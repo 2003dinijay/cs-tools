@@ -3976,27 +3976,30 @@ type CreateChangeRequestRequest struct {
 	// ProjectID is the change request's Customer Project (work_item.project_id).
 	// DeploymentIDs are the project's deployments the change touches: each must
 	// belong to ProjectID (and be active), so DeploymentIDs requires ProjectID.
-	// EnvironmentIDs / DeploymentProductIDs follow from the chosen deployments:
-	// Environments, when omitted, default to the environment of every chosen
-	// deployment and, when given, must each be the environment of at least one
-	// of them; Deployment products are READ-ONLY -- always the deployed
-	// products of the chosen deployments -- so DeploymentProductIDs, when
-	// given, must be exactly that set. See DeriveChangeRequestLinks in the
-	// repository package and entity-service's CLAUDE.md "Change requests" ->
-	// "Customer project, deployments, environments".
+	// DeploymentProductIDs follow from the chosen deployments: Deployment
+	// products are READ-ONLY -- always the deployed products of the chosen
+	// deployments -- so DeploymentProductIDs, when given, must be exactly that
+	// set. A deployment already carries its environment role (deployment.type),
+	// so there is no separate environments field. See entity-service's
+	// CLAUDE.md "Change requests" -> "Customer project and deployments".
 	ProjectID     *string  `json:"projectId,omitempty"`
 	DeploymentIDs []string `json:"deploymentIds,omitempty"`
 	// AffectedServicesText, AffectedComponentsText, RollbackDurationText,
-	// CustomerGroupID, EnvironmentIDs, DeploymentProductIDs, and DurationInput
-	// are field-parity additions -- see PatchChangeRequestRequest for the
-	// shared documentation of each. On create there is no prior value to
-	// clear, so none of them need tri-state handling here.
+	// DeploymentProductIDs and DurationInput are field-parity additions -- see
+	// PatchChangeRequestRequest for the shared documentation of each. On create
+	// there is no prior value to clear, so none of them need tri-state handling
+	// here.
 	AffectedServicesText   *string  `json:"affectedServicesText,omitempty"`
 	AffectedComponentsText *string  `json:"affectedComponentsText,omitempty"`
 	RollbackDurationText   *string  `json:"rollbackDurationText,omitempty"`
-	CustomerGroupID        *string  `json:"customerGroupId,omitempty"`
-	EnvironmentIDs         []string `json:"environmentIds,omitempty"`
 	DeploymentProductIDs   []string `json:"deploymentProductIds,omitempty"`
+	// CustomerGroupID and EnvironmentIDs are NO LONGER ACCEPTED. They exist
+	// only so a client that still sends one is refused with a clear 400 rather
+	// than having it silently dropped: the Customer Group is derived from the
+	// Customer Project's registered contacts (ChangeRequest.CustomerContacts)
+	// and a deployment already carries its environment (deployment.type).
+	CustomerGroupID *string  `json:"customerGroupId,omitempty"`
+	EnvironmentIDs  []string `json:"environmentIds,omitempty"`
 	// DurationInput is the calendar duration in whole seconds. It is accepted
 	// only when it exactly matches the effective planned window (PlannedStartDate
 	// to PlannedEndDate, in this same request): the backing data source derives
@@ -4421,7 +4424,7 @@ type PatchChangeRequestRequest struct {
 	//   - nil outer pointer: field omitted -- leave the value unchanged
 	//   - non-nil outer, nil inner: explicit null -- clear the value
 	//   - non-nil outer, non-nil inner: set the value
-	// EnvironmentIDs/DeploymentProductIDs use a single pointer instead: nil
+	// DeploymentProductIDs uses a single pointer instead: nil
 	// means omitted, and any non-nil slice (including an explicitly empty one)
 	// replaces the whole list -- the same convention CreateIncidentRequest's
 	// WatchList already uses, since an array field has no separate "null" state
@@ -4435,13 +4438,15 @@ type PatchChangeRequestRequest struct {
 	// RollbackDurationText is a raw, unvalidated string (e.g. "2 hours");
 	// parsing or normalizing it is a decision for the layer above, not this one.
 	RollbackDurationText **string  `json:"rollbackDurationText"`
-	CustomerGroupID      **string  `json:"customerGroupId"`
-	EnvironmentIDs       *[]string `json:"environmentIds"`
 	DeploymentProductIDs *[]string `json:"deploymentProductIds"`
+	// CustomerGroupID and EnvironmentIDs are NO LONGER ACCEPTED (any value,
+	// null included, is a 400); see CreateChangeRequestRequest.
+	CustomerGroupID **string  `json:"customerGroupId"`
+	EnvironmentIDs  *[]string `json:"environmentIds"`
 	// DeploymentIDs replaces the whole list of the project's deployments the
 	// change touches (an explicitly empty array clears it, and with it the
-	// environments and deployment products that follow from it). Together
-	// with ProjectID, EnvironmentIDs and DeploymentProductIDs it is editable
+	// deployment products that follow from it). Together
+	// with ProjectID and DeploymentProductIDs it is editable
 	// only before implementation starts: once the change request has reached
 	// implement (or any later state) a change is refused with a
 	// ValidationError, while resending the stored value is accepted. The
@@ -4470,20 +4475,12 @@ type PatchChangeRequestResponse struct {
 
 // ChangeRequestLinkSelection is a change request's customer-scope selection as
 // a caller states it: the project and, within it, the deployments the change
-// touches, plus the environments and deployment products that follow from
-// those deployments. It is what the repository validates and derives from.
+// touches, plus the deployment products that follow from those deployments.
+// It is what the repository validates and derives from.
 type ChangeRequestLinkSelection struct {
 	ProjectID *string
-	// CustomerGroupID is the chosen Customer Group (nil/blank = none). It must
-	// be one of the customer groups associated with ProjectID
-	// (project_customer_group, migration 0192), so a change request can never
-	// be directed at another customer's approvers.
-	CustomerGroupID *string
 	// DeploymentIDs are the chosen deployments, in the order given.
 	DeploymentIDs []string
-	// EnvironmentIDs is nil when the caller did not state environments (they
-	// then default to the environment of every chosen deployment).
-	EnvironmentIDs []string
 	// DeploymentProductIDs is nil when the caller did not state them. Deployment
 	// products are read-only: when stated they must equal the derived set.
 	DeploymentProductIDs []string
@@ -4494,32 +4491,39 @@ type ChangeRequestLinkSelection struct {
 type ChangeRequestLinkSet struct {
 	ProjectID          string
 	Deployments        []EntityRef
-	Environments       []EntityRef
 	DeploymentProducts []EntityRef
 }
 
 // ChangeRequestLinkOptionsRequest is the input for POST /change-requests/link-options:
 // the lookup behind the change request form's Customer Project -> Deployments ->
-// Environments / Deployment products cascade.
+// Deployment products cascade (and the read-only Customer Group).
 type ChangeRequestLinkOptionsRequest struct {
 	// ProjectID is the selected Customer Project (required).
 	ProjectID string `json:"projectId"`
 	// DeploymentIDs are the deployments chosen so far (optional). When present
-	// they must belong to ProjectID and the response lists the environments
-	// and deployment products that follow from them.
+	// they must belong to ProjectID and the response lists the deployment
+	// products that follow from them.
 	DeploymentIDs []string `json:"deploymentIds,omitempty"`
 }
 
-// ChangeRequestDeploymentOption is one selectable deployment of the project,
-// with the environment it is an instance of.
+// ChangeRequestDeploymentOption is one selectable deployment of the project.
 type ChangeRequestDeploymentOption struct {
 	ID   string `json:"id"`
 	Name string `json:"name"`
-	// Type is the deployment type (primary_production, staging, qa, ...).
+	// Type is the deployment type, i.e. its environment role
+	// (primary_production, staging, qa, ...).
 	Type string `json:"type"`
-	// Environment is the environment of this deployment; null when its type
-	// has no environment (cannot happen for the six built-in types).
-	Environment *EntityRef `json:"environment"`
+}
+
+// ChangeRequestCustomerContact is one member of a change request's Customer
+// Group: a REGISTERED portal-user contact of the change request's Customer
+// Project. The group is derived (never stored): see
+// repository.loadProjectCustomerContacts.
+type ChangeRequestCustomerContact struct {
+	// ID is the project contact's id (project_contact.id).
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Email string `json:"email,omitempty"`
 }
 
 // ChangeRequestDeploymentProductOption is one deployment product (a deployed
@@ -4536,16 +4540,13 @@ type ChangeRequestDeploymentProductOption struct {
 type ChangeRequestLinkOptionsResponse struct {
 	// Deployments are the project's active deployments, name order.
 	Deployments []ChangeRequestDeploymentOption `json:"deployments"`
-	// Environments follow from the chosen deployments (deploymentIds); empty
-	// when none were chosen.
-	Environments []EntityRef `json:"environments"`
 	// DeploymentProducts follow from the chosen deployments; read-only on the
 	// form. Empty when none were chosen.
 	DeploymentProducts []ChangeRequestDeploymentProductOption `json:"deploymentProducts"`
-	// CustomerGroups are the customer groups associated with the project (the
-	// only values customerGroupId accepts for it), name order; empty when the
-	// project has none.
-	CustomerGroups []EntityRef `json:"customerGroups"`
+	// CustomerContacts are the project's registered contacts -- the read-only
+	// Customer Group of a change request on it, name order; empty when it has
+	// none.
+	CustomerContacts []ChangeRequestCustomerContact `json:"customerContacts"`
 }
 
 // TimeCardState represents the workflow state of a time card.
@@ -4742,13 +4743,18 @@ type ChangeRequest struct {
 	AffectedServicesText   *string `json:"affectedServicesText"`
 	AffectedComponentsText *string `json:"affectedComponentsText"`
 	RollbackDurationText   *string `json:"rollbackDurationText"`
-	// Environments and DeploymentProducts follow from Deployments (see
+	// DeploymentProducts follow from Deployments (see
 	// CreateChangeRequestRequest.ProjectID). Always a JSON array on the
 	// PostgreSQL data source (empty when none). DeploymentProducts names read
 	// "<product> <version>".
-	Environments       []EntityRef `json:"environments"`
 	DeploymentProducts []EntityRef `json:"deploymentProducts"`
-	CustomerGroup      *EntityRef  `json:"customerGroup"`
+	// CustomerContacts is the change request's Customer Group: the REGISTERED
+	// portal-user contacts of its Customer Project, computed live on every read
+	// (nothing is stored), name order. Always a JSON array on the PostgreSQL
+	// data source: empty without a project or without registered contacts.
+	// Read-only -- they are the customer's approvers at Customer Approval /
+	// Customer Review.
+	CustomerContacts []ChangeRequestCustomerContact `json:"customerContacts"`
 
 	// Group C2 -- carried for parity, read-through only; no write path is
 	// exposed for any of these seven.

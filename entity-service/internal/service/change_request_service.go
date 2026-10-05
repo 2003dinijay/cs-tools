@@ -221,8 +221,14 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.PatchChangeRequestResponse{}, err
 	}
+	// customerGroupId / environmentIds are no longer accepted (the Customer
+	// Group is derived from the project's registered contacts; a deployment
+	// carries its environment): refused before anything else is looked at.
+	if err := repository.RejectRemovedPatchFields(req); err != nil {
+		return domain.PatchChangeRequestResponse{}, err
+	}
 	ids := []string{}
-	for _, pp := range []**string{req.RequestedByID, req.CustomerGroupID} {
+	for _, pp := range []**string{req.RequestedByID} {
 		if pp != nil && *pp != nil {
 			ids = append(ids, **pp)
 		}
@@ -235,7 +241,7 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	if err := validateUUIDs("id", ids); err != nil {
 		return domain.PatchChangeRequestResponse{}, err
 	}
-	if err := validateChangeRequestScopeLists(derefStrings(req.DeploymentIDs), derefStrings(req.EnvironmentIDs), derefStrings(req.DeploymentProductIDs)); err != nil {
+	if err := validateChangeRequestScopeLists(derefStrings(req.DeploymentIDs), derefStrings(req.DeploymentProductIDs)); err != nil {
 		return domain.PatchChangeRequestResponse{}, err
 	}
 	if req.Comment != nil && strings.TrimSpace(*req.Comment) == "" {
@@ -260,10 +266,10 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 		req.IsPlanningVisibleToCustomers == nil &&
 		req.ImplementationPlan == nil && req.Priority == nil && req.Category == nil &&
 		req.RequestedByID == nil && req.AffectedServicesText == nil && req.AffectedComponentsText == nil &&
-		req.RollbackDurationText == nil && req.CustomerGroupID == nil &&
+		req.RollbackDurationText == nil &&
 		req.OnHold == nil && req.OnHoldReason == nil &&
 		req.CustomerApprovalRequired == nil && req.CustomerReviewRequired == nil &&
-		req.DeploymentIDs == nil && req.EnvironmentIDs == nil && req.DeploymentProductIDs == nil &&
+		req.DeploymentIDs == nil && req.DeploymentProductIDs == nil &&
 		req.Comment == nil && req.WorkNote == nil && req.DurationInput == nil {
 		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
 	}
@@ -305,17 +311,18 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	// are a different thing), so they stay Postgres-only. A PATCH that carried
 	// nothing else has nothing to mirror.
 	//
-	// deploymentIds / environmentIds / deploymentProductIds are stripped too:
-	// ServiceNow's change request API carries a single deployment and a single
-	// deployed product on a PATCH, and its environments / deployment products
-	// are ServiceNow records whose ids are not the ones PostgreSQL derives
-	// (environments are a PostgreSQL-only catalogue of deployment types) -- the
-	// field names and reference tables behind them are not discoverable here,
-	// so rather than guess they stay Postgres-only. projectId, customerGroupId,
-	// category, comment and workNote are forwarded as before.
+	// deploymentIds / deploymentProductIds are stripped too: ServiceNow's change
+	// request API carries a single deployment and a single deployed product on
+	// a PATCH, and its deployment products are ServiceNow records whose ids are
+	// not the ones PostgreSQL derives -- the field names and reference tables
+	// behind them are not discoverable here, so rather than guess they stay
+	// Postgres-only. projectId, category, comment and workNote are forwarded as
+	// before. customerGroupId and environmentIds are no longer accepted at all
+	// (refused above), so there is nothing of them to forward: the Customer
+	// Group is derived from the project's registered contacts in PostgreSQL.
 	mirrorReq := req
 	mirrorReq.CustomerApprovalRequired, mirrorReq.CustomerReviewRequired = nil, nil
-	mirrorReq.DeploymentIDs, mirrorReq.EnvironmentIDs, mirrorReq.DeploymentProductIDs = nil, nil, nil
+	mirrorReq.DeploymentIDs, mirrorReq.DeploymentProductIDs = nil, nil
 	if s.snWriteback != nil && !reflect.DeepEqual(mirrorReq, domain.PatchChangeRequestRequest{}) {
 		mirrorID := id
 		s.snWriteback.Dispatch(ctx, "change_request", id, "patch", mirrorReq,
@@ -338,6 +345,12 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 // delegates to createChangeRequestSNFirst; otherwise createChangeRequestPortal
 // -- see each method's own doc comment.
 func (s *changeRequestService) CreateChangeRequest(ctx context.Context, req domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
+	// customerGroupId / environmentIds are no longer accepted (see
+	// repository.RejectRemovedCreateFields); refused before anything else,
+	// including before ServiceNow is called.
+	if err := repository.RejectRemovedCreateFields(req); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
 	if s.snMirror != nil {
 		return s.createChangeRequestSNFirst(ctx, req)
 	}
@@ -418,23 +431,23 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	if err := validateChangeRequestCreateScope(req); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
-	// The project / deployments / environments / deployment products and the
-	// customer group (which must belong to the project) are
-	// validated BEFORE ServiceNow is called: once ServiceNow has created the
-	// change request, a refusal on the Postgres side would strand it there.
+	// The project / deployments / deployment products are validated BEFORE
+	// ServiceNow is called: once ServiceNow has created the change request, a
+	// refusal on the Postgres side would strand it there.
 	if _, err := s.repo.ValidateChangeRequestLinks(ctx, domain.ChangeRequestLinkSelection{
-		ProjectID: req.ProjectID, CustomerGroupID: req.CustomerGroupID, DeploymentIDs: req.DeploymentIDs,
-		EnvironmentIDs: req.EnvironmentIDs, DeploymentProductIDs: req.DeploymentProductIDs,
+		ProjectID: req.ProjectID, DeploymentIDs: req.DeploymentIDs, DeploymentProductIDs: req.DeploymentProductIDs,
 	}); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
 	// ServiceNow gets the request without the scope fields only PostgreSQL
 	// models: projectId and deploymentIds have no field on ServiceNow's create
-	// payload, and environments / deployment products are PostgreSQL-derived
-	// ids that are not ServiceNow records (see PatchChangeRequest's mirror
-	// comment). customerGroupId, category, comment and workNote are forwarded.
+	// payload, and deployment products are PostgreSQL-derived ids that are not
+	// ServiceNow records (see PatchChangeRequest's mirror comment). category,
+	// comment and workNote are forwarded; customerGroupId / environmentIds are
+	// refused up front (nothing to forward: the Customer Group is derived from
+	// the project's registered contacts).
 	mirrorReq := req
-	mirrorReq.ProjectID, mirrorReq.DeploymentIDs, mirrorReq.EnvironmentIDs, mirrorReq.DeploymentProductIDs = nil, nil, nil, nil
+	mirrorReq.ProjectID, mirrorReq.DeploymentIDs, mirrorReq.DeploymentProductIDs = nil, nil, nil
 	snResp, err := s.snMirror.CreateChangeRequest(ctx, mirrorReq)
 	if err != nil {
 		// ServiceNow never accepted the change request -- nothing is
@@ -582,7 +595,7 @@ func (s *changeRequestService) GetChangeRequestLinkOptions(ctx context.Context, 
 	if err := validateUUIDs("projectId", []string{req.ProjectID}); err != nil {
 		return domain.ChangeRequestLinkOptionsResponse{}, err
 	}
-	if err := validateChangeRequestScopeLists(req.DeploymentIDs, nil, nil); err != nil {
+	if err := validateChangeRequestScopeLists(req.DeploymentIDs, nil); err != nil {
 		return domain.ChangeRequestLinkOptionsResponse{}, err
 	}
 	return s.repo.GetChangeRequestLinkOptions(ctx, req)
@@ -599,13 +612,13 @@ func derefStrings(p *[]string) []string {
 }
 
 // validateChangeRequestScopeLists checks the shape of the deployment,
-// environment and deployment-product id lists: UUIDs, bounded. Whether they
+// and deployment-product id lists: UUIDs, bounded. Whether they
 // fit together is the repository's to judge.
-func validateChangeRequestScopeLists(deploymentIDs, environmentIDs, deploymentProductIDs []string) error {
+func validateChangeRequestScopeLists(deploymentIDs, deploymentProductIDs []string) error {
 	for _, l := range []struct {
 		field string
 		ids   []string
-	}{{"deploymentIds", deploymentIDs}, {"environmentIds", environmentIDs}, {"deploymentProductIds", deploymentProductIDs}} {
+	}{{"deploymentIds", deploymentIDs}, {"deploymentProductIds", deploymentProductIDs}} {
 		if len(l.ids) > maxChangeRequestScopeIDs {
 			return &apierror.ValidationError{Msg: fmt.Sprintf("%s must contain at most %d entries", l.field, maxChangeRequestScopeIDs)}
 		}
@@ -624,10 +637,5 @@ func validateChangeRequestCreateScope(req domain.CreateChangeRequestRequest) err
 			return err
 		}
 	}
-	if req.CustomerGroupID != nil {
-		if err := validateUUIDs("customerGroupId", []string{*req.CustomerGroupID}); err != nil {
-			return err
-		}
-	}
-	return validateChangeRequestScopeLists(req.DeploymentIDs, req.EnvironmentIDs, req.DeploymentProductIDs)
+	return validateChangeRequestScopeLists(req.DeploymentIDs, req.DeploymentProductIDs)
 }

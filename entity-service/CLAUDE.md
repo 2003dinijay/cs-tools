@@ -2532,7 +2532,7 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   `[customer_review, rollback, canceled]` when `customerReviewRequired` --,
   customer_review `[closed, rollback, canceled]`, terminal states none.
   **While a live Customer Approval / Customer Review stage exists (the change
-  has a Customer Group, see "Customer Group" below) `customer_approval` and
+  has registered customer contacts, see "Customer Group" below) `customer_approval` and
   `customer_review` offer only `[canceled]`**: the manual `scheduled` /
   `closed` / `rollback` is withdrawn and refused.
 * **Roll back** (`rollback`) is the failed-review off-ramp of the process
@@ -2593,39 +2593,43 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   decide it (not creator; not SRE on the peer stage). Additive, advisory; the
   decision endpoint re-checks. Postgres data source only.
 * **Rejections** of the internal stages keep the existing behaviour: siblings
-  cancelled, no state change in either direction. (A *customer group's*
+  cancelled, no state change in either direction. (A *customer contact's*
   rejection does move the change — see "Customer Group" below.)
 * Stage labels (`approval_stage.checkpoint_label`) are now `Peer Approval`,
-  `CAB Approval`, `ECAB Approval`, `Review`, plus the customer group's `Customer
+  `CAB Approval`, `ECAB Approval`, `Review`, plus the customer group's (project contacts') `Customer
   Approval` / `Customer Review`; pre-existing `Assess`/`Authorize`
   labels (and unlabeled positional stages) are still recognised as peer/CAB.
 
-### Customer project, deployments, environments and deployment products
+### Customer project, deployments and deployment products
 
-The change request form's **Customer Project**, **Deployments** (multi-select),
-**Environments** (multi-select) and **Deployment products** (read-only), plus
-**Category**, **Customer Group**, **Additional comments** (customer visible) and
+The change request form's **Customer Project**, **Deployments** (multi-select) and
+**Deployment products** (read-only), plus **Category**, the read-only **Customer
+Group** (see the next section), **Additional comments** (customer visible) and
 **Work notes**. Code: `change_request_links.go` (all rules), `change_request_repo.go`
-(create / `patchChangeRequestTx` / `GetChangeRequestByID`); migration
-`0191_change_request_project_links.sql`. PostgreSQL data source only.
+(create / `patchChangeRequestTx` / `GetChangeRequestByID`); migrations
+`0191_change_request_project_links.sql` and
+`0192_change_request_drop_environments.sql`. PostgreSQL data source only.
 
-**Before this, only customer group and (via PATCH) category were persisted.** Both
-create paths silently dropped project, category, environments, deployment products,
-comment and workNote; PATCH rejected environments / deployment products / comment /
-workNote with "not supported on this data source". All are now written and read back.
+**There is no Environments field.** A deployment already *is* an environment
+instance of a project (its role, Primary production / Staging / QA …, is
+`deployment.type`, still returned as `type` by the lookup), so a separate
+Environments selection only repeated the Deployments one. Migration 0191 first
+added an `environment` catalogue and a `change_request_environment` join table
+for it; migration **0192 drops both** (`DROP TABLE IF EXISTS`, idempotent) and
+0191 itself is untouched (it may already be applied somewhere). `environmentIds`
+is refused on every write path (create, PATCH, both services) with the 400
+`environmentIds is no longer supported: deployments carry the environment`, and
+`environments` is gone from the detail response and the lookup.
 
-*Data model.* The case model has no environment table — a **deployment is an
-environment instance** of a project and its role is `deployment.type`
-(`deployment_type_enum`). So:
+*Data model.*
 
 | Field | Storage |
 | --- | --- |
 | Customer Project | `work_item.project_id` (already existed; create now writes it) |
 | Deployments | `change_request_deployment (change_request_id, deployment_id)` |
-| Environments | `change_request_environment (change_request_id, environment_id)` → new catalogue `environment (id, code, name)`, one row per `deployment_type_enum` label with fixed ids (`e0000000-0000-4000-8000-00000000000N`); a deployment's environment is the row whose `code` = its type |
 | Deployment products | `change_request_deployed_product (change_request_id, deployed_product_id)` (the same rows the case form's Product picker lists), stored as a snapshot |
 | Category | `change_request.category`; the enum gained `REGULAR_RELEASE_CLOUD`, `HOTFIX_RELEASE_CLOUD`, `DEVOPS`, `CLOUD_COMPUTING` so all 13 API values persist |
-| Customer Group | `change_request.customer_group_id` (unchanged) |
+| Customer Group | **not stored**: derived live from the project's registered contacts (next section). `change_request.customer_group_id` (migration 0075) is kept but no longer written or read |
 | Additional comments / Work notes | `comment` rows of type `COMMENT` / `WORK_NOTE`, `created_by` = the caller's email |
 
 The join tables have FKs with `ON DELETE CASCADE`, a lookup index each and `FORCE ROW
@@ -2640,53 +2644,55 @@ on PATCH cannot be combined with `deploymentIds`.
 
 1. `projectId` must exist. `deploymentIds` require `projectId`; each deployment must
    exist, be active and belong to the project.
-2. **Environments follow the deployments.** `environmentIds` omitted → every
-   environment of the chosen deployments. Given → each must be the environment of at
-   least one chosen deployment. `environmentIds` without `deploymentIds` is refused.
-3. **Deployment products are read-only and derived**: always the active
+2. **Deployment products are read-only and derived**: always the active
    (`active IS NULL OR TRUE`) deployed products of the chosen deployments. A caller
    may state `deploymentProductIds`, but only as exactly that set (on PATCH also
    exactly the stored snapshot, so a re-sent value never fails because the
    deployment gained a product since); anything else is "deploymentProductIds is
    read-only: …". Without `deploymentIds` they are refused.
-4. Each list holds at most 100 ids; duplicates are collapsed.
+3. Each list holds at most 100 ids; duplicates are collapsed.
+4. `customerGroupId` and `environmentIds` are refused (see above and below).
 
-*PATCH.* Arrays replace. `deploymentIds` changed → deployments, environments (reset
-to the new deployments' unless `environmentIds` is sent too) and products (re-derived)
-are all rewritten; `[]` clears them. Changing `projectId` while deployments are stored
-requires `deploymentIds` in the same request. **Edit window:** project, deployments,
-environments and deployment products can change only while the change has not reached
+*PATCH.* Arrays replace. `deploymentIds` changed → deployments and products
+(re-derived) are rewritten; `[]` clears them. Changing `projectId` while deployments
+are stored requires `deploymentIds` in the same request. **Edit window:** project,
+deployments and deployment products can change only while the change has not reached
 `implement` (states new … scheduled); from implement/review/customer_review/rollback/
 closed/canceled a *change* is a 400 ("<field> can no longer be changed: the change
 request is in state …") while re-sending the stored value is accepted (same posture as
-the customer gate flags). Category, customer group and the journal entries are not
-windowed. A refused PATCH writes nothing (all in the PATCH transaction).
-`comment` / `workNote` append a row each; blank is refused on PATCH and ignored on
-create. `durationInput` is still unsupported on this data source.
+the customer gate flags). Category and the journal entries are not windowed. A refused
+PATCH writes nothing (all in the PATCH transaction). `comment` / `workNote` append a
+row each; blank is refused on PATCH and ignored on create. `durationInput` is still
+unsupported on this data source.
 
-*Create* runs validation, the insert, the three join tables and the two journal rows
-in one transaction (all-or-nothing). The ServiceNow-first path validates the selection
+*Create* runs validation, the insert, the two join tables and the two journal rows in
+one transaction (all-or-nothing). The ServiceNow-first path refuses the removed
+fields and validates the selection
 (`ChangeRequestRepository.ValidateChangeRequestLinks`) **before** calling ServiceNow.
 
 *Lookup.* `POST /change-requests/link-options {projectId, deploymentIds?}` →
-`{deployments:[{id,name,type,environment}], environments:[…], deploymentProducts:[{id,name,deployment}]}`
-(`GetChangeRequestLinkOptions`): the project's active deployments, and for the chosen
-ones the environments and products that follow — computed by the same derivation the
-writes validate against, so what it offers is exactly what create accepts.
+`{deployments:[{id,name,type}], deploymentProducts:[{id,name,deployment}], customerContacts:[{id,name,email?}]}`
+(`GetChangeRequestLinkOptions`): the project's active deployments, for the chosen ones
+the products that follow — computed by the same derivation the writes validate against,
+so what it offers is exactly what create accepts — and the project's registered
+contacts (the read-only Customer Group, name order, `[]` when none).
 
-*ServiceNow mirror (dual-write).* The ServiceNow client types here carry
-`customerGroupId`, `categoryKey`, `comment`, `workNote` (create) and `projectId`,
-`customerGroupId`, `comment`, `workNote` (PATCH), which keep being forwarded. They do
-**not** carry a project or a deployment *list* (create has neither; PATCH has the single
-`deploymentId`/`deployedProductId`), and the env/product ids PostgreSQL derives are not
-ServiceNow records (environments are a PostgreSQL-only catalogue), whose field names
-and reference tables are not discoverable from this repository. So `projectId` (create),
-`deploymentIds`, `environmentIds` and `deploymentProductIds` are **stripped from the
-mirror** like the customer gate flags (`changeRequestService.createChangeRequestSNFirst` /
-`PatchChangeRequest`); the ServiceNow-only service refuses `projectId`/`deploymentIds`
-instead of dropping them. Wire them once the ServiceNow field names are known.
-A change request created in dual-write mode also gets its comment rows in PostgreSQL;
-if csm-sync-service syncs the ServiceNow journal back it may add its own copies.
+*ServiceNow mirror (dual-write).* `customerGroupId` and `environmentIds` are **no
+longer forwarded** (they are no longer accepted, so there is nothing to forward; the
+ServiceNow-only service refuses them with the same 400 instead of sending them, and
+no longer maps `customerGroup` / `environments` from a ServiceNow read). The ServiceNow
+client types still carry `categoryKey`, `comment`, `workNote` (create) and `projectId`,
+`comment`, `workNote` (PATCH), which keep being forwarded. They do **not** carry a
+project or a deployment *list* (create has neither; PATCH has the single
+`deploymentId`/`deployedProductId`), and the product ids PostgreSQL derives are not
+ServiceNow records, whose field names and reference tables are not discoverable from
+this repository. So `projectId` (create), `deploymentIds` and `deploymentProductIds`
+are **stripped from the mirror** like the customer gate flags
+(`changeRequestService.createChangeRequestSNFirst` / `PatchChangeRequest`); the
+ServiceNow-only service refuses `projectId`/`deploymentIds` instead of dropping them.
+Wire them once the ServiceNow field names are known. A change request created in
+dual-write mode also gets its comment rows in PostgreSQL; if csm-sync-service syncs
+the ServiceNow journal back it may add its own copies.
 
 ### Customer Approval / Customer Review checkboxes
 
@@ -2759,33 +2765,55 @@ receipt). Postgres data source only.
 
 ### Customer Group: approving / rejecting Customer Approval and Customer Review
 
-A change request's **Customer Group** (`change_request.customer_group_id`, an FK
-into `"group"`; API `customerGroupId` on create/PATCH, `customerGroup` on the
-detail response) identifies the people the request is directed to, the way the
-Assignment group (Apollo / Artemis) identifies the internal approvers. When the
-change reaches `customer_approval` / `customer_review`, **the group's members
-get an Approve / Reject action in the Approvals tab**, like any other stage.
-Code: `change_request_approval_flow.go` (`provisionCustomerStage`,
+A change request's **Customer Group** is **not a group you pick**: it is
+derived, live and read-only, from the change request's **Customer Project** — the
+project's **registered contacts** (`customerContacts` on the detail response and on
+`POST /change-requests/link-options`; the UI label stays "Customer Group"). It is
+never stored, so it can never point at another customer's people: a contact belongs
+to exactly the project it was registered on. When the change reaches
+`customer_approval` / `customer_review`, **those contacts get an Approve / Reject
+action in the Approvals tab**, like any other stage. Code: `change_request_links.go`
+(`customerContactsSQL`, `loadProjectCustomerContacts`, `customerContactRefs`),
+`change_request_approval_flow.go` (`provisionCustomerStage`,
 `applyCustomerStageOutcome`, `customerStageSpec*`).
 
-* **Membership model.** A group's members are its `team_member` rows by
-  `group_id` — exactly the Assignment group's model (`groupMemberIDs`), nothing
-  new. Eligible = an **active** user (`"user".is_active`) in the group;
-  the CR's creator is listed `cancelled` like on every other stage and can never
-  decide. The SRE-peer exclusion does **not** apply to customer stages.
+* **Who is a customer contact.** A `project_contact` of the change request's
+  `work_item.project_id` in state **`REGISTERED`** holding the **`PORTAL_USER`**
+  project role (through `project_contact_group` → `project_group_role` →
+  `project_role` — the very chain `callerMayGrantChangeRequestCustomerFlag` uses
+  for "a registered contact with role X on project Y"), whose `"user"` is active.
+  The name/email/user come from `account_contact.user_name` matched
+  case-insensitively to `"user".user_name`, as in `ProjectContactRepository`
+  (a contact with no `"user"` row is listed with its contact email but cannot
+  hold an approval). `INVITED` / `RE-INVITED` / `DEACTIVATED` contacts, contacts
+  holding only `SECURITY_CONTACT`, and deactivated users are not in the group.
+  Empty (`[]`, never null) when the change request has no project or the project
+  has no such contact. `change_request.customer_group_id` (migration 0075) is no
+  longer written or read; a stored legacy value is ignored (also for approvals).
+* **API.** `customerGroupId` is **no longer accepted** on create or PATCH (any
+  value, `null` included): 400 `customerGroupId is no longer accepted: the customer
+  group is derived from the customer project's registered contacts`
+  (`RejectRemovedCreateFields` / `RejectRemovedPatchFields`: in the service before
+  anything else — so before ServiceNow is called — and again in the repository).
+  The detail response drops `customerGroup` for `customerContacts:
+  [{id (project_contact.id), name, email?}]` (name order).
+* **Eligible approvers** = the contacts' active users minus the CR's creator (listed
+  `cancelled` like on every other stage; they can never decide). The SRE-peer
+  exclusion does **not** apply to customer stages.
 * **Stages.** Entering `customer_approval` writes an `approval_stage`
-  `checkpoint_label = "Customer Approval"`, `assignment_group_id` = the customer
-  group, one `requested` `approval_stage_approver` per eligible member; entering
-  `customer_review` the same with `"Customer Review"`. Entry points (all call
-  `provisionCustomerStage`): CAB / ECAB approval cascade, Request Approval on a
-  Standard change, the `{state: "customer_review"}` PATCH, and any PATCH that
-  carries `state` or `customerGroupId`. The stage kind rides on
+  `checkpoint_label = "Customer Approval"`, **`assignment_group_id` NULL** (the
+  group is not a `"group"` row), one `requested` `approval_stage_approver` per
+  eligible contact; entering `customer_review` the same with `"Customer Review"`.
+  Entry points (all call `provisionCustomerStage`): CAB / ECAB approval cascade,
+  Request Approval on a Standard change, the `{state: "customer_review"}` PATCH,
+  and any PATCH that carries `state` **or `projectId`**. The stage kind rides on
   `checkpoint_label` (`stageKindCustomerApproval` / `stageKindCustomerReview` in
   `classifyApprovalStage`) — **no migration**. The approvals read response shows
-  them under those labels, `approverName` = the group's name, `approverType`
-  `STATIC_GROUP`. The Customer stages are excluded from the internal checkpoint
-  ordinal count in `provisionApprovalStage`, so the Review stage of a Normal
-  change is still created after a Customer Approval stage exists.
+  them under those labels, `approverName` = `"Customer Group"` (the fixed
+  `customerGroupDisplayName`), `approverType` `STATIC_GROUP`. The Customer stages
+  are excluded from the internal checkpoint ordinal count in
+  `provisionApprovalStage`, so the Review stage of a Normal change is still
+  created after a Customer Approval stage exists.
 * **Decisions** go through `DecideChangeRequestApproval` (first responder wins,
   siblings cancelled, `canDecide` true only on a member's own `REQUESTED` row).
   Outcomes, applied in the same transaction:
@@ -2800,40 +2828,69 @@ Code: `change_request_approval_flow.go` (`provisionCustomerStage`,
   action from `review` / `customer_review` (see "Roll back" above), and
   `canceled` for a declined approval matches the ServiceNow `isCustomerApproved:
   false` semantics. **`rollback` is terminal** (`legalNextStates` none). The decision comes from the approval, so the flag stamp bypasses
-  `authorizeChangeRequestCustomerFlagWrite` (the decider is a group member).
-* **A non-member** (or anyone without a `requested` row) deciding on a change
+  `authorizeChangeRequestCustomerFlagWrite` (the decider is a project contact).
+* **A non-contact** (or anyone without a `requested` row) deciding on a change
   waiting on its live customer stage gets a **403** `only members of the
-  customer group "<name>" can approve or reject the customer's approval|review
-  of this change request` (the creator keeps "the creator of a change request
-  cannot approve it"); elsewhere the old 404 "no pending approval found" stays.
-* **Fallback so nothing strands.** No customer group, or a group with no
-  eligible member: **no stage**, and the manual paths work as before
+  customer group (the registered contacts of this change request's project) can
+  approve or reject the customer's approval|review of this change request` (the
+  creator keeps "the creator of a change request cannot approve it"); elsewhere
+  the old 404 "no pending approval found" stays. **Customer A's contacts can
+  neither be asked about, nor decide, customer B's change request.**
+* **Who can reach the decision endpoint — read this.** `DecideChangeRequestApproval`
+  decides as the caller's own `"user"` (resolved from the `x-user-id-token` email) and
+  only on their own `requested` row, so a registered contact's token would be
+  accepted *by the entity service*. But in this repository the only route to it is
+  the **CSM portal BFF** (`POST /change-requests/{id}/approvals/decision`,
+  `PermWrite` = the `cs_engineer` / `admin` roles): registered *customer* contacts
+  have no access to the CSM portal, and no customer-facing app here calls it. So a
+  live customer stage is, today, answerable only by a person who is both a
+  registered project contact **and** a CSM user with `PermWrite` — in the local seed
+  jane.doe / john.smith are exactly that. In production, until a customer-facing
+  client for this endpoint exists (not built here), a live stage cannot be answered
+  by the real customer, and with a live stage `legalNextStates` offers only
+  `canceled` (the manual `scheduled` / `closed` is refused). The ServiceNow
+  workflow is the same shape (customer-side approvers answer in ServiceNow).
+* **Fallback so nothing strands.** No project, or a project with no eligible
+  contact: **no stage**, and the manual paths work as before
   (`customer_approval` `[scheduled, canceled]`, `customer_review` `[closed,
   canceled]`). With a live stage, `legalNextStates` is `[canceled]` for both
   states and a manual `{state: "scheduled"}` / `{state: "closed"}` is a **400**
   `state "scheduled" cannot be set manually: the customer's approval has been
-  requested from the customer group "<name>" and is given by one of its members
-  approving or rejecting it in the change request's approvals (POST
-  /change-requests/{id}/approvals/decision)`. Cancel stays available and cancels
+  requested from the customer group (the registered contacts of the change
+  request's project) and is given by one of them approving or rejecting it in the
+  change request's approvals (POST /change-requests/{id}/approvals/decision)`. Cancel stays available and cancels
   the pending rows.
-* **Group set / changed / cleared later** (`provisionCustomerStage`,
-  idempotent, under the `change_request` row lock): set while already in the
-  state -> the stage is provisioned; resent/unrelated PATCH -> nothing; changed
-  while a stage is live -> the old stage's `requested` rows are `cancelled` and a
-  new stage is provisioned for the new group (never two live stages; the old
-  stage stays as a record); cleared -> pending rows cancelled, manual path back.
-  A stage already approved/rejected is never re-provisioned.
+* **Project (and contacts) changed later** (`provisionCustomerStage`, idempotent,
+  under the `change_request` row lock; the stage is compared with the project's
+  *current* eligible contact set): project set while already in the state -> the
+  stage is provisioned; resent/unrelated PATCH -> nothing; project changed (or a
+  contact registered / deregistered since) while a stage is live -> the old stage's
+  `requested` rows are `cancelled` and a new stage is provisioned for the new
+  project's contacts (never two live stages; the old stage stays as a record);
+  project without contacts -> pending rows cancelled, manual path back. A stage
+  already approved/rejected is never re-provisioned. Project edits follow the
+  existing edit window (up to `scheduled`); contacts are re-read only when a write
+  touches the state or the project.
 * **ServiceNow.** Not mirrored beyond the existing decision replay
   (`approval_decision` writeback); no ServiceNow field names for customer-group
   approvals are guessed. The pure ServiceNow data source is unchanged
   (`withoutManualScheduled` still offers `scheduled` from customer approval).
-* Seed: `scripts/csm-compose/seed-entity-service.sql` adds the group "Example
-  Corp Customer Approvers" (jane.doe, john.smith) and CHG-FIXED-007
-  (`customer_approval`) / CHG-FIXED-008 (`customer_review`) with their stages.
-* Tests: `TestChangeRequestFlowIntegration_CustomerGroup*` and
-  `_SeedCustomerGroupFixtures` (real Postgres), `TestCustomerStageSpecs`,
-  `TestWithoutManualCustomerOutcome`, `TestCustomerStageManualRefusal`,
-  `TestClassifyApprovalStage`.
+* **ServiceNow impact.** The dual-write mirror used to forward `customerGroupId`;
+  it no longer does (nothing to send). Pure-ServiceNow reads no longer map
+  `customerGroup`.
+* Seed: `scripts/csm-compose/seed-entity-service.sql` seeds two customers — Example
+  Corp (project 401, registered contacts jane.doe and john.smith) and Other Corp
+  (project 402, registered contact sam.other) with the `PORTAL_USER` role /
+  "General Access" project group they hold — and CHG-FIXED-007
+  (`customer_approval`) / CHG-FIXED-008 (`customer_review`) on project 401 with
+  their stages (no assignment group).
+* Tests: `TestChangeRequestFlowIntegration_CustomerGroup*`,
+  `_StoredCustomerGroupIsNoLongerUsedForApprovals`, `_SeedCustomerGroupFixtures`,
+  `TestChangeRequestScopeIntegration_CustomerContactsAreDerivedFromTheProject`,
+  `_CreateRefusesRemovedFields`, `_PatchRefusesRemovedFields`,
+  `_LinkOptions` (real Postgres), `TestRejectRemovedChangeRequestFields`,
+  `TestCustomerStageSpecs`, `TestWithoutManualCustomerOutcome`,
+  `TestCustomerStageManualRefusal`, `TestClassifyApprovalStage`.
 
 **`scanChangeRequestView`/`scanChangeRequestViewAndDetail` had a
 scan-destination bug** found in production logs: `wi.created_on`/

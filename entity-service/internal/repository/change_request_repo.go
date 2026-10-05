@@ -796,7 +796,6 @@ const changeRequestDetailColumns = `
 	cr.implementation_plan, cr.priority::TEXT, cr.category::TEXT,
 	rb.id, COALESCE(rb.name, NULLIF(TRIM(CONCAT_WS(' ', rb.first_name, rb.last_name)), '')),
 	cr.affected_services, cr.affected_component, cr.rollback_duration,
-	cg.id, cg.name,
 	cr.change_request_type::TEXT, cr.likelihood::TEXT, cr.is_planning_visible_to_customers,
 	cr.customer_updated_date_confirmation::TEXT, cr.customer_updated_on,
 	cr.work_start_on, cr.work_end_on, cr.git_reference,
@@ -804,13 +803,12 @@ const changeRequestDetailColumns = `
 
 // changeRequestDetailJoins adds the two FK joins changeRequestDetailColumns
 // needs beyond changeRequestFromJoins -- kept separate from (not folded
-// into) changeRequestFromJoins since RequestedBy/CustomerGroup are detail
+// into) changeRequestFromJoins since RequestedBy is a detail
 // -only fields (domain.ChangeRequest, not SearchChangeRequestView): folding
 // these into the shared joins would cost every SearchChangeRequests/
 // AggregateChangeRequests row two extra joins neither ever selects from.
 const changeRequestDetailJoins = `
-	LEFT JOIN "user" rb ON rb.id = cr.requested_by_user_id
-	LEFT JOIN "group" cg ON cg.id = cr.customer_group_id`
+	LEFT JOIN "user" rb ON rb.id = cr.requested_by_user_id`
 
 // GetChangeRequestByID implements ChangeRequestRepository.
 func (r *changeRequestRepo) GetChangeRequestByID(ctx context.Context, id string) (domain.ChangeRequest, error) {
@@ -826,11 +824,15 @@ func (r *changeRequestRepo) GetChangeRequestByID(ctx context.Context, id string)
 	if err != nil {
 		return domain.ChangeRequest{}, fmt.Errorf("get change request by id: %w", err)
 	}
-	// Deployments / Environments / DeploymentProducts come from the join
-	// tables (never nil). ApprovedBy/ApprovedOn/Labels have no real column --
-	// see this file's own package doc comment.
-	cr.Deployments, cr.Environments, cr.DeploymentProducts, err = loadChangeRequestLinks(ctx, r.db, id)
+	// Deployments / DeploymentProducts come from the join tables (never nil).
+	// ApprovedBy/ApprovedOn/Labels have no real column -- see this file's own
+	// package doc comment.
+	cr.Deployments, cr.DeploymentProducts, err = loadChangeRequestLinks(ctx, r.db, id)
 	if err != nil {
+		return domain.ChangeRequest{}, fmt.Errorf("get change request by id: %w", err)
+	}
+	// The Customer Group is derived live from the project, never stored.
+	if cr.CustomerContacts, err = customerContactRefs(ctx, r.db, cr.Project.ID); err != nil {
 		return domain.ChangeRequest{}, fmt.Errorf("get change request by id: %w", err)
 	}
 
@@ -877,7 +879,6 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 		implementationPlan, priority, category                             *string
 		rbID, rbName                                                       *string
 		affectedServicesText, affectedComponentsText, rollbackDurationText *string
-		cgID, cgName                                                       *string
 		changeRequestType, likelihood                                      *string
 		isPlanningVisibleToCustomers                                       *bool
 		confirmCustomerUpdatedDate                                         *string
@@ -904,7 +905,6 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 		&implementationPlan, &priority, &category,
 		&rbID, &rbName,
 		&affectedServicesText, &affectedComponentsText, &rollbackDurationText,
-		&cgID, &cgName,
 		&changeRequestType, &likelihood, &isPlanningVisibleToCustomers,
 		&confirmCustomerUpdatedDate, &customerUpdatedOn,
 		&workStart, &workEnd, &gitReference,
@@ -996,9 +996,6 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 	cr.AffectedServicesText = affectedServicesText
 	cr.AffectedComponentsText = affectedComponentsText
 	cr.RollbackDurationText = rollbackDurationText
-	if cgID != nil {
-		cr.CustomerGroup = &domain.EntityRef{ID: *cgID, Name: stringOrEmpty(cgName)}
-	}
 	if changeRequestType != nil {
 		lower := strings.ToLower(*changeRequestType)
 		cr.ChangeRequestType = &lower
@@ -1113,6 +1110,9 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	// products): validated and planned here, before anything is written, so a
 	// refused combination leaves the change request untouched. See
 	// change_request_links.go for the rules and the edit window.
+	if err := RejectRemovedPatchFields(req); err != nil {
+		return "", err
+	}
 	linkPlan, err := planChangeRequestLinks(ctx, tx, id, req)
 	if err != nil {
 		return "", err
@@ -1523,13 +1523,6 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			addCR("requested_by_user_id = $%d::uuid", **req.RequestedByID)
 		}
 	}
-	if req.CustomerGroupID != nil {
-		if *req.CustomerGroupID == nil {
-			crSets = append(crSets, "customer_group_id = NULL")
-		} else {
-			addCR("customer_group_id = $%d::uuid", **req.CustomerGroupID)
-		}
-	}
 	if req.Priority != nil {
 		if *req.Priority == nil {
 			crSets = append(crSets, "priority = NULL")
@@ -1706,15 +1699,15 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		}
 	}
 
-	// The customer group answers Customer Approval / Customer Review through
-	// an approval stage of its own (provisionCustomerStage). Whatever this
-	// PATCH changed about the state or the customer group, bring that stage in
-	// step with the change as it now stands: provision it on entering the
-	// state (Request Approval on a Standard change, {state: customer_review}),
-	// provision it when the group is set later, replace it when the group
-	// changes, cancel it when the group is cleared or the change leaves the
-	// state. Idempotent, and a no-op for every other state.
-	if req.State != nil || req.CustomerGroupID != nil {
+	// The customer group (the project's registered contacts) answers Customer
+	// Approval / Customer Review through an approval stage of its own
+	// (provisionCustomerStage). Whatever this PATCH changed about the state or
+	// the project, bring that stage in step with the change as it now stands:
+	// provision it on entering the state (Request Approval on a Standard
+	// change, {state: customer_review}), replace it when the project changes,
+	// cancel it when the change leaves the state. Idempotent, and a no-op for
+	// every other state.
+	if req.State != nil || req.ProjectID != nil {
 		if _, err := provisionCustomerStage(ctx, tx, id, actorEmail); err != nil {
 			return "", err
 		}
@@ -2032,7 +2025,7 @@ func insertApprovalStage(ctx context.Context, tx pgx.Tx, workItemID, actorEmail,
 	var stageID string
 	if err := tx.QueryRow(ctx,
 		`INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, checkpoint_label)
-		 VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, $3::uuid, $4)
+		 VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, NULLIF($3::text, '')::uuid, $4)
 		 RETURNING id`,
 		actorEmail, workItemID, pool.groupID, label).Scan(&stageID); err != nil {
 		return fmt.Errorf("patch change request: create approval stage: %w", err)
@@ -2148,6 +2141,9 @@ func (r *changeRequestRepo) createChangeRequestWithScope(
 	createdBy string,
 	insert func(ctx context.Context, tx pgx.Tx, projectID, deploymentID, deployedProductID, category *string) (createdChangeRequestRow, error),
 ) (createdChangeRequestRow, error) {
+	if err := RejectRemovedCreateFields(req); err != nil {
+		return createdChangeRequestRow{}, err
+	}
 	category, err := changeRequestCreateCategory(req)
 	if err != nil {
 		return createdChangeRequestRow{}, err
@@ -2155,9 +2151,7 @@ func (r *changeRequestRepo) createChangeRequestWithScope(
 	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (createdChangeRequestRow, error) {
 		links, err := resolveChangeRequestLinks(ctx, tx, domain.ChangeRequestLinkSelection{
 			ProjectID:            req.ProjectID,
-			CustomerGroupID:      req.CustomerGroupID,
 			DeploymentIDs:        req.DeploymentIDs,
-			EnvironmentIDs:       req.EnvironmentIDs,
 			DeploymentProductIDs: req.DeploymentProductIDs,
 		}, resolveLinkOpts{})
 		if err != nil {
@@ -2172,9 +2166,6 @@ func (r *changeRequestRepo) createChangeRequestWithScope(
 			return createdChangeRequestRow{}, err
 		}
 		if err := writeChangeRequestDeployments(ctx, tx, row.id, links.deploymentIDs()); err != nil {
-			return createdChangeRequestRow{}, err
-		}
-		if err := writeChangeRequestEnvironments(ctx, tx, row.id, links.environmentIDs()); err != nil {
 			return createdChangeRequestRow{}, err
 		}
 		if err := writeChangeRequestProducts(ctx, tx, row.id, links.productIDs()); err != nil {
@@ -2224,7 +2215,7 @@ func (r *changeRequestRepo) CreateChangeRequest(ctx context.Context, req domain.
 			createdBy, req.Subject, req.Description, req.AssignedEngineerID,
 			req.ServiceID, req.ServiceOfferingID, impact, risk, priority, changeModel,
 			req.Justification, req.ImplementationPlan, req.RiskImpactAnalysis, req.BackoutPlan, req.TestPlan,
-			req.PlannedStartDate, req.PlannedEndDate, req.RequestedByID, req.CustomerGroupID,
+			req.PlannedStartDate, req.PlannedEndDate, req.RequestedByID, nil, // customer_group_id: no longer written (derived from the project)
 			req.IsPlanningVisibleToCustomers, req.AffectedServicesText, req.AffectedComponentsText, req.RollbackDurationText,
 			req.GroupID, req.CustomerApprovalRequired, req.CustomerReviewRequired,
 			projectID, deploymentID, deployedProductID, category,
@@ -2338,7 +2329,7 @@ func (r *changeRequestRepo) CreateChangeRequestFromServiceNow(ctx context.Contex
 			number, req.Subject, req.Description, req.AssignedEngineerID,
 			req.ServiceID, req.ServiceOfferingID, impact, risk, priority, changeModel,
 			req.Justification, req.ImplementationPlan, req.RiskImpactAnalysis, req.BackoutPlan, req.TestPlan,
-			req.PlannedStartDate, req.PlannedEndDate, req.RequestedByID, req.CustomerGroupID,
+			req.PlannedStartDate, req.PlannedEndDate, req.RequestedByID, nil, // customer_group_id: no longer written (derived from the project)
 			req.IsPlanningVisibleToCustomers, req.AffectedServicesText, req.AffectedComponentsText, req.RollbackDurationText,
 			req.GroupID, req.CustomerApprovalRequired, req.CustomerReviewRequired,
 			projectID, deploymentID, deployedProductID, category,
@@ -2711,10 +2702,16 @@ func buildChangeRequestApprovals(stages []changeRequestApprovalStageRow, approve
 			stageStatus = domain.ChangeRequestApprovalStatusApproved
 		}
 
+		// The Customer Group is derived from the project's contacts, so its
+		// stages are recorded against no "group" row.
+		approverName := stringOrEmpty(st.assignmentGroupName)
+		if approverName == "" && st.checkpointLabel != nil && customerStageSpecForLabel(*st.checkpointLabel) != nil {
+			approverName = customerGroupDisplayName
+		}
 		result = append(result, domain.ChangeRequestApproval{
 			Stage:        label,
 			ApproverType: approverType,
-			ApproverName: stringOrEmpty(st.assignmentGroupName),
+			ApproverName: approverName,
 			Status:       stageStatus,
 			Approvers:    domainApprovers,
 		})

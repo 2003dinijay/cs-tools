@@ -4702,10 +4702,11 @@ func TestChangeRequestFlowIntegration_CustomerGateMigrationIsIdempotent(t *testi
 }
 
 // ---------------------------------------------------------------------------
-// Customer-scope fields: Customer Project, Deployments, Environments and
-// Deployment products, plus Category, Customer Group and the "Additional
-// comments" / "Work notes" journal entries (migration 0191,
-// change_request_links.go). Same harness as the lifecycle tests above.
+// Customer-scope fields: Customer Project, Deployments and Deployment
+// products, plus Category, the read-only Customer Group (the project's
+// registered contacts) and the "Additional comments" / "Work notes" journal
+// entries (migration 0191, change_request_links.go). Same harness as the
+// lifecycle tests above.
 // ---------------------------------------------------------------------------
 
 const (
@@ -4718,17 +4719,21 @@ const (
 	// Project C belongs to account A and has no customer group at all.
 	crScopeProjectC = "3bbbbbbb-0000-0000-0000-000000000013"
 
-	// Customer groups (project_customer_group): A1 and A2 belong to project A
-	// (customer A), B1 to project B (customer B); Loose is associated with no
-	// project. Project C has none.
-	crScopeGroupA1    = "3bbbbbbb-0000-0000-0000-000000000061"
-	crScopeGroupA2    = "3bbbbbbb-0000-0000-0000-000000000062"
-	crScopeGroupB1    = "3bbbbbbb-0000-0000-0000-000000000063"
-	crScopeGroupLoose = "3bbbbbbb-0000-0000-0000-000000000064"
+	// The project contacts (the Customer Group). Project A (customer A) has two
+	// registered portal users plus three who do not count: an invited one, a
+	// registered one with only the SECURITY_CONTACT role, and a registered one
+	// whose user is deactivated. Project B (customer B) has one registered
+	// portal user. Project C has none.
+	crScopeUserAlice    = "3bbbbbbb-0000-0000-0000-000000000071" // Alice Aaron, registered, A
+	crScopeUserBob      = "3bbbbbbb-0000-0000-0000-000000000072" // Bob Bell, registered, A
+	crScopeUserInvited  = "3bbbbbbb-0000-0000-0000-000000000073" // invited, A
+	crScopeUserSecurity = "3bbbbbbb-0000-0000-0000-000000000074" // registered, SECURITY_CONTACT only, A
+	crScopeUserInactive = "3bbbbbbb-0000-0000-0000-000000000075" // registered, user deactivated, A
+	crScopeUserCarol    = "3bbbbbbb-0000-0000-0000-000000000076" // Carol Cook, registered, B
 
 	// Project A's deployments. Prod and Stage carry deployed products; Stage2
-	// is a second instance of the Staging environment with none; Dev has none;
-	// Old is deactivated.
+	// is a second Staging deployment with none; Dev has none; Old is
+	// deactivated.
 	crScopeDepProd   = "3bbbbbbb-0000-0000-0000-000000000021"
 	crScopeDepStage  = "3bbbbbbb-0000-0000-0000-000000000022"
 	crScopeDepStage2 = "3bbbbbbb-0000-0000-0000-000000000023"
@@ -4748,16 +4753,85 @@ const (
 	crScopeDPStageOne = "3bbbbbbb-0000-0000-0000-000000000053" // Stage: product one 2.0
 	crScopeDPInactive = "3bbbbbbb-0000-0000-0000-000000000054" // Prod, deactivated
 	crScopeDPOtherB   = "3bbbbbbb-0000-0000-0000-000000000055" // B's deployment
-
-	// The environment catalogue rows (migration 0191).
-	crScopeEnvProd    = "e0000000-0000-4000-8000-000000000001"
-	crScopeEnvStaging = "e0000000-0000-4000-8000-000000000002"
-	crScopeEnvDev     = "e0000000-0000-4000-8000-000000000006"
 )
 
-// seedScope inserts project A (five deployments across four environments, three
-// active deployed products and one deactivated) and project B (one deployment
-// with one deployed product), and removes them again on cleanup.
+// scopeContact describes one project contact for seedScopeContacts.
+type scopeContact struct {
+	userID, name, project, account, state string
+	roles                                 []string // project roles the contact holds
+	inactiveUser                          bool
+}
+
+// seedScopeContacts creates the users, account contacts, project contacts and
+// their PORTAL_USER / SECURITY_CONTACT project roles described by the
+// crScopeUser* constants. A contact's email is crFlowEmail(user id), so the user
+// can also be the caller of an approval decision.
+func (f *crFlow) seedScopeContacts(exec func(sql string, args ...any)) {
+	f.t.Helper()
+	groups := map[string]string{} // role -> project_group id
+	for _, role := range []string{"PORTAL_USER", "SECURITY_CONTACT"} {
+		var roleID string
+		if err := f.scoped.QueryRow(f.sys, `SELECT id::text FROM project_role WHERE role = $1::project_role_enum`, role).Scan(&roleID); err != nil {
+			if err := f.scoped.QueryRow(f.sys,
+				`INSERT INTO project_role (id, created_on, updated_on, created_by, updated_by, role)
+				 VALUES (gen_random_uuid(), now(), now(), 'cr-scope-test', 'cr-scope-test', $1::project_role_enum) RETURNING id::text`, role).Scan(&roleID); err != nil {
+				f.t.Fatalf("seed project_role %s: %v", role, err)
+			}
+		}
+		var gid string
+		if err := f.scoped.QueryRow(f.sys,
+			`INSERT INTO project_group (id, created_on, updated_on, created_by, updated_by, "group")
+			 VALUES (gen_random_uuid(), now(), now(), 'cr-scope-test', 'cr-scope-test', $1) RETURNING id::text`, "CR Scope "+role).Scan(&gid); err != nil {
+			f.t.Fatalf("seed project_group %s: %v", role, err)
+		}
+		exec(`INSERT INTO project_group_role (id, created_on, updated_on, created_by, updated_by, project_group_id, project_role_id)
+		      VALUES (gen_random_uuid(), now(), now(), 'cr-scope-test', 'cr-scope-test', $1, $2)`, gid, roleID)
+		groups[role] = gid
+	}
+	for _, c := range []scopeContact{
+		{crScopeUserAlice, "Alice Aaron", crScopeProjectA, crScopeAccountID, "REGISTERED", []string{"PORTAL_USER"}, false},
+		{crScopeUserBob, "Bob Bell", crScopeProjectA, crScopeAccountID, "REGISTERED", []string{"PORTAL_USER"}, false},
+		{crScopeUserInvited, "Ivy Invited", crScopeProjectA, crScopeAccountID, "INVITED", []string{"PORTAL_USER"}, false},
+		{crScopeUserSecurity, "Sam Security", crScopeProjectA, crScopeAccountID, "REGISTERED", []string{"SECURITY_CONTACT"}, false},
+		{crScopeUserInactive, "Ian Inactive", crScopeProjectA, crScopeAccountID, "REGISTERED", []string{"PORTAL_USER"}, true},
+		{crScopeUserCarol, "Carol Cook", crScopeProjectB, crScopeAccountB, "REGISTERED", []string{"PORTAL_USER"}, false},
+	} {
+		email := crFlowEmail(c.userID)
+		exec(`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user)
+		      VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, $3, 'First', 'Last', $2, $4, false)`, c.userID, email, c.name, !c.inactiveUser)
+		var acID, pcID string
+		if err := f.scoped.QueryRow(f.sys,
+			`INSERT INTO account_contact (id, created_on, updated_on, created_by, updated_by, user_name, account_id)
+			 VALUES (gen_random_uuid(), now(), now(), 'cr-scope-test', 'cr-scope-test', $1, $2) RETURNING id::text`, email, c.account).Scan(&acID); err != nil {
+			f.t.Fatalf("seed account_contact: %v", err)
+		}
+		if err := f.scoped.QueryRow(f.sys,
+			`INSERT INTO project_contact (id, created_on, updated_on, created_by, updated_by, email, account_contact_id, project_id, state)
+			 VALUES (gen_random_uuid(), now(), now(), 'cr-scope-test', 'cr-scope-test', $1, $2, $3, $4::project_contact_state_enum) RETURNING id::text`,
+			email, acID, c.project, c.state).Scan(&pcID); err != nil {
+			f.t.Fatalf("seed project_contact: %v", err)
+		}
+		for _, role := range c.roles {
+			exec(`INSERT INTO project_contact_group (id, created_on, updated_on, created_by, updated_by, project_contact_id, project_group_id)
+			      VALUES (gen_random_uuid(), now(), now(), 'cr-scope-test', 'cr-scope-test', $1, $2)`, pcID, groups[role])
+		}
+	}
+}
+
+// contactNames returns the names of a change request's customer contacts.
+func contactNames(cs []domain.ChangeRequestCustomerContact) []string {
+	out := make([]string, len(cs))
+	for i, c := range cs {
+		out[i] = c.Name
+	}
+	return out
+}
+
+// seedScope inserts project A (five deployments of four types, three active
+// deployed products and one deactivated; two registered contacts) and project B
+// (one deployment with one deployed product; one registered contact of a
+// different customer) and project C (nothing), and removes them again on
+// cleanup.
 func (f *crFlow) seedScope() {
 	f.t.Helper()
 	exec := func(sql string, args ...any) {
@@ -4774,8 +4848,9 @@ func (f *crFlow) seedScope() {
 			`DELETE FROM project WHERE id::text LIKE '3bbbbbbb-%'`,
 			`DELETE FROM product_version WHERE id::text LIKE '3bbbbbbb-%'`,
 			`DELETE FROM product WHERE id::text LIKE '3bbbbbbb-%'`,
-			`DELETE FROM "group" WHERE id::text LIKE '3bbbbbbb-%'`,
 			`DELETE FROM account WHERE id::text LIKE '3bbbbbbb-%'`,
+			`DELETE FROM project_group WHERE "group" LIKE 'CR Scope %'`,
+			`DELETE FROM "user" WHERE id::text LIKE '3bbbbbbb-%'`,
 		} {
 			_, _ = f.scoped.Exec(f.sys, q)
 		}
@@ -4793,17 +4868,7 @@ func (f *crFlow) seedScope() {
 		exec(`INSERT INTO project (id, created_on, updated_on, created_by, updated_by, key, sf_id, name, account_id)
 		      VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, $2, $2, $3)`, p.id, p.key, p.account)
 	}
-	for id, name := range map[string]string{
-		crScopeGroupA1: "Scope A Customers", crScopeGroupA2: "Scope A Customers Non-Prod", crScopeGroupB1: "Scope B Customers", crScopeGroupLoose: "Scope Unassociated",
-	} {
-		exec(`INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name, is_active)
-		      VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, true)`, id, name)
-	}
-	for _, l := range []struct{ project, group string }{
-		{crScopeProjectA, crScopeGroupA1}, {crScopeProjectA, crScopeGroupA2}, {crScopeProjectB, crScopeGroupB1},
-	} {
-		exec(`INSERT INTO project_customer_group (project_id, group_id) VALUES ($1, $2)`, l.project, l.group)
-	}
+	f.seedScopeContacts(exec)
 	for _, d := range []struct {
 		id, number, name, typ, project string
 		active                         bool
@@ -4905,7 +4970,7 @@ func scopeNames(refs []domain.EntityRef) []string {
 	return out
 }
 
-func (f *crFlow) assertScope(what string, cr domain.ChangeRequest, project string, deployments, environments, products []string) {
+func (f *crFlow) assertScope(what string, cr domain.ChangeRequest, project string, deployments, products []string) {
 	f.t.Helper()
 	if cr.Project.ID != project {
 		f.t.Fatalf("%s: project = %q, want %q", what, cr.Project.ID, project)
@@ -4913,7 +4978,7 @@ func (f *crFlow) assertScope(what string, cr domain.ChangeRequest, project strin
 	for name, c := range map[string]struct {
 		got  []domain.EntityRef
 		want []string
-	}{"deployments": {cr.Deployments, deployments}, "environments": {cr.Environments, environments}, "deploymentProducts": {cr.DeploymentProducts, products}} {
+	}{"deployments": {cr.Deployments, deployments}, "deploymentProducts": {cr.DeploymentProducts, products}} {
 		if c.got == nil {
 			f.t.Fatalf("%s: %s is nil, want a (possibly empty) array", what, name)
 		}
@@ -4953,9 +5018,10 @@ func (f *crFlow) crCount() int {
 }
 
 // Every scope field persists on create and comes back on GET: project,
-// deployments, environments (defaulting to those of the deployments),
-// deployment products (derived, deactivated ones excluded), category, customer
-// group, and the two journal entries as comment rows of the right types.
+// deployments, deployment products (derived, deactivated ones excluded),
+// category, and the two journal entries as comment rows of the right types; the
+// Customer Group is not stored but derived from the project's registered
+// contacts.
 func TestChangeRequestScopeIntegration_CreatePersistsEveryField(t *testing.T) {
 	for _, path := range []string{"portal", "servicenow-first"} {
 		path := path
@@ -4967,7 +5033,6 @@ func TestChangeRequestScopeIntegration_CreatePersistsEveryField(t *testing.T) {
 				r.ProjectID = scopeStrp(crScopeProjectA)
 				r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage}
 				r.Category = &cat
-				r.CustomerGroupID = scopeStrp(crScopeGroupA1)
 				r.Comment = scopeStrp("customer visible note")
 				r.WorkNote = scopeStrp("internal note")
 			}
@@ -4986,7 +5051,6 @@ func TestChangeRequestScopeIntegration_CreatePersistsEveryField(t *testing.T) {
 			cr := f.get(id)
 			f.assertScope("after create", cr, crScopeProjectA,
 				[]string{crScopeDepProd, crScopeDepStage},
-				[]string{crScopeEnvProd, crScopeEnvStaging},
 				[]string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne})
 			if got := scopeNames(cr.DeploymentProducts); strings.Join(got, ",") != "Scope Product One 1.0,Scope Product One 2.0,Scope Product Two 3.0" {
 				t.Fatalf("deploymentProducts names = %v, want \"<product> <version>\"", got)
@@ -4994,8 +5058,11 @@ func TestChangeRequestScopeIntegration_CreatePersistsEveryField(t *testing.T) {
 			if cr.Category == nil || *cr.Category != "devops" {
 				t.Fatalf("category = %v, want devops", cr.Category)
 			}
-			if cr.CustomerGroup == nil || cr.CustomerGroup.ID != crScopeGroupA1 {
-				t.Fatalf("customerGroup = %+v, want %s", cr.CustomerGroup, crScopeGroupA1)
+			if got := contactNames(cr.CustomerContacts); strings.Join(got, ",") != "Alice Aaron,Bob Bell" {
+				t.Fatalf("customerContacts = %v, want project A's registered portal-user contacts (name order)", got)
+			}
+			if got := f.storedCustomerGroup(id); got != nil {
+				t.Fatalf("customer_group_id = %s, want it left unwritten", *got)
 			}
 			// The single-valued columns the list views read follow the first
 			// deployment (name order) and its first deployed product.
@@ -5024,9 +5091,12 @@ func TestChangeRequestScopeIntegration_CreateWithoutScopeReadsEmptyArrays(t *tes
 		r.WorkNote = scopeStrp("")
 	})
 	cr := f.get(id)
-	f.assertScope("bare create", cr, "", nil, nil, nil)
-	if cr.Category != nil || cr.CustomerGroup != nil {
-		t.Fatalf("category/customerGroup = %v/%v, want unset", cr.Category, cr.CustomerGroup)
+	f.assertScope("bare create", cr, "", nil, nil)
+	if cr.Category != nil {
+		t.Fatalf("category = %v, want unset", cr.Category)
+	}
+	if cr.CustomerContacts == nil || len(cr.CustomerContacts) != 0 {
+		t.Fatalf("customerContacts = %v, want an empty array without a project", cr.CustomerContacts)
 	}
 	if got := f.comments(id); len(got) != 0 {
 		t.Fatalf("blank journal entries created comment rows: %v", got)
@@ -5038,7 +5108,7 @@ func TestChangeRequestScopeIntegration_CreateProjectOnly(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedScope()
 	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) { r.ProjectID = scopeStrp(crScopeProjectA) })
-	f.assertScope("project only", f.get(id), crScopeProjectA, nil, nil, nil)
+	f.assertScope("project only", f.get(id), crScopeProjectA, nil, nil)
 }
 
 // Every combination the rules refuse is a ValidationError naming the field and
@@ -5070,20 +5140,6 @@ func TestChangeRequestScopeIntegration_CreateRejectsInconsistentSelections(t *te
 		{"unknown project", func(r *domain.CreateChangeRequestRequest) {
 			r.ProjectID = scopeStrp(unknown)
 		}, "projectId does not refer to an existing project"},
-		{"environment of no chosen deployment", func(r *domain.CreateChangeRequestRequest) {
-			r.ProjectID = scopeStrp(crScopeProjectA)
-			r.DeploymentIDs = []string{crScopeDepProd}
-			r.EnvironmentIDs = []string{crScopeEnvStaging}
-		}, "environment that is not provided by the selected deployments: " + crScopeEnvStaging},
-		{"unknown environment", func(r *domain.CreateChangeRequestRequest) {
-			r.ProjectID = scopeStrp(crScopeProjectA)
-			r.DeploymentIDs = []string{crScopeDepProd}
-			r.EnvironmentIDs = []string{unknown}
-		}, "unknown environment: " + unknown},
-		{"environments without deployments", func(r *domain.CreateChangeRequestRequest) {
-			r.ProjectID = scopeStrp(crScopeProjectA)
-			r.EnvironmentIDs = []string{crScopeEnvProd}
-		}, "environmentIds requires deploymentIds"},
 		{"deployment products without deployments", func(r *domain.CreateChangeRequestRequest) {
 			r.ProjectID = scopeStrp(crScopeProjectA)
 			r.DeploymentProductIDs = []string{crScopeDPProdOne}
@@ -5103,6 +5159,15 @@ func TestChangeRequestScopeIntegration_CreateRejectsInconsistentSelections(t *te
 			r.DeploymentIDs = []string{crScopeDepProd}
 			r.DeploymentProductIDs = []string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPInactive}
 		}, "deploymentProductIds is read-only"},
+		{"customerGroupId is no longer accepted", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.CustomerGroupID = scopeStrp(seededGroupID)
+		}, crScopeMsgGroupRemoved},
+		{"environmentIds is no longer supported", func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID = scopeStrp(crScopeProjectA)
+			r.DeploymentIDs = []string{crScopeDepProd}
+			r.EnvironmentIDs = []string{"3bbbbbbb-0000-0000-0000-0000000000e1"}
+		}, crScopeMsgEnvRemoved},
 		{"too many deployments", func(r *domain.CreateChangeRequestRequest) {
 			r.ProjectID = scopeStrp(crScopeProjectA)
 			for i := 0; i < 101; i++ {
@@ -5121,36 +5186,32 @@ func TestChangeRequestScopeIntegration_CreateRejectsInconsistentSelections(t *te
 	}
 }
 
-// A chosen subset of the deployments' environments is kept; environments left
-// out are not stored. Deployment products stated exactly are accepted.
-func TestChangeRequestScopeIntegration_CreateEnvironmentSubsetAndExplicitProducts(t *testing.T) {
+// Deployment products stated exactly are accepted; duplicates in the lists are
+// collapsed; a deployment with no deployed products derives none.
+func TestChangeRequestScopeIntegration_CreateExplicitProductsAndDuplicates(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedScope()
 	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
 		r.ProjectID = scopeStrp(crScopeProjectA)
 		r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage}
-		r.EnvironmentIDs = []string{crScopeEnvStaging}
 		r.DeploymentProductIDs = []string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne}
 	})
-	f.assertScope("subset", f.get(id), crScopeProjectA,
-		[]string{crScopeDepProd, crScopeDepStage}, []string{crScopeEnvStaging},
+	f.assertScope("explicit products", f.get(id), crScopeProjectA,
+		[]string{crScopeDepProd, crScopeDepStage},
 		[]string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne})
 
-	// Duplicates in the lists are collapsed, and two deployments of one
-	// environment give that environment once.
 	id = f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
 		r.ProjectID = scopeStrp(crScopeProjectA)
 		r.DeploymentIDs = []string{crScopeDepStage, crScopeDepStage2, crScopeDepStage}
 	})
 	f.assertScope("two staging deployments", f.get(id), crScopeProjectA,
-		[]string{crScopeDepStage, crScopeDepStage2}, []string{crScopeEnvStaging}, []string{crScopeDPStageOne})
+		[]string{crScopeDepStage, crScopeDepStage2}, []string{crScopeDPStageOne})
 
-	// A deployment with no deployed products derives none.
 	id = f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
 		r.ProjectID = scopeStrp(crScopeProjectA)
 		r.DeploymentIDs = []string{crScopeDepDev}
 	})
-	f.assertScope("dev only", f.get(id), crScopeProjectA, []string{crScopeDepDev}, []string{crScopeEnvDev}, nil)
+	f.assertScope("dev only", f.get(id), crScopeProjectA, []string{crScopeDepDev}, nil)
 }
 
 // Category: all 13 values of the API enum persist (four needed new enum labels),
@@ -5201,25 +5262,27 @@ func TestChangeRequestScopeIntegration_PatchArraysReplace(t *testing.T) {
 	})
 
 	cr := f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepStage}})
-	f.assertScope("replace with [stage]", cr, crScopeProjectA, []string{crScopeDepStage}, []string{crScopeEnvStaging}, []string{crScopeDPStageOne})
+	f.assertScope("replace with [stage]", cr, crScopeProjectA, []string{crScopeDepStage}, []string{crScopeDPStageOne})
 	if cr.Deployment == nil || cr.Deployment.ID != crScopeDepStage || cr.DeployedProduct == nil || cr.DeployedProduct.ID != crScopeDPStageOne {
 		t.Fatalf("single-valued deployment/deployedProduct = %+v/%+v, want stage / its product", cr.Deployment, cr.DeployedProduct)
 	}
 
 	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd, crScopeDepDev}})
 	f.assertScope("replace with [prod, dev]", cr, crScopeProjectA,
-		[]string{crScopeDepProd, crScopeDepDev}, []string{crScopeEnvProd, crScopeEnvDev}, []string{crScopeDPProdOne, crScopeDPProdTwo})
+		[]string{crScopeDepProd, crScopeDepDev}, []string{crScopeDPProdOne, crScopeDPProdTwo})
 
 	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{}})
-	f.assertScope("cleared", cr, crScopeProjectA, nil, nil, nil)
+	f.assertScope("cleared", cr, crScopeProjectA, nil, nil)
 	if cr.Deployment != nil || cr.DeployedProduct != nil {
 		t.Fatalf("single-valued deployment/deployedProduct after clearing = %+v/%+v, want nil", cr.Deployment, cr.DeployedProduct)
 	}
 }
 
-// Environments: replaced as a list; reset to the new deployments' when the
-// deployments change without them; left alone by an unrelated PATCH.
-func TestChangeRequestScopeIntegration_PatchEnvironments(t *testing.T) {
+// An unrelated PATCH leaves the deployments and products alone; a client that
+// still sends customerGroupId (a group, or null) or environmentIds is refused
+// with a clear 400 and nothing of the request is applied -- the Customer Group
+// is derived from the project and a deployment carries its environment.
+func TestChangeRequestScopeIntegration_PatchRefusesRemovedFields(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedScope()
 	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
@@ -5229,27 +5292,33 @@ func TestChangeRequestScopeIntegration_PatchEnvironments(t *testing.T) {
 	both := []string{crScopeDepProd, crScopeDepStage}
 	allProducts := []string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne}
 
-	cr := f.mustPatch(id, domain.PatchChangeRequestRequest{EnvironmentIDs: &[]string{crScopeEnvStaging}})
-	f.assertScope("narrowed to staging", cr, crScopeProjectA, both, []string{crScopeEnvStaging}, allProducts)
-
 	title := "unrelated edit"
-	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{Title: &title})
-	f.assertScope("after unrelated PATCH", cr, crScopeProjectA, both, []string{crScopeEnvStaging}, allProducts)
+	cr := f.mustPatch(id, domain.PatchChangeRequestRequest{Title: &title})
+	f.assertScope("after unrelated PATCH", cr, crScopeProjectA, both, allProducts)
 
-	// Environments sent together with the same deployments.
-	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &both, EnvironmentIDs: &[]string{crScopeEnvProd}})
-	f.assertScope("deployments resent + env prod", cr, crScopeProjectA, both, []string{crScopeEnvProd}, allProducts)
-
-	// New deployments without environments: environments follow.
-	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd}})
-	f.assertScope("deployments [prod]", cr, crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
-
-	// An environment of no chosen deployment is refused, and nothing changes.
-	_, err := f.patch(id, domain.PatchChangeRequestRequest{EnvironmentIDs: &[]string{crScopeEnvStaging}})
-	f.wantValidationError("env of another deployment", err, "not provided by the selected deployments")
-	// Clearing the environments is allowed.
-	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{EnvironmentIDs: &[]string{}})
-	f.assertScope("environments cleared", cr, crScopeProjectA, []string{crScopeDepProd}, nil, []string{crScopeDPProdOne, crScopeDPProdTwo})
+	group := scopeStrp(seededGroupID)
+	var none *string
+	other := "must not be applied"
+	for name, tc := range map[string]struct {
+		req  domain.PatchChangeRequestRequest
+		want string
+	}{
+		"customerGroupId set":  {domain.PatchChangeRequestRequest{Title: &other, CustomerGroupID: &group}, crScopeMsgGroupRemoved},
+		"customerGroupId null": {domain.PatchChangeRequestRequest{Title: &other, CustomerGroupID: &none}, crScopeMsgGroupRemoved},
+		"environmentIds":       {domain.PatchChangeRequestRequest{Title: &other, EnvironmentIDs: &[]string{"3bbbbbbb-0000-0000-0000-0000000000e1"}}, crScopeMsgEnvRemoved},
+		"environmentIds empty": {domain.PatchChangeRequestRequest{Title: &other, EnvironmentIDs: &[]string{}}, crScopeMsgEnvRemoved},
+	} {
+		_, err := f.patch(id, tc.req)
+		f.wantValidationMessage(name, err, tc.want)
+	}
+	cr = f.get(id)
+	f.assertScope("after refused PATCHes", cr, crScopeProjectA, both, allProducts)
+	if cr.Subject != nil && *cr.Subject == other {
+		t.Fatal("a refused PATCH applied its other fields")
+	}
+	if g := f.storedCustomerGroup(id); g != nil {
+		t.Fatalf("customer_group_id = %s, want it never written", *g)
+	}
 }
 
 // Deployments must belong to the project on PATCH too, and a refused PATCH
@@ -5280,14 +5349,14 @@ func TestChangeRequestScopeIntegration_PatchRejectsInconsistentSelections(t *tes
 		{"deployment products: not the derived set", domain.PatchChangeRequestRequest{DeploymentProductIDs: &[]string{crScopeDPProdOne}}, "deploymentProductIds is read-only"},
 		{"deployment products: another project's", domain.PatchChangeRequestRequest{DeploymentProductIDs: &[]string{crScopeDPOtherB}}, "deploymentProductIds is read-only"},
 		{"single deployment fields with deploymentIds", domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd}, DeploymentID: scopeStrp(crScopeDepProd)}, "cannot be combined with deploymentIds"},
-		{"too many ids", domain.PatchChangeRequestRequest{EnvironmentIDs: &manyIDs}, "environmentIds must contain at most 100 entries"},
+		{"too many ids", domain.PatchChangeRequestRequest{DeploymentProductIDs: &manyIDs}, "deploymentProductIds must contain at most 100 entries"},
 	} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			_, err := f.patch(id, tc.req)
 			f.wantValidationError(tc.name, err, tc.contains)
 			cr := f.get(id)
-			f.assertScope("after refused PATCH", cr, crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
+			f.assertScope("after refused PATCH", cr, crScopeProjectA, []string{crScopeDepProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
 			if cr.Subject != nil && *cr.Subject == title {
 				t.Fatal("a refused PATCH applied its other fields")
 			}
@@ -5305,19 +5374,19 @@ func TestChangeRequestScopeIntegration_PatchMovesProject(t *testing.T) {
 		r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage}
 	})
 	cr := f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: &[]string{crScopeDepOtherB}})
-	f.assertScope("moved to B", cr, crScopeProjectB, []string{crScopeDepOtherB}, []string{crScopeEnvProd}, []string{crScopeDPOtherB})
+	f.assertScope("moved to B", cr, crScopeProjectB, []string{crScopeDepOtherB}, []string{crScopeDPOtherB})
 
 	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectA), DeploymentIDs: &[]string{}})
-	f.assertScope("back to A with no deployments", cr, crScopeProjectA, nil, nil, nil)
+	f.assertScope("back to A with no deployments", cr, crScopeProjectA, nil, nil)
 
 	// With no deployments stored, the project alone can change.
 	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB)})
-	f.assertScope("project alone", cr, crScopeProjectB, nil, nil, nil)
+	f.assertScope("project alone", cr, crScopeProjectB, nil, nil)
 
 	// A change request created without a project can be given one later.
 	id2 := f.mustCreateScoped(nil)
 	cr = f.mustPatch(id2, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectA), DeploymentIDs: &[]string{crScopeDepDev}})
-	f.assertScope("project added later", cr, crScopeProjectA, []string{crScopeDepDev}, []string{crScopeEnvDev}, nil)
+	f.assertScope("project added later", cr, crScopeProjectA, []string{crScopeDepDev}, nil)
 }
 
 // Deployment products are read-only: stated exactly (or as the stored
@@ -5331,7 +5400,7 @@ func TestChangeRequestScopeIntegration_PatchDeploymentProductsReadOnly(t *testin
 	})
 	derived := []string{crScopeDPProdOne, crScopeDPProdTwo}
 	cr := f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentProductIDs: &derived})
-	f.assertScope("exact set resent", cr, crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, derived)
+	f.assertScope("exact set resent", cr, crScopeProjectA, []string{crScopeDepProd}, derived)
 
 	// The deployment gains a product after the change request was raised: the
 	// stored snapshot stays until the deployments are re-chosen, and resending
@@ -5343,17 +5412,17 @@ func TestChangeRequestScopeIntegration_PatchDeploymentProductsReadOnly(t *testin
 		extra, crScopeDepProd, crScopeProductTwo, crScopeVersion3); err != nil {
 		t.Fatalf("add deployed product: %v", err)
 	}
-	f.assertScope("snapshot unchanged", f.get(id), crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, derived)
+	f.assertScope("snapshot unchanged", f.get(id), crScopeProjectA, []string{crScopeDepProd}, derived)
 	f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentProductIDs: &derived})
 	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd}})
-	f.assertScope("snapshot kept while the deployments are the same", cr, crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, derived)
+	f.assertScope("snapshot kept while the deployments are the same", cr, crScopeProjectA, []string{crScopeDepProd}, derived)
 	// Re-choosing the deployments re-derives, picking up the new product.
 	cr = f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepStage, crScopeDepProd}})
-	f.assertScope("re-derived", cr, crScopeProjectA, []string{crScopeDepProd, crScopeDepStage}, []string{crScopeEnvProd, crScopeEnvStaging},
+	f.assertScope("re-derived", cr, crScopeProjectA, []string{crScopeDepProd, crScopeDepStage},
 		[]string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne, extra})
 }
 
-// The edit window: project, deployments, environments and deployment products
+// The edit window: project, deployments and deployment products
 // change freely through Scheduled and are refused from Implement on; resending
 // the stored values is always accepted; everything else stays editable.
 func TestChangeRequestScopeIntegration_PatchEditWindow(t *testing.T) {
@@ -5376,13 +5445,12 @@ func TestChangeRequestScopeIntegration_PatchEditWindow(t *testing.T) {
 			storedProducts := scopeIDs(stored.DeploymentProducts)
 			f.mustPatch(id, domain.PatchChangeRequestRequest{
 				ProjectID: scopeStrp(crScopeProjectA), DeploymentIDs: &[]string{crScopeDepStage, crScopeDepProd},
-				EnvironmentIDs: &[]string{crScopeEnvStaging, crScopeEnvProd}, DeploymentProductIDs: &storedProducts,
+				DeploymentProductIDs: &storedProducts,
 			})
 
 			attempts := map[string]domain.PatchChangeRequestRequest{
-				"deploymentIds":  {DeploymentIDs: &[]string{crScopeDepProd}},
-				"environmentIds": {EnvironmentIDs: &[]string{crScopeEnvProd}},
-				"projectId":      {ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: &[]string{crScopeDepOtherB}},
+				"deploymentIds": {DeploymentIDs: &[]string{crScopeDepProd}},
+				"projectId":     {ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: &[]string{crScopeDepOtherB}},
 			}
 			for field, req := range attempts {
 				_, err := f.patch(id, req)
@@ -5391,21 +5459,20 @@ func TestChangeRequestScopeIntegration_PatchEditWindow(t *testing.T) {
 						t.Fatalf("%s change in %s: %v", field, state, err)
 					}
 					// Put it back for the next attempt.
-					f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectA), DeploymentIDs: &[]string{crScopeDepProd, crScopeDepStage}, EnvironmentIDs: &[]string{crScopeEnvProd, crScopeEnvStaging}})
+					f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectA), DeploymentIDs: &[]string{crScopeDepProd, crScopeDepStage}})
 					continue
 				}
 				f.wantValidationError(field+" in "+state, err, "can no longer be changed")
 				if !strings.Contains(err.Error(), strings.ToLower(state)) {
 					t.Fatalf("message %q should name the state %q", err.Error(), strings.ToLower(state))
 				}
-				f.assertScope("after refused "+field, f.get(id), crScopeProjectA, []string{crScopeDepProd, crScopeDepStage}, []string{crScopeEnvProd, crScopeEnvStaging}, storedProducts)
+				f.assertScope("after refused "+field, f.get(id), crScopeProjectA, []string{crScopeDepProd, crScopeDepStage}, storedProducts)
 			}
 
-			// Not part of the window, in any state: journal entries, category, customer group.
+			// Not part of the window, in any state: journal entries and category.
 			cat := domain.ChangeRequestCategoryNetwork
 			cp := &cat
-			cg := scopeStrp(crScopeGroupA1)
-			f.mustPatch(id, domain.PatchChangeRequestRequest{Comment: scopeStrp("still allowed"), WorkNote: scopeStrp("still allowed"), Category: &cp, CustomerGroupID: &cg})
+			f.mustPatch(id, domain.PatchChangeRequestRequest{Comment: scopeStrp("still allowed"), WorkNote: scopeStrp("still allowed"), Category: &cp})
 		})
 	}
 }
@@ -5441,26 +5508,59 @@ func TestChangeRequestScopeIntegration_PatchAppendsJournalEntries(t *testing.T) 
 	}
 }
 
-// Customer group: persists on create, replaced and cleared on PATCH.
-func TestChangeRequestScopeIntegration_CustomerGroupRoundTrips(t *testing.T) {
+// The Customer Group is derived live from the project's registered portal-user
+// contacts, read-only: it follows a project change, tracks a contact being
+// deregistered or deactivated, is empty without a project or without contacts,
+// and never mixes two customers' contacts.
+func TestChangeRequestScopeIntegration_CustomerContactsAreDerivedFromTheProject(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedScope()
-	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
-		r.ProjectID = scopeStrp(crScopeProjectA)
-		r.CustomerGroupID = scopeStrp(crScopeGroupA1)
-	})
-	if g := f.get(id).CustomerGroup; g == nil || g.ID != crScopeGroupA1 || g.Name != "Scope A Customers" {
-		t.Fatalf("customerGroup after create = %+v", g)
+	names := func(id string) string { return strings.Join(contactNames(f.get(id).CustomerContacts), ",") }
+
+	id := f.mustCreateScoped(nil)
+	if cr := f.get(id); cr.CustomerContacts == nil || len(cr.CustomerContacts) != 0 {
+		t.Fatalf("customerContacts without a project = %v, want []", cr.CustomerContacts)
 	}
-	var none *string
-	f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: &none})
-	if g := f.get(id).CustomerGroup; g != nil {
-		t.Fatalf("customerGroup after clearing = %+v, want nil", g)
+	// Setting the project derives its contacts: registered + PORTAL_USER only
+	// (the invited, security-only and deactivated users of project A do not count).
+	f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectA)})
+	if got := names(id); got != "Alice Aaron,Bob Bell" {
+		t.Fatalf("project A contacts = %q, want Alice Aaron,Bob Bell", got)
 	}
-	g := scopeStrp(crScopeGroupA2)
-	f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: &g})
-	if g := f.get(id).CustomerGroup; g == nil || g.ID != crScopeGroupA2 {
-		t.Fatalf("customerGroup after set = %+v", g)
+	cr := f.get(id)
+	if cr.CustomerContacts[0].ID == "" || cr.CustomerContacts[0].Email != crFlowEmail(crScopeUserAlice) {
+		t.Fatalf("contact = %+v, want an id and the contact's email", cr.CustomerContacts[0])
+	}
+	// Changing the project re-derives: customer B's contact replaces customer A's.
+	f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: &[]string{}})
+	if got := names(id); got != "Carol Cook" {
+		t.Fatalf("project B contacts = %q, want only Carol Cook (customer B's)", got)
+	}
+	f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectC)})
+	if got := names(id); got != "" {
+		t.Fatalf("project C contacts = %q, want none", got)
+	}
+	// Computed live on every read: a contact who stops being registered, or whose
+	// user is deactivated, drops out; one who registers appears.
+	f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectA)})
+	f.execSQL(`UPDATE project_contact SET state = 'DEACTIVATED' WHERE email = $1`, crFlowEmail(crScopeUserBob))
+	if got := names(id); got != "Alice Aaron" {
+		t.Fatalf("after deactivating Bob = %q, want Alice Aaron", got)
+	}
+	f.execSQL(`UPDATE project_contact SET state = 'REGISTERED' WHERE email = $1`, crFlowEmail(crScopeUserInvited))
+	if got := names(id); got != "Alice Aaron,Ivy Invited" {
+		t.Fatalf("after Ivy registers = %q, want Alice Aaron,Ivy Invited", got)
+	}
+	f.execSQL(`UPDATE "user" SET is_active = false WHERE id = $1`, crScopeUserAlice)
+	if got := names(id); got != "Ivy Invited" {
+		t.Fatalf("after deactivating Alice's user = %q, want Ivy Invited", got)
+	}
+}
+
+func (f *crFlow) execSQL(sql string, args ...any) {
+	f.t.Helper()
+	if _, err := f.scoped.Exec(f.sys, sql, args...); err != nil {
+		f.t.Fatalf("exec %.60s: %v", sql, err)
 	}
 }
 
@@ -5478,7 +5578,7 @@ func TestChangeRequestScopeIntegration_SurvivesNormalLifecycle(t *testing.T) {
 	resp, err := f.repo.CreateChangeRequest(f.sys, domain.CreateChangeRequestRequest{
 		Subject: crFlowSubject, Type: &typ, GroupID: &group,
 		ProjectID: scopeStrp(crScopeProjectA), DeploymentIDs: []string{crScopeDepProd, crScopeDepStage},
-		CustomerGroupID: scopeStrp(crScopeGroupA1), Comment: scopeStrp("lifecycle comment"), WorkNote: scopeStrp("lifecycle note"),
+		Comment: scopeStrp("lifecycle comment"), WorkNote: scopeStrp("lifecycle note"),
 	}, crFlowEmail(crFlowCreatorID))
 	if err != nil {
 		t.Fatalf("CreateChangeRequest: %v", err)
@@ -5488,14 +5588,13 @@ func TestChangeRequestScopeIntegration_SurvivesNormalLifecycle(t *testing.T) {
 		t.Fatalf("set requested_by: %v", err)
 	}
 	deps := []string{crScopeDepProd, crScopeDepStage}
-	envs := []string{crScopeEnvProd, crScopeEnvStaging}
 	prods := []string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne}
 	check := func(when string) {
 		t.Helper()
 		cr := f.get(id)
-		f.assertScope(when, cr, crScopeProjectA, deps, envs, prods)
-		if cr.CustomerGroup == nil || cr.CustomerGroup.ID != crScopeGroupA1 {
-			t.Fatalf("%s: customerGroup = %+v", when, cr.CustomerGroup)
+		f.assertScope(when, cr, crScopeProjectA, deps, prods)
+		if got := contactNames(cr.CustomerContacts); strings.Join(got, ",") != "Alice Aaron,Bob Bell" {
+			t.Fatalf("%s: customerContacts = %v", when, got)
 		}
 		if c := f.comments(id); len(c["COMMENT"]) < 1 || len(c["WORK_NOTE"]) < 1 || c["COMMENT"][0] != "lifecycle comment|"+crFlowEmail(crFlowCreatorID) {
 			t.Fatalf("%s: journal = %v", when, c)
@@ -5505,7 +5604,7 @@ func TestChangeRequestScopeIntegration_SurvivesNormalLifecycle(t *testing.T) {
 
 	// Editable while New: narrow, then swap back.
 	f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd}})
-	f.assertScope("narrowed while New", f.get(id), crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
+	f.assertScope("narrowed while New", f.get(id), crScopeProjectA, []string{crScopeDepProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
 	f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &deps})
 	check("after narrowing and back")
 
@@ -5537,8 +5636,9 @@ func TestChangeRequestScopeIntegration_SurvivesNormalLifecycle(t *testing.T) {
 	}
 }
 
-// The form's lookup: a project's active deployments with their environments;
-// the environments and read-only deployment products that follow from the
+// The form's lookup: a project's active deployments (with their type);
+// the project's registered contacts (the read-only Customer Group); the
+// read-only deployment products that follow from the
 // chosen deployments; the same validation errors as create.
 func TestChangeRequestScopeIntegration_LinkOptions(t *testing.T) {
 	f := newCRFlow(t)
@@ -5550,21 +5650,35 @@ func TestChangeRequestScopeIntegration_LinkOptions(t *testing.T) {
 	}
 	var depNames []string
 	for _, d := range opts.Deployments {
-		depNames = append(depNames, d.Name+"/"+d.Type+"/"+d.Environment.Name)
+		depNames = append(depNames, d.Name+"/"+d.Type)
 	}
-	if want := "Scope Dev/development/Development,Scope Prod/primary_production/Primary Production,Scope Stage/staging/Staging,Scope Stage 2/staging/Staging"; strings.Join(depNames, ",") != want {
+	if want := "Scope Dev/development,Scope Prod/primary_production,Scope Stage/staging,Scope Stage 2/staging"; strings.Join(depNames, ",") != want {
 		t.Fatalf("deployments = %v, want %s (active only, name order)", depNames, want)
 	}
-	if opts.Environments == nil || opts.DeploymentProducts == nil || len(opts.Environments) != 0 || len(opts.DeploymentProducts) != 0 {
-		t.Fatalf("without chosen deployments: environments/products = %v/%v, want empty arrays", opts.Environments, opts.DeploymentProducts)
+	if opts.DeploymentProducts == nil || len(opts.DeploymentProducts) != 0 {
+		t.Fatalf("without chosen deployments: products = %v, want an empty array", opts.DeploymentProducts)
+	}
+	// The read-only Customer Group of the project, name order: the registered
+	// portal-user contacts of project A only.
+	if got := contactNames(opts.CustomerContacts); strings.Join(got, ",") != "Alice Aaron,Bob Bell" {
+		t.Fatalf("customerContacts = %v, want project A's Alice Aaron,Bob Bell", got)
+	}
+	if opts.CustomerContacts[0].ID == "" || opts.CustomerContacts[0].Email == "" {
+		t.Fatalf("contact = %+v, want id and email", opts.CustomerContacts[0])
+	}
+	for project, want := range map[string]string{crScopeProjectB: "Carol Cook", crScopeProjectC: ""} {
+		o, err := f.repo.GetChangeRequestLinkOptions(f.sys, domain.ChangeRequestLinkOptionsRequest{ProjectID: project})
+		if err != nil {
+			t.Fatalf("GetChangeRequestLinkOptions(%s): %v", project, err)
+		}
+		if o.CustomerContacts == nil || strings.Join(contactNames(o.CustomerContacts), ",") != want {
+			t.Fatalf("project %s customerContacts = %v, want %q (never another customer's)", project, o.CustomerContacts, want)
+		}
 	}
 
 	opts, err = f.repo.GetChangeRequestLinkOptions(f.sys, domain.ChangeRequestLinkOptionsRequest{ProjectID: crScopeProjectA, DeploymentIDs: []string{crScopeDepProd, crScopeDepStage, crScopeDepStage2}})
 	if err != nil {
 		t.Fatalf("GetChangeRequestLinkOptions(chosen): %v", err)
-	}
-	if got := scopeIDs(opts.Environments); strings.Join(got, ",") != crScopeEnvProd+","+crScopeEnvStaging {
-		t.Fatalf("environments = %v, want Primary Production and Staging once each", got)
 	}
 	var prods []string
 	for _, p := range opts.DeploymentProducts {
@@ -5580,15 +5694,12 @@ func TestChangeRequestScopeIntegration_LinkOptions(t *testing.T) {
 	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
 		r.ProjectID = scopeStrp(crScopeProjectA)
 		r.DeploymentIDs = []string{crScopeDepProd, crScopeDepStage, crScopeDepStage2}
-		for _, e := range opts.Environments {
-			r.EnvironmentIDs = append(r.EnvironmentIDs, e.ID)
-		}
 		for _, p := range opts.DeploymentProducts {
 			r.DeploymentProductIDs = append(r.DeploymentProductIDs, p.ID)
 		}
 	})
 	f.assertScope("created from the lookup's options", f.get(id), crScopeProjectA,
-		[]string{crScopeDepProd, crScopeDepStage, crScopeDepStage2}, []string{crScopeEnvProd, crScopeEnvStaging},
+		[]string{crScopeDepProd, crScopeDepStage, crScopeDepStage2},
 		[]string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne})
 
 	_, err = f.repo.GetChangeRequestLinkOptions(f.sys, domain.ChangeRequestLinkOptionsRequest{ProjectID: crScopeProjectA, DeploymentIDs: []string{crScopeDepOtherB}})
@@ -5598,7 +5709,7 @@ func TestChangeRequestScopeIntegration_LinkOptions(t *testing.T) {
 
 	// Pre-flight validation (the ServiceNow-first create) writes nothing.
 	set, err := f.repo.ValidateChangeRequestLinks(f.sys, domain.ChangeRequestLinkSelection{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: []string{crScopeDepOtherB}})
-	if err != nil || set.ProjectID != crScopeProjectB || len(set.Deployments) != 1 || len(set.Environments) != 1 || len(set.DeploymentProducts) != 1 {
+	if err != nil || set.ProjectID != crScopeProjectB || len(set.Deployments) != 1 || len(set.DeploymentProducts) != 1 {
 		t.Fatalf("ValidateChangeRequestLinks = %+v, %v", set, err)
 	}
 	_, err = f.repo.ValidateChangeRequestLinks(f.sys, domain.ChangeRequestLinkSelection{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: []string{crScopeDepProd}})
@@ -5621,7 +5732,7 @@ func TestChangeRequestScopeIntegration_JoinRowsCascade(t *testing.T) {
 		}
 		return n
 	}
-	if count("change_request_deployment") != 2 || count("change_request_environment") != 2 || count("change_request_deployed_product") != 3 {
+	if count("change_request_deployment") != 2 || count("change_request_deployed_product") != 3 {
 		t.Fatal("join rows not written as expected")
 	}
 	if _, err := f.scoped.Exec(f.sys, `DELETE FROM deployed_product WHERE id = $1`, crScopeDPStageOne); err != nil {
@@ -5633,17 +5744,21 @@ func TestChangeRequestScopeIntegration_JoinRowsCascade(t *testing.T) {
 	if _, err := f.scoped.Exec(f.sys, `DELETE FROM deployment WHERE id = $1`, crScopeDepStage); err != nil {
 		t.Fatalf("delete deployment: %v", err)
 	}
-	f.assertScope("after deleting the stage deployment", f.get(id), crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd, crScopeEnvStaging}, []string{crScopeDPProdOne, crScopeDPProdTwo})
+	f.assertScope("after deleting the stage deployment", f.get(id), crScopeProjectA, []string{crScopeDepProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
 	if _, err := f.scoped.Exec(f.sys, `DELETE FROM work_item WHERE id = $1`, id); err != nil {
 		t.Fatalf("delete work item: %v", err)
 	}
-	if count("change_request_deployment")+count("change_request_environment")+count("change_request_deployed_product") != 0 {
+	if count("change_request_deployment")+count("change_request_deployed_product") != 0 {
 		t.Fatal("join rows survived the change request")
 	}
 }
 
-// Migration 0191 is idempotent: re-running it changes nothing, keeps the data
-// and the six environments, and the category enum carries all 13 labels.
+// Migrations 0191 and 0192 are idempotent: re-running them (0191 then 0192, as
+// a database that already has both would see on a replay) changes nothing, keeps
+// the data, leaves the category enum with all 13 labels, and leaves no
+// environment catalogue, no change_request_environment table and no
+// project_customer_group table (0192 drops all three; the environment
+// concept is gone because a deployment carries its type).
 func TestChangeRequestScopeIntegration_MigrationIsIdempotent(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedScope()
@@ -5651,44 +5766,51 @@ func TestChangeRequestScopeIntegration_MigrationIsIdempotent(t *testing.T) {
 		r.ProjectID = scopeStrp(crScopeProjectA)
 		r.DeploymentIDs = []string{crScopeDepProd}
 	})
-	sqlBytes, err := os.ReadFile("../../migrations/0191_change_request_project_links.sql")
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
+	exists := func(table string) bool {
+		var ok bool
+		if err := f.scoped.QueryRow(f.sys, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&ok); err != nil {
+			t.Fatal(err)
+		}
+		return ok
 	}
-	for i := 0; i < 2; i++ {
-		if _, err := f.pool.Exec(context.Background(), string(sqlBytes)); err != nil {
-			t.Fatalf("re-running migration 0191 (pass %d): %v", i+1, err)
+	for _, name := range []string{"0191_change_request_project_links.sql", "0192_change_request_drop_environments.sql"} {
+		sqlBytes, err := os.ReadFile("../../migrations/" + name)
+		if err != nil {
+			t.Fatalf("read migration: %v", err)
+		}
+		for i := 0; i < 2; i++ {
+			if _, err := f.pool.Exec(context.Background(), string(sqlBytes)); err != nil {
+				t.Fatalf("re-running migration %s (pass %d): %v", name, i+1, err)
+			}
 		}
 	}
-	f.assertScope("after re-running the migration", f.get(id), crScopeProjectA, []string{crScopeDepProd}, []string{crScopeEnvProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
-	var envs, labels int
-	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM environment`).Scan(&envs); err != nil {
-		t.Fatal(err)
+	f.assertScope("after re-running the migrations", f.get(id), crScopeProjectA, []string{crScopeDepProd}, []string{crScopeDPProdOne, crScopeDPProdTwo})
+	for _, table := range []string{"environment", "change_request_environment", "project_customer_group"} {
+		if exists(table) {
+			t.Fatalf("table %s still exists after migration 0192", table)
+		}
 	}
+	for _, table := range []string{"change_request_deployment", "change_request_deployed_product"} {
+		if !exists(table) {
+			t.Fatalf("table %s is gone", table)
+		}
+	}
+	var labels int
 	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM pg_enum WHERE enumtypid = 'change_request_category_enum'::regtype`).Scan(&labels); err != nil {
 		t.Fatal(err)
 	}
-	if envs != 6 || labels != 13 {
-		t.Fatalf("environments = %d, category labels = %d, want 6 and 13", envs, labels)
-	}
-	// Every deployment_type_enum label has an environment (the join is by code).
-	var orphan int
-	if err := f.scoped.QueryRow(f.sys,
-		`SELECT count(*) FROM unnest(enum_range(NULL::deployment_type_enum)) t(label) WHERE NOT EXISTS (SELECT 1 FROM environment e WHERE e.code = t.label::text)`).Scan(&orphan); err != nil {
-		t.Fatal(err)
-	}
-	if orphan != 0 {
-		t.Fatalf("%d deployment types have no environment", orphan)
+	if labels != 13 {
+		t.Fatalf("category labels = %d, want 13", labels)
 	}
 	var fks, idx int
-	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid IN ('change_request_deployment'::regclass, 'change_request_environment'::regclass, 'change_request_deployed_product'::regclass) AND confdeltype = 'c'`).Scan(&fks); err != nil {
+	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid IN ('change_request_deployment'::regclass, 'change_request_deployed_product'::regclass) AND confdeltype = 'c'`).Scan(&fks); err != nil {
 		t.Fatal(err)
 	}
-	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM pg_indexes WHERE tablename IN ('change_request_deployment','change_request_environment','change_request_deployed_product')`).Scan(&idx); err != nil {
+	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM pg_indexes WHERE tablename IN ('change_request_deployment','change_request_deployed_product')`).Scan(&idx); err != nil {
 		t.Fatal(err)
 	}
-	if fks != 6 || idx != 6 {
-		t.Fatalf("cascading FKs = %d, indexes = %d, want 6 and 6 (a PK + a lookup index per table)", fks, idx)
+	if fks != 4 || idx != 4 {
+		t.Fatalf("cascading FKs = %d, indexes = %d, want 4 and 4 (a PK + a lookup index per table)", fks, idx)
 	}
 }
 
@@ -5871,19 +5993,24 @@ func TestChangeRequestFlowIntegration_RollbackRespectsOnHold(t *testing.T) {
 func stateptr(s domain.ChangeRequestState) *domain.ChangeRequestState { return &s }
 
 // ---------------------------------------------------------------------------
-// Customer Group is based on the Customer Project (migration 0192,
-// project_customer_group): the group must be associated with the chosen
-// project, so one customer's change request can never be directed at another
-// customer's approvers. seedScope seeds two customers: project A (groups A1,
-// A2) of account A, project B (group B1) of account B, project C (no groups),
-// and a group associated with no project at all.
+// The Customer Group is the Customer Project's registered contacts, read-only:
+// no group is picked or stored, the detail exposes customerContacts, and
+// customerGroupId / environmentIds are refused.
 // ---------------------------------------------------------------------------
 
 const (
-	crScopeMsgGroupNeedsProject = "customerGroupId requires projectId: the customer group must belong to the selected customer project"
-	crScopeMsgGroupNotInProject = "customerGroupId does not belong to the selected project: "
-	crScopeMsgProjectNeedsGroup = "projectId cannot be changed without customerGroupId: the stored customer group does not belong to the new project (send customerGroupId for the new project; null clears it)"
+	crScopeMsgGroupRemoved = "customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts"
+	crScopeMsgEnvRemoved   = "environmentIds is no longer supported: deployments carry the environment"
 )
+
+func (f *crFlow) storedCustomerGroup(id string) *string {
+	f.t.Helper()
+	var g *string
+	if err := f.scoped.QueryRow(f.sys, `SELECT customer_group_id::text FROM change_request WHERE id = $1`, id).Scan(&g); err != nil {
+		f.t.Fatalf("read stored customer group: %v", err)
+	}
+	return g
+}
 
 // wantValidationMessage is wantValidationError with the message compared exactly.
 func (f *crFlow) wantValidationMessage(what string, err error, want string) {
@@ -5897,329 +6024,52 @@ func (f *crFlow) wantValidationMessage(what string, err error, want string) {
 	}
 }
 
-func (f *crFlow) storedCustomerGroup(id string) *string {
-	f.t.Helper()
-	var g *string
-	if err := f.scoped.QueryRow(f.sys, `SELECT customer_group_id::text FROM change_request WHERE id = $1`, id).Scan(&g); err != nil {
-		f.t.Fatalf("read stored customer group: %v", err)
-	}
-	return g
-}
-
-// Create: a group of the selected project is accepted; any other group, a
-// group without a project, and any group on a project that has none are
-// refused with the exact messages, before anything is written -- on the portal
-// create, the ServiceNow-first insert and the pre-flight validation alike.
-func TestChangeRequestScopeIntegration_CustomerGroupMustBelongToProject(t *testing.T) {
+// Create refuses the removed fields on every path (portal insert, ServiceNow-
+// first insert, pre-flight) and leaves nothing behind.
+func TestChangeRequestScopeIntegration_CreateRefusesRemovedFields(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedScope()
-	for _, tc := range []struct {
-		name    string
-		project *string
-		group   string
-		want    string
+	for name, tc := range map[string]struct {
+		mod  func(*domain.CreateChangeRequestRequest)
+		want string
 	}{
-		{"another customer's group", scopeStrp(crScopeProjectA), crScopeGroupB1, crScopeMsgGroupNotInProject + crScopeGroupB1},
-		{"the other way round", scopeStrp(crScopeProjectB), crScopeGroupA1, crScopeMsgGroupNotInProject + crScopeGroupA1},
-		{"a group associated with no project", scopeStrp(crScopeProjectA), crScopeGroupLoose, crScopeMsgGroupNotInProject + crScopeGroupLoose},
-		{"a project with no groups refuses any group", scopeStrp(crScopeProjectC), crScopeGroupA1, crScopeMsgGroupNotInProject + crScopeGroupA1},
-		{"an unknown group", scopeStrp(crScopeProjectA), "3bbbbbbb-9999-0000-0000-000000000000", crScopeMsgGroupNotInProject + "3bbbbbbb-9999-0000-0000-000000000000"},
-		{"a group without a project", nil, crScopeGroupA1, crScopeMsgGroupNeedsProject},
+		"customerGroupId": {func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID, r.CustomerGroupID = scopeStrp(crScopeProjectA), scopeStrp(seededGroupID)
+		}, crScopeMsgGroupRemoved},
+		"customerGroupId without a project": {func(r *domain.CreateChangeRequestRequest) {
+			r.CustomerGroupID = scopeStrp(seededGroupID)
+		}, crScopeMsgGroupRemoved},
+		"environmentIds": {func(r *domain.CreateChangeRequestRequest) {
+			r.ProjectID, r.EnvironmentIDs = scopeStrp(crScopeProjectA), []string{}
+		}, crScopeMsgEnvRemoved},
 	} {
-		tc := tc
-		t.Run(tc.name, func(t *testing.T) {
-			before := f.crCount()
-			mod := func(r *domain.CreateChangeRequestRequest) {
-				r.ProjectID = tc.project
-				r.CustomerGroupID = scopeStrp(tc.group)
-			}
-			_, err := f.createScoped(mod)
-			f.wantValidationMessage("portal create", err, tc.want)
-
-			typ := domain.ChangeRequestTypeNormal
-			req := domain.CreateChangeRequestRequest{Subject: crFlowSubject, Type: &typ}
-			mod(&req)
-			_, err = f.repo.CreateChangeRequestFromServiceNow(f.sys, req, "3bbbbbbb-0000-0000-0000-0000000000f2", "CRSCOPESN02", crFlowEmail(crFlowCreatorID))
-			f.wantValidationMessage("ServiceNow-first insert", err, tc.want)
-
-			_, err = f.repo.ValidateChangeRequestLinks(f.sys, domain.ChangeRequestLinkSelection{ProjectID: tc.project, CustomerGroupID: scopeStrp(tc.group)})
-			f.wantValidationMessage("pre-flight validation", err, tc.want)
-			if got := f.crCount(); got != before {
-				t.Fatalf("a refused create left %d change request(s) behind", got-before)
-			}
-		})
+		_, err := f.createScoped(tc.mod)
+		f.wantValidationMessage(name+" (portal)", err, tc.want)
+		typ := domain.ChangeRequestTypeNormal
+		req := domain.CreateChangeRequestRequest{Subject: crFlowSubject, Type: &typ}
+		tc.mod(&req)
+		_, err = f.repo.CreateChangeRequestFromServiceNow(f.sys, req, "3bbbbbbb-0000-0000-0000-0000000000f2", "CRSCOPESN02", crFlowEmail(crFlowCreatorID))
+		f.wantValidationMessage(name+" (ServiceNow-first insert)", err, tc.want)
 	}
-
-	// The accepted shapes: a group of the project (either of its groups), and
-	// no group at all, with or without a project.
-	for _, g := range []string{crScopeGroupA1, crScopeGroupA2} {
-		id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
-			r.ProjectID = scopeStrp(crScopeProjectA)
-			r.CustomerGroupID = scopeStrp(g)
-		})
-		if cg := f.get(id).CustomerGroup; cg == nil || cg.ID != g {
-			t.Fatalf("customerGroup = %+v, want %s", cg, g)
-		}
-	}
-	if cg := f.get(f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) { r.ProjectID = scopeStrp(crScopeProjectC) })).CustomerGroup; cg != nil {
-		t.Fatalf("customerGroup = %+v, want none", cg)
-	}
-	if _, err := f.repo.ValidateChangeRequestLinks(f.sys, domain.ChangeRequestLinkSelection{ProjectID: scopeStrp(crScopeProjectB), CustomerGroupID: scopeStrp(crScopeGroupB1)}); err != nil {
-		t.Fatalf("pre-flight validation of a valid pair: %v", err)
+	if n := f.crCount(); n != 0 {
+		t.Fatalf("%d change request(s) left behind by refused creates", n)
 	}
 }
 
-// PATCH: the same rule on the group, and on the project when a group is stored.
-func TestChangeRequestScopeIntegration_PatchCustomerGroupFollowsProject(t *testing.T) {
+// A legacy change request that still has a stored customer_group_id (from
+// before the group was derived) reads fine: customerContacts come from the
+// project, the stored column is ignored, and an unrelated edit works.
+func TestChangeRequestScopeIntegration_LegacyStoredGroupIsIgnored(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedScope()
-	create := func(project, group *string) string {
-		return f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
-			r.ProjectID, r.CustomerGroupID = project, group
-		})
-	}
-	group := func(g string) **string { p := scopeStrp(g); return &p }
-	var none *string
-
-	t.Run("set, change and clear the group within the project", func(t *testing.T) {
-		id := create(scopeStrp(crScopeProjectA), nil)
-		f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: group(crScopeGroupA1)})
-		if g := f.storedCustomerGroup(id); g == nil || *g != crScopeGroupA1 {
-			t.Fatalf("stored group = %v", g)
-		}
-		f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: group(crScopeGroupA2)})
-		// Re-sending the stored value is a no-op.
-		f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: group(crScopeGroupA2)})
-		f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: &none})
-		if g := f.storedCustomerGroup(id); g != nil {
-			t.Fatalf("stored group after null = %v, want none", *g)
-		}
-	})
-
-	t.Run("a group of another project or customer is refused and nothing changes", func(t *testing.T) {
-		id := create(scopeStrp(crScopeProjectA), scopeStrp(crScopeGroupA1))
-		title := "must not be applied"
-		for g, want := range map[string]string{
-			crScopeGroupB1:    crScopeMsgGroupNotInProject + crScopeGroupB1,
-			crScopeGroupLoose: crScopeMsgGroupNotInProject + crScopeGroupLoose,
-		} {
-			_, err := f.patch(id, domain.PatchChangeRequestRequest{Title: &title, CustomerGroupID: group(g)})
-			f.wantValidationMessage("group "+g, err, want)
-		}
-		if g := f.storedCustomerGroup(id); g == nil || *g != crScopeGroupA1 {
-			t.Fatalf("stored group after refusals = %v, want %s", g, crScopeGroupA1)
-		}
-		if s := f.get(id).Subject; s != nil && *s == title {
-			t.Fatal("a refused PATCH applied its other fields")
-		}
-	})
-
-	t.Run("a group without a project", func(t *testing.T) {
-		id := create(nil, nil)
-		_, err := f.patch(id, domain.PatchChangeRequestRequest{CustomerGroupID: group(crScopeGroupA1)})
-		f.wantValidationMessage("no project", err, crScopeMsgGroupNeedsProject)
-		// ...but the project and its group can be given together.
-		f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectA), CustomerGroupID: group(crScopeGroupA1)})
-		if g := f.get(id).CustomerGroup; g == nil || g.ID != crScopeGroupA1 {
-			t.Fatalf("customerGroup = %+v", g)
-		}
-	})
-
-	t.Run("a project with no groups refuses any group", func(t *testing.T) {
-		id := create(scopeStrp(crScopeProjectC), nil)
-		_, err := f.patch(id, domain.PatchChangeRequestRequest{CustomerGroupID: group(crScopeGroupA1)})
-		f.wantValidationMessage("project C", err, crScopeMsgGroupNotInProject+crScopeGroupA1)
-		f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: &none})
-	})
-
-	t.Run("changing the project with a stored group", func(t *testing.T) {
-		id := create(scopeStrp(crScopeProjectA), scopeStrp(crScopeGroupA1))
-		// The stored group is not in the new project and the request says
-		// nothing about it.
-		_, err := f.patch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: &[]string{}})
-		f.wantValidationMessage("stale group", err, crScopeMsgProjectNeedsGroup)
-		// Keeping the stale group explicitly is refused too.
-		_, err = f.patch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: &[]string{}, CustomerGroupID: group(crScopeGroupA1)})
-		f.wantValidationMessage("explicit stale group", err, crScopeMsgGroupNotInProject+crScopeGroupA1)
-		cr := f.get(id)
-		if cr.Project.ID != crScopeProjectA || cr.CustomerGroup == nil || cr.CustomerGroup.ID != crScopeGroupA1 {
-			t.Fatalf("after refusals project/group = %s/%+v, want A/A1", cr.Project.ID, cr.CustomerGroup)
-		}
-		// Cleared with the project.
-		cr = f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: &[]string{}, CustomerGroupID: &none})
-		if cr.Project.ID != crScopeProjectB || cr.CustomerGroup != nil {
-			t.Fatalf("after move+clear project/group = %s/%+v", cr.Project.ID, cr.CustomerGroup)
-		}
-
-		// Replaced with the new project's group.
-		id = create(scopeStrp(crScopeProjectA), scopeStrp(crScopeGroupA1))
-		cr = f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB), DeploymentIDs: &[]string{}, CustomerGroupID: group(crScopeGroupB1)})
-		if cr.Project.ID != crScopeProjectB || cr.CustomerGroup == nil || cr.CustomerGroup.ID != crScopeGroupB1 {
-			t.Fatalf("after move+replace project/group = %s/%+v", cr.Project.ID, cr.CustomerGroup)
-		}
-		// Moving to a project with no groups needs the group cleared.
-		_, err = f.patch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectC), DeploymentIDs: &[]string{}})
-		f.wantValidationMessage("move to project C", err, crScopeMsgProjectNeedsGroup)
-	})
-
-	t.Run("a group associated with both projects survives the move", func(t *testing.T) {
-		if _, err := f.scoped.Exec(f.sys, `INSERT INTO project_customer_group (project_id, group_id) VALUES ($1, $2)`, crScopeProjectC, crScopeGroupA1); err != nil {
-			t.Fatalf("associate A1 with project C: %v", err)
-		}
-		id := create(scopeStrp(crScopeProjectA), scopeStrp(crScopeGroupA1))
-		cr := f.mustPatch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectC)})
-		if cr.Project.ID != crScopeProjectC || cr.CustomerGroup == nil || cr.CustomerGroup.ID != crScopeGroupA1 {
-			t.Fatalf("project/group = %s/%+v, want C/A1", cr.Project.ID, cr.CustomerGroup)
-		}
-	})
-
-	t.Run("with deployments stored the deployments rule still comes first", func(t *testing.T) {
-		id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
-			r.ProjectID = scopeStrp(crScopeProjectA)
-			r.DeploymentIDs = []string{crScopeDepProd}
-			r.CustomerGroupID = scopeStrp(crScopeGroupA1)
-		})
-		_, err := f.patch(id, domain.PatchChangeRequestRequest{ProjectID: scopeStrp(crScopeProjectB)})
-		f.wantValidationError("move without deployments", err, "projectId cannot be changed without deploymentIds")
-	})
-}
-
-// A change request whose stored group and project already disagree (data from
-// before the rule) still reads, and writes that touch neither the project nor
-// the group are unaffected; re-sending the stored group is a no-op; changing
-// the group or the project is judged by the rule.
-func TestChangeRequestScopeIntegration_LegacyMismatchStillReadsAndEdits(t *testing.T) {
-	f := newCRFlow(t)
-	f.seedScope()
-	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
-		r.ProjectID = scopeStrp(crScopeProjectA)
-		r.DeploymentIDs = []string{crScopeDepProd}
-	})
-	if _, err := f.scoped.Exec(f.sys, `UPDATE change_request SET customer_group_id = $1 WHERE id = $2`, crScopeGroupB1, id); err != nil {
-		t.Fatalf("force a mismatching group: %v", err)
-	}
-	cr := f.get(id)
-	if cr.CustomerGroup == nil || cr.CustomerGroup.ID != crScopeGroupB1 || cr.Project.ID != crScopeProjectA {
-		t.Fatalf("read of a mismatching CR = project %s group %+v", cr.Project.ID, cr.CustomerGroup)
+	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) { r.ProjectID = scopeStrp(crScopeProjectB) })
+	f.execSQL(`UPDATE change_request SET customer_group_id = $1 WHERE id = $2`, seededGroupID, id)
+	if got := contactNames(f.get(id).CustomerContacts); strings.Join(got, ",") != "Carol Cook" {
+		t.Fatalf("customerContacts = %v, want project B's Carol Cook regardless of the stored group", got)
 	}
 	title := "edited"
 	f.mustPatch(id, domain.PatchChangeRequestRequest{Title: &title})
-	f.mustPatch(id, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{crScopeDepProd, crScopeDepStage}})
-	same := scopeStrp(crScopeGroupB1)
-	f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: &same})
-
-	other := scopeStrp(crScopeGroupLoose)
-	_, err := f.patch(id, domain.PatchChangeRequestRequest{CustomerGroupID: &other})
-	f.wantValidationMessage("changing to another bad group", err, crScopeMsgGroupNotInProject+crScopeGroupLoose)
-	fix := scopeStrp(crScopeGroupA1)
-	f.mustPatch(id, domain.PatchChangeRequestRequest{CustomerGroupID: &fix})
-}
-
-// The lookup returns the selected project's groups only, name order, and what
-// it offers is exactly what create accepts.
-func TestChangeRequestScopeIntegration_LinkOptionsCustomerGroups(t *testing.T) {
-	f := newCRFlow(t)
-	f.seedScope()
-	groups := func(project string) []string {
-		opts, err := f.repo.GetChangeRequestLinkOptions(f.sys, domain.ChangeRequestLinkOptionsRequest{ProjectID: project})
-		if err != nil {
-			t.Fatalf("GetChangeRequestLinkOptions(%s): %v", project, err)
-		}
-		if opts.CustomerGroups == nil {
-			t.Fatalf("customerGroups is nil for %s, want a (possibly empty) array", project)
-		}
-		var out []string
-		for _, g := range opts.CustomerGroups {
-			out = append(out, g.ID+"="+g.Name)
-		}
-		return out
-	}
-	if got, want := groups(crScopeProjectA), []string{crScopeGroupA1 + "=Scope A Customers", crScopeGroupA2 + "=Scope A Customers Non-Prod"}; strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("project A groups = %v, want %v (name order)", got, want)
-	}
-	if got, want := groups(crScopeProjectB), []string{crScopeGroupB1 + "=Scope B Customers"}; strings.Join(got, "|") != strings.Join(want, "|") {
-		t.Fatalf("project B groups = %v, want %v", got, want)
-	}
-	if got := groups(crScopeProjectC); len(got) != 0 {
-		t.Fatalf("project C groups = %v, want none", got)
-	}
-	// Deactivated groups are not offered.
-	if _, err := f.scoped.Exec(f.sys, `UPDATE "group" SET is_active = false WHERE id = $1`, crScopeGroupA2); err != nil {
-		t.Fatal(err)
-	}
-	if got := groups(crScopeProjectA); len(got) != 1 || !strings.HasPrefix(got[0], crScopeGroupA1) {
-		t.Fatalf("project A groups with A2 inactive = %v, want only A1", got)
-	}
-	// With chosen deployments the groups are still the project's.
-	opts, err := f.repo.GetChangeRequestLinkOptions(f.sys, domain.ChangeRequestLinkOptionsRequest{ProjectID: crScopeProjectA, DeploymentIDs: []string{crScopeDepProd}})
-	if err != nil || len(opts.CustomerGroups) != 1 {
-		t.Fatalf("link options with deployments = %+v, %v", opts.CustomerGroups, err)
-	}
-}
-
-// Migration 0192 is idempotent, cascades with the project and the group, has
-// its lookup index and keeps FORCE ROW LEVEL SECURITY.
-func TestChangeRequestScopeIntegration_ProjectCustomerGroupMigration(t *testing.T) {
-	f := newCRFlow(t)
-	f.seedScope()
-	id := f.mustCreateScoped(func(r *domain.CreateChangeRequestRequest) {
-		r.ProjectID = scopeStrp(crScopeProjectA)
-		r.CustomerGroupID = scopeStrp(crScopeGroupA1)
-	})
-	sqlBytes, err := os.ReadFile("../../migrations/0192_project_customer_group.sql")
-	if err != nil {
-		t.Fatalf("read migration: %v", err)
-	}
-	for i := 0; i < 2; i++ {
-		if _, err := f.pool.Exec(context.Background(), string(sqlBytes)); err != nil {
-			t.Fatalf("re-running migration 0192 (pass %d): %v", i+1, err)
-		}
-	}
-	count := func(where string, args ...any) int {
-		var n int
-		if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM project_customer_group WHERE `+where, args...).Scan(&n); err != nil {
-			t.Fatal(err)
-		}
-		return n
-	}
-	if n := count(`project_id::text LIKE '3bbbbbbb-%'`); n != 3 {
-		t.Fatalf("association rows after re-running the migration = %d, want the 3 seeded", n)
-	}
-	if cg := f.get(id).CustomerGroup; cg == nil || cg.ID != crScopeGroupA1 {
-		t.Fatalf("customerGroup after re-running the migration = %+v", cg)
-	}
-	var rls, forced bool
-	var fks, idx, policies int
-	if err := f.scoped.QueryRow(f.sys, `SELECT relrowsecurity, relforcerowsecurity FROM pg_class WHERE oid = 'project_customer_group'::regclass`).Scan(&rls, &forced); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM pg_constraint WHERE contype = 'f' AND conrelid = 'project_customer_group'::regclass AND confdeltype = 'c'`).Scan(&fks); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM pg_indexes WHERE tablename = 'project_customer_group'`).Scan(&idx); err != nil {
-		t.Fatal(err)
-	}
-	if err := f.scoped.QueryRow(f.sys, `SELECT count(*) FROM pg_policies WHERE tablename = 'project_customer_group'`).Scan(&policies); err != nil {
-		t.Fatal(err)
-	}
-	if !rls || !forced || fks != 2 || idx != 2 || policies != 3 {
-		t.Fatalf("rls=%v forced=%v cascading FKs=%d indexes=%d policies=%d, want true/true/2/2/3", rls, forced, fks, idx, policies)
-	}
-	// Removing the group removes its association rows (and only those).
-	if _, err := f.scoped.Exec(f.sys, `DELETE FROM "group" WHERE id = $1`, crScopeGroupA2); err != nil {
-		t.Fatalf("delete group: %v", err)
-	}
-	if n := count(`group_id = $1`, crScopeGroupA2); n != 0 {
-		t.Fatalf("association rows of a deleted group = %d, want 0", n)
-	}
-	// ...and the project's.
-	if _, err := f.scoped.Exec(f.sys, `DELETE FROM work_item WHERE subject = $1`, crFlowSubject); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := f.scoped.Exec(f.sys, `DELETE FROM project WHERE id = $1`, crScopeProjectB); err != nil {
-		t.Fatalf("delete project: %v", err)
-	}
-	if n := count(`project_id = $1`, crScopeProjectB); n != 0 {
-		t.Fatalf("association rows of a deleted project = %d, want 0", n)
+	if g := f.storedCustomerGroup(id); g == nil || *g != seededGroupID {
+		t.Fatalf("the legacy column was rewritten: %v", g)
 	}
 }

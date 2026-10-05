@@ -455,7 +455,6 @@ func TestSNChangeRequestService_PatchChangeRequest_ExplicitNullClearsFields(t *t
 	req := domain.PatchChangeRequestRequest{
 		ImplementationPlan: nullStrPtrPtr(),
 		Priority:           nullPriorityPtrPtr(),
-		CustomerGroupID:    nullStrPtrPtr(),
 		DurationInput:      nullIntPtrPtr(),
 	}
 
@@ -463,7 +462,7 @@ func TestSNChangeRequestService_PatchChangeRequest_ExplicitNullClearsFields(t *t
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	for _, key := range []string{"implementationPlan", "priorityKey", "customerGroupId", "durationInput"} {
+	for _, key := range []string{"implementationPlan", "priorityKey", "durationInput"} {
 		raw, ok := gotBody[key]
 		if !ok {
 			t.Errorf("expected key %q to be present in the outgoing payload (explicit null), but it was omitted", key)
@@ -509,8 +508,6 @@ func TestSNChangeRequestService_PatchChangeRequest_SetsNewWritableFields(t *test
 		AffectedServicesText:         strPtrPtr("services"),
 		AffectedComponentsText:       strPtrPtr("components"),
 		RollbackDurationText:         strPtrPtr("10 mins"),
-		CustomerGroupID:              strPtrPtr(testCaseUUID),
-		EnvironmentIDs:               &[]string{testCaseUUID},
 		DeploymentProductIDs:         &[]string{testCaseUUID},
 		Comment:                      &comment,
 		WorkNote:                     &workNote,
@@ -534,12 +531,12 @@ func TestSNChangeRequestService_PatchChangeRequest_SetsNewWritableFields(t *test
 	if gotBody["requestedById"] != uuidToSysid(testCaseUUID) {
 		t.Errorf("requestedById: got %v, want a sysid, not a raw UUID", gotBody["requestedById"])
 	}
-	if gotBody["customerGroupId"] != uuidToSysid(testCaseUUID) {
-		t.Errorf("customerGroupId: got %v, want a sysid, not a raw UUID", gotBody["customerGroupId"])
-	}
-	envIDs, ok := gotBody["environmentIds"].([]any)
-	if !ok || len(envIDs) != 1 || envIDs[0] != uuidToSysid(testCaseUUID) {
-		t.Errorf("environmentIds: got %v, want [%q] (raw UUID must not be sent to SN)", gotBody["environmentIds"], uuidToSysid(testCaseUUID))
+	// customerGroupId / environmentIds are no longer part of the API, so
+	// nothing of them is ever sent to ServiceNow.
+	for _, key := range []string{"customerGroupId", "environmentIds"} {
+		if _, ok := gotBody[key]; ok {
+			t.Errorf("%s was sent to ServiceNow: %v", key, gotBody[key])
+		}
 	}
 	if gotBody["comment"] != "a comment" || gotBody["workNote"] != "a work note" {
 		t.Errorf("comment/workNote: got comment=%v workNote=%v", gotBody["comment"], gotBody["workNote"])
@@ -704,8 +701,6 @@ func TestSNChangeRequestService_CreateChangeRequest_SendsNewCreateFields(t *test
 		AffectedServicesText:         strPtr("services"),
 		AffectedComponentsText:       strPtr("components"),
 		RollbackDurationText:         strPtr("2 hours"),
-		CustomerGroupID:              strPtr(testCaseUUID),
-		EnvironmentIDs:               []string{testCaseUUID},
 		DeploymentProductIDs:         []string{testCaseUUID},
 		PlannedStartDate:             strPtr("2026-01-01 00:00:00"),
 		PlannedEndDate:               strPtr("2026-01-01 06:00:00"),
@@ -717,12 +712,10 @@ func TestSNChangeRequestService_CreateChangeRequest_SendsNewCreateFields(t *test
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	if gotBody["customerGroupId"] != uuidToSysid(testCaseUUID) {
-		t.Errorf("customerGroupId: got %v, want a sysid, not a raw UUID", gotBody["customerGroupId"])
-	}
-	envIDs, ok := gotBody["environmentIds"].([]any)
-	if !ok || len(envIDs) != 1 || envIDs[0] != uuidToSysid(testCaseUUID) {
-		t.Errorf("environmentIds: got %v", gotBody["environmentIds"])
+	for _, key := range []string{"customerGroupId", "environmentIds"} {
+		if _, ok := gotBody[key]; ok {
+			t.Errorf("%s was sent to ServiceNow: %v", key, gotBody[key])
+		}
 	}
 	if gotBody["durationInput"] != float64(21600) {
 		t.Errorf("durationInput: got %v", gotBody["durationInput"])
@@ -854,14 +847,8 @@ func TestSNChangeRequestService_GetChangeRequest_MapsFieldParityKeys(t *testing.
 	if got.RequestedBy == nil || got.RequestedBy.ID != testCaseUUID {
 		t.Errorf("requestedBy: got %v", got.RequestedBy)
 	}
-	if len(got.Environments) != 1 || got.Environments[0].ID != testCaseUUID {
-		t.Errorf("environments: got %v", got.Environments)
-	}
 	if len(got.DeploymentProducts) != 1 {
 		t.Errorf("deploymentProducts: got %v", got.DeploymentProducts)
-	}
-	if got.CustomerGroup == nil || got.CustomerGroup.ID != testCaseUUID {
-		t.Errorf("customerGroup: got %v", got.CustomerGroup)
 	}
 	if got.ChangeRequestType == nil || *got.ChangeRequestType != "General" {
 		t.Errorf("changeRequestType: got %v", got.ChangeRequestType)
@@ -947,5 +934,50 @@ func TestSNChangeRequestService_RefusesPostgresOnlyScopeFields(t *testing.T) {
 	_, err = svc.PatchChangeRequest(context.Background(), project, domain.PatchChangeRequestRequest{DeploymentIDs: &[]string{project}})
 	if !asValidationError(err, &ve) || !strings.Contains(ve.Msg, "deploymentIds is not supported") {
 		t.Fatalf("patch with deploymentIds: err = %v", err)
+	}
+}
+
+// customerGroupId and environmentIds are no longer accepted on the ServiceNow
+// data source either (the Customer Group is the project's registered contacts
+// and a deployment carries its environment): refused before ServiceNow is
+// called, with the same messages as the PostgreSQL path.
+func TestSNChangeRequestService_RemovedFieldsAreRefused(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", func(http.ResponseWriter, *http.Request) {
+		t.Error("ServiceNow was called for a request carrying a removed field")
+	})
+	svc := NewServiceNowChangeRequestService(newTestSNClient(t, mux))
+	normalType := domain.ChangeRequestTypeNormal
+	ctx := contextWithUserIDToken("token")
+	for name, tc := range map[string]struct {
+		create domain.CreateChangeRequestRequest
+		patch  domain.PatchChangeRequestRequest
+		want   string
+	}{
+		"customerGroupId": {
+			domain.CreateChangeRequestRequest{Subject: "s", Type: &normalType, CustomerGroupID: strPtr(testCaseUUID)},
+			domain.PatchChangeRequestRequest{CustomerGroupID: strPtrPtr(testCaseUUID)},
+			"customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts",
+		},
+		"customerGroupId null": {
+			domain.CreateChangeRequestRequest{Subject: "s", Type: &normalType, CustomerGroupID: strPtr(testCaseUUID)},
+			domain.PatchChangeRequestRequest{CustomerGroupID: nullStrPtrPtr()},
+			"customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts",
+		},
+		"environmentIds": {
+			domain.CreateChangeRequestRequest{Subject: "s", Type: &normalType, EnvironmentIDs: []string{testCaseUUID}},
+			domain.PatchChangeRequestRequest{EnvironmentIDs: &[]string{testCaseUUID}},
+			"environmentIds is no longer supported: deployments carry the environment",
+		},
+	} {
+		_, err := svc.CreateChangeRequest(ctx, tc.create)
+		var ve *apierror.ValidationError
+		if !errors.As(err, &ve) || ve.Msg != tc.want {
+			t.Errorf("%s create: err = %v, want ValidationError %q", name, err, tc.want)
+		}
+		_, err = svc.PatchChangeRequest(ctx, testCaseUUID, tc.patch)
+		if !errors.As(err, &ve) || ve.Msg != tc.want {
+			t.Errorf("%s patch: err = %v, want ValidationError %q", name, err, tc.want)
+		}
 	}
 }

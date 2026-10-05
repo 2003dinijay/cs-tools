@@ -28,25 +28,23 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
-// The change request's customer-scope fields -- Customer Project, Deployments,
-// Environments and Deployment products -- and the rules that tie them
-// together. The data model is migration 0191's header; the rules, which both
-// create and PATCH (and the form's lookup) apply identically, are:
+// The change request's customer-scope fields -- Customer Project, Deployments
+// and Deployment products -- and the rules that tie them together. The data
+// model is migration 0191's header (its environment catalogue and join table
+// were dropped again by migration 0192: a deployment already IS an environment
+// instance, its role being deployment.type); the rules, which both create and
+// PATCH (and the form's lookup) apply identically, are:
 //
 //   - Project: work_item.project_id. Must exist.
 //   - Deployments: change_request_deployment. Each must exist, be active and
 //     belong to the project (so deployments require a project).
-//   - Environments: change_request_environment. An environment is the
-//     catalogue row whose code is a deployment's type, so the only valid
-//     environments are those of the chosen deployments. Omitted: all of them.
 //   - Deployment products: change_request_deployed_product. READ-ONLY and
 //     derived: the active deployed products of the chosen deployments. A caller
 //     may state them, but only as exactly that set.
-//   - Customer Group: change_request.customer_group_id. Must be one of the
-//     customer groups associated with the project (project_customer_group,
-//     migration 0192), so a change request of one customer can never be directed
-//     at another customer's approvers; it therefore requires a project. See
-//     validateCustomerGroupForProject.
+//   - Customer Group: NOT a field. It is derived, live, from the project: its
+//     REGISTERED portal-user contacts (loadProjectCustomerContacts). A client
+//     that still sends customerGroupId, or environmentIds, is refused
+//     (rejectRemovedChangeRequestFields).
 //
 // PATCH additionally enforces the edit window (changeRequestLinksLockedStates).
 
@@ -74,10 +72,8 @@ type crQueryer interface {
 // linkDeploymentRow / linkProductRow keep the extra columns the lookup needs
 // next to the EntityRef the detail needs.
 type linkDeploymentRow struct {
-	ref     domain.EntityRef
-	typ     string
-	envID   *string
-	envName *string
+	ref domain.EntityRef
+	typ string
 }
 
 type linkProductRow struct {
@@ -87,10 +83,9 @@ type linkProductRow struct {
 
 // resolvedChangeRequestLinks is a validated selection with everything derived.
 type resolvedChangeRequestLinks struct {
-	projectID    string
-	deployments  []linkDeploymentRow
-	environments []domain.EntityRef
-	products     []linkProductRow
+	projectID   string
+	deployments []linkDeploymentRow
+	products    []linkProductRow
 }
 
 func (r resolvedChangeRequestLinks) deploymentIDs() []string {
@@ -100,8 +95,6 @@ func (r resolvedChangeRequestLinks) deploymentIDs() []string {
 	}
 	return out
 }
-
-func (r resolvedChangeRequestLinks) environmentIDs() []string { return entityRefIDs(r.environments) }
 
 func (r resolvedChangeRequestLinks) productIDs() []string {
 	out := make([]string, len(r.products))
@@ -165,55 +158,123 @@ func linkValidationf(format string, args ...any) error {
 	return &apierror.ValidationError{Msg: fmt.Sprintf(format, args...)}
 }
 
-// Messages of the customer group / project rule (also the webapp's verbatim 400s).
+// Messages for the fields that are no longer accepted.
 const (
-	customerGroupRequiresProjectMsg = "customerGroupId requires projectId: the customer group must belong to the selected customer project"
+	customerGroupIDRemovedMsg = "customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts"
+	environmentIDsRemovedMsg  = "environmentIds is no longer supported: deployments carry the environment"
 )
 
-// customerGroupInProject reports whether the customer group is associated with
-// the project (project_customer_group). A blank project or group is never "in".
-func customerGroupInProject(ctx context.Context, q crQueryer, projectID, groupID string) (bool, error) {
-	projectID, groupID = strings.TrimSpace(projectID), strings.TrimSpace(groupID)
-	if projectID == "" || groupID == "" {
-		return false, nil
+// rejectRemovedChangeRequestFields refuses a client that still sends
+// customerGroupId or environmentIds, rather than silently dropping them: the
+// Customer Group is derived live from the Customer Project's registered
+// contacts, and a deployment already carries its environment (deployment.type).
+// Applied by the service before anything else is looked at, so a refusal can
+// never leave a ServiceNow record behind either.
+func rejectRemovedChangeRequestFields(customerGroupSent, environmentIDsSent bool) error {
+	if customerGroupSent {
+		return &apierror.ValidationError{Msg: customerGroupIDRemovedMsg}
 	}
-	var ok bool
-	if err := q.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM project_customer_group WHERE project_id = $1::uuid AND group_id = $2::uuid)`,
-		projectID, groupID).Scan(&ok); err != nil {
-		return false, fmt.Errorf("check customer group of project: %w", err)
-	}
-	return ok, nil
-}
-
-// validateCustomerGroupForProject enforces the customer group rule: the group
-// requires a project and must be associated with it. A project with no
-// associated groups therefore refuses every group. Returns a ValidationError
-// (a 400) otherwise.
-func validateCustomerGroupForProject(ctx context.Context, q crQueryer, projectID, groupID string) error {
-	groupID = strings.ToLower(strings.TrimSpace(groupID))
-	if strings.TrimSpace(projectID) == "" {
-		return linkValidationf("%s", customerGroupRequiresProjectMsg)
-	}
-	ok, err := customerGroupInProject(ctx, q, projectID, groupID)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return linkValidationf("customerGroupId does not belong to the selected project: %s", groupID)
+	if environmentIDsSent {
+		return &apierror.ValidationError{Msg: environmentIDsRemovedMsg}
 	}
 	return nil
 }
 
-// resolveChangeRequestLinks validates sel and derives environments and
-// deployment products from the chosen deployments, per the rules above.
+// RejectRemovedCreateFields / RejectRemovedPatchFields are the entry points the
+// service layer uses.
+func RejectRemovedCreateFields(req domain.CreateChangeRequestRequest) error {
+	return rejectRemovedChangeRequestFields(req.CustomerGroupID != nil, req.EnvironmentIDs != nil)
+}
+
+func RejectRemovedPatchFields(req domain.PatchChangeRequestRequest) error {
+	return rejectRemovedChangeRequestFields(req.CustomerGroupID != nil, req.EnvironmentIDs != nil)
+}
+
+// customerContactsSQL selects the REGISTERED portal-user contacts of a project:
+// a project_contact in state REGISTERED holding the PORTAL_USER project role
+// (the same "registered contact with role X on project Y" chain
+// callerMayGrantChangeRequestCustomerFlag uses), with the name and the "user"
+// row resolved the way ProjectContactRepository does it (account_contact.user_name
+// matched to "user".user_name, case-insensitively). A contact whose "user" row is
+// deactivated is not listed. Contacts are the customer's own people, so they are
+// never mixed across projects: the only input is the project id.
+//
+//	$1 project id (uuid)
+//
+// Columns: project_contact.id, display name, email, "user".id (NULL when the
+// contact has no "user" row yet).
+const customerContactsSQL = `
+	SELECT pc.id::text,
+	       COALESCE(NULLIF(TRIM(u.name), ''), NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), pc.email),
+	       COALESCE(u.email, pc.email),
+	       u.id::text
+	FROM project_contact pc
+	JOIN account_contact ac ON ac.id = pc.account_contact_id
+	LEFT JOIN "user" u ON LOWER(u.user_name) = LOWER(ac.user_name)
+	WHERE pc.project_id = $1::uuid
+	  AND pc.state = 'REGISTERED'::project_contact_state_enum
+	  AND COALESCE(u.is_active, true)
+	  AND EXISTS (
+	      SELECT 1
+	      FROM project_contact_group pcg
+	      JOIN project_group_role pgr ON pgr.project_group_id = pcg.project_group_id
+	      JOIN project_role pr ON pr.id = pgr.project_role_id
+	      WHERE pcg.project_contact_id = pc.id AND pr.role = 'PORTAL_USER'::project_role_enum)
+	ORDER BY 2, pc.id`
+
+// projectCustomerContact is a registered contact with the "user" id that can
+// act as an approver (empty when the contact has no "user" row).
+type projectCustomerContact struct {
+	contact domain.ChangeRequestCustomerContact
+	userID  string
+}
+
+// loadProjectCustomerContacts lists the project's registered portal-user
+// contacts (name order, never nil). A blank project has none.
+func loadProjectCustomerContacts(ctx context.Context, q crQueryer, projectID string) ([]projectCustomerContact, error) {
+	out := []projectCustomerContact{}
+	if strings.TrimSpace(projectID) == "" {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, customerContactsSQL, projectID)
+	if err != nil {
+		return nil, fmt.Errorf("list project customer contacts: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var c projectCustomerContact
+		var email, userID *string
+		if err := rows.Scan(&c.contact.ID, &c.contact.Name, &email, &userID); err != nil {
+			return nil, fmt.Errorf("scan project customer contact: %w", err)
+		}
+		c.contact.Email = stringOrEmpty(email)
+		c.userID = stringOrEmpty(userID)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// customerContactRefs is loadProjectCustomerContacts for the response shape.
+func customerContactRefs(ctx context.Context, q crQueryer, projectID string) ([]domain.ChangeRequestCustomerContact, error) {
+	contacts, err := loadProjectCustomerContacts(ctx, q, projectID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]domain.ChangeRequestCustomerContact, len(contacts))
+	for i, c := range contacts {
+		out[i] = c.contact
+	}
+	return out, nil
+}
+
+// resolveChangeRequestLinks validates sel and derives the deployment products
+// from the chosen deployments, per the rules above.
 // Returns a ValidationError (a 400) naming the offending field and id.
 func resolveChangeRequestLinks(ctx context.Context, q crQueryer, sel domain.ChangeRequestLinkSelection, opts resolveLinkOpts) (resolvedChangeRequestLinks, error) {
 	var res resolvedChangeRequestLinks
 	depIDs := normalizeUUIDList(sel.DeploymentIDs)
-	envIDs := normalizeUUIDList(sel.EnvironmentIDs)
 	prodIDs := normalizeUUIDList(sel.DeploymentProductIDs)
-	for field, n := range map[string]int{"deploymentIds": len(depIDs), "environmentIds": len(envIDs), "deploymentProductIds": len(prodIDs)} {
+	for field, n := range map[string]int{"deploymentIds": len(depIDs), "deploymentProductIds": len(prodIDs)} {
 		if n > maxChangeRequestLinkIDs {
 			return res, linkValidationf("%s must contain at most %d entries", field, maxChangeRequestLinkIDs)
 		}
@@ -230,18 +291,7 @@ func resolveChangeRequestLinks(ctx context.Context, q crQueryer, sel domain.Chan
 		}
 	}
 
-	// The customer group is validated here, before anything is written (and,
-	// on the ServiceNow-first create, before ServiceNow is called).
-	if sel.CustomerGroupID != nil && strings.TrimSpace(*sel.CustomerGroupID) != "" {
-		if err := validateCustomerGroupForProject(ctx, q, res.projectID, *sel.CustomerGroupID); err != nil {
-			return res, err
-		}
-	}
-
 	if len(depIDs) == 0 {
-		if len(envIDs) > 0 {
-			return res, linkValidationf("environmentIds requires deploymentIds: environments come from the selected deployments")
-		}
 		if len(prodIDs) > 0 {
 			return res, linkValidationf("deploymentProductIds requires deploymentIds: deployment products come from the selected deployments")
 		}
@@ -253,9 +303,8 @@ func resolveChangeRequestLinks(ctx context.Context, q crQueryer, sel domain.Chan
 
 	// Deployments: exist, active, in the project.
 	rows, err := q.Query(ctx, `
-		SELECT d.id::text, d.name, d.project_id::text, COALESCE(d.is_active, false), lower(d.type::text), e.id::text, e.name
+		SELECT d.id::text, d.name, d.project_id::text, COALESCE(d.is_active, false), lower(d.type::text)
 		FROM deployment d
-		LEFT JOIN environment e ON e.code = d.type::text
 		WHERE d.id = ANY($1::text[]::uuid[])`, depIDs)
 	if err != nil {
 		return res, fmt.Errorf("resolve change request links: query deployments: %w", err)
@@ -271,13 +320,12 @@ func resolveChangeRequestLinks(ctx context.Context, q crQueryer, sel domain.Chan
 			id, name, typ string
 			project       *string
 			active        bool
-			envID, envNm  *string
 		)
-		if err := rows.Scan(&id, &name, &project, &active, &typ, &envID, &envNm); err != nil {
+		if err := rows.Scan(&id, &name, &project, &active, &typ); err != nil {
 			rows.Close()
 			return res, fmt.Errorf("resolve change request links: scan deployment: %w", err)
 		}
-		found[id] = depInfo{row: linkDeploymentRow{ref: domain.EntityRef{ID: id, Name: name}, typ: typ, envID: envID, envName: envNm}, project: project, active: active}
+		found[id] = depInfo{row: linkDeploymentRow{ref: domain.EntityRef{ID: id, Name: name}, typ: typ}, project: project, active: active}
 	}
 	rows.Close()
 	if err := rows.Err(); err != nil {
@@ -300,66 +348,6 @@ func resolveChangeRequestLinks(ctx context.Context, q crQueryer, sel domain.Chan
 			return res.deployments[i].ref.Name < res.deployments[j].ref.Name
 		}
 		return res.deployments[i].ref.ID < res.deployments[j].ref.ID
-	})
-
-	// Environments: distinct environments of the chosen deployments.
-	derivedEnv := map[string]domain.EntityRef{}
-	for _, d := range res.deployments {
-		if d.envID != nil {
-			derivedEnv[*d.envID] = domain.EntityRef{ID: *d.envID, Name: stringOrEmpty(d.envName)}
-		}
-	}
-	chosen := envIDs
-	if sel.EnvironmentIDs == nil {
-		chosen = chosen[:0]
-		for id := range derivedEnv {
-			chosen = append(chosen, id)
-		}
-	}
-	var unknownCheck []string
-	for _, id := range chosen {
-		if _, ok := derivedEnv[id]; !ok {
-			unknownCheck = append(unknownCheck, id)
-		}
-	}
-	if len(unknownCheck) > 0 {
-		var known []string
-		erows, err := q.Query(ctx, `SELECT id::text FROM environment WHERE id = ANY($1::text[]::uuid[])`, unknownCheck)
-		if err != nil {
-			return res, fmt.Errorf("resolve change request links: query environments: %w", err)
-		}
-		for erows.Next() {
-			var id string
-			if err := erows.Scan(&id); err != nil {
-				erows.Close()
-				return res, fmt.Errorf("resolve change request links: scan environment: %w", err)
-			}
-			known = append(known, id)
-		}
-		erows.Close()
-		if err := erows.Err(); err != nil {
-			return res, fmt.Errorf("resolve change request links: iterate environments: %w", err)
-		}
-		knownSet := map[string]bool{}
-		for _, id := range known {
-			knownSet[id] = true
-		}
-		for _, id := range unknownCheck {
-			if !knownSet[id] {
-				return res, linkValidationf("environmentIds contains an unknown environment: %s", id)
-			}
-			return res, linkValidationf("environmentIds contains an environment that is not provided by the selected deployments: %s", id)
-		}
-	}
-	// Names come from the catalogue row; resolve for a caller-chosen subset.
-	for _, id := range chosen {
-		res.environments = append(res.environments, derivedEnv[id])
-	}
-	sort.SliceStable(res.environments, func(i, j int) bool {
-		if res.environments[i].Name != res.environments[j].Name {
-			return res.environments[i].Name < res.environments[j].Name
-		}
-		return res.environments[i].ID < res.environments[j].ID
 	})
 
 	// Deployment products: always the active deployed products of the chosen
@@ -408,7 +396,6 @@ func (r resolvedChangeRequestLinks) linkSet() domain.ChangeRequestLinkSet {
 	set := domain.ChangeRequestLinkSet{
 		ProjectID:          r.projectID,
 		Deployments:        make([]domain.EntityRef, 0, len(r.deployments)),
-		Environments:       append([]domain.EntityRef{}, r.environments...),
 		DeploymentProducts: make([]domain.EntityRef, 0, len(r.products)),
 	}
 	for _, d := range r.deployments {
@@ -450,17 +437,13 @@ func writeChangeRequestDeployments(ctx context.Context, tx pgx.Tx, crID string, 
 	return writeChangeRequestLinkRows(ctx, tx, "change_request_deployment", "deployment_id", crID, ids)
 }
 
-func writeChangeRequestEnvironments(ctx context.Context, tx pgx.Tx, crID string, ids []string) error {
-	return writeChangeRequestLinkRows(ctx, tx, "change_request_environment", "environment_id", crID, ids)
-}
-
 func writeChangeRequestProducts(ctx context.Context, tx pgx.Tx, crID string, ids []string) error {
 	return writeChangeRequestLinkRows(ctx, tx, "change_request_deployed_product", "deployed_product_id", crID, ids)
 }
 
-// loadChangeRequestLinks reads the stored deployments, environments and
-// deployment products of a change request (name order, never nil).
-func loadChangeRequestLinks(ctx context.Context, q crQueryer, crID string) (deployments, environments, products []domain.EntityRef, err error) {
+// loadChangeRequestLinks reads the stored deployments and deployment products
+// of a change request (name order, never nil).
+func loadChangeRequestLinks(ctx context.Context, q crQueryer, crID string) (deployments, products []domain.EntityRef, err error) {
 	read := func(query string) ([]domain.EntityRef, error) {
 		rows, err := q.Query(ctx, query, crID)
 		if err != nil {
@@ -482,12 +465,7 @@ func loadChangeRequestLinks(ctx context.Context, q crQueryer, crID string) (depl
 	if deployments, err = read(`
 		SELECT d.id::text, d.name FROM change_request_deployment l JOIN deployment d ON d.id = l.deployment_id
 		WHERE l.change_request_id = $1::uuid ORDER BY d.name, d.id`); err != nil {
-		return nil, nil, nil, fmt.Errorf("read change request deployments: %w", err)
-	}
-	if environments, err = read(`
-		SELECT e.id::text, e.name FROM change_request_environment l JOIN environment e ON e.id = l.environment_id
-		WHERE l.change_request_id = $1::uuid ORDER BY e.name, e.id`); err != nil {
-		return nil, nil, nil, fmt.Errorf("read change request environments: %w", err)
+		return nil, nil, fmt.Errorf("read change request deployments: %w", err)
 	}
 	if products, err = read(`
 		SELECT dp.id::text, p.name || COALESCE(' ' || NULLIF(pv.version, ''), '')
@@ -496,9 +474,9 @@ func loadChangeRequestLinks(ctx context.Context, q crQueryer, crID string) (depl
 		LEFT JOIN product p ON p.id = dp.product_id
 		LEFT JOIN product_version pv ON pv.id = dp.version_id
 		WHERE l.change_request_id = $1::uuid ORDER BY p.name, pv.version NULLS FIRST, dp.id`); err != nil {
-		return nil, nil, nil, fmt.Errorf("read change request deployment products: %w", err)
+		return nil, nil, fmt.Errorf("read change request deployment products: %w", err)
 	}
-	return deployments, environments, products, nil
+	return deployments, products, nil
 }
 
 // insertChangeRequestJournalEntry appends a comment row of the given type
@@ -516,10 +494,9 @@ func insertChangeRequestJournalEntry(ctx context.Context, tx pgx.Tx, crID, comme
 
 // changeRequestLinkPlan is what a PATCH decided to write for the scope fields.
 type changeRequestLinkPlan struct {
-	writeDeployments  bool
-	writeEnvironments bool
-	writeProducts     bool
-	links             resolvedChangeRequestLinks
+	writeDeployments bool
+	writeProducts    bool
+	links            resolvedChangeRequestLinks
 	// setSingulars mirrors the first chosen deployment / deployed product
 	// into work_item.deployment_id / deployed_product_id, which the list
 	// views and the single-valued PATCH fields still read.
@@ -534,29 +511,29 @@ type changeRequestLinkPlan struct {
 // request has no scope field. A field re-sent with the value already stored is
 // a no-op and is never refused, whatever the state.
 func planChangeRequestLinks(ctx context.Context, tx pgx.Tx, id string, req domain.PatchChangeRequestRequest) (*changeRequestLinkPlan, error) {
-	if req.ProjectID == nil && req.DeploymentIDs == nil && req.EnvironmentIDs == nil && req.DeploymentProductIDs == nil && req.CustomerGroupID == nil {
+	if req.ProjectID == nil && req.DeploymentIDs == nil && req.DeploymentProductIDs == nil {
 		return nil, nil
 	}
 	if req.DeploymentIDs != nil && (req.DeploymentID != nil || req.DeployedProductID != nil) {
 		return nil, linkValidationf("deploymentId and deployedProductId cannot be combined with deploymentIds: send deploymentIds only")
 	}
 
-	var storedProject, state, storedGroup *string
+	var storedProject, state *string
 	if err := tx.QueryRow(ctx, `
-		SELECT wi.project_id::text, cr.state::text, cr.customer_group_id::text
+		SELECT wi.project_id::text, cr.state::text
 		FROM work_item wi JOIN change_request cr ON cr.id = wi.id
 		WHERE wi.id = $1::uuid AND wi.type = 'CHANGE_REQUEST'
-		FOR UPDATE OF wi`, id).Scan(&storedProject, &state, &storedGroup); err != nil {
+		FOR UPDATE OF wi`, id).Scan(&storedProject, &state); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, &apierror.NotFoundError{Msg: "change request not found"}
 		}
 		return nil, fmt.Errorf("patch change request: read stored scope: %w", err)
 	}
-	storedDeps, storedEnvs, storedProds, err := loadChangeRequestLinks(ctx, tx, id)
+	storedDeps, storedProds, err := loadChangeRequestLinks(ctx, tx, id)
 	if err != nil {
 		return nil, fmt.Errorf("patch change request: %w", err)
 	}
-	storedDepIDs, storedEnvIDs, storedProdIDs := entityRefIDs(storedDeps), entityRefIDs(storedEnvs), entityRefIDs(storedProds)
+	storedDepIDs, storedProdIDs := entityRefIDs(storedDeps), entityRefIDs(storedProds)
 
 	effProject := storedProject
 	projectChanged := false
@@ -574,27 +551,13 @@ func planChangeRequestLinks(ctx context.Context, tx pgx.Tx, id string, req domai
 		return nil, linkValidationf("projectId cannot be changed without deploymentIds: the stored deployments belong to the current project (send deploymentIds for the new project; an empty array clears them)")
 	}
 
-	// Customer group. Only a write that touches the project or the group is
-	// judged: a change request whose stored group and project already disagree
-	// (data from before the rule) stays readable and editable in every other
-	// respect. Re-sending the stored group with the project unchanged is a
-	// no-op and is never refused.
-	if err := validateCustomerGroupOfPatch(ctx, tx, req, storedGroup, effProject, projectChanged); err != nil {
-		return nil, err
-	}
-
-	needResolve := projectChanged || depsChanged || req.EnvironmentIDs != nil || req.DeploymentProductIDs != nil
+	needResolve := projectChanged || depsChanged || req.DeploymentProductIDs != nil
 	plan := &changeRequestLinkPlan{}
 	if !needResolve {
 		return plan, nil
 	}
 
 	sel := domain.ChangeRequestLinkSelection{ProjectID: effProject, DeploymentIDs: effDeps}
-	if req.EnvironmentIDs != nil {
-		sel.EnvironmentIDs = *req.EnvironmentIDs
-	}
-	// Environments not stated and deployments unchanged: they stay as stored
-	// and are not re-validated (plan.writeEnvironments is false).
 	if req.DeploymentProductIDs != nil {
 		sel.DeploymentProductIDs = *req.DeploymentProductIDs
 	}
@@ -612,7 +575,6 @@ func planChangeRequestLinks(ctx context.Context, tx pgx.Tx, id string, req domai
 	plan.links = links
 
 	plan.writeDeployments = depsChanged
-	plan.writeEnvironments = depsChanged || (req.EnvironmentIDs != nil && !sameIDSet(links.environmentIDs(), storedEnvIDs))
 	plan.writeProducts = depsChanged || (req.DeploymentProductIDs != nil && !sameIDSet(links.productIDs(), storedProdIDs) && !sameIDSet(normalizeUUIDList(*req.DeploymentProductIDs), storedProdIDs))
 
 	// Edit window.
@@ -622,13 +584,11 @@ func planChangeRequestLinks(ctx context.Context, tx pgx.Tx, id string, req domai
 		changedField = "projectId"
 	case plan.writeDeployments:
 		changedField = "deploymentIds"
-	case plan.writeEnvironments:
-		changedField = "environmentIds"
 	case plan.writeProducts:
 		changedField = "deploymentProductIds"
 	}
 	if changedField != "" && state != nil && changeRequestLinksLockedStates[*state] {
-		return nil, linkValidationf("%s can no longer be changed: the change request is in state %q (project, deployments, environments and deployment products are editable only before implementation starts)",
+		return nil, linkValidationf("%s can no longer be changed: the change request is in state %q (project, deployments and deployment products are editable only before implementation starts)",
 			changedField, strings.ToLower(*state))
 	}
 
@@ -640,44 +600,6 @@ func planChangeRequestLinks(ctx context.Context, tx pgx.Tx, id string, req domai
 	return plan, nil
 }
 
-// validateCustomerGroupOfPatch applies the customer group rule to a PATCH.
-//
-//   - customerGroupId sent as a group (changed, or the project changes too): it
-//     must be associated with the effective project (see
-//     validateCustomerGroupForProject);
-//   - customerGroupId null: clears it, always allowed;
-//   - projectId changed while a group is stored and customerGroupId is not
-//     sent: the stored group must also belong to the new project, otherwise the
-//     request is refused -- the group has to be changed or cleared together with
-//     the project (the way deploymentIds must be).
-func validateCustomerGroupOfPatch(ctx context.Context, q crQueryer, req domain.PatchChangeRequestRequest, storedGroup, effProject *string, projectChanged bool) error {
-	project := ""
-	if effProject != nil {
-		project = strings.ToLower(strings.TrimSpace(*effProject))
-	}
-	if req.CustomerGroupID != nil {
-		sent := *req.CustomerGroupID
-		if sent == nil {
-			return nil
-		}
-		unchanged := storedGroup != nil && strings.EqualFold(strings.TrimSpace(*sent), *storedGroup)
-		if unchanged && !projectChanged {
-			return nil
-		}
-		return validateCustomerGroupForProject(ctx, q, project, *sent)
-	}
-	if projectChanged && storedGroup != nil {
-		ok, err := customerGroupInProject(ctx, q, project, *storedGroup)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return linkValidationf("projectId cannot be changed without customerGroupId: the stored customer group does not belong to the new project (send customerGroupId for the new project; null clears it)")
-		}
-	}
-	return nil
-}
-
 // applyChangeRequestLinkPlan writes the join rows the plan decided on.
 func applyChangeRequestLinkPlan(ctx context.Context, tx pgx.Tx, id string, plan *changeRequestLinkPlan) error {
 	if plan == nil {
@@ -685,11 +607,6 @@ func applyChangeRequestLinkPlan(ctx context.Context, tx pgx.Tx, id string, plan 
 	}
 	if plan.writeDeployments {
 		if err := writeChangeRequestDeployments(ctx, tx, id, plan.links.deploymentIDs()); err != nil {
-			return err
-		}
-	}
-	if plan.writeEnvironments {
-		if err := writeChangeRequestEnvironments(ctx, tx, id, plan.links.environmentIDs()); err != nil {
 			return err
 		}
 	}
@@ -715,9 +632,8 @@ func (r *changeRequestRepo) GetChangeRequestLinkOptions(ctx context.Context, req
 	project := strings.ToLower(strings.TrimSpace(req.ProjectID))
 	resp := domain.ChangeRequestLinkOptionsResponse{
 		Deployments:        []domain.ChangeRequestDeploymentOption{},
-		Environments:       []domain.EntityRef{},
 		DeploymentProducts: []domain.ChangeRequestDeploymentProductOption{},
-		CustomerGroups:     []domain.EntityRef{},
+		CustomerContacts:   []domain.ChangeRequestCustomerContact{},
 	}
 	var exists bool
 	if err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM project WHERE id = $1::uuid)`, project).Scan(&exists); err != nil {
@@ -726,34 +642,16 @@ func (r *changeRequestRepo) GetChangeRequestLinkOptions(ctx context.Context, req
 	if !exists {
 		return resp, linkValidationf("projectId does not refer to an existing project: %s", project)
 	}
-	// The customer groups of the project: the only values customerGroupId
-	// accepts for it (validateCustomerGroupForProject).
-	grows, err := r.db.Query(ctx, `
-		SELECT g.id::text, COALESCE(g.name, '')
-		FROM project_customer_group pcg
-		JOIN "group" g ON g.id = pcg.group_id
-		WHERE pcg.project_id = $1::uuid AND COALESCE(g.is_active, true)
-		ORDER BY g.name, g.id`, project)
+	// The read-only Customer Group of a change request on this project.
+	contacts, err := customerContactRefs(ctx, r.db, project)
 	if err != nil {
-		return resp, fmt.Errorf("link options: query customer groups: %w", err)
+		return resp, fmt.Errorf("link options: %w", err)
 	}
-	for grows.Next() {
-		var ref domain.EntityRef
-		if err := grows.Scan(&ref.ID, &ref.Name); err != nil {
-			grows.Close()
-			return resp, fmt.Errorf("link options: scan customer group: %w", err)
-		}
-		resp.CustomerGroups = append(resp.CustomerGroups, ref)
-	}
-	grows.Close()
-	if err := grows.Err(); err != nil {
-		return resp, fmt.Errorf("link options: iterate customer groups: %w", err)
-	}
+	resp.CustomerContacts = contacts
 
 	rows, err := r.db.Query(ctx, `
-		SELECT d.id::text, d.name, lower(d.type::text), e.id::text, e.name
+		SELECT d.id::text, d.name, lower(d.type::text)
 		FROM deployment d
-		LEFT JOIN environment e ON e.code = d.type::text
 		WHERE d.project_id = $1::uuid AND d.is_active = TRUE
 		ORDER BY d.name, d.id`, project)
 	if err != nil {
@@ -762,14 +660,11 @@ func (r *changeRequestRepo) GetChangeRequestLinkOptions(ctx context.Context, req
 	defer rows.Close()
 	for rows.Next() {
 		var opt domain.ChangeRequestDeploymentOption
-		var typ, envID, envName *string
-		if err := rows.Scan(&opt.ID, &opt.Name, &typ, &envID, &envName); err != nil {
+		var typ *string
+		if err := rows.Scan(&opt.ID, &opt.Name, &typ); err != nil {
 			return resp, fmt.Errorf("link options: scan deployment: %w", err)
 		}
 		opt.Type = stringOrEmpty(typ)
-		if envID != nil {
-			opt.Environment = &domain.EntityRef{ID: *envID, Name: stringOrEmpty(envName)}
-		}
 		resp.Deployments = append(resp.Deployments, opt)
 	}
 	if err := rows.Err(); err != nil {
@@ -784,7 +679,6 @@ func (r *changeRequestRepo) GetChangeRequestLinkOptions(ctx context.Context, req
 	if err != nil {
 		return resp, err
 	}
-	resp.Environments = append(resp.Environments, res.environments...)
 	depNames := make(map[string]domain.EntityRef, len(res.deployments))
 	for _, d := range res.deployments {
 		depNames[d.ref.ID] = d.ref

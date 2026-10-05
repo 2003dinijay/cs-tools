@@ -58,14 +58,13 @@ INSERT INTO deployment (id, created_on, updated_on, created_by, updated_by, numb
   ('00000000-0000-0000-0000-000000000501', now(), now(), 'seed', 'seed', 'DEP-0001', 'Production', 'PRIMARY_PRODUCTION', true, '00000000-0000-0000-0000-000000000401')
 ON CONFLICT (id) DO NOTHING;
 
--- A second and third environment for the same project, each with its own
+-- A second and third deployment for the same project, each with its own
 -- deployed products, so the change request form's cascade (Customer Project ->
--- Deployments -> Environments / Deployment products) has something to show:
+-- Deployments -> Deployment products) has something to show:
 -- Production (PRIMARY_PRODUCTION) runs API Manager 4.3.0 and Identity Server
 -- 7.0.0, Staging runs API Manager 4.4.0 only, Development runs nothing yet. A
--- deployment's environment is its type, so choosing Production + Staging gives
--- the environments {Primary Production, Staging} and three deployment
--- products; choosing Development alone gives one environment and none.
+-- deployment's environment role is its type, so choosing Production + Staging
+-- gives three deployment products; choosing Development alone gives none.
 INSERT INTO deployment (id, created_on, updated_on, created_by, updated_by, number, name, type, is_active, project_id) VALUES
   ('00000000-0000-0000-0000-000000000502', now(), now(), 'seed', 'seed', 'DEP-0002', 'Staging',     'STAGING',     true, '00000000-0000-0000-0000-000000000401'),
   ('00000000-0000-0000-0000-000000000503', now(), now(), 'seed', 'seed', 'DEP-0003', 'Development', 'DEVELOPMENT', true, '00000000-0000-0000-0000-000000000401')
@@ -295,33 +294,20 @@ INSERT INTO change_request (id, state, change_model, priority, impact, category,
   ('00000000-0000-0000-0000-000000001202', 'REVIEW'::change_request_state_enum, 'NORMAL'::change_request_change_model_enum, 'MODERATE'::change_request_priority_enum, 'LOW'::change_request_impact_enum, 'SOFTWARE'::change_request_category_enum, 'LOW'::change_request_risk_enum, 'GENERAL'::change_request_type_enum, NULL, 'Seed fixture: Review state, Customer Review ticked.', false, true)
 ON CONFLICT (id) DO NOTHING;
 
--- Customer Group fixtures: the group that gives the customer's answer at
--- Customer Approval / Customer Review (change_request.customer_group_id), like
--- the Assignment group (901) does for the internal Peer/Review approvals.
--- Membership is team_member.group_id -- the same model as every other approval
--- group; team_member.team_id is NOT NULL, so the seeded team (901) fills it.
--- jane.doe and john.smith are the members, so either can approve or reject in
--- the Approvals tab. requested_by_user_id is NULL and created_by is 'seed', so
--- neither is excluded as the creator.
-INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name, is_active) VALUES
-  ('00000000-0000-0000-0000-000000000911', now(), now(), 'seed', 'seed', 'Example Corp Customer Approvers', true)
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id) VALUES
-  ('00000000-0000-0000-0000-000000001301', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000001', '00000000-0000-0000-0000-000000000911'),
-  ('00000000-0000-0000-0000-000000001302', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000911')
-ON CONFLICT (id) DO NOTHING;
-
--- Customer groups belong to customer projects (migration 0192,
--- project_customer_group): a change request may only name a customer group
--- associated with its Customer Project, so one customer's change can never be
--- routed to another customer's approvers. Two customers are seeded for that:
+-- Customer Group: the registered contacts of the change request's Customer
+-- Project, derived live and read-only (entity-service CLAUDE.md, "Customer
+-- Group"). A contact is a project_contact in state REGISTERED holding the
+-- PORTAL_USER project role (through project_contact_group -> project_group ->
+-- project_group_role -> project_role) whose "user" is active; they are the
+-- people asked at Customer Approval / Customer Review. Two customers are seeded
+-- so the isolation is demonstrable:
 --   Example Corp (account 301)  project 401 "Example Corp Production"
---                               <- group 911 "Example Corp Customer Approvers"
+--                               <- registered contacts jane.doe, john.smith
 --   Other Corp   (account 302)  project 402 "Other Corp Production"
---                               <- group 912 "Other Corp Customer Approvers"
--- so group 912 is refused on a change request of project 401 and vice versa.
--- The fixtures below (CHG-FIXED-007/008) sit on project 401 with group 911.
+--                               <- registered contact sam.other
+-- A change request of project 401 is only ever put to jane.doe / john.smith,
+-- one of project 402 only to sam.other. (project_role / project_group rows are
+-- normally synced from ServiceNow; they are seeded here for the local stack.)
 INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user) VALUES
   ('00000000-0000-0000-0000-000000000003', now(), now(), 'seed', 'seed', 'sam.other@othercorp.example', 'Sam Other', 'Sam', 'Other', 'sam.other@othercorp.example', true, false)
 ON CONFLICT (id) DO NOTHING;
@@ -338,41 +324,64 @@ INSERT INTO deployment (id, created_on, updated_on, created_by, updated_by, numb
   ('00000000-0000-0000-0000-000000000541', now(), now(), 'seed', 'seed', 'DEP-0010', 'Other Corp Production', 'PRIMARY_PRODUCTION', true, '00000000-0000-0000-0000-000000000402')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name, is_active) VALUES
-  ('00000000-0000-0000-0000-000000000912', now(), now(), 'seed', 'seed', 'Other Corp Customer Approvers', true)
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id) VALUES
-  ('00000000-0000-0000-0000-000000001311', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000003', '00000000-0000-0000-0000-000000000912')
-ON CONFLICT (id) DO NOTHING;
-
-INSERT INTO project_customer_group (project_id, group_id) VALUES
-  ('00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000911'),
-  ('00000000-0000-0000-0000-000000000402', '00000000-0000-0000-0000-000000000912')
+-- The PORTAL_USER role and the "General Access" project group that carries it.
+INSERT INTO project_role (id, created_on, updated_on, created_by, updated_by, role) VALUES
+  ('00000000-0000-0000-0000-000000001401', now(), now(), 'seed', 'seed', 'PORTAL_USER')
+ON CONFLICT (role) DO NOTHING;
+INSERT INTO project_group (id, created_on, updated_on, created_by, updated_by, "group") VALUES
+  ('00000000-0000-0000-0000-000000001402', now(), now(), 'seed', 'seed', 'General Access')
+ON CONFLICT ("group") DO NOTHING;
+INSERT INTO project_group_role (id, created_on, updated_on, created_by, updated_by, project_group_id, project_role_id)
+SELECT '00000000-0000-0000-0000-000000001403', now(), now(), 'seed', 'seed', pg.id, pr.id
+FROM project_group pg, project_role pr
+WHERE pg."group" = 'General Access' AND pr.role = 'PORTAL_USER'
 ON CONFLICT DO NOTHING;
 
--- CR-FIXED-007: a Normal change in Customer Approval with the customer group
--- set and its "Customer Approval" stage provisioned (what the CAB approval
--- cascade writes): jane.doe and john.smith are REQUESTED approvers; the first
--- to approve schedules the change, a rejection cancels it.
--- CR-FIXED-008: a change in Customer Review with the customer group set and its
--- "Customer Review" stage provisioned: approving closes it, rejecting moves it
--- to Rollback.
-INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type, account_id, project_id, assignment_group_id, opened_by_user_id, assigned_to_id, description) VALUES
-  ('00000000-0000-0000-0000-000000001303', now(), now(), 'seed', 'seed', 'CHG-FIXED-007', 'E2E fixture: change in Customer Approval with a pending customer group approval', 'CHANGE_REQUEST', '00000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Seed fixture: Customer Approval state, customer group set, Customer Approval stage with two requested approvers (jane.doe, john.smith).'),
-  ('00000000-0000-0000-0000-000000001304', now(), now(), 'seed', 'seed', 'CHG-FIXED-008', 'E2E fixture: change in Customer Review with a pending customer group review', 'CHANGE_REQUEST', '00000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Seed fixture: Customer Review state, customer group set, Customer Review stage with two requested approvers (jane.doe, john.smith).')
+INSERT INTO account_contact (id, created_on, updated_on, created_by, updated_by, is_active, user_name, account_id) VALUES
+  ('00000000-0000-0000-0000-000000001411', now(), now(), 'seed', 'seed', true, 'jane.doe@example.com', '00000000-0000-0000-0000-000000000301'),
+  ('00000000-0000-0000-0000-000000001412', now(), now(), 'seed', 'seed', true, 'john.smith@example.com', '00000000-0000-0000-0000-000000000301'),
+  ('00000000-0000-0000-0000-000000001413', now(), now(), 'seed', 'seed', true, 'sam.other@othercorp.example', '00000000-0000-0000-0000-000000000302')
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO change_request (id, state, change_model, priority, impact, category, risk, change_request_type, requested_by_user_id, justification, customer_approval_required, customer_review_required, customer_group_id) VALUES
-  ('00000000-0000-0000-0000-000000001303', 'CUSTOMER_APPROVAL'::change_request_state_enum, 'NORMAL'::change_request_change_model_enum, 'MODERATE'::change_request_priority_enum, 'LOW'::change_request_impact_enum, 'SOFTWARE'::change_request_category_enum, 'LOW'::change_request_risk_enum, 'GENERAL'::change_request_type_enum, NULL, 'Seed fixture: Customer Approval with a customer group.', true, false, '00000000-0000-0000-0000-000000000911'),
-  ('00000000-0000-0000-0000-000000001304', 'CUSTOMER_REVIEW'::change_request_state_enum, 'NORMAL'::change_request_change_model_enum, 'MODERATE'::change_request_priority_enum, 'LOW'::change_request_impact_enum, 'SOFTWARE'::change_request_category_enum, 'LOW'::change_request_risk_enum, 'GENERAL'::change_request_type_enum, NULL, 'Seed fixture: Customer Review with a customer group.', false, true, '00000000-0000-0000-0000-000000000911')
+INSERT INTO project_contact (id, created_on, updated_on, created_by, updated_by, email, state, account_contact_id, project_id) VALUES
+  ('00000000-0000-0000-0000-000000001421', now(), now(), 'seed', 'seed', 'jane.doe@example.com', 'REGISTERED', '00000000-0000-0000-0000-000000001411', '00000000-0000-0000-0000-000000000401'),
+  ('00000000-0000-0000-0000-000000001422', now(), now(), 'seed', 'seed', 'john.smith@example.com', 'REGISTERED', '00000000-0000-0000-0000-000000001412', '00000000-0000-0000-0000-000000000401'),
+  ('00000000-0000-0000-0000-000000001423', now(), now(), 'seed', 'seed', 'sam.other@othercorp.example', 'REGISTERED', '00000000-0000-0000-0000-000000001413', '00000000-0000-0000-0000-000000000402')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO project_contact_group (id, created_on, updated_on, created_by, updated_by, project_contact_id, project_group_id)
+SELECT c.id, now(), now(), 'seed', 'seed', c.contact, pg.id
+FROM (VALUES
+  ('00000000-0000-0000-0000-000000001431'::uuid, '00000000-0000-0000-0000-000000001421'::uuid),
+  ('00000000-0000-0000-0000-000000001432'::uuid, '00000000-0000-0000-0000-000000001422'::uuid),
+  ('00000000-0000-0000-0000-000000001433'::uuid, '00000000-0000-0000-0000-000000001423'::uuid)
+) AS c(id, contact), project_group pg
+WHERE pg."group" = 'General Access'
+ON CONFLICT (id) DO NOTHING;
+
+-- CR-FIXED-007: a Normal change in Customer Approval on project 401 with its
+-- "Customer Approval" stage provisioned (what the CAB approval cascade writes)
+-- for the project's registered contacts: jane.doe and john.smith are REQUESTED
+-- approvers; the first to approve schedules the change, a rejection cancels it.
+-- CR-FIXED-008: a change in Customer Review on project 401 with its "Customer
+-- Review" stage provisioned: approving closes it, rejecting moves it to
+-- Rollback. The stages have no assignment group (the Customer Group is the
+-- project's contacts, not a "group" row).
+INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type, account_id, project_id, assignment_group_id, opened_by_user_id, assigned_to_id, description) VALUES
+  ('00000000-0000-0000-0000-000000001303', now(), now(), 'seed', 'seed', 'CHG-FIXED-007', 'E2E fixture: change in Customer Approval with a pending customer group approval', 'CHANGE_REQUEST', '00000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Seed fixture: Customer Approval state on project 401, Customer Approval stage with two requested approvers (the project''s registered contacts jane.doe, john.smith).'),
+  ('00000000-0000-0000-0000-000000001304', now(), now(), 'seed', 'seed', 'CHG-FIXED-008', 'E2E fixture: change in Customer Review with a pending customer group review', 'CHANGE_REQUEST', '00000000-0000-0000-0000-000000000301', '00000000-0000-0000-0000-000000000401', '00000000-0000-0000-0000-000000000901', '00000000-0000-0000-0000-000000000002', '00000000-0000-0000-0000-000000000001', 'Seed fixture: Customer Review state on project 401, Customer Review stage with two requested approvers (the project''s registered contacts jane.doe, john.smith).')
+ON CONFLICT (id) DO NOTHING;
+
+INSERT INTO change_request (id, state, change_model, priority, impact, category, risk, change_request_type, requested_by_user_id, justification, customer_approval_required, customer_review_required) VALUES
+  ('00000000-0000-0000-0000-000000001303', 'CUSTOMER_APPROVAL'::change_request_state_enum, 'NORMAL'::change_request_change_model_enum, 'MODERATE'::change_request_priority_enum, 'LOW'::change_request_impact_enum, 'SOFTWARE'::change_request_category_enum, 'LOW'::change_request_risk_enum, 'GENERAL'::change_request_type_enum, NULL, 'Seed fixture: Customer Approval with the project''s customer contacts.', true, false),
+  ('00000000-0000-0000-0000-000000001304', 'CUSTOMER_REVIEW'::change_request_state_enum, 'NORMAL'::change_request_change_model_enum, 'MODERATE'::change_request_priority_enum, 'LOW'::change_request_impact_enum, 'SOFTWARE'::change_request_category_enum, 'LOW'::change_request_risk_enum, 'GENERAL'::change_request_type_enum, NULL, 'Seed fixture: Customer Review with the project''s customer contacts.', false, true)
 ON CONFLICT (id) DO NOTHING;
 
 -- The stages carry an explicit checkpoint_label (migration 0179), which is how
--- they are recognised; the assignment group is the customer group.
+-- they are recognised.
 INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status, checkpoint_label) VALUES
-  ('00000000-0000-0000-0000-000000001305', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001303', '00000000-0000-0000-0000-000000000911', 'requested', 'Customer Approval'),
-  ('00000000-0000-0000-0000-000000001306', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001304', '00000000-0000-0000-0000-000000000911', 'requested', 'Customer Review')
+  ('00000000-0000-0000-0000-000000001305', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001303', NULL, 'requested', 'Customer Approval'),
+  ('00000000-0000-0000-0000-000000001306', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001304', NULL, 'requested', 'Customer Review')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status) VALUES

@@ -955,7 +955,7 @@ func (m *mockEntityChangeRequestClient) GetChangeRequestLinkOptions(ctx context.
 	if m.getChangeRequestLinkOptionsFn != nil {
 		return m.getChangeRequestLinkOptionsFn(ctx, body)
 	}
-	return []byte(`{"deployments":[],"environments":[],"deploymentProducts":[]}`), nil
+	return []byte(`{"deployments":[],"deploymentProducts":[],"customerContacts":[]}`), nil
 }
 
 func (m *mockEntityChangeRequestClient) CreateComment(ctx context.Context, body []byte) ([]byte, error) {

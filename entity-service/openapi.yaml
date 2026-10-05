@@ -7256,18 +7256,19 @@ paths:
     post:
       summary: >-
         Options for the change request form's Customer Project -> Deployments ->
-        Environments / Deployment products cascade (PostgreSQL data source only).
+        Deployment products cascade, plus the read-only Customer Group
+        (PostgreSQL data source only).
       operationId: getChangeRequestLinkOptions
       description: >-
         Given the selected Customer Project, returns the project's active
-        deployments (each with the environment it is an instance of). Given the
-        deployments chosen so far as well, also returns the environments and the
-        deployment products that follow from them -- the same derivation that
-        POST /change-requests and PATCH /change-requests/{id} validate against.
+        deployments (each with its type, i.e. its environment role) and its
+        `customerContacts`: the project's REGISTERED portal-user contacts, which
+        are the change request's read-only Customer Group (nothing to pick). Given
+        the deployments chosen so far as well, also returns the deployment
+        products that follow from them -- the same derivation that POST
+        /change-requests and PATCH /change-requests/{id} validate against.
         Deployment products are read-only on the form: they are always the
-        active deployed products of the chosen deployments. Also returns the
-        project's customer groups -- the only values `customerGroupId` accepts
-        for it.
+        active deployed products of the chosen deployments.
       requestBody:
         required: true
         content:
@@ -15781,13 +15782,6 @@ components:
               type: string
               nullable: true
               description: Raw, unvalidated free text (e.g. "10 mins").
-            environments:
-              type: array
-              items:
-                $ref: '#/components/schemas/EntityRef'
-              description: >-
-                The environments of the change (deployment types such as Primary
-                Production, Staging). Follow from `deployments`.
             deploymentProducts:
               type: array
               items:
@@ -15795,9 +15789,18 @@ components:
               description: >-
                 Read-only, derived from `deployments`: the deployed products of
                 the chosen deployments, named "<product> <version>".
-            customerGroup:
-              $ref: '#/components/schemas/EntityRef'
-              nullable: true
+            customerContacts:
+              type: array
+              description: >-
+                The change request's Customer Group, READ-ONLY and derived live
+                (never stored): the REGISTERED portal-user contacts (a
+                project_contact in state REGISTERED holding the PORTAL_USER
+                project role, whose user is active) of the change request's
+                Customer Project, name order. Always an array: empty without a
+                project or without such contacts. They are the customer's
+                approvers at Customer Approval / Customer Review.
+              items:
+                $ref: '#/components/schemas/ChangeRequestCustomerContact'
             changeRequestType:
               type: string
               nullable: true
@@ -16424,18 +16427,13 @@ components:
         customerGroupId:
           type: string
           format: uuid
+          deprecated: true
           description: >-
-            The Customer Group: the customer-side people who approve / review
-            the change. Must be one of the customer groups associated with
-            `projectId` (see `customerGroups` of POST
-            /change-requests/link-options), so a change request can never be
-            directed at another customer's people; it therefore requires
-            `projectId` (400 `customerGroupId requires projectId: the customer
-            group must belong to the selected customer project`), and a group
-            that is not the project's is a 400 `customerGroupId does not belong
-            to the selected project: <id>` (a project with no associated groups
-            refuses every group). Validated before anything is written -- and
-            before ServiceNow is called on the ServiceNow-first create.
+            NO LONGER ACCEPTED. Any value is a 400 `customerGroupId is no longer
+            accepted: the customer group is derived from the customer project's
+            registered contacts`. The Customer Group is read-only: the REGISTERED
+            portal-user contacts of `projectId`, exposed as `customerContacts` on
+            the change request and by POST /change-requests/link-options.
         projectId:
           type: string
           format: uuid
@@ -16457,17 +16455,14 @@ components:
             contains an inactive deployment: <id>".
         environmentIds:
           type: array
-          maxItems: 100
+          deprecated: true
           items:
             type: string
             format: uuid
           description: >-
-            Environments follow from the chosen deployments. Omitted: every
-            environment of the chosen deployments. Given: each must be the
-            environment of at least one chosen deployment, else 400
-            ("environmentIds contains an environment that is not provided by the
-            selected deployments: <id>"; "environmentIds requires deploymentIds").
-            PostgreSQL data source only.
+            NO LONGER SUPPORTED. Any value is a 400 `environmentIds is no longer
+            supported: deployments carry the environment` (a deployment's type is
+            its environment role).
         deploymentProductIds:
           type: array
           maxItems: 100
@@ -16525,18 +16520,31 @@ components:
             The deployments chosen so far. Must belong to the project. Omit (or
             send empty) to get just the project's deployments.
 
+    ChangeRequestCustomerContact:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The project contact's id (project_contact.id).
+        name:
+          type: string
+        email:
+          type: string
+
     ChangeRequestLinkOptionsResponse:
       type: object
-      required: [deployments, environments, deploymentProducts, customerGroups]
+      required: [deployments, deploymentProducts, customerContacts]
       properties:
-        customerGroups:
+        customerContacts:
           type: array
           description: >-
-            The active customer groups associated with the project
-            (project_customer_group), name order; empty when the project has
-            none (then no customerGroupId is accepted for it).
+            The project's REGISTERED portal-user contacts, name order: the
+            read-only Customer Group of a change request on it. Empty when the
+            project has none.
           items:
-            $ref: '#/components/schemas/EntityRef'
+            $ref: '#/components/schemas/ChangeRequestCustomerContact'
         deployments:
           type: array
           description: The project's active deployments, name order.
@@ -16551,17 +16559,9 @@ components:
                 type: string
               type:
                 type: string
-                description: primary_production, staging, qa, stress, uat or development.
-              environment:
-                $ref: '#/components/schemas/EntityRef'
-                nullable: true
-        environments:
-          type: array
-          description: >-
-            The environments that follow from `deploymentIds` (distinct, name
-            order); empty when none were chosen.
-          items:
-            $ref: '#/components/schemas/EntityRef'
+                description: >-
+                  The deployment type, i.e. its environment role:
+                  primary_production, staging, qa, stress, uat or development.
         deploymentProducts:
           type: array
           description: >-
@@ -16740,18 +16740,14 @@ components:
           type: string
           format: uuid
           nullable: true
+          deprecated: true
           description: >-
-            Explicit null clears the field. A group must be associated with the
-            change request's (effective) project, as on create (400
-            `customerGroupId requires projectId: ...` / `customerGroupId does not
-            belong to the selected project: <id>`). Changing `projectId` while a
-            customer group is stored requires the group to belong to the new
-            project too: the request must then send a valid `customerGroupId`
-            for it, or null to clear it, otherwise 400 `projectId cannot be
-            changed without customerGroupId: the stored customer group does not
-            belong to the new project (send customerGroupId for the new project;
-            null clears it)`. Only a write that touches the project or the group
-            is judged; re-sending the stored group is a no-op.
+            NO LONGER ACCEPTED (any value, null included, is a 400 `customerGroupId
+            is no longer accepted: the customer group is derived from the customer
+            project's registered contacts`). The Customer Group is read-only and
+            follows `projectId`: changing the project re-derives it, and a live
+            Customer Approval / Customer Review stage is replaced by one for the new
+            project's contacts.
         deploymentIds:
           type: array
           maxItems: 100
@@ -16761,14 +16757,12 @@ components:
           description: >-
             Replaces the whole list of the project's deployments the change
             touches; an explicitly empty array clears it (and with it the
-            environments and deployment products). Each deployment must belong
+            deployment products). Each deployment must belong
             to the change request's project (`projectId` in this request, else
             the stored one). Changing `projectId` while deployments are stored
             requires `deploymentIds` in the same request. Cannot be combined
-            with `deploymentId` / `deployedProductId`. Environments are reset to
-            those of the new deployments unless `environmentIds` is also sent;
-            deployment products are always re-derived. EDIT WINDOW:
-            `projectId`, `deploymentIds`, `environmentIds` and
+            with `deploymentId` / `deployedProductId`. Deployment products are
+            always re-derived. EDIT WINDOW: `projectId`, `deploymentIds` and
             `deploymentProductIds` can be changed only while the change request
             has not reached `implement` (states new .. scheduled); afterwards a
             change is a 400 ("<field> can no longer be changed: ...") while
@@ -16776,15 +16770,13 @@ components:
         environmentIds:
           type: array
           nullable: true
-          maxItems: 100
+          deprecated: true
           items:
             type: string
             format: uuid
           description: >-
-            Replaces the whole list; an explicitly empty array clears it. Each
-            must be the environment of a deployment on the change request
-            (stored, or `deploymentIds` in this request). Same edit window as
-            `deploymentIds`.
+            NO LONGER SUPPORTED. Any value is a 400 `environmentIds is no longer
+            supported: deployments carry the environment`.
         deploymentProductIds:
           type: array
           nullable: true

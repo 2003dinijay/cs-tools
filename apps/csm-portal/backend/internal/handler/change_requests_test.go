@@ -601,12 +601,12 @@ func TestDecideChangeRequestApproval(t *testing.T) {
 	})
 }
 
-// Customer Approval / Customer Review are answered by the members of the
-// change's customer group through the approvals. A non-member's refusal and the
+// Customer Approval / Customer Review are answered by the change's customer
+// group (the registered contacts of its project) through the approvals. A non-member's refusal and the
 // refusal of the manual state change must reach the caller readable.
 func TestCustomerGroupApprovalMessages(t *testing.T) {
-	t.Run("a non-member's decision is refused with the group named", func(t *testing.T) {
-		const msg = `only members of the customer group "Artemis Customers" can approve or reject the customer's approval of this change request`
+	t.Run("a non-contact's decision is refused with the reason", func(t *testing.T) {
+		const msg = `only members of the customer group (the registered contacts of this change request's project) can approve or reject the customer's approval of this change request`
 		client := &mockEntityChangeRequestClient{
 			decideChangeRequestApprovalFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
 				return nil, &apierror.Error{StatusCode: http.StatusForbidden, Body: `{"code":403,"message":` + jsonQuote(msg) + `}`}
@@ -622,7 +622,7 @@ func TestCustomerGroupApprovalMessages(t *testing.T) {
 	})
 
 	t.Run("a manual scheduled/closed while the customer group's request is pending is a readable 400", func(t *testing.T) {
-		const msg = `state "scheduled" cannot be set manually: the customer's approval has been requested from the customer group "Artemis Customers" and is given by one of its members approving or rejecting it in the change request's approvals (POST /change-requests/{id}/approvals/decision)`
+		const msg = `state "scheduled" cannot be set manually: the customer's approval has been requested from the customer group (the registered contacts of the change request's project) and is given by one of them approving or rejecting it in the change request's approvals (POST /change-requests/{id}/approvals/decision)`
 		client := &mockEntityChangeRequestClient{
 			patchChangeRequestFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
 				return nil, &apierror.Error{StatusCode: http.StatusBadRequest, Body: `{"code":400,"message":` + jsonQuote(msg) + `}`}
@@ -1136,28 +1136,31 @@ const (
 	scopeDeploymentID = "66666666-7777-8888-9999-aaaaaaaaaaaa"
 )
 
-// The customer-scope fields (project, deployments, environments, deployment
-// products, customer group) and the journal entries are shape-checked at the
+// The customer-scope fields (project, deployments, deployment products) and the
+// journal entries are shape-checked at the
 // BFF on both create and PATCH, so a stray string/null reaches the form as a
 // readable 400 instead of an upstream decode failure; valid ones are forwarded
 // byte-for-byte.
 func TestChangeRequestScopeFieldValidation(t *testing.T) {
 	bad := map[string]string{
-		`"projectId":"not-a-uuid"`:                           "projectId must be a UUID string",
-		`"projectId":null`:                                   "projectId must be a UUID string",
-		`"projectId":7`:                                      "projectId must be a UUID string",
-		`"deploymentIds":"` + scopeDeploymentID + `"`:        "deploymentIds must be an array of UUID strings",
-		`"deploymentIds":null`:                               "deploymentIds must be an array of UUID strings",
-		`"deploymentIds":{"0":"x"}`:                          "deploymentIds must be an array of UUID strings",
-		`"deploymentIds":["not-a-uuid"]`:                     "deploymentIds must be an array of UUID strings",
-		`"deploymentIds":[1]`:                                "deploymentIds must be an array of UUID strings",
-		`"environmentIds":"` + scopeDeploymentID + `"`:       "environmentIds must be an array of UUID strings",
-		`"environmentIds":["` + scopeDeploymentID + `","x"]`: "environmentIds must be an array of UUID strings",
-		`"deploymentProductIds":true`:                        "deploymentProductIds must be an array of UUID strings",
-		`"customerGroupId":"x"`:                              "customerGroupId must be a UUID string",
-		`"category":3`:                                       "category must be a string",
-		`"comment":5`:                                        "comment must be a string",
-		`"workNote":["a"]`:                                   "workNote must be a string",
+		`"projectId":"not-a-uuid"`:                       "projectId must be a UUID string",
+		`"projectId":null`:                               "projectId must be a UUID string",
+		`"projectId":7`:                                  "projectId must be a UUID string",
+		`"deploymentIds":"` + scopeDeploymentID + `"`:    "deploymentIds must be an array of UUID strings",
+		`"deploymentIds":null`:                           "deploymentIds must be an array of UUID strings",
+		`"deploymentIds":{"0":"x"}`:                      "deploymentIds must be an array of UUID strings",
+		`"deploymentIds":["not-a-uuid"]`:                 "deploymentIds must be an array of UUID strings",
+		`"deploymentIds":[1]`:                            "deploymentIds must be an array of UUID strings",
+		`"environmentIds":["` + scopeDeploymentID + `"]`: errMsgEnvironmentIDsRemoved,
+		`"environmentIds":[]`:                            errMsgEnvironmentIDsRemoved,
+		`"environmentIds":null`:                          errMsgEnvironmentIDsRemoved,
+		`"customerGroupId":"` + scopeProjectID + `"`:     errMsgCustomerGroupIDRemoved,
+		`"customerGroupId":null`:                         errMsgCustomerGroupIDRemoved,
+		`"deploymentProductIds":true`:                    "deploymentProductIds must be an array of UUID strings",
+		`"customerGroupId":"x"`:                          errMsgCustomerGroupIDRemoved,
+		`"category":3`:                                   "category must be a string",
+		`"comment":5`:                                    "comment must be a string",
+		`"workNote":["a"]`:                               "workNote must be a string",
 		`"deploymentIds":[` + strings.TrimSuffix(strings.Repeat(`"`+scopeDeploymentID+`",`, 101), ",") + `]`: "deploymentIds must contain at most 100 entries",
 	}
 	for field, wantMsg := range bad {
@@ -1213,8 +1216,8 @@ func TestChangeRequestScopeFieldValidation(t *testing.T) {
 		assertStatus(t, w, http.StatusCreated)
 	})
 
-	t.Run("valid scope fields are forwarded unchanged; null clears customerGroupId and category on patch", func(t *testing.T) {
-		createBody := `{"subject":"s","type":"normal","projectId":"` + scopeProjectID + `","deploymentIds":["` + scopeDeploymentID + `"],"environmentIds":[],"deploymentProductIds":[],"customerGroupId":"` + scopeProjectID + `","category":"devops","comment":"c","workNote":"w"}`
+	t.Run("valid scope fields are forwarded unchanged; null clears category on patch", func(t *testing.T) {
+		createBody := `{"subject":"s","type":"normal","projectId":"` + scopeProjectID + `","deploymentIds":["` + scopeDeploymentID + `"],"deploymentProductIds":[],"category":"devops","comment":"c","workNote":"w"}`
 		var gotCreate string
 		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{createChangeRequestFn: func(_ context.Context, b []byte) ([]byte, error) {
 			gotCreate = string(b)
@@ -1227,7 +1230,7 @@ func TestChangeRequestScopeFieldValidation(t *testing.T) {
 			t.Fatalf("forwarded create body = %s, want unchanged", gotCreate)
 		}
 
-		patchBody := `{"projectId":"` + scopeProjectID + `","deploymentIds":[],"environmentIds":["` + scopeDeploymentID + `"],"customerGroupId":null,"category":null,"comment":"c"}`
+		patchBody := `{"projectId":"` + scopeProjectID + `","deploymentIds":[],"category":null,"comment":"c"}`
 		var gotPatch string
 		h = NewChangeRequestHandler(&mockEntityChangeRequestClient{patchChangeRequestFn: func(_ context.Context, _ string, b []byte) ([]byte, error) {
 			gotPatch = string(b)
@@ -1240,61 +1243,6 @@ func TestChangeRequestScopeFieldValidation(t *testing.T) {
 		assertStatus(t, w, http.StatusOK)
 		if gotPatch != patchBody {
 			t.Fatalf("forwarded patch body = %s, want unchanged", gotPatch)
-		}
-	})
-
-	t.Run("create: customerGroupId needs projectId, refused before the entity service is called", func(t *testing.T) {
-		called := false
-		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{createChangeRequestFn: func(_ context.Context, _ []byte) ([]byte, error) {
-			called = true
-			return []byte(`{"changeRequest":{"id":"x"}}`), nil
-		}})
-		w := httptest.NewRecorder()
-		h.CreateChangeRequest(w, withUser(httptest.NewRequest(http.MethodPost, "/change-requests",
-			strings.NewReader(`{"subject":"s","type":"normal","customerGroupId":"`+scopeProjectID+`"}`))))
-		assertStatus(t, w, http.StatusBadRequest)
-		assertErrorMessage(t, w, "customerGroupId requires projectId: the customer group must belong to the selected customer project")
-		if called {
-			t.Fatal("the entity service was called for a customer group without a project")
-		}
-		// A PATCH may rely on the project the change request already has.
-		var got string
-		h = NewChangeRequestHandler(&mockEntityChangeRequestClient{patchChangeRequestFn: func(_ context.Context, _ string, b []byte) ([]byte, error) {
-			got = string(b)
-			return []byte(`{}`), nil
-		}})
-		body := `{"customerGroupId":"` + scopeProjectID + `"}`
-		r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(body)))
-		r.SetPathValue("id", testCRID)
-		w = httptest.NewRecorder()
-		h.PatchChangeRequest(w, r)
-		assertStatus(t, w, http.StatusOK)
-		if got != body {
-			t.Fatalf("forwarded patch body = %s, want %s", got, body)
-		}
-	})
-
-	t.Run("the customer group refusals of the entity service are shown verbatim on create and patch", func(t *testing.T) {
-		for _, want := range []string{
-			"customerGroupId does not belong to the selected project: " + scopeProjectID,
-			"projectId cannot be changed without customerGroupId: the stored customer group does not belong to the new project (send customerGroupId for the new project; null clears it)",
-		} {
-			upstream := &apierror.Error{StatusCode: http.StatusBadRequest, Body: `{"message":"` + want + `"}`}
-			h := NewChangeRequestHandler(&mockEntityChangeRequestClient{
-				createChangeRequestFn: func(_ context.Context, _ []byte) ([]byte, error) { return nil, upstream },
-				patchChangeRequestFn:  func(_ context.Context, _ string, _ []byte) ([]byte, error) { return nil, upstream },
-			})
-			w := httptest.NewRecorder()
-			h.CreateChangeRequest(w, withUser(httptest.NewRequest(http.MethodPost, "/change-requests",
-				strings.NewReader(`{"subject":"s","type":"normal","projectId":"`+scopeProjectID+`","customerGroupId":"`+scopeProjectID+`"}`))))
-			assertStatus(t, w, http.StatusBadRequest)
-			assertErrorMessage(t, w, want)
-			r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(`{"projectId":"`+scopeProjectID+`"}`)))
-			r.SetPathValue("id", testCRID)
-			w = httptest.NewRecorder()
-			h.PatchChangeRequest(w, r)
-			assertStatus(t, w, http.StatusBadRequest)
-			assertErrorMessage(t, w, want)
 		}
 	})
 
@@ -1319,7 +1267,7 @@ func TestChangeRequestScopeFieldValidation(t *testing.T) {
 }
 
 // POST /change-requests/link-options: the form's Customer Project ->
-// Deployments -> Environments / Deployment products lookup.
+// Deployments -> Deployment products lookup, plus the read-only Customer Group.
 func TestChangeRequestLinkOptions(t *testing.T) {
 	post := func(h *ChangeRequestHandler, body string, authed bool) *httptest.ResponseRecorder {
 		r := httptest.NewRequest(http.MethodPost, "/change-requests/link-options", strings.NewReader(body))
@@ -1362,9 +1310,9 @@ func TestChangeRequestLinkOptions(t *testing.T) {
 		})
 	}
 
-	t.Run("forwards the body and returns the entity response as is, customerGroups included", func(t *testing.T) {
+	t.Run("forwards the body and returns the entity response as is, customerContacts included", func(t *testing.T) {
 		body := `{"projectId":"` + scopeProjectID + `","deploymentIds":["` + scopeDeploymentID + `"]}`
-		const resp = `{"deployments":[{"id":"d1","name":"Prod","type":"primary_production","environment":{"id":"e1","name":"Primary Production"}}],"environments":[{"id":"e1","name":"Primary Production"}],"deploymentProducts":[{"id":"p1","name":"APIM 4.3.0","deployment":{"id":"d1","name":"Prod"}}],"customerGroups":[{"id":"g1","name":"PEKINPROD_customer"}]}`
+		const resp = `{"deployments":[{"id":"d1","name":"Prod","type":"primary_production"}],"deploymentProducts":[{"id":"p1","name":"APIM 4.3.0","deployment":{"id":"d1","name":"Prod"}}],"customerContacts":[{"id":"c1","name":"Jane Doe","email":"jane.doe@example.com"}]}`
 		var got string
 		h := NewChangeRequestHandler(&mockEntityChangeRequestClient{getChangeRequestLinkOptionsFn: func(_ context.Context, b []byte) ([]byte, error) {
 			got = string(b)

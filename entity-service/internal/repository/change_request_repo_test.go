@@ -118,7 +118,6 @@ type fakeChangeRequestDetailRow struct {
 	implementationPlan, priority, category                             *string
 	rbID, rbName                                                       *string
 	affectedServicesText, affectedComponentsText, rollbackDurationText *string
-	cgID, cgName                                                       *string
 	changeRequestType, likelihood                                      *string
 	isPlanningVisibleToCustomers                                       *bool
 	confirmCustomerUpdatedDate                                         *string
@@ -147,7 +146,6 @@ func (f fakeChangeRequestDetailRow) Scan(dest ...any) error {
 		f.implementationPlan, f.priority, f.category,
 		f.rbID, f.rbName,
 		f.affectedServicesText, f.affectedComponentsText, f.rollbackDurationText,
-		f.cgID, f.cgName,
 		f.changeRequestType, f.likelihood, f.isPlanningVisibleToCustomers,
 		f.confirmCustomerUpdatedDate, f.customerUpdatedOn,
 		f.workStart, f.workEnd, f.gitReference,
@@ -198,7 +196,6 @@ func TestScanChangeRequestViewAndDetail_FieldParityAdditions(t *testing.T) {
 			implementationPlan: strPtrCR("do the thing"), priority: strPtrCR("HIGH"), category: strPtrCR("SOFTWARE"),
 			rbID: strPtrCR("user-1"), rbName: strPtrCR("Jane Doe"),
 			affectedServicesText: strPtrCR("svc-a"), affectedComponentsText: strPtrCR("comp-a"), rollbackDurationText: strPtrCR("2h"),
-			cgID: strPtrCR("group-1"), cgName: strPtrCR("SRE Team"),
 			changeRequestType: strPtrCR("INFRA"), likelihood: strPtrCR("HIGH"),
 			isPlanningVisibleToCustomers: boolPtrCR(true),
 			confirmCustomerUpdatedDate:   strPtrCR("AGREE"),
@@ -230,9 +227,6 @@ func TestScanChangeRequestViewAndDetail_FieldParityAdditions(t *testing.T) {
 		if cr.AssignedTeam == nil || cr.AssignedTeam.ID != "team-1" || cr.AssignedTeam.Name != "Devops" {
 			t.Errorf("AssignedTeam = %+v, want {team-1 Devops}", cr.AssignedTeam)
 		}
-		if cr.CustomerGroup == nil || cr.CustomerGroup.ID != "group-1" || cr.CustomerGroup.Name != "SRE Team" {
-			t.Errorf("CustomerGroup = %+v, want {group-1 SRE Team}", cr.CustomerGroup)
-		}
 		if cr.AffectedServicesText == nil || *cr.AffectedServicesText != "svc-a" {
 			t.Errorf("AffectedServicesText = %v, want \"svc-a\"", cr.AffectedServicesText)
 		}
@@ -256,8 +250,8 @@ func TestScanChangeRequestViewAndDetail_FieldParityAdditions(t *testing.T) {
 		}
 	})
 
-	t.Run("NULL field-parity columns (no RequestedBy/CustomerGroup, nothing written yet) do not error", func(t *testing.T) {
-		// Regression: RequestedBy/CustomerGroup come from LEFT JOINs
+	t.Run("NULL field-parity columns (no RequestedBy, nothing written yet) do not error", func(t *testing.T) {
+		// Regression: RequestedBy comes from a LEFT JOIN
 		// (changeRequestDetailJoins) that can legitimately match no row,
 		// and every other new column is nullable -- none of this should
 		// panic the way a non-pointer scan destination would.
@@ -269,8 +263,8 @@ func TestScanChangeRequestViewAndDetail_FieldParityAdditions(t *testing.T) {
 		if err := scanChangeRequestViewAndDetail(row, &cr); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if cr.RequestedBy != nil || cr.CustomerGroup != nil {
-			t.Errorf("RequestedBy/CustomerGroup = %+v/%+v, want both nil", cr.RequestedBy, cr.CustomerGroup)
+		if cr.RequestedBy != nil {
+			t.Errorf("RequestedBy = %+v, want nil", cr.RequestedBy)
 		}
 		if cr.AssignedTeam != nil {
 			t.Errorf("AssignedTeam = %+v, want nil (no assignment group set)", cr.AssignedTeam)
@@ -844,14 +838,69 @@ func TestWithoutManualCustomerOutcome(t *testing.T) {
 }
 
 func TestCustomerStageManualRefusal(t *testing.T) {
-	err := customerStageManualRefusal("scheduled", &customerApprovalStageSpec, &liveCustomerStage{groupName: "Artemis Customers"})
+	err := customerStageManualRefusal("scheduled", &customerApprovalStageSpec, &liveCustomerStage{})
 	var ve *apierror.ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("err = %v, want *apierror.ValidationError", err)
 	}
-	for _, want := range []string{`"scheduled"`, `customer group "Artemis Customers"`, "approving or rejecting", "approvals"} {
+	for _, want := range []string{`"scheduled"`, "customer group (the registered contacts of the change request's project)", "approving or rejecting", "approvals"} {
 		if !strings.Contains(ve.Msg, want) {
 			t.Errorf("message %q does not contain %q", ve.Msg, want)
+		}
+	}
+}
+
+// customerGroupId and environmentIds are refused with a clear message, the
+// group first; a request carrying neither passes.
+func TestRejectRemovedChangeRequestFields(t *testing.T) {
+	const group = "customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts"
+	const env = "environmentIds is no longer supported: deployments carry the environment"
+	for _, tc := range []struct {
+		name       string
+		group, env bool
+		want       string
+	}{
+		{"neither", false, false, ""},
+		{"group", true, false, group},
+		{"environments", false, true, env},
+		{"both: the group is named first", true, true, group},
+	} {
+		err := rejectRemovedChangeRequestFields(tc.group, tc.env)
+		if tc.want == "" {
+			if err != nil {
+				t.Errorf("%s: err = %v, want nil", tc.name, err)
+			}
+			continue
+		}
+		var ve *apierror.ValidationError
+		if !errors.As(err, &ve) || ve.Msg != tc.want {
+			t.Errorf("%s: err = %v, want ValidationError %q", tc.name, err, tc.want)
+		}
+	}
+	// The struct entry points see an explicit null / empty array too.
+	var none *string
+	if err := RejectRemovedPatchFields(domain.PatchChangeRequestRequest{CustomerGroupID: &none}); err == nil {
+		t.Error("an explicit null customerGroupId was accepted")
+	}
+	if err := RejectRemovedPatchFields(domain.PatchChangeRequestRequest{EnvironmentIDs: &[]string{}}); err == nil {
+		t.Error("an empty environmentIds was accepted")
+	}
+	if err := RejectRemovedCreateFields(domain.CreateChangeRequestRequest{EnvironmentIDs: []string{}}); err == nil {
+		t.Error("an empty environmentIds was accepted on create")
+	}
+	if err := RejectRemovedCreateFields(domain.CreateChangeRequestRequest{}); err != nil {
+		t.Errorf("an empty create request was refused: %v", err)
+	}
+}
+
+// The customer stages are recognised by their checkpoint label; nothing else is.
+func TestCustomerStageSpecForLabel(t *testing.T) {
+	if customerStageSpecForLabel("Customer Approval") != &customerApprovalStageSpec || customerStageSpecForLabel("Customer Review") != &customerReviewStageSpec {
+		t.Error("the customer stage labels are not recognised")
+	}
+	for _, label := range []string{"", "Peer Approval", "CAB Approval", "Review", "customer approval"} {
+		if customerStageSpecForLabel(label) != nil {
+			t.Errorf("%q recognised as a customer stage", label)
 		}
 	}
 }

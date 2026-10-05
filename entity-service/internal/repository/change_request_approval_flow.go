@@ -659,6 +659,18 @@ func customerStageSpecForState(state string) *customerStageSpec {
 	return nil
 }
 
+// customerStageSpecForLabel is customerStageSpecForState keyed by the stage's
+// checkpoint label.
+func customerStageSpecForLabel(label string) *customerStageSpec {
+	switch label {
+	case customerApprovalStageSpec.label:
+		return &customerApprovalStageSpec
+	case customerReviewStageSpec.label:
+		return &customerReviewStageSpec
+	}
+	return nil
+}
+
 // customerStageSpecForKind is customerStageSpecForState keyed by stage kind.
 func customerStageSpecForKind(kind approvalStageKind) *customerStageSpec {
 	switch kind {
@@ -670,24 +682,45 @@ func customerStageSpecForKind(kind approvalStageKind) *customerStageSpec {
 	return nil
 }
 
-// customerGroupMemberIDs lists the distinct ids of the active users in the
-// customer group (team_member.group_id -- the same membership model as the
-// Assignment group, see groupMemberIDs).
-func customerGroupMemberIDs(ctx context.Context, q crQuerier, groupID string) ([]string, error) {
-	rows, err := q.Query(ctx, `
-		SELECT DISTINCT tm.user_id::text
-		FROM team_member tm
-		JOIN "user" u ON u.id = tm.user_id
-		WHERE tm.group_id = $1::uuid AND COALESCE(u.is_active, true)`, groupID)
+// customerGroupDisplayName names the customer stages' approver pool in the
+// approvals read response: the Customer Group is not a stored group any more,
+// it is the change request's project's registered contacts.
+const customerGroupDisplayName = "Customer Group"
+
+// customerContactUserIDs lists the distinct "user" ids of the project's
+// registered portal-user contacts (the Customer Group -- see
+// loadProjectCustomerContacts). A contact with no "user" row cannot hold an
+// approval and is skipped.
+func customerContactUserIDs(ctx context.Context, q crQuerier, projectID string) ([]string, error) {
+	contacts, err := loadProjectCustomerContacts(ctx, q, projectID)
 	if err != nil {
-		return nil, fmt.Errorf("list customer group members: %w", err)
+		return nil, err
+	}
+	seen := map[string]bool{}
+	var ids []string
+	for _, c := range contacts {
+		key := strings.ToLower(c.userID)
+		if c.userID == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		ids = append(ids, c.userID)
+	}
+	return ids, nil
+}
+
+// stageApproverUserIDs lists every approver (whatever their status) of a stage.
+func stageApproverUserIDs(ctx context.Context, q crQuerier, stageID string) ([]string, error) {
+	rows, err := q.Query(ctx, `SELECT approver_user_id::text FROM approval_stage_approver WHERE stage_id = $1`, stageID)
+	if err != nil {
+		return nil, fmt.Errorf("list stage approvers: %w", err)
 	}
 	defer rows.Close()
 	var ids []string
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return nil, fmt.Errorf("scan customer group member: %w", err)
+			return nil, fmt.Errorf("scan stage approver: %w", err)
 		}
 		ids = append(ids, id)
 	}
@@ -780,13 +813,9 @@ func withoutManualCustomerOutcome(state *string, nexts []string, liveStage bool)
 // state's outcome ({state: scheduled} / {state: closed}) while the customer
 // group's approval request is pending.
 func customerStageManualRefusal(target string, spec *customerStageSpec, live *liveCustomerStage) error {
-	who := "the customer group"
-	if live.groupName != "" {
-		who = fmt.Sprintf("the customer group %q", live.groupName)
-	}
 	return &apierror.ValidationError{Msg: fmt.Sprintf(
-		"state %q cannot be set manually: the customer's %s has been requested from %s and is given by one of its members approving or rejecting it in the change request's approvals (POST /change-requests/{id}/approvals/decision)",
-		target, spec.what, who)}
+		"state %q cannot be set manually: the customer's %s has been requested from the customer group (the registered contacts of the change request's project) and is given by one of them approving or rejecting it in the change request's approvals (POST /change-requests/{id}/approvals/decision)",
+		target, spec.what)}
 }
 
 // cancelLiveStageApprovers cancels the REQUESTED approvers of a stage (the
@@ -819,35 +848,40 @@ func cancelPendingApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 }
 
 // provisionCustomerStage brings the change's customer stage in step with the
-// change as it now stands (read under FOR UPDATE), and is idempotent:
+// change as it now stands (read under FOR UPDATE), and is idempotent. The
+// customer's approvers are the Customer Group of the change request: the
+// REGISTERED portal-user contacts of its Customer Project, derived live
+// (loadProjectCustomerContacts) -- nothing is stored, and the contacts of one
+// project are never the approvers of another project's change request.
 //
-//   - state Customer Approval / Customer Review and a customer group with at
-//     least one eligible member (active, not the creator): provisions the
-//     "Customer Approval" / "Customer Review" stage -- assignment group = the
-//     customer group, one REQUESTED approver per eligible member, the creator
-//     (if a member) listed CANCELLED like on every other stage -- unless a
-//     live stage for that group already exists (nothing to do) or the stage
+//   - state Customer Approval / Customer Review and a project with at least one
+//     eligible contact (a registered contact whose user is active and is not
+//     the creator): provisions the "Customer Approval" / "Customer Review"
+//     stage -- one REQUESTED approver per eligible contact, the creator (if a
+//     contact) listed CANCELLED like on every other stage -- unless a live stage
+//     for exactly that contact set already exists (nothing to do) or the stage
 //     has already been decided (approved or rejected: nothing left to ask);
-//   - a live customer stage that no longer matches -- the customer group was
-//     changed or cleared, or the change left that state (e.g. was cancelled) --
-//     has its REQUESTED approvers cancelled, so there are never two live
-//     customer stages and nobody is asked a question that no longer applies.
-//     A changed group gets a fresh stage for the new group (first bullet);
-//   - no customer group, a customer group that is not associated with the
-//     change request's project (project_customer_group; never trusted for
-//     approvers, see below), or nobody eligible in it: no stage; the manual
-//     "record the customer's approval" / close path stays available.
+//   - a live customer stage that no longer matches -- the project was changed,
+//     its contacts changed, or the change left that state (e.g. was cancelled)
+//     -- has its REQUESTED approvers cancelled, so there are never two live
+//     customer stages and nobody is asked a question that no longer applies. A
+//     changed project gets a fresh stage for its own contacts (first bullet);
+//   - no project, or no eligible contact: no stage; the manual "record the
+//     customer's approval" / close path stays available.
+//
+// The stage's assignment group is NULL (the Customer Group is not a "group"
+// row); the approvals read response names it "Customer Group".
 //
 // Returns whether a stage was provisioned. Callers: the CAB / ECAB approval
 // cascade and Request Approval on a Standard change (entering Customer
 // Approval), a {state: customer_review} PATCH, and any PATCH that sets or
-// changes customerGroupId or the state.
+// changes the state or the project.
 func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) (bool, error) {
-	var state, groupID, projectID *string
+	var state, projectID *string
 	if err := tx.QueryRow(ctx,
-		`SELECT cr.state::text, cr.customer_group_id::text, wi.project_id::text
+		`SELECT cr.state::text, wi.project_id::text
 		 FROM change_request cr JOIN work_item wi ON wi.id = cr.id
-		 WHERE cr.id = $1 FOR UPDATE OF cr`, workItemID).Scan(&state, &groupID, &projectID); err != nil {
+		 WHERE cr.id = $1 FOR UPDATE OF cr`, workItemID).Scan(&state, &projectID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
@@ -869,35 +903,31 @@ func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 		return false, fmt.Errorf("provision customer stage: escalate identity: %w", err)
 	}
 
-	// Defence in depth: a customer group that is not associated with the change
-	// request's project (data from before the rule, or an association since
-	// removed) must never supply approvers -- it could be another customer's
-	// people. It is treated as no group at all: no stage is provisioned from it,
-	// a live stage for it is cancelled, and the manual path applies. Valid
-	// project/group combinations are unaffected.
-	if groupID != nil {
-		inProject, err := customerGroupInProject(ctx, tx, stringOrEmpty(projectID), *groupID)
-		if err != nil {
+	// The Customer Group, as it is now: the project's registered contacts.
+	var members []string
+	if spec != nil && projectID != nil {
+		if members, err = customerContactUserIDs(ctx, tx, *projectID); err != nil {
 			return false, fmt.Errorf("provision customer stage: %w", err)
-		}
-		if !inProject {
-			slog.WarnContext(ctx, "customer group is not associated with the change request's project, customer stage not provisioned",
-				"changeRequestId", workItemID)
-			groupID = nil
 		}
 	}
 
 	keep := false
 	for _, st := range live {
-		if spec != nil && st.label == spec.label && groupID != nil && strings.EqualFold(st.groupID, *groupID) && !keep {
-			keep = true
-			continue
+		if spec != nil && st.label == spec.label && !keep {
+			have, err := stageApproverUserIDs(ctx, tx, st.stageID)
+			if err != nil {
+				return false, err
+			}
+			if len(members) > 0 && sameIDSet(have, members) {
+				keep = true
+				continue
+			}
 		}
 		if err := cancelLiveStageApprovers(ctx, tx, st.stageID, actorEmail); err != nil {
 			return false, err
 		}
 	}
-	if spec == nil || groupID == nil || keep {
+	if spec == nil || len(members) == 0 || keep {
 		return false, nil
 	}
 
@@ -916,10 +946,6 @@ func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 	if err != nil {
 		return false, fmt.Errorf("provision customer stage: %w", err)
 	}
-	members, err := customerGroupMemberIDs(ctx, tx, *groupID)
-	if err != nil {
-		return false, err
-	}
 	eligible := false
 	for _, m := range members {
 		if !creatorIDs[strings.ToLower(m)] {
@@ -931,10 +957,10 @@ func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 		// The manual path stays open (see the doc comment): nothing is
 		// stranded, but say why no stage appeared.
 		slog.InfoContext(ctx, "customer group has no eligible approvers, customer stage not provisioned",
-			"changeRequestId", workItemID, "customerGroupId", *groupID, "stage", spec.label)
+			"changeRequestId", workItemID, "stage", spec.label)
 		return false, nil
 	}
-	if err := insertApprovalStage(ctx, tx, workItemID, actorEmail, spec.label, approvalPool{groupID: *groupID, members: members}, creatorIDs); err != nil {
+	if err := insertApprovalStage(ctx, tx, workItemID, actorEmail, spec.label, approvalPool{members: members}, creatorIDs); err != nil {
 		return false, err
 	}
 	return true, nil
@@ -998,10 +1024,6 @@ func customerStageDecisionRefusal(ctx context.Context, tx pgx.Tx, workItemID str
 		return nil, nil
 	}
 	spec := customerStageSpecForState(strings.ToUpper(stringOrEmpty(state)))
-	who := "members of the customer group"
-	if live.groupName != "" {
-		who = fmt.Sprintf("members of the customer group %q", live.groupName)
-	}
 	return &apierror.ForbiddenError{Msg: fmt.Sprintf(
-		"only %s can approve or reject the customer's %s of this change request", who, spec.what)}, nil
+		"only members of the customer group (the registered contacts of this change request's project) can approve or reject the customer's %s of this change request", spec.what)}, nil
 }

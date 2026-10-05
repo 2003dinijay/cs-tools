@@ -284,36 +284,44 @@ to the entity service as-is (no field allow-list), with two checks on top:
   review is required …") reach the form verbatim (`POST` does the same, see below).
 * Both shape-check the customer-scope and journal fields
   (`validateChangeRequestScopeFields`): `projectId` a UUID string; `deploymentIds`,
-  `environmentIds`, `deploymentProductIds` arrays of UUID strings (at most 100, `null`
-  is not an array); `customerGroupId` a UUID string (`null` clears it on PATCH);
-  `category`, `comment`, `workNote` strings; on PATCH `comment`/`workNote` not blank.
-  Whether the deployments belong to the project, the environments follow from the
-  deployments, the deployment products match (they are read-only/derived) and the
-  edit window (only before the change reaches `implement`) are the entity service's
-  call — see its CLAUDE.md, "Customer project, deployments, environments and
-  deployment products".
+  `deploymentProductIds` arrays of UUID strings (at most 100, `null` is not an
+  array); `category`, `comment`, `workNote` strings; on PATCH `comment`/`workNote`
+  not blank. **`customerGroupId` and `environmentIds` are no longer accepted** —
+  any value, `null` included, is refused at the BFF (no upstream call) with the
+  entity service's own 400 text: `customerGroupId is no longer accepted: the
+  customer group is derived from the customer project's registered contacts` /
+  `environmentIds is no longer supported: deployments carry the environment`.
+  Whether the deployments belong to the project, the deployment products match
+  (they are read-only/derived) and the edit window (only before the change reaches
+  `implement`) are the entity service's call — see its CLAUDE.md, "Customer
+  project, deployments and deployment products".
 * **`POST` now echoes the entity service's 400/409 message too** (`mapUpstreamError`,
   like `PATCH`): the form has to show "deploymentIds contains a deployment that does
   not belong to the selected project: …". 5xx and unmapped statuses still map to the
   generic "Failed to create change request." — upstream internals are never echoed.
 * `POST /change-requests/link-options` (`PermViewOperations`) is the form's lookup:
-  `{projectId, deploymentIds?}` → `{deployments, environments, deploymentProducts}`.
-  `projectId` is required (400 "projectId is required"). Project search for the
-  picker is the existing `POST /projects/search`; customer group is `POST /groups/search`.
+  `{projectId, deploymentIds?}` → `{deployments:[{id,name,type}],
+  deploymentProducts, customerContacts:[{id,name,email?}]}`. `projectId` is required
+  (400 "projectId is required"). Project search for the picker is the existing
+  `POST /projects/search`; the Customer Group is not searched or picked — it is the
+  project's registered contacts, returned here as `customerContacts` (read-only).
+  The body and the entity response are passed through untouched.
 * The detail response carries `customerApprovalRequired`/`customerReviewRequired`
   and `legalNextStates` untouched; the webapp renders `legalNextStates` as-is. It also
-  carries `project`, `deployments`, `environments`, `deploymentProducts`,
-  `customerGroup` and `category`.
-* **Customer Group approvals.** The change's customer group answers Customer
-  Approval / Customer Review through the approvals
+  carries `project`, `deployments`, `deploymentProducts`, `customerContacts` (the
+  derived, read-only Customer Group) and `category`.
+* **Customer Group approvals.** The change's customer group (the project's registered
+  contacts) answers Customer Approval / Customer Review through the approvals
   (`POST /change-requests/{id}/approvals/decision`), with the stages "Customer
   Approval" / "Customer Review" in `GET .../approvals` (see the entity service's
   CLAUDE.md, "Customer Group"). While such a stage is live `legalNextStates` for
   those states is just `["canceled"]` and a manual `{state: "scheduled"}` /
   `{state: "closed"}` PATCH is a 400 whose message is echoed verbatim. A
-  non-member's decision is a 403 whose reason is shown (`mapApprovalDecisionError`
-  already surfaces any 403 reason: `only members of the customer group "X" can
-  approve or reject …`). A rejected Customer Approval cancels the change, a
+  non-contact's decision is a 403 whose reason is shown (`mapApprovalDecisionError`
+  already surfaces any 403 reason: `only members of the customer group (the
+  registered contacts of this change request's project) can approve or reject …`).
+  The decision route is `PermWrite` (cs_engineer / admin): registered customer
+  contacts cannot reach it through this BFF. A rejected Customer Approval cancels the change, a
   rejected Customer Review moves it to `rollback`. No BFF code change was needed;
   `TestCustomerGroupApprovalMessages` pins both messages.
 

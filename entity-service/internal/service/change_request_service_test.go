@@ -924,9 +924,7 @@ func TestChangeRequestService_ScopeFields_ShapeValidation(t *testing.T) {
 	creates := map[string]func(*domain.CreateChangeRequestRequest){
 		"projectId":            func(r *domain.CreateChangeRequestRequest) { r.ProjectID = &bad },
 		"deploymentIds":        func(r *domain.CreateChangeRequestRequest) { r.DeploymentIDs = []string{bad} },
-		"environmentIds":       func(r *domain.CreateChangeRequestRequest) { r.EnvironmentIDs = []string{bad} },
 		"deploymentProductIds": func(r *domain.CreateChangeRequestRequest) { r.DeploymentProductIDs = []string{bad} },
-		"customerGroupId":      func(r *domain.CreateChangeRequestRequest) { r.CustomerGroupID = &bad },
 		"too many":             func(r *domain.CreateChangeRequestRequest) { r.DeploymentIDs = many },
 	}
 	for name, mod := range creates {
@@ -954,7 +952,6 @@ func TestChangeRequestService_ScopeFields_ShapeValidation(t *testing.T) {
 	patches := map[string]domain.PatchChangeRequestRequest{
 		"projectId":            {ProjectID: &bad},
 		"deploymentIds":        {DeploymentIDs: &[]string{bad}},
-		"environmentIds":       {EnvironmentIDs: &[]string{bad}},
 		"deploymentProductIds": {DeploymentProductIDs: &[]string{bad}},
 		"too many":             {DeploymentIDs: &many},
 		"blank comment":        {Comment: func() *string { s := "  "; return &s }()},
@@ -987,7 +984,6 @@ func TestChangeRequestService_PatchChangeRequest_ScopeFieldsReachTheRepository(t
 	for name, req := range map[string]domain.PatchChangeRequestRequest{
 		"deploymentIds":        {DeploymentIDs: &[]string{scopeTestDeploymentID}},
 		"empty deploymentIds":  {DeploymentIDs: &[]string{}},
-		"environmentIds":       {EnvironmentIDs: &[]string{scopeTestDeploymentID}},
 		"deploymentProductIds": {DeploymentProductIDs: &[]string{scopeTestDeploymentID}},
 		"comment":              {Comment: &comment},
 		"workNote":             {WorkNote: &note},
@@ -997,7 +993,7 @@ func TestChangeRequestService_PatchChangeRequest_ScopeFieldsReachTheRepository(t
 		if _, err := svc.PatchChangeRequest(ctx, testUUID, req); err != nil {
 			t.Fatalf("%s alone: %v", name, err)
 		}
-		if got.DeploymentIDs != req.DeploymentIDs || got.EnvironmentIDs != req.EnvironmentIDs || got.DeploymentProductIDs != req.DeploymentProductIDs ||
+		if got.DeploymentIDs != req.DeploymentIDs || got.DeploymentProductIDs != req.DeploymentProductIDs ||
 			got.Comment != req.Comment || got.WorkNote != req.WorkNote || got.ProjectID != req.ProjectID {
 			t.Fatalf("%s: the repository saw a different request", name)
 		}
@@ -1005,8 +1001,8 @@ func TestChangeRequestService_PatchChangeRequest_ScopeFieldsReachTheRepository(t
 }
 
 // The dual-write mirror gets only what ServiceNow models: projectId on PATCH,
-// comment, workNote and customerGroupId go through; deploymentIds,
-// environmentIds and deploymentProductIds (Postgres-derived) are stripped; a
+// comment and workNote go through; deploymentIds and deploymentProductIds
+// (Postgres-derived) are stripped; a
 // PATCH carrying only those has nothing to mirror.
 func TestChangeRequestService_PatchChangeRequest_ScopeFieldsStayOutOfTheMirror(t *testing.T) {
 	repo := &stubChangeRequestRepo{patchChangeRequest: func(_ context.Context, id string, _ domain.PatchChangeRequestRequest, _ string) (domain.ChangeRequest, error) {
@@ -1024,14 +1020,14 @@ func TestChangeRequestService_PatchChangeRequest_ScopeFieldsStayOutOfTheMirror(t
 		svc := NewChangeRequestServiceWithSNWriteback(repo, stubUserRepo{}, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
 		ids := []string{scopeTestDeploymentID}
 		if _, err := svc.PatchChangeRequest(ctx, testUUID, domain.PatchChangeRequestRequest{
-			ProjectID: &project, Comment: &comment, DeploymentIDs: &ids, EnvironmentIDs: &ids, DeploymentProductIDs: &ids,
+			ProjectID: &project, Comment: &comment, DeploymentIDs: &ids, DeploymentProductIDs: &ids,
 		}); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 		select {
 		case got := <-called:
-			if got.DeploymentIDs != nil || got.EnvironmentIDs != nil || got.DeploymentProductIDs != nil {
-				t.Errorf("mirror saw the Postgres-only lists: %v/%v/%v", got.DeploymentIDs, got.EnvironmentIDs, got.DeploymentProductIDs)
+			if got.DeploymentIDs != nil || got.DeploymentProductIDs != nil {
+				t.Errorf("mirror saw the Postgres-only lists: %v/%v", got.DeploymentIDs, got.DeploymentProductIDs)
 			}
 			if got.ProjectID == nil || *got.ProjectID != project || got.Comment == nil || *got.Comment != comment {
 				t.Errorf("mirror lost projectId/comment: %v/%v", got.ProjectID, got.Comment)
@@ -1061,11 +1057,11 @@ func TestChangeRequestService_PatchChangeRequest_ScopeFieldsStayOutOfTheMirror(t
 // fields it cannot model, while PostgreSQL receives all of them.
 func TestChangeRequestService_CreateChangeRequest_ScopeValidatedBeforeSNAndStrippedFromIt(t *testing.T) {
 	project := scopeTestProjectID
-	group, category, comment, note := scopeTestProjectID, domain.ChangeRequestCategoryDevOps, "c", "w"
+	category, comment, note := domain.ChangeRequestCategoryDevOps, "c", "w"
 	req := validCreateChangeRequestRequest()
 	req.ProjectID, req.DeploymentIDs = &project, []string{scopeTestDeploymentID}
-	req.EnvironmentIDs, req.DeploymentProductIDs = []string{scopeTestDeploymentID}, []string{scopeTestDeploymentID}
-	req.CustomerGroupID, req.Category, req.Comment, req.WorkNote = &group, &category, &comment, &note
+	req.DeploymentProductIDs = []string{scopeTestDeploymentID}
+	req.Category, req.Comment, req.WorkNote = &category, &comment, &note
 
 	t.Run("refused by PostgreSQL: ServiceNow never called", func(t *testing.T) {
 		mirror := &stubMirrorChangeRequestService{createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
@@ -1083,24 +1079,36 @@ func TestChangeRequestService_CreateChangeRequest_ScopeValidatedBeforeSNAndStrip
 		}
 	})
 
-	t.Run("customer group of another project: refused before ServiceNow is called", func(t *testing.T) {
+	t.Run("customerGroupId / environmentIds: refused before anything else, ServiceNow never called", func(t *testing.T) {
 		mirror := &stubMirrorChangeRequestService{createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
-			t.Fatal("ServiceNow was called although the customer group does not belong to the project")
+			t.Fatal("ServiceNow was called although a removed field was sent")
 			return domain.CreateChangeRequestResponse{}, nil
 		}}
-		var sawGroup *string
-		repo := &stubChangeRequestRepo{validateChangeRequestLinks: func(_ context.Context, sel domain.ChangeRequestLinkSelection) (domain.ChangeRequestLinkSet, error) {
-			sawGroup = sel.CustomerGroupID
-			return domain.ChangeRequestLinkSet{}, &apierror.ValidationError{Msg: "customerGroupId does not belong to the selected project: " + *sel.CustomerGroupID}
+		repo := &stubChangeRequestRepo{validateChangeRequestLinks: func(context.Context, domain.ChangeRequestLinkSelection) (domain.ChangeRequestLinkSet, error) {
+			t.Fatal("the repository was consulted for a request carrying a removed field")
+			return domain.ChangeRequestLinkSet{}, nil
 		}}
-		svc := NewChangeRequestServiceWithSNMirror(repo, stubUserRepo{}, mirror)
-		_, err := svc.CreateChangeRequest(context.Background(), req)
-		var ve *apierror.ValidationError
-		if !asValidationError(err, &ve) || ve.Msg != "customerGroupId does not belong to the selected project: "+group {
-			t.Fatalf("err = %v, want the repository's customer group ValidationError", err)
-		}
-		if sawGroup == nil || *sawGroup != group {
-			t.Fatalf("the customer group was not part of the validated selection: %v", sawGroup)
+		for name, tc := range map[string]struct {
+			mod  func(*domain.CreateChangeRequestRequest)
+			want string
+		}{
+			"customerGroupId": {func(r *domain.CreateChangeRequestRequest) { g := scopeTestProjectID; r.CustomerGroupID = &g },
+				"customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts"},
+			"environmentIds": {func(r *domain.CreateChangeRequestRequest) { r.EnvironmentIDs = []string{scopeTestDeploymentID} },
+				"environmentIds is no longer supported: deployments carry the environment"},
+		} {
+			r := req
+			tc.mod(&r)
+			for label, svc := range map[string]ChangeRequestService{
+				"plain":            NewChangeRequestService(repo, stubUserRepo{}),
+				"servicenow-first": NewChangeRequestServiceWithSNMirror(repo, stubUserRepo{}, mirror),
+			} {
+				_, err := svc.CreateChangeRequest(context.Background(), r)
+				var ve *apierror.ValidationError
+				if !asValidationError(err, &ve) || ve.Msg != tc.want {
+					t.Fatalf("%s/%s: err = %v, want ValidationError %q", name, label, err, tc.want)
+				}
+			}
 		}
 	})
 
@@ -1129,19 +1137,16 @@ func TestChangeRequestService_CreateChangeRequest_ScopeValidatedBeforeSNAndStrip
 		if _, err := svc.CreateChangeRequest(context.Background(), req); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if sawSel.ProjectID == nil || *sawSel.ProjectID != project || len(sawSel.DeploymentIDs) != 1 || len(sawSel.EnvironmentIDs) != 1 || len(sawSel.DeploymentProductIDs) != 1 {
+		if sawSel.ProjectID == nil || *sawSel.ProjectID != project || len(sawSel.DeploymentIDs) != 1 || len(sawSel.DeploymentProductIDs) != 1 {
 			t.Errorf("validated selection = %+v", sawSel)
 		}
-		if sawSel.CustomerGroupID == nil || *sawSel.CustomerGroupID != group {
-			t.Errorf("validated selection lost the customer group: %+v", sawSel)
-		}
-		if toSN.ProjectID != nil || toSN.DeploymentIDs != nil || toSN.EnvironmentIDs != nil || toSN.DeploymentProductIDs != nil {
+		if toSN.ProjectID != nil || toSN.DeploymentIDs != nil || toSN.DeploymentProductIDs != nil {
 			t.Errorf("ServiceNow saw the Postgres-only scope: %+v", toSN)
 		}
-		if toSN.CustomerGroupID == nil || toSN.Category == nil || toSN.Comment == nil || toSN.WorkNote == nil {
-			t.Errorf("ServiceNow lost customerGroupId/category/comment/workNote: %+v", toSN)
+		if toSN.Category == nil || toSN.Comment == nil || toSN.WorkNote == nil {
+			t.Errorf("ServiceNow lost category/comment/workNote: %+v", toSN)
 		}
-		if toPG.ProjectID == nil || len(toPG.DeploymentIDs) != 1 || len(toPG.EnvironmentIDs) != 1 || len(toPG.DeploymentProductIDs) != 1 || toPG.Comment == nil || toPG.WorkNote == nil {
+		if toPG.ProjectID == nil || len(toPG.DeploymentIDs) != 1 || len(toPG.DeploymentProductIDs) != 1 || toPG.Comment == nil || toPG.WorkNote == nil {
 			t.Errorf("PostgreSQL did not get the full request: %+v", toPG)
 		}
 	})
@@ -1153,14 +1158,14 @@ func TestChangeRequestService_GetChangeRequestLinkOptions(t *testing.T) {
 	repo := &stubChangeRequestRepo{getChangeRequestLinkOptions: func(_ context.Context, r domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error) {
 		got = r
 		return domain.ChangeRequestLinkOptionsResponse{
-			Deployments:    []domain.ChangeRequestDeploymentOption{{ID: "d"}},
-			CustomerGroups: []domain.EntityRef{{ID: "g", Name: "G"}},
+			Deployments:      []domain.ChangeRequestDeploymentOption{{ID: "d"}},
+			CustomerContacts: []domain.ChangeRequestCustomerContact{{ID: "c", Name: "Jane Doe", Email: "jane@example.com"}},
 		}, nil
 	}}
 	svc := NewChangeRequestService(repo, stubUserRepo{})
 	resp, err := svc.GetChangeRequestLinkOptions(context.Background(), domain.ChangeRequestLinkOptionsRequest{ProjectID: scopeTestProjectID, DeploymentIDs: []string{scopeTestDeploymentID}})
-	if err == nil && (len(resp.CustomerGroups) != 1 || resp.CustomerGroups[0].ID != "g") {
-		t.Fatalf("customerGroups not passed through: %+v", resp.CustomerGroups)
+	if err == nil && (len(resp.CustomerContacts) != 1 || resp.CustomerContacts[0].ID != "c") {
+		t.Fatalf("customerContacts not passed through: %+v", resp.CustomerContacts)
 	}
 	if err != nil || len(resp.Deployments) != 1 || got.ProjectID != scopeTestProjectID || len(got.DeploymentIDs) != 1 {
 		t.Fatalf("valid request: resp=%+v err=%v got=%+v", resp, err, got)
@@ -1182,5 +1187,31 @@ func TestChangeRequestService_GetChangeRequestLinkOptions(t *testing.T) {
 	var ve *apierror.ValidationError
 	if !asValidationError(err, &ve) {
 		t.Fatalf("servicenow data source: expected *apierror.ValidationError, got %T: %v", err, err)
+	}
+}
+
+// customerGroupId / environmentIds on PATCH are refused with a clear 400 before
+// the repository is reached (and so before anything is mirrored to ServiceNow),
+// whatever else the request carries.
+func TestChangeRequestService_PatchChangeRequest_RefusesRemovedFields(t *testing.T) {
+	svc := NewChangeRequestService(&stubChangeRequestRepo{}, stubUserRepo{}) // repo panics if reached
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "a@example.com"))
+	title := "t"
+	group := scopeTestProjectID
+	var none *string
+	groupPtr := &group
+	for name, tc := range map[string]struct {
+		req  domain.PatchChangeRequestRequest
+		want string
+	}{
+		"customerGroupId":      {domain.PatchChangeRequestRequest{Title: &title, CustomerGroupID: &groupPtr}, "customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts"},
+		"customerGroupId null": {domain.PatchChangeRequestRequest{CustomerGroupID: &none}, "customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts"},
+		"environmentIds":       {domain.PatchChangeRequestRequest{Title: &title, EnvironmentIDs: &[]string{scopeTestDeploymentID}}, "environmentIds is no longer supported: deployments carry the environment"},
+	} {
+		_, err := svc.PatchChangeRequest(ctx, testUUID, tc.req)
+		var ve *apierror.ValidationError
+		if !asValidationError(err, &ve) || ve.Msg != tc.want {
+			t.Fatalf("%s: err = %v, want ValidationError %q", name, err, tc.want)
+		}
 	}
 }
