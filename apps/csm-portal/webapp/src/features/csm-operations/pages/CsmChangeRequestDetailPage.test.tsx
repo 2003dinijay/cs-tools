@@ -1330,7 +1330,9 @@ function lcSeed(
       if (input.decision === "approved") {
         lcSetState(current.stage === "Customer Approval" ? "scheduled" : "closed");
       } else {
-        lcSetState("canceled");
+        // Backend rule: a declined Customer Approval cancels the change; a
+        // rejected Customer Review moves it to rollback (terminal, no actions).
+        lcSetState(current.stage === "Customer Approval" ? "canceled" : "rollback");
       }
     } else if (input.decision === "approved") {
       if (current.stage === "Peer Approval") {
@@ -1930,7 +1932,7 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     view.unmount();
   });
 
-  it("a member rejecting the Customer Review cancels the change request", () => {
+  it("a member rejecting the Customer Review moves the change request to Rollback (terminal, no actions left)", () => {
     lcSeed("normal", { approval: false, review: true }, { members: LC_MEMBERS });
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
     view = lcOpenAs(LC_CREATOR, view);
@@ -1942,9 +1944,12 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
 
     view = lcOpenAs(LC_CUST_ONE, view);
     fireEvent.click(screen.getByRole("button", { name: /^reject$/i }));
-    expect(lc.cr.state).toBe("canceled");
+    expect(lc.cr.state).toBe("rollback");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
-    expect(within(approvalsRow("Mia Member")).getByText("Rejected")).toBeInTheDocument();
+    expect(screen.getAllByText("Rollback", { selector: ".MuiChip-label" }).length).toBeGreaterThan(0);
+    expect(within(approvalsRowInStage("Mia Member", "Customer Review")).getByText("Rejected")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /change state/i })).not.toBeInTheDocument();
     view.unmount();
   });
 

@@ -661,4 +661,18 @@ describe("ChangeRequestApprovals — customer group stages (Customer Approval / 
     render(<ChangeRequestApprovals id="chg-1" isCreator />);
     screen.getByText("Me Member").closest("tr")!.querySelectorAll("button").forEach((b) => expect(b).toBeDisabled());
   });
+
+  it("shows the creator's own row (listed Cancelled by the backend when they are a group member) with no controls", () => {
+    mockQueryResult({
+      data: customerStage("Customer Approval", [
+        { id: "me", name: "Me Member", status: "CANCELLED" },
+        { id: "m2", name: "Other Member", status: "REQUESTED", canDecide: false },
+      ]),
+    });
+    mockCurrentUser("me");
+    render(<ChangeRequestApprovals id="chg-1" isCreator />);
+    expect(screen.getByText("Me Member").closest("tr")).toHaveTextContent("Cancelled");
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
+  });
 });

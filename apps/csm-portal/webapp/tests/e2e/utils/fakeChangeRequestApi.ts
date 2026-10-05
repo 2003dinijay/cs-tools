@@ -47,7 +47,7 @@
 //     {state:"closed"} is refused with a 400. A member's decision settles the
 //     stage (their co-members become NOT_REQUIRED): Customer Approval approved
 //     -> scheduled, rejected -> canceled; Customer Review approved -> closed,
-//     rejected -> canceled. With no customer group, or a group with no
+//     rejected -> rollback (terminal: legalNextStates none). With no customer group, or a group with no
 //     eligible member, no stage is provisioned and the manual paths above
 //     remain. `canDecide` is true only on the signed-in member's own
 //     REQUESTED row of a live stage, never for the creator;
@@ -623,7 +623,7 @@ export async function installFakeChangeRequestApi(
           // One member's decision settles the stage; co-members are no longer needed.
           for (const a of current.approvers) if (a !== row && a.status === "REQUESTED") a.status = "NOT_REQUIRED";
           if (decision === "approved") enter(current.stage === "Customer Approval" ? "scheduled" : "closed");
-          else enter("canceled");
+          else enter(current.stage === "Customer Approval" ? "canceled" : "rollback");
         } else if (decision === "approved") {
           if (current.stage === "Peer Approval") {
             state = "authorize";

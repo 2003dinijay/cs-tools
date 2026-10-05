@@ -945,7 +945,7 @@ test.describe("change request approval flow — customer group", () => {
     await expect(detail.changeStateButton()).toHaveCount(0);
   });
 
-  test("a group member rejecting the Customer Review cancels the change request", async ({ page }) => {
+  test("a group member rejecting the Customer Review moves the change request to Rollback (terminal, no actions left)", async ({ page }) => {
     test.setTimeout(120_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, {}, FAKE_CUSTOMER_GROUP);
     const detail = new ChangeRequestDetailPage(page);
@@ -960,8 +960,11 @@ test.describe("change request approval flow — customer group", () => {
     await switchTo(page, api, FAKE_CUST_ONE);
     await detail.reject(FAKE_CUST_ONE.name);
     await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Review")).toHaveText("Rejected");
-    expect(api.state()).toBe("canceled");
+    expect(api.state()).toBe("rollback");
+    await expect(page.locator(".MuiChip-label", { hasText: /^Rollback$/ }).first()).toBeVisible();
     await expect(detail.blockingReason()).toHaveCount(0);
+    await expect(detail.approveButton()).toHaveCount(0);
+    await expect(detail.changeStateButton()).toHaveCount(0);
   });
 
   test("no customer group: no customer stage, the Approval tab explains why, and Record customer approval still schedules it", async ({
