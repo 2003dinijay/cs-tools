@@ -207,8 +207,16 @@ func (s *customerEngagementAllocationService) findOrCreateEngagement(ctx context
 		}
 		if found != nil {
 			if in.engagementID != "" {
-				if err := store.SetEngagementIDIfNull(ctx, *found, in.engagementID); err != nil {
+				assigned, err := store.SetEngagementIDIfNull(ctx, *found, in.engagementID)
+				if err != nil {
 					return "", false, "", err
+				}
+				// Not assigned: a concurrent event may have created this engagement id; prefer that row.
+				if !assigned {
+					byID, err := store.FindEngagementByEngagementID(ctx, in.engagementID)
+					if err != nil || byID != nil {
+						return allocDeref(byID), false, "", err
+					}
 				}
 			}
 			return *found, false, "", nil

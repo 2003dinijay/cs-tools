@@ -38,16 +38,17 @@ var testEngagementTypeIDs = map[string]string{
 
 // fakeAllocationStore is an in-memory customer_engagement / allocation_resource pair.
 type fakeAllocationStore struct {
-	engagementsByEngID map[string]string // engagement_id -> id
-	engagementsByLine  map[string]string // line-item sf id -> id
-	accountsBySfID     map[string]string
-	accountsByName     map[string][]domain.AccountCandidate
-	usersByEmail       map[string]string
-	allocations        map[string]domain.AllocationResourceFields // engagement/allocation -> row
-	allocationIDs      map[string]string
-	inserted           []domain.NewCustomerEngagement
-	engagementIDSet    map[string]string // id -> engagement_id set via SetEngagementIDIfNull
-	seq                int
+	engagementsByEngID   map[string]string // engagement_id -> id
+	engagementsByLine    map[string]string // line-item sf id -> id
+	accountsBySfID       map[string]string
+	accountsByName       map[string][]domain.AccountCandidate
+	findByEngIDMissFirst bool
+	usersByEmail         map[string]string
+	allocations          map[string]domain.AllocationResourceFields // engagement/allocation -> row
+	allocationIDs        map[string]string
+	inserted             []domain.NewCustomerEngagement
+	engagementIDSet      map[string]string // id -> engagement_id set via SetEngagementIDIfNull
+	seq                  int
 }
 
 func newFakeAllocationStore() *fakeAllocationStore {
@@ -76,6 +77,11 @@ func allocOptional(m map[string]string, k string) *string {
 }
 
 func (f *fakeAllocationStore) FindEngagementByEngagementID(_ context.Context, id string) (*string, error) {
+	// findByEngIDMissFirst simulates a concurrent insert committing after the first lookup.
+	if f.findByEngIDMissFirst {
+		f.findByEngIDMissFirst = false
+		return nil, nil
+	}
 	return allocOptional(f.engagementsByEngID, id), nil
 }
 func (f *fakeAllocationStore) FindEngagementByLineItemSfID(_ context.Context, id string) (*string, error) {
@@ -99,15 +105,18 @@ func (f *fakeAllocationStore) InsertEngagement(_ context.Context, e domain.NewCu
 	f.inserted = append(f.inserted, e)
 	return id, true, nil
 }
-func (f *fakeAllocationStore) SetEngagementIDIfNull(_ context.Context, id, engagementID string) error {
+func (f *fakeAllocationStore) SetEngagementIDIfNull(_ context.Context, id, engagementID string) (bool, error) {
+	if _, taken := f.engagementsByEngID[engagementID]; taken {
+		return false, nil
+	}
 	for _, existing := range f.engagementsByEngID {
 		if existing == id {
-			return nil
+			return false, nil
 		}
 	}
 	f.engagementIDSet[id] = engagementID
 	f.engagementsByEngID[engagementID] = id
-	return nil
+	return true, nil
 }
 func (f *fakeAllocationStore) UpdateAllocationResource(_ context.Context, r domain.AllocationResourceFields) (*string, error) {
 	key := r.EngagementID + "/" + r.AllocationID
@@ -368,6 +377,22 @@ func TestAllocationEvent_NameWithoutCustomerName(t *testing.T) {
 	}
 	if len(f.inserted) != 1 || f.inserted[0].Name != "Support Related Customer Firefighting" {
 		t.Fatalf("inserted = %+v, want the allocation type name alone", f.inserted)
+	}
+}
+
+func TestAllocationEvent_LineItemPrefersConcurrentEngagementID(t *testing.T) {
+	f := newFakeAllocationStore()
+	f.engagementsByLine["00k000000000001AAA"] = "eng-li"
+	// Another event already holds E1001 on a different engagement.
+	f.engagementsByEngID["E1001"] = "eng-other"
+	f.usersByEmail["consultant@wso2.com"] = "user-1"
+	f.findByEngIDMissFirst = true
+	res, err := newAllocationSvc(f).ProcessAllocationEvent(context.Background(), allocLineItemEvent())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.EngagementID == nil || *res.EngagementID != "eng-other" {
+		t.Fatalf("engagement = %v, want eng-other", res.EngagementID)
 	}
 }
 

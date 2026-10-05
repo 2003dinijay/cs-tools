@@ -47,8 +47,9 @@ type AllocationEventStore interface {
 	FindUserByEmailOrUserName(ctx context.Context, email string) (*string, error)
 	// InsertEngagement inserts unless engagement_id exists; returns the id and whether it inserted.
 	InsertEngagement(ctx context.Context, e domain.NewCustomerEngagement) (id string, created bool, err error)
-	// SetEngagementIDIfNull sets engagement_id on an engagement found by line item, when it has none.
-	SetEngagementIDIfNull(ctx context.Context, id, engagementID string) error
+	// SetEngagementIDIfNull sets engagement_id on an engagement found by line item, when it has none;
+	// it reports whether a row was updated.
+	SetEngagementIDIfNull(ctx context.Context, id, engagementID string) (bool, error)
 	// UpdateAllocationResource updates the (engagement, allocation_id) row; nil when there is none.
 	UpdateAllocationResource(ctx context.Context, f domain.AllocationResourceFields) (*string, error)
 	// UpsertAllocationResource inserts the row, or updates it if a racing insert won.
@@ -200,11 +201,12 @@ const setEngagementIDIfNullQuery = `
 	WHERE id = $1::uuid AND engagement_id IS NULL
 	  AND NOT EXISTS (SELECT 1 FROM customer_engagement o WHERE o.engagement_id = $2)`
 
-func (s *allocationEventStore) SetEngagementIDIfNull(ctx context.Context, id, engagementID string) error {
-	if _, err := s.q.Exec(ctx, setEngagementIDIfNullQuery, id, engagementID, allocationSyncActor); err != nil {
-		return fmt.Errorf("set engagement_id: %w", err)
+func (s *allocationEventStore) SetEngagementIDIfNull(ctx context.Context, id, engagementID string) (bool, error) {
+	tag, err := s.q.Exec(ctx, setEngagementIDIfNullQuery, id, engagementID, allocationSyncActor)
+	if err != nil {
+		return false, fmt.Errorf("set engagement_id: %w", err)
 	}
-	return nil
+	return tag.RowsAffected() > 0, nil
 }
 
 // COALESCE keeps the stored state when the event's clearance status has no enum value.
