@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
@@ -25,8 +26,8 @@ import (
 )
 
 const (
-	testSupportGroup  = "5aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
-	testExplicitGroup = "5bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
+	testSupportGroup = "5aaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa"
+	testOtherGroup   = "5bbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"
 )
 
 func strPtrGroup(s string) *string { return &s }
@@ -65,19 +66,49 @@ func TestCreateIncident_DerivesAssignmentGroupFromService(t *testing.T) {
 	}
 }
 
-// A caller that knows better -- an alarm naming its own team -- is not
-// overridden.
-func TestCreateIncident_ExplicitAssignmentGroupWins(t *testing.T) {
+// *** ONE WAY, NOT TWO. *** The request body cannot carry a group
+// (domain.CreateIncidentRequest.AssignmentGroupID is json:"-"), and even a
+// value set in Go -- a future caller, a stale field -- is replaced by the
+// service's support group.
+func TestCreateIncident_GroupAlwaysComesFromTheService(t *testing.T) {
 	var got domain.CreateIncidentRequest
 	req := validCreateIncidentRequest()
-	req.AssignmentGroupID = strPtrGroup(testExplicitGroup)
+	req.AssignmentGroupID = strPtrGroup(testOtherGroup)
 	svc := NewIncidentService(createCapturing(map[string]string{req.ServiceID: testSupportGroup}, &got), &mockEventPublisher{})
 
 	if _, err := svc.CreateIncident(userCtx(), req); err != nil {
 		t.Fatalf("CreateIncident: %v", err)
 	}
-	if got.AssignmentGroupID == nil || *got.AssignmentGroupID != testExplicitGroup {
-		t.Errorf("assignmentGroupId = %v, want the explicitly sent %s", got.AssignmentGroupID, testExplicitGroup)
+	if got.AssignmentGroupID == nil || *got.AssignmentGroupID != testSupportGroup {
+		t.Errorf("assignmentGroupId = %v, want the service's support group %s", got.AssignmentGroupID, testSupportGroup)
+	}
+}
+
+// ...and a group set in Go does not survive on a service with no support
+// group either.
+func TestCreateIncident_GroupIsClearedWhenTheServiceHasNone(t *testing.T) {
+	var got domain.CreateIncidentRequest
+	req := validCreateIncidentRequest()
+	req.AssignmentGroupID = strPtrGroup(testOtherGroup)
+	svc := NewIncidentService(createCapturing(nil, &got), &mockEventPublisher{})
+
+	if _, err := svc.CreateIncident(userCtx(), req); err != nil {
+		t.Fatalf("CreateIncident: %v", err)
+	}
+	if got.AssignmentGroupID != nil {
+		t.Errorf("assignmentGroupId = %v, want none", *got.AssignmentGroupID)
+	}
+}
+
+// The body is where a second way would come back in: assignmentGroupId must
+// not decode into the request at all.
+func TestCreateIncidentRequest_BodyCannotCarryAGroup(t *testing.T) {
+	var req domain.CreateIncidentRequest
+	if err := json.Unmarshal([]byte(`{"assignmentGroupId":"`+testOtherGroup+`"}`), &req); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if req.AssignmentGroupID != nil {
+		t.Errorf("assignmentGroupId decoded into the request: %s", *req.AssignmentGroupID)
 	}
 }
 

@@ -3272,7 +3272,8 @@ export interface BeCreateIncidentPayload {
   contactType?: BeIncidentContactType;
   impact: BeIncidentImpact;
   urgency: BeIncidentUrgency;
-  assignmentGroupId?: string;
+  // No assignmentGroupId: the backend sets the group from `serviceId`'s
+  // support group, and refuses a create that sends one.
   assignedEngineerId?: string;
   subject: string;
   watchList?: string[];

@@ -990,7 +990,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// worker pool plus one sn_writeback_failures repository, nothing
 		// case-specific about it, so a second instance would only mean a
 		// second, redundant worker pool.
-		snIncidentMirrorSvc := service.NewServiceNowIncidentService(serviceNowIntegrationServiceClient, nil)
+		snIncidentMirrorSvc := service.NewServiceNowIncidentMirrorService(serviceNowIntegrationServiceClient)
 		activeIncidentSvc = service.NewIncidentServiceWithSNMirror(incidentRepo, userRepo, snIncidentMirrorSvc, eventPublisher, snWritebackDispatcher)
 	default:
 		activeIncidentSvc = service.NewIncidentService(incidentRepo, eventPublisher)

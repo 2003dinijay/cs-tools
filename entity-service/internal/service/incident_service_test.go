@@ -304,8 +304,9 @@ func TestIncidentService_CreateIncident_RejectsConfigurationItemID(t *testing.T)
 
 // TestIncidentService_CreateIncident_PersistsAssignmentGroupID guards the
 // fix for work_item.assignment_group_id (migration 0075): unlike
-// ConfigurationItemID, this field DOES have a backing column, so it must be
-// forwarded through to CreateIncidentFromServiceNow rather than rejected.
+// ConfigurationItemID, this field DOES have a backing column, so the group
+// (the service's support group) must be forwarded through to
+// CreateIncidentFromServiceNow rather than dropped.
 func TestIncidentService_CreateIncident_PersistsAssignmentGroupID(t *testing.T) {
 	assignmentGroupID := "88888888-8888-8888-8888-888888888888"
 
@@ -319,7 +320,9 @@ func TestIncidentService_CreateIncident_PersistsAssignmentGroupID(t *testing.T) 
 		},
 	}
 	var gotAssignmentGroupID *string
+	req := validCreateIncidentRequest()
 	repo := &stubIncidentRepo{
+		supportGroups: map[string]string{req.ServiceID: assignmentGroupID},
 		createIncidentFromServiceNow: func(_ context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error) {
 			gotAssignmentGroupID = req.AssignmentGroupID
 			resp := domain.CreateIncidentResponse{Message: "Incident created successfully."}
@@ -331,8 +334,6 @@ func TestIncidentService_CreateIncident_PersistsAssignmentGroupID(t *testing.T) 
 	}
 	svc := NewIncidentServiceWithSNMirror(repo, nil, mirror, nil, nil)
 
-	req := validCreateIncidentRequest()
-	req.AssignmentGroupID = &assignmentGroupID
 	if _, err := svc.CreateIncident(context.Background(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
