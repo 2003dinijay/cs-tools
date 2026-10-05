@@ -875,8 +875,11 @@ func TestIncidentService_UpdateIncident_PlainPostgresClaimAndNote(t *testing.T) 
 	if got.State == nil || *got.State != "IN_PROGRESS" || got.AssignedEngineerID == nil || *got.AssignedEngineerID != engineer {
 		t.Errorf("lifecycle got state=%v assignee=%v, want IN_PROGRESS and %s", got.State, got.AssignedEngineerID, engineer)
 	}
-	if len(notes) != 1 || notes[0] != string(domain.CommentTypeWorkNote)+":taking this" {
-		t.Errorf("notes written = %v, want one work note", notes)
+	if got.WorkNotes == nil || *got.WorkNotes != "taking this" || got.AdditionalComments != nil {
+		t.Errorf("lifecycle update carried notes work=%v comment=%v, want the work note in the same transaction", got.WorkNotes, got.AdditionalComments)
+	}
+	if len(notes) != 0 {
+		t.Errorf("notes written outside the lifecycle transaction: %v", notes)
 	}
 	if resp.Message != "Incident updated successfully" {
 		t.Errorf("message = %q", resp.Message)

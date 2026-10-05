@@ -192,6 +192,11 @@ type IncidentLifecycleUpdate struct {
 	ResolutionNotes     *string // incident.close_notes
 	ResolvedByID        *string
 	DefaultResolvedByID *string // the acting user, used only when entering Resolved without ResolvedByID
+
+	// WorkNotes and AdditionalComments are written as comment rows in the same transaction as the
+	// state change, so a failed note leaves the state change unsaved too. Nil or blank writes nothing.
+	WorkNotes          *string
+	AdditionalComments *string
 }
 
 type incidentRepo struct {
@@ -870,7 +875,10 @@ var incidentLifecycleFKField = map[string]string{
 // UpdateIncidentLifecycle implements IncidentRepository.
 func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u IncidentLifecycleUpdate, actorEmail string) error {
 	_, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (struct{}, error) {
-		return struct{}{}, r.updateIncidentLifecycleTx(ctx, tx, id, u, actorEmail)
+		if err := r.updateIncidentLifecycleTx(ctx, tx, id, u, actorEmail); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, insertIncidentNotesTx(ctx, tx, id, u.WorkNotes, u.AdditionalComments, actorEmail)
 	})
 	if err == nil {
 		return nil

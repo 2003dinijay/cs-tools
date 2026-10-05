@@ -282,6 +282,10 @@ type incidentService struct {
 	// actually depend on has even been attempted). See
 	// publishIncidentCreatedEvent's doc comment for the full reasoning.
 	eventPublisher EventPublisherService
+	// updatable is set by the constructors whose instance may write an incident update
+	// (NewIncidentServiceWithPublisher, NewIncidentServiceWithSNMirror). NewIncidentService stays
+	// read-only for updates whatever it is given.
+	updatable bool
 }
 
 // NewIncidentService constructs an IncidentService backed by Postgres.
@@ -297,7 +301,7 @@ func NewIncidentService(repo repository.IncidentRepository, eventPublisher Event
 // (actorOf); userRepo resolves a forwarded end-user token for UpdateIncident, whose notes from a
 // service caller with none are incidentSystemActorEmail.
 func NewIncidentServiceWithPublisher(repo repository.IncidentRepository, userRepo repository.UserRepository, eventPublisher EventPublisherService) IncidentService {
-	return &incidentService{repo: repo, userRepo: userRepo, eventPublisher: eventPublisher}
+	return &incidentService{repo: repo, userRepo: userRepo, eventPublisher: eventPublisher, updatable: true}
 }
 
 // NewIncidentServiceWithSNMirror is NewIncidentService plus the wiring
@@ -321,7 +325,7 @@ func NewIncidentServiceWithPublisher(repo repository.IncidentRepository, userRep
 // a fixed background worker pool plus one sn_writeback_failures repository,
 // nothing incident-specific about it.
 func NewIncidentServiceWithSNMirror(repo repository.IncidentRepository, userRepo repository.UserRepository, mirror IncidentService, eventPublisher EventPublisherService, dispatcher *SNWritebackDispatcher) IncidentService {
-	return &incidentService{repo: repo, userRepo: userRepo, snMirror: mirror, eventPublisher: eventPublisher, snWriteback: dispatcher}
+	return &incidentService{repo: repo, userRepo: userRepo, snMirror: mirror, eventPublisher: eventPublisher, snWriteback: dispatcher, updatable: true}
 }
 
 // incidentSystemActorEmail is UpdateIncident's comment.created_by fallback
@@ -635,7 +639,7 @@ func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.
 // with a request carrying only ID plus the field(s) actually being
 // mirrored -- no narrow patcher interface needed, unlike case's.
 func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateIncidentRequest) (domain.UpdateIncidentResponse, error) {
-	if s.snWriteback == nil && s.eventPublisher == nil && s.userRepo == nil {
+	if !s.updatable {
 		// NewIncidentService: a plain read-only Postgres instance that does not create incidents either.
 		return domain.UpdateIncidentResponse{}, &apierror.ServiceUnavailableError{
 			Msg: "updating an incident is not available on this data source yet",
@@ -671,13 +675,13 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		if actor.ID != "" {
 			lifecycle.DefaultResolvedByID = &actor.ID
 		}
+		// The notes ride in the state change's transaction: a failed note leaves nothing saved.
+		lifecycle.WorkNotes, lifecycle.AdditionalComments = req.WorkNotes, req.AdditionalComments
 		if err := s.repo.UpdateIncidentLifecycle(ctx, req.ID, lifecycle, actor.Email); err != nil {
 			return domain.UpdateIncidentResponse{}, err
 		}
-	}
-
-	// Both notes commit together, so a retry after a failed second insert cannot save the first twice.
-	if err := s.repo.CreateIncidentNotes(ctx, req.ID, req.WorkNotes, req.AdditionalComments, actor.Email); err != nil {
+	} else if err := s.repo.CreateIncidentNotes(ctx, req.ID, req.WorkNotes, req.AdditionalComments, actor.Email); err != nil {
+		// Both notes commit together, so a retry after a failed second insert cannot save the first twice.
 		return domain.UpdateIncidentResponse{}, err
 	}
 
