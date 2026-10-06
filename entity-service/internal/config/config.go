@@ -385,9 +385,16 @@ type Config struct {
 	// forwarded user token, if present at all, is used only for
 	// attribution (created_by/updated_by), never for scoping.
 	//
-	// Not to be confused with M2MTrustedActorEmails below, which is a
-	// completely different list (acting-user emails an M2M caller may
-	// claim, not client ids).
+	// Also gates AddCaseTagRequest.ActorEmail/CreateCaseCommentRequest.ActorEmail
+	// (internal/handler/case_handler.go): a caller whose x-jwt-assertion
+	// names a client id in this same set may claim ANY actorEmail as the
+	// acting user for a tag/comment write -- the same "M2MClientIDs wins
+	// outright, unconditionally" trust this list already carries for
+	// scoping. This used to be a second, separate email-based allowlist
+	// (M2M_TRUSTED_ACTOR_EMAILS), replaced in favor of one list to keep
+	// trusted internal callers in: a caller already trusted to bypass RLS
+	// entirely needs no second, narrower list just to claim a comment/tag
+	// author.
 	//
 	// This is deliberately NOT where apps/csm-portal/backend or
 	// apps/customer-portal/backend-v2 belong, even though both are
@@ -445,14 +452,6 @@ type Config struct {
 	SalesEntityClientID     string
 	SalesEntityClientSecret string
 	SalesEntityScopes       string
-	// M2MTrustedActorEmails is the allowlist of service-account emails an
-	// M2M caller (no x-user-id-token, e.g. UMT via csm-integration-service)
-	// may claim as the acting user via AddCaseTagRequest.ActorEmail. An
-	// unset/empty var means no email is trusted and every such request is
-	// rejected -- this is deliberately not a default-open list, since it
-	// exists specifically to stop an M2M caller from spoofing an arbitrary
-	// actor. Compared case-insensitively in the handler.
-	M2MTrustedActorEmails []string
 
 	// Escalation* configure the fixed, deployment-specific notification
 	// recipient GROUPS EscalationService.CreateEscalation (Postgres data
@@ -579,7 +578,6 @@ func Load() *Config {
 		SalesEntityClientSecret:                       os.Getenv("SALES_ENTITY_CLIENT_SECRET"),
 		SalesEntityScopes:                             os.Getenv("SALES_ENTITY_SCOPES"),
 		CSMMigrationMembershipRegistrationEnabled:     os.Getenv("CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED") == "true",
-		M2MTrustedActorEmails:                         splitComma(os.Getenv("M2M_TRUSTED_ACTOR_EMAILS")),
 		EscalationEL1AmericasTLGroupID:                os.Getenv("ESCALATION_EL1_AMERICAS_TL_GROUP_ID"),
 		EscalationEL2AmericasTUGroupID:                os.Getenv("ESCALATION_EL2_AMERICAS_TU_GROUP_ID"),
 		EscalationEL2ServiceProductGroupID:            os.Getenv("ESCALATION_EL2_SERVICE_PRODUCT_GROUP_ID"),

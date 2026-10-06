@@ -3354,8 +3354,8 @@ type CreateCaseCommentRequest struct {
 	Content   string      `json:"content"`
 	// ActorEmail is set only by an M2M caller that has no x-user-id-token to
 	// resolve an acting user from (e.g. UMT via csm-integration-service).
-	// The handler checks it against a configured allowlist of trusted
-	// service-account emails (config.Config.M2MTrustedActorEmails) before
+	// The handler checks the caller's own x-jwt-assertion client id against
+	// the trusted M2M client set (config.Config.M2MClientIDs) before
 	// honoring it -- an arbitrary caller-supplied value is never trusted
 	// as-is, since that would let any caller claim to be any user. Mutually
 	// exclusive with a real x-user-id-token on the same request.
@@ -3370,8 +3370,8 @@ type AddCaseTagRequest struct {
 	Label  string `json:"label"`
 	// ActorEmail is set only by an M2M caller that has no x-user-id-token to
 	// resolve an acting user from (e.g. UMT via csm-integration-service).
-	// The handler checks it against a configured allowlist of trusted
-	// service-account emails (config.Config.M2MTrustedActorEmails) before
+	// The handler checks the caller's own x-jwt-assertion client id against
+	// the trusted M2M client set (config.Config.M2MClientIDs) before
 	// honoring it -- an arbitrary caller-supplied value is never trusted
 	// as-is, since that would let any caller claim to be any user. Mutually
 	// exclusive with a real x-user-id-token on the same request.
