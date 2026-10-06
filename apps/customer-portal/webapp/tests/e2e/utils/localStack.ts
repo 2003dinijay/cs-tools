@@ -209,6 +209,8 @@ export type CustomerChangeRequest = {
   number: string;
   state?: { id?: string; label?: string } | null;
   customerCanAnswer?: boolean;
+  /** Whether WSO2 holds the change (the reason is never sent to a customer). */
+  isOnHold?: boolean;
   hasCustomerApproved?: boolean;
   startDate?: string | null;
   endDate?: string | null;

@@ -40,6 +40,13 @@
 //   - CHG-FIXED-008, Customer Review, asked of dave and erin
 //       dave confirms "Successful" -> Closed.
 //
+// Why this and customer-change-request-answer.spec.ts both approve CHG-FIXED-007 and
+// confirm CHG-FIXED-008: this one needs NOTHING but the stack and the sessions (no database
+// access: it reaches the change requests through the list and skips a fixture an earlier run
+// answered), so it can run against a stack whose Postgres container is not at hand, where
+// the answer spec (which re-seeds before every test and reads rows back) skips. Where both
+// can run, the answer spec is the one that proves the details; this is the minimum.
+//
 // (A rejection — Customer Approval -> Canceled, Customer Review -> Rollback — moves
 // the same fixtures on, so one seed can only hold one of the two answers per
 // fixture; the approve / confirm path is the one this spec keeps.)

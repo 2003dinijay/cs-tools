@@ -55,6 +55,7 @@ import {
   patchAsStaff,
   psql,
   resetFixtures,
+  stackEndpoints,
   withFixtureStack,
 } from "../../utils/localStack";
 import { CHANGE_REQUEST_DETAILS as UI } from "../../utils/selectors";
@@ -174,6 +175,15 @@ test.describe("Local stack — a customer proposes a new implementation time", (
       await expect(dave.currentStage()).toHaveText(UI.stages.authorize);
       await expect(dave.answerButtons()).toHaveCount(0);
 
+      // Focus did not fall to <body> when the buttons went: it is on the page's heading.
+      await expect(dave.heading()).toBeFocused();
+
+      // The banner is a five-second toast; the page keeps saying what is going on after
+      // it has gone, and the window is a plan, not yet a scheduled maintenance window.
+      await expect(dave.banner(UI.banners.proposedNormal)).toBeHidden({ timeout: 20_000 });
+      await expect(dave.internalReviewNote()).toBeVisible();
+      await expect(page.getByText(UI.windowCard.planned, { exact: true })).toBeVisible();
+
       // What the stack holds: the window as UTC, the customers' request cancelled, CAB asked.
       const after = await changeRequestRow(approval.id);
       expect(after.state).toBe("AUTHORIZE");
@@ -274,7 +284,8 @@ test.describe("Local stack — a customer proposes a new implementation time", (
     const zone = await dave.proposeTimeZone();
     const window = futureWindow(zone, { daysAhead: 5, startHour: 9, hours: 3 });
     await dave.fillProposedWindow(window.start, window.end);
-    await dave.submitProposalButton().click();
+    // Enter in a field submits, like the button (the fields and the button are one form).
+    await dave.proposedEnd().press("Enter");
 
     await expect(dave.banner(UI.banners.proposedStandard)).toBeVisible();
     await expect(dave.proposeDialog()).toBeHidden();
@@ -307,20 +318,23 @@ test.describe("Local stack — a customer proposes a new implementation time", (
     await expect(dave.currentStage()).toHaveText(UI.stages.scheduled);
   });
 
-  test(`${approval.number} on hold: a proposal is refused in the dialog with the reason, and Approve is still taken`, async ({
+  test(`${approval.number} on hold: Propose New Time is off with the reason beside it, a hold placed after the dialog was opened is refused with the reason, and Approve is still taken`, async ({
     page,
   }) => {
-    // WSO2 put the change on hold. A held change refuses a proposed time (409) but not an answer.
-    await psql(
-      `update change_request set is_on_hold = true, on_hold_reason = 'E2E hold' where id = '${approval.id}'`,
-    );
-
     const dave = new ChangeRequestDetailsPage(page);
     await dave.open(projectId, approval.id, approval.number);
+    await expect(dave.button(UI.buttons.proposeNewTime)).toBeEnabled();
+    await expect(dave.holdNote()).toHaveCount(0);
+
+    // The page was opened, and the dialog filled in, BEFORE WSO2 put the change on hold:
+    // the late refusal is still there for a page that could not know.
     await dave.button(UI.buttons.proposeNewTime).click();
     const zone = await dave.proposeTimeZone();
     const window = futureWindow(zone, { daysAhead: 6, startHour: 11, hours: 2 });
     await dave.fillProposedWindow(window.start, window.end);
+    await psql(
+      `update change_request set is_on_hold = true, on_hold_reason = 'E2E hold' where id = '${approval.id}'`,
+    );
     await dave.submitProposalButton().click();
 
     // The dialog stays open, so the customer can read why; nothing changed.
@@ -329,14 +343,102 @@ test.describe("Local stack — a customer proposes a new implementation time", (
     const row = await changeRequestRow(approval.id);
     expect([row.state, row.startUtc, row.endUtc]).toEqual(["CUSTOMER_APPROVAL", "", ""]);
     expect((await customerApi("dave").get(approval.id)).body.customerCanAnswer).toBe(true);
-
     await dave.proposeDialog().getByRole("button", { name: UI.propose.cancel, exact: true }).click();
     await expect(dave.proposeDialog()).toBeHidden();
 
-    // Approve is still taken while the change is on hold.
+    // A page opened NOW knows: the detail carries the hold (never its reason), Propose New
+    // Time is switched off with the reason beside it, and nothing opens when it is clicked.
+    const detail = await customerApi("dave").get(approval.id);
+    expect(detail.body.isOnHold, "the detail says the change is held").toBe(true);
+    expect(JSON.stringify(detail.body), "WSO2's reason for the hold stays internal").not.toContain("E2E hold");
+    await dave.open(projectId, approval.id, approval.number);
+    const propose = dave.button(UI.buttons.proposeNewTime);
+    await expect(propose).toBeDisabled();
+    await expect(dave.holdNote()).toBeVisible();
+    await expect(propose).toHaveAccessibleDescription(UI.notes.onHold);
+    await propose.click({ force: true });
+    await expect(dave.proposeDialog()).toBeHidden();
+
+    // Approve and Reject are still there, and Approve is still taken while the change is on hold.
+    await expect(dave.button(UI.buttons.reject)).toBeEnabled();
     await dave.button(UI.buttons.approve).click();
     await expect(dave.banner(UI.banners.approved)).toBeVisible();
     await expect(dave.currentStage()).toHaveText(UI.stages.scheduled);
+  });
+
+  test(`a page opened before ${approval.number} was re-scheduled cannot approve the new window: the schedule-changed message, nothing recorded, and the page shows the new window`, async ({
+    browser,
+    baseURL,
+  }) => {
+    // The fixture has no planned window; give it one so the page has a window to approve.
+    const first = futureWindow(BROWSER_ZONE, { daysAhead: 8, startHour: 9, hours: 2 });
+    await psql(
+      `update change_request set start_on = '${first.startUtc}', end_on = '${first.endUtc}' where id = '${approval.id}'`,
+    );
+
+    // dave's tab stays on what it loaded (every GET of the change request is served the first
+    // answer until his PATCH is sent): a tab left open, without a race against the page's refetching.
+    const daveContext = await openLocalContext(test, browser, "dave", { baseURL, timezoneId: BROWSER_ZONE });
+    try {
+      const davePage = await daveContext.newPage();
+      let frozenBody: string | undefined;
+      let frozen = true;
+      const detailUrl = `${(await stackEndpoints()).customerApi}/change-requests/${approval.id}`;
+      await davePage.route(detailUrl, async (route) => {
+        const method = route.request().method();
+        if (method === "PATCH") frozen = false;
+        if (method !== "GET") return route.continue();
+        const response = await route.fetch();
+        const body = await response.text();
+        frozenBody ??= body;
+        return route.fulfill({ response, body: frozen ? frozenBody : body });
+      });
+      const dave = new ChangeRequestDetailsPage(davePage);
+      await dave.open(projectId, approval.id, approval.number);
+      await expect(dave.button(UI.buttons.approve)).toBeVisible();
+
+      // erin re-schedules (a whole new window), WSO2's CAB approves it, and the contacts are asked again.
+      const second = futureWindow(BROWSER_ZONE, { daysAhead: 12, startHour: 14, hours: 2 });
+      const proposed = await customerApi("erin").patch(approval.id, {
+        plannedStartOn: second.startUtc.replace("T", " ").replace("Z", ""),
+        plannedEndOn: second.endUtc.replace("T", " ").replace("Z", ""),
+      });
+      expect(proposed.status, JSON.stringify(proposed.body)).toBe(200);
+      const decided = await decideAsStaff(STAFF_APPROVERS.alice, approval.id, "approved");
+      expect(decided.status, JSON.stringify(decided.body)).toBe(200);
+      expect((await customerApi("dave").get(approval.id)).body.customerCanAnswer, "dave is asked again").toBe(true);
+      await expect(dave.button(UI.buttons.approve), "dave's stale tab still offers Approve").toBeVisible();
+
+      // The stale page's Approve is for the window it showed: refused, with the reason.
+      await dave.button(UI.buttons.approve).click();
+      await expect(dave.banner(UI.banners.scheduleChanged)).toBeVisible();
+      expect(await changeRequestRow(approval.id), "nothing was approved").toMatchObject({
+        state: "CUSTOMER_APPROVAL",
+        startUtc: second.startUtc,
+        endUtc: second.endUtc,
+      });
+      expect(
+        (await approverRows(approval.id)).filter((r) => r.stage === "Customer Approval").map((r) => `${r.email}|${r.status}`),
+      ).toEqual([
+        "dave.mendis@example.com|cancelled",
+        "erin.jayawardena@example.com|cancelled",
+        "dave.mendis@example.com|requested",
+        "erin.jayawardena@example.com|requested",
+      ]);
+
+      // The page refreshed on the refusal: it now shows the new window, and Approve for THAT window is taken.
+      await expect(dave.button(UI.buttons.approve)).toBeVisible();
+      await dave.button(UI.buttons.approve).click();
+      await expect(dave.banner(UI.banners.approved)).toBeVisible();
+      await expect(dave.currentStage()).toHaveText(UI.stages.scheduled);
+      expect(await changeRequestRow(approval.id)).toMatchObject({
+        state: "SCHEDULED",
+        startUtc: second.startUtc,
+        endUtc: second.endUtc,
+      });
+    } finally {
+      await daveContext.close();
+    }
   });
 
   test(`the loop can be repeated: dave moves the window again after CAB approved the first, the start drags the end along, and the history keeps every round`, async ({

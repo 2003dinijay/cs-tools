@@ -31,7 +31,10 @@
 //   - the list is reachable the way a customer reaches it — side nav, Operations
 //     hub, "View all change requests";
 //   - CHG-FIXED-007 (seeded in Customer Approval, waiting for dave and erin) is
-//     listed and says where it is (still Customer Approval on a fresh seed);
+//     listed and says where it is: Customer Approval on a fresh seed, and Scheduled
+//     or Canceled once a state-changing spec has answered it (the specs that sort
+//     before this file leave it so; that the buttons are offered, and what an answer
+//     does, is what those specs assert, not this one);
 //   - every change request the list API returns belongs to Example Corp's project.
 //     Other customers' change requests exist in the same database (the
 //     seed-generator creates `CR-####` ones on its own projects, and the CSM portal
@@ -72,7 +75,7 @@ test.describe("Local stack — customer change requests", () => {
   // A cold shell load behind the project's features, then the hub, then the list.
   test.describe.configure({ timeout: 180_000 });
 
-  test(`${LOCAL_PERSONAS.dave.email} sees CHG-FIXED-007 in Customer Approval, and only his own project's change requests`, async ({
+  test(`${LOCAL_PERSONAS.dave.email} lists CHG-FIXED-007 with its state (Customer Approval on a fresh seed), and only his own project's change requests`, async ({
     page,
   }) => {
     // Every change request the list API sends the page, whatever page of it.

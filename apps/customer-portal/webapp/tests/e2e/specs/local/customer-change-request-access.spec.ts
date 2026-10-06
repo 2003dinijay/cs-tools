@@ -25,7 +25,9 @@
 //   2. A viewer with NOTHING PENDING sees no buttons: a contact who was never asked
 //      (the change is not in a customer state at all: CHG-FIXED-005 in New,
 //      CHG-FIXED-006 in Review) and a contact whose own request was cancelled while
-//      the change still waits on her colleague.
+//      the change still waits on her colleague, at Customer Approval (CHG-FIXED-007)
+//      and at Customer Review (CHG-FIXED-008, where the old gate offered the answer
+//      to everybody).
 //   3. A direct PATCH from a customer's token that carries anything but an answer, or
 //      a proposed time, is refused (403), and the two mixed forms are refused (400);
 //      nothing about the change moves.
@@ -61,7 +63,7 @@ import { CHANGE_REQUEST_DETAILS as UI } from "../../utils/selectors";
 withLocalSession(test, "dave");
 withFixtureStack(test);
 
-const { approval, inReview, standardNew, projectId } = FIXTURES;
+const { approval, review, inReview, standardNew, projectId } = FIXTURES;
 
 /** True unless told otherwise: entity-service under test runs as a role that row-level security applies to. */
 const ENTITY_ENFORCES_RLS = process.env.E2E_ENTITY_RLS !== "0";
@@ -204,6 +206,44 @@ test.describe("Local stack — who may not answer a change request", () => {
         refused.status,
       );
       expect((await changeRequestRow(approval.id)).state).toBe("CUSTOMER_APPROVAL");
+    } finally {
+      await erinContext.close();
+    }
+  });
+
+  test(`at Customer Review (${review.number}) a contact whose own request was cancelled is offered neither Successful nor Unsuccessful, and her answer is refused, while dave who is still asked is`, async ({
+    page,
+    browser,
+    baseURL,
+  }) => {
+    // The gate at Customer Approval is per viewer (customerCanAnswer), and so is Customer Review's: it
+    // is not "always on". erin's request on this review is cancelled (what a sibling's answer leaves);
+    // dave's stands.
+    await psql(
+      `update approval_stage_approver a set status = 'cancelled' from "user" u ` +
+        `where a.approver_user_id = u.id and a.work_item_id = '${review.id}' ` +
+        `and u.email = '${LOCAL_PERSONAS.erin.email}'`,
+    );
+    const erinContext = await openLocalContext(test, browser, "erin", { baseURL });
+    try {
+      const erin = new ChangeRequestDetailsPage(await erinContext.newPage());
+      await erin.open(projectId, review.id, review.number);
+      await expect(erin.currentStage()).toHaveText(UI.stages.customerReview);
+      await expect(erin.answerButtons(), "erin has no pending request but was offered an answer").toHaveCount(0);
+      expect((await customerApi("erin").get(review.id)).body.customerCanAnswer).toBe(false);
+
+      const dave = new ChangeRequestDetailsPage(page);
+      await dave.open(projectId, review.id, review.number);
+      await expect(dave.button(UI.buttons.successful)).toBeVisible();
+      await expect(dave.button(UI.buttons.unsuccessful)).toBeVisible();
+      expect((await customerApi("dave").get(review.id)).body.customerCanAnswer).toBe(true);
+
+      // The backend agrees with the page: erin's answer is refused and moves nothing.
+      const refused = await customerApi("erin").patch(review.id, { isCustomerReviewed: true });
+      expect([403, 409], `erin's review without a pending request: ${JSON.stringify(refused.body)}`).toContain(
+        refused.status,
+      );
+      expect((await changeRequestRow(review.id)).state).toBe("CUSTOMER_REVIEW");
     } finally {
       await erinContext.close();
     }

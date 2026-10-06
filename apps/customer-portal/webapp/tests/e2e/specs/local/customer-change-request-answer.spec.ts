@@ -94,11 +94,18 @@ test.describe("Local stack — a customer answers a change request", () => {
       // Customer Approval's buttons, not Customer Review's.
       await expect(dave.reviewButtons()).toHaveCount(0);
 
+      // The three buttons are one named group, and the window is a plan until it is scheduled.
+      await expect(dave.answerGroup(UI.notes.approvalGroup).getByRole("button")).toHaveCount(3);
+      await expect(page.getByText(UI.windowCard.planned, { exact: true })).toBeVisible();
+
       // Approving needs no confirmation: one click.
       await dave.button(UI.buttons.approve).click();
       await expect(dave.banner(UI.banners.approved)).toBeVisible();
       await expect(dave.currentStage()).toHaveText(UI.stages.scheduled);
       await expect(dave.answerButtons(), "the answer buttons stay after answering").toHaveCount(0);
+      // The buttons went with the answer; focus is on the page's heading, not lost to <body>.
+      await expect(dave.heading()).toBeFocused();
+      await expect(page.getByText(UI.windowCard.scheduled, { exact: true })).toBeVisible();
 
       // What the stack recorded, not what the page shows.
       const afterApi = await customerApi("dave").get(approval.id);
@@ -177,6 +184,22 @@ test.describe("Local stack — a customer answers a change request", () => {
     }
   });
 
+  test(`on a 390px screen the banner that answers ${LOCAL_PERSONAS.dave.email}'s click is not clipped on the left`, async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 390, height: 844 });
+    const dave = new ChangeRequestDetailsPage(page);
+    await dave.open(projectId, approval.id, approval.number);
+    await dave.button(UI.buttons.approve).click();
+
+    const banner = dave.banner(UI.banners.approved);
+    await expect(banner).toBeVisible();
+    const box = await banner.boundingBox();
+    expect(box, "the banner has no box").not.toBeNull();
+    expect(box!.x, `the banner starts at x=${box!.x}: its left side is off screen`).toBeGreaterThanOrEqual(0);
+    expect(box!.x + box!.width, "the banner runs past the right edge").toBeLessThanOrEqual(390);
+  });
+
   test(`${LOCAL_PERSONAS.dave.email} rejects ${approval.number}: the confirmation comes first ("Go back" changes nothing), then the change is Canceled`, async ({
     page,
   }) => {
@@ -224,6 +247,9 @@ test.describe("Local stack — a customer answers a change request", () => {
     await expect(dave.button(UI.buttons.successful)).toBeVisible();
     await expect(dave.button(UI.buttons.unsuccessful)).toBeVisible();
     await expect(dave.approvalButtons()).toHaveCount(0);
+    // They answer a question that is on the page, and sit in a group named by it.
+    await expect(page.getByText(UI.notes.reviewPrompt, { exact: true })).toBeVisible();
+    await expect(dave.answerGroup(UI.notes.reviewPrompt).getByRole("button")).toHaveCount(2);
 
     // Successful is one click, like Approve.
     await dave.button(UI.buttons.successful).click();

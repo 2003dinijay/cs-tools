@@ -796,6 +796,27 @@ export const CHANGE_REQUEST_DETAILS = {
       "New time proposed. We'll ask for your approval again once it's confirmed internally.",
     proposedStandard:
       "New time proposed. Review the updated schedule and approve it when you are ready.",
+    /** HTTP 409 on an answer: the schedule moved while the page was open. */
+    scheduleChanged:
+      "The schedule of this change request changed after you opened it. Review the updated schedule, then answer again.",
+  },
+  /** What the page says around the answer buttons. */
+  notes: {
+    /** Customer Review's question, which also names its two buttons' group. */
+    reviewPrompt: "This change has been implemented. Was it successful?",
+    /** The group of Customer Approval's three buttons. */
+    approvalGroup: "Answer this change request",
+    /** Beside a Propose New Time that is switched off because WSO2 holds the change. */
+    onHold:
+      "WSO2 has this change request on hold, so a new time cannot be proposed right now. You can still approve or reject it.",
+    /** Kept on the page (not a five-second banner) while a proposed time waits for WSO2. */
+    internalReview:
+      "WSO2 is reviewing this change request internally. You will be asked to approve the schedule once it is confirmed.",
+  },
+  /** The window card's title: a plan until the change is scheduled. */
+  windowCard: {
+    planned: "Planned Maintenance Window",
+    scheduled: "Scheduled Maintenance Window",
   },
   /** The confirmation before the answers that cannot be taken back. */
   rejectConfirm: {

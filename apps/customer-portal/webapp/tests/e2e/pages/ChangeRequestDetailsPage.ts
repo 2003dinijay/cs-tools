@@ -20,7 +20,7 @@ import { CASE_DETAIL, CHANGE_REQUEST_DETAILS } from "../utils/selectors";
 /** How long to allow for the page to load behind the shell and the project's features. */
 const LOAD_TIMEOUT_MS = 60_000;
 
-const { buttons, currentMarker, propose, rejectConfirm } = CHANGE_REQUEST_DETAILS;
+const { buttons, currentMarker, notes, propose, rejectConfirm } = CHANGE_REQUEST_DETAILS;
 
 /**
  * Page object for a change request's detail page, as a customer uses it: the
@@ -151,6 +151,26 @@ export class ChangeRequestDetailsPage {
    */
   banner(message: string | RegExp): Locator {
     return this.page.getByRole("alert").filter({ hasText: message });
+  }
+
+  /** The page's own heading: the change request's title (where focus goes after an answer). */
+  heading(): Locator {
+    return this.page.getByRole("heading", { level: 5 }).first();
+  }
+
+  /** The group the answer buttons sit in (Customer Review's is named by its question). */
+  answerGroup(name: string): Locator {
+    return this.page.getByRole("group", { name, exact: true });
+  }
+
+  /** The note beside a Propose New Time that is off because the change is on hold. */
+  holdNote(): Locator {
+    return this.page.getByText(notes.onHold, { exact: true });
+  }
+
+  /** The note that stays on the page while a proposed time waits for WSO2's review. */
+  internalReviewNote(): Locator {
+    return this.page.getByRole("status").filter({ hasText: notes.internalReview });
   }
 
   /** "Back to Change Requests": the way back to the list. */
