@@ -25,6 +25,7 @@ import {
   getCustomerDecisionLabels,
   getCustomerDecisionMessages,
   getCustomerRejectConfirmCopy,
+  buildChangeRequestWorkflowStages,
   mapChangeRequestStats,
   resolveCustomerDecisionMode,
   stripChangeRequestCustomTags,
@@ -268,5 +269,28 @@ describe("describeChangeRequestActionError", () => {
       terminal: false,
     });
     expect(describeChangeRequestActionError("boom", fallback).message).toBe(fallback);
+  });
+});
+
+describe("buildChangeRequestWorkflowStages", () => {
+  it("shows Authorize as current for the raw state a customer's proposal leaves the change in", () => {
+    const { workflowStages, currentStateIndex } = buildChangeRequestWorkflowStages({
+      state: { label: "authorize" },
+      hasCustomerApproved: false,
+      hasCustomerReviewed: false,
+    } as never);
+    expect(workflowStages.find((s) => s.current)?.name).toBe("Authorize");
+    expect(currentStateIndex).toBe(2);
+    expect(workflowStages.filter((s) => s.current)).toHaveLength(1);
+    expect(workflowStages[0]).toMatchObject({ name: "New", completed: true, current: false });
+  });
+
+  it("still marks Customer Approval current, with the old gate's stamp untouched", () => {
+    const { workflowStages } = buildChangeRequestWorkflowStages({
+      state: { id: "5", label: "Customer Approval" },
+      hasCustomerApproved: false,
+      hasCustomerReviewed: false,
+    } as never);
+    expect(workflowStages.find((s) => s.current)?.name).toBe("Customer Approval");
   });
 });

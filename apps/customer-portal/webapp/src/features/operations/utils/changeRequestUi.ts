@@ -48,7 +48,16 @@ function normalizeChangeRequestStateLabel(
   if (values.includes(t)) {
     return t as ChangeRequestState;
   }
-  return undefined;
+  // The Postgres-backed API sends the raw state enum, with no id, for the states
+  // it has no display vocabulary for ("authorize" after a customer proposes a new
+  // time, "new", "assess"): match ignoring case, and "_" / "-" as a space.
+  const loose = t.toLowerCase().replace(/[\s_-]+/g, " ");
+  if (loose === "cancelled") {
+    return ChangeRequestStates.CANCELED;
+  }
+  return values.find((v) => v.toLowerCase() === loose) as
+    | ChangeRequestState
+    | undefined;
 }
 
 /**

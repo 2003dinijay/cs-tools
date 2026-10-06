@@ -29,6 +29,33 @@ describe("resolveChangeRequestCanonicalState", () => {
     );
   });
 
+  it("recognises the raw state enum the Postgres-backed API sends with no id", () => {
+    expect(resolveChangeRequestCanonicalState({ label: "authorize" })).toBe(
+      ChangeRequestStates.AUTHORIZE,
+    );
+    expect(resolveChangeRequestCanonicalState({ id: "", label: "new" })).toBe(
+      ChangeRequestStates.NEW,
+    );
+    expect(resolveChangeRequestCanonicalState({ label: "assess" })).toBe(
+      ChangeRequestStates.ASSESS,
+    );
+    expect(resolveChangeRequestCanonicalState({ label: "customer_approval" })).toBe(
+      ChangeRequestStates.CUSTOMER_APPROVAL,
+    );
+    expect(resolveChangeRequestCanonicalState({ label: "CUSTOMER REVIEW" })).toBe(
+      ChangeRequestStates.CUSTOMER_REVIEW,
+    );
+    expect(resolveChangeRequestCanonicalState({ label: "cancelled" })).toBe(
+      ChangeRequestStates.CANCELED,
+    );
+  });
+
+  it("does not guess at a label it does not know", () => {
+    expect(resolveChangeRequestCanonicalState({ label: "on hold" })).toBeUndefined();
+    expect(resolveChangeRequestCanonicalState({ label: "" })).toBeUndefined();
+    expect(resolveChangeRequestCanonicalState(null)).toBeUndefined();
+  });
+
   it("normalizes Cancelled label to Canceled", () => {
     expect(resolveChangeRequestCanonicalState({ label: "Cancelled" })).toBe(
       ChangeRequestStates.CANCELED,
