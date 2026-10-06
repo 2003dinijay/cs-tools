@@ -196,7 +196,7 @@ func RejectRemovedPatchFields(req domain.PatchChangeRequestRequest) error {
 // customerContactsSQL selects the REGISTERED portal-user contacts of a project:
 // a project_contact in state REGISTERED holding the PORTAL_USER project role
 // (the same "registered contact with role X on project Y" chain
-// callerMayGrantChangeRequestCustomerFlag uses), with the name and the "user"
+// callerIsRegisteredPortalContact uses), with the name and the "user"
 // row resolved the way ProjectContactRepository does it (account_contact.user_name
 // matched to "user".user_name, case-insensitively). A contact whose "user" row is
 // deactivated is not listed. Contacts are the customer's own people, so they are

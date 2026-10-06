@@ -346,9 +346,12 @@ func TestChangeRequestLockIntegration_RequestApprovalWithoutRequirementsAndResen
 	if _, err := f.patchState(legacy, domain.ChangeRequestStateAssess); err != nil {
 		t.Fatalf("a resent Request Approval on a legacy change in Customer Approval: %v", err)
 	}
-	f.expect(legacy, "after the resend", "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
-	// ...and it can still be driven by hand: the manual way out is unchanged.
-	f.step(legacy, domain.ChangeRequestStateScheduled, "SCHEDULED", "implement", "canceled")
+	f.expect(legacy, "after the resend", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	// ...and staff cannot answer for the customer: the manual scheduled is refused
+	// (such a change can be cancelled or re-scheduled).
+	_, err := f.patchState(legacy, domain.ChangeRequestStateScheduled)
+	f.wantValidationError("manual scheduled out of a legacy change with no project", err, "can only be given by the customer in the Customer Portal")
+	f.expect(legacy, "after the refused manual scheduled", "CUSTOMER_APPROVAL", "authorize", "canceled")
 }
 
 // {state: "new"} is a no-op while New (or NULL) and a readable 400 in every other
@@ -534,16 +537,17 @@ func TestChangeRequestLockIntegration_CustomerReviewCannotBeReopened(t *testing.
 }
 
 // A change with its box ticked that reached the customer state with NO contacts to
-// ask (the project has none registered) has no stage rows: the manual path is its
-// way out. The lock holds there too -- the box stays ticked, the project cannot be
-// swapped for one that has contacts -- and a contact who registers afterwards is
-// picked up by resending the project, the only trigger that survives the lock.
+// ask (the project has none registered) has no stage rows, and nobody can answer
+// for the customer: it can be cancelled or re-scheduled, or wait for a contact.
+// The lock holds there too -- the box stays ticked, the project cannot be swapped
+// for one that has contacts -- and a contact who registers afterwards is picked up
+// by resending the project, the only trigger that survives the lock.
 func TestChangeRequestLockIntegration_NoContactsReachedTheStage(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
 	f.requestApproval(id)
-	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
-	f.expect(id, "in Customer Approval with nobody to ask", "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
+	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.expect(id, "in Customer Approval with nobody to ask", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	if n := len(f.stages(id)); n != 2 {
 		t.Fatalf("stages = %v, want only peer and CAB (no customer stage rows)", f.labels(id))
 	}

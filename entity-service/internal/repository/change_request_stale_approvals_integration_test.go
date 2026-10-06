@@ -342,7 +342,7 @@ func TestChangeRequestFlowIntegration_StaleApprovals_Rollback(t *testing.T) {
 		f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 		f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
 		f.wantLive(id, "in Review", map[string][]string{"Review": crStaleAssigned})
-		f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
+		f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "rollback", "canceled")
 		f.wantLive(id, "in Customer Review", nil)
 		f.wantCanDecide(id, "in Customer Review", nil)
 		if _, err := f.patchState(id, domain.ChangeRequestStateRollback); err != nil {

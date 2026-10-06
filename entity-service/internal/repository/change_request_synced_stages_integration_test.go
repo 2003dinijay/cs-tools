@@ -210,7 +210,7 @@ func TestChangeRequestSyncedStagesIntegration_APositionTwoStageIsNeverTheCustome
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
 	f.requestApproval(id)
-	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
+	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 	// A synced third stage naming the project's contact (and an internal person).
 	f.registerContact(crScopeProjectC, crScopeAccountID, crScopeUserA1)
 	synced := f.seedSyncedStage(id, nil, 0, map[string]string{crScopeUserA1: "REQUESTED", crFlowPeerAID: "REQUESTED"})

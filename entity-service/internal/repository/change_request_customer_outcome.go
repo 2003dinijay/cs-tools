@@ -184,11 +184,11 @@ func lockCustomerAnswerRow(ctx context.Context, tx pgx.Tx, id, actorEmail string
 
 // requireRegisteredContact refuses (403) a caller who is not a REGISTERED
 // PORTAL_USER contact of the change request's own project -- the same test the
-// customer flag has always used (callerMayGrantChangeRequestCustomerFlag), and
+// customer flag has always used (callerIsRegisteredPortalContact), and
 // the reason a customer of ANOTHER project is refused whatever role the portal
 // gave them.
 func requireRegisteredContact(ctx context.Context, tx pgx.Tx, projectID *string, actorEmail string) error {
-	ok, err := callerMayGrantChangeRequestCustomerFlag(ctx, tx, projectID, actorEmail)
+	ok, err := callerIsRegisteredPortalContact(ctx, tx, projectID, actorEmail)
 	if err != nil {
 		return err
 	}
@@ -251,7 +251,7 @@ func customerCanAnswer(ctx context.Context, q crQuerier, id string, projectID *s
 	if spec == nil || strings.TrimSpace(viewerEmail) == "" {
 		return false, nil
 	}
-	ok, err := callerMayGrantChangeRequestCustomerFlag(ctx, q, projectID, viewerEmail)
+	ok, err := callerIsRegisteredPortalContact(ctx, q, projectID, viewerEmail)
 	if err != nil || !ok {
 		return false, err
 	}
@@ -363,7 +363,7 @@ func ensureCustomerStageForLegacy(ctx context.Context, tx pgx.Tx, id, actorEmail
 	if err != nil || live != nil {
 		return err
 	}
-	registered, err := callerMayGrantChangeRequestCustomerFlag(ctx, tx, projectID, actorEmail)
+	registered, err := callerIsRegisteredPortalContact(ctx, tx, projectID, actorEmail)
 	if err != nil || !registered {
 		return err
 	}
@@ -580,7 +580,8 @@ func stateForMessage(state string) string {
 //     change's window, else 409: a page opened before the change was re-scheduled
 //     cannot approve a time its reader never saw;
 //  6. the customer's request must still be pending (a live stage), else 409: with
-//     nobody asked there is nothing to approve here, and WSO2 records the answer;
+//     nobody asked there is nothing to approve here (staff cannot answer for
+//     the customer either);
 //  7. the answer is the caller's own pending approval, decided by
 //     decideChangeRequestApprovalTx: the creator may not (403), a contact who was
 //     not asked may not (403), the caller's row becomes Approved / Rejected, the
@@ -631,7 +632,7 @@ func answerCustomerStageViaPatch(ctx context.Context, tx pgx.Tx, id string, p cu
 	}
 	if live == nil {
 		return "", &apierror.ConflictError{Msg: fmt.Sprintf(
-			"no customer %s is pending on this change request: it has not been requested from the project's registered contacts, so there is nothing to answer here and WSO2 records the customer's %s", spec.what, spec.what)}
+			"no customer %s is pending on this change request: it has not been requested from the project's registered contacts, so there is nothing to answer here", spec.what)}
 	}
 
 	userID, err := customerApproverUserID(ctx, tx, id, actorEmail)

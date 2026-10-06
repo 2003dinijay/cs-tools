@@ -399,21 +399,27 @@ func ChangeRequestTypeSupported(t domain.ChangeRequestType) bool {
 //   - New -> Assess is the "Request Approval" action, offered for every type.
 //   - Assess -> Authorize and Authorize -> (nothing) are approval waits: a
 //     change leaves them through DecideChangeRequestApproval's cascade.
-//   - Scheduled is offered as a target from exactly ONE state, Customer
-//     Approval, where the human action "scheduled" means "record the
-//     customer's approval". Everywhere else there is no "Schedule" action: a
-//     change reaches Scheduled automatically (CAB / ECAB approval, or Request
-//     Approval on a Standard change) unless Customer Approval is required, in
-//     which case those same events move it to Customer Approval instead.
-//     patchChangeRequestTx rejects a manual {state: "scheduled"} from any other
-//     state.
+//   - Scheduled is never offered as a target, from any state. There is no
+//     "Schedule" action: a change reaches Scheduled automatically (CAB / ECAB
+//     approval, or Request Approval on a Standard change) unless Customer
+//     Approval is required, in which case those same events move it to
+//     Customer Approval instead, and from there only the CUSTOMER's approval
+//     (given in the Customer Portal) schedules it. patchChangeRequestTx rejects
+//     a manual {state: "scheduled"} from every state.
 //   - Review offers Closed -- or, when customer_review_required is set,
 //     Customer Review instead (legalChangeRequestNextStates applies that
-//     branch; the map holds the default). Customer Review then offers Closed.
-//   - Customer Approval additionally offers Authorize, which means Re-schedule:
-//     the planned time changed, so the change goes back through internal
-//     approval (patchChangeRequestTx documents the contract). It is the one
-//     state from which a manual {state: "authorize"} is accepted.
+//     branch; the map holds the default). Customer Review offers no forward
+//     move: only the CUSTOMER's review (given in the Customer Portal) closes
+//     it, so staff are left with Rollback and Cancel there.
+//   - Customer Approval and Customer Review are customer states: the change
+//     leaves them through the customer's own answer and nothing else, so no
+//     staff action may record that answer (patchChangeRequestTx and
+//     refuseStaffExitFromCustomerState). Staff keep Cancel everywhere, Rollback
+//     out of Customer Review, and, out of Customer Approval, Authorize, which
+//     means Re-schedule: the planned time changed, so the change goes back
+//     through internal approval (patchChangeRequestTx documents the contract)
+//     and the customer is asked again. It is the one state from which a manual
+//     {state: "authorize"} is accepted.
 //   - Rollback is the failed-review off-ramp and is offered from exactly two
 //     states, Review (the internal review failed) and Customer Review (the
 //     customer's review failed): changeRequestRollbackFrom. It is not a
@@ -434,17 +440,21 @@ var changeRequestForwardNextStates = map[domain.ChangeRequestState][]domain.Chan
 	// still offers Cancel for a state that has an entry, and nothing for one
 	// that does not.
 	domain.ChangeRequestStateAuthorize: {},
-	// Customer Approval is the customer-approval step: "scheduled" records the
-	// customer's approval (stamping is_customer_approval_required) and schedules the
-	// change; Cancel is the customer declining.
-	// "authorize" here is Re-schedule (the process diagram's Time Change loop),
-	// not the approval path: see rescheduleChangeRequest.
-	domain.ChangeRequestStateCustomerApproval: {domain.ChangeRequestStateScheduled, domain.ChangeRequestStateAuthorize},
+	// Customer Approval is the customer's step: the customer's own approval (the
+	// Customer Portal) schedules the change, their rejection cancels it, and no
+	// staff action stands in for either, so "scheduled" is NOT offered here.
+	// "authorize" is Re-schedule (the process diagram's Time Change loop), not
+	// the approval path: see rescheduleChangeRequest. Cancel is added by
+	// legalChangeRequestNextStates.
+	domain.ChangeRequestStateCustomerApproval: {domain.ChangeRequestStateAuthorize},
 	domain.ChangeRequestStateScheduled:        {domain.ChangeRequestStateImplement},
 	domain.ChangeRequestStateImplement:        {domain.ChangeRequestStateReview},
 	// Review's default (customer review not required) is Closed directly.
-	domain.ChangeRequestStateReview:         {domain.ChangeRequestStateClosed},
-	domain.ChangeRequestStateCustomerReview: {domain.ChangeRequestStateClosed},
+	domain.ChangeRequestStateReview: {domain.ChangeRequestStateClosed},
+	// Customer Review has an empty (non-nil) entry on purpose: the customer's own
+	// review closes the change (or rolls it back), so "closed" is NOT offered to
+	// staff. Rollback and Cancel are added by legalChangeRequestNextStates.
+	domain.ChangeRequestStateCustomerReview: {},
 }
 
 // legalChangeRequestNextStates computes domain.ChangeRequest.LegalNextStates
@@ -455,13 +465,20 @@ var changeRequestForwardNextStates = map[domain.ChangeRequestState][]domain.Chan
 //
 // customerReviewRequired (change_request.customer_review_required) is the one
 // input beyond the state: a Review that requires the customer's review offers
-// Customer Review INSTEAD of Closed (and Customer Review then offers Closed);
-// one that does not offers Closed directly.
+// Customer Review INSTEAD of Closed; one that does not offers Closed directly.
+// Customer Review itself offers no forward move at all (only the customer's
+// review closes it).
 //
 // "rollback" is offered, right after the forward move and before "canceled",
 // from exactly two states -- Review and Customer Review (the review failed;
 // changeRequestRollbackFrom). It is the failed-review branch of the process
 // diagram, so it is offered whether or not customer review is required.
+//
+// The result for the two customer states is therefore, exactly:
+// customer_approval [authorize, canceled] and customer_review [rollback,
+// canceled] -- never "scheduled" or "closed", which only the customer's own
+// answer can reach. (GetChangeRequestByID then takes "rollback" off
+// customer_review while the customer group's review request is pending.)
 //
 // "canceled" is offered alongside the forward move(s) from every
 // non-terminal state: the Cancel Change action was available on every
@@ -869,15 +886,17 @@ func (r *changeRequestRepo) GetChangeRequestByID(ctx context.Context, id string)
 		return domain.ChangeRequest{}, fmt.Errorf("get change request by id: %w", err)
 	}
 
-	// While the customer group's approval request is pending (a live
-	// "Customer Approval" / "Customer Review" stage), the manual way out of
-	// the customer state is not offered: the decision comes from the approval.
+	// While the customer group's review request is pending (a live "Customer
+	// Review" stage), staff are not offered Rollback either: a failed review is
+	// the customer's to give (their rejection rolls the change back). The
+	// customer's own approval / review is never offered to staff at all
+	// (changeRequestForwardNextStates), live stage or not.
 	if cr.State != nil {
 		live, err := liveCustomerStageForState(ctx, r.db, id, strings.ToUpper(*cr.State))
 		if err != nil {
 			return domain.ChangeRequest{}, fmt.Errorf("get change request by id: %w", err)
 		}
-		cr.LegalNextStates = withoutManualCustomerOutcome(cr.State, cr.LegalNextStates, live != nil)
+		cr.LegalNextStates = withoutStaffRollbackWhileCustomerReviewPending(cr.State, cr.LegalNextStates, live != nil)
 	}
 
 	// For a customer reading the detail (or the PATCH receipt, which is this
@@ -1131,6 +1150,15 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		}
 	}
 
+	// Whatever is left is NOT a customer answering (that returned above): staff,
+	// an internal client credential, a context with no identity. None of them may
+	// record the customer's approval or review for the customer, so a request that
+	// carries either flag is refused outright -- not applied, not ignored, and not
+	// only when it would change the stored value (see refuseStaffCustomerOutcomeFlags).
+	if err := refuseStaffCustomerOutcomeFlags(req); err != nil {
+		return "", err
+	}
+
 	// The planned window is parsed before it is used for anything, by whoever
 	// sends it (see change_request_window.go): nothing but an RFC 3339 /
 	// "YYYY-MM-DD HH:MM:SS" date-time in a sane range, as UTC, reaches SQL.
@@ -1355,17 +1383,20 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	//     change); Customer Approval only by the approval flow when
 	//     customerApprovalRequired is set. Accepting them here would let any
 	//     caller skip an approval the flow requires.
-	//   - {state: "scheduled"} is rejected EXCEPT from Customer Approval, where
-	//     it is the human action "record the customer's approval": it stamps
-	//     is_customer_approval_required (through the same authorization and one-way lock
-	//     as a direct isCustomerApproved write) and schedules the change.
-	//     Everywhere else Scheduled is reached only by the CAB/ECAB cascade (or
-	//     Request Approval on a Standard change).
+	//   - {state: "scheduled"} is rejected from EVERY state. Scheduled is reached
+	//     only by the CAB/ECAB cascade, by Request Approval on a Standard change,
+	//     or -- from Customer Approval -- by the CUSTOMER's own approval, which no
+	//     staff action can give on their behalf (customerOutcomeRefusal).
 	//   - {state: "customer_review"} is rejected unless customerReviewRequired
 	//     is set, and {state: "closed"} from Review is rejected when it is: the
 	//     customer's review is a required step in between. {state: "closed"}
-	//     from Customer Review records the customer's review
-	//     (is_customer_review_required).
+	//     from Customer Review is rejected too: only the customer's own review
+	//     closes the change from there.
+	//   - A change in Customer Approval or Customer Review leaves it by the
+	//     customer's own answer, or by one of the few staff exits that do not
+	//     answer for the customer (refuseStaffExitFromCustomerState): Cancel, and
+	//     Re-schedule from Customer Approval / Rollback from Customer Review.
+	//     Every other destination is refused, whichever way it is spelled.
 	//   - {state: "rollback"} is the failed-review off-ramp: accepted only from
 	//     Review and Customer Review (and from Customer Review only while no
 	//     customer-group review request is pending -- its members' rejection
@@ -1389,7 +1420,6 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	// again, or -- Standard -- whether the customer is simply asked again.
 	var rescheduleCheckpoint *changeRequestApprovalCheckpoint
 	rescheduleAsksCustomerAgain := false
-	effectiveApproved, effectiveReviewed := req.IsCustomerApproved, req.IsCustomerReviewed
 	approvalRequired, reviewRequired := gates.approvalRequired, gates.reviewRequired
 	if req.CustomerApprovalRequired != nil {
 		approvalRequired = *req.CustomerApprovalRequired
@@ -1398,7 +1428,6 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		reviewRequired = *req.CustomerReviewRequired
 	}
 	if req.State != nil {
-		yes := true
 		// Rollback is terminal: nothing moves a rolled-back change anywhere
 		// (a repeated {state: rollback} gets the "only from review" refusal
 		// below).
@@ -1437,22 +1466,14 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			return "", &apierror.ValidationError{Msg: fmt.Sprintf(
 				"state %q cannot be set manually: it is reached automatically through the approval flow when customerApprovalRequired is set", *req.State)}
 		case "scheduled":
-			if gates.state != "CUSTOMER_APPROVAL" {
-				return "", &apierror.ValidationError{Msg: fmt.Sprintf(
-					"state %q cannot be set manually: it is reached automatically through the approval flow (Request Approval, then peer/CAB approval); it can only be set by hand to record the customer's approval, from customer_approval", *req.State)}
+			// Never a manual choice, from any state. Out of Customer Approval it
+			// would be the customer's approval given by someone else (the
+			// customer's own answer, in the Customer Portal, is the only way).
+			if gates.state == crStateCustomerApproval {
+				return "", customerOutcomeRefusal(ctx, tx, id, &customerApprovalStageSpec, *req.State)
 			}
-			// The customer group's approval request is pending: the answer
-			// comes from its members through the approvals, not from here.
-			if live, err := liveCustomerStageForState(ctx, tx, id, gates.state); err != nil {
-				return "", fmt.Errorf("patch change request: %w", err)
-			} else if live != nil {
-				return "", customerStageManualRefusal("scheduled", &customerApprovalStageSpec, live)
-			}
-			if req.IsCustomerApproved != nil && !*req.IsCustomerApproved {
-				return "", &apierror.ValidationError{Msg: "isCustomerApproved cannot be false when recording the customer's approval (state scheduled from customer_approval)"}
-			}
-			// Recording the customer's approval IS setting is_customer_approval_required.
-			effectiveApproved = &yes
+			return "", &apierror.ValidationError{Msg: fmt.Sprintf(
+				"state %q cannot be set manually: it is reached automatically through the approval flow (Request Approval, then peer/CAB approval), or by the customer's own approval from customer_approval", *req.State)}
 		case "rollback":
 			// The failed-review off-ramp: only from the two review states.
 			// Terminal, no stamp of is_customer_review_required, no new stage.
@@ -1469,9 +1490,6 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 					return "", customerStageManualRefusal("rollback", &customerReviewStageSpec, live)
 				}
 			}
-			if req.IsCustomerReviewed != nil && *req.IsCustomerReviewed {
-				return "", &apierror.ValidationError{Msg: "isCustomerReviewed cannot be true when rolling back: the review failed"}
-			}
 		case "customer_review":
 			if !reviewRequired {
 				return "", &apierror.ValidationError{Msg: "state \"customer_review\" cannot be set: customer review is not required for this change request (customerReviewRequired is false); close it from review instead"}
@@ -1480,19 +1498,10 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			if gates.state == "REVIEW" && reviewRequired {
 				return "", &apierror.ValidationError{Msg: "state \"closed\" cannot be set from review: customer review is required for this change request (customerReviewRequired is true); move it to customer_review first"}
 			}
-			if gates.state == "CUSTOMER_REVIEW" {
-				// As for scheduled above: with the customer group's review
-				// request pending, closing is the members' decision.
-				if live, err := liveCustomerStageForState(ctx, tx, id, gates.state); err != nil {
-					return "", fmt.Errorf("patch change request: %w", err)
-				} else if live != nil {
-					return "", customerStageManualRefusal("closed", &customerReviewStageSpec, live)
-				}
-				if req.IsCustomerReviewed != nil && !*req.IsCustomerReviewed {
-					return "", &apierror.ValidationError{Msg: "isCustomerReviewed cannot be false when recording the customer's review (state closed from customer_review)"}
-				}
-				// Closing from Customer Review records the customer's review.
-				effectiveReviewed = &yes
+			if gates.state == crStateCustomerReview {
+				// As for scheduled above: the customer's own review (in the
+				// Customer Portal) is the only way to close from here.
+				return "", customerOutcomeRefusal(ctx, tx, id, &customerReviewStageSpec, *req.State)
 			}
 		case "assess":
 			model := gates.model
@@ -1516,6 +1525,14 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			}
 			effectiveState = &dest
 			requestApprovalFlow = &flow
+		}
+		// The destination that will actually be written (Request Approval and a
+		// Standard re-schedule resolve to a state of their own above): out of a
+		// customer state only the exits that answer nothing for the customer.
+		if effectiveState != nil {
+			if err := refuseStaffExitFromCustomerState(ctx, tx, id, gates.state, *effectiveState); err != nil {
+				return "", err
+			}
 		}
 	}
 	if req.Type != nil {
@@ -1593,30 +1610,12 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	if req.TestPlan != nil {
 		addCR("test_plan = $%d", *req.TestPlan)
 	}
-	// IsCustomerApproved/IsCustomerReviewed used to be written straight
-	// through here, unconditionally, from any caller -- the last two
-	// customer-facing fields with no authorization of their own. See
-	// authorizeChangeRequestCustomerFlagWrite's own doc comment (below
-	// patchChangeRequestTx) for the full rule and its ServiceNow
-	// provenance: who may flip either false -> true, why true -> false is
-	// always rejected, and why neither has any bearing on this change
-	// request's own state transitions.
-	//
-	// effectiveApproved/effectiveReviewed are the request's own values, plus the
-	// two the state routing above implies: scheduled from Customer Approval
-	// records the customer's approval, closed from Customer Review records the
-	// customer's review. Both go through the same authorization and lock.
-	if effectiveApproved != nil || effectiveReviewed != nil {
-		if err := authorizeChangeRequestCustomerFlagWrite(ctx, tx, id, actorEmail, effectiveApproved, effectiveReviewed); err != nil {
-			return "", err
-		}
-		if effectiveApproved != nil {
-			addCR("is_customer_approval_required = $%d", *effectiveApproved)
-		}
-		if effectiveReviewed != nil {
-			addCR("is_customer_review_required = $%d", *effectiveReviewed)
-		}
-	}
+	// IsCustomerApproved / IsCustomerReviewed (the customer's OUTCOME columns,
+	// is_customer_approval_required / is_customer_review_required) are never
+	// written from this path: a staff request that carries either was refused at
+	// the top (refuseStaffCustomerOutcomeFlags), and the customer's own answer
+	// never gets here (answerCustomerStageViaPatch returned earlier, and
+	// applyCustomerStageOutcome stamps the flag with the state it moves to).
 	// The creation form's checkboxes: the requirement, not the outcome. Any
 	// edit past the gate was refused above (validateCustomerGateEdits).
 	if req.CustomerApprovalRequired != nil {
@@ -1894,149 +1893,21 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	return wiID, nil
 }
 
-// authorizeChangeRequestCustomerFlagWrite applies the authorization and
-// one-way-lock rules for change_request.is_customer_approval_required/
-// is_customer_review_required (domain.ChangeRequest.HasCustomerApproved/
-// HasCustomerReviewed on the read side; PatchChangeRequestRequest.
-// IsCustomerApproved/IsCustomerReviewed, approved/reviewed here, on this
-// one) -- the last two customer-facing fields this PATCH used to write
-// straight through unconditionally, from any caller, with no authorization
-// of its own at all.
+// callerIsRegisteredPortalContact reports whether actorEmail is a REGISTERED
+// PORTAL_USER contact of the project projectID (the change request's own
+// project, work_item.project_id): the one test of "this person is one of the
+// customer", behind the customer's own answer (requireRegisteredContact), the
+// read-only twin of it (customerCanAnswer) and the legacy customer stage
+// (ensureCustomerStageForLegacy). Nobody else is the customer: there is
+// deliberately NO shortcut for an internal caller (it used to say yes to one,
+// for the staff write of the customer flag that no longer exists), so nothing
+// built on this can let staff answer for the customer. projectID nil/empty (an
+// unlinked change request) or an empty email means no project_contact row could
+// match, so this returns false without querying.
 //
-// **No approval_stage involvement whatsoever** -- these stay the plain
-// booleans they already were; this closes the authorization gap on top of
-// the existing schema, not a new mechanism of its own. By explicit product
-// decision, confirmed against a real ServiceNow instance:
-//
-//   - **Once a flag is true, it is permanently locked.** The real change-
-//     request form renders both checkboxes read-only -- un-clickable -- the
-//     instant either is checked (confirmed by direct DOM inspection and a
-//     physical click-test showing neither toggles back off), and no sampled
-//     record's own history ever shows a reversal either. A true -> false
-//     attempt is therefore always rejected here (ValidationError, a
-//     data-shaped problem with the request: the field named in Msg cannot
-//     be un-set), for either field, regardless of who is asking -- there is
-//     no override path in this cycle, internal caller or not.
-//   - **false -> false and true -> true are no-ops** and always succeed
-//     trivially, with no authorization check at all: a write that changes
-//     nothing needs no permission to not-change it.
-//   - **The one real gated transition is the first false -> true flip.**
-//     Allowed for either (a) an internal/staff caller --
-//     repository.CallerIdentityFromContext's own Unrestricted, the exact
-//     INTERNAL resolution AccessService.ResolveScope/recompute_user_type
-//     already use everywhere else in this service (see entity-service's own
-//     CLAUDE.md "Token validation and caller-scoped access"), reused here
-//     rather than re-derived -- or (b) a caller who resolves, by actorEmail
-//     (the x-user-id-token email claim, already resolved by
-//     changeRequestService.PatchChangeRequest before this is ever called),
-//     to a project_contact row on THIS change request's OWN project
-//     (work_item.project_id, via change_request's shared-PK join), in state
-//     REGISTERED, holding the PORTAL_USER project role -- the identical
-//     project_contact -> project_contact_group -> project_group_role ->
-//     project_role join chain CaseRepository.ProjectContactEmailsByRole/
-//     ProjectContactRepository's own projectContactColumns already use for
-//     "is this person a registered contact with role X on project Y",
-//     reused verbatim rather than inventing a second way to ask the same
-//     question (callerMayGrantChangeRequestCustomerFlag, below). A caller
-//     who is neither is rejected with a ForbiddenError -- an
-//     authorization-shaped rejection, not a data-shaped one, matching how
-//     apierror.ForbiddenError is already used elsewhere in this codebase
-//     for exactly this distinction (AccessService.ResolveScope's own "no
-//     access for this user"; TimeCardRepository.TransitionTimeCardState's
-//     "only an eligible approver ... may approve or reject this time
-//     card") -- never ValidationError, which this file reserves for a
-//     problem with the request's own data, not with who is sending it.
-//   - **A project with no qualifying contact simply means no external
-//     caller can ever flip either flag on it** -- an accepted consequence
-//     of the rule above, not a bug: it has no relationship whatsoever to
-//     legalChangeRequestNextStates/changeRequestForwardNextStates, and must
-//     never gate or block this change request's own lifecycle in any way.
-//     Nothing in this function touches change_request.state, and nothing
-//     here is consulted by anything that does.
-//
-// Reads the CURRENTLY STORED values fresh, inside this same transaction --
-// never against approved/reviewed's own new values -- same discipline as
-// the on-hold gate earlier in patchChangeRequestTx. Either of approved/
-// reviewed may be nil (that field simply isn't part of this PATCH), and
-// each is checked independently: one field's lock state has no bearing on
-// the other's, so a single PATCH setting both is free to succeed on one and
-// fail on the other.
-func authorizeChangeRequestCustomerFlagWrite(ctx context.Context, tx pgx.Tx, id, actorEmail string, approved, reviewed *bool) error {
-	var currentApproved, currentReviewed *bool
-	var projectID *string
-	err := tx.QueryRow(ctx, `
-		SELECT cr.is_customer_approval_required, cr.is_customer_review_required, wi.project_id::text
-		FROM change_request cr
-		JOIN work_item wi ON wi.id = cr.id
-		WHERE cr.id = $1`, id,
-	).Scan(&currentApproved, &currentReviewed, &projectID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return &apierror.NotFoundError{Msg: "change request not found"}
-	}
-	if err != nil {
-		return fmt.Errorf("patch change request: check customer approval/review state: %w", err)
-	}
-
-	// Authorization is resolved at most once per PATCH, lazily: most PATCHes
-	// touching either field are a no-op (false -> false) or a lock
-	// violation (true -> false), neither of which ever needs it, and an
-	// internal caller is already known from ctx with no query at all.
-	var authorized, authorizedResolved bool
-	resolveAuthorized := func() (bool, error) {
-		if authorizedResolved {
-			return authorized, nil
-		}
-		authorizedResolved = true
-		ok, err := callerMayGrantChangeRequestCustomerFlag(ctx, tx, projectID, actorEmail)
-		authorized = ok
-		return authorized, err
-	}
-
-	check := func(label string, current, requested *bool) error {
-		if requested == nil {
-			return nil
-		}
-		wasTrue := current != nil && *current
-		if *requested == wasTrue {
-			return nil // no-op (false->false or true->true): always allowed, no authorization needed
-		}
-		if wasTrue {
-			// true -> false: permanently locked, no override, regardless of caller.
-			return &apierror.ValidationError{Msg: label + " is locked once set to true and cannot be reverted to false"}
-		}
-		// false -> true: the one real authorization-gated transition.
-		ok, err := resolveAuthorized()
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return &apierror.ForbiddenError{Msg: "only an internal user or a registered PORTAL_USER contact on this change request's own project may set " + label}
-		}
-		return nil
-	}
-
-	if err := check("isCustomerApproved", currentApproved, approved); err != nil {
-		return err
-	}
-	if err := check("isCustomerReviewed", currentReviewed, reviewed); err != nil {
-		return err
-	}
-	return nil
-}
-
-// callerMayGrantChangeRequestCustomerFlag reports whether actorEmail may
-// flip change_request.is_customer_approval_required/is_customer_review_required from false
-// to true on the change request whose work_item.project_id is projectID --
-// see authorizeChangeRequestCustomerFlagWrite's own doc comment immediately
-// above for the full rule and its provenance. projectID nil/empty (an
-// unlinked change request -- see this file's own doc comment on
-// SearchChangeRequestView.Project/Case) means no project_contact row could
-// ever match, so this returns false for a non-internal caller without
-// querying.
-func callerMayGrantChangeRequestCustomerFlag(ctx context.Context, tx crQuerier, projectID *string, actorEmail string) (bool, error) {
-	if scope, ok := CallerIdentityFromContext(ctx); ok && scope.Unrestricted {
-		return true, nil
-	}
+// The same "registered contact with role X on project Y" join chain
+// CaseRepository.ProjectContactEmailsByRole and customerContactsSQL use.
+func callerIsRegisteredPortalContact(ctx context.Context, tx crQuerier, projectID *string, actorEmail string) (bool, error) {
 	if projectID == nil || *projectID == "" || actorEmail == "" {
 		return false, nil
 	}
@@ -2055,7 +1926,7 @@ func callerMayGrantChangeRequestCustomerFlag(ctx context.Context, tx crQuerier, 
 		)`, *projectID, actorEmail,
 	).Scan(&qualifies)
 	if err != nil {
-		return false, fmt.Errorf("check project contact authorization for customer flag: %w", err)
+		return false, fmt.Errorf("check registered project contact: %w", err)
 	}
 	return qualifies, nil
 }
@@ -3028,8 +2899,8 @@ func cancelSiblingApprovalStageApprovers(ctx context.Context, tx pgx.Tx, stageID
 //   - CAB (Normal) or ECAB (Emergency) approval resolved while the change is in
 //     Authorize: state -> Scheduled, automatically -- or Customer Approval when
 //     customer_approval_required is set (approvalGateTarget). There is no
-//     manual Schedule action; the customer's approval is recorded by a human
-//     {state: "scheduled"} out of Customer Approval.
+//     manual Schedule action; out of Customer Approval only the CUSTOMER's own
+//     approval (the customer stage below) schedules the change.
 //   - the customer group's stage while the change waits in the matching state
 //     (provisionCustomerStage): "Customer Approval" approved -> Scheduled and
 //     is_customer_approval_required = true, rejected -> Canceled; "Customer Review"
@@ -3196,15 +3067,16 @@ func decideChangeRequestApprovalTx(ctx context.Context, tx pgx.Tx, id, approverU
 				// CAB (Normal) / ECAB (Emergency) approval schedules the
 				// change automatically -- there is no manual Schedule --
 				// unless the customer's approval is required, in which case
-				// the change waits in Customer Approval for it to be
-				// recorded (a human {state: "scheduled"} from there).
+				// the change waits in Customer Approval for the customer's own
+				// approval (no staff action gives it for them).
 				target := approvalGateTarget(customerApprovalRequired)
 				if _, err := tx.Exec(ctx, `UPDATE change_request SET state = $2::change_request_state_enum WHERE id = $1`, id, target); err != nil {
 					return "", fmt.Errorf("decide change request approval: advance state: %w", err)
 				}
 				// Entering Customer Approval asks the customer group, when
-				// the change has one with someone eligible; otherwise the
-				// manual "record the customer's approval" stays open.
+				// the change has one with someone eligible; otherwise nobody
+				// is asked and the change can only be cancelled or re-scheduled
+				// (see provisionCustomerStage).
 				if target == customerApprovalStageSpec.state {
 					if _, err := provisionCustomerStage(ctx, tx, id, actorEmail); err != nil {
 						return "", err

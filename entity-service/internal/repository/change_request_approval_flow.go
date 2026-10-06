@@ -65,12 +65,23 @@ import (
 //	    (CAB / ECAB approval, or Request Approval on a Standard change -- an
 //	    assumption, Standard has no internal approvals to put the gate after) it
 //	    moves it to Customer Approval instead when customer_approval_required.
-//	    A human then records the customer's approval ({state: "scheduled"},
-//	    legal ONLY from Customer Approval), which stamps is_customer_approval_required
-//	    and schedules the change.
+//	    Only the CUSTOMER's own approval, given in the Customer Portal, then
+//	    schedules the change (and stamps is_customer_approval_required).
 //	review gate: Review -> Customer Review -> Closed when
-//	    customer_review_required, Review -> Closed otherwise. Closing from
-//	    Customer Review records the customer's review (is_customer_review_required).
+//	    customer_review_required, Review -> Closed otherwise. Only the
+//	    CUSTOMER's own review, given in the Customer Portal, closes the change
+//	    from Customer Review (and stamps is_customer_review_required).
+//
+// COMPLIANCE RULE: no staff action records the customer's approval or review on
+// the customer's behalf. The customer's answer is the customer's decision and
+// ServiceNow's record of it is audited, so a decision made for the customer and
+// stored as theirs would be a compliance problem. A change in a customer state
+// moves on only through the customer's own answer; staff keep Cancel (any
+// state), Re-schedule (out of Customer Approval: the customer is asked again)
+// and Rollback (out of Customer Review, while nobody is being asked). See
+// refuseStaffExitFromCustomerState, refuseStaffCustomerOutcomeFlags and
+// changeRequestForwardNextStates. (Emergency changes do not tick the customer
+// boxes: they are acted on without the customer's consent.)
 //
 // Who gives the customer's answer depends on the change's Customer Project. The
 // Customer Group is not stored or picked: it is the project's registered
@@ -86,12 +97,13 @@ import (
 //	    stage (first responder wins). Approving Customer Approval schedules the
 //	    change (is_customer_approval_required stamped), rejecting it cancels it;
 //	    approving Customer Review closes it (is_customer_review_required
-//	    stamped), rejecting it moves it to Rollback. The manual
-//	    {state: scheduled} / {state: closed} is then refused: the answer comes
-//	    from the approval.
+//	    stamped), rejecting it moves it to Rollback.
 //	without one (no project, or no eligible registered contact on it): no stage
-//	    is provisioned and the manual path above stays the way out, so a change
-//	    can never be stranded in a customer state with nobody able to answer.
+//	    is provisioned and nobody is asked. Staff do NOT answer for the
+//	    customer: the change can be cancelled or re-scheduled, or it waits until
+//	    a contact is registered and the project is restated (provisionCustomerStage
+//	    then asks them). A legacy change that reached the state with nobody asked
+//	    gets its stage when a contact first acts (ensureCustomerStageForLegacy).
 //
 // provisionCustomerStage keeps the stage in step with the change (state and
 // project contacts) and is the one place that provisions, replaces or cancels it.
@@ -1120,40 +1132,133 @@ func liveCustomerStageForState(ctx context.Context, q crQuerier, workItemID, sta
 	return nil, nil
 }
 
-// withoutManualCustomerOutcome drops the manual way out of a customer state
-// from legalNextStates while a customer stage is live for it: "scheduled"
-// (the CSM portal's "Bypass customer approval") from Customer Approval,
-// "closed" ("Bypass customer review") and "rollback" (the failed review) from
-// Customer Review. Only Cancel is left; the decision comes from the approval
-// (a member rejecting the review rolls the change back).
-func withoutManualCustomerOutcome(state *string, nexts []string, liveStage bool) []string {
-	if !liveStage || state == nil || nexts == nil {
+// withoutStaffRollbackWhileCustomerReviewPending takes "rollback" out of the
+// next states of a change in Customer Review while the customer group's review
+// request is live: a failed review is then the customer's to give (a member
+// rejecting the review rolls the change back), not a staff action. Cancel stays.
+//
+// This is the only thing left to filter. The customer's own approval and review
+// ("scheduled" out of Customer Approval, "closed" out of Customer Review) are
+// never offered to staff at all, live stage or not: see
+// changeRequestForwardNextStates.
+func withoutStaffRollbackWhileCustomerReviewPending(state *string, nexts []string, liveStage bool) []string {
+	if !liveStage || state == nil || nexts == nil || !strings.EqualFold(*state, string(domain.ChangeRequestStateCustomerReview)) {
 		return nexts
 	}
-	spec := customerStageSpecForState(strings.ToUpper(*state))
-	if spec == nil {
-		return nexts
-	}
-	manual := strings.ToLower(spec.approvedState)
-	rejected := strings.ToLower(spec.rejectedState)
 	out := make([]string, 0, len(nexts))
 	for _, n := range nexts {
-		// Cancel is the one manual way out that stays: rejectedState for
-		// Customer Approval IS canceled, hence the explicit guard.
-		if n != manual && (n != rejected || n == string(domain.ChangeRequestStateCanceled)) {
+		if n != string(domain.ChangeRequestStateRollback) {
 			out = append(out, n)
 		}
 	}
 	return out
 }
 
-// customerStageManualRefusal is the 400 for a manual PATCH of the customer
-// state's outcome ({state: scheduled} / {state: closed}) while the customer
-// group's approval request is pending.
+// customerStageManualRefusal is the 400 for a manual {state: rollback} out of
+// Customer Review while the customer group's review request is pending: the
+// failed review is given by one of them rejecting it, not by staff.
 func customerStageManualRefusal(target string, spec *customerStageSpec, live *liveCustomerStage) error {
 	return &apierror.ValidationError{Msg: fmt.Sprintf(
 		"state %q cannot be set manually: the customer's %s has been requested from the customer group (the registered contacts of the change request's project) and is given by one of them approving or rejecting it in the change request's approvals (POST /change-requests/{id}/approvals/decision)",
 		target, spec.what)}
+}
+
+// ---------------------------------------------------------------------------
+// The customer's own answer is the only way out of a customer state
+// ---------------------------------------------------------------------------
+
+// A change waiting in Customer Approval / Customer Review moves on only through
+// the customer's own answer, given by a registered contact of the change
+// request's project in the Customer Portal (answerCustomerStageViaPatch /
+// decideChangeRequestApprovalTx). No WSO2 staff action records that answer, for
+// any change, with or without anybody having been asked, because the answer is
+// the customer's decision and ServiceNow's record of it is audited: a decision
+// made for the customer and stored as theirs would be a compliance problem.
+// What staff keep: Cancel (any state), Re-schedule from Customer Approval (the
+// customer is asked again), Rollback from Customer Review (while nobody is
+// being asked). Emergency changes simply do not tick the customer boxes.
+
+// staffCustomerOutcomeFlagRefusal is the 400 a request that carries
+// isCustomerApproved / isCustomerReviewed from anyone but the customer is
+// refused with.
+func staffCustomerOutcomeFlagRefusal(flag string, spec *customerStageSpec) error {
+	return &apierror.ValidationError{Msg: fmt.Sprintf(
+		"%s cannot be set on the customer's behalf: the customer's %s can only be given by the customer in the Customer Portal", flag, spec.what)}
+}
+
+// refuseStaffCustomerOutcomeFlags refuses a PATCH from a caller that is not the
+// customer when it carries isCustomerApproved or isCustomerReviewed, true or
+// false, alone or with a state: those two fields ARE the customer's answer, and
+// nobody else may give it. They used to be accepted from staff (stamping the
+// flag, with or without moving the state); they are refused outright now, not
+// ignored, so a client that still sends them learns it.
+func refuseStaffCustomerOutcomeFlags(req domain.PatchChangeRequestRequest) error {
+	if req.IsCustomerApproved != nil {
+		return staffCustomerOutcomeFlagRefusal("isCustomerApproved", &customerApprovalStageSpec)
+	}
+	if req.IsCustomerReviewed != nil {
+		return staffCustomerOutcomeFlagRefusal("isCustomerReviewed", &customerReviewStageSpec)
+	}
+	return nil
+}
+
+// customerOutcomeRefusal is the 400 for a staff PATCH that would take a change
+// out of Customer Approval / Customer Review through a door only the customer's
+// own answer opens ({state: scheduled} out of Customer Approval, {state: closed}
+// out of Customer Review, or any other destination): refused whatever the
+// project's contacts are, whether anybody was asked, and with or without a
+// stage, and it changes nothing. The message says why and what staff can do
+// instead, which depends on the state: Re-schedule (Customer Approval),
+// Rollback (Customer Review, while nobody is being asked), and Cancel.
+func customerOutcomeRefusal(ctx context.Context, q crQuerier, workItemID string, spec *customerStageSpec, target domain.ChangeRequestState) error {
+	instead := "cancel the change or re-schedule it"
+	if spec.state == crStateCustomerReview {
+		instead = "roll the change back or cancel it"
+		live, err := liveCustomerStageForState(ctx, q, workItemID, spec.state)
+		if err != nil {
+			return fmt.Errorf("patch change request: %w", err)
+		}
+		if live != nil {
+			// A failed review is the customer's to give while they are being asked.
+			instead = "cancel the change"
+		}
+	}
+	return &apierror.ValidationError{Msg: fmt.Sprintf(
+		"state %q cannot be set manually from %s: the customer's %s can only be given by the customer in the Customer Portal; %s instead",
+		strings.ToLower(string(target)), strings.ToLower(spec.state), spec.what, instead)}
+}
+
+// refuseStaffExitFromCustomerState is the one guard behind "the change moves on
+// only through the customer's own answer": for a change in Customer Approval or
+// Customer Review it refuses every destination the PATCH would write except the
+// exits that answer nothing for the customer -- Cancel; Re-schedule (authorize)
+// out of Customer Approval; Rollback out of Customer Review (patchChangeRequestTx
+// has refused that one already while the customer group's review is pending) --
+// and staying where it is (a resent Request Approval / customer_review, no move).
+// current is the change's upper-case state; target is the state about to be
+// written. The PATCH does not enforce a full transition graph, so without this
+// {state: implement} out of Customer Approval would skip the customer as surely
+// as {state: scheduled} would.
+func refuseStaffExitFromCustomerState(ctx context.Context, q crQuerier, workItemID, current string, target domain.ChangeRequestState) error {
+	spec := customerStageSpecForState(current)
+	if spec == nil {
+		return nil
+	}
+	t := strings.ToLower(string(target))
+	if strings.EqualFold(t, current) || t == string(domain.ChangeRequestStateCanceled) {
+		return nil
+	}
+	switch spec.state {
+	case crStateCustomerApproval:
+		if t == string(domain.ChangeRequestStateAuthorize) {
+			return nil
+		}
+	case crStateCustomerReview:
+		if t == string(domain.ChangeRequestStateRollback) {
+			return nil
+		}
+	}
+	return customerOutcomeRefusal(ctx, q, workItemID, spec, target)
 }
 
 // cancelLiveStageApprovers cancels the REQUESTED approvers of a stage (the
@@ -1489,8 +1594,10 @@ func reconcileStaleApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEm
 //     -- has its REQUESTED approvers cancelled, so there are never two live
 //     customer stages and nobody is asked a question that no longer applies. A
 //     changed project gets a fresh stage for its own contacts (first bullet);
-//   - no project, or no eligible contact: no stage; the manual "record the
-//     customer's approval" / close path stays available.
+//   - no project, or no eligible contact: no stage and nobody is asked. There is
+//     no staff path that answers for the customer: the change can be cancelled
+//     or re-scheduled, or wait for a contact to register (a PATCH that restates
+//     the project then asks them).
 //
 // The stage's assignment group is NULL (the Customer Group is not a "group"
 // row); the approvals read response names it "Customer Group".
@@ -1577,8 +1684,9 @@ func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 		}
 	}
 	if !eligible {
-		// The manual path stays open (see the doc comment): nothing is
-		// stranded, but say why no stage appeared.
+		// Nobody can be asked (see the doc comment): staff can cancel or
+		// re-schedule the change but cannot answer for the customer. Say why
+		// no stage appeared.
 		slog.InfoContext(ctx, "customer group has no eligible approvers, customer stage not provisioned",
 			"changeRequestId", workItemID, "stage", spec.label)
 		return false, nil

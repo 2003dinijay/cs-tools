@@ -571,12 +571,13 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 		// itself (to Scheduled, or Customer Approval when the customer's
 		// approval is required).
 		{string(domain.ChangeRequestStateAuthorize), false, []string{"canceled"}},
-		// Customer Approval: "scheduled" records the customer's approval; Cancel
-		// is the customer declining. It is the ONE state that offers scheduled.
-		// ... and "authorize" there means Re-schedule (the planned time changed:
-		// back through internal approval). It is offered from this state only.
-		{string(domain.ChangeRequestStateCustomerApproval), false, []string{"scheduled", "authorize", "canceled"}},
-		{string(domain.ChangeRequestStateCustomerApproval), true, []string{"scheduled", "authorize", "canceled"}},
+		// Customer Approval waits for the CUSTOMER's own approval, which no staff
+		// action gives for them, so "scheduled" is NOT offered (from any state).
+		// "authorize" there means Re-schedule (the planned time changed: back
+		// through internal approval, the customer asked again). It is offered
+		// from this state only (and Assess's approval path); Cancel stays.
+		{string(domain.ChangeRequestStateCustomerApproval), false, []string{"authorize", "canceled"}},
+		{string(domain.ChangeRequestStateCustomerApproval), true, []string{"authorize", "canceled"}},
 		{string(domain.ChangeRequestStateScheduled), false, []string{"implement", "canceled"}},
 		{string(domain.ChangeRequestStateImplement), false, []string{"review", "canceled"}},
 		// Review: Closed directly unless the customer's review is required, in
@@ -585,8 +586,10 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 		// forward move and before Cancel -- and from these two states only.
 		{string(domain.ChangeRequestStateReview), false, []string{"closed", "rollback", "canceled"}},
 		{string(domain.ChangeRequestStateReview), true, []string{"customer_review", "rollback", "canceled"}},
-		{string(domain.ChangeRequestStateCustomerReview), false, []string{"closed", "rollback", "canceled"}},
-		{string(domain.ChangeRequestStateCustomerReview), true, []string{"closed", "rollback", "canceled"}},
+		// Customer Review waits for the CUSTOMER's own review: "closed" is NOT
+		// offered, only Rollback (the review failed) and Cancel.
+		{string(domain.ChangeRequestStateCustomerReview), false, []string{"rollback", "canceled"}},
+		{string(domain.ChangeRequestStateCustomerReview), true, []string{"rollback", "canceled"}},
 		// Terminal states offer nothing, rollback included.
 		{string(domain.ChangeRequestStateRollback), false, nil},
 		{string(domain.ChangeRequestStateRollback), true, nil},
@@ -607,13 +610,41 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 		})
 	}
 
-	t.Run("scheduled is offered from customer_approval only", func(t *testing.T) {
+	// The customer's approval and review are the customer's alone: no state
+	// offers "scheduled" (the CAB / ECAB cascade, Request Approval on a Standard
+	// change and the customer's own approval are the only ways in), and Customer
+	// Review does not offer "closed" (only the customer's review closes it).
+	t.Run("scheduled is never offered, from any state", func(t *testing.T) {
 		for st := range changeRequestForwardNextStates {
 			for _, review := range []bool{false, true} {
 				s := string(st)
 				for _, next := range legalChangeRequestNextStates(&s, review) {
-					if next == string(domain.ChangeRequestStateScheduled) && st != domain.ChangeRequestStateCustomerApproval {
-						t.Errorf("legalChangeRequestNextStates(%q) offers %q; Scheduled is reached automatically except by recording the customer's approval", s, next)
+					if next == string(domain.ChangeRequestStateScheduled) {
+						t.Errorf("legalChangeRequestNextStates(%q, %v) offers %q; Scheduled is reached by the approval flow or by the customer's own approval, never by a staff action", s, review, next)
+					}
+				}
+			}
+		}
+	})
+
+	t.Run("closed is never offered from customer_review", func(t *testing.T) {
+		s := string(domain.ChangeRequestStateCustomerReview)
+		for _, review := range []bool{false, true} {
+			for _, next := range legalChangeRequestNextStates(&s, review) {
+				if next == string(domain.ChangeRequestStateClosed) {
+					t.Errorf("legalChangeRequestNextStates(customer_review, %v) offers closed; only the customer's own review closes it", review)
+				}
+			}
+		}
+	})
+
+	t.Run("a customer state never offers a staff exit that answers for the customer", func(t *testing.T) {
+		for _, st := range []domain.ChangeRequestState{domain.ChangeRequestStateCustomerApproval, domain.ChangeRequestStateCustomerReview} {
+			s := string(st)
+			for _, review := range []bool{false, true} {
+				for _, next := range legalChangeRequestNextStates(&s, review) {
+					if err := refuseStaffExitFromCustomerState(context.Background(), nil, "wi", strings.ToUpper(s), domain.ChangeRequestState(next)); err != nil {
+						t.Errorf("legalChangeRequestNextStates(%q, %v) offers %q, which patchChangeRequestTx refuses: %v", s, review, next, err)
 					}
 				}
 			}
@@ -907,7 +938,11 @@ func TestCustomerStageSpecs(t *testing.T) {
 	}
 }
 
-func TestWithoutManualCustomerOutcome(t *testing.T) {
+// withoutStaffRollbackWhileCustomerReviewPending is the only live-stage filter
+// left on legalNextStates: Rollback out of Customer Review while the customer
+// group's review request is pending. The customer's own approval / review are
+// never in the base graph, so there is nothing else to drop.
+func TestWithoutStaffRollbackWhileCustomerReviewPending(t *testing.T) {
 	str := func(s string) *string { return &s }
 	for _, tc := range []struct {
 		name  string
@@ -916,32 +951,104 @@ func TestWithoutManualCustomerOutcome(t *testing.T) {
 		live  bool
 		want  []string
 	}{
-		// Re-schedule ("authorize") stays on offer: an internal user may still
-		// re-plan, which supersedes the pending customer request.
-		{"customer_approval, live", str("CUSTOMER_APPROVAL"), []string{"scheduled", "authorize", "canceled"}, true, []string{"authorize", "canceled"}},
-		{"customer_approval, not live (fallback)", str("CUSTOMER_APPROVAL"), []string{"scheduled", "authorize", "canceled"}, false, []string{"scheduled", "authorize", "canceled"}},
-		{"customer_review, live", str("CUSTOMER_REVIEW"), []string{"closed", "rollback", "canceled"}, true, []string{"canceled"}},
-		{"customer_review, not live (fallback)", str("CUSTOMER_REVIEW"), []string{"closed", "rollback", "canceled"}, false, []string{"closed", "rollback", "canceled"}},
+		{"customer_approval, live: Re-schedule and Cancel stay", str("CUSTOMER_APPROVAL"), []string{"authorize", "canceled"}, true, []string{"authorize", "canceled"}},
+		{"customer_approval, not live", str("CUSTOMER_APPROVAL"), []string{"authorize", "canceled"}, false, []string{"authorize", "canceled"}},
+		{"customer_review, live: only Cancel", str("CUSTOMER_REVIEW"), []string{"rollback", "canceled"}, true, []string{"canceled"}},
+		{"customer_review, live, lower case", str("customer_review"), []string{"rollback", "canceled"}, true, []string{"canceled"}},
+		{"customer_review, not live: Rollback and Cancel", str("CUSTOMER_REVIEW"), []string{"rollback", "canceled"}, false, []string{"rollback", "canceled"}},
 		{"review is untouched even with a live customer stage", str("REVIEW"), []string{"closed", "rollback", "canceled"}, true, []string{"closed", "rollback", "canceled"}},
 		{"nil states", str("CUSTOMER_REVIEW"), nil, true, nil},
-		{"nil state", nil, []string{"closed"}, true, []string{"closed"}},
+		{"nil state", nil, []string{"rollback"}, true, []string{"rollback"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got := withoutManualCustomerOutcome(tc.state, tc.in, tc.live)
+			got := withoutStaffRollbackWhileCustomerReviewPending(tc.state, tc.in, tc.live)
 			if strings.Join(got, ",") != strings.Join(tc.want, ",") || (got == nil) != (tc.want == nil) {
-				t.Errorf("withoutManualCustomerOutcome = %v, want %v", got, tc.want)
+				t.Errorf("withoutStaffRollbackWhileCustomerReviewPending = %v, want %v", got, tc.want)
 			}
 		})
 	}
 }
 
+// The compliance rule at the unit level: nobody but the customer records the
+// customer's approval or review. A staff request that carries either flag is
+// refused outright (true or false, alone or with anything else), and out of a
+// customer state only the exits that answer nothing for the customer pass.
+func TestRefuseStaffCustomerOutcomeFlags(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name string
+		req  domain.PatchChangeRequestRequest
+		want string
+	}{
+		{"isCustomerApproved true", domain.PatchChangeRequestRequest{IsCustomerApproved: &yes}, "isCustomerApproved cannot be set on the customer's behalf: the customer's approval can only be given by the customer in the Customer Portal"},
+		{"isCustomerApproved false", domain.PatchChangeRequestRequest{IsCustomerApproved: &no}, "isCustomerApproved cannot be set on the customer's behalf: the customer's approval can only be given by the customer in the Customer Portal"},
+		{"isCustomerReviewed true", domain.PatchChangeRequestRequest{IsCustomerReviewed: &yes}, "isCustomerReviewed cannot be set on the customer's behalf: the customer's review can only be given by the customer in the Customer Portal"},
+		{"isCustomerReviewed false", domain.PatchChangeRequestRequest{IsCustomerReviewed: &no}, "isCustomerReviewed cannot be set on the customer's behalf: the customer's review can only be given by the customer in the Customer Portal"},
+		{"with a state", domain.PatchChangeRequestRequest{State: ptrState(domain.ChangeRequestStateScheduled), IsCustomerApproved: &yes}, "isCustomerApproved cannot be set on the customer's behalf: the customer's approval can only be given by the customer in the Customer Portal"},
+		{"both: approval is named first", domain.PatchChangeRequestRequest{IsCustomerApproved: &yes, IsCustomerReviewed: &yes}, "isCustomerApproved cannot be set on the customer's behalf: the customer's approval can only be given by the customer in the Customer Portal"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var ve *apierror.ValidationError
+			if err := refuseStaffCustomerOutcomeFlags(tc.req); !errors.As(err, &ve) || ve.Msg != tc.want {
+				t.Fatalf("err = %v, want a 400 saying %q", err, tc.want)
+			}
+		})
+	}
+	if err := refuseStaffCustomerOutcomeFlags(domain.PatchChangeRequestRequest{State: ptrState(domain.ChangeRequestStateCanceled)}); err != nil {
+		t.Errorf("a request without either flag is not refused here: %v", err)
+	}
+}
+
+func ptrState(s domain.ChangeRequestState) *domain.ChangeRequestState { return &s }
+
+func TestRefuseStaffExitFromCustomerState(t *testing.T) {
+	ctx := context.Background()
+	const wantApproval = `state "scheduled" cannot be set manually from customer_approval: the customer's approval can only be given by the customer in the Customer Portal; cancel the change or re-schedule it instead`
+	// Out of Customer Approval: Cancel and Re-schedule (authorize) pass, as does
+	// staying where it is (a resent Request Approval resolves to the state
+	// itself); every other destination -- the customer's own outcome first, then
+	// the ones that would skip the customer altogether -- is refused.
+	for _, ok := range []domain.ChangeRequestState{"canceled", "authorize", "customer_approval", "CANCELED"} {
+		if err := refuseStaffExitFromCustomerState(ctx, nil, "wi", "CUSTOMER_APPROVAL", ok); err != nil {
+			t.Errorf("customer_approval -> %q was refused: %v", ok, err)
+		}
+	}
+	for _, refused := range []domain.ChangeRequestState{"scheduled", "SCHEDULED", "implement", "review", "customer_review", "closed", "rollback", "assess", "new"} {
+		var ve *apierror.ValidationError
+		err := refuseStaffExitFromCustomerState(ctx, nil, "wi", "CUSTOMER_APPROVAL", refused)
+		if !errors.As(err, &ve) {
+			t.Errorf("customer_approval -> %q was accepted", refused)
+			continue
+		}
+		want := strings.Replace(wantApproval, `"scheduled"`, fmt.Sprintf("%q", strings.ToLower(string(refused))), 1)
+		if ve.Msg != want {
+			t.Errorf("customer_approval -> %q: message %q, want %q", refused, ve.Msg, want)
+		}
+	}
+	// Out of Customer Review: Cancel and Rollback pass, as does staying.
+	for _, ok := range []domain.ChangeRequestState{"canceled", "rollback", "customer_review"} {
+		if err := refuseStaffExitFromCustomerState(ctx, nil, "wi", "CUSTOMER_REVIEW", ok); err != nil {
+			t.Errorf("customer_review -> %q was refused: %v", ok, err)
+		}
+	}
+	// Every other state is not a customer state: nothing here is judged.
+	for _, st := range []string{"", "NEW", "ASSESS", "AUTHORIZE", "SCHEDULED", "IMPLEMENT", "REVIEW", "ROLLBACK", "CLOSED", "CANCELED"} {
+		if err := refuseStaffExitFromCustomerState(ctx, nil, "wi", st, "scheduled"); err != nil {
+			t.Errorf("%q -> scheduled was judged by the customer-state guard: %v", st, err)
+		}
+	}
+}
+
+// customerStageManualRefusal is what a manual Rollback out of Customer Review is
+// refused with while the customer group's review request is pending (a failed
+// review is theirs to give).
 func TestCustomerStageManualRefusal(t *testing.T) {
-	err := customerStageManualRefusal("scheduled", &customerApprovalStageSpec, &liveCustomerStage{})
+	err := customerStageManualRefusal("rollback", &customerReviewStageSpec, &liveCustomerStage{})
 	var ve *apierror.ValidationError
 	if !errors.As(err, &ve) {
 		t.Fatalf("err = %v, want *apierror.ValidationError", err)
 	}
-	for _, want := range []string{`"scheduled"`, "customer group (the registered contacts of the change request's project)", "approving or rejecting", "approvals"} {
+	for _, want := range []string{`"rollback"`, "customer's review", "customer group (the registered contacts of the change request's project)", "approving or rejecting", "approvals"} {
 		if !strings.Contains(ve.Msg, want) {
 			t.Errorf("message %q does not contain %q", ve.Msg, want)
 		}

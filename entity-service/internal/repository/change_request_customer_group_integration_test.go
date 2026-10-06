@@ -206,9 +206,9 @@ func TestChangeRequestFlowIntegration_CustomerGroupNormalLifecycle(t *testing.T)
 	f.driveToCustomerApproval(id)
 
 	// Entering Customer Approval provisioned the stage: one REQUESTED row per
-	// group member, assignment group = the customer group, and the manual
-	// "record the customer's approval" is not offered (asserted by
-	// driveToCustomerApproval: legalNextStates is [canceled]).
+	// group member, assignment group = the customer group, and the customer's
+	// approval is not offered to staff (asserted by driveToCustomerApproval:
+	// legalNextStates is [authorize, canceled]).
 	stages := f.stages(id)
 	if got := f.labels(id); strings.Join(got, ",") != "Peer Approval,CAB Approval,Customer Approval" {
 		t.Fatalf("stages after CAB approval = %v", got)
@@ -396,12 +396,14 @@ func TestChangeRequestFlowIntegration_CustomerGroupFirstResponderWins(t *testing
 	}
 }
 
-// Fallback: a project without registered contacts, or nobody eligible among
-// them -> no stage, and the manual paths work exactly as before. ("No project"
-// is no longer a way to get here: a box ticked on a change with no Customer
+// Nobody to ask: a project without registered contacts, or nobody eligible among
+// them -> no customer stage. There is NO manual way out any more: the customer's
+// approval / review can only be given by the customer, so staff are left with
+// Cancel and Re-schedule (Customer Approval) / Roll back (Customer Review). ("No
+// project" is not a way to get here: a box ticked on a change with no Customer
 // Project is refused at Request Approval -- see
 // TestChangeRequestLockIntegration_RequestApprovalNeedsAProject.)
-func TestChangeRequestFlowIntegration_CustomerGroupFallbackToManual(t *testing.T) {
+func TestChangeRequestFlowIntegration_CustomerGroupNobodyToAsk(t *testing.T) {
 	cases := []struct {
 		name    string
 		project *string
@@ -415,30 +417,52 @@ func TestChangeRequestFlowIntegration_CustomerGroupFallbackToManual(t *testing.T
 	for _, tc := range cases {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
-			f := newCustomerGroupFlow(t)
-			if tc.prepare != nil {
-				tc.prepare(f)
-			}
-			id := f.createWithProject(domain.ChangeRequestTypeNormal, tc.project, true, true)
-			f.requestApproval(id)
-			f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
-			if n := len(f.customerStages(id)); n != 0 {
-				t.Fatalf("customer stage provisioned: %d", n)
-			}
-			f.step(id, domain.ChangeRequestStateScheduled, "SCHEDULED", "implement", "canceled")
-			if approved, _ := f.customerOutcome(id); !approved {
-				t.Fatal("manual record did not stamp is_customer_approval_required")
-			}
-			f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
-			f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
-			f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
-			if n := len(f.customerStages(id)); n != 0 {
-				t.Fatalf("customer review stage provisioned: %d", n)
-			}
-			f.step(id, domain.ChangeRequestStateClosed, "CLOSED")
-			if _, reviewed := f.customerOutcome(id); !reviewed {
-				t.Fatal("manual close did not stamp is_customer_review_required")
-			}
+			t.Run("Customer Approval", func(t *testing.T) {
+				f := newCustomerGroupFlow(t)
+				if tc.prepare != nil {
+					tc.prepare(f)
+				}
+				id := f.createWithProject(domain.ChangeRequestTypeNormal, tc.project, true, false)
+				f.requestApproval(id)
+				f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
+				if n := len(f.customerStages(id)); n != 0 {
+					t.Fatalf("customer stage provisioned: %d", n)
+				}
+				_, err := f.patchState(id, domain.ChangeRequestStateScheduled)
+				f.wantValidationError("manual scheduled with nobody to ask", err,
+					`state "scheduled" cannot be set manually from customer_approval: the customer's approval can only be given by the customer in the Customer Portal; cancel the change or re-schedule it instead`)
+				f.expect(id, "after the refused manual scheduled", "CUSTOMER_APPROVAL", "authorize", "canceled")
+				if approved, _ := f.customerOutcome(id); approved {
+					t.Fatal("a refused manual scheduled stamped is_customer_approval_required")
+				}
+				// What staff have: cancel it.
+				f.step(id, domain.ChangeRequestStateCanceled, "CANCELED")
+			})
+			t.Run("Customer Review", func(t *testing.T) {
+				f := newCustomerGroupFlow(t)
+				if tc.prepare != nil {
+					tc.prepare(f)
+				}
+				id := f.createWithProject(domain.ChangeRequestTypeNormal, tc.project, false, true)
+				f.requestApproval(id)
+				f.approvePeerAndCAB(id, "SCHEDULED", "implement", "canceled")
+				f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
+				f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
+				// Nobody is asked, so a failed review is staff's to give (Roll
+				// back stays on offer) but a passed one never is.
+				f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "rollback", "canceled")
+				if n := len(f.customerStages(id)); n != 0 {
+					t.Fatalf("customer review stage provisioned: %d", n)
+				}
+				_, err := f.patchState(id, domain.ChangeRequestStateClosed)
+				f.wantValidationError("manual closed with nobody to ask", err,
+					`state "closed" cannot be set manually from customer_review: the customer's review can only be given by the customer in the Customer Portal; roll the change back or cancel it instead`)
+				f.expect(id, "after the refused manual closed", "CUSTOMER_REVIEW", "rollback", "canceled")
+				if _, reviewed := f.customerOutcome(id); reviewed {
+					t.Fatal("a refused manual closed stamped is_customer_review_required")
+				}
+				f.step(id, domain.ChangeRequestStateRollback, "ROLLBACK")
+			})
 		})
 	}
 }
@@ -548,14 +572,16 @@ func TestChangeRequestFlowIntegration_CustomerGroupIsolatesCustomers(t *testing.
 }
 
 // While a customer stage is live the manual transitions are refused with a
-// readable 400, and nothing is stamped.
+// readable 400, and nothing is stamped: the customer's own answer is the only
+// way on (the same refusal as with nobody to ask), Rollback out of Customer
+// Review is theirs too while they are asked, and Cancel stays.
 func TestChangeRequestFlowIntegration_CustomerGroupRefusesManualTransition(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeStandard, sp(crScopeProjectA), true, true)
 	f.requestApproval(id)
 	_, err := f.patchState(id, domain.ChangeRequestStateScheduled)
-	f.wantValidationError("manual scheduled", err, "approving or rejecting it in the change request's approvals")
-	f.wantValidationError("manual scheduled", err, `the customer group (the registered contacts of the change request's project)`)
+	f.wantValidationMessage("manual scheduled", err,
+		`state "scheduled" cannot be set manually from customer_approval: the customer's approval can only be given by the customer in the Customer Portal; cancel the change or re-schedule it instead`)
 	f.expect(id, "after the refused scheduled", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	if approved, _ := f.customerOutcome(id); approved {
 		t.Fatal("refused PATCH stamped is_customer_approval_required")
@@ -567,7 +593,8 @@ func TestChangeRequestFlowIntegration_CustomerGroupRefusesManualTransition(t *te
 	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
 	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "canceled")
 	_, err = f.patchState(id, domain.ChangeRequestStateClosed)
-	f.wantValidationError("manual closed", err, "approving or rejecting it in the change request's approvals")
+	f.wantValidationMessage("manual closed", err,
+		`state "closed" cannot be set manually from customer_review: the customer's review can only be given by the customer in the Customer Portal; cancel the change instead`)
 	f.expect(id, "after the refused close", "CUSTOMER_REVIEW", "canceled")
 	// Rolling back is the members' call too (rejecting the review).
 	_, err = f.patchState(id, domain.ChangeRequestStateRollback)
@@ -642,17 +669,19 @@ func TestChangeRequestFlowIntegration_SeedCustomerGroupFixtures(t *testing.T) {
 
 // A customer_group_id still stored on a change request (from before the group
 // was derived) is no longer used for approvals: a project without registered
-// contacts gets no customer stage, whoever the old group's members are, and the
-// manual path stays open.
+// contacts gets no customer stage, whoever the old group's members are -- and
+// nobody answers for the customer.
 func TestChangeRequestFlowIntegration_StoredCustomerGroupIsNoLongerUsedForApprovals(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
 	// seededGroupID has real members (the seeded users); store it as the legacy group.
 	f.execSQL(`UPDATE change_request SET customer_group_id = $1 WHERE id = $2`, seededGroupID, id)
 	f.requestApproval(id)
-	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
+	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 	if n := len(f.customerStages(id)); n != 0 {
 		t.Fatalf("a customer stage was provisioned from the legacy group: %+v", f.customerStages(id))
 	}
-	f.step(id, domain.ChangeRequestStateScheduled, "SCHEDULED", "implement", "canceled")
+	_, err := f.patchState(id, domain.ChangeRequestStateScheduled)
+	f.wantValidationError("manual scheduled", err, "can only be given by the customer in the Customer Portal")
+	f.expect(id, "after the refused manual scheduled", "CUSTOMER_APPROVAL", "authorize", "canceled")
 }

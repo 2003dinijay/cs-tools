@@ -426,8 +426,9 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchWhoMayAnswer(t *testing.T)
 
 // A contact registered after the request went out was not asked: refused, with
 // the change as it was. And a change in Customer Approval with nobody asked (no
-// eligible contact when it got there) has nothing to answer: 409, and the manual
-// path stays open for WSO2.
+// eligible contact when it got there) has nothing to answer: it stays where it
+// is, and WSO2 cannot answer for the customer either (cancel or re-schedule are
+// what staff have).
 func TestChangeRequestCustomerOutcomeIntegration_PatchWhenNobodyWasAsked(t *testing.T) {
 	t.Run("a contact registered afterwards was not asked", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
@@ -452,14 +453,14 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchWhenNobodyWasAsked(t *test
 	// visible to its project's registered contacts, and the customer's first act
 	// gives it the stage it lacks, so the customer's answer is recorded like any
 	// other; a STRICT one was never designated to anybody, so it does not exist
-	// for the customers, and WSO2 records the answer as before.
+	// for the customers, and WSO2 does not answer for them either: it waits.
 	t.Run("no customer request is pending, strict: invisible to the customers", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		f.useVisibility(visStrictSinceLongAgo())
 		// Project C has no contact when the change reaches Customer Approval.
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
 		f.requestApproval(id)
-		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
+		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 		if n := len(f.customerStages(id)); n != 0 {
 			t.Fatalf("customer stage provisioned for a project without contacts: %+v", f.customerStages(id))
 		}
@@ -474,14 +475,17 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchWhenNobodyWasAsked(t *test
 		f.wantNotFound("answering a change request nobody designated to them", err)
 		_, err = f.approveAs(id, late, false)
 		f.wantNotFound("rejecting a change request nobody designated to them", err)
-		f.expect(id, "after the refused answers", "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
+		f.expect(id, "after the refused answers", "CUSTOMER_APPROVAL", "authorize", "canceled")
 		if a, _ := f.customerOutcome(id); a {
 			t.Fatal("flag stamped by a refused answer")
 		}
-		// WSO2 records it, as before.
-		f.step(id, domain.ChangeRequestStateScheduled, "SCHEDULED", "implement", "canceled")
-		if a, _ := f.customerOutcome(id); !a {
-			t.Fatal("manual record of the customer's approval did not stamp the flag")
+		// WSO2 does not record it for them: the manual scheduled is refused, and
+		// nothing is stamped.
+		_, err = f.patchState(id, domain.ChangeRequestStateScheduled)
+		f.wantValidationError("WSO2 answering for a customer who was never asked", err, "can only be given by the customer in the Customer Portal")
+		f.expect(id, "after the refused manual scheduled", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		if a, _ := f.customerOutcome(id); a {
+			t.Fatal("a refused manual scheduled stamped the flag")
 		}
 	})
 
@@ -490,7 +494,7 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchWhenNobodyWasAsked(t *test
 		// The default policy has no cutover: every change request is legacy.
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
 		f.requestApproval(id)
-		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
+		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 		if n := len(f.customerStages(id)); n != 0 {
 			t.Fatalf("customer stage provisioned for a project without contacts: %+v", f.customerStages(id))
 		}
@@ -529,13 +533,13 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchRespectsTheFlagLock(t *tes
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
 	f.driveToCustomerApproval(id)
-	// WSO2 stamped the flag by hand while the request was still out.
-	if _, err := f.patch(id, domain.PatchChangeRequestRequest{IsCustomerApproved: boolp(true)}); err != nil {
-		t.Fatalf("internal stamp: %v", err)
-	}
-	f.expect(id, "after the internal stamp (state untouched)", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	// The flag is already true while the request is still out -- as a row synced
+	// from ServiceNow can be (WSO2 itself can no longer stamp it: see
+	// ..._InternalFlagStampRefused).
+	f.execSQL(`UPDATE change_request SET is_customer_approval_required = true WHERE id = $1`, id)
+	f.expect(id, "with the flag already stored (state untouched)", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	if a, _ := f.customerOutcome(id); !a {
-		t.Fatal("internal stamp did not take")
+		t.Fatal("the stored flag is not read back")
 	}
 	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 
@@ -618,20 +622,32 @@ func TestChangeRequestCustomerOutcomeIntegration_ExternalWhitelist(t *testing.T)
 	}
 }
 
-// The internal flag stamp is untouched: WSO2 recording the answer by hand with
-// {isCustomerApproved: true} stamps the flag and nothing else, as before.
-func TestChangeRequestCustomerOutcomeIntegration_InternalFlagStampUnchanged(t *testing.T) {
+// WSO2 cannot record the customer's answer by hand: {isCustomerApproved: true}
+// from an internal caller used to stamp the flag (leaving the state where it
+// was); it is refused now, with the stage, the state and the flag exactly as
+// they were. The customer's own answer still works afterwards.
+func TestChangeRequestCustomerOutcomeIntegration_InternalFlagStampRefused(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
 	f.driveToCustomerApproval(id)
-	if _, err := f.patch(id, domain.PatchChangeRequestRequest{IsCustomerApproved: boolp(true)}); err != nil {
-		t.Fatalf("internal stamp: %v", err)
+	alias := map[string]string{crScopeUserA1: "alice", crScopeUserA2: "bob"}
+	before := f.customerSnapshot(id, alias)
+	for _, v := range []bool{true, false} {
+		_, err := f.patch(id, domain.PatchChangeRequestRequest{IsCustomerApproved: boolp(v)})
+		f.wantValidationError(fmt.Sprintf("internal isCustomerApproved=%v", v), err, "isCustomerApproved cannot be set on the customer's behalf")
 	}
-	f.expect(id, "after the internal stamp", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.expect(id, "after the refused internal stamps", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
-	if a, _ := f.customerOutcome(id); !a {
-		t.Fatal("internal stamp did not take")
+	if a, _ := f.customerOutcome(id); a {
+		t.Fatal("an internal caller stamped the customer's approval")
 	}
+	if after := f.customerSnapshot(id, alias); after != before {
+		t.Fatalf("a refused internal stamp changed the change request:\n  before: %s\n  after:  %s", before, after)
+	}
+	if _, err := f.approveAs(id, crScopeUserA1, true); err != nil {
+		t.Fatalf("the customer's own answer after the refused stamps: %v", err)
+	}
+	f.expect(id, "after the customer approved", "SCHEDULED", "implement", "canceled")
 }
 
 // Two contacts answer at once: exactly one answer is recorded, the other is
