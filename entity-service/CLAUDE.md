@@ -3280,17 +3280,25 @@ nothing.
   a concurrent edit cannot deadlock. Two contacts answering at once serialise on the
   `change_request` lock: one answers, the other gets the 409
   (`TestChangeRequestCustomerOutcomeIntegration_ConcurrentAnswers`).
-* **Exposure of internal states (reported, not changed here).** A customer's reads are
-  scoped to the projects they are a registered contact of
+* **Exposure of internal states (partly closed in the customer portal's backend).** A
+  customer's reads here are scoped to the projects they are a registered contact of
   (`change_request_visibility` / `approval_stage_visibility`, migration 0145) and
-  nothing there or in the search / get / approvals queries restricts them by *state*:
-  `POST /change-requests/search` returns a project's change requests in `new` /
-  `assess` / `authorize` to its customers too (observed on the local stack), and
-  `GET /change-requests/{id}` and its approvals follow the same policies. The
-  customer portal's webapp hides those states client-side only
-  (`resolveAllowedCrStateIds`). A server-side rule would belong in the visibility
-  policies (and the stats queries) and is a product decision about what a customer may
-  see, so it is left to a separate change.
+  nothing there or in the search / get / approvals queries restricts them by *state*,
+  so entity-service itself returns a project's change requests in `new` / `assess` /
+  `authorize` (and the Peer / CAB stages of the latter two) to its customers. The
+  customer portal's backend-v2 is where those states are "internal, never
+  customer-facing" (it has no vocabulary for them): its change-request **search** now
+  always narrows `filters.states` to the customer-visible set, so a customer can no
+  longer list them by sending no `stateKeys` (the webapp used to be the only thing
+  that kept them out, by always sending the allowed keys itself; observed on the local
+  stack: `POST /projects/{id}/change-requests/search` returned all eight fixtures,
+  `new` / `assess` / `authorize` included, now the three customer-visible ones).
+  **Still open:** `GET /change-requests/{id}` and `GET /change-requests/{id}/approvals`
+  answer for any id the caller knows, whatever the state, here and through backend-v2.
+  Ids are random UUIDs that now only reach a customer from a list, so this is a
+  disclosure only for someone who already holds one, but the rule belongs in the
+  visibility policies (and the stats queries) and is a product decision about what a
+  customer may see, so it is left to a separate change.
 * Tests: `TestChangeRequestCustomerOutcomeIntegration_*` (real Postgres,
   `CHANGE_REQUEST_TEST_DSN`: lifecycle, rejections, PATCH == decision route, out of
   state, who may answer, nobody asked, the flag lock, the whitelist, concurrency,

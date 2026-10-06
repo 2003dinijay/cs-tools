@@ -462,6 +462,14 @@ its own whitelist for external callers, so a request that bypassed this layer st
 change request. Route wiring is `registerChangeRequestRoutes` in `cmd/server/main.go`, covered by
 `TestChangeRequestRouteGating`.
 
+**Change-request search never asks for the internal states.** `POST /projects/{id}/change-requests/search`
+used to forward whatever `stateKeys` the caller sent -- none meant no state filter, i.e. New / Assess /
+Authorize too -- and relied on the webapp to send only the allowed keys. `dto.BuildEntitySearchChangeRequestsRequest`
+now always sends `filters.states`: the requested states that exist in this API's vocabulary (`crStateIDs`), or
+every customer-visible state (everything but New, Assess, Authorize) when none is left. `GET /change-requests/{id}`
+and `.../approvals` still answer for any id (the rule for them belongs where visibility is decided; see
+entity-service/CLAUDE.md "Customer answers through PATCH").
+
 **When you add a field a customer may set, add it to `ChangeRequestCustomerUpdateRequest` and say
 why here; a field in `ChangeRequestUpdateRequest` is staff-only.**
 

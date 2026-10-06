@@ -16,7 +16,10 @@
 
 package dto
 
-import "strconv"
+import (
+	"sort"
+	"strconv"
+)
 
 // crStateIDs mirrors entity-service's private snCRStateIDMap
 // (internal/service/sn_change_request_service.go) — ServiceNow's own
@@ -68,6 +71,40 @@ var crImpactLabels = map[string]string{
 	"high":   "High",
 	"medium": "Medium",
 	"low":    "Low",
+}
+
+// customerVisibleChangeRequestStates is what a change-request search may return:
+// the states this API has a vocabulary for (crStateIDs), which is every state
+// except the three internal pre-approval ones -- New, Assess, Authorize -- that
+// are "internal, never customer-facing" here (restrictedChangeRequestStateLabels,
+// which keeps them out of GET /projects/{id}/filters' changeRequestStates).
+//
+// The filter dropdown hiding them is not a rule while the search accepts any
+// state list: a search with no stateKeys used to return the project's whole set,
+// internal states included, and the webapp only avoided that by always sending
+// the allowed keys itself. The search now narrows whatever it is asked for to
+// this set, so the restriction holds for every caller of the API. States are
+// returned in a fixed order.
+func customerVisibleChangeRequestStates() []string {
+	out := make([]string, 0, len(crStateIDs))
+	for state := range crStateIDs {
+		out = append(out, state)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// restrictToCustomerVisibleStates is the state filter a search is sent with:
+// the requested states (already translated, and already limited to the ones in
+// crStateIDs -- crIDsToEnums skips a key it cannot map, which is every key of a
+// restricted state), or every customer-visible state when none is left. That
+// also covers a request for restricted states only: it gets the default set, the
+// same as a request naming no state, not the restricted rows it asked for.
+func restrictToCustomerVisibleStates(requested []string) []string {
+	if len(requested) == 0 {
+		return customerVisibleChangeRequestStates()
+	}
+	return requested
 }
 
 // crIDsToEnums converts the frontend's numeric filter ids (stateKeys,

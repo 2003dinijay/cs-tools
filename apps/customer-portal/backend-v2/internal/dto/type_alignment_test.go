@@ -17,6 +17,7 @@
 package dto
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
@@ -112,6 +113,47 @@ func TestBuildEntitySearchChangeRequestsRequest_ScopesProjectAndTranslatesKeys(t
 	}
 	if len(got.Filters.Impacts) != 1 || got.Filters.Impacts[0] != "high" {
 		t.Fatalf("Impacts = %v, want [high]", got.Filters.Impacts)
+	}
+}
+
+// TestBuildEntitySearchChangeRequestsRequest_NeverAsksForInternalStates pins that
+// the change-request search is limited to the states a customer may see: with
+// no stateKeys it asks for every customer-visible state rather than for no state
+// filter at all (which returned New / Assess / Authorize too), and no stateKeys
+// -- known, unknown or restricted -- can widen it again.
+func TestBuildEntitySearchChangeRequestsRequest_NeverAsksForInternalStates(t *testing.T) {
+	visible := []string{"canceled", "closed", "customer_approval", "customer_review", "implement", "review", "rollback", "scheduled"}
+	restricted := []string{"new", "assess", "authorize"}
+
+	for name, keys := range map[string][]int{
+		"no keys":                            nil,
+		"only the restricted ServiceNow ids": {-3, -4, -5},
+		"only unknown ids":                   {99, 1000},
+	} {
+		got := BuildEntitySearchChangeRequestsRequest("proj-9", ChangeRequestSearchRequest{Filters: ChangeRequestSearchFilters{StateKeys: keys}})
+		if strings.Join(got.Filters.States, ",") != strings.Join(visible, ",") {
+			t.Errorf("%s: States = %v, want every customer-visible state %v", name, got.Filters.States, visible)
+		}
+	}
+
+	// A requested subset is honoured, restricted ids dropped from it.
+	got := BuildEntitySearchChangeRequestsRequest("proj-9", ChangeRequestSearchRequest{Filters: ChangeRequestSearchFilters{StateKeys: []int{5, -3, 3}}})
+	if strings.Join(got.Filters.States, ",") != "customer_approval,closed" {
+		t.Errorf("States = %v, want [customer_approval closed]", got.Filters.States)
+	}
+
+	// The vocabulary and the restricted set are disjoint, so the default can
+	// never include an internal state: if a restricted state is ever given an id
+	// (crStateIDs), this fails instead of leaking it.
+	for _, state := range customerVisibleChangeRequestStates() {
+		for _, r := range restricted {
+			if state == r {
+				t.Errorf("customer-visible states include the internal state %q", r)
+			}
+			if restrictedChangeRequestStateLabels[strings.ToUpper(state)] {
+				t.Errorf("customer-visible state %q is listed as restricted", state)
+			}
+		}
 	}
 }
 
