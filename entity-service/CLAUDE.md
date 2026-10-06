@@ -2651,6 +2651,8 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   | Carol Silva | `carol.silva@example.com` | `internal` → INTERNAL | same groups; peer approver on -003 (requested) / -004 (cancelled) |
   | Dave Mendis | `dave.mendis@example.com` | `customer` → EXTERNAL | registered `PORTAL_USER` contact of project 401 "Example Corp Production"; Customer Approval approver on CHG-FIXED-007, Customer Review on -008 (requested) |
   | Erin Jayawardena | `erin.jayawardena@example.com` | `customer` → EXTERNAL | same as Dave |
+  | Mira Santos | `mira.santos@lumenworks.example` | `customer` → EXTERNAL | registered `PORTAL_USER` contact of the generated project **"Lumen Works Platform"** (found by name — its id is random per database; a no-op where no such project exists, picked up by the next seed run after the seed-generator created it): its Customer Group, the people asked at Customer Approval / Customer Review |
+  | Noel Prasad | `noel.prasad@lumenworks.example` | `customer` → EXTERNAL | same as Mira |
 
   * jane.doe (internal) is the requester persona: still a *team* member of Example
     Corp ABT (so `/users/me` and `GET /teams/{id}/members` keep working) but
@@ -2660,6 +2662,11 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     CHG-FIXED-002 provisions alice, bob and carol, never john. Neither is a
     registered contact of project 401 any more (Other Corp's sam.other is
     unchanged).
+  * The seed also removes the **old group-based Customer Group** (groups 911 / 912,
+    "Example Corp Customer Approvers", with their memberships) from a database seeded
+    by an earlier version: the Customer Group is now the project's registered contacts
+    and nothing references those groups. Re-run the seed with
+    `docker-compose up -d migrate`.
   * The **`Devops Approval`** group (the peer fallback) is seeded with the three
     internal personas — it is created only when no group of that name exists.
   * **Traps** (both from `seed-team-schedule.sql`): never grant the `internal`

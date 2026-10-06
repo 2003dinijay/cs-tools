@@ -456,3 +456,113 @@ func TestChangeRequestSeedIntegration_SeedIsSelfHealing(t *testing.T) {
 	mustExec(seedSQL)
 	check("second run")
 }
+
+// TestChangeRequestSeedIntegration_LumenWorksPlatformContacts: the seed registers two customer
+// contacts (mira.santos, noel.prasad) on the generated project "Lumen Works Platform", found by
+// NAME because its id is random per database. They must meet the Customer Group criteria
+// (REGISTERED, PORTAL_USER, active customer user) so a change request on that project is put
+// to them, never to another customer's contacts. Where no such project exists the block does
+// nothing. Runs inside a rolled-back transaction, twice (idempotent).
+func TestChangeRequestSeedIntegration_LumenWorksPlatformContacts(t *testing.T) {
+	f := newSeededFlow(t)
+	raw, err := os.ReadFile(seedSQLPath)
+	if err != nil {
+		t.Skipf("seed file not readable from here (%v)", err)
+	}
+	var kept []string
+	for _, line := range strings.Split(string(raw), "\n") {
+		if trimmed := strings.TrimSpace(line); trimmed == "BEGIN;" || trimmed == "COMMIT;" {
+			continue
+		}
+		kept = append(kept, line)
+	}
+	seedSQL := strings.Join(kept, "\n")
+
+	ctx := context.Background()
+	tx, err := f.pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	mustExec := func(sql string, args ...any) {
+		t.Helper()
+		if _, err := tx.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("exec (%.70s): %v", sql, err)
+		}
+	}
+	// The Customer Group derivation (customerContactsSQL in change_request_links.go, not
+	// exported to this package): REGISTERED + PORTAL_USER role + not a deactivated user.
+	contactNames := func(projectID string) string {
+		t.Helper()
+		var names string
+		if err := tx.QueryRow(ctx, `
+			SELECT COALESCE(string_agg(n, ',' ORDER BY n), '') FROM (
+				SELECT COALESCE(NULLIF(TRIM(u.name), ''), pc.email) AS n
+				FROM project_contact pc
+				JOIN account_contact ac ON ac.id = pc.account_contact_id
+				LEFT JOIN "user" u ON LOWER(u.user_name) = LOWER(ac.user_name)
+				WHERE pc.project_id = $1::uuid
+				  AND pc.state = 'REGISTERED'::project_contact_state_enum
+				  AND COALESCE(u.is_active, true)
+				  AND EXISTS (
+				      SELECT 1
+				      FROM project_contact_group pcg
+				      JOIN project_group_role pgr ON pgr.project_group_id = pcg.project_group_id
+				      JOIN project_role pr ON pr.id = pgr.project_role_id
+				      WHERE pcg.project_contact_id = pc.id AND pr.role = 'PORTAL_USER'::project_role_enum)
+			) c`, projectID).Scan(&names); err != nil {
+			t.Fatalf("derive customer contacts: %v", err)
+		}
+		return names
+	}
+
+	// A database that already has a generated project of that name must not
+	// confuse the test: set it aside inside this transaction.
+	mustExec(`UPDATE project SET name = 'Lumen Works Platform (set aside by the test)' WHERE name = 'Lumen Works Platform'`)
+
+	// A database seeded earlier (the user's) already holds the Lumen contacts: clear
+	// them inside this transaction so the "no project" step starts from nothing.
+	mustExec(`DELETE FROM project_contact_group WHERE id IN ('00000000-0000-0000-0000-000000001436', '00000000-0000-0000-0000-000000001437')`)
+	mustExec(`DELETE FROM project_contact WHERE id IN ('00000000-0000-0000-0000-000000001426', '00000000-0000-0000-0000-000000001427')`)
+	mustExec(`DELETE FROM account_contact WHERE id IN ('00000000-0000-0000-0000-000000001416', '00000000-0000-0000-0000-000000001417')`)
+
+	// 1. No such project: the block is a no-op, and the contacts exist nowhere.
+	mustExec(seedSQL)
+	var n int
+	if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM project_contact WHERE id IN ('00000000-0000-0000-0000-000000001426', '00000000-0000-0000-0000-000000001427')`).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	if n != 0 {
+		t.Fatalf("with no Lumen Works Platform project, %d Lumen contacts were created, want 0", n)
+	}
+
+	// 2. The generator has created the project (random id, with an account): the next seed run registers them.
+	const acct, proj = "00000000-0000-0000-0000-00000000aa01", "00000000-0000-0000-0000-00000000aa02"
+	mustExec(`INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, country, city)
+	          VALUES ($1, now(), now(), 'seed', 'seed', 'Lumen Works', 'ACC-LUMEN-T', 'SF-LUMEN-T', 'Sri Lanka', 'Colombo')`, acct)
+	mustExec(`INSERT INTO project (id, created_on, updated_on, created_by, updated_by, key, sf_id, name, account_id, is_active)
+	          VALUES ($1, now(), now(), 'seed', 'seed', 'LUMEN-T', 'SF-PROJ-LUMEN-T', 'Lumen Works Platform', $2, true)`, proj, acct)
+	// A generated contact that does not qualify (no user row, no PORTAL_USER role) stays out.
+	mustExec(`INSERT INTO account_contact (id, created_on, updated_on, created_by, updated_by, is_active, user_name, account_id)
+	          VALUES ('00000000-0000-0000-0000-00000000aa03', now(), now(), 'gen', 'gen', true, 'Gen Contact <gen@example.net>', $1)`, acct)
+	mustExec(`INSERT INTO project_contact (id, created_on, updated_on, created_by, updated_by, email, state, account_contact_id, project_id)
+	          VALUES ('00000000-0000-0000-0000-00000000aa04', now(), now(), 'gen', 'gen', 'gen@example.net', 'REGISTERED', '00000000-0000-0000-0000-00000000aa03', $1)`, proj)
+
+	for _, pass := range []string{"first run", "second run"} {
+		mustExec(seedSQL)
+		if got := contactNames(proj); got != "Mira Santos,Noel Prasad" {
+			t.Errorf("%s: Lumen Works Platform customer contacts = %q, want \"Mira Santos,Noel Prasad\"", pass, got)
+		}
+		var types string
+		if err := tx.QueryRow(ctx, `SELECT string_agg(user_type::text, ',' ORDER BY email) FROM "user" WHERE id IN ('00000000-0000-0000-0000-000000000023', '00000000-0000-0000-0000-000000000024')`).Scan(&types); err != nil {
+			t.Fatal(err)
+		}
+		if types != "EXTERNAL,EXTERNAL" {
+			t.Errorf("%s: Mira and Noel are %q, want customers (EXTERNAL,EXTERNAL)", pass, types)
+		}
+		// Isolation: Example Corp's project still only has its own contacts.
+		if got := contactNames(seedProject401); got != "Dave Mendis,Erin Jayawardena" {
+			t.Errorf("%s: project 401 contacts = %q, want Dave and Erin only", pass, got)
+		}
+	}
+}

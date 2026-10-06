@@ -259,6 +259,17 @@ FROM (VALUES
 ) AS m(id, user_id)
 ON CONFLICT (id) DO UPDATE SET user_id = EXCLUDED.user_id, group_id = EXCLUDED.group_id;
 
+-- An earlier version of this seed modelled the Customer Group as a "group" of
+-- members ("Example Corp Customer Approvers", 911; 912 for the second customer)
+-- with jane.doe / john.smith in it. The Customer Group is now derived from the
+-- project's registered contacts (below) and these groups are referenced by
+-- nothing, so remove them -- and their memberships -- from a database that was
+-- seeded by that version. (No-op on a fresh one.)
+DELETE FROM team_member WHERE group_id IN (
+  '00000000-0000-0000-0000-000000000911', '00000000-0000-0000-0000-000000000912');
+DELETE FROM "group" WHERE id IN (
+  '00000000-0000-0000-0000-000000000911', '00000000-0000-0000-0000-000000000912');
+
 -- Customer Group: the registered contacts of the change request's Customer
 -- Project, derived live and read-only (entity-service CLAUDE.md, "Customer
 -- Group"). A contact is a project_contact in state REGISTERED holding the
@@ -334,6 +345,71 @@ FROM (VALUES
   ('00000000-0000-0000-0000-000000001435'::uuid, '00000000-0000-0000-0000-000000001425'::uuid)
 ) AS c(id, contact), project_group pg
 WHERE pg."group" = 'General Access'
+ON CONFLICT (id) DO NOTHING;
+
+-- "Lumen Works Platform": registered customer contacts for the generated project.
+-- The seed-generator (a separate, randomised pass that runs AFTER this script)
+-- creates projects with random names; "Lumen Works Platform" is one of them, with
+-- generated contacts that do not qualify as a Customer Group (no "user" row, no
+-- PORTAL_USER project role). So that a change request on that project has
+-- customer approvers, two real customer users are registered on it here:
+--     mira.santos@lumenworks.example   Mira Santos
+--     noel.prasad@lumenworks.example   Noel Prasad
+-- They meet the same criteria as the Example Corp contacts above: a REGISTERED
+-- project_contact holding the PORTAL_USER role (through the "General Access"
+-- project group), whose "user" is active and a customer (role 'customer', so
+-- EXTERNAL; never the internal role). The project is found BY NAME because its id
+-- is random per database; where no project of that name exists this block does
+-- nothing, and it takes effect on the next seed run after the generator has
+-- created it (`docker-compose up -d migrate` re-runs this script).
+INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user) VALUES
+  ('00000000-0000-0000-0000-000000000023', now(), now(), 'seed', 'seed', 'mira.santos@lumenworks.example', 'Mira Santos', 'Mira', 'Santos', 'mira.santos@lumenworks.example', true, false),
+  ('00000000-0000-0000-0000-000000000024', now(), now(), 'seed', 'seed', 'noel.prasad@lumenworks.example', 'Noel Prasad', 'Noel', 'Prasad', 'noel.prasad@lumenworks.example', true, false)
+ON CONFLICT (id) DO NOTHING;
+
+-- No created_by on purpose (see the personas above).
+INSERT INTO user_role (id, created_on, updated_on, user_id, role_id) VALUES
+  ('00000000-0000-0000-0000-000000000223', now(), now(), '00000000-0000-0000-0000-000000000023', '00000000-0000-0000-0000-000000000102'),
+  ('00000000-0000-0000-0000-000000000224', now(), now(), '00000000-0000-0000-0000-000000000024', '00000000-0000-0000-0000-000000000102')
+ON CONFLICT (id) DO NOTHING;
+DELETE FROM user_role
+WHERE user_id IN ('00000000-0000-0000-0000-000000000023', '00000000-0000-0000-0000-000000000024')
+  AND role_id = '00000000-0000-0000-0000-000000000101';
+
+WITH lumen AS (
+  SELECT id, account_id FROM project
+  WHERE name = 'Lumen Works Platform' AND account_id IS NOT NULL
+  ORDER BY created_on, id LIMIT 1
+)
+INSERT INTO account_contact (id, created_on, updated_on, created_by, updated_by, is_active, user_name, account_id)
+SELECT c.id, now(), now(), 'seed', 'seed', true, c.user_name, lumen.account_id
+FROM lumen, (VALUES
+  ('00000000-0000-0000-0000-000000001416'::uuid, 'mira.santos@lumenworks.example'),
+  ('00000000-0000-0000-0000-000000001417'::uuid, 'noel.prasad@lumenworks.example')
+) AS c(id, user_name)
+ON CONFLICT (id) DO UPDATE SET account_id = EXCLUDED.account_id, is_active = true;
+
+WITH lumen AS (
+  SELECT id FROM project
+  WHERE name = 'Lumen Works Platform' AND account_id IS NOT NULL
+  ORDER BY created_on, id LIMIT 1
+)
+INSERT INTO project_contact (id, created_on, updated_on, created_by, updated_by, email, state, account_contact_id, project_id)
+SELECT c.id, now(), now(), 'seed', 'seed', c.email, 'REGISTERED', c.account_contact_id, lumen.id
+FROM lumen, (VALUES
+  ('00000000-0000-0000-0000-000000001426'::uuid, 'mira.santos@lumenworks.example', '00000000-0000-0000-0000-000000001416'::uuid),
+  ('00000000-0000-0000-0000-000000001427'::uuid, 'noel.prasad@lumenworks.example', '00000000-0000-0000-0000-000000001417'::uuid)
+) AS c(id, email, account_contact_id)
+ON CONFLICT (id) DO UPDATE SET state = 'REGISTERED', project_id = EXCLUDED.project_id, account_contact_id = EXCLUDED.account_contact_id;
+
+INSERT INTO project_contact_group (id, created_on, updated_on, created_by, updated_by, project_contact_id, project_group_id)
+SELECT c.id, now(), now(), 'seed', 'seed', c.contact, pg.id
+FROM (VALUES
+  ('00000000-0000-0000-0000-000000001436'::uuid, '00000000-0000-0000-0000-000000001426'::uuid),
+  ('00000000-0000-0000-0000-000000001437'::uuid, '00000000-0000-0000-0000-000000001427'::uuid)
+) AS c(id, contact), project_group pg
+WHERE pg."group" = 'General Access'
+  AND EXISTS (SELECT 1 FROM project_contact pc WHERE pc.id = c.contact)
 ON CONFLICT (id) DO NOTHING;
 
 -- ---------------------------------------------------------------------------
