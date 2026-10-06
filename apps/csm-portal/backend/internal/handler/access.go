@@ -146,21 +146,20 @@ const (
 	PermUsePlg
 	// PermCreateWorkNote is posting a work_note-type comment on a case --
 	// POST /cases/{id}/comments, the route this gates. Deliberately broader
-	// than PermWrite at the ROUTE level (Viewer ∪ WorknoteCreator ∪
-	// CsEngineer ∪ Admin, a superset of PermWrite's CsEngineer ∪ Admin) so a
-	// Viewer- or WorknoteCreator-only caller can reach the handler at all;
-	// CaseHandler then requires the caller ALSO hold full PermWrite for any
-	// comment whose type is NOT work_note (a customer-visible reply, or any
-	// future type) -- same "broader route floor, narrower in-handler check
-	// for the more sensitive sub-action" shape as PermApproveTimeCard/
+	// than PermWrite at the ROUTE level (WorknoteCreator ∪ CsEngineer ∪
+	// Admin, a superset of PermWrite's CsEngineer ∪ Admin) so a
+	// WorknoteCreator-only caller can reach the handler at all; CaseHandler
+	// then requires the caller ALSO hold full PermWrite for any comment
+	// whose type is NOT work_note (a customer-visible reply, or any future
+	// type) -- same "broader route floor, narrower in-handler check for the
+	// more sensitive sub-action" shape as PermApproveTimeCard/
 	// PermViewSecurityCenter, just inverted: here the floor is the new
 	// permission and the narrower gate is the pre-existing one. A
-	// Viewer- or WorknoteCreator-only caller can therefore only ever post
-	// internal work notes, never a customer-visible comment.
+	// WorknoteCreator-only caller can therefore only ever post internal
+	// work notes, never a customer-visible comment.
 	//
-	// Viewer is included so Sales/Solutions-Architecture staff (who hold
-	// Viewer, not CsEngineer) can annotate a case through the same case view
-	// CS engineers use, while every other action on it stays blocked.
+	// Viewer deliberately does NOT hold this: it is the read-only role, and
+	// work notes have their own dedicated role (worknote_creator).
 	PermCreateWorkNote
 	// PermManagePlaybooks is authoring a PLG playbook template: creating one,
 	// editing it, replacing its tasks, deleting it. Admin only.
@@ -209,9 +208,7 @@ type AccessConfig struct {
 	SalesSolutions []string
 	// WorknoteCreator grants PermCreateWorkNote (see that permission's own
 	// doc comment) -- creating a work_note-type comment on a case, and
-	// nothing else. Viewer, CsEngineer and Admin hold that permission too,
-	// so this role only matters for a caller who is none of those. A holder
-	// still needs CsEngineer/Admin's own PermWrite
+	// nothing else. A holder still needs CsEngineer/Admin's own PermWrite
 	// to post a customer-visible reply, escalate, download an attachment,
 	// or any other write action; this role grants none of those.
 	WorknoteCreator []string
@@ -265,8 +262,7 @@ type portalRole struct {
 // audience check than the webapp's CsEngineer-first portal-nav choice.
 // worknote_creator is narrower still: it implies nothing but
 // PermCreateWorkNote, and even that is capped to work_note-type comments
-// only -- see that permission's own doc comment. Plain Viewer holds
-// PermCreateWorkNote too (on top of PermView), with the same cap.
+// only -- see that permission's own doc comment.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	build := func(lists ...[]string) map[string]struct{} {
 		set := make(map[string]struct{})
@@ -322,9 +318,9 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			PermManagePlaybooks:    build(cfg.Admin),
 			// The route-level floor for POST /cases/{id}/comments -- see
 			// PermCreateWorkNote's own doc comment for the in-handler
-			// narrowing that keeps a Viewer- or WorknoteCreator-only caller
-			// from posting anything but a work_note.
-			PermCreateWorkNote: build(cfg.Viewer, cfg.WorknoteCreator, cfg.CsEngineer, cfg.Admin),
+			// narrowing that keeps a WorknoteCreator-only caller from
+			// posting anything but a work_note.
+			PermCreateWorkNote: build(cfg.WorknoteCreator, cfg.CsEngineer, cfg.Admin),
 		},
 	}
 }

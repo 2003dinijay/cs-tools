@@ -412,20 +412,21 @@ func TestAccessGuard_ManagePlaybooksIsAdminOnly(t *testing.T) {
 	}
 }
 
-// TestAccessGuard_CreateWorkNoteIsForViewersWorknoteCreatorsCsEngineersAndAdmins pins
+// TestAccessGuard_CreateWorkNoteIsForWorknoteCreatorsCsEngineersAndAdmins pins
 // PermCreateWorkNote's deliberately wider holder set than PermWrite's (see
 // the constant's own doc comment) -- it's the route-level floor for POST
 // /cases/{id}/comments, with CaseHandler itself narrowing back to full
-// PermWrite for anything that isn't a work_note.
-func TestAccessGuard_CreateWorkNoteIsForViewersWorknoteCreatorsCsEngineersAndAdmins(t *testing.T) {
+// PermWrite for anything that isn't a work_note. Viewer is read-only and does
+// NOT hold it.
+func TestAccessGuard_CreateWorkNoteIsForWorknoteCreatorsCsEngineersAndAdmins(t *testing.T) {
 	g := NewAccessGuard(testAccessConfig())
-	for _, role := range []string{"test-viewer", "test-worknote-creator", "test-cs-engineer", "test-admin"} {
+	for _, role := range []string{"test-worknote-creator", "test-cs-engineer", "test-admin"} {
 		if status, _ := serveWithRoles(g, PermCreateWorkNote, []string{role}); status != http.StatusNoContent {
 			t.Errorf("%s: status = %d, want 204", role, status)
 		}
 	}
 	for _, role := range []string{
-		"test-escalator", "test-attachment-downloader",
+		"test-viewer", "test-escalator", "test-attachment-downloader",
 		"test-usage-metrics-viewer", "test-timecard-approver", "test-dashboard-designer",
 		"test-sales-solutions",
 	} {
@@ -433,11 +434,32 @@ func TestAccessGuard_CreateWorkNoteIsForViewersWorknoteCreatorsCsEngineersAndAdm
 			t.Errorf("%s must not hold PermCreateWorkNote: status = %d, want 403", role, status)
 		}
 	}
-	// viewer and worknote_creator hold ONLY this -- not the broader PermWrite a
+	// worknote_creator holds ONLY this -- not the broader PermWrite a
 	// customer-visible reply (or any other write) needs.
-	for _, role := range []string{"test-viewer", "test-worknote-creator"} {
-		if status, _ := serveWithRoles(g, PermWrite, []string{role}); status != http.StatusForbidden {
-			t.Errorf("%s must not hold PermWrite: status = %d, want 403", role, status)
-		}
+	if status, _ := serveWithRoles(g, PermWrite, []string{"test-worknote-creator"}); status != http.StatusForbidden {
+		t.Errorf("worknote_creator must not hold PermWrite: status = %d, want 403", status)
+	}
+}
+
+// TestAccessGuard_SalesSAStaffRoleSet pins the role set a Sales/SA staff member
+// holds in practice (read-only viewer plus a few specialised read/act roles,
+// with worknote_creator the only one that adds a comment): the viewer-ish
+// roles alone cannot add a work note, adding worknote_creator can, and even
+// then nothing beyond a work note is writable.
+func TestAccessGuard_SalesSAStaffRoleSet(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	readOnlyish := []string{
+		"test-viewer", "test-escalator", "test-attachment-downloader",
+		"test-usage-metrics-viewer", "test-timecard-approver",
+	}
+	if status, _ := serveWithRoles(g, PermCreateWorkNote, readOnlyish); status != http.StatusForbidden {
+		t.Errorf("without worknote_creator: PermCreateWorkNote status = %d, want 403", status)
+	}
+	withNotes := append(append([]string{}, readOnlyish...), "test-worknote-creator")
+	if status, _ := serveWithRoles(g, PermCreateWorkNote, withNotes); status != http.StatusNoContent {
+		t.Errorf("with worknote_creator: PermCreateWorkNote status = %d, want 204", status)
+	}
+	if status, _ := serveWithRoles(g, PermWrite, withNotes); status != http.StatusForbidden {
+		t.Errorf("with worknote_creator: PermWrite status = %d, want 403 (a work note is not a write)", status)
 	}
 }

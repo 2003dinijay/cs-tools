@@ -372,7 +372,7 @@ func main() {
 	route("GET /cases/{id}", handler.PermViewSharedEntity, caseHandler.GetCase)
 	route("PATCH /cases/{id}", handler.PermWrite, caseHandler.PatchCase)
 	// PermCreateWorkNote, not PermWrite -- the route-level floor is
-	// deliberately broader (includes viewer and worknote_creator) since a work_note is
+	// deliberately broader (includes worknote_creator) since a work_note is
 	// a narrower action than every other write this handler's siblings
 	// guard; CreateCaseComment itself requires full PermWrite for any
 	// comment that isn't a work_note -- see PermCreateWorkNote's own doc

@@ -73,12 +73,12 @@ export interface PortalAccess {
   canWrite: boolean;
   /**
    * Posting an internal work note on a case. `cs_engineer`/`admin` (full
-   * write) can, and so can a plain `viewer` or `worknote_creator` -- which is
-   * ALL those two can do: no customer-visible reply, no attachment upload, no
-   * other write. Mirrors the backend's `PermCreateWorkNote`, whose handler
-   * narrows a non-write caller to `type=work_note` only. Callers that offer a
-   * composer to someone with this but not {@link canWrite} must lock it to
-   * internal notes.
+   * write) can, and so can `worknote_creator` -- which is ALL that role can
+   * do: no customer-visible reply, no attachment upload, no other write. A
+   * plain `viewer` is read-only and cannot. Mirrors the backend's
+   * `PermCreateWorkNote`, whose handler narrows a non-write caller to
+   * `type=work_note` only. Callers that offer a composer to someone with this
+   * but not {@link canWrite} must lock it to internal notes.
    */
   canAddWorkNotes: boolean;
   /**
@@ -123,8 +123,8 @@ export interface PortalAccess {
  * approving a time card is a similarly dedicated responsibility, but it
  * isn't a flag on this type at all, see `canUseTimeCardsAndUpdates`'s own
  * doc comment for why; `attachment_downloader` adds just that one ability;
- * `viewer` and `worknote_creator` also add internal work notes (see
- * `canAddWorkNotes`); every other role is view-only here.
+ * `worknote_creator` also adds internal work notes (see `canAddWorkNotes`);
+ * every other role, `viewer` included, is view-only here.
  *
  * Mirrors the backend's `AccessGuard` policy so controls can be hidden up
  * front — but it is a UX affordance only. The backend's 403 is the real gate,
@@ -164,7 +164,7 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     canUseOperations: full,
     canUseTimeCardsAndUpdates: full || has(PORTAL_ROLE.timecardApprover),
     canWrite: full,
-    canAddWorkNotes: full || has(PORTAL_ROLE.viewer) || has(PORTAL_ROLE.worknoteCreator),
+    canAddWorkNotes: full || has(PORTAL_ROLE.worknoteCreator),
     canCreateUser: isAdmin,
     canUseSecurityCenter: full,
     canUsePlg: full,

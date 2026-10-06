@@ -36,7 +36,8 @@ The sections below appear in the left sidebar in this order:
 Accounts set up for the Sales and Solutions Architecture view see a different sidebar in place
 of the one above: **Sales / Solutions Architecture**, with seven tabs: Cases, Accounts, Projects,
 Team schedule, User scan, Usage metrics, and Customer health. **Cases** opens the same cases list
-and case view as above; on a case you can add internal work notes but nothing else.
+and case view as above, read-only. With the worknote_creator role you can also add internal work
+notes on a case, but nothing else.
 
 Most of these sections have their own topic further down this page with the specifics.
 

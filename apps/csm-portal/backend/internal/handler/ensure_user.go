@@ -39,10 +39,10 @@ type entityUserProvisioningClient interface {
 // ensureUserProvisioned makes sure the caller has a "user" row in
 // entity-service before a write that needs one to attribute itself to.
 //
-// A viewer-, worknote_creator- or escalator-only caller reaches POST
+// A worknote_creator- or escalator-only caller reaches POST
 // /cases/{id}/comments or POST /cases/{id}/escalations purely on the
-// strength of an Asgardeo role grant (AUTH_VIEWER_ROLES /
-// AUTH_WORKNOTE_CREATOR_ROLES / AUTH_ESCALATOR_ROLES) -- unlike the admin-only "Add User" flow, holding
+// strength of an Asgardeo role grant (AUTH_WORKNOTE_CREATOR_ROLES /
+// AUTH_ESCALATOR_ROLES) -- unlike the admin-only "Add User" flow, holding
 // one of those roles never provisions a "user" row anywhere. Without one,
 // entity-service's own identity resolution for the write (emailFromJWT ->
 // GetUserByEmail) fails it outright. Call this immediately before such a

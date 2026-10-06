@@ -312,54 +312,7 @@ func TestCreateCaseComment(t *testing.T) {
 		}
 	})
 
-	// ----- PermCreateWorkNote boundary: viewer-only caller -----
-	// A plain viewer (Sales/SA staff) holds the same narrow work-note-only
-	// grant as worknote_creator: an internal note, nothing else.
-
-	t.Run("viewer-only caller is forbidden from posting a customer-visible comment", func(t *testing.T) {
-		called := false
-		client := &mockEntityCaseClient{
-			createCaseCommentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
-				called = true
-				return []byte(`{}`), nil
-			},
-		}
-		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
-		r := withViewerOnlyUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
-		r.SetPathValue("id", "case-1")
-		w := httptest.NewRecorder()
-		h.CreateCaseComment(w, r)
-		assertStatus(t, w, http.StatusForbidden)
-		assertErrorMessage(t, w, ErrMsgForbidden)
-		if called {
-			t.Error("entity CreateCaseComment must not be called when the permission gate denies the request")
-		}
-	})
-
-	t.Run("viewer-only caller can post a work_note, rebuilt server-side", func(t *testing.T) {
-		var forwardedBody []byte
-		client := &mockEntityCaseClient{
-			getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"state":"work_in_progress"}`), nil
-			},
-			createCaseCommentFn: func(_ context.Context, _ string, body []byte) ([]byte, error) {
-				forwardedBody = body
-				return []byte(`{}`), nil
-			},
-		}
-		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
-		const trickPayload = `{"type":"comment","type":"work_note","content":"on it"}`
-		r := withViewerOnlyUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(trickPayload)))
-		r.SetPathValue("id", "case-1")
-		w := httptest.NewRecorder()
-		h.CreateCaseComment(w, r)
-		assertStatus(t, w, http.StatusCreated)
-		if want := `{"type":"work_note","content":"on it"}`; string(forwardedBody) != want {
-			t.Errorf("forwarded body = %s, want %s (rebuilt server-side, not the caller-supplied bytes)", forwardedBody, want)
-		}
-	})
-
-	t.Run("viewer-only caller can only ever post type=work_note", func(t *testing.T) {
+	t.Run("worknote_creator-only caller can only ever post type=work_note", func(t *testing.T) {
 		for _, payload := range []string{
 			`{"content":"no type"}`,
 			`{"type":"activity","content":"x"}`,
@@ -376,53 +329,14 @@ func TestCreateCaseComment(t *testing.T) {
 				},
 			}
 			h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
-			r := withViewerOnlyUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(payload)))
+			r := withWorknoteCreatorUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(payload)))
 			r.SetPathValue("id", "case-1")
 			w := httptest.NewRecorder()
 			h.CreateCaseComment(w, r)
 			assertStatus(t, w, http.StatusForbidden)
 			if called {
-				t.Errorf("payload %s: entity CreateCaseComment must not be called for a viewer-only caller", payload)
+				t.Errorf("payload %s: entity CreateCaseComment must not be called for a worknote_creator-only caller", payload)
 			}
-		}
-	})
-
-	t.Run("viewer-only caller with no user row yet is provisioned before the work note is posted", func(t *testing.T) {
-		var createUserCalled, createCommentCalled bool
-		client := &mockEntityCaseClient{
-			getUserMeFn: func(_ context.Context) ([]byte, error) {
-				return nil, &apierror.Error{StatusCode: http.StatusNotFound, Body: "not found"}
-			},
-			createUserFn: func(_ context.Context, body []byte) ([]byte, error) {
-				createUserCalled = true
-				var req struct {
-					Email string   `json:"email"`
-					Roles []string `json:"roles"`
-				}
-				if err := json.Unmarshal(body, &req); err != nil {
-					t.Fatalf("decode CreateUser body: %v", err)
-				}
-				if req.Email != testViewerOnlyUser.Email || len(req.Roles) != 1 || req.Roles[0] != "internal" {
-					t.Errorf("CreateUser body = %+v, want the caller's own email and [\"internal\"]", req)
-				}
-				return []byte(`{"id":"new-id"}`), nil
-			},
-			createCaseCommentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
-				createCommentCalled = true
-				return []byte(`{}`), nil
-			},
-		}
-		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
-		r := withViewerOnlyUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(`{"type":"work_note","content":"noted"}`)))
-		r.SetPathValue("id", "case-1")
-		w := httptest.NewRecorder()
-		h.CreateCaseComment(w, r)
-		assertStatus(t, w, http.StatusCreated)
-		if !createUserCalled {
-			t.Error("entity CreateUser was not called for a viewer-only caller with no user row")
-		}
-		if !createCommentCalled {
-			t.Error("entity CreateCaseComment was not called")
 		}
 	})
 

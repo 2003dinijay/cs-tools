@@ -317,7 +317,7 @@ type CaseTabId =
 const TASKS_FEATURE_ENABLED = false;
 
 // Shown in the composer for a caller who can add internal work notes but has no
-// full write access (a plain viewer, a worknote_creator).
+// full write access (a worknote_creator).
 const WORK_NOTE_ONLY_REASON = "You can only add internal work notes on this case.";
 
 const TAB_DEFS: Array<{
@@ -386,8 +386,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
     canUseOperations,
     canUseTimeCardsAndUpdates,
   } = usePortalAccess();
-  // A viewer (or worknote_creator) without full write may still add an internal
-  // work note -- and nothing else on this page. The composer is locked to
+  // A worknote_creator without full write may still add an internal work
+  // note -- and nothing else on this page. The composer is locked to
   // internal notes for them, the same lock a not-yet-started case gets.
   const workNoteOnly = !canWrite && canAddWorkNotes;
   const routedCaseId = useNormalizedIdParam("caseId");

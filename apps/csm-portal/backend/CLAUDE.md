@@ -167,7 +167,7 @@ and reports a sanitized 502 instead; every other SCIM failure status still goes 
 
 ## Provisioning a "user" row on demand (`ensureUserProvisioned`)
 
-A `viewer`-, `worknote_creator`- or `escalator`-only caller reaches `POST /cases/{id}/comments`
+A `worknote_creator`- or `escalator`-only caller reaches `POST /cases/{id}/comments`
 (the `!hasFullWrite` branch) or `POST /cases/{id}/escalations` purely on the strength
 of an Asgardeo role grant — unlike the admin-only "Add User" flow above, neither
 `AUTH_WORKNOTE_CREATOR_ROLES` nor `AUTH_ESCALATOR_ROLES` provisions a `"user"` row

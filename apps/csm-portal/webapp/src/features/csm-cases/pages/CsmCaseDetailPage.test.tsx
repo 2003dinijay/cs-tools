@@ -1572,9 +1572,23 @@ describe("CsmCaseDetailPage — role-based controls", () => {
     expect(probe).toHaveAttribute("data-attachments-disabled", "false");
   });
 
-  it("a viewer has no action bar and can only add an internal work note", () => {
-    for (const role of ["viewer", "worknote_creator"]) {
-      currentUserRoles.value = [role];
+  it("a viewer is read-only: neither the action bar nor any composer", () => {
+    currentUserRoles.value = ["viewer"];
+    renderPage();
+    expect(screen.queryByRole("button", { name: /stub request info/i })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /compose a reply|add an internal work note/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("a worknote_creator has no action bar and can only add an internal work note", () => {
+    // Includes the role set a Sales/SA staff member holds: viewer plus a few
+    // specialised read/act roles, with worknote_creator adding the one comment.
+    for (const roles of [
+      ["worknote_creator"],
+      ["viewer", "escalator", "attachment_downloader", "usage_metrics_viewer", "timecard_approver", "worknote_creator"],
+    ]) {
+      currentUserRoles.value = roles;
       const { unmount } = renderPage();
       expect(screen.queryByRole("button", { name: /stub request info/i })).not.toBeInTheDocument();
       // Never offered a customer-visible reply, only the internal note.
