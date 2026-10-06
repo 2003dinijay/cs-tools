@@ -105,18 +105,18 @@ From the detail page a CS engineer can:
   first, which is recorded as an internal note (the customer does not see it)
   before the state change is applied. **Go back** in that dialog leaves the
   change as it was.
-- **Bypass the customer's answer**: while a change waits at Customer Approval
-  or Customer Review, the customer answers in the Customer Portal. If no one is
-  being asked (the project has no registered contacts, or the request was
-  superseded), an engineer can answer for them from **Change state** ->
-  **Bypass customer approval** (moves the change to Scheduled) or **Bypass
-  customer review** (moves it to Closed). They are menu-only, never a main
-  button, because the customer is not asked: you must state a reason, which is
-  recorded as an internal note first. While the customer's request is still
-  pending the entry stays visible but disabled, and says who the change is
-  waiting on. At Customer Review, **Roll back** is held back the same way while
-  the review is pending, since a failed review is the customer's to give in the
-  Customer Portal.
+- **The customer's answer is theirs to give.** Staff never record a customer's
+  approval or review: while a change waits at Customer Approval or Customer
+  Review, only the customer moves it on, by answering in the Customer Portal, so
+  there is no action for it here, not even a greyed-out one. At
+  Customer Approval you can **Re-schedule** (the customer is asked again) or
+  **Cancel change**; at Customer Review you can **Roll back** or **Cancel
+  change**, and there is no Close. While the customer's review is still pending,
+  **Roll back** is held back and says who the change is waiting on, since a
+  failed review is the customer's to give in the Customer Portal. If nobody is
+  being asked (the project has no registered contacts), the Approval tab says so
+  and the change waits at the gate for the same reason: nobody can answer for the
+  customer.
 - **Approve or reject** a pending approval stage, if the engineer is listed
   as an approver on it: the Approve/Reject buttons only appear on that
   engineer's own pending approval.

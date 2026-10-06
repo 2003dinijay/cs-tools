@@ -121,10 +121,12 @@ CSM page as an internal user:
   / `:8081` / `:3000` defaults);
 - against the fake API, it is `api.customerDecides(contact, decision)`.
 
-Asserting that an engineer cannot answer *for* the customer while the customer is still asked needs no customer
-session either: the "Bypass customer approval" / "Bypass customer review" entries of the "Change state" menu are
-disabled then, and the seeded-fixture describe only LOOKS at CHG-FIXED-007 / -008 (Dave and Erin still requested) and
-sends the manual PATCH the backend refuses (`state "scheduled" cannot be set manually: ...`), so nothing changes.
+Staff never record a customer's approval or review, so there is nothing for a spec to drive on the CSM side
+either: no "Bypass customer approval" / "Bypass customer review" entry exists in the "Change state" menu, enabled or
+disabled, and the specs assert it is absent (with the customer asked and with nobody asked). The seeded-fixture
+describe only LOOKS at CHG-FIXED-007 / -008 (Dave and Erin still requested) and sends the manual PATCH the backend
+refuses (`state "scheduled" cannot be set manually from customer_approval: the customer's approval can only be given by
+the customer in the Customer Portal; ...`), so nothing changes.
 
 **The real-stack lock tests** ("the customer requirements lock (real stack)" in the same spec) RAISE change
 requests through the CSM portal's backend as the seed's staff (`utils/realStackApi.ts`: jane raises, alice and bob
