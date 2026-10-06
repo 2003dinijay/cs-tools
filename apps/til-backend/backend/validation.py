@@ -1,0 +1,55 @@
+"""Server-side validation for a submission payload.
+
+Deliberately re-checked here even though the One WSO2 frontend validates the
+same fields client-side -- per one-wso2's own conventions.md: "Client-side
+gating is presentation only. Every endpoint re-checks the caller itself" --
+the same principle applies to input shape, not just auth. The Chat App entry
+point in particular has no client-side validation of its own to rely on.
+"""
+from __future__ import annotations
+
+from sanitize import what_plain_text
+
+TIL_WHERE_OPTIONS = ("Customer", "Partner", "Internal", "Other")
+WHERE_OPTIONS_REQUIRING_DETAIL = ("Customer", "Partner", "Other")
+WHO_MAX_LENGTH = 200
+WHERE_DETAIL_MAX_LENGTH = 200
+WHAT_MAX_LENGTH = 5000
+
+
+def validate_submission_payload(body: dict) -> str | None:
+    """Returns an error message, or None if the payload is valid."""
+    if not isinstance(body, dict):
+        return "Request body must be a JSON object."
+
+    who = body.get("who")
+    if not isinstance(who, str) or not who.strip():
+        return "'who' is required."
+    if len(who.strip()) > WHO_MAX_LENGTH:
+        return f"'who' must be {WHO_MAX_LENGTH} characters or fewer."
+
+    where = body.get("where")
+    if where not in TIL_WHERE_OPTIONS:
+        return f"'where' must be one of: {', '.join(TIL_WHERE_OPTIONS)}."
+
+    if where in WHERE_OPTIONS_REQUIRING_DETAIL:
+        where_detail = body.get("whereDetail")
+        if not isinstance(where_detail, str) or not where_detail.strip():
+            return f"'whereDetail' is required when 'where' is {where}."
+        if len(where_detail.strip()) > WHERE_DETAIL_MAX_LENGTH:
+            return f"'whereDetail' must be {WHERE_DETAIL_MAX_LENGTH} characters or fewer."
+
+    what = body.get("what")
+    if not isinstance(what, str):
+        return "'what' is required."
+    # `what` is rich-text HTML (TilRichTextField on the frontend) -- an
+    # editor with nothing typed still sends "<p><br></p>", not "", so an
+    # empty check (and the length limit) must read the PLAIN TEXT, not the
+    # markup. Mirrors the frontend's own isEmptyTilHtml/tilPlainTextLength.
+    what_text = what_plain_text(what)
+    if not what_text:
+        return "'what' is required."
+    if len(what_text) > WHAT_MAX_LENGTH:
+        return f"'what' must be {WHAT_MAX_LENGTH} characters or fewer."
+
+    return None
