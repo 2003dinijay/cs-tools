@@ -496,6 +496,10 @@ go run ./cmd/server/main.go
 
 The server auto-loads `.env` from the working directory at startup (silently ignored if absent).
 
+### Choreo build (`project.toml`)
+
+This directory has three `main` packages now (`cmd/server`, `cmd/escalation-local`, `cmd/ladder-harness`) — Google's Cloud Native Buildpacks, which Choreo builds Go components with, have no `main` package at the module root to default to, and don't guess between several `cmd/*` candidates on their own; left unset, the build fails with `no Go files in /workspace` (it tries `go build ./...`'s equivalent at the root, finds nothing there). `project.toml`'s `GOOGLE_BUILDABLE = "./cmd/server"` pins the one that's actually deployed — mirrors `integrations/sre-alert-core-service`'s own `project.toml`, which has the same multi-`cmd/`-package shape (`cmd/server` + `cmd/user`). Adding a fourth `cmd/*` tool needs no change here; only swapping which one is actually deployed would.
+
 ## Commands
 
 ```bash
