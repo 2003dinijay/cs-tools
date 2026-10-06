@@ -22,12 +22,22 @@ import type { BeIncidentTaskDetail } from "@api/backend/types";
 
 const navigateMock = vi.fn();
 const useGetIncidentTaskMock = vi.fn();
+const patchMutateMock = vi.fn();
 
 vi.mock("@hooks/useNavTransition", () => ({
   useNavTransition: () => navigateMock,
 }));
 vi.mock("@features/csm-operations/api/useGetIncidentTask", () => ({
   useGetIncidentTask: (id: string | undefined) => useGetIncidentTaskMock(id),
+}));
+vi.mock("@features/csm-operations/api/usePatchIncidentTask", () => ({
+  usePatchIncidentTask: () => ({
+    mutate: patchMutateMock,
+    reset: vi.fn(),
+    isPending: false,
+    isError: false,
+    error: null,
+  }),
 }));
 
 // Imported after the mocks above so the module picks them up.
@@ -40,6 +50,7 @@ const TASK: BeIncidentTaskDetail = {
   id: TASK_ID,
   number: "CS-PORTAL-000021",
   subject: "[Incident Report] Create the incident report for INC0099782",
+  state: "OPEN",
   stateLabel: "Open",
   incident: { id: INCIDENT_ID, number: "INC0099782" },
   assignmentGroup: { id: "g1", name: "Choreo SRE Team" },
@@ -64,6 +75,33 @@ describe("IncidentTaskDetailPage", () => {
   beforeEach(() => {
     navigateMock.mockReset();
     useGetIncidentTaskMock.mockReset();
+    patchMutateMock.mockReset();
+  });
+
+  it("closes an open task with the chosen outcome and notes", () => {
+    useGetIncidentTaskMock.mockReturnValue({ data: TASK, isLoading: false, isError: false });
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Close task" }));
+    fireEvent.click(screen.getByLabelText("Closed Skipped"));
+    fireEvent.change(screen.getByLabelText("Close notes"), { target: { value: "  covered by INC0099783  " } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Close task" }).at(-1) as HTMLElement);
+    expect(patchMutateMock).toHaveBeenCalledWith(
+      { id: TASK_ID, patch: { state: "CLOSED_SKIPPED", closeNotes: "covered by INC0099783" } },
+      expect.anything(),
+    );
+  });
+
+  it("offers Reopen instead of Close on a closed task, and shows its close notes", () => {
+    useGetIncidentTaskMock.mockReturnValue({
+      data: { ...TASK, state: "CLOSED_COMPLETE", stateLabel: "Closed Complete", closeNotes: "Report filed." },
+      isLoading: false,
+      isError: false,
+    });
+    renderPage();
+    expect(screen.queryByRole("button", { name: "Close task" })).not.toBeInTheDocument();
+    expect(screen.getByText("Report filed.")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Reopen" }));
+    expect(patchMutateMock).toHaveBeenCalledWith({ id: TASK_ID, patch: { state: "OPEN" } });
   });
 
   it("shows the task and links to its incident's Related tab", () => {

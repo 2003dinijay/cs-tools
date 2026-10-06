@@ -15,12 +15,17 @@
 // under the License.
 
 import { Box, Button, Card, Chip, Link, Skeleton, Typography } from "@wso2/oxygen-ui";
-import { ArrowLeft } from "@wso2/oxygen-ui-icons-react";
-import type { JSX, ReactNode } from "react";
+import { ArrowLeft, CheckCircle, RotateCcw } from "@wso2/oxygen-ui-icons-react";
+import { useState, type JSX, type ReactNode } from "react";
 import { Link as RouterLink, useLocation } from "react-router";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { useGetIncidentTask } from "@features/csm-operations/api/useGetIncidentTask";
-import { incidentRelatedTabPath } from "@features/csm-operations/utils/incidents";
+import { usePatchIncidentTask } from "@features/csm-operations/api/usePatchIncidentTask";
+import CloseIncidentTaskDialog from "@features/csm-operations/components/CloseIncidentTaskDialog";
+import {
+  incidentRelatedTabPath,
+  isIncidentTaskOpen,
+} from "@features/csm-operations/utils/incidents";
 import type { BeEntityRef } from "@api/backend/types";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useNormalizedIdParam } from "@hooks/useNormalizedIdParam";
@@ -62,14 +67,16 @@ function RefText({ value }: { value?: BeEntityRef | null }): JSX.Element {
 }
 
 /**
- * Read-only detail page for one incident task, opened from the incident's
- * Related tab. Incident tasks have no update endpoint in the backend, so
- * there are no actions here.
+ * Detail page for one incident task, opened from the incident's Related tab.
+ * An open task can be closed (which is what lets its incident be closed);
+ * a closed one can be reopened.
  */
 export default function IncidentTaskDetailPage(): JSX.Element {
   const id = useNormalizedIdParam("id");
   const navigate = useNavTransition();
   const { data, isLoading, isError } = useGetIncidentTask(id);
+  const patchTask = usePatchIncidentTask();
+  const [closeOpen, setCloseOpen] = useState(false);
   // Prefer the page the row link captured; else the parent incident's
   // Related tab once the task is loaded; else Operations.
   const backState = useLocation().state as { from?: string } | undefined;
@@ -124,25 +131,67 @@ export default function IncidentTaskDetailPage(): JSX.Element {
   }
 
   const task = data;
+  const taskOpen = isIncidentTaskOpen(task.state);
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
       {BackButton}
 
-      <Box sx={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
-        <Typography
-          variant="h6"
-          sx={{ fontFamily: "monospace", fontWeight: 700, letterSpacing: 0.2, lineHeight: 1.2 }}
-        >
-          {task.number || task.id}
-        </Typography>
-        {task.stateLabel && (
-          <Box>
-            <Chip size="small" label={task.stateLabel} />
-          </Box>
-        )}
-        <Typography variant="h5">{task.subject || "Incident task"}</Typography>
+      <Box
+        sx={{
+          display: "flex",
+          gap: 2,
+          alignItems: "flex-start",
+          flexWrap: { xs: "wrap", md: "nowrap" },
+          justifyContent: "space-between",
+        }}
+      >
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 1, minWidth: 0 }}>
+          <Typography
+            variant="h6"
+            sx={{ fontFamily: "monospace", fontWeight: 700, letterSpacing: 0.2, lineHeight: 1.2 }}
+          >
+            {task.number || task.id}
+          </Typography>
+          {task.stateLabel && (
+            <Box>
+              <Chip size="small" label={task.stateLabel} />
+            </Box>
+          )}
+          <Typography variant="h5">{task.subject || "Incident task"}</Typography>
+        </Box>
+        <Box className="csm-print-hide" sx={{ flexShrink: 0 }}>
+          {taskOpen ? (
+            <Button
+              size="small"
+              variant="contained"
+              color="success"
+              startIcon={<CheckCircle size={16} />}
+              onClick={() => {
+                patchTask.reset();
+                setCloseOpen(true);
+              }}
+            >
+              Close task
+            </Button>
+          ) : (
+            <Button
+              size="small"
+              variant="outlined"
+              startIcon={<RotateCcw size={16} />}
+              disabled={patchTask.isPending}
+              onClick={() => patchTask.mutate({ id: task.id as string, patch: { state: "OPEN" } })}
+            >
+              Reopen
+            </Button>
+          )}
+        </Box>
       </Box>
+      {!closeOpen && patchTask.isError && (
+        <Typography variant="body2" color="error">
+          {patchTask.error.message}
+        </Typography>
+      )}
 
       <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
         <Typography variant="subtitle2">Overview</Typography>
@@ -182,6 +231,13 @@ export default function IncidentTaskDetailPage(): JSX.Element {
             <Typography variant="body2">{formatDateTime(task.closedOn)}</Typography>
           </MetaCell>
         </Box>
+        {task.closeNotes && (
+          <MetaCell label="Close notes">
+            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>
+              {task.closeNotes}
+            </Typography>
+          </MetaCell>
+        )}
       </Card>
 
       <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
@@ -196,6 +252,21 @@ export default function IncidentTaskDetailPage(): JSX.Element {
           </Typography>
         )}
       </Card>
+
+      {closeOpen && (
+        <CloseIncidentTaskDialog
+          taskNumber={task.number || "task"}
+          isSubmitting={patchTask.isPending}
+          error={patchTask.isError ? patchTask.error.message : null}
+          onClose={() => setCloseOpen(false)}
+          onConfirm={({ state, closeNotes }) =>
+            patchTask.mutate(
+              { id: task.id as string, patch: closeNotes ? { state, closeNotes } : { state } },
+              { onSuccess: () => setCloseOpen(false) },
+            )
+          }
+        />
+      )}
     </Box>
   );
 }

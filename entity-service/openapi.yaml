@@ -7943,6 +7943,12 @@ paths:
 
     patch:
       summary: Partially update an incident (ServiceNow data source only).
+      description: >-
+        On postgres-servicenow-dual-write, moving the incident to CLOSED also moves each of
+        its open incident tasks to CLOSED_INCOMPLETE, and moving it to CANCELED moves them
+        to CLOSED_SKIPPED, each with ServiceNow's work note ("Incident Task is Closed
+        Incomplete based on closure of INC..."), in the same transaction -- a port of
+        ServiceNow's "Cascade closure of Incident Tasks".
       operationId: updateIncident
       parameters:
         - name: id
@@ -9088,6 +9094,60 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    patch:
+      summary: >-
+        Change an incident task's state and/or close notes (Postgres data sources only).
+      description: >-
+        Closing a task (CLOSED_COMPLETE, CLOSED_INCOMPLETE or CLOSED_SKIPPED) sets it
+        inactive and records when and by whom, unless already recorded; moving it back to
+        an open state makes it active again and keeps those, as ServiceNow does. Closing or
+        canceling the parent incident closes any task still open (Closed Incomplete /
+        Closed Skipped), as ServiceNow's "Cascade closure of Incident Tasks" does.
+      operationId: updateIncidentTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateIncidentTaskRequest'
+      responses:
+        "200":
+          description: The updated incident task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentTaskDetail'
+        "400":
+          description: No field given, or an unknown state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Incident task not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Not available on the ServiceNow data source.
           content:
             application/json:
               schema:
@@ -20148,6 +20208,16 @@ components:
         limit:
           type: integer
 
+    UpdateIncidentTaskRequest:
+      type: object
+      minProperties: 1
+      properties:
+        state:
+          type: string
+          enum: [PENDING, OPEN, WORK_IN_PROGRESS, CLOSED_COMPLETE, CLOSED_INCOMPLETE, CLOSED_SKIPPED]
+        closeNotes:
+          type: string
+
     IncidentTaskDetail:
       type: object
       properties:
@@ -20188,6 +20258,10 @@ components:
         closedOn:
           type: string
           nullable: true
+        closeNotes:
+          type: string
+          nullable: true
+          description: Postgres data sources only.
 
     SearchConversationsRequest:
       type: object

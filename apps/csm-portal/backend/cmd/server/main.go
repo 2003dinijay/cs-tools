@@ -596,6 +596,7 @@ func main() {
 	route("POST /problems/search", handler.PermViewOperations, problemHandler.SearchProblems)
 	route("POST /problems/aggregate", handler.PermViewOperations, problemHandler.AggregateProblems)
 	route("GET /incident-tasks/{id}", handler.PermViewOperations, incidentTaskHandler.GetIncidentTask)
+	route("PATCH /incident-tasks/{id}", handler.PermWrite, incidentTaskHandler.PatchIncidentTask)
 	route("POST /incident-tasks/search", handler.PermViewOperations, incidentTaskHandler.SearchIncidentTasks)
 	route("POST /incident-tasks/aggregate", handler.PermViewOperations, incidentTaskHandler.AggregateIncidentTasks)
 	route("POST /outages", handler.PermWrite, outageHandler.CreateOutage)

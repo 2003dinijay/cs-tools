@@ -371,6 +371,13 @@ func (c *CustomerEntityClient) GetIncidentTask(ctx context.Context, id string) (
 	return c.do(ctx, http.MethodGet, fmt.Sprintf("/incident-tasks/%s", url.PathEscape(id)), nil)
 }
 
+// UpdateIncidentTask calls PATCH /incident-tasks/{id} on the entity service
+// to change a task's state and/or close notes.
+// Response is returned as raw JSON; typed response structs are deferred.
+func (c *CustomerEntityClient) UpdateIncidentTask(ctx context.Context, id string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/incident-tasks/%s", url.PathEscape(id)), body)
+}
+
 // PostDeployment calls POST /deployments on the entity service to create a new deployment.
 // Response is returned as raw JSON; typed response structs are deferred.
 func (c *CustomerEntityClient) PostDeployment(ctx context.Context, body []byte) ([]byte, error) {
