@@ -23,7 +23,6 @@ import (
 	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
-	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 // caseEscalationSearchPageSize is the page size used internally when reading
@@ -121,15 +120,14 @@ func (s *caseEscalationService) CreateCaseEscalation(ctx context.Context, caseID
 		effectiveAction = domain.EscalationAction(strings.ToUpper(string(*action)))
 	}
 	//
-	// This one call runs as the system identity, not the caller's: a WORK_NOTE
-	// is an internal record (migration 0191 refuses an external caller both
-	// reading and writing one), and a customer can escalate their own case.
-	// The escalation above already ran under the caller's identity, so caseID is
-	// a case they are allowed to act on. The whole case-comment path runs as
-	// system for this call (author lookup, the case read behind the published
-	// event, the publish); nothing from it is returned to the caller, who gets
-	// the escalation only.
-	if _, err := s.caseSvc.CreateCaseComment(repository.WithSystemIdentity(ctx), domain.CreateCaseCommentRequest{
+	// This is an internal write: a WORK_NOTE is an internal record (migration
+	// 0191 refuses an external caller both reading and writing one), and a
+	// customer can escalate their own case. CreateInternalCaseComment writes the
+	// row as the system identity. The escalation above already ran under the
+	// caller's identity, so caseID is a case they are allowed to act on, and
+	// nothing from this call is returned to the caller, who gets the escalation
+	// only.
+	if _, err := s.caseSvc.CreateInternalCaseComment(ctx, domain.CreateCaseCommentRequest{
 		CaseID:  caseID,
 		Type:    domain.CommentTypeWorkNote,
 		Content: caseEscalationWorkNoteContent(effectiveAction, resp.Escalation),

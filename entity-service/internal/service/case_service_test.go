@@ -62,6 +62,7 @@ type stubCaseRepo struct {
 	updateCase                    func(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error)
 	createCaseFromServiceNow      func(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error)
 	createCaseComment             func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error)
+	createCaseCommentAsSystem     func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error)
 	createCase                    func(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
 	getCaseByID                   func(ctx context.Context, id string, scope repository.SearchScope) (domain.CaseView, error)
 	addCaseTag                    func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
@@ -114,6 +115,12 @@ func (s *stubCaseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRe
 func (s *stubCaseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error) {
 	if s.createCaseComment != nil {
 		return s.createCaseComment(ctx, req, createdOn)
+	}
+	panic("not implemented")
+}
+func (s *stubCaseRepo) CreateCaseCommentAsSystem(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error) {
+	if s.createCaseCommentAsSystem != nil {
+		return s.createCaseCommentAsSystem(ctx, req, createdOn)
 	}
 	panic("not implemented")
 }
@@ -2280,7 +2287,7 @@ func TestCaseService_CreateCase_MirrorsInitialServiceNowComments(t *testing.T) {
 			respState := domain.CaseStateOpen
 			return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, State: &respState}, nil
 		},
-		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error) {
+		createCaseCommentAsSystem: func(_ context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error) {
 			if createdOn == nil {
 				t.Fatalf("mirrorInitialSNComments must pass a non-nil createdOn, got nil for %+v", req)
 			}

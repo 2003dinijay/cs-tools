@@ -25,6 +25,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
@@ -301,5 +302,51 @@ func TestCommentWorkNoteRLS_MemberCannotWriteEditHistoryOfAWorkNote(t *testing.T
 	_, err := scoped.Exec(member, insert, wnWorkNote, wnMember)
 	if !isRLSViolation(err) {
 		t.Fatalf("recording edit history against a work note must be refused (42501), got %v", err)
+	}
+}
+
+// The two real repository operations, called as the case service calls them,
+// with a project member's identity: the ordinary create refuses a WORK_NOTE
+// (and still accepts a COMMENT), while CreateCaseCommentAsSystem, which is
+// what the escalation note and the ServiceNow mirror use, writes it and
+// keeps a ServiceNow timestamp it is given. The member still cannot see the
+// note afterwards.
+func TestCommentWorkNoteRLS_CaseRepoSystemOperationWritesWhatMemberCannot(t *testing.T) {
+	pool := caseStatsPool(t)
+	scoped := seedWorkNoteFixture(t, pool)
+	_, member, _ := wnContexts()
+	repo := repository.NewCaseRepository(scoped)
+
+	note := domain.CreateCaseCommentRequest{CaseID: wnWorkItem, Type: domain.CommentTypeWorkNote, Content: "internal note", CreatedBy: wnMember}
+
+	// the caller-identity create is refused for a work note ...
+	if _, err := repo.CreateCaseComment(member, note, nil); !isRLSViolation(err) {
+		t.Fatalf("a member must not be able to write a work note through CreateCaseComment, got %v", err)
+	}
+	// ... and still works for an ordinary comment
+	if _, err := repo.CreateCaseComment(member, domain.CreateCaseCommentRequest{CaseID: wnWorkItem, Type: domain.CommentTypeComment, Content: "hello", CreatedBy: wnMember}, nil); err != nil {
+		t.Fatalf("a member must still be able to write an ordinary comment: %v", err)
+	}
+
+	// the system operation writes the note, from the same member context
+	when := time.Date(2026, 9, 1, 10, 30, 0, 0, time.UTC)
+	got, err := repo.CreateCaseCommentAsSystem(member, note, &when)
+	if err != nil {
+		t.Fatalf("CreateCaseCommentAsSystem must write a work note even for a member's context: %v", err)
+	}
+	if got.Type != domain.CommentTypeWorkNote || got.CaseID != wnWorkItem || got.Content != "internal note" {
+		t.Fatalf("unexpected comment back: %+v", got)
+	}
+	if !got.CreatedOn.Equal(when) {
+		t.Fatalf("ServiceNow's CreatedOn must be kept, got %v want %v", got.CreatedOn, when)
+	}
+
+	// the member still does not see any work note (the seeded one nor the new one)
+	if v := commentTypesVisible(t, member, scoped); v["WORK_NOTE"] != 0 {
+		t.Fatalf("the member must not see work notes, got %v", v)
+	}
+	internal, _, _ := wnContexts()
+	if v := commentTypesVisible(t, internal, scoped); v["WORK_NOTE"] != 2 {
+		t.Fatalf("expected the seeded and the new work note for an internal caller, got %v", v)
 	}
 }

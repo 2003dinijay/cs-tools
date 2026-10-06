@@ -39,19 +39,28 @@ func (r *recordingEscalations) CreateEscalation(ctx context.Context, _ domain.Cr
 	return domain.CreateEscalationResponse{Escalation: domain.CreatedEscalation{ID: "esc-1"}}, nil
 }
 
-// recordingCaseService is a CaseService whose CreateCaseComment records the
-// context and request it was called with.
+// recordingCaseService is a CaseService that records which comment operation
+// was used, the context it got, and the request. CreateCaseComment is the
+// caller-identity operation and must not be used for the escalation note.
 type recordingCaseService struct {
 	CaseService
-	commentCtx context.Context
-	comment    domain.CreateCaseCommentRequest
-	err        error
+	internalCtx     context.Context
+	internalComment domain.CreateCaseCommentRequest
+	internalCalls   int
+	ordinaryCalls   int
+	err             error
 }
 
-func (r *recordingCaseService) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
-	r.commentCtx = ctx
-	r.comment = req
+func (r *recordingCaseService) CreateInternalCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
+	r.internalCalls++
+	r.internalCtx = ctx
+	r.internalComment = req
 	return domain.CreateCaseCommentResponse{}, r.err
+}
+
+func (r *recordingCaseService) CreateCaseComment(context.Context, domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
+	r.ordinaryCalls++
+	return domain.CreateCaseCommentResponse{}, nil
 }
 
 func externalCustomerContext() context.Context {
@@ -63,9 +72,11 @@ func externalCustomerContext() context.Context {
 
 // A customer can escalate their own case. The case work note recorded after
 // the escalation is a WORK_NOTE comment, which an external caller can neither
-// read nor write (migration 0191), so that one write must run as the system
-// identity while the escalation itself keeps the caller's identity.
-func TestCreateCaseEscalation_WorkNoteRunsAsSystemEscalationKeepsCaller(t *testing.T) {
+// read nor write (migration 0191), so it goes through the internal comment
+// operation (which writes it as the system below the service boundary). The
+// escalation itself keeps the caller's identity, and this layer hands the
+// caller's context down unchanged for both: it stamps no identity of its own.
+func TestCreateCaseEscalation_WorkNoteUsesInternalOperationEscalationKeepsCaller(t *testing.T) {
 	escalations := &recordingEscalations{}
 	caseSvc := &recordingCaseService{}
 	svc := NewCaseEscalationService(escalations, caseSvc)
@@ -80,13 +91,17 @@ func TestCreateCaseEscalation_WorkNoteRunsAsSystemEscalationKeepsCaller(t *testi
 		t.Fatalf("escalation must keep the caller's identity, got %+v (ok=%v)", got, ok)
 	}
 
-	// the work note is a WORK_NOTE on the same case, written as the system
-	if caseSvc.comment.Type != domain.CommentTypeWorkNote || caseSvc.comment.CaseID != workNoteTestCaseID {
-		t.Fatalf("expected a WORK_NOTE on case %s, got %+v", workNoteTestCaseID, caseSvc.comment)
+	// the work note is a WORK_NOTE on the same case, via the internal operation
+	if caseSvc.internalCalls != 1 || caseSvc.ordinaryCalls != 0 {
+		t.Fatalf("expected exactly one internal comment and no ordinary one, got internal=%d ordinary=%d", caseSvc.internalCalls, caseSvc.ordinaryCalls)
 	}
-	note, ok := repository.CallerIdentityFromContext(caseSvc.commentCtx)
-	if !ok || !note.Unrestricted {
-		t.Fatalf("work note must run as the system identity, got %+v (ok=%v)", note, ok)
+	if caseSvc.internalComment.Type != domain.CommentTypeWorkNote || caseSvc.internalComment.CaseID != workNoteTestCaseID {
+		t.Fatalf("expected a WORK_NOTE on case %s, got %+v", workNoteTestCaseID, caseSvc.internalComment)
+	}
+	// no identity change in the service layer
+	note, ok := repository.CallerIdentityFromContext(caseSvc.internalCtx)
+	if !ok || note.Unrestricted || note.ViewerEmail != "customer@test.local" {
+		t.Fatalf("the escalation service must not stamp an identity itself, got %+v (ok=%v)", note, ok)
 	}
 }
 

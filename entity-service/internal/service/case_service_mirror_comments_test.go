@@ -38,19 +38,30 @@ func (m *mirrorSNCaseService) SearchCaseComments(_ context.Context, _ domain.Sea
 
 // ServiceNow can generate WORK_NOTE comments for a new case, and the customer
 // who created the case is the caller here. A WORK_NOTE is refused for an
-// external identity (migration 0191), so the mirror write must run as the
-// system. If it did not, ServiceNow-originated work notes would be silently
-// lost (the failure is logged and does not fail the case creation).
-func TestMirrorInitialSNComments_WritesAsSystemIdentity(t *testing.T) {
+// external identity (migration 0191), so the mirror must write through the
+// repository's system-identity operation. If it used the ordinary create,
+// ServiceNow-originated work notes would be silently lost (the failure is
+// logged and does not fail the case creation). The service layer must not
+// stamp an identity itself: the context it passes down is the caller's.
+func TestMirrorInitialSNComments_WritesThroughTheSystemOperation(t *testing.T) {
 	const caseID = "44444444-4444-4444-4444-444444444444"
 	created := time.Date(2026, 10, 1, 9, 0, 0, 0, time.UTC)
-	var gotCtx context.Context
-	var gotReqs []domain.CreateCaseCommentRequest
+	older := time.Date(2026, 9, 30, 8, 0, 0, 0, time.UTC)
+	type call struct {
+		ctx       context.Context
+		req       domain.CreateCaseCommentRequest
+		createdOn *time.Time
+	}
+	var calls []call
 
 	repo := &stubCaseRepo{
-		createCaseComment: func(ctx context.Context, req domain.CreateCaseCommentRequest, _ *time.Time) (domain.CaseComment, error) {
-			gotCtx = ctx
-			gotReqs = append(gotReqs, req)
+		createCaseCommentAsSystem: func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error) {
+			calls = append(calls, call{ctx, req, createdOn})
+			return domain.CaseComment{}, nil
+		},
+		// the ordinary create must not be used for the mirror
+		createCaseComment: func(context.Context, domain.CreateCaseCommentRequest, *time.Time) (domain.CaseComment, error) {
+			t.Fatal("the mirror must not use the caller-identity create")
 			return domain.CaseComment{}, nil
 		},
 	}
@@ -59,20 +70,31 @@ func TestMirrorInitialSNComments_WritesAsSystemIdentity(t *testing.T) {
 		snMirror: &mirrorSNCaseService{comments: []domain.CaseComment{
 			{Type: domain.CommentTypeWorkNote, Content: "auto-generated note", CreatedOn: created},
 			{Type: domain.CommentTypeActivity, Content: "audit trail", CreatedOn: created},
-			{Type: domain.CommentTypeComment, Content: "title and description", CreatedOn: created},
+			{Type: domain.CommentTypeComment, Content: "title and description", CreatedOn: older},
 		}},
 	}
 
 	svc.mirrorInitialSNComments(externalCustomerContext(), caseID)
 
-	if len(gotReqs) != 2 {
-		t.Fatalf("expected the work note and the comment to be mirrored (the audit entry is skipped), got %d writes", len(gotReqs))
+	if len(calls) != 2 {
+		t.Fatalf("expected the work note and the comment to be mirrored (the audit entry is skipped), got %d writes", len(calls))
 	}
-	if gotReqs[0].Type != domain.CommentTypeWorkNote || gotReqs[0].CaseID != caseID {
-		t.Fatalf("expected the WORK_NOTE to be written to case %s, got %+v", caseID, gotReqs[0])
+	if calls[0].req.Type != domain.CommentTypeWorkNote || calls[0].req.CaseID != caseID {
+		t.Fatalf("expected the WORK_NOTE to be written to case %s, got %+v", caseID, calls[0].req)
 	}
-	id, ok := repository.CallerIdentityFromContext(gotCtx)
-	if !ok || !id.Unrestricted {
-		t.Fatalf("the mirror write must run as the system identity, got %+v (ok=%v)", id, ok)
+	// ServiceNow's own timestamps are kept, not replaced by "now"
+	if calls[0].createdOn == nil || !calls[0].createdOn.Equal(created) {
+		t.Fatalf("work note must keep ServiceNow's CreatedOn %v, got %v", created, calls[0].createdOn)
+	}
+	if calls[1].createdOn == nil || !calls[1].createdOn.Equal(older) {
+		t.Fatalf("comment must keep ServiceNow's CreatedOn %v, got %v", older, calls[1].createdOn)
+	}
+	// the service layer hands the caller's context straight down; the
+	// repository is what stamps the system identity
+	for i, c := range calls {
+		id, ok := repository.CallerIdentityFromContext(c.ctx)
+		if !ok || id.Unrestricted || id.ViewerEmail != "customer@test.local" {
+			t.Fatalf("call %d: service layer must not change the caller's identity, got %+v (ok=%v)", i, id, ok)
+		}
 	}
 }
