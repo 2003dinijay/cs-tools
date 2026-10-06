@@ -31,7 +31,15 @@
 //
 
 import fs from "node:fs";
-import { hasSession, sessionPath, withSession, type test } from "../fixtures/test";
+import type { Browser, BrowserContext, BrowserContextOptions } from "@playwright/test";
+import {
+  hasSession,
+  openContextAs,
+  sessionOrigin,
+  sessionPath,
+  withSession,
+  type test,
+} from "../fixtures/test";
 
 /**
  * The customer personas of the local seed (scripts/csm-compose/seed-entity-service.sql,
@@ -177,4 +185,44 @@ export function withLocalSession(t: typeof test, persona: LocalPersona): void {
         "E2E_BASE_URL at the customer webapp it publishes.",
     );
   });
+}
+
+/**
+ * Opens a SECOND signed-in browser context as another local persona, for a spec
+ * in which two customers act (dave approves, erin looks). Skips the test, with
+ * the reason, exactly as {@link withLocalSession} does for the first persona: no
+ * bundle minted, expired, or minted for another origin than the run targets.
+ *
+ * The caller closes the returned context.
+ *
+ * @param t - The `test` object of the spec file.
+ * @param browser - The `browser` fixture.
+ * @param persona - Which seeded customer to sign in as.
+ * @param options - Context options; pass the run's `baseURL` (a hand-made context
+ * does not inherit it) and any `timezoneId` the spec pins.
+ */
+export async function openLocalContext(
+  t: typeof test,
+  browser: Browser,
+  persona: LocalPersona,
+  options?: BrowserContextOptions,
+): Promise<BrowserContext> {
+  const name = localSessionName(persona);
+  t.skip(
+    !hasSession(name),
+    `No '${name}' session. Mint one: ${mintCommand(persona)}`,
+  );
+  const left = sessionMinutesLeft(name);
+  t.skip(
+    left !== null && left < 2,
+    `The local '${name}' session ${left !== null && left < 0 ? "expired" : "is about to expire"}. ` +
+      `Mint a new one: ${mintCommand(persona)}`,
+  );
+  const captured = sessionOrigin(name);
+  const target = options?.baseURL ? new URL(options.baseURL).origin : undefined;
+  t.skip(
+    !!captured && !!target && captured !== target,
+    `Session '${name}' was minted for ${captured} but this run targets ${target}.`,
+  );
+  return openContextAs(browser, name, options);
 }
