@@ -273,6 +273,15 @@ services:
       EVENT_HUB_CONNECTION_STRING: local-dev-shared-secret
       EVENT_HUB_TOPIC: case-events
       EVENT_PUBLISHING_ENABLED: "true"
+      # A customer sees only the change requests designated to them (the customer's
+      # approval or review was asked of them); a change request created BEFORE this
+      # instant is "legacy" and keeps being visible to its project's registered
+      # contacts past Authorize. Unset = every change request is legacy, which would
+      # leave this stack NOT strict. Far in the past on purpose: every change request
+      # the local seed and the specs create is strict, as production's will be after
+      # its own cutover. See entity-service/CLAUDE.md, "Customer visibility and the
+      # cutover".
+      CR_STRICT_VISIBILITY_FROM: "2000-01-01T00:00:00Z"
       SSL_CERT_FILE: /certs/ca.crt
       # Token validation is always on (see internal/config/config.go), so this
       # stack needs a real issuer to start at all -- mock-oidc, the same one

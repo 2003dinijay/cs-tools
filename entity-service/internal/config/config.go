@@ -243,6 +243,21 @@ type Config struct {
 	// onboarding dead-letter queue can be watched on its own.
 	// csm-notification-service consumes it with its own consumer group.
 	ProjectEventHubTopic string
+	// CRStrictVisibilityFromRaw is CR_STRICT_VISIBILITY_FROM: the instant (RFC
+	// 3339, with a zone, e.g. 2026-11-01T00:00:00Z) from which a change request
+	// is visible to a customer only when it was designated to them (the
+	// customer's approval or review was asked of them). A change request created
+	// BEFORE it is "legacy" and keeps the visibility customers had before the
+	// strict rule: everything past Authorize, to the registered contacts of its
+	// project. See CRStrictVisibilityFrom and CLAUDE.md "Customer visibility and
+	// the cutover".
+	//
+	// UNSET OR EMPTY MEANS NO CUTOVER: every change request is legacy, which is
+	// today's behaviour and the safe default and the rollback. Set it once at
+	// release, in each environment, to that release's own instant and do not
+	// move it afterwards: moving it re-classifies existing rows retroactively.
+	// An unparsable value refuses to start the service.
+	CRStrictVisibilityFromRaw string
 	// CRNoticePollInterval is how often to poll event_outbox when the last
 	// pass came back short. A backlog drains at full speed regardless, so this
 	// governs only the idle case: notice latency against query volume.
@@ -579,6 +594,7 @@ func Load() *Config {
 		GithubLabelsClass:                        os.Getenv("GITHUB_LABELS_CLASS"),
 		GithubLabelStatusAssigned:                os.Getenv("GITHUB_LABEL_STATUS_ASSIGNED"),
 		CRNoticesEnabled:                         os.Getenv("CR_NOTICES_ENABLED") == "true",
+		CRStrictVisibilityFromRaw:                strings.TrimSpace(os.Getenv("CR_STRICT_VISIBILITY_FROM")),
 		CSMMigrationSalesforceMembershipIngestEnabled: os.Getenv("CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED") == "true",
 		CSMMigrationSalesforceAccountIngestEnabled:    os.Getenv("CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED") == "true",
 		CSMMigrationPortalWritesEnabled:               os.Getenv("CSM_MIGRATION_PORTAL_WRITES_ENABLED") == "true",
@@ -919,6 +935,9 @@ func (c *Config) Validate() error {
 	if v := c.CustomerEngagementFirefightingTypeID; v != "" && !isSysID(v) {
 		return fmt.Errorf("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID must be a 32-character hex sys_id")
 	}
+	if _, err := c.CRStrictVisibilityFrom(); err != nil {
+		return err
+	}
 	// The URL carries the Redis password, so neither it nor url.Parse's own
 	// error (which quotes its input) may appear in this message.
 	if c.RedisURL != "" {
@@ -928,6 +947,24 @@ func (c *Config) Validate() error {
 		}
 	}
 	return nil
+}
+
+// CRStrictVisibilityFrom is the parsed CR_STRICT_VISIBILITY_FROM: nil when it
+// is unset or empty (no cutover: every change request is legacy), otherwise the
+// instant, which must be RFC 3339 WITH a zone offset so that the cutover means
+// the same moment in every environment ("2026-11-01T00:00:00Z", not a bare
+// local date).
+func (c *Config) CRStrictVisibilityFrom() (*time.Time, error) {
+	raw := strings.TrimSpace(c.CRStrictVisibilityFromRaw)
+	if raw == "" {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, raw)
+	if err != nil {
+		return nil, fmt.Errorf("CR_STRICT_VISIBILITY_FROM %q must be an RFC 3339 instant with a zone, e.g. 2026-11-01T00:00:00Z: %w", raw, err)
+	}
+	t = t.UTC()
+	return &t, nil
 }
 
 // isSysID reports whether v is a 32-character lowercase hex ServiceNow sys_id.
