@@ -43,8 +43,12 @@ const REASON_OPTIONS: Array<{ value: BeHandoffReasonCode; label: string }> = [
 ];
 
 interface HandoffToSpecialistDialogProps {
-  /** The sub-teams to offer, from `GET /specialist-handoff-teams`. */
+  /** The incident's product's Special Ops teams, from
+   * `GET /specialist-handoff-teams?serviceId=`: several are a required
+   * choice, one is the target with nothing to choose. */
   teamOptions: BeSpecialistHandoffTeam[];
+  /** True while `teamOptions` is still loading. */
+  isLoadingTeams?: boolean;
   isSubmitting: boolean;
   /** Set once the mutation resolves with a result to show inline
    * (success, with or without a GitHub issue error) — `null` before submit
@@ -57,8 +61,10 @@ interface HandoffToSpecialistDialogProps {
 
 /**
  * Reproduces the ServiceNow "Escalate to Special Ops Team" modal: one
- * mandatory reason select, one optional (Choreo-only) team select. See
- * `CHANGES-incident-handoff.md` §1.1 for the source dialog this mirrors.
+ * mandatory reason select, then the team. The teams come from the entity
+ * service's handoff configuration for the incident's service: a product
+ * with several (Choreo) makes the team a required select; a product with
+ * one (Asgardeo) names it and asks nothing.
  *
  * Unlike that modal, a `githubIssueError` on an otherwise-successful handoff
  * is shown here explicitly (`result.githubIssueError`) rather than silently
@@ -69,6 +75,7 @@ interface HandoffToSpecialistDialogProps {
  */
 export default function HandoffToSpecialistDialog({
   teamOptions,
+  isLoadingTeams = false,
   isSubmitting,
   result,
   onClose,
@@ -77,7 +84,10 @@ export default function HandoffToSpecialistDialog({
   const [reasonCode, setReasonCode] = useState<BeHandoffReasonCode | "">("");
   const [escalationTeam, setEscalationTeam] = useState<BeHandoffEscalationTeam | "">("");
 
-  const canSubmit = !!reasonCode && !isSubmitting && !result;
+  const choosesTeam = teamOptions.length > 1;
+  const noTeam = !isLoadingTeams && teamOptions.length === 0;
+  const canSubmit =
+    !!reasonCode && (!choosesTeam || !!escalationTeam) && !isLoadingTeams && !noTeam && !isSubmitting && !result;
 
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth>
@@ -138,33 +148,43 @@ export default function HandoffToSpecialistDialog({
                 </Select>
               </FormControl>
 
-              {/* Shown for every incident, as ServiceNow's "Escalate to Special
-                  Ops Team" modal does; the choice only routes Choreo
-                  incidents, and the backend ignores it for any other
-                  service. */}
-              <FormControl fullWidth size="small" disabled={isSubmitting}>
-                <InputLabel id="handoff-team-label" shrink>
-                  Escalation Team (applies to Choreo only)
-                </InputLabel>
-                <Select
-                  labelId="handoff-team-label"
-                  label="Escalation Team (applies to Choreo only)"
-                  value={escalationTeam}
-                  displayEmpty
-                  onChange={(e) => setEscalationTeam(e.target.value as BeHandoffEscalationTeam)}
-                >
-                  <MenuItem value="">
-                    <Typography component="span" color="text.secondary">
-                      -- Select --
-                    </Typography>
-                  </MenuItem>
-                  {teamOptions.map((o) => (
-                    <MenuItem key={o.key} value={o.key}>
-                      {o.label}
+              {isLoadingTeams ? (
+                <Typography variant="body2" color="text.secondary">
+                  Loading specialist teams…
+                </Typography>
+              ) : noTeam ? (
+                <Alert severity="info">
+                  No specialist team is configured for this incident's service.
+                </Alert>
+              ) : choosesTeam ? (
+                <FormControl fullWidth size="small" required disabled={isSubmitting}>
+                  <InputLabel id="handoff-team-label" shrink>
+                    Escalation Team
+                  </InputLabel>
+                  <Select
+                    labelId="handoff-team-label"
+                    label="Escalation Team"
+                    value={escalationTeam}
+                    displayEmpty
+                    onChange={(e) => setEscalationTeam(e.target.value as BeHandoffEscalationTeam)}
+                  >
+                    <MenuItem value="">
+                      <Typography component="span" color="text.secondary">
+                        -- Select --
+                      </Typography>
                     </MenuItem>
-                  ))}
-                </Select>
-              </FormControl>
+                    {teamOptions.map((o) => (
+                      <MenuItem key={o.key} value={o.key}>
+                        {o.label}
+                      </MenuItem>
+                    ))}
+                  </Select>
+                </FormControl>
+              ) : (
+                <Typography variant="body2" color="text.secondary">
+                  Escalates to <strong>{teamOptions[0].label}</strong>.
+                </Typography>
+              )}
             </>
           )}
         </Box>
@@ -186,7 +206,8 @@ export default function HandoffToSpecialistDialog({
                 reasonCode &&
                 onSubmit({
                   reasonCode,
-                  escalationTeam: escalationTeam || undefined,
+                  // A single team is the target already; only a choice is sent.
+                  escalationTeam: (choosesTeam && escalationTeam) || undefined,
                 })
               }
             >

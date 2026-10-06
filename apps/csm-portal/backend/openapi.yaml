@@ -7317,8 +7317,21 @@ paths:
 
   /specialist-handoff-teams:
     get:
-      summary: The sub-teams the "Escalate to specialist team" dialog offers.
+      summary: The Special Ops teams the "Escalate to specialist team" dialog offers.
+      description: >-
+        The teams of the product the incident's service belongs to, from the entity
+        service's SPECIALIST_HANDOFF_CONFIG. Several teams mean the user must pick one
+        (escalationTeam); one team is the handoff's target with nothing to pick; none
+        means the service cannot be handed off.
       operationId: listSpecialistHandoffTeams
+      parameters:
+        - name: serviceId
+          in: query
+          required: false
+          description: The incident's service. Omitted, every product's teams.
+          schema:
+            type: string
+            format: uuid
       responses:
         "200":
           description: Ok

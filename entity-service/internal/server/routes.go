@@ -19,6 +19,7 @@ package server
 import (
 	"context"
 	"log"
+	"log/slog"
 	"net/http"
 	"sync"
 
@@ -1093,12 +1094,31 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// (what the call-escalation ladders start from) and takes work notes, with no ServiceNow behind it.
 		activeIncidentSvc = service.NewIncidentServiceWithPublisher(incidentRepo, userRepo, eventPublisher)
 	}
-	// Specialist handoffs on Postgres file their internal GitHub issue with
-	// the GitHub integration's client; without one they still hand off and
-	// report that no issue was filed.
-	if githubClient != nil {
-		activeIncidentSvc = service.WithHandoffIssueCreator(activeIncidentSvc, githubClient)
+	// Which Special Ops team a handoff goes to, and which GitHub repository
+	// its internal issue goes to, is configuration. A value that does not
+	// parse would silently offer no handoff anywhere; refuse to start instead.
+	handoffConfig, handoffErr := service.ParseSpecialistHandoffConfig(cfg.SpecialistHandoffConfig)
+	if handoffErr != nil {
+		log.Fatalf("invalid specialist handoff configuration: %v", handoffErr)
 	}
+	activeIncidentSvc = service.WithSpecialistHandoffConfig(activeIncidentSvc, handoffConfig)
+	// One GitHub client per credential the products name, independent of the
+	// change-request sync. A credential with no token is logged, not fatal:
+	// its handoffs still go through and report that no issue was filed.
+	handoffToken, tokenErr := service.ParseSpecialistHandoffGithubTokens(cfg.SpecialistHandoffGithubTokens, cfg.GithubToken)
+	if tokenErr != nil {
+		log.Fatalf("invalid specialist handoff GitHub tokens: %v", tokenErr)
+	}
+	handoffIssueClients := service.SpecialistHandoffIssueClients{}
+	for _, credential := range handoffConfig.Credentials() {
+		token := handoffToken(credential)
+		if token == "" {
+			slog.Warn("specialist handoff: no GitHub token for credential; its handoffs will file no issue", "credential", credential)
+			continue
+		}
+		handoffIssueClients[credential] = github.NewClient(github.Config{BaseURL: cfg.GithubBaseURL, Token: token})
+	}
+	activeIncidentSvc = service.WithHandoffIssueCreators(activeIncidentSvc, handoffIssueClients)
 	incidentHandler := handler.NewIncidentHandler(activeIncidentSvc)
 
 	problemRepo := repository.NewProblemRepository(repository.NewScoped(db))

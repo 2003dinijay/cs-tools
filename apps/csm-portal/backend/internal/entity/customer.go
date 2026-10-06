@@ -311,9 +311,14 @@ func (c *CustomerEntityClient) SearchIncidentActivities(ctx context.Context, id 
 }
 
 // ListSpecialistHandoffTeams calls GET /specialist-handoff-teams on the entity service:
-// the sub-teams the incident handoff dialog offers. Raw JSON.
-func (c *CustomerEntityClient) ListSpecialistHandoffTeams(ctx context.Context) ([]byte, error) {
-	return c.do(ctx, http.MethodGet, "/specialist-handoff-teams", nil)
+// the Special Ops teams the incident handoff dialog offers for serviceID (every team when
+// empty). Raw JSON.
+func (c *CustomerEntityClient) ListSpecialistHandoffTeams(ctx context.Context, serviceID string) ([]byte, error) {
+	path := "/specialist-handoff-teams"
+	if serviceID != "" {
+		path += "?" + url.Values{"serviceId": {serviceID}}.Encode()
+	}
+	return c.do(ctx, http.MethodGet, path, nil)
 }
 
 // HandOffIncidentToSpecialist calls POST /incidents/{id}/specialist-handoffs on the entity

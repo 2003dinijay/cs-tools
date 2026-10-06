@@ -228,7 +228,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   const handOffIncident = useHandOffIncident();
   const [editOpen, setEditOpen] = useState(false);
   const [handoffOpen, setHandoffOpen] = useState(false);
-  const handoffTeams = useSpecialistHandoffTeams(handoffOpen);
+  const handoffTeams = useSpecialistHandoffTeams(data?.service?.id, handoffOpen);
   // Kept for the dialog's inline success/warning result, cleared whenever the
   // dialog is reopened for a fresh attempt.
   const [handoffResult, setHandoffResult] = useState<BeIncidentHandoffResult | null>(null);
@@ -1112,6 +1112,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
       {handoffOpen && (
         <HandoffToSpecialistDialog
           teamOptions={handoffTeams.data ?? []}
+          isLoadingTeams={handoffTeams.isLoading}
           isSubmitting={handOffIncident.isPending}
           result={handoffResult}
           onClose={() => {

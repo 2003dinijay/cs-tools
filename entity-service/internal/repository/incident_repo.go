@@ -180,10 +180,6 @@ type IncidentRepository interface {
 	// id is not an incident, and ValidationError when the group plan names
 	// is not in this database.
 	ApplySpecialistHandoff(ctx context.Context, id, actorEmail string, plan func(SpecialistHandoffSnapshot) (SpecialistHandoffPlan, error)) (SpecialistHandoffWritten, error)
-	// ListSpecialistHandoffTeams returns every sub-team a handoff can name:
-	// the teams of active, non-default specialist_handoff_route rows, by key
-	// and name, ordered by name.
-	ListSpecialistHandoffTeams(ctx context.Context) ([]domain.SpecialistHandoffTeam, error)
 }
 
 // SpecialistHandoffSnapshot is the incident as ApplySpecialistHandoff found it,
@@ -197,22 +193,6 @@ type SpecialistHandoffSnapshot struct {
 	ServiceID           *string
 	AssignmentGroupID   *string
 	AssignmentGroupName *string
-	// Routes are the active specialist_handoff_route rows for the
-	// incident's service, with their teams (migration 0194): its default
-	// route, if any, and its sub-teams.
-	Routes []SpecialistHandoffRoute
-}
-
-// SpecialistHandoffRoute is one specialist_handoff_route row joined to its
-// team: TeamKey is the escalationTeam that selects it, GroupID the team's
-// assignment group (team.group_id; nil when the team has none yet).
-type SpecialistHandoffRoute struct {
-	TeamKey     string
-	TeamName    string
-	IsDefault   bool
-	GroupID     *string
-	GithubOwner *string
-	GithubRepo  *string
 }
 
 // SpecialistHandoffPlan is what a handoff writes: the group the incident
@@ -690,22 +670,6 @@ func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.I
 		return domain.IncidentView{}, err
 	}
 	v.SpecialistHandoff = sum
-
-	can := false
-	if state != nil && *state == "IN_PROGRESS" && svcID != nil {
-		// The same rule planSpecialistHandoff enforces, read without a lock:
-		// it only decides whether to offer the action.
-		if err := r.db.QueryRow(ctx, `
-			SELECT EXISTS (
-				SELECT 1 FROM specialist_handoff_route r
-				JOIN team t ON t.id = r.team_id
-				WHERE r.service_id = $1 AND r.is_active AND r.is_default
-				  AND t.group_id IS NOT NULL AND t.group_id IS DISTINCT FROM $2::uuid
-			)`, *svcID, agID).Scan(&can); err != nil {
-			return domain.IncidentView{}, fmt.Errorf("get incident: specialist handoff eligibility: %w", err)
-		}
-	}
-	v.CanHandOffToSpecialist = &can
 	return v, nil
 }
 
@@ -734,12 +698,6 @@ func (r *incidentRepo) ApplySpecialistHandoff(ctx context.Context, id, actorEmai
 		if err != nil {
 			return SpecialistHandoffWritten{}, fmt.Errorf("specialist handoff: read incident: %w", err)
 		}
-		if snap.ServiceID != nil {
-			if snap.Routes, err = specialistHandoffRoutes(ctx, tx, *snap.ServiceID); err != nil {
-				return SpecialistHandoffWritten{}, err
-			}
-		}
-
 		p, err := plan(snap)
 		if err != nil {
 			return SpecialistHandoffWritten{}, err
@@ -805,51 +763,6 @@ func (r *incidentRepo) ApplySpecialistHandoff(ctx context.Context, id, actorEmai
 	})
 }
 
-// specialistHandoffRoutes reads a service's active routes.
-func specialistHandoffRoutes(ctx context.Context, tx pgx.Tx, serviceID string) ([]SpecialistHandoffRoute, error) {
-	rows, err := tx.Query(ctx, `
-		SELECT COALESCE(t.key, ''), t.name, r.is_default, t.group_id::text, r.github_owner, r.github_repo
-		FROM specialist_handoff_route r
-		JOIN team t ON t.id = r.team_id
-		WHERE r.service_id = $1 AND r.is_active`, serviceID)
-	if err != nil {
-		return nil, fmt.Errorf("specialist handoff: read routes: %w", err)
-	}
-	defer rows.Close()
-	var routes []SpecialistHandoffRoute
-	for rows.Next() {
-		var r SpecialistHandoffRoute
-		if err := rows.Scan(&r.TeamKey, &r.TeamName, &r.IsDefault, &r.GroupID, &r.GithubOwner, &r.GithubRepo); err != nil {
-			return nil, fmt.Errorf("specialist handoff: scan route: %w", err)
-		}
-		routes = append(routes, r)
-	}
-	return routes, rows.Err()
-}
-
-// ListSpecialistHandoffTeams implements IncidentRepository.
-func (r *incidentRepo) ListSpecialistHandoffTeams(ctx context.Context) ([]domain.SpecialistHandoffTeam, error) {
-	rows, err := r.db.Query(ctx, `
-		SELECT DISTINCT t.key, t.name
-		FROM specialist_handoff_route r
-		JOIN team t ON t.id = r.team_id
-		WHERE r.is_active AND NOT r.is_default AND t.key IS NOT NULL
-		ORDER BY t.name, t.key`)
-	if err != nil {
-		return nil, fmt.Errorf("list specialist handoff teams: %w", err)
-	}
-	defer rows.Close()
-	teams := []domain.SpecialistHandoffTeam{}
-	for rows.Next() {
-		var t domain.SpecialistHandoffTeam
-		if err := rows.Scan(&t.Key, &t.Label); err != nil {
-			return nil, fmt.Errorf("list specialist handoff teams: scan: %w", err)
-		}
-		teams = append(teams, t)
-	}
-	return teams, rows.Err()
-}
-
 // specialistHandoffSummary ports ServiceNow's IncidentHandoffUtils
 // .getHandoffSummary: the newest work note holding a handoff reason blob
 // ({"reasonCode":...}) is the handoff; the GitHub link comes from the oldest
@@ -907,17 +820,12 @@ func (r *incidentRepo) specialistHandoffSummary(ctx context.Context, id string, 
 		HandedOffAt:       at.UTC().Format(time.RFC3339),
 		HandedOffBy:       &by,
 	}
-	// A team counts when a route names it -- getHandoffSummary keeps only
-	// the teams IncidentHandoffUtils knows, and the routes are that list here.
+	// The team as the blob names it; the service keeps it only when the
+	// handoff configuration knows it, as getHandoffSummary keeps only the
+	// teams IncidentHandoffUtils knows.
 	if team := stringOrEmpty(blob.EscalationTeam); team != "" {
-		var known bool
-		if err := r.db.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM specialist_handoff_route r JOIN team t ON t.id = r.team_id WHERE t.key = $1 AND NOT r.is_default)`, team).Scan(&known); err != nil {
-			return nil, fmt.Errorf("specialist handoff summary: team: %w", err)
-		}
-		if known {
-			t := domain.IncidentSpecialistHandoffEscalationTeam(team)
-			sum.EscalationTeam = &t
-		}
+		t := domain.IncidentSpecialistHandoffEscalationTeam(team)
+		sum.EscalationTeam = &t
 	}
 	if m := githubIssueURLPattern.FindString(noteAfterBlob); m != "" {
 		u := strings.TrimRight(m, ").,")

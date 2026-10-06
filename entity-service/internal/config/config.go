@@ -210,6 +210,22 @@ type Config struct {
 	// last pass came back short. A backlog drains at full speed regardless.
 	GithubOutboundInterval time.Duration
 
+	// SpecialistHandoffConfig is SPECIALIST_HANDOFF_CONFIG, raw: the JSON
+	// that routes "Escalate to specialist team" handoffs (products, their
+	// services, Special Ops teams and GitHub repository). Parsed and
+	// validated by service.ParseSpecialistHandoffConfig at startup; empty
+	// hands nothing off.
+	SpecialistHandoffConfig string
+	// SpecialistHandoffGithubTokens is SPECIALIST_HANDOFF_GITHUB_TOKENS, a
+	// secret: one line of JSON mapping a credential name to the GitHub token
+	// that files a specialist handoff's internal issue (ServiceNow's
+	// InternalGitHubIssues REST message), {"wso2-enterprise":"github_pat_..."}.
+	// A product's github.credential picks one, defaulting to its owner.
+	// A credential the map does not name uses GITHUB_TOKEN; with neither, the
+	// handoff still goes through and reports that no issue was filed.
+	// Independent of the change-request sync.
+	SpecialistHandoffGithubTokens string
+
 	// CSMPortalBaseURL builds the link back to a change request in comments
 	// posted to GitHub. Empty omits the link rather than rendering a broken one.
 	CSMPortalBaseURL string
@@ -574,6 +590,8 @@ func Load() *Config {
 		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
 		GithubOutboundInterval:                   envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
 		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
+		SpecialistHandoffConfig:                  os.Getenv("SPECIALIST_HANDOFF_CONFIG"),
+		SpecialistHandoffGithubTokens:            os.Getenv("SPECIALIST_HANDOFF_GITHUB_TOKENS"),
 		GithubLabelTypeIncident:                  os.Getenv("GITHUB_LABEL_TYPE_INCIDENT"),
 		GithubLabelTypeServiceRequest:            os.Getenv("GITHUB_LABEL_TYPE_SERVICE_REQUEST"),
 		GithubLabelsClass:                        os.Getenv("GITHUB_LABELS_CLASS"),

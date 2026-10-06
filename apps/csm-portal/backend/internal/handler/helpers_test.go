@@ -733,16 +733,16 @@ func (m *mockEntityProductClient) GetProductRepoMapping(ctx context.Context, nam
 // ----- mock entity incident client -----
 
 type mockEntityIncidentClient struct {
-	listSpecialistHandoffTeamsFn func(ctx context.Context) ([]byte, error)
-	searchIncidentsFn          func(ctx context.Context, body []byte) ([]byte, error)
-	aggregateIncidentsFn       func(ctx context.Context, body []byte) ([]byte, error)
-	createIncidentFn           func(ctx context.Context, body []byte) ([]byte, error)
-	getIncidentFn              func(ctx context.Context, id string) ([]byte, error)
-	patchIncidentFn            func(ctx context.Context, id string, body []byte) ([]byte, error)
-	createCommentFn            func(ctx context.Context, body []byte) ([]byte, error)
-	searchCommentsFn           func(ctx context.Context, body []byte) ([]byte, error)
-	searchIncidentActivitiesFn func(ctx context.Context, id string, body []byte) ([]byte, error)
-	handOffIncidentFn          func(ctx context.Context, id string, body []byte) ([]byte, error)
+	listSpecialistHandoffTeamsFn func(ctx context.Context, serviceID string) ([]byte, error)
+	searchIncidentsFn            func(ctx context.Context, body []byte) ([]byte, error)
+	aggregateIncidentsFn         func(ctx context.Context, body []byte) ([]byte, error)
+	createIncidentFn             func(ctx context.Context, body []byte) ([]byte, error)
+	getIncidentFn                func(ctx context.Context, id string) ([]byte, error)
+	patchIncidentFn              func(ctx context.Context, id string, body []byte) ([]byte, error)
+	createCommentFn              func(ctx context.Context, body []byte) ([]byte, error)
+	searchCommentsFn             func(ctx context.Context, body []byte) ([]byte, error)
+	searchIncidentActivitiesFn   func(ctx context.Context, id string, body []byte) ([]byte, error)
+	handOffIncidentFn            func(ctx context.Context, id string, body []byte) ([]byte, error)
 }
 
 func (m *mockEntityIncidentClient) SearchIncidents(ctx context.Context, body []byte) ([]byte, error) {
@@ -801,9 +801,9 @@ func (m *mockEntityIncidentClient) SearchIncidentActivities(ctx context.Context,
 	return []byte(`{"activity":[],"total":0,"limit":20,"offset":0,"hasMore":false}`), nil
 }
 
-func (m *mockEntityIncidentClient) ListSpecialistHandoffTeams(ctx context.Context) ([]byte, error) {
+func (m *mockEntityIncidentClient) ListSpecialistHandoffTeams(ctx context.Context, serviceID string) ([]byte, error) {
 	if m.listSpecialistHandoffTeamsFn != nil {
-		return m.listSpecialistHandoffTeamsFn(ctx)
+		return m.listSpecialistHandoffTeamsFn(ctx, serviceID)
 	}
 	return []byte(`{"teams":[]}`), nil
 }

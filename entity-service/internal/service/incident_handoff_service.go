@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -38,14 +39,12 @@ import (
 // never called. Discovery script 68 (csm-flow-service docs) has the UI
 // action and its history.
 
-// The routing -- which team, and so which group, a service's incidents are
-// handed to, by sub-team, and where the GitHub issue goes -- is data: the
-// Special Ops teams are team rows linked to their group (team.group_id), and
-// specialist_handoff_route (migration 0194) says which serve which service,
-// seeded with IncidentHandoffUtils' IHU_SERVICE_ROUTING. ServiceNow
-// hard-codes it.
+// The routing -- which Special Ops teams serve which services, each team's
+// assignment group, and where the GitHub issue goes -- is configuration
+// (SpecialistHandoffConfig, SPECIALIST_HANDOFF_CONFIG). ServiceNow hard-codes
+// it in IncidentHandoffUtils' IHU_SERVICE_ROUTING.
 
-// maxEscalationTeamLen is team.key's length.
+// maxEscalationTeamLen bounds a team key, in the request and the config.
 const maxEscalationTeamLen = 64
 
 // handoffReasons are the two reasons the UI action's modal offers: the
@@ -64,17 +63,32 @@ var handoffReasons = map[domain.IncidentSpecialistHandoffReasonCode]struct {
 	},
 }
 
-// handoffIssueCreator is the slice of the GitHub client a handoff needs.
-type handoffIssueCreator interface {
+// HandoffIssueCreator is the slice of the GitHub client a handoff needs.
+type HandoffIssueCreator interface {
 	CreateIssue(ctx context.Context, owner, repository, title, body string, labels []string) (*github.CreatedIssue, error)
 }
 
-// WithHandoffIssueCreator gives a Postgres-backed IncidentService the GitHub
-// client its specialist handoffs file issues with. A nil client, or a
-// ServiceNow-backed service, is left as it is.
-func WithHandoffIssueCreator(svc IncidentService, client handoffIssueCreator) IncidentService {
-	if pg, ok := svc.(*incidentService); ok && client != nil {
-		pg.handoffIssues = client
+// SpecialistHandoffIssueClients are the GitHub clients handoffs file issues
+// with, by credential name.
+type SpecialistHandoffIssueClients map[string]HandoffIssueCreator
+
+// WithHandoffIssueCreators gives a Postgres-backed IncidentService the
+// GitHub clients its specialist handoffs file issues with, by credential
+// name (SpecialistHandoffGithub.Credential). A ServiceNow-backed service is
+// left as it is.
+func WithHandoffIssueCreators(svc IncidentService, clients SpecialistHandoffIssueClients) IncidentService {
+	if pg, ok := svc.(*incidentService); ok {
+		pg.handoffIssues = clients
+	}
+	return svc
+}
+
+// WithSpecialistHandoffConfig gives a Postgres-backed IncidentService its
+// specialist handoff routing. Without one no incident can be handed off. A
+// ServiceNow-backed service, whose routing is ServiceNow's, is left as it is.
+func WithSpecialistHandoffConfig(svc IncidentService, cfg *SpecialistHandoffConfig) IncidentService {
+	if pg, ok := svc.(*incidentService); ok {
+		pg.handoffConfig = cfg
 	}
 	return svc
 }
@@ -86,52 +100,60 @@ func specialistHandoffConflict(detail string) error {
 }
 
 // planSpecialistHandoff is IncidentHandoffUtils.checkEligibility plus the
-// writes handOff makes, decided on the locked incident. route is the
-// specialist_handoff_route the incident goes to: the requested sub-team's,
-// or the service's default when the service has no such sub-team (as
-// ServiceNow ignores a team for Asgardeo).
+// writes handOff makes, decided on the locked incident: the incident's
+// service must belong to a configured product, the incident must be In
+// Progress and not already with one of that product's Special Ops groups.
+// A product with several teams needs req's escalationTeam to name one; a
+// product with one team takes it, and the reason note records no team, as
+// ServiceNow's does for Asgardeo. It returns the product, for the GitHub
+// issue, and the request as it is recorded.
 //
 // The runbook task goes to the same Special Ops group as the incident.
 // ServiceNow sends it to WSO2 SRE Team, which no longer exists; the Special
 // Ops team now owns its runbooks.
-func planSpecialistHandoff(req domain.HandOffIncidentToSpecialistRequest, snap repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, repository.SpecialistHandoffRoute, error) {
-	var def, route *repository.SpecialistHandoffRoute
-	for i := range snap.Routes {
-		r := &snap.Routes[i]
-		switch {
-		case r.IsDefault:
-			def = r
-		case req.EscalationTeam != nil && r.TeamKey == string(*req.EscalationTeam):
-			route = r
-		}
+func planSpecialistHandoff(cfg *SpecialistHandoffConfig, req domain.HandOffIncidentToSpecialistRequest, snap repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, *SpecialistHandoffProduct, domain.HandOffIncidentToSpecialistRequest, error) {
+	fail := func(err error) (repository.SpecialistHandoffPlan, *SpecialistHandoffProduct, domain.HandOffIncidentToSpecialistRequest, error) {
+		return repository.SpecialistHandoffPlan{}, nil, req, err
 	}
-	if def == nil {
-		return repository.SpecialistHandoffPlan{}, repository.SpecialistHandoffRoute{}, specialistHandoffConflict("No specialist group is configured for this incident's service.")
+	product := cfg.productFor(snap.ServiceID)
+	if product == nil {
+		return fail(specialistHandoffConflict("No specialist group is configured for this incident's service."))
 	}
 	if snap.State != string(domain.IncidentStateInProgress) {
-		return repository.SpecialistHandoffPlan{}, *def, specialistHandoffConflict("Only an In Progress incident can be handed off.")
+		return fail(specialistHandoffConflict("Only an In Progress incident can be handed off."))
 	}
-	if def.GroupID != nil && snap.AssignmentGroupID != nil && strings.EqualFold(*snap.AssignmentGroupID, *def.GroupID) {
-		return repository.SpecialistHandoffPlan{}, *def, specialistHandoffConflict("The incident already sits with the specialist group for this service.")
+	if product.holdsGroup(snap.AssignmentGroupID) {
+		return fail(specialistHandoffConflict("The incident already sits with a " + product.Name + " specialist group."))
 	}
-	if route == nil {
-		route = def
-	}
-	if route.GroupID == nil {
-		return repository.SpecialistHandoffPlan{}, *route, specialistHandoffConflict("The " + route.TeamName + " team has no assignment group configured.")
+
+	var team *SpecialistHandoffConfigTeam
+	if len(product.Teams) == 1 {
+		team, req.EscalationTeam = &product.Teams[0], nil
+	} else {
+		keys := make([]string, 0, len(product.Teams))
+		for _, t := range product.Teams {
+			keys = append(keys, t.Key)
+		}
+		if req.EscalationTeam == nil {
+			return fail(&apierror.ValidationError{Msg: "escalationTeam is required for a " + product.Name + " incident: one of " + strings.Join(keys, ", ")})
+		}
+		if team = product.team(string(*req.EscalationTeam)); team == nil {
+			return fail(&apierror.ValidationError{Msg: "invalid escalationTeam for a " + product.Name + " incident: " + string(*req.EscalationTeam) + " (one of " + strings.Join(keys, ", ") + ")"})
+		}
 	}
 
 	reason := handoffReasons[req.ReasonCode]
 	blob, err := handoffReasonBlob(req, reason.description)
 	if err != nil {
-		return repository.SpecialistHandoffPlan{}, *route, err
+		return fail(err)
 	}
+	groupID := team.GroupID
 	return repository.SpecialistHandoffPlan{
-		GroupID:     *route.GroupID,
+		GroupID:     groupID,
 		TaskSubject: reason.taskSubject(snap.Number),
-		TaskGroupID: route.GroupID,
+		TaskGroupID: &groupID,
 		WorkNotes:   []string{blob},
-	}, *route, nil
+	}, product, req, nil
 }
 
 // handoffReasonBlob is the reason work note, byte for byte the JSON the UI
@@ -195,18 +217,17 @@ func (s *incidentService) handoffActor(ctx context.Context) (email, label string
 // HandOffIncidentToSpecialist implements IncidentService for Postgres.
 //
 // In one transaction it applies IncidentHandoffUtils' eligibility rules
-// (In Progress; a Choreo or Asgardeo incident; not already with that
-// service's specialist group), moves the incident to the specialist group,
-// clears its assignee, opens the runbook task and writes the reason note.
-// Then, outside the transaction and best effort -- the handoff stands
+// (planSpecialistHandoff), moves the incident to the Special Ops team's
+// group, clears its assignee, opens the runbook task and writes the reason
+// note. Then, outside the transaction and best effort -- the handoff stands
 // whatever GitHub does, as in IncidentHandoffUtils -- it files the internal
 // GitHub issue and writes the "Escalated to Special Ops team." note.
 func (s *incidentService) HandOffIncidentToSpecialist(ctx context.Context, req domain.HandOffIncidentToSpecialistRequest) (domain.HandOffIncidentToSpecialistResponse, error) {
 	if err := validateHandOffRequest(req); err != nil {
 		return domain.HandOffIncidentToSpecialistResponse{}, err
 	}
-	// Any team key a route can hold; one with no route for the incident's
-	// service falls back to the service's default route.
+	// Whether the key is one of the product's teams is known only once the
+	// incident's service is read; here, only its shape.
 	if req.EscalationTeam != nil {
 		if t := strings.TrimSpace(string(*req.EscalationTeam)); t == "" || len(t) > maxEscalationTeamLen {
 			return domain.HandOffIncidentToSpecialistResponse{}, &apierror.ValidationError{Msg: "invalid escalationTeam: " + string(*req.EscalationTeam)}
@@ -217,11 +238,11 @@ func (s *incidentService) HandOffIncidentToSpecialist(ctx context.Context, req d
 		return domain.HandOffIncidentToSpecialistResponse{}, err
 	}
 
-	var route repository.SpecialistHandoffRoute
+	var product *SpecialistHandoffProduct
 	written, err := s.repo.ApplySpecialistHandoff(ctx, req.IncidentID, email,
 		func(snap repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, error) {
-			plan, r, perr := planSpecialistHandoff(req, snap)
-			route = r
+			plan, p, recorded, perr := planSpecialistHandoff(s.handoffConfig, req, snap)
+			product, req = p, recorded
 			return plan, perr
 		})
 	if err != nil {
@@ -241,14 +262,14 @@ func (s *incidentService) HandOffIncidentToSpecialist(ctx context.Context, req d
 	}
 
 	if req.CreateGithubIssue == nil || *req.CreateGithubIssue {
-		result.GithubIssue, result.GithubIssueError = s.fileHandoffIssue(ctx, route, written.Before)
+		result.GithubIssue, result.GithubIssueError = s.fileHandoffIssue(ctx, product, written.Before)
 	}
 	if _, err := s.repo.CreateIncidentComment(ctx, req.IncidentID, domain.CommentTypeWorkNote, handoffEscalatedNote(label, result.GithubIssue), email); err != nil {
 		// The handoff itself is committed; only this note is missing.
 		slog.ErrorContext(ctx, "specialist handoff: escalated note not written", "incidentId", req.IncidentID, "error", err)
 	}
 
-	view, err := s.repo.GetIncidentByID(ctx, req.IncidentID)
+	view, err := s.incidentView(ctx, req.IncidentID)
 	if err != nil {
 		return domain.HandOffIncidentToSpecialistResponse{}, err
 	}
@@ -262,35 +283,82 @@ func (s *incidentService) HandOffIncidentToSpecialist(ctx context.Context, req d
 	}, nil
 }
 
-// fileHandoffIssue opens the internal GitHub issue in the route's
-// repository, titled and bodied with the incident's subject and description.
-// It never fails the handoff: a missing client, a route with no repository,
-// or a GitHub error comes back as the error text.
-func (s *incidentService) fileHandoffIssue(ctx context.Context, route repository.SpecialistHandoffRoute, inc repository.SpecialistHandoffSnapshot) (*domain.IncidentSpecialistHandoffGithubIssue, *string) {
-	if s.handoffIssues == nil {
+// fileHandoffIssue opens the internal GitHub issue in the product's
+// repository, with the token its credential names, titled and bodied with
+// the incident's subject and description. It never fails the handoff: a
+// product with no repository, a credential with no token, or a GitHub error
+// comes back as the error text.
+func (s *incidentService) fileHandoffIssue(ctx context.Context, product *SpecialistHandoffProduct, inc repository.SpecialistHandoffSnapshot) (*domain.IncidentSpecialistHandoffGithubIssue, *string) {
+	if product == nil || product.Github == nil {
+		msg := "No GitHub repository is configured for this product's specialist handoffs"
+		return nil, &msg
+	}
+	owner, repo := product.Github.Owner, product.Github.Repo
+	client := s.handoffIssues[product.Github.credential()]
+	if client == nil {
 		msg := "GitHub issue creation is not configured on this deployment"
 		return nil, &msg
 	}
-	owner, repo := derefString(route.GithubOwner), derefString(route.GithubRepo)
-	if owner == "" || repo == "" {
-		msg := "No GitHub repository is configured for this specialist route"
-		return nil, &msg
-	}
-	created, err := s.handoffIssues.CreateIssue(ctx, owner, repo, inc.Subject, derefString(inc.Description), nil)
+	created, err := client.CreateIssue(ctx, owner, repo, inc.Subject, derefString(inc.Description), nil)
 	if err != nil {
 		slog.WarnContext(ctx, "specialist handoff: GitHub issue not created", "incidentId", inc.IncidentID, "error", err)
+		// IncidentHandoffUtils' wording: the status GitHub answered with, or
+		// the failure when there was no answer.
 		msg := "GitHub issue creation failed: " + err.Error()
+		if apiErr := (*github.Error)(nil); errors.As(err, &apiErr) {
+			msg = fmt.Sprintf("GitHub issue creation failed (%d)", apiErr.StatusCode)
+		}
 		return nil, &msg
 	}
 	return &domain.IncidentSpecialistHandoffGithubIssue{URL: created.HTMLURL, Number: created.Number, Repo: repo}, nil
 }
 
 // ListSpecialistHandoffTeams implements IncidentService for Postgres: the
-// sub-teams specialist_handoff_route offers.
-func (s *incidentService) ListSpecialistHandoffTeams(ctx context.Context) (domain.SpecialistHandoffTeamsResponse, error) {
-	teams, err := s.repo.ListSpecialistHandoffTeams(ctx)
-	if err != nil {
+// teams of the product serviceID belongs to, in configured order; none for
+// a service no product covers. An empty serviceID lists every product's.
+func (s *incidentService) ListSpecialistHandoffTeams(_ context.Context, serviceID string) (domain.SpecialistHandoffTeamsResponse, error) {
+	teams := []domain.SpecialistHandoffTeam{}
+	if serviceID == "" {
+		if s.handoffConfig != nil {
+			for i := range s.handoffConfig.Products {
+				teams = append(teams, s.handoffConfig.Products[i].teamOptions()...)
+			}
+		}
+		return domain.SpecialistHandoffTeamsResponse{Teams: teams}, nil
+	}
+	if err := validateUUIDs("serviceId", []string{serviceID}); err != nil {
 		return domain.SpecialistHandoffTeamsResponse{}, err
 	}
+	if p := s.handoffConfig.productFor(&serviceID); p != nil {
+		teams = p.teamOptions()
+	}
 	return domain.SpecialistHandoffTeamsResponse{Teams: teams}, nil
+}
+
+// incidentView is the repository's view of an incident with what the
+// handoff configuration decides added: whether the incident can be handed
+// off now (the same rules planSpecialistHandoff applies, read without a
+// lock -- it only decides whether to offer the action), and its handoff's
+// escalation team only when the configuration knows the team, as
+// getHandoffSummary keeps only the teams IncidentHandoffUtils knows.
+func (s *incidentService) incidentView(ctx context.Context, id string) (domain.IncidentView, error) {
+	v, err := s.repo.GetIncidentByID(ctx, id)
+	if err != nil {
+		return v, err
+	}
+	can := false
+	if v.State != nil && *v.State == string(domain.IncidentStateInProgress) && v.Service != nil {
+		if p := s.handoffConfig.productFor(&v.Service.ID); p != nil {
+			var group *string
+			if v.AssignmentGroup != nil {
+				group = &v.AssignmentGroup.ID
+			}
+			can = !p.holdsGroup(group)
+		}
+	}
+	v.CanHandOffToSpecialist = &can
+	if sum := v.SpecialistHandoff; sum != nil && sum.EscalationTeam != nil && !s.handoffConfig.knowsTeam(string(*sum.EscalationTeam)) {
+		sum.EscalationTeam = nil
+	}
+	return v, nil
 }

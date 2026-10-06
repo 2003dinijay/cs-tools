@@ -20,21 +20,26 @@ import { useBackendApi } from "@api/backend/client";
 import type { BeSpecialistHandoffTeam, BeSpecialistHandoffTeamsResponse } from "@api/backend/types";
 
 /**
- * The sub-teams the "Escalate to specialist team" dialog offers, via
- * `GET /specialist-handoff-teams`. They are configuration (the
- * specialist_handoff_route table), so they change rarely: fetched when the
- * dialog first opens and kept for five minutes.
+ * The Special Ops teams the "Escalate to specialist team" dialog offers for
+ * an incident's service, via `GET /specialist-handoff-teams?serviceId=`.
+ * They are configuration, so they change rarely: fetched when the dialog
+ * first opens and kept for five minutes.
  */
 export function useSpecialistHandoffTeams(
+  serviceId: string | undefined,
   enabled: boolean,
 ): UseQueryResult<BeSpecialistHandoffTeam[], Error> {
   const api = useBackendApi();
 
   return useQuery<BeSpecialistHandoffTeam[], Error>({
-    queryKey: [ApiQueryKeys.SPECIALIST_HANDOFF_TEAMS],
+    queryKey: [ApiQueryKeys.SPECIALIST_HANDOFF_TEAMS, serviceId],
     queryFn: async (): Promise<BeSpecialistHandoffTeam[]> =>
-      (await api.get<BeSpecialistHandoffTeamsResponse>("/specialist-handoff-teams"))?.teams ?? [],
-    enabled,
+      (
+        await api.get<BeSpecialistHandoffTeamsResponse>(
+          `/specialist-handoff-teams?serviceId=${encodeURIComponent(serviceId ?? "")}`,
+        )
+      )?.teams ?? [],
+    enabled: enabled && !!serviceId,
     staleTime: 5 * 60_000,
   });
 }

@@ -145,10 +145,11 @@ func (h *IncidentHandler) HandOffIncidentToSpecialist(w http.ResponseWriter, r *
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
-// ListSpecialistHandoffTeams handles GET /specialist-handoff-teams: the
-// sub-teams the handoff dialog offers.
+// ListSpecialistHandoffTeams handles GET /specialist-handoff-teams
+// [?serviceId=]: the sub-teams the handoff dialog offers for an incident's
+// service.
 func (h *IncidentHandler) ListSpecialistHandoffTeams(w http.ResponseWriter, r *http.Request) {
-	resp, err := h.svc.ListSpecialistHandoffTeams(r.Context())
+	resp, err := h.svc.ListSpecialistHandoffTeams(r.Context(), r.URL.Query().Get("serviceId"))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

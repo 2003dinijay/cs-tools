@@ -267,11 +267,14 @@ type incidentService struct {
 	// target of its async ServiceNow mirror dispatch (see that method's own
 	// doc comment) once snWriteback below is set.
 	snMirror IncidentService
-	// handoffIssues files the GitHub issue a specialist handoff opens; nil
-	// when the GitHub integration is not configured, in which case a
-	// handoff still succeeds and reports that no issue was filed. Set with
-	// WithHandoffIssueCreator.
-	handoffIssues handoffIssueCreator
+	// handoffIssues file the GitHub issue a specialist handoff opens, by
+	// credential name; a product whose credential has no client still hands
+	// off and reports that no issue was filed. Set with
+	// WithHandoffIssueCreators.
+	handoffIssues SpecialistHandoffIssueClients
+	// handoffConfig routes specialist handoffs; nil hands off nothing
+	// (WithSpecialistHandoffConfig).
+	handoffConfig *SpecialistHandoffConfig
 	// snWriteback is nil in every mode except
 	// DATA_SOURCE=postgres-servicenow-dual-write, same convention as
 	// caseService's identical field -- see NewCaseServiceWithSNWriteback's
@@ -423,7 +426,7 @@ func (s *incidentService) GetIncidentByID(ctx context.Context, id string) (domai
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.IncidentView{}, err
 	}
-	return s.repo.GetIncidentByID(ctx, id)
+	return s.incidentView(ctx, id)
 }
 
 // SearchIncidentActivities implements IncidentService.
@@ -743,7 +746,7 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		return domain.UpdateIncidentResponse{}, err
 	}
 
-	view, err := s.repo.GetIncidentByID(ctx, req.ID)
+	view, err := s.incidentView(ctx, req.ID)
 	if err != nil {
 		return domain.UpdateIncidentResponse{}, err
 	}

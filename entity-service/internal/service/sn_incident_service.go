@@ -233,17 +233,42 @@ func validateHandOffRequest(req domain.HandOffIncidentToSpecialistRequest) error
 	return nil
 }
 
-// snSpecialistHandoffTeams are the two teams ServiceNow's handoff API
-// (IncidentHandoffUtils) accepts, with the labels its modal shows.
-var snSpecialistHandoffTeams = []domain.SpecialistHandoffTeam{
-	{Key: string(domain.IncidentSpecialistHandoffTeamChoreoAPIM), Label: "Choreo APIM Team"},
-	{Key: string(domain.IncidentSpecialistHandoffTeamChoreoRuntime), Label: "Choreo Runtime Team"},
+// ServiceNow's handoff routing (IncidentHandoffUtils' IHU_SERVICE_ROUTING)
+// as the dialog lists it: Choreo's default Special Ops group plus its two
+// sub-teams, and Asgardeo's one group. The "-special-ops" keys stand for the
+// default group, which ServiceNow's API reaches by naming no team.
+const (
+	snChoreoServiceID   = "b9c999f8-1b86-a010-00ae-86acdd4bcb61"
+	snAsgardeoServiceID = "97ed1b8b-1ba2-6c10-00ae-86acdd4bcbd3"
+
+	snChoreoSpecialOpsTeam   domain.IncidentSpecialistHandoffEscalationTeam = "choreo-special-ops"
+	snAsgardeoSpecialOpsTeam domain.IncidentSpecialistHandoffEscalationTeam = "asgardeo-special-ops"
+)
+
+var snSpecialistHandoffTeams = map[string][]domain.SpecialistHandoffTeam{
+	snChoreoServiceID: {
+		{Key: string(snChoreoSpecialOpsTeam), Label: "Choreo Special Ops"},
+		{Key: string(domain.IncidentSpecialistHandoffTeamChoreoRuntime), Label: "Choreo Runtime Team"},
+		{Key: string(domain.IncidentSpecialistHandoffTeamChoreoAPIM), Label: "Choreo APIM Team"},
+	},
+	snAsgardeoServiceID: {
+		{Key: string(snAsgardeoSpecialOpsTeam), Label: "Asgardeo Special Ops"},
+	},
 }
 
 // ListSpecialistHandoffTeams implements IncidentService for ServiceNow,
-// whose routing is code, not data.
-func (s *snIncidentService) ListSpecialistHandoffTeams(context.Context) (domain.SpecialistHandoffTeamsResponse, error) {
-	return domain.SpecialistHandoffTeamsResponse{Teams: snSpecialistHandoffTeams}, nil
+// whose routing is code, not data: the teams above for Choreo and
+// Asgardeo, none for any other service, and all of them for no service.
+func (s *snIncidentService) ListSpecialistHandoffTeams(_ context.Context, serviceID string) (domain.SpecialistHandoffTeamsResponse, error) {
+	if serviceID == "" {
+		all := append(append([]domain.SpecialistHandoffTeam{}, snSpecialistHandoffTeams[snChoreoServiceID]...), snSpecialistHandoffTeams[snAsgardeoServiceID]...)
+		return domain.SpecialistHandoffTeamsResponse{Teams: all}, nil
+	}
+	teams := snSpecialistHandoffTeams[strings.ToLower(serviceID)]
+	if teams == nil {
+		teams = []domain.SpecialistHandoffTeam{}
+	}
+	return domain.SpecialistHandoffTeamsResponse{Teams: teams}, nil
 }
 
 var validIncidentSortField = map[domain.IncidentSortField]bool{
@@ -1963,6 +1988,10 @@ type snHandOffIncidentResponse struct {
 func (s *snIncidentService) HandOffIncidentToSpecialist(ctx context.Context, req domain.HandOffIncidentToSpecialistRequest) (domain.HandOffIncidentToSpecialistResponse, error) {
 	if err := validateHandOffRequest(req); err != nil {
 		return domain.HandOffIncidentToSpecialistResponse{}, err
+	}
+	// The default groups' keys are ServiceNow's "no team".
+	if req.EscalationTeam != nil && (*req.EscalationTeam == snChoreoSpecialOpsTeam || *req.EscalationTeam == snAsgardeoSpecialOpsTeam) {
+		req.EscalationTeam = nil
 	}
 	if req.EscalationTeam != nil && !validIncidentSpecialistHandoffEscalationTeam[*req.EscalationTeam] {
 		return domain.HandOffIncidentToSpecialistResponse{}, &apierror.ValidationError{Msg: "invalid escalationTeam: " + string(*req.EscalationTeam)}

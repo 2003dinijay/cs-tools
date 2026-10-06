@@ -16,7 +16,7 @@
 
 // Integration tests for IncidentRepository.ApplySpecialistHandoff and the
 // specialist-handoff summary GetIncidentByID derives, against a real Postgres
-// with migrations through 0194 applied. Skipped unless
+// with the migrations applied. Skipped unless
 // INCIDENT_HANDOFF_TEST_DSN is set.
 package repository_test
 
@@ -57,7 +57,6 @@ func handoffPool(t *testing.T) *pgxpool.Pool {
 	scoped := repository.NewScoped(pool)
 	cleanup := func() {
 		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE subject = $1`, hoTaskSubject)
-		_, _ = pool.Exec(ctx, `DELETE FROM team WHERE key IN ('ho-test-special-ops', 'ho-test-sub-team')`)
 		_, _ = pool.Exec(ctx, `DELETE FROM "group" WHERE id = ANY($1::uuid[])`, []string{hoSpecialGroup, hoSubGroup})
 	}
 	cleanup()
@@ -67,20 +66,6 @@ func handoffPool(t *testing.T) *pgxpool.Pool {
 		if _, err := pool.Exec(ctx, `INSERT INTO "group" (id, created_on, updated_on, created_by, updated_by, name) VALUES ($1, $2, $2, 'test', 'test', $3)`, id, now, name); err != nil {
 			t.Fatalf("seed group: %v", err)
 		}
-	}
-	// The test service's routes, as migration 0194 seeds Choreo's: a default
-	// team and one sub-team, each a team row linked to its group.
-	if _, err := pool.Exec(ctx, `
-		WITH teams AS (
-			INSERT INTO team (id, created_on, updated_on, created_by, updated_by, name, type, key, group_id)
-			VALUES (gen_random_uuid(), NOW(), NOW(), 'test', 'test', 'Test Special Ops', 'SPECIAL-OPS', 'ho-test-special-ops', $2::uuid),
-			       (gen_random_uuid(), NOW(), NOW(), 'test', 'test', 'Test Sub Team',    'SPECIAL-OPS', 'ho-test-sub-team',    $3::uuid)
-			RETURNING id, key
-		)
-		INSERT INTO specialist_handoff_route (service_id, team_id, is_default, github_owner, github_repo)
-		SELECT $1::uuid, id, key = 'ho-test-special-ops', 'test-owner', 'test-repo' FROM teams`,
-		icServiceID, hoSpecialGroup, hoSubGroup); err != nil {
-		t.Fatalf("seed routes: %v", err)
 	}
 	return pool
 }
@@ -117,9 +102,8 @@ func TestSpecialistHandoff_WritesAndReadsBack(t *testing.T) {
 	ctx := repository.WithSystemIdentity(context.Background())
 	repo := repository.NewIncidentRepository(repository.NewScoped(pool))
 
-	if v, err := repo.GetIncidentByID(ctx, incID); err != nil || v.SpecialistHandoff != nil ||
-		v.CanHandOffToSpecialist == nil || !*v.CanHandOffToSpecialist {
-		t.Fatalf("before the handoff: summary %+v can %v err %v, want no summary and eligible", v.SpecialistHandoff, v.CanHandOffToSpecialist, err)
+	if v, err := repo.GetIncidentByID(ctx, incID); err != nil || v.SpecialistHandoff != nil {
+		t.Fatalf("before the handoff: summary %+v err %v, want none", v.SpecialistHandoff, err)
 	}
 
 	var seen repository.SpecialistHandoffSnapshot
@@ -132,15 +116,6 @@ func TestSpecialistHandoff_WritesAndReadsBack(t *testing.T) {
 	}
 	if seen.State != "IN_PROGRESS" || seen.ServiceID == nil || *seen.ServiceID != icServiceID || seen.Number == "" {
 		t.Errorf("snapshot %+v, want the In Progress incident on %s", seen, icServiceID)
-	}
-	routes := map[string]repository.SpecialistHandoffRoute{}
-	for _, r := range seen.Routes {
-		routes[r.TeamKey] = r
-	}
-	def, sub := routes["ho-test-special-ops"], routes["ho-test-sub-team"]
-	if len(seen.Routes) != 2 || !def.IsDefault || sub.IsDefault || sub.GroupID == nil || *sub.GroupID != hoSubGroup ||
-		sub.TeamName != "Test Sub Team" || sub.GithubRepo == nil || *sub.GithubRepo != "test-repo" {
-		t.Errorf("snapshot routes %+v, want the default team and the sub-team with their groups", seen.Routes)
 	}
 	if written.GroupName != "Test Sub Special Ops" || !strings.HasPrefix(written.TaskNumber, "CS-PORTAL-") {
 		t.Errorf("written %+v", written)
@@ -172,11 +147,6 @@ func TestSpecialistHandoff_WritesAndReadsBack(t *testing.T) {
 	}
 	if v.AssignmentGroup == nil || v.AssignmentGroup.ID != hoSubGroup || v.AssignedTo != nil {
 		t.Errorf("group %+v assignee %+v, want the specialist group and no assignee", v.AssignmentGroup, v.AssignedTo)
-	}
-	// Handed to a sub-team's group, not the default's: still eligible, as in
-	// ServiceNow (only the default group hides the button).
-	if v.CanHandOffToSpecialist == nil || !*v.CanHandOffToSpecialist {
-		t.Errorf("after a sub-team handoff: canHandOffToSpecialist %v, want true", v.CanHandOffToSpecialist)
 	}
 	s := v.SpecialistHandoff
 	if s == nil {
@@ -241,61 +211,5 @@ func TestSpecialistHandoff_UnknownGroupAndIncident(t *testing.T) {
 	var nf *apierror.NotFoundError
 	if !errors.As(err, &nf) {
 		t.Errorf("unknown incident: %T %v, want NotFoundError", err, err)
-	}
-}
-
-// TestListSpecialistHandoffTeams: the dialog's options are the teams of
-// active, non-default routes, by key and name.
-func TestListSpecialistHandoffTeams(t *testing.T) {
-	pool := handoffPool(t)
-	ctx := repository.WithSystemIdentity(context.Background())
-	repo := repository.NewIncidentRepository(repository.NewScoped(pool))
-	teams, err := repo.ListSpecialistHandoffTeams(ctx)
-	if err != nil {
-		t.Fatalf("ListSpecialistHandoffTeams: %v", err)
-	}
-	var sub, def bool
-	for _, tm := range teams {
-		sub = sub || (tm.Key == "ho-test-sub-team" && tm.Label == "Test Sub Team")
-		def = def || tm.Key == "ho-test-special-ops"
-	}
-	if !sub || def {
-		t.Errorf("teams %+v, want the sub-team and not the default team", teams)
-	}
-}
-
-// TestCanHandOffToSpecialist mirrors canEscalateToSpecialOps: only an In
-// Progress incident on a routed service, not in the default group.
-func TestCanHandOffToSpecialist(t *testing.T) {
-	pool := handoffPool(t)
-	incID := inProgressIncident(t, pool)
-	ctx := repository.WithSystemIdentity(context.Background())
-	scoped := repository.NewScoped(pool)
-	repo := repository.NewIncidentRepository(scoped)
-	can := func() bool {
-		t.Helper()
-		v, err := repo.GetIncidentByID(ctx, incID)
-		if err != nil || v.CanHandOffToSpecialist == nil {
-			t.Fatalf("GetIncidentByID: %v / %v", err, v.CanHandOffToSpecialist)
-		}
-		return *v.CanHandOffToSpecialist
-	}
-	if !can() {
-		t.Error("In Progress on a routed service: want eligible")
-	}
-	if _, err := scoped.Exec(ctx, `UPDATE work_item SET assignment_group_id = $2 WHERE id = $1`, incID, hoSpecialGroup); err != nil {
-		t.Fatal(err)
-	}
-	if can() {
-		t.Error("already in the default Special Ops group: want not eligible")
-	}
-	if _, err := scoped.Exec(ctx, `UPDATE work_item SET assignment_group_id = NULL WHERE id = $1`, incID); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := scoped.Exec(ctx, `UPDATE incident SET state = 'NEW' WHERE id = $1`, incID); err != nil {
-		t.Fatal(err)
-	}
-	if can() {
-		t.Error("not In Progress: want not eligible")
 	}
 }

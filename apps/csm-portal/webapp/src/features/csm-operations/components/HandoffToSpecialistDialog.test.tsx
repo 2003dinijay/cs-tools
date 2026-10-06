@@ -49,72 +49,83 @@ function baseResult(overrides: Partial<BeIncidentHandoffResult> = {}): BeInciden
 }
 
 const TEAMS = [
-  { key: "choreo-apim-team", label: "Choreo APIM Team" },
+  { key: "choreo-special-ops", label: "Choreo Special Ops" },
   { key: "choreo-runtime-team", label: "Choreo Runtime Team" },
+  { key: "choreo-apim-team", label: "Choreo APIM Team" },
 ];
 
+function renderForm(props: Partial<Parameters<typeof HandoffToSpecialistDialog>[0]> = {}) {
+  const onSubmit = vi.fn();
+  render(
+    <HandoffToSpecialistDialog
+      teamOptions={TEAMS}
+      isSubmitting={false}
+      result={null}
+      onClose={() => {}}
+      onSubmit={onSubmit}
+      {...props}
+    />,
+  );
+  return onSubmit;
+}
+
+function pickReason(name: RegExp) {
+  openSelect(/^reason$/i);
+  fireEvent.click(screen.getByRole("option", { name }));
+}
+
 describe("HandoffToSpecialistDialog — form", () => {
-  it("submits the reason code alone when no team is picked", () => {
-    const onSubmit = vi.fn();
-    render(
-      <HandoffToSpecialistDialog
-        teamOptions={TEAMS}
-        isSubmitting={false}
-        result={null}
-        onClose={() => {}}
-        onSubmit={onSubmit}
-      />,
-    );
+  it("requires a team when the product has several, and sends the choice", () => {
+    const onSubmit = renderForm();
+    const escalate = screen.getByRole("button", { name: /^escalate$/i });
 
-    expect(screen.getByRole("combobox", { name: /escalation team \(applies to choreo only\)/i })).toBeInTheDocument();
+    pickReason(/runbook doesn't solve the incident/i);
+    expect(escalate).toBeDisabled();
 
-    fireEvent.mouseDown(screen.getByRole("combobox", { name: /reason/i }));
-    fireEvent.click(within(screen.getByRole("listbox")).getByText(/runbook doesn't solve the incident/i));
-    fireEvent.click(screen.getByRole("button", { name: /^escalate$/i }));
+    const list = openSelect(/escalation team/i);
+    expect(within(list).getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "-- Select --",
+      "Choreo Special Ops",
+      "Choreo Runtime Team",
+      "Choreo APIM Team",
+    ]);
+    fireEvent.click(screen.getByRole("option", { name: /choreo apim team/i }));
+    fireEvent.click(escalate);
 
     expect(onSubmit).toHaveBeenCalledWith({
       reasonCode: "runbook-not-working",
-      escalationTeam: undefined,
-    });
-  });
-
-  it("always shows the team select, labelled as ServiceNow does, and includes the choice when submitted", () => {
-    const onSubmit = vi.fn();
-    render(
-      <HandoffToSpecialistDialog
-        teamOptions={TEAMS}
-        isSubmitting={false}
-        result={null}
-        onClose={() => {}}
-        onSubmit={onSubmit}
-      />,
-    );
-
-    openSelect(/^reason$/i);
-    fireEvent.click(screen.getByRole("option", { name: /runbook is not available/i }));
-
-    openSelect(/escalation team \(applies to choreo only\)/i);
-    fireEvent.click(screen.getByRole("option", { name: /choreo apim team/i }));
-
-    fireEvent.click(screen.getByRole("button", { name: /^escalate$/i }));
-
-    expect(onSubmit).toHaveBeenCalledWith({
-      reasonCode: "no-runbook",
       escalationTeam: "choreo-apim-team",
     });
   });
 
-  it("disables Escalate until a reason is chosen", () => {
-    render(
-      <HandoffToSpecialistDialog
-        teamOptions={TEAMS}
-        isSubmitting={false}
-        result={null}
-        onClose={() => {}}
-        onSubmit={vi.fn()}
-      />,
-    );
+  it("names the only team and asks nothing when the product has one", () => {
+    const onSubmit = renderForm({ teamOptions: [{ key: "asgardeo-special-ops", label: "Asgardeo Special Ops" }] });
 
+    expect(screen.queryByRole("combobox", { name: /escalation team/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/escalates to/i)).toHaveTextContent("Escalates to Asgardeo Special Ops.");
+
+    pickReason(/runbook is not available/i);
+    fireEvent.click(screen.getByRole("button", { name: /^escalate$/i }));
+
+    expect(onSubmit).toHaveBeenCalledWith({ reasonCode: "no-runbook", escalationTeam: undefined });
+  });
+
+  it("cannot escalate while the teams load or when the service has none", () => {
+    renderForm({ teamOptions: [], isLoadingTeams: true });
+    expect(screen.getByText(/loading specialist teams/i)).toBeInTheDocument();
+    pickReason(/runbook is not available/i);
+    expect(screen.getByRole("button", { name: /^escalate$/i })).toBeDisabled();
+  });
+
+  it("says when no specialist team is configured", () => {
+    renderForm({ teamOptions: [] });
+    expect(screen.getByText(/no specialist team is configured/i)).toBeInTheDocument();
+    pickReason(/runbook is not available/i);
+    expect(screen.getByRole("button", { name: /^escalate$/i })).toBeDisabled();
+  });
+
+  it("disables Escalate until a reason is chosen", () => {
+    renderForm({ teamOptions: [{ key: "asgardeo-special-ops", label: "Asgardeo Special Ops" }] });
     expect(screen.getByRole("button", { name: /^escalate$/i })).toBeDisabled();
   });
 

@@ -942,16 +942,28 @@ func TestListSpecialistHandoffTeams(t *testing.T) {
 		assertStatus(t, w, http.StatusUnauthorized)
 	})
 
-	t.Run("passes the entity service's teams through", func(t *testing.T) {
+	t.Run("passes the service and the entity service's teams through", func(t *testing.T) {
 		const body = `{"teams":[{"key":"choreo-apim-team","label":"Choreo APIM Team"}]}`
+		const service = "b9c999f8-1b86-a010-00ae-86acdd4bcb61"
+		var gotService string
 		h := NewIncidentHandler(&mockEntityIncidentClient{
-			listSpecialistHandoffTeamsFn: func(context.Context) ([]byte, error) { return []byte(body), nil },
+			listSpecialistHandoffTeamsFn: func(_ context.Context, serviceID string) ([]byte, error) {
+				gotService = serviceID
+				return []byte(body), nil
+			},
 		})
 		w := httptest.NewRecorder()
-		h.ListSpecialistHandoffTeams(w, withUser(httptest.NewRequest(http.MethodGet, "/specialist-handoff-teams", nil)))
+		h.ListSpecialistHandoffTeams(w, withUser(httptest.NewRequest(http.MethodGet, "/specialist-handoff-teams?serviceId="+service, nil)))
 		assertStatus(t, w, http.StatusOK)
-		if got := strings.TrimSpace(w.Body.String()); got != body {
-			t.Errorf("body %s, want %s", got, body)
+		if got := strings.TrimSpace(w.Body.String()); got != body || gotService != service {
+			t.Errorf("body %s service %q, want %s for %s", got, gotService, body, service)
 		}
+	})
+
+	t.Run("rejects a malformed serviceId", func(t *testing.T) {
+		h := NewIncidentHandler(&mockEntityIncidentClient{})
+		w := httptest.NewRecorder()
+		h.ListSpecialistHandoffTeams(w, withUser(httptest.NewRequest(http.MethodGet, "/specialist-handoff-teams?serviceId=choreo", nil)))
+		assertStatus(t, w, http.StatusBadRequest)
 	})
 }

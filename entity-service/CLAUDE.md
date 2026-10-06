@@ -5015,17 +5015,24 @@ Postgres only -- no ServiceNow call, in dual-write mode too.
 transaction that moves `work_item.assignment_group_id`, clears the assignee,
 opens a portal-numbered `[Runbook Task]` (in the same Special Ops group --
 WSO2 SRE Team no longer exists) and writes the reason JSON as a work note.
-Routing is data, not code (migration 0194): each Special Ops team is a `team`
-row (type `SPECIAL-OPS`, key = the handoff's `escalationTeam`) linked to its
-assignment group by `team.group_id`, and `specialist_handoff_route` says
-which teams serve which service (one default per service) and where the
-GitHub issue goes. `GET /specialist-handoff-teams` feeds the dialog, and
-`IncidentView.CanHandOffToSpecialist` (SN's `canEscalateToSpecialOps`)
-decides whether the portal shows the action.
+Routing is configuration, not code or tables: `SPECIALIST_HANDOFF_CONFIG`
+(one line of JSON, `specialist_handoff_config.go`, validated at startup --
+a bad value refuses to start) lists products, each with its service ids,
+its Special Ops teams (`key` = the handoff's `escalationTeam`, `label`,
+`groupId`) and an optional GitHub repo. A product with several teams
+(Choreo) requires `escalationTeam`; one with a single team (Asgardeo) takes
+it and records no team, as SN does. `GET /specialist-handoff-teams?serviceId=`
+feeds the dialog, and `IncidentView.CanHandOffToSpecialist` (SN's
+`canEscalateToSpecialOps`; false when the incident is already with any of
+its product's groups) is computed in the service from the config.
 The GitHub issue and the "Escalated to Special Ops team." note follow,
-best effort, through the GitHub integration's client
-(`WithHandoffIssueCreator`; without one the handoff still succeeds and
-reports `githubIssueError`). `IncidentView.SpecialistHandoff` is derived at
+best effort. Each product's repo picks a token by `github.credential`
+(default: its owner) from the secret `SPECIALIST_HANDOFF_GITHUB_TOKENS`
+(`{"<credential>":"<token>"}`, falling back to `GITHUB_TOKEN`), one client
+per credential (`WithHandoffIssueCreators`), independent of the
+change-request GitHub sync. No token: the handoff still succeeds and reports
+`githubIssueError`. No webhook -- SN never reads anything back from the
+issue. `IncidentView.SpecialistHandoff` is derived at
 read time from those notes and the task, as SN's `getHandoffSummary` does.
 
 **`UpdateProblem`/`UpdateIncident` are also not
