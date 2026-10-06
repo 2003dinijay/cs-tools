@@ -361,26 +361,94 @@ export function changeRequestBlockingReason(
 }
 
 /**
- * Helper shown in the Approval tab when a CR sits at a customer gate but its
- * Customer Project has no registered contacts, so the backend had nobody to
- * ask. Staff never record a customer's approval or review, so the note says
- * what is left. `null` when the state is not a customer gate or contacts
- * exist. `customerContacts` being `undefined` (field absent from the payload,
- * e.g. another data source) is treated as "unknown" -> `null`; only an
- * explicit empty list counts as "none".
+ * Why nobody is being asked, for a project with no registered contacts at all:
+ * what the Customer Project holds, and that it cannot be changed to route the
+ * step (it is fixed once approval is requested).
  */
 export const NO_CUSTOMER_CONTACTS_HELPER =
   "No registered customer contacts are assigned to this change request's project, so no customer approvers were assigned. " +
-  "The Customer Project is fixed once approval is requested, so it cannot be changed to route the step. " +
-  "Staff never record a customer's approval or review, so there is nobody to answer here: the change can only be re-scheduled (Customer Approval), rolled back (Customer Review) or canceled.";
+  "The Customer Project is fixed once approval is requested, so it cannot be changed to route the step.";
 
-export function noCustomerContactsHelper(
+/**
+ * Why nobody is being asked when the project does have registered contacts but
+ * none of them has a request waiting. The web cannot tell which of the causes
+ * applies, so it names them rather than one: the request goes to the project's
+ * registered contacts leaving out whoever raised the change and anyone no longer
+ * active (so a project whose only contact is the requester, or whose contacts
+ * were all deactivated, asks nobody), and a change that came over from ServiceNow
+ * sitting at the step can have had no request at all.
+ */
+export const NOBODY_ASKED_HELPER =
+  "Nobody is being asked to answer at this step. The request goes to the Customer Project's registered contacts, " +
+  "leaving out whoever raised the change and anyone no longer active, and none of them has one waiting; " +
+  "a change that came over from ServiceNow may also have no request at all.";
+
+/**
+ * What staff are left with, per customer gate, when nobody is being asked.
+ * Staff never record a customer's approval or review, so the only exits are the
+ * ones staff always have there: Cancel change out of Customer Approval
+ * (Re-schedule only sends the change back through approval, to ask the same
+ * contacts again, so it ends no wait), Roll back or Cancel change out of Customer
+ * Review.
+ */
+export const NOBODY_ASKED_WAY_OUT: Readonly<Record<"customer_approval" | "customer_review", string>> = {
+  customer_approval:
+    "Staff never record a customer's approval, so there is nobody to answer here: Cancel change is the only way out. " +
+    "Re-schedule only sends the change back through approval, to ask the same contacts again.",
+  customer_review:
+    "Staff never record a customer's review, so there is nobody to answer here: Roll back or Cancel change are the only ways out.",
+};
+
+/**
+ * Whether any approver of any stage is still being asked: an approver row in
+ * the `REQUESTED` state, the same test the backend and `pendingCustomerReview`
+ * use (never the stage's own status, which stays `PENDING` after every approver
+ * was cancelled). `null` while the approvals are not known (not loaded, or being
+ * reloaded).
+ *
+ * Any stage counts, not only one labelled as a customer stage: a stage the
+ * sync brought over is labelled by its position, so the customer's request on a
+ * migrated change can carry any label, and a note that says nobody is asked
+ * must never be wrong about a change somebody is asked about. At a customer
+ * gate every internal stage is settled (leaving a state cancels what was left
+ * waiting in it), so a row still waiting there is the customer's.
+ */
+export function anyApproverBeingAsked(approvals: readonly BeChangeRequestApproval[] | null | undefined): boolean | null {
+  if (!approvals) return null;
+  return approvals.some((stage) => stage.approvers.some((a) => a.status.trim().toUpperCase() === "REQUESTED"));
+}
+
+/**
+ * The note shown in the Approval tab when a change sits at a customer gate
+ * (Customer Approval / Customer Review) and nobody is being asked to answer, so
+ * nobody can: staff never record a customer's approval or review, and the
+ * customer's own answer has no one to come from. `null` in every other case.
+ *
+ * Nobody is asked when:
+ *  - the project has no registered contacts (`customerContacts` empty): the
+ *    project-specific reason, shown even before the approvals load, since the
+ *    contacts alone prove it unless an old request is still waiting;
+ *  - the project has contacts, but the approvals (loaded) show no approver
+ *    waiting: only the requester is registered, the contacts are deactivated,
+ *    or the change reached the gate with no request at all (a legacy change
+ *    with no stage).
+ * It is `null`, never a guess, while the approvals are unknown (`undefined`),
+ * when somebody IS waiting (an old request still stands: only the approvers
+ * already asked may answer it), and when `customerContacts` is `undefined`
+ * (absent from the payload: another data source, nothing is claimed).
+ */
+export function noCustomerAskedHelper(
   state: string | null | undefined,
   customerContacts: readonly unknown[] | null | undefined,
+  approvals?: readonly BeChangeRequestApproval[] | null,
 ): string | null {
   if (state !== "customer_approval" && state !== "customer_review") return null;
   if (customerContacts === undefined) return null;
-  return customerContacts && customerContacts.length > 0 ? null : NO_CUSTOMER_CONTACTS_HELPER;
+  const asked = anyApproverBeingAsked(approvals);
+  if (asked === true) return null;
+  const wayOut = NOBODY_ASKED_WAY_OUT[state];
+  if (!customerContacts || customerContacts.length === 0) return `${NO_CUSTOMER_CONTACTS_HELPER} ${wayOut}`;
+  return asked === false ? `${NOBODY_ASKED_HELPER} ${wayOut}` : null;
 }
 
 // ---------------------------------------------------------------------------

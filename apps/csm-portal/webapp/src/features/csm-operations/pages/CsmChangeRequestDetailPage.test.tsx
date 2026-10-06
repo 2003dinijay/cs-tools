@@ -2979,7 +2979,8 @@ describe("CsmChangeRequestDetailPage — customer group: no registered customer 
     // Only the settled internal stages; no customer-stage rows.
     expect(screen.queryAllByText("Customer Approval", { selector: "td" })).toHaveLength(0);
     expect(screen.getByText(/^No registered customer contacts are assigned to this change request's project, so no customer approvers were assigned\./)).toBeInTheDocument();
-    expect(screen.getByText(/staff never record a customer's approval or review/i)).toBeInTheDocument();
+    // ...and says plainly what is left: Cancel change is the only way out of Customer Approval.
+    expect(screen.getByText(/staff never record a customer's approval, so there is nobody to answer here: Cancel change is the only way out/i)).toBeInTheDocument();
     // Nobody was asked and nobody can answer for the customer: Re-schedule, and Cancel change in the menu.
     expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change state/i }));
@@ -3001,6 +3002,8 @@ describe("CsmChangeRequestDetailPage — customer group: no registered customer 
     expect(currentStep()).toBe("Customer Review");
     expect(screen.getByText("Awaiting Customer Review")).toBeInTheDocument();
     expect(screen.getByText(/no registered customer contacts/i)).toBeInTheDocument();
+    // Roll back or Cancel change are the only ways out of Customer Review.
+    expect(screen.getByText(/staff never record a customer's review, so there is nobody to answer here: Roll back or Cancel change are the only ways out/i)).toBeInTheDocument();
     expect(screen.queryAllByText("Customer Review", { selector: "td" })).toHaveLength(0);
     expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change state/i }));
@@ -3012,17 +3015,142 @@ describe("CsmChangeRequestDetailPage — customer group: no registered customer 
     view.unmount();
   });
 
-  it("registered contacts none of whom is eligible (e.g. only the creator) provision no stage: nobody is asked, no helper nags, and still no way to record the approval", () => {
+  it("registered contacts none of whom is eligible (e.g. only the creator) provision no stage: nobody is asked, the note says so (not that no contacts are registered), and still no way to record the approval", () => {
     lcSeed("normal", { approval: true, review: false }, { members: [], contacts: [{ id: LC_CREATOR.id, name: LC_CREATOR.name }] });
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
     view = lcOpenAs(LC_CREATOR, view);
     expect(currentStep()).toBe("Customer Approval");
     expect(screen.queryAllByText("Customer Approval", { selector: "td" })).toHaveLength(0);
+    // The project HAS a registered contact, so the "no registered contacts" reason would be false here:
+    // the note says what is true (nobody has a request waiting) and what is left.
     expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/^Nobody is being asked to answer at this step\./)).toBeInTheDocument();
+    expect(screen.getByText(/leaving out whoever raised the change and anyone no longer active/)).toBeInTheDocument();
+    expect(screen.getByText(/Cancel change is the only way out/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change state/i }));
     expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Cancel change"]);
     expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
     view.unmount();
+  });
+
+  it("registered contacts none of whom is active (deactivated) are asked nothing: the same note at Customer Approval, naming Cancel change as the way out", () => {
+    // The backend asks only active contacts, so a project whose contacts were all deactivated provisions no stage.
+    lcSeed("normal", { approval: true, review: false }, { members: [], contacts: [{ id: "00000000-0000-0000-0000-0000000000d1", name: "Dormant Contact" }] });
+    let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
+    view = lcOpenAs(LC_CREATOR, view);
+    expect(currentStep()).toBe("Customer Approval");
+    expect(screen.getByText(/^Nobody is being asked to answer at this step\./)).toBeInTheDocument();
+    expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
+    expect(screen.getByText(/Cancel change is the only way out/)).toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("the same at Customer Review: nobody eligible, the note names Roll back or Cancel change as the ways out, and Roll back is enabled", { timeout: 30000 }, () => {
+    lcSeed("normal", { approval: false, review: true }, { members: [], contacts: [{ id: LC_CREATOR.id, name: LC_CREATOR.name }] });
+    let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
+    view = lcOpenAs(LC_CREATOR, view);
+    fireEvent.click(screen.getByRole("button", { name: /^start implementation$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^mark implemented$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^send for customer review$/i }));
+    expect(currentStep()).toBe("Customer Review");
+    expect(screen.getByText(/^Nobody is being asked to answer at this step\./)).toBeInTheDocument();
+    expect(screen.getByText(/Roll back or Cancel change are the only ways out/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    expect(screen.getByRole("menuitem", { name: "Roll back" })).not.toHaveAttribute("aria-disabled", "true");
+    view.unmount();
+  });
+
+  it("a legacy change at Customer Approval with no approval stage at all (contacts registered, nothing ever asked) gets the note too", () => {
+    useGetChangeRequestApprovalsMock.mockReturnValue({ data: { approvals: [] }, isLoading: false, isError: false, error: null });
+    mockQueryResult({
+      data: {
+        ...BASE_CR,
+        state: "customer_approval",
+        customerApprovalRequired: true,
+        customerContacts: [{ id: "k1", name: "Mia Member", email: "mia.member@acme.example" }],
+        legalNextStates: ["authorize", "canceled"],
+      },
+    });
+    renderPage();
+    expect(screen.getByText(/^Nobody is being asked to answer at this step\./)).toBeInTheDocument();
+    expect(screen.getByText(/came over from ServiceNow may also have no request at all/)).toBeInTheDocument();
+    expect(screen.getByText(/Cancel change is the only way out/)).toBeInTheDocument();
+  });
+
+  it("a legacy change at Customer Review whose only request was settled or cancelled (no row waiting) gets the note, with Roll back or Cancel change as the ways out", () => {
+    useGetChangeRequestApprovalsMock.mockReturnValue({
+      data: {
+        approvals: [
+          { stage: "Customer Review", approverType: "STATIC_GROUP", approverName: "Customer Group", status: "PENDING", approvers: [{ id: "u-mia", name: "Mia Member", status: "CANCELLED" }] },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    mockQueryResult({
+      data: {
+        ...BASE_CR,
+        state: "customer_review",
+        customerReviewRequired: true,
+        customerContacts: [{ id: "k1", name: "Mia Member", email: "mia.member@acme.example" }],
+        legalNextStates: ["rollback", "canceled"],
+      },
+    });
+    renderPage();
+    expect(screen.getByText(/^Nobody is being asked to answer at this step\./)).toBeInTheDocument();
+    expect(screen.getByText(/Roll back or Cancel change are the only ways out/)).toBeInTheDocument();
+  });
+
+  it("says nothing while somebody is asked, under whatever label the stage carries (a synced customer stage is labelled by its position)", () => {
+    for (const stage of ["Customer Approval", "Authorize"]) {
+      cleanup();
+      useGetChangeRequestApprovalsMock.mockReturnValue({
+        data: { approvals: [{ stage, approverType: "STATIC_GROUP", approverName: "Customer Group", status: "REQUESTED", approvers: [{ id: "u-mia", name: "Mia Member", status: "REQUESTED" }] }] },
+        isLoading: false,
+        isError: false,
+        error: null,
+      });
+      mockQueryResult({
+        data: { ...BASE_CR, state: "customer_approval", customerContacts: [{ id: "k1", name: "Mia Member", email: "mia.member@acme.example" }] },
+      });
+      renderPage();
+      expect(screen.queryByText(/nobody is being asked/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
+    }
+  });
+
+  it("says nothing while an old request still waits on somebody, even when the project has no registered contacts any more", () => {
+    useGetChangeRequestApprovalsMock.mockReturnValue({
+      data: { approvals: [{ stage: "Customer Approval", approverType: "STATIC_GROUP", approverName: "Customer Group", status: "REQUESTED", approvers: [{ id: "u-mia", name: "Mia Member", status: "REQUESTED" }] }] },
+      isLoading: false,
+      isError: false,
+      error: null,
+    });
+    mockQueryResult({ data: { ...BASE_CR, state: "customer_approval", customerContacts: [] } });
+    renderPage();
+    expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/nobody is being asked/i)).not.toBeInTheDocument();
+  });
+
+  it("does not claim nobody is asked from approvals that are not known: still loading or being reloaded after a change (the old rows would read as nobody waiting)", () => {
+    const contacts = [{ id: "k1", name: "Mia Member", email: "mia.member@acme.example" }];
+    mockQueryResult({ data: { ...BASE_CR, state: "customer_approval", customerContacts: contacts } });
+    // Not loaded.
+    useGetChangeRequestApprovalsMock.mockReturnValue({ data: null, isLoading: true, isFetching: true, isError: false, error: null });
+    renderPage();
+    expect(screen.queryByText(/nobody is being asked/i)).not.toBeInTheDocument();
+    cleanup();
+    // Loaded earlier, being refetched after the state change.
+    useGetChangeRequestApprovalsMock.mockReturnValue({ data: { approvals: [] }, isLoading: false, isFetching: true, isError: false, error: null });
+    renderPage();
+    expect(screen.queryByText(/nobody is being asked/i)).not.toBeInTheDocument();
+    cleanup();
+    // Settled: the note.
+    useGetChangeRequestApprovalsMock.mockReturnValue({ data: { approvals: [] }, isLoading: false, isFetching: false, isError: false, error: null });
+    renderPage();
+    expect(screen.getByText(/^Nobody is being asked to answer at this step\./)).toBeInTheDocument();
   });
 
   it("stays silent about the customer contacts when the payload omits the field (another data source)", () => {

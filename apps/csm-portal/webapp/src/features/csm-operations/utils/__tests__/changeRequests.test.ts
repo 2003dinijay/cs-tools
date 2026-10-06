@@ -39,8 +39,11 @@ import {
   isChangeRequestCategory,
   isChangeRequestCreator,
   isCreatableChangeRequestType,
+  anyApproverBeingAsked,
   NO_CUSTOMER_CONTACTS_HELPER,
-  noCustomerContactsHelper,
+  NOBODY_ASKED_HELPER,
+  NOBODY_ASKED_WAY_OUT,
+  noCustomerAskedHelper,
   CUSTOMER_PROJECT_FROZEN_REASON,
   CUSTOMER_REQUIREMENT_ADD_ONLY_REASON,
   CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON,
@@ -1046,26 +1049,78 @@ describe("changeRequestBlockingReason — customer group stages", () => {
   });
 });
 
-describe("noCustomerContactsHelper", () => {
-  it.each(["customer_approval", "customer_review"])(
-    "returns the helper at %s when the project has no registered contacts",
-    (state) => {
-      expect(noCustomerContactsHelper(state, [])).toBe(NO_CUSTOMER_CONTACTS_HELPER);
-      expect(noCustomerContactsHelper(state, null)).toBe(NO_CUSTOMER_CONTACTS_HELPER);
-    },
-  );
+describe("noCustomerAskedHelper (the Approval tab's note: nobody is being asked at a customer gate)", () => {
+  const GATES = ["customer_approval", "customer_review"] as const;
+  // Approver rows in the shapes the backend sends them. Names are synthetic.
+  const approver = (status: string, name = "Contact One") => ({ id: `u-${name}`, name, status });
+  const stageOf = (stage: string, approvers: ReturnType<typeof approver>[], status = "REQUESTED"): BeChangeRequestApproval => ({
+    stage,
+    approverType: "STATIC_GROUP",
+    approverName: stage,
+    status,
+    approvers,
+  });
+  const CONTACTS = [{ id: "c1", name: "Contact One" }];
 
-  it("is silent when the project has registered contacts", () => {
-    expect(noCustomerContactsHelper("customer_approval", [{ id: "c1", name: "Alice" }])).toBeNull();
+  describe("a project with no registered contacts", () => {
+    it.each(GATES)("says so at %s, before the approvals load, with what staff are left with", (state) => {
+      expect(noCustomerAskedHelper(state, [])).toBe(`${NO_CUSTOMER_CONTACTS_HELPER} ${NOBODY_ASKED_WAY_OUT[state]}`);
+      expect(noCustomerAskedHelper(state, null)).toBe(`${NO_CUSTOMER_CONTACTS_HELPER} ${NOBODY_ASKED_WAY_OUT[state]}`);
+    });
+
+    it.each(GATES)("says so at %s with the approvals loaded and nobody waiting", (state) => {
+      expect(noCustomerAskedHelper(state, [], [])).toBe(`${NO_CUSTOMER_CONTACTS_HELPER} ${NOBODY_ASKED_WAY_OUT[state]}`);
+      expect(noCustomerAskedHelper(state, [], [stageOf("Peer Approval", [approver("APPROVED")], "APPROVED")])).toContain(
+        "No registered customer contacts are assigned",
+      );
+    });
+
+    it.each(GATES)("is silent at %s when an old request still waits on somebody (only those asked may answer it)", (state) => {
+      expect(noCustomerAskedHelper(state, [], [stageOf("Customer Approval", [approver("REQUESTED")])])).toBeNull();
+    });
   });
 
-  it("is silent when the payload carries no customerContacts field at all (unknown)", () => {
-    expect(noCustomerContactsHelper("customer_approval", undefined)).toBeNull();
+  describe("a project with registered contacts, none of them waiting", () => {
+    it.each(GATES)("says nobody is asked at %s when the approvals hold no stage at all (a legacy change with no stage)", (state) => {
+      expect(noCustomerAskedHelper(state, CONTACTS, [])).toBe(`${NOBODY_ASKED_HELPER} ${NOBODY_ASKED_WAY_OUT[state]}`);
+    });
+
+    it.each(GATES)("says it at %s when every row is settled or cancelled (creator-only, deactivated contacts, a superseded request)", (state) => {
+      const rows = [
+        stageOf("Peer Approval", [approver("APPROVED", "Peer")], "APPROVED"),
+        stageOf("CAB Approval", [approver("approved", "Cab")], "APPROVED"),
+        stageOf("Customer Approval", [approver("CANCELLED"), approver("NOT_REQUIRED", "Contact Two")], "PENDING"),
+      ];
+      expect(noCustomerAskedHelper(state, CONTACTS, rows)).toBe(`${NOBODY_ASKED_HELPER} ${NOBODY_ASKED_WAY_OUT[state]}`);
+    });
+
+    it.each(GATES)("is silent at %s once somebody is asked, whatever the stage is labelled", (state) => {
+      expect(noCustomerAskedHelper(state, CONTACTS, [stageOf("Customer Approval", [approver("REQUESTED")])])).toBeNull();
+      expect(noCustomerAskedHelper(state, CONTACTS, [stageOf("Customer Review", [approver(" requested ")])])).toBeNull();
+      // A synced customer stage is labelled by its position (here as an internal stage's name): still somebody asked.
+      expect(noCustomerAskedHelper(state, CONTACTS, [stageOf("Authorize", [approver("REQUESTED")])])).toBeNull();
+    });
+
+    it("is silent while the approvals are unknown (not loaded, or being reloaded): it never guesses", () => {
+      for (const state of GATES) {
+        expect(noCustomerAskedHelper(state, CONTACTS)).toBeNull();
+        expect(noCustomerAskedHelper(state, CONTACTS, undefined)).toBeNull();
+        expect(noCustomerAskedHelper(state, CONTACTS, null)).toBeNull();
+      }
+    });
   });
 
-  it("is silent outside the customer gates", () => {
-    for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "closed", "canceled", undefined]) {
-      expect(noCustomerContactsHelper(state, [])).toBeNull();
+  it("is silent when the payload carries no customerContacts field at all (another data source: nothing is claimed)", () => {
+    for (const state of GATES) {
+      expect(noCustomerAskedHelper(state, undefined)).toBeNull();
+      expect(noCustomerAskedHelper(state, undefined, [])).toBeNull();
+    }
+  });
+
+  it("is silent outside the customer gates, whoever is registered and whoever is waiting", () => {
+    for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "closed", "canceled", "rollback", undefined, null]) {
+      expect(noCustomerAskedHelper(state, [])).toBeNull();
+      expect(noCustomerAskedHelper(state, CONTACTS, [])).toBeNull();
     }
   });
 
@@ -1077,9 +1132,51 @@ describe("noCustomerContactsHelper", () => {
     expect(NO_CUSTOMER_CONTACTS_HELPER).toMatch(/fixed once approval is requested/i);
   });
 
-  it("says staff never record the customer's answer, and what is left; it does not offer a bypass or a manual record", () => {
-    expect(NO_CUSTOMER_CONTACTS_HELPER).toMatch(/staff never record a customer's approval or review/i);
-    expect(NO_CUSTOMER_CONTACTS_HELPER).toMatch(/re-scheduled.*rolled back.*canceled/i);
-    expect(NO_CUSTOMER_CONTACTS_HELPER).not.toMatch(/bypass|recorded manually|answer for/i);
+  it("names the causes the web cannot tell apart (the requester alone, contacts no longer active, no request at all) without pinning one on the change", () => {
+    expect(NOBODY_ASKED_HELPER).toMatch(/^Nobody is being asked to answer at this step\./);
+    expect(NOBODY_ASKED_HELPER).toMatch(/leaving out whoever raised the change and anyone no longer active/);
+    expect(NOBODY_ASKED_HELPER).toMatch(/no request at all/);
+  });
+
+  it("says plainly that Cancel change is the only way out of Customer Approval, and Roll back or Cancel change out of Customer Review", () => {
+    expect(NOBODY_ASKED_WAY_OUT.customer_approval).toMatch(/Cancel change is the only way out/);
+    expect(NOBODY_ASKED_WAY_OUT.customer_approval).toMatch(/Re-schedule only sends the change back through approval/);
+    expect(NOBODY_ASKED_WAY_OUT.customer_review).toMatch(/Roll back or Cancel change are the only ways out/);
+    // Close is not an exit: neither text offers one.
+    expect(NOBODY_ASKED_WAY_OUT.customer_review).not.toMatch(/\bclose\b/i);
+  });
+
+  it("never offers a bypass or a manual record of the customer's answer", () => {
+    for (const text of [NO_CUSTOMER_CONTACTS_HELPER, NOBODY_ASKED_HELPER, ...Object.values(NOBODY_ASKED_WAY_OUT)]) {
+      expect(text).not.toMatch(/bypass|recorded manually|answer for/i);
+    }
+    expect(NOBODY_ASKED_WAY_OUT.customer_approval).toMatch(/staff never record a customer's approval/i);
+    expect(NOBODY_ASKED_WAY_OUT.customer_review).toMatch(/staff never record a customer's review/i);
+  });
+});
+
+describe("anyApproverBeingAsked", () => {
+  const row = (status: string) => ({ id: "u", name: "Contact", status });
+  const stage = (...statuses: string[]): BeChangeRequestApproval => ({
+    stage: "Customer Approval",
+    approverType: "STATIC_GROUP",
+    status: "REQUESTED",
+    approvers: statuses.map(row),
+  });
+
+  it("is null while the approvals are not known", () => {
+    expect(anyApproverBeingAsked(undefined)).toBeNull();
+    expect(anyApproverBeingAsked(null)).toBeNull();
+  });
+
+  it("is true when any approver of any stage is REQUESTED, in any case and padding", () => {
+    expect(anyApproverBeingAsked([stage("APPROVED"), stage("CANCELLED", "requested")])).toBe(true);
+    expect(anyApproverBeingAsked([stage(" Requested ")])).toBe(true);
+  });
+
+  it("is false with no stage, no approver, or only settled / cancelled / not-required rows (a stage's own PENDING status does not count)", () => {
+    expect(anyApproverBeingAsked([])).toBe(false);
+    expect(anyApproverBeingAsked([stage()])).toBe(false);
+    expect(anyApproverBeingAsked([stage("APPROVED", "REJECTED", "CANCELLED", "NOT_REQUIRED", "NOT_REQUESTED", "NOT_ENTITLED")])).toBe(false);
   });
 });

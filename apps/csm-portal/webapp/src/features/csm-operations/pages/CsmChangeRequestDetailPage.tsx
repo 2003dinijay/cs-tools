@@ -79,7 +79,7 @@ import {
   buildCloneChangeRequestNavState,
   changeRequestBlockingReason,
   changeRequestCategoryLabel,
-  noCustomerContactsHelper,
+  noCustomerAskedHelper,
   isChangeRequestCreator,
   pendingCustomerReview,
   changeRequestCommentGateReason,
@@ -290,7 +290,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   // the engineer lands on a different tab. Both call sites share the same
   // query key, so react-query dedupes this into a single request rather than
   // fetching twice.
-  const { data: approvalsData } = useGetChangeRequestApprovals(id);
+  const { data: approvalsData, isFetching: approvalsFetching } = useGetChangeRequestApprovals(id);
   const { showError } = useErrorBanner();
   const { user } = useCurrentUser();
   const patchCr = usePatchChangeRequest();
@@ -461,11 +461,19 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
     cr.state === "closed" || cr.state === "canceled" || cr.state === "rollback"
       ? null
       : changeRequestBlockingReason(approvalsData?.approvals, cr.state);
-  // At a customer gate whose project has no registered contacts the backend
-  // had no one to assign the Customer Approval / Customer Review stage to.
-  // `customerContacts` absent from the payload (another data source) yields
-  // null, so nothing is claimed.
-  const noCustomerGroupNote = noCustomerContactsHelper(cr.state, cr.customerContacts);
+  // At a customer gate nobody is being asked to answer when the project has no
+  // registered contacts (the backend had no one to assign the stage to), and
+  // also when it has some but none has a request waiting: only the requester,
+  // contacts no longer active, or a legacy change with no stage at all. The
+  // second case needs the approvals, and not while they are being reloaded (a
+  // state change refetches them after the detail, so the old rows would read
+  // as "nobody is waiting" for a moment). `customerContacts` absent from the
+  // payload (another data source) yields null, so nothing is claimed.
+  const noCustomerGroupNote = noCustomerAskedHelper(
+    cr.state,
+    cr.customerContacts,
+    approvalsFetching ? undefined : approvalsData?.approvals,
+  );
   // The customer's review the change is waiting for, if any, from the same
   // approval stages as the note above. The action bar uses it to show Roll back
   // disabled, with who the review is waiting on, instead of leaving it out (a
