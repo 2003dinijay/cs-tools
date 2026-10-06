@@ -4393,9 +4393,16 @@ type PatchChangeRequestRequest struct {
 	CommunicationPlan  *string              `json:"communicationPlan,omitempty"`
 	RollbackPlan       *string              `json:"rollbackPlan,omitempty"`
 	TestPlan           *string              `json:"testPlan,omitempty"`
-	IsCustomerApproved *bool                `json:"isCustomerApproved,omitempty"`
-	IsCustomerReviewed *bool                `json:"isCustomerReviewed,omitempty"`
-	RequestApproval    *bool                `json:"requestApproval,omitempty"`
+	// IsCustomerApproved / IsCustomerReviewed are the CUSTOMER's answer, which only
+	// the customer can give (a registered contact of the change request's project,
+	// in the Customer Portal): no staff action records the customer's approval or
+	// review on their behalf, because it is the customer's decision and
+	// ServiceNow's record of it is audited. From anyone else, on the PostgreSQL
+	// data source, any value is a 400 and nothing is written. See
+	// repository.refuseStaffCustomerOutcomeFlags and entity-service's CLAUDE.md.
+	IsCustomerApproved *bool `json:"isCustomerApproved,omitempty"`
+	IsCustomerReviewed *bool `json:"isCustomerReviewed,omitempty"`
+	RequestApproval    *bool `json:"requestApproval,omitempty"`
 	// ExpectedPlannedStartOn / ExpectedPlannedEndOn go with a CUSTOMER'S answer
 	// (IsCustomerApproved / IsCustomerReviewed from an external caller) and
 	// nothing else: the planned window the customer was shown when they gave it
