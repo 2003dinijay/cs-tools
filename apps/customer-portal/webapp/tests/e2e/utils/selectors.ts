@@ -747,6 +747,27 @@ export const CHANGE_REQUESTS_LIST = {
   numberPattern: /CHG\d+/,
 } as const;
 
+/** A change request's detail page, as far as the customer's decision goes: the
+ * buttons ChangeRequestDetailsPage shows while the change is in Customer Approval
+ * or Customer Review, and the banner each decision raises.
+ *
+ * Customer Review words the same two choices "Successful" / "Unsuccessful" rather
+ * than "Approve" / "Reject". */
+export const CHANGE_REQUEST_DECISION = {
+  approve: "Approve",
+  reject: "Reject",
+  proposeNewTime: "Propose New Time",
+  reviewSuccessful: "Successful",
+  reviewUnsuccessful: "Unsuccessful",
+  back: "Back to Change Requests",
+  banners: {
+    approved: "Change request approved successfully.",
+    rejected: "Change request rejected successfully.",
+    reviewSuccessful: "Change request marked as successful.",
+    reviewUnsuccessful: "Change request marked as unsuccessful.",
+  },
+} as const;
+
 /** MUI TablePagination's default labels.
  *
  * Every paginated list in the portal renders the same control, so the strings
