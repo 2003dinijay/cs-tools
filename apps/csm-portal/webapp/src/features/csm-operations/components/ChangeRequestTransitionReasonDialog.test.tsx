@@ -186,9 +186,26 @@ describe("ChangeRequestTransitionReasonDialog — wording and accessibility", ()
     const describedBy = dialog.getAttribute("aria-describedby");
     expect(describedBy).toBeTruthy();
     expect(document.getElementById(describedBy!)).toHaveTextContent(
-      "This moves the change request into Rollback to record that the review failed and the implemented change is being reversed. Rollback is final and can't be undone from here.",
+      "This moves the change request into Rollback, recording that the implemented change is being reversed. Rollback is final and can't be undone from here.",
     );
     expect(dialog).toHaveAccessibleName("Roll back this change?");
+  });
+
+  it("says what Roll back does and never why: no review is claimed to have failed (it opens from Review and from Customer Review, asked or not)", () => {
+    renderDialog({ target: "rollback" });
+    const body = document.getElementById(screen.getByRole("dialog").getAttribute("aria-describedby")!)!;
+    expect(body).not.toHaveTextContent(/failed|fail\b|review/i);
+    expect(body).toHaveTextContent(/implemented change is being reversed/);
+    expect(body).toHaveTextContent(/final/);
+  });
+
+  it("says what Cancel change does without claiming the given approvals are lost: the waiting ones are withdrawn, the given ones stay on the record", () => {
+    renderDialog({ target: "canceled" });
+    const body = document.getElementById(screen.getByRole("dialog").getAttribute("aria-describedby")!)!;
+    expect(body).toHaveTextContent(
+      "This ends the change request as canceled. It can't be reopened from here. Approvals still waiting are withdrawn; the ones already given stay on its record.",
+    );
+    expect(body).not.toHaveTextContent(/lost/i);
   });
 
   it("puts focus in the Reason field once the dialog has opened, so typing right away lands in it", async () => {

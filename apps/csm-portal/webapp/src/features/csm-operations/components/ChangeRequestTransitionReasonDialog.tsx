@@ -36,19 +36,27 @@ interface TransitionCopy {
   confirmColor: "error";
 }
 
-/** Per-target copy for the two destructive transitions. */
+/**
+ * Per-target copy for the two destructive transitions. It says only what the
+ * action DOES, never why it is taken: the same dialog opens from Review and from
+ * Customer Review, with a customer's answer given, pending or never asked, so a
+ * sentence about "the review failing" would be false history in an audited record
+ * whenever no review was held. The reason typed below is where the why goes.
+ * Cancel: the approvals still waiting are withdrawn (their rows become Cancelled),
+ * but the ones already given stay on the record, so they are not "lost".
+ */
 const TRANSITION_COPY: Record<string, TransitionCopy> = {
   rollback: {
     title: "Roll back this change?",
     body:
-      "This moves the change request into Rollback to record that the review failed and the implemented change is being reversed. Rollback is final and can't be undone from here.",
+      "This moves the change request into Rollback, recording that the implemented change is being reversed. Rollback is final and can't be undone from here.",
     confirmLabel: "Roll back",
     confirmColor: "error",
   },
   canceled: {
     title: "Cancel this change request?",
     body:
-      "This closes the change request as canceled. It can't be reopened from here, and any approvals already given are lost.",
+      "This ends the change request as canceled. It can't be reopened from here. Approvals still waiting are withdrawn; the ones already given stay on its record.",
     confirmLabel: "Cancel change",
     confirmColor: "error",
   },
