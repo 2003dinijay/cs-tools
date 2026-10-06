@@ -58,8 +58,10 @@ import {
   futureWindow,
   psql,
   raiseChange,
+  requestApproval,
   resetFixtures,
   staffApi,
+  staffDecides,
   storedState,
   withFixtureStack,
   RAISED_PREFIX,
@@ -221,6 +223,22 @@ test.describe("Local stack — the planned time is validated by the server", () 
       const created = await jane.create({ subject, type: "normal", plannedStartDate: bad.start, plannedEndDate: bad.end });
       expect(created.status, `${bad.name}: create ${JSON.stringify(created.body)}`).toBe(400);
       expect(await psql(`select count(*) from work_item where subject = '${subject.replace(/'/g, "''")}'`), `${bad.name}: a refused create left a row`).toBe("0");
+    }
+
+    // Re-schedule (the staff's {state: "authorize"} out of Customer Approval) takes the same dates through the same parser: a
+    // date word is a 400 and the change stays in Customer Approval, its customer request standing.
+    const rescheduled = await raiseChange({ title: "dates, re-schedule", projectId, approval: true, review: false });
+    expect((await requestApproval(rescheduled.id)).status).toBe(200);
+    await staffDecides("alice", rescheduled.id);
+    await staffDecides("alice", rescheduled.id);
+    expect(await storedState(rescheduled.id)).toBe("CUSTOMER_APPROVAL");
+    const asked = await approverRows(rescheduled.id);
+    for (const [start, end] of [["tomorrow", "2031-03-02 10:00:00"], ["now", "infinity"], ["2031-03-01", "2031-03-02"]] as const) {
+      const refusedReschedule = await staffApi("alice").patch(rescheduled.id, { state: "authorize", plannedStartOn: start, plannedEndOn: end });
+      expect(refusedReschedule.status, `re-schedule with ${start} / ${end}: ${JSON.stringify(refusedReschedule.body)}`).toBe(400);
+      expect(JSON.stringify(refusedReschedule.body)).toMatch(FORMAT);
+      expect(await storedState(rescheduled.id)).toBe("CUSTOMER_APPROVAL");
+      expect(await approverRows(rescheduled.id), "a refused re-schedule left the requests as they were").toEqual(asked);
     }
 
     // A past window is staff's to plan (a retrospective record), in either good format.

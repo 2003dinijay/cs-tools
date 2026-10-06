@@ -220,6 +220,7 @@ test.describe("Local stack — who sees a change request, over its whole life", 
       await expect(miraList.rowByNumber(change.number), "New in mira's list").toHaveCount(0);
       await miraList.searchFor(change.number); // not even by its number
       await expect(miraList.rowByNumber(change.number), "New found by its number in mira's list").toHaveCount(0);
+      await miraList.clearSearch(); // the list remembers its last search: the later phases look at the whole list
       const hidden = await miraPage.openAndSettle(lumen, change.id, change.number);
       expect(hidden.loaded, "New rendered for mira").toBe(false);
       await expect(miraPage.answerButtons()).toHaveCount(0);
@@ -307,6 +308,17 @@ test.describe("Local stack — who sees a change request, over its whole life", 
       await expect(miraList.rowByNumber(change.number), "mira lost it from her list in Authorize").toHaveCount(1);
       await expect(miraList.rowByNumber(change.number)).toContainText("Authorize");
       await shot(page, "04-mira-list-authorize-after-proposal");
+      // The State filter offers Authorize (and never New or Assess), and filtering by it lists exactly the designated change request.
+      await miraList.openFilters();
+      const stateOptions = await miraList.stateFilterOptions();
+      expect(stateOptions, "the State filter").toContain("Authorize");
+      expect(stateOptions).not.toContain("New");
+      expect(stateOptions).not.toContain("Assess");
+      await miraList.filterByState("Authorize");
+      await expect(miraList.rowByNumber(change.number), "mira's Authorize filter").toHaveCount(1);
+      await expect(miraList.allRows()).toHaveCount(1);
+      await shot(page, "04a-mira-list-state-filter-authorize");
+      await miraList.clearFilters(); // the list remembers its filters: the later phases look at the whole list
       await expectOnHub(page, lumen, change, true, "Authorize after the proposal (outstanding for a customer)");
       await shot(page, "04b-mira-operations-hub-authorize-after-proposal");
       await noelPage.open(lumen, change.id, change.number);
@@ -314,6 +326,12 @@ test.describe("Local stack — who sees a change request, over its whole life", 
       await expect(noelPage.answerButtons(), "noel offered an answer in Authorize").toHaveCount(0);
       await shot(noelBrowserPage, "05-noel-detail-authorize-after-proposal");
       expect((await customerApi("noel").get(change.id)).body.customerCanAnswer).toBe(false);
+      // Visible does not mean answerable: in Authorize an answer and a second proposal are refused in words, and move nothing.
+      for (const body of [{ isCustomerApproved: true }, { plannedStartOn: window.startUtc.replace("T", " ").replace("Z", ""), plannedEndOn: window.endUtc.replace("T", " ").replace("Z", "") }]) {
+        const refused = await customerApi("mira").patch(change.id, body);
+        expect(refused.status, `an answer in Authorize: ${JSON.stringify(refused.body)}`).toBe(409);
+      }
+      expect(await storedState(change.id)).toBe("AUTHORIZE");
 
       // ---- CAB approves the new time (bob this time): Customer Approval again, a FRESH stage for both.
       await staffDecides("bob", change.id);
@@ -426,6 +444,39 @@ test.describe("Local stack — who sees a change request, over its whole life", 
     expect((await customerApi("mira").get(noProject.id)).status).toBe(404);
     expect((await customerApi("dave").get(noProject.id)).status).toBe(404);
     expect(await customerApi("dave").listedNumbers(FIXTURES.projectId)).not.toContain(noProject.number);
+  });
+
+  test("a Standard change with Customer Approval ticked goes straight to Customer Approval at Request Approval, where both contacts see it (and a proposal keeps it there); an Emergency one is invisible through its ECAB approval", async () => {
+    const lumen = await lumenProjectId();
+    const bases = { mira: (await customerCounts(LOCAL_PERSONAS.mira.email, lumen))!, noel: (await customerCounts(LOCAL_PERSONAS.noel.email, lumen))! };
+
+    const standard = await raiseChange({ title: "Lumen, Standard with approval", projectId: lumen, approval: true, review: false, type: "standard" });
+    await expectSeenBy(standard, lumen, [], null, bases, "Standard, New");
+    expect((await requestApproval(standard.id)).status).toBe(200);
+    expect(await storedState(standard.id), "a Standard change has no internal approval").toBe("CUSTOMER_APPROVAL");
+    await expectSeenBy(standard, lumen, ["mira", "noel"], "Customer Approval", bases, "Standard, Customer Approval");
+    // mira proposes a new time: a Standard change stays in Customer Approval and both are asked again
+    const window = futureWindow("UTC", { daysAhead: 7, startHour: 11, hours: 2 });
+    const proposed = await customerApi("mira").patch(standard.id, { plannedStartOn: window.startUtc, plannedEndOn: window.endUtc });
+    expect(proposed.status, JSON.stringify(proposed.body)).toBe(200);
+    expect(await storedState(standard.id)).toBe("CUSTOMER_APPROVAL");
+    await expectSeenBy(standard, lumen, ["mira", "noel"], "Customer Approval", bases, "Standard, after a proposal");
+    expect((await customerApi("noel").patch(standard.id, { isCustomerApproved: true })).status).toBe(200);
+    expect(await storedState(standard.id)).toBe("SCHEDULED");
+    await expectSeenBy(standard, lumen, ["mira", "noel"], "Scheduled", bases, "Standard, Scheduled");
+
+    const emergency = await raiseChange({ title: "Lumen, Emergency with approval", projectId: lumen, approval: true, review: false, type: "emergency" });
+    expect((await requestApproval(emergency.id)).status).toBe(200);
+    expect(await storedState(emergency.id), "an Emergency change goes straight to its ECAB").toBe("AUTHORIZE");
+    // (bases already hold the Standard one: its two states are what the counts now carry)
+    const basesWithStandard = {
+      mira: countsWith(bases.mira, "Scheduled"),
+      noel: countsWith(bases.noel, "Scheduled"),
+    };
+    await expectSeenBy(emergency, lumen, [], null, basesWithStandard, "Emergency, Authorize (ECAB asked)");
+    await staffDecides("bob", emergency.id);
+    expect(await storedState(emergency.id)).toBe("CUSTOMER_APPROVAL");
+    await expectSeenBy(emergency, lumen, ["mira", "noel"], "Customer Approval", basesWithStandard, "Emergency, Customer Approval");
   });
 
   test("only the customer's REVIEW ticked: invisible through Scheduled, Implement and Review (the box alone shows nothing), visible to both contacts from Customer Review on, and kept after Closed", async () => {
