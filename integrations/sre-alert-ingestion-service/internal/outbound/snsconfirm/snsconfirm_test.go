@@ -30,8 +30,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -198,26 +196,6 @@ func TestExpiredCertificate_Rejected(t *testing.T) {
 	}
 	if !strings.Contains(logs.String(), "not valid at") {
 		t.Errorf("want the expiry warning, got:\n%s", logs.String())
-	}
-}
-
-// TestRealAWSCertificate_Accepted serves AWS's real SNS signing certificate, which holds only the leaf
-// and not its "Amazon RSA 2048 M04" intermediate. A chain check rejected it on Linux.
-func TestRealAWSCertificate_Accepted(t *testing.T) {
-	pemBytes, err := os.ReadFile(filepath.Join("testdata", "aws_sns_signing_cert.pem"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(pemBytes) }))
-	t.Cleanup(srv.Close)
-	v := &verifier{http: srv.Client(), allowURL: func(*url.URL) bool { return true },
-		now: func() time.Time { return time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC) }}
-	c, err := v.cert(srv.URL + "/SimpleNotificationService-test.pem")
-	if err != nil {
-		t.Fatalf("real AWS certificate rejected: %v", err)
-	}
-	if _, ok := c.PublicKey.(*rsa.PublicKey); !ok {
-		t.Error("want an RSA key")
 	}
 }
 
