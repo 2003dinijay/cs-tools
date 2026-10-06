@@ -90,9 +90,13 @@ var (
 		"NEW": true, "IN_PROGRESS": true, "ON_HOLD": true, "RESOLVED": true, "CLOSED": true, "CANCELLED": true,
 	}
 
-	validHandoffReasonCodes     = map[string]bool{"no-runbook": true, "runbook-not-working": true}
-	validHandoffEscalationTeams = map[string]bool{"choreo-runtime-team": true, "choreo-apim-team": true}
+	validHandoffReasonCodes = map[string]bool{"no-runbook": true, "runbook-not-working": true}
 )
+
+// maxHandoffEscalationTeamLen bounds escalationTeam's shape. Which keys are
+// valid is the entity service's SPECIALIST_HANDOFF_CONFIG, per product, so
+// it -- not a list here -- decides, and answers 400 for an unknown team.
+const maxHandoffEscalationTeamLen = 64
 
 // createIncidentRequest mirrors the enum/format-constrained fields of the documented
 // CreateIncidentPayload schema. It is decoded only to validate those fields at the
@@ -337,7 +341,7 @@ func validateHandOffIncidentBody(body []byte) bool {
 	if !validHandoffReasonCodes[req.ReasonCode] {
 		return false
 	}
-	if req.EscalationTeam != nil && *req.EscalationTeam != "" && !validHandoffEscalationTeams[*req.EscalationTeam] {
+	if req.EscalationTeam != nil && len(*req.EscalationTeam) > maxHandoffEscalationTeamLen {
 		return false
 	}
 	return true

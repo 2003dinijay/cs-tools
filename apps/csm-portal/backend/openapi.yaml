@@ -20716,8 +20716,11 @@ components:
         escalationTeam:
           type: string
           nullable: true
-          description: Only meaningful for a Choreo-routed handoff.
-          enum: [choreo-runtime-team, choreo-apim-team]
+          maxLength: 64
+          description: >-
+            A team key from GET /specialist-handoff-teams?serviceId=. Required when the
+            incident's product has several teams; ignored when it has one. The entity
+            service validates it against its configuration.
         createGithubIssue:
           type: boolean
           default: true
@@ -20771,7 +20774,6 @@ components:
             escalationTeam:
               type: string
               nullable: true
-              enum: [choreo-runtime-team, choreo-apim-team]
             task:
               $ref: '#/components/schemas/IncidentSpecialistHandoffTask'
             githubIssue:
@@ -20824,7 +20826,6 @@ components:
         escalationTeam:
           type: string
           nullable: true
-          enum: [choreo-runtime-team, choreo-apim-team]
         handedOffAt:
           type: string
         handedOffBy:
