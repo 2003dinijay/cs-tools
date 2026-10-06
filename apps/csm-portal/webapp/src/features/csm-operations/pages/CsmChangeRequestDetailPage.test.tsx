@@ -1425,7 +1425,7 @@ function lcLegalNextStates(
     case "new":
       return ["assess", "canceled"];
     case "assess":
-      return ["authorize", "canceled"]; // authorize = the approval path, never a button
+      return ["canceled"]; // waits for the peer approval, which moves it on by itself (no Authorize to offer)
     case "authorize":
       return ["canceled"];
     case "customer_approval":
@@ -1616,6 +1616,23 @@ function lcSeed(
   // The page's own PATCH (Request Approval, Start implementation, ...) drives the fake.
   const applyPatch = (input: { patch: { state?: string } }): void => {
     const target = input.patch.state;
+    const from = lc.cr.state ?? "new";
+    // The backend's transition graph: a FINAL state has no exit (naming the state it is in is a resend, no move), and a
+    // target that is not a next state of the current one would skip a state and every approval gate on the way. The
+    // targets with a refusal of their own below (new, assess, authorize, customer_approval, scheduled, rollback) and the
+    // customer states (the customer's answer) are judged there.
+    if (target && target !== from) {
+      if (["closed", "canceled", "rollback"].includes(from)) {
+        throw new BackendApiError(
+          400,
+          `state "${target}" cannot be set manually from ${from}: a change request that is ${from === "rollback" ? "rolled back" : from} cannot be moved`,
+        );
+      }
+      const ownRefusal = ["new", "assess", "authorize", "customer_approval", "scheduled", "rollback"];
+      if (from !== "customer_approval" && from !== "customer_review" && !ownRefusal.includes(target) && !lcLegalNextStates(from).includes(target)) {
+        throw new BackendApiError(400, `state "${target}" cannot be set manually from ${from}: no step or approval gate can be skipped`);
+      }
+    }
     if (target === "assess") {
       if (lc.cr.type === "standard") lcSetState(lcAfterInternalApproval());
       else if (lc.cr.type === "emergency") {
@@ -1649,6 +1666,9 @@ function lcSeed(
         ...lc.cr,
         plannedStartOn: win.plannedStartOn ?? lc.cr.plannedStartOn,
         plannedEndOn: win.plannedEndOn ?? lc.cr.plannedEndOn,
+        // The customer was being asked: the Re-schedule writes the requirement true, so even a row that never had its box
+        // ticked (a migrated one) is asked again after the CAB's new approval.
+        customerApprovalRequired: true,
       };
       // The customer's pending request is superseded: its rows are cancelled
       // (the stage stays as a record; the backend reports it PENDING).
