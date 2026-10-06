@@ -103,8 +103,12 @@ apply_pending_migrations() {
     # RAISE EXCEPTION when they are absent -- fatal on a fresh local database,
     # and fatal for every migration queued behind them. A fixture supplies
     # those rows at the moment they first become insertable, so the real
-    # migration runs unmodified. Local dev only; nothing reads /migrations/
-    # fixtures outside this compose stack.
+    # migration runs unmodified. A fixture may also converge a table an OLDER
+    # local volume built in a different shape than the migration's own
+    # `CREATE TABLE IF NOT EXISTS` (a no-op there) -- see
+    # fixtures/0136_change_request_deployment_table.sql. It brings such a table
+    # to the sync's shape and never adds to it: the sync owns the schema. Local
+    # dev only; nothing reads /migrations/fixtures outside this compose stack.
     #
     # A fixture is recorded as its own row, `fixture:<version>`, and checked
     # independently of its migration. Otherwise a fixture that failed after
