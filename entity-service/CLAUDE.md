@@ -2764,10 +2764,34 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     approver rows, installs the personas' and **resets the fixtures to their
     starting state** (state, stamps, stages, approvers), so no volume wipe is
     needed. The Playwright suite re-runs the seed before it starts.
+  * **What the customers can see in the customer portal.** The portal's Operations
+    menu (Service requests, Change requests) comes from `GET /projects/{id}/features`,
+    i.e. the project's `project_type` flags `has_service_request_read_access` /
+    `has_change_request_read_access` (migration 0130). The local fixture row
+    "Subscription" (`…a3`, the type of projects 401 / 402) is created with every flag
+    FALSE, so the seed **sets those two flags** (an `UPDATE` of that one
+    `created_by = 'local-fixture'` row, so it also corrects a database seeded earlier;
+    no other flag or type is touched), and moves **"Lumen Works Platform"** (random
+    project type, per database) onto "Subscription" when its type does not grant change
+    request read access. The seed also adds `"user".timezone` when missing: no migration
+    declares it, yet `GET /users/me` selects it (a 500 for every signed-in user of a
+    database built from `migrations/` alone).
+  * **How each caller is scoped in the compose stack** (`AccessService.ResolveScope`;
+    `docker-compose.yml`'s entity-service block). A caller that is in none of
+    `M2M_CLIENT_IDS` / `CSM_PORTAL_BACKEND_CLIENT_ID` / `CUSTOMER_PORTAL_BACKEND_CLIENT_ID`
+    is resolved from its forwarded `x-user-id-token` alone (INTERNAL → everything,
+    EXTERNAL → the projects they are a registered contact of), which is how both portal
+    backends already behave here; `CUSTOMER_PORTAL_BACKEND_CLIENT_ID` makes that a
+    guarantee for the customer backend (it stays scoped even if also listed in
+    `M2M_CLIENT_IDS`). `CSM_PORTAL_BACKEND_CLIENT_ID` / `CSM_PORTAL_USER_DOMAIN` stay
+    unset: the staff and customer personas share `example.com`. `M2M_CLIENT_IDS` lists only
+    the pure machine-to-machine services (`csm-integration-service`,
+    `csm-notification-service`); the old `AUTH_INTERNAL_CLIENT_IDS` is read by nothing.
   * Tests: `TestChangeRequestSeedIntegration_*` (personas, fixture approvers, the
     seeded assigned group / CAB / ECAB end to end, the Devops fallback, and the
     seed's self-healing from the old shape inside a rolled-back transaction),
-    `_SeedCustomerGroupFixtures`.
+    `_SeedCustomerGroupFixtures`, `_CustomerPortalEntitlements` (the project type
+    flags and Lumen's type, from the old shape, twice, with nothing else touched).
 * **`CAB Approval` and `ECAB Approval` groups** are created by migration 0188
   (fixed ids `00000000-0000-4000-8000-00000000ca01` / `…eca1`) only when no group
   of that name exists, idempotently; membership is NOT seeded (synced from
