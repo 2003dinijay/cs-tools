@@ -139,7 +139,12 @@ function onSubmitForm(event) {
 }
 
 function readTextInput(formInputs, name) {
-  const field = formInputs && formInputs[name];
+  // Apps Script wraps each widget's value under an extra empty-string key
+  // that other Chat API client shapes (HTTP, other languages) don't have --
+  // confirmed against Google's own form-data guide: "If your Chat app is
+  // built with Apps Script, you must add [""] after the widget name,
+  // e.g. formInputs.contactName[""].stringInputs.value[0]."
+  const field = formInputs && formInputs[name] && formInputs[name][""];
   const value = field && field.stringInputs && field.stringInputs.value;
   return value && value.length > 0 ? value[0].trim() : "";
 }
