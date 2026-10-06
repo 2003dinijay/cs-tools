@@ -6,18 +6,7 @@
   "oauthScopes": [
     "https://www.googleapis.com/auth/script.external_request"
   ],
-  "chat": {
-    "name": "Today I Learned",
-    "avatarUrl": "https://www.gstatic.com/images/branding/product/1x/chat_48dp.png",
-    "description": "Share and browse learnings from customers, partners, and internal sources.",
-    "slashCommands": [
-      {
-        "name": "/learn",
-        "commandId": 1,
-        "description": "Share something you learned",
-        "triggers": ["DIALOG"]
-      }
-    ],
-    "addToSpacePermissionLevel": "ADMIN_ONLY"
+  "addOns": {
+    "chat": {}
   }
 }

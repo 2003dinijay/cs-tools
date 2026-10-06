@@ -33,12 +33,25 @@ A single Google Apps Script project (`Code.gs` in this folder) that:
    `TIL_BACKEND_URL` to the deployed til-backend's base URL.
 3. In the project's `appsscript.json` (Project Settings → Show
    "appsscript.json"), merge in the contents of `appsscript.json` from this
-   folder — it declares the Chat App manifest (the `+` menu entry, the
-   Dialog trigger).
-4. Deploy → New deployment → **Add-on** → **Chat app**. Google Workspace
-   Marketplace SDK configuration (internal-only visibility, scoped to the
-   WSO2 domain) happens here — this is the step that specifically needs
-   admin console access.
+   folder. **This only marks the project as a Chat app** (`addOns.chat` is
+   deliberately an empty object — Chat apps don't take name/avatar/slash-
+   command config through the manifest at all, unlike other Workspace
+   add-ons; see [Configure a Google Chat app](https://developers.google.com/workspace/add-ons/chat/configure)).
+4. Deploy → New deployment → **Add-on** → **Chat app**, which opens the
+   Google Cloud Console's Chat API configuration page. Enter the actual
+   app details there -- the manifest doesn't carry them:
+   - **App name**: Today I Learned
+   - **Avatar URL**: any square icon (not read from the manifest)
+   - **Description**: Share and browse learnings from customers, partners, and internal sources.
+   - **Interactive features** → **Slash commands** → add one:
+     name `/learn`, command ID `1`, description "Share something you
+     learned", trigger type **Opens a dialog**.
+   - **Visibility**: internal-only, scoped to the WSO2 domain -- this is
+     the step that specifically needs Workspace admin console access.
+   - **Connection settings** → **Triggers**: point the message/added-to-
+     space callbacks at this script's `onMessage`/`onAddedToSpace`
+     functions (`Code.gs` already defines `onMessage` and `onAppCommand`
+     to match Apps Script's expected callback names).
 5. Add the deployed Chat App to the "Today I Learned" Space.
 
 ## Why a service-account-style call, not the human's own token
