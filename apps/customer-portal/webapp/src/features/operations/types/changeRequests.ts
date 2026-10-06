@@ -65,6 +65,13 @@ export type ChangeRequestDetails = ChangeRequestItem & {
    * at Customer Approval and always offers the review answer at Customer Review.
    */
   customerCanAnswer?: boolean;
+  /**
+   * True while WSO2 has the change request on hold (the reason is not shared).
+   * A held change refuses a proposed time, not an answer, so the page turns
+   * Propose New Time off, and says why. Omitted when the data source cannot say,
+   * which is not the same as "not held".
+   */
+  isOnHold?: boolean;
   approvedBy: IdLabelRef | null;
   approvedOn: string | null;
 };
@@ -133,12 +140,16 @@ export type ChangeRequestSearchRequest = SearchRequestBase & {
 // Request type for patching a change request. The customer-portal backend takes
 // either the customer's answer (isCustomerApproved / isCustomerReviewed) or a
 // proposed window (plannedStartOn / plannedEndOn, "YYYY-MM-DD HH:MM:SS" in UTC),
-// never both in one request.
+// never both in one request. An answer also names the planned window the
+// customer was looking at (expectedPlannedStartOn / expectedPlannedEndOn, as the
+// details read them): it is then recorded only while that is still the window.
 export type PatchChangeRequestRequest = {
   plannedStartOn?: string;
   plannedEndOn?: string;
   isCustomerApproved?: boolean;
   isCustomerReviewed?: boolean;
+  expectedPlannedStartOn?: string;
+  expectedPlannedEndOn?: string;
 };
 
 // Enum for change request decision mode.
@@ -215,6 +226,8 @@ export type ChangeRequestsStatCardsProps = {
 export type ProposeNewImplementationTimeModalProps = {
   open: boolean;
   onClose: () => void;
+  /** Called once a proposal has been accepted, just before the dialog closes. */
+  onProposed?: () => void;
   changeRequest: ChangeRequestDetails | null;
 };
 

@@ -16,10 +16,11 @@
 
 import { useNavigate, useLocation } from "react-router";
 import useNormalizedIdParam from "@hooks/useNormalizedIdParam";
-import { type JSX, useMemo, useRef, useState } from "react";
+import { type JSX, useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { DESCRIPTION_PURIFY_CONFIG } from "@utils/common";
 import {
+  Alert,
   Box,
   Button,
   Stack,
@@ -29,6 +30,7 @@ import {
   Divider,
   alpha,
   colors,
+  useTheme,
 } from "@wso2/oxygen-ui";
 import {
   ArrowLeft,
@@ -60,8 +62,10 @@ import {
   buildChangeRequestWorkflowStages,
   describeChangeRequestActionError,
   generateChangeRequestDetailsPdf,
+  getAnsweredWindow,
   getCustomerDecisionLabels,
   getCustomerDecisionMessages,
+  isAwaitingInternalReview,
   resolveCustomerDecisionMode,
 } from "@features/operations/utils/changeRequests";
 import { formatDateTime } from "@features/support/utils/support";
@@ -91,6 +95,13 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
   const [proposeTimeOpen, setProposeTimeOpen] = useState(false);
   const [rejectConfirmOpen, setRejectConfirmOpen] = useState(false);
   const answerInFlightRef = useRef(false);
+  // Where focus goes once an answer or a proposal has been given: the buttons
+  // that had it are gone by then, and a keyboard or screen reader user would
+  // otherwise start again from the top of the document.
+  const headingRef = useRef<HTMLElement | null>(null);
+  const [focusHeadingPending, setFocusHeadingPending] = useState(false);
+  const theme = useTheme();
+  const isDark = theme.palette.mode === "dark";
 
   const {
     data: changeRequest,
@@ -107,8 +118,30 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
   const decisionMode = resolveCustomerDecisionMode(changeRequest);
   const canShowApprovalActions = decisionMode !== ChangeRequestDecisionMode.NONE;
   const canShowProposeNewTime = decisionMode === ChangeRequestDecisionMode.CUSTOMER_APPROVAL;
+  // A held change refuses a proposed time (but not an answer): offer the button
+  // switched off, with the reason beside it, rather than let a customer type a
+  // whole window and be refused.
+  const proposeBlockedByHold = canShowProposeNewTime && changeRequest?.isOnHold === true;
   const { approve: approveLabel, reject: rejectLabel } =
     getCustomerDecisionLabels(decisionMode);
+
+  // Outlined answer buttons. Lighter shades in dark mode and darker ones in light:
+  // one fixed shade for both read 3.6 to 4.3 : 1 on the dark page (AA text needs 4.5).
+  const answerButtonSx = (hue: "blue" | "green" | "red") => ({
+    height: 32,
+    color: isDark ? colors[hue][300] : colors[hue][800],
+    borderColor: isDark ? colors[hue][400] : colors[hue][300],
+    "&:hover": {
+      bgcolor: alpha(colors[hue][500], isDark ? 0.16 : 0.08),
+      borderColor: isDark ? colors[hue][300] : colors[hue][400],
+    },
+  });
+
+  useEffect(() => {
+    if (!focusHeadingPending || proposeTimeOpen || rejectConfirmOpen) return;
+    setFocusHeadingPending(false);
+    headingRef.current?.focus();
+  }, [focusHeadingPending, proposeTimeOpen, rejectConfirmOpen]);
 
   const impactColor = getChangeRequestImpactColorShades(
     changeRequest?.impact?.label,
@@ -128,12 +161,17 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
     const messages = getCustomerDecisionMessages(mode, approved);
     answerInFlightRef.current = true;
     try {
+      // The answer names the schedule on screen: if it moved while the page was
+      // open (a re-schedule was approved behind it), it is refused, not given
+      // for a time the customer never saw.
+      const shown = getAnsweredWindow(changeRequest);
       await patchChangeRequest.mutateAsync(
         mode === ChangeRequestDecisionMode.CUSTOMER_REVIEW
-          ? { isCustomerReviewed: approved }
-          : { isCustomerApproved: approved },
+          ? { isCustomerReviewed: approved, ...shown }
+          : { isCustomerApproved: approved, ...shown },
       );
       showSuccess(messages.success);
+      setFocusHeadingPending(true);
     } catch (err) {
       showError(describeChangeRequestActionError(err, messages.failure).message);
     } finally {
@@ -299,7 +337,13 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
                     flexWrap: "wrap",
                   }}
                 >
-                  <Typography variant="h5" color="text.primary">
+                  <Typography
+                    variant="h5"
+                    color="text.primary"
+                    ref={headingRef}
+                    tabIndex={-1}
+                    sx={{ outline: "none" }}
+                  >
                     {changeRequest.title || "Not Available"}
                   </Typography>
                   {changeRequest.hasServiceOutage && (
@@ -394,70 +438,102 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
                   </Button>
                 </Box>
                 {canShowApprovalActions && (
-                  <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap">
-                    {canShowProposeNewTime && (
+                  <Box
+                    sx={{
+                      display: "flex",
+                      flexDirection: "column",
+                      alignItems: { xs: "flex-start", sm: "flex-end" },
+                      gap: 0.75,
+                    }}
+                  >
+                    {decisionMode === ChangeRequestDecisionMode.CUSTOMER_REVIEW && (
+                      <Typography
+                        id="cr-answer-prompt"
+                        variant="body2"
+                        color="text.secondary"
+                      >
+                        This change has been implemented. Was it successful?
+                      </Typography>
+                    )}
+                    <Stack
+                      direction="row"
+                      spacing={1}
+                      useFlexGap
+                      flexWrap="wrap"
+                      role="group"
+                      aria-labelledby={
+                        decisionMode === ChangeRequestDecisionMode.CUSTOMER_REVIEW
+                          ? "cr-answer-prompt"
+                          : undefined
+                      }
+                      aria-label={
+                        decisionMode === ChangeRequestDecisionMode.CUSTOMER_REVIEW
+                          ? undefined
+                          : "Answer this change request"
+                      }
+                    >
+                      {canShowProposeNewTime && (
+                        <Button
+                          size="small"
+                          variant="outlined"
+                          startIcon={<CalendarClock size={14} aria-hidden />}
+                          onClick={() => setProposeTimeOpen(true)}
+                          disabled={patchChangeRequest.isPending || proposeBlockedByHold}
+                          aria-describedby={
+                            proposeBlockedByHold ? "cr-propose-hold-note" : undefined
+                          }
+                          sx={answerButtonSx("blue")}
+                        >
+                          Propose New Time
+                        </Button>
+                      )}
                       <Button
                         size="small"
                         variant="outlined"
-                        startIcon={<CalendarClock size={14} aria-hidden />}
-                        onClick={() => setProposeTimeOpen(true)}
+                        startIcon={<FileCheck size={14} aria-hidden />}
+                        onClick={() => void submitAnswer(true)}
                         disabled={patchChangeRequest.isPending}
-                        sx={{
-                          height: 32,
-                          color: colors.blue[700],
-                          borderColor: colors.blue[300],
-                          "&:hover": {
-                            bgcolor: alpha(colors.blue[500], 0.08),
-                            borderColor: colors.blue[400],
-                          },
-                        }}
+                        sx={answerButtonSx("green")}
                       >
-                        Propose New Time
+                        {approveLabel}
                       </Button>
+                      <Button
+                        size="small"
+                        variant="outlined"
+                        startIcon={<X size={14} aria-hidden />}
+                        onClick={() => setRejectConfirmOpen(true)}
+                        disabled={patchChangeRequest.isPending}
+                        sx={answerButtonSx("red")}
+                      >
+                        {rejectLabel}
+                      </Button>
+                    </Stack>
+                    {proposeBlockedByHold && (
+                      <Typography
+                        id="cr-propose-hold-note"
+                        variant="caption"
+                        color="text.secondary"
+                        role="note"
+                        sx={{ maxWidth: 360, textAlign: { sm: "right" } }}
+                      >
+                        WSO2 has this change request on hold, so a new time cannot
+                        be proposed right now. You can still approve or reject it.
+                      </Typography>
                     )}
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<FileCheck size={14} aria-hidden />}
-                      onClick={() => void submitAnswer(true)}
-                      disabled={patchChangeRequest.isPending}
-                      sx={{
-                        height: 32,
-                        color: colors.green[800],
-                        borderColor: colors.green[300],
-                        "&:hover": {
-                          bgcolor: alpha(colors.green[500], 0.08),
-                          borderColor: colors.green[400],
-                        },
-                      }}
-                    >
-                      {approveLabel}
-                    </Button>
-                    <Button
-                      size="small"
-                      variant="outlined"
-                      startIcon={<X size={14} aria-hidden />}
-                      onClick={() => setRejectConfirmOpen(true)}
-                      disabled={patchChangeRequest.isPending}
-                      sx={{
-                        height: 32,
-                        color: colors.red[800],
-                        borderColor: colors.red[300],
-                        "&:hover": {
-                          bgcolor: alpha(colors.red[500], 0.08),
-                          borderColor: colors.red[400],
-                        },
-                      }}
-                    >
-                      {rejectLabel}
-                    </Button>
-                  </Stack>
+                  </Box>
                 )}
               </Box>
             </Box>
           </Box>
         </Paper>
       </Box>
+
+      {isAwaitingInternalReview(changeRequest) && (
+        <Alert severity="info" role="status" id="cr-internal-review-note">
+          WSO2 is reviewing this change request internally. You will be asked to
+          approve the schedule once it is confirmed.
+        </Alert>
+      )}
 
       {/* Scrollable 2-Column Layout */}
       <Box
@@ -888,6 +964,7 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
       <ProposeNewImplementationTimeModal
         open={proposeTimeOpen && canShowProposeNewTime}
         onClose={() => setProposeTimeOpen(false)}
+        onProposed={() => setFocusHeadingPending(true)}
         changeRequest={changeRequest}
       />
       <ChangeRequestRejectConfirmDialog

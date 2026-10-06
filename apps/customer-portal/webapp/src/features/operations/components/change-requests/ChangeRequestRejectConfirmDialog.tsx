@@ -90,6 +90,12 @@ export default function ChangeRequestRejectConfirmDialog({
         <Button
           variant="contained"
           color="error"
+          // error.main under white text reads 3.7 : 1 in dark mode (AA needs 4.5);
+          // error.dark gives about 5 : 1 in both.
+          sx={{
+            bgcolor: "error.dark",
+            "&:hover": { bgcolor: "error.dark", filter: "brightness(0.9)" },
+          }}
           onClick={() => {
             if (!isPending) onConfirm();
           }}

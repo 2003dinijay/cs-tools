@@ -20,8 +20,10 @@ import {
   changeRequestToDatetimeLocal,
   formatChangeRequestDuration,
   formatDuration,
+  getAnsweredWindow,
   getChangeRequestDecisionMode,
   describeChangeRequestActionError,
+  isAwaitingInternalReview,
   getCustomerDecisionLabels,
   getCustomerDecisionMessages,
   getCustomerRejectConfirmCopy,
@@ -35,6 +37,7 @@ import {
   CHANGE_REQUEST_ANSWER_STALE_MESSAGE,
   CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE,
   CHANGE_REQUEST_ON_HOLD_MESSAGE,
+  CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE,
 } from "@features/operations/utils/changeRequests";
 import { ChangeRequestDecisionMode } from "@features/operations/types/changeRequests";
 import { ApiError } from "@utils/ApiError";
@@ -215,6 +218,35 @@ describe("describeChangeRequestActionError", () => {
     ).toEqual({ message: CHANGE_REQUEST_ON_HOLD_MESSAGE, terminal: false });
   });
 
+  it("says the schedule moved, not that the answer was already given, when an answer named another window", () => {
+    expect(
+      describeChangeRequestActionError(
+        new ApiError(
+          409,
+          "Conflict",
+          "the planned implementation time of this change request changed after you opened it (it is now 2026-09-15T10:00:00Z to 2026-09-15T12:00:00Z); read it again before giving your answer",
+        ),
+        fallback,
+      ),
+    ).toEqual({ message: CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE, terminal: true });
+    expect(CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE).toMatch(/schedule .* changed after you opened it/);
+  });
+
+  it("puts the newer window refusals in the customer's words", () => {
+    const say = (backend: string) =>
+      describeChangeRequestActionError(new ApiError(400, "Bad Request", backend), fallback);
+    expect(say("the planned start must not be the same as the planned end: the window must have a duration")).toEqual({
+      message: "The proposed end must be after the proposed start.",
+      terminal: false,
+    });
+    expect(say("plannedStartOn is in the past: a proposed implementation time must be one still to come").message).toBe(
+      "The proposed time must be in the future.",
+    );
+    expect(
+      say("plannedEndOn must be a valid date-time, either RFC 3339 (2030-03-01T09:00:00Z) or YYYY-MM-DD HH:MM:SS in UTC, in the years 2000 to 2100").message,
+    ).toBe("Enter a valid start and end date and time.");
+  });
+
   it("explains a refusal as not being a contact who can answer", () => {
     expect(
       describeChangeRequestActionError(new ApiError(403, "Forbidden", "You do not have permission."), fallback),
@@ -292,5 +324,32 @@ describe("buildChangeRequestWorkflowStages", () => {
       hasCustomerReviewed: false,
     } as never);
     expect(workflowStages.find((s) => s.current)?.name).toBe("Customer Approval");
+  });
+});
+
+describe("getAnsweredWindow", () => {
+  it("names the window the details showed, as they showed it", () => {
+    expect(getAnsweredWindow({ startDate: "2026-06-10T04:30:00Z", endDate: "2026-06-10T06:30:00Z" })).toEqual({
+      expectedPlannedStartOn: "2026-06-10T04:30:00Z",
+      expectedPlannedEndOn: "2026-06-10T06:30:00Z",
+    });
+  });
+
+  it("leaves out a bound the change request does not have", () => {
+    expect(getAnsweredWindow({ startDate: "2026-06-10T04:30:00Z", endDate: "" })).toEqual({
+      expectedPlannedStartOn: "2026-06-10T04:30:00Z",
+    });
+    expect(getAnsweredWindow({ startDate: undefined as never, endDate: "  " })).toEqual({});
+  });
+});
+
+describe("isAwaitingInternalReview", () => {
+  it("is true in Authorize, where a proposed time waits for WSO2, and nowhere else", () => {
+    expect(isAwaitingInternalReview({ state: { id: "-3", label: "Authorize" } })).toBe(true);
+    for (const label of ["New", "Assess", "Customer Approval", "Scheduled", "Customer Review", "Closed", "Canceled"]) {
+      expect(isAwaitingInternalReview({ state: { id: "x", label } }), label).toBe(false);
+    }
+    expect(isAwaitingInternalReview(null)).toBe(false);
+    expect(isAwaitingInternalReview({ state: null })).toBe(false);
   });
 });

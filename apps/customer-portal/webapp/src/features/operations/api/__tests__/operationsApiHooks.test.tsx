@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -278,6 +278,55 @@ describe("operations API hooks", () => {
       expect(keys).toContainEqual([ApiQueryKeys.CHANGE_REQUEST_DETAILS, "cr-1"]);
       expect(keys).toContainEqual([ApiQueryKeys.CHANGE_REQUESTS]);
       expect(keys).toContainEqual([ApiQueryKeys.CHANGE_REQUEST_STATS]);
+    });
+
+    it("stays pending until the refetch of the change request has landed", async () => {
+      // The page reads "settled" as "the new state is on screen": a mutation that
+      // settled while the refetch was still in flight would leave the old state,
+      // with live buttons, to be clicked a second time.
+      mockAuthFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ id: "cr-1" }) });
+      const queryClient = new QueryClient({
+        defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
+      });
+      const wrapper = ({ children }: { children: ReactNode }) => (
+        <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+      );
+      let releaseRefetch: () => void = () => {};
+      let detailFetches = 0;
+      const queryFn = () => {
+        detailFetches += 1;
+        if (detailFetches === 1) return Promise.resolve({ state: "Customer Approval" });
+        return new Promise<{ state: string }>((resolve) => {
+          releaseRefetch = () => resolve({ state: "Scheduled" });
+        });
+      };
+      const { result } = renderHook(
+        () => ({
+          detail: useQuery({ queryKey: [ApiQueryKeys.CHANGE_REQUEST_DETAILS, "cr-1"], queryFn }),
+          patch: usePatchChangeRequest("cr-1"),
+        }),
+        { wrapper },
+      );
+      await waitFor(() => expect(result.current.detail.isSuccess).toBe(true));
+
+      let settled = false;
+      const answer = result.current.patch.mutateAsync({ isCustomerApproved: true }).then((value) => {
+        settled = true;
+        return value;
+      });
+      // The PATCH has been answered and the refetch it asked for is in flight...
+      await waitFor(() => expect(detailFetches).toBe(2));
+      await waitFor(() => expect(mockAuthFetch).toHaveBeenCalledTimes(1));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      // ...and the answer has not settled, nor has the mutation left pending.
+      expect(settled).toBe(false);
+      expect(result.current.patch.isPending).toBe(true);
+
+      releaseRefetch();
+      await answer;
+      expect(settled).toBe(true);
+      await waitFor(() => expect(result.current.detail.data).toEqual({ state: "Scheduled" }));
+      expect(result.current.patch.isPending).toBe(false);
     });
 
     it("rejects with an ApiError that keeps the status and the backend's message", async () => {

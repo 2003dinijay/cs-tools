@@ -53,6 +53,8 @@ import type {
   ProposeNewImplementationTimeModalProps,
 } from "@features/operations/types/changeRequests";
 
+const PROPOSE_FORM_ID = "propose-implementation-form";
+
 const SCHEDULE_DISPLAY_OPTIONS: Intl.DateTimeFormatOptions = {
   weekday: "long",
   year: "numeric",
@@ -66,6 +68,7 @@ const SCHEDULE_DISPLAY_OPTIONS: Intl.DateTimeFormatOptions = {
 type ProposeNewImplementationTimeModalBodyProps = {
   changeRequest: ChangeRequestDetails;
   onClose: () => void;
+  onProposed?: () => void;
 };
 
 /**
@@ -79,6 +82,7 @@ type ProposeNewImplementationTimeModalBodyProps = {
 function ProposeNewImplementationTimeModalBody({
   changeRequest,
   onClose,
+  onProposed,
 }: ProposeNewImplementationTimeModalBodyProps): JSX.Element {
   const { showError } = useErrorBanner();
   const { showSuccess } = useSuccessBanner();
@@ -162,6 +166,7 @@ function ProposeNewImplementationTimeModalBody({
     try {
       await patchMutation.mutateAsync(payload);
       showSuccess(copy.success);
+      onProposed?.();
       onClose();
     } catch (error) {
       const { message, terminal } = describeChangeRequestActionError(
@@ -225,6 +230,20 @@ function ProposeNewImplementationTimeModalBody({
           <X size={20} aria-hidden />
         </IconButton>
       </DialogTitle>
+      {/* One form around the content and the actions, so Enter in either field
+          submits (the Submit button is tied to it by `form`). Validation stays
+          ours: the browser's own bubbles are off. */}
+      <form
+        id={PROPOSE_FORM_ID}
+        noValidate
+        // No box of its own: the dialog's scrolling content and its fixed actions
+        // stay laid out as children of the dialog.
+        style={{ display: "contents" }}
+        onSubmit={(event) => {
+          event.preventDefault();
+          void handleSubmit();
+        }}
+      >
       <DialogContent sx={{ pt: 1 }}>
         <Alert
           id="propose-implementation-dialog-notice"
@@ -250,6 +269,7 @@ function ProposeNewImplementationTimeModalBody({
         >
           <Typography
             variant="subtitle2"
+            component="h3"
             color="text.secondary"
             sx={{ mb: 1.5 }}
           >
@@ -297,7 +317,12 @@ function ProposeNewImplementationTimeModalBody({
           </Box>
         </Box>
 
-        <Typography variant="subtitle2" color="text.secondary" sx={{ mb: 0.5 }}>
+        <Typography
+          variant="subtitle2"
+          component="h3"
+          color="text.secondary"
+          sx={{ mb: 0.5 }}
+        >
           Proposed implementation window
         </Typography>
         <Typography
@@ -375,9 +400,9 @@ function ProposeNewImplementationTimeModalBody({
           Cancel
         </Button>
         <Button
+          type="submit"
           variant="contained"
           color="primary"
-          onClick={() => void handleSubmit()}
           disabled={isModalBusy}
           startIcon={
             isModalBusy ? <CircularProgress size={16} color="inherit" /> : undefined
@@ -386,6 +411,7 @@ function ProposeNewImplementationTimeModalBody({
           {isModalBusy ? "Submitting..." : "Submit Proposal"}
         </Button>
       </DialogActions>
+      </form>
     </Dialog>
   );
 }
@@ -400,6 +426,7 @@ function ProposeNewImplementationTimeModalBody({
 export default function ProposeNewImplementationTimeModal({
   open,
   onClose,
+  onProposed,
   changeRequest,
 }: ProposeNewImplementationTimeModalProps): JSX.Element | null {
   if (!changeRequest) return null;
@@ -409,6 +436,7 @@ export default function ProposeNewImplementationTimeModal({
       key={changeRequest.id}
       changeRequest={changeRequest}
       onClose={onClose}
+      onProposed={onProposed}
     />
   ) : null;
 }

@@ -294,6 +294,38 @@ export function resolveCustomerDecisionMode(
   }
 }
 
+/**
+ * The planned window the customer is looking at, as the answer's precondition:
+ * the backend records the answer only while it is still the change request's
+ * window, so a page opened before the change was re-scheduled cannot approve a
+ * time its reader never saw. A bound the change request does not have is left out
+ * (nothing to compare it with).
+ */
+export function getAnsweredWindow(
+  changeRequest: Pick<ChangeRequestDetails, "startDate" | "endDate">,
+): { expectedPlannedStartOn?: string; expectedPlannedEndOn?: string } {
+  const start = changeRequest.startDate?.trim();
+  const end = changeRequest.endDate?.trim();
+  return {
+    ...(start ? { expectedPlannedStartOn: start } : {}),
+    ...(end ? { expectedPlannedEndOn: end } : {}),
+  };
+}
+
+/**
+ * True while the change request waits on WSO2 alone: it is in Authorize, which
+ * a customer sees only after proposing a new time (the proposal sends the change
+ * back through WSO2's internal approval before the customer is asked again).
+ */
+export function isAwaitingInternalReview(
+  changeRequest?: Pick<ChangeRequestDetails, "state"> | null,
+): boolean {
+  return (
+    resolveChangeRequestCanonicalState(changeRequest?.state) ===
+    ChangeRequestStates.AUTHORIZE
+  );
+}
+
 /** Labels of the two answer buttons for a decision mode. */
 export function getCustomerDecisionLabels(mode: ChangeRequestDecisionMode): {
   approve: string;
@@ -368,6 +400,14 @@ export const CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE =
 export const CHANGE_REQUEST_ON_HOLD_MESSAGE =
   "This change request is on hold, so a new time cannot be proposed right now.";
 
+/**
+ * A conflict (409) on an answer because the schedule moved after the page was
+ * opened: the answer was given for a time its reader never saw, so it was not
+ * recorded. The page re-reads the change request, so the new time is on screen.
+ */
+export const CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE =
+  "The schedule of this change request changed after you opened it. Review the updated schedule, then answer again.";
+
 /** Backend 400 messages the customer can act on, in the customer's words. */
 const BAD_REQUEST_MESSAGES: ReadonlyArray<readonly [needle: string, message: string]> = [
   [
@@ -377,6 +417,18 @@ const BAD_REQUEST_MESSAGES: ReadonlyArray<readonly [needle: string, message: str
   [
     "requires a changed planned start or end",
     "This is the same as the current schedule. Change the start or the end to propose a different time.",
+  ],
+  [
+    "must not be the same as the planned end",
+    "The proposed end must be after the proposed start.",
+  ],
+  [
+    "is in the past",
+    "The proposed time must be in the future.",
+  ],
+  [
+    "must be a valid date-time",
+    "Enter a valid start and end date and time.",
   ],
   [
     "is locked once set to true",
@@ -406,6 +458,10 @@ export function describeChangeRequestActionError(
       // state: the customer is still being asked, a proposal just cannot go in.
       if (/\bon hold\b/i.test(error.message)) {
         return { message: CHANGE_REQUEST_ON_HOLD_MESSAGE, terminal: false };
+      }
+      // The other conflict that is not "already answered": the schedule moved.
+      if (/planned implementation time .* changed after you opened/i.test(error.message)) {
+        return { message: CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE, terminal: true };
       }
       return { message: CHANGE_REQUEST_ANSWER_STALE_MESSAGE, terminal: true };
     }

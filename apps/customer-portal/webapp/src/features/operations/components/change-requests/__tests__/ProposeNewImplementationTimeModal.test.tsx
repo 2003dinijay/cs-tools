@@ -57,15 +57,16 @@ const changeRequest = {
   endDate: "2026-06-10 06:30:00",
 } as never;
 
-function renderModal(overrides: Record<string, unknown> = {}, onClose = vi.fn()) {
+function renderModal(overrides: Record<string, unknown> = {}, onClose = vi.fn(), onProposed = vi.fn()) {
   render(
     <ProposeNewImplementationTimeModal
       open
       onClose={onClose}
+      onProposed={onProposed}
       changeRequest={{ ...(changeRequest as object), ...overrides } as never}
     />,
   );
-  return { onClose };
+  return { onClose, onProposed };
 }
 
 const startInput = () => screen.getByLabelText(/Proposed start/) as HTMLInputElement;
@@ -212,6 +213,39 @@ describe("ProposeNewImplementationTimeModal", () => {
     expect(mocks.showSuccess).toHaveBeenCalledWith(
       "New time proposed. Review the updated schedule and approve it when you are ready.",
     );
+  });
+
+  it("tells the page it was proposed (so focus can move on), only when it was", async () => {
+    mocks.mutateAsync.mockRejectedValueOnce(new ApiError(400, "Bad Request", "plannedStartOn is in the past: a proposed implementation time must be one still to come"));
+    const { onClose, onProposed } = renderModal();
+    setValue(startInput(), "2026-06-11T15:30");
+    submit();
+    expect(await screen.findByText("The proposed time must be in the future.")).toBeInTheDocument();
+    expect(onProposed).not.toHaveBeenCalled();
+
+    submit();
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(onProposed).toHaveBeenCalledTimes(1);
+  });
+
+  it("submits when Enter is pressed in a field: the fields and the button are one form", async () => {
+    const { onClose } = renderModal();
+    setValue(startInput(), "2026-06-11T15:30");
+    const form = endInput().closest("form");
+    expect(form).not.toBeNull();
+    expect(screen.getByRole("button", { name: "Submit Proposal" })).toHaveAttribute("type", "submit");
+    // What the browser does for Enter in a field of a form with a submit button.
+    fireEvent.submit(form as HTMLFormElement);
+    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+    expect(mocks.mutateAsync).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not skip a heading level: the two sections sit under the title as h3", () => {
+    renderModal();
+    expect(screen.getByRole("heading", { level: 2, name: /Propose New Implementation Time/ })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Current Schedule" })).toBeInTheDocument();
+    expect(screen.getByRole("heading", { level: 3, name: "Proposed implementation window" })).toBeInTheDocument();
+    expect(screen.queryByRole("heading", { level: 6 })).not.toBeInTheDocument();
   });
 
   it("keeps the dialog open with the backend's message when the window is refused", async () => {

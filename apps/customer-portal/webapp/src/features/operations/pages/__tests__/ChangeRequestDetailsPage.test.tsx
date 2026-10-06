@@ -21,6 +21,7 @@ import ChangeRequestDetailsPage from "@features/operations/pages/ChangeRequestDe
 import {
   CHANGE_REQUEST_ANSWER_STALE_MESSAGE,
   CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE,
+  CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE,
 } from "@features/operations/utils/changeRequests";
 import { ApiError } from "@utils/ApiError";
 
@@ -77,8 +78,8 @@ function makeChangeRequest(overrides: Record<string, unknown> = {}) {
     product: null,
     assignedEngineer: null,
     assignedTeam: null,
-    startDate: "2026-06-10 04:30:00",
-    endDate: "2026-06-10 06:30:00",
+    startDate: "2026-06-10T04:30:00Z",
+    endDate: "2026-06-10T06:30:00Z",
     createdOn: "2026-01-01",
     updatedOn: "2026-01-02",
     hasCustomerApproved: false,
@@ -101,6 +102,9 @@ function renderPage() {
 }
 
 const button = (name: string) => screen.queryByRole("button", { name });
+
+/** The window makeChangeRequest shows, as an answer names it (the schedule the customer saw). */
+const SHOWN = { expectedPlannedStartOn: "2026-06-10T04:30:00Z", expectedPlannedEndOn: "2026-06-10T06:30:00Z" };
 
 describe("ChangeRequestDetailsPage", () => {
   beforeEach(() => {
@@ -164,7 +168,7 @@ describe("ChangeRequestDetailsPage", () => {
       fireEvent.click(screen.getByRole("button", { name: "Approve" }));
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       await waitFor(() => expect(mocks.showSuccess).toHaveBeenCalledTimes(1));
-      expect(mocks.mutateAsync).toHaveBeenCalledWith({ isCustomerApproved: true });
+      expect(mocks.mutateAsync).toHaveBeenCalledWith({ isCustomerApproved: true, ...SHOWN });
       expect(mocks.showSuccess).toHaveBeenCalledWith("Change request approved. It is now scheduled.");
       expect(mocks.showError).not.toHaveBeenCalled();
     });
@@ -188,6 +192,47 @@ describe("ChangeRequestDetailsPage", () => {
       for (const name of ["Propose New Time", "Approve", "Reject"]) {
         expect(screen.getByRole("button", { name })).toBeDisabled();
       }
+    });
+
+    it("names only the bounds the change request has", async () => {
+      mocks.changeRequest.value = makeChangeRequest({
+        state: STATES.approval,
+        customerCanAnswer: true,
+        startDate: "2026-06-10T04:30:00Z",
+        endDate: undefined,
+      });
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+      await waitFor(() => expect(mocks.showSuccess).toHaveBeenCalledTimes(1));
+      expect(mocks.mutateAsync).toHaveBeenCalledWith({
+        isCustomerApproved: true,
+        expectedPlannedStartOn: "2026-06-10T04:30:00Z",
+      });
+    });
+
+    it("says the schedule changed, not that the request was answered, when it moved under an open page", async () => {
+      mocks.mutateAsync.mockRejectedValueOnce(
+        new ApiError(
+          409,
+          "Conflict",
+          "the planned implementation time of this change request changed after you opened it (it is now 2026-09-15T10:00:00Z to 2026-09-15T12:00:00Z); read it again before giving your answer",
+        ),
+      );
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Approve" }));
+      await waitFor(() => expect(mocks.showError).toHaveBeenCalledWith(CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE));
+      expect(mocks.showSuccess).not.toHaveBeenCalled();
+    });
+
+    it("moves focus to the page heading once the answer is given", async () => {
+      renderPage();
+      const approve = screen.getByRole("button", { name: "Approve" });
+      approve.focus();
+      fireEvent.click(approve);
+      await waitFor(() => expect(mocks.showSuccess).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(document.activeElement).toBe(screen.getByRole("heading", { name: "Deploy patch" })),
+      );
     });
 
     it.each([
@@ -239,7 +284,7 @@ describe("ChangeRequestDetailsPage", () => {
       fireEvent.click(screen.getByRole("button", { name: "Reject change request" }));
       await waitFor(() => expect(mocks.showSuccess).toHaveBeenCalledTimes(1));
       expect(mocks.mutateAsync).toHaveBeenCalledTimes(1);
-      expect(mocks.mutateAsync).toHaveBeenCalledWith({ isCustomerApproved: false });
+      expect(mocks.mutateAsync).toHaveBeenCalledWith({ isCustomerApproved: false, ...SHOWN });
       expect(mocks.showSuccess).toHaveBeenCalledWith("Change request rejected. It has been canceled.");
       await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     });
@@ -265,7 +310,7 @@ describe("ChangeRequestDetailsPage", () => {
       fireEvent.click(screen.getByRole("button", { name: "Successful" }));
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       await waitFor(() => expect(mocks.showSuccess).toHaveBeenCalledTimes(1));
-      expect(mocks.mutateAsync).toHaveBeenCalledWith({ isCustomerReviewed: true });
+      expect(mocks.mutateAsync).toHaveBeenCalledWith({ isCustomerReviewed: true, ...SHOWN });
       expect(mocks.showSuccess).toHaveBeenCalledWith("Change request marked as successful. It is now closed.");
     });
 
@@ -280,8 +325,54 @@ describe("ChangeRequestDetailsPage", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "Mark unsuccessful" }));
       await waitFor(() => expect(mocks.showSuccess).toHaveBeenCalledTimes(1));
-      expect(mocks.mutateAsync).toHaveBeenCalledWith({ isCustomerReviewed: false });
+      expect(mocks.mutateAsync).toHaveBeenCalledWith({ isCustomerReviewed: false, ...SHOWN });
       expect(mocks.showSuccess).toHaveBeenCalledWith("Change request marked as unsuccessful. It is now in rollback.");
+    });
+  });
+
+  describe("what the page says around the answer", () => {
+    it("asks the review question and groups the two answers under it", () => {
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.review, customerCanAnswer: true });
+      renderPage();
+      const group = screen.getByRole("group", { name: "This change has been implemented. Was it successful?" });
+      expect(within(group).getByRole("button", { name: "Successful" })).toBeInTheDocument();
+      expect(within(group).getByRole("button", { name: "Unsuccessful" })).toBeInTheDocument();
+    });
+
+    it("names the group of answers at Customer Approval", () => {
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.approval, customerCanAnswer: true });
+      renderPage();
+      const group = screen.getByRole("group", { name: "Answer this change request" });
+      expect(within(group).getAllByRole("button")).toHaveLength(3);
+      expect(screen.queryByText(/Was it successful/)).not.toBeInTheDocument();
+    });
+
+    it("says, for as long as the page is open, that WSO2 is reviewing a proposed time", () => {
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.authorize, customerCanAnswer: false });
+      renderPage();
+      const note = screen.getByRole("status");
+      expect(note).toHaveTextContent("WSO2 is reviewing this change request internally");
+      expect(note).toHaveTextContent("You will be asked to approve the schedule once it is confirmed");
+    });
+
+    it.each([
+      ["Customer Approval", STATES.approval],
+      ["Scheduled", STATES.scheduled],
+      ["Customer Review", STATES.review],
+    ])("does not say it in %s", (_name, state) => {
+      mocks.changeRequest.value = makeChangeRequest({ state, customerCanAnswer: true });
+      renderPage();
+      expect(screen.queryByText(/reviewing this change request internally/)).not.toBeInTheDocument();
+    });
+
+    it("calls the window a plan until the change is scheduled", () => {
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.approval, customerCanAnswer: true });
+      const view = renderPage();
+      expect(screen.getByText("Planned Maintenance Window")).toBeInTheDocument();
+      view.unmount();
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.scheduled });
+      renderPage();
+      expect(screen.getByText("Scheduled Maintenance Window")).toBeInTheDocument();
     });
   });
 
@@ -292,6 +383,30 @@ describe("ChangeRequestDetailsPage", () => {
       expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
       fireEvent.click(screen.getByRole("button", { name: "Propose New Time" }));
       expect(screen.getByRole("dialog", { name: "Propose New Implementation Time" })).toBeInTheDocument();
+    });
+
+    it("switches Propose New Time off, and says why, while WSO2 has the change on hold; answering stays possible", () => {
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.approval, customerCanAnswer: true, isOnHold: true });
+      renderPage();
+      const propose = screen.getByRole("button", { name: "Propose New Time" });
+      expect(propose).toBeDisabled();
+      const note = screen.getByText(/WSO2 has this change request on hold/);
+      expect(propose).toHaveAttribute("aria-describedby", note.id);
+      expect(screen.getByRole("button", { name: "Approve" })).toBeEnabled();
+      expect(screen.getByRole("button", { name: "Reject" })).toBeEnabled();
+      fireEvent.click(propose);
+      expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    });
+
+    it.each([[false], [undefined]])("keeps Propose New Time on when the hold flag is %s", (isOnHold) => {
+      mocks.changeRequest.value = makeChangeRequest({
+        state: STATES.approval,
+        customerCanAnswer: true,
+        ...(isOnHold === undefined ? {} : { isOnHold }),
+      });
+      renderPage();
+      expect(screen.getByRole("button", { name: "Propose New Time" })).toBeEnabled();
+      expect(screen.queryByText(/on hold/)).not.toBeInTheDocument();
     });
 
     it("closes the dialog by itself once the change request no longer waits on the customer", () => {
