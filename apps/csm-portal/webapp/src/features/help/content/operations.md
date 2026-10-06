@@ -48,6 +48,17 @@ versa) and stay on this device/browser.
 
 The detail page shows:
 
+- A **lifecycle line** across the top, plotting the same eleven-stage workflow
+  the customer sees in the Customer Portal: New, Assess, Authorize, Customer
+  Approval, Scheduled, Implement, Review, Customer Review, **Rollback**,
+  Closed and **Canceled**. Stages already passed are ticked and the current
+  stage is highlighted. Rollback and Canceled are the two exits off the normal
+  path, so they stay faint until the change really ends there, when the stage
+  turns red. Customer Approval and Customer Review only appear when the change
+  requires them. A canceled change keeps no record of where it was canceled,
+  so a stage the approvals cannot prove it passed is drawn faint (and read out
+  as "history not recorded") rather than guessed. Hover a stage for what it
+  means.
 - An **overview** card: Customer Project, type, linked case, deployment,
   deployed product, the selected deployments and their deployment products,
   the Customer Group, category, assigned engineer/team, duration, planned
@@ -83,9 +94,23 @@ From the detail page a CS engineer can:
 
 - **Change state**: the action bar's buttons are driven entirely by the
   record's own legal next states, so only valid transitions are ever offered.
-  Moving to a destructive state (rollback, cancel) requires typing a reason
+  The forward move (for example **Request Approval**, **Start implementation**,
+  **Mark implemented**, **Send for customer review**) is the main button;
+  **Re-schedule** (Customer Approval only) sits beside it; everything else is
+  behind the **Change state** menu. Moving to a destructive state (**Roll back**
+  from Review or Customer Review, **Cancel change**) requires typing a reason
   first, which is recorded as an internal note before the state change is
   applied.
+- **Bypass the customer's answer**: while a change waits at Customer Approval
+  or Customer Review, the customer answers in the Customer Portal. If no one is
+  being asked (the project has no registered contacts, or the request was
+  superseded), an engineer can answer for them from **Change state** ->
+  **Bypass customer approval** (moves the change to Scheduled) or **Bypass
+  customer review** (moves it to Closed). They are menu-only, never a main
+  button, because the customer is not asked: you must state a reason, which is
+  recorded as an internal note first. While the customer's request is still
+  pending the entry stays visible but disabled, and says who the change is
+  waiting on.
 - **Approve or reject** a pending approval stage, if the engineer is listed
   as an approver on it: the Approve/Reject buttons only appear on that
   engineer's own pending approval.

@@ -121,6 +121,11 @@ CSM page as an internal user:
   / `:8081` / `:3000` defaults);
 - against the fake API, it is `api.customerDecides(contact, decision)`.
 
+Asserting that an engineer cannot answer *for* the customer while the customer is still asked needs no customer
+session either: the "Bypass customer approval" / "Bypass customer review" entries of the "Change state" menu are
+disabled then, and the seeded-fixture describe only LOOKS at CHG-FIXED-007 / -008 (Dave and Erin still requested) and
+sends the manual PATCH the backend refuses (`state "scheduled" cannot be set manually: ...`), so nothing changes.
+
 The seeded-fixture describes of the spec also reset the fixtures first, by piping
 `seed-entity-service.sql` into the compose Postgres with `docker exec -i`
 (`E2E_POSTGRES_CONTAINER`, default `csm-platform-postgres-1`; for the `csmcr` project use
