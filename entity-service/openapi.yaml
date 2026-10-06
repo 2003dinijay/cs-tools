@@ -18516,7 +18516,9 @@ components:
 
     ScheduleZone:
       type: object
-      description: An SRE time zone.
+      description: >
+        A block of the day a rota is worked in: SaaS SRE's time zones TZ1-TZ3,
+        or a rotation's Day and Night.
       properties:
         id: { type: string, format: uuid }
         code: { type: string, example: TZ1 }
@@ -18526,6 +18528,30 @@ components:
           description: >
             The zone that absorbs this one at the weekend, when three weekday
             zones collapse into two.
+        sortOrder: { type: integer }
+        rotaCode:
+          type: string
+          example: SRE_SAAS
+          description: The rota this zone belongs to; absent for a zone no rota claims.
+    ScheduleRota:
+      type: object
+      required: [code, label, family, rotates, sortOrder]
+      description: >
+        A named rotation inside a family -- SRE's SaaS and IaaS, one per SME
+        product -- with the rules its own sheet states. A team is on the rota
+        whose team type matches team.type.
+      properties:
+        code: { type: string, example: SME_MOESIF }
+        label: { type: string, example: Moesif }
+        family: { type: string, enum: [CRE, SRE, SME] }
+        rotates: { type: string, enum: [DAILY, WEEKLY, IRREGULAR] }
+        escalationMinutes:
+          type: integer
+          description: >
+            Minutes before an unanswered page moves up a level, as the rota's
+            sheet states; absent where it does not say. Informational -- the
+            escalation ladder keeps its own timing.
+        sourceSheet: { type: string }
         sortOrder: { type: integer }
     ScheduleShift:
       type: object
@@ -18538,7 +18564,7 @@ components:
         code: { type: string, example: SRE_TZ1_L1 }
         shortCode: { type: string, example: L1 }
         label: { type: string }
-        family: { type: string, enum: [CRE, SRE] }
+        family: { type: string, enum: [CRE, SRE, SME] }
         zoneCode: { type: string }
         tier: { type: string, enum: [L1, L2, L3] }
         dayScope: { type: string, enum: [WEEKDAY, WEEKEND, ANY] }
@@ -18572,12 +18598,16 @@ components:
       properties:
         key: { type: string, example: castor }
         name: { type: string }
-        family: { type: string, enum: [CRE, SRE] }
+        family: { type: string, enum: [CRE, SRE, SME] }
         sortOrder:
           type: integer
           description: >-
             Display order, and what gives a team a stable colour without any
             client naming it.
+        rotaCode:
+          type: string
+          example: SRE_SAAS
+          description: The rota the team's type belongs to; absent for a team on no named rota.
     CreateScheduleAbsenceKindRequest:
       type: object
       required: [shortCode, label, bucket, colourToken]
@@ -18611,7 +18641,7 @@ components:
           description: True for a tag a lead added from the portal, which a lead may also delete.
         family:
           type: string
-          enum: [CRE, SRE]
+          enum: [CRE, SRE, SME]
           description: The rota the kind is offered on. Absent for a kind both rotas use, which is every kind of leave.
         retired:
           type: boolean
@@ -18633,6 +18663,9 @@ components:
         teams:
           type: array
           items: { $ref: '#/components/schemas/ScheduleTeam' }
+        rotas:
+          type: array
+          items: { $ref: '#/components/schemas/ScheduleRota' }
     ScheduleEngineer:
       type: object
       properties:
@@ -18911,7 +18944,7 @@ components:
         teamKeys:
           type: array
           items: { type: string }
-        family: { type: string, enum: [CRE, SRE] }
+        family: { type: string, enum: [CRE, SRE, SME] }
         userId: { type: string, format: uuid }
         userEmail:
           type: string

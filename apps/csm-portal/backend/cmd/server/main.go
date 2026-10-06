@@ -888,7 +888,7 @@ func loadDashboards() *dashboard.Registry {
 //	CSM_TEAM_REGISTRY  the team registry as
 //	                   "teamKey|Display Name|FAMILY|creGroupId|sreGroupId" rows
 //	                   separated by commas, where FAMILY is one of cre-abt,
-//	                   cre, sre-abt or sre (case insensitive) and FAMILY,
+//	                   cre, sre-abt, sre or sme (case insensitive) and FAMILY,
 //	                   creGroupId, and sreGroupId are all optional. Unset means
 //	                   no teams are configured; there is deliberately no
 //	                   default, because team names are organisation vocabulary
