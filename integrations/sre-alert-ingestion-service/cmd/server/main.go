@@ -168,11 +168,12 @@ func main() {
 		stop()
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.Server.ShutdownGrace.Duration())
 		defer cancel()
-		shutdown(shutdownCtx, logger, srv, httpSrv, alloc, budget{
+		shutdown(shutdownCtx, logger, srv, httpSrv, alloc, rawPayloads, budget{
 			DrainDelay:     cfg.Server.DrainDelay.Duration(),
 			RequestWait:    cfg.Server.RequestWait.Duration(),
 			AllocatorDrain: cfg.Server.AllocatorDrain.Duration(),
-		}, waker.Wait, rawPayloads.Close)
+			PayloadDrain:   cfg.Server.PayloadDrain.Duration(),
+		}, waker.Wait)
 	}
 }
 

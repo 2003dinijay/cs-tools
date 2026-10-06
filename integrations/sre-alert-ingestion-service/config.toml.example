@@ -15,14 +15,16 @@
 # under the License.
 
 [server]
-# Total SIGTERM budget covering the three drains below; Choreo's grace period must be 30s or more.
-shutdown_grace = "25s"
+# Total SIGTERM budget covering the four drains below; Choreo's grace period must be 35s or more.
+shutdown_grace = "30s"
 # After SIGTERM, /healthz answers 503 for this long before the listener closes.
 drain_delay = "5s"
 # How long a request waits for its ids, and how long in-flight requests get on shutdown.
 request_wait = "10s"
 # The allocator's own time to write what is queued, even if requests overran.
 allocator_drain = "10s"
+# Reserved after allocator_drain for the final raw_alerts insert, so buffered webhook bodies are written before exit.
+payload_drain = "5s"
 read_timeout = "10s"
 write_timeout = "30s"
 # Keep-alive connections idle this long are closed.

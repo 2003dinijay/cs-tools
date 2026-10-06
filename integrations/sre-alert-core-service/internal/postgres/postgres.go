@@ -45,13 +45,14 @@ type Config struct {
 // PoolHeadroom is the main pool's room beyond the fold workers, for the claimer, ack flushes, delivery reads, retention and health checks.
 const PoolHeadroom = 16
 
-// SizePool derives an unset PGPOOLMAXCONNS from foldWorkers, and refuses an explicit one below it, since each fold worker holds a connection while folding.
+// SizePool derives an unset PGPOOLMAXCONNS from foldWorkers plus PoolHeadroom, and refuses an explicit one below that, since fold workers holding every connection would stall claims, acks and health checks.
 func SizePool(cfg Config, foldWorkers int) (Config, error) {
+	need := int32(foldWorkers + PoolHeadroom)
 	switch {
 	case cfg.PoolMaxConns == 0:
-		cfg.PoolMaxConns = int32(foldWorkers + PoolHeadroom)
-	case cfg.PoolMaxConns < int32(foldWorkers):
-		return Config{}, fmt.Errorf("PGPOOLMAXCONNS=%d is below poll.concurrency (%d); unset it to use %d, or set at least %d", cfg.PoolMaxConns, foldWorkers, foldWorkers+PoolHeadroom, foldWorkers)
+		cfg.PoolMaxConns = need
+	case cfg.PoolMaxConns < need:
+		return Config{}, fmt.Errorf("PGPOOLMAXCONNS=%d is below poll.concurrency (%d) + %d; unset it or set at least %d", cfg.PoolMaxConns, foldWorkers, PoolHeadroom, need)
 	}
 	return cfg, nil
 }

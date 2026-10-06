@@ -329,7 +329,7 @@ components:
           example: ALT000000123
         alt_ids:
           type: array
-          description: Every stored alert's id, in request order. Present only when one request stored several alerts (prometheus, or a servicenow array).
+          description: Every stored alert's id, in request order. Present only for a multi-alert request that stored several alerts.
           items:
             type: string
             example: ALT000000123

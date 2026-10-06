@@ -53,10 +53,12 @@ type ServerConfig struct {
 	DrainDelay     Duration `toml:"drain_delay"`
 	RequestWait    Duration `toml:"request_wait"`
 	AllocatorDrain Duration `toml:"allocator_drain"`
-	ReadTimeout    Duration `toml:"read_timeout"`
-	WriteTimeout   Duration `toml:"write_timeout"`
-	IdleTimeout    Duration `toml:"idle_timeout"`
-	MaxBodyBytes   int64    `toml:"max_body_bytes"`
+	// PayloadDrain is reserved after allocator_drain for the final raw_alerts insert.
+	PayloadDrain Duration `toml:"payload_drain"`
+	ReadTimeout  Duration `toml:"read_timeout"`
+	WriteTimeout Duration `toml:"write_timeout"`
+	IdleTimeout  Duration `toml:"idle_timeout"`
+	MaxBodyBytes int64    `toml:"max_body_bytes"`
 }
 
 // AllocatorConfig tunes the id allocator: queue depth, batch size, and writer concurrency.
@@ -132,10 +134,11 @@ func (d Duration) Duration() time.Duration {
 func Defaults() Config {
 	return Config{
 		Server: ServerConfig{
-			ShutdownGrace:  Duration(25 * time.Second),
+			ShutdownGrace:  Duration(30 * time.Second),
 			DrainDelay:     Duration(5 * time.Second),
 			RequestWait:    Duration(10 * time.Second),
 			AllocatorDrain: Duration(10 * time.Second),
+			PayloadDrain:   Duration(5 * time.Second),
 			ReadTimeout:    Duration(10 * time.Second),
 			WriteTimeout:   Duration(30 * time.Second),
 			IdleTimeout:    Duration(60 * time.Second),
@@ -205,8 +208,10 @@ func (c Config) Validate() error {
 		return fmt.Errorf("server.request_wait must be positive")
 	case c.Server.AllocatorDrain <= 0:
 		return fmt.Errorf("server.allocator_drain must be positive")
-	case c.Server.DrainDelay+c.Server.RequestWait+c.Server.AllocatorDrain > c.Server.ShutdownGrace:
-		return fmt.Errorf("server.drain_delay + request_wait + allocator_drain must not exceed shutdown_grace")
+	case c.Server.PayloadDrain <= 0:
+		return fmt.Errorf("server.payload_drain must be positive")
+	case c.Server.DrainDelay+c.Server.RequestWait+c.Server.AllocatorDrain+c.Server.PayloadDrain > c.Server.ShutdownGrace:
+		return fmt.Errorf("server.drain_delay + request_wait + allocator_drain + payload_drain must not exceed shutdown_grace")
 	case c.Server.ReadTimeout <= 0:
 		return fmt.Errorf("server.read_timeout must be positive")
 	case c.Server.WriteTimeout <= 0:

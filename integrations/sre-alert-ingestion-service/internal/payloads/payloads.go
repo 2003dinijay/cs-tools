@@ -60,19 +60,23 @@ type Buffer struct {
 	// flushMu keeps the periodic flush and the shutdown flush from inserting the same rows twice.
 	flushMu sync.Mutex
 	early   chan struct{}
-	stop    chan struct{}
-	stopped chan struct{}
+	// runCtx bounds Run's periodic flushes; Close cancels it so an in-flight insert hands its rows to the final flush.
+	runCtx    context.Context
+	cancelRun context.CancelFunc
+	stopped   chan struct{}
 }
 
 // New returns a Buffer; call Run in a goroutine and Close on shutdown.
 func New(logger *slog.Logger, ins Inserter, cfg Config) *Buffer {
+	runCtx, cancelRun := context.WithCancel(context.Background())
 	return &Buffer{
-		logger:  logger,
-		ins:     ins,
-		cfg:     cfg,
-		early:   make(chan struct{}, 1),
-		stop:    make(chan struct{}),
-		stopped: make(chan struct{}),
+		logger:    logger,
+		ins:       ins,
+		cfg:       cfg,
+		early:     make(chan struct{}, 1),
+		runCtx:    runCtx,
+		cancelRun: cancelRun,
+		stopped:   make(chan struct{}),
 	}
 }
 
@@ -113,24 +117,26 @@ func (b *Buffer) Run() {
 	defer ticker.Stop()
 	for {
 		select {
-		case <-b.stop:
+		case <-b.runCtx.Done():
 			return
 		case <-ticker.C:
 		case <-b.early:
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), b.cfg.FlushTimeout)
+		ctx, cancel := context.WithTimeout(b.runCtx, b.cfg.FlushTimeout)
 		b.flush(ctx)
 		cancel()
 	}
 }
 
-// Close stops Run and writes whatever is still buffered within ctx.
+// Close stops Run, cancelling any in-flight periodic insert so its rows rejoin the buffer, then writes everything within ctx and FlushTimeout.
 func (b *Buffer) Close(ctx context.Context) {
-	close(b.stop)
+	b.cancelRun()
 	select {
 	case <-b.stopped:
 	case <-ctx.Done():
 	}
+	ctx, cancel := context.WithTimeout(ctx, b.cfg.FlushTimeout)
+	defer cancel()
 	b.flush(ctx)
 }
 

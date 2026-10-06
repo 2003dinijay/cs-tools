@@ -73,7 +73,7 @@ dedup_window = "5m"
 [retention]
 # How often one replica purges expired rows.
 interval = "1h"
-# How long processed alert rows are kept.
+# How long processed alert rows, and raw webhook bodies in raw_alerts, are kept.
 alerts = "168h"
 # How long an incident with nothing left to deliver is kept after its last alert.
 incidents = "720h"

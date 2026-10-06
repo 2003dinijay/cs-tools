@@ -37,7 +37,7 @@ func TestConnStringKeepsReservedCharacters(t *testing.T) {
 	}
 }
 
-// TestSizePool: unset derives poll.concurrency plus headroom, an explicit value at or above the workers is kept, and one below them is refused.
+// TestSizePool: unset derives poll.concurrency plus headroom, an explicit value at or above that is kept, and one leaving no headroom is refused.
 func TestSizePool(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -48,8 +48,9 @@ func TestSizePool(t *testing.T) {
 	}{
 		{name: "unset derives", max: 0, workers: 64, want: 80},
 		{name: "explicit kept", max: 100, workers: 64, want: 100},
-		{name: "explicit at workers", max: 64, workers: 64, want: 64},
-		{name: "explicit too small", max: 63, workers: 64, wantErr: true},
+		{name: "explicit at minimum", max: 80, workers: 64, want: 80},
+		{name: "explicit at workers", max: 64, workers: 64, wantErr: true},
+		{name: "explicit too small", max: 79, workers: 64, wantErr: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

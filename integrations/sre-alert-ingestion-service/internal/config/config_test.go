@@ -70,6 +70,8 @@ func TestLoad_RejectsInvalidValues(t *testing.T) {
 		"negative timeout":     "[store]\nquery_timeout = \"-1s\"\n",
 		"bad duration":         "[wake]\ntimeout = \"soon\"\n",
 		"zero idle":            "[server]\nidle_timeout = \"0s\"\n",
+		"zero payload drain":   "[server]\npayload_drain = \"0s\"\n",
+		"payload over grace":   "[server]\npayload_drain = \"6s\"\n",
 		"zero drain delay":     "[server]\ndrain_delay = \"0s\"\n",
 		"budget over grace":    "[server]\nshutdown_grace = \"10s\"\n",
 		"steps over grace":     "[server]\nrequest_wait = \"20s\"\n",

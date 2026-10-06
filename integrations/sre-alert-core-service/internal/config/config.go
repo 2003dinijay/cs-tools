@@ -42,7 +42,7 @@ type Config struct {
 type RetentionConfig struct {
 	// Interval is how often one replica purges expired rows.
 	Interval Duration `toml:"interval"`
-	// Alerts is how long a processed alert row is kept.
+	// Alerts is how long a processed alert row, and a raw_alerts webhook body, is kept.
 	Alerts Duration `toml:"alerts"`
 	// Incidents is how long an incident with nothing left to deliver is kept after its last alert.
 	Incidents Duration `toml:"incidents"`

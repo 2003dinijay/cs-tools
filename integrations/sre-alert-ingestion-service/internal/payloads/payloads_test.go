@@ -154,3 +154,65 @@ func TestAsJSON(t *testing.T) {
 		})
 	}
 }
+
+// blockingInserter holds its first insert until ctx ends, as a slow database would, then accepts every later one.
+type blockingInserter struct {
+	fakeInserter
+	entered chan struct{}
+	first   sync.Once
+}
+
+func (b *blockingInserter) InsertPayloads(ctx context.Context, at []time.Time, payloads []string) error {
+	blocked := false
+	b.first.Do(func() { blocked = true })
+	if blocked {
+		close(b.entered)
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return b.fakeInserter.InsertPayloads(ctx, at, payloads)
+}
+
+// TestClose_CancelsInFlightFlushAndKeepsItsRows: Close doesn't wait out a slow periodic insert; its rows are written by the final flush.
+func TestClose_CancelsInFlightFlushAndKeepsItsRows(t *testing.T) {
+	ins := &blockingInserter{entered: make(chan struct{})}
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), ins, Config{
+		FlushInterval: time.Hour, MaxBytes: 1 << 20, FlushTimeout: time.Minute,
+	})
+	go b.Run()
+	b.Add(time.Now(), []byte(`{"a":1}`))
+	b.flushSoon()
+	<-ins.entered
+
+	start := time.Now()
+	b.Close(context.Background())
+	if took := time.Since(start); took > 5*time.Second {
+		t.Fatalf("Close took %v; it should cancel the in-flight insert instead of waiting out FlushTimeout", took)
+	}
+	if calls := ins.snapshot(); len(calls) != 1 || len(calls[0]) != 1 || calls[0][0] != `{"a":1}` {
+		t.Fatalf("inserts after Close = %v, want the cancelled row written once", calls)
+	}
+}
+
+// TestClose_AppliesFlushTimeout: the final insert gets a deadline even when the caller's ctx has none.
+func TestClose_AppliesFlushTimeout(t *testing.T) {
+	var deadline time.Time
+	var ok bool
+	ins := insertFunc(func(ctx context.Context) { deadline, ok = ctx.Deadline() })
+	b := New(slog.New(slog.NewTextHandler(io.Discard, nil)), ins, Config{
+		FlushInterval: time.Hour, MaxBytes: 1 << 20, FlushTimeout: 2 * time.Second,
+	})
+	go b.Run()
+	b.Add(time.Now(), []byte(`{"a":1}`))
+	b.Close(context.Background())
+	if !ok || time.Until(deadline) > 2*time.Second {
+		t.Fatalf("final insert deadline = %v (set %v), want within FlushTimeout", deadline, ok)
+	}
+}
+
+type insertFunc func(ctx context.Context)
+
+func (f insertFunc) InsertPayloads(ctx context.Context, _ []time.Time, _ []string) error {
+	f(ctx)
+	return nil
+}

@@ -114,3 +114,5 @@ CREATE TABLE IF NOT EXISTS raw_alerts (
   received_at  timestamptz NOT NULL,
   payload      jsonb NOT NULL
 );
+-- Retention deletes by age, oldest first.
+CREATE INDEX IF NOT EXISTS raw_alerts_received_at_idx ON raw_alerts (received_at);
