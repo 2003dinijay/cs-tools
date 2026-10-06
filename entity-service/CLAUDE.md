@@ -2693,8 +2693,12 @@ value is a 400 on both data sources instead of silently falling back to
 
 `approval_stage` and `approval_stage_approver` mirror ServiceNow's
 `sysapproval_group` / `sysapproval_approver` and are defined by csm-sync-service
-(migrations 0089 and 0138, mirrored into this folder). **This service adds no
-columns, tables or types to them and does not rename anything.** The approver's
+(migrations 0089 and 0138, mirrored into this folder). **This service adds nothing
+further to them and renames nothing.** The one column it did add to the sync-owned
+`approval_stage` (`checkpoint_label`, migration 0179: the stage's name, NULL on a
+synced stage, which then falls back to the stage's position) predates this rule; it
+is kept as it stands until the ServiceNow table that defines approval stages /
+checkpoints is reconciled with it, and nothing further is added. The approver's
 standing is the column **`approval_stage_approver.state`** (renamed from `status`
 by 0138), stored UPPER_SNAKE_CASE: `REQUESTED`, `APPROVED`, `REJECTED`, `NOT_REQUESTED`,
 `NOT_REQUIRED`, `CANCELLED`, `NOT_ENTITLED`. Every statement below that says an
@@ -2705,11 +2709,7 @@ of `state` (the request-level decision a client sends stays lowercase,
 upper-cases a lowercase raw ServiceNow value, so it never double-converts; the BFFs
 and webapps compare it case-insensitively against the same UPPER_SNAKE set.
 `approval_stage.raw_status` is the raw ServiceNow `approval` passthrough and stays
-lowercase. The one column this service did add to the sync-owned `approval_stage`
-(`checkpoint_label`, migration 0179: the stage's name, NULL on a synced stage, which
-then falls back to the stage's position) predates this rule; it is kept as it stands
-until the ServiceNow table that defines approval stages / checkpoints is reconciled
-with it, and nothing further is added.
+lowercase.
 
 ### Approval flow by change type (current behaviour)
 
@@ -2997,6 +2997,16 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     project 401; each customer reads and answers their own. Integration tests that use
     `CHANGE_REQUEST_TEST_DSN` still connect as `postgres` (a superuser), so they see the
     superuser behaviour.
+  * **Local fixtures are dev-only, and the sync owns the schema.** Files under
+    `scripts/csm-compose/fixtures/` are named for the migration they follow and run straight
+    after it (recorded as `fixture:<version>` in the stack's own `schema_migrations`; safe to
+    re-run). They load rows ServiceNow would supply (`0031_project_type_table.sql`, the
+    `0121_timezone_table.sql` stand-in time zones) or converge an OLD local volume to the
+    sync's table (`0136_change_request_deployment_table.sql`: a volume built before the sync's
+    0136 was mirrored has that junction without its `id`, and the sync's `CREATE TABLE IF NOT
+    EXISTS` leaves it so). They are not migrations and nothing outside the compose stack runs
+    them; they never declare a table, column or type for the repo, because csm-sync-service's
+    ServiceNow schema is the authority and `entity-service/migrations/` only mirrors it.
   * **Traps** (both from `seed-team-schedule.sql`): never grant the `internal`
     role to a customer (`recompute_user_type()` checks internal before external,
     so that customer becomes INTERNAL and gets unrestricted scope), and the
