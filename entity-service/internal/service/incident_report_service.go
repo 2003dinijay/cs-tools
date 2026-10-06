@@ -407,21 +407,24 @@ const (
 // postResolutionTasks runs the flow's blocks 1-14 for an incident that has
 // just changed to Resolved. src is the incident as it is now, which is what
 // the flow's {{Updated_1.current}} pills read.
+//
+// The flow's trigger admits only Choreo and Asgardeo incidents. The alert
+// tasks keep that limit; the workaround problem deliberately does not -- an
+// incident on any service resolved with a workaround gets one (a portal
+// decision, not ServiceNow's behaviour).
 func postResolutionTasks(ctx context.Context, tx repository.IncidentReportTx, src repository.IncidentReportSource) error {
 	service := strOrEmpty(src.ServiceID)
-	if service != postResolutionServiceChoreo && service != postResolutionServiceAsgardeo {
-		return nil
-	}
-	slog.InfoContext(ctx, "Incident # - "+src.Number+" - is resolved", "incidentId", src.IncidentID)
-
 	code := strOrEmpty(src.ResolutionCode)
-	for _, t := range alertTasksFor(src, code) {
-		id, number, err := tx.CreateIncidentTask(ctx, t)
-		if err != nil {
-			return err
+	if service == postResolutionServiceChoreo || service == postResolutionServiceAsgardeo {
+		slog.InfoContext(ctx, "Incident # - "+src.Number+" - is resolved", "incidentId", src.IncidentID)
+		for _, t := range alertTasksFor(src, code) {
+			id, number, err := tx.CreateIncidentTask(ctx, t)
+			if err != nil {
+				return err
+			}
+			slog.InfoContext(ctx, "postresolution: created alert task",
+				"incidentId", src.IncidentID, "taskId", id, "taskNumber", number)
 		}
-		slog.InfoContext(ctx, "postresolution: created alert task",
-			"incidentId", src.IncidentID, "taskId", id, "taskNumber", number)
 	}
 
 	if code == "SOLVED_WORK_AROUND" && strOrEmpty(src.ProblemID) == "" {
@@ -467,10 +470,11 @@ func alertTasksFor(src repository.IncidentReportSource, code string) []repositor
 }
 
 // problemFor is blocks 9 and 11-14: service, impact and urgency copied from
-// the incident, the incident linked, and the group chosen by which of the two
-// services the incident is on. The flow's If compares a transform of the
-// incident to CHOREO / ASGARDEO; the trigger admits only those two services,
-// so the service decides it.
+// the incident, the incident linked, and the group chosen by service. The
+// flow's If compares a transform of the incident to CHOREO / ASGARDEO: Choreo
+// gets Choreo Special Ops, Asgardeo Asgardeo Operations Team. Any other
+// service (which the flow's trigger never admits) gets the incident's own
+// assignment group, none if it has none.
 //
 // The flow also copies the incident's priority, but ServiceNow's "Priority
 // Problem Lookup" runs on the insert and overwrites it from impact x urgency
@@ -478,9 +482,12 @@ func alertTasksFor(src repository.IncidentReportSource, code string) []repositor
 // too, which also covers an incident whose own priority is missing. An
 // absent impact or urgency is ServiceNow's problem default, 3 - Low.
 func problemFor(src repository.IncidentReportSource) repository.NewIncidentProblem {
-	group := groupAsgardeoOperationsTeam
-	if strOrEmpty(src.ServiceID) == postResolutionServiceChoreo {
-		group = groupChoreoSpecialOps
+	group := src.AssignmentGroupID
+	switch strOrEmpty(src.ServiceID) {
+	case postResolutionServiceChoreo:
+		group = strPtr(groupChoreoSpecialOps)
+	case postResolutionServiceAsgardeo:
+		group = strPtr(groupAsgardeoOperationsTeam)
 	}
 	impact, urgency := strOrDefault(src.Impact, "LOW"), strOrDefault(src.Urgency, "LOW")
 	priority := priorityFromImpactUrgency(impact, urgency)
@@ -491,7 +498,7 @@ func problemFor(src repository.IncidentReportSource) repository.NewIncidentProbl
 		Priority:          &priority,
 		Impact:            &impact,
 		Urgency:           &urgency,
-		AssignmentGroupID: &group,
+		AssignmentGroupID: group,
 		CreatedBy:         incidentReportActor,
 	}
 }
