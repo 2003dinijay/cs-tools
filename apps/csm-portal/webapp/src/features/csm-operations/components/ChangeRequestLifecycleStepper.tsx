@@ -31,6 +31,13 @@ const NODE_SIZE = 22;
 /** How faint a stage's MARKER reads when it is not part of this change's path (the customer portal's disabled stage is 0.5). */
 const MUTED_OPACITY = 0.45;
 /**
+ * How strong an upcoming stage's ring reads: less than a done or current marker
+ * (they are filled) and clearly more than a not-taken one. At full strength the
+ * secondary text colour is 9:1 against the page, heavier than a to-do ring needs;
+ * at this it stays above the 3:1 a state-conveying graphic needs on both themes.
+ */
+const PENDING_OPACITY = 0.7;
+/**
  * How faint such a stage's LABEL reads. Much less than its marker: the label is
  * text, and the secondary text colour dimmed to the marker's level (or 0.6, as
  * it was) falls below the 4.5:1 text contrast on the light theme's page
@@ -116,7 +123,7 @@ function StepNode({ stage, status }: { stage: string; status: ChangeRequestLifec
           flexShrink: 0,
           boxSizing: "border-box",
           transition: "background-color 0.15s, border-color 0.15s",
-          opacity: faint ? MUTED_OPACITY : 1,
+          opacity: faint ? MUTED_OPACITY : status === "pending" ? PENDING_OPACITY : 1,
           ...(status === "done"
             ? { bgcolor: "success.main", color: "success.contrastText" }
             : status === "current"
@@ -127,9 +134,9 @@ function StepNode({ stage, status }: { stage: string; status: ChangeRequestLifec
                     bgcolor: "transparent",
                     border: "2px",
                     borderStyle: status === "not-taken" ? "dashed" : "solid",
-                    // Text-secondary, not the divider colour: an upcoming stage's ring
-                    // (a state-conveying graphic) needs 3:1 against the page, and it
-                    // must stay clearer than a not-taken one, which is dimmed above.
+                    // Text-secondary, not the divider colour (1.2:1): an upcoming stage's
+                    // ring is a state-conveying graphic and needs 3:1 against the page,
+                    // and it must stay clearer than a not-taken one (dimmed above).
                     borderColor: "text.secondary",
                     color: "text.secondary",
                   }),
@@ -211,19 +218,20 @@ type Tone = "info" | "error";
  * and MUI hands the real theme over at call time.
  */
 type ColorSchemeAwareTheme = {
-  palette: Record<Tone, { main: string; dark: string }>;
+  palette: Record<Tone, { main: string; dark: string; light: string }>;
   applyStyles: (scheme: "dark" | "light", styles: Record<string, unknown>) => Record<string, unknown>;
 };
 
 /**
- * A tone's text colour: the dark shade on the light theme (the main shade is
- * below 4.5:1 on its page backdrop at caption size) and the main shade on the
- * dark one (where it is the legible one).
+ * A tone's text colour: the dark shade on the light theme and the light shade
+ * on the dark one. The main shade is below 4.5:1 at caption size on both (about
+ * 3.3:1 on the light page backdrop, 3.8 to 4.1:1 for the error red on the dark
+ * one).
  */
 function toneText(tone: Tone): (theme: ColorSchemeAwareTheme) => Record<string, unknown> {
   return (theme) => ({
     color: theme.palette[tone].dark,
-    ...theme.applyStyles("dark", { color: theme.palette[tone].main }),
+    ...theme.applyStyles("dark", { color: theme.palette[tone].light }),
   });
 }
 
