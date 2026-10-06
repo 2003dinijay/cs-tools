@@ -260,36 +260,6 @@ namespace to run the whole service; there is no local-broker mode.
 
 ## Testing the incident call escalation
 
-The escalation ladder is the one flow you really want to hear before trusting
-it, and `cmd/escalation-local` exists so you can, without Event Hub. It runs
-the **real engine** (`escalation.Engine.Handle` and `.Tick`) against a real
-Redis, fed the same event envelopes Event Hub would deliver, on a compressed
-clock — one ladder minute per second by default, so a 113-minute P4 ladder
-takes under two minutes.
-
-Dry runs are not stubbed at the client boundary: the real
-`notifications.TwilioClient` is pointed at a local HTTP server through its own
-`APIBaseURL` override, so the TwiML — the SSML document especially — is built
-by production code and printed exactly as Twilio would receive it.
-
-You can also run the ladder over Google Chat instead of Twilio, which needs no
-telephony account at all - `-channel chat` posts one card per rung to the space
-`GOOGLE_CHAT_SPACES` configures, and `-channel both` does each.
-
-```bash
-docker run --rm -p 6379:6379 redis          # the ladder's durable state
-
-# 1. dry run: nothing is dialled, the TwiML is printed
-go run ./cmd/escalation-local -priority CRITICAL
-
-# 2. see a ladder stop the way section 3.0 says an elevation is acknowledged
-go run ./cmd/escalation-local -kind elevated -priority P0 -cancel-after 6s
-
-# 3. hear it, on one number you control
-go run ./cmd/escalation-local -priority P0 -live -to +9477xxxxxxx -ssml \
-    -cancel-after 10s
-```
-
 ### Testing a ladder against the local Team Schedule
 
 `scripts/csm-compose/trigger-sre-escalation.sh` runs the real engine against the
@@ -316,30 +286,6 @@ the repo's gateway shim in front of entity-service for the run, because
 entity-service reads the caller from `x-jwt-assertion`, which only the Choreo
 gateway adds. The local seed rosters SRE engineers on L1 and L2 only, so L3
 reports NO_RECIPIENTS. `-h` lists every option.
-
-A ladder outlives the process that started it, so an interrupted run can leave
-one in Redis that the next run resumes and keeps dialling. The tool retires its
-own on exit, but `go run` does not forward signals to the child it spawns, so an
-interrupted `go run` can still orphan one. `-cleanup` retires anything left
-behind — worth running before any `--live` session:
-
-```bash
-go run ./cmd/escalation-local -cleanup
-```
-
-`--live` needs `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_FROM_NUMBER` in
-`.env`, refuses to run without an explicit `--to` (so it can never page whoever
-a real roster points at), and refuses to start at all if the plan is larger than
-`--max-calls`. Useful flags: `-shift` and `-not-abt` to exercise the section 5.0
-routing rules (`USA_WEEKEND` with and without `-not-abt` is R10 vs R12),
-`-cancel-by status|comment` for either acknowledgement gesture, and `-minute` to
-change the compression.
-
-**`cmd/ladder-harness` is a different tool**: it builds a plan and places the
-calls itself, with no engine, no durable state and no events — it answers "what
-does the ladder sound like". `cmd/escalation-local` answers "does the engine
-actually do it", including the parts only the engine has: idempotency under
-redelivery, resumption from Redis, and cancellation driven by a real event.
 
 ### Running the full service against it
 

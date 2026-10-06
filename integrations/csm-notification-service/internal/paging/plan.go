@@ -432,8 +432,7 @@ func (t Trigger) VoiceSpeech() notifications.Speech {
 // placed is parallel to Plan.Calls and says which calls were actually dialled.
 // Pass it whenever it is known — the engine always knows — and the summary
 // reports only those. Passing nil falls back to "everything scheduled before
-// cancelledAt", which is all a caller without an engine (cmd/ladder-harness)
-// can say.
+// cancelledAt", which is all a caller without an engine can say.
 //
 // The distinction is not cosmetic. A cancellation and a call due at the same
 // instant race, and the cancellation wins: the wake entries are dropped before
