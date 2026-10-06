@@ -61,8 +61,12 @@ connect_base_delay = "2s"
 connect_timeout = "10s"
 # Connections kept open per replica, so a webhook after a quiet spell doesn't wait on a new TLS connection.
 min_conns = 2
-# Budget for one integration_users credential check, including the wait for a pooled connection.
+# Time limit for one integration_users refresh query.
 auth_timeout = "5s"
+# Credentials are checked against an in-memory copy of integration_users reloaded this often; user changes apply within it.
+auth_refresh_interval = "30s"
+# While refreshes fail, the last good copy keeps serving this long; after that, auth answers 503.
+auth_max_stale = "15m"
 
 [wake]
 # Timeout for the fire-and-forget POST /alertz to alerts-core.

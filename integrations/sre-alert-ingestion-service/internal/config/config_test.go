@@ -85,7 +85,8 @@ func TestLoad_RejectsInvalidValues(t *testing.T) {
 		"zero flush interval":  "[payloads]\nflush_interval = \"0s\"\n",
 		"zero flush timeout":   "[payloads]\nflush_timeout = \"0s\"\n",
 		"payload buffer small": "[payloads]\nmax_buffer_bytes = 1048576\n",
-		"auth near write":      "[postgres]\nauth_timeout = \"20s\"\n",
+		"zero auth refresh":    "[postgres]\nauth_refresh_interval = \"0s\"\n",
+		"stale under refresh":  "[postgres]\nauth_max_stale = \"30s\"\n",
 	}
 	for name, body := range cases {
 		t.Run(name, func(t *testing.T) {

@@ -2,6 +2,8 @@
 
 `internal/auth` provides PBKDF2-hashed (10000 iterations, random salt) service-account credentials backed by the `integration_users` PostgreSQL table, plus an `auth.RequireAuth` middleware. `cmd/server` wraps `POST /alertz` with `auth.RequireAuth`, so every wake request needs an `integration_users` credential; provision one here and set it on sre-alert-ingestion-service as `ALERT_CORE_WAKE_USERNAME` / `ALERT_CORE_WAKE_SECRET`, otherwise each wake gets a 401 and alerts are only picked up by the `poll.interval` backstop.
 
+Neither service queries `integration_users` per request. Each keeps an in-memory copy and reloads it every `postgres.auth_refresh_interval` (30s by default), so a user you create, disable, enable or rotate here takes effect within that interval. If reloads keep failing, the last good copy is used for up to `postgres.auth_max_stale` (15m), after which requests get 503 until a reload succeeds.
+
 Secrets are never stored in plaintext; only the PBKDF2 hash and salt live in PostgreSQL. Each row also tracks who provisioned it, when it was last modified, when its secret was last rotated, and an optional expiry, so accounts behave closer to real identity records rather than a bare credential pair. There's no admin API or startup seeding, so accounts are managed one at a time with `cmd/user`, run against the same PostgreSQL database and `PG*` env vars the server itself uses.
 
 ## cmd/user
@@ -54,7 +56,7 @@ Prefer reading the value from a file or env var (e.g. `-secret "$(cat secret.txt
 
 ## Rotating a secret
 
-Re-running `create` for the same `-username` overwrites that row (upsert), but preserves its identity: `id`, `created_at`, and `created_by` stay exactly as they were (`created_by` only changes if you explicitly pass `-created-by` again), and any existing expiry is preserved unless you pass `-ttl` or `-clear-expiry`. Only `secret_hash`, `salt`, `secret_rotated_at`, and `updated_at` change. To rotate: generate or pick a new secret, re-run the command, then update the caller's stored credential to match. The old secret stops working the moment the row is overwritten, so update the caller first if a brief outage during rotation isn't acceptable.
+Re-running `create` for the same `-username` overwrites that row (upsert), but preserves its identity: `id`, `created_at`, and `created_by` stay exactly as they were (`created_by` only changes if you explicitly pass `-created-by` again), and any existing expiry is preserved unless you pass `-ttl` or `-clear-expiry`. Only `secret_hash`, `salt`, `secret_rotated_at`, and `updated_at` change. To rotate: generate or pick a new secret, re-run the command, then update the caller's stored credential to match. Both services pick the new secret up at their next reload (within `postgres.auth_refresh_interval`, 30s). Until then the old secret still works and the new one doesn't, so update the caller about 30s after rotating, and expect a few 401s if it switches earlier.
 
 ## Listing users
 
@@ -95,7 +97,7 @@ go run ./cmd/user disable -username webhook-integration-user
 go run ./cmd/user enable -username webhook-integration-user
 ```
 
-`auth.RequireAuth` rejects any request for a disabled user with a generic 401. Disabling keeps the row (and its hash) intact, so re-enabling doesn't require issuing a new secret. `updated_at` is bumped either way.
+`auth.RequireAuth` rejects any request for a disabled user with a generic 401, from the next reload of `integration_users` (within 30s). Disabling keeps the row (and its hash) intact, so re-enabling doesn't require issuing a new secret. `updated_at` is bumped either way.
 
 ## Authenticating
 

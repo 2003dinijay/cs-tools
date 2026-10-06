@@ -114,8 +114,9 @@ confirmation being stored.
 - `internal/postgres`: connection setup (`pgxpool`) and schema migration.
 - `internal/config`: loads and validates `config.toml`.
 - `internal/auth`: PBKDF2 hashing/verification, the `integration_users`
-  repository, and the `RequireAuth` middleware guarding `/alertz` (verified
-  credentials are cached for 60s).
+  repository, and the `RequireAuth` middleware guarding `/alertz`. Credentials are
+  checked against an in-memory copy of `integration_users` reloaded every
+  `postgres.auth_refresh_interval` (30s), so `/alertz` never waits on Postgres.
 - `cmd/server`: wires everything together and manages startup/shutdown.
 - `cmd/user`: CLI to create/rotate, list, enable, and disable `integration_users` rows.
 

@@ -26,6 +26,8 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"io"
+	"log/slog"
 	"math/rand"
 	"net/http/httptest"
 	"sync"
@@ -73,7 +75,17 @@ func TestAuthenticate_ConcurrentBurstOnSmallPool(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	authn := NewIntegrationUsers(pool, 2*time.Second, time.Minute)
+	// A row with NULL fields must be skipped on its own, not fail the whole load.
+	if _, err := pool.Exec(ctx, `INSERT INTO integration_users (username, secret_hash, salt, iterations, enabled) VALUES ('broken', NULL, NULL, 10000, true)`); err != nil {
+		t.Fatal(err)
+	}
+
+	authn := NewIntegrationUsers(pool, slog.New(slog.NewTextHandler(io.Discard, nil)), UsersConfig{
+		QueryTimeout: 2 * time.Second, RefreshInterval: 30 * time.Second, MaxStale: 15 * time.Minute, CacheTTL: time.Minute,
+	})
+	if err := authn.Refresh(ctx); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
 	request := func(user, secret string) error {
 		r := httptest.NewRequest("POST", "/elasticsearch", nil)
 		r.SetBasicAuth(user, secret)

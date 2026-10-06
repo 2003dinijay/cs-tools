@@ -85,8 +85,12 @@ type PostgresConfig struct {
 	ConnectTimeout     Duration `toml:"connect_timeout"`
 	// MinConns keeps this many connections open so a webhook after a quiet spell doesn't pay for a new TLS connection.
 	MinConns int `toml:"min_conns"`
-	// AuthTimeout bounds one integration_users check, including waiting for a pooled connection.
+	// AuthTimeout bounds one integration_users refresh query.
 	AuthTimeout Duration `toml:"auth_timeout"`
+	// AuthRefreshInterval is how often the in-memory copy of integration_users is reloaded.
+	AuthRefreshInterval Duration `toml:"auth_refresh_interval"`
+	// AuthMaxStale is how long the last good copy serves while refreshes fail, before auth answers 503.
+	AuthMaxStale Duration `toml:"auth_max_stale"`
 }
 
 // WakeConfig bounds the fire-and-forget POST /alertz to alerts-core.
@@ -158,11 +162,13 @@ func Defaults() Config {
 			WriteDeadline:   Duration(8 * time.Second),
 		},
 		Postgres: PostgresConfig{
-			ConnectMaxAttempts: 5,
-			ConnectBaseDelay:   Duration(2 * time.Second),
-			ConnectTimeout:     Duration(10 * time.Second),
-			MinConns:           2,
-			AuthTimeout:        Duration(5 * time.Second),
+			ConnectMaxAttempts:  5,
+			ConnectBaseDelay:    Duration(2 * time.Second),
+			ConnectTimeout:      Duration(10 * time.Second),
+			MinConns:            2,
+			AuthTimeout:         Duration(5 * time.Second),
+			AuthRefreshInterval: Duration(30 * time.Second),
+			AuthMaxStale:        Duration(15 * time.Minute),
 		},
 		Wake:   WakeConfig{Timeout: Duration(2 * time.Second)},
 		Reject: RejectConfig{BodyPreviewChars: 500},
@@ -254,8 +260,10 @@ func (c Config) Validate() error {
 		return fmt.Errorf("postgres.min_conns must not be negative")
 	case c.Postgres.AuthTimeout <= 0:
 		return fmt.Errorf("postgres.auth_timeout must be positive")
-	case c.Postgres.AuthTimeout+c.Server.RequestWait+WriteMargin > c.Server.WriteTimeout:
-		return fmt.Errorf("postgres.auth_timeout + server.request_wait must be at least %v below server.write_timeout", WriteMargin.Duration())
+	case c.Postgres.AuthRefreshInterval <= 0:
+		return fmt.Errorf("postgres.auth_refresh_interval must be positive")
+	case c.Postgres.AuthMaxStale <= c.Postgres.AuthRefreshInterval:
+		return fmt.Errorf("postgres.auth_max_stale must exceed postgres.auth_refresh_interval, or one slow refresh would fail every request")
 	case c.Wake.Timeout <= 0:
 		return fmt.Errorf("wake.timeout must be positive")
 	case c.Reject.BodyPreviewChars <= 0:

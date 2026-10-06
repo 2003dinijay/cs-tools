@@ -92,14 +92,28 @@ func main() {
 	}
 	// After the pool: AUTH_ENABLED checks webhooks against alerts-core's integration_users.
 	var authn auth.Authenticator = auth.None{}
+	if envCfg.AuthEnabled {
+		users := auth.NewIntegrationUsers(pool, base.With("component", "auth"), auth.UsersConfig{
+			QueryTimeout:    cfg.Postgres.AuthTimeout.Duration(),
+			RefreshInterval: cfg.Postgres.AuthRefreshInterval.Duration(),
+			MaxStale:        cfg.Postgres.AuthMaxStale.Duration(),
+			CacheTTL:        authCacheTTL,
+		})
+		// A failed first load isn't fatal: requests answer 503 until Run's next refresh succeeds.
+		if err := users.Refresh(context.Background()); err != nil {
+			logger.Error("integration_users not loaded; webhooks get 503 until a refresh succeeds", "error", err)
+		}
+		usersCtx, stopUsers := context.WithCancel(context.Background())
+		defer stopUsers()
+		go users.Run(usersCtx)
+		authn = users
+	}
 	switch {
 	case envCfg.AuthEnabled && envCfg.AuthAuditOnly:
-		authn = auth.NewAudit(auth.NewIntegrationUsers(pool, cfg.Postgres.AuthTimeout.Duration(), authCacheTTL),
-			base.With("component", "auth"))
+		authn = auth.NewAudit(authn, base.With("component", "auth"))
 		logger.Warn("AUTH_AUDIT_ONLY is set: credentials are checked but nothing is rejected")
 	case envCfg.AuthEnabled:
-		authn = auth.NewIntegrationUsers(pool, cfg.Postgres.AuthTimeout.Duration(), authCacheTTL)
-		logger.Info("auth enabled: source webhooks are checked against integration_users")
+		logger.Info("auth enabled: source webhooks are checked against an in-memory copy of integration_users")
 	default:
 		logger.Warn("AUTH_ENABLED is not true: source routes are unauthenticated")
 		if envCfg.AuthAuditOnly {

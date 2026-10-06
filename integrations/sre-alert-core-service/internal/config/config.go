@@ -72,6 +72,10 @@ type PostgresConfig struct {
 	ConnectBaseDelay   Duration `toml:"connect_base_delay"`
 	ConnectTimeout     Duration `toml:"connect_timeout"`
 	QueryTimeout       Duration `toml:"query_timeout"`
+	// AuthRefreshInterval is how often the in-memory copy of integration_users behind /alertz is reloaded.
+	AuthRefreshInterval Duration `toml:"auth_refresh_interval"`
+	// AuthMaxStale is how long the last good copy serves while refreshes fail, before /alertz answers 503.
+	AuthMaxStale Duration `toml:"auth_max_stale"`
 }
 
 // NotifyConfig tunes retry attempts, backoff delay, and per-call timeout for outbound CSM and Chat webhook requests.
@@ -134,10 +138,12 @@ func defaults() Config {
 			ClaimTTL:    Duration(2 * time.Minute),
 		},
 		Postgres: PostgresConfig{
-			ConnectMaxAttempts: 5,
-			ConnectBaseDelay:   Duration(2 * time.Second),
-			ConnectTimeout:     Duration(10 * time.Second),
-			QueryTimeout:       Duration(5 * time.Second),
+			ConnectMaxAttempts:  5,
+			ConnectBaseDelay:    Duration(2 * time.Second),
+			ConnectTimeout:      Duration(10 * time.Second),
+			QueryTimeout:        Duration(5 * time.Second),
+			AuthRefreshInterval: Duration(30 * time.Second),
+			AuthMaxStale:        Duration(15 * time.Minute),
 		},
 		Notify: NotifyConfig{
 			MaxAttempts:          3,
@@ -208,6 +214,10 @@ func (c Config) validate() error {
 		return fmt.Errorf("postgres.connect_timeout must be positive")
 	case c.Postgres.QueryTimeout <= 0:
 		return fmt.Errorf("postgres.query_timeout must be positive")
+	case c.Postgres.AuthRefreshInterval <= 0:
+		return fmt.Errorf("postgres.auth_refresh_interval must be positive")
+	case c.Postgres.AuthMaxStale <= c.Postgres.AuthRefreshInterval:
+		return fmt.Errorf("postgres.auth_max_stale must exceed postgres.auth_refresh_interval")
 	case c.Notify.MaxAttempts <= 0:
 		return fmt.Errorf("notify.max_attempts must be positive")
 	case c.Notify.RetryBaseDelay <= 0:

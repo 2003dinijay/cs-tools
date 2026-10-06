@@ -178,9 +178,17 @@ func main() {
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	// alert-ingestion authenticates against the same integration_users store its own webhooks use.
-	userRepo := auth.NewUserRepo(pool)
-	mux.Handle("/alertz", auth.RequireAuth(userRepo, base.With("component", "auth"))(http.HandlerFunc(h.ServeAlert)))
+	// alert-ingestion authenticates against the same integration_users store its own webhooks use, held in memory so /alertz never waits on Postgres.
+	users := auth.NewDirectory(auth.NewUserRepo(pool), base.With("component", "auth"), auth.DirectoryConfig{
+		QueryTimeout:    depCfg.Postgres.QueryTimeout.Duration(),
+		RefreshInterval: depCfg.Postgres.AuthRefreshInterval.Duration(),
+		MaxStale:        depCfg.Postgres.AuthMaxStale.Duration(),
+	})
+	if err := users.Refresh(context.Background()); err != nil {
+		logger.Error("integration_users not loaded; /alertz answers 503 until a refresh succeeds", "error", err)
+	}
+	go users.Run(pollCtx)
+	mux.Handle("/alertz", auth.RequireAuth(users, base.With("component", "auth"))(http.HandlerFunc(h.ServeAlert)))
 
 	port := os.Getenv("PORT")
 	if port == "" {
