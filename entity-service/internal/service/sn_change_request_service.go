@@ -1500,7 +1500,7 @@ func mapSNChangeRequestDetailToView(cr snChangeRequestDetail) domain.ChangeReque
 		HasCustomerApproved:     cr.HasCustomerApproved,
 		HasCustomerReviewed:     cr.HasCustomerReviewed,
 		ApprovedOn:              cr.ApprovedOn,
-		LegalNextStates:         withoutManualScheduled(cr.LegalNextStates, view.State),
+		LegalNextStates:         withoutCustomerOutcomeStates(cr.LegalNextStates, view.State),
 
 		// Field-parity additions.
 		ImplementationPlan:           cr.ImplementationPlan,
@@ -1559,23 +1559,31 @@ func mapSNChangeRequestDetailToView(cr snChangeRequestDetail) domain.ChangeReque
 	return result
 }
 
-// withoutManualScheduled drops "scheduled" from the next states ServiceNow
-// offers. There is no manual "Schedule" action in the CSM flow: a change
-// becomes Scheduled when its CAB (or, for Emergency, ECAB) approval is granted,
-// so the portal must never be handed it as something to click -- the same rule
-// the PostgreSQL data source applies (legalChangeRequestNextStates). The one
-// exception is a change sitting in Customer Approval, where "scheduled" is the
-// action that records the customer's approval (also as on PostgreSQL).
-func withoutManualScheduled(states []string, state *string) []string {
+// withoutCustomerOutcomeStates drops the two next states that only the CUSTOMER
+// can reach from the next states ServiceNow offers, so that this data source's
+// legalNextStates answer is the one the PostgreSQL data source gives
+// (repository.changeRequestForwardNextStates): "scheduled" is never offered,
+// from any state -- there is no Schedule action, a change becomes Scheduled when
+// its CAB (or, for Emergency, ECAB) approval is granted or, out of Customer
+// Approval, when the customer approves -- and "closed" is never offered from
+// Customer Review, which only the customer's own review closes. No staff action
+// records the customer's approval or review on their behalf (a compliance rule:
+// ServiceNow's record of it is audited), so the portal must never be handed
+// either as something to click. Rollback (the failed-review off-ramp
+// ServiceNow offers from Review and Customer Review) and Cancel are never
+// stripped; "closed" from Review stays. This filters OUR response only: what
+// ServiceNow itself returns is unchanged.
+func withoutCustomerOutcomeStates(states []string, state *string) []string {
 	if states == nil {
 		return nil
 	}
-	if state != nil && strings.EqualFold(*state, string(domain.ChangeRequestStateCustomerApproval)) {
-		return states
-	}
+	fromCustomerReview := state != nil && strings.EqualFold(*state, string(domain.ChangeRequestStateCustomerReview))
 	out := make([]string, 0, len(states))
 	for _, st := range states {
 		if strings.EqualFold(st, string(domain.ChangeRequestStateScheduled)) {
+			continue
+		}
+		if fromCustomerReview && strings.EqualFold(st, string(domain.ChangeRequestStateClosed)) {
 			continue
 		}
 		out = append(out, st)

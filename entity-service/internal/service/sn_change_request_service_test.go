@@ -622,33 +622,47 @@ func TestSNChangeRequestService_CreateChangeRequest_RequiresType(t *testing.T) {
 	}
 }
 
-// TestWithoutManualScheduled: ServiceNow's own offered next states never reach
-// the portal with "scheduled" in them -- Scheduled is reached by CAB/ECAB
-// approval, there is no Schedule action -- except from Customer Approval, where
-// "scheduled" is the action that records the customer's approval.
-func TestWithoutManualScheduled(t *testing.T) {
+// TestWithoutCustomerOutcomeStates: ServiceNow's own offered next states never
+// reach the portal with the two states only the CUSTOMER can reach in them --
+// "scheduled" (from any state, Customer Approval included: the customer's own
+// approval schedules the change) and "closed" out of Customer Review (only the
+// customer's own review closes it) -- so this data source's legalNextStates
+// agrees with the PostgreSQL one. "closed" from Review, Rollback and Cancel stay.
+func TestWithoutCustomerOutcomeStates(t *testing.T) {
 	str := func(s string) *string { return &s }
-	got := withoutManualScheduled([]string{"scheduled", "implement", "Scheduled", "canceled"}, str("assess"))
+	got := withoutCustomerOutcomeStates([]string{"scheduled", "implement", "Scheduled", "canceled"}, str("assess"))
 	if strings.Join(got, ",") != "implement,canceled" {
-		t.Fatalf("withoutManualScheduled = %v, want [implement canceled]", got)
+		t.Fatalf("withoutCustomerOutcomeStates = %v, want [implement canceled]", got)
 	}
-	if withoutManualScheduled(nil, nil) != nil {
+	if withoutCustomerOutcomeStates(nil, nil) != nil {
 		t.Fatal("nil must stay nil")
 	}
-	if got := withoutManualScheduled([]string{"scheduled", "canceled"}, nil); strings.Join(got, ",") != "canceled" {
-		t.Fatalf("withoutManualScheduled with unknown state = %v, want [canceled]", got)
+	if got := withoutCustomerOutcomeStates([]string{"scheduled", "canceled"}, nil); strings.Join(got, ",") != "canceled" {
+		t.Fatalf("withoutCustomerOutcomeStates with unknown state = %v, want [canceled]", got)
 	}
-	// Rollback (the failed-review off-ramp ServiceNow offers from Review and
-	// Customer Review) is never stripped.
-	for _, st := range []string{"review", "customer_review"} {
-		got = withoutManualScheduled([]string{"closed", "rollback", "canceled"}, str(st))
-		if strings.Join(got, ",") != "closed,rollback,canceled" {
-			t.Fatalf("withoutManualScheduled from %s = %v, want [closed rollback canceled]", st, got)
+	// Review keeps Closed and Rollback (the failed-review off-ramp).
+	got = withoutCustomerOutcomeStates([]string{"closed", "rollback", "canceled"}, str("review"))
+	if strings.Join(got, ",") != "closed,rollback,canceled" {
+		t.Fatalf("withoutCustomerOutcomeStates from review = %v, want [closed rollback canceled]", got)
+	}
+	// Customer Review: only the customer's review closes the change, so Closed
+	// goes (in any case), Rollback and Cancel stay.
+	for _, st := range []string{"customer_review", "Customer_Review"} {
+		got = withoutCustomerOutcomeStates([]string{"closed", "Closed", "rollback", "canceled"}, str(st))
+		if strings.Join(got, ",") != "rollback,canceled" {
+			t.Fatalf("withoutCustomerOutcomeStates from %s = %v, want [rollback canceled]", st, got)
 		}
 	}
-	got = withoutManualScheduled([]string{"scheduled", "canceled"}, str("customer_approval"))
-	if strings.Join(got, ",") != "scheduled,canceled" {
-		t.Fatalf("withoutManualScheduled from customer_approval = %v, want [scheduled canceled] (records the customer's approval)", got)
+	// Customer Approval: the customer's own approval schedules the change, so
+	// "scheduled" goes here as well (it used to stay: it was a staff action),
+	// Re-schedule (authorize) and Cancel stay.
+	got = withoutCustomerOutcomeStates([]string{"scheduled", "authorize", "canceled"}, str("customer_approval"))
+	if strings.Join(got, ",") != "authorize,canceled" {
+		t.Fatalf("withoutCustomerOutcomeStates from customer_approval = %v, want [authorize canceled]", got)
+	}
+	// An empty (non-nil) answer stays empty, not nil.
+	if got := withoutCustomerOutcomeStates([]string{"scheduled"}, str("customer_approval")); got == nil || len(got) != 0 {
+		t.Fatalf("withoutCustomerOutcomeStates([scheduled]) = %#v, want an empty non-nil slice", got)
 	}
 }
 
