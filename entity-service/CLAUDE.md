@@ -4547,7 +4547,12 @@ every work_item type comes from `next_portal_work_item_number()`
 (`'CS-PORTAL-' || a zero-padded sequence value`, `portal_work_item_number_seq`)
 -- a visually distinct prefix rules out any collision with ServiceNow's own
 still-running `CS` + 7-digit sync, the same reasoning migrations `0113`/`0115`
-already used for GitHub-sourced records (`CHG-GH-...`/`SR-GH-...`). `wso2_id`
+already used for GitHub-sourced records (`CHG-GH-...`/`SR-GH-...`).
+**Exception: `INCIDENT_TASK`** (migration `0201`) takes ServiceNow's format
+from 0180's TASK series, `next_work_item_number('INCIDENT_TASK')`, started at
+`TASK1000000` -- far above ServiceNow's range (TASK0084630 on staging,
+2026-10-07), as outages did with `OUT0010000`. The cutover seed script only
+moves sequences forward, so it is unaffected. `wso2_id`
 (required, by `work_item_wso2_id_required_by_type`, only for the five
 case-like types -- CASE/SERVICE_REQUEST/ENGAGEMENT/SECURITY_REPORT_ANALYSIS/
 ANNOUNCEMENT) comes from `next_portal_wso2_id(project_id)`
@@ -5017,7 +5022,7 @@ Postgres only -- no ServiceNow call, in dual-write mode too.
 `incident_handoff_service.go` ports `IncidentHandoffUtils.handOff` (the
 "Escalate to Special Ops" UI action): eligibility as 409s, and one
 transaction that moves `work_item.assignment_group_id`, clears the assignee,
-opens a portal-numbered `[Runbook Task]` (in the same Special Ops group --
+opens a TASK-numbered `[Runbook Task]` (in the same Special Ops group --
 WSO2 SRE Team no longer exists) and writes the reason JSON as a work note.
 Routing is configuration, not code or tables: `SPECIALIST_HANDOFF_CONFIG`
 (one line of JSON, `specialist_handoff_config.go`, validated at startup --
