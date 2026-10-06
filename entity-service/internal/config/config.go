@@ -85,8 +85,25 @@ type Config struct {
 	// "public" half of that fallback matters: entity-service's migrations
 	// create every table unqualified, so every deployment's real tables
 	// live there today.
-	DBSchema   string
-	ServerPort string
+	DBSchema string
+	// DBPoolMaxConns/DBPoolMinConns/DBPoolMaxConnLifetime/DBPoolMaxConnIdleTime
+	// tune internal/db.NewPool's pgxpool (DB_POOL_MAX_CONNS/DB_POOL_MIN_CONNS/
+	// DB_POOL_MAX_CONN_LIFETIME/DB_POOL_MAX_CONN_IDLE_TIME). Defaults (20/2/
+	// 30m/5m) are the values this file previously hardcoded in
+	// internal/db/postgres.go — an unset deployment behaves exactly as
+	// before these existed. DBPoolMaxConns falls back to its default on an
+	// unset, non-numeric, or non-positive value (a pool that may open no
+	// connections at all can never serve a single query). DBPoolMinConns
+	// falls back the same way EXCEPT zero is accepted — pgxpool genuinely
+	// permits a minimum of 0 (a deployment that doesn't want to retain any
+	// idle connections). DBPoolMaxConnLifetime/DBPoolMaxConnIdleTime fall
+	// back to theirs the same way every other duration here does
+	// (getDurationOrDefault), via loadErr.
+	DBPoolMaxConns        int32
+	DBPoolMinConns        int32
+	DBPoolMaxConnLifetime time.Duration
+	DBPoolMaxConnIdleTime time.Duration
+	ServerPort            string
 	// HealthPort is the listen port for the separate, minimal health
 	// server (internal/server.NewHealthServer). It is deliberately NOT
 	// ServerPort: that mux carries every business route and is exposed at
@@ -547,6 +564,13 @@ func Load() *Config {
 		}
 		return d
 	}
+	intVal := func(key string, def int32, allowZero bool) int32 {
+		n, err := getInt32OrDefault(key, def, allowZero)
+		if err != nil && loadErr == nil {
+			loadErr = err
+		}
+		return n
+	}
 	cfg := &Config{
 		DBHost:                                   getEnvOrDefault("DB_HOST", "localhost"),
 		DBPort:                                   getEnvOrDefault("DB_PORT", "5432"),
@@ -556,6 +580,10 @@ func Load() *Config {
 		DBName:                                   os.Getenv("DB_NAME"),
 		DBSSLMode:                                os.Getenv("DB_SSLMODE"),
 		DBSchema:                                 os.Getenv("DB_SCHEMA"),
+		DBPoolMaxConns:                           intVal("DB_POOL_MAX_CONNS", 20, false),
+		DBPoolMinConns:                           intVal("DB_POOL_MIN_CONNS", 2, true),
+		DBPoolMaxConnLifetime:                    duration("DB_POOL_MAX_CONN_LIFETIME", 30*time.Minute),
+		DBPoolMaxConnIdleTime:                    duration("DB_POOL_MAX_CONN_IDLE_TIME", 5*time.Minute),
 		ServerPort:                               getEnvOrDefault("SERVER_PORT", "8080"),
 		HealthPort:                               getEnvOrDefault("HEALTH_PORT", "8081"),
 		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
@@ -681,6 +709,34 @@ func getDurationOrDefault(key string, defaultVal time.Duration) (time.Duration, 
 		return defaultVal, fmt.Errorf("invalid %s %q: %w", key, v, err)
 	}
 	return d, nil
+}
+
+// getInt32OrDefault parses key as a base-10 integer. An unset/empty value
+// yields defaultVal; a non-numeric one is an error (and also falls back to
+// defaultVal) -- same fail-safe-to-default posture as an unparseable
+// duration (see getDurationOrDefault) rather than passing a bad value
+// through. allowZero distinguishes DB_POOL_MIN_CONNS (pgxpool genuinely
+// accepts 0 -- a deployment that doesn't want to retain any idle
+// connections at all) from DB_POOL_MAX_CONNS (0 or negative would
+// misconfigure pgxpool outright, since a pool that may open no connections
+// at all can never serve a single query).
+func getInt32OrDefault(key string, defaultVal int32, allowZero bool) (int32, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil {
+		return defaultVal, fmt.Errorf("invalid %s %q: %w", key, v, err)
+	}
+	if n < 0 || (n == 0 && !allowZero) {
+		want := "a positive integer"
+		if allowZero {
+			want = "a non-negative integer"
+		}
+		return defaultVal, fmt.Errorf("invalid %s %q: must be %s", key, v, want)
+	}
+	return int32(n), nil
 }
 
 func getEnvOrDefault(key, defaultVal string) string {
