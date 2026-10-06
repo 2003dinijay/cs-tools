@@ -6897,7 +6897,7 @@ func TestChangeRequestFlowIntegration_RescheduleManualFallbackTwice(t *testing.T
 	}
 	f.step(id, domain.ChangeRequestStateScheduled, "SCHEDULED", "implement", "canceled")
 	if approved, _ := f.customerOutcome(id); !approved {
-		t.Fatal("manual Record customer approval did not stamp is_customer_approval_required")
+		t.Fatal("manual customer approval (the portal's Bypass customer approval) did not stamp is_customer_approval_required")
 	}
 }
 

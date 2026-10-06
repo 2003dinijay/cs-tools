@@ -2530,7 +2530,12 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   PATCH is rejected (400): Scheduled is reached only by the CAB/ECAB approval
   cascade or by Request Approval on a Standard change -- **except from
   `customer_approval`**, where the human action `scheduled` means "record the
-  customer's approval" (and `authorize` means Re-schedule, see below). The ServiceNow data source's own offered states are
+  customer's approval" (and `authorize` means Re-schedule, see below). The CSM
+  portal names that action, and the matching manual `closed` out of
+  `customer_review`, **"Bypass customer approval"** / **"Bypass customer
+  review"** (menu-only entries of its "Change state" menu that need a stated
+  reason: an engineer answers for a customer who is not asked); the wire
+  contract here is unchanged. The ServiceNow data source's own offered states are
   filtered the same way (`withoutManualScheduled`, which keeps `scheduled` for a
   change sitting in `customer_approval`). `legalNextStates` per state (the single
   source of truth the webapp renders): new `[assess, canceled]`, assess

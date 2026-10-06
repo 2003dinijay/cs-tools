@@ -882,10 +882,10 @@ func liveCustomerStageForState(ctx context.Context, q crQuerier, workItemID, sta
 
 // withoutManualCustomerOutcome drops the manual way out of a customer state
 // from legalNextStates while a customer stage is live for it: "scheduled"
-// (Record customer approval) from Customer Approval, "closed" (Close) and
-// "rollback" (the failed review) from Customer Review. Only Cancel is left;
-// the decision comes from the approval (a member rejecting the review rolls
-// the change back).
+// (the CSM portal's "Bypass customer approval") from Customer Approval,
+// "closed" ("Bypass customer review") and "rollback" (the failed review) from
+// Customer Review. Only Cancel is left; the decision comes from the approval
+// (a member rejecting the review rolls the change back).
 func withoutManualCustomerOutcome(state *string, nexts []string, liveStage bool) []string {
 	if !liveStage || state == nil || nexts == nil {
 		return nexts
