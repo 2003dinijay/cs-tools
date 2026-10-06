@@ -489,6 +489,15 @@ func (c *CustomerEntityClient) PatchChangeRequest(ctx context.Context, id string
 	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/change-requests/%s", url.PathEscape(id)), body)
 }
 
+// GetChangeRequestLinkOptions calls POST /change-requests/link-options on the
+// entity service: the project's deployments, the deployment products that
+// follow from the deployments chosen so far, and the project's registered
+// customer contacts (the read-only Customer Group).
+// Response is returned as raw JSON.
+func (c *CustomerEntityClient) GetChangeRequestLinkOptions(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/change-requests/link-options", body)
+}
+
 // GetChangeRequestApprovals calls GET /change-requests/{id}/approvals on the entity service.
 // Response is returned as raw JSON; typed response structs are deferred.
 func (c *CustomerEntityClient) GetChangeRequestApprovals(ctx context.Context, id string) ([]byte, error) {
@@ -658,6 +667,14 @@ func (c *CustomerEntityClient) SearchServiceOfferings(ctx context.Context, body 
 // Response is returned as raw JSON.
 func (c *CustomerEntityClient) SearchGroups(ctx context.Context, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, "/groups/search", body)
+}
+
+// GetGroup calls GET /groups/{id} on the entity service: one group (name,
+// description, email, manager) and its active members, opened from a change
+// request approval stage's assignment group. Internal callers only, enforced by
+// entity-service. Response is returned as raw JSON.
+func (c *CustomerEntityClient) GetGroup(ctx context.Context, id string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, fmt.Sprintf("/groups/%s", url.PathEscape(id)), nil)
 }
 
 // GetScheduleCatalogue calls GET /team-schedule/catalogue on the entity service.
