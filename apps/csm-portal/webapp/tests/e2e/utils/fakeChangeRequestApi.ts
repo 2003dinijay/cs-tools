@@ -302,6 +302,9 @@ const ENVIRONMENT_IDS_REMOVED = "environmentIds is no longer supported: deployme
 // the state is the change request's CURRENT one, in its API spelling.
 export const CANNOT_RETURN_TO_NEW =
   'state "new" cannot be set: a change request that has left New cannot return to it. Cancel it and clone it instead.';
+/** Every state change out of Rollback is refused with this, {state: "new"} included (it says more than "cannot return to New"). */
+export const ROLLBACK_IS_FINAL =
+  "change request has been rolled back; rollback is final and its state can no longer be changed";
 export const projectFrozenMessage = (state: string): string =>
   `projectId can no longer be changed: the Customer Project is fixed once approval has been requested (current state: ${state}). Cancel this change request and clone it to use another project.`;
 export const requirementCannotBeRemovedMessage = (field: string, state: string): string =>
@@ -726,7 +729,7 @@ export async function installFakeChangeRequestApi(
   const creationPhaseProblem = (body: Record<string, unknown>): string | null => {
     const inNew = state === "new";
     // 1. A change request that has left New cannot return to it.
-    if (body.state === "new" && !inNew) return CANNOT_RETURN_TO_NEW;
+    if (body.state === "new" && !inNew) return state === "rollback" ? ROLLBACK_IS_FINAL : CANNOT_RETURN_TO_NEW;
     // 2. The Customer Project is frozen once the change leaves New.
     if (!inNew && body.projectId !== undefined && body.projectId !== scope.projectId) {
       return projectFrozenMessage(state);
@@ -1060,7 +1063,7 @@ export async function installFakeChangeRequestApi(
           return json(route, { id: FAKE_CR_ID, state, message: "Change request updated.", changeRequest: detail() });
         }
         if (state === "rollback" && target !== "rollback") {
-          return json(route, { message: "change request has been rolled back; rollback is final and its state can no longer be changed" }, 400);
+          return json(route, { message: ROLLBACK_IS_FINAL }, 400);
         }
         if (target === "rollback") {
           if (state !== "review" && state !== "customer_review") {
