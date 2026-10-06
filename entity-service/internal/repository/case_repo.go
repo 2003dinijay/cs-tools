@@ -2750,7 +2750,14 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	if len(req.Parsed.CreatedBy) > 0 {
 		// work_item.created_by is already a free-text email (not a UUID FK
 		// needing a join) -- see this file's other created_by fixes.
-		where += fmt.Sprintf(" AND wi.created_by = ANY($%d)", argIdx)
+		// Case-insensitive on both sides, matching conversation_repo.go's
+		// identical CreatedByMe comparison -- this one was a plain `=` until
+		// a real, reported gap: "My Cases" showed nothing for integration
+		// users whose work_item.created_by was stored in a different case
+		// than their token's own email claim (emailFromJWT does not
+		// normalize case either), while the unfiltered case list still
+		// showed those same cases fine.
+		where += fmt.Sprintf(" AND LOWER(wi.created_by) = ANY(SELECT LOWER(x) FROM unnest($%d::text[]) x)", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.CreatedBy)
 		argIdx++
 	}
