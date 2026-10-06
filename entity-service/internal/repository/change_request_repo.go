@@ -2957,7 +2957,7 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 
 		var approvalID string
 		var stageID *string
-		err = tx.QueryRow(ctx, decideChangeRequestApprovalQuery, id, approverUserID, decision, actorEmail, pendingStageID).Scan(&approvalID, &stageID)
+		err = tx.QueryRow(ctx, decideChangeRequestApprovalQuery, id, approverUserID, strings.ToUpper(decision), actorEmail, pendingStageID).Scan(&approvalID, &stageID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			// A change waiting on the customer group's answer: say who may give
 			// it, rather than a bare "no pending approval" for someone who is

@@ -301,7 +301,7 @@ func seedApprovalStageForDecisionTest(t *testing.T, pool *repository.Scoped, app
 
 	for i, userID := range approverUserIDs {
 		mustExec(`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
-		          VALUES ($1, now(), now(), 'cr-approval-test', 'cr-approval-test', $2, $3, $4, 'requested')`,
+		          VALUES ($1, now(), now(), 'cr-approval-test', 'cr-approval-test', $2, $3, $4, 'REQUESTED')`,
 			fmt.Sprintf("36666666-0000-0000-0000-00000000%04d", i+10), stageID, changeRequestApprovalTestID, userID)
 	}
 	return stageID
@@ -448,8 +448,8 @@ func TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess(t *t
 		changeRequestApprovalTestID, changeRequestApprovalApproverUserID).Scan(&gotStatus); scanErr != nil {
 		t.Fatalf("read back approver status: %v", scanErr)
 	}
-	if gotStatus != "requested" {
-		t.Fatalf("approver status after a refused decision = %q, want unchanged \"requested\"", gotStatus)
+	if gotStatus != "REQUESTED" {
+		t.Fatalf("approver status after a refused decision = %q, want unchanged \"REQUESTED\"", gotStatus)
 	}
 }
 
@@ -509,14 +509,14 @@ func TestChangeRequestIntegration_DecideApprovalCancelsSiblingApprovers(t *testi
 		t.Fatalf("iterate approver rows: %v", err)
 	}
 
-	if got := statusByApprover[changeRequestApprovalApproverUserID]; got != "approved" {
-		t.Errorf("acted-on approver status = %q, want \"approved\"", got)
+	if got := statusByApprover[changeRequestApprovalApproverUserID]; got != "APPROVED" {
+		t.Errorf("acted-on approver status = %q, want \"APPROVED\"", got)
 	}
-	if got := statusByApprover[changeRequestApprovalApproverUserID2]; got != "cancelled" {
-		t.Errorf("sibling approver 2 status = %q, want \"cancelled\" (not left at \"requested\")", got)
+	if got := statusByApprover[changeRequestApprovalApproverUserID2]; got != "CANCELLED" {
+		t.Errorf("sibling approver 2 status = %q, want \"CANCELLED\" (not left at \"REQUESTED\")", got)
 	}
-	if got := statusByApprover[changeRequestApprovalApproverUserID3]; got != "cancelled" {
-		t.Errorf("sibling approver 3 status = %q, want \"cancelled\" (not left at \"requested\")", got)
+	if got := statusByApprover[changeRequestApprovalApproverUserID3]; got != "CANCELLED" {
+		t.Errorf("sibling approver 3 status = %q, want \"CANCELLED\" (not left at \"REQUESTED\")", got)
 	}
 
 	var gotState string
@@ -610,14 +610,14 @@ func TestChangeRequestIntegration_DecideRejectionCancelsSiblingApprovers(t *test
 		t.Fatalf("iterate approver rows: %v", err)
 	}
 
-	if got := statusByApprover[changeRequestApprovalApproverUserID]; got != "rejected" {
-		t.Errorf("acted-on approver status = %q, want \"rejected\"", got)
+	if got := statusByApprover[changeRequestApprovalApproverUserID]; got != "REJECTED" {
+		t.Errorf("acted-on approver status = %q, want \"REJECTED\"", got)
 	}
-	if got := statusByApprover[changeRequestApprovalApproverUserID2]; got != "cancelled" {
-		t.Errorf("sibling approver 2 status = %q, want \"cancelled\" (not left at \"requested\")", got)
+	if got := statusByApprover[changeRequestApprovalApproverUserID2]; got != "CANCELLED" {
+		t.Errorf("sibling approver 2 status = %q, want \"CANCELLED\" (not left at \"REQUESTED\")", got)
 	}
-	if got := statusByApprover[changeRequestApprovalApproverUserID3]; got != "cancelled" {
-		t.Errorf("sibling approver 3 status = %q, want \"cancelled\" (not left at \"requested\")", got)
+	if got := statusByApprover[changeRequestApprovalApproverUserID3]; got != "CANCELLED" {
+		t.Errorf("sibling approver 3 status = %q, want \"CANCELLED\" (not left at \"REQUESTED\")", got)
 	}
 
 	var gotState string
@@ -693,14 +693,14 @@ func TestChangeRequestIntegration_DecideRejectionCancelsSiblingApproversAtEveryC
 				t.Fatalf("iterate approver rows: %v", err)
 			}
 
-			if got := statusByApprover[changeRequestApprovalApproverUserID]; got != "rejected" {
-				t.Errorf("acted-on approver status = %q, want \"rejected\"", got)
+			if got := statusByApprover[changeRequestApprovalApproverUserID]; got != "REJECTED" {
+				t.Errorf("acted-on approver status = %q, want \"REJECTED\"", got)
 			}
-			if got := statusByApprover[changeRequestApprovalApproverUserID2]; got != "cancelled" {
-				t.Errorf("sibling approver 2 status at %s = %q, want \"cancelled\"", tc.name, got)
+			if got := statusByApprover[changeRequestApprovalApproverUserID2]; got != "CANCELLED" {
+				t.Errorf("sibling approver 2 status at %s = %q, want \"CANCELLED\"", tc.name, got)
 			}
-			if got := statusByApprover[changeRequestApprovalApproverUserID3]; got != "cancelled" {
-				t.Errorf("sibling approver 3 status at %s = %q, want \"cancelled\"", tc.name, got)
+			if got := statusByApprover[changeRequestApprovalApproverUserID3]; got != "CANCELLED" {
+				t.Errorf("sibling approver 3 status at %s = %q, want \"CANCELLED\"", tc.name, got)
 			}
 
 			var gotState string
@@ -753,7 +753,7 @@ func TestChangeRequestIntegration_DecideRejectionDoesNotDisturbAlreadyApprovedSt
 	// left it. Approver 3 is deliberately left "requested" to prove it
 	// survives untouched below.
 	if _, err := scoped.Exec(sys,
-		`UPDATE approval_stage_approver SET state = 'approved' WHERE stage_id = $1 AND approver_user_id = $2`,
+		`UPDATE approval_stage_approver SET state = 'APPROVED' WHERE stage_id = $1 AND approver_user_id = $2`,
 		stageID, changeRequestApprovalApproverUserID2); err != nil {
 		t.Fatalf("seed pre-existing approval: %v", err)
 	}
@@ -782,19 +782,19 @@ func TestChangeRequestIntegration_DecideRejectionDoesNotDisturbAlreadyApprovedSt
 		t.Fatalf("iterate approver rows: %v", err)
 	}
 
-	if got := statusByApprover[changeRequestApprovalApproverUserID3]; got != "rejected" {
-		t.Errorf("acted-on approver status = %q, want \"rejected\"", got)
+	if got := statusByApprover[changeRequestApprovalApproverUserID3]; got != "REJECTED" {
+		t.Errorf("acted-on approver status = %q, want \"REJECTED\"", got)
 	}
-	if got := statusByApprover[changeRequestApprovalApproverUserID2]; got != "approved" {
-		t.Errorf("pre-existing approved approver status = %q, want unchanged \"approved\"", got)
+	if got := statusByApprover[changeRequestApprovalApproverUserID2]; got != "APPROVED" {
+		t.Errorf("pre-existing approved approver status = %q, want unchanged \"APPROVED\"", got)
 	}
 	// The real assertion of this test: approver 1 was never decided by
 	// anyone and is NOT a sibling of the rejection's own resolution (the
 	// stage was already resolved, by the approval, before the rejection
 	// ever ran) -- the hasApproval guard must have skipped cancellation
 	// entirely, leaving it exactly as it was.
-	if got := statusByApprover[changeRequestApprovalApproverUserID]; got != "requested" {
-		t.Errorf("untouched sibling approver status = %q, want unchanged \"requested\" (an already-approved stage must not be disturbed by a later rejection)", got)
+	if got := statusByApprover[changeRequestApprovalApproverUserID]; got != "REQUESTED" {
+		t.Errorf("untouched sibling approver status = %q, want unchanged \"REQUESTED\" (an already-approved stage must not be disturbed by a later rejection)", got)
 	}
 
 	var gotState string
@@ -1190,8 +1190,8 @@ func TestChangeRequestIntegration_PatchAssessProvisionsApproversFromGroupMembers
 	}
 
 	want := map[string]string{
-		changeRequestAssessGateMemberUserID:  "requested",
-		changeRequestAssessGateMemberUserID2: "requested",
+		changeRequestAssessGateMemberUserID:  "REQUESTED",
+		changeRequestAssessGateMemberUserID2: "REQUESTED",
 	}
 	if len(gotApprovers) != len(want) {
 		t.Fatalf("approval_stage_approver rows = %+v, want exactly %+v", gotApprovers, want)
@@ -1460,8 +1460,8 @@ func TestChangeRequestIntegration_PatchAssessProvisionsRequesterAsCancelled(t *t
 	}
 
 	want := map[string]string{
-		changeRequestAssessGateMemberUserID:  "cancelled",
-		changeRequestAssessGateMemberUserID2: "requested",
+		changeRequestAssessGateMemberUserID:  "CANCELLED",
+		changeRequestAssessGateMemberUserID2: "REQUESTED",
 	}
 	if len(gotApprovers) != len(want) {
 		t.Fatalf("approval_stage_approver rows = %+v, want exactly %+v", gotApprovers, want)
@@ -1759,8 +1759,8 @@ func TestChangeRequestIntegration_PatchReviewProvisionsApproversFromGroupMembers
 	}
 
 	want := map[string]string{
-		changeRequestReviewGateMemberUserID:  "requested",
-		changeRequestReviewGateMemberUserID2: "requested",
+		changeRequestReviewGateMemberUserID:  "REQUESTED",
+		changeRequestReviewGateMemberUserID2: "REQUESTED",
 	}
 	if len(gotApprovers) != len(want) {
 		t.Fatalf("approval_stage_approver rows = %+v, want exactly %+v", gotApprovers, want)
@@ -2001,8 +2001,8 @@ func TestChangeRequestIntegration_PatchReviewProvisionsRequesterAsCancelled(t *t
 	}
 
 	want := map[string]string{
-		changeRequestReviewGateMemberUserID:  "cancelled",
-		changeRequestReviewGateMemberUserID2: "requested",
+		changeRequestReviewGateMemberUserID:  "CANCELLED",
+		changeRequestReviewGateMemberUserID2: "REQUESTED",
 	}
 	if len(gotApprovers) != len(want) {
 		t.Fatalf("approval_stage_approver rows = %+v, want exactly %+v", gotApprovers, want)
@@ -2192,8 +2192,8 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 		t.Fatalf("Assess approval_stage_approver rows: %v", err)
 	}
 	wantAssess := map[string]string{
-		changeRequestAssessGateMemberUserID:  "approved",
-		changeRequestAssessGateMemberUserID2: "cancelled",
+		changeRequestAssessGateMemberUserID:  "APPROVED",
+		changeRequestAssessGateMemberUserID2: "CANCELLED",
 	}
 	if len(assessApprovers) != len(wantAssess) {
 		t.Fatalf("Assess approval_stage_approver rows = %+v, want exactly %+v", assessApprovers, wantAssess)
@@ -2226,8 +2226,8 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 		t.Fatalf("Authorize approval_stage_approver rows: %v", err)
 	}
 	wantAuthorize := map[string]string{
-		crCABMemberUserID1: "cancelled",
-		crCABMemberUserID2: "cancelled",
+		crCABMemberUserID1: "CANCELLED",
+		crCABMemberUserID2: "CANCELLED",
 	}
 	if len(authorizeApprovers) != len(wantAuthorize) {
 		t.Fatalf("Authorize approval_stage_approver rows = %+v, want exactly %+v", authorizeApprovers, wantAuthorize)
@@ -2259,8 +2259,8 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 		t.Fatalf("Review approval_stage_approver rows: %v", err)
 	}
 	wantReview := map[string]string{
-		changeRequestReviewGateMemberUserID:  "requested",
-		changeRequestReviewGateMemberUserID2: "requested",
+		changeRequestReviewGateMemberUserID:  "REQUESTED",
+		changeRequestReviewGateMemberUserID2: "REQUESTED",
 	}
 	if len(reviewApprovers) != len(wantReview) {
 		t.Fatalf("Review approval_stage_approver rows = %+v, want exactly %+v", reviewApprovers, wantReview)
@@ -3738,7 +3738,7 @@ func TestChangeRequestFlowIntegration_CreatorCannotApproveAnyStage(t *testing.T)
 	// forced in by drift must not be decidable.
 	assertForbidden("creator on the peer stage (cancelled row)", crFlowCreatorID)
 	if _, err := f.scoped.Exec(f.sys,
-		`UPDATE approval_stage_approver SET state = 'requested' WHERE work_item_id = $1 AND approver_user_id = $2`, id, crFlowCreatorID); err != nil {
+		`UPDATE approval_stage_approver SET state = 'REQUESTED' WHERE work_item_id = $1 AND approver_user_id = $2`, id, crFlowCreatorID); err != nil {
 		t.Fatalf("force creator row to requested: %v", err)
 	}
 	assertForbidden("creator on the peer stage (requested row)", crFlowCreatorID)
@@ -3754,7 +3754,7 @@ func TestChangeRequestFlowIntegration_CreatorCannotApproveAnyStage(t *testing.T)
 	}
 	if _, err := f.scoped.Exec(f.sys,
 		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
-		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'requested'
+		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'REQUESTED'
 		 FROM approval_stage s WHERE s.work_item_id = $1 AND s.checkpoint_label = 'CAB Approval'`, id, crFlowCreatorID); err != nil {
 		t.Fatalf("force creator onto the CAB stage: %v", err)
 	}
@@ -3784,8 +3784,8 @@ func TestChangeRequestFlowIntegration_CreatorRecognisedByCreatedByEmail(t *testi
 	}
 	f.requestApproval(id)
 	stages := f.stages(id)
-	if got := stages[0].approvers[crFlowCreatorID]; got != "cancelled" {
-		t.Fatalf("creator (identified only by created_by email) peer row = %q, want cancelled", got)
+	if got := stages[0].approvers[crFlowCreatorID]; got != "CANCELLED" {
+		t.Fatalf("creator (identified only by created_by email) peer row = %q, want CANCELLED", got)
 	}
 }
 
@@ -3812,7 +3812,7 @@ func (f *crFlow) forceApprover(id, label, userID string) {
 	f.t.Helper()
 	if _, err := f.scoped.Exec(f.sys,
 		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
-		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $3::uuid, 'requested'
+		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $3::uuid, 'REQUESTED'
 		 FROM approval_stage s WHERE s.work_item_id = $1 AND s.checkpoint_label = $2
 		 ORDER BY s.created_on DESC, s.id DESC LIMIT 1`, id, label, userID); err != nil {
 		f.t.Fatalf("force %s onto the %s stage: %v", userID, label, err)
@@ -3901,7 +3901,7 @@ func TestChangeRequestFlowIntegration_PeerPoolFallsBackToDevopsApprovalOnlyWhenA
 		seedApprovalGroupMembers(t, f.scoped, crFlowGroupID, crFlowCreatorID, crFlowPeerAID)
 		id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
 		f.requestApproval(id)
-		f.wantPeerPool(id, crFlowGroupID, map[string]string{crFlowCreatorID: "cancelled", crFlowPeerAID: "requested"})
+		f.wantPeerPool(id, crFlowGroupID, map[string]string{crFlowCreatorID: "CANCELLED", crFlowPeerAID: "REQUESTED"})
 	})
 
 	t.Run("assigned group of customers only falls back", func(t *testing.T) {
@@ -4097,7 +4097,7 @@ func TestChangeRequestFlowIntegration_ExternalUserCannotDecideInternalStage(t *t
 	f.execSQL(`UPDATE "user" SET user_type = 'INTERNAL'::user_type_enum, is_active = false WHERE id = $1`, crFlowPeerBID)
 	f.wantForbidden("an inactive peer deciding", f.decide(id, crFlowPeerBID, "approved"), "only active internal (WSO2) users")
 	f.wantState(id, "ASSESS")
-	if st := f.stage(id, "Peer Approval"); st.approvers[crFlowExternalID] != "requested" {
+	if st := f.stage(id, "Peer Approval"); st.approvers[crFlowExternalID] != "REQUESTED" {
 		t.Fatalf("refused decision changed the customer's row: %v", st.approvers)
 	}
 
@@ -4315,7 +4315,7 @@ func TestChangeRequestFlowIntegration_PeerApprovalRefusedWhenCABGroupEmptied(t *
 		t.Fatalf("state after refused peer approval = %q, want ASSESS (rolled back)", got)
 	}
 	stages := f.stages(id)
-	if len(stages) != 1 || stages[0].approvers[crFlowPeerAID] != "requested" {
+	if len(stages) != 1 || stages[0].approvers[crFlowPeerAID] != "REQUESTED" {
 		t.Fatalf("stages after rolled-back approval = %+v, want the peer still pending", stages)
 	}
 }
@@ -4386,7 +4386,7 @@ func TestChangeRequestFlowIntegration_CanDecide(t *testing.T) {
 		}
 		if _, err := f.scoped.Exec(f.sys,
 			`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
-			 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'requested'
+			 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'REQUESTED'
 			 FROM approval_stage s WHERE s.work_item_id = $1`, id, uid); err != nil {
 			t.Fatalf("seed row: %v", err)
 		}
@@ -5157,7 +5157,7 @@ func TestChangeRequestFlowIntegration_ApproverRulesHoldWithCustomerGates(t *test
 	// reach the customer gate.
 	if _, err := f.scoped.Exec(f.sys,
 		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
-		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'requested'
+		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'REQUESTED'
 		 FROM approval_stage s WHERE s.work_item_id = $1 AND s.checkpoint_label = 'CAB Approval'`, id, crFlowCreatorID); err != nil {
 		t.Fatalf("force creator onto the CAB stage: %v", err)
 	}
@@ -6384,7 +6384,7 @@ func (f *crFlow) requestedApprovers(id string) int {
 	f.t.Helper()
 	var n int
 	if err := f.scoped.QueryRow(f.sys,
-		`SELECT COUNT(*) FROM approval_stage_approver WHERE work_item_id = $1 AND state = 'requested'`, id).Scan(&n); err != nil {
+		`SELECT COUNT(*) FROM approval_stage_approver WHERE work_item_id = $1 AND state = 'REQUESTED'`, id).Scan(&n); err != nil {
 		f.t.Fatalf("count requested approvers: %v", err)
 	}
 	return n

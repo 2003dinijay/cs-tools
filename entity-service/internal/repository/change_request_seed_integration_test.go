@@ -287,7 +287,7 @@ func TestChangeRequestSeedIntegration_AssignedGroupProvisionsOnlyTheInternalPers
 	if cab.groupID != crCABGroupID {
 		t.Fatalf("CAB stage group = %s, want the CAB group", cab.groupID)
 	}
-	assertApprovers(t, "CAB", cab.approvers, map[string]string{seedAliceID: "requested", seedBobID: "requested", seedCarolID: "requested"})
+	assertApprovers(t, "CAB", cab.approvers, map[string]string{seedAliceID: "REQUESTED", seedBobID: "REQUESTED", seedCarolID: "REQUESTED"})
 	if err := f.decide(id, seedBobID, "approved"); err != nil {
 		t.Fatalf("bob CAB approval: %v", err)
 	}
@@ -298,7 +298,7 @@ func TestChangeRequestSeedIntegration_AssignedGroupProvisionsOnlyTheInternalPers
 	if _, err := f.repo.PatchChangeRequest(f.sys, eid, domain.PatchChangeRequestRequest{State: stateptr(domain.ChangeRequestStateAssess)}, "jane.doe@example.com"); err != nil {
 		t.Fatalf("Emergency Request Approval: %v", err)
 	}
-	assertApprovers(t, "ECAB", f.stage(eid, "ECAB Approval").approvers, map[string]string{seedAliceID: "requested", seedBobID: "requested", seedCarolID: "requested"})
+	assertApprovers(t, "ECAB", f.stage(eid, "ECAB Approval").approvers, map[string]string{seedAliceID: "REQUESTED", seedBobID: "REQUESTED", seedCarolID: "REQUESTED"})
 	if err := f.decide(eid, seedCarolID, "approved"); err != nil {
 		t.Fatalf("carol ECAB approval: %v", err)
 	}
@@ -335,7 +335,7 @@ func TestChangeRequestSeedIntegration_DevopsApprovalFallback(t *testing.T) {
 	if err := f.scoped.QueryRow(f.sys, `SELECT name FROM "group" WHERE id = $1`, st.groupID).Scan(&name); err != nil || name != domain.PeerApprovalFallbackGroupName {
 		t.Fatalf("peer stage group name = %q (%v), want %q", name, err, domain.PeerApprovalFallbackGroupName)
 	}
-	assertApprovers(t, "fallback peer stage", st.approvers, map[string]string{seedAliceID: "requested", seedBobID: "requested", seedCarolID: "requested"})
+	assertApprovers(t, "fallback peer stage", st.approvers, map[string]string{seedAliceID: "REQUESTED", seedBobID: "REQUESTED", seedCarolID: "REQUESTED"})
 }
 
 // Re-running the seed converges a database seeded BEFORE the personas (jane.doe
