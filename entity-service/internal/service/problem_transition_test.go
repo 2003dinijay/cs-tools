@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,10 +30,12 @@ import (
 
 func strp(s string) *string { return &s }
 
-// problemDetailStub answers the post-write re-read.
+// problemDetailStub answers the pre-move requirement check and the
+// post-write re-read: a problem that already has an assignee and fix notes,
+// so every move's requirements are met.
 func problemDetailStub(context.Context, string) (domain.ProblemDetail, error) {
-	id := testDeploymentUUID
-	return domain.ProblemDetail{ID: &id}, nil
+	id, notes := testDeploymentUUID, "rotate logs"
+	return domain.ProblemDetail{ID: &id, AssignedTo: &domain.EntityRef{ID: testUUID, Name: "Jane"}, FixNotes: &notes}, nil
 }
 
 func userCtxProblem(t *testing.T) context.Context {
@@ -157,7 +160,7 @@ func TestUpdateProblem_DualWrite_ServiceNowRefusalLeavesPostgres(t *testing.T) {
 			return domain.UpdateProblemResponse{}, refusal
 		},
 	}
-	svc := NewProblemServiceWithSNMirror(&stubProblemRepo{}, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+	svc := NewProblemServiceWithSNMirror(&stubProblemRepo{getProblem: problemDetailStub}, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
 	_, err := svc.UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{ID: testDeploymentUUID, Transition: strp("confirm")})
 	if !errors.Is(err, refusal) {
 		t.Errorf("err = %v, want ServiceNow's refusal unchanged", err)
@@ -176,6 +179,7 @@ func TestUpdateProblem_DualWrite_PostgresFailureAfterServiceNowIsReturned(t *tes
 		applyProblemTransition: func(context.Context, domain.UpdateProblemRequest, repository.ProblemTransition, bool, string) (time.Time, error) {
 			return time.Time{}, boom
 		},
+		getProblem: problemDetailStub,
 	}
 	svc := NewProblemServiceWithSNMirror(repo, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
 	if _, err := svc.UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{ID: testDeploymentUUID, Transition: strp("assess")}); !errors.Is(err, boom) {
@@ -222,5 +226,65 @@ func TestUpdateProblem_UnknownTransitionRejected(t *testing.T) {
 		if !errors.As(err, &ve) {
 			t.Errorf("%s: err = %T %v, want a ValidationError", name, err, err)
 		}
+	}
+}
+
+// ServiceNow's state model wants an assignee for Assess and fix notes for
+// Resolved (discovery script 61). A move missing one is a 400 before
+// ServiceNow or Postgres is touched, in both modes -- the stub repo and
+// mirror panic if either is reached.
+func TestUpdateProblem_TransitionRequirements(t *testing.T) {
+	bare := func(context.Context, string) (domain.ProblemDetail, error) {
+		id := testDeploymentUUID
+		return domain.ProblemDetail{ID: &id}, nil
+	}
+	for name, svc := range map[string]ProblemService{
+		"postgres":   NewProblemService(&stubProblemRepo{getProblem: bare}),
+		"dual-write": NewProblemServiceWithSNMirror(&stubProblemRepo{getProblem: bare}, &stubMirrorProblemService{}, NewSNWritebackDispatcher(&recordingSNWritebackFailures{})),
+	} {
+		for _, c := range []struct {
+			req  domain.UpdateProblemRequest
+			want string
+		}{
+			{domain.UpdateProblemRequest{ID: testDeploymentUUID, Transition: strp("assess")}, "assess needs an assignee"},
+			{domain.UpdateProblemRequest{ID: testDeploymentUUID, Transition: strp("resolve")}, "resolve needs fix notes"},
+			{domain.UpdateProblemRequest{ID: testDeploymentUUID, Transition: strp("resolve"), FixNotes: strp(" ")}, "resolve needs fix notes"},
+		} {
+			_, err := svc.UpdateProblem(userCtxProblem(t), c.req)
+			var ve *apierror.ValidationError
+			if !errors.As(err, &ve) || !strings.Contains(ve.Msg, c.want) {
+				t.Errorf("%s %s: err = %v, want a ValidationError %q", name, *c.req.Transition, err, c.want)
+			}
+		}
+	}
+}
+
+// A requirement met by the request itself passes: the assignee or fix notes
+// ride along with the move, as in ServiceNow's own Assess / Resolve dialogs.
+func TestUpdateProblem_RequirementsMetByTheRequest(t *testing.T) {
+	bare := func(context.Context, string) (domain.ProblemDetail, error) {
+		id := testDeploymentUUID
+		return domain.ProblemDetail{ID: &id}, nil
+	}
+	var moved []string
+	repo := &stubProblemRepo{
+		getProblem: bare,
+		applyProblemTransition: func(_ context.Context, _ domain.UpdateProblemRequest, tr repository.ProblemTransition, _ bool, _ string) (time.Time, error) {
+			moved = append(moved, tr.Name)
+			return time.Now(), nil
+		},
+	}
+	svc := NewProblemService(repo)
+	for _, req := range []domain.UpdateProblemRequest{
+		{ID: testDeploymentUUID, Transition: strp("assess"), AssignedToID: strp(testUUID)},
+		{ID: testDeploymentUUID, Transition: strp("resolve"), FixNotes: strp("patched the gateway")},
+		{ID: testDeploymentUUID, Transition: strp("confirm")},
+	} {
+		if _, err := svc.UpdateProblem(userCtxProblem(t), req); err != nil {
+			t.Errorf("%s: %v", *req.Transition, err)
+		}
+	}
+	if strings.Join(moved, ",") != "assess,resolve,confirm" {
+		t.Errorf("moved = %v", moved)
 	}
 }

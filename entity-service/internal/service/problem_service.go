@@ -317,6 +317,32 @@ var problemTransitions = map[string]repository.ProblemTransition{
 	"close":   {Name: "close", From: "RESOLVED", To: "CLOSED"},
 }
 
+// checkProblemTransitionRequirements refuses a move ServiceNow would refuse
+// for a missing field, before anything is written. ServiceNow's state model
+// (ProblemStateUtils, discovery script 61) wants an assignee to move to
+// Assess and fix notes to move to Resolved -- the fields of its own "Assess"
+// and "Resolve" dialogs (resolve's resolution code is set by the move
+// itself). A value in the request counts, as does one already on the
+// problem. Without this, dual-write gets ServiceNow's misleading 409 ("a
+// populated 'Assigned to' is a confirmed live cause") and Postgres-only mode
+// would move a problem ServiceNow never would.
+func checkProblemTransitionRequirements(t repository.ProblemTransition, req domain.UpdateProblemRequest, current domain.ProblemDetail) error {
+	has := func(fromReq *string, onProblem bool) bool {
+		return (fromReq != nil && strings.TrimSpace(*fromReq) != "") || onProblem
+	}
+	switch t.Name {
+	case "assess":
+		if !has(req.AssignedToID, current.AssignedTo != nil && current.AssignedTo.ID != "") {
+			return &apierror.ValidationError{Msg: "assess needs an assignee: send assignedToId, or assign the problem first"}
+		}
+	case "resolve":
+		if !has(req.FixNotes, current.FixNotes != nil && strings.TrimSpace(*current.FixNotes) != "") {
+			return &apierror.ValidationError{Msg: "resolve needs fix notes: send fixNotes, or add them to the problem first"}
+		}
+	}
+	return nil
+}
+
 // UpdateProblem implements ProblemService for both Postgres data sources.
 // A request carries a transition (a state move), plain fields, or both --
 // the fields apply in the same save as the move, as ServiceNow's "Fix" UI
@@ -372,6 +398,16 @@ func (s *problemService) UpdateProblem(ctx context.Context, req domain.UpdatePro
 	actorEmail, err := s.resolveActorEmail(ctx)
 	if err != nil {
 		return domain.UpdateProblemResponse{}, err
+	}
+
+	if transition != nil {
+		current, err := s.repo.GetProblem(ctx, req.ID)
+		if err != nil {
+			return domain.UpdateProblemResponse{}, err
+		}
+		if err := checkProblemTransitionRequirements(*transition, req, current); err != nil {
+			return domain.UpdateProblemResponse{}, err
+		}
 	}
 
 	var updatedOn time.Time
