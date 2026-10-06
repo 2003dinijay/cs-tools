@@ -33,7 +33,7 @@ def test_strips_disallowed_attribute_but_keeps_element():
 
 
 def test_keeps_safe_link_href():
-    assert 'href="https://wso2.com"' in sanitize_what_html('<a href="https://wso2.com">WSO2</a>')
+    assert 'href="https://example.com"' in sanitize_what_html('<a href="https://example.com">WSO2</a>')
 
 
 def test_drops_javascript_link():

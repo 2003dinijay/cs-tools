@@ -39,14 +39,14 @@ def db_module():
 
 
 def test_create_and_get_submission(db_module):
-    created = db_module.create_submission("Jane", "Internal", "Learned X", "jane@wso2.com")
+    created = db_module.create_submission("Jane", "Internal", "Learned X", "jane@example.com")
     fetched = db_module.get_submission(created["id"])
     assert fetched == created
 
 
 def test_where_detail_round_trips(db_module):
     created = db_module.create_submission(
-        "Jane", "Customer", "Learned X", "jane@wso2.com", where_detail="Acme Corp"
+        "Jane", "Customer", "Learned X", "jane@example.com", where_detail="Acme Corp"
     )
     assert created["whereDetail"] == "Acme Corp"
     fetched = db_module.get_submission(created["id"])
@@ -56,8 +56,8 @@ def test_where_detail_round_trips(db_module):
 
 
 def test_list_submissions_newest_first(db_module):
-    db_module.create_submission("A", "Customer", "first", "a@wso2.com")
-    db_module.create_submission("B", "Internal", "second", "b@wso2.com")
+    db_module.create_submission("A", "Customer", "first", "a@example.com")
+    db_module.create_submission("B", "Internal", "second", "b@example.com")
     page = db_module.list_submissions(limit=10)
     assert [item["who"] for item in page["items"]] == ["B", "A"]
     assert page["nextCursor"] is None
@@ -65,14 +65,14 @@ def test_list_submissions_newest_first(db_module):
 
 def test_list_submissions_respects_limit_and_sets_cursor(db_module):
     for i in range(3):
-        db_module.create_submission(f"Person {i}", "Internal", "x", f"p{i}@wso2.com")
+        db_module.create_submission(f"Person {i}", "Internal", "x", f"p{i}@example.com")
     page = db_module.list_submissions(limit=2)
     assert len(page["items"]) == 2
     assert page["nextCursor"] is not None
 
 
 def test_delete_submission_removes_it(db_module):
-    created = db_module.create_submission("Jane", "Customer", "x", "jane@wso2.com")
+    created = db_module.create_submission("Jane", "Customer", "x", "jane@example.com")
     assert db_module.delete_submission(created["id"]) is True
     assert db_module.get_submission(created["id"]) is None
 

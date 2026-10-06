@@ -34,10 +34,10 @@ import db
 import main
 from auth import require_auth
 
-HUMAN_USER = {"email": "jane@wso2.com", "name": "Jane", "groups": [], "is_moderator": False, "is_chat_service_account": False}
-OTHER_HUMAN_USER = {"email": "sam@wso2.com", "name": "Sam", "groups": [], "is_moderator": False, "is_chat_service_account": False}
-MODERATOR_USER = {"email": "mod@wso2.com", "name": "Mod", "groups": ["til-mods"], "is_moderator": True, "is_chat_service_account": False}
-CHAT_SERVICE_ACCOUNT = {"email": "til-chat-sa@wso2.com", "name": "TIL Chat", "groups": [], "is_moderator": False, "is_chat_service_account": True}
+HUMAN_USER = {"email": "jane@example.com", "name": "Jane", "groups": [], "is_moderator": False, "is_chat_service_account": False}
+OTHER_HUMAN_USER = {"email": "sam@example.com", "name": "Sam", "groups": [], "is_moderator": False, "is_chat_service_account": False}
+MODERATOR_USER = {"email": "mod@example.com", "name": "Mod", "groups": ["til-mods"], "is_moderator": True, "is_chat_service_account": False}
+CHAT_SERVICE_ACCOUNT = {"email": "til-chat-sa@example.com", "name": "TIL Chat", "groups": [], "is_moderator": False, "is_chat_service_account": True}
 
 
 @pytest.fixture(autouse=True)
@@ -64,7 +64,7 @@ def test_create_submission_uses_tokens_own_email():
     client = client_as(HUMAN_USER)
     resp = client.post("/submissions", json={"who": "Jane Doe, CSM", "where": "Internal", "what": "Learned X."})
     assert resp.status_code == 200
-    assert resp.json()["submittedByEmail"] == "jane@wso2.com"
+    assert resp.json()["submittedByEmail"] == "jane@example.com"
 
 
 def test_create_submission_sanitizes_what_even_if_client_skips_the_editor():
@@ -103,7 +103,7 @@ def test_on_behalf_of_rejected_from_a_regular_human():
     client = client_as(HUMAN_USER)
     resp = client.post(
         "/submissions",
-        json={"who": "Someone", "where": "Internal", "what": "x", "onBehalfOfEmail": "other@wso2.com"},
+        json={"who": "Someone", "where": "Internal", "what": "x", "onBehalfOfEmail": "other@example.com"},
     )
     assert resp.status_code == 403
 
@@ -112,10 +112,10 @@ def test_on_behalf_of_accepted_from_the_chat_service_account():
     client = client_as(CHAT_SERVICE_ACCOUNT)
     resp = client.post(
         "/submissions",
-        json={"who": "Someone", "where": "Internal", "what": "x", "onBehalfOfEmail": "real-submitter@wso2.com"},
+        json={"who": "Someone", "where": "Internal", "what": "x", "onBehalfOfEmail": "real-submitter@example.com"},
     )
     assert resp.status_code == 200
-    assert resp.json()["submittedByEmail"] == "real-submitter@wso2.com"
+    assert resp.json()["submittedByEmail"] == "real-submitter@example.com"
 
 
 def test_on_behalf_of_still_validated_as_an_email():
