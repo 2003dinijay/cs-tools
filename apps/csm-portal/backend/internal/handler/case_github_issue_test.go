@@ -147,7 +147,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		if c.body != wantBody {
 			t.Errorf("body = %q, want %q", c.body, wantBody)
 		}
-		if want := []string{"Origin/CS", "U12", "Alpha", "Priority/High", "Require/Hotfix", "regression", "Affected/Migration", "Onboarding/affected"}; !slices.Equal(c.labels, want) {
+		if want := []string{"Origin/CS", "Alpha", "Priority/High", "Require/Hotfix", "regression", "Affected/Migration", "Onboarding/affected"}; !slices.Equal(c.labels, want) {
 			t.Errorf("labels = %v, want %v", c.labels, want)
 		}
 	})

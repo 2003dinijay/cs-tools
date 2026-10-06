@@ -138,12 +138,6 @@ func buildGitHubIssueLabels(productLabel string, req caseGitHubIssueRequest) []s
 		labels = append(labels, l)
 	}
 	add(originLabel)
-	// The update level is free text from the case. It is a version label only
-	// when it is not one of the labels this function assigns itself, so a
-	// value such as Priority/Critical cannot land on a Patch issue.
-	if !reservedIssueLabel(req.UpdateLevel) {
-		add(req.UpdateLevel)
-	}
 	add(productLabel)
 	issueType := strings.TrimSpace(req.IssueTypeLabel)
 	switch issueType {
@@ -166,31 +160,6 @@ func buildGitHubIssueLabels(productLabel string, req caseGitHubIssueRequest) []s
 		add(onboardingLabel)
 	}
 	return labels
-}
-
-// reservedIssueLabel reports whether s is a label this builder assigns for a
-// reason other than the product version.
-//
-// The three priority strings are the values of SEVERITY_OPTIONS in
-// CreateGithubIssueDialog.tsx. A new severity there has to be added here too,
-// or an update level with that text would be filed as a label.
-func reservedIssueLabel(s string) bool {
-	switch strings.ToLower(strings.TrimSpace(s)) {
-	case strings.ToLower(originLabel),
-		strings.ToLower(patchIssueTypeLabel),
-		strings.ToLower(patchExtraLabel),
-		strings.ToLower(discussionIssueTypeLabel),
-		strings.ToLower(hotfixLabel),
-		strings.ToLower(migrationLabel),
-		strings.ToLower(onboardingLabel),
-		strings.ToLower(regressionLabel),
-		"priority/critical",
-		"priority/high",
-		"priority/medium":
-		return true
-	default:
-		return false
-	}
 }
 
 // productNameFromCase prefers the catalogue product name, then the versioned
