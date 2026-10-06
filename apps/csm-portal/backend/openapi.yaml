@@ -5291,6 +5291,17 @@ paths:
   /change-requests/{id}:
     patch:
       summary: Update a change request (ServiceNow data source only).
+      description: >-
+        Forwarded to the entity service as-is, after body checks that read keys the way
+        its decoder does -- without regard to case (isCustomerApproved, ISCUSTOMERAPPROVED
+        and iscustomerapproved are one field; a body naming it twice in different cases is
+        judged on every spelling): isCustomerApproved / isCustomerReviewed with any value
+        but null are a 400 (the customer's answer is the customer's), a customer
+        requirement box that is not a boolean, a malformed projectId / deploymentIds /
+        deploymentProductIds, and the removed customerGroupId / environmentIds are a 400
+        too, each with no upstream call. The state is the entity service's: it accepts only
+        the state the change request is in or a move legalNextStates offers, and answers
+        every other with a 400 whose message is echoed.
       operationId: patchChangeRequest
       security:
         - bearerAuth: []
@@ -13476,7 +13487,12 @@ components:
         state:
           type: string
           description: >-
-            The next state, from the change request's own legalNextStates. "scheduled"
+            The next state, from the change request's own legalNextStates: the entity
+            service accepts exactly those (or the state the change request is already in),
+            trimmed and case-insensitive, and refuses every other with a 400 that changes
+            nothing -- a closed, canceled or rolled-back change request cannot be moved, and
+            no request skips a step or a gate (new -> implement, assess -> scheduled, ...).
+            "scheduled"
             is never accepted (a 400, from every state): it is reached by the approval
             flow or, out of customer_approval, by the customer's own approval in the
             Customer Portal. Out of customer_approval / customer_review only canceled,
@@ -18495,10 +18511,10 @@ components:
                 Next states a human may move the change request to, per state.
                 new: [assess, canceled] ("assess" is the "Request Approval"
                 action for every type; the state it lands in depends on the
-                type and on customerApprovalRequired). assess: [authorize,
-                canceled]. authorize: [canceled] (CAB/ECAB approval moves the
-                change on by itself: to scheduled, or to customer_approval when
-                customerApprovalRequired). customer_approval: [authorize,
+                type and on customerApprovalRequired). assess: [canceled] (the
+                peer approval moves the change on by itself). authorize:
+                [canceled] (CAB/ECAB approval moves the change on by itself: to
+                scheduled, or to customer_approval when customerApprovalRequired). customer_approval: [authorize,
                 canceled] -- never "scheduled": only the CUSTOMER's own approval
                 (Customer Portal) schedules the change, and no staff action
                 records it for them; "authorize" here is Re-schedule. scheduled:

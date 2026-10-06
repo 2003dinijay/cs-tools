@@ -1396,7 +1396,11 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 
 	// Approval-flow routing (change_request_approval_flow.go has the per-type
 	// flows). State changes that are not a free human choice are decided here,
-	// before anything is written to change_request:
+	// before anything is written to change_request. checkStaffStateRequest (the
+	// transition graph, change_request_transitions.go) has already refused every
+	// request that is not a resend or an edge of the table -- a final change moves
+	// nowhere, no step or gate is skipped -- except the targets whose refusal is
+	// one of the cases below (they say more than "not an edge"):
 	//
 	//   - {state: "authorize"|"customer_approval"} is rejected. Authorize is
 	//     reached only by peer approval (or Request Approval on an Emergency
@@ -1423,7 +1427,8 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	//     is what rolls the change back then). It stamps no customer flag,
 	//     provisions no stage, and cancels the still-requested approvers
 	//     (as does reaching Closed or Canceled -- reconcileStaleApprovers).
-	//     Rollback is final: no state change is accepted out of it.
+	//     Rollback, Closed and Canceled are final: no state change is accepted
+	//     out of them (checkStaffStateRequest).
 	//   - {state: "assess"} is the Request Approval action. It is only legal
 	//     from New, and the state actually written is chosen from the change's
 	//     type: Assess (Normal), Authorize (Emergency), Scheduled (Standard) --

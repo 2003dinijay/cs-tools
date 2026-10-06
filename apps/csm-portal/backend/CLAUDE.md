@@ -274,6 +274,19 @@ reached the browser; this is what stops them being sent at all to a caller who s
 to the entity service as-is (no field allow-list), with two checks on top:
 
 * `POST` requires `type` of `standard`, `normal` or `emergency` (`validateChangeRequestCreateType`).
+* **Every body guard of the change request handlers reads keys the way the entity service's decoder
+  does -- without regard to case.** The entity service decodes with `encoding/json`, which matches a
+  key to a field case-insensitively, so `ISCUSTOMERAPPROVED`, `iscustomerreviewed` and
+  `{"isCustomerApproved": null, "ISCUSTOMERAPPROVED": true}` are the flag there (a body that names a
+  field twice is read as the last spelling reached, `null` included). A guard that looked up one
+  exact key let them through; on `DATA_SOURCE=servicenow` the entity service forwards the flag. All
+  the guards below (the two customer flags, the two requirement boxes, `type`, `projectId`,
+  `deploymentIds`, `deploymentProductIds`, `customerGroupId`, `environmentIds`, `category`,
+  `comment`, `workNote`) look a field up through `payloadValues`, which returns the value under
+  **every** spelling of the key and judges all of them: the customer flags are refused when any
+  spelling carries a value that is not `null` (the null/true pair in either order too).
+  `TestPatchChangeRequestRefusesTheCustomersAnswer` and
+  `TestChangeRequestBodyGuardsIgnoreTheCaseOfKeys`.
 * **Compliance rule: nobody here records the customer's approval or review on the customer's
   behalf.** `PATCH` refuses (400, no upstream call) a body that carries `isCustomerApproved` or
   `isCustomerReviewed` with any value but `null` -- `true` or `false`, alone or with a state
@@ -329,7 +342,11 @@ to the entity service as-is (no field allow-list), with two checks on top:
   Review" still appear in `GET .../approvals` (see the entity service's CLAUDE.md,
   "Customer Group") so the Approvals tab can show who was asked and the outcome. While such a
   stage is live `legalNextStates` for Customer Review is just `["canceled"]` (Customer Approval
-  keeps Re-schedule: `["authorize", "canceled"]`), and a manual `{state: "scheduled"}` /
+  keeps Re-schedule: `["authorize", "canceled"]`; Assess and Authorize offer `["canceled"]` only --
+  the peer / CAB approval moves them on -- and the entity service accepts exactly the states
+  `legalNextStates` offers, see its CLAUDE.md, "The transition graph of `PATCH {state}`": a change
+  that is closed, canceled or rolled back cannot be moved by any request, and no request skips a
+  step), and a manual `{state: "scheduled"}` /
   `{state: "closed"}` PATCH is a 400 -- live stage or not, whatever the project (see the entity
   service's CLAUDE.md, "There is no "Schedule" action") -- whose message is echoed
   verbatim (`state "scheduled" cannot be set manually from customer_approval: the customer's

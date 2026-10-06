@@ -2767,6 +2767,50 @@ GitHub sync's `SetState` (refuses to leave a customer state), the dual-write mir
 (a refused PATCH is never mirrored) and the pure ServiceNow data source (its
 offered states are filtered the same way).
 
+* **The transition graph of `PATCH {state}`** (`change_request_transitions.go`; Postgres and
+  dual-write -- a pure ServiceNow source forwards the PATCH and ServiceNow is the authority).
+  One table, `changeRequestForwardNextStates` + `changeRequestRollbackFrom` + Cancel from every
+  non-final state, is read twice: `legalChangeRequestNextStates` renders it as `legalNextStates`
+  and `checkStaffStateRequest` enforces it in `patchChangeRequestTx` (right after the row lock),
+  so what the portal offers is exactly what the service accepts. A staff request may name the
+  state the change is already in (a resend: no move) or a move out of it:
+
+  | from | staff may request by PATCH |
+  |---|---|
+  | new (or NULL) | `assess` (Request Approval), `canceled` |
+  | assess | `canceled` only: the **peer approval** moves it on (Assess -> Authorize is the cascade's) |
+  | authorize | `canceled` only: the **CAB / ECAB approval** moves it on (to scheduled, or customer_approval) |
+  | customer_approval | `authorize` (Re-schedule), `canceled`: the **customer's answer** moves it on |
+  | scheduled | `implement`, `canceled` |
+  | implement | `review`, `canceled` |
+  | review | `closed` (or `customer_review` when `customerReviewRequired`), `rollback`, `canceled` |
+  | customer_review | `rollback` (while nobody is asked), `canceled`: the **customer's review** moves it on |
+  | closed, canceled, rollback | **nothing: final** |
+
+  Every other request is a 400 and writes nothing: from a **final** state
+  `state "implement" cannot be set manually from canceled: a change request that is canceled
+  cannot be moved` (likewise `closed`, and `rolled back` -- this replaces the rollback-only
+  guard: a change canceled in Customer Approval used to be revivable to Implement / Review /
+  Closed / Customer Review with no customer answer, and `{state: implement}` from New, Assess or
+  Authorize used to skip Peer and CAB approval and the customer); a **jump** `state "implement"
+  cannot be set manually from assess: it is waiting for its peer approval, which moves it on by
+  itself; the moves open to staff from assess are: only canceled` (what the change waits for,
+  then the open moves); out of a customer state the customer-answer refusals below
+  (`refuseStaffExitFromCustomerState`); `scheduled` / `customer_approval` / `authorize` (outside
+  Re-schedule) / `rollback` (outside the review states) / `assess` (not New) / `new` keep the
+  refusal of their own -- **also when the change is already in that state** (a resent
+  `{state: scheduled}` is still a 400: staff never name it; the other resends -- `new`, `assess`,
+  `implement`, `review`, `customer_review`, `closed`, `canceled` -- are accepted no-ops). The
+  requested state is **trimmed and read case-insensitively** (`" IMPLEMENT "` is `implement`);
+  a value that is not a state is a 400 `state "X" is not a change request state`.
+  **`legalNextStates` of Assess no longer lists `authorize`**: the PATCH always refused
+  Assess -> Authorize (only the peer approval takes it), so the portal was offered an edge the
+  service would not accept; `assess` offers `["canceled"]`. A NULL state is New for the PATCH
+  but has no `legalNextStates` (as it never had). Tests: `TestChangeRequestStaffTargets`,
+  `TestCheckStaffStateRequest_*`, `TestTransitionRefusalMessages` (unit) and
+  `TestChangeRequestTransitionsIntegration_*` (every state by every request, with every box
+  combination, native and migrated-shaped rows; Cancel-then-revive from every customer-state
+  exit and from Closed / Rollback; no step skipped; spelling), run as a superuser and as `csm_app`.
 * **"Request Approval" is the one human action out of New** and is always sent
   as `{state: "assess"}` (legalNextStates of New is `["assess","canceled"]` for
   every type — the webapp contract). The state written is chosen from the type,
@@ -2790,10 +2834,10 @@ offered states are filtered the same way).
   change instead` while the customer group is being asked, because a failed
   review is then theirs to give too), and for **every other destination** out of a
   customer state but Cancel, Re-schedule (`customer_approval`) and Roll back
-  (`customer_review`) -- the PATCH has no full transition graph, so
-  `{state: "implement"}` would skip the customer exactly as `scheduled` would
-  (`refuseStaffExitFromCustomerState`; staying where it is, e.g. a resent Request
-  Approval on a Standard change, is not an exit). A refused PATCH writes nothing
+  (`customer_review`) -- `{state: "implement"}` would skip the customer exactly as
+  `scheduled` would (`refuseStaffExitFromCustomerState`, which keeps the customer's wording
+  for these two states; staying where it is, e.g. a resent Request Approval on a Standard
+  change, is not an exit). A refused PATCH writes nothing
   (state, flags, approver rows and `updated_on` stay). Nor can staff send the
   customer's flags: `isCustomerApproved` / `isCustomerReviewed` from anyone but
   the customer (an internal caller, staff who also hold an external record, an
@@ -2808,8 +2852,8 @@ offered states are filtered the same way).
   `customer_review`; what ServiceNow itself returns is unchanged, and a PATCH on
   that source is forwarded to ServiceNow, which is the authority there).
   `legalNextStates` per state (the single source of truth the webapp renders): new
-  `[assess, canceled]`, assess `[authorize, canceled]` (`authorize` is the approval
-  path; the webapp never renders it as a button), authorize `[canceled]`,
+  `[assess, canceled]`, assess `[canceled]` (the peer approval moves it on), authorize
+  `[canceled]` (the CAB / ECAB approval does),
   customer_approval `[authorize, canceled]` (`authorize` = Re-schedule), scheduled
   `[implement, canceled]`, implement `[review, canceled]`, review
   `[closed, rollback, canceled]` -- or `[customer_review, rollback, canceled]` when
@@ -2849,7 +2893,19 @@ offered states are filtered the same way).
   When the new CAB / ECAB stage is approved the ordinary cascade sends the
   change to `customer_approval` and provisions a fresh Customer Approval stage
   for the customer group. Rejecting the new stage behaves as a CAB / ECAB
-  rejection always has (siblings cancelled, state unchanged). **Standard** has
+  rejection always has (siblings cancelled, state unchanged). **Re-schedule re-asks the
+  customer on every row**: it writes our own `customer_approval_required = true` in the same
+  UPDATE as the new window (never the sync-owned `is_customer_approval_required`, ServiceNow's
+  record of the customer's answer), because the cascade that ends the loop reads that column
+  (`approvalGateTarget`) and migration 0189 defaulted it to false for every existing and synced
+  row -- including the ones already waiting in Customer Approval, where a Re-schedule used to go
+  CAB -> **Scheduled** with the customer never asked about the new plan. A row with nobody to
+  ask then waits in Customer Approval, as every such row does; a `customerApprovalRequired:
+  false` resent in the same request is not a way round (the stored false is accepted by the
+  lock, and the Re-schedule writes true).
+  (`TestChangeRequestRescheduleLegacyIntegration_*`: native and migrated-shaped rows, Normal and
+  Standard, with a project with contacts, with none and with no project, and the customer's own
+  proposal.) **Standard** has
   no internal approval to repeat: the dates are applied, the change **stays in
   `customer_approval`** and the customer is asked again (pending stage
   cancelled, a fresh one provisioned when the group has an eligible member;
@@ -2869,7 +2925,9 @@ offered states are filtered the same way).
   `REQUESTED` approver row** of the change (all stages stay as a record; the
   customer-group rejection cascade does the same). **`rollback` is final**:
   `legalNextStates` is none and any other state PATCH out of it is a 400
-  (`change request has been rolled back; rollback is final ...`). Cancel and
+  (`state "implement" cannot be set manually from rollback: a change request that is rolled
+  back cannot be moved`, the same refusal as for closed and canceled; a repeated
+  `{state: rollback}` keeps `state "rollback" can only be set from review or customer_review`). Cancel and
   Close do the same since "An approval is only actionable in its stage's state"
   (below): every `closed` / `canceled` / `rollback` change has no `REQUESTED` row
   left, internal stages included (this supersedes the earlier "Cancel does not
@@ -3523,14 +3581,14 @@ requested value, whether the change has a Customer Project).
 | New / NULL | ok | ok | ok | ok | ok | ok (no-op) |
 | Assess, Authorize | **400 frozen** | ok | ok | **400 needs a project** | **400 cannot turn off** | **400** |
 | Customer Approval, Scheduled, Implement, Review | **400 frozen** | ok | approval box **400 gate passed**; review box ok | approval **400 gate passed**; review **400 needs a project** | **400** | **400** |
-| Customer Review, Rollback, Closed, Canceled | **400 frozen** | ok | **400 gate passed** | **400 gate passed** | **400** | **400** (Rollback: "rollback is final") |
+| Customer Review, Rollback, Closed, Canceled | **400 frozen** | ok | **400 gate passed** | **400 gate passed** | **400** | **400** (Rollback, Closed, Canceled: "... cannot be moved") |
 
 (`approvalRequirementEditable` = New / Assess / Authorize, `reviewRequirementEditable` =
 everything up to and including Review: the cut-offs are the ones that existed before
 the lock. "Project stored" is the **stored** project: none can be set after New.)
 The same table is `TestCustomerRequirementsLock_TruthTable` (Go, unit, row ids
 `<STATE>/<column>`, outcome codes `ok / frozen / cannot-turn-off / gate-passed /
-needs-project / return-to-new / rolled-back`); the CSM Edit dialog computes the same
+needs-project / return-to-new / final`); the CSM Edit dialog computes the same
 rule client-side from the stored (state, flag, hasProject) and keeps a Vitest table with
 **the same row ids and outcome codes** (no file is shared between the modules). The server
 stays the authority and answers 400.
@@ -3540,7 +3598,8 @@ The rules, in the order they are applied (**the first failing one wins, every re
 
 1. `{state: "new"}` on a change that has left New -> `state "new" cannot be set: a change
    request that has left New cannot return to it. Cancel it and clone it instead.` (On a
-   rolled-back change the existing `... rollback is final ...` message is what answers it.)
+   closed, canceled or rolled-back change the refusal is the final-state one, `state "new" cannot
+   be set manually from closed: a change request that is closed cannot be moved`.)
 2. `projectId` that differs from the stored one (NULL -> X included) after New ->
    `projectId can no longer be changed: the Customer Project is fixed once approval has
    been requested (current state: X). Cancel this change request and clone it to use

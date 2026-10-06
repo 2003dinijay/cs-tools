@@ -1236,9 +1236,10 @@ func customerOutcomeRefusal(ctx context.Context, q crQuerier, workItemID string,
 // has refused that one already while the customer group's review is pending) --
 // and staying where it is (a resent Request Approval / customer_review, no move).
 // current is the change's upper-case state; target is the state about to be
-// written. The PATCH does not enforce a full transition graph, so without this
-// {state: implement} out of Customer Approval would skip the customer as surely
-// as {state: scheduled} would.
+// written. The transition graph (checkStaffStateRequest) accepts exactly these
+// exits too; it leaves the customer states to this guard so that the refusal
+// names the customer's answer -- {state: implement} out of Customer Approval
+// would skip the customer as surely as {state: scheduled} would.
 func refuseStaffExitFromCustomerState(ctx context.Context, q crQuerier, workItemID, current string, target domain.ChangeRequestState) error {
 	spec := customerStageSpecForState(current)
 	if spec == nil {
