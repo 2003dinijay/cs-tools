@@ -319,6 +319,53 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
 -- team.key is shared; leave it unless nothing else has started using it.
 ```
 
+## Rotas: IaaS SRE and the SME rotations (0186–0187)
+
+A **rota** is a named rotation inside a family. SRE runs SaaS (Apollo & Artemis)
+and IaaS. **SME**, a third family added in 0186, runs one rota per product:
+Asgardeo, Choreo Runtime, Bijira, Devant, WSO2 Cloud · Agent platform,
+WSO2 Cloud · Core and Moesif. The source is the "CSM SRE + SME on call" doc.
+PaaS SRE is N/A there, so it has no rota until it has a schedule.
+
+| Rota | Family | Team type | Zones (LK time) | Duty rotates | Escalation |
+|---|---|---|---|---|---|
+| `SRE_SAAS` | SRE | `sre-abt` | TZ1, TZ2, TZ3 (unchanged) | irregular | 5 min |
+| `SRE_IAAS` | SRE | `sre-iaas` | `IAAS_D` 08:00–20:00 · `IAAS_N` 20:00–08:00 | daily | 5 min |
+| `SME_ASGARDEO` | SME | `sme-asgardeo` | `ASG_D` 09:30–18:30 · `ASG_N` 18:30–09:30 | daily | 5 min |
+| `SME_CHOREO` | SME | `sme-choreo-runtime` | `CRT_D` 06:00–18:00 · `CRT_N` 18:00–06:00 | weekly | — |
+| `SME_BIJIRA` | SME | `sme-bijira` | `BIJ_D` / `BIJ_N`, as Choreo Runtime | weekly | — |
+| `SME_DEVANT` | SME | `sme-devant` | `DVT_D` / `DVT_N`, as Choreo Runtime | weekly | — |
+| `SME_CLOUD_AGENT` | SME | `sme-cloud-agent` | `WCA_D` 06:00–18:00 · `WCA_N` 18:00–06:00 | weekly | 5 min |
+| `SME_CLOUD_CORE` | SME | `sme-cloud-core` | `WCC_D` / `WCC_N`, as Agent platform | weekly | 5 min |
+| `SME_MOESIF` | SME | `sme-moesif` | `MOE_D` 10:00–22:00 · `MOE_N` 22:00–10:00 | weekly | 30 min |
+
+**How it hangs together:**
+- **Teams join a rota by type.** A team is on the rota whose `team_type` matches
+  `team.type`, read the same way the family always has been
+  (`sme…` → SME, `sre…` → SRE). No column is added to `team`, so the ServiceNow
+  sync stays the only writer of team rows: to put a team on a rota, give it the
+  rota's type. On a local stack, `scripts/csm-compose/seed-team-schedule-rotas.sql`
+  adds one team per new rota.
+- **Zones belong to rotas.** `team_schedule_zone.rota_id` (nullable) ties each
+  zone to its rota. TZ1–TZ3 are backfilled to `SRE_SAAS`; a zone without a rota
+  still works as before.
+- **Windows.** Each new zone has one escalation window, worked every day
+  (`ANY`), with the tier (L1, L2 or L3) on the assignment, as `SRE_TZ3` does.
+  The weekend is the same as the weekdays.
+- **Who may edit.** `sme_rota_admin` does for SME what `cre_rota_admin` and
+  `sre_rota_admin` do for their families. Granting it stays a deployment step.
+- **The catalogue** gains `rotas[]`, `zone.rotaCode` and `team.rotaCode`. All are
+  additive; a client that ignores them sees what it saw before. The webapp
+  scopes every view to one rota and offers a rota picker only where a family
+  has more than one rota with teams, so CRE and SaaS-only SRE read as before.
+
+**Not changed, on purpose:**
+- **`rota.escalation_minutes` is informational.** The escalation ladder
+  (csm-notification-service) keeps its own timing.
+- **The notification service only runs the CRE ladder.** Its rota rungs are
+  scoped by team type and key, so the new teams never reach it. An SRE or SME
+  ladder is separate work.
+
 ## 5. Known gaps
 
 - **Why 0152–0156.** 0141–0150 are claimed by the open RLS work in #2094, and
@@ -335,6 +382,7 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
 
 ## Change log
 
+- **0186–0187 rotas.** The SME family; `team_schedule_rota`; `zone.rota_id` (TZ1–TZ3 on `SRE_SAAS`); the zone-family check widened from SRE to SRE or SME; IaaS and seven SME rotas, each with a Day and a Night zone and window; the `sme_rota_admin` role. Additive only: no existing row, value or column changes.
 - **0152–0155** replace `000088`–`000107`, which were written in the old
   up/down format. They reproduce the schema and catalogue that chain ended in
   exactly (compared with `pg_dump` against a server built from the old chain).
