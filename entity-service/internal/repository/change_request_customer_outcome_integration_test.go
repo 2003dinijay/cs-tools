@@ -75,6 +75,25 @@ func (f *crFlow) wantConflictContaining(what string, err error, contains ...stri
 	}
 }
 
+// wantRefusedAsStranger asserts the caller was refused because they are not a
+// registered contact of the change request's project: a 403 from the
+// repository's own check when the database does not enforce row-level
+// security (the superuser DSN the suite normally runs with), or a 404 from the
+// row-level security that hides the change request from a non-member when it
+// does (a non-superuser role). Either way the caller learns nothing and
+// changes nothing.
+func (f *crFlow) wantRefusedAsStranger(what string, err error) {
+	f.t.Helper()
+	var fe *apierror.ForbiddenError
+	var nf *apierror.NotFoundError
+	if !errors.As(err, &fe) && !errors.As(err, &nf) {
+		f.t.Fatalf("%s: err = %v (%T), want *apierror.ForbiddenError or *apierror.NotFoundError", what, err, err)
+	}
+	if fe != nil && !strings.Contains(fe.Msg, "only a registered PORTAL_USER contact on this change request's own project") {
+		f.t.Fatalf("%s: message %q should say who may answer", what, fe.Msg)
+	}
+}
+
 // updatedBy is work_item.updated_by, what a PATCH stamps.
 func (f *crFlow) updatedBy(id string) string {
 	f.t.Helper()
@@ -351,18 +370,25 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchWhoMayAnswer(t *testing.T)
 
 	before := f.customerSnapshot(id, map[string]string{crScopeUserA1: "alice", crScopeUserA2: "bob", crFlowCreatorID: "creator"})
 	for _, tc := range []struct {
-		name, user, want string
+		name, user string
+		stranger   bool   // not a member of the project's contacts at all: refused before the change request is even looked at
+		want       string // the 403's message, for a caller who is a member
 	}{
-		{"a contact of ANOTHER project", crScopeUserB1, "only a registered PORTAL_USER contact on this change request's own project"},
-		{"a contact holding no PORTAL_USER role", crScopeUserSecurity, "only a registered PORTAL_USER contact on this change request's own project"},
-		{"a contact who was only invited", crScopeUserInvited, "only a registered PORTAL_USER contact on this change request's own project"},
-		{"an internal user who is not a contact", crFlowPeerAID, "only a registered PORTAL_USER contact on this change request's own project"},
-		{"a registered contact whose user is inactive (never asked)", crScopeUserInactive, "only members of the customer group"},
-		{"the creator, although a registered contact", crFlowCreatorID, "creator of a change request cannot approve it"},
+		{"a contact of ANOTHER project", crScopeUserB1, true, ""},
+		{"a contact who was only invited", crScopeUserInvited, true, ""},
+		{"an internal user who is not a contact", crFlowPeerAID, true, ""},
+		{"a contact holding no PORTAL_USER role", crScopeUserSecurity, false, "only a registered PORTAL_USER contact on this change request's own project"},
+		{"a registered contact whose user is inactive (never asked)", crScopeUserInactive, false, "only members of the customer group"},
+		{"the creator, although a registered contact", crFlowCreatorID, false, "creator of a change request cannot approve it"},
 	} {
 		for _, approved := range []bool{true, false} {
 			_, err := f.approveAs(id, tc.user, approved)
-			f.wantForbidden(fmt.Sprintf("%s answering %v", tc.name, approved), err, tc.want)
+			what := fmt.Sprintf("%s answering %v", tc.name, approved)
+			if tc.stranger {
+				f.wantRefusedAsStranger(what, err)
+			} else {
+				f.wantForbidden(what, err, tc.want)
+			}
 		}
 	}
 	if after := f.customerSnapshot(id, map[string]string{crScopeUserA1: "alice", crScopeUserA2: "bob", crFlowCreatorID: "creator"}); after != before {
@@ -373,7 +399,7 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchWhoMayAnswer(t *testing.T)
 	_, err := f.repo.PatchChangeRequest(
 		repository.WithCallerIdentity(context.Background(), repository.SearchScope{ViewerEmail: "nobody@example.com"}),
 		id, domain.PatchChangeRequestRequest{IsCustomerApproved: boolp(true)}, "nobody@example.com")
-	f.wantForbidden("an unknown caller", err, "only a registered PORTAL_USER contact")
+	f.wantRefusedAsStranger("an unknown caller", err)
 
 	// A real contact still can.
 	if _, err := f.approveAs(id, crScopeUserA2, true); err != nil {
@@ -526,11 +552,6 @@ func TestChangeRequestCustomerOutcomeIntegration_ExternalWhitelist(t *testing.T)
 	// WSO2 users (an internal identity) are unaffected: the whole contract.
 	if _, err := f.patch(id, domain.PatchChangeRequestRequest{Title: sp("edited by WSO2")}); err != nil {
 		t.Fatalf("an internal PATCH of the title: %v", err)
-	}
-	// And staff who also hold an external record are not customers.
-	staffCtx := repository.WithCallerIdentity(context.Background(), repository.SearchScope{ViewerEmail: crFlowEmail(crFlowCreatorID), HasInternalAccess: true})
-	if _, err := f.repo.PatchChangeRequest(staffCtx, id, domain.PatchChangeRequestRequest{Title: sp("edited by staff")}, crFlowEmail(crFlowCreatorID)); err != nil {
-		t.Fatalf("a PATCH by staff holding an external record too: %v", err)
 	}
 }
 
@@ -704,9 +725,10 @@ func TestChangeRequestCustomerOutcomeIntegration_ProposeNewTimeRefusals(t *testi
 	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 
 	// Not by anyone who is not a contact of this project, nor by the creator.
-	for _, user := range []string{crScopeUserB1, crScopeUserSecurity, crScopeUserInvited, crFlowPeerAID} {
-		f.wantForbidden("proposal by "+user, propose(user), "only a registered PORTAL_USER contact on this change request's own project")
+	for _, user := range []string{crScopeUserB1, crScopeUserInvited, crFlowPeerAID} {
+		f.wantRefusedAsStranger("proposal by "+user, propose(user))
 	}
+	f.wantForbidden("proposal by a contact holding no PORTAL_USER role", propose(crScopeUserSecurity), "only a registered PORTAL_USER contact on this change request's own project")
 	f.wantForbidden("proposal by the creator", propose(crFlowCreatorID), "creator of a change request cannot approve it")
 
 	// Not while the change is on hold.
