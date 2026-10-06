@@ -129,7 +129,9 @@ node_modules/.bin/playwright test tests/e2e/specs/local --project=chromium
   them back (wait for the `migrate` container to exit before running a spec, e.g.
   `docker-compose up -d migrate && docker wait <project>-migrate-1`). The smoke spec changes
   nothing; `customer-change-request-approval.spec.ts` answers `CHG-FIXED-007` and `-008`, and skips
-  (never fails) a fixture an earlier run already answered, naming the seed re-run that resets it.
+  (never fails) a fixture an earlier run already answered, naming the seed re-run that resets it. The
+  state-changing specs below re-seed the stack's Postgres themselves, before every test and once more
+  when their file is done, so the specs that sort after them still find the fixtures waiting.
 * **entity-service runs as a plain role.** The compose stack connects entity-service as `csm_app`
   (no superuser, no `BYPASSRLS`; created by `migrate-and-seed.sh`), so the project-membership
   row-level security applies as it does in production: a customer asking for another project's
@@ -146,6 +148,44 @@ node_modules/.bin/playwright test tests/e2e/specs/local --project=chromium
 | `specs/local/customer-change-requests.spec.ts` | Smoke: dave lists `CHG-FIXED-007` under Operations > Change requests (Customer Approval on a fresh seed), and every change request the list API returns for the project belongs to it |
 | `specs/local/customer-change-request-approval.spec.ts` | Writes: dave approves `CHG-FIXED-007` (Customer Approval -> Scheduled, banner kept, buttons gone, list and erin's view agree) and confirms `CHG-FIXED-008` as Successful (Customer Review -> Closed), through the real chain; re-run the seed to reset |
 | `pages/ChangeRequestDetailPage.ts` | The detail page as a customer answering it uses it: Approve / Reject / Propose New Time / Successful / Unsuccessful, the banner, the workflow stepper's "Current" row |
+| `specs/local/customer-change-request-answer.spec.ts` | **State-changing.** A customer answers: dave approves `CHG-FIXED-007` (success banner, Scheduled in the page and the list, erin no longer offered Approve) and a stale tab of erin's gets the plain-words 409; dave rejects (confirmation first, "Go back" changes nothing, then Canceled); at Customer Review (`CHG-FIXED-008`) Successful closes it, Unsuccessful asks first and sends it to Rollback. Each test reads the answer back from the API and from Postgres |
+| `specs/local/customer-change-request-propose.spec.ts` | **State-changing.** Propose New Time: the dialog asks for a start AND an end and an empty / past / inverted window shows inline errors and sends nothing; the whole loop for a Normal change (dave proposes, the change goes to Authorize and the buttons go for dave and erin, alice approves as CAB through the CSM portal's backend, both are asked again with fresh requests, erin approves the new time); a Standard change stays in Customer Approval and asks both again at once; a change on hold refuses a proposal with the reason but still takes an answer |
+| `specs/local/customer-change-request-access.spec.ts` | **State-changing in the small.** Who may not: mira (another project) is never offered the answer, cannot list the change and is refused (403) when she answers or proposes; a viewer with nothing pending sees no buttons; a direct PATCH from dave's token with anything but an answer or a proposed time is 403 and moves nothing |
+| `utils/localStack.ts` | What those specs need beyond a browser session: resetting the fixtures (the seed, run in the stack's Postgres), reading the raw rows, the customer's own API calls, staff deciding through the CSM portal's backend, and wall-clock helpers for the Propose dialog |
+| `pages/ChangeRequestDetailsPage.ts` | The change request detail page: answer buttons, the confirmations, the Propose dialog, the lifecycle panel's current stage |
+
+### State-changing local specs (answer, propose, access)
+
+The three `customer-change-request-{answer,propose,access}.spec.ts` specs approve, reject and re-schedule
+the seeded fixtures for real, so they need a little more than a session. They **skip with the reason**
+(never fail, never guess) unless the stack under test is named:
+
+| Variable | Needed by | Meaning |
+|---|---|---|
+| `E2E_POSTGRES_CONTAINER` | all three | The Docker container of the stack's Postgres, e.g. `csm-platform-postgres-1` for the stock compose project or `csmenv-postgres-1` for a second stack. The specs re-run `scripts/csm-compose/seed-entity-service.sql` in it (`docker exec … psql`) before every test and read raw rows back. There is **no default**: a name that was guessed could reset somebody else's stack. After each re-seed the spec reads the fixtures back *through the app under test* and fails with that explanation if they do not show up, which is what a container of the wrong stack looks like |
+| `E2E_CSM_BFF_URL` | `…-propose` | The CSM portal's backend as the browser reaches it (`http://localhost:8082` stock). The loop has WSO2 staff (alice, the CAB) approve the new time through its `POST /change-requests/{id}/approvals/decision`, the same call as the CSM portal's Approvals tab |
+| `E2E_ENTITY_RLS=0` | `…-access` (optional) | Say so when entity-service runs as a database **superuser**, which bypasses row-level security (an older compose stack, where it connected as `postgres`). By default the spec expects what the compose stack does now (entity-service connects as `csm_app`, so row-level security applies): mira's by-id read of Example Corp's change request is a **404** and her page is the error page. With `=0` the same read may answer 200, and the test asserts only what holds either way: the change request is never offered to her and cannot be answered |
+| `E2E_POSTGRES_USER`, `E2E_POSTGRES_DB` | optional | Default `postgres`, `csm_platform` |
+
+The customer backend and the mock identity provider are not configured: the specs read them from the
+webapp's own `/config.js`, so an API call can never go to another stack than the browser does.
+
+```bash
+# from apps/customer-portal/webapp, the stack up and seeded, sessions minted for dave, erin and mira
+export E2E_BASE_URL=http://localhost:13000            # the customer webapp of the stack under test
+export E2E_POSTGRES_CONTAINER=csmenv-postgres-1
+export E2E_CSM_BFF_URL=http://localhost:18082
+for p in dave erin mira noel; do E2E_LOCAL_PERSONA=$p node_modules/.bin/playwright test --config=playwright.local-auth.config.ts; done
+node_modules/.bin/playwright test tests/e2e/specs/local --project=chromium --reporter=list
+```
+
+The Propose specs pin the browser's time zone to `America/New_York` and read the zone the dialog says it
+uses ("Times are in your time zone: …"), then assert that the wall time typed there is what Postgres
+holds in UTC, and that the dialog shows the very same wall time again once the change is back in
+Customer Approval.
+
+The sessions last one hour: re-mint before a long or repeated run. The specs leave the fixtures re-seeded,
+so the read-only smoke spec that sorts after them still finds `CHG-FIXED-007` in Customer Approval.
 
 ## Layout
 
