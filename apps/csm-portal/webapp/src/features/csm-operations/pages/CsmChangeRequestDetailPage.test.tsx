@@ -1623,6 +1623,11 @@ function lcSeed(
       state: "new",
       requestedBy: { id: LC_CREATOR.id, name: LC_CREATOR.name },
       createdBy: LC_CREATOR.email,
+      // Request Approval is refused when a customer box is ticked and there is no
+      // Customer Project (nobody to ask, and none can be set once the change leaves
+      // New), so these change requests have one; "no customer group" is a project
+      // with no registered contacts, below.
+      project: { id: "proj-a", name: "Acme Project" },
       customerApprovalRequired: flags.approval,
       customerReviewRequired: flags.review,
       customerContacts: customerGroup ? (customerGroup.contacts ?? customerGroup.members) : [],

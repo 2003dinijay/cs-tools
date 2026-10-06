@@ -86,8 +86,13 @@
 //     provisioned and the manual paths above remain. `canDecide` is true only on
 //     the signed-in user's own REQUESTED row of a live stage, never for the creator;
 //   - `customerApprovalRequired` / `customerReviewRequired` are on the detail
-//     response and editable via PATCH until their gate passes; a late edit is
-//     refused with a 400 and a readable message;
+//     response. They are fully editable in New (the creation phase). From the moment
+//     the change leaves New they are ADD-ONLY: false -> true is accepted until the
+//     gate the box controls has passed (Customer Approval: while the change is in
+//     New / Assess / Authorize; Customer Review: until Customer Review) and only
+//     when the change already has a Customer Project; true -> false is refused in
+//     every state but New. Each refusal is a 400 with the backend's own message
+//     (see the constants below);
 //   - `hasCustomerApproved` / `hasCustomerReviewed` (the customer's outcome) are
 //     on the detail response and stamped true when a customer gate is left by an
 //     answer, the customer's own or an engineer's bypass: `scheduled` out of
@@ -124,8 +129,13 @@
 //     `deploymentProductIds` / `category` / `comment` / `workNote` after the
 //     backend's own validation -- deployments must belong to the project,
 //     deployment products must be exactly the derived set (all else a 400 with a
-//     readable message), and the project / deployments are locked from
-//     `implement` onwards. The detail response returns `project`, `deployments`,
+//     readable message). The Customer Project is editable only in New and FROZEN
+//     from the moment the change leaves it (a PATCH that names a different project
+//     is a 400; naming the stored one is an accepted no-op); the deployments stay
+//     editable until `implement`, within the frozen project. A change can never
+//     return to New (`{state: "new"}` after New is a 400), and Request Approval
+//     (`{state: "assess"}`) is refused when a customer box is ticked and the change
+//     has no Customer Project. The detail response returns `project`, `deployments`,
 //     `deploymentProducts`, `customerContacts`, `category` (EntityRef /
 //     EntityRef[] / {id,name,email}[] / the category enum value).
 //
@@ -286,6 +296,20 @@ const derivedProductIds = (deploymentIds: string[]): string[] =>
 const CUSTOMER_GROUP_ID_REMOVED =
   "customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts";
 const ENVIRONMENT_IDS_REMOVED = "environmentIds is no longer supported: deployments carry the environment";
+
+// The lock on the customer's part of a change request (entity-service
+// `patchChangeRequestTx`, "creation-phase gate"). Same text, character for character:
+// the state is the change request's CURRENT one, in its API spelling.
+export const CANNOT_RETURN_TO_NEW =
+  'state "new" cannot be set: a change request that has left New cannot return to it. Cancel it and clone it instead.';
+export const projectFrozenMessage = (state: string): string =>
+  `projectId can no longer be changed: the Customer Project is fixed once approval has been requested (current state: ${state}). Cancel this change request and clone it to use another project.`;
+export const requirementCannotBeRemovedMessage = (field: string, state: string): string =>
+  `${field} can no longer be turned off: once approval has been requested a customer requirement can be added but never removed (current state: ${state}). Cancel and clone to correct it.`;
+export const requirementNeedsProjectMessage = (field: string): string =>
+  `${field} cannot be turned on: this change request has no Customer Project, and one can no longer be set after approval was requested. Cancel and clone it with a project.`;
+export const REQUEST_APPROVAL_NEEDS_PROJECT =
+  "approval cannot be requested: the customer's approval and/or review is required but no Customer Project is set, so there is nobody to ask. Select a Customer Project first (or clear the requirement).";
 
 /**
  * The 400 the backend answers a manual PATCH of a customer state's outcome with
@@ -647,6 +671,8 @@ export async function installFakeChangeRequestApi(
       return `category must be one of ${CATEGORIES.join(", ")}`;
     }
     if (isPatch) {
+      // The Customer Project part is frozen far earlier (creationPhaseProblem); what
+      // is left here is the deployments' own window, which closes at Implement.
       const touchesScope =
         (body.projectId !== undefined && body.projectId !== scope.projectId) ||
         (body.deploymentIds !== undefined && !sameSet(body.deploymentIds as string[], scope.deploymentIds));
@@ -684,6 +710,45 @@ export async function installFakeChangeRequestApi(
     next.deploymentProductIds = derivedProductIds(next.deploymentIds);
     if (body.category !== undefined) next.category = body.category as string | null;
     return next;
+  };
+
+  /**
+   * The backend's creation-phase gate on a PATCH body (the customer's part of a
+   * change request is fully editable only in New): the first refusal wins, in the
+   * backend's order, and nothing is written when one applies. Resending a value
+   * that is already stored is never a refusal.
+   */
+  const creationPhaseProblem = (body: Record<string, unknown>): string | null => {
+    const inNew = state === "new";
+    // 1. A change request that has left New cannot return to it.
+    if (body.state === "new" && !inNew) return CANNOT_RETURN_TO_NEW;
+    // 2. The Customer Project is frozen once the change leaves New.
+    if (!inNew && body.projectId !== undefined && body.projectId !== scope.projectId) {
+      return projectFrozenMessage(state);
+    }
+    const boxes = [
+      { field: "customerApprovalRequired", stored: flags.customerApprovalRequired, gateLocked: APPROVAL_FLAG_LOCKED },
+      { field: "customerReviewRequired", stored: flags.customerReviewRequired, gateLocked: REVIEW_FLAG_LOCKED },
+    ] as const;
+    // 3. After New a customer requirement can be added but never removed.
+    for (const box of boxes) {
+      if (!inNew && box.stored && body[box.field] === false) return requirementCannotBeRemovedMessage(box.field, state);
+    }
+    // 4. ... and added only before its gate, and only with a Customer Project to ask.
+    for (const box of boxes) {
+      if (!inNew && !box.stored && body[box.field] === true) {
+        if (box.gateLocked.includes(state)) return `${box.field} cannot be changed once the change request is ${state}`;
+        if (!scope.projectId) return requirementNeedsProjectMessage(box.field);
+      }
+    }
+    // 6. Request Approval needs somebody to ask when the customer's part is required.
+    if (body.state === "assess" && inNew) {
+      const approval = typeof body.customerApprovalRequired === "boolean" ? body.customerApprovalRequired : flags.customerApprovalRequired;
+      const review = typeof body.customerReviewRequired === "boolean" ? body.customerReviewRequired : flags.customerReviewRequired;
+      const project = typeof body.projectId === "string" && body.projectId ? body.projectId : scope.projectId;
+      if ((approval || review) && !project) return REQUEST_APPROVAL_NEEDS_PROJECT;
+    }
+    return null;
   };
 
   const cors = (route: Route): Record<string, string> => ({
@@ -960,6 +1025,9 @@ export async function installFakeChangeRequestApi(
           customerApprovalRequired?: boolean;
           customerReviewRequired?: boolean;
         } & Record<string, unknown>;
+        // The creation-phase gate: nothing below is written when it refuses.
+        const gateProblem = creationPhaseProblem(body);
+        if (gateProblem) return json(route, { message: gateProblem }, 400);
         // Customer scope / category (and the removed customerGroupId / environmentIds,
         // which are refused), validated like the backend.
         const touchesScopeFields = ["projectId", "deploymentIds", "environmentIds", "deploymentProductIds", "customerGroupId", "category"].some(
@@ -970,27 +1038,18 @@ export async function installFakeChangeRequestApi(
           const problem = validateScope(body, next, true);
           if (problem) return json(route, { message: problem }, 400);
           Object.assign(scope, next);
-          // A project written while the CR already sits at a customer gate
-          // (re)provisions the stage for that project's contacts, like the backend.
+          // A project written (even the stored one again: an accepted no-op) while the
+          // CR already sits at a customer gate (re)provisions the stage for that
+          // project's contacts, like the backend.
           if (body.projectId !== undefined) syncCustomerStage();
         }
         for (const kind of ["comment", "workNote"] as const) {
           const text = body[kind];
           if (typeof text === "string" && text.trim()) journal.push({ kind, text });
         }
-        // Checkbox edits: refused once the gate they control has passed.
-        if (body.customerApprovalRequired !== undefined) {
-          if (APPROVAL_FLAG_LOCKED.includes(state)) {
-            return json(route, { message: `customerApprovalRequired cannot be changed once the change request is ${state}` }, 400);
-          }
-          flags.customerApprovalRequired = body.customerApprovalRequired;
-        }
-        if (body.customerReviewRequired !== undefined) {
-          if (REVIEW_FLAG_LOCKED.includes(state)) {
-            return json(route, { message: `customerReviewRequired cannot be changed once the change request is ${state}` }, 400);
-          }
-          flags.customerReviewRequired = body.customerReviewRequired;
-        }
+        // Checkbox edits: the gate above has refused every one that is not allowed.
+        if (typeof body.customerApprovalRequired === "boolean") flags.customerApprovalRequired = body.customerApprovalRequired;
+        if (typeof body.customerReviewRequired === "boolean") flags.customerReviewRequired = body.customerReviewRequired;
         const target = body.state;
         if (target === undefined) {
           return json(route, { id: FAKE_CR_ID, state, message: "Change request updated.", changeRequest: detail() });

@@ -43,6 +43,14 @@ import {
   isCreatableChangeRequestType,
   NO_CUSTOMER_CONTACTS_HELPER,
   noCustomerContactsHelper,
+  CUSTOMER_REQUIREMENT_ADD_ONLY_REASON,
+  CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON,
+  CUSTOMER_REQUIREMENT_ONCE_SAVED_HELPER,
+  REQUEST_APPROVAL_NEEDS_PROJECT_REASON,
+  customerProjectLockedReason,
+  customerRequirementOnceSavedHelper,
+  isChangeRequestCreationPhase,
+  requestApprovalNeedsProjectReason,
 } from "@features/csm-operations/utils/changeRequests";
 import type { BeChangeRequestApproval, BeChangeRequestDetail } from "@api/backend/types";
 
@@ -714,23 +722,173 @@ describe("changeRequestBlockingReason — customer states", () => {
   });
 });
 
-describe("customer approval / review edit locks", () => {
-  it("locks Customer Approval from customer_approval onwards (incl. off-ramps), not before", () => {
-    for (const s of ["new", "assess", "authorize"]) {
-      expect(customerApprovalLockedReason(s)).toBeNull();
+// The rule for the customer's part of a change request is a pure function of
+// (state, the stored tick box, whether the change request has a Customer Project),
+// and the CSM Edit dialog computes it up front, mirroring the backend. This is the
+// table, one row per case, with an id of the form
+//
+//     <kind>:<state>:<stored on|off>:<project|noproject>
+//
+// (kind is `approval` or `review`; the state of a change request with none recorded
+// is written `none`). The backend carries the same table in its own Go test under the
+// same ids, so a drift between the two shows up as a failing row in one of them.
+//
+// Outcomes: `editable` (the box may be changed), `add-only` (a ticked box after New,
+// read-only), `gate` (an unticked box whose gate has passed), `needs-project`
+// (an unticked box after New with no Customer Project to ask, and none can be set).
+type LockOutcome = "editable" | "add-only" | "gate" | "needs-project";
+
+const LOCK_REASON: Record<Exclude<LockOutcome, "editable">, (kind: "approval" | "review") => string> = {
+  "add-only": () => CUSTOMER_REQUIREMENT_ADD_ONLY_REASON,
+  "needs-project": () => CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON,
+  gate: (kind) => `Locked: the change request has already reached the customer ${kind} step or later.`,
+};
+
+const APPROVAL_BEFORE_GATE = ["assess", "authorize"];
+const APPROVAL_GATE_PASSED = ["customer_approval", "scheduled", "implement", "review", "customer_review", "closed", "rollback", "canceled"];
+const REVIEW_BEFORE_GATE = ["assess", "authorize", "customer_approval", "scheduled", "implement", "review"];
+const REVIEW_GATE_PASSED = ["customer_review", "closed", "rollback", "canceled"];
+
+interface LockRow {
+  id: string;
+  kind: "approval" | "review";
+  state: string | undefined;
+  stored: boolean;
+  hasProject: boolean;
+  outcome: LockOutcome;
+}
+
+function lockRows(): LockRow[] {
+  const rows: LockRow[] = [];
+  const add = (kind: "approval" | "review", state: string | undefined, stored: boolean, hasProject: boolean, outcome: LockOutcome) =>
+    rows.push({
+      id: `${kind}:${state ?? "none"}:${stored ? "on" : "off"}:${hasProject ? "project" : "noproject"}`,
+      kind,
+      state,
+      stored,
+      hasProject,
+      outcome,
+    });
+  for (const [kind, before, passed] of [
+    ["approval", APPROVAL_BEFORE_GATE, APPROVAL_GATE_PASSED],
+    ["review", REVIEW_BEFORE_GATE, REVIEW_GATE_PASSED],
+  ] as const) {
+    for (const stored of [false, true]) {
+      for (const hasProject of [false, true]) {
+        // The creation phase: everything editable, whatever is stored.
+        add(kind, "new", stored, hasProject, "editable");
+        add(kind, undefined, stored, hasProject, "editable");
+        // After New: a ticked box stays ticked, in every state; an unticked one can be
+        // added only before its gate and only with a project to ask.
+        for (const state of [...before, ...passed]) {
+          if (stored) add(kind, state, stored, hasProject, "add-only");
+          else if (passed.includes(state)) add(kind, state, stored, hasProject, "gate");
+          else add(kind, state, stored, hasProject, hasProject ? "editable" : "needs-project");
+        }
+      }
     }
-    for (const s of ["customer_approval", "scheduled", "implement", "review", "customer_review", "closed", "rollback", "canceled"]) {
-      expect(customerApprovalLockedReason(s)).toMatch(/locked/i);
-    }
+  }
+  return rows;
+}
+
+describe("customer approval / review edit rule (the table the backend carries too)", () => {
+  const rows = lockRows();
+
+  it("covers every state, both boxes, both stored values and both project cases, with unique ids", () => {
+    // 2 kinds x 2 stored x 2 project x (new + none + 10 states after New) = 96 rows.
+    expect(rows).toHaveLength(96);
+    expect(new Set(rows.map((r) => r.id)).size).toBe(rows.length);
   });
 
-  it("locks Customer Review from customer_review onwards, but not at review or earlier", () => {
-    for (const s of ["new", "assess", "authorize", "customer_approval", "scheduled", "implement", "review"]) {
-      expect(customerReviewLockedReason(s)).toBeNull();
+  it.each(rows.map((r) => [r.id, r] as const))("%s", (_id, row) => {
+    const reason = (row.kind === "approval" ? customerApprovalLockedReason : customerReviewLockedReason)(row.state, {
+      stored: row.stored,
+      hasProject: row.hasProject,
+    });
+    if (row.outcome === "editable") expect(reason).toBeNull();
+    else expect(reason).toBe(LOCK_REASON[row.outcome](row.kind));
+  });
+
+  // The rows that matter most, written out so a reader can see the rule without the generator.
+  it.each([
+    ["approval:new:off:noproject", "new", false, false, null],
+    ["approval:new:on:project", "new", true, true, null],
+    ["approval:assess:on:project", "assess", true, true, CUSTOMER_REQUIREMENT_ADD_ONLY_REASON],
+    ["approval:authorize:off:project", "authorize", false, true, null],
+    ["approval:authorize:off:noproject", "authorize", false, false, CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON],
+    ["approval:customer_approval:off:project", "customer_approval", false, true, "Locked: the change request has already reached the customer approval step or later."],
+    ["approval:scheduled:on:project", "scheduled", true, true, CUSTOMER_REQUIREMENT_ADD_ONLY_REASON],
+  ] as const)("spot check %s", (_id, state, stored, hasProject, expected) => {
+    expect(customerApprovalLockedReason(state, { stored, hasProject })).toBe(expected);
+  });
+
+  it("the Re-schedule hole is closed: a change request that reached Customer Approval has the box ticked, and a ticked box can never be unticked", () => {
+    // A change request can only be in Customer Approval (or Authorize again after a
+    // Re-schedule) with the box ticked, and every state after New refuses to untick it.
+    for (const state of ["authorize", "customer_approval", "scheduled"]) {
+      expect(customerApprovalLockedReason(state, { stored: true, hasProject: true })).toBe(
+        CUSTOMER_REQUIREMENT_ADD_ONLY_REASON,
+      );
     }
-    for (const s of ["customer_review", "closed", "rollback", "canceled"]) {
-      expect(customerReviewLockedReason(s)).toMatch(/locked/i);
+    for (const state of ["customer_review", "closed", "rollback"]) {
+      expect(customerReviewLockedReason(state, { stored: true, hasProject: true })).toBe(
+        CUSTOMER_REQUIREMENT_ADD_ONLY_REASON,
+      );
     }
+  });
+});
+
+describe("customerRequirementOnceSavedHelper", () => {
+  it("warns that an addable requirement cannot be removed, only after New and only while unticked", () => {
+    expect(customerRequirementOnceSavedHelper("assess", false)).toBe(CUSTOMER_REQUIREMENT_ONCE_SAVED_HELPER);
+    expect(customerRequirementOnceSavedHelper("authorize", false)).toBe("Once saved this can't be removed.");
+    expect(customerRequirementOnceSavedHelper("new", false)).toBeNull();
+    expect(customerRequirementOnceSavedHelper(undefined, false)).toBeNull();
+    expect(customerRequirementOnceSavedHelper("assess", true)).toBeNull();
+  });
+});
+
+describe("the Customer Project is fixed once approval was requested", () => {
+  it("is editable in New (and when no state is recorded yet)", () => {
+    expect(isChangeRequestCreationPhase("new")).toBe(true);
+    expect(isChangeRequestCreationPhase(undefined)).toBe(true);
+    expect(isChangeRequestCreationPhase(null)).toBe(true);
+    expect(customerProjectLockedReason("new")).toBeNull();
+    expect(customerProjectLockedReason(undefined)).toBeNull();
+  });
+
+  it.each(["assess", "authorize", "customer_approval", "scheduled", "implement", "review", "customer_review", "closed", "rollback", "canceled"])(
+    "is read-only in %s, with the reason",
+    (state) => {
+      expect(isChangeRequestCreationPhase(state)).toBe(false);
+      expect(customerProjectLockedReason(state)).toBe("Fixed when approval was requested. Cancel and clone to change it.");
+    },
+  );
+});
+
+describe("requestApprovalNeedsProjectReason", () => {
+  const withProject = { id: "p1", name: "Acme" };
+  it("blocks Request Approval when a customer box is ticked and there is no Customer Project", () => {
+    expect(requestApprovalNeedsProjectReason({ state: "new", customerApprovalRequired: true })).toBe(
+      "Select a Customer Project before requesting approval",
+    );
+    expect(requestApprovalNeedsProjectReason({ state: "new", customerReviewRequired: true })).toBe(
+      REQUEST_APPROVAL_NEEDS_PROJECT_REASON,
+    );
+    expect(
+      requestApprovalNeedsProjectReason({ state: "new", customerApprovalRequired: true, customerReviewRequired: true }),
+    ).toBe(REQUEST_APPROVAL_NEEDS_PROJECT_REASON);
+  });
+
+  it("does not block when there is a project, or when no customer part is required", () => {
+    expect(requestApprovalNeedsProjectReason({ state: "new", customerApprovalRequired: true, project: withProject })).toBeNull();
+    expect(requestApprovalNeedsProjectReason({ state: "new", customerReviewRequired: true, project: withProject })).toBeNull();
+    expect(requestApprovalNeedsProjectReason({ state: "new" })).toBeNull();
+    expect(requestApprovalNeedsProjectReason({ state: "new", customerApprovalRequired: false, customerReviewRequired: false })).toBeNull();
+  });
+
+  it("is about the move out of New only", () => {
+    expect(requestApprovalNeedsProjectReason({ state: "assess", customerApprovalRequired: true })).toBeNull();
   });
 });
 
@@ -881,13 +1039,13 @@ describe("change request category helpers", () => {
   });
 });
 
-describe("changeRequestScopeLockedReason", () => {
+describe("changeRequestScopeLockedReason (the deployments; the Customer Project is frozen earlier)", () => {
   it("is editable before implementation and locked from implement onwards", () => {
     for (const state of ["new", "assess", "authorize", "customer_approval", "scheduled"]) {
       expect(changeRequestScopeLockedReason(state)).toBeNull();
     }
     for (const state of ["implement", "review", "customer_review", "closed", "rollback", "canceled"]) {
-      expect(changeRequestScopeLockedReason(state)).toMatch(/can't be changed/);
+      expect(changeRequestScopeLockedReason(state)).toMatch(/deployments can't be changed/);
     }
     expect(changeRequestScopeLockedReason(undefined)).toBeNull();
   });
@@ -947,9 +1105,11 @@ describe("noCustomerContactsHelper", () => {
     }
   });
 
-  it("says what is going on", () => {
+  it("says what is going on, and does not promise that changing the project fixes it", () => {
     expect(NO_CUSTOMER_CONTACTS_HELPER).toMatch(
       /^No registered customer contacts are assigned to this change request's project, so no customer approvers were assigned\./,
     );
+    expect(NO_CUSTOMER_CONTACTS_HELPER).not.toMatch(/changing the Customer Project and saving/i);
+    expect(NO_CUSTOMER_CONTACTS_HELPER).toMatch(/fixed once approval is requested/i);
   });
 });

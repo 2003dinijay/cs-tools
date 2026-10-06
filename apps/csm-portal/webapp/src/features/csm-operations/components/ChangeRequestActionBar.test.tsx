@@ -337,6 +337,50 @@ describe("ChangeRequestActionBar — per-target blocked reasons", () => {
     expect(screen.getByRole("button", { name: /request approval/i })).toBeEnabled();
   });
 
+  describe("Request Approval needs a Customer Project when a customer box is ticked", () => {
+    const REASON = "Select a Customer Project before requesting approval";
+    const ACME = { id: "proj-a", name: "Acme Project" };
+
+    it.each([
+      ["Customer Approval", { customerApprovalRequired: true }],
+      ["Customer Review", { customerReviewRequired: true }],
+      ["both", { customerApprovalRequired: true, customerReviewRequired: true }],
+    ])("is disabled, with the reason, when %s is ticked and there is no project", (_name, flags) => {
+      const { onAction } = renderBar({ state: "new", legalNextStates: ["assess"], ...flags });
+      const button = screen.getByRole("button", { name: /request approval/i });
+      expect(button).toBeDisabled();
+      expect(button.closest('[tabindex="0"]')).toHaveAttribute("aria-label", `Request Approval: ${REASON}`);
+      fireEvent.click(button);
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    it("is enabled once a Customer Project is set", () => {
+      renderBar({ state: "new", legalNextStates: ["assess"], customerApprovalRequired: true, project: ACME });
+      expect(screen.getByRole("button", { name: /request approval/i })).toBeEnabled();
+    });
+
+    it("is enabled with no project when no customer part is required (a Standard change too)", () => {
+      renderBar({ state: "new", type: "standard", legalNextStates: ["assess"], customerApprovalRequired: false });
+      expect(screen.getByRole("button", { name: /request approval/i })).toBeEnabled();
+    });
+
+    it("names the missing team first, when both are missing", () => {
+      renderBar({ state: "new", legalNextStates: ["assess"], assignedTeam: null, customerApprovalRequired: true });
+      expect(screen.getByRole("button", { name: /request approval/i }).closest('[tabindex="0"]')).toHaveAttribute(
+        "aria-label",
+        "Request Approval: Set an assigned team before requesting approval",
+      );
+    });
+
+    it("leaves Cancel change usable behind the menu", () => {
+      const { onAction } = renderBar({ state: "new", legalNextStates: ["assess", "canceled"], customerReviewRequired: true });
+      expect(screen.getByRole("button", { name: /request approval/i })).toBeDisabled();
+      openMenu();
+      fireEvent.click(screen.getByRole("menuitem", { name: /cancel change/i }));
+      expect(onAction).toHaveBeenCalledWith("canceled");
+    });
+  });
+
   it("blocks only the target with the unmet prerequisite, leaving the others clickable", () => {
     // `assess` is blocked *and* is first in FORWARD_ORDER, so it stays the
     // promoted (disabled) primary while `canceled` stays usable behind the

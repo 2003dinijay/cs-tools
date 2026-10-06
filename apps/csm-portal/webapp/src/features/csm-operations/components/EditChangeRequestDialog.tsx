@@ -66,6 +66,8 @@ import {
   changeRequestCategoryValue,
   changeRequestScopeLockedReason,
   customerApprovalLockedReason,
+  customerProjectLockedReason,
+  customerRequirementOnceSavedHelper,
   customerReviewLockedReason,
 } from "@features/csm-operations/utils/changeRequests";
 
@@ -172,11 +174,20 @@ function useRichTextPlanField(storedHtml?: string | null): RichTextPlanField {
  *
  * Customer Project / Deployments / Deployment products and Category are
  * editable too. The scope fields cascade exactly like the create form
- * (project -> deployments, with deployment products derived and read-only) and
- * are locked once the change request reaches Implement, because the backend
- * refuses the edit from there on. The Customer Group is shown read-only: it is
- * the chosen project's registered contacts, so changing the project changes it
- * and nothing about it is ever sent.
+ * (project -> deployments, with deployment products derived and read-only). The
+ * Customer Project is editable only in New and is READ-ONLY from the moment
+ * approval is requested (the backend refuses the edit in every later state); the
+ * deployments stay editable until the change request reaches Implement, within
+ * that project. The Customer Group is shown read-only: it is the chosen project's
+ * registered contacts, so changing the project changes it and nothing about it is
+ * ever sent.
+ *
+ * The two customer tick boxes are fully editable in New and ADD-ONLY afterwards:
+ * a ticked box is read-only, an unticked one can still be ticked until the gate it
+ * controls is passed (and only with a Customer Project set), with a note that it
+ * cannot be removed once saved. The rule is computed here from the record
+ * (`customerApprovalLockedReason` and friends) exactly as the backend decides it;
+ * the backend remains the authority and its 400 shows in `saveError`.
  *
  * Deliberately NOT here, even though the backend's write contract accepts
  * them: `priorityKey` (no metadata endpoint yet for the picker),
@@ -224,10 +235,20 @@ export default function EditChangeRequestDialog({
   const initialIsPlanningVisibleToCustomers = cr.isPlanningVisibleToCustomers ?? false;
   const initialCustomerApprovalRequired = cr.customerApprovalRequired ?? false;
   const initialCustomerReviewRequired = cr.customerReviewRequired ?? false;
-  // Once the gate a checkbox controls has passed the backend refuses the edit
-  // (400), so the control is disabled up front with the reason.
-  const customerApprovalLocked = customerApprovalLockedReason(cr.state);
-  const customerReviewLocked = customerReviewLockedReason(cr.state);
+  // After New the customer's part is add-only (see the rules in utils/changeRequests.ts):
+  // a ticked box is read-only, an unticked one may still be ticked until the gate it
+  // controls has passed and only when a Customer Project is set. The backend refuses
+  // anything else (400) and stays the authority; the control is disabled up front
+  // with the reason, computed here from the same inputs (state, stored value, project).
+  const hasStoredProject = !!cr.project?.id;
+  const customerApprovalLocked = customerApprovalLockedReason(cr.state, {
+    stored: initialCustomerApprovalRequired,
+    hasProject: hasStoredProject,
+  });
+  const customerReviewLocked = customerReviewLockedReason(cr.state, {
+    stored: initialCustomerReviewRequired,
+    hasProject: hasStoredProject,
+  });
   const [plannedStart, setPlannedStart] = useState(initialPlannedStart);
   const [plannedEnd, setPlannedEnd] = useState(initialPlannedEnd);
   const [assignedTeamId, setAssignedTeamId] = useState(initialAssignedTeamId);
@@ -236,9 +257,11 @@ export default function EditChangeRequestDialog({
   const initialDeploymentIds = useMemo(() => cr.deployments?.map((d) => d.id) ?? [], [cr.deployments]);
   const initialCategory = changeRequestCategoryValue(cr.category);
   const [category, setCategory] = useState<string>(initialCategory);
-  // Customer Project / Deployments / Deployment products,
-  // seeded from the record. Locked (like the customer checkboxes) once the
-  // backend would refuse the edit.
+  // Customer Project / Deployments / Deployment products, seeded from the record.
+  // The project is fixed the moment the change request leaves New; the deployments
+  // stay editable (within that project) until Implement. The backend refuses
+  // anything else, so the controls are disabled up front with the reason.
+  const projectLocked = customerProjectLockedReason(cr.state);
   const scopeLocked = changeRequestScopeLockedReason(cr.state);
   const scope = useChangeRequestScope({
     projectId: cr.project?.id,
@@ -308,6 +331,8 @@ export default function EditChangeRequestDialog({
     // The scope fields are validated by the backend as a unit, so when any of
     // them changed the whole set goes out together (see BePatchChangeRequestPayload).
     // Deployment products are derived: sent only once the lookup has settled.
+    // A frozen project is never sent changed (its picker is disabled); sending the
+    // stored one along with changed deployments is accepted as a no-op.
     const scopeChanged =
       !scopeLocked &&
       !!scope.projectId &&
@@ -422,6 +447,7 @@ export default function EditChangeRequestDialog({
     checked: boolean,
     onChange: (next: boolean) => void,
     lockedReason: string | null,
+    onceSavedHelper: string | null,
   ): JSX.Element => {
     const control = (
       <FormControlLabel
@@ -439,7 +465,7 @@ export default function EditChangeRequestDialog({
           <Box>
             <Typography variant="body1">{label}</Typography>
             <Typography id={`${id}-desc`} variant="body2" color="text.secondary">
-              {lockedReason ?? helperText}
+              {lockedReason ?? (onceSavedHelper ? `${helperText} ${onceSavedHelper}` : helperText)}
             </Typography>
           </Box>
         }
@@ -559,10 +585,17 @@ export default function EditChangeRequestDialog({
             aria-label="Customer project and deployments"
             sx={{ display: "flex", flexDirection: "column", gap: 1 }}
           >
-            {scopeLocked && <Alert severity="info">{scopeLocked}</Alert>}
+            {(projectLocked || scopeLocked) && (
+              // An explanation, not an error: a status, so a save error stays the dialog's one alert.
+              <Alert severity="info" role="status">
+                {projectLocked && <Typography variant="body2">{projectLocked}</Typography>}
+                {scopeLocked && <Typography variant="body2">{scopeLocked}</Typography>}
+              </Alert>
+            )}
             <ChangeRequestScopeFields
               scope={scope}
               disabled={isSaving || !!scopeLocked}
+              projectDisabled={!!projectLocked}
               idPrefix="cr-edit"
               // A saved project can be swapped for another but not removed —
               // the patch has no way to express "no project".
@@ -600,6 +633,7 @@ export default function EditChangeRequestDialog({
             customerApprovalRequired,
             setCustomerApprovalRequired,
             customerApprovalLocked,
+            customerRequirementOnceSavedHelper(cr.state, initialCustomerApprovalRequired),
           )}
           {renderCustomerStepCheckbox(
             "cr-edit-customer-review",
@@ -608,6 +642,7 @@ export default function EditChangeRequestDialog({
             customerReviewRequired,
             setCustomerReviewRequired,
             customerReviewLocked,
+            customerRequirementOnceSavedHelper(cr.state, initialCustomerReviewRequired),
           )}
           <TextField
             label="Rollback duration"

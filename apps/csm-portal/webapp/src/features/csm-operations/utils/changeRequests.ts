@@ -370,7 +370,7 @@ export function changeRequestBlockingReason(
  */
 export const NO_CUSTOMER_CONTACTS_HELPER =
   "No registered customer contacts are assigned to this change request's project, so no customer approvers were assigned. " +
-  "Once a contact registers on the project, changing the Customer Project and saving the change request routes the step to them; until then the customer's response is recorded manually.";
+  "The Customer Project is fixed once approval is requested, so it cannot be changed to route the step; until the step is routed to a contact who registers on the project, the customer's response is recorded manually.";
 
 export function noCustomerContactsHelper(
   state: string | null | undefined,
@@ -381,12 +381,65 @@ export function noCustomerContactsHelper(
   return customerContacts && customerContacts.length > 0 ? null : NO_CUSTOMER_CONTACTS_HELPER;
 }
 
+// ---------------------------------------------------------------------------
+// What can still be edited about the customer's part of a change request
+//
+// The rule is a pure function of (state, the stored value, whether the change
+// request has a Customer Project), so this mirrors the backend EXACTLY, up front,
+// instead of waiting for its 400 (the backend stays the authority and still
+// answers one; its own table test and the table in `__tests__/changeRequests.test.ts`
+// here carry the same rows, under the same ids):
+//
+//   - CREATION PHASE is the state New (before Request Approval). The Customer
+//     Project (which fixes the Customer Group, derived read-only from that
+//     project's registered contacts) and both tick boxes are fully editable in it.
+//   - The moment the change request leaves New the Customer Project is FROZEN in
+//     every later state, for everyone. A correction is Cancel + Clone.
+//   - After New a tick box is ADD-ONLY: an unticked one may be ticked until the
+//     gate it controls is passed (Customer Approval: while the change request is
+//     New / Assess / Authorize, i.e. before it can reach Customer Approval;
+//     Customer Review: until it reaches Customer Review), and needs a Customer
+//     Project to already be set (it can no longer be set then); a ticked one can
+//     never be unticked.
+//   - Deployments and deployment products keep their own rule: editable until
+//     Implement, and always within the frozen project.
+//
+// A change request cannot return to New, so none of this needs a record of what
+// it reached. It is also what closes the Re-schedule hole: a ticked box stays
+// ticked, so a change sent back to Authorize asks the same contacts again.
+// ---------------------------------------------------------------------------
+
+/** True while a change request is being created: state New, or none recorded yet. */
+export function isChangeRequestCreationPhase(state?: string | null): boolean {
+  return !state || state === "new";
+}
+
+/** Why the Customer Project cannot be changed once approval was requested. */
+export const CUSTOMER_PROJECT_FROZEN_REASON =
+  "Fixed when approval was requested. Cancel and clone to change it.";
+
+/** Why a ticked customer requirement is read-only after New. */
+export const CUSTOMER_REQUIREMENT_ADD_ONLY_REASON =
+  "Once approval has been requested a customer requirement can be added but never removed.";
+
+/** Why an unticked customer requirement cannot be added after New: no project, and none can be set. */
+export const CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON =
+  "Needs a Customer Project, which can no longer be set. Cancel and clone.";
+
+/** The helper under a customer requirement that may still be added, but not removed. */
+export const CUSTOMER_REQUIREMENT_ONCE_SAVED_HELPER = "Once saved this can't be removed.";
+
+/** Why the Customer Project is read-only in `state`, or `null` while it is editable (state New). */
+export function customerProjectLockedReason(state?: string | null): string | null {
+  return isChangeRequestCreationPhase(state) ? null : CUSTOMER_PROJECT_FROZEN_REASON;
+}
+
 /**
- * States from which the "Customer Approval" checkbox can no longer be changed:
+ * States from which the "Customer Approval" checkbox can no longer be turned ON:
  * the gate it controls (between internal approval and scheduling) is either
  * being worked (`customer_approval`) or already behind the CR (`scheduled` and
- * everything after it, including the off-ramps). Mirrors the backend, which
- * refuses a late edit with a 400; this only lets the UI say so up front.
+ * everything after it, including the off-ramps). Mirrors the backend's
+ * `approvalRequirementEditable`.
  */
 const CUSTOMER_APPROVAL_LOCKED_STATES: readonly string[] = [
   "customer_approval",
@@ -399,7 +452,7 @@ const CUSTOMER_APPROVAL_LOCKED_STATES: readonly string[] = [
   "canceled",
 ];
 
-/** States from which the "Customer Review" checkbox can no longer be changed. */
+/** States from which the "Customer Review" checkbox can no longer be turned ON (`reviewRequirementEditable`). */
 const CUSTOMER_REVIEW_LOCKED_STATES: readonly string[] = [
   "customer_review",
   "closed",
@@ -407,24 +460,87 @@ const CUSTOMER_REVIEW_LOCKED_STATES: readonly string[] = [
   "canceled",
 ];
 
-/** Why the Customer Approval checkbox is locked in `state`, or `null` when it is editable. */
-export function customerApprovalLockedReason(state?: string | null): string | null {
-  return state && CUSTOMER_APPROVAL_LOCKED_STATES.includes(state)
-    ? "Locked: the change request has already reached the customer approval step or later."
-    : null;
+/** What a customer requirement's rule depends on besides the state. */
+export interface CustomerRequirementContext {
+  /** The tick box as stored (`customerApprovalRequired` / `customerReviewRequired`). */
+  stored: boolean;
+  /** Whether the change request has a Customer Project. */
+  hasProject: boolean;
 }
 
-/** Why the Customer Review checkbox is locked in `state`, or `null` when it is editable. */
-export function customerReviewLockedReason(state?: string | null): string | null {
-  return state && CUSTOMER_REVIEW_LOCKED_STATES.includes(state)
-    ? "Locked: the change request has already reached the customer review step or later."
-    : null;
+function customerRequirementLockedReason(
+  gateLockedStates: readonly string[],
+  gateWord: "approval" | "review",
+  state: string | null | undefined,
+  { stored, hasProject }: CustomerRequirementContext,
+): string | null {
+  if (isChangeRequestCreationPhase(state)) return null;
+  // Add-only: a requirement that was added stays, in every state after New.
+  if (stored) return CUSTOMER_REQUIREMENT_ADD_ONLY_REASON;
+  // Adding one is possible only until its gate is passed...
+  if (state && gateLockedStates.includes(state)) {
+    return `Locked: the change request has already reached the customer ${gateWord} step or later.`;
+  }
+  // ...and only with a Customer Project to ask (it can no longer be set).
+  if (!hasProject) return CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON;
+  return null;
 }
 
 /**
- * States from which Customer Project / Deployments / Deployment
- * products can no longer be changed (the backend refuses with a 400 from
- * `implement` onward).
+ * Why the Customer Approval checkbox cannot be changed in `state`, or `null` when
+ * it can (in New either way; after New only to tick an unticked one).
+ */
+export function customerApprovalLockedReason(
+  state: string | null | undefined,
+  context: CustomerRequirementContext,
+): string | null {
+  return customerRequirementLockedReason(CUSTOMER_APPROVAL_LOCKED_STATES, "approval", state, context);
+}
+
+/** Why the Customer Review checkbox cannot be changed in `state`, or `null` when it can. */
+export function customerReviewLockedReason(
+  state: string | null | undefined,
+  context: CustomerRequirementContext,
+): string | null {
+  return customerRequirementLockedReason(CUSTOMER_REVIEW_LOCKED_STATES, "review", state, context);
+}
+
+/**
+ * The warning shown under a customer requirement that can still be ticked after
+ * New (it can be added but never removed), or `null` where nothing is final yet:
+ * in New, or when the box is ticked already (it then has its own reason).
+ */
+export function customerRequirementOnceSavedHelper(
+  state: string | null | undefined,
+  stored: boolean,
+): string | null {
+  return isChangeRequestCreationPhase(state) || stored ? null : CUSTOMER_REQUIREMENT_ONCE_SAVED_HELPER;
+}
+
+/** Why Request Approval is blocked for want of a Customer Project, or `null`. */
+export const REQUEST_APPROVAL_NEEDS_PROJECT_REASON = "Select a Customer Project before requesting approval";
+
+/**
+ * Request Approval (New -> Assess) is refused by the backend when the customer's
+ * approval and/or review is required but the change request has no Customer
+ * Project: it would reach a customer stage with nobody to ask, and the project can
+ * no longer be set once it has left New. Offered up front as the reason the action
+ * is disabled.
+ */
+export function requestApprovalNeedsProjectReason(
+  cr: Pick<BeChangeRequestDetail, "state" | "project" | "customerApprovalRequired" | "customerReviewRequired">,
+): string | null {
+  // Only the move out of New: a resent {state: "assess"} on a change request that
+  // is already past it is the backend's idempotent no-op, not a request.
+  if (!isChangeRequestCreationPhase(cr.state)) return null;
+  const needsCustomer = cr.customerApprovalRequired === true || cr.customerReviewRequired === true;
+  return needsCustomer && !cr.project?.id ? REQUEST_APPROVAL_NEEDS_PROJECT_REASON : null;
+}
+
+/**
+ * States from which the deployments / deployment products can no longer be
+ * changed (the backend refuses with a 400 from `implement` onward). The Customer
+ * Project is frozen far earlier (see `customerProjectLockedReason`).
  */
 const SCOPE_LOCKED_STATES: readonly string[] = [
   "implement",
@@ -435,10 +551,10 @@ const SCOPE_LOCKED_STATES: readonly string[] = [
   "canceled",
 ];
 
-/** Why the project / deployments are locked in `state`, or `null` when editable. */
+/** Why the deployments (and their products) are locked in `state`, or `null` when editable. */
 export function changeRequestScopeLockedReason(state?: string | null): string | null {
   return state && SCOPE_LOCKED_STATES.includes(state)
-    ? "Locked: the customer project and deployments can't be changed once implementation has started."
+    ? "Locked: the deployments can't be changed once implementation has started."
     : null;
 }
 

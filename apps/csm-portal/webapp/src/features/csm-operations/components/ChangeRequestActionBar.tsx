@@ -34,6 +34,7 @@ import {
   customerRequestPendingReason,
   isCustomerBypassTransition,
   isDestructiveChangeRequestTransition,
+  requestApprovalNeedsProjectReason,
   type PendingCustomerRequest,
 } from "@features/csm-operations/utils/changeRequests";
 import type { BeChangeRequestDetail } from "@api/backend/types";
@@ -255,7 +256,7 @@ const TARGET_BLOCKED_REASON: Record<
   (cr: BeChangeRequestDetail, context: BlockedReasonContext) => string | null
 > = {
   assess: (cr) =>
-    cr.assignedTeam ? null : "Set an assigned team before requesting approval",
+    cr.assignedTeam ? requestApprovalNeedsProjectReason(cr) : "Set an assigned team before requesting approval",
   scheduled: (cr, { pendingCustomerRequest }) =>
     isCustomerBypassTransition("scheduled", cr.state)
       ? customerRequestPendingReason(pendingCustomerRequest)
