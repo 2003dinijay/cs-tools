@@ -24,6 +24,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
@@ -85,8 +86,19 @@ func patchAs(t *testing.T, fake *fakeEntityChangeRequestClient, granted middlewa
 		req = req.WithContext(middleware.WithGrantedAction(req.Context(), granted))
 	}
 	rec := httptest.NewRecorder()
-	NewChangeRequestHandler(fake).PatchChangeRequest(rec, req)
+	handlerAt(fake).PatchChangeRequest(rec, req)
 	return rec
+}
+
+// testNow is the clock the change-request handler tests run at, so that "a time
+// still to come" does not depend on the day the suite runs.
+var testNow = time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
+
+// handlerAt is a ChangeRequestHandler whose clock reads testNow.
+func handlerAt(fake *fakeEntityChangeRequestClient) *ChangeRequestHandler {
+	h := NewChangeRequestHandler(fake)
+	h.now = func() time.Time { return testNow }
+	return h
 }
 
 func wantMessage(t *testing.T, rec *httptest.ResponseRecorder, contains string) {
@@ -329,4 +341,133 @@ func TestGetChangeRequest_CarriesCustomerCanAnswer(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A proposed implementation time is checked before anything is sent to
+// entity-service: the Postgres values that used to ride through `::timestamptz`
+// (tomorrow, now, infinity, a bare date), a time that has passed, an inverted or
+// empty window. Each is a 400 in the words entity-service uses, with nothing
+// forwarded. entity-service repeats every check; this is only the first layer.
+func TestPatchChangeRequest_CustomerProposalIsValidatedBeforeItIsSent(t *testing.T) {
+	tests := []struct {
+		name, body, wantMsg string
+	}{
+		{"tomorrow", `{"plannedStartOn":"tomorrow"}`, "plannedStartOn must be a valid date-time"},
+		{"now", `{"plannedStartOn":"now"}`, "plannedStartOn must be a valid date-time"},
+		{"infinity", `{"plannedEndOn":"infinity"}`, "plannedEndOn must be a valid date-time"},
+		{"a bare date", `{"plannedStartOn":"2026-12-01"}`, "plannedStartOn must be a valid date-time"},
+		{"an empty value", `{"plannedStartOn":""}`, "plannedStartOn must be a valid date-time"},
+		{"a year out of range", `{"plannedStartOn":"2101-01-01 00:00:00"}`, "plannedStartOn must be a valid date-time"},
+		{"a start in the past", `{"plannedStartOn":"2026-10-05 10:00:00"}`, "plannedStartOn is in the past"},
+		{"a start that is right now", `{"plannedStartOn":"2026-10-06 00:00:00"}`, "plannedStartOn is in the past"},
+		{"an end in the past", `{"plannedEndOn":"2026-10-05 10:00:00"}`, "plannedEndOn is in the past"},
+		{"a window ending before it starts", `{"plannedStartOn":"2026-12-01 10:00:00","plannedEndOn":"2026-12-01 09:00:00"}`, "must not be after the planned end"},
+		{"a window with no duration", `{"plannedStartOn":"2026-12-01 10:00:00","plannedEndOn":"2026-12-01T10:00:00Z"}`, "must not be the same as the planned end"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			fake := &fakeEntityChangeRequestClient{}
+			rec := patchAs(t, fake, middleware.ActionDecide, tt.body)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400. body: %s", rec.Code, rec.Body.String())
+			}
+			wantMessage(t, rec, tt.wantMsg)
+			if fake.patchCalls != 0 {
+				t.Errorf("a refused proposal reached entity-service: %+v", fake.gotPatch)
+			}
+		})
+	}
+
+	t.Run("a start in the future is sent as typed", func(t *testing.T) {
+		fake := &fakeEntityChangeRequestClient{}
+		rec := patchAs(t, fake, middleware.ActionDecide, `{"plannedStartOn":"2026-10-06 00:00:01"}`)
+		if rec.Code != http.StatusOK || fake.patchCalls != 1 {
+			t.Fatalf("status %d, upstream calls %d; want 200 and 1", rec.Code, fake.patchCalls)
+		}
+		if fake.gotPatch.PlannedStartOn == nil || *fake.gotPatch.PlannedStartOn != "2026-10-06 00:00:01" {
+			t.Errorf("forwarded %+v, want the start exactly as the customer sent it", fake.gotPatch)
+		}
+	})
+
+	t.Run("an answer is not a proposal: no clock check on the window it was shown", func(t *testing.T) {
+		// The expected window is what the customer was shown, which may be in the
+		// past by the time they answer; it is compared by entity-service, not
+		// validated as a proposed time.
+		fake := &fakeEntityChangeRequestClient{}
+		rec := patchAs(t, fake, middleware.ActionDecide,
+			`{"isCustomerApproved":true,"expectedPlannedStartOn":"2020-01-01T10:00:00Z","expectedPlannedEndOn":"2020-01-01T12:00:00Z"}`)
+		if rec.Code != http.StatusOK || fake.patchCalls != 1 {
+			t.Fatalf("status %d, upstream calls %d; want 200 and 1", rec.Code, fake.patchCalls)
+		}
+	})
+}
+
+// Staff edit and create are checked for form and range only: a window that has
+// passed is something staff may record, and ordering is entity-service's call.
+func TestPatchChangeRequest_StaffWindowIsCheckedForFormAndRangeOnly(t *testing.T) {
+	t.Run("a malformed start is a 400 and is not sent", func(t *testing.T) {
+		for _, bad := range []string{"tomorrow", "infinity", "2030-03-01", "1999-01-01 00:00:00"} {
+			fake := &fakeEntityChangeRequestClient{}
+			rec := patchAs(t, fake, middleware.ActionUpdate, `{"plannedStartOn":"`+bad+`"}`)
+			if rec.Code != http.StatusBadRequest || fake.patchCalls != 0 {
+				t.Errorf("%q: status %d, upstream calls %d; want 400 and none", bad, rec.Code, fake.patchCalls)
+				continue
+			}
+			wantMessage(t, rec, "plannedStartOn must be a valid date-time")
+		}
+	})
+	t.Run("a start in the past is accepted", func(t *testing.T) {
+		fake := &fakeEntityChangeRequestClient{}
+		rec := patchAs(t, fake, middleware.ActionUpdate, `{"plannedStartOn":"2026-01-02 03:04:05","plannedEndOn":"2026-01-02 02:00:00"}`)
+		if rec.Code != http.StatusOK || fake.patchCalls != 1 {
+			t.Fatalf("status %d, upstream calls %d; want 200 and 1 (%s)", rec.Code, fake.patchCalls, rec.Body.String())
+		}
+	})
+	t.Run("an edit with no window is untouched", func(t *testing.T) {
+		fake := &fakeEntityChangeRequestClient{}
+		rec := patchAs(t, fake, middleware.ActionUpdate, `{"title":"x"}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d", rec.Code)
+		}
+	})
+}
+
+// POST /change-requests refuses a malformed planned window before it is sent.
+func TestCreateChangeRequest_PlannedWindowIsValidatedBeforeItIsSent(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"a start of 'tomorrow'", `{"subject":"s","plannedStartDate":"tomorrow"}`, "plannedStartDate must be a valid date-time"},
+		{"an end of 'infinity'", `{"subject":"s","plannedEndDate":"infinity"}`, "plannedEndDate must be a valid date-time"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &createRecordingClient{}
+			req := authedRequest(http.MethodPost, "/change-requests", tc.body)
+			rec := httptest.NewRecorder()
+			h := NewChangeRequestHandler(fake)
+			h.CreateChangeRequest(rec, req)
+			if rec.Code != http.StatusBadRequest || fake.createCalls != 0 {
+				t.Fatalf("status %d, upstream calls %d; want 400 and none (%s)", rec.Code, fake.createCalls, rec.Body.String())
+			}
+			wantMessage(t, rec, tc.want)
+		})
+	}
+	t.Run("a well-formed window is sent", func(t *testing.T) {
+		fake := &createRecordingClient{}
+		req := authedRequest(http.MethodPost, "/change-requests", `{"subject":"s","plannedStartDate":"2030-03-01 09:00:00","plannedEndDate":"2030-03-01T10:00:00Z"}`)
+		rec := httptest.NewRecorder()
+		NewChangeRequestHandler(fake).CreateChangeRequest(rec, req)
+		if rec.Code != http.StatusCreated || fake.createCalls != 1 {
+			t.Fatalf("status %d, upstream calls %d; want 201 and 1 (%s)", rec.Code, fake.createCalls, rec.Body.String())
+		}
+	})
+}
+
+// createRecordingClient counts POST /change-requests calls.
+type createRecordingClient struct {
+	fakeEntityChangeRequestClient
+	createCalls int
+}
+
+func (f *createRecordingClient) CreateChangeRequest(_ context.Context, _ entity.CreateChangeRequestRequest) (entity.CreateChangeRequestResponse, error) {
+	f.createCalls++
+	return entity.CreateChangeRequestResponse{}, nil
 }

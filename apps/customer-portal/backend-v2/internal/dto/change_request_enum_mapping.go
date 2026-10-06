@@ -16,10 +16,7 @@
 
 package dto
 
-import (
-	"sort"
-	"strconv"
-)
+import "strconv"
 
 // crStateIDs mirrors entity-service's private snCRStateIDMap
 // (internal/service/sn_change_request_service.go) — ServiceNow's own
@@ -28,7 +25,16 @@ import (
 // normalizes State/Impact to these exact domain enum strings (see
 // snCRStateLabelToString/snCRImpactLabelToString), so no label-word-parsing
 // is needed here — just a direct enum lookup, both directions.
+//
+// Authorize ("-3") is in the vocabulary on purpose: a change request a customer
+// was asked about goes back to Authorize when the customer proposes a new
+// implementation time (it is re-approved internally before the customer is asked
+// again), and it stays visible to that customer while it is there. New and
+// Assess are not: no change request that is visible to a customer is ever in
+// either (it left New when approval was requested and a designated one never
+// returns to Assess), so they have no id or label to show.
 var crStateIDs = map[string]string{
+	"authorize":         "-3",
 	"customer_approval": "5",
 	"scheduled":         "-2",
 	"implement":         "-1",
@@ -46,10 +52,28 @@ var crImpactIDs = map[string]string{
 	"low":    "3",
 }
 
+// crStateFilterOnlyIDs are ServiceNow ids a search may NAME although no response
+// ever carries them (see crStateIDs). A search for state New or Assess is a
+// well-formed question whose answer is "none": entity-service decides what the
+// caller may see, so it is asked, rather than the id being dropped here (a
+// dropped id would turn "only New" into "no state filter", every visible change
+// request).
+var crStateFilterOnlyIDs = map[string]string{
+	"-5": "new",
+	"-4": "assess",
+}
+
 var (
-	crStateIDToEnum  = reverseStringMap(crStateIDs)
+	crStateIDToEnum  = withEntries(reverseStringMap(crStateIDs), crStateFilterOnlyIDs)
 	crImpactIDToEnum = reverseStringMap(crImpactIDs)
 )
+
+func withEntries(base, extra map[string]string) map[string]string {
+	for k, v := range extra {
+		base[k] = v
+	}
+	return base
+}
 
 // crStateLabels/crImpactLabels supply portal-facing display text for these
 // enum values — entity-service's change-request search response carries the
@@ -57,6 +81,7 @@ var (
 // search's SN-backed path), so this is this backend's own presentation
 // text, not a mirror of anything entity-service or ServiceNow provides.
 var crStateLabels = map[string]string{
+	"authorize":         "Authorize",
 	"customer_approval": "Customer Approval",
 	"scheduled":         "Scheduled",
 	"implement":         "Implement",
@@ -71,40 +96,6 @@ var crImpactLabels = map[string]string{
 	"high":   "High",
 	"medium": "Medium",
 	"low":    "Low",
-}
-
-// customerVisibleChangeRequestStates is what a change-request search may return:
-// the states this API has a vocabulary for (crStateIDs), which is every state
-// except the three internal pre-approval ones -- New, Assess, Authorize -- that
-// are "internal, never customer-facing" here (restrictedChangeRequestStateLabels,
-// which keeps them out of GET /projects/{id}/filters' changeRequestStates).
-//
-// The filter dropdown hiding them is not a rule while the search accepts any
-// state list: a search with no stateKeys used to return the project's whole set,
-// internal states included, and the webapp only avoided that by always sending
-// the allowed keys itself. The search now narrows whatever it is asked for to
-// this set, so the restriction holds for every caller of the API. States are
-// returned in a fixed order.
-func customerVisibleChangeRequestStates() []string {
-	out := make([]string, 0, len(crStateIDs))
-	for state := range crStateIDs {
-		out = append(out, state)
-	}
-	sort.Strings(out)
-	return out
-}
-
-// restrictToCustomerVisibleStates is the state filter a search is sent with:
-// the requested states (already translated, and already limited to the ones in
-// crStateIDs -- crIDsToEnums skips a key it cannot map, which is every key of a
-// restricted state), or every customer-visible state when none is left. That
-// also covers a request for restricted states only: it gets the default set, the
-// same as a request naming no state, not the restricted rows it asked for.
-func restrictToCustomerVisibleStates(requested []string) []string {
-	if len(requested) == 0 {
-		return customerVisibleChangeRequestStates()
-	}
-	return requested
 }
 
 // crIDsToEnums converts the frontend's numeric filter ids (stateKeys,

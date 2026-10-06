@@ -17,6 +17,7 @@
 package dto
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -116,44 +117,89 @@ func TestBuildEntitySearchChangeRequestsRequest_ScopesProjectAndTranslatesKeys(t
 	}
 }
 
-// TestBuildEntitySearchChangeRequestsRequest_NeverAsksForInternalStates pins that
-// the change-request search is limited to the states a customer may see: with
-// no stateKeys it asks for every customer-visible state rather than for no state
-// filter at all (which returned New / Assess / Authorize too), and no stateKeys
-// -- known, unknown or restricted -- can widen it again.
-func TestBuildEntitySearchChangeRequestsRequest_NeverAsksForInternalStates(t *testing.T) {
-	visible := []string{"canceled", "closed", "customer_approval", "customer_review", "implement", "review", "rollback", "scheduled"}
-	restricted := []string{"new", "assess", "authorize"}
-
+// TestBuildEntitySearchChangeRequestsRequest_InventsNoStateFilter pins that the
+// change-request search no longer narrows by state on its own. Which change
+// requests a customer may see is entity-service's decision (designation, not
+// state): a state list invented here hid a designated change request that sat in
+// Authorize after the customer proposed a new time, and showed none of the others
+// the customer was never asked about only because the list left them out. The
+// translator now sends exactly what the caller asked for.
+func TestBuildEntitySearchChangeRequestsRequest_InventsNoStateFilter(t *testing.T) {
 	for name, keys := range map[string][]int{
-		"no keys":                            nil,
-		"only the restricted ServiceNow ids": {-3, -4, -5},
-		"only unknown ids":                   {99, 1000},
+		"no keys":     nil,
+		"empty keys":  {},
+		"unknown ids": {99, 1000},
 	} {
 		got := BuildEntitySearchChangeRequestsRequest("proj-9", ChangeRequestSearchRequest{Filters: ChangeRequestSearchFilters{StateKeys: keys}})
-		if strings.Join(got.Filters.States, ",") != strings.Join(visible, ",") {
-			t.Errorf("%s: States = %v, want every customer-visible state %v", name, got.Filters.States, visible)
+		if len(got.Filters.States) != 0 {
+			t.Errorf("%s: States = %v, want none (no state filter)", name, got.Filters.States)
 		}
 	}
+}
 
-	// A requested subset is honoured, restricted ids dropped from it.
+// A requested subset is translated as asked, Authorize included, in the order
+// given: nothing is dropped and nothing is added.
+func TestBuildEntitySearchChangeRequestsRequest_TranslatesEveryStateIDItWasGiven(t *testing.T) {
 	got := BuildEntitySearchChangeRequestsRequest("proj-9", ChangeRequestSearchRequest{Filters: ChangeRequestSearchFilters{StateKeys: []int{5, -3, 3}}})
-	if strings.Join(got.Filters.States, ",") != "customer_approval,closed" {
-		t.Errorf("States = %v, want [customer_approval closed]", got.Filters.States)
+	if strings.Join(got.Filters.States, ",") != "customer_approval,authorize,closed" {
+		t.Errorf("States = %v, want [customer_approval authorize closed]", got.Filters.States)
 	}
 
-	// The vocabulary and the restricted set are disjoint, so the default can
-	// never include an internal state: if a restricted state is ever given an id
-	// (crStateIDs), this fails instead of leaking it.
-	for _, state := range customerVisibleChangeRequestStates() {
-		for _, r := range restricted {
-			if state == r {
-				t.Errorf("customer-visible states include the internal state %q", r)
-			}
-			if restrictedChangeRequestStateLabels[strings.ToUpper(state)] {
-				t.Errorf("customer-visible state %q is listed as restricted", state)
-			}
+	// Every state of the vocabulary round-trips: the id the response carries is
+	// the id a search accepts.
+	for enum, id := range crStateIDs {
+		n, err := strconv.Atoi(id)
+		if err != nil {
+			t.Fatalf("state %q has a non-numeric id %q", enum, id)
 		}
+		got := BuildEntitySearchChangeRequestsRequest("p", ChangeRequestSearchRequest{Filters: ChangeRequestSearchFilters{StateKeys: []int{n}}})
+		if len(got.Filters.States) != 1 || got.Filters.States[0] != enum {
+			t.Errorf("state id %d -> %v, want [%s]", n, got.Filters.States, enum)
+		}
+	}
+}
+
+// New and Assess are named in a search as what they are. A well-formed question
+// with the answer "none" must not decay into "no state filter" (which would be
+// every change request the customer may see): the ids are kept for the request
+// even though no response carries them.
+func TestBuildEntitySearchChangeRequestsRequest_NewAndAssessStayStatesNotNoFilter(t *testing.T) {
+	got := BuildEntitySearchChangeRequestsRequest("proj-9", ChangeRequestSearchRequest{Filters: ChangeRequestSearchFilters{StateKeys: []int{-5, -4}}})
+	if strings.Join(got.Filters.States, ",") != "new,assess" {
+		t.Errorf("States = %v, want [new assess]", got.Filters.States)
+	}
+}
+
+// The state vocabulary a customer is shown includes Authorize (a change request
+// waits there after the customer proposed a new time) and not New or Assess, which
+// no visible change request is ever in.
+func TestChangeRequestStateVocabulary_OffersAuthorizeButNotNewOrAssess(t *testing.T) {
+	if id, label := crStateIDs["authorize"], crStateLabels["authorize"]; id != "-3" || label != "Authorize" {
+		t.Errorf("authorize = {%q %q}, want {-3 Authorize}", id, label)
+	}
+	for _, state := range []string{"new", "assess"} {
+		if _, ok := crStateIDs[state]; ok {
+			t.Errorf("%q has a response id: no change request visible to a customer is ever in it", state)
+		}
+		if _, ok := crStateLabels[state]; ok {
+			t.Errorf("%q has a response label", state)
+		}
+	}
+	// Every state with a response id has a label and the reverse.
+	for state := range crStateIDs {
+		if crStateLabels[state] == "" {
+			t.Errorf("state %q has an id but no label", state)
+		}
+	}
+	for state := range crStateLabels {
+		if crStateIDs[state] == "" {
+			t.Errorf("state %q has a label but no id", state)
+		}
+	}
+	// The state a response shows for a change request waiting in Authorize.
+	authorize := "authorize"
+	if got := crStateRef(&authorize); got == nil || got.ID != "-3" || got.Label != "Authorize" {
+		t.Errorf("crStateRef(authorize) = %+v, want {-3 Authorize}", got)
 	}
 }
 

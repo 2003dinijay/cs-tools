@@ -204,16 +204,21 @@ type ChangeRequestSearchRequest struct {
 // BuildEntitySearchChangeRequestsRequest translates the portal's request
 // into entity-service's SearchChangeRequestsRequest. projectID (the {id}
 // path parameter) always populates Filters.ProjectIDs — never the request
-// body, which the frontend never sends one in. Filters.States is always set and
-// never names New, Assess or Authorize (restrictToCustomerVisibleStates): those
-// internal pre-approval states are not customer-facing, whatever stateKeys the
-// caller sends or omits.
+// body, which the frontend never sends one in.
+//
+// Which change requests a caller may see is entity-service's decision, made for
+// the signed-in contact on every read (a change request is visible to the
+// customer it was designated to, in whatever state it is in now), not this
+// translator's: StateKeys only NARROWS what that returns. No state list is
+// invented here, so a search that names none gets every change request the
+// customer may see, in every state, and one that names a state nobody can see
+// (New, Assess) gets none.
 func BuildEntitySearchChangeRequestsRequest(projectID string, req ChangeRequestSearchRequest) entity.SearchChangeRequestsRequest {
 	return entity.SearchChangeRequestsRequest{
 		Filters: entity.SearchChangeRequestsFilters{
 			ProjectIDs:      []string{projectID},
 			SearchQuery:     req.Filters.SearchQuery,
-			States:          restrictToCustomerVisibleStates(crIDsToEnums(req.Filters.StateKeys, crStateIDToEnum)),
+			States:          crIDsToEnums(req.Filters.StateKeys, crStateIDToEnum),
 			Impacts:         crIDsToEnums(req.Filters.ImpactKeys, crImpactIDToEnum),
 			ClosedStartDate: req.Filters.ClosedStartDate,
 			ClosedEndDate:   req.Filters.ClosedEndDate,

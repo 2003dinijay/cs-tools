@@ -1770,8 +1770,11 @@ paths:
       summary: Search change requests.
       description: >
         projectId is set server-side from the path parameter — any
-        client-supplied value in the request body is ignored. The internal
-        pre-approval states (new, assess, authorize) are never returned.
+        client-supplied value in the request body is ignored. Only the change
+        requests that were designated to the signed-in contact (they were asked
+        to approve or review them) are returned, in whatever state they are in
+        now, Authorize included; every other change request is absent from the
+        list and from the totals. stateKeys only narrows that set.
       operationId: postProjectsIdChangeRequestsSearch
       parameters:
         - name: id

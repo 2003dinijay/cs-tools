@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/dto"
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
@@ -49,6 +50,9 @@ type entityChangeRequestClient interface {
 // ServiceNow's.
 type ChangeRequestHandler struct {
 	entity entityChangeRequestClient
+	// now is the clock a proposed implementation time is held against ("must be
+	// still to come"); a field so a test can fix it.
+	now func() time.Time
 }
 
 // Messages of PATCH /change-requests/{id} when it is served at the customer
@@ -63,7 +67,20 @@ const (
 
 // NewChangeRequestHandler creates a ChangeRequestHandler backed by the given entity client.
 func NewChangeRequestHandler(entity entityChangeRequestClient) *ChangeRequestHandler {
-	return &ChangeRequestHandler{entity: entity}
+	return &ChangeRequestHandler{entity: entity, now: time.Now}
+}
+
+// refusePlannedWindow answers a 400 with the readable reason when the window a
+// request carries is not acceptable, and reports whether it did. entity-service
+// checks the same again (this is the first layer, not the only one); the point
+// here is that a typing mistake is told what is wrong before a round trip, in the
+// words the webapp already maps.
+func refusePlannedWindow(w http.ResponseWriter, err error) bool {
+	if err == nil {
+		return false
+	}
+	writeError(w, http.StatusBadRequest, err.Error())
+	return true
 }
 
 // CreateChangeRequest handles POST /change-requests.
@@ -86,6 +103,9 @@ func (h *ChangeRequestHandler) CreateChangeRequest(w http.ResponseWriter, r *htt
 	}
 	if req.Subject == "" {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	if refusePlannedWindow(w, dto.ValidatePlannedWindow("plannedStartDate", req.PlannedStartDate, "plannedEndDate", req.PlannedEndDate, dto.PlannedWindowRules{})) {
 		return
 	}
 
@@ -203,6 +223,9 @@ func (h *ChangeRequestHandler) PatchChangeRequest(w http.ResponseWriter, r *http
 		writeError(w, http.StatusBadRequest, "At least one field must be provided for update.")
 		return
 	}
+	if refusePlannedWindow(w, dto.ValidatePlannedWindow("plannedStartOn", req.PlannedStartOn, "plannedEndOn", req.PlannedEndOn, dto.PlannedWindowRules{})) {
+		return
+	}
 
 	result, err := h.entity.UpdateChangeRequest(r.Context(), id, dto.BuildEntityPatchChangeRequestRequest(req))
 	if err != nil {
@@ -268,6 +291,13 @@ func (h *ChangeRequestHandler) patchChangeRequestAsCustomer(w http.ResponseWrite
 		return
 	case req.IsCustomerApproved != nil && req.IsCustomerReviewed != nil:
 		writeError(w, http.StatusBadRequest, errMsgCustomerPatchBoth)
+		return
+	}
+	// A proposed time is checked before anything is sent: well-formed, in range,
+	// still to come, and (with both bounds) a window with a duration. entity-service
+	// repeats every one of these against what is stored, and is the authority.
+	if req.HasWindow() && refusePlannedWindow(w, dto.ValidatePlannedWindow("plannedStartOn", req.PlannedStartOn, "plannedEndOn", req.PlannedEndOn,
+		dto.PlannedWindowRules{Now: h.now(), RequireFuture: true, RequireOrder: true})) {
 		return
 	}
 

@@ -61,25 +61,34 @@ func mapReferenceTableItems(items []entity.ReferenceTableItem) []ReferenceItem {
 }
 
 // restrictedChangeRequestStateIDs are excluded from ProjectFilterOptions'
-// changeRequestStates — ServiceNow's own numeric ids for the three internal
-// pre-approval workflow states (New, Assess, Authorize).
-var restrictedChangeRequestStateIDs = map[string]bool{"-3": true, "-4": true, "-5": true}
+// changeRequestStates — ServiceNow's own numeric ids for the two pre-approval
+// workflow states a customer is never shown (New, Assess).
+//
+// Authorize ("-3") is NOT one of them any more. A customer sees a change request
+// only once it was designated to them (it reached Customer Approval or Customer
+// Review and they were asked), and such a change request goes back to Authorize
+// when the customer proposes a new implementation time; it stays visible there,
+// so the state filter has to offer it. New and Assess cannot hold a visible
+// change request: a change leaves New when approval is requested and a designated
+// one never returns to Assess.
+var restrictedChangeRequestStateIDs = map[string]bool{"-5": true, "-4": true}
 
 // restrictedChangeRequestStateLabels is the Postgres-mode equivalent: on
 // that data source ReferenceDataRepository.EnumLabels (entity-service)
 // returns the raw enum label as id, e.g. {"id":"NEW"}, never a ServiceNow
-// number, so the id check above never matches there and these three would
+// number, so the id check above never matches there and these two would
 // leak into the response unfiltered without this. crStateIDs (see
 // change_request_enum_mapping.go) also has no entries for them, by the same
-// "internal, never customer-facing" design, so they pass normalizeChoices
-// unchanged and keep their raw label -- matched here before that happens.
+// "no visible change request is ever in them" design, so they pass
+// normalizeChoices unchanged and keep their raw label -- matched here before
+// that happens.
 //
 // Checked case-insensitively and kept alongside the id check above, not in
 // place of it: a Postgres-mode label is reliably UPPER_SNAKE, but this
 // endpoint also serves the ServiceNow data source, whose own raw label
 // casing isn't guaranteed to match — dropping the id check here would trade
 // one data source's gap for the other's.
-var restrictedChangeRequestStateLabels = map[string]bool{"NEW": true, "ASSESS": true, "AUTHORIZE": true}
+var restrictedChangeRequestStateLabels = map[string]bool{"NEW": true, "ASSESS": true}
 
 func isRestrictedChangeRequestState(s ReferenceItem) bool {
 	return restrictedChangeRequestStateIDs[s.ID] || restrictedChangeRequestStateLabels[strings.ToUpper(s.Label)]
@@ -448,13 +457,26 @@ type ProjectChangeRequestStats struct {
 // display label, so an un-normalized "SCHEDULED" never matched and the
 // Upcoming Changes card fell back to "--" while the list beside it showed
 // Scheduled changes.
+//
+// New and Assess are left out of StateCount, as they are out of the filter
+// options: entity-service lists every state with a count, but a customer is only
+// counted the change requests designated to them and none of those is ever in
+// either, so they would be two rows of 0 under raw ids ("NEW", "ASSESS") no
+// screen has a name for. Authorize is kept, as {id: "-3", label: "Authorize"}:
+// a change request the customer proposed a new time for waits there.
 func MapProjectChangeRequestStats(r entity.ProjectChangeRequestStatsResponse) ProjectChangeRequestStats {
+	stateCount := make([]ReferenceItem, 0, len(r.StateCount))
+	for _, s := range mapChoiceListItems(r.StateCount) {
+		if !isRestrictedChangeRequestState(s) {
+			stateCount = append(stateCount, s)
+		}
+	}
 	return ProjectChangeRequestStats{
 		TotalCount:          r.TotalCount,
 		ActiveCount:         r.ActiveCount,
 		OutstandingCount:    r.OutstandingCount,
 		ActionRequiredCount: r.ActionRequiredCount,
-		StateCount:          normalizeChangeRequestStateChoices(mapChoiceListItems(r.StateCount)),
+		StateCount:          normalizeChangeRequestStateChoices(stateCount),
 		ResolvedCount:       mapResolvedCountBreakdown(r.ResolvedCount),
 	}
 }

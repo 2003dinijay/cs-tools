@@ -485,13 +485,36 @@ key set is pinned by `TestMapChangeRequestDetails_ExposesOnlyTheCustomerFields`,
 to be added there on purpose. The PATCH response is unchanged (id / updatedOn / updatedBy); the webapp re-reads
 the detail after an answer.
 
-**Change-request search never asks for the internal states.** `POST /projects/{id}/change-requests/search`
-used to forward whatever `stateKeys` the caller sent -- none meant no state filter, i.e. New / Assess /
-Authorize too -- and relied on the webapp to send only the allowed keys. `dto.BuildEntitySearchChangeRequestsRequest`
-now always sends `filters.states`: the requested states that exist in this API's vocabulary (`crStateIDs`), or
-every customer-visible state (everything but New, Assess, Authorize) when none is left. `GET /change-requests/{id}`
-and `.../approvals` still answer for any id (the rule for them belongs where visibility is decided; see
-entity-service/CLAUDE.md "Customer answers through PATCH").
+**Which change requests a customer sees is entity-service's decision, never this API's.** A customer sees a
+change request once it was *designated* to them (it reached Customer Approval and/or Customer Review and they
+were one of the contacts asked), in every later state (Authorize after they proposed a new time, Scheduled,
+Implement, Review, Closed, Rollback, Canceled), and nothing else: no change request before it first reached a
+customer stage, none that never needs the customer, none designated only to other contacts, none of another
+project. entity-service enforces that on every read and write (search, totals, stats, detail, approvals,
+decision, PATCH, comments): a change request that is not visible to the caller is a `404` there, so this API
+forwards the caller's own token and decides nothing. `POST /projects/{id}/change-requests/search` therefore
+sends **only the states the caller named** (`dto.BuildEntitySearchChangeRequestsRequest`; none named means no
+state filter, i.e. every change request the customer may see, in every state). It used to narrow every search to
+the states other than New / Assess / Authorize (`restrictToCustomerVisibleStates`); that was a stand-in for the
+rule above, hid a designated change request sitting in Authorize and showed a non-designated one in Customer
+Approval, and is gone. The state vocabulary a response may carry has `authorize` (`-3`, "Authorize") in it for the
+same reason; New and Assess have no response id or label (nothing visible is ever in them), and
+`GET /projects/{id}/filters` and the change-request stats leave them out (`isRestrictedChangeRequestState`), but a
+search that NAMES them (`-5`, `-4`, `crStateFilterOnlyIDs`) is forwarded as asked and answers "none" instead of
+silently becoming "no filter".
+
+**A planned time is checked here first and again upstream.** `dto.ValidatePlannedWindow` (`planned_window.go`)
+refuses, with a readable 400 and before anything is sent, a `plannedStartOn` / `plannedEndOn` (PATCH) or
+`plannedStartDate` / `plannedEndDate` (create) that is not RFC 3339 or `YYYY-MM-DD HH:MM:SS` (UTC) in the years
+2000 to 2100 -- so `tomorrow`, `now`, `infinity`, a bare date and a zone name never leave the API. A customer's
+proposal (the `PATCH` the customer level serves) is held to two more rules, the ones entity-service applies to
+it: a bound must be still to come (`h.now`, a field so a test can fix the clock) and, with both bounds, the start
+must be before the end. A staff edit and a create are checked for form and range only. The messages are
+entity-service's own, so the webapp's mapping of a 400 reads either layer's answer. This is never the only layer:
+entity-service parses the window with the same two layouts and the same bounds, against the stored value too (an
+end-only proposal after the stored start has passed is refused there), and is the authority. The values the
+customer was SHOWN (`expectedPlannedStartOn` / `expectedPlannedEndOn`) are not proposed times and are not
+validated here.
 
 **When you add a field a customer may set, add it to `ChangeRequestCustomerUpdateRequest` and say
 why here; a field in `ChangeRequestUpdateRequest` is staff-only.**
