@@ -16,7 +16,8 @@ info:
     | `approve_time_card` | `PATCH /time-cards/{id}` when the body sets `state` (approve/reject) | time-card-approver, admin |
     | `escalate` | `POST /cases/{id}/escalations` | escalator, admin |
     | `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` | attachment-downloader, cs-engineer, admin |
-    | `write` | every other `POST`/`PATCH`/`DELETE`, including case, incident and change-request comments | cs-engineer, admin |
+    | `create_work_note` | `POST /cases/{id}/comments` with `type=work_note` (internal note) — and nothing else | worknote-creator, cs-engineer, admin |
+    | `write` | every other `POST`/`PATCH`/`DELETE`, including incident and change-request comments and case comments of any type other than `work_note` | cs-engineer, admin |
     | `admin` | `POST /users` | admin only |
     | `security_center` | `POST /products/vulnerabilities/search`, `GET /products/vulnerabilities/{id}`, and a `POST /cases/search`/`GET /cases/{id}` naming case type security_report_analysis | cs-engineer, admin |
 security:
@@ -263,6 +264,11 @@ paths:
   /cases/{id}/comments:
     post:
       summary: Create a comment on a case.
+      description: >-
+        A caller holding `write` (cs-engineer, admin) may post any comment type. A
+        worknote-creator-only caller may post only `type=work_note` (an internal
+        note); any other type is rejected with `403`. A viewer-only caller may not
+        post at all.
       operationId: postCasesIdComments
       parameters:
         - name: id
@@ -1448,6 +1454,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -1810,6 +1822,42 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /roles/grantable:
+    get:
+      summary: List the portal roles an admin may grant to a new user.
+      description: >
+        Admin-only — the Add User dialog's only caller. Each key reported here is
+        already resolved, at startup, to a real role on the identity provider via
+        the configured role-ID mapping; a key with no configured mapping is simply
+        absent. POST /users' own grantRoles field accepts exactly these keys and
+        rejects any other with a 400.
+      operationId: getRolesGrantable
+      responses:
+        "200":
+          description: The portal roles this deployment can grant via SCIM.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GrantableRolesResponse'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /teams/search:
     post:
       summary: Search the team registry.
@@ -1980,6 +2028,61 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /users/time-card-approvers:
+    get:
+      summary: List the real Asgardeo membership of the time-card-approver role.
+      description: >
+        Returns 404 unless ASGARDEO_ROLE_IDS contains a timecard_approver|<role-id>
+        mapping. Fetches the configured Asgardeo role (via the SCIM operations
+        service's GET /organizations/internal/roles/{id}, which proxies Asgardeo's
+        Roles Management API v2) and returns its member users. This is the
+        authoritative list of who may approve a time card — entity-service's own
+        Postgres role/user_role tables (what POST /users/search's roleIds filter
+        reads) are a separate, syncable mirror that can drift from the real Asgardeo
+        role assignment.
+      operationId: getUsersTimeCardApprovers
+      responses:
+        "200":
+          description: The role's current member users.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/TimeCardApproversResponse'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not Found — no timecard_approver entry is configured in ASGARDEO_ROLE_IDS.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "502":
+          description: >-
+            Bad Gateway — the SCIM operations service rejected this backend's own
+            request (e.g. its OAuth2 app lacks a roles-read scope). Reported as 502
+            rather than 401/403 so it is never mistaken for the caller's own
+            permissions being denied.
           content:
             application/json:
               schema:
@@ -5405,6 +5508,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: >-
+            The approval is no longer pending: the change request has moved to a
+            state the caller's stage cannot be decided in (e.g. a Review approver
+            once the change is Customer Review or Closed). The message says where
+            the change is; nothing was changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: Request entity too large.
           content:
@@ -5421,6 +5534,11 @@ paths:
   /change-requests:
     post:
       summary: Create a change request (ServiceNow data source only).
+      description: >-
+        The body must carry `type`: one of `standard`, `normal` or `emergency`
+        (400 with an explanatory message otherwise). The type decides the approval
+        flow -- Standard needs none, Normal needs peer then CAB approval, Emergency
+        needs ECAB approval only.
       operationId: createChangeRequest
       security:
         - bearerAuth: []
@@ -5430,6 +5548,84 @@ paths:
           application/json:
             schema:
               type: object
+              required: [type]
+              properties:
+                type:
+                  type: string
+                  enum: [standard, normal, emergency]
+                customerApprovalRequired:
+                  type: boolean
+                  description: >-
+                    The "Customer Approval" checkbox: the change needs the
+                    customer's approval before it is scheduled. CAB / ECAB
+                    approval (or Request Approval on a Standard change) then
+                    moves it to `customer_approval` instead of `scheduled`.
+                    Defaults to false. A non-boolean value is a 400.
+                customerReviewRequired:
+                  type: boolean
+                  description: >-
+                    The "Customer Review" checkbox: the change needs the
+                    customer's review before it is closed. Review then offers
+                    `customer_review` instead of `closed`. Defaults to false. A
+                    non-boolean value is a 400.
+                projectId:
+                  type: string
+                  format: uuid
+                  description: >-
+                    The Customer Project. Not a UUID string is a 400. Pick it
+                    with POST /projects/search.
+                deploymentIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  description: >-
+                    The project's deployments the change touches. Not an array
+                    of UUID strings is a 400. Each must belong to `projectId`
+                    (400 otherwise, with the entity service's message). Get the
+                    choices from POST /change-requests/link-options.
+                environmentIds:
+                  type: array
+                  deprecated: true
+                  items:
+                    type: string
+                    format: uuid
+                  description: >-
+                    NO LONGER SUPPORTED: any value is a 400 `environmentIds is
+                    no longer supported: deployments carry the environment` (a
+                    deployment's type is its environment role).
+                deploymentProductIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+                  description: >-
+                    READ-ONLY, derived from `deploymentIds`; optional, and when
+                    sent it must be exactly the derived set (400 otherwise).
+                customerGroupId:
+                  type: string
+                  format: uuid
+                  deprecated: true
+                  description: >-
+                    NO LONGER ACCEPTED: any value is a 400 `customerGroupId is
+                    no longer accepted: the customer group is derived from the
+                    customer project's registered contacts`. The Customer Group
+                    is read-only: the REGISTERED portal-user contacts of
+                    `projectId`, returned as `customerContacts` by POST
+                    /change-requests/link-options and on the change request.
+                category:
+                  type: string
+                  enum: [hardware, software, service, system_software, applications_software, network, telecom, documentation, other, regular_release_cloud, hotfix_release_cloud, devops, cloud_computing]
+                comment:
+                  type: string
+                  description: >-
+                    The customer-visible "Additional comments" entry; stored as
+                    a comment of type `comment`. Blank is ignored.
+                workNote:
+                  type: string
+                  description: >-
+                    The internal "Work notes" entry; stored as a comment of type
+                    `work_note`. Blank is ignored.
       responses:
         "201":
           description: Change request created.
@@ -5451,6 +5647,122 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
           description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: Request entity too large.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /change-requests/link-options:
+    post:
+      summary: >-
+        Options for the change request form's Customer Project -> Deployments ->
+        Deployment products cascade, plus the read-only Customer Group.
+      description: >-
+        Send the selected Customer Project to get its active deployments (each
+        with its type, i.e. its environment role) and its `customerContacts`:
+        the project's registered contacts, which are the change request's
+        read-only Customer Group (nothing to pick). Add the deployments chosen
+        so far to also get the (read-only) deployment products that follow from
+        them. `projectId` is required and `projectId` /
+        `deploymentIds` must be UUIDs (`deploymentIds` an array) -- 400
+        otherwise, also when a deployment does not belong to the project.
+      operationId: postChangeRequestLinkOptions
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [projectId]
+              properties:
+                projectId:
+                  type: string
+                  format: uuid
+                deploymentIds:
+                  type: array
+                  items:
+                    type: string
+                    format: uuid
+      responses:
+        "200":
+          description: The options for the selection.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [deployments, deploymentProducts, customerContacts]
+                properties:
+                  customerContacts:
+                    type: array
+                    description: >-
+                      The project's registered portal-user contacts, name order:
+                      the read-only Customer Group. Empty when it has none.
+                    items:
+                      $ref: '#/components/schemas/ChangeRequestCustomerContact'
+                  deployments:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, type]
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        name:
+                          type: string
+                        type:
+                          type: string
+                          description: >-
+                            The deployment type, i.e. its environment role:
+                            primary_production, staging, qa, stress, uat or
+                            development.
+                  deploymentProducts:
+                    type: array
+                    items:
+                      type: object
+                      required: [id, name, deployment]
+                      properties:
+                        id:
+                          type: string
+                          format: uuid
+                        name:
+                          type: string
+                        deployment:
+                          $ref: '#/components/schemas/EntityRef'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found.
           content:
             application/json:
               schema:
@@ -5711,6 +6023,69 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: Request entity too large.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /groups/{id}:
+    get:
+      summary: Get one group and its members (PostgreSQL data source only; internal staff only).
+      description: >-
+        What opens when a user clicks the assignment group of a change request
+        approval stage: the group's name, description, group email and manager,
+        and its active internal members in name order. `id` is the `assignmentGroup.id` of
+        GET /change-requests/{id}/approvals -- a group id, NOT a team id
+        (POST /groups/search lists teams). The members are the people the
+        approval stage was provisioned from. Customer Approval / Customer Review
+        stages have no group (`assignmentGroup` is null); their approvers are the
+        project's registered contacts, which the change request already carries as
+        `customerContacts`. Internal staff only: a caller entity-service
+        considers external gets 403.
+      operationId: getGroup
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: id
+          in: path
+          required: true
+          description: UUID of the group.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The group and its members.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GroupDetail'
+        "400":
+          description: The id is not a valid UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: No group with this id.
           content:
             application/json:
               schema:
@@ -7427,6 +7802,66 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    patch:
+      summary: >-
+        Change an incident task's state and/or close notes (Postgres data sources only).
+      description: >-
+        Closing a task (CLOSED_COMPLETE, CLOSED_INCOMPLETE or CLOSED_SKIPPED) sets it
+        inactive and records when and by whom, unless already recorded; moving it back to
+        an open state makes it active again and keeps those, as ServiceNow does. Closing or
+        canceling the parent incident closes any task still open (Closed Incomplete /
+        Closed Skipped), as ServiceNow's "Cascade closure of Incident Tasks" does.
+      operationId: updateIncidentTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateIncidentTaskRequest'
+      responses:
+        "200":
+          description: The updated incident task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentTaskDetail'
+        "400":
+          description: No field given, or an unknown state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Incident task not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "503":
+          description: Not available on the ServiceNow data source.
           content:
             application/json:
               schema:
@@ -9271,7 +9706,7 @@ paths:
   /accounts/{accountId}/escalations:
     get:
       summary: List an account's escalations.
-      operationId: splGetAccountEscalations
+      operationId: getAccountEscalations
       parameters:
         - name: accountId
           in: path
@@ -9298,7 +9733,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplEscalationDetail'
+                  $ref: '#/components/schemas/EscalationDetail'
         "400":
           description: BadRequest
           content:
@@ -9333,7 +9768,7 @@ paths:
   /accounts/{accountId}/cases/{caseId}/escalate:
     post:
       summary: Escalate a case on this account.
-      operationId: splEscalateCase
+      operationId: escalateCase
       parameters:
         - name: accountId
           in: path
@@ -9350,14 +9785,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplEscalationRequest'
+              $ref: '#/components/schemas/EscalationRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplEscalationResponse'
+                $ref: '#/components/schemas/EscalationResponse'
         "400":
           description: BadRequest
           content:
@@ -9398,7 +9833,7 @@ paths:
   /cases/{caseId}/attachments-info:
     get:
       summary: List metadata for a case's attachments.
-      operationId: splGetAttachmentsInfo
+      operationId: getAttachmentsInfo
       parameters:
         - name: caseId
           in: path
@@ -9425,7 +9860,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplAttachmentInfo'
+                  $ref: '#/components/schemas/AttachmentInfo'
         "400":
           description: BadRequest
           content:
@@ -9460,7 +9895,7 @@ paths:
   /products:
     get:
       summary: List the distinct product names known to ServiceNow deployments.
-      operationId: splGetProducts
+      operationId: getProducts
       responses:
         "200":
           description: Ok
@@ -9492,7 +9927,7 @@ paths:
   /abt-teams:
     get:
       summary: List the distinct ABT team names.
-      operationId: splGetABTTeams
+      operationId: getABTTeams
       responses:
         "200":
           description: Ok
@@ -9524,7 +9959,7 @@ paths:
   /generate-sla-report:
     get:
       summary: Generate a project's SLA report for a date range.
-      operationId: splGenerateSLAReport
+      operationId: generateSLAReport
       parameters:
         - name: projectSysId
           in: query
@@ -9547,7 +9982,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplSLAReportDetails'
+                $ref: '#/components/schemas/SLAReportDetails'
         "400":
           description: BadRequest
           content:
@@ -9576,7 +10011,7 @@ paths:
   /report-details:
     get:
       summary: Generate a project's detailed CS report for a date range.
-      operationId: splGetReportDetails
+      operationId: getReportDetails
       parameters:
         - name: projectSysId
           in: query
@@ -9599,7 +10034,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplCSReportDetails'
+                $ref: '#/components/schemas/CSReportDetails'
         "400":
           description: BadRequest
           content:
@@ -9628,7 +10063,7 @@ paths:
   /generate-timelogs-breakdown-report:
     get:
       summary: Generate a project's time-log breakdown report.
-      operationId: splGenerateTimelogsBreakdownReport
+      operationId: generateTimelogsBreakdownReport
       parameters:
         - name: projectId
           in: query
@@ -9641,7 +10076,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplTimeLogBreakdownDetails'
+                $ref: '#/components/schemas/TimeLogBreakdownDetails'
         "400":
           description: BadRequest
           content:
@@ -9676,7 +10111,7 @@ paths:
   /attachments/{attachmentId}/download:
     get:
       summary: Download the binary content of a case attachment (ServiceNow-backed).
-      operationId: splDownloadAttachment
+      operationId: downloadAttachment
       parameters:
         - name: attachmentId
           in: path
@@ -9730,7 +10165,7 @@ paths:
   /abt-team-schedule:
     get:
       summary: Get an ABT team's schedule.
-      operationId: splGetABTTeamSchedule
+      operationId: getABTTeamSchedule
       parameters:
         - name: from
           in: query
@@ -9758,7 +10193,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplABTTeamScheduleData'
+                $ref: '#/components/schemas/ABTTeamScheduleData'
         "400":
           description: BadRequest
           content:
@@ -9795,7 +10230,7 @@ paths:
   /usage-metrics/projects:
     get:
       summary: List projects for the usage-metrics dashboard, optionally filtered by name.
-      operationId: splUsageMetricsGetProjects
+      operationId: usageMetricsGetProjects
       parameters:
         - name: search
           in: query
@@ -9832,7 +10267,7 @@ paths:
   /usage-metrics/instances/metrics/search:
     post:
       summary: Search instance-level product metrics (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchInstanceMetrics
+      operationId: searchInstanceMetrics
       requestBody:
         required: true
         content:
@@ -9882,7 +10317,7 @@ paths:
   /usage-metrics/instances/metrics/stats:
     post:
       summary: Get aggregated instance metrics stats (raw passthrough to ServiceNow's custom API).
-      operationId: splGetInstanceMetricsStats
+      operationId: getInstanceMetricsStats
       requestBody:
         required: true
         content:
@@ -9932,7 +10367,7 @@ paths:
   /usage-metrics/instances/usages/search:
     post:
       summary: Search instance-level usage records (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchInstanceUsages
+      operationId: searchInstanceUsages
       requestBody:
         required: true
         content:
@@ -9982,7 +10417,7 @@ paths:
   /usage-metrics/instances/usages/stats:
     post:
       summary: Get aggregated instance usage stats (raw passthrough to ServiceNow's custom API).
-      operationId: splGetInstanceUsagesStats
+      operationId: getInstanceUsagesStats
       requestBody:
         required: true
         content:
@@ -10032,7 +10467,7 @@ paths:
   /usage-metrics/deployments/search:
     post:
       summary: Search deployments (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchUsageMetricsDeployments
+      operationId: searchUsageMetricsDeployments
       requestBody:
         required: true
         content:
@@ -10082,7 +10517,7 @@ paths:
   /usage-metrics/projects/search:
     post:
       summary: Search projects for the usage-metrics dashboard (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchUsageMetricsProjects
+      operationId: searchUsageMetricsProjects
       requestBody:
         required: true
         content:
@@ -10132,7 +10567,7 @@ paths:
   /usage-metrics/deployed-products/search:
     post:
       summary: Search deployed products (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchUsageMetricsDeployedProducts
+      operationId: searchUsageMetricsDeployedProducts
       requestBody:
         required: true
         content:
@@ -10182,7 +10617,7 @@ paths:
   /usage-metrics/instances/search:
     post:
       summary: Search instances (raw passthrough to ServiceNow's custom API).
-      operationId: splSearchUsageMetricsInstances
+      operationId: searchUsageMetricsInstances
       requestBody:
         required: true
         content:
@@ -10232,7 +10667,7 @@ paths:
   /usage-metrics/deployed-products/{id}/metrics/search:
     post:
       summary: Get metrics for a deployed product over a date range (raw passthrough to ServiceNow's custom API).
-      operationId: splGetDeployedProductMetrics
+      operationId: getDeployedProductMetrics
       parameters:
         - name: id
           in: path
@@ -10295,7 +10730,7 @@ paths:
   /usage-metrics/deployed-products/{id}/metrics/usage-counts/search:
     post:
       summary: Get usage counts for a deployed product over a date range (raw passthrough to ServiceNow's custom API).
-      operationId: splGetDeployedProductUsageCounts
+      operationId: getDeployedProductUsageCounts
       parameters:
         - name: id
           in: path
@@ -10358,7 +10793,7 @@ paths:
   /files:
     get:
       summary: List files in a Google Drive folder.
-      operationId: splListFiles
+      operationId: listFiles
       parameters:
         - name: folderId
           in: query
@@ -10373,7 +10808,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplDriveFile'
+                  $ref: '#/components/schemas/DriveFile'
         "400":
           description: BadRequest
           content:
@@ -10402,7 +10837,7 @@ paths:
   /files/search:
     get:
       summary: Find a Google Drive folder by name.
-      operationId: splSearchFolder
+      operationId: searchFolder
       parameters:
         - name: folderName
           in: query
@@ -10415,7 +10850,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplDriveFolder'
+                $ref: '#/components/schemas/DriveFolder'
         "400":
           description: BadRequest
           content:
@@ -10450,20 +10885,20 @@ paths:
   /customer-health/summary:
     post:
       summary: Search account health summaries (ServiceNow account data enriched with MySQL-tracked review status).
-      operationId: splGetCustomerHealthSummary
+      operationId: getCustomerHealthSummary
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplCustomerHealthSummaryRequest'
+              $ref: '#/components/schemas/CustomerHealthSummaryRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplAccountSummaryResponse'
+                $ref: '#/components/schemas/AccountSummaryResponse'
         "400":
           description: BadRequest
           content:
@@ -10498,7 +10933,7 @@ paths:
   /customer-health/accounts/{accountSysId}/init-health-tracking:
     post:
       summary: Initialize MySQL health-tracking rows for an account's projects.
-      operationId: splInitHealthTracking
+      operationId: initHealthTracking
       parameters:
         - name: accountSysId
           in: path
@@ -10510,7 +10945,7 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplInitHealthTrackingRequest'
+              $ref: '#/components/schemas/InitHealthTrackingRequest'
       responses:
         "202":
           description: Accepted
@@ -10542,7 +10977,7 @@ paths:
   /customer-health/accounts/{accountId}:
     get:
       summary: Get an account's detailed health breakdown (ServiceNow-backed; no MySQL involved).
-      operationId: splGetCustomerHealthAccountDetail
+      operationId: getCustomerHealthAccountDetail
       parameters:
         - name: accountId
           in: path
@@ -10555,7 +10990,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplAccountDetail'
+                $ref: '#/components/schemas/ViewerAccountDetail'
         "400":
           description: BadRequest
           content:
@@ -10590,7 +11025,7 @@ paths:
   /customer-health/projects/{projectSysId}/risk:
     post:
       summary: Open a new risk on a project.
-      operationId: splOpenRisk
+      operationId: openRisk
       parameters:
         - name: projectSysId
           in: path
@@ -10602,14 +11037,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplOpenRiskRequest'
+              $ref: '#/components/schemas/OpenRiskRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplProjectRisk'
+                $ref: '#/components/schemas/ProjectRisk'
         "400":
           description: BadRequest
           content:
@@ -10638,7 +11073,7 @@ paths:
   /customer-health/risks/{riskId}/close:
     put:
       summary: Close an open risk.
-      operationId: splCloseRisk
+      operationId: closeRisk
       parameters:
         - name: riskId
           in: path
@@ -10650,14 +11085,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplCloseRiskRequest'
+              $ref: '#/components/schemas/CloseRiskRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplProjectRisk'
+                $ref: '#/components/schemas/ProjectRisk'
         "400":
           description: BadRequest — e.g. no matching open risk for this riskId.
           content:
@@ -10686,7 +11121,7 @@ paths:
   /customer-health/projects/{projectSysId}/mark-healthy:
     post:
       summary: Mark a project healthy.
-      operationId: splMarkHealthy
+      operationId: markHealthy
       parameters:
         - name: projectSysId
           in: path
@@ -10698,14 +11133,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplMarkHealthyRequest'
+              $ref: '#/components/schemas/MarkHealthyRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplHealthStatusRecord'
+                $ref: '#/components/schemas/HealthStatusRecord'
         "400":
           description: BadRequest
           content:
@@ -10734,7 +11169,7 @@ paths:
   /customer-health/projects/{projectSysId}/revert-review:
     post:
       summary: Revert a project's health review.
-      operationId: splRevertReview
+      operationId: revertReview
       parameters:
         - name: projectSysId
           in: path
@@ -10746,14 +11181,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplRevertHealthRequest'
+              $ref: '#/components/schemas/RevertHealthRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplHealthStatusRecord'
+                $ref: '#/components/schemas/HealthStatusRecord'
         "400":
           description: BadRequest
           content:
@@ -10782,7 +11217,7 @@ paths:
   /customer-health/accounts/{accountSysId}/health-status:
     get:
       summary: List health status per project for an account.
-      operationId: splGetAccountHealthStatus
+      operationId: getAccountHealthStatus
       parameters:
         - name: accountSysId
           in: path
@@ -10797,7 +11232,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplProjectHealthStatus'
+                  $ref: '#/components/schemas/ProjectHealthStatus'
         "400":
           description: BadRequest
           content:
@@ -10826,7 +11261,7 @@ paths:
   /customer-health/accounts/{accountSysId}/health-summary:
     get:
       summary: Get an account's overall health summary.
-      operationId: splGetAccountHealthSummary
+      operationId: getAccountHealthSummary
       parameters:
         - name: accountSysId
           in: path
@@ -10839,7 +11274,7 @@ paths:
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplHealthSummary'
+                $ref: '#/components/schemas/HealthSummary'
         "400":
           description: BadRequest
           content:
@@ -10868,7 +11303,7 @@ paths:
   /customer-health/projects/{projectSysId}/risk-history:
     get:
       summary: List a project's risk history.
-      operationId: splGetProjectRiskHistory
+      operationId: getProjectRiskHistory
       parameters:
         - name: projectSysId
           in: path
@@ -10883,7 +11318,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplProjectRisk'
+                  $ref: '#/components/schemas/ProjectRisk'
         "400":
           description: BadRequest
           content:
@@ -10912,7 +11347,7 @@ paths:
   /customer-health/risks/{riskId}/action-items:
     post:
       summary: Create an action item on a risk.
-      operationId: splCreateActionItem
+      operationId: createActionItem
       parameters:
         - name: riskId
           in: path
@@ -10924,14 +11359,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplCreateActionItemRequest'
+              $ref: '#/components/schemas/CreateActionItemRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplRiskActionItem'
+                $ref: '#/components/schemas/RiskActionItem'
         "400":
           description: BadRequest
           content:
@@ -10958,7 +11393,7 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
     get:
       summary: List action items on a risk, optionally filtered by status.
-      operationId: splGetActionItemsByRisk
+      operationId: getActionItemsByRisk
       parameters:
         - name: riskId
           in: path
@@ -10978,7 +11413,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplRiskActionItem'
+                  $ref: '#/components/schemas/RiskActionItem'
         "400":
           description: BadRequest
           content:
@@ -11007,7 +11442,7 @@ paths:
   /customer-health/action-items/{actionItemId}/status:
     put:
       summary: Update an action item's status.
-      operationId: splUpdateActionItemStatus
+      operationId: updateActionItemStatus
       parameters:
         - name: actionItemId
           in: path
@@ -11019,14 +11454,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplUpdateActionItemStatusRequest'
+              $ref: '#/components/schemas/UpdateActionItemStatusRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplRiskActionItem'
+                $ref: '#/components/schemas/RiskActionItem'
         "400":
           description: BadRequest
           content:
@@ -11055,7 +11490,7 @@ paths:
   /customer-health/action-items/{actionItemId}:
     put:
       summary: Update an action item's fields.
-      operationId: splUpdateActionItem
+      operationId: updateActionItem
       parameters:
         - name: actionItemId
           in: path
@@ -11067,14 +11502,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplUpdateActionItemRequest'
+              $ref: '#/components/schemas/UpdateActionItemRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplRiskActionItem'
+                $ref: '#/components/schemas/RiskActionItem'
         "400":
           description: BadRequest
           content:
@@ -11103,7 +11538,7 @@ paths:
   /customer-health/accounts/{accountSysId}/action-items:
     get:
       summary: List action items for an account, optionally filtered by project and/or status.
-      operationId: splGetActionItemsByAccount
+      operationId: getActionItemsByAccount
       parameters:
         - name: accountSysId
           in: path
@@ -11128,7 +11563,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplRiskActionItem'
+                  $ref: '#/components/schemas/RiskActionItem'
         "400":
           description: BadRequest
           content:
@@ -11157,7 +11592,7 @@ paths:
   /customer-health/action-items/{actionItemId}/comments:
     post:
       summary: Post a comment on an action item.
-      operationId: splCreateActionItemComment
+      operationId: createActionItemComment
       parameters:
         - name: actionItemId
           in: path
@@ -11169,14 +11604,14 @@ paths:
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplCreateCommentRequest'
+              $ref: '#/components/schemas/CreateCommentRequest'
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplActionItemComment'
+                $ref: '#/components/schemas/ActionItemComment'
         "400":
           description: BadRequest
           content:
@@ -11203,7 +11638,7 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
     get:
       summary: List comments on an action item.
-      operationId: splGetActionItemComments
+      operationId: getActionItemComments
       parameters:
         - name: actionItemId
           in: path
@@ -11218,7 +11653,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplActionItemComment'
+                  $ref: '#/components/schemas/ActionItemComment'
         "400":
           description: BadRequest
           content:
@@ -11247,14 +11682,14 @@ paths:
   /user-info:
     get:
       summary: Get the caller's own employee info, resolved from their JWT email.
-      operationId: splGetUserInfo
+      operationId: getUserInfo
       responses:
         "200":
           description: Ok
           content:
             application/json:
               schema:
-                $ref: '#/components/schemas/SplUserInfoView'
+                $ref: '#/components/schemas/UserInfoView'
         "401":
           description: Unauthorized
           content:
@@ -11280,13 +11715,13 @@ paths:
         Diagnostic tool cross-referencing the sales-side (Salesforce) and
         CS-side (ServiceNow) entity services for a given email/subscription
         key, surfacing why a user might not have portal access.
-      operationId: splScanUser
+      operationId: scanUser
       requestBody:
         required: true
         content:
           application/json:
             schema:
-              $ref: '#/components/schemas/SplUserScanRequest'
+              $ref: '#/components/schemas/UserScanRequest'
       responses:
         "200":
           description: Ok
@@ -11295,7 +11730,7 @@ paths:
               schema:
                 type: array
                 items:
-                  $ref: '#/components/schemas/SplScanResponse'
+                  $ref: '#/components/schemas/ScanResponse'
         "400":
           description: BadRequest
           content:
@@ -12395,6 +12830,561 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /users/by-ids:
+    post:
+      summary: Resolve a batch of user ids to their profiles.
+      operationId: getUsersByIDs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Matching users.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-articles:
+    post:
+      summary: Create a KB article (draft).
+      operationId: createKBArticle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "201":
+          description: Created article.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-articles/search:
+    post:
+      summary: Search KB articles.
+      operationId: searchKBArticles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Matching articles.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-articles/{id}:
+    get:
+      summary: Get one KB article by id.
+      operationId: getKBArticle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The requested article.
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          description: No such article.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+    patch:
+      summary: Edit a KB article's title/body (draft).
+      operationId: patchKBArticleContent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated article.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+    delete:
+      summary: Delete a KB article (draft or pending_review only).
+      operationId: deleteKBArticle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Deleted.
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-articles/{id}/state:
+    patch:
+      summary: Transition a KB article's state.
+      operationId: patchKBArticleState
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated article.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Illegal transition or bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "409":
+          description: Conflicting concurrent update.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-articles/{id}/history:
+    get:
+      summary: List a KB article's version history.
+      operationId: listKBArticleHistory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Version history.
+          content:
+            application/json:
+              schema:
+                type: object
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /knowledge-bases:
+    get:
+      summary: List active knowledge bases.
+      operationId: listKnowledgeBases
+      responses:
+        "200":
+          description: Knowledge bases.
+          content:
+            application/json:
+              schema:
+                type: object
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+    post:
+      summary: Create a knowledge base.
+      operationId: createKnowledgeBase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "201":
+          description: Created knowledge base.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /knowledge-bases/{id}:
+    patch:
+      summary: Rename a knowledge base.
+      operationId: updateKnowledgeBaseName
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated knowledge base.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /knowledge-bases/{id}/active:
+    patch:
+      summary: Activate or deactivate a knowledge base.
+      operationId: setKnowledgeBaseActive
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated knowledge base.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-managers/my-knowledge-bases:
+    get:
+      summary: List knowledge bases the current user manages.
+      operationId: listMyManagedKnowledgeBases
+      responses:
+        "200":
+          description: Managed knowledge base ids.
+          content:
+            application/json:
+              schema:
+                type: object
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-manager-users:
+    post:
+      summary: Grant a user manager access to a knowledge base.
+      operationId: createKBManagerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "201":
+          description: Created grant.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+    delete:
+      summary: Revoke a user's manager access to a knowledge base.
+      operationId: deleteKBManagerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "204":
+          description: Revoked.
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-manager-users/search:
+    post:
+      summary: Search knowledge-base manager users.
+      operationId: searchKBManagerUsers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Matching manager users.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-manager-groups:
+    post:
+      summary: Grant a group manager access to a knowledge base.
+      operationId: createKBManagerGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "201":
+          description: Created grant.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+    delete:
+      summary: Revoke a group's manager access to a knowledge base.
+      operationId: deleteKBManagerGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "204":
+          description: Revoked.
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-manager-groups/search:
+    post:
+      summary: Search knowledge-base manager groups.
+      operationId: searchKBManagerGroups
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Matching manager groups.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
 components:
   securitySchemes:
     bearerAuth:
@@ -12501,6 +13491,75 @@ components:
           type: string
         testPlan:
           type: string
+        customerApprovalRequired:
+          type: boolean
+          description: >-
+            The "Customer Approval" checkbox. Editable only until the approval
+            gate has been passed (state new, assess or authorize); changing it
+            afterwards is a 400 ("customerApprovalRequired can no longer be
+            changed ..."). Resending the stored value is always accepted. A
+            non-boolean value is a 400.
+        customerReviewRequired:
+          type: boolean
+          description: >-
+            The "Customer Review" checkbox. Editable until the change leaves
+            review (any state up to and including review); changing it from
+            customer_review onwards is a 400 ("customerReviewRequired can no
+            longer be changed ..."). A non-boolean value is a 400.
+        deploymentIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: >-
+            Replaces the list of the project's deployments the change touches
+            (empty array clears it, and with it the deployment
+            products). Not an array of UUID strings is a 400. Each must belong
+            to the change request's project (`projectId` here, else the stored
+            one); changing `projectId` while deployments are stored requires
+            `deploymentIds` too. Editable only before the change request reaches
+            `implement` (states new..scheduled); afterwards a change of
+            `projectId`, `deploymentIds` is a 400 (resending
+            the stored value is accepted).
+        environmentIds:
+          type: array
+          deprecated: true
+          items:
+            type: string
+            format: uuid
+          description: >-
+            NO LONGER SUPPORTED: any value is a 400 `environmentIds is no longer
+            supported: deployments carry the environment`.
+        deploymentProductIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: >-
+            READ-ONLY, derived from the deployments; accepted only when exactly
+            the derived set.
+        customerGroupId:
+          type: string
+          format: uuid
+          nullable: true
+          deprecated: true
+          description: >-
+            NO LONGER ACCEPTED (any value, null included, is a 400
+            `customerGroupId is no longer accepted: the customer group is derived
+            from the customer project's registered contacts`). The Customer Group
+            is read-only and follows `projectId`: changing the project re-derives
+            it, and a live Customer Approval / Customer Review stage is replaced
+            by one for the new project's contacts.
+        category:
+          type: string
+          nullable: true
+          enum: [hardware, software, service, system_software, applications_software, network, telecom, documentation, other, regular_release_cloud, hotfix_release_cloud, devops, cloud_computing]
+        comment:
+          type: string
+          description: Appends a customer-visible "Additional comments" entry. Not empty.
+        workNote:
+          type: string
+          description: Appends an internal "Work notes" entry. Not empty.
         isCustomerApproved:
           type: boolean
           description: >-
@@ -14165,6 +15224,19 @@ components:
           type: string
           example: Jane Doe
 
+    ChangeRequestCustomerContact:
+      type: object
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The project contact's id.
+        name:
+          type: string
+        email:
+          type: string
+
     EntityRef:
       type: object
       properties:
@@ -15133,6 +16205,44 @@ components:
           type: string
           format: date-time
 
+    TimeCardApproversResponse:
+      type: object
+      required: [approvers]
+      properties:
+        approvers:
+          type: array
+          items:
+            $ref: '#/components/schemas/TimeCardApproverRef'
+
+    TimeCardApproverRef:
+      type: object
+      required: [id, email]
+      properties:
+        id:
+          type: string
+          description: The user's Asgardeo UUID.
+        email:
+          type: string
+
+    GrantableRolesResponse:
+      type: object
+      required: [roles]
+      properties:
+        roles:
+          type: array
+          items:
+            $ref: '#/components/schemas/GrantableRoleRef'
+
+    GrantableRoleRef:
+      type: object
+      required: [key]
+      properties:
+        key:
+          type: string
+          description: >-
+            A stable portal role key (e.g. "cs_engineer", "escalator") — pass this
+            value, not a display name, in CreateUserPayload.grantRoles.
+
     CreateUserPayload:
       type: object
       required: [email]
@@ -15157,6 +16267,16 @@ components:
             partner/customer/partner_admin/customer_admin) is rejected
             unconditionally — creating an external-type user is temporarily
             disabled, and the form's "External" option is disabled to match.
+        grantRoles:
+          type: array
+          items:
+            type: string
+          description: >-
+            Portal role keys to additionally grant via SCIM once the user is
+            created — see GET /roles/grantable for the exact set this
+            deployment can grant. Optional; an unknown key is a 400. Distinct
+            from roles above: this never reaches entity-service, it only
+            controls which identity-provider role(s) the new user is added to.
       description: At least one of firstName/lastName is required.
 
     AccountSearchPayload:
@@ -17304,8 +18424,47 @@ components:
               nullable: true
             hasCustomerApproved:
               type: boolean
+              description: >-
+                The customer's OUTCOME (their approval has been recorded), not
+                the creation checkbox -- see customerApprovalRequired.
             hasCustomerReviewed:
               type: boolean
+              description: >-
+                The customer's OUTCOME (their review has been recorded), not
+                the creation checkbox -- see customerReviewRequired.
+            customerApprovalRequired:
+              type: boolean
+              description: >-
+                The "Customer Approval" checkbox: the change needs the
+                customer's approval before it is scheduled.
+            customerReviewRequired:
+              type: boolean
+              description: >-
+                The "Customer Review" checkbox: the change needs the
+                customer's review before it is closed.
+            deployments:
+              type: array
+              items:
+                $ref: '#/components/schemas/EntityRef'
+              description: The project's deployments the change touches (`project` is the Customer Project).
+            deploymentProducts:
+              type: array
+              items:
+                $ref: '#/components/schemas/EntityRef'
+              description: Read-only, derived from `deployments`; names read "<product> <version>".
+            customerContacts:
+              type: array
+              description: >-
+                The change request's Customer Group, READ-ONLY, derived live from
+                its Customer Project and never stored: the project's registered
+                portal-user contacts, name order. Always an array (empty without a
+                project or without registered contacts). They are the customer's
+                approvers at Customer Approval / Customer Review.
+              items:
+                $ref: '#/components/schemas/ChangeRequestCustomerContact'
+            category:
+              type: string
+              nullable: true
             approvedBy:
               $ref: '#/components/schemas/EntityRef'
               nullable: true
@@ -17317,8 +18476,18 @@ components:
               items:
                 type: string
               description: >-
-                States the change request can legally transition to from its
-                current state, given its type and workflow position.
+                Next states a human may move the change request to, per state.
+                new: [assess, canceled] ("assess" is the "Request Approval"
+                action for every type; the state it lands in depends on the
+                type and on customerApprovalRequired). assess: [authorize,
+                canceled]. authorize: [canceled] (CAB/ECAB approval moves the
+                change on by itself: to scheduled, or to customer_approval when
+                customerApprovalRequired). customer_approval: [scheduled,
+                canceled] -- "scheduled" here means "record the customer's
+                approval" and is the only state it is offered from. scheduled:
+                [implement, canceled]. implement: [review, canceled]. review:
+                [customer_review, canceled] when customerReviewRequired, else
+                [closed, canceled]. customer_review: [closed, canceled].
 
     TaskSummary:
       type: object
@@ -17458,6 +18627,15 @@ components:
             Approver-level status as reported by the backing data source
             (e.g. "APPROVED", "NOT_REQUIRED", "REQUESTED"); open string set,
             not a fixed enum.
+        canDecide:
+          type: boolean
+          description: >-
+            True only on the calling user's own REQUESTED row, when they may
+            actually decide it (not the change request's creator; an active
+            internal user on an internal stage -- peer, CAB, ECAB, review; and
+            the change request is in the state the stage belongs to, so a
+            REQUESTED row left on a stage the change has moved past is false).
+            Render Approve/Reject on this.
         createdOn:
           type: string
           nullable: true
@@ -17479,7 +18657,9 @@ components:
       properties:
         stage:
           type: string
-          enum: [Assess, Authorize, Customer Approval]
+          description: >-
+            "Peer Approval", "CAB Approval", "ECAB Approval" or "Review";
+            legacy/synced stages may be "Assess", "Authorize" or "Customer Approval".
         approverType:
           type: string
           enum: [STATIC_GROUP, DYNAMIC_CONTACT]
@@ -17488,10 +18668,29 @@ components:
         status:
           type: string
           enum: [APPROVED, REJECTED, PENDING]
+        assignmentGroup:
+          $ref: '#/components/schemas/ChangeRequestApprovalGroup'
         approvers:
           type: array
           items:
             $ref: '#/components/schemas/ChangeRequestApprover'
+
+    ChangeRequestApprovalGroup:
+      type: object
+      nullable: true
+      description: >-
+        The group the stage is assigned to; open it with GET /groups/{id} to list
+        its members. null for the Customer Approval / Customer Review stages (their
+        approvers are the project's registered contacts), for a stage recorded
+        against no group, and always on the ServiceNow-backed data source.
+        `approverName` still carries the display name.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
 
     ChangeRequestApprovalsView:
       type: object
@@ -17500,6 +18699,68 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/ChangeRequestApproval'
+
+    GroupManager:
+      type: object
+      nullable: true
+      description: The group's manager.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+
+    GroupMember:
+      type: object
+      description: One active internal member of a group.
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          format: uuid
+          description: The member's user id.
+        name:
+          type: string
+        email:
+          type: string
+          nullable: true
+        userType:
+          type: string
+          nullable: true
+          description: Always INTERNAL, as only internal users are listed.
+        role:
+          type: string
+          nullable: true
+          enum: [member, lead]
+
+    GroupDetail:
+      type: object
+      required: [id, name, members, total]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        description:
+          type: string
+          nullable: true
+        email:
+          type: string
+          nullable: true
+          description: The group email.
+        manager:
+          $ref: '#/components/schemas/GroupManager'
+        members:
+          type: array
+          description: Active internal members in name order; empty for a group nobody (eligible) is in.
+          items:
+            $ref: '#/components/schemas/GroupMember'
+        total:
+          type: integer
+          description: The number of members.
 
     ChangeRequestApprovalDecisionPayload:
       type: object
@@ -18595,6 +19856,15 @@ components:
         state:
           type: string
           enum: [draft, pending_approval, approved, published]
+        states:
+          type: array
+          description: >-
+            Matches a request in any of the listed states, as one merged
+            paginated list. An empty or omitted list means no state filter.
+            Rejected if combined with state.
+          items:
+            type: string
+            enum: [draft, pending_approval, approved, published]
         createdBy:
           type: string
         pagination:
@@ -19049,6 +20319,9 @@ components:
         serviceId:
           type: string
           format: uuid
+          description: >-
+            The incident's assignment group is set from this service's support
+            group; there is no assignmentGroupId on create.
         serviceOfferingId:
           type: string
           format: uuid
@@ -19056,6 +20329,9 @@ components:
           type: string
           format: uuid
         contactType:
+          description: >-
+            How the incident was reported. Shown as "Channel" in the CSM portal
+            (ServiceNow's incident contact_type, which ServiceNow also labels Channel).
           type: string
           enum: [SELF_SERVICE, EMAIL, WALK_IN, AZURE, EMAIL_INTERNAL, SITE_247, DIRECT, PHONE, SENTINEL, VIRTUAL_AGENT, CHAT, EMAIL_EXTERNAL]
         impact:
@@ -19064,9 +20340,6 @@ components:
         urgency:
           type: string
           enum: [HIGH, MEDIUM, LOW]
-        assignmentGroupId:
-          type: string
-          format: uuid
         assignedEngineerId:
           type: string
           format: uuid
@@ -19191,6 +20464,9 @@ components:
           allOf:
             - $ref: '#/components/schemas/EntityRef'
         contactType:
+          description: >-
+            How the incident was reported. Shown as "Channel" in the CSM portal
+            (ServiceNow's incident contact_type, which ServiceNow also labels Channel).
           type: string
           nullable: true
           enum: [SELF_SERVICE, EMAIL, WALK_IN, AZURE, EMAIL_INTERNAL, SITE_247, DIRECT, PHONE, SENTINEL, VIRTUAL_AGENT, CHAT, EMAIL_EXTERNAL]
@@ -19291,6 +20567,9 @@ components:
           type: string
           enum: [DHCP, ORACLE, CPU, KEYBOARD, DOS_DDOS, PRIVILEGE_ESCALATIONS, THREAT_INTELLIGENCE, SCANS_AND_PROBES, APPLICATION_SECURITY, CONFIG_CHANGE_REQUEST, IP_ADDRESS, FULL_OUTAGE, SQL_SERVER, SLOWNESS, MEMORY, MOUSE, PRIVACY, DATA_BREACH, SYSTEM_COMPROMISES, DNS, OS, DISK, VPN, MALWARE, VULNERABILITY, UNAUTHORIZED_ACCESS, IDENTITY_PROTECTION, PHISHING, IMPROPER_CONFIGURATION, INFORMATION_REQUEST, DB2, PARTIAL_OUTAGE, EMAIL, MONITOR, WIRELESS]
         contactType:
+          description: >-
+            How the incident was reported. Shown as "Channel" in the CSM portal
+            (ServiceNow's incident contact_type, which ServiceNow also labels Channel).
           type: string
           enum: [SELF_SERVICE, EMAIL, WALK_IN, AZURE, EMAIL_INTERNAL, SITE_247, DIRECT, PHONE, SENTINEL, VIRTUAL_AGENT, CHAT, EMAIL_EXTERNAL]
         impact:
@@ -19909,6 +21188,16 @@ components:
         offset:
           type: integer
 
+    UpdateIncidentTaskRequest:
+      type: object
+      minProperties: 1
+      properties:
+        state:
+          type: string
+          enum: [PENDING, OPEN, WORK_IN_PROGRESS, CLOSED_COMPLETE, CLOSED_INCOMPLETE, CLOSED_SKIPPED]
+        closeNotes:
+          type: string
+
     IncidentTaskDetail:
       allOf:
         - $ref: '#/components/schemas/IncidentTask'
@@ -19924,6 +21213,9 @@ components:
               type: string
               nullable: true
             closedOn:
+              type: string
+              nullable: true
+            closeNotes:
               type: string
               nullable: true
 
@@ -21366,7 +22658,7 @@ components:
               label:
                 type: string
           description: Required by the two list types and refused by the rest.
-    SplAccountDetails:
+    AccountDetails:
       type: object
       properties:
         number:
@@ -21404,7 +22696,7 @@ components:
         driveLocation:
           type: string
 
-    SplProjectDetails:
+    ViewerProjectDetails:
       type: object
       properties:
         number:
@@ -21432,7 +22724,7 @@ components:
         totalQueryHours:
           type: string
 
-    SplContact:
+    Contact:
       type: object
       properties:
         contactName:
@@ -21442,7 +22734,7 @@ components:
         state:
           type: string
 
-    SplEscalationDetail:
+    EscalationDetail:
       type: object
       properties:
         id:
@@ -21454,7 +22746,7 @@ components:
         escalatedOn:
           type: string
 
-    SplEscalationRequest:
+    EscalationRequest:
       type: object
       required: [justification, requestSource, reason, severity]
       properties:
@@ -21470,7 +22762,7 @@ components:
           type: string
           enum: ["High Severity", "Medium Severity"]
 
-    SplEscalationResponse:
+    EscalationResponse:
       type: object
       properties:
         linkedCaseNumber:
@@ -21478,7 +22770,7 @@ components:
         sysId:
           type: string
 
-    SplCaseDetails:
+    CaseDetails:
       type: object
       properties:
         number:
@@ -21524,7 +22816,7 @@ components:
         projectDeploymentType:
           type: string
 
-    SplCaseDetailsWithCount:
+    CaseDetailsWithCount:
       type: object
       properties:
         count:
@@ -21532,9 +22824,9 @@ components:
         cases:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseDetails'
+            $ref: '#/components/schemas/CaseDetails'
 
-    SplComment:
+    Comment:
       type: object
       properties:
         createdOn:
@@ -21546,7 +22838,7 @@ components:
         type:
           type: string
 
-    SplCommentsResponse:
+    CommentsResponse:
       type: object
       properties:
         total:
@@ -21554,9 +22846,9 @@ components:
         comments:
           type: array
           items:
-            $ref: '#/components/schemas/SplComment'
+            $ref: '#/components/schemas/Comment'
 
-    SplAttachmentInfo:
+    AttachmentInfo:
       type: object
       properties:
         sysId:
@@ -21576,7 +22868,7 @@ components:
         state:
           type: string
 
-    SplSLAReportDetails:
+    SLAReportDetails:
       type: object
       properties:
         projectName:
@@ -21586,13 +22878,13 @@ components:
         percentileDataList:
           type: array
           items:
-            $ref: '#/components/schemas/SplPercentileDataList'
+            $ref: '#/components/schemas/PercentileDataList'
         caseDataList:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseDataList'
+            $ref: '#/components/schemas/CaseDataList'
 
-    SplPercentileDataList:
+    PercentileDataList:
       type: object
       properties:
         key:
@@ -21608,7 +22900,7 @@ components:
         resolutionTime:
           type: string
 
-    SplCaseDataList:
+    CaseDataList:
       type: object
       properties:
         caseSysId:
@@ -21638,27 +22930,27 @@ components:
         resolutionSysId:
           type: string
 
-    SplCSReportDetails:
+    CSReportDetails:
       type: object
       properties:
         subscriptionDetails:
-          $ref: '#/components/schemas/SplSubscriptionDetail'
+          $ref: '#/components/schemas/SubscriptionDetail'
         casesRecords:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseRecordDetail'
+            $ref: '#/components/schemas/CaseRecordDetail'
         slaDetails:
-          $ref: '#/components/schemas/SplSlaStats'
+          $ref: '#/components/schemas/SlaStats'
         projectDeployments:
           type: array
           items:
-            $ref: '#/components/schemas/SplProjectDeployment'
+            $ref: '#/components/schemas/ProjectDeployment'
         monthlyCounts:
           type: array
           items:
-            $ref: '#/components/schemas/SplMonthlyCount'
+            $ref: '#/components/schemas/MonthlyCount'
 
-    SplSubscriptionDetail:
+    SubscriptionDetail:
       type: object
       properties:
         projectName:
@@ -21682,7 +22974,7 @@ components:
         consumedQueryHours:
           type: string
 
-    SplCaseRecordDetail:
+    CaseRecordDetail:
       type: object
       properties:
         caseSysId:
@@ -21708,17 +23000,17 @@ components:
         productName:
           type: string
 
-    SplSlaStats:
+    SlaStats:
       type: object
       properties:
         slaRecords:
           type: array
           items:
-            $ref: '#/components/schemas/SplSlaRecordDetail'
+            $ref: '#/components/schemas/SlaRecordDetail'
         slaPerformanceStats:
-          $ref: '#/components/schemas/SplSlaPerformanceStats'
+          $ref: '#/components/schemas/SlaPerformanceStats'
 
-    SplSlaRecordDetail:
+    SlaRecordDetail:
       type: object
       properties:
         task:
@@ -21728,7 +23020,7 @@ components:
         businessElapsedPercentage:
           type: string
 
-    SplSlaStatsDetail:
+    SlaStatsDetail:
       type: object
       properties:
         fraction:
@@ -21739,7 +23031,7 @@ components:
         percentage:
           type: string
 
-    SplSlaPerformanceStats:
+    SlaPerformanceStats:
       type: object
       description: >-
         Field names are capitalized (Workaround/Resolution/Response), not
@@ -21748,13 +23040,13 @@ components:
         codes against.
       properties:
         Workaround:
-          $ref: '#/components/schemas/SplSlaStatsDetail'
+          $ref: '#/components/schemas/SlaStatsDetail'
         Resolution:
-          $ref: '#/components/schemas/SplSlaStatsDetail'
+          $ref: '#/components/schemas/SlaStatsDetail'
         Response:
-          $ref: '#/components/schemas/SplSlaStatsDetail'
+          $ref: '#/components/schemas/SlaStatsDetail'
 
-    SplProjectDeployment:
+    ProjectDeployment:
       type: object
       properties:
         name:
@@ -21762,9 +23054,9 @@ components:
         products:
           type: array
           items:
-            $ref: '#/components/schemas/SplProduct'
+            $ref: '#/components/schemas/ViewerProduct'
 
-    SplProduct:
+    ViewerProduct:
       type: object
       properties:
         name:
@@ -21790,15 +23082,15 @@ components:
         earliestPossibleSupportEOLDate:
           type: string
 
-    SplMonthlyCount:
+    MonthlyCount:
       type: object
       properties:
         yearAndMonth:
           type: string
         counts:
-          $ref: '#/components/schemas/SplCount'
+          $ref: '#/components/schemas/Count'
 
-    SplCount:
+    Count:
       type: object
       properties:
         incidentCount:
@@ -21806,7 +23098,7 @@ components:
         queryCount:
           type: integer
 
-    SplTimeLogBreakdownDetails:
+    TimeLogBreakdownDetails:
       type: object
       properties:
         projectName:
@@ -21822,9 +23114,9 @@ components:
         cases:
           type: array
           items:
-            $ref: '#/components/schemas/SplTimeLogBreakdownCase'
+            $ref: '#/components/schemas/TimeLogBreakdownCase'
 
-    SplTimeLogBreakdownCase:
+    TimeLogBreakdownCase:
       type: object
       properties:
         caseNumber:
@@ -21846,9 +23138,9 @@ components:
         timeCards:
           type: array
           items:
-            $ref: '#/components/schemas/SplTimeCardDetails'
+            $ref: '#/components/schemas/TimeCardDetails'
 
-    SplTimeCardDetails:
+    TimeCardDetails:
       type: object
       properties:
         total:
@@ -21866,7 +23158,7 @@ components:
         state:
           type: string
 
-    SplWorkNoteResponse:
+    WorkNoteResponse:
       type: object
       properties:
         number:
@@ -21874,21 +23166,21 @@ components:
         updatedOn:
           type: string
 
-    SplABTTeamScheduleData:
+    ABTTeamScheduleData:
       type: object
       properties:
         list:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleList'
+            $ref: '#/components/schemas/ABTTeamScheduleList'
         metadata:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleMetadata'
+            $ref: '#/components/schemas/ABTTeamScheduleMetadata'
         snURL:
           type: string
 
-    SplABTTeamScheduleMetadata:
+    ABTTeamScheduleMetadata:
       type: object
       description: >-
         Populates the SPL frontend's team/event-type filter dropdowns.
@@ -21899,13 +23191,13 @@ components:
         teams:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleMetadataTeam'
+            $ref: '#/components/schemas/ABTTeamScheduleMetadataTeam'
         eventTypes:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleMetadataEventType'
+            $ref: '#/components/schemas/ABTTeamScheduleMetadataEventType'
 
-    SplABTTeamScheduleMetadataTeam:
+    ABTTeamScheduleMetadataTeam:
       type: object
       properties:
         label:
@@ -21915,7 +23207,7 @@ components:
         link:
           type: string
 
-    SplABTTeamScheduleMetadataEventType:
+    ABTTeamScheduleMetadataEventType:
       type: object
       properties:
         name:
@@ -21923,7 +23215,7 @@ components:
         label:
           type: string
 
-    SplABTTeamScheduleList:
+    ABTTeamScheduleList:
       type: object
       properties:
         label:
@@ -21931,9 +23223,9 @@ components:
         members:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleMember'
+            $ref: '#/components/schemas/ABTTeamScheduleMember'
 
-    SplABTTeamScheduleMember:
+    ABTTeamScheduleMember:
       type: object
       properties:
         name:
@@ -21941,16 +23233,16 @@ components:
         roles:
           type: array
           items:
-            $ref: '#/components/schemas/SplABTTeamScheduleMemberRole'
+            $ref: '#/components/schemas/ABTTeamScheduleMemberRole'
         schedule:
           type: object
           description: Keyed by date; each value is the list of schedule entries for that date.
           additionalProperties:
             type: array
             items:
-              $ref: '#/components/schemas/SplABTTeamScheduleMemberSchedule'
+              $ref: '#/components/schemas/ABTTeamScheduleMemberSchedule'
 
-    SplABTTeamScheduleMemberRole:
+    ABTTeamScheduleMemberRole:
       type: object
       properties:
         name:
@@ -21958,7 +23250,7 @@ components:
         label:
           type: string
 
-    SplABTTeamScheduleMemberSchedule:
+    ABTTeamScheduleMemberSchedule:
       type: object
       properties:
         name:
@@ -21966,7 +23258,7 @@ components:
         label:
           type: string
 
-    SplDriveFile:
+    DriveFile:
       type: object
       properties:
         id:
@@ -21976,7 +23268,7 @@ components:
         mimeType:
           type: string
 
-    SplDriveFolder:
+    DriveFolder:
       type: object
       properties:
         id:
@@ -21984,7 +23276,7 @@ components:
         name:
           type: string
 
-    SplCustomerHealthSummaryRequest:
+    CustomerHealthSummaryRequest:
       type: object
       properties:
         email:
@@ -22015,17 +23307,17 @@ components:
           type: integer
           default: 10
 
-    SplAccountSummaryResponse:
+    AccountSummaryResponse:
       type: object
       properties:
         data:
           type: array
           items:
-            $ref: '#/components/schemas/SplAccountSummary'
+            $ref: '#/components/schemas/AccountSummary'
         totalCount:
           type: integer
 
-    SplAccountSummary:
+    AccountSummary:
       type: object
       properties:
         accountSysId:
@@ -22034,7 +23326,7 @@ components:
           type: string
           nullable: true
         hasNoGoLive:
-          $ref: '#/components/schemas/SplGoLiveStatus'
+          $ref: '#/components/schemas/GoLiveStatus'
         hasRecentCases:
           type: boolean
         hasEolProduct:
@@ -22052,7 +23344,7 @@ components:
           nullable: true
           description: Populated from MySQL risk-tracking data; null when no health review has been recorded for this account.
 
-    SplGoLiveStatus:
+    GoLiveStatus:
       type: object
       properties:
         status:
@@ -22062,7 +23354,7 @@ components:
         state:
           type: string
 
-    SplInitHealthTrackingRequest:
+    InitHealthTrackingRequest:
       type: object
       properties:
         projectSysIds:
@@ -22070,7 +23362,7 @@ components:
           items:
             type: string
 
-    SplAccountDetail:
+    ViewerAccountDetail:
       type: object
       properties:
         accountName:
@@ -22078,9 +23370,9 @@ components:
         customerProjects:
           type: array
           items:
-            $ref: '#/components/schemas/SplProjectDetail'
+            $ref: '#/components/schemas/ProjectDetail'
 
-    SplProjectDetail:
+    ProjectDetail:
       type: object
       properties:
         sysId:
@@ -22092,7 +23384,7 @@ components:
         detailedRecentCases:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseGroup'
+            $ref: '#/components/schemas/CaseGroup'
         totalRecentCases:
           type: integer
         hasAbandonedCases:
@@ -22100,33 +23392,33 @@ components:
         detailedAbandonedCases:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseLink'
+            $ref: '#/components/schemas/CaseLink'
         isUsingEolProduct:
           type: boolean
         softwareModel:
           type: array
           items:
-            $ref: '#/components/schemas/SplEolProduct'
+            $ref: '#/components/schemas/EolProduct'
         deployments:
           type: array
           items:
-            $ref: '#/components/schemas/SplDeployment'
+            $ref: '#/components/schemas/ViewerDeployment'
         hasMigrationDelays:
           type: boolean
         detailedMigrationDelays:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseLink'
+            $ref: '#/components/schemas/CaseLink'
         hasEscalatedCases:
           type: boolean
         detailedEscalatedCases:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseLink'
+            $ref: '#/components/schemas/CaseLink'
         goLiveStatus:
-          $ref: '#/components/schemas/SplGoLiveStatus'
+          $ref: '#/components/schemas/GoLiveStatus'
 
-    SplCaseGroup:
+    CaseGroup:
       type: object
       properties:
         priority:
@@ -22136,9 +23428,9 @@ components:
         cases:
           type: array
           items:
-            $ref: '#/components/schemas/SplCaseInfo'
+            $ref: '#/components/schemas/CaseInfo'
 
-    SplCaseInfo:
+    CaseInfo:
       type: object
       properties:
         sysId:
@@ -22146,7 +23438,7 @@ components:
         number:
           type: string
 
-    SplCaseLink:
+    CaseLink:
       type: object
       properties:
         sysId:
@@ -22158,7 +23450,7 @@ components:
         escalationNumber:
           type: string
 
-    SplEolProduct:
+    EolProduct:
       type: object
       properties:
         name:
@@ -22168,9 +23460,9 @@ components:
         deployments:
           type: array
           items:
-            $ref: '#/components/schemas/SplDeployment'
+            $ref: '#/components/schemas/ViewerDeployment'
 
-    SplDeployment:
+    ViewerDeployment:
       type: object
       properties:
         sysId:
@@ -22178,7 +23470,7 @@ components:
         name:
           type: string
 
-    SplOpenRiskRequest:
+    OpenRiskRequest:
       type: object
       required: [accountSysId, comment]
       properties:
@@ -22187,14 +23479,14 @@ components:
         comment:
           type: string
 
-    SplCloseRiskRequest:
+    CloseRiskRequest:
       type: object
       required: [comment]
       properties:
         comment:
           type: string
 
-    SplMarkHealthyRequest:
+    MarkHealthyRequest:
       type: object
       required: [accountSysId]
       properties:
@@ -22204,14 +23496,14 @@ components:
           type: string
           nullable: true
 
-    SplRevertHealthRequest:
+    RevertHealthRequest:
       type: object
       required: [accountSysId]
       properties:
         accountSysId:
           type: string
 
-    SplProjectRisk:
+    ProjectRisk:
       type: object
       properties:
         id:
@@ -22240,9 +23532,9 @@ components:
         actionItems:
           type: array
           items:
-            $ref: '#/components/schemas/SplRiskActionItem'
+            $ref: '#/components/schemas/RiskActionItem'
 
-    SplHealthStatusRecord:
+    HealthStatusRecord:
       type: object
       properties:
         id:
@@ -22260,18 +23552,18 @@ components:
           type: string
           nullable: true
 
-    SplProjectHealthStatus:
+    ProjectHealthStatus:
       type: object
       properties:
         projectSysId:
           type: string
         healthStatus:
-          $ref: '#/components/schemas/SplHealthStatusRecord'
+          $ref: '#/components/schemas/HealthStatusRecord'
         openRisk:
-          $ref: '#/components/schemas/SplProjectRisk'
+          $ref: '#/components/schemas/ProjectRisk'
           nullable: true
 
-    SplHealthSummary:
+    HealthSummary:
       type: object
       properties:
         accountSysId:
@@ -22279,7 +23571,7 @@ components:
         overallStatus:
           type: string
 
-    SplCreateActionItemRequest:
+    CreateActionItemRequest:
       type: object
       required: [title, priority, dueDate, projectSysId, accountSysId]
       properties:
@@ -22300,7 +23592,7 @@ components:
         accountSysId:
           type: string
 
-    SplUpdateActionItemStatusRequest:
+    UpdateActionItemStatusRequest:
       type: object
       required: [status]
       properties:
@@ -22310,7 +23602,7 @@ components:
           type: string
           nullable: true
 
-    SplUpdateActionItemRequest:
+    UpdateActionItemRequest:
       type: object
       required: [title, priority]
       properties:
@@ -22328,14 +23620,14 @@ components:
           type: string
           nullable: true
 
-    SplCreateCommentRequest:
+    CreateCommentRequest:
       type: object
       required: [comment]
       properties:
         comment:
           type: string
 
-    SplRiskActionItem:
+    RiskActionItem:
       type: object
       properties:
         id:
@@ -22379,7 +23671,7 @@ components:
         commentCount:
           type: integer
 
-    SplActionItemComment:
+    ActionItemComment:
       type: object
       properties:
         id:
@@ -22393,7 +23685,7 @@ components:
         createdOn:
           type: string
 
-    SplUserInfoView:
+    UserInfoView:
       type: object
       properties:
         firstName:
@@ -22401,7 +23693,7 @@ components:
         lastName:
           type: string
 
-    SplUserScanRequest:
+    UserScanRequest:
       type: object
       required: [email, subscriptionKey, isPartner]
       properties:
@@ -22422,7 +23714,7 @@ components:
         documentation:
           type: string
 
-    SplScanResult:
+    ScanResult:
       type: object
       properties:
         order:
@@ -22434,7 +23726,7 @@ components:
         information:
           $ref: '#/components/schemas/SplScanInformation'
 
-    SplScanResponse:
+    ScanResponse:
       type: object
       properties:
         system:
@@ -22443,5 +23735,5 @@ components:
         systemResult:
           type: array
           items:
-            $ref: '#/components/schemas/SplScanResult'
+            $ref: '#/components/schemas/ScanResult'
 

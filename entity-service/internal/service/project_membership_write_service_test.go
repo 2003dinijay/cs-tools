@@ -184,8 +184,8 @@ func (f *fakeWriteMembershipRepo) Upsert(context.Context, domain.SalesforceMembe
 	return domain.SalesforceMembershipUpsertResult{}, errors.New("the portal writes use UpsertWithin")
 }
 
-func (f *fakeWriteMembershipRepo) DeactivateBySfID(context.Context, string, repository.AdminRoleBasisFunc) (bool, error) {
-	return false, errors.New("not used by the portal writes")
+func (f *fakeWriteMembershipRepo) DeactivateBySfID(context.Context, string, repository.AdminRoleBasisFunc) (bool, []domain.AffectedUser, error) {
+	return false, nil, errors.New("not used by the portal writes")
 }
 
 func (f *fakeWriteMembershipRepo) UpsertWithin(ctx context.Context, _, _ string, plan repository.MembershipWritePlan) (domain.SalesforceMembershipUpsertResult, error) {
@@ -255,6 +255,7 @@ type writeHarness struct {
 	steps    *fakeStepRepo
 	pub      *fakeInvitePublisher
 	failures *fakeFailureRecorder
+	cache    *fakeUserCache
 	svc      ProjectMembershipWriteService
 }
 
@@ -273,6 +274,7 @@ func newWriteHarness(t *testing.T, access AccessService) *writeHarness {
 		steps:    &fakeStepRepo{},
 		pub:      &fakeInvitePublisher{},
 		failures: &fakeFailureRecorder{},
+		cache:    newFakeUserCache(),
 	}
 	h.svc = NewProjectMembershipWriteService(MembershipWriteDeps{
 		Memberships: h.repo,
@@ -281,6 +283,7 @@ func newWriteHarness(t *testing.T, access AccessService) *writeHarness {
 		Publisher:   h.pub,
 		Failures:    h.failures,
 		Access:      access,
+		UserCache:   h.cache,
 	})
 	return h
 }
@@ -304,35 +307,6 @@ func existingSalesforceContact() *salesentity.Contact {
 }
 
 // ---- authorization -------------------------------------------------------
-
-// TestMembershipWrite_RejectsNonInternalCallers pins that every one of the
-// four operations is refused for a caller that is not an allow-listed
-// internal service, BEFORE anything downstream is touched -- no Salesforce
-// call, no transaction, no event.
-func TestMembershipWrite_RejectsNonInternalCallers(t *testing.T) {
-	h := newWriteHarness(t, stubAccess{scope: AccessScope{ProjectIDs: []string{writeProjectID}}})
-	ctx := context.Background()
-
-	_, inviteErr := h.svc.Invite(ctx, writeProjectID, inviteReq("Portal user"))
-	_, rolesErr := h.svc.UpdateRoles(ctx, writeProjectID, writeEmail, domain.UpdateProjectMembershipRolesRequest{Roles: []string{"Admin"}})
-	deactivateErr := h.svc.Deactivate(ctx, writeProjectID, writeEmail)
-	resendErr := h.svc.ResendInvitation(ctx, writeProjectID, writeEmail)
-
-	for name, err := range map[string]error{
-		"Invite": inviteErr, "UpdateRoles": rolesErr, "Deactivate": deactivateErr, "ResendInvitation": resendErr,
-	} {
-		var fe *apierror.ForbiddenError
-		if !errors.As(err, &fe) {
-			t.Errorf("%s: err = %v, want ForbiddenError", name, err)
-		}
-	}
-	if len(h.se.contactSearchs)+len(h.se.createdContact)+len(h.se.createdPC)+len(h.se.updates) != 0 {
-		t.Error("Salesforce must not be touched for a caller that is refused")
-	}
-	if len(h.repo.upserts) != 0 || len(h.pub.published) != 0 {
-		t.Error("nothing may be written or published for a caller that is refused")
-	}
-}
 
 // ---- invite --------------------------------------------------------------
 

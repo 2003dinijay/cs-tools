@@ -113,6 +113,11 @@ type entityCaseClient interface {
 	// call that backs GET /users/me. Needed by the public-comment ownership
 	// guard; see CaseHandler.resolveCurrentUserID.
 	GetUserMe(ctx context.Context) ([]byte, error)
+	// CreateUser calls POST /users on the entity service — used alongside
+	// GetUserMe by ensureUserProvisioned (see that function's own doc
+	// comment) to provision a worknote_creator-/escalator-only caller who
+	// has no "user" row yet.
+	CreateUser(ctx context.Context, body []byte) ([]byte, error)
 }
 
 // CaseHandler handles HTTP requests for case operations, delegating to the
@@ -487,6 +492,11 @@ func (h *CaseHandler) CreateCaseComment(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		body = rebuilt
+
+		// A worknote_creator-only caller (not cs_engineer/admin, who already
+		// hold full PermWrite and are assumed provisioned) may have no "user"
+		// row yet — see ensureUserProvisioned's own doc comment.
+		ensureUserProvisioned(r.Context(), h.entity, user)
 	}
 
 	if reqMeta.Type != "work_note" {
@@ -1681,6 +1691,11 @@ func (h *CaseHandler) CreateCaseEscalation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	// This route's permission (PermEscalate) is escalator-or-admin only —
+	// cs_engineer never holds it — so every caller reaching this point may
+	// have no "user" row yet. See ensureUserProvisioned's own doc comment.
+	ensureUserProvisioned(r.Context(), h.entity, user)
+
 	result, err := h.entity.CreateCaseEscalation(r.Context(), caseID, body)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity CreateCaseEscalation failed", "userID", user.UserID, "caseID", caseID, "err", err)
@@ -1953,7 +1968,7 @@ func (h *CaseHandler) CreateCaseGithubIssue(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusCreated, result)
 }
 
-// splCaseClient abstracts the ServiceNow operations used by SplCaseHandler.
+// viewerCaseClient abstracts the ServiceNow operations used by ViewerCaseHandler.
 // GetCases/GetCaseByNumber/GetCommentsAndWorknotes used to live here too,
 // backed first by ServiceNow and later by a Postgres translation layer --
 // both removed in favor of calling CS Portal's own POST /cases/search,
@@ -1963,28 +1978,28 @@ func (h *CaseHandler) CreateCaseGithubIssue(w http.ResponseWriter, r *http.Reque
 // already exposes -- see splWorknotesHandler's removal). Attachments have no
 // entity-service equivalent at all yet (no Postgres storage/backfill path),
 // so that one stays here, ServiceNow-backed, unmerged.
-type splCaseClient interface {
+type viewerCaseClient interface {
 	GetAttachmentsInfo(ctx context.Context, caseNumber string, offset, limit int) ([]servicenow.AttachmentInfo, error)
 }
 
-// SplCaseHandler handles HTTP requests for SupportPortalLite's case-
+// ViewerCaseHandler handles HTTP requests for SupportPortalLite's case-
 // attachments endpoint -- the one piece of the case domain with no
-// Postgres/entity-service equivalent to merge onto (see splCaseClient's own
+// Postgres/entity-service equivalent to merge onto (see viewerCaseClient's own
 // doc comment). Reading, searching, and commenting on cases now goes
 // through CS Portal's own /cases routes directly.
-type SplCaseHandler struct {
-	sn          splCaseClient
+type ViewerCaseHandler struct {
+	sn          viewerCaseClient
 	accessGuard *AccessGuard
 }
 
-// NewSplCaseHandler creates a SplCaseHandler.
-func NewSplCaseHandler(sn splCaseClient, accessGuard *AccessGuard) *SplCaseHandler {
-	return &SplCaseHandler{sn: sn, accessGuard: accessGuard}
+// NewViewerCaseHandler creates a ViewerCaseHandler.
+func NewViewerCaseHandler(sn viewerCaseClient, accessGuard *AccessGuard) *ViewerCaseHandler {
+	return &ViewerCaseHandler{sn: sn, accessGuard: accessGuard}
 }
 
 // GetAttachmentsInfo handles GET /cases/{caseId}/attachments-info.
-func (h *SplCaseHandler) GetAttachmentsInfo(w http.ResponseWriter, r *http.Request) {
-	user, ok := requireSPLAccess(w, r, h.accessGuard)
+func (h *ViewerCaseHandler) GetAttachmentsInfo(w http.ResponseWriter, r *http.Request) {
+	user, ok := requireViewerAccess(w, r, h.accessGuard)
 	if !ok {
 		return
 	}

@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -74,6 +75,44 @@ type ReferenceDataRepository interface {
 	// always matches whatever the migrations currently define. A requested
 	// type with no matching rows is simply absent from the returned map.
 	EnumLabels(ctx context.Context, enumTypeNames []string) (map[string][]string, error)
+	// ListTimeZones returns every row of the timezone reference table
+	// (value, label), ordered by value. This table is not declared in this
+	// repo's own migrations/ -- same "built outside this directory" class
+	// as several other tables documented in CLAUDE.md's "Staging schema
+	// drift" section -- so check the live schema before assuming its shape,
+	// not this file.
+	ListTimeZones(ctx context.Context) ([]TimeZoneRow, error)
+	// ListSLADurationPolicy returns every row of sla_duration_policy
+	// (migration 0192), ordered by severity then clock_type -- backs
+	// GET /sla-duration-policy. Severity is already translated from the raw
+	// case_severity_enum label ("S0") to the uppercase English word every
+	// case.* event's own Priority field carries ("CATASTROPHIC"), via this
+	// same package's caseSeverityFromEnum (case_repo.go) -- the one place
+	// that mapping is defined, so this method stays the only repository
+	// read anywhere that needs to apply it for this table.
+	ListSLADurationPolicy(ctx context.Context) ([]SLADurationPolicyRow, error)
+}
+
+// SLADurationPolicyRow is one row of the sla_duration_policy table, already
+// severity-translated -- see ListSLADurationPolicy's own doc comment.
+// DurationSeconds is duration's whole-second EXTRACT(EPOCH FROM ...) -- an
+// INTERVAL has no direct Go scan target in this connection's type map, same
+// reasoning project_repo.go's own EXTRACT(EPOCH FROM ...) columns already
+// document.
+type SLADurationPolicyRow struct {
+	Severity        string
+	ClockType       string
+	DurationSeconds int64
+}
+
+// TimeZoneRow is one row of the timezone reference table. utc_offset/dst
+// exist on the table but have no slot in domain.ChoiceListItem (the
+// {id, label} shape GET /metadata's own timeZones field has always used,
+// matching the ServiceNow-backed response this replaces) -- left unread
+// rather than widening that wire contract for data nothing consumes yet.
+type TimeZoneRow struct {
+	Value string
+	Label string
 }
 
 type referenceDataRepo struct {
@@ -101,6 +140,55 @@ func (r *referenceDataRepo) ListProjectTypes(ctx context.Context) ([]ProjectType
 			return nil, fmt.Errorf("scan project type: %w", err)
 		}
 		out = append(out, pt)
+	}
+	return out, rows.Err()
+}
+
+// ListTimeZones implements ReferenceDataRepository.
+func (r *referenceDataRepo) ListTimeZones(ctx context.Context) ([]TimeZoneRow, error) {
+	rows, err := r.db.Query(ctx, `SELECT value, label FROM timezone ORDER BY value`)
+	if err != nil {
+		return nil, fmt.Errorf("list time zones: %w", err)
+	}
+	defer rows.Close()
+
+	var out []TimeZoneRow
+	for rows.Next() {
+		var tz TimeZoneRow
+		if err := rows.Scan(&tz.Value, &tz.Label); err != nil {
+			return nil, fmt.Errorf("scan time zone: %w", err)
+		}
+		out = append(out, tz)
+	}
+	return out, rows.Err()
+}
+
+// ListSLADurationPolicy implements ReferenceDataRepository.
+func (r *referenceDataRepo) ListSLADurationPolicy(ctx context.Context) ([]SLADurationPolicyRow, error) {
+	rows, err := r.db.Query(ctx,
+		`SELECT severity::TEXT, clock_type, EXTRACT(EPOCH FROM duration)::BIGINT
+		 FROM sla_duration_policy ORDER BY severity, clock_type`)
+	if err != nil {
+		return nil, fmt.Errorf("list sla duration policy: %w", err)
+	}
+	defer rows.Close()
+
+	var out []SLADurationPolicyRow
+	for rows.Next() {
+		var rawSeverity, clockType string
+		var durationSeconds int64
+		if err := rows.Scan(&rawSeverity, &clockType, &durationSeconds); err != nil {
+			return nil, fmt.Errorf("scan sla duration policy: %w", err)
+		}
+		severity, ok := caseSeverityFromEnum[rawSeverity]
+		if !ok {
+			return nil, fmt.Errorf("list sla duration policy: unrecognized severity %q", rawSeverity)
+		}
+		out = append(out, SLADurationPolicyRow{
+			Severity:        strings.ToUpper(string(severity)),
+			ClockType:       clockType,
+			DurationSeconds: durationSeconds,
+		})
 	}
 	return out, rows.Err()
 }

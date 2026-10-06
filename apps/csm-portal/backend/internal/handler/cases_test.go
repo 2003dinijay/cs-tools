@@ -218,7 +218,7 @@ func TestCreateCaseComment(t *testing.T) {
 	const validPayload = `{"type":"comment","content":"Looking into this now."}`
 
 	t.Run("requires authenticated user", func(t *testing.T) {
-		h := NewCaseHandler(&mockEntityCaseClient{}).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(&mockEntityCaseClient{}).WithAccessGuard(viewerAccessGuard)
 		r := httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -229,7 +229,7 @@ func TestCreateCaseComment(t *testing.T) {
 	})
 
 	t.Run("rejects empty case ID", func(t *testing.T) {
-		h := NewCaseHandler(&mockEntityCaseClient{}).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(&mockEntityCaseClient{}).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases//comments", strings.NewReader(validPayload)))
 		w := httptest.NewRecorder()
 		h.CreateCaseComment(w, r)
@@ -239,7 +239,7 @@ func TestCreateCaseComment(t *testing.T) {
 	})
 
 	t.Run("rejects body exceeding 10 MiB comment limit", func(t *testing.T) {
-		h := NewCaseHandler(&mockEntityCaseClient{}).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(&mockEntityCaseClient{}).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(strings.Repeat("x", maxCommentBodyBytes+1))))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -250,7 +250,7 @@ func TestCreateCaseComment(t *testing.T) {
 	})
 
 	t.Run("rejects invalid JSON body", func(t *testing.T) {
-		h := NewCaseHandler(&mockEntityCaseClient{}).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(&mockEntityCaseClient{}).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(`not-json`)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -271,7 +271,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withWorknoteCreatorUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -294,7 +294,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		// A duplicate "type" key: if the forwarded body were the raw client
 		// bytes rather than rebuilt server-side (see CreateCaseComment's own
 		// comment on this), a downstream decoder disagreeing with Go's
@@ -310,6 +310,103 @@ func TestCreateCaseComment(t *testing.T) {
 		if want := `{"type":"work_note","content":"on it"}`; string(forwardedBody) != want {
 			t.Errorf("forwarded body = %s, want %s (rebuilt server-side, not the caller-supplied bytes)", forwardedBody, want)
 		}
+	})
+
+	t.Run("worknote_creator-only caller can only ever post type=work_note", func(t *testing.T) {
+		for _, payload := range []string{
+			`{"content":"no type"}`,
+			`{"type":"activity","content":"x"}`,
+			`{"type":"Work_Note","content":"x"}`,
+			`{"type":" work_note","content":"x"}`,
+			`{"type":["work_note"],"content":"x"}`,
+			`{"type":"work_note","type":"comment","content":"x"}`,
+		} {
+			called := false
+			client := &mockEntityCaseClient{
+				createCaseCommentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					called = true
+					return []byte(`{}`), nil
+				},
+			}
+			h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
+			r := withWorknoteCreatorUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(payload)))
+			r.SetPathValue("id", "case-1")
+			w := httptest.NewRecorder()
+			h.CreateCaseComment(w, r)
+			assertStatus(t, w, http.StatusForbidden)
+			if called {
+				t.Errorf("payload %s: entity CreateCaseComment must not be called for a worknote_creator-only caller", payload)
+			}
+		}
+	})
+
+	t.Run("worknote_creator-only caller with no user row yet is provisioned before the comment is posted", func(t *testing.T) {
+		var createUserCalled, createCommentCalled bool
+		client := &mockEntityCaseClient{
+			getUserMeFn: func(_ context.Context) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusNotFound, Body: "not found"}
+			},
+			createUserFn: func(_ context.Context, body []byte) ([]byte, error) {
+				createUserCalled = true
+				var req struct {
+					FirstName string   `json:"firstName"`
+					LastName  string   `json:"lastName"`
+					Email     string   `json:"email"`
+					Roles     []string `json:"roles"`
+				}
+				if err := json.Unmarshal(body, &req); err != nil {
+					t.Fatalf("decode CreateUser body: %v", err)
+				}
+				if req.Email != testWorknoteCreatorUser.Email || len(req.Roles) != 1 || req.Roles[0] != "internal" {
+					t.Errorf("CreateUser body = %+v, want the caller's own email and [\"internal\"]", req)
+				}
+				return []byte(`{"id":"new-id"}`), nil
+			},
+			createCaseCommentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				createCommentCalled = true
+				return []byte(`{}`), nil
+			},
+		}
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
+		// work_note: a worknote_creator-only caller may only ever post this
+		// type (see the permission boundary tests above) -- validPayload's
+		// "comment" type would be forbidden before ever reaching provisioning.
+		r := withWorknoteCreatorUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(`{"type":"work_note","content":"noted"}`)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusCreated)
+		if !createUserCalled {
+			t.Error("entity CreateUser was not called for a worknote_creator-only caller with no user row")
+		}
+		if !createCommentCalled {
+			t.Error("entity CreateCaseComment was not called")
+		}
+	})
+
+	t.Run("cs_engineer caller is never provisioned, even with no user row upstream", func(t *testing.T) {
+		client := &mockEntityCaseClient{
+			getUserMeFn: func(_ context.Context) ([]byte, error) {
+				t.Fatal("GetUserMe should not be called for a cs_engineer posting a work_note")
+				return nil, nil
+			},
+			createUserFn: func(_ context.Context, _ []byte) ([]byte, error) {
+				t.Fatal("CreateUser should not be called for a cs_engineer")
+				return nil, nil
+			},
+			createCaseCommentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				return []byte(`{}`), nil
+			},
+		}
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
+		// work_note, not validPayload ("comment"): a cs_engineer posting a
+		// customer-visible comment also runs the state-gate (GetCase), an
+		// unrelated code path this test isn't exercising -- work_note skips it.
+		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(`{"type":"work_note","content":"noted"}`)))
+		r.SetPathValue("id", "case-1")
+		w := httptest.NewRecorder()
+		h.CreateCaseComment(w, r)
+		assertStatus(t, w, http.StatusCreated)
 	})
 
 	// testPlatformUserID is the id GET /users/me resolves for the requesting
@@ -328,7 +425,7 @@ func TestCreateCaseComment(t *testing.T) {
 						return []byte(`{"state":"` + state + `","workState":null}`), nil
 					},
 				}
-				h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+				h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 				r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 				r.SetPathValue("id", "case-1")
 				w := httptest.NewRecorder()
@@ -345,7 +442,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{"state":"work_in_progress","workState":"paused"}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -360,7 +457,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{"state":"work_in_progress"}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -375,7 +472,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{"state":"work_in_progress","workState":"ongoing","assignedEngineer":{"id":"someone-else"}}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -390,7 +487,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{"state":"work_in_progress","workState":"ongoing"}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -418,7 +515,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{"id":"comment-1"}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -438,7 +535,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{"state":"work_in_progress","workState":"ongoing","assignedEngineer":{"id":"` + testUser.UserID + `"}}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -469,7 +566,7 @@ func TestCreateCaseComment(t *testing.T) {
 						return []byte(`{"id":"comment-1"}`), nil
 					},
 				}
-				h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+				h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 				r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 				r.SetPathValue("id", "case-1")
 				w := httptest.NewRecorder()
@@ -498,7 +595,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{"id":"wn-1"}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(`{"type":"work_note","content":"internal note"}`)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -516,7 +613,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return nil, errors.New("unexpected call")
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -538,7 +635,7 @@ func TestCreateCaseComment(t *testing.T) {
 						return []byte(`{"id":"wn-1"}`), nil
 					},
 				}
-				h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+				h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 				r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(`{"type":"work_note","content":"internal note"}`)))
 				r.SetPathValue("id", "case-1")
 				w := httptest.NewRecorder()
@@ -555,7 +652,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{"state":"closed"}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(`{"type":"work_note","content":"internal note"}`)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -577,7 +674,7 @@ func TestCreateCaseComment(t *testing.T) {
 						return []byte(`{"id":"comment-1"}`), nil
 					},
 				}
-				h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+				h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 				r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 				r.SetPathValue("id", "case-1")
 				w := httptest.NewRecorder()
@@ -593,7 +690,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{"type":"announcement","state":"closed"}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -611,7 +708,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{"id":"wn-1"}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(`{"type":"work_note","content":"internal note"}`)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -632,7 +729,7 @@ func TestCreateCaseComment(t *testing.T) {
 				return []byte(`{"message":"Comment created successfully","comment":{"id":"comment-1","createdOn":"2026-06-03T00:00:00Z","createdBy":"agent@example.com"}}`), nil
 			},
 		}
-		h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+		h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 		r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 		r.SetPathValue("id", "case-1")
 		w := httptest.NewRecorder()
@@ -667,7 +764,7 @@ func TestCreateCaseComment(t *testing.T) {
 						return nil, tc.err
 					},
 				}
-				h := NewCaseHandler(client).WithAccessGuard(splAccessGuard)
+				h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
 				r := withCsEngineerUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(validPayload)))
 				r.SetPathValue("id", "case-1")
 				w := httptest.NewRecorder()
@@ -2321,10 +2418,10 @@ func TestCreateCaseEscalation(t *testing.T) {
 				t.Fatal("SearchCaseEscalations should not be called for an ESCALATE action")
 				return nil, nil
 			},
-			getUserMeFn: func(_ context.Context) ([]byte, error) {
-				t.Fatal("GetUserMe should not be called for an ESCALATE action")
-				return nil, nil
-			},
+			// GetUserMe IS called for every escalation now, regardless of
+			// action -- see ensureUserProvisioned. It's the notified-users
+			// gate (SearchCaseEscalations, asserted above) that must stay
+			// ESCALATE-exempt, not GetUserMe itself.
 			createCaseEscalationFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
 				upstreamCalled = true
 				return []byte(`{"id":"e-1","level":"1","action":"ESCALATE"}`), nil
@@ -2338,6 +2435,45 @@ func TestCreateCaseEscalation(t *testing.T) {
 		assertStatus(t, w, http.StatusCreated)
 		if !upstreamCalled {
 			t.Error("upstream CreateCaseEscalation was not called for an ESCALATE action")
+		}
+	})
+
+	t.Run("escalator caller with no user row yet is provisioned before the escalation is created", func(t *testing.T) {
+		var createUserCalled, createEscalationCalled bool
+		client := &mockEntityCaseClient{
+			getUserMeFn: func(_ context.Context) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusNotFound, Body: "not found"}
+			},
+			createUserFn: func(_ context.Context, body []byte) ([]byte, error) {
+				createUserCalled = true
+				var req struct {
+					Email string   `json:"email"`
+					Roles []string `json:"roles"`
+				}
+				if err := json.Unmarshal(body, &req); err != nil {
+					t.Fatalf("decode CreateUser body: %v", err)
+				}
+				if req.Email != testUser.Email || len(req.Roles) != 1 || req.Roles[0] != "internal" {
+					t.Errorf("CreateUser body = %+v, want the caller's own email and [\"internal\"]", req)
+				}
+				return []byte(`{"id":"new-id"}`), nil
+			},
+			createCaseEscalationFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				createEscalationCalled = true
+				return []byte(`{"id":"e-1","level":"1","action":"ESCALATE"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/cases/"+testCaseID+"/escalations", strings.NewReader(`{"reason":"needed","action":"ESCALATE"}`)))
+		r.SetPathValue("id", testCaseID)
+		w := httptest.NewRecorder()
+		h.CreateCaseEscalation(w, r)
+		assertStatus(t, w, http.StatusCreated)
+		if !createUserCalled {
+			t.Error("entity CreateUser was not called for an escalator caller with no user row")
+		}
+		if !createEscalationCalled {
+			t.Error("entity CreateCaseEscalation was not called")
 		}
 	})
 
@@ -4177,16 +4313,16 @@ func TestAggregateFeedback(t *testing.T) {
 	})
 }
 
-type mockSplCaseClient struct {
+type mockViewerCaseClient struct {
 	getAttachmentsInfoFn func(ctx context.Context, caseNumber string, offset, limit int) ([]servicenow.AttachmentInfo, error)
 }
 
-func (m *mockSplCaseClient) GetAttachmentsInfo(ctx context.Context, caseNumber string, offset, limit int) ([]servicenow.AttachmentInfo, error) {
+func (m *mockViewerCaseClient) GetAttachmentsInfo(ctx context.Context, caseNumber string, offset, limit int) ([]servicenow.AttachmentInfo, error) {
 	return m.getAttachmentsInfoFn(ctx, caseNumber, offset, limit)
 }
 
 func TestSplGetAttachmentsInfo_MissingCaseIDIs400(t *testing.T) {
-	h := NewSplCaseHandler(&mockSplCaseClient{}, splAccessGuard)
+	h := NewViewerCaseHandler(&mockViewerCaseClient{}, viewerAccessGuard)
 	r := withUser(httptest.NewRequest(http.MethodGet, "/spl/cases//attachments-info?offset=0&limit=10", nil))
 	w := httptest.NewRecorder()
 	h.GetAttachmentsInfo(w, r)

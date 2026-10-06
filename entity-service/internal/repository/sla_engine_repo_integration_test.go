@@ -56,16 +56,20 @@ func intervalLiteral(d time.Duration) string {
 // integration test stays re-runnable against a shared database.
 func seedSLAEngineWorkItem(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
-	ctx := context.Background()
+	// WithSystemIdentity: work_item itself is RLS-protected now too
+	// (migration 0147), not just sla -- scoped, not just pool, backs this
+	// seed's own insert/cleanup.
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
 
 	cleanup := func() {
-		_, _ = pool.Exec(ctx, `DELETE FROM sla WHERE work_item_id = $1::uuid`, slaEngineIntegrationWorkItemID)
-		_, _ = pool.Exec(ctx, `DELETE FROM work_item WHERE id = $1::uuid`, slaEngineIntegrationWorkItemID)
+		_, _ = scoped.Exec(ctx, `DELETE FROM sla WHERE work_item_id = $1::uuid`, slaEngineIntegrationWorkItemID)
+		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE id = $1::uuid`, slaEngineIntegrationWorkItemID)
 	}
 	cleanup()
 	t.Cleanup(cleanup)
 
-	if _, err := pool.Exec(ctx, `
+	if _, err := scoped.Exec(ctx, `
 		INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type)
 		VALUES ($1::uuid, NOW(), NOW(), 'sla-engine-test', 'sla-engine-test', 'SLAENGINE01', 'SLAENGINE-1', 'sla engine integration test case', 'CASE')`,
 		slaEngineIntegrationWorkItemID); err != nil {
@@ -94,8 +98,17 @@ func seedSLAEngineWorkItem(t *testing.T, pool *pgxpool.Pool) {
 func TestSLAEngineIntegration_ReviseClocksDoesNotResurrectTerminalClock(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
-	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	// WithSystemIdentity: this exercises the same engine the background
+	// recompute worker runs as (see NewSLAEngineRepository's own doc
+	// comment) -- sla's RLS policies (migration 0142) require an
+	// identity on every statement now. scoped, not just pool, backs this
+	// test's own setup/verification queries below too -- a raw pool.Query
+	// carries no identity at all and would see zero rows regardless of
+	// what was actually written, which is not what those queries mean to
+	// test.
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	respPolicy, err := repo.FindPolicyByName(ctx, "P0 - Response (Managed Services)", "RESPONSE")
 	if err != nil {
@@ -123,7 +136,7 @@ func TestSLAEngineIntegration_ReviseClocksDoesNotResurrectTerminalClock(t *testi
 	if _, err := repo.CompleteClock(ctx, slaEngineIntegrationWorkItemID, "RESPONSE"); err != nil {
 		t.Fatalf("CompleteClock(RESPONSE) setup: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	if _, err := scoped.Exec(ctx,
 		`UPDATE sla SET stage = 'CANCELLED' WHERE work_item_id = $1::uuid AND sla_policy_id = $2::uuid`,
 		slaEngineIntegrationWorkItemID, resolutionPolicy.ID); err != nil {
 		t.Fatalf("pre-cancel RESOLUTION setup: %v", err)
@@ -142,7 +155,7 @@ func TestSLAEngineIntegration_ReviseClocksDoesNotResurrectTerminalClock(t *testi
 	countRows := func(t *testing.T, query string) int {
 		t.Helper()
 		var n int
-		if err := pool.QueryRow(ctx, query, slaEngineIntegrationWorkItemID).Scan(&n); err != nil {
+		if err := scoped.QueryRow(ctx, query, slaEngineIntegrationWorkItemID).Scan(&n); err != nil {
 			t.Fatalf("count query failed: %v\nquery: %s", err, query)
 		}
 		return n
@@ -192,8 +205,10 @@ func TestSLAEngineIntegration_ReviseClocksDoesNotResurrectTerminalClock(t *testi
 func TestSLAEngineIntegration_ReviseClocksReplacesBreachedClock(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
-	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	// WithSystemIdentity + Scoped: work_item is RLS-protected (see seedSLAEngineWorkItem).
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	workaroundPolicy, err := repo.FindPolicyByName(ctx, "P0 - Workaround (Managed Services)", "WORKAROUND")
 	if err != nil {
@@ -203,7 +218,7 @@ func TestSLAEngineIntegration_ReviseClocksReplacesBreachedClock(t *testing.T) {
 	if _, err := repo.RegisterClock(ctx, slaEngineIntegrationWorkItemID, workaroundPolicy); err != nil {
 		t.Fatalf("RegisterClock(workaround) setup: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	if _, err := scoped.Exec(ctx,
 		`UPDATE sla SET stage = 'BREACHED', has_breached = TRUE WHERE work_item_id = $1::uuid AND sla_policy_id = $2::uuid`,
 		slaEngineIntegrationWorkItemID, workaroundPolicy.ID); err != nil {
 		t.Fatalf("force WORKAROUND to BREACHED setup: %v", err)
@@ -214,12 +229,12 @@ func TestSLAEngineIntegration_ReviseClocksReplacesBreachedClock(t *testing.T) {
 	}
 
 	var cancelled, active int
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+	if err := scoped.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
 		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'WORKAROUND' AND s.stage = 'CANCELLED'`,
 		slaEngineIntegrationWorkItemID).Scan(&cancelled); err != nil {
 		t.Fatalf("count cancelled: %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+	if err := scoped.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
 		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'WORKAROUND' AND s.stage = 'IN_PROGRESS'`,
 		slaEngineIntegrationWorkItemID).Scan(&active); err != nil {
 		t.Fatalf("count active: %v", err)
@@ -240,8 +255,10 @@ func TestSLAEngineIntegration_ReviseClocksReplacesBreachedClock(t *testing.T) {
 func TestSLAEngineIntegration_ReviseClocksPreservesBreachedResponseClock(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
-	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	// WithSystemIdentity + Scoped: work_item is RLS-protected (see seedSLAEngineWorkItem).
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	responsePolicy, err := repo.FindPolicyByName(ctx, "P0 - Response (Managed Services)", "RESPONSE")
 	if err != nil {
@@ -251,7 +268,7 @@ func TestSLAEngineIntegration_ReviseClocksPreservesBreachedResponseClock(t *test
 	if _, err := repo.RegisterClock(ctx, slaEngineIntegrationWorkItemID, responsePolicy); err != nil {
 		t.Fatalf("RegisterClock(response) setup: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	if _, err := scoped.Exec(ctx,
 		`UPDATE sla SET stage = 'BREACHED', has_breached = TRUE WHERE work_item_id = $1::uuid AND sla_policy_id = $2::uuid`,
 		slaEngineIntegrationWorkItemID, responsePolicy.ID); err != nil {
 		t.Fatalf("force RESPONSE to BREACHED setup: %v", err)
@@ -262,12 +279,12 @@ func TestSLAEngineIntegration_ReviseClocksPreservesBreachedResponseClock(t *test
 	}
 
 	var total, breached int
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+	if err := scoped.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
 		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'RESPONSE'`,
 		slaEngineIntegrationWorkItemID).Scan(&total); err != nil {
 		t.Fatalf("count total: %v", err)
 	}
-	if err := pool.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+	if err := scoped.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
 		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'RESPONSE' AND s.stage = 'BREACHED'`,
 		slaEngineIntegrationWorkItemID).Scan(&breached); err != nil {
 		t.Fatalf("count breached: %v", err)
@@ -290,8 +307,13 @@ func TestSLAEngineIntegration_ReviseClocksPreservesBreachedResponseClock(t *test
 func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
-	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	// WithSystemIdentity + scoped for every statement, not just the
+	// repository construction below -- see seedSLAEngineWorkItem's own
+	// comment: sla's RLS policies (migration 0142) require an identity on
+	// every statement, and a raw pool.Exec/QueryRow carries none at all.
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	policy, err := repo.FindPolicyByName(ctx, "P0 - Response (Managed Services)", "RESPONSE")
 	if err != nil {
@@ -303,7 +325,7 @@ func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T
 	// Push start_on back far enough that the clock is already well past its
 	// own duration -- simulating a response that has sat unanswered for a
 	// while, not one that just crossed over this instant.
-	if _, err := pool.Exec(ctx,
+	if _, err := scoped.Exec(ctx,
 		`UPDATE sla SET start_on = NOW() - $2::interval WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID, intervalLiteral(policy.Duration+10*time.Minute)); err != nil {
 		t.Fatalf("push start_on back: %v", err)
@@ -315,7 +337,7 @@ func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T
 
 	var stage string
 	var firstPercent, firstDurationSeconds float64
-	if err := pool.QueryRow(ctx, `SELECT stage::TEXT, business_elapsed_percentage, EXTRACT(EPOCH FROM business_duration)
+	if err := scoped.QueryRow(ctx, `SELECT stage::TEXT, business_elapsed_percentage, EXTRACT(EPOCH FROM business_duration)
 		FROM sla WHERE work_item_id = $1::uuid`, slaEngineIntegrationWorkItemID).
 		Scan(&stage, &firstPercent, &firstDurationSeconds); err != nil {
 		t.Fatalf("scan after first RecomputeActive: %v", err)
@@ -328,7 +350,7 @@ func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T
 	}
 
 	// More real time passes while the clock remains BREACHED and unanswered.
-	if _, err := pool.Exec(ctx,
+	if _, err := scoped.Exec(ctx,
 		`UPDATE sla SET start_on = start_on - INTERVAL '10 minutes' WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID); err != nil {
 		t.Fatalf("push start_on back further: %v", err)
@@ -338,7 +360,7 @@ func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T
 	}
 
 	var secondPercent, secondDurationSeconds float64
-	if err := pool.QueryRow(ctx, `SELECT business_elapsed_percentage, EXTRACT(EPOCH FROM business_duration)
+	if err := scoped.QueryRow(ctx, `SELECT business_elapsed_percentage, EXTRACT(EPOCH FROM business_duration)
 		FROM sla WHERE work_item_id = $1::uuid`, slaEngineIntegrationWorkItemID).
 		Scan(&secondPercent, &secondDurationSeconds); err != nil {
 		t.Fatalf("scan after second RecomputeActive: %v", err)
@@ -360,8 +382,9 @@ func TestSLAEngineIntegration_RecomputeActiveKeepsMovingAfterBreach(t *testing.T
 func TestSLAEngineIntegration_CompleteClockFinalizesBreachedClock(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
-	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	policy, err := repo.FindPolicyByName(ctx, "P0 - Response (Managed Services)", "RESPONSE")
 	if err != nil {
@@ -370,7 +393,7 @@ func TestSLAEngineIntegration_CompleteClockFinalizesBreachedClock(t *testing.T) 
 	if _, err := repo.RegisterClock(ctx, slaEngineIntegrationWorkItemID, policy); err != nil {
 		t.Fatalf("RegisterClock setup: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	if _, err := scoped.Exec(ctx,
 		`UPDATE sla SET stage = 'BREACHED', has_breached = TRUE, start_on = NOW() - $2::interval WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID, intervalLiteral(policy.Duration+10*time.Minute)); err != nil {
 		t.Fatalf("force BREACHED setup: %v", err)
@@ -386,7 +409,7 @@ func TestSLAEngineIntegration_CompleteClockFinalizesBreachedClock(t *testing.T) 
 
 	var stage string
 	var percent float64
-	if err := pool.QueryRow(ctx, `SELECT stage::TEXT, business_elapsed_percentage FROM sla WHERE work_item_id = $1::uuid`,
+	if err := scoped.QueryRow(ctx, `SELECT stage::TEXT, business_elapsed_percentage FROM sla WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID).Scan(&stage, &percent); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
@@ -407,8 +430,9 @@ func TestSLAEngineIntegration_CompleteClockFinalizesBreachedClock(t *testing.T) 
 func TestSLAEngineIntegration_SetPausedPausesBreachedClock(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedSLAEngineWorkItem(t, pool)
-	ctx := context.Background()
-	repo := repository.NewSLAEngineRepository(pool)
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewSLAEngineRepository(scoped)
 
 	policy, err := repo.FindPolicyByName(ctx, "P0 - Workaround (Managed Services)", "WORKAROUND")
 	if err != nil {
@@ -417,7 +441,7 @@ func TestSLAEngineIntegration_SetPausedPausesBreachedClock(t *testing.T) {
 	if _, err := repo.RegisterClock(ctx, slaEngineIntegrationWorkItemID, policy); err != nil {
 		t.Fatalf("RegisterClock setup: %v", err)
 	}
-	if _, err := pool.Exec(ctx,
+	if _, err := scoped.Exec(ctx,
 		`UPDATE sla SET stage = 'BREACHED', has_breached = TRUE WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID); err != nil {
 		t.Fatalf("force BREACHED setup: %v", err)
@@ -432,7 +456,7 @@ func TestSLAEngineIntegration_SetPausedPausesBreachedClock(t *testing.T) {
 	}
 
 	var stage string
-	if err := pool.QueryRow(ctx, `SELECT stage::TEXT FROM sla WHERE work_item_id = $1::uuid`,
+	if err := scoped.QueryRow(ctx, `SELECT stage::TEXT FROM sla WHERE work_item_id = $1::uuid`,
 		slaEngineIntegrationWorkItemID).Scan(&stage); err != nil {
 		t.Fatalf("scan: %v", err)
 	}

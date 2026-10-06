@@ -35,7 +35,7 @@ import (
 // is NOT the platform's own user record id (see testPlatformUserID). Roles
 // holds every test role testAccessConfig() (access_test.go) grants a
 // permission for, so testUser passes every /spl/* handler's gates by
-// default (PermSPLAccess plus every sub-permission) — a test needing to
+// default (PermViewerAccess plus every sub-permission) — a test needing to
 // exercise a denial builds its own narrower *middleware.UserInfo instead
 // (see e.g. spl_accounts_test.go's TestSplEscalateCase_RequiresEscalation).
 var testUser = &middleware.UserInfo{
@@ -47,11 +47,11 @@ var testUser = &middleware.UserInfo{
 	},
 }
 
-// splAccessGuard is the shared AccessGuard every /spl/* handler test wires
+// viewerAccessGuard is the shared AccessGuard every /spl/* handler test wires
 // its handler with, built from the same testAccessConfig() (access_test.go)
 // every non-SPL handler test already uses — one guard, one set of test role
 // names, for the whole package.
-var splAccessGuard = NewAccessGuard(testAccessConfig())
+var viewerAccessGuard = NewAccessGuard(testAccessConfig())
 
 // testPlatformUserID is the id GET /users/me resolves for testUser: the
 // platform's own user record id, from a different id space than
@@ -89,9 +89,11 @@ func withCsEngineerUser(r *http.Request) *http.Request {
 // PermCreateWorkNote's own doc comment describes: this caller may post a
 // work_note, never anything else.
 var testWorknoteCreatorUser = &middleware.UserInfo{
-	Email:  "worknote-creator@example.com",
-	UserID: "f2d9bf5b-7067-43dc-8578-802c8623af5f",
-	Roles:  []string{"test-worknote-creator"},
+	Email:     "worknote-creator@example.com",
+	UserID:    "f2d9bf5b-7067-43dc-8578-802c8623af5f",
+	FirstName: "Worknote",
+	LastName:  "Creator",
+	Roles:     []string{"test-worknote-creator"},
 }
 
 // withWorknoteCreatorUser returns r with testWorknoteCreatorUser stored in its context.
@@ -174,6 +176,7 @@ type mockEntityCaseClient struct {
 	removeCaseTagFn            func(ctx context.Context, caseID, tagID string) ([]byte, error)
 	searchTagsFn               func(ctx context.Context, body []byte) ([]byte, error)
 	getUserMeFn                func(ctx context.Context) ([]byte, error)
+	createUserFn               func(ctx context.Context, body []byte) ([]byte, error)
 	// getChangeRequestFn/getIncidentFn back the attachmentStorageEntityClient
 	// interface (see attachment_storage.go) so this same mock serves
 	// AttachmentStorageHandler's per-reference-type access checks.
@@ -203,6 +206,13 @@ func (m *mockEntityCaseClient) GetUserMe(ctx context.Context) ([]byte, error) {
 		return m.getUserMeFn(ctx)
 	}
 	return []byte(`{"id":"` + testPlatformUserID + `","email":"` + testUser.Email + `"}`), nil
+}
+
+func (m *mockEntityCaseClient) CreateUser(ctx context.Context, body []byte) ([]byte, error) {
+	if m.createUserFn != nil {
+		return m.createUserFn(ctx, body)
+	}
+	return []byte(`{}`), nil
 }
 
 func (m *mockEntityCaseClient) CreateCase(ctx context.Context, body []byte) ([]byte, error) {
@@ -433,6 +443,8 @@ type mockSCIMClient struct {
 	searchUserFn         func(ctx context.Context, email string) (*scim.UserInfo, error)
 	searchExternalUserFn func(ctx context.Context, email string) (*scim.ExternalUserInfo, error)
 	updateUserPhoneFn    func(ctx context.Context, userID, mobile string) (*string, error)
+	getRoleFn            func(ctx context.Context, roleID string) ([]scim.RoleMember, error)
+	addRoleMembersFn     func(ctx context.Context, roleID string, emails []string) error
 }
 
 func (m *mockSCIMClient) SearchUser(ctx context.Context, email string) (*scim.UserInfo, error) {
@@ -456,6 +468,20 @@ func (m *mockSCIMClient) UpdateUserPhone(ctx context.Context, userID, mobile str
 	return nil, nil
 }
 
+func (m *mockSCIMClient) GetRole(ctx context.Context, roleID string) ([]scim.RoleMember, error) {
+	if m.getRoleFn != nil {
+		return m.getRoleFn(ctx, roleID)
+	}
+	return nil, nil
+}
+
+func (m *mockSCIMClient) AddRoleMembers(ctx context.Context, roleID string, emails []string) error {
+	if m.addRoleMembersFn != nil {
+		return m.addRoleMembersFn(ctx, roleID, emails)
+	}
+	return nil
+}
+
 // ----- mock entity user client -----
 
 type mockEntityUserClient struct {
@@ -463,6 +489,7 @@ type mockEntityUserClient struct {
 	patchUserMeFn            func(ctx context.Context, body []byte) ([]byte, error)
 	searchUsersFn            func(ctx context.Context, body []byte) ([]byte, error)
 	getUserFn                func(ctx context.Context, id string) ([]byte, error)
+	getUsersByIDsFn          func(ctx context.Context, body []byte) ([]byte, error)
 	listSavedFilterViewsFn   func(ctx context.Context, listKey string) ([]byte, error)
 	saveSavedFilterViewFn    func(ctx context.Context, body []byte) ([]byte, error)
 	deleteSavedFilterViewFn  func(ctx context.Context, listKey, name string) ([]byte, error)
@@ -482,6 +509,13 @@ func (m *mockEntityUserClient) GetUser(ctx context.Context, id string) ([]byte, 
 		return m.getUserFn(ctx, id)
 	}
 	return []byte(`{"id":"` + id + `","email":"","roles":[],"groups":[],"teams":[]}`), nil
+}
+
+func (m *mockEntityUserClient) GetUsersByIDs(ctx context.Context, body []byte) ([]byte, error) {
+	if m.getUsersByIDsFn != nil {
+		return m.getUsersByIDsFn(ctx, body)
+	}
+	return []byte(`{"users":[]}`), nil
 }
 
 // testTeamRegistry is a representative registry in its configured wire form: an
@@ -845,6 +879,14 @@ type mockEntityIncidentTaskClient struct {
 	searchIncidentTasksFn    func(ctx context.Context, body []byte) ([]byte, error)
 	aggregateIncidentTasksFn func(ctx context.Context, body []byte) ([]byte, error)
 	getIncidentTaskFn        func(ctx context.Context, id string) ([]byte, error)
+	updateIncidentTaskFn     func(ctx context.Context, id string, body []byte) ([]byte, error)
+}
+
+func (m *mockEntityIncidentTaskClient) UpdateIncidentTask(ctx context.Context, id string, body []byte) ([]byte, error) {
+	if m.updateIncidentTaskFn != nil {
+		return m.updateIncidentTaskFn(ctx, id, body)
+	}
+	return []byte(`{}`), nil
 }
 
 func (m *mockEntityIncidentTaskClient) SearchIncidentTasks(ctx context.Context, body []byte) ([]byte, error) {
@@ -877,6 +919,7 @@ type mockEntityChangeRequestClient struct {
 	getChangeRequestFn            func(ctx context.Context, id string) ([]byte, error)
 	patchChangeRequestFn          func(ctx context.Context, id string, body []byte) ([]byte, error)
 	getChangeRequestApprovalsFn   func(ctx context.Context, id string) ([]byte, error)
+	getChangeRequestLinkOptionsFn func(ctx context.Context, body []byte) ([]byte, error)
 	createCommentFn               func(ctx context.Context, body []byte) ([]byte, error)
 	searchCommentsFn              func(ctx context.Context, body []byte) ([]byte, error)
 	decideChangeRequestApprovalFn func(ctx context.Context, id string, body []byte) ([]byte, error)
@@ -922,6 +965,13 @@ func (m *mockEntityChangeRequestClient) GetChangeRequestApprovals(ctx context.Co
 		return m.getChangeRequestApprovalsFn(ctx, id)
 	}
 	return []byte(`{"approvals":[]}`), nil
+}
+
+func (m *mockEntityChangeRequestClient) GetChangeRequestLinkOptions(ctx context.Context, body []byte) ([]byte, error) {
+	if m.getChangeRequestLinkOptionsFn != nil {
+		return m.getChangeRequestLinkOptionsFn(ctx, body)
+	}
+	return []byte(`{"deployments":[],"deploymentProducts":[],"customerContacts":[]}`), nil
 }
 
 func (m *mockEntityChangeRequestClient) CreateComment(ctx context.Context, body []byte) ([]byte, error) {
@@ -1036,6 +1086,14 @@ func (m *mockEntityServiceOfferingClient) SearchServiceOfferings(ctx context.Con
 
 type mockEntityGroupClient struct {
 	searchGroupsFn func(ctx context.Context, body []byte) ([]byte, error)
+	getGroupFn     func(ctx context.Context, id string) ([]byte, error)
+}
+
+func (m *mockEntityGroupClient) GetGroup(ctx context.Context, id string) ([]byte, error) {
+	if m.getGroupFn != nil {
+		return m.getGroupFn(ctx, id)
+	}
+	return []byte(`{"id":"` + id + `","name":"","description":null,"email":null,"manager":null,"members":[],"total":0}`), nil
 }
 
 func (m *mockEntityGroupClient) SearchGroups(ctx context.Context, body []byte) ([]byte, error) {

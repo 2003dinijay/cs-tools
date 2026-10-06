@@ -25,7 +25,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
@@ -103,12 +102,20 @@ type AccountRepository interface {
 	LookupAccountIDBySfID(ctx context.Context, sfID string) (*string, error)
 }
 
+// accountRepo's Salesforce ingest methods (UpsertFromSalesforce,
+// SoftDeleteBySfID, LookupUserIDByEmail, LookupAccountIDBySfID) run as the
+// system: they have no caller to inherit an identity from (the Salesforce
+// webhook and the retry worker carry none), and which duplicate sf_id row they
+// pick is ranked by accountReferencedOrder's EXISTS over work_item, which must
+// not depend on who triggered the ingest. The search/get/patch methods serve
+// internal callers only (routes.go wraps them in internalOnly) and use the
+// caller's own identity.
 type accountRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
-// NewAccountRepository constructs an AccountRepository backed by the given connection pool.
-func NewAccountRepository(db *pgxpool.Pool) AccountRepository {
+// NewAccountRepository constructs an AccountRepository backed by the given scoped connection pool.
+func NewAccountRepository(db *Scoped) AccountRepository {
 	return &accountRepo{db: db}
 }
 
@@ -323,19 +330,10 @@ const salesforceSyncActor = domain.SalesforceSyncActor
 // deleted_on, which is how a RESTORED event (or any later CREATED/UPDATED)
 // brings a soft-deleted account back.
 func (r *accountRepo) UpsertFromSalesforce(ctx context.Context, row domain.SalesforceAccountUpsert, state domain.UpsertSalesforceIngestStateRequest) error {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return fmt.Errorf("upsert account from salesforce: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	if err := upsertAccountFromSalesforce(ctx, tx, row, state); err != nil {
-		return err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return fmt.Errorf("upsert account from salesforce: commit: %w", err)
-	}
-	return nil
+	ctx = WithSystemIdentity(ctx)
+	return r.db.InTx(ctx, func(tx pgx.Tx) error {
+		return upsertAccountFromSalesforce(ctx, tx, row, state)
+	})
 }
 
 // upsertAccountFromSalesforce is UpsertFromSalesforce's body, run on q (the
@@ -494,20 +492,10 @@ const insertAccountFromSalesforceQuery = `
 // account carries the id; the ledger row is written regardless, so a later
 // RESTORED is never mistaken for a duplicate.
 func (r *accountRepo) SoftDeleteBySfID(ctx context.Context, sfID string, state domain.UpsertSalesforceIngestStateRequest) (bool, error) {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return false, fmt.Errorf("soft-delete account by sf_id: begin: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	found, err := softDeleteAccountBySfID(ctx, tx, sfID, state)
-	if err != nil {
-		return false, err
-	}
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("soft-delete account by sf_id: commit: %w", err)
-	}
-	return found, nil
+	ctx = WithSystemIdentity(ctx)
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (bool, error) {
+		return softDeleteAccountBySfID(ctx, tx, sfID, state)
+	})
 }
 
 // softDeleteAccountBySfID is SoftDeleteBySfID's body, run on q (the
@@ -533,6 +521,7 @@ func softDeleteAccountBySfID(ctx context.Context, q querier, sfID string, state 
 }
 
 func (r *accountRepo) LookupUserIDByEmail(ctx context.Context, email string) (*string, error) {
+	ctx = WithSystemIdentity(ctx)
 	var id string
 	err := r.db.QueryRow(ctx, `SELECT id::text FROM "user" WHERE lower(email) = lower($1)`, email).Scan(&id)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -545,5 +534,5 @@ func (r *accountRepo) LookupUserIDByEmail(ctx context.Context, email string) (*s
 }
 
 func (r *accountRepo) LookupAccountIDBySfID(ctx context.Context, sfID string) (*string, error) {
-	return resolveIDBySfID(ctx, r.db, resolveAccountBySfIDQuery, "account", sfID)
+	return resolveIDBySfID(WithSystemIdentity(ctx), r.db, resolveAccountBySfIDQuery, "account", sfID)
 }

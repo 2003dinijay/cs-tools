@@ -24,7 +24,6 @@ import (
 	"strings"
 
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
@@ -74,7 +73,11 @@ type ProjectMembershipRepository interface {
 	// rather than at their next membership event. basis supplies what the
 	// database cannot (the contact's account classification and isCsAdmin);
 	// nil, or a basis that reports !ok, skips the re-derivation.
-	DeactivateBySfID(ctx context.Context, membershipSfID string, basis AdminRoleBasisFunc) (bool, error)
+	//
+	// affected names the user behind the membership (or, when no user row
+	// matches, the membership's own email), so the caller can drop that
+	// user's cached profile after the commit.
+	DeactivateBySfID(ctx context.Context, membershipSfID string, basis AdminRoleBasisFunc) (found bool, affected []domain.AffectedUser, err error)
 }
 
 // AdminRoleBasis is what re-deriving a contact's account-level admin role
@@ -142,32 +145,54 @@ type MembershipWriteContext struct {
 // still the last thing that happens.
 type MembershipWritePlan func(ctx context.Context, wc MembershipWriteContext) (domain.SalesforceMembershipUpsert, domain.UpsertOnboardingStepRequest, error)
 
+// projectMembershipRepo's writes (Upsert, UpsertWithin, DeactivateBySfID) run
+// as the system, whoever triggered them: the Salesforce webhook and retry
+// worker carry no identity, and a customer's own membership registration
+// reaches Upsert on that customer's identity, which must not change the
+// result. Their only read of an RLS-protected table is projectReferencedOrder/
+// accountReferencedOrder's EXISTS over work_item, which ranks duplicate sf_id
+// rows and so must see every work_item. Authorization of a portal write stays
+// in the service layer (requireInternalCaller), as it was before RLS.
+// GetMembershipByEmail and ResolveWriteContext read no protected table and
+// use the caller's own identity.
 type projectMembershipRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
-// NewProjectMembershipRepository constructs a ProjectMembershipRepository backed by the pool.
-func NewProjectMembershipRepository(db *pgxpool.Pool) ProjectMembershipRepository {
+// NewProjectMembershipRepository constructs a ProjectMembershipRepository backed by the scoped pool.
+func NewProjectMembershipRepository(db *Scoped) ProjectMembershipRepository {
 	return &projectMembershipRepo{db: db}
 }
 
-func (r *projectMembershipRepo) DeactivateBySfID(ctx context.Context, membershipSfID string, basis AdminRoleBasisFunc) (bool, error) {
-	tx, err := r.db.Begin(ctx)
+func (r *projectMembershipRepo) DeactivateBySfID(ctx context.Context, membershipSfID string, basis AdminRoleBasisFunc) (bool, []domain.AffectedUser, error) {
+	ctx = WithSystemIdentity(ctx)
+	affected, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) ([]domain.AffectedUser, error) {
+		return deactivateBySfIDTx(ctx, tx, membershipSfID, basis)
+	})
 	if err != nil {
-		return false, fmt.Errorf("deactivate project contact: begin tx: %w", err)
+		return false, nil, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	return affected != nil, affected, nil
+}
 
+// deactivateBySfIDTx is DeactivateBySfID's body, run inside tx. A nil result
+// means no membership carried the id; a found one always returns a non-nil
+// (possibly empty) slice.
+func deactivateBySfIDTx(ctx context.Context, tx pgx.Tx, membershipSfID string, basis AdminRoleBasisFunc) ([]domain.AffectedUser, error) {
 	tag, err := tx.Exec(ctx, `
 		UPDATE project_contact
 		SET state = $2::project_contact_state_enum, updated_on = NOW(), updated_by = $3
 		WHERE sf_id = $1`,
 		membershipSfID, domain.MembershipStateDeactivated, domain.SalesforceSyncActor)
 	if err != nil {
-		return false, fmt.Errorf("deactivate project contact by sf_id: %w", err)
+		return nil, fmt.Errorf("deactivate project contact by sf_id: %w", err)
 	}
 	if tag.RowsAffected() == 0 {
-		return false, nil
+		return nil, nil
+	}
+	affected, err := membershipAffectedUsers(ctx, tx, membershipSfID)
+	if err != nil {
+		return nil, err
 	}
 
 	// Salesforce has no LastModifiedDate to offer for a deleted record, so
@@ -178,19 +203,45 @@ func (r *projectMembershipRepo) DeactivateBySfID(ctx context.Context, membership
 		SET event_type = $2, updated_on = NOW(), updated_by = $3
 		WHERE membership_sf_id = $1 AND step = 'DATABASE'::onboarding_step_enum`,
 		membershipSfID, string(domain.SalesforceEventDeleted), domain.SalesforceSyncActor); err != nil {
-		return false, fmt.Errorf("mark DATABASE step deleted: %w", err)
+		return nil, fmt.Errorf("mark DATABASE step deleted: %w", err)
 	}
 
 	if basis != nil {
 		if err := rederiveAdminAfterDeactivate(ctx, tx, membershipSfID, basis); err != nil {
-			return false, err
+			return nil, err
 		}
 	}
+	return affected, nil
+}
 
-	if err := tx.Commit(ctx); err != nil {
-		return false, fmt.Errorf("deactivate project contact: commit: %w", err)
+// membershipAffectedUsers names the users behind the memberships with this
+// Salesforce id, resolved the way rederiveAdminAfterDeactivate resolves its
+// user (project_contact -> account_contact -> "user" by user_name). A
+// membership with no matching user row is named by its own email instead.
+// Always non-nil.
+func membershipAffectedUsers(ctx context.Context, tx querier, membershipSfID string) ([]domain.AffectedUser, error) {
+	rows, err := tx.Query(ctx, `
+		SELECT COALESCE(u.id::text, ''), COALESCE(NULLIF(u.email, ''), pc.email, '')
+		FROM project_contact pc
+		LEFT JOIN account_contact ac ON ac.id = pc.account_contact_id
+		LEFT JOIN "user" u ON LOWER(u.user_name) = LOWER(ac.user_name)
+		WHERE pc.sf_id = $1`, membershipSfID)
+	if err != nil {
+		return nil, fmt.Errorf("deactivate project contact: resolve affected users: %w", err)
 	}
-	return true, nil
+	defer rows.Close()
+	affected := []domain.AffectedUser{}
+	for rows.Next() {
+		var u domain.AffectedUser
+		if err := rows.Scan(&u.ID, &u.Email); err != nil {
+			return nil, fmt.Errorf("deactivate project contact: resolve affected users: %w", err)
+		}
+		affected = append(affected, u)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("deactivate project contact: resolve affected users: %w", err)
+	}
+	return affected, nil
 }
 
 // rederiveAdminAfterDeactivate re-runs syncDerivedAdminRole for the user
@@ -227,12 +278,14 @@ func rederiveAdminAfterDeactivate(ctx context.Context, tx querier, membershipSfI
 }
 
 func (r *projectMembershipRepo) Upsert(ctx context.Context, in domain.SalesforceMembershipUpsert, step domain.UpsertOnboardingStepRequest) (domain.SalesforceMembershipUpsertResult, error) {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return domain.SalesforceMembershipUpsertResult{}, fmt.Errorf("upsert membership: begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
+	ctx = WithSystemIdentity(ctx)
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (domain.SalesforceMembershipUpsertResult, error) {
+		return upsertTx(ctx, tx, in, step)
+	})
+}
 
+// upsertTx is Upsert's body, run inside tx.
+func upsertTx(ctx context.Context, tx pgx.Tx, in domain.SalesforceMembershipUpsert, step domain.UpsertOnboardingStepRequest) (domain.SalesforceMembershipUpsertResult, error) {
 	res, err := upsertMembershipTx(ctx, tx, in)
 	if err != nil {
 		return domain.SalesforceMembershipUpsertResult{}, err
@@ -243,21 +296,36 @@ func (r *projectMembershipRepo) Upsert(ctx context.Context, in domain.Salesforce
 	if _, err := upsertOnboardingStep(ctx, tx, step); err != nil {
 		return domain.SalesforceMembershipUpsertResult{}, err
 	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return domain.SalesforceMembershipUpsertResult{}, fmt.Errorf("upsert membership: commit: %w", err)
-	}
 	return res, nil
 }
 
 // UpsertWithin implements ProjectMembershipRepository.
 func (r *projectMembershipRepo) UpsertWithin(ctx context.Context, projectID, email string, plan MembershipWritePlan) (domain.SalesforceMembershipUpsertResult, error) {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return domain.SalesforceMembershipUpsertResult{}, fmt.Errorf("membership write: begin tx: %w", err)
+	var res domain.SalesforceMembershipUpsertResult
+	// planned records that the write ran to the end -- the plan, and with it the
+	// Salesforce half, completed -- so any error InTx still returns can only be
+	// the commit. That is the one failure ErrMembershipCommitFailed reports, and
+	// InTx alone would fold it into an ordinary error.
+	planned := false
+	// The identity is stamped on the transaction only; plan keeps the caller's ctx.
+	err := r.db.InTx(WithSystemIdentity(ctx), func(tx pgx.Tx) error {
+		var err error
+		res, err = upsertWithinTx(ctx, tx, projectID, email, plan)
+		planned = err == nil
+		return err
+	})
+	switch {
+	case err == nil:
+		return res, nil
+	case planned:
+		return res, fmt.Errorf("%w: %v", ErrMembershipCommitFailed, err)
+	default:
+		return domain.SalesforceMembershipUpsertResult{}, err
 	}
-	defer func() { _ = tx.Rollback(ctx) }()
+}
 
+// upsertWithinTx is UpsertWithin's body, run inside tx.
+func upsertWithinTx(ctx context.Context, tx pgx.Tx, projectID, email string, plan MembershipWritePlan) (domain.SalesforceMembershipUpsertResult, error) {
 	if err := lockMembershipWriteKey(ctx, tx, projectID, email); err != nil {
 		return domain.SalesforceMembershipUpsertResult{}, err
 	}
@@ -272,8 +340,8 @@ func (r *projectMembershipRepo) UpsertWithin(ctx context.Context, projectID, ema
 	}
 
 	// The Salesforce half. An error here leaves both systems untouched: the
-	// deferred Rollback discards whatever this transaction has read, and
-	// nothing has been written to either side yet.
+	// rollback discards whatever this transaction has read, and nothing has
+	// been written to either side yet.
 	in, step, err := plan(ctx, MembershipWriteContext{Target: target, Existing: existing})
 	if err != nil {
 		return domain.SalesforceMembershipUpsertResult{}, err
@@ -288,10 +356,6 @@ func (r *projectMembershipRepo) UpsertWithin(ctx context.Context, projectID, ema
 	step.ProjectContactID = &res.ProjectContactID
 	if _, err := upsertOnboardingStep(ctx, tx, step); err != nil {
 		return domain.SalesforceMembershipUpsertResult{}, err
-	}
-
-	if err := tx.Commit(ctx); err != nil {
-		return res, fmt.Errorf("%w: %v", ErrMembershipCommitFailed, err)
 	}
 	return res, nil
 }

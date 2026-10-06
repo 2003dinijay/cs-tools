@@ -82,6 +82,11 @@ type MembershipWriteDeps struct {
 	// nil, in which case invitations are not checked beyond the request's
 	// own shape.
 	Invitations InvitationValidator
+	// Admins says whether a customer caller is an account admin; nil refuses every customer.
+	Admins repository.AccountAdminRepository
+	// UserCache may be nil (Redis unconfigured). Otherwise every committed
+	// write drops the affected user's cached profile.
+	UserCache UserCacheInvalidator
 }
 
 type projectMembershipWriteService struct {
@@ -112,24 +117,31 @@ func NewProjectMembershipWriteService(deps MembershipWriteDeps) ProjectMembershi
 	return &projectMembershipWriteService{deps: deps}
 }
 
-// requireInternalCaller gates every method on an allow-listed internal client
-// (AUTH_INTERNAL_CLIENT_IDS), exactly as the onboarding-step endpoints do.
-//
-// A portal END USER must never reach these directly: whether this particular
-// customer admin may invite this particular person into this particular
-// project is the portal backend's decision, made against the account it has
-// already scoped the session to. This service only knows that the caller is
-// one of the portal backends, and deliberately does not re-derive that
-// authorization from a forwarded user token.
-func (s *projectMembershipWriteService) requireInternalCaller(ctx context.Context) error {
-	scope, err := s.deps.Access.ResolveScope(ctx)
+// msgNotAccountAdmin refuses a customer who can see the project but isn't an account admin.
+const msgNotAccountAdmin = "only an account admin can manage this project's contacts"
+
+// authorizeMembershipWrite allows trusted callers, and customers REGISTERED on the project who hold
+// customer_admin/partner_admin. For a customer it returns their email, used as the inviter.
+func (s *projectMembershipWriteService) authorizeMembershipWrite(ctx context.Context, projectID string) (customerEmail string, err error) {
+	scope, err := authorizeProject(ctx, s.deps.Access, projectID)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if !scope.Unrestricted {
-		return &apierror.ForbiddenError{Msg: "membership writes are only available to internal services"}
+	if scope.Unrestricted {
+		return "", nil
 	}
-	return nil
+	email := strings.TrimSpace(scope.ViewerEmail)
+	if email == "" || s.deps.Admins == nil {
+		return "", &apierror.ForbiddenError{Msg: msgNotAccountAdmin}
+	}
+	isAdmin, err := s.deps.Admins.HoldsAccountAdminRole(ctx, email)
+	if err != nil {
+		return "", err
+	}
+	if !isAdmin {
+		return "", &apierror.ForbiddenError{Msg: msgNotAccountAdmin}
+	}
+	return email, nil
 }
 
 // Membership write operation names. They key the caller-facing message a
@@ -216,11 +228,12 @@ func requireSalesforceLinks(ctx context.Context, operation string, wc repository
 
 // Invite implements ProjectMembershipWriteService.
 func (s *projectMembershipWriteService) Invite(ctx context.Context, projectID string, req domain.CreateProjectMembershipRequest) (domain.ProjectMembership, error) {
-	if err := s.requireInternalCaller(ctx); err != nil {
+	customerEmail, err := s.authorizeMembershipWrite(ctx, projectID)
+	if err != nil {
 		return domain.ProjectMembership{}, err
 	}
-	if err := validateUUIDs("id", []string{projectID}); err != nil {
-		return domain.ProjectMembership{}, err
+	if customerEmail != "" {
+		req.InviterEmail = customerEmail
 	}
 	email, err := normalizeMembershipEmail(req.Email)
 	if err != nil {
@@ -284,6 +297,7 @@ func (s *projectMembershipWriteService) Invite(ctx context.Context, projectID st
 	if err != nil {
 		return domain.ProjectMembership{}, s.handleWriteError(ctx, membershipOpInvite, projectID, email, written, err)
 	}
+	invalidateUser(ctx, s.deps.UserCache, res.UserID, email)
 
 	membership := domain.ProjectMembership{
 		ProjectID:        res.ProjectID,
@@ -321,11 +335,12 @@ const msgAlreadyProjectContact = "this address is already a contact on the proje
 // Invite checks everything again, so this is advice to the person inviting,
 // never a guarantee.
 func (s *projectMembershipWriteService) ValidateInvitation(ctx context.Context, projectID string, req domain.ValidateProjectMembershipRequest) (domain.ProjectMembershipValidation, error) {
-	if err := s.requireInternalCaller(ctx); err != nil {
+	customerEmail, err := s.authorizeMembershipWrite(ctx, projectID)
+	if err != nil {
 		return domain.ProjectMembershipValidation{}, err
 	}
-	if err := validateUUIDs("id", []string{projectID}); err != nil {
-		return domain.ProjectMembershipValidation{}, err
+	if customerEmail != "" {
+		req.InviterEmail = customerEmail
 	}
 	email, err := normalizeMembershipEmail(req.Email)
 	if err != nil {
@@ -428,10 +443,7 @@ func validatedInvitee(c salesentity.Contact) *domain.ValidatedInvitee {
 
 // UpdateRoles implements ProjectMembershipWriteService.
 func (s *projectMembershipWriteService) UpdateRoles(ctx context.Context, projectID, email string, req domain.UpdateProjectMembershipRolesRequest) (domain.ProjectMembership, error) {
-	if err := s.requireInternalCaller(ctx); err != nil {
-		return domain.ProjectMembership{}, err
-	}
-	if err := validateUUIDs("id", []string{projectID}); err != nil {
+	if _, err := s.authorizeMembershipWrite(ctx, projectID); err != nil {
 		return domain.ProjectMembership{}, err
 	}
 	normalized, err := normalizeMembershipEmail(email)
@@ -471,6 +483,7 @@ func (s *projectMembershipWriteService) UpdateRoles(ctx context.Context, project
 	if err != nil {
 		return domain.ProjectMembership{}, s.handleWriteError(ctx, membershipOpUpdateRoles, projectID, normalized, written, err)
 	}
+	invalidateUser(ctx, s.deps.UserCache, res.UserID, normalized)
 	return domain.ProjectMembership{
 		ProjectID:        res.ProjectID,
 		ProjectContactID: res.ProjectContactID,
@@ -485,10 +498,7 @@ func (s *projectMembershipWriteService) UpdateRoles(ctx context.Context, project
 
 // Deactivate implements ProjectMembershipWriteService.
 func (s *projectMembershipWriteService) Deactivate(ctx context.Context, projectID, email string) error {
-	if err := s.requireInternalCaller(ctx); err != nil {
-		return err
-	}
-	if err := validateUUIDs("id", []string{projectID}); err != nil {
+	if _, err := s.authorizeMembershipWrite(ctx, projectID); err != nil {
 		return err
 	}
 	normalized, err := normalizeMembershipEmail(email)
@@ -497,7 +507,7 @@ func (s *projectMembershipWriteService) Deactivate(ctx context.Context, projectI
 	}
 
 	var written salesforceWriteRecord
-	_, err = s.deps.Memberships.UpsertWithin(ctx, projectID, normalized, func(ctx context.Context, wc repository.MembershipWriteContext) (domain.SalesforceMembershipUpsert, domain.UpsertOnboardingStepRequest, error) {
+	res, err := s.deps.Memberships.UpsertWithin(ctx, projectID, normalized, func(ctx context.Context, wc repository.MembershipWriteContext) (domain.SalesforceMembershipUpsert, domain.UpsertOnboardingStepRequest, error) {
 		if wc.Existing == nil {
 			return domain.SalesforceMembershipUpsert{}, domain.UpsertOnboardingStepRequest{},
 				&apierror.NotFoundError{Msg: "contact not found on this project"}
@@ -527,15 +537,13 @@ func (s *projectMembershipWriteService) Deactivate(ctx context.Context, projectI
 	if err != nil {
 		return s.handleWriteError(ctx, membershipOpDeactivate, projectID, normalized, written, err)
 	}
+	invalidateUser(ctx, s.deps.UserCache, res.UserID, normalized)
 	return nil
 }
 
 // ResendInvitation implements ProjectMembershipWriteService.
 func (s *projectMembershipWriteService) ResendInvitation(ctx context.Context, projectID, email string) error {
-	if err := s.requireInternalCaller(ctx); err != nil {
-		return err
-	}
-	if err := validateUUIDs("id", []string{projectID}); err != nil {
+	if _, err := s.authorizeMembershipWrite(ctx, projectID); err != nil {
 		return err
 	}
 	normalized, err := normalizeMembershipEmail(email)

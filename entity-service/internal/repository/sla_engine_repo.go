@@ -24,7 +24,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 )
 
@@ -225,12 +224,16 @@ type SLAEngineRepository interface {
 }
 
 type slaEngineRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
 // NewSLAEngineRepository constructs an SLAEngineRepository backed by the
-// given connection pool.
-func NewSLAEngineRepository(db *pgxpool.Pool) SLAEngineRepository {
+// given Scoped connection. This engine runs on a process-startup background
+// worker (cmd/api/main.go's slaEngineCtx), never an HTTP request, so that
+// context must carry WithSystemIdentity(ctx) rather than inheriting nothing
+// -- Scoped requires an identity on ctx even though sla itself has no RLS
+// since migration 0153.
+func NewSLAEngineRepository(db *Scoped) SLAEngineRepository {
 	return &slaEngineRepo{db: db}
 }
 
@@ -559,26 +562,23 @@ func (r *slaEngineRepo) ReviseClocks(ctx context.Context, workItemID string, pol
 		    OR (sp.target::TEXT != 'RESPONSE' AND s.stage::TEXT IN ('IN_PROGRESS', 'PAUSED', 'BREACHED'))
 		  )`
 
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return 0, fmt.Errorf("revise csm sla clocks: begin tx: %w", err)
-	}
-	defer func() { _ = tx.Rollback(ctx) }()
-
-	tag, err := tx.Exec(ctx, cancelQuery, workItemID, sqlActorLiteral)
-	if err != nil {
-		return 0, fmt.Errorf("revise csm sla clocks: cancel active: %w", err)
-	}
-	cancelled := int(tag.RowsAffected())
-
-	for _, policy := range policies {
-		if _, err := registerClockExec(ctx, tx, workItemID, policy); err != nil {
-			return 0, fmt.Errorf("revise csm sla clocks: %w", err)
+	var cancelled int
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, cancelQuery, workItemID, sqlActorLiteral)
+		if err != nil {
+			return fmt.Errorf("revise csm sla clocks: cancel active: %w", err)
 		}
-	}
+		cancelled = int(tag.RowsAffected())
 
-	if err := tx.Commit(ctx); err != nil {
-		return 0, fmt.Errorf("revise csm sla clocks: commit: %w", err)
+		for _, policy := range policies {
+			if _, err := registerClockExec(ctx, tx, workItemID, policy); err != nil {
+				return fmt.Errorf("revise csm sla clocks: %w", err)
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return 0, err
 	}
 	return cancelled, nil
 }

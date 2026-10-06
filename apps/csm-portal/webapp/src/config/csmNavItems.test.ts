@@ -41,7 +41,7 @@ describe("nav tree invariants", () => {
 
   it("keeps a query-param tab from claiming its section's landing route", () => {
     const incidents = navNodeById("operations.incidents");
-    expect(navNodeRoutes(incidents!)).toEqual(["/operations/incidents"]);
+    expect(navNodeRoutes(incidents!)).toEqual(["/operations/incidents", "/operations/incident-tasks"]);
     expect(navNodePath(incidents!)).toBe("/operations");
   });
 });
@@ -66,7 +66,7 @@ describe("top-level nav order", () => {
   });
 
   it("keeps the remaining sections in their existing relative order", () => {
-    expect(ids.filter((id) => id !== "spl")).toEqual([
+    expect(ids.filter((id) => id !== "viewer")).toEqual([
       "dashboard",
       "support",
       "operations",
@@ -140,9 +140,9 @@ describe("navNodeMatchForPath", () => {
     expect(navNodeMatchForPath("/nothing-here")).toBeUndefined();
   });
 
-  it("prefers a child over its parent on an equal-length prefix tie (spl's href aliases spl.cases')", () => {
+  it("prefers a child over its parent on an equal-length prefix tie (viewer's href aliases viewer.cases')", () => {
     expect(navNodeMatchForPath("/spl/cases")).toMatchObject({
-      node: { id: "spl.cases" },
+      node: { id: "viewer.cases" },
       prefix: "/spl/cases",
     });
   });

@@ -25,7 +25,6 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
-	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
@@ -116,17 +115,28 @@ type ProblemRepository interface {
 	// problem_subcategory.value within that category; unmatched values remain
 	// NULL.
 	CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string) (domain.ProblemDetail, error)
+	// CreateProblem inserts a new problem row (both work_item and "problem")
+	// for the plain-Postgres data source (no ServiceNow at all) --
+	// createProblemPortalQuery's own doc comment has the full field-by-field
+	// reasoning, which mirrors CreateProblemFromServiceNow's exactly except
+	// identity (id/number) is generated here via
+	// gen_random_uuid()/next_portal_work_item_number() instead of being
+	// supplied by a prior ServiceNow response, createdBy is the calling
+	// user's own resolved email, and state is hardcoded to NEW (there is no
+	// ServiceNow response to confirm one from, and problem.state has no
+	// column default of its own -- confirmed against the live schema --
+	// unlike incident's).
+	CreateProblem(ctx context.Context, req domain.CreateProblemRequest, createdBy string) (domain.ProblemDetail, error)
 
 	// UpdateProblemFields writes any subset of the PATCH /problems/{id}
 	// fields that have an unambiguous, established Postgres column mapping --
 	// req.CauseNotes/FixNotes/Workaround/TargetResolutionDate (problem.cause_notes/
 	// fix_notes/workaround/due_on) and req.AssignedToID (work_item.assigned_to_id,
 	// the same generic column CaseRepository.UpdateCaseFields already writes for
-	// "case"). req.Transition and req.AssignmentGroupID are rejected earlier, by
-	// problemService.UpdateProblem's own validation -- there is no
-	// state-transition rule set or assignment-group column to apply them to
-	// (see this file's own package doc comment) -- so this method never sees
-	// them set.
+	// "case") and req.AssignmentGroupID (work_item.assignment_group_id,
+	// migration 0075). req.Transition is never applied here: a state move goes
+	// through ApplyProblemTransition, which writes these same fields in the
+	// same transaction.
 	//
 	// work_item.updated_on/updated_by are bumped unconditionally, matching
 	// UpdateCaseFields' identical convention, using actorEmail (the caller's
@@ -138,14 +148,40 @@ type ProblemRepository interface {
 	// user row (FK violation) or targetResolutionDate is not a valid RFC3339
 	// timestamp.
 	UpdateProblemFields(ctx context.Context, req domain.UpdateProblemRequest, actorEmail string) (time.Time, error)
+
+	// ApplyProblemTransition moves the problem along t and writes req's plain
+	// fields, in one transaction, with the row locked. With enforceFrom, a
+	// problem not in t.From is a ValidationError naming its current state
+	// (DATA_SOURCE=postgres, where this is the only state machine). Without
+	// it the move is applied whatever Postgres holds: dual-write calls it
+	// only after ServiceNow, the authority there, has accepted the same move,
+	// and Postgres may lag behind ServiceNow. See ProblemTransition for the
+	// side effects.
+	ApplyProblemTransition(ctx context.Context, req domain.UpdateProblemRequest, t ProblemTransition, enforceFrom bool, actorEmail string) (time.Time, error)
+}
+
+// ProblemTransition is one move of ServiceNow's problem state model, as
+// ProblemUtils._PROBLEM_TRANSITIONS defines them (the five forward moves its
+// API allows; From/To are problem_state_enum labels). Besides state and
+// problem_state, ApplyProblemTransition does what ServiceNow does on the
+// same move:
+//
+//   - resolve: resolution_code FIX_APPLIED (ProblemUtils hardcodes
+//     fix_applied, as the native "Resolve" UI action does), resolved_on now,
+//     resolved_by the caller.
+//   - close: is_active false (ProblemUtils sets active=false, as the native
+//     "Complete" UI action does), closed_on now. Refused when the
+//     resolution code is RISK_ACCEPTED, ProblemUtils' own guard.
+type ProblemTransition struct {
+	Name, From, To string
 }
 
 type problemRepo struct {
-	db *pgxpool.Pool
+	db *Scoped
 }
 
 // NewProblemRepository constructs a ProblemRepository backed by the given connection pool.
-func NewProblemRepository(db *pgxpool.Pool) ProblemRepository {
+func NewProblemRepository(db *Scoped) ProblemRepository {
 	return &problemRepo{db: db}
 }
 
@@ -436,6 +472,92 @@ func (r *problemRepo) GetProblem(ctx context.Context, id string) (domain.Problem
 	return d, nil
 }
 
+// createProblemPortalQuery is CreateProblem's (the plain-Postgres,
+// caller-initiated path) query -- structurally identical to
+// createProblemFromServiceNowQuery except id/number are generated here
+// (gen_random_uuid()/next_portal_work_item_number(), migration 0140) instead
+// of supplied by a prior ServiceNow response, and state is a fixed literal
+// ('NEW') rather than a parameter -- there is no ServiceNow response to
+// confirm one from on this path, and problem.state has no column default of
+// its own (confirmed against the live schema, unlike incident's).
+//
+// Column/output order matches the trailing SELECT exactly.
+const createProblemPortalQuery = `
+	WITH inserted_work_item AS (
+		INSERT INTO work_item (
+			id, created_on, updated_on, created_by, updated_by,
+			number, subject, description, type, parent_id
+		)
+		VALUES (
+			gen_random_uuid(), NOW(), NOW(), $1, $1,
+			next_portal_work_item_number(), $2, $6, 'PROBLEM'::work_item_type_enum, $3::uuid
+		)
+		RETURNING id, number, subject, description, created_on, updated_on, created_by
+	),
+	inserted_problem AS (
+		INSERT INTO problem (
+			id, state, incident_id, opened_on, category, subcategory_id
+		)
+		SELECT id, 'NEW'::problem_state_enum, $4::uuid, NOW(), $7::problem_category_enum,
+		       -- subcategory is matched on problem_subcategory.value (lower-case
+		       -- free text) within the chosen category; an unmatched value stays NULL.
+		       (SELECT psc.id FROM problem_subcategory psc WHERE psc.category = $7::problem_category_enum AND psc.value = LOWER($5::text))
+		FROM inserted_work_item
+		RETURNING id
+	)
+	SELECT iwi.id, iwi.number, iwi.subject, iwi.description, iwi.created_on, iwi.updated_on, iwi.created_by
+	FROM inserted_work_item iwi
+	JOIN inserted_problem ip ON ip.id = iwi.id`
+
+// CreateProblem implements ProblemRepository.
+func (r *problemRepo) CreateProblem(ctx context.Context, req domain.CreateProblemRequest, createdBy string) (domain.ProblemDetail, error) {
+	var category *string
+	if req.Category != nil && strings.TrimSpace(*req.Category) != "" {
+		v := strings.ToUpper(strings.TrimSpace(*req.Category))
+		category = &v
+	}
+	var (
+		outID, outNumber, outSubject, outCreatedBy string
+		outDescription                             *string
+		outCreatedOn, outUpdatedOn                 time.Time
+	)
+	err := r.db.QueryRow(ctx, createProblemPortalQuery,
+		createdBy, req.Subject, req.OriginCaseID,
+		req.PrimaryIncidentID, req.Subcategory, req.Description,
+		category,
+	).Scan(&outID, &outNumber, &outSubject, &outDescription, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
+	if err != nil {
+		// problem_deny_all_insert (migration 0148) permits only an internal
+		// caller -- problem has no project concept at all, same as incident.
+		// POST /problems is already gated internalOnly at the route, so this
+		// should not be reachable in practice, but map it defensively rather
+		// than leaving a theoretical 42501 to surface as a raw 500.
+		if IsRLSPolicyViolation(err) {
+			return domain.ProblemDetail{}, &apierror.NotFoundError{Msg: "problem not found"}
+		}
+		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
+			switch pgErr.Code {
+			case "22001": // string_data_right_truncation -- e.g. subject over work_item.subject's VARCHAR(512)
+				return domain.ProblemDetail{}, &apierror.ValidationError{Msg: "a field value is too long: " + pgErr.Message}
+			case "23503": // foreign_key_violation -- one of the referenced IDs does not exist
+				return domain.ProblemDetail{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist: " + pgErr.Detail}
+			case "P0001": // raise_exception from integrity triggers
+				return domain.ProblemDetail{}, &apierror.ValidationError{Msg: pgErr.Message}
+			}
+		}
+		return domain.ProblemDetail{}, fmt.Errorf("create problem: %w", err)
+	}
+
+	state := "NEW"
+	return domain.ProblemDetail{
+		ID:          &outID,
+		Number:      &outNumber,
+		Subject:     &outSubject,
+		Description: outDescription,
+		State:       &state,
+	}, nil
+}
+
 // createProblemFromServiceNowQuery inserts both halves of a problem row
 // (work_item + problem, the same shared-primary-key pattern
 // createIncidentFromServiceNowQuery documents) in one round trip via a CTE,
@@ -480,6 +602,13 @@ const createProblemFromServiceNowQuery = `
 
 // CreateProblemFromServiceNow implements ProblemRepository.
 func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string) (domain.ProblemDetail, error) {
+	// WithSystemIdentity: this insert never sets a project_id on the new
+	// work_item row at all (problems have no project concept, same as
+	// incidents -- see this file's own package doc comment), so work_item's
+	// INSERT policy (migration 0147) can only be satisfied by is_internal.
+	// Same reasoning as IncidentRepository.CreateIncidentFromServiceNow's
+	// own identical stamp.
+	ctx = WithSystemIdentity(ctx)
 	var category *string
 	if req.Category != nil && strings.TrimSpace(*req.Category) != "" {
 		v := strings.ToUpper(strings.TrimSpace(*req.Category))
@@ -534,12 +663,55 @@ func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domai
 // extension table uses). Same overall shape as
 // CaseRepository.UpdateCaseFields.
 func (r *problemRepo) UpdateProblemFields(ctx context.Context, req domain.UpdateProblemRequest, actorEmail string) (time.Time, error) {
-	tx, err := r.db.Begin(ctx)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("update problem fields: begin tx: %w", err)
-	}
-	defer tx.Rollback(ctx)
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (time.Time, error) {
+		return updateProblemFieldsTx(ctx, tx, req, actorEmail)
+	})
+}
 
+// ApplyProblemTransition implements ProblemRepository.
+func (r *problemRepo) ApplyProblemTransition(ctx context.Context, req domain.UpdateProblemRequest, t ProblemTransition, enforceFrom bool, actorEmail string) (time.Time, error) {
+	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (time.Time, error) {
+		var state, resolutionCode *string
+		err := tx.QueryRow(ctx, `SELECT state::text, resolution_code::text FROM problem WHERE id = $1 FOR UPDATE`, req.ID).
+			Scan(&state, &resolutionCode)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return time.Time{}, &apierror.NotFoundError{Msg: "problem not found"}
+		}
+		if err != nil {
+			return time.Time{}, fmt.Errorf("apply problem transition: read state: %w", err)
+		}
+		current := "NONE"
+		if state != nil {
+			current = *state
+		}
+		if enforceFrom && current != t.From {
+			return time.Time{}, &apierror.ValidationError{Msg: fmt.Sprintf(
+				"'%s' can only be used when the problem is in state %s. Current state: %s", t.Name, t.From, current)}
+		}
+		if t.Name == "close" && resolutionCode != nil && *resolutionCode == "RISK_ACCEPTED" {
+			return time.Time{}, &apierror.ValidationError{Msg: "'close' is not available when the resolution code is RISK_ACCEPTED"}
+		}
+
+		sets := []string{"state = $2::text::problem_state_enum", "problem_state = $2::text::problem_problem_state_enum"}
+		args := []any{req.ID, t.To}
+		switch t.Name {
+		case "resolve":
+			sets = append(sets, "resolution_code = 'FIX_APPLIED'", "resolved_on = NOW()",
+				`resolved_by_id = (SELECT u.id FROM "user" u WHERE LOWER(u.email) = LOWER($3) LIMIT 1)`)
+			args = append(args, actorEmail)
+		case "close":
+			sets = append(sets, "is_active = FALSE", "closed_on = NOW()")
+		}
+		if _, err := tx.Exec(ctx, `UPDATE problem SET `+strings.Join(sets, ", ")+` WHERE id = $1`, args...); err != nil {
+			return time.Time{}, fmt.Errorf("apply problem transition %s: %w", t.Name, err)
+		}
+		return updateProblemFieldsTx(ctx, tx, req, actorEmail)
+	})
+}
+
+// updateProblemFieldsTx is UpdateProblemFields' body, extracted so it can
+// run inside r.db.InTx's closure.
+func updateProblemFieldsTx(ctx context.Context, tx pgx.Tx, req domain.UpdateProblemRequest, actorEmail string) (time.Time, error) {
 	var problemSets []string
 	problemArgs := []any{req.ID}
 	idx := 2
@@ -588,21 +760,23 @@ func (r *problemRepo) UpdateProblemFields(ctx context.Context, req domain.Update
 		wiArgs = append(wiArgs, *req.AssignedToID)
 		widx++
 	}
+	if req.AssignmentGroupID != nil {
+		wiSets = append(wiSets, fmt.Sprintf("assignment_group_id = $%d::uuid", widx))
+		wiArgs = append(wiArgs, *req.AssignmentGroupID)
+		widx++
+	}
 
 	var updatedOn time.Time
-	err = tx.QueryRow(ctx, `UPDATE work_item SET `+strings.Join(wiSets, ", ")+` WHERE id = $1 AND type = 'PROBLEM' RETURNING updated_on`, wiArgs...).Scan(&updatedOn)
+	err := tx.QueryRow(ctx, `UPDATE work_item SET `+strings.Join(wiSets, ", ")+` WHERE id = $1 AND type = 'PROBLEM' RETURNING updated_on`, wiArgs...).Scan(&updatedOn)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return time.Time{}, &apierror.NotFoundError{Msg: "problem not found"}
 	}
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
-			return time.Time{}, &apierror.ValidationError{Msg: "assignedToId does not exist: " + pgErr.Detail}
+			return time.Time{}, &apierror.ValidationError{Msg: "assignedToId or assignmentGroupId does not exist: " + pgErr.Detail}
 		}
 		return time.Time{}, fmt.Errorf("update problem fields: work_item: %w", err)
 	}
 
-	if err := tx.Commit(ctx); err != nil {
-		return time.Time{}, fmt.Errorf("update problem fields: commit tx: %w", err)
-	}
 	return updatedOn, nil
 }

@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,12 +30,12 @@ import (
 // unconfigured methods panic if called -- same convention as
 // stubCallRequestRepo (call_request_service_test.go).
 type stubTimeCardRepo struct {
-	createTimeCard        func(ctx context.Context, req domain.CreateTimeCardRequest, userID string) (domain.TimeCardView, error)
-	updateTimeCardFields  func(ctx context.Context, req domain.UpdateTimeCardRequest, actorID string) (domain.TimeCardView, error)
+	createTimeCard          func(ctx context.Context, req domain.CreateTimeCardRequest, userID string) (domain.TimeCardView, error)
+	updateTimeCardFields    func(ctx context.Context, req domain.UpdateTimeCardRequest, actorID string) (domain.TimeCardView, error)
 	transitionTimeCardState func(ctx context.Context, id string, state domain.TimeCardState, leadComment *string, actorID string) (domain.TimeCardView, error)
-	deleteTimeCard        func(ctx context.Context, id, submitterID string) error
-	setTimeCardSNSysID    func(ctx context.Context, id, snSysID string) error
-	getTimeCardSNSysID    func(ctx context.Context, id string) (*string, error)
+	deleteTimeCard          func(ctx context.Context, id, submitterID string) error
+	setTimeCardSNSysID      func(ctx context.Context, id, snSysID string) error
+	getTimeCardSNSysID      func(ctx context.Context, id string) (*string, error)
 }
 
 func (s *stubTimeCardRepo) SearchTimeCards(context.Context, domain.SearchTimeCardsRequest, string) ([]domain.TimeCardView, int, error) {
@@ -101,10 +102,16 @@ func (s *stubMirrorTimeCardService) DeleteTimeCard(ctx context.Context, req doma
 	return s.deleteTimeCard(ctx, req)
 }
 
+// testApproverUUID is a distinct id from testUUID (the submitting caller's
+// own resolved user id in these tests) specifically so ApproverIDs never
+// accidentally names the submitter as their own approver -- validateApproverIDsExcludeSubmitter
+// would otherwise reject every one of these requests.
+const testApproverUUID = "77777777-0000-4000-8000-000000000003"
+
 func validCreateTimeCardRequest() domain.CreateTimeCardRequest {
 	return domain.CreateTimeCardRequest{
 		CaseID: testUUID, ProjectID: testUUID, Date: "2026-09-01",
-		ApproverIDs: []string{testUUID}, TimeAnalyzing: 10,
+		ApproverIDs: []string{testApproverUUID}, TimeAnalyzing: 10,
 	}
 }
 
@@ -131,7 +138,9 @@ func TestTimeCardService_CreateTimeCard_MirrorsToServiceNow(t *testing.T) {
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
+		},
 	}, dispatcher, mirror)
 
 	if _, err := svc.CreateTimeCard(ctx, req); err != nil {
@@ -172,7 +181,9 @@ func TestTimeCardService_CreateTimeCard_MirrorFailureRecordsWritebackFailure(t *
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
+		},
 	}, dispatcher, mirror)
 
 	if _, err := svc.CreateTimeCard(ctx, req); err != nil {
@@ -209,7 +220,9 @@ func TestTimeCardService_CreateTimeCard_MirrorSuccessPersistsSNSysID(t *testing.
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
+		},
 	}, dispatcher, mirror)
 
 	if _, err := svc.CreateTimeCard(ctx, req); err != nil {
@@ -256,7 +269,9 @@ func TestTimeCardService_UpdateTimeCard_MirrorsWithStoredSNSysID(t *testing.T) {
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
+		},
 	}, dispatcher, mirror)
 
 	if _, err := svc.UpdateTimeCard(ctx, req); err != nil {
@@ -301,7 +316,9 @@ func TestTimeCardService_UpdateTimeCard_SkipsMirrorWhenNoSNSysIDStored(t *testin
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
+		},
 	}, dispatcher, mirror)
 
 	if _, err := svc.UpdateTimeCard(ctx, req); err != nil {
@@ -343,7 +360,9 @@ func TestTimeCardService_DeleteTimeCard_MirrorsWithStoredSNSysID(t *testing.T) {
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
+		},
 	}, dispatcher, mirror)
 
 	if _, err := svc.DeleteTimeCard(ctx, req); err != nil {
@@ -386,7 +405,9 @@ func TestTimeCardService_DeleteTimeCard_SkipsMirrorWhenNoSNSysIDStored(t *testin
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
+		},
 	}, dispatcher, mirror)
 
 	if _, err := svc.DeleteTimeCard(ctx, req); err != nil {
@@ -433,7 +454,9 @@ func TestTimeCardService_DeleteTimeCard_RecordsSNWritebackFailureOnLookupError(t
 	failures := &recordingSNWritebackFailures{}
 	dispatcher := NewSNWritebackDispatcher(failures)
 	svc := NewTimeCardServiceWithSNWriteback(repo, stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) { return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil },
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
+		},
 	}, dispatcher, mirror)
 
 	if _, err := svc.DeleteTimeCard(ctx, req); err != nil {
@@ -455,6 +478,92 @@ func TestTimeCardService_DeleteTimeCard_RecordsSNWritebackFailureOnLookupError(t
 	}
 	if failReq.Error != lookupErr.Error() {
 		t.Errorf("failure record Error = %q, want %q", failReq.Error, lookupErr.Error())
+	}
+}
+
+// TestTimeCardService_CreateTimeCard_RejectsSelfApprover verifies the
+// backend half of the "no self-approval" rule: a submitter naming
+// themselves as their own card's approver is rejected before the
+// repository is ever called.
+func TestTimeCardService_CreateTimeCard_RejectsSelfApprover(t *testing.T) {
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	req := domain.CreateTimeCardRequest{
+		CaseID: testUUID, Date: "2026-09-01",
+		ApproverIDs: []string{testUUID}, TimeAnalyzing: 10,
+	}
+
+	repo := &stubTimeCardRepo{
+		createTimeCard: func(context.Context, domain.CreateTimeCardRequest, string) (domain.TimeCardView, error) {
+			t.Fatal("repository.CreateTimeCard must not be called when the submitter named themselves as their own approver")
+			return domain.TimeCardView{}, nil
+		},
+	}
+	svc := NewTimeCardService(repo, stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
+		},
+	})
+
+	_, err := svc.CreateTimeCard(ctx, req)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if got := err.Error(); got != "you cannot be your own time card approver" {
+		t.Errorf("error = %q, want the self-approval message", got)
+	}
+}
+
+// TestTimeCardService_UpdateTimeCard_RejectsSelfApprover is the same check
+// on the field-edit path: UpdateTimeCardFields's own WHERE clause already
+// guarantees the row's submitter equals the acting caller, so comparing
+// ApproverIDs against actorID here is both cheap and correct.
+func TestTimeCardService_UpdateTimeCard_RejectsSelfApprover(t *testing.T) {
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	req := domain.UpdateTimeCardRequest{ID: testUUID, ApproverIDs: []string{testUUID}}
+
+	repo := &stubTimeCardRepo{
+		updateTimeCardFields: func(context.Context, domain.UpdateTimeCardRequest, string) (domain.TimeCardView, error) {
+			t.Fatal("repository.UpdateTimeCardFields must not be called when the actor named themselves as their own approver")
+			return domain.TimeCardView{}, nil
+		},
+	}
+	svc := NewTimeCardService(repo, stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
+		},
+	})
+
+	_, err := svc.UpdateTimeCard(ctx, req)
+	if err == nil {
+		t.Fatal("expected an error, got nil")
+	}
+	if got := err.Error(); got != "you cannot be your own time card approver" {
+		t.Errorf("error = %q, want the self-approval message", got)
+	}
+}
+
+// TestValidateApproverIDsExcludeSubmitter pins the helper's own contract
+// directly, including the case-insensitive comparison (ids can arrive with
+// different casing from different callers).
+func TestValidateApproverIDsExcludeSubmitter(t *testing.T) {
+	tests := []struct {
+		name        string
+		approverIDs []string
+		submitterID string
+		wantErr     bool
+	}{
+		{"no approvers", nil, testUUID, false},
+		{"unrelated approver", []string{testApproverUUID}, testUUID, false},
+		{"self among several", []string{testApproverUUID, testUUID}, testUUID, true},
+		{"self, different case", []string{strings.ToUpper(testUUID)}, testUUID, true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateApproverIDsExcludeSubmitter(tt.approverIDs, tt.submitterID)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("validateApproverIDsExcludeSubmitter(%v, %q) error = %v, wantErr %v", tt.approverIDs, tt.submitterID, err, tt.wantErr)
+			}
+		})
 	}
 }
 
