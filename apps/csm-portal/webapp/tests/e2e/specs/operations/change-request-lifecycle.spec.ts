@@ -93,6 +93,7 @@ import {
   FAKE_PEER_GROUP,
   FAKE_PROJECT_CONTACTS,
   FAKE_PROJECTS,
+  customerAnswerRefusal,
   customerStageManualRefusal,
   installFakeChangeRequestApi,
   projectFrozenMessage,
@@ -207,9 +208,9 @@ async function postDecision(page: Page, crId: string, decision: "approved" | "re
 }
 
 /**
- * PATCHes `{ state }` straight to the BFF, as a Bypass customer approval / review (or a Roll back) would have, to
- * see what the API answers. The specs only ever send what the backend REFUSES (the customer's request is live),
- * so nothing changes; `message` is the answer's own `message`.
+ * PATCHes `{ state }` straight to the BFF, to see what the API answers. The specs only ever send what the backend
+ * REFUSES (a manual scheduled / closed out of a customer gate, whoever asks; a Roll back while the customer's review is
+ * live), so nothing changes; `message` is the answer's own `message`.
  */
 async function patchState(page: Page, crId: string, state: string): Promise<{ status: number; message: string }> {
   const { headers, base } = await apiSession(page, crId);
@@ -751,29 +752,25 @@ test.describe("change request lifecycle — a Review approver's controls follow 
 });
 
 // ---------------------------------------------------------------------------
-// The customer bypasses and the stepper while the customer is being asked, on the real stack:
-// CHG-FIXED-007 sits in Customer Approval and CHG-FIXED-008 in Customer Review, each with the
-// project's contacts (Dave and Erin) still REQUESTED. The customer answers in the customer portal,
-// so nobody here ever answers: this only LOOKS at the page and asks the API for the manual answer a
-// Bypass would send, which the backend refuses while the request is live. Nothing is changed.
+// No bypass, and the stepper, while the customer is being asked, on the real stack: CHG-FIXED-007 sits in
+// Customer Approval and CHG-FIXED-008 in Customer Review, each with the project's contacts (Dave and Erin) still
+// REQUESTED. The customer answers in the customer portal, and staff never answer for them: this only LOOKS at the
+// page (the stepper, the action bar: nothing named Bypass, no Close at Customer Review) and asks the API for the
+// manual answer, which the backend refuses -- whoever asks, asked or not. Nothing is changed.
 // ---------------------------------------------------------------------------
 
-test.describe("change request lifecycle — the customer bypass and the stepper while the customer is asked (real stack)", () => {
+test.describe("change request lifecycle — no bypass, and the stepper, while the customer is asked (real stack)", () => {
   // The describes before this one consume the fixtures; the seed puts them back.
   test.beforeAll(async () => {
     await resetFixtures();
   });
 
-  const PENDING = (what: "approval" | "review"): RegExp =>
-    new RegExp(
-      `^Customer ${what} is pending from (${DAVE}, ${ERIN}|${ERIN}, ${DAVE})\\. They answer in the Customer Portal, so it can't be bypassed from here\\.$`,
-    );
-  /** Roll back at Customer Review: the same wording for the failed review, which is the customer's to give. */
+  /** Roll back at Customer Review: a failed review is the customer's to give, so it is held back while they are asked. */
   const PENDING_ROLLBACK = new RegExp(
     `^Customer review is pending from (${DAVE}, ${ERIN}|${ERIN}, ${DAVE})\\. A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here\\.$`,
   );
 
-  test("CHG-FIXED-007 (Customer Approval, Dave and Erin asked): Bypass customer approval is a disabled Change state entry naming them, never a button, and the API refuses {state: scheduled}", async ({ page }) => {
+  test("CHG-FIXED-007 (Customer Approval, Dave and Erin asked): Re-schedule and Cancel change are all staff have, there is no Bypass entry, and the API refuses {state: scheduled}", async ({ page }) => {
     test.setTimeout(90_000);
     const detail = new ChangeRequestDetailPage(page);
     await detail.goto(CR_CUSTOMER_APPROVAL);
@@ -782,24 +779,18 @@ test.describe("change request lifecycle — the customer bypass and the stepper 
 
     // The stepper: Customer Approval is ticked on this fixture and current; Customer Review is not ticked, so not plotted.
     await expectStages(detail, "d d d c p p p p n p n", { approval: true, review: false });
-    // The bar: Re-schedule beside Change state (the main button); the bypass only inside the menu.
-    await expectActionBar(detail, { primary: null, reschedule: true, menu: [/^Bypass customer approval/, "Cancel change"] });
-    await detail.openChangeStateMenu();
-    const bypass = detail.bypassCustomerApprovalMenuItem();
-    await expect(bypass).toBeDisabled();
-    // The reason is on screen beside the entry: who is asked and where they answer.
-    await expect(bypass.getByText(PENDING("approval"))).toBeVisible();
-    await detail.closeChangeStateMenu();
+    // The bar: Re-schedule beside Change state (the main button); the menu holds Cancel change and nothing else.
+    await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Cancel change"] });
 
     // The backend refuses the manual answer with its own words, and nothing moved.
     const refused = await patchState(page, CR_CUSTOMER_APPROVAL, "scheduled");
     expect(refused.status, refused.message).toBe(400);
-    expect(refused.message).toBe(customerStageManualRefusal("scheduled"));
+    expect(refused.message).toBe(customerAnswerRefusal("scheduled"));
     expect(await psqlOutput(`SELECT state::text FROM change_request WHERE id = '${CR_CUSTOMER_APPROVAL}';`)).toBe("CUSTOMER_APPROVAL");
     expect(await requestedRows(CR_CUSTOMER_APPROVAL)).toBe(2);
   });
 
-  test("CHG-FIXED-008 (Customer Review, Dave and Erin asked): Bypass customer review and Roll back are disabled Change state entries naming them, there is no Close button, and the API refuses {state: closed} and {state: rollback}", async ({ page }) => {
+  test("CHG-FIXED-008 (Customer Review, Dave and Erin asked): Roll back is a disabled Change state entry naming them, there is no Close and no Bypass, and the API refuses {state: closed} and {state: rollback}", async ({ page }) => {
     test.setTimeout(90_000);
     const detail = new ChangeRequestDetailPage(page);
     await detail.goto(CR_CUSTOMER_REVIEW);
@@ -808,23 +799,19 @@ test.describe("change request lifecycle — the customer bypass and the stepper 
 
     // Customer Review is ticked and current; Customer Approval is not ticked on this fixture, so not plotted.
     await expectStages(detail, "d d d d d d d c n p n", { approval: false, review: true });
-    // The bar: no button at all (Close is the menu-only bypass); the backend withdraws Roll back while the review is
-    // pending too (a failed review is the customer's to give), so it is listed disabled, with why, like the bypass.
-    await expectActionBar(detail, { primary: null, reschedule: false, menu: [/^Bypass customer review/, /^Roll back/, "Cancel change"] });
+    // The bar: no button at all (the customer's review is theirs to give: no Close); the backend withdraws Roll back while the
+    // review is pending too (a failed review is the customer's to give), so it is listed disabled, with why.
+    await expectActionBar(detail, { primary: null, reschedule: false, menu: [/^Roll back/, "Cancel change"] });
     await expect(detail.closeButton()).toHaveCount(0);
     await detail.openChangeStateMenu();
-    const bypass = detail.bypassCustomerReviewMenuItem();
-    await expect(bypass).toBeDisabled();
-    await expect(bypass.getByText(PENDING("review"))).toBeVisible();
     await expect(detail.rollbackMenuItem()).toBeDisabled();
     await expect(detail.rollbackMenuItem().getByText(PENDING_ROLLBACK)).toBeVisible();
     await detail.closeChangeStateMenu();
 
-    for (const target of ["closed", "rollback"] as const) {
-      const refused = await patchState(page, CR_CUSTOMER_REVIEW, target);
-      expect(refused.status, `${target}: ${refused.message}`).toBe(400);
-      expect(refused.message).toBe(customerStageManualRefusal(target));
-    }
+    const closed = await patchState(page, CR_CUSTOMER_REVIEW, "closed");
+    expect([closed.status, closed.message], "closed").toEqual([400, customerAnswerRefusal("closed", true)]);
+    const rolledBack = await patchState(page, CR_CUSTOMER_REVIEW, "rollback");
+    expect([rolledBack.status, rolledBack.message], "rollback").toEqual([400, customerStageManualRefusal("rollback")]);
     expect(await psqlOutput(`SELECT state::text FROM change_request WHERE id = '${CR_CUSTOMER_REVIEW}';`)).toBe("CUSTOMER_REVIEW");
     expect(await requestedRows(CR_CUSTOMER_REVIEW)).toBe(2);
   });
@@ -844,11 +831,11 @@ test.describe("change request lifecycle — the customer bypass and the stepper 
 //   Standard  New -> Request Approval -> (auto) Scheduled, no approvals
 //
 // With "Customer Approval" ticked, every route above stops at Customer
-// Approval before Scheduled until the customer answers (in the customer portal)
-// or an engineer answers for them with "Change state" -> "Bypass customer
-// approval"; with "Customer Review" ticked, Review offers "Send for customer
-// review" instead of "Close", then Customer Review offers "Change state" ->
-// "Bypass customer review" (there is no Close button there).
+// Approval before Scheduled until the customer answers (in the customer portal);
+// with "Customer Review" ticked, Review offers "Send for customer review" instead
+// of "Close", then Customer Review waits for the customer's answer too (there is
+// no Close button there). Staff never record a customer's approval or review:
+// nothing in the page words answering for the customer (no "Bypass ...").
 //
 // Also asserts at every step that there is no "Schedule" button and no
 // "Move to Assess" label, and that the CR's creator can Cancel but never
@@ -934,29 +921,15 @@ async function expectStages(
 }
 
 /**
- * The customer bypass ("Bypass customer approval" at Customer Approval, "Bypass customer review" at Customer
- * Review) as the "Change state" menu shows it -- and nowhere else: it is never a button, whatever its mode.
- *  - "enabled": offered, nothing is being asked of the customer;
- *  - "disabled": listed but not clickable, the customer's request is pending;
- *  - "absent": not offered (any other state).
- * The retired "Record customer approval" must not exist in any of them.
+ * Staff never record a customer's approval or review, so nothing in the page words an engineer answering for the
+ * customer ("Bypass customer approval" / "Bypass customer review", the retired "Record customer approval"): not as
+ * text, not as a button, not as a "Change state" entry (enabled or disabled). The menu is opened to look, when there is one.
  */
-async function expectBypass(
-  detail: ChangeRequestDetailPage,
-  kind: "approval" | "review",
-  mode: "enabled" | "disabled" | "absent",
-): Promise<void> {
-  await expect(detail.bypassButton()).toHaveCount(0);
-  await expect(detail.retiredRecordCustomerApproval()).toHaveCount(0);
-  if ((await detail.changeStateButton().count()) === 0) {
-    expect(mode, "no Change state menu at all, so no bypass").toBe("absent");
-    return;
-  }
+async function expectNoBypass(detail: ChangeRequestDetailPage): Promise<void> {
+  await expect(detail.answerForCustomerWording()).toHaveCount(0);
+  if ((await detail.changeStateButton().count()) === 0) return;
   await detail.openChangeStateMenu();
-  const item = kind === "approval" ? detail.bypassCustomerApprovalMenuItem() : detail.bypassCustomerReviewMenuItem();
-  if (mode === "absent") await expect(item).toHaveCount(0);
-  else if (mode === "enabled") await expect(item).toBeEnabled();
-  else await expect(item).toBeDisabled();
+  await expect(detail.answerForCustomerWording()).toHaveCount(0);
   await detail.closeChangeStateMenu();
 }
 
@@ -968,14 +941,14 @@ test.describe("change request approval flow — Normal", () => {
       }) => {
         test.setTimeout(120_000);
         // A customer step needs a Customer Project to ask (Request Approval is refused without one, and the project can no
-        // longer be set after New); a project with no registered contacts leaves nobody to ask, which is what the manual
-        // path below is for.
+        // longer be set after New); Acme's contacts are asked at each customer gate and answer in the customer portal
+        // (applied server-side), since staff have no way to answer for them.
         const api = await installFakeChangeRequestApi(
           page,
           "normal",
           FAKE_CREATOR,
           { customerApprovalRequired: approval, customerReviewRequired: review },
-          approval || review ? NO_CONTACTS : {},
+          approval || review ? ON_ACME : {},
         );
         const detail = new ChangeRequestDetailPage(page);
 
@@ -1025,24 +998,21 @@ test.describe("change request approval flow — Normal", () => {
           await expect(detail.currentStep()).toContainText("Customer Approval");
           await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
           await expect(page.getByRole("button", { name: "Start implementation" })).toHaveCount(0);
-          // The project has no registered contacts, so nobody is asked: the engineer may answer for the customer -- from the
-          // "Change state" menu, never from a button.
-          await expect(detail.bypassButton()).toHaveCount(0);
-          await detail.openChangeStateMenu();
-          await expect(detail.menuItems()).toHaveText(["Bypass customer approval", "Cancel change"]);
-          await expect(detail.bypassCustomerApprovalMenuItem()).toBeEnabled();
-          await expect(detail.cancelChangeMenuItem()).toBeEnabled();
-          await detail.closeChangeStateMenu();
+          // The customer is asked, and only the customer's own answer moves the change on: staff have Re-schedule and Cancel change.
+          await expectOnlyCancelActionable(detail, "approval");
           await expectNoManualSchedule(detail);
-          await detail.bypassCustomer("approval", "The customer approved the window by phone.");
+          const writesBefore = api.requests().filter(isWrite).length;
+          await customerAnswers(page, api, FAKE_CUST_ONE, "approved");
+          // The answer came from the customer portal, not from this page: nothing was sent from it.
+          expect(api.requests().filter(isWrite).length).toBe(writesBefore);
         } else {
-          await expectBypass(detail, "approval", "absent");
+          await expectNoBypass(detail);
         }
 
         // Scheduled: nothing awaited, no Schedule button.
         await expect(detail.currentStep()).toContainText("Scheduled");
         await expect(detail.blockingReason()).toHaveCount(0);
-        await expectBypass(detail, "approval", "absent");
+        await expectNoBypass(detail);
         await expectNoManualSchedule(detail);
 
         // The engineer-driven tail.
@@ -1061,9 +1031,10 @@ test.describe("change request approval flow — Normal", () => {
           await expect(detail.currentStep()).toContainText("Customer Review");
           await expect(detail.blockingReason()).toHaveText("Awaiting Customer Review");
           await expect(detail.sendForCustomerReviewButton()).toHaveCount(0);
-          // Customer Review has no Close button: an engineer answers for the customer from the menu.
+          // Customer Review has no Close button, and none in the menu either: the review is the customer's to give.
           await expect(detail.closeButton()).toHaveCount(0);
-          await detail.bypassCustomer("review", "The customer confirmed the result by email.");
+          await expectOnlyCancelActionable(detail, "review");
+          await customerAnswers(page, api, FAKE_CUST_ONE, "approved");
         } else {
           // Review offers Close and no customer review.
           await expect(detail.closeButton()).toBeVisible();
@@ -1119,9 +1090,9 @@ test.describe("change request approval flow — Emergency", () => {
 });
 
 test.describe("change request approval flow — Emergency with Customer Approval", () => {
-  test("ECAB approval stops at Customer Approval; only 'Bypass customer approval' (a Change state menu entry) reaches Scheduled", async ({ page }) => {
+  test("ECAB approval stops at Customer Approval; only the customer's own answer (in the customer portal) reaches Scheduled", async ({ page }) => {
     test.setTimeout(60_000);
-    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
+    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
 
     await openDetail(detail);
@@ -1136,15 +1107,18 @@ test.describe("change request approval flow — Emergency with Customer Approval
     await page.reload();
     await detail.approve("Eli Ecab");
 
+    // The ECAB approver is staff like any other: Customer Approval offers them no way to answer for the customer.
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expectNoBypass(detail);
     api.setViewer(FAKE_CREATOR);
     await page.reload();
     await expect(detail.currentStep()).toContainText("Customer Approval");
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
     await expect(page.getByRole("button", { name: "Start implementation" })).toHaveCount(0);
     await expectNoManualSchedule(detail);
-    await expectBypass(detail, "approval", "enabled");
-    await detail.bypassCustomer("approval", "The customer approved on the bridge call.");
+    await expectOnlyCancelActionable(detail, "approval");
 
+    await customerAnswers(page, api, FAKE_CUST_ONE, "approved");
     await expect(detail.currentStep()).toContainText("Scheduled");
     await expect(detail.blockingReason()).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Start implementation" })).toBeVisible();
@@ -1153,10 +1127,10 @@ test.describe("change request approval flow — Emergency with Customer Approval
 });
 
 test.describe("change request approval flow — Standard with Customer Approval", () => {
-  test("Request Approval goes to Customer Approval (not Scheduled), then Bypass customer approval schedules it", async ({
+  test("Request Approval goes to Customer Approval (not Scheduled), and only the customer's answer schedules it", async ({
     page,
   }) => {
-    await installFakeChangeRequestApi(page, "standard", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
+    const api = await installFakeChangeRequestApi(page, "standard", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
 
     await openDetail(detail);
@@ -1164,11 +1138,12 @@ test.describe("change request approval flow — Standard with Customer Approval"
 
     await expect(detail.currentStep()).toContainText("Customer Approval");
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
-    await expect(page.getByText(/no approval stages recorded/i)).toBeVisible();
+    await expect(page.getByText(/no approval stages recorded/i)).toHaveCount(0); // the customer's stage is the one stage it has
     await expect(page.getByRole("button", { name: "Start implementation" })).toHaveCount(0);
     await expectNoManualSchedule(detail);
+    await expectOnlyCancelActionable(detail, "approval");
 
-    await detail.bypassCustomer("approval", "Standard change, pre-approved by the customer.");
+    await customerAnswers(page, api, FAKE_CUST_TWO, "approved");
     await expect(detail.currentStep()).toContainText("Scheduled");
     await expect(detail.blockingReason()).toHaveCount(0);
     await expect(page.getByRole("button", { name: "Start implementation" })).toBeVisible();
@@ -1587,8 +1562,10 @@ test.describe("change request lifecycle — project and deployments (mocked back
 // server-side (`api.customerDecides`) and assert what the CSM page then shows
 // (approve -> Scheduled / Closed, reject -> Canceled / Rollback; the contact's row
 // Approved / Rejected, the others' Cancelled). With no project, a project without
-// registered contacts, or none of them eligible, no stage exists and the manual
-// "Bypass customer approval" / "Bypass customer review" (Change state menu entries) stay.
+// registered contacts, or none of them eligible, no stage exists: nobody is asked,
+// and staff never record a customer's approval or review, so the change waits at
+// the gate with what staff always have there (Re-schedule, Roll back at Customer
+// Review, Cancel change) until the customer can be asked.
 //
 
 const NO_CUSTOMER_GROUP_TEXT =
@@ -1599,24 +1576,25 @@ const ON_ACME = { projectId: ACME.id };
 
 /**
  * A change request on a project with NO registered contacts (Gamma). A customer step needs a Customer Project (Request
- * Approval is refused without one, and the project cannot be set after New), so this is where the manual path -- an
- * engineer's "Bypass customer approval / review" -- remains for a change whose customer step has nobody to ask.
+ * Approval is refused without one, and the project cannot be set after New), so this is where a customer step has nobody
+ * to ask -- and nobody can answer for them either: there is no manual path.
  */
 const NO_CONTACTS = { projectId: GAMMA.id };
 
 /**
- * The customer's request is pending, so Cancel is the only thing an engineer can still do: no forward button, and
- * the menu lists the customer bypass DISABLED (with the reason, see the action bar describes) next to an enabled
- * Cancel change. At Customer Review it also lists Roll back disabled: a failed review is the customer's to give too.
+ * The customer's request is pending, so only the customer moves the change on. At Customer Approval staff have Re-schedule
+ * (beside Change state) and, in the menu, Cancel change; at Customer Review the menu lists Roll back DISABLED (a failed review
+ * is the customer's to give too, see the action bar describes) next to an enabled Cancel change. No Close, no forward button,
+ * nothing named Bypass -- not even a disabled entry.
  */
-async function expectOnlyCancelActionable(detail: ChangeRequestDetailPage, bypass: "approval" | "review"): Promise<void> {
-  await expect(detail.bypassButton()).toHaveCount(0);
+async function expectOnlyCancelActionable(detail: ChangeRequestDetailPage, gate: "approval" | "review"): Promise<void> {
+  await expect(detail.answerForCustomerWording()).toHaveCount(0);
   await expect(detail.closeButton()).toHaveCount(0);
   await expect(detail.page.getByRole("button", { name: "Start implementation" })).toHaveCount(0);
   await detail.openChangeStateMenu();
-  await expect(detail.menuItems()).toHaveCount(bypass === "review" ? 3 : 2);
-  await expect(bypass === "approval" ? detail.bypassCustomerApprovalMenuItem() : detail.bypassCustomerReviewMenuItem()).toBeDisabled();
-  if (bypass === "review") await expect(detail.rollbackMenuItem()).toBeDisabled();
+  await expect(detail.menuItems()).toHaveCount(gate === "review" ? 2 : 1);
+  await expect(detail.answerForCustomerWording()).toHaveCount(0);
+  if (gate === "review") await expect(detail.rollbackMenuItem()).toBeDisabled();
   await expect(detail.cancelChangeMenuItem()).toBeEnabled();
   await detail.closeChangeStateMenu();
 }
@@ -1695,7 +1673,7 @@ test.describe("change request approval flow — customer group (the project's re
     await expect(detail.approverRow(FAKE_CUST_ONE.name, "Customer Approval")).toBeVisible();
     await expect(detail.approveButton()).toHaveCount(0);
     await expect(detail.rejectButton()).toHaveCount(0);
-    await expectBypass(detail, "approval", "disabled");
+    await expectNoBypass(detail);
 
     // Customer Approval, a member answers in the customer portal (not in this page): the CSM
     // page, reloaded, shows Scheduled, the member's row Approved and the other contact's Cancelled.
@@ -1791,7 +1769,7 @@ test.describe("change request approval flow — customer group (the project's re
     await expect(detail.stage("Customer Review")).toHaveText("Customer Review, rejected by the customer");
   });
 
-  test("a project with no registered contacts: no customer stage, the Approval tab explains why, and Bypass customer approval still schedules it", async ({
+  test("a project with no registered contacts: no customer stage, the Approval tab explains why, and nobody can record the approval: Re-schedule and Cancel change are what is left", async ({
     page,
   }) => {
     test.setTimeout(120_000);
@@ -1803,16 +1781,20 @@ test.describe("change request approval flow — customer group (the project's re
     await expect(detail.currentStep()).toContainText("Customer Approval");
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
+    await expect(page.getByText(/staff never record a customer's approval or review/i)).toBeVisible();
     await expect(page.getByRole("cell", { name: "Customer Approval", exact: true })).toHaveCount(0);
-    await expectBypass(detail, "approval", "enabled");
+    // Nobody was asked and nobody can answer for the customer: Re-schedule beside Change state, whose menu holds Cancel change.
+    await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Cancel change"] });
+    await expectNoBypass(detail);
 
-    await detail.bypassCustomer("approval", "No registered contact to ask; the account manager confirmed.");
-    await expect(detail.currentStep()).toContainText("Scheduled");
-    await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
-    expect(api.state()).toBe("scheduled");
+    // The backend says the same in words, asked or not, and nothing moved (no work note either).
+    expect(await patchStateFromPage(page, "scheduled")).toEqual({ status: 400, message: customerAnswerRefusal("scheduled") });
+    expect(api.state()).toBe("customer_approval");
+    expect(api.journal()).toEqual([]);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
   });
 
-  test("a project with no registered contacts: Customer Review shows the helper and Bypass customer review stays available (no Close button)", async ({ page }) => {
+  test("a project with no registered contacts: Customer Review shows the helper, Roll back and Cancel change are on offer, there is no Close and no Bypass", async ({ page }) => {
     test.setTimeout(120_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
@@ -1827,14 +1809,19 @@ test.describe("change request approval flow — customer group (the project's re
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
     await expect(page.getByRole("cell", { name: "Customer Review", exact: true })).toHaveCount(0);
     await expect(detail.closeButton()).toHaveCount(0);
-    await expectBypass(detail, "review", "enabled");
+    // Nobody is asked, so Roll back is enabled (nothing is pending to hold it back); there is no Close to be had.
+    await expectActionBar(detail, { primary: null, reschedule: false, menu: ["Roll back", "Cancel change"] });
+    await detail.openChangeStateMenu();
+    await expect(detail.rollbackMenuItem()).toBeEnabled();
+    await detail.closeChangeStateMenu();
+    await expectNoBypass(detail);
 
-    await detail.bypassCustomer("review", "No registered contact to ask; the account manager confirmed.");
-    await expect(detail.currentStep()).toContainText("Closed");
-    expect(api.state()).toBe("closed");
+    expect(await patchStateFromPage(page, "closed")).toEqual({ status: 400, message: customerAnswerRefusal("closed") });
+    expect(api.state()).toBe("customer_review");
+    expect(api.journal()).toEqual([]);
   });
 
-  test("a project without registered contacts gets no stage and the helper; the project cannot be swapped for one that has contacts (it is fixed once approval was requested), so the manual path stays until a contact registers on THAT project", async ({
+  test("a project without registered contacts gets no stage and the helper; the project cannot be swapped for one that has contacts (it is fixed once approval was requested), so the change waits until a contact registers on THAT project", async ({
     page,
   }) => {
     test.setTimeout(150_000);
@@ -1846,7 +1833,7 @@ test.describe("change request approval flow — customer group (the project's re
     await expect(detail.currentStep()).toContainText("Customer Approval");
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
     await expect(detail.overviewChips("Customer group")).toHaveCount(0);
-    await expectBypass(detail, "approval", "enabled");
+    await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Cancel change"] });
 
     // The Edit dialog shows the project read-only, with why: it cannot be swapped for one that has contacts.
     await detail.openEditDialog();
@@ -1865,7 +1852,7 @@ test.describe("change request approval flow — customer group (the project's re
     expect(await patchFromPage(page, { projectId: GAMMA.id }), "the stored project resent is an accepted no-op").toMatchObject({ status: 200 });
     await page.reload();
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
-    await expectBypass(detail, "approval", "disabled");
+    await expectOnlyCancelActionable(detail, "approval");
     await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
     await customerAnswers(page, api, FAKE_CUST_ONE, "approved");
     await expect(detail.currentStep()).toContainText("Scheduled");
@@ -1921,7 +1908,7 @@ test.describe("change request approval flow — customer group (the project's re
     expect(api.state()).toBe("customer_approval");
   });
 
-  test("a project whose only contact is the creator provisions no stage: manual path stays, no helper", async ({ page }) => {
+  test("a project whose only contact is the creator provisions no stage: nobody is asked, no helper, and still no way to record the approval", async ({ page }) => {
     test.setTimeout(120_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, { projectId: GAMMA.id });
     api.setProjectContacts(GAMMA.id, [FAKE_CREATOR]);
@@ -1932,7 +1919,8 @@ test.describe("change request approval flow — customer group (the project's re
     await expect(detail.currentStep()).toContainText("Customer Approval");
     await expect(page.getByRole("cell", { name: "Customer Approval", exact: true })).toHaveCount(0);
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
-    await expectBypass(detail, "approval", "enabled");
+    await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Cancel change"] });
+    await expectNoBypass(detail);
   });
 });
 
@@ -2238,7 +2226,7 @@ test.describe("change request approval flow — Roll back", () => {
     });
   }
 
-  test("Normal with customer review on: Review -> Customer Review -> Roll back (manual fallback, no customer group)", async ({ page }) => {
+  test("Normal with customer review on: Review -> Customer Review -> Roll back (no customer group: nobody is asked, so it is not held back)", async ({ page }) => {
     test.setTimeout(180_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
@@ -2250,13 +2238,13 @@ test.describe("change request approval flow — Roll back", () => {
     await expect(detail.currentStep()).toContainText("Review");
     await detail.sendForCustomerReviewButton().click();
 
-    // Customer Review without a group: no button at all (Close is the menu-only Bypass customer review);
-    // the menu lists the bypass, then Roll back, then Cancel change.
+    // Customer Review without a group: no button at all (the customer's review is theirs to give, so no Close);
+    // the menu lists Roll back, then Cancel change.
     await expect(detail.currentStep()).toContainText("Customer Review");
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Review");
     await expect(detail.closeButton()).toHaveCount(0);
     await detail.openChangeStateMenu();
-    await expect(detail.menuItems()).toHaveText(["Bypass customer review", "Roll back", "Cancel change"]);
+    await expect(detail.menuItems()).toHaveText(["Roll back", "Cancel change"]);
     await detail.closeChangeStateMenu();
 
     await rollBackWithReason(page, detail, "The customer rejected the result.");
@@ -2590,7 +2578,7 @@ test.describe("change request approval flow — Re-schedule", () => {
     expect(api.state()).toBe("authorize");
     await expect(detail.blockingReason()).toHaveText("Awaiting CAB Approval");
     await expect(detail.rescheduleButton()).toHaveCount(0);
-    await expectBypass(detail, "approval", "absent");
+    await expectNoBypass(detail);
     expect(api.stages().map((s) => s.stage)).toEqual(["Peer Approval", "CAB Approval", "Customer Approval", "CAB Approval"]);
     expect(api.stages()[2].approvers.map((a) => a.status)).toEqual(["CANCELLED", "CANCELLED"]);
     expect(api.stages()[3].approvers.map((a) => a.status)).toEqual(["REQUESTED"]);
@@ -2623,7 +2611,7 @@ test.describe("change request approval flow — Re-schedule", () => {
     await expectNoRescheduleOffered(detail);
   });
 
-  test("Normal without a customer group: Re-schedule is the outlined button beside Change state, which holds Bypass customer approval; the dialog blocks an unchanged window and shows the backend's refusal", async ({
+  test("Normal without a customer group: Re-schedule is the outlined button beside Change state, which holds only Cancel change; the dialog blocks an unchanged window and shows the backend's refusal", async ({
     page,
   }) => {
     test.setTimeout(240_000);
@@ -2633,7 +2621,7 @@ test.describe("change request approval flow — Re-schedule", () => {
 
     await switchTo(page, api, FAKE_CREATOR);
     await expect(detail.currentStep()).toContainText("Customer Approval");
-    await expectBypass(detail, "approval", "enabled");
+    await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Cancel change"] });
     await expect(detail.rescheduleButton()).toBeVisible();
 
     // No change -> the submit stays disabled.
@@ -2734,8 +2722,8 @@ test.describe("change request approval flow — Re-schedule", () => {
 // Rollback, Closed, Canceled), horizontally, and each says its status in words (visually hidden
 // ", done" / ", current" / ", upcoming" / ", not taken" / ", history not recorded" / ", rejected by the customer"); the action
 // bar offers the forward move as the primary button, Re-schedule beside it, everything else
-// behind "Change state" -- and the customer bypasses ("Bypass customer approval" / "Bypass
-// customer review") only there, never as a button. Against the in-browser fake of the backend.
+// behind "Change state" -- and never a way to answer for the customer (no "Bypass customer
+// approval" / "Bypass customer review", as a button or in the menu). Against the in-browser fake of the backend.
 // ---------------------------------------------------------------------------
 
 /** What the page offers in one state: the stepper's columns and the action bar. */
@@ -2758,9 +2746,8 @@ async function expectActionBar(
   detail: ChangeRequestDetailPage,
   bar: Pick<Surface, "primary" | "reschedule"> & { menu: Array<string | RegExp> },
 ): Promise<void> {
-  // A bypass is never a button; the retired wording is gone from the page.
-  await expect(detail.bypassButton()).toHaveCount(0);
-  await expect(detail.retiredRecordCustomerApproval()).toHaveCount(0);
+  // Nothing words answering for the customer: no bypass, no "Record customer approval", anywhere on the page.
+  await expect(detail.answerForCustomerWording()).toHaveCount(0);
   for (const label of PRIMARY_LABELS) {
     await expect(detail.page.getByRole("button", { name: label, exact: true }), label).toHaveCount(label === bar.primary ? 1 : 0);
   }
@@ -2773,6 +2760,7 @@ async function expectActionBar(
   await expect(detail.changeStateButton()).toHaveClass(bar.primary ? /MuiButton-outlined/ : /MuiButton-contained/);
   await detail.openChangeStateMenu();
   await expect(detail.menuItems()).toHaveText(bar.menu);
+  await expect(detail.answerForCustomerWording()).toHaveCount(0);
   await detail.closeChangeStateMenu();
 }
 
@@ -2811,7 +2799,7 @@ test.describe("change request lifecycle — the stepper and the action bar in ev
         "normal",
         FAKE_CREATOR,
         { customerApprovalRequired: customer, customerReviewRequired: customer },
-        customer ? NO_CONTACTS : {},
+        customer ? ON_ACME : {},
       );
       const detail = new ChangeRequestDetailPage(page);
       const flags = { approval: customer, review: customer };
@@ -2834,14 +2822,15 @@ test.describe("change request lifecycle — the stepper and the action bar in ev
       await detail.approve("Cam Cab");
       await switchTo(page, api, FAKE_CREATOR);
       if (customer) {
-        // Nobody is asked (no project): Re-schedule stays beside Change state, whose menu holds the bypass.
+        // The customer is asked (Acme's contacts): Re-schedule stays beside Change state, whose menu holds Cancel change only.
         await expectSurface(
           detail,
           "Customer Approval",
-          { stages: "d d d c p p p p n p n", primary: null, reschedule: true, menu: ["Bypass customer approval", "Cancel change"] },
+          { stages: "d d d c p p p p n p n", primary: null, reschedule: true, menu: ["Cancel change"] },
           flags,
         );
-        await detail.bypassCustomer("approval", "The customer approved the window by phone.");
+        // The customer approves in the customer portal; the page, reloaded, shows Scheduled.
+        await customerAnswers(page, api, FAKE_CUST_ONE, "approved");
       }
       await expectSurface(detail, "Scheduled", { stages: "d d d d c p p p n p n", primary: "Start implementation", reschedule: false, menu: ["Cancel change"] }, flags);
 
@@ -2863,14 +2852,15 @@ test.describe("change request lifecycle — the stepper and the action bar in ev
 
       if (customer) {
         await detail.sendForCustomerReviewButton().click();
-        // No Close button here: closing on the customer's behalf is the menu's "Bypass customer review".
+        // No Close button here, and none in the menu: the customer's review is theirs to give. Roll back is held back
+        // (disabled, with why) while they are asked.
         await expectSurface(
           detail,
           "Customer Review",
-          { stages: "d d d d d d d c n p n", primary: null, reschedule: false, menu: ["Bypass customer review", "Roll back", "Cancel change"] },
+          { stages: "d d d d d d d c n p n", primary: null, reschedule: false, menu: [/^Roll back/, "Cancel change"] },
           flags,
         );
-        await detail.bypassCustomer("review", "The customer confirmed the result by email.");
+        await customerAnswers(page, api, FAKE_CUST_TWO, "approved");
       } else {
         // A plain Close out of Review is an ordinary forward move: no dialog, no reason.
         await detail.closeButton().click();
@@ -2878,15 +2868,8 @@ test.describe("change request lifecycle — the stepper and the action bar in ev
       }
       await expectSurface(detail, "Closed", { stages: "d d d d d d d d n c n", primary: null, reschedule: false, menu: [] }, flags);
       expect(api.state()).toBe("closed");
-      // The customer is bypassed with a recorded reason; a plain Close needs none.
-      expect(api.journal()).toEqual(
-        customer
-          ? [
-              { kind: "comment", text: "The customer approved the window by phone." },
-              { kind: "comment", text: "The customer confirmed the result by email." },
-            ]
-          : [],
-      );
+      // Nobody recorded anything on the customer's behalf (the answers came from the customer portal), and a plain Close needs no reason.
+      expect(api.journal()).toEqual([]);
     });
   }
 
@@ -2979,18 +2962,18 @@ test.describe("change request lifecycle — the stepper and the action bar in ev
     await expect(detail.stage("Review")).toHaveText("Review, history not recorded");
   });
 
-  test("Canceled after the customer's approval was bypassed on a project with no contacts: Customer Approval reads done (the recorded approval proves it), later stages are not recorded", async ({ page }) => {
+  test("Canceled after the customer approved (in the customer portal): Customer Approval reads done (their approved stage and the recorded approval prove it), later stages are not recorded", async ({ page }) => {
     test.setTimeout(240_000);
-    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
     await driveToCustomerApproval(page, api, detail);
-    await detail.bypassCustomer("approval", "The customer approved the window by phone.");
+    await customerAnswers(page, api, FAKE_CUST_ONE, "approved");
     await expect(detail.currentStep()).toContainText("Scheduled");
     await cancelChangeWithReason(page, detail, "The window moved out of the quarter.");
     await expect(detail.currentStep()).toContainText("Canceled");
     expect(api.state()).toBe("canceled");
-    // No Customer Approval stage was ever provisioned (nobody to ask), but the customer's approval is on record
-    // (`hasCustomerApproved`): it was passed. The change may have been canceled at Scheduled itself, so that is not.
+    // The customer's approval is on record (their APPROVED stage row and `hasCustomerApproved`): Customer Approval was
+    // passed. The change may have been canceled at Scheduled itself, so that is not.
     await expectStages(detail, "d d d d u u u u n n c", { approval: true, review: false });
     await expect(detail.stage("Customer Approval")).toHaveText("Customer Approval, done");
   });
@@ -3023,18 +3006,16 @@ test.describe("change request lifecycle — the stepper and the action bar in ev
 });
 
 // ---------------------------------------------------------------------------
-// The customer bypasses in the action bar. An engineer answering for the customer is a deliberate
-// override, so it is named for what it is ("Bypass customer approval" / "Bypass customer review"),
-// lives only in the "Change state" menu (never the primary or the outlined button), and is
-// disabled -- with a visible reason -- while the customer's request is pending, because the
-// backend refuses it then (the customer answers in the customer portal).
+// The customer's answer is not the staff's to give. Staff never record a customer's approval or
+// review: while a change is in Customer Approval / Customer Review it moves on only through the
+// customer's own answer in the customer portal. So the "Change state" menu holds no "Bypass customer
+// approval" / "Bypass customer review" -- not as a button, not as an entry, not even a disabled one --
+// whether the customer's request is pending or nobody was asked. What staff keep: Re-schedule (Customer
+// Approval), Roll back (Review, Customer Review; held back, disabled with why, while the customer's
+// review is pending) and Cancel change.
 // ---------------------------------------------------------------------------
 
-const PENDING_APPROVAL_REASON =
-  "Customer approval is pending from Mia Member, Max Member. They answer in the Customer Portal, so it can't be bypassed from here.";
-const PENDING_REVIEW_REASON =
-  "Customer review is pending from Mia Member, Max Member. They answer in the Customer Portal, so it can't be bypassed from here.";
-/** The same pending review, as it explains the disabled Roll back: a failed review is the customer's to give. */
+/** Why Roll back is disabled at Customer Review while the customer is asked: a failed review is theirs to give. */
 const PENDING_REVIEW_ROLLBACK_REASON =
   "Customer review is pending from Mia Member, Max Member. A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here.";
 
@@ -3063,263 +3044,230 @@ async function patchStateFromPage(page: Page, state: string): Promise<{ status: 
 /** A request that changes something: a PATCH, or a posted comment (the reason recorded before a state change). */
 const isWrite = (request: string): boolean => request.startsWith("PATCH ") || (request.startsWith("POST ") && request.endsWith("/comments"));
 
-test.describe("change request action bar — the customer bypass lives in the Change state menu (mocked backend)", () => {
-  test("Customer Approval, the customer's request pending: Bypass customer approval is a disabled menu entry that says why, never a button", async ({ page }) => {
+test.describe("change request action bar — nobody answers for the customer (mocked backend)", () => {
+  test("Customer Approval, the customer's request pending: Re-schedule and Cancel change only; no Bypass anywhere, and the API refuses {state: scheduled}", async ({ page }) => {
     test.setTimeout(240_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
     await driveToCustomerApproval(page, api, detail);
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval"); // the approvals are loaded
 
-    // The bar: Re-schedule beside Change state, which is the main button; nothing is bypassable as a button.
-    await expectActionBar(detail, { primary: null, reschedule: true, menu: [/^Bypass customer approval/, "Cancel change"] });
+    // The bar: Re-schedule beside Change state, which is the main button; the menu holds Cancel change and nothing else.
+    await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Cancel change"] });
     await expect(detail.rescheduleButton()).toHaveClass(/MuiButton-outlined/);
-
-    await detail.openChangeStateMenu();
-    const bypass = detail.bypassCustomerApprovalMenuItem();
-    await expect(bypass).toBeDisabled();
-    // The reason is on screen, beside the entry, and is its accessible name too.
-    await expect(bypass.getByText(PENDING_APPROVAL_REASON)).toBeVisible();
-    await expect(bypass).toHaveAccessibleName(`Bypass customer approval: ${PENDING_APPROVAL_REASON}`);
-    // A disabled entry is still reachable by keyboard (so its reason can be read) and does nothing.
-    await bypass.focus();
-    await expect(bypass).toBeFocused();
-    await page.keyboard.press("Enter");
-    await expect(detail.bypassDialog("Bypass customer approval")).toHaveCount(0);
-    await expect(detail.cancelChangeMenuItem()).toBeEnabled();
-    await detail.closeChangeStateMenu();
+    await expectOnlyCancelActionable(detail, "approval");
+    // Not even the explanation of a disabled entry: who is asked is shown in the Approvals tab, not in the menu.
+    await expect(page.getByText(/is pending from/i)).toHaveCount(0);
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
 
     // Nothing was sent, and the backend would refuse it with its own words if it were.
     expect(api.requestBodies().filter((b) => b.request.startsWith("PATCH ") && b.body?.state === "scheduled")).toEqual([]);
-    expect(await patchStateFromPage(page, "scheduled")).toEqual({ status: 400, message: customerStageManualRefusal("scheduled") });
+    expect(await patchStateFromPage(page, "scheduled")).toEqual({ status: 400, message: customerAnswerRefusal("scheduled") });
     expect(api.state()).toBe("customer_approval");
   });
 
-  test("Customer Approval, nobody asked (no registered contacts): Bypass customer approval is an enabled menu entry; Change state is the main button beside Re-schedule", async ({ page }) => {
+  test("Customer Approval, nobody asked (no registered contacts): the same bar -- Re-schedule beside Change state, whose menu holds Cancel change -- and the same refusal in words", async ({ page }) => {
     test.setTimeout(240_000);
-    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, { projectId: GAMMA.id });
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
     await driveToCustomerApproval(page, api, detail);
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
 
-    await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Bypass customer approval", "Cancel change"] });
+    await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Cancel change"] });
     await expect(detail.changeStateButton()).toHaveClass(/MuiButton-contained/);
     await expect(detail.rescheduleButton()).toHaveClass(/MuiButton-outlined/);
-    await detail.openChangeStateMenu();
-    await expect(detail.bypassCustomerApprovalMenuItem()).toBeEnabled();
-    await detail.closeChangeStateMenu();
+    await expectNoBypass(detail);
+
+    // Nobody was asked, and still the backend will not record the approval for the customer.
+    expect(await patchStateFromPage(page, "scheduled")).toEqual({ status: 400, message: customerAnswerRefusal("scheduled") });
+    expect(api.state()).toBe("customer_approval");
+    expect(api.journal()).toEqual([]);
   });
 
-  test("Customer Review, the customer's request pending: Bypass customer review and Roll back are disabled and say why; there is no Close button", async ({ page }) => {
+  test("Customer Review, the customer's request pending: Roll back is disabled and says why; there is no Close and no Bypass, and the API refuses {state: closed} and {state: rollback}", async ({ page }) => {
     test.setTimeout(240_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
     await driveToCustomerReview(page, api, detail);
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Review");
 
-    await expectActionBar(detail, { primary: null, reschedule: false, menu: [/^Bypass customer review/, /^Roll back/, "Cancel change"] });
+    await expectActionBar(detail, { primary: null, reschedule: false, menu: [/^Roll back/, "Cancel change"] });
     await expect(detail.closeButton()).toHaveCount(0);
     await detail.openChangeStateMenu();
-    const bypass = detail.bypassCustomerReviewMenuItem();
-    await expect(bypass).toBeDisabled();
-    await expect(bypass.getByText(PENDING_REVIEW_REASON)).toBeVisible();
-    await expect(bypass).toHaveAccessibleName(`Bypass customer review: ${PENDING_REVIEW_REASON}`);
-    // The backend withdraws Roll back while the review is pending too, so it is listed disabled with its own reason.
+    // The backend withdraws Roll back while the review is pending (a failed review is the customer's to give), so it is
+    // listed disabled with its own reason.
     await expect(detail.rollbackMenuItem()).toBeDisabled();
+    await expect(detail.rollbackMenuItem().getByText(PENDING_REVIEW_ROLLBACK_REASON)).toBeVisible();
     await expect(detail.rollbackMenuItem()).toHaveAccessibleName(`Roll back: ${PENDING_REVIEW_ROLLBACK_REASON}`);
-    await bypass.focus();
+    // A disabled entry is still reachable by keyboard (so its reason can be read) and does nothing.
+    await detail.rollbackMenuItem().focus();
+    await expect(detail.rollbackMenuItem()).toBeFocused();
     await page.keyboard.press("Enter");
-    await expect(detail.bypassDialog("Bypass customer review")).toHaveCount(0);
+    await expect(detail.reasonDialog()).toHaveCount(0);
     await detail.closeChangeStateMenu();
 
-    // The backend refuses closing and rolling back on the customer's behalf, with its own words.
-    expect(await patchStateFromPage(page, "closed")).toEqual({ status: 400, message: customerStageManualRefusal("closed") });
+    // The backend refuses closing on the customer's behalf (whoever asks) and rolling back while they are asked, in its own words.
+    expect(await patchStateFromPage(page, "closed")).toEqual({ status: 400, message: customerAnswerRefusal("closed", true) });
     expect(await patchStateFromPage(page, "rollback")).toEqual({ status: 400, message: customerStageManualRefusal("rollback") });
     expect(api.state()).toBe("customer_review");
     expect(api.journal()).toEqual([]);
   });
 
-  test("Customer Review, nobody asked: Bypass customer review is the first menu entry, before Roll back and Cancel change, and no button closes the change", async ({ page }) => {
-    test.setTimeout(240_000);
-    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, { projectId: GAMMA.id });
-    const detail = new ChangeRequestDetailPage(page);
-    await driveToCustomerReview(page, api, detail);
-    await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
-
-    await expectActionBar(detail, { primary: null, reschedule: false, menu: ["Bypass customer review", "Roll back", "Cancel change"] });
-    await expect(detail.closeButton()).toHaveCount(0);
-    await detail.openChangeStateMenu();
-    await expect(detail.bypassCustomerReviewMenuItem()).toBeEnabled();
-    await expect(detail.rollbackMenuItem()).toBeEnabled();
-    await detail.closeChangeStateMenu();
-  });
-
-  test("the bypass is nowhere else: Review's plain Close is a button, and neither Review nor Scheduled lists a bypass", async ({ page }) => {
-    test.setTimeout(240_000);
-    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
-    const detail = new ChangeRequestDetailPage(page);
-    await driveToReview(page, api, detail);
-    // Customer review is not required: Close is the primary move out of Review, with no customer to bypass.
-    await expectActionBar(detail, { primary: "Close", reschedule: false, menu: ["Roll back", "Cancel change"] });
-    await expectBypass(detail, "review", "absent");
-    await expectBypass(detail, "approval", "absent");
-  });
-});
-
-// ---------------------------------------------------------------------------
-// The bypass itself: the shared reason dialog (the reason is required, and recorded as an internal
-// work note BEFORE the state change), then `PATCH { state: "scheduled" }` out of Customer Approval /
-// `{ state: "closed" }` out of Customer Review, and the page and the stepper follow.
-// ---------------------------------------------------------------------------
-
-test.describe("change request approval flow — bypassing the customer (mocked backend)", () => {
-  test("Bypass customer approval: a reason is required, it is recorded as an internal note before the PATCH {state: scheduled}, and the change is Scheduled", async ({ page }) => {
-    test.setTimeout(240_000);
-    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
-    const detail = new ChangeRequestDetailPage(page);
-    await driveToCustomerApproval(page, api, detail);
-    const flags = { approval: true, review: false };
-    await expectStages(detail, "d d d c p p p p n p n", flags);
-    const before = api.requests().length;
-
-    // The dialog says what the action is and that the customer is not asked.
-    await detail.openChangeStateMenu();
-    await detail.bypassCustomerApprovalMenuItem().click();
-    const dialog = detail.bypassDialog("Bypass customer approval");
-    await expect(dialog).toBeVisible();
-    await expect(
-      dialog.getByText("This records the customer's approval on their behalf and moves the change request to Scheduled. The customer is not asked."),
-    ).toBeVisible();
-    // The reason is an internal note: the engineer is told the customer does not see it.
-    await expect(dialog.getByText("Recorded as an internal note (not visible to the customer) before the state changes.")).toBeVisible();
-    // The dialog is described by that body, so a screen reader hears what the action does.
-    await expect(dialog).toHaveAccessibleDescription(/records the customer's approval on their behalf/);
-    // Focus is in the Reason field once the dialog has opened (the menu it came from closes in the same tick and
-    // used to take it back), so typing right away lands there.
-    await expect(dialog.getByLabel("Reason")).toBeFocused();
-    await page.keyboard.type("Typed straight away.");
-    await expect(dialog.getByLabel("Reason")).toHaveValue("Typed straight away.");
-    await dialog.getByLabel("Reason").fill("");
-
-    // A reason is required: the confirm action is disabled until there is one, and spaces are not one.
-    const confirm = detail.bypassConfirm("Bypass customer approval");
-    await expect(confirm).toBeDisabled();
-    await dialog.getByLabel("Reason").fill("   ");
-    await expect(confirm).toBeDisabled();
-
-    // Backing out leaves the change alone and sends nothing. The way out is "Go back", not "Close".
-    await expect(dialog.getByRole("button", { name: "Close", exact: true })).toHaveCount(0);
-    await dialog.getByRole("button", { name: "Go back", exact: true }).click();
-    await expect(dialog).toHaveCount(0);
-    expect(api.state()).toBe("customer_approval");
-    expect(api.requests().slice(before).filter(isWrite)).toEqual([]);
-    await expect(detail.currentStep()).toContainText("Customer Approval");
-
-    // Again, with a reason.
-    await detail.openChangeStateMenu();
-    await detail.bypassCustomerApprovalMenuItem().click();
-    await expect(dialog).toBeVisible();
-    await expect(dialog.getByLabel("Reason")).toHaveValue(""); // a fresh dialog, not the abandoned one
-    await dialog.getByLabel("Reason").fill("The customer's change manager approved the window on the phone.");
-    await expect(confirm).toBeEnabled();
-    await confirm.click();
-    await expect(dialog).toHaveCount(0);
-
-    // The page and the stepper follow: Customer Approval is done, Scheduled is current.
-    await expect(detail.currentStep()).toContainText("Scheduled");
-    expect(api.state()).toBe("scheduled");
-    await expectStages(detail, "d d d d c p p p n p n", flags);
-    await expect(detail.stage("Customer Approval")).toHaveText("Customer Approval, done");
-    await expect(detail.blockingReason()).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Start implementation" })).toBeVisible();
-    await expectBypass(detail, "approval", "absent");
-
-    // Comment first, then the state change; the PATCH body is unchanged: { state: "scheduled" }.
-    const sent = api.requests().slice(before).filter(isWrite);
-    expect(sent).toEqual([`POST /change-requests/${FAKE_CR_ID}/comments`, `PATCH /change-requests/${FAKE_CR_ID}`]);
-    const bodies = api.requestBodies().slice(before).filter((b) => isWrite(b.request));
-    // An internal work note, never a customer-visible comment: the customer was not asked.
-    expect(bodies[0]?.body).toMatchObject({ type: "work_note", content: "The customer's change manager approved the window on the phone." });
-    expect(bodies[1]?.body).toEqual({ state: "scheduled" });
-    expect(api.journal()).toEqual([{ kind: "comment", text: "The customer's change manager approved the window on the phone." }]);
-
-    await page.reload();
-    await expect(detail.currentStep()).toContainText("Scheduled");
-    await expectStages(detail, "d d d d c p p p n p n", flags);
-  });
-
-  test("Bypass customer review: a reason is required, it is recorded as an internal note before the PATCH {state: closed}, and the change is Closed", async ({ page }) => {
+  test("Customer Review, nobody asked: Roll back is the first menu entry, before Cancel change, enabled; no button or entry closes the change, and the API refuses {state: closed}", async ({ page }) => {
     test.setTimeout(240_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
     await driveToCustomerReview(page, api, detail);
-    const flags = { approval: false, review: true };
-    await expectStages(detail, "d d d d d d d c n p n", flags);
+    await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
+
+    await expectActionBar(detail, { primary: null, reschedule: false, menu: ["Roll back", "Cancel change"] });
+    await expect(detail.closeButton()).toHaveCount(0);
+    await detail.openChangeStateMenu();
+    await expect(detail.page.getByRole("menuitem", { name: /^close$/i })).toHaveCount(0);
+    await expect(detail.rollbackMenuItem()).toBeEnabled();
+    await detail.closeChangeStateMenu();
+    await expectNoBypass(detail);
+
+    expect(await patchStateFromPage(page, "closed")).toEqual({ status: 400, message: customerAnswerRefusal("closed") });
+    expect(api.state()).toBe("customer_review");
+  });
+
+  test("there is no bypass anywhere else either: Review's plain Close is a button, and neither Review nor Scheduled lists anything like one", async ({ page }) => {
+    test.setTimeout(240_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToReview(page, api, detail);
+    // Customer review is not required: Close is the primary move out of Review, and it is not the customer's answer.
+    await expectActionBar(detail, { primary: "Close", reschedule: false, menu: ["Roll back", "Cancel change"] });
+    await expectNoBypass(detail);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The only ways on out of a customer gate: the customer's own answer (applied server-side, as the customer
+// portal does), Re-schedule, Roll back and Cancel change. The customer's answer stamps what the customer
+// confirmed ("Customer approved" / "Customer reviewed"); a stray manual PATCH of it is refused from any
+// caller and changes nothing, not even a work note.
+// ---------------------------------------------------------------------------
+
+test.describe("change request approval flow — the customer's own answer is the only way on (mocked backend)", () => {
+  test("Customer Approval: the customer approves in the customer portal -> Scheduled, 'Customer approved' reads Yes, and nothing was sent from the CSM page", async ({ page }) => {
+    test.setTimeout(240_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToCustomerApproval(page, api, detail);
+    const flags = { approval: true, review: false };
+    await expectStages(detail, "d d d c p p p p n p n", flags);
+    await expect(detail.flagValue("Customer approved")).toHaveText("No");
     const before = api.requests().length;
 
-    await detail.openChangeStateMenu();
-    await detail.bypassCustomerReviewMenuItem().click();
-    const dialog = detail.bypassDialog("Bypass customer review");
-    await expect(dialog).toBeVisible();
-    await expect(
-      dialog.getByText("This records the customer's review on their behalf and moves the change request to Closed. The customer is not asked."),
-    ).toBeVisible();
-    const confirm = detail.bypassConfirm("Bypass customer review");
-    await expect(confirm).toBeDisabled();
-    await dialog.getByLabel("Reason").fill("   ");
-    await expect(confirm).toBeDisabled();
-    await dialog.getByLabel("Reason").fill("The customer's change manager signed off the result by email.");
-    await expect(confirm).toBeEnabled();
-    await confirm.click();
-    await expect(dialog).toHaveCount(0);
+    await customerAnswers(page, api, FAKE_CUST_TWO, "approved");
+    await expect(detail.currentStep()).toContainText("Scheduled");
+    expect(api.state()).toBe("scheduled");
+    await expectStages(detail, "d d d d c p p p n p n", flags);
+    await expect(detail.stage("Customer Approval")).toHaveText("Customer Approval, done");
+    await expect(detail.approverStatus(FAKE_CUST_TWO.name, "Customer Approval")).toHaveText("Approved");
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Cancelled");
+    await expect(detail.flagValue("Customer approved")).toHaveText("Yes");
+    await expect(detail.blockingReason()).toHaveCount(0);
+    await expect(page.getByRole("button", { name: "Start implementation" })).toBeVisible();
+    await expectNoBypass(detail);
+    // No PATCH and no work note went out from the page: the answer is not staff's to give or to annotate.
+    expect(api.requests().slice(before).filter(isWrite)).toEqual([]);
+    expect(api.journal()).toEqual([]);
+  });
 
+  test("Customer Review: the customer approves in the customer portal -> Closed, 'Customer reviewed' reads Yes, and nothing was sent from the CSM page", async ({ page }) => {
+    test.setTimeout(240_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToCustomerReview(page, api, detail);
+    const flags = { approval: false, review: true };
+    await expectStages(detail, "d d d d d d d c n p n", flags);
+    await expect(detail.flagValue("Customer reviewed")).toHaveText("No");
+    const before = api.requests().length;
+
+    await customerAnswers(page, api, FAKE_CUST_ONE, "approved");
     await expect(detail.currentStep()).toContainText("Closed");
     expect(api.state()).toBe("closed");
     await expectStages(detail, "d d d d d d d d n c n", flags);
     await expect(detail.stage("Customer Review")).toHaveText("Customer Review, done");
+    await expect(detail.flagValue("Customer reviewed")).toHaveText("Yes");
     await expect(detail.blockingReason()).toHaveCount(0);
     await expect(detail.changeStateButton()).toHaveCount(0); // nothing is left to do
-
-    expect(api.requests().slice(before).filter(isWrite)).toEqual([`POST /change-requests/${FAKE_CR_ID}/comments`, `PATCH /change-requests/${FAKE_CR_ID}`]);
-    const bodies = api.requestBodies().slice(before).filter((b) => isWrite(b.request));
-    expect(bodies[0]?.body).toMatchObject({ type: "work_note", content: "The customer's change manager signed off the result by email." });
-    expect(bodies[1]?.body).toEqual({ state: "closed" });
-    expect(api.journal()).toEqual([{ kind: "comment", text: "The customer's change manager signed off the result by email." }]);
+    expect(api.requests().slice(before).filter(isWrite)).toEqual([]);
+    expect(api.journal()).toEqual([]);
   });
 
-  test("the backend refuses a bypass the page still thought possible (a customer request appeared behind the dialog): its words show in the dialog and the reason is not posted twice on retry", async ({ page }) => {
+  test("a manual scheduled / closed sent anyway is refused with the backend's words, from a customer gate, asked or not, and changes nothing (no state, no stamp, no work note)", async ({ page }) => {
     test.setTimeout(240_000);
-    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, { projectId: GAMMA.id });
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true, customerReviewRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
     await driveToCustomerApproval(page, api, detail);
-    await expectBypass(detail, "approval", "enabled"); // Gamma has no contacts: nobody is asked
+
+    expect(await patchStateFromPage(page, "scheduled")).toEqual({ status: 400, message: customerAnswerRefusal("scheduled") });
+    expect(api.state()).toBe("customer_approval");
+    await page.reload();
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.flagValue("Customer approved")).toHaveText("No");
+
+    // The same out of Customer Review (the change put there out of band: nothing in the page gets it there without the
+    // engineer-driven tail): closed is refused too.
+    api.setState("customer_review");
+    await page.reload();
+    await expect(detail.currentStep()).toContainText("Customer Review");
+    expect(await patchStateFromPage(page, "closed")).toEqual({ status: 400, message: customerAnswerRefusal("closed") });
+    expect(api.state()).toBe("customer_review");
+    await page.reload();
+    await expect(detail.flagValue("Customer reviewed")).toHaveText("No");
+    expect(api.journal()).toEqual([]);
+  });
+
+  test("Cancel change out of a customer gate still takes a reason, recorded as an internal note before the PATCH", async ({ page }) => {
+    test.setTimeout(240_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToCustomerApproval(page, api, detail);
+    await cancelChangeWithReason(page, detail, "The customer asked to postpone indefinitely.");
+    await expect(detail.currentStep()).toContainText("Canceled");
+    expect(api.state()).toBe("canceled");
+    expect(api.journal()).toEqual([{ kind: "comment", text: "The customer asked to postpone indefinitely." }]);
+  });
+
+  test("the backend refuses a Roll back the page still thought possible (a customer review request appeared behind the dialog): its words show in the dialog and the reason is not posted twice on retry", async ({ page }) => {
+    test.setTimeout(240_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, NO_CONTACTS);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToCustomerReview(page, api, detail);
+    await expectActionBar(detail, { primary: null, reschedule: false, menu: ["Roll back", "Cancel change"] }); // nobody is asked
 
     await detail.openChangeStateMenu();
-    await detail.bypassCustomerApprovalMenuItem().click();
-    const dialog = detail.bypassDialog("Bypass customer approval");
-    await dialog.getByLabel("Reason").fill("Phone approval from the customer's manager.");
+    await detail.rollbackMenuItem().click();
+    const dialog = detail.reasonDialog();
+    await expect(dialog.getByRole("heading", { name: "Roll back this change?" })).toBeVisible();
+    await dialog.getByLabel("Reason").fill("The customer's review failed on the phone.");
 
     // Meanwhile someone registers a contact for the project: the customer is now being asked.
     api.setProjectContacts(GAMMA.id, [FAKE_CUST_ONE]);
     api.syncCustomers();
-    await detail.bypassConfirm("Bypass customer approval").click();
+    await dialog.getByRole("button", { name: "Roll back", exact: true }).click();
 
     // The backend's refusal, verbatim, with the news that the reason itself was recorded.
     const alert = dialog.getByRole("alert");
-    await expect(alert).toContainText(customerStageManualRefusal("scheduled"));
+    await expect(alert).toContainText(customerStageManualRefusal("rollback"));
     await expect(alert).toContainText("Your reason was recorded as an internal note, but the state did not change");
     await expect(dialog.getByLabel("Reason")).toBeDisabled(); // locked: retrying only re-sends the state change
-    expect(api.state()).toBe("customer_approval");
+    expect(api.state()).toBe("customer_review");
 
     // The request goes away again (the contact is deregistered): retrying works, and the reason is not posted twice.
     api.setProjectContacts(GAMMA.id, []);
     api.syncCustomers();
-    await detail.bypassConfirm("Bypass customer approval").click();
+    await dialog.getByRole("button", { name: "Roll back", exact: true }).click();
     await expect(dialog).toHaveCount(0);
-    await expect(detail.currentStep()).toContainText("Scheduled");
-    expect(api.state()).toBe("scheduled");
+    await expect(detail.currentStep()).toContainText("Rollback");
+    expect(api.state()).toBe("rollback");
     expect(api.requests().filter((r) => r === `POST /change-requests/${FAKE_CR_ID}/comments`)).toHaveLength(1);
-    expect(api.journal()).toEqual([{ kind: "comment", text: "Phone approval from the customer's manager." }]);
+    expect(api.journal()).toEqual([{ kind: "comment", text: "The customer's review failed on the phone." }]);
   });
 });
 
@@ -3717,14 +3665,20 @@ test.describe("migrated (legacy) change requests in the CSM portal (real stack)"
     });
   });
 
-  test("a legacy change request sitting in Customer Approval with nobody asked: the Approvals tab says so, and the engineer's Bypass customer approval is on offer (no live customer request to override)", async ({ page }) => {
+  test("a legacy change request sitting in Customer Approval with nobody asked: the Approvals tab says so, and staff cannot answer for the customer (Re-schedule and Cancel change only; the API refuses {state: scheduled})", async ({ page }) => {
     await pictureWindow(page);
     const detail = new ChangeRequestDetailPage(page);
-    await detail.goto(legacyId("CHG0039104"));
+    const id = legacyId("CHG0039104");
+    await detail.goto(id);
     await expect(detail.currentStep()).toContainText("Customer Approval");
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
-    await expectBypass(detail, "approval", "enabled");
+    await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Cancel change"] });
+    await expectNoBypass(detail);
     await shotTo(page, "31-csm-legacy-customer-approval-nobody-asked");
+    // Nobody was asked, and still the backend will not record the customer's approval, from any caller.
+    const refused = await patchState(page, id, "scheduled");
+    expect([refused.status, refused.message]).toEqual([400, customerAnswerRefusal("scheduled")]);
+    expect(await stateOf(id)).toBe("customer_approval");
   });
 
   test("a legacy change request in Scheduled with its flags false and a Customer Project: the Edit dialog freezes the project, closes the approval box (its gate is passed) and still lets the review box be added", async ({ page }) => {
