@@ -49,7 +49,7 @@ export function usePatchChangeRequest(
 > {
   const logger = useLogger();
   const queryClient = useQueryClient();
-  const { isSignedIn, isLoading: isAuthLoading } = useAsgardeo();
+  const { isSignedIn } = useAsgardeo();
   const authFetch = useAuthApiClient();
 
   return useMutation<
@@ -63,7 +63,12 @@ export function usePatchChangeRequest(
       logger.debug("[usePatchChangeRequest] Request payload:", payload);
 
       try {
-        if (!isSignedIn || isAuthLoading) {
+        // Not gated on the provider's `isLoading`: it flips on the SDK's own
+        // background token handling (seen on the local mock identity provider,
+        // where it was true on about one click in five), so a customer who is
+        // plainly signed in had Approve / Propose refused. `authFetch` gets the
+        // token itself and sends an expired session to sign-in.
+        if (!isSignedIn) {
           throw new Error("User must be signed in to update change request");
         }
 

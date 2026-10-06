@@ -229,6 +229,28 @@ describe("operations API hooks", () => {
       );
     });
 
+    it("still sends while the auth provider is busy refreshing, because the customer is signed in", async () => {
+      mockIsAuthLoading = true;
+      mockAuthFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ id: "cr-1" }) });
+      const { wrapper } = wrapperWithClient();
+      const { result } = renderHook(() => usePatchChangeRequest("cr-1"), { wrapper });
+
+      await result.current.mutateAsync({ isCustomerApproved: true });
+
+      expect(mockAuthFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it("refuses, without calling the API, when nobody is signed in", async () => {
+      mockIsSignedIn = false;
+      const { wrapper } = wrapperWithClient();
+      const { result } = renderHook(() => usePatchChangeRequest("cr-1"), { wrapper });
+
+      await expect(
+        result.current.mutateAsync({ isCustomerApproved: true }),
+      ).rejects.toThrow("User must be signed in");
+      expect(mockAuthFetch).not.toHaveBeenCalled();
+    });
+
     it("sends a proposed window with both ends", async () => {
       mockAuthFetch.mockResolvedValueOnce({ ok: true, json: async () => ({ id: "cr-1" }) });
       const { wrapper } = wrapperWithClient();
