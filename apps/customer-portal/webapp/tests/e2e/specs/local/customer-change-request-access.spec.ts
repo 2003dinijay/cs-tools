@@ -30,14 +30,14 @@
 //      a proposed time, is refused (403), and the two mixed forms are refused (400);
 //      nothing about the change moves.
 //
-// "Cannot SEE it" needs a word of care. entity-service hides another project's rows
-// with Postgres row-level security, and the local compose stack connects as the
-// `postgres` role, a SUPERUSER, which bypasses it (entity-service/CLAUDE.md; "Local
-// seed personas"): there, mira's by-id read of CHG-FIXED-007 answers 200, with
-// `customerCanAnswer: false`, so the assertion that holds on every stack is "never
-// offered, never answerable". Run against entity-service as a non-superuser role and
-// say so with E2E_ENTITY_RLS=1, and the same read is asserted to be a 404, and the
-// page to be the error page.
+// "Cannot SEE it" depends on how entity-service reaches Postgres. It hides another
+// project's rows with row-level security, which a database SUPERUSER bypasses: the
+// compose stack therefore connects as the plain role `csm_app` (see "entity-service runs
+// as a plain role" in tests/e2e/README.md), and there mira's by-id read of Example Corp's
+// change request is a 404 and her page is the error page. On a stack whose entity-service
+// still connects as a superuser, say so with E2E_ENTITY_RLS=0: the same read then answers
+// 200 with `customerCanAnswer: false`, and the spec asserts only what holds on every
+// stack, that it is never offered to her and cannot be answered.
 //
 // ⚠️ STATE-CHANGING in the small (it re-seeds first, and one test cancels erin's request
 // in the database), so it needs E2E_POSTGRES_CONTAINER and SKIPS without it.
@@ -63,8 +63,8 @@ withFixtureStack(test);
 
 const { approval, inReview, standardNew, projectId } = FIXTURES;
 
-/** True when entity-service under test runs as a role that row-level security applies to. */
-const ENTITY_ENFORCES_RLS = process.env.E2E_ENTITY_RLS === "1";
+/** True unless told otherwise: entity-service under test runs as a role that row-level security applies to. */
+const ENTITY_ENFORCES_RLS = process.env.E2E_ENTITY_RLS !== "0";
 
 /** What the Lumen Works Platform project is called (its id is random per database). */
 const LUMEN_PROJECT = LOCAL_PERSONAS.mira.project;
