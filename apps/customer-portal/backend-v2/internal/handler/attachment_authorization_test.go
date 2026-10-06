@@ -45,7 +45,12 @@ type fakeAttachmentAuthzClient struct {
 	getCaseErr        error
 	searchDeploysErr  error
 	deploymentVisible bool
-	contentReached    bool
+	// unrelatedDeploymentID, when set, makes SearchDeployments return a
+	// deployment with THIS id regardless of what the request's ids filter
+	// asked for -- simulating snDeploymentService (plain
+	// DATA_SOURCE=servicenow), which never forwards the ids filter at all.
+	unrelatedDeploymentID string
+	contentReached        bool
 }
 
 func (f *fakeAttachmentAuthzClient) GetAttachment(ctx context.Context, id string) (entity.AttachmentDetails, error) {
@@ -65,6 +70,9 @@ func (f *fakeAttachmentAuthzClient) GetCase(ctx context.Context, id string) (ent
 func (f *fakeAttachmentAuthzClient) SearchDeployments(ctx context.Context, req entity.SearchDeploymentsRequest) (entity.SearchDeploymentsResponse, error) {
 	if f.searchDeploysErr != nil {
 		return entity.SearchDeploymentsResponse{}, f.searchDeploysErr
+	}
+	if f.unrelatedDeploymentID != "" {
+		return entity.SearchDeploymentsResponse{Deployments: []entity.DeploymentView{{ID: f.unrelatedDeploymentID}}, Total: 1}, nil
 	}
 	if !f.deploymentVisible {
 		return entity.SearchDeploymentsResponse{}, nil
@@ -121,6 +129,15 @@ func attachmentAuthzTestCases() map[string]struct {
 		"deployment lookup itself fails: denied": {
 			client:     fakeAttachmentAuthzClient{referenceID: testDeploymentID, getCaseErr: &apierror.Error{StatusCode: http.StatusNotFound}, searchDeploysErr: &apierror.Error{StatusCode: http.StatusServiceUnavailable}},
 			wantStatus: http.StatusServiceUnavailable,
+		},
+		// CodeRabbit finding on PR #2432: the ServiceNow-backed SearchDeployments
+		// adapter doesn't forward the ids filter at all, so a non-empty result
+		// alone doesn't prove it's THIS deployment -- an unrelated deployment
+		// the caller can see must not authorize access to a different one's
+		// attachment.
+		"deployment lookup returns an unrelated deployment: denied": {
+			client:     fakeAttachmentAuthzClient{referenceID: testDeploymentID, getCaseErr: &apierror.Error{StatusCode: http.StatusNotFound}, unrelatedDeploymentID: "99999999-9999-9999-9999-999999999999"},
+			wantStatus: http.StatusNotFound,
 		},
 	}
 }

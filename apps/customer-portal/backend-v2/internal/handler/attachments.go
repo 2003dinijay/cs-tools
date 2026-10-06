@@ -50,11 +50,21 @@ type entityAttachmentClient interface {
 // the calling user, the same way DeploymentHandler.deploymentBelongsToProject
 // does: entity-service's SearchDeployments is evaluated under the caller's
 // own row-level-security scope (deployment has RLS, migration 0176), so a
-// non-empty result already proves access — no second project lookup needed.
-// Unlike deploymentBelongsToProject, this doesn't need to know the project
-// up front: SearchDeployments' ids filter (entity-service's SearchDeploymentsRequest.IDs)
-// resolves the single deployment directly, which is all an attachment's own
-// ReferenceID ever carries.
+// result actually matching deploymentID already proves access — no second
+// project lookup needed. Unlike deploymentBelongsToProject, this doesn't need
+// to know the project up front: SearchDeployments' ids filter (entity-service's
+// SearchDeploymentsRequest.IDs) resolves the single deployment directly, which
+// is all an attachment's own ReferenceID ever carries.
+//
+// Checks each returned DeploymentView.ID against deploymentID explicitly,
+// rather than trusting a non-empty result alone: the ServiceNow-backed
+// SearchDeployments adapter (snDeploymentService, plain DATA_SOURCE=servicenow)
+// doesn't forward the ids filter at all (see entity-service's own
+// SearchDeploymentsRequest.IDs doc comment — only the Postgres data source
+// applies it), so an unfiltered search could return an unrelated deployment
+// the caller happens to have access to. A bare len(resp.Deployments) > 0
+// check would then authorize against that unrelated deployment instead of
+// the one actually being asked about.
 func deploymentAttachmentIsVisible(ctx context.Context, client entityAttachmentClient, deploymentID string) (bool, error) {
 	resp, err := client.SearchDeployments(ctx, entity.SearchDeploymentsRequest{
 		IDs:        []string{deploymentID},
@@ -63,7 +73,12 @@ func deploymentAttachmentIsVisible(ctx context.Context, client entityAttachmentC
 	if err != nil {
 		return false, err
 	}
-	return len(resp.Deployments) > 0, nil
+	for _, deployment := range resp.Deployments {
+		if deployment.ID == deploymentID {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // authorizeAttachmentAccess verifies the caller may see an attachment's
