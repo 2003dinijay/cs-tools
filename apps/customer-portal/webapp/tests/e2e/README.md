@@ -126,7 +126,15 @@ node_modules/.bin/playwright test tests/e2e/specs/local --project=chromium
   itself when no staging credentials are set, so these specs run without any.
 * **Fixtures move.** The seeded `CHG-FIXED-*` change requests are driven forward by whoever
   approves or rejects them; `docker-compose up -d migrate` re-runs the (self-healing) seed and puts
-  them back. The read-only smoke spec here changes nothing.
+  them back (wait for the `migrate` container to exit before running a spec, e.g.
+  `docker-compose up -d migrate && docker wait <project>-migrate-1`). The smoke spec changes
+  nothing; `customer-change-request-approval.spec.ts` answers `CHG-FIXED-007` and `-008`, and skips
+  (never fails) a fixture an earlier run already answered, naming the seed re-run that resets it.
+* **entity-service runs as a plain role.** The compose stack connects entity-service as `csm_app`
+  (no superuser, no `BYPASSRLS`; created by `migrate-and-seed.sh`), so the project-membership
+  row-level security applies as it does in production: a customer asking for another project's
+  change request gets a 404, not its contents. As the `postgres` superuser every such read answered
+  200.
 * **Operations needs the seed.** The menu appears only when the project's type grants change request
   / service request read access; the seed sets that on the local "Subscription" type. A database
   seeded before that existed shows no Operations menu until `migrate` is re-run.
@@ -135,7 +143,9 @@ node_modules/.bin/playwright test tests/e2e/specs/local --project=chromium
 |---|---|
 | `auth/local-session.setup.ts` | Mints `storageState/local-<persona>.json` (run through `playwright.local-auth.config.ts`, a separate config so a regression run never mints as a side effect) |
 | `auth/localSessions.ts` | `LOCAL_PERSONAS`, `withLocalSession(test, "dave")` (replays the bundle; skips on missing / expired / wrong-origin / unreachable), `sessionMinutesLeft` |
-| `specs/local/customer-change-requests.spec.ts` | Smoke: dave lists `CHG-FIXED-007` (Customer Approval) under Operations > Change requests, and no other customer's change request |
+| `specs/local/customer-change-requests.spec.ts` | Smoke: dave lists `CHG-FIXED-007` under Operations > Change requests (Customer Approval on a fresh seed), and every change request the list API returns for the project belongs to it |
+| `specs/local/customer-change-request-approval.spec.ts` | Writes: dave approves `CHG-FIXED-007` (Customer Approval -> Scheduled, banner kept, buttons gone, list and erin's view agree) and confirms `CHG-FIXED-008` as Successful (Customer Review -> Closed), through the real chain; re-run the seed to reset |
+| `pages/ChangeRequestDetailPage.ts` | The detail page as a customer answering it uses it: Approve / Reject / Propose New Time / Successful / Unsuccessful, the banner, the workflow stepper's "Current" row |
 
 ## Layout
 

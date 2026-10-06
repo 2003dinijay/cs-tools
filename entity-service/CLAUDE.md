@@ -2751,6 +2751,17 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     `docker-compose up -d migrate`.
   * The **`Devops Approval`** group (the peer fallback) is seeded with the three
     internal personas — it is created only when no group of that name exists.
+  * **The local stack connects as `csm_app`, not `postgres`.** A superuser skips every
+    row-level-security policy, `FORCE ROW LEVEL SECURITY` or not, so with entity-service on
+    `postgres` the `work_item` project-membership policies never applied: a customer could read
+    another project's change request (and its approver list) by id. `migrate-and-seed.sh` creates
+    `csm_app` (`NOSUPERUSER NOBYPASSRLS`) and re-grants it after every migration pass;
+    `docker-compose.yml` points entity-service's `DB_USER` at it. Migrations and seeds still run as
+    `postgres`. Verified as `csm_app`: dave asking for a Lumen Works change request gets 404 on the
+    detail, the PATCH and the decision (200 with an empty list on `/approvals`); mira likewise for
+    project 401; each customer reads and answers their own. Integration tests that use
+    `CHANGE_REQUEST_TEST_DSN` still connect as `postgres` (a superuser), so they see the
+    superuser behaviour.
   * **Traps** (both from `seed-team-schedule.sql`): never grant the `internal`
     role to a customer (`recompute_user_type()` checks internal before external,
     so that customer becomes INTERNAL and gets unrestricted scope), and the
