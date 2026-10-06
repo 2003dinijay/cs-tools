@@ -40,8 +40,9 @@ from fastapi.responses import JSONResponse
 
 import db
 import entity_client
-from auth import require_auth
+from auth import ONE_WSO2_WEBAPP_CLIENT_ID, require_auth
 from chat_notify import notify_new_submission
+from novera_notify import notify_novera
 from sanitize import sanitize_what_html
 from validation import TIL_WHERE_OPTIONS, WHAT_MAX_LENGTH, validate_submission_payload
 
@@ -144,6 +145,17 @@ async def create_submission(request: Request, user: dict = Depends(require_auth)
 
     entry_url = f"{ONE_WSO2_BASE_URL}/knowledge-base/{submission['id']}" if ONE_WSO2_BASE_URL else None
     await notify_new_submission(who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
+    # Novera's own DM broadcast is scoped to THIS entry point only -- not the
+    # Chat App Dialog, and not Novera's own share_til_entry tool (which would
+    # otherwise notify the very person who just submitted, about their own
+    # entry, as if someone else had). Checked against the TOKEN's own
+    # verified client identity, never a request header -- a header is
+    # caller-controlled (any already-authenticated caller could set any
+    # header value), so it proves nothing about which application actually
+    # issued the token. ONE_WSO2_WEBAPP_CLIENT_ID unset = never broadcasts,
+    # same fail-closed posture as every other optional check in this service.
+    if ONE_WSO2_WEBAPP_CLIENT_ID and ONE_WSO2_WEBAPP_CLIENT_ID in user.get("token_identities", set()):
+        await notify_novera(who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
 
     return submission
 

@@ -72,6 +72,14 @@ TIL_CHAT_SERVICE_ACCOUNT_EMAIL = os.environ.get("TIL_CHAT_SERVICE_ACCOUNT_EMAIL"
 ASGARDEO_ALLOWED_CLIENT_IDS = {
     c.strip() for c in os.environ.get("ASGARDEO_ALLOWED_CLIENT_IDS", "").split(",") if c.strip()
 }
+# Optional. The One WSO2 webapp's own Asgardeo client id (a public SPA
+# client id, not a secret -- see public/config.js's ONE_WSO2_AUTH_CLIENT_ID
+# in that repo). Used by main.py to decide whether to trigger the Novera
+# broadcast -- checked against the VERIFIED token's own aud/client_id/azp
+# claim, never a request header, since a header is caller-controlled and
+# proves nothing about which application actually issued the token. Absent
+# = the broadcast never fires (fail closed, not "trust everyone").
+ONE_WSO2_WEBAPP_CLIENT_ID = os.environ.get("ONE_WSO2_WEBAPP_CLIENT_ID", "")
 
 _jwks_cache: dict = {}
 _jwks_fetched_at: float = 0.0
@@ -116,15 +124,22 @@ async def _validate_token(token: str) -> dict:
     )
     claims_registry.validate(claims)
 
-    if ASGARDEO_ALLOWED_CLIENT_IDS:
-        aud = claims.get("aud")
-        aud_values = aud if isinstance(aud, list) else ([aud] if aud else [])
-        client_id = claims.get("client_id") or claims.get("azp")
-        token_identities = {str(v) for v in aud_values if v}
-        if client_id:
-            token_identities.add(str(client_id))
-        if not (token_identities & ASGARDEO_ALLOWED_CLIENT_IDS):
-            raise ValueError("Token not issued to an allowed client")
+    # Computed unconditionally (not just when ASGARDEO_ALLOWED_CLIENT_IDS is
+    # set) -- require_auth also exposes this so callers can verify WHICH
+    # application a token was issued to, not just that it's valid. This is
+    # the one thing a request header can never prove: the client_id claim is
+    # part of the signed JWT payload itself, so forging a different value
+    # would require forging the whole signature.
+    aud = claims.get("aud")
+    aud_values = aud if isinstance(aud, list) else ([aud] if aud else [])
+    client_id = claims.get("client_id") or claims.get("azp")
+    token_identities = {str(v) for v in aud_values if v}
+    if client_id:
+        token_identities.add(str(client_id))
+    claims["_token_identities"] = token_identities
+
+    if ASGARDEO_ALLOWED_CLIENT_IDS and not (token_identities & ASGARDEO_ALLOWED_CLIENT_IDS):
+        raise ValueError("Token not issued to an allowed client")
 
     return claims
 
@@ -190,6 +205,10 @@ async def require_auth(request: Request) -> dict:
     is_moderator = TIL_MODERATOR_GROUP in groups
 
     is_chat_service_account = bool(TIL_CHAT_SERVICE_ACCOUNT_EMAIL) and email == TIL_CHAT_SERVICE_ACCOUNT_EMAIL
+    # The verified Asgardeo client (aud/client_id/azp) this token was issued
+    # to -- see main.py's is_one_wso2_webapp_request for why this, not a
+    # request header, is what decides whether to trigger the Novera broadcast.
+    token_identities = claims.get("_token_identities", set())
 
     # Asgardeo's own access tokens (at least this org's) don't carry a
     # combined "name" claim -- only given_name/family_name separately -- so
@@ -205,4 +224,5 @@ async def require_auth(request: Request) -> dict:
         "groups": groups,
         "is_moderator": is_moderator,
         "is_chat_service_account": is_chat_service_account,
+        "token_identities": token_identities,
     }
