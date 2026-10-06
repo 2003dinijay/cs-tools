@@ -14,8 +14,4 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Add job_type to csm_migration_row_error so errors can be filtered and
--- cleared by the job type that produced them, without joining csm_migration_job.
--- Existing rows get an empty string default (historical data, type unknown).
-ALTER TABLE csm_migration_row_error
-    ADD COLUMN IF NOT EXISTS job_type TEXT NOT NULL DEFAULT '';
+ALTER TABLE "user" ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) REFERENCES timezone(value);
