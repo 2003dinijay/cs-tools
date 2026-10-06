@@ -41,11 +41,14 @@ func TestEscalationEnumLabels(t *testing.T) {
 
 func TestCaseFieldPredicates(t *testing.T) {
 	// Placeholders continue from argIdx; every predicate carries exactly one
-	// arg except State, which carries two -- see its own branch's doc
-	// comment: one array reused (via separate casts) across the four
-	// case-like enum types that share its label set, and a second, smaller
-	// array specifically for announcement_state_enum's own OPEN/CLOSE-only
-	// vocabulary.
+	// arg except State, which carries five -- see its own branch's doc
+	// comment: a SEPARATE placeholder per enum cast (even where four of them
+	// carry the identical array), since Postgres resolves a prepared
+	// statement's placeholder type once per index, not per occurrence --
+	// reusing one placeholder across multiple distinct enum casts fails at
+	// PREPARE time with "cannot cast type X to Y" (a real, confirmed bug a
+	// previous revision of this test's own expectations locked in by
+	// mistake).
 	preds, args, next, err := caseFieldPredicates(caseFieldSet{
 		Severities:       []domain.CaseSeverity{domain.CaseSeverityCritical},
 		EscalationLevels: []string{"3", "4"},
@@ -58,18 +61,18 @@ func TestCaseFieldPredicates(t *testing.T) {
 	if len(preds) != 4 { // default types + state + severity + escalation
 		t.Fatalf("preds = %d %v", len(preds), preds)
 	}
-	if len(args) != 4 || next != 9 {
-		t.Fatalf("args=%d next=%d, want 4 and 9 (default-types binds nothing; state binds two)", len(args), next)
+	if len(args) != 7 || next != 12 {
+		t.Fatalf("args=%d next=%d, want 7 and 12 (default-types binds nothing; state binds five)", len(args), next)
 	}
 	joined := strings.Join(preds, " | ")
 	for _, want := range []string{
 		"c.state = ANY($5::case_state_enum[])",
-		"eng.state = ANY($5::engagement_state_enum[])",
-		"sr.state = ANY($5::service_request_state_enum[])",
-		"sra.state = ANY($5::security_report_analysis_state_enum[])",
-		"ann.state = ANY($6::announcement_state_enum[])",
-		"$7::case_severity_enum[]",
-		"$8::text[]::case_escalation_level_enum[]",
+		"eng.state = ANY($6::engagement_state_enum[])",
+		"sr.state = ANY($7::service_request_state_enum[])",
+		"sra.state = ANY($8::security_report_analysis_state_enum[])",
+		"ann.state = ANY($9::announcement_state_enum[])",
+		"$10::case_severity_enum[]",
+		"$11::text[]::case_escalation_level_enum[]",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %s", want, joined)
@@ -110,16 +113,18 @@ func TestCaseFieldPredicates_StateAnnouncementMapping(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(args) != 2 {
-		t.Fatalf("args = %d, want 2 (the shared array, then the announcement-mapped one)", len(args))
+	if len(args) != 5 {
+		t.Fatalf("args = %d, want 5 (four separate placeholders for the shared array, then the announcement-mapped one)", len(args))
 	}
-	shared, ok := args[0].([]string)
-	if !ok || strings.Join(shared, ",") != "OPEN,CLOSED,WORK_IN_PROGRESS" {
-		t.Errorf("shared array = %v, want [OPEN CLOSED WORK_IN_PROGRESS] unchanged", args[0])
+	for i := 0; i < 4; i++ {
+		shared, ok := args[i].([]string)
+		if !ok || strings.Join(shared, ",") != "OPEN,CLOSED,WORK_IN_PROGRESS" {
+			t.Errorf("args[%d] = %v, want [OPEN CLOSED WORK_IN_PROGRESS] unchanged", i, args[i])
+		}
 	}
-	annStates, ok := args[1].([]string)
+	annStates, ok := args[4].([]string)
 	if !ok || strings.Join(annStates, ",") != "OPEN,CLOSE" {
-		t.Errorf("announcement array = %v, want [OPEN CLOSE] (CLOSED mapped, WORK_IN_PROGRESS dropped)", args[1])
+		t.Errorf("announcement array = %v, want [OPEN CLOSE] (CLOSED mapped, WORK_IN_PROGRESS dropped)", args[4])
 	}
 }
 
