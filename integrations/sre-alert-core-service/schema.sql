@@ -104,6 +104,14 @@ CREATE TABLE IF NOT EXISTS integration_users (
   created_by         text NOT NULL DEFAULT '',
   updated_at         timestamptz NOT NULL DEFAULT now(),
   secret_rotated_at  timestamptz NOT NULL DEFAULT to_timestamp(0),
-  last_used_at       timestamptz NOT NULL DEFAULT to_timestamp(0),
-  expires_at         timestamptz NOT NULL DEFAULT to_timestamp(0)
+  last_used_at       timestamptz NOT NULL DEFAULT to_timestamp(0)
 );
+
+-- Raw webhook bodies exactly as received, before any transform; sre-alert-ingestion-service writes them in batches.
+CREATE TABLE IF NOT EXISTS raw_alerts (
+  id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  received_at  timestamptz NOT NULL,
+  payload      jsonb NOT NULL
+);
+-- Retention deletes by age, oldest first.
+CREATE INDEX IF NOT EXISTS raw_alerts_received_at_idx ON raw_alerts (received_at);

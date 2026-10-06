@@ -92,7 +92,6 @@ func Transform(raw []byte, cfg Config) ([]Alert, error) {
 		return nil, ErrInvalidStructure
 	}
 
-	description := utils.CompactJSON(raw)
 	receiver := utils.Str(payload, "receiver")
 	batchStatus := utils.Str(payload, "status") // fallback for alerts without their own status
 
@@ -102,12 +101,12 @@ func Transform(raw []byte, cfg Config) ([]Alert, error) {
 		if !ok {
 			continue
 		}
-		alerts = append(alerts, transformOne(alertMap, cfg, receiver, batchStatus, description))
+		alerts = append(alerts, transformOne(alertMap, cfg, receiver, batchStatus))
 	}
 	return alerts, nil
 }
 
-func transformOne(alert map[string]any, cfg Config, receiver, batchStatus, description string) Alert {
+func transformOne(alert map[string]any, cfg Config, receiver, batchStatus string) Alert {
 	labels, _ := alert["labels"].(map[string]any)
 	annotations, _ := alert["annotations"].(map[string]any)
 
@@ -144,7 +143,8 @@ func transformOne(alert map[string]any, cfg Config, receiver, batchStatus, descr
 		Environment:      configValue(cfg, "ENVIRONMENT", utils.FirstNonEmpty(utils.Str(labels, "environment"), utils.Str(labels, "cluster"))),
 		Source:           alertSource,
 		UniqueIdentifier: utils.Str(alert, "fingerprint"),
-		Description:      description,
+		// The alert's own annotation text, never the payload; the raw body is kept in raw_alerts.
+		Description: utils.FirstNonEmpty(utils.Str(annotations, "description"), utils.Str(annotations, "summary")),
 	}
 }
 

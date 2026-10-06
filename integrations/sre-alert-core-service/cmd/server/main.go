@@ -29,7 +29,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/jackc/pgx/v5/stdlib"
 
@@ -65,6 +65,12 @@ func main() {
 		logger.Error("failed to read postgres config", "error", err)
 		os.Exit(1)
 	}
+	pgCfg, err = postgres.SizePool(pgCfg, depCfg.Poll.Concurrency)
+	if err != nil {
+		logger.Error("invalid postgres pool size", "error", err)
+		os.Exit(1)
+	}
+	logger.Info("postgres pools sized", "main_max_conns", pgCfg.PoolMaxConns, "lock_max_conns", depCfg.Notify.DeliveryConcurrency+lockPoolHeadroom)
 	// Core writes are replayed after a crash, so they skip the WAL flush wait; ingestion keeps synchronous commits since it acknowledges senders.
 	pool, err := connectWithRetry(logger, pgCfg, depCfg.Postgres, true)
 	if err != nil {
@@ -172,9 +178,17 @@ func main() {
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	// alert-ingestion authenticates against the same integration_users store its own webhooks use.
-	userRepo := auth.NewUserRepo(pool)
-	mux.Handle("/alertz", auth.RequireAuth(userRepo, base.With("component", "auth"))(http.HandlerFunc(h.ServeAlert)))
+	// alert-ingestion authenticates against the same integration_users store its own webhooks use, held in memory so /alertz never waits on Postgres.
+	users := auth.NewDirectory(auth.NewUserRepo(pool), base.With("component", "auth"), auth.DirectoryConfig{
+		QueryTimeout:    depCfg.Postgres.QueryTimeout.Duration(),
+		RefreshInterval: depCfg.Postgres.AuthRefreshInterval.Duration(),
+		MaxStale:        depCfg.Postgres.AuthMaxStale.Duration(),
+	})
+	if err := users.Refresh(context.Background()); err != nil {
+		logger.Error("integration_users not loaded; /alertz answers 503 until a refresh succeeds", "error", err)
+	}
+	go users.Run(pollCtx)
+	mux.Handle("/alertz", auth.RequireAuth(users, base.With("component", "auth"))(http.HandlerFunc(h.ServeAlert)))
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -278,24 +292,17 @@ func splitComma(raw string) []string {
 
 // connectWithRetry retries with exponential backoff so a transient startup outage doesn't crash the server.
 func connectWithRetry(logger *slog.Logger, cfg postgres.Config, pcfg config.PostgresConfig, asyncCommit bool) (*pgxpool.Pool, error) {
-	var pool *pgxpool.Pool
 	attempt := 0
-	operation := func() error {
+	operation := func() (*pgxpool.Pool, error) {
 		attempt++
 		p, err := postgres.Connect(cfg, pcfg.ConnectTimeout.Duration(), pcfg.QueryTimeout.Duration(), asyncCommit)
 		if err != nil {
 			logger.Warn("postgres connection failed, retrying", "attempt", attempt, "max_attempts", pcfg.ConnectMaxAttempts, "error", err)
-			return err
 		}
-		pool = p
-		return nil
+		return p, err
 	}
 
 	eb := backoff.NewExponentialBackOff()
 	eb.InitialInterval = pcfg.ConnectBaseDelay.Duration()
-	b := backoff.WithMaxRetries(eb, uint64(pcfg.ConnectMaxAttempts-1))
-	if err := backoff.Retry(operation, b); err != nil {
-		return nil, err
-	}
-	return pool, nil
+	return backoff.Retry(context.Background(), operation, backoff.WithBackOff(eb), backoff.WithMaxTries(uint(pcfg.ConnectMaxAttempts)))
 }

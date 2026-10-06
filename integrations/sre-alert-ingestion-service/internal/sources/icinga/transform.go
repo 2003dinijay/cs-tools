@@ -121,7 +121,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Environment:      configValue(cfg, "ENVIRONMENT", utils.FirstNonEmpty(utils.Str(vars, "environment"), utils.Str(payload, "environment"))),
 		Source:           source,
 		UniqueIdentifier: uniqueIdentifier,
-		Description:      utils.CompactJSON(raw),
+		// The check's plugin output, never the payload; the raw body is kept in raw_alerts.
+		Description: utils.FirstNonEmpty(utils.Str(payload, "service_output"), utils.Str(payload, "host_output")),
 	}
 	return alert, nil
 }

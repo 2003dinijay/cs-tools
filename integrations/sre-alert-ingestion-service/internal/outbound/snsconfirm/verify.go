@@ -117,7 +117,7 @@ func (v *verifier) cert(raw string) (*x509.Certificate, error) {
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode/100 != 2 {
-		return nil, fmt.Errorf("fetch signing certificate: %d", resp.StatusCode)
+		return nil, fmt.Errorf("fetch signing certificate: unexpected status %d", resp.StatusCode)
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
 	if err != nil {

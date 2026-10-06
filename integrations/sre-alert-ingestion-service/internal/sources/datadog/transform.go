@@ -119,7 +119,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Environment:      configValue(cfg, tags, "ENVIRONMENT", utils.Str(payload, "environment")),
 		Source:           source,
 		UniqueIdentifier: uniqueIdentifier,
-		Description:      utils.CompactJSON(raw),
+		// Datadog's message text ($EVENT_MSG), never the payload; the raw body is kept in raw_alerts.
+		Description: utils.FirstNonEmpty(utils.Str(payload, "body"), utils.Str(payload, "text_only_msg"), utils.Str(payload, "event_msg")),
 	}
 	return alert, nil
 }

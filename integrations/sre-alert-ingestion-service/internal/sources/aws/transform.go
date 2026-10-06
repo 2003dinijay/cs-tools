@@ -18,7 +18,6 @@
 package aws
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -40,7 +39,7 @@ var defaults = map[string]string{
 }
 
 // ErrMissingBody is returned when the webhook is called with no body, or a body that isn't valid JSON at all.
-var ErrMissingBody = errors.New("MISSING REQUEST BODY DATA")
+var ErrMissingBody = errors.New("missing or invalid request body")
 
 // Alert is the canonical alert model handed to the core component.
 type Alert = model.Alert
@@ -90,7 +89,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	if err := jsonnum.Unmarshal([]byte(messageRaw), &messageObj); err != nil {
 		// SNS Message isn't valid JSON; still produces a real alert, matching the reference script's own fallback.
 		base.MetricName = "SNS Message Parse Error"
-		base.Description = "Raw Payload Message: " + prettyJSON(raw)
+		// A non-JSON SNS Message is the human-readable text itself; the raw body is kept in raw_alerts.
+		base.Description = strings.TrimSpace(messageRaw)
 		return base, nil
 	}
 
@@ -116,7 +116,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Environment:      utils.FirstNonEmpty(utils.Str(alarmDesc, "environment"), base.Environment),
 		Source:           base.Source,
 		UniqueIdentifier: utils.Str(messageObj, "AlarmArn"),
-		Description:      prettyJSON([]byte(messageRaw)),
+		// The alarm's state reason, never the payload; the raw body is kept in raw_alerts.
+		Description: utils.Str(messageObj, "NewStateReason"),
 		// An alarm may name its own CSM assignment group in AlarmDescription; it beats every
 		// other routing signal the core has.
 		AssignmentGroup: strings.TrimSpace(utils.Str(alarmDesc, "assignment_group")),
@@ -142,13 +143,4 @@ func arnAccount(arn string) string {
 // configValue applies the 2-tier resolution: operator config, then the hardcoded default.
 func configValue(cfg Config, field string) string {
 	return utils.FirstNonEmpty(cfg[field], defaults[field])
-}
-
-// prettyJSON re-indents raw JSON bytes with a 2-space indent, operating on the raw bytes to preserve field order.
-func prettyJSON(raw []byte) string {
-	var buf bytes.Buffer
-	if err := json.Indent(&buf, raw, "", "  "); err != nil {
-		return string(raw)
-	}
-	return buf.String()
 }
