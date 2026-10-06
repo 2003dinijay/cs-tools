@@ -447,9 +447,10 @@ need `decide` on exactly two routes:
   handler honours `dto.ChangeRequestUpdateRequest` as before; at anything else -- including a
   request that never passed through the middleware, so the restriction cannot be lost by not
   wiring it -- it decodes the body into `dto.ChangeRequestCustomerUpdateRequest` (exactly
-  `isCustomerApproved`, `isCustomerReviewed`, `plannedStartOn`, `plannedEndOn`) with **unknown
-  fields refused (403)**, refuses an answer combined with a proposed time or both outcomes (400),
-  and builds the entity-service request from those four fields alone. Sending `title`, `state`,
+  `isCustomerApproved`, `isCustomerReviewed`, `plannedStartOn`, `plannedEndOn`, and the answer's
+  `expectedPlannedStartOn` / `expectedPlannedEndOn`, the window the customer was shown) with **unknown
+  fields refused (403)**, refuses an answer combined with a proposed time, both outcomes, or the expected
+  window without an answer (400), and builds the entity-service request from those six fields alone. Sending `title`, `state`,
   `requestApproval`... with an answer cannot get them through: they are not fields of the struct.
 
 `decide` is granted to every role that can read a change request on purpose: **this matrix is a
@@ -466,7 +467,7 @@ change request. Route wiring is `registerChangeRequestRoutes` in `cmd/server/mai
 passes through entity-service's per-caller `customerCanAnswer` (`entity.ChangeRequest.CustomerCanAnswer`, a
 `*bool`, `omitempty`): whether the signed-in customer may answer the change request right now -- approve or
 reject in Customer Approval, confirm or fail the review in Customer Review, and in Customer Approval propose a
-new implementation time (a held change refuses a proposal, so the webapp also checks `onHold`/state). It is the
+new implementation time unless the change is on hold (a held change refuses a proposal, so the detail also carries the boolean `isOnHold`, never the reason, and the webapp turns Propose off when it is true). It is the
 portal's source for showing those buttons: `hasCustomerApproved` / `hasCustomerReviewed` are the recorded
 OUTCOME and are false for as long as the change waits for the customer, so they cannot say "waiting for me".
 Contract: **present true/false** when entity-service computed it for this customer (PostgreSQL data source);

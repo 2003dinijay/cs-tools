@@ -42,8 +42,11 @@ type entityChangeRequestClient interface {
 
 // ChangeRequestHandler handles HTTP requests for change-request operations.
 //
-// NOTE: entity-service only supports change requests on its ServiceNow data
-// source — a Postgres-mode deployment 404s on every route this handler serves.
+// entity-service serves these routes on its PostgreSQL data source as well as on
+// its ServiceNow one (a Postgres-mode deployment does not 404 them). What is
+// computed for the customer -- customerCanAnswer, the expected-window check, the
+// proposal rules -- is entity-service's PostgreSQL data source's, and absent on
+// ServiceNow's.
 type ChangeRequestHandler struct {
 	entity entityChangeRequestClient
 }
@@ -51,10 +54,11 @@ type ChangeRequestHandler struct {
 // Messages of PATCH /change-requests/{id} when it is served at the customer
 // level (see patchChangeRequestAsCustomer).
 const (
-	errMsgCustomerPatchFields = "Customers can only approve or reject a change request, confirm or reject its review, or propose a new implementation time. Other fields cannot be changed."
-	errMsgCustomerPatchMixed  = "Send the approval or review and a proposed implementation time as separate requests."
-	errMsgCustomerPatchBoth   = "Send either isCustomerApproved or isCustomerReviewed, not both."
-	errMsgCustomerPatchEmpty  = "At least one of isCustomerApproved, isCustomerReviewed or plannedStartOn must be provided."
+	errMsgCustomerPatchFields   = "Customers can only approve or reject a change request, confirm or reject its review, or propose a new implementation time. Other fields cannot be changed."
+	errMsgCustomerPatchMixed    = "Send the approval or review and a proposed implementation time as separate requests."
+	errMsgCustomerPatchBoth     = "Send either isCustomerApproved or isCustomerReviewed, not both."
+	errMsgCustomerPatchEmpty    = "At least one of isCustomerApproved, isCustomerReviewed, plannedStartOn or plannedEndOn must be provided."
+	errMsgCustomerPatchExpected = "expectedPlannedStartOn and expectedPlannedEndOn go with isCustomerApproved or isCustomerReviewed only."
 )
 
 // NewChangeRequestHandler creates a ChangeRequestHandler backed by the given entity client.
@@ -214,20 +218,24 @@ func (h *ChangeRequestHandler) PatchChangeRequest(w http.ResponseWriter, r *http
 // who may give the customer's answer but not edit the change request.
 //
 // The body is decoded into dto.ChangeRequestCustomerUpdateRequest with unknown
-// fields refused, so any key outside its four fields -- a real one such as
+// fields refused, so any key outside its six fields -- a real one such as
 // "title" or "state", a misspelt one, or one that differs only in case -- is a
 // 403 and nothing is forwarded; and entity-service's request is then built from
-// those four fields alone. There is no code path by which an extra key rides
+// those six fields alone. There is no code path by which an extra key rides
 // along.
 //
 // The body must be exactly one of:
 //
 //   - the customer's answer: isCustomerApproved (Customer Approval) or
-//     isCustomerReviewed (Customer Review), one of the two, true or false;
+//     isCustomerReviewed (Customer Review), one of the two, true or false,
+//     optionally with expectedPlannedStartOn / expectedPlannedEndOn, the window
+//     the customer was shown (the answer is then only recorded while that is
+//     still the window);
 //   - a proposed implementation window: plannedStartOn and/or plannedEndOn.
 //
 // Combining the two is refused (400): a customer who proposes a different time
 // has not approved the old one, and the two have different outcomes upstream.
+// The expected window with anything but an answer is refused too.
 //
 // Whether this caller may answer THIS change request is not decided here.
 // entity-service resolves the caller from the forwarded user token and accepts
@@ -249,6 +257,9 @@ func (h *ChangeRequestHandler) patchChangeRequestAsCustomer(w http.ResponseWrite
 		return
 	}
 	switch {
+	case req.HasExpectedWindow() && !req.HasDecision():
+		writeError(w, http.StatusBadRequest, errMsgCustomerPatchExpected)
+		return
 	case !req.HasDecision() && !req.HasWindow():
 		writeError(w, http.StatusBadRequest, errMsgCustomerPatchEmpty)
 		return

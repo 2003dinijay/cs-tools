@@ -248,6 +248,13 @@ type ChangeRequestDetails struct {
 	// Passed through untouched, and omitted when entity-service did not compute
 	// it (nil): an absent value means "unknown", which is not the same as false.
 	CustomerCanAnswer *bool `json:"customerCanAnswer,omitempty"`
+
+	// IsOnHold is whether WSO2 has this change request on hold (the reason is
+	// WSO2's own note and is not passed on). A held change refuses a proposed
+	// implementation time (but not an answer), so the portal turns Propose New
+	// Time off, and says why, instead of letting a customer type a window only to
+	// be refused. Omitted when entity-service did not say, which is not "not held".
+	IsOnHold *bool `json:"isOnHold,omitempty"`
 }
 
 // MapChangeRequestDetails builds the portal response from entity-service's ChangeRequest.
@@ -266,6 +273,7 @@ func MapChangeRequestDetails(r entity.ChangeRequest) ChangeRequestDetails {
 		ApprovedBy:           entityRefToIDLabel(r.ApprovedBy),
 		ApprovedOn:           r.ApprovedOn,
 		CustomerCanAnswer:    r.CustomerCanAnswer,
+		IsOnHold:             r.OnHold,
 	}
 }
 
@@ -345,20 +353,33 @@ func BuildEntityPatchChangeRequestRequest(req ChangeRequestUpdateRequest) entity
 //     Customer Approval.
 //   - IsCustomerReviewed: confirm the implementation succeeded (true) or failed
 //     (false) on a change request in Customer Review.
+//   - ExpectedPlannedStartOn / ExpectedPlannedEndOn: with an answer, the planned
+//     window the customer was shown (the detail's startDate / endDate). The answer
+//     is recorded only while that is still the change's window, so a page opened
+//     before the change was re-scheduled cannot approve a time its reader never
+//     saw. Optional; the webapp sends them.
 //   - PlannedStartOn / PlannedEndOn: "propose new implementation time". The
-//     webapp sends only plannedStartOn.
+//     webapp sends both: a customer proposes a whole window.
 //
-// It is a struct of exactly these four fields on purpose: the handler decodes the
+// It is a struct of exactly these six fields on purpose: the handler decodes the
 // body into it with unknown fields refused, so a field that is not here cannot
 // reach entity-service however the body is spelled, and the entity-service
 // request is built from it field by field (BuildEntityCustomerPatchChangeRequestRequest)
 // rather than by copying a wider shape. Add a field here only after deciding that
 // a customer may set it.
 type ChangeRequestCustomerUpdateRequest struct {
-	IsCustomerApproved *bool   `json:"isCustomerApproved,omitempty"`
-	IsCustomerReviewed *bool   `json:"isCustomerReviewed,omitempty"`
-	PlannedStartOn     *string `json:"plannedStartOn,omitempty"`
-	PlannedEndOn       *string `json:"plannedEndOn,omitempty"`
+	IsCustomerApproved     *bool   `json:"isCustomerApproved,omitempty"`
+	IsCustomerReviewed     *bool   `json:"isCustomerReviewed,omitempty"`
+	PlannedStartOn         *string `json:"plannedStartOn,omitempty"`
+	PlannedEndOn           *string `json:"plannedEndOn,omitempty"`
+	ExpectedPlannedStartOn *string `json:"expectedPlannedStartOn,omitempty"`
+	ExpectedPlannedEndOn   *string `json:"expectedPlannedEndOn,omitempty"`
+}
+
+// HasExpectedWindow reports whether the request names the planned window the
+// customer's answer was given for.
+func (r ChangeRequestCustomerUpdateRequest) HasExpectedWindow() bool {
+	return r.ExpectedPlannedStartOn != nil || r.ExpectedPlannedEndOn != nil
 }
 
 // HasDecision reports whether the request carries the customer's answer.
@@ -372,14 +393,16 @@ func (r ChangeRequestCustomerUpdateRequest) HasWindow() bool {
 }
 
 // BuildEntityCustomerPatchChangeRequestRequest builds entity-service's PATCH
-// request from a customer's restricted one, setting nothing but the four fields
-// it carries.
+// request from a customer's restricted one, setting nothing but the fields it
+// carries.
 func BuildEntityCustomerPatchChangeRequestRequest(req ChangeRequestCustomerUpdateRequest) entity.PatchChangeRequestRequest {
 	return entity.PatchChangeRequestRequest{
-		IsCustomerApproved: req.IsCustomerApproved,
-		IsCustomerReviewed: req.IsCustomerReviewed,
-		PlannedStartOn:     req.PlannedStartOn,
-		PlannedEndOn:       req.PlannedEndOn,
+		IsCustomerApproved:     req.IsCustomerApproved,
+		IsCustomerReviewed:     req.IsCustomerReviewed,
+		PlannedStartOn:         req.PlannedStartOn,
+		PlannedEndOn:           req.PlannedEndOn,
+		ExpectedPlannedStartOn: req.ExpectedPlannedStartOn,
+		ExpectedPlannedEndOn:   req.ExpectedPlannedEndOn,
 	}
 }
 

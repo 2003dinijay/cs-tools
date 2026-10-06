@@ -1720,7 +1720,6 @@ paths:
   /change-requests:
     post:
       summary: Create a change request.
-      description: Only entity-service's ServiceNow data source supports this route.
       operationId: postChangeRequests
       requestBody:
         content:
@@ -1771,8 +1770,8 @@ paths:
       summary: Search change requests.
       description: >
         projectId is set server-side from the path parameter — any
-        client-supplied value in the request body is ignored. Only
-        entity-service's ServiceNow data source supports this route.
+        client-supplied value in the request body is ignored. The internal
+        pre-approval states (new, assess, authorize) are never returned.
       operationId: postProjectsIdChangeRequestsSearch
       parameters:
         - name: id
@@ -1829,11 +1828,10 @@ paths:
     get:
       summary: Get a change request by ID.
       description: >-
-        Only entity-service's ServiceNow data source supports this route.
         The detail carries `customerCanAnswer`, the per-caller answer to "may I
         approve / reject (or confirm / fail the review of) this change request
-        now"; the approvals and the identities of the WSO2 approvers are not part
-        of the customer's detail.
+        now", and `isOnHold`; the approvals and the identities of the WSO2
+        approvers are not part of the customer's detail.
       operationId: getChangeRequestsId
       parameters:
         - name: id
@@ -1896,15 +1894,22 @@ paths:
         Customer Approval), isCustomerReviewed (confirm / fail the review in
         Customer Review), or plannedStartOn and/or plannedEndOn ("propose new
         implementation time" -- it sends the change request back through
-        approval). Any other field is a 403 and nothing is forwarded; combining
-        an answer with a proposed time, or both outcomes, is a 400.
+        approval, so the customer is asked again only once WSO2 has approved
+        the new time). An answer may carry expectedPlannedStartOn /
+        expectedPlannedEndOn, the planned window the customer was shown: it is
+        then recorded only while that is still the window (409 otherwise). Any
+        other field is a 403 and nothing is forwarded; combining an answer with
+        a proposed time, both outcomes, or the expected window with anything but
+        an answer, is a 400.
 
 
-        Whether the caller may answer THIS change request is entity-service's
-        decision from the forwarded user token: only a registered portal-user
-        contact of the change request's own project (403 otherwise), only while
-        it is in the state the answer belongs to (409 otherwise, e.g. a second
-        contact answering after the first).
+        Whether the caller may answer or propose on THIS change request is
+        entity-service's decision from the forwarded user token: only a
+        registered portal-user contact of the change request's own project who
+        was asked for the customer's approval (403 otherwise), only while it is
+        in the state the answer belongs to (409 otherwise, e.g. a second
+        contact answering after the first), and, for a proposed time, a window
+        still to come with a duration, on a change that is not on hold.
       operationId: patchChangeRequestsId
       parameters:
         - name: id
@@ -1974,7 +1979,10 @@ paths:
   /change-requests/{id}/approvals:
     get:
       summary: Get a change request's approval stages.
-      description: Only entity-service's ServiceNow data source supports this route.
+      description: >-
+        The customer's own stages (Customer Approval / Customer Review) are given
+        whole; WSO2's internal stages (Peer, CAB, ECAB, Review) are reduced by
+        entity-service to their label and status, with no approver names or ids.
       operationId: getChangeRequestsIdApprovals
       parameters:
         - name: id
@@ -7973,6 +7981,13 @@ components:
                 creator. ABSENT (not false) when entity-service did not compute it
                 -- the ServiceNow data source, a non-customer caller; a client
                 then keeps its old behaviour. Passed through unchanged.
+            isOnHold:
+              type: boolean
+              description: >-
+                Whether WSO2 has the change request on hold (the reason is not
+                passed on). A held change refuses a proposed implementation time,
+                so the portal does not offer one; an answer is still accepted.
+                ABSENT when entity-service did not say, which is not "not held".
             approvedBy:
               $ref: '#/components/schemas/IdLabelRef'
             approvedOn:
@@ -8001,8 +8016,24 @@ components:
           type: string
         plannedStartOn:
           type: string
+          description: >-
+            A date-time, "YYYY-MM-DD HH:MM:SS" (UTC) or RFC 3339, in the years
+            2000 to 2100.
         plannedEndOn:
           type: string
+          description: Same formats as plannedStartOn.
+        expectedPlannedStartOn:
+          type: string
+          description: >-
+            Customers only, with isCustomerApproved / isCustomerReviewed: the
+            planned start the customer was shown (the detail's startDate). The
+            answer is recorded only while it is still the change's start (409
+            otherwise).
+        expectedPlannedEndOn:
+          type: string
+          description: >-
+            Customers only, with an answer: the planned end the customer was
+            shown (the detail's endDate); see expectedPlannedStartOn.
         impact:
           type: string
         type:

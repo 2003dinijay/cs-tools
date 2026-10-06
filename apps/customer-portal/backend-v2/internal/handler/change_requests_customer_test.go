@@ -106,6 +106,7 @@ func wantMessage(t *testing.T, rec *httptest.ResponseRecorder, contains string) 
 func TestPatchChangeRequest_CustomerAllowedBodies(t *testing.T) {
 	yes, no := true, false
 	start, end := "2026-10-10 10:00:00", "2026-10-10 12:00:00"
+	seenStart, seenEnd := "2026-10-10T10:00:00Z", "2026-10-10T12:00:00Z"
 	tests := []struct {
 		name, body string
 		want       entity.PatchChangeRequestRequest
@@ -116,6 +117,10 @@ func TestPatchChangeRequest_CustomerAllowedBodies(t *testing.T) {
 		{"fail the review", `{"isCustomerReviewed":false}`, entity.PatchChangeRequestRequest{IsCustomerReviewed: &no}},
 		{"propose a start (what the webapp sends)", `{"plannedStartOn":"2026-10-10 10:00:00"}`, entity.PatchChangeRequestRequest{PlannedStartOn: &start}},
 		{"propose a window", `{"plannedStartOn":"2026-10-10 10:00:00","plannedEndOn":"2026-10-10 12:00:00"}`, entity.PatchChangeRequestRequest{PlannedStartOn: &start, PlannedEndOn: &end}},
+		{"approve for the window that was shown", `{"isCustomerApproved":true,"expectedPlannedStartOn":"2026-10-10T10:00:00Z","expectedPlannedEndOn":"2026-10-10T12:00:00Z"}`,
+			entity.PatchChangeRequestRequest{IsCustomerApproved: &yes, ExpectedPlannedStartOn: &seenStart, ExpectedPlannedEndOn: &seenEnd}},
+		{"confirm the review for the window that was shown", `{"isCustomerReviewed":true,"expectedPlannedEndOn":"2026-10-10T12:00:00Z"}`,
+			entity.PatchChangeRequestRequest{IsCustomerReviewed: &yes, ExpectedPlannedEndOn: &seenEnd}},
 		{"field names are matched case-insensitively like everywhere else", `{"ISCUSTOMERAPPROVED":true}`, entity.PatchChangeRequestRequest{IsCustomerApproved: &yes}},
 	}
 	for _, tt := range tests {
@@ -135,13 +140,14 @@ func TestPatchChangeRequest_CustomerAllowedBodies(t *testing.T) {
 	}
 }
 
-// Every field of entity-service's PATCH contract other than the four customer
+// Every field of entity-service's PATCH contract other than the six customer
 // ones is refused for a customer, with nothing forwarded. Derived from the
 // struct, so a field added to entity-service later is covered without anyone
 // remembering to list it here: it is refused until a customer is deliberately
 // allowed to set it.
 func TestPatchChangeRequest_CustomerCannotSendAnyOtherField(t *testing.T) {
-	allowed := map[string]bool{"isCustomerApproved": true, "isCustomerReviewed": true, "plannedStartOn": true, "plannedEndOn": true}
+	allowed := map[string]bool{"isCustomerApproved": true, "isCustomerReviewed": true, "plannedStartOn": true, "plannedEndOn": true,
+		"expectedPlannedStartOn": true, "expectedPlannedEndOn": true}
 	var fields []string
 	typ := reflect.TypeOf(entity.PatchChangeRequestRequest{})
 	for i := 0; i < typ.NumField(); i++ {
@@ -189,6 +195,8 @@ func TestPatchChangeRequest_CustomerMalformedAndAmbiguousBodies(t *testing.T) {
 		name, body, wantMsg string
 	}{
 		{"empty object", `{}`, "At least one of"},
+		{"the expected window alone", `{"expectedPlannedStartOn":"2026-10-10T10:00:00Z"}`, "go with isCustomerApproved or isCustomerReviewed only"},
+		{"the expected window beside a proposed time", `{"plannedStartOn":"2026-10-10 10:00:00","expectedPlannedEndOn":"2026-10-10T12:00:00Z"}`, "go with isCustomerApproved or isCustomerReviewed only"},
 		{"wrong type for the flag", `{"isCustomerApproved":"yes"}`, "Invalid request payload"},
 		{"wrong type for the window", `{"plannedStartOn":12}`, "Invalid request payload"},
 		{"both outcomes", `{"isCustomerApproved":true,"isCustomerReviewed":true}`, "not both"},

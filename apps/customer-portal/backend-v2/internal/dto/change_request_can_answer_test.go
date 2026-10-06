@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"reflect"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
@@ -61,6 +62,33 @@ func TestMapChangeRequestDetails_PassesCustomerCanAnswerThrough(t *testing.T) {
 		if present && v != tc.want {
 			t.Errorf("%s: customerCanAnswer = %v, want %v", name, v, tc.want)
 		}
+	}
+}
+
+// isOnHold is whether WSO2 holds the change (so the portal can turn Propose New
+// Time off); the reason is WSO2's note and never reaches the customer, and an
+// absent flag stays absent (unknown is not "not held").
+func TestMapChangeRequestDetails_ExposesIsOnHoldButNotTheReason(t *testing.T) {
+	var held, free entity.ChangeRequest
+	if err := json.Unmarshal([]byte(`{"id":"cr-1","state":"customer_approval","onHold":true,"onHoldReason":"waiting for the freeze to end"}`), &held); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if err := json.Unmarshal([]byte(`{"id":"cr-2","state":"customer_approval","onHold":false}`), &free); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := detailsJSON(t, held)
+	if got["isOnHold"] != true {
+		t.Errorf("isOnHold = %v, want true", got["isOnHold"])
+	}
+	raw, _ := json.Marshal(got)
+	if strings.Contains(string(raw), "freeze") || strings.Contains(string(raw), "onHoldReason") {
+		t.Errorf("the hold's reason reached the customer: %s", raw)
+	}
+	if got := detailsJSON(t, free); got["isOnHold"] != false {
+		t.Errorf("isOnHold = %v, want false", got["isOnHold"])
+	}
+	if _, present := detailsJSON(t, entity.ChangeRequest{})["isOnHold"]; present {
+		t.Error("isOnHold is present when entity-service did not say")
 	}
 }
 
