@@ -814,8 +814,7 @@ func main() {
 						CallSendingEnabled: callSendingEnabled,
 						// SSML is opt-in rather than the default: it changes
 						// how every escalation call sounds, so a deployment
-						// should hear it (escalation-local --speak) before
-						// switching.
+						// should hear a sample call first before switching.
 						UseSSML: os.Getenv("INCIDENT_ESCALATION_SSML") == "true",
 						Channel: channel,
 						// Which incidents get a ladder, and what one may spend.

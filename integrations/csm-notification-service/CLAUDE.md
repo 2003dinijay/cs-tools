@@ -470,13 +470,11 @@ ask: whether an incident is on an ABT team is answered from the team's own
 stamped onto the routing context by `BuildPlan` and reported everywhere. The
 field remains on the payload for decode compatibility and is unread.
 
-**Testing**: `cmd/escalation-local` runs the *real* engine against a real
-Redis with the real Twilio client pointed at a local stub (or at Twilio with
-`--live --to`), on a compressed clock, fed real envelopes — see "Testing the
-incident call escalation" in `README.md`. `cmd/ladder-harness` is the older,
-engine-less tool. `matrix_test.go` walks all fourteen rules against all five
+**Testing**: `matrix_test.go` walks all fourteen rules against all five
 priorities; `store_test.go` runs against a real Redis when one is reachable
-(`REDIS_URL` first, then `REDIS_ADDR`) and skips otherwise.
+(`REDIS_URL` first, then `REDIS_ADDR`) and skips otherwise. See "Testing the
+incident call escalation" in `README.md` for exercising a ladder end-to-end
+against the local Team Schedule or the full service.
 
 ## Frustration detection (`case.comment_added`)
 
