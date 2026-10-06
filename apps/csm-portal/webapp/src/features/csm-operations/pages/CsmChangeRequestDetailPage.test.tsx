@@ -1791,10 +1791,21 @@ function lcCustomerDecides(contact: { id: string; name: string }, decision: "app
   lcPublish();
 }
 
+/** A stepper stage's label: its text minus the visually-hidden ", <status>" the stepper appends. */
+function stepLabel(item: HTMLElement): string {
+  return (item.textContent ?? "").replace(/, (done|current|upcoming|not taken|history not recorded)$/, "");
+}
+
+/** A stepper stage as it reads: its label plus the visually-hidden status, e.g. "Authorize, done". */
+function stepReading(label: string): string {
+  const list = screen.getByRole("list", { name: /change request lifecycle/i });
+  return within(list).getByText(label).closest('[role="listitem"]')?.textContent ?? "";
+}
+
 /** The lifecycle stepper's current step label (`aria-current="step"`). */
 function currentStep(): string {
   const list = screen.getByRole("list", { name: /change request lifecycle/i });
-  return within(list).getByRole("listitem", { current: "step" }).textContent ?? "";
+  return stepLabel(within(list).getByRole("listitem", { current: "step" }));
 }
 
 function expectNoManualSchedule(): void {
@@ -1864,7 +1875,7 @@ function stepLabels(): string[] {
   const list = screen.getByRole("list", { name: /change request lifecycle/i });
   return within(list)
     .getAllByRole("listitem")
-    .map((li) => li.textContent ?? "");
+    .map((li) => stepLabel(li));
 }
 
 /** Cell value (Yes/No) beside a label on the Approval tab. */
@@ -2230,8 +2241,9 @@ describe("CsmChangeRequestDetailPage — lifecycle: Roll back", () => {
 
   function expectRolledBack(): void {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    // The stepper shows the off-ramp, not a step on the line.
-    expect(screen.getByText(/diverted from the standard path/i)).toBeInTheDocument();
+    // The stepper plots Rollback as the change's current stage. (Not through
+    // the role queries: the closing dialog still marks the page aria-hidden.)
+    expect(document.querySelector('[aria-current="step"]')).toHaveTextContent(/^Rollback/);
     expect(screen.getAllByText("Rollback", { selector: ".MuiChip-label" }).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /change state/i })).not.toBeInTheDocument();
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
@@ -2905,6 +2917,12 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     expect(currentStep()).toBe("Customer Approval");
     lcCustomerDecides(LC_CUST_TWO, "rejected");
     expect(lc.cr.state).toBe("canceled");
+    // The stepper: Canceled is where the change is; the approvals (Peer and CAB approved, a Customer
+    // Approval stage entered) prove it got through Authorize, and nothing past that.
+    expect(currentStep()).toBe("Canceled");
+    expect(stepReading("Authorize")).toBe("Authorize, done");
+    expect(stepReading("Customer Approval")).toBe("Customer Approval, history not recorded");
+    expect(stepReading("Rollback")).toBe("Rollback, not taken");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
     expect(within(approvalsRow("Max Member")).getByText("Rejected")).toBeInTheDocument();
     expect(within(approvalsRowInStage("Mia Member", "Customer Approval")).getByText("Cancelled")).toBeInTheDocument();
@@ -2925,6 +2943,10 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
 
     lcCustomerDecides(LC_CUST_ONE, "rejected");
     expect(lc.cr.state).toBe("rollback");
+    // The stepper: Rollback is where the change is, and the Customer Review stage proves the customer review happened.
+    expect(currentStep()).toBe("Rollback");
+    expect(stepReading("Customer Review")).toBe("Customer Review, done");
+    expect(stepReading("Closed")).toBe("Closed, not taken");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
     expect(screen.getAllByText("Rollback", { selector: ".MuiChip-label" }).length).toBeGreaterThan(0);
     expect(within(approvalsRowInStage("Mia Member", "Customer Review")).getByText("Rejected")).toBeInTheDocument();

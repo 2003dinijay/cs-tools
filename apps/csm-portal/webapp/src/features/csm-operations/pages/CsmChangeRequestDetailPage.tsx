@@ -690,11 +690,6 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
             )}
           </Box>
           <Typography variant="h5">{cr.subject || "Change request"}</Typography>
-          <ChangeRequestLifecycleStepper
-            state={cr.state}
-            customerApprovalRequired={cr.customerApprovalRequired}
-            customerReviewRequired={cr.customerReviewRequired}
-          />
         </Box>
         <Box sx={{ flexShrink: 0, alignSelf: { xs: "stretch", md: "flex-start" } }}>
           <Box className="csm-print-hide" sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -731,6 +726,15 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           </Box>
         </Box>
       </Box>
+
+      {/* Full width, under the header: eleven stages need more room than the
+          header's left block leaves beside the action bar. */}
+      <ChangeRequestLifecycleStepper
+        state={cr.state}
+        customerApprovalRequired={cr.customerApprovalRequired}
+        customerReviewRequired={cr.customerReviewRequired}
+        approvals={approvalsData?.approvals}
+      />
 
       <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
         <Typography variant="subtitle2">Overview</Typography>

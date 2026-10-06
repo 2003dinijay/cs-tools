@@ -729,7 +729,11 @@ async function expectNoManualSchedule(detail: ChangeRequestDetailPage): Promise<
   await expect(detail.page.getByText(/move to assess/i)).toHaveCount(0);
 }
 
-/** Customer Approval / Customer Review appear on the stepper only when ticked. */
+/**
+ * Customer Approval / Customer Review appear on the stepper only when ticked;
+ * Rollback, Closed and Canceled are always there (the customer portal's order).
+ * Each stage's text is its label plus a visually-hidden ", <status>".
+ */
 async function expectCustomerStepsOnLine(
   detail: ChangeRequestDetailPage,
   flags: { approval: boolean; review: boolean },
@@ -738,8 +742,8 @@ async function expectCustomerStepsOnLine(
   if (flags.approval) expected.push("Customer Approval");
   expected.push("Scheduled", "Implement", "Review");
   if (flags.review) expected.push("Customer Review");
-  expected.push("Closed");
-  await expect(detail.stepLabels()).toHaveText(expected);
+  expected.push("Rollback", "Closed", "Canceled");
+  await expect(detail.stepLabels()).toHaveText(expected.map((label) => new RegExp(`^${label}, `)));
 }
 
 test.describe("change request approval flow — Normal", () => {
@@ -1569,8 +1573,8 @@ test.describe("change request approval flow — customer group (the project's re
 // Roll back -- the failed-review off-ramp. Offered, next to the forward move and
 // Cancel change, from Review and Customer Review only; destructive (menu-only),
 // and it needs a stated reason, which is posted as a comment before the PATCH.
-// Rollback is final: the stepper shows the Rollback off-ramp and no actions are
-// left. Runs against the in-browser fake of the backend contract.
+// Rollback is final: the stepper's Rollback stage is the current one and no
+// actions are left. Runs against the in-browser fake of the backend contract.
 // ---------------------------------------------------------------------------
 
 /** Roll back is not offered: either no overflow menu at all, or none of its entries is "Roll back". */
@@ -1583,12 +1587,12 @@ async function expectNoRollbackOffered(detail: ChangeRequestDetailPage): Promise
   await detail.page.keyboard.press("Escape");
 }
 
-/** The Rollback off-ramp: no step on the line is current, the note names the state, nothing is awaited. */
+/** The Rollback stage is the current one on the stepper (no other is), the state chip says so, nothing is awaited. */
 async function expectRolledBack(page: import("@playwright/test").Page, detail: ChangeRequestDetailPage, api: FakeChangeRequestApi): Promise<void> {
   await expect(detail.reasonDialog()).toHaveCount(0);
-  await expect(page.getByText(/diverted from the standard path/i)).toBeVisible();
+  await expect(detail.currentStep()).toHaveCount(1);
+  await expect(detail.currentStep()).toContainText("Rollback");
   await expect(page.locator(".MuiChip-label", { hasText: /^Rollback$/ }).first()).toBeVisible();
-  await expect(detail.currentStep()).toHaveCount(0);
   await expect(detail.blockingReason()).toHaveCount(0);
   await expect(detail.changeStateButton()).toHaveCount(0);
   await expect(detail.approveButton()).toHaveCount(0);
@@ -1610,7 +1614,7 @@ async function rollBackWithReason(page: import("@playwright/test").Page, detail:
   await dialog.getByLabel("Reason").fill(reason);
   await expect(dialog.getByRole("button", { name: "Roll back", exact: true })).toBeEnabled();
   await dialog.getByRole("button", { name: "Roll back", exact: true }).click();
-  await expect(page.getByText(/diverted from the standard path/i)).toBeVisible();
+  await expect(detail.currentStep()).toContainText("Rollback");
 }
 
 //
