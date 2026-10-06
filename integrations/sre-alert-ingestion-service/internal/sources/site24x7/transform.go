@@ -104,7 +104,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 
 	alert := Alert{
 		Service:          utils.FirstNonEmpty(extracted["Service"], cfg.Defaults["Service"]),
-		MetricName:       utils.Str(payload, "MONITORNAME"),
+		MetricName:       utils.FirstNonEmpty(utils.Str(payload, "MONITORNAME"), cfg.Defaults["Metric_Name"]),
 		Severity:         mapSeverity(status, cfg.Defaults["Severity"]),
 		Category:         utils.FirstNonEmpty(extracted["Category"], cfg.Defaults["Category"]),
 		Environment:      utils.FirstNonEmpty(extracted["Environment"], cfg.Defaults["Environment"]),

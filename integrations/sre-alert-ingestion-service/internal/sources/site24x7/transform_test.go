@@ -82,6 +82,20 @@ func TestTransform_WithBuiltInConfig(t *testing.T) {
 		}
 	})
 
+	t.Run("MONITORNAME present wins over the default", func(t *testing.T) {
+		a, err := Transform([]byte(`{"STATUS":"DOWN","MONITORNAME":"api-check","MONITOR_ID":"42"}`), cfg)
+		if err != nil || a.MetricName != "api-check" {
+			t.Errorf("metric = %q, err = %v; want api-check", a.MetricName, err)
+		}
+	})
+
+	t.Run("no MONITORNAME uses default metric name", func(t *testing.T) {
+		a, err := Transform([]byte(`{"STATUS":"DOWN","MONITOR_ID":"42"}`), cfg)
+		if err != nil || a.MetricName != "Not Available" {
+			t.Errorf("metric = %q, err = %v; want Not Available", a.MetricName, err)
+		}
+	})
+
 	t.Run("no STATUS uses default severity", func(t *testing.T) {
 		a, err := Transform([]byte(`{"MONITORNAME":"api-check","MONITOR_ID":"42"}`), cfg)
 		if err != nil || a.Severity != "Critical" {
