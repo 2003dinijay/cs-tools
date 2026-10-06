@@ -144,6 +144,7 @@ func nullable(v string) any {
 	return v
 }
 
+// crvis: GitHub inbound sync under the system identity (M2M-only webhook handlers); no customer identity reaches it
 func (r *githubMutationRepository) CreateFromIssue(ctx context.Context, in NewChangeRequestFromIssue) (string, string, error) {
 	ctx = withGithubSystemIdentity(ctx)
 	var id, number string
@@ -185,6 +186,7 @@ func (r *githubMutationRepository) CreateFromIssue(ctx context.Context, in NewCh
 	return id, number, nil
 }
 
+// crvis: GitHub inbound sync under the system identity (M2M-only webhook handlers); no customer identity reaches it
 func (r *githubMutationRepository) UpdateFromIssue(ctx context.Context, id string, in NewChangeRequestFromIssue) error {
 	ctx = withGithubSystemIdentity(ctx)
 	return r.db.InTx(ctx, func(tx pgx.Tx) error {
@@ -254,6 +256,7 @@ func (r *githubMutationRepository) UpdateFromIssue(ctx context.Context, id strin
 // (approval_stage_approver.updated_by).
 const githubSyncActor = "github-sync"
 
+// crvis: GitHub inbound sync under the system identity (M2M-only webhook handlers); no customer identity reaches it
 func (r *githubMutationRepository) SetState(ctx context.Context, id, state string) (bool, error) {
 	ctx = withGithubSystemIdentity(ctx)
 	// IS DISTINCT FROM so a move to the state it already holds writes nothing:

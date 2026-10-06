@@ -642,6 +642,8 @@ func applyChangeRequestLinkPlan(ctx context.Context, tx pgx.Tx, id string, plan 
 }
 
 // ValidateChangeRequestLinks implements ChangeRequestRepository.
+//
+// crvis: internal callers only: it is the create form's pre-flight, reached from POST /change-requests (internalOnly); it reads no change request
 func (r *changeRequestRepo) ValidateChangeRequestLinks(ctx context.Context, sel domain.ChangeRequestLinkSelection) (domain.ChangeRequestLinkSet, error) {
 	res, err := resolveChangeRequestLinks(ctx, r.db, sel, resolveLinkOpts{})
 	if err != nil {
@@ -651,6 +653,8 @@ func (r *changeRequestRepo) ValidateChangeRequestLinks(ctx context.Context, sel 
 }
 
 // GetChangeRequestLinkOptions implements ChangeRequestRepository.
+//
+// crvis: internal callers only: POST /change-requests/link-options is wrapped by internalOnly (server/routes.go); it reads no change request, only the project's deployments
 func (r *changeRequestRepo) GetChangeRequestLinkOptions(ctx context.Context, req domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error) {
 	project := strings.ToLower(strings.TrimSpace(req.ProjectID))
 	resp := domain.ChangeRequestLinkOptionsResponse{

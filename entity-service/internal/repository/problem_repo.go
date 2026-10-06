@@ -258,6 +258,8 @@ func scanSearchProblemView(row interface{ Scan(...any) error }) (domain.SearchPr
 }
 
 // SearchProblems implements ProblemRepository.
+//
+// crvis: internal callers only: /problems routes are wrapped by internalOnly (server/routes.go); the change_request join only names the linked change request
 func (r *problemRepo) SearchProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs, assignmentGroupIDs []string) ([]domain.SearchProblemView, int, error) {
 	where, args := problemWhereClause(req.Filters, states, assignedUserIDs, assignmentGroupIDs)
 
@@ -323,6 +325,8 @@ var problemAggregateColumns = map[string]string{
 }
 
 // AggregateProblems implements ProblemRepository.
+//
+// crvis: internal callers only: /problems routes are wrapped by internalOnly (server/routes.go); the change_request join only names the linked change request
 func (r *problemRepo) AggregateProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs, assignmentGroupIDs []string, groupBy string, maxGroups int) (domain.AggregateResponse, error) {
 	col, ok := problemAggregateColumns[groupBy]
 	if !ok {
@@ -375,6 +379,8 @@ func (r *problemRepo) AggregateProblems(ctx context.Context, req domain.SearchPr
 }
 
 // GetProblem implements ProblemRepository.
+//
+// crvis: internal callers only: /problems routes are wrapped by internalOnly (server/routes.go); the change_request join only names the linked change request
 func (r *problemRepo) GetProblem(ctx context.Context, id string) (domain.ProblemDetail, error) {
 	query := `
 		SELECT wi.id, wi.number, wi.subject, wi.description, pr.state::TEXT, pr.priority::TEXT,
