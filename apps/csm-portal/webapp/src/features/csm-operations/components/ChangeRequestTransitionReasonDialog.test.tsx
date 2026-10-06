@@ -15,7 +15,7 @@
 // under the License.
 
 import type { ComponentProps } from "react";
-import { fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import ChangeRequestTransitionReasonDialog from "@features/csm-operations/components/ChangeRequestTransitionReasonDialog";
@@ -85,6 +85,73 @@ describe("ChangeRequestTransitionReasonDialog — per-target copy", () => {
       screen.getByRole("heading", { name: /cancel this change request/i }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /cancel change/i })).toBeInTheDocument();
+  });
+
+  it("names the bypass of the customer's approval, and says what it records and that the customer is not asked", () => {
+    renderDialog({ target: "scheduled", fromState: "customer_approval" });
+    expect(screen.getByRole("heading", { name: "Bypass customer approval" })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "This records the customer's approval on their behalf and moves the change request to Scheduled. The customer is not asked.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Bypass customer approval" })).toBeInTheDocument();
+    // Not the destructive wording.
+    expect(screen.queryByText(/can't be undone|can’t be undone/i)).not.toBeInTheDocument();
+  });
+
+  it("names the bypass of the customer's review, and says what it records and that the customer is not asked", () => {
+    renderDialog({ target: "closed", fromState: "customer_review" });
+    expect(screen.getByRole("heading", { name: "Bypass customer review" })).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "This records the customer's review on their behalf and moves the change request to Closed. The customer is not asked.",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Bypass customer review" })).toBeInTheDocument();
+  });
+
+  it("requires the reason for a bypass, like rollback: confirm stays disabled until it has content", () => {
+    const { onConfirm } = renderDialog({ target: "scheduled", fromState: "customer_approval" });
+    const confirm = screen.getByRole("button", { name: "Bypass customer approval" });
+    expect(reasonField()).toBeRequired();
+    expect(confirm).toBeDisabled();
+    fireEvent.change(reasonField(), { target: { value: "   " } });
+    expect(confirm).toBeDisabled();
+    fireEvent.change(reasonField(), { target: { value: "  Customer approved by phone on 6 Oct.  " } });
+    expect(confirm).toBeEnabled();
+    fireEvent.click(confirm);
+    expect(onConfirm).toHaveBeenCalledWith("Customer approved by phone on 6 Oct.");
+  });
+
+  it("confirms a bypass in the warning colour and a rollback / cancel in the error colour", () => {
+    renderDialog({ target: "closed", fromState: "customer_review" });
+    expect(screen.getByRole("button", { name: "Bypass customer review" }).className).toContain(
+      "MuiButton-colorWarning",
+    );
+    cleanup();
+    renderDialog({ target: "rollback", fromState: "customer_review" });
+    expect(screen.getByRole("button", { name: /^roll back$/i }).className).toContain("MuiButton-colorError");
+    cleanup();
+    renderDialog({ target: "canceled", fromState: "customer_approval" });
+    expect(screen.getByRole("button", { name: /cancel change/i }).className).toContain("MuiButton-colorError");
+  });
+
+  it("keeps the same retry handling for a bypass: the recorded reason locks, only the state is retried", () => {
+    renderDialog({ target: "scheduled", fromState: "customer_approval", reasonRecorded: true });
+    expect(reasonField()).toBeDisabled();
+    expect(screen.getByText(/already recorded as a comment/i)).toBeInTheDocument();
+  });
+
+  it("shows the same target without the bypass copy when it is not leaving a customer gate", () => {
+    // `closed` out of Review is an ordinary Close, never a bypass; the dialog has no
+    // curated copy for it and falls back to the generic wording.
+    renderDialog({ target: "closed", fromState: "review" });
+    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: /^close\?$/i })).toBeInTheDocument();
+    cleanup();
+    renderDialog({ target: "closed" });
+    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
   });
 
   it("still renders for a target it has no curated copy for", () => {

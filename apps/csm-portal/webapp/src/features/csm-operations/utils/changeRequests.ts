@@ -477,12 +477,13 @@ const TRANSITION_LABEL: Record<string, string> = {
   // There is deliberately no generic entry for `scheduled`: a CR is moved to
   // Scheduled automatically when its approval is granted, never by a manual
   // "Schedule" action. The one exception is leaving `customer_approval`,
-  // where the move *is* recording the customer's approval -- see
-  // `changeRequestTransitionLabel`'s `fromState` and `NEVER_OFFERED_TARGETS`
-  // in ChangeRequestActionBar.
+  // where the move *is* a customer bypass (see `isCustomerBypassTransition`
+  // and `changeRequestTransitionLabel`'s `fromState`).
   implement: "Start implementation",
   review: "Mark implemented",
   customer_review: "Send for customer review",
+  // Plain "Close" is the move out of Review when no customer review is
+  // required. Leaving `customer_review` it is a customer bypass instead.
   closed: "Close",
   rollback: "Roll back",
   canceled: "Cancel change",
@@ -502,14 +503,45 @@ function sentenceCase(raw: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1).toLowerCase();
 }
 
+/**
+ * True when moving to `target` from `fromState` is a **customer bypass**: an
+ * engineer records the customer's answer on their behalf instead of waiting
+ * for the customer, who answers in the customer portal. There are exactly two:
+ * `scheduled` out of `customer_approval` (the customer's approval) and
+ * `closed` out of `customer_review` (the customer's review). Nothing else is
+ * one: a plain Close out of Review (no customer review required) is an
+ * ordinary forward move.
+ *
+ * The single source of truth for what the action bar, the confirmation dialog
+ * and the detail page treat as a bypass: its label, its menu-only placement,
+ * its warning colour and its required reason all key off this.
+ */
+export function isCustomerBypassTransition(target: string, fromState?: string | null): boolean {
+  return (
+    (target === "scheduled" && fromState === "customer_approval") ||
+    (target === "closed" && fromState === "customer_review")
+  );
+}
+
+/**
+ * The transition that bypasses the customer's answer in `fromState`, or `null`
+ * when `fromState` is not a customer gate. The inverse view of
+ * {@link isCustomerBypassTransition}.
+ */
+export function customerBypassTarget(fromState?: string | null): string | null {
+  if (fromState === "customer_approval") return "scheduled";
+  if (fromState === "customer_review") return "closed";
+  return null;
+}
+
 /** The action-phrased label for a transition target, curated or generic. */
 export function changeRequestTransitionLabel(target: string, fromState?: string | null): string {
-  // Leaving `customer_approval` for `scheduled` is how the customer's approval
-  // is recorded; it is the only place `scheduled` is ever an action.
-  if (target === "scheduled" && fromState === "customer_approval") {
-    return "Record customer approval";
+  // The two customer bypasses are named for what they are: an engineer
+  // answering for the customer, not an ordinary step of the process.
+  if (isCustomerBypassTransition(target, fromState)) {
+    return target === "scheduled" ? "Bypass customer approval" : "Bypass customer review";
   }
-  // Likewise `authorize` is only ever an action from `customer_approval`: the
+  // `authorize` is only ever an action from `customer_approval`: the
   // planned time changed, so the change goes back through internal approval.
   if (target === "authorize" && fromState === "customer_approval") {
     return "Re-schedule";
@@ -523,13 +555,84 @@ export function isDestructiveChangeRequestTransition(target: string): boolean {
 }
 
 /**
- * True when moving to `target` must not happen without a stated reason. The
- * reason is recorded as an ordinary comment on the change request *before*
- * the state is patched — the PATCH contract has no reason or comment field of
- * its own. See `ChangeRequestTransitionReasonDialog`.
+ * True when moving to `target` (from `fromState`, when known) must not happen
+ * without a stated reason: the destructive off-ramps, and the two customer
+ * bypasses (an engineer answering for the customer needs a reason on record).
+ * The reason is recorded as an ordinary internal work note on the change
+ * request *before* the state is patched -- the PATCH contract has no reason or
+ * comment field of its own. See `ChangeRequestTransitionReasonDialog`.
+ *
+ * `fromState` only matters for the bypasses: `closed` needs a reason leaving
+ * `customer_review` but not leaving Review.
  */
-export function changeRequestTransitionRequiresReason(target: string): boolean {
-  return isDestructiveChangeRequestTransition(target);
+export function changeRequestTransitionRequiresReason(
+  target: string,
+  fromState?: string | null,
+): boolean {
+  return isDestructiveChangeRequestTransition(target) || isCustomerBypassTransition(target, fromState);
+}
+
+/**
+ * A customer request that is still waiting for an answer: the Customer Approval
+ * (`kind: "approval"`) or Customer Review (`kind: "review"`) stage that the
+ * change's current customer gate provisioned, with at least one customer
+ * contact still being asked. `contactNames` are those contacts (de-duplicated,
+ * in stage order).
+ */
+export interface PendingCustomerRequest {
+  kind: "approval" | "review";
+  contactNames: string[];
+}
+
+/**
+ * The customer request currently pending for a change sitting at a customer
+ * gate, derived from its approval stages (`GET /change-requests/{id}/approvals`),
+ * or `null` when `state` is not a customer gate, the approvals have not
+ * loaded, or nobody is being asked (no registered contacts, or the request was
+ * superseded by a Re-schedule). "Being asked" is the approver-level `REQUESTED`
+ * status -- the same test the backend's refusal uses -- never the stage's own
+ * status, which stays `PENDING` after every approver was cancelled.
+ */
+export function pendingCustomerRequest(
+  approvals: BeChangeRequestApproval[] | null | undefined,
+  state?: string | null,
+): PendingCustomerRequest | null {
+  const kind = state === "customer_approval" ? "approval" : state === "customer_review" ? "review" : null;
+  if (!kind || !approvals) return null;
+  const label = kind === "approval" ? "Customer Approval" : "Customer Review";
+  const names: string[] = [];
+  let pending = false;
+  for (const stage of approvals) {
+    if (knownApprovalStageLabel(stage.stage) !== label) continue;
+    for (const approver of stage.approvers) {
+      if (approver.status.trim().toUpperCase() !== "REQUESTED") continue;
+      pending = true;
+      const name = approver.name?.trim();
+      if (name && !names.includes(name)) names.push(name);
+    }
+  }
+  return pending ? { kind, contactNames: names } : null;
+}
+
+/** Most contact names spelled out in the pending-request reason before "and N more". */
+const MAX_PENDING_CONTACT_NAMES = 3;
+
+/**
+ * Why the customer bypass is unavailable while `pending` is waiting for the
+ * customer, or `null` when nothing is pending. The backend refuses a manual
+ * `scheduled` / `closed` while the customer group's request is live; the
+ * customer answers in the customer portal.
+ */
+export function customerRequestPendingReason(pending: PendingCustomerRequest | null | undefined): string | null {
+  if (!pending) return null;
+  const noun = pending.kind === "approval" ? "approval" : "review";
+  const shown = pending.contactNames.slice(0, MAX_PENDING_CONTACT_NAMES);
+  if (shown.length === 0) {
+    return `Customer ${noun} is pending. The customer answers in the Customer Portal, so it can't be bypassed from here.`;
+  }
+  const more = pending.contactNames.length - shown.length;
+  const who = more > 0 ? `${shown.join(", ")} and ${more} more` : shown.join(", ");
+  return `Customer ${noun} is pending from ${who}. They answer in the Customer Portal, so it can't be bypassed from here.`;
 }
 
 export interface ChangeRequestFilters {

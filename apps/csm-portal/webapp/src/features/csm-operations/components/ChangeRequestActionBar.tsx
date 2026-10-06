@@ -23,13 +23,18 @@ import {
   ChevronDown,
   Play,
   Send,
+  SkipForward,
   Undo2,
   UserCheck,
 } from "@wso2/oxygen-ui-icons-react";
 import { useState, type JSX } from "react";
 import {
   changeRequestTransitionLabel,
+  customerBypassTarget,
+  customerRequestPendingReason,
+  isCustomerBypassTransition,
   isDestructiveChangeRequestTransition,
+  type PendingCustomerRequest,
 } from "@features/csm-operations/utils/changeRequests";
 import type { BeChangeRequestDetail } from "@api/backend/types";
 
@@ -45,16 +50,27 @@ type TargetConfig = {
 
 const TARGET_CONFIG: Record<string, TargetConfig> = {
   assess: { color: "primary", icon: <Send size={16} /> },
-  // Only ever rendered from `customer_approval` ("Record customer approval").
-  scheduled: { color: "primary", icon: <UserCheck size={16} /> },
   implement: { color: "primary", icon: <Play size={16} /> },
   review: { color: "primary", icon: <CheckCircle size={16} /> },
   customer_review: { color: "primary", icon: <UserCheck size={16} /> },
+  // Plain Close, out of Review when no customer review is required. Leaving
+  // `customer_review` the same target is a customer bypass: `BYPASS_CONFIG`.
   closed: { color: "primary", icon: <CheckCircle size={16} /> },
   // Only ever rendered from `customer_approval` ("Re-schedule").
   authorize: { color: "primary", icon: <CalendarClock size={16} /> },
   rollback: { color: "error", icon: <Undo2 size={16} /> },
   canceled: { color: "error", icon: <Ban size={16} /> },
+};
+
+/**
+ * Presentation of a customer bypass (`isCustomerBypassTransition`): an
+ * engineer answering for the customer. Warning, not error -- it is not
+ * destructive, it skips a gate -- with a skip icon so it never reads as an
+ * ordinary forward step.
+ */
+const BYPASS_CONFIG: TargetConfig = {
+  color: "warning",
+  icon: <SkipForward size={16} />,
 };
 
 /**
@@ -77,17 +93,29 @@ const DEFAULT_TARGET_CONFIG: TargetConfig = {
  * Membership doubles as primary-button eligibility, so it deliberately
  * excludes the destructive off-ramps and every uncurated state: without a
  * curated action label there is no evidence a target is *the* expected
- * forward move, so it goes in the overflow menu instead.
+ * forward move, so it goes in the overflow menu instead. It also excludes
+ * `scheduled`, which is only ever offered as the customer bypass out of
+ * `customer_approval`. `closed` is a member (Close out of Review when no
+ * customer review is required), but a customer bypass is never primary
+ * whatever its target: see `isPrimaryEligible`.
  */
 const FORWARD_ORDER: readonly string[] = [
   "assess",
-  // Reachable only from `customer_approval` (see `isOfferedTarget`).
-  "scheduled",
   "implement",
   "review",
   "customer_review",
   "closed",
 ];
+
+/**
+ * Whether `target` may take the primary button from `state`: a forward move,
+ * and never a customer bypass. `closed` is the case that needs the state:
+ * the same target is the primary Close out of Review and a menu-only bypass
+ * out of `customer_review`.
+ */
+function isPrimaryEligible(target: string, state: string | null | undefined): boolean {
+  return FORWARD_ORDER.includes(target) && !isCustomerBypassTransition(target, state);
+}
 
 /**
  * Actions shown as an outlined (secondary) button beside the primary one
@@ -96,13 +124,12 @@ const FORWARD_ORDER: readonly string[] = [
  */
 const SECONDARY_ORDER: readonly string[] = ["authorize"];
 
-/** Menu ordering: forward moves first, destructive off-ramps last. */
-const MENU_ORDER: readonly string[] = [
-  ...FORWARD_ORDER,
-  ...SECONDARY_ORDER,
-  "rollback",
-  "canceled",
-];
+/**
+ * Menu ordering: forward moves first, then the customer bypass, then the
+ * destructive off-ramps. Uncurated states sort after all of them.
+ */
+const MENU_ORDER_BEFORE_BYPASS: readonly string[] = [...FORWARD_ORDER, ...SECONDARY_ORDER];
+const MENU_ORDER_AFTER_BYPASS: readonly string[] = ["rollback", "canceled"];
 
 /**
  * States this bar never offers, no matter what `legalNextStates` contains.
@@ -123,7 +150,7 @@ const MENU_ORDER: readonly string[] = [
  * Offering it as a directly-clickable button/menu item from here would let
  * someone skip the actual approval process entirely and land the record in
  * Authorize with no approval behind it — the same audit hole as above, by a
- * different route. The one exception is the same shape as `scheduled`: from
+ * different route. The one exception is keyed on the record's own state: from
  * `customer_approval` it means "Re-schedule" (the planned time changed, so the
  * change goes back through internal approval -- more approval, not less), and
  * the page collects the new planned window before sending it.
@@ -132,11 +159,11 @@ const MENU_ORDER: readonly string[] = [
  * automatically the moment its approval is granted (CAB/ECAB, or Standard's
  * Request Approval) -- or, when the CR requires customer approval, it first
  * waits in `customer_approval`. There is no manual "Schedule" action anywhere,
- * with exactly one exception: leaving `customer_approval`, where
- * `scheduled` *is* the way the customer's approval is recorded
- * ("Record customer approval", `PATCH {state:"scheduled"}`). So `scheduled` is
- * filtered out unless the CR's current state is `customer_approval` -- see
- * `isOfferedTarget`.
+ * with exactly one exception: leaving `customer_approval`, where a manual
+ * `PATCH {state:"scheduled"}` is the customer bypass ("Bypass customer
+ * approval": the engineer records the customer's approval for them). So
+ * `scheduled` is filtered out unless the CR's current state is
+ * `customer_approval` -- see `isOfferedTarget` -- and there it is menu-only.
  *
  * `rollback` is the failed-review off-ramp of the process diagram: a human
  * action ("Roll back"), but only from the two review states, `review` and
@@ -156,9 +183,10 @@ const NEVER_OFFERED_TARGETS: readonly string[] = ["customer_approval"];
 const ROLLBACK_FROM_STATES: readonly string[] = ["review", "customer_review"];
 
 /**
- * `scheduled` ("Record customer approval") and `authorize` ("Re-schedule") are
- * manual actions only from `customer_approval`; `rollback` only from the two
- * review states. Everywhere else they are not offered.
+ * `scheduled` (the "Bypass customer approval" move) and `authorize`
+ * ("Re-schedule") are manual actions only from `customer_approval`;
+ * `rollback` only from the two review states. Everywhere else they are not
+ * offered.
  */
 function isOfferedTarget(target: string, currentState: string | null | undefined): boolean {
   if (!target || target === currentState) return false;
@@ -171,10 +199,24 @@ function isOfferedTarget(target: string, currentState: string | null | undefined
   return !NEVER_OFFERED_TARGETS.includes(target);
 }
 
-/** Sort key for a target: curated order first, uncurated states after. */
-function menuRank(target: string): number {
-  const index = MENU_ORDER.indexOf(target);
-  return index === -1 ? MENU_ORDER.length : index;
+/**
+ * Sort key for a target in the "Change state" menu: forward moves first, a
+ * customer bypass next, Roll back / Cancel change after it (destructive last),
+ * uncurated states at the very end.
+ */
+function menuRank(target: string, state: string | null | undefined): number {
+  if (isCustomerBypassTransition(target, state)) return MENU_ORDER_BEFORE_BYPASS.length;
+  const before = MENU_ORDER_BEFORE_BYPASS.indexOf(target);
+  if (before !== -1) return before;
+  const after = MENU_ORDER_AFTER_BYPASS.indexOf(target);
+  const afterBase = MENU_ORDER_BEFORE_BYPASS.length + 1;
+  return after !== -1 ? afterBase + after : afterBase + MENU_ORDER_AFTER_BYPASS.length;
+}
+
+/** What the per-target blockers may consult besides the record itself. */
+interface BlockedReasonContext {
+  /** The customer's answer the change is waiting for, when the caller knows of one. */
+  pendingCustomerRequest: PendingCustomerRequest | null;
 }
 
 /**
@@ -199,13 +241,27 @@ function menuRank(target: string): number {
  * (who gets provisioned as an approver), and the backend itself rejects the
  * transition with no team regardless of what this map does — this entry is
  * what keeps the button from round-tripping into that rejection.
+ *
+ * `scheduled` / `closed` are blocked only as the two customer bypasses (the
+ * entry checks the record's own state: a plain Close out of Review is never
+ * blocked by a customer request): while the customer group's request is
+ * pending the backend refuses to let anyone answer for the customer, since
+ * they answer in the customer portal.
  */
 const TARGET_BLOCKED_REASON: Record<
   string,
-  (cr: BeChangeRequestDetail) => string | null
+  (cr: BeChangeRequestDetail, context: BlockedReasonContext) => string | null
 > = {
   assess: (cr) =>
     cr.assignedTeam ? null : "Set an assigned team before requesting approval",
+  scheduled: (cr, { pendingCustomerRequest }) =>
+    isCustomerBypassTransition("scheduled", cr.state)
+      ? customerRequestPendingReason(pendingCustomerRequest)
+      : null,
+  closed: (cr, { pendingCustomerRequest }) =>
+    isCustomerBypassTransition("closed", cr.state)
+      ? customerRequestPendingReason(pendingCustomerRequest)
+      : null,
 };
 
 interface ChangeRequestActionBarProps {
@@ -213,11 +269,21 @@ interface ChangeRequestActionBarProps {
   /** True while a state-changing request for this CR is in flight. */
   isPending: boolean;
   /**
+   * The customer's answer the change is still waiting for (a live Customer
+   * Approval / Customer Review request), derived by the caller from the
+   * change's approval stages (`pendingCustomerRequest`). While one is pending
+   * the customer bypass is shown disabled with the reason, even though the
+   * backend has already left it out of `legalNextStates` (it refuses it). Leave
+   * it `null`/absent while the approvals are loading or when nobody is being
+   * asked: the bypass is then enabled exactly when `legalNextStates` offers it.
+   */
+  pendingCustomerRequest?: PendingCustomerRequest | null;
+  /**
    * Fired with the target state the engineer picked. The caller decides how
-   * to apply it — a direct patch for most targets, or (for the destructive
-   * ones flagged by `changeRequestTransitionRequiresReason`) opening a dialog
-   * to collect the reason first. Same split of responsibility as
-   * `IncidentActionBar` + `CsmIncidentDetailPage`.
+   * to apply it — a direct patch for most targets, or (for the ones flagged by
+   * `changeRequestTransitionRequiresReason`: the destructive off-ramps and
+   * the customer bypasses) opening a dialog to collect the reason first. Same
+   * split of responsibility as `IncidentActionBar` + `CsmIncidentDetailPage`.
    */
   onAction: (target: string) => void;
 }
@@ -236,10 +302,18 @@ interface ChangeRequestActionBarProps {
  * overflow menu. The header this sits in already carries Back, Clone and
  * Edit, so a row of eight buttons would bury the one action the engineer
  * actually wants.
+ *
+ * The two customer bypasses ("Bypass customer approval" out of
+ * `customer_approval`, "Bypass customer review" out of `customer_review`) are
+ * never the primary button and never an outlined button: an engineer
+ * answering for the customer is a deliberate override, so it lives only in the
+ * menu, in the warning colour, between the forward moves and Roll back /
+ * Cancel change.
  */
 export default function ChangeRequestActionBar({
   cr,
   isPending,
+  pendingCustomerRequest = null,
   onAction,
 }: ChangeRequestActionBarProps): JSX.Element | null {
   const [stateMenuAnchor, setStateMenuAnchor] = useState<HTMLElement | null>(null);
@@ -247,14 +321,28 @@ export default function ChangeRequestActionBar({
   // Single choke point for what is renderable: the exclusion below therefore
   // covers the primary button, the overflow menu, and states rendered through
   // `DEFAULT_TARGET_CONFIG` alike.
-  const targets = Array.from(
+  const offered = Array.from(
     new Set(
       (cr.legalNextStates ?? []).filter((s) => isOfferedTarget(s, cr.state)),
     ),
-  ).sort((a, b) => menuRank(a) - menuRank(b));
-  if (targets.length === 0) return null;
+  );
+  if (offered.length === 0) return null;
 
-  const primaryTarget = targets.find((t) => FORWARD_ORDER.includes(t));
+  // While a customer request is pending the backend leaves the bypass out of
+  // `legalNextStates` (it would refuse it), so there is nothing to render a
+  // disabled entry from: add it here, so the engineer sees why it is not
+  // available instead of wondering where it went. It is only ever added
+  // alongside targets the backend did offer (so a record the caller may not
+  // transition still renders nothing), is menu-only, and `TARGET_BLOCKED_REASON`
+  // keeps it disabled -- this never makes anything clickable.
+  const bypassTarget = customerBypassTarget(cr.state);
+  const targets = (
+    pendingCustomerRequest && bypassTarget && !offered.includes(bypassTarget)
+      ? [...offered, bypassTarget]
+      : offered
+  ).sort((a, b) => menuRank(a, cr.state) - menuRank(b, cr.state));
+
+  const primaryTarget = targets.find((t) => isPrimaryEligible(t, cr.state));
   const secondaryTargets = targets.filter((t) => SECONDARY_ORDER.includes(t));
   const menuTargets = targets.filter((t) => t !== primaryTarget && !SECONDARY_ORDER.includes(t));
 
@@ -264,10 +352,12 @@ export default function ChangeRequestActionBar({
   };
 
   const configFor = (target: string): TargetConfig =>
-    TARGET_CONFIG[target] ?? DEFAULT_TARGET_CONFIG;
+    isCustomerBypassTransition(target, cr.state)
+      ? BYPASS_CONFIG
+      : (TARGET_CONFIG[target] ?? DEFAULT_TARGET_CONFIG);
 
   const blockedReason = (target: string): string | null =>
-    TARGET_BLOCKED_REASON[target]?.(cr) ?? null;
+    TARGET_BLOCKED_REASON[target]?.(cr, { pendingCustomerRequest }) ?? null;
 
   const renderPrimary = (target: string): JSX.Element => {
     const { color, icon } = configFor(target);
@@ -364,29 +454,53 @@ export default function ChangeRequestActionBar({
               const label = changeRequestTransitionLabel(target, cr.state);
               const reason = blockedReason(target);
               const destructive = isDestructiveChangeRequestTransition(target);
+              const bypass = isCustomerBypassTransition(target, cr.state);
+              const disabled = isPending || !!reason;
               return (
                 <MenuItem
                   key={target}
-                  disabled={isPending || !!reason}
+                  disabled={disabled}
                   aria-label={reason ? `${label}: ${reason}` : label}
                   onClick={() => {
                     if (reason) return;
                     dispatch(target);
                   }}
-                  sx={{ gap: 1.25, minHeight: 36, alignItems: "flex-start", py: 1 }}
+                  sx={{
+                    gap: 1.25,
+                    minHeight: 36,
+                    alignItems: "flex-start",
+                    py: 1,
+                    // A blocked item dims its own icon and label (below), not
+                    // the whole row: the reason beside it has to stay legible.
+                    "&.Mui-disabled": { opacity: 1 },
+                  }}
                 >
-                  <Box sx={{ color: `${color}.main`, display: "flex", mt: 0.25 }}>
+                  <Box
+                    sx={{
+                      color: `${color}.main`,
+                      display: "flex",
+                      mt: 0.25,
+                      opacity: disabled ? 0.5 : 1,
+                    }}
+                  >
                     {icon}
                   </Box>
-                  <Box sx={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+                  <Box sx={{ display: "flex", flexDirection: "column", minWidth: 0, maxWidth: 300 }}>
                     <Box
                       component="span"
-                      sx={{ color: destructive ? "error.main" : "inherit" }}
+                      sx={{
+                        color: destructive ? "error.main" : bypass ? "warning.dark" : "inherit",
+                        opacity: disabled ? 0.5 : 1,
+                      }}
                     >
                       {label}
                     </Box>
                     {reason && (
-                      <Typography variant="caption" color="text.secondary">
+                      <Typography
+                        variant="caption"
+                        color="text.secondary"
+                        sx={{ whiteSpace: "normal" }}
+                      >
                         {reason}
                       </Typography>
                     )}
