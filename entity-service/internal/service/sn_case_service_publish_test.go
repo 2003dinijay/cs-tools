@@ -720,6 +720,96 @@ func TestSNCaseService_CreateCaseComment_PublishesCommentAdded(t *testing.T) {
 	if len(payload.Recipients) != 1 || payload.Recipients[0] != "john.roe@example.com" {
 		t.Errorf("recipients = %v, want [john.roe@example.com]", payload.Recipients)
 	}
+	if payload.IsSupportEngineerResponse {
+		t.Error("IsSupportEngineerResponse = true, want false when csEngineerRole is unconfigured")
+	}
+}
+
+// fakeSNUserService is a minimal SNUserService test double for
+// isSupportEngineerAuthorSN's own SearchUsers call — every other method
+// panics if called, since nothing under test here touches them.
+type fakeSNUserService struct {
+	SNUserService
+	rolesByEmail map[string][]string
+}
+
+func (f *fakeSNUserService) SearchUsers(_ context.Context, req domain.SearchUsersRequest) (domain.SearchSNUsersResponse, error) {
+	if len(req.Filters.Emails) != 1 {
+		return domain.SearchSNUsersResponse{}, nil
+	}
+	roles, ok := f.rolesByEmail[req.Filters.Emails[0]]
+	if !ok {
+		return domain.SearchSNUsersResponse{}, nil
+	}
+	return domain.SearchSNUsersResponse{Users: []domain.SNUser{{Email: req.Filters.Emails[0], Roles: roles}}}, nil
+}
+
+// TestSNCaseService_CreateCaseComment_PublishesIsSupportEngineerResponse is
+// the regression guard for events.CommentAddedPayload.IsSupportEngineerResponse
+// on the ServiceNow data source: a public comment from a user holding
+// csEngineerRole must publish case.comment_added with that flag set.
+func TestSNCaseService_CreateCaseComment_PublishesIsSupportEngineerResponse(t *testing.T) {
+	caseSysid := sysid32('a')
+	projectSysid := sysid32('b')
+	watcherSysid := sysid32('c')
+	commentSysid := sysid32('d')
+	caseID := sysidToUUID(caseSysid)
+
+	getCaseBody := `{
+		"id": "` + caseSysid + `",
+		"internalId": "WSO2-020",
+		"number": "CS0020001",
+		"title": "Login is broken",
+		"description": "d",
+		"createdOn": "2026-01-02 10:00:00",
+		"createdBy": "jane.doe@example.com",
+		"createdByFullName": "Jane Doe",
+		"project": {"id": "` + projectSysid + `", "name": "Project Zeta"},
+		"deployment": {"id": "", "name": ""},
+		"deployedProduct": {"id": "", "name": "", "version": ""},
+		"state": {"id": 1, "label": "Open"},
+		"watchList": [
+			{"id": "` + watcherSysid + `", "userName": "jroe", "name": "John Roe", "email": "john.roe@example.com"}
+		]
+	}`
+	createCommentBody := `{
+		"message": "Comment created successfully",
+		"comment": {"id": "` + commentSysid + `", "createdOn": "2026-01-02 11:00:00", "createdBy": "agent.smith"}
+	}`
+	searchCommentsBody := `{
+		"comments": [
+			{"id": "` + commentSysid + `", "referenceId": "` + caseSysid + `", "content": "Looking into it", "type": "comments", "createdOn": "2026-01-02 11:00:00", "createdBy": "agent.smith@example.com", "createdByFullName": "Agent Smith"}
+		],
+		"offset": 0, "limit": 20, "totalRecords": 1
+	}`
+
+	client := newTestCommentClient(t, getCaseBody, createCommentBody, searchCommentsBody)
+	publisher := &mockEventPublisher{}
+	userSvc := &fakeSNUserService{rolesByEmail: map[string][]string{
+		"agent.smith@example.com": {"sn_customerservice_agent"},
+	}}
+	svc := NewServiceNowCaseService(client, nil, publisher, userSvc, nil, "sn_customerservice_agent", nil)
+
+	req := domain.CreateCaseCommentRequest{
+		CaseID:  caseID,
+		Type:    domain.CommentTypeComment,
+		Content: "Looking into it",
+	}
+	if _, err := svc.CreateCaseComment(contextWithUserIDToken("token"), req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	call, ok := findPublishCall(publisher.calls, events.TypeCommentAdded)
+	if !ok {
+		t.Fatalf("expected a case.comment_added publish call, got %v", publisher.calls)
+	}
+	var payload events.CommentAddedPayload
+	if err := json.Unmarshal(call.payload, &payload); err != nil {
+		t.Fatalf("decode published payload: %v", err)
+	}
+	if !payload.IsSupportEngineerResponse {
+		t.Error("IsSupportEngineerResponse = false, want true for a comment from a csEngineerRole-holding author")
+	}
 }
 
 // TestSNCaseService_CreateCaseComment_WorkNote_FiltersRecipientsToWso2Domain

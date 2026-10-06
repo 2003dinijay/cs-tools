@@ -1210,13 +1210,24 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 		return domain.CreateCaseCommentResponse{}, err
 	}
 
+	// Computed once, used by both the SLA-engine hook and the published
+	// event's own IsSupportEngineerResponse flag below -- see
+	// isSupportEngineerAuthor's own doc comment. Only resolved when at
+	// least one of them is actually configured, so a deployment with
+	// neither the native SLA engine nor Event Hub publishing enabled pays
+	// no extra lookup on every comment.
+	var isSupportEngineerResponse bool
+	if req.Type == domain.CommentTypeComment && (s.slaEngine != nil || s.publisher != nil) {
+		isSupportEngineerResponse = s.isSupportEngineerAuthor(ctx, req.CaseID, actorEmail)
+	}
+
 	// Best-effort, in-process only -- deliberately not gated on s.publisher
 	// (never touches Event Hub), same reasoning
 	// snCaseService.applyResponseSLAOnComment's own doc comment gives for
 	// its own, separate ServiceNow-mode hook: a deployment without Event
 	// Hub configured must not lose SLA tracking as a side effect either.
 	if req.Type == domain.CommentTypeComment {
-		s.completeResponseSLAOnComment(ctx, req.CaseID, actorEmail)
+		s.completeResponseSLAOnComment(ctx, req.CaseID, isSupportEngineerResponse)
 	}
 
 	// Event publishing follows the write, not DATA_SOURCE -- see
@@ -1230,7 +1241,7 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 			slog.ErrorContext(ctx, "create comment: enrich case for case.comment_added publish failed", "caseId", req.CaseID)
 		} else {
 			cv.WatchList = s.filterActiveWatchListUsers(ctx, cv, cv.WatchList)
-			publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.ProjectOnboardingInfo, cv, req, c.ID, authorName, actorEmail)
+			publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.ProjectOnboardingInfo, cv, req, c.ID, authorName, actorEmail, isSupportEngineerResponse)
 		}
 	}
 
@@ -1283,40 +1294,54 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 // completeResponseSLAOnComment best-effort marks the case's CSM-native
 // "response" SLA clock complete (SLAEngineService.CompleteResponseClock,
 // idempotent -- see repository.SLAEngineRepository.CompleteClock's own doc
-// comment) when actorEmail holds s.csEngineerRole. This is caseService's
-// own equivalent of snCaseService.applyResponseSLAOnComment, which caseService
-// never reached before now -- a real, live-observed gap: a support
-// engineer's reply never stopped the response clock on this path, so it
-// kept running to breach regardless of how quickly the case was actually
-// answered. Shares the one CS_ENGINEER_ROLE config with that hook --
+// comment) when isSupportEngineerResponse is true (see
+// isSupportEngineerAuthor below for how that's decided). This is
+// caseService's own equivalent of snCaseService.applyResponseSLAOnComment,
+// which caseService never reached before now -- a real, live-observed gap: a
+// support engineer's reply never stopped the response clock on this path,
+// so it kept running to breach regardless of how quickly the case was
+// actually answered. Shares the one CS_ENGINEER_ROLE config with that hook --
 // "CS engineer" and "support engineer" are the same real-world role, just
 // checked here via a different lookup (GetUserRoles) than snCaseService's
 // own.
 //
-// Skips entirely, rather than guessing, when: s.slaEngine or
-// s.csEngineerRole is unset (no database, or the role name isn't
-// configured); actorEmail doesn't resolve to a real user row (the M2M
-// CreateCaseCommentAs path deliberately has none -- see that method's own
-// doc comment, "no GetUserByEmail lookup happens here"); or the role lookup
-// itself fails. None of these fail the comment creation itself -- the
-// comment has already been written by the time this runs.
-func (s *caseService) completeResponseSLAOnComment(ctx context.Context, caseID, actorEmail string) {
-	if s.slaEngine == nil || s.csEngineerRole == "" {
-		return
-	}
-	user, err := s.userRepo.GetUserByEmail(ctx, actorEmail)
-	if err != nil {
-		return
-	}
-	roles, err := s.userRepo.GetUserRoles(ctx, user.ID)
-	if err != nil {
-		slog.ErrorContext(ctx, "create comment: response SLA not evaluated, user role lookup failed", "caseId", caseID)
-		return
-	}
-	if !slices.Contains(roles, s.csEngineerRole) {
+// Skips entirely, rather than guessing, when s.slaEngine is unset (no
+// database) or isSupportEngineerResponse is false -- the latter already
+// covers every reason isSupportEngineerAuthor itself can't confirm
+// authorship (s.csEngineerRole unset, actorEmail not resolving to a real
+// user row, or the role lookup failing). None of these fail the comment
+// creation itself -- the comment has already been written by the time this
+// runs.
+func (s *caseService) completeResponseSLAOnComment(ctx context.Context, caseID string, isSupportEngineerResponse bool) {
+	if s.slaEngine == nil || !isSupportEngineerResponse {
 		return
 	}
 	s.slaEngine.CompleteResponseClock(ctx, caseID)
+}
+
+// isSupportEngineerAuthor resolves whether actorEmail belongs to a user
+// holding s.csEngineerRole -- shared by completeResponseSLAOnComment (the
+// CSM-native SLA engine's own response-clock completion, above) and the
+// published case.comment_added event's own IsSupportEngineerResponse flag,
+// computed once per comment rather than twice. s.csEngineerRole unset (no
+// database, or the role name isn't configured), an actorEmail that doesn't
+// resolve to a real user row (the M2M CreateCaseCommentAs path deliberately
+// has none -- see that method's own doc comment), or a failed role lookup
+// all answer false -- can't confirm, not an error.
+func (s *caseService) isSupportEngineerAuthor(ctx context.Context, caseID, actorEmail string) bool {
+	if s.csEngineerRole == "" {
+		return false
+	}
+	user, err := s.userRepo.GetUserByEmail(ctx, actorEmail)
+	if err != nil {
+		return false
+	}
+	roles, err := s.userRepo.GetUserRoles(ctx, user.ID)
+	if err != nil {
+		slog.ErrorContext(ctx, "create comment: support-engineer role lookup failed", "caseId", caseID)
+		return false
+	}
+	return slices.Contains(roles, s.csEngineerRole)
 }
 
 // SearchCaseComments implements CaseService.

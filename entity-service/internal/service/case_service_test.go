@@ -3183,6 +3183,98 @@ func TestCaseService_CreateCaseComment_PublishesCommentAdded(t *testing.T) {
 	}
 }
 
+// TestCaseService_CreateCaseComment_PublishesIsSupportEngineerResponse is the
+// regression guard for events.CommentAddedPayload.IsSupportEngineerResponse:
+// a public comment from a user holding csEngineerRole must publish
+// case.comment_added with that flag set, so
+// integrations/csm-notification-service's own SLA tracking can complete a
+// case's response clock without any role/identity resolution of its own.
+func TestCaseService_CreateCaseComment_PublishesIsSupportEngineerResponse(t *testing.T) {
+	repo := &stubCaseRepo{
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, _ *time.Time) (domain.CaseComment, error) {
+			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
+		},
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{
+				ID: testDeploymentUUID, Number: "CS0001", InternalID: "WSO2-CS-1", Subject: "s",
+				ProjectDetails: &domain.EntityRef{ID: "proj-1", Name: "Project One"},
+				WatchList:      []domain.WatchListUser{{Email: "watcher@example.com"}},
+			}, nil
+		},
+	}
+	userRepo := stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: "user-1", Email: "engineer@example.com"}, nil
+		},
+		getUserRoles: func(context.Context, string) ([]string, error) {
+			return []string{"sn_customerservice_agent"}, nil
+		},
+	}
+	publisher := &mockEventPublisher{}
+	svc := NewCaseServiceWithSNWriteback(repo, userRepo, publisher, alwaysUnrestrictedAccess{}, nil, nil, nil, nil, "sn_customerservice_agent")
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "engineer@example.com"))
+	req := domain.CreateCaseCommentRequest{CaseID: testDeploymentUUID, Type: domain.CommentTypeComment, Content: "Looking into it"}
+	if _, err := svc.CreateCaseComment(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(publisher.calls) != 1 {
+		t.Fatalf("expected exactly 1 publish call, got %d", len(publisher.calls))
+	}
+	var payload events.CommentAddedPayload
+	if err := json.Unmarshal(publisher.calls[0].payload, &payload); err != nil {
+		t.Fatalf("failed to decode payload: %v", err)
+	}
+	if !payload.IsSupportEngineerResponse {
+		t.Errorf("IsSupportEngineerResponse = false, want true for a comment from a csEngineerRole-holding author")
+	}
+}
+
+// TestCaseService_CreateCaseComment_DoesNotPublishIsSupportEngineerResponseForNonEngineer
+// proves the flag above is genuinely role-gated, not unconditional.
+func TestCaseService_CreateCaseComment_DoesNotPublishIsSupportEngineerResponseForNonEngineer(t *testing.T) {
+	repo := &stubCaseRepo{
+		createCaseComment: func(_ context.Context, req domain.CreateCaseCommentRequest, _ *time.Time) (domain.CaseComment, error) {
+			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
+		},
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{
+				ID: testDeploymentUUID, Number: "CS0001", InternalID: "WSO2-CS-1", Subject: "s",
+				ProjectDetails: &domain.EntityRef{ID: "proj-1", Name: "Project One"},
+				WatchList:      []domain.WatchListUser{{Email: "watcher@example.com"}},
+			}, nil
+		},
+	}
+	userRepo := stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{ID: "user-2", Email: "customer@example.com"}, nil
+		},
+		getUserRoles: func(context.Context, string) ([]string, error) {
+			return []string{"customer"}, nil
+		},
+	}
+	publisher := &mockEventPublisher{}
+	svc := NewCaseServiceWithSNWriteback(repo, userRepo, publisher, alwaysUnrestrictedAccess{}, nil, nil, nil, nil, "sn_customerservice_agent")
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "customer@example.com"))
+	req := domain.CreateCaseCommentRequest{CaseID: testDeploymentUUID, Type: domain.CommentTypeComment, Content: "Any update?"}
+	if _, err := svc.CreateCaseComment(ctx, req); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if len(publisher.calls) != 1 {
+		t.Fatalf("expected exactly 1 publish call, got %d", len(publisher.calls))
+	}
+	var payload events.CommentAddedPayload
+	if err := json.Unmarshal(publisher.calls[0].payload, &payload); err != nil {
+		t.Fatalf("failed to decode payload: %v", err)
+	}
+	if payload.IsSupportEngineerResponse {
+		t.Error("IsSupportEngineerResponse = true, want false for a non-engineer author")
+	}
+}
+
 // TestCaseService_CreateCaseComment_RecordsSNWritebackFailureOnMirrorError
 // covers the failure path: Postgres already committed the comment by the
 // time Dispatch runs, so a failed mirror write must not surface as a

@@ -620,6 +620,32 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /sla-duration-policy:
+    get:
+      summary: >-
+        List every (severity, clockType) duration row of the static
+        sla_duration_policy reference table — WSO2's own published
+        Enterprise Support Policy durations, seeded directly in a migration,
+        independent of the ServiceNow-synced "sla"/"sla_policy" tables
+        GET /sla-status reads. integrations/csm-notification-service fetches
+        this once at startup to compute its own SLA due dates. Internal
+        callers only. Has no ServiceNow equivalent of its own — always
+        backed by Postgres.
+      operationId: listSLADurationPolicy
+      responses:
+        "200":
+          description: Every sla_duration_policy row, unpaginated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SLADurationPolicyResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /announcement-requests:
     post:
       summary: >-
@@ -22752,6 +22778,30 @@ components:
           type: integer
         offset:
           type: integer
+
+    SLADurationPolicyItem:
+      type: object
+      description: >-
+        One (severity, clockType) duration row — severity is the same
+        uppercase English word a case.* event's own priority field carries
+        (e.g. "CATASTROPHIC"), not the raw case_severity_enum label.
+      properties:
+        severity:
+          type: string
+        clockType:
+          type: string
+          description: One of response, workaround, resolution.
+        durationSeconds:
+          type: integer
+          format: int64
+
+    SLADurationPolicyResponse:
+      type: object
+      properties:
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/SLADurationPolicyItem'
 
     CloudAvailabilityWindow:
       type: object

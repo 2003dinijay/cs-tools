@@ -173,6 +173,20 @@ type CommentAddedPayload struct {
 	Team                    string `json:"team,omitempty"`
 	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
 	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
+	// IsSupportEngineerResponse is true when this comment is a public
+	// comment (req.Type == domain.CommentTypeComment) authored by a user
+	// holding CSEngineerRole -- entity-service's own "support engineer"
+	// vocabulary, the same one the CSM-native SLA engine already uses to
+	// complete a case's response clock (see case_service.go's
+	// isSupportEngineerAuthor / sn_case_service.go's
+	// isSupportEngineerAuthorSN). Lets csm-notification-service's own SLA
+	// tracking complete a case's response clock the moment a qualifying
+	// reply lands, without needing any identity/role resolution of its
+	// own -- the signal entity-service is uniquely positioned to compute,
+	// since it owns the role data. False whenever this can't be confirmed
+	// (CSEngineerRole unset, the author's email doesn't resolve, or the
+	// role lookup fails) -- never guessed.
+	IsSupportEngineerResponse bool `json:"isSupportEngineerResponse,omitempty"`
 }
 
 // KBArticlePublishedPayload is the Payload shape for

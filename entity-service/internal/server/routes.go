@@ -588,6 +588,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// ReferenceDataRepository's own doc comment.
 	referenceDataRepo := repository.NewReferenceDataRepository(db)
 
+	// sla-duration-policy reads the small, static sla_duration_policy
+	// reference table (migration 0192) -- gated on db != nil like
+	// slaStatusHandler above, since there's nothing to read on a deployment
+	// with no Postgres pool at all. integrations/csm-notification-service
+	// fetches this once at startup to compute its own SLA due dates.
+	var slaDurationPolicyHandler *handler.SLADurationPolicyHandler
+	if db != nil {
+		slaDurationPolicyHandler = handler.NewSLADurationPolicyHandler(
+			service.NewSLADurationPolicyService(referenceDataRepo, accessSvc))
+	}
+
 	// Every project-stats route is available on both data sources. In
 	// ServiceNow mode one client-backed value satisfies all three interfaces
 	// structurally, so it is built once and shared; in Postgres mode the
@@ -1358,6 +1369,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	if slaStatusHandler != nil {
 		mux.HandleFunc("GET /sla-status", slaStatusHandler.SearchActiveSLAStatuses)
+	}
+	if slaDurationPolicyHandler != nil {
+		mux.HandleFunc("GET /sla-duration-policy", slaDurationPolicyHandler.ListSLADurationPolicy)
 	}
 	if githubDeliveryHandler != nil {
 		mux.HandleFunc("POST /github/deliveries", githubDeliveryHandler.Handle)
