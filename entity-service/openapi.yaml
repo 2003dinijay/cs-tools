@@ -13734,6 +13734,12 @@ components:
               - uat
               - development
           description: Filter by deployment types.
+        ids:
+          type: array
+          items:
+            type: string
+            format: uuid
+          description: Filter by the deployment's own UUID. Postgres data source only.
 
     DeploymentView:
       type: object
