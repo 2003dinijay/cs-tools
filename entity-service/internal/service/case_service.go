@@ -836,7 +836,14 @@ func (s *caseService) mirrorInitialSNComments(ctx context.Context, caseID string
 		// run. SearchCaseComments orders by created_on DESC, so stamping
 		// NOW() here instead would misorder mirrored comments relative to
 		// their real ServiceNow chronology (caught in review on PR #2204).
-		if _, err := s.repo.CreateCaseComment(ctx, domain.CreateCaseCommentRequest{
+		//
+		// Written as the system (CreateCaseCommentAsSystem): ServiceNow's
+		// initial comments can include WORK_NOTE rows, which an external
+		// caller may not write (migration 0191), and the customer who just
+		// created this case is the caller here. The case was created under that
+		// caller's identity, so only this mirror of ServiceNow's own rows is
+		// elevated.
+		if _, err := s.repo.CreateCaseCommentAsSystem(ctx, domain.CreateCaseCommentRequest{
 			CaseID:    caseID,
 			Type:      c.Type,
 			Content:   c.Content,
@@ -1121,25 +1128,45 @@ var validCommentType = map[domain.CommentType]bool{
 	domain.CommentTypeActivity: true,
 }
 
-// CreateCaseComment implements CaseService.
-func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
+// commentAuthor resolves who is writing from the x-user-id-token: their email
+// and display name.
+func (s *caseService) commentAuthor(ctx context.Context) (email, name string, err error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
-		return domain.CreateCaseCommentResponse{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+		return "", "", &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
-	email, err := emailFromJWT(token)
+	email, err = emailFromJWT(token)
 	if err != nil {
-		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
+		return "", "", &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
 	}
 	user, err := s.userRepo.GetUserByEmail(ctx, email)
 	if err != nil {
+		return "", "", err
+	}
+	name = strings.TrimSpace(user.FirstName + " " + user.LastName)
+	if name == "" {
+		name = user.Email
+	}
+	return user.Email, name, nil
+}
+
+// CreateCaseComment implements CaseService.
+func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
+	email, name, err := s.commentAuthor(ctx)
+	if err != nil {
 		return domain.CreateCaseCommentResponse{}, err
 	}
-	authorName := strings.TrimSpace(user.FirstName + " " + user.LastName)
-	if authorName == "" {
-		authorName = user.Email
+	return s.createCaseCommentAs(ctx, req, email, name, false)
+}
+
+// CreateInternalCaseComment implements CaseService: CreateCaseComment with the
+// row itself written as the system identity (see the interface comment).
+func (s *caseService) CreateInternalCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
+	email, name, err := s.commentAuthor(ctx)
+	if err != nil {
+		return domain.CreateCaseCommentResponse{}, err
 	}
-	return s.createCaseCommentAs(ctx, req, user.Email, authorName)
+	return s.createCaseCommentAs(ctx, req, email, name, true)
 }
 
 // CreateCaseCommentAs implements CaseService for a caller that already knows
@@ -1152,14 +1179,14 @@ func (s *caseService) CreateCaseComment(ctx context.Context, req domain.CreateCa
 // published event's author name rather than risking a hard failure over a
 // service account that was never expected to exist as a real user.
 func (s *caseService) CreateCaseCommentAs(ctx context.Context, req domain.CreateCaseCommentRequest, actorEmail string) (domain.CreateCaseCommentResponse, error) {
-	return s.createCaseCommentAs(ctx, req, actorEmail, actorEmail)
+	return s.createCaseCommentAs(ctx, req, actorEmail, actorEmail, false)
 }
 
 // createCaseCommentAs is the shared validation/create logic behind both
 // CreateCaseComment (token-resolved actor) and CreateCaseCommentAs (caller-
 // supplied actor) -- everything past actor resolution is identical between
 // the two.
-func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.CreateCaseCommentRequest, actorEmail, authorName string) (domain.CreateCaseCommentResponse, error) {
+func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.CreateCaseCommentRequest, actorEmail, authorName string, asSystem bool) (domain.CreateCaseCommentResponse, error) {
 	if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
 		return domain.CreateCaseCommentResponse{}, err
 	}
@@ -1172,7 +1199,13 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 	// comment.created_by (migration 0040) is a free-text VARCHAR, not a
 	// UUID FK -- see CaseRepository.CreateCaseComment's own doc comment.
 	req.CreatedBy = actorEmail
-	c, err := s.repo.CreateCaseComment(ctx, req, nil)
+	var c domain.CaseComment
+	var err error
+	if asSystem {
+		c, err = s.repo.CreateCaseCommentAsSystem(ctx, req, nil)
+	} else {
+		c, err = s.repo.CreateCaseComment(ctx, req, nil)
+	}
 	if err != nil {
 		return domain.CreateCaseCommentResponse{}, err
 	}

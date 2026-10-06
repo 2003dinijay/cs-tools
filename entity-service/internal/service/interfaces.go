@@ -698,6 +698,15 @@ type CaseService interface {
 	// CreateCaseComment creates a new comment on the case identified by req.CaseID.
 	// A ValidationError is returned for invalid input or constraint violations.
 	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error)
+	// CreateInternalCaseComment is CreateCaseComment for an internal bookkeeping
+	// comment (for example the WORK_NOTE recorded when a case is escalated)
+	// that must be written even when the request that triggered it came from
+	// an external caller, who may not write a WORK_NOTE themselves. The author
+	// is still resolved from the caller's token. It is for server-side use only:
+	// no route may expose it, and the caller must already have authorised
+	// req.CaseID. On the Postgres data source the row is written as the
+	// system identity; on ServiceNow it is the same call as CreateCaseComment.
+	CreateInternalCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error)
 	// CreateCaseCommentAs is CreateCaseComment for a caller that already
 	// knows who is acting (actorEmail) and has no live x-user-id-token to
 	// resolve it from -- see domain.CreateCaseCommentRequest.ActorEmail's

@@ -2361,6 +2361,12 @@ func (s *snCaseService) CreateCaseCommentAs(ctx context.Context, req domain.Crea
 	return s.CreateCaseComment(ctx, req)
 }
 
+// CreateInternalCaseComment implements CaseService. ServiceNow applies its own
+// rules to who may write what, so this is the same call as CreateCaseComment.
+func (s *snCaseService) CreateInternalCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
+	return s.CreateCaseComment(ctx, req)
+}
+
 func (s *snCaseService) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
 	if !validCommentType[req.Type] {
 		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "type contains invalid value: " + string(req.Type)}
