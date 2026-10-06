@@ -1896,7 +1896,7 @@ func provisionApprovalStage(ctx context.Context, tx pgx.Tx, workItemID string, a
 			status = "cancelled"
 		}
 		if _, err := tx.Exec(ctx,
-			`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, work_item_id, stage_id, approver_user_id, status)
+			`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, work_item_id, stage_id, approver_user_id, state)
 			 VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1, $2, $3, $4::uuid, $5)`,
 			actorEmail, workItemID, stageID, uid, status); err != nil {
 			return false, fmt.Errorf("patch change request: seed approval stage approver: %w", err)
@@ -2169,7 +2169,7 @@ const changeRequestApprovalStagesQuery = `
 const changeRequestApprovalApproversQuery = `
 	SELECT asa.id, asa.stage_id, u.id,
 	       COALESCE(NULLIF(TRIM(u.name), ''), NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS approver_name,
-	       asa.status, asa.created_on, asa.updated_on, asa.comments, u.email
+	       asa.state, asa.created_on, asa.updated_on, asa.comments, u.email
 	FROM approval_stage_approver asa
 	LEFT JOIN "user" u ON u.id = asa.approver_user_id
 	WHERE asa.work_item_id = $1
@@ -2188,9 +2188,10 @@ type changeRequestApprovalStageRow struct {
 
 // changeRequestApprovalApproverRow is one row of
 // changeRequestApprovalApproversQuery. rawStatus/stageID are nullable
-// pointers because both approval_stage_approver.status and .stage_id are
-// (migration 0089's own comment on nullable FKs throughout, plus status
-// having no NOT NULL/DEFAULT). approverUserID is nullable because the LEFT
+// pointers because both approval_stage_approver.state (renamed from status,
+// migration 0138) and .stage_id are (migration 0089's own comment on
+// nullable FKs throughout, plus this column having no NOT NULL/DEFAULT
+// either). approverUserID is nullable because the LEFT
 // JOIN to "user" leaves it null whenever approver_user_id itself is null or
 // points to a since-deleted user row.
 type changeRequestApprovalApproverRow struct {
@@ -2360,14 +2361,16 @@ func changeRequestApprovalStagePosition(pos int) (string, domain.ChangeRequestAp
 	}
 }
 
-// changeRequestApprovalStatusByRaw normalizes approval_stage_approver.status
-// (a ServiceNow sysapproval_approver.state passthrough -- migration 0089's
-// own comment) to the UPPER_SNAKE_CASE values domain.ChangeRequestApprover.
-// Status already carries for the ServiceNow data source (see
-// snChangeRequestService.GetChangeRequestApprovals, which passes ServiceNow's
-// own already-uppercase values straight through) -- this is the Postgres
-// equivalent of that pass-through, applied to SN's raw lowercase state
-// strings instead.
+// changeRequestApprovalStatusByRaw normalizes approval_stage_approver.state
+// (renamed from status by migration 0138; a ServiceNow sysapproval_approver.state
+// passthrough -- migration 0089's own comment) to the UPPER_SNAKE_CASE values
+// domain.ChangeRequestApprover.Status already carries for the ServiceNow data
+// source (see snChangeRequestService.GetChangeRequestApprovals, which passes
+// ServiceNow's own already-uppercase values straight through) -- this is the
+// Postgres equivalent of that pass-through, applied to SN's raw lowercase
+// state strings instead. Harmless once 0138's own sync-layer normalization
+// lands new rows already uppercase: the map only matches lowercase keys, so
+// an already-uppercase value falls through to the ToUpper no-op below.
 var changeRequestApprovalStatusByRaw = map[string]string{
 	"requested":    "REQUESTED",
 	"approved":     "APPROVED",
@@ -2490,15 +2493,15 @@ func buildChangeRequestApprovals(stages []changeRequestApprovalStageRow, approve
 }
 
 // decideChangeRequestApprovalQuery backs DecideChangeRequestApproval. The
-// WHERE clause's status = 'requested' is the entire enforcement of "only the
+// WHERE clause's state = 'requested' is the entire enforcement of "only the
 // caller's own PENDING approval can be decided" -- see that method's own
 // doc comment. stage_id is also returned (nullable, same as everywhere else
 // in this file) so the caller can re-check that stage's own overall outcome
 // for the Assess->Authorize cascade below.
 const decideChangeRequestApprovalQuery = `
 	UPDATE approval_stage_approver
-	SET status = $3, updated_on = NOW(), updated_by = $4
-	WHERE work_item_id = $1 AND approver_user_id = $2 AND status = 'requested'
+	SET state = $3, updated_on = NOW(), updated_by = $4
+	WHERE work_item_id = $1 AND approver_user_id = $2 AND state = 'requested'
 	RETURNING id, stage_id`
 
 // cancelSiblingApprovalStageApprovers moves every other still-Requested
@@ -2509,8 +2512,8 @@ const decideChangeRequestApprovalQuery = `
 // comment for why both now resolve a stage identically.
 func cancelSiblingApprovalStageApprovers(ctx context.Context, tx pgx.Tx, stageID, actorEmail string) error {
 	if _, err := tx.Exec(ctx,
-		`UPDATE approval_stage_approver SET status = 'cancelled', updated_on = NOW(), updated_by = $2
-		 WHERE stage_id = $1 AND status = 'requested'`,
+		`UPDATE approval_stage_approver SET state = 'cancelled', updated_on = NOW(), updated_by = $2
+		 WHERE stage_id = $1 AND state = 'requested'`,
 		stageID, actorEmail); err != nil {
 		return fmt.Errorf("decide change request approval: cancel sibling approvers: %w", err)
 	}
@@ -2589,7 +2592,7 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 		var pendingStageID *string
 		if err := tx.QueryRow(ctx,
 			`SELECT stage_id::text FROM approval_stage_approver
-			 WHERE work_item_id = $1 AND approver_user_id = $2 AND status = 'requested'
+			 WHERE work_item_id = $1 AND approver_user_id = $2 AND state = 'requested'
 			 ORDER BY created_on ASC, id ASC LIMIT 1`, id, approverUserID).Scan(&pendingStageID); err != nil && !errors.Is(err, pgx.ErrNoRows) {
 			return "", fmt.Errorf("decide change request approval: find pending approval: %w", err)
 		}
@@ -2616,7 +2619,7 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 		if decision == "approved" && stageID != nil {
 			var hasRejection bool
 			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND status = 'rejected')`,
+				`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND state = 'rejected')`,
 				*stageID).Scan(&hasRejection); err != nil {
 				return "", fmt.Errorf("decide change request approval: check stage rejections: %w", err)
 			}
@@ -2668,7 +2671,7 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 			// method's doc comment.
 			var hasApproval bool
 			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND status = 'approved')`,
+				`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND state = 'approved')`,
 				*stageID).Scan(&hasApproval); err != nil {
 				return "", fmt.Errorf("decide change request approval: check stage approvals: %w", err)
 			}

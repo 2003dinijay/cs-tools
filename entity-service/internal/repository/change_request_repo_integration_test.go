@@ -298,7 +298,7 @@ func seedApprovalStageForDecisionTest(t *testing.T, pool *repository.Scoped, app
 	})
 
 	for i, userID := range approverUserIDs {
-		mustExec(`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+		mustExec(`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
 		          VALUES ($1, now(), now(), 'cr-approval-test', 'cr-approval-test', $2, $3, $4, 'requested')`,
 			fmt.Sprintf("36666666-0000-0000-0000-00000000%04d", i+10), stageID, changeRequestApprovalTestID, userID)
 	}
@@ -473,7 +473,7 @@ func TestChangeRequestIntegration_DecideApprovalCancelsSiblingApprovers(t *testi
 	}
 
 	rows, err := scoped.Query(sys,
-		`SELECT approver_user_id, status FROM approval_stage_approver WHERE stage_id = $1`, stageID)
+		`SELECT approver_user_id, state FROM approval_stage_approver WHERE stage_id = $1`, stageID)
 	if err != nil {
 		t.Fatalf("read back approver statuses: %v", err)
 	}
@@ -574,7 +574,7 @@ func TestChangeRequestIntegration_DecideRejectionCancelsSiblingApprovers(t *test
 	}
 
 	rows, err := scoped.Query(sys,
-		`SELECT approver_user_id, status FROM approval_stage_approver WHERE stage_id = $1`, stageID)
+		`SELECT approver_user_id, state FROM approval_stage_approver WHERE stage_id = $1`, stageID)
 	if err != nil {
 		t.Fatalf("read back approver statuses: %v", err)
 	}
@@ -657,7 +657,7 @@ func TestChangeRequestIntegration_DecideRejectionCancelsSiblingApproversAtEveryC
 			}
 
 			rows, err := scoped.Query(sys,
-				`SELECT approver_user_id, status FROM approval_stage_approver WHERE stage_id = $1`, stageID)
+				`SELECT approver_user_id, state FROM approval_stage_approver WHERE stage_id = $1`, stageID)
 			if err != nil {
 				t.Fatalf("read back approver statuses: %v", err)
 			}
@@ -735,7 +735,7 @@ func TestChangeRequestIntegration_DecideRejectionDoesNotDisturbAlreadyApprovedSt
 	// left it. Approver 3 is deliberately left "requested" to prove it
 	// survives untouched below.
 	if _, err := scoped.Exec(sys,
-		`UPDATE approval_stage_approver SET status = 'approved' WHERE stage_id = $1 AND approver_user_id = $2`,
+		`UPDATE approval_stage_approver SET state = 'approved' WHERE stage_id = $1 AND approver_user_id = $2`,
 		stageID, changeRequestApprovalApproverUserID2); err != nil {
 		t.Fatalf("seed pre-existing approval: %v", err)
 	}
@@ -746,7 +746,7 @@ func TestChangeRequestIntegration_DecideRejectionDoesNotDisturbAlreadyApprovedSt
 	}
 
 	rows, err := scoped.Query(sys,
-		`SELECT approver_user_id, status FROM approval_stage_approver WHERE stage_id = $1`, stageID)
+		`SELECT approver_user_id, state FROM approval_stage_approver WHERE stage_id = $1`, stageID)
 	if err != nil {
 		t.Fatalf("read back approver statuses: %v", err)
 	}
@@ -1153,7 +1153,7 @@ func TestChangeRequestIntegration_PatchAssessProvisionsApproversFromGroupMembers
 	}
 
 	rows, err := scoped.Query(sys,
-		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1 ORDER BY approver_user_id`, stageID)
+		`SELECT approver_user_id::TEXT, state FROM approval_stage_approver WHERE stage_id = $1 ORDER BY approver_user_id`, stageID)
 	if err != nil {
 		t.Fatalf("query approval_stage_approver: %v", err)
 	}
@@ -1419,7 +1419,7 @@ func TestChangeRequestIntegration_PatchAssessProvisionsRequesterAsCancelled(t *t
 	}
 
 	rows, err := scoped.Query(sys,
-		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1`, stageID)
+		`SELECT approver_user_id::TEXT, state FROM approval_stage_approver WHERE stage_id = $1`, stageID)
 	if err != nil {
 		t.Fatalf("query approval_stage_approver: %v", err)
 	}
@@ -1715,7 +1715,7 @@ func TestChangeRequestIntegration_PatchReviewProvisionsApproversFromGroupMembers
 	}
 
 	rows, err := scoped.Query(sys,
-		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1 ORDER BY approver_user_id`, stageID)
+		`SELECT approver_user_id::TEXT, state FROM approval_stage_approver WHERE stage_id = $1 ORDER BY approver_user_id`, stageID)
 	if err != nil {
 		t.Fatalf("query approval_stage_approver: %v", err)
 	}
@@ -1957,7 +1957,7 @@ func TestChangeRequestIntegration_PatchReviewProvisionsRequesterAsCancelled(t *t
 	}
 
 	rows, err := scoped.Query(sys,
-		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1`, stageID)
+		`SELECT approver_user_id::TEXT, state FROM approval_stage_approver WHERE stage_id = $1`, stageID)
 	if err != nil {
 		t.Fatalf("query approval_stage_approver: %v", err)
 	}
@@ -2143,7 +2143,7 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 	// The Assess stage's own approvers: unchanged by anything that followed.
 	assessApprovers := map[string]string{}
 	assessRows, err := scoped.Query(sys,
-		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1`, assessStageID)
+		`SELECT approver_user_id::TEXT, state FROM approval_stage_approver WHERE stage_id = $1`, assessStageID)
 	if err != nil {
 		t.Fatalf("query Assess approval_stage_approver: %v", err)
 	}
@@ -2176,7 +2176,7 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 	// "requested" -- unchanged by the Review patch that followed.
 	authorizeApprovers := map[string]string{}
 	authorizeRows, err := scoped.Query(sys,
-		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1`, authorizeStageID)
+		`SELECT approver_user_id::TEXT, state FROM approval_stage_approver WHERE stage_id = $1`, authorizeStageID)
 	if err != nil {
 		t.Fatalf("query Authorize approval_stage_approver: %v", err)
 	}
@@ -2209,7 +2209,7 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 	// different, explicitly-supplied review team, freshly "requested".
 	reviewApprovers := map[string]string{}
 	reviewRows, err := scoped.Query(sys,
-		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1`, reviewStageID)
+		`SELECT approver_user_id::TEXT, state FROM approval_stage_approver WHERE stage_id = $1`, reviewStageID)
 	if err != nil {
 		t.Fatalf("query Review approval_stage_approver: %v", err)
 	}
@@ -3335,7 +3335,7 @@ func (f *crFlow) stages(id string) []crFlowStage {
 	var out []crFlowStage
 	for _, r := range raws {
 		st := crFlowStage{label: r.label, groupID: r.group, approvers: map[string]string{}}
-		arows, err := f.scoped.Query(f.sys, `SELECT approver_user_id::text, status FROM approval_stage_approver WHERE stage_id = $1`, r.id)
+		arows, err := f.scoped.Query(f.sys, `SELECT approver_user_id::text, state FROM approval_stage_approver WHERE stage_id = $1`, r.id)
 		if err != nil {
 			f.t.Fatalf("query approvers: %v", err)
 		}
@@ -3599,7 +3599,7 @@ func TestChangeRequestFlowIntegration_CreatorCannotApproveAnyStage(t *testing.T)
 	// forced in by drift must not be decidable.
 	assertForbidden("creator on the peer stage (cancelled row)", crFlowCreatorID)
 	if _, err := f.scoped.Exec(f.sys,
-		`UPDATE approval_stage_approver SET status = 'requested' WHERE work_item_id = $1 AND approver_user_id = $2`, id, crFlowCreatorID); err != nil {
+		`UPDATE approval_stage_approver SET state = 'requested' WHERE work_item_id = $1 AND approver_user_id = $2`, id, crFlowCreatorID); err != nil {
 		t.Fatalf("force creator row to requested: %v", err)
 	}
 	assertForbidden("creator on the peer stage (requested row)", crFlowCreatorID)
@@ -3614,7 +3614,7 @@ func TestChangeRequestFlowIntegration_CreatorCannotApproveAnyStage(t *testing.T)
 		t.Fatalf("peer approval: %v", err)
 	}
 	if _, err := f.scoped.Exec(f.sys,
-		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
 		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'requested'
 		 FROM approval_stage s WHERE s.work_item_id = $1 AND s.checkpoint_label = 'CAB Approval'`, id, crFlowCreatorID); err != nil {
 		t.Fatalf("force creator onto the CAB stage: %v", err)
@@ -3667,7 +3667,7 @@ func TestChangeRequestFlowIntegration_SREMemberCannotBePeerApprover(t *testing.T
 	// Decision time: even a row that exists (drift, or a membership that
 	// changed after provisioning) cannot be decided by an SRE member.
 	if _, err := f.scoped.Exec(f.sys,
-		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
 		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'requested'
 		 FROM approval_stage s WHERE s.work_item_id = $1 AND s.checkpoint_label = 'Peer Approval'`, id, crFlowSREID); err != nil {
 		t.Fatalf("force SRE member onto the peer stage: %v", err)
@@ -3858,7 +3858,7 @@ func TestChangeRequestFlowIntegration_CanDecide(t *testing.T) {
 			t.Fatalf("reset row: %v", err)
 		}
 		if _, err := f.scoped.Exec(f.sys,
-			`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+			`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
 			 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'requested'
 			 FROM approval_stage s WHERE s.work_item_id = $1`, id, uid); err != nil {
 			t.Fatalf("seed row: %v", err)
@@ -4628,7 +4628,7 @@ func TestChangeRequestFlowIntegration_ApproverRulesHoldWithCustomerGates(t *test
 	// Creator on the CAB stage by force: still refused, and the change does not
 	// reach the customer gate.
 	if _, err := f.scoped.Exec(f.sys,
-		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+		`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
 		 SELECT gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', s.id, s.work_item_id, $2::uuid, 'requested'
 		 FROM approval_stage s WHERE s.work_item_id = $1 AND s.checkpoint_label = 'CAB Approval'`, id, crFlowCreatorID); err != nil {
 		t.Fatalf("force creator onto the CAB stage: %v", err)
