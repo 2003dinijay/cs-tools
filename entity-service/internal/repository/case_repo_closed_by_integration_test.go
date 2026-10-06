@@ -43,6 +43,11 @@ const (
 	cbCaseID       = "90000000-0000-0000-0000-000000000001"
 	cbEngagementID = "90000000-0000-0000-0000-000000000002"
 	cbCloserUserID = "90000000-0000-0000-0000-000000000003"
+	// cbOtherUserID is a second, different actor -- used to prove a
+	// redundant re-close (state already CLOSED, PATCHed to closed again)
+	// never overwrites the real closer with whoever/whatever happened to
+	// resend it.
+	cbOtherUserID = "90000000-0000-0000-0000-000000000004"
 )
 
 func seedClosedByFixture(t *testing.T, pool *pgxpool.Pool) {
@@ -52,7 +57,7 @@ func seedClosedByFixture(t *testing.T, pool *pgxpool.Pool) {
 
 	cleanup := func() {
 		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE id IN ($1, $2)`, cbCaseID, cbEngagementID)
-		_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, cbCloserUserID)
+		_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE id IN ($1, $2)`, cbCloserUserID, cbOtherUserID)
 	}
 	cleanup()
 	t.Cleanup(cleanup)
@@ -73,6 +78,8 @@ func seedClosedByFixture(t *testing.T, pool *pgxpool.Pool) {
 
 	mustExec(`INSERT INTO "user" (id, created_on, updated_on, user_name, first_name, last_name, email)
 		VALUES ($1, $2, $2, 'cb-closer-user', 'Cara', 'Closer', 'cb-closer-user@test.local')`, cbCloserUserID, now)
+	mustExec(`INSERT INTO "user" (id, created_on, updated_on, user_name, first_name, last_name, email)
+		VALUES ($1, $2, $2, 'cb-other-user', 'Olly', 'Other', 'cb-other-user@test.local')`, cbOtherUserID, now)
 
 	mustExecScoped(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type)
 		VALUES ($1, $2, $2, 'test', 'test', 'CB-TEST-0001', 'CB-TEST-WSO2-0001', 'closed-by integration test fixture', 'CASE')`,
@@ -180,5 +187,39 @@ func TestClosedByIntegration_EngagementAlsoStampsTheActor(t *testing.T) {
 	}
 	if cv.ClosedBy == nil || cv.ClosedBy.ID != cbCloserUserID {
 		t.Errorf("ClosedBy = %+v, want ID %q", cv.ClosedBy, cbCloserUserID)
+	}
+}
+
+// TestClosedByIntegration_RedundantRecloseDoesNotOverwriteTheRealCloser is
+// the regression guard for a CodeRabbit-caught bug: a caller re-PATCHing an
+// already-closed case's state to closed again -- a harmless, idempotent
+// no-op everywhere else this codebase applies state transitions -- used to
+// unconditionally re-stamp closed_by_user_id with whatever actorID that
+// redundant call happened to carry, silently overwriting the real closer.
+// closed_by_user_id must only ever be set on a GENUINE transition into
+// closed (the stored state was not already closed).
+func TestClosedByIntegration_RedundantRecloseDoesNotOverwriteTheRealCloser(t *testing.T) {
+	pool := caseStatsPool(t)
+	seedClosedByFixture(t, pool)
+	repo := repository.NewCaseRepository(repository.NewScoped(pool))
+	ctx := repository.WithSystemIdentity(context.Background())
+
+	closed := domain.CaseStateClosed
+	closerID := cbCloserUserID
+	if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &closed}, &closerID); err != nil {
+		t.Fatalf("UpdateCase(state=closed) first close: %v", err)
+	}
+
+	otherID := cbOtherUserID
+	if _, _, err := repo.UpdateCase(ctx, domain.UpdateCaseRequest{ID: cbCaseID, State: &closed}, &otherID); err != nil {
+		t.Fatalf("UpdateCase(state=closed) redundant re-close: %v", err)
+	}
+
+	cv, err := repo.GetCaseByID(ctx, cbCaseID, repository.SearchScope{Unrestricted: true})
+	if err != nil {
+		t.Fatalf("GetCaseByID: %v", err)
+	}
+	if cv.ClosedBy == nil || cv.ClosedBy.ID != cbCloserUserID {
+		t.Errorf("ClosedBy = %+v after a redundant re-close, want it to still be the original closer %q", cv.ClosedBy, cbCloserUserID)
 	}
 }

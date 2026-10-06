@@ -257,8 +257,14 @@ func createCaseFeedbackTx(ctx context.Context, tx pgx.Tx, caseID string, params 
 		return CaseFeedbackCreated{}, &apierror.ConflictError{Msg: "feedback can only be submitted once the case is closed"}
 	}
 
+	// is_active AND selected_image IS NOT NULL is the exact definition
+	// ListFeedbackEmojis itself uses for "a real catalog emoji" -- matched
+	// here so a submission can never be accepted for an id GET /metadata
+	// would never have offered as a choice in the first place (e.g. a
+	// non-"<rating> - Reasons" row like "Experience"/"Additional Comments",
+	// or a malformed future row missing its image).
 	var metricName string
-	if err := tx.QueryRow(ctx, `SELECT name FROM work_item_feedback_metric WHERE id = $1 AND is_active`, params.EmojiID).
+	if err := tx.QueryRow(ctx, `SELECT name FROM work_item_feedback_metric WHERE id = $1 AND is_active AND selected_image IS NOT NULL`, params.EmojiID).
 		Scan(&metricName); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return CaseFeedbackCreated{}, &apierror.ValidationError{Msg: "emojiId does not refer to a known feedback rating"}

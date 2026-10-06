@@ -1818,10 +1818,17 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 // (SELECT 1 FROM updated_case)" guard means it only actually touches a row
 // when the case update did -- so a nonexistent id updates nothing anywhere
 // and the final join returns zero rows, not a partial update.
-// $8 (actorID) mirrors closed_on's own transition-gated write exactly:
-// stamped on a transition TO closed, cleared back to NULL on a transition
-// AWAY from closed, left untouched otherwise -- see UpdateCase's own
-// interface doc comment for where actorID itself comes from.
+// $8 (actorID) is stamped only on a GENUINE transition INTO closed -- the
+// stored (pre-update) state must itself not already be closed, checked by
+// referencing the column's own pre-statement value on the right-hand side
+// (standard SQL UPDATE semantics: every SET expression sees the row as it
+// was before this statement, not the value state's own SET just computed) --
+// so a caller re-PATCHing an already-closed case's state to closed again
+// (a harmless, idempotent no-op everywhere else in this codebase) can never
+// overwrite the real closer with whoever/whatever happened to resend it.
+// Cleared back to NULL on a transition AWAY from closed, left untouched on
+// every other PATCH -- see UpdateCase's own interface doc comment for where
+// actorID itself comes from.
 // updateCaseQuery's $2/$3/$4 arrive already converted to their real enum
 // labels by UpdateCase below (state/work_state upper-cased, severity mapped
 // through caseSeverityToEnum) -- case_state_enum's "CLOSED" is what $2 = ”
@@ -1842,7 +1849,7 @@ const updateCaseQuery = `
 		    severity          = CASE WHEN $3 <> '' THEN $3::case_severity_enum ELSE severity END,
 		    work_state        = CASE WHEN $4 <> '' THEN $4::case_work_state_enum ELSE work_state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' THEN $8::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
+		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::case_state_enum THEN $8::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    resolution_code   = CASE WHEN $5 <> '' THEN $5::case_resolution_code_enum ELSE resolution_code END,
 		    cause             = CASE WHEN $6 <> '' THEN $6::case_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($7, close_notes)
@@ -1868,7 +1875,7 @@ const updateSecurityReportAnalysisQuery = `
 		UPDATE security_report_analysis
 		SET state             = CASE WHEN $2 <> '' THEN $2::security_report_analysis_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
+		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::security_report_analysis_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::security_report_analysis_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
 		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
@@ -1895,7 +1902,7 @@ const updateServiceRequestQuery = `
 		UPDATE service_request
 		SET state             = CASE WHEN $2 <> '' THEN $2::service_request_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
+		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::service_request_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::service_request_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
 		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
@@ -1922,7 +1929,7 @@ const updateEngagementQuery = `
 		UPDATE engagement
 		SET state             = CASE WHEN $2 <> '' THEN $2::engagement_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
+		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::engagement_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::engagement_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
 		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
@@ -1949,7 +1956,7 @@ const updateAnnouncementQuery = `
 		UPDATE announcement
 		SET state             = CASE WHEN $2 <> '' THEN $2::announcement_state_enum ELSE state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSE' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSE' THEN NULL ELSE closed_on END,
-		    closed_by_user_id = CASE WHEN $2 = 'CLOSE' THEN $5::uuid WHEN $2 <> '' AND $2 <> 'CLOSE' THEN NULL ELSE closed_by_user_id END,
+		    closed_by_user_id = CASE WHEN $2 = 'CLOSE' AND state IS DISTINCT FROM 'CLOSE'::announcement_state_enum THEN $5::uuid WHEN $2 <> '' AND $2 <> 'CLOSE' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::announcement_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes)
 		WHERE id = $1
