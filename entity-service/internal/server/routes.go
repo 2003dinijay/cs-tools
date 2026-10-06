@@ -54,7 +54,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// The customer-visibility policy of change requests (CR_STRICT_VISIBILITY_FROM),
 	// shared by every repository that reads or writes a change request.
 	crVisibility := CRVisibilityFromConfig(cfg)
-	logCRVisibility(cfg)
+	if db != nil {
+		// Nothing reads the policy without a database (the ServiceNow data source
+		// serves change requests itself), so only say which mode this process is in
+		// when it matters.
+		logCRVisibility(cfg)
+	}
 	userRepo := repository.NewUserRepository(db)
 	userSvc := service.NewUserService(userRepo)
 

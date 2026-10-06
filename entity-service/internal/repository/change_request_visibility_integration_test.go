@@ -1016,3 +1016,34 @@ func TestChangeRequestVisibilityIntegration_MembershipAndEmailEdges(t *testing.T
 		}
 	}
 }
+
+// The creator of a change request who is also a registered contact of its project
+// (a WSO2 engineer registered on a customer project, say) is listed on the
+// customer stage as Cancelled -- never asked, as on every other stage -- and a
+// listed row designates, so the change request is theirs to see; they still may
+// not answer it.
+func TestChangeRequestVisibilityIntegration_TheCreatorWhoIsAContact(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	vis := visStrictSinceLongAgo()
+	f.useVisibility(vis)
+	r := f.visRepos(vis)
+	f.registerContact(crScopeProjectA, crScopeAccountID, crFlowCreatorID)
+	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
+	creator := persona{"the creator", asContact(crFlowCreatorID)}
+
+	f.wantSeen(r, creator, id, crScopeProjectA, "in New, before anybody was asked", false)
+	f.driveToCustomerApproval(id)
+	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers,
+		map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED", crFlowCreatorID: "CANCELLED"})
+	f.wantSeen(r, creator, id, crScopeProjectA, "in Customer Approval, listed Cancelled", true)
+	cr, err := r.cr.GetChangeRequestByID(creator.ctx, id)
+	if err != nil {
+		t.Fatalf("GET as the creator: %v", err)
+	}
+	if cr.CustomerCanAnswer == nil || *cr.CustomerCanAnswer {
+		t.Fatalf("customerCanAnswer for the creator = %v, want false", cr.CustomerCanAnswer)
+	}
+	if _, err := f.approveAs(id, crFlowCreatorID, true); err == nil {
+		t.Fatal("the creator answered their own change request")
+	}
+}
