@@ -42,6 +42,12 @@ func baseValidConfig() Config {
 		AuthIssuer:             "https://api.asgardeo.io/t/x/oauth2/token",
 		AuthJWKSURL:            "https://api.asgardeo.io/t/x/oauth2/jwks",
 		AuthUserTokenAudiences: []string{"spa"},
+		// Timeouts carry their real defaults for the same reason: Load always
+		// populates them and Validate rejects non-positive values.
+		ServerReadTimeout:     DefaultServerReadTimeout,
+		ServerWriteTimeout:    DefaultServerWriteTimeout,
+		RequestTimeout:        DefaultRequestTimeout,
+		UpstreamClientTimeout: DefaultUpstreamClientTimeout,
 	}
 }
 
@@ -335,6 +341,10 @@ func baseValidServiceNowConfig() Config {
 		AuthIssuer:             "https://api.asgardeo.io/t/x/oauth2/token",
 		AuthJWKSURL:            "https://api.asgardeo.io/t/x/oauth2/jwks",
 		AuthUserTokenAudiences: []string{"spa"},
+		ServerReadTimeout:      DefaultServerReadTimeout,
+		ServerWriteTimeout:     DefaultServerWriteTimeout,
+		RequestTimeout:         DefaultRequestTimeout,
+		UpstreamClientTimeout:  DefaultUpstreamClientTimeout,
 	}
 }
 
@@ -735,6 +745,56 @@ func TestConfig_Validate_RedisURL(t *testing.T) {
 	}
 }
 
+func TestLoad_TimeoutDefaults(t *testing.T) {
+	for _, k := range []string{"SERVER_READ_TIMEOUT", "SERVER_WRITE_TIMEOUT", "REQUEST_TIMEOUT", "UPSTREAM_CLIENT_TIMEOUT"} {
+		t.Setenv(k, "")
+	}
+	c := Load()
+	if c.ServerReadTimeout != 60*time.Second || c.ServerWriteTimeout != 60*time.Second ||
+		c.RequestTimeout != 60*time.Second || c.UpstreamClientTimeout != 60*time.Second {
+		t.Errorf("defaults = %v/%v/%v/%v, want 60s/60s/60s/60s",
+			c.ServerReadTimeout, c.ServerWriteTimeout, c.RequestTimeout, c.UpstreamClientTimeout)
+	}
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with defaults = %v, want nil", err)
+	}
+}
+
+func TestLoad_TimeoutOverrides(t *testing.T) {
+	t.Setenv("SERVER_READ_TIMEOUT", "2m")
+	t.Setenv("SERVER_WRITE_TIMEOUT", "90s")
+	t.Setenv("REQUEST_TIMEOUT", "80s")
+	t.Setenv("UPSTREAM_CLIENT_TIMEOUT", "75s")
+	c := Load()
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+	if c.ServerReadTimeout != 2*time.Minute || c.ServerWriteTimeout != 90*time.Second ||
+		c.RequestTimeout != 80*time.Second || c.UpstreamClientTimeout != 75*time.Second {
+		t.Errorf("overrides not applied: %v/%v/%v/%v",
+			c.ServerReadTimeout, c.ServerWriteTimeout, c.RequestTimeout, c.UpstreamClientTimeout)
+	}
+}
+
+func TestLoad_InvalidTimeoutFailsValidate(t *testing.T) {
+	for _, k := range []string{"SERVER_READ_TIMEOUT", "SERVER_WRITE_TIMEOUT", "REQUEST_TIMEOUT", "UPSTREAM_CLIENT_TIMEOUT"} {
+		t.Run(k, func(t *testing.T) {
+			t.Setenv(k, "fifty")
+			c := Load()
+			c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+			c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), k) {
+				t.Errorf("Validate() = %v, want an error naming %s", err, k)
+			}
+		})
+	}
+}
+
 func TestLoad_Redis(t *testing.T) {
 	t.Setenv("REDIS_URL", "")
 	t.Setenv("REDIS_ADDR", "")
@@ -833,5 +893,28 @@ func TestSREEventHubTopicMovesBothOperationsPublishers(t *testing.T) {
 	}
 	if c.EventHubTopic == "sre-events" {
 		t.Error("the case-events topic must not move")
+	}
+}
+
+func TestConfig_Validate_Timeouts(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{"zero read", func(c *Config) { c.ServerReadTimeout = 0 }, "SERVER_READ_TIMEOUT"},
+		{"negative write", func(c *Config) { c.ServerWriteTimeout = -time.Second }, "SERVER_WRITE_TIMEOUT"},
+		{"zero request", func(c *Config) { c.RequestTimeout = 0 }, "REQUEST_TIMEOUT"},
+		{"zero upstream", func(c *Config) { c.UpstreamClientTimeout = 0 }, "UPSTREAM_CLIENT_TIMEOUT"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := baseValidConfig()
+			tt.mutate(&c)
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Validate() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }

@@ -14,24 +14,27 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package middleware
+package entity
 
 import (
-	"context"
-	"net/http"
+	"testing"
 	"time"
 )
 
-// Timeout returns an HTTP middleware that cancels the request context after
-// duration d. Ideally d is shorter than the server's WriteTimeout so the
-// handler has a chance to write a clean error response before the connection
-// is forcibly closed; this is advice only and is not enforced.
-func Timeout(d time.Duration) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, cancel := context.WithTimeout(r.Context(), d)
-			defer cancel()
-			next.ServeHTTP(w, r.WithContext(ctx))
+func TestNewClient_Timeout(t *testing.T) {
+	for name, tc := range map[string]struct {
+		in   time.Duration
+		want time.Duration
+	}{
+		"unset uses default":    {0, 60 * time.Second},
+		"negative uses default": {-time.Second, 60 * time.Second},
+		"override":              {90 * time.Second, 90 * time.Second},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := NewClient(Config{BaseURL: "http://localhost", Timeout: tc.in})
+			if c.http.Timeout != tc.want {
+				t.Fatalf("got %s, want %s", c.http.Timeout, tc.want)
+			}
 		})
 	}
 }

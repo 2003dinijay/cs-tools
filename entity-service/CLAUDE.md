@@ -47,6 +47,10 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `DB_SCHEMA`   | no       | `DB_USER,public` | Pins the connection's `search_path` (`DSN`'s `options=-c search_path=...`), same purpose as `operations/csm-sync-service`'s own `DB_SCHEMA` — see that config's `withSchema`. The fallback makes explicit what Postgres' own default `search_path` (`"$user", public`) would already do implicitly — `public` must survive it, since every deployment's tables live there today (unqualified migrations). An explicit value is used verbatim, with no `public` appended |
 | `SERVER_PORT` | no       | `8080`  | Main API listen port       |
 | `HEALTH_PORT` | no       | `8081`  | Health probe listen port; `Validate` rejects it being equal to `SERVER_PORT` (see "Health probes" below) |
+| `SERVER_READ_TIMEOUT` | no | `60s` | Main API server read timeout (Go duration, e.g. `60s`); must be > 0 |
+| `SERVER_WRITE_TIMEOUT` | no | `60s` | Main API server write timeout; must be > 0 |
+| `REQUEST_TIMEOUT` | no | `60s` | Per-request context timeout; must be > 0 |
+| `UPSTREAM_CLIENT_TIMEOUT` | no | `60s` | Data-source HTTP client timeout; must be > 0 |
 | `EVENT_HUB_BROKER` | no | — | Kafka-compatible bootstrap address; feature-gates `EventPublisherService` (see "Event Hub publishing" below) |
 | `EVENT_HUB_CONNECTION_STRING` | no* | — | Event Hub namespace Shared Access Policy connection string. *Required once `EVENT_HUB_BROKER` is set |
 | `EVENT_HUB_TOPIC` | no* | — | Event Hub (Kafka topic) name. *Required once `EVENT_HUB_BROKER` is set |
@@ -1440,7 +1444,7 @@ is), each bounded by its own 5s `context.WithTimeout`
 (`publishCaseCreatedTimeout`/`publishIncidentCreatedTimeout`/
 `publishCommentAddedTimeout`/`publishStatusChangedTimeout`/
 `publishSeverityChangedTimeout`) so a slow
-ServiceNow or Event Hub round trip can't consume this service's own 30s
+ServiceNow or Event Hub round trip can't consume this service's own
 request timeout — a deliberate simplicity trade-off over the async+
 `WaitGroup`-drain pattern, made because this service (unlike that backend)
 has no existing per-handler struct to hold a drain hook, and adding one
