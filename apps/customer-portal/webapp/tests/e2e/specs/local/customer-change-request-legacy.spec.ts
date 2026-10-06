@@ -144,7 +144,7 @@ test.describe("Local stack — legacy (migrated) change requests", () => {
         // The stat cards: the list, state by state, and nothing else (New / Assess / Authorize rows add nothing).
         const visibleLabels = [...LEGACY_VISIBLE].map((n) => LABEL_OF[n]);
         const stats = (await customerCounts(LOCAL_PERSONAS[who].email, projectId))!;
-        const expected = countsWith({ total: 0, active: 0, outstanding: 0, actionRequired: 0, dashboard: 0, byState: {} }, ["Customer Approval", "Customer Review", ...visibleLabels]);
+        const expected = countsWith({ total: 0, active: 0, outstanding: 0, actionRequired: 0, resolved: 0, dashboard: 0, byState: {} }, ["Customer Approval", "Customer Review", ...visibleLabels]);
         expect({ ...stats, byState: undefined }, `${who}: stat cards and the dashboard`).toEqual({ ...expected, byState: undefined });
         for (const label of Object.keys(expected.byState)) {
           expect(stats.byState[label] ?? 0, `${who}: ${label} card`).toBe(expected.byState[label]);

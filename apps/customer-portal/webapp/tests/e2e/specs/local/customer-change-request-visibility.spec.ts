@@ -71,6 +71,7 @@ import {
   entityServiceUrl,
   futureWindow,
   lumenProjectId,
+  psql,
   raiseChange,
   registerLateContact,
   removeLateContact,
@@ -483,6 +484,63 @@ test.describe("Local stack — who sees a change request, over its whole life", 
     await watch("Closed");
     expect((await approverRows(change.id)).filter((r) => r.email === LATE_CONTACT.email)).toEqual([]);
     await removeLateContact();
+  });
+
+  test("designation is not enough on its own: a contact who is no longer REGISTERED on the project sees nothing (and sees it again when registered), and a change request the sync moved to another project is theirs no more and nobody's there", async () => {
+    const lumen = await lumenProjectId();
+    const change = await raiseChange({ title: "Lumen, membership edges", projectId: lumen, approval: true, review: false });
+    expect((await requestApproval(change.id)).status).toBe(200);
+    await staffDecides("alice", change.id);
+    await staffDecides("alice", change.id);
+    expect(await storedState(change.id)).toBe("CUSTOMER_APPROVAL");
+    const mira = customerApi("mira");
+    const noel = customerApi("noel");
+    const lumenBase = (await customerCounts(LOCAL_PERSONAS.noel.email, lumen))!;
+    const noelSees = async (when: string, sees: boolean) => {
+      expect((await noel.get(change.id)).status, `noel, ${when}: detail`).toBe(sees ? 200 : 404);
+      expect((await noel.approvals(change.id)).status, `noel, ${when}: approvals`).toBe(sees ? 200 : 404);
+      expect((await noel.listedNumbers(lumen)).includes(change.number), `noel, ${when}: listed`).toBe(sees);
+    };
+    await noelSees("registered and asked", true);
+
+    // noel's registration on the project is ended (the contact is deactivated): the request made of him is still on record, and still shows nothing.
+    await psql(`update project_contact set state = 'DEACTIVATED' where lower(email) = '${LOCAL_PERSONAS.noel.email}' and project_id = '${lumen}'`);
+    try {
+      await noelSees("deactivated on the project", false);
+      expect((await noel.patch(change.id, { isCustomerApproved: true })).status, "a deactivated contact's answer").toBe(404);
+      expect((await noel.stats(lumen)) === undefined || (await customerCounts(LOCAL_PERSONAS.noel.email, lumen))!.total === 0, "a deactivated contact's cards count nothing of it").toBe(true);
+      expect((await mira.get(change.id)).status, "mira, still registered").toBe(200);
+    } finally {
+      await psql(`update project_contact set state = 'REGISTERED' where lower(email) = '${LOCAL_PERSONAS.noel.email}' and project_id = '${lumen}'`);
+    }
+    await noelSees("registered again (the designation was never taken away)", true);
+    expect(await customerCounts(LOCAL_PERSONAS.noel.email, lumen)).toEqual(countsWith(lumenBase, null));
+
+    // The sync moves the change request to Example Corp's project (the API cannot: the Customer Project is frozen once approval
+    // was requested). dave and erin are registered contacts of THAT project, but nobody there was ever asked.
+    const dave = customerApi("dave");
+    const erin = customerApi("erin");
+    await psql(`update work_item set project_id = '${FIXTURES.projectId}' where id = '${change.id}'`);
+    try {
+      expect((await mira.get(change.id)).status, "mira, after the move").toBe(404);
+      expect((await mira.approvals(change.id)).status).toBe(404);
+      expect(await mira.listedNumbers(lumen)).not.toContain(change.number);
+      for (const [name, who] of [["dave", dave], ["erin", erin]] as const) {
+        expect((await who.get(change.id)).status, `${name}, a registered contact of the new project nobody asked`).toBe(404);
+        expect((await who.approvals(change.id)).status, `${name}: approvals`).toBe(404);
+        expect(await who.listedNumbers(FIXTURES.projectId), `${name}: the new project's list`).not.toContain(change.number);
+        expect((await who.patch(change.id, { isCustomerApproved: true })).status, `${name}: answer`).toBe(404);
+      }
+      if (entityServiceUrl()) {
+        // ...and the service itself, which is where the rule lives, says the same
+        const direct = await entityAsCustomer(LOCAL_PERSONAS.dave.email, "GET", `/change-requests/${change.id}`);
+        expect(direct.status, `entity-service, dave: ${JSON.stringify(direct.body)}`).toBe(404);
+      }
+    } finally {
+      await psql(`update work_item set project_id = '${lumen}' where id = '${change.id}'`);
+    }
+    expect((await mira.get(change.id)).status, "mira, moved back").toBe(200);
+    expect((await dave.get(change.id)).status, "dave, with it back on Lumen").toBe(404);
   });
 
   test("the approvals a customer reads hold the customer's own rows by name, and every internal stage as a label and a status only", async () => {

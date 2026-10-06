@@ -234,6 +234,7 @@ export type CustomerStats = {
   outstandingCount: number;
   actionRequiredCount: number;
   stateCount: { id: string; label: string; count: number }[];
+  resolvedCount?: { total: number; currentMonth: number; pastThirtyDays: number };
 };
 
 /**
@@ -533,16 +534,17 @@ export async function shot(page: Page, name: string): Promise<void> {
 // --- What the stat cards and the dashboard say to a customer --------------------------------
 
 /** What one state adds to the project's counts for a customer who sees a change request in it (entity-service's active / outstanding / action-required states; Authorize is outstanding for a customer only). */
-export const STATE_ADDS: Record<string, { active: number; outstanding: number; actionRequired: number }> = {
-  Authorize: { active: 1, outstanding: 1, actionRequired: 0 },
-  "Customer Approval": { active: 1, outstanding: 1, actionRequired: 1 },
-  Scheduled: { active: 1, outstanding: 1, actionRequired: 0 },
-  Implement: { active: 1, outstanding: 1, actionRequired: 0 },
-  Review: { active: 1, outstanding: 1, actionRequired: 0 },
-  "Customer Review": { active: 1, outstanding: 1, actionRequired: 1 },
-  Rollback: { active: 1, outstanding: 1, actionRequired: 0 },
-  Closed: { active: 0, outstanding: 0, actionRequired: 0 },
-  Canceled: { active: 0, outstanding: 0, actionRequired: 0 },
+export const STATE_ADDS: Record<string, { active: number; outstanding: number; actionRequired: number; resolved: number }> = {
+  Authorize: { active: 1, outstanding: 1, actionRequired: 0, resolved: 0 },
+  "Customer Approval": { active: 1, outstanding: 1, actionRequired: 1, resolved: 0 },
+  Scheduled: { active: 1, outstanding: 1, actionRequired: 0, resolved: 0 },
+  Implement: { active: 1, outstanding: 1, actionRequired: 0, resolved: 0 },
+  Review: { active: 1, outstanding: 1, actionRequired: 0, resolved: 0 },
+  "Customer Review": { active: 1, outstanding: 1, actionRequired: 1, resolved: 0 },
+  Rollback: { active: 1, outstanding: 1, actionRequired: 0, resolved: 0 },
+  // Closed is "resolved" (the resolved card counts it), no longer active or outstanding
+  Closed: { active: 0, outstanding: 0, actionRequired: 0, resolved: 1 },
+  Canceled: { active: 0, outstanding: 0, actionRequired: 0, resolved: 0 },
 };
 
 /** The project's stat cards and the dashboard's Outstanding count, as one customer is told them. */
@@ -551,6 +553,8 @@ export type Counts = {
   active: number;
   outstanding: number;
   actionRequired: number;
+  /** The "resolved" card's total (Closed change requests). */
+  resolved: number;
   /** The dashboard's "Outstanding" change request count (GET /projects/{id}/stats). */
   dashboard: number;
   byState: Record<string, number>;
@@ -567,6 +571,7 @@ export async function customerCounts(email: string, projectId: string): Promise<
     active: stats.activeCount,
     outstanding: stats.outstandingCount,
     actionRequired: stats.actionRequiredCount,
+    resolved: stats.resolvedCount?.total ?? 0,
     dashboard,
     byState: Object.fromEntries(stats.stateCount.map((s) => [s.label, s.count])),
   };
@@ -585,6 +590,7 @@ export function countsWith(base: Counts, labels: string | string[] | null): Coun
     out.active += add.active;
     out.outstanding += add.outstanding;
     out.actionRequired += add.actionRequired;
+    out.resolved += add.resolved;
     out.dashboard += add.outstanding;
     out.byState[label] = (out.byState[label] ?? 0) + 1;
   }
@@ -684,9 +690,23 @@ export function legacyId(number: string): string {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
-/** (Re)writes the legacy rows to their starting state. */
+/**
+ * The cutover instant the stack's entity-service runs with (`CR_STRICT_VISIBILITY_FROM`); the local compose default is
+ * 2000-01-01T00:00:00Z. Name it in `E2E_CR_STRICT_VISIBILITY_FROM` when the stack under test runs with another (it must be
+ * AFTER 1999-12-20, the age of the legacy rows).
+ */
+export function strictVisibilityFrom(): string {
+  return process.env.E2E_CR_STRICT_VISIBILITY_FROM?.trim() || "2000-01-01T00:00:00Z";
+}
+
+/** (Re)writes the legacy rows to their starting state; the two boundary rows are put either side of the cutover instant. */
 export async function seedLegacyChangeRequests(): Promise<void> {
   await psql(fs.readFileSync(LEGACY_SEED_FILE, "utf8"));
+  const instant = strictVisibilityFrom().replace(/'/g, "");
+  await psql(
+    `update work_item set created_on = '${instant}'::timestamptz - interval '1 second', updated_on = '${instant}'::timestamptz - interval '1 second' where number = '${LEGACY.oneSecondBefore}';
+     update work_item set created_on = '${instant}'::timestamptz, updated_on = '${instant}'::timestamptz where number = '${LEGACY.atTheInstant}';`,
+  );
 }
 
 /** Takes the legacy rows away again, so the specs that count a project's list do not see them. */
