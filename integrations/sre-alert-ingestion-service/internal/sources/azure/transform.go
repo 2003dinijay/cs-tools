@@ -107,7 +107,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Environment:      configValue(cfg, props, "environment", ""),
 		Source:           utils.FirstNonEmpty(cfg["source"], source),
 		UniqueIdentifier: utils.Str(essentials, "alertId"),
-		Description:      utils.CompactJSON(raw),
+		// The rule's own text, never the payload; the raw body is kept in raw_alerts.
+		Description: utils.Str(essentials, "description"),
 	}
 	return alert, nil
 }

@@ -93,7 +93,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Environment:      utils.FirstNonEmpty(extracted["Environment"], cfg.Defaults["Environment"]),
 		Source:           source,
 		UniqueIdentifier: utils.Str(payload, "MONITOR_ID"),
-		Description:      utils.CompactJSON(raw),
+		// Site24x7's reason text, never the payload; the raw body is kept in raw_alerts.
+		Description: utils.Str(payload, "INCIDENT_REASON"),
 	}
 	return alert, nil
 }
