@@ -126,6 +126,26 @@ session either: the "Bypass customer approval" / "Bypass customer review" entrie
 disabled then, and the seeded-fixture describe only LOOKS at CHG-FIXED-007 / -008 (Dave and Erin still requested) and
 sends the manual PATCH the backend refuses (`state "scheduled" cannot be set manually: ...`), so nothing changes.
 
+**The real-stack lock tests** ("the customer requirements lock (real stack)" in the same spec) RAISE change
+requests through the CSM portal's backend as the seed's staff (`utils/realStackApi.ts`: jane raises, alice and bob
+approve; the mock identity provider signs any email in) and drive the Edit dialog as jane. They write, so they need the
+stack under test named explicitly and SKIP without it -- there is no default, the stock `:8082` could be somebody's running stack:
+
+| Variable | Meaning |
+|---|---|
+| `E2E_CSM_BFF_URL` | The CSM portal's backend as the host reaches it (isolated stack: `http://localhost:18082`) |
+| `E2E_POSTGRES_CONTAINER` | Its Postgres (isolated stack: `csmenv-postgres-1`); the tests delete what they raised (`E2E lock: ...`) before and after |
+| `E2E_OIDC_URL` | The mock identity provider (isolated stack: `http://localhost:19100`) |
+| `E2E_ENTITY_SERVICE_URL`, `E2E_CUSTOMER_PORTAL_URL` | Where a customer's answer is applied and the customer webapp's origin (isolated stack: `http://localhost:18081`, `http://localhost:13000`) |
+| `E2E_SHOT_DIR` | Optional: save pictures of the key screens there |
+
+```bash
+E2E_BASE_URL=http://localhost:13001 E2E_NO_WEBSERVER=1 E2E_POSTGRES_CONTAINER=csmenv-postgres-1 \
+E2E_CSM_BFF_URL=http://localhost:18082 E2E_OIDC_URL=http://localhost:19100 \
+E2E_ENTITY_SERVICE_URL=http://localhost:18081 E2E_CUSTOMER_PORTAL_URL=http://localhost:13000 \
+  node_modules/.bin/playwright test tests/e2e/specs/operations/change-request-lifecycle.spec.ts --project=chromium
+```
+
 The seeded-fixture describes of the spec also reset the fixtures first, by piping
 `seed-entity-service.sql` into the compose Postgres with `docker exec -i`
 (`E2E_POSTGRES_CONTAINER`, default `csm-platform-postgres-1`; for the `csmcr` project use
