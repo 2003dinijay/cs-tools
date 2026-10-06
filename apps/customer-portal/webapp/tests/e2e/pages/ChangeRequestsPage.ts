@@ -135,9 +135,14 @@ export class ChangeRequestsPage {
   /**
    * Waits for the list to settle into one of its two real states — rows, or the
    * empty copy — so a caller cannot assert against a still-loading page.
+   *
+   * A row is recognised by {@link allRows}, not {@link rows}: a project whose
+   * requests are numbered `CS-PORTAL-000026` (every request raised through the CSM
+   * portal on the local stack) has no `CHG<digits>` row, so keying on that number
+   * left this waiting for a state the page never reaches.
    */
   async waitForList(): Promise<void> {
-    await expect(this.rows().first().or(this.emptyMessage())).toBeVisible({
+    await expect(this.allRows().first().or(this.emptyMessage())).toBeVisible({
       timeout: LOAD_TIMEOUT_MS,
     });
   }
