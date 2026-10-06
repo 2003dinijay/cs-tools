@@ -3052,8 +3052,11 @@ project's **registered contacts** (`customerContacts` on the detail response and
 `POST /change-requests/link-options`; the UI label stays "Customer Group"). It is
 never stored, so it can never point at another customer's people: a contact belongs
 to exactly the project it was registered on. When the change reaches
-`customer_approval` / `customer_review`, **those contacts get an Approve / Reject
-action in the Approvals tab**, like any other stage. Code: `change_request_links.go`
+`customer_approval` / `customer_review`, **those contacts are asked**: a "Customer
+Approval" / "Customer Review" stage with one `requested` row per contact appears in the
+change request's approvals, and they answer it **in the customer portal** (customers do
+not sign in to the CSM portal, whose Approvals tab only *shows* the stage and its
+outcome). Code: `change_request_links.go`
 (`customerContactsSQL`, `loadProjectCustomerContacts`, `customerContactRefs`),
 `change_request_approval_flow.go` (`provisionCustomerStage`,
 `applyCustomerStageOutcome`, `customerStageSpec*`).
@@ -3118,22 +3121,24 @@ action in the Approvals tab**, like any other stage. Code: `change_request_links
   creator keeps "the creator of a change request cannot approve it"); elsewhere
   the old 404 "no pending approval found" stays. **Customer A's contacts can
   neither be asked about, nor decide, customer B's change request.**
-* **Who can reach the decision endpoint — read this.** `DecideChangeRequestApproval`
-  decides as the caller's own `"user"` (resolved from the `x-user-id-token` email) and
-  only on their own `requested` row, so a registered contact's token would be
-  accepted *by the entity service*. But in this repository the only route to it is
-  the **CSM portal BFF** (`POST /change-requests/{id}/approvals/decision`,
-  `PermWrite` = the `cs_engineer` / `admin` roles): registered *customer* contacts
-  have no access to the CSM portal, and no customer-facing app here calls it. So a
-  live customer stage is, today, answerable only by a person who is both a
-  registered project contact **and** a CSM user with `PermWrite` — in the local seed
-  dave.mendis / erin.jayawardena are exactly that (the local mock-oidc login gives
-  any email the `cs_engineer` group, and the BFF takes `PermWrite` from the JWT
-  group, so a customer persona can answer from the portal locally). In production, until a customer-facing
-  client for this endpoint exists (not built here), a live stage cannot be answered
-  by the real customer, and with a live stage `legalNextStates` offers only
-  `canceled` (the manual `scheduled` / `closed` is refused). The ServiceNow
-  workflow is the same shape (customer-side approvers answer in ServiceNow).
+* **Who answers: the customer, in the customer portal — never in the CSM portal.**
+  `DecideChangeRequestApproval` decides as the caller's own `"user"` (resolved from the
+  `x-user-id-token` email) and only on their own `requested` row, so a registered
+  contact's token is accepted by the entity service. Customers do **not** sign in to the
+  CSM portal (`apps/csm-portal`; its BFF routes `POST /change-requests/{id}/approvals/decision`
+  as `PermWrite`, the `cs_engineer` / `admin` roles, for internal approvers), so a CSM user
+  is never an approver of a customer stage and the CSM Approvals tab only displays the
+  stage's rows and the outcome. The customer answers from the customer portal
+  (`apps/customer-portal`: its change request page's Approve / Reject, and its backend-v2,
+  which routes the same `GET /change-requests/{id}/approvals` and `POST .../approvals/decision`
+  and forwards the customer's `x-user-id-token`). Do not write a test that signs a customer
+  in to the CSM portal. The CSM Playwright specs apply a customer's answer server-side
+  instead (`apps/csm-portal/webapp/tests/e2e/utils/customerPortalDecision.ts`: a mock-oidc
+  ID token for the contact, sent to this endpoint; or `customerDecides` on the fake API) and
+  assert what the CSM page then shows — the deciding contact's row Approved / Rejected, the
+  others' Cancelled, the change Scheduled / Closed / Canceled / Rollback. With a live stage
+  `legalNextStates` offers only `canceled` (the manual `scheduled` / `closed` is refused).
+  The ServiceNow workflow is the same shape (customer-side approvers answer in ServiceNow).
 * **Fallback so nothing strands.** No project, or a project with no eligible
   contact: **no stage**, and the manual paths work as before
   (`customer_approval` `[scheduled, canceled]`, `customer_review` `[closed,

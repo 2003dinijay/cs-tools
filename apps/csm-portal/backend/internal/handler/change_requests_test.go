@@ -640,10 +640,12 @@ func TestDecideChangeRequestApproval(t *testing.T) {
 }
 
 // Customer Approval / Customer Review are answered by the change's customer
-// group (the registered contacts of its project) through the approvals. A non-member's refusal and the
-// refusal of the manual state change must reach the caller readable.
+// group (the registered contacts of its project) in the customer portal, never
+// through this BFF. What a CSM user can still run into -- a decision on a live
+// customer stage (they are no member of the group) and the manual state change
+// it refuses -- must reach the caller readable.
 func TestCustomerGroupApprovalMessages(t *testing.T) {
-	t.Run("a non-contact's decision is refused with the reason", func(t *testing.T) {
+	t.Run("a CSM user's decision on a live customer stage is refused with the reason", func(t *testing.T) {
 		const msg = `only members of the customer group (the registered contacts of this change request's project) can approve or reject the customer's approval of this change request`
 		client := &mockEntityChangeRequestClient{
 			decideChangeRequestApprovalFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {

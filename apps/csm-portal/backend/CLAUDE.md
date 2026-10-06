@@ -310,20 +310,21 @@ to the entity service as-is (no field allow-list), with two checks on top:
   and `legalNextStates` untouched; the webapp renders `legalNextStates` as-is. It also
   carries `project`, `deployments`, `deploymentProducts`, `customerContacts` (the
   derived, read-only Customer Group) and `category`.
-* **Customer Group approvals.** The change's customer group (the project's registered
-  contacts) answers Customer Approval / Customer Review through the approvals
-  (`POST /change-requests/{id}/approvals/decision`), with the stages "Customer
-  Approval" / "Customer Review" in `GET .../approvals` (see the entity service's
-  CLAUDE.md, "Customer Group"). While such a stage is live `legalNextStates` for
-  those states is just `["canceled"]` and a manual `{state: "scheduled"}` /
-  `{state: "closed"}` PATCH is a 400 whose message is echoed verbatim. A
-  non-contact's decision is a 403 whose reason is shown (`mapApprovalDecisionError`
-  already surfaces any 403 reason: `only members of the customer group (the
-  registered contacts of this change request's project) can approve or reject …`).
-  The decision route is `PermWrite` (cs_engineer / admin): registered customer
-  contacts cannot reach it through this BFF. A rejected Customer Approval cancels the change, a
-  rejected Customer Review moves it to `rollback`. No BFF code change was needed;
-  `TestCustomerGroupApprovalMessages` pins both messages.
+* **Customer Group approvals (not decided here).** The change's customer group (the
+  project's registered contacts) answers Customer Approval / Customer Review **in the
+  customer portal**, not through this BFF: customers do not sign in to the CSM portal, and
+  the decision route (`POST /change-requests/{id}/approvals/decision`) is `PermWrite`
+  (cs_engineer / admin) for internal approvers. The stages "Customer Approval" / "Customer
+  Review" still appear in `GET .../approvals` (see the entity service's CLAUDE.md,
+  "Customer Group") so the Approvals tab can show who was asked and the outcome. While such a
+  stage is live `legalNextStates` for those states is just `["canceled"]` and a manual
+  `{state: "scheduled"}` / `{state: "closed"}` PATCH is a 400 whose message is echoed
+  verbatim; a CSM user's decision on it is a 403 whose reason is shown
+  (`mapApprovalDecisionError` already surfaces any 403 reason: `only members of the customer
+  group (the registered contacts of this change request's project) can approve or reject …`).
+  A rejected Customer Approval cancels the change, a rejected Customer Review moves it to
+  `rollback`. No BFF code change was needed; `TestCustomerGroupApprovalMessages` pins both
+  refusal messages.
 * **A stale approval is a 409.** A decision on a stage whose state the change has left
   (a Review approver once the change is in Customer Review / Closed -- the entity
   service cancels such rows when the change moves on, and refuses a decision on one it
