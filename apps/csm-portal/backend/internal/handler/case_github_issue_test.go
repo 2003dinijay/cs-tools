@@ -203,6 +203,28 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 	})
 
+	t.Run("an empty mapping label falls back to the case's own product name for the Product line", func(t *testing.T) {
+		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
+		entityClient := &mockEntityCaseClient{
+			getCaseFn: func(context.Context, string) ([]byte, error) {
+				return []byte(`{"deployedProduct":{"product":{"name":"Beta"}}}`), nil
+			},
+			getProductRepoMappingFn: func(context.Context, string) ([]byte, error) {
+				return []byte(`{"productName":"Beta","owner":"example-org","repository":"alpha-repo","githubLabel":""}`), nil
+			},
+		}
+		post(t, newHandler(eng, entityClient), "{"+base+"}")
+		wantBody := "Product : Beta\n\nIt fails."
+		if got := eng.calls[0].body; got != wantBody {
+			t.Errorf("body = %q, want %q", got, wantBody)
+		}
+		// The empty label must not become a GitHub label either -- buildGitHubIssueLabels
+		// is unaffected by this fallback, which is body-only.
+		if want := []string{"Origin/CS"}; !slices.Equal(eng.calls[0].labels, want) {
+			t.Errorf("labels = %v, want %v", eng.calls[0].labels, want)
+		}
+	})
+
 	t.Run("a priority string in the update level is not applied as a label", func(t *testing.T) {
 		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
 		post(t, newHandler(eng, &mockEntityCaseClient{}), "{"+base+`,"issueTypeLabel":"Type/Patch","updateLevel":"Priority/Critical"}`)

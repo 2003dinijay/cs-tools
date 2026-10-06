@@ -311,7 +311,15 @@ func (h *CaseHandler) createGitHubIssueViaEngineering(w http.ResponseWriter, r *
 	owner := strings.TrimSpace(mapping.Owner)
 	repo := strings.TrimSpace(mapping.Repository)
 
-	issueBody := buildGitHubIssueBody(req, mapping.GithubLabel, caseGitHubIssueContextFromCase(caseRaw))
+	// github_label is NOT NULL but not constrained against being blank, and
+	// this table is known to carry occasional data-quality gaps -- fall back
+	// to the case's own product name (already validated non-empty above)
+	// rather than silently dropping the Product line.
+	productLabel := strings.TrimSpace(mapping.GithubLabel)
+	if productLabel == "" {
+		productLabel = productName
+	}
+	issueBody := buildGitHubIssueBody(req, productLabel, caseGitHubIssueContextFromCase(caseRaw))
 	if utf8.RuneCountInString(issueBody) > maxGitHubIssueBodyChars {
 		writeError(w, http.StatusBadRequest, errMsgGitHubBodyTooLong)
 		return
