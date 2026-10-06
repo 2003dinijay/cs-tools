@@ -5774,6 +5774,37 @@ paths:
   /change-requests/{id}:
     patch:
       summary: Update a change request (ServiceNow data source only).
+      description: >-
+        WSO2 users (internal callers) may send the whole PatchChangeRequestRequest.
+
+        A CUSTOMER (an external caller: a registered contact of the change request's
+        project, signed in to the customer portal) may send exactly one of the
+        customer's answer -- isCustomerApproved while the change request is in
+        customer_approval, isCustomerReviewed while it is in customer_review -- or a
+        proposed implementation window (plannedStartOn and/or plannedEndOn), and
+        nothing else (403 for any other field; 400 for both outcomes, or an answer
+        together with a window).
+
+        The answer IS the caller's decision on their own pending Customer Approval /
+        Customer Review approval, recorded exactly as
+        POST /change-requests/{id}/approvals/decision records it: the caller's
+        approval becomes approved (true) / rejected (false), the other contacts' are
+        cancelled, and the change request moves -- customer_approval to scheduled
+        (isCustomerApproved true, which stamps hasCustomerApproved) or canceled (false),
+        customer_review to closed (isCustomerReviewed true, which stamps
+        hasCustomerReviewed) or rollback (false). A second contact answering afterwards,
+        or anyone answering in another state, gets a 409 and nothing changes; a caller
+        who is not a registered PORTAL_USER contact of the change request's own
+        project gets a 403; a rejection of a flag that is already true is a 400.
+
+        A proposed window, from a registered contact while the change request is in
+        customer_approval, is the Re-schedule: the new window is applied, the pending
+        customer request is cancelled, and the change goes back through CAB / ECAB
+        approval (a Standard change stays in customer_approval and the customer is asked
+        again). Anywhere else, or while on hold, it is a 409.
+
+        An internal caller's isCustomerApproved / isCustomerReviewed remain a
+        bookkeeping stamp of the flag that moves nothing.
       operationId: patchChangeRequest
       parameters:
         - name: id
@@ -5807,8 +5838,28 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: >-
+            A customer sent a field other than the customer's answer or a proposed
+            window, or is not a registered PORTAL_USER contact of the change
+            request's own project, or is its creator, or was not asked.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Change request not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >-
+            A customer's answer or proposal does not apply in the change request's
+            state, or nobody was asked: for example "this approval is no longer
+            pending: the change request is in Scheduled, but the Customer Approval
+            stage can only be decided while it is in Customer Approval". Nothing was
+            changed.
           content:
             application/json:
               schema:
@@ -5923,6 +5974,12 @@ paths:
         missed is refused with a 409 and changes nothing. A stage of unknown kind
         (ServiceNow-synced, no recognisable label) and a change with no state are not
         guarded.
+
+        The customer group's stages are answered in the CUSTOMER portal (customers do
+        not use the CSM portal): by the registered contacts calling this route with
+        their own user token, or -- the same decision, one implementation -- by
+        PATCH /change-requests/{id} with isCustomerApproved / isCustomerReviewed. The
+        CSM portal's Approvals tab shows who was asked and who answered.
       operationId: decideChangeRequestApproval
       parameters:
         - name: id
@@ -16816,8 +16873,19 @@ components:
           type: string
         isCustomerApproved:
           type: boolean
+          description: >-
+            The customer's approval. From a customer (an external caller) in
+            customer_approval: true approves (scheduled), false rejects (canceled), as
+            the caller's own decision on the Customer Approval stage; refused (409) in
+            any other state. From an internal caller: a bookkeeping stamp that moves
+            nothing (true is permanent). See the operation description.
         isCustomerReviewed:
           type: boolean
+          description: >-
+            The customer's review. From a customer in customer_review: true confirms
+            (closed), false fails the review (rollback), as the caller's own decision on
+            the Customer Review stage; refused (409) in any other state. From an internal
+            caller: a bookkeeping stamp that moves nothing.
         requestApproval:
           type: boolean
         isPlanningVisibleToCustomers:

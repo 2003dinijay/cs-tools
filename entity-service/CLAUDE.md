@@ -3139,6 +3139,15 @@ outcome). Code: `change_request_links.go`
   others' Cancelled, the change Scheduled / Closed / Canceled / Rollback. With a live stage
   `legalNextStates` offers only `canceled` (the manual `scheduled` / `closed` is refused).
   The ServiceNow workflow is the same shape (customer-side approvers answer in ServiceNow).
+* **The customer's two ways to answer are one decision.** The customer portal's
+  backend-v2 reaches entity-service with the customer's own `x-user-id-token` through
+  either `POST /change-requests/{id}/approvals/decision` or `PATCH
+  /change-requests/{id}` (`{isCustomerApproved}` / `{isCustomerReviewed}`: the portal's
+  Approve / Reject buttons -- the contract it was built against ServiceNow with). Both
+  end in the same code and leave the same state, flags and rows; see "Customer answers
+  through PATCH" below. backend-v2 lets customer-side roles reach both routes through a
+  narrow `decide` permission (`apps/customer-portal/backend-v2/CLAUDE.md`); who may
+  answer *which* change is decided here, not there.
 * **Fallback so nothing strands.** No project, or a project with no eligible
   contact: **no stage**, and the manual paths work as before
   (`customer_approval` `[scheduled, canceled]`, `customer_review` `[closed,
@@ -3180,6 +3189,116 @@ outcome). Code: `change_request_links.go`
   `_LinkOptions` (real Postgres), `TestRejectRemovedChangeRequestFields`,
   `TestCustomerStageSpecs`, `TestWithoutManualCustomerOutcome`,
   `TestCustomerStageManualRefusal`, `TestClassifyApprovalStage`.
+
+### Customer answers through PATCH (customer portal)
+
+The customer portal was built against ServiceNow, where the customer's answer is
+`PATCH /change-requests/{id}` with `{isCustomerApproved: true|false}` in Customer
+Approval, `{isCustomerReviewed: true|false}` in Customer Review, or
+`{plannedStartOn}` to propose a new implementation time. On this data source those
+requests and the Approvals-tab decisions are **one mechanism with two doors**.
+Code: `change_request_customer_outcome.go` (`classifyExternalPatch`,
+`answerCustomerStageViaPatch`, `prepareCustomerProposal`), hooked at the top of
+`patchChangeRequestTx`; the shared implementation is
+`decideChangeRequestApprovalTx` (what `DecideChangeRequestApproval` runs).
+
+**Who is "a customer" here: an external caller** -- a resolved identity with
+`SearchScope.Unrestricted == false` and `HasInternalAccess == false`
+(`isExternalCaller`). Internal staff (and the system identity, and staff who also
+hold an external record) are untouched: their PATCH keeps the whole contract,
+including `{isCustomerApproved: true}` as a bookkeeping stamp of the flag that moves
+nothing.
+
+* **Whitelist.** An external caller's PATCH may carry exactly one of the customer's
+  answer (`isCustomerApproved` **or** `isCustomerReviewed`) or a proposed window
+  (`plannedStartOn` and/or `plannedEndOn`), and **nothing else**: any other field
+  -- title, state, project, assignee, `requestApproval`, `onHold`, comment,
+  `customerApprovalRequired`, a field added later -- is a **403** `customers can
+  only record the customer's approval or review ... or propose a new
+  implementation time ...`, checked by clearing the four fields and requiring the
+  rest of the request to be empty. Row-level security lets *any* member of the
+  project update the row and has no notion of fields, so this is the layer that says
+  what a customer may change; the portal in front of it is not relied on. Both
+  outcomes in one request, or an answer together with a window, is a 400.
+* **The answer is a decision.** `{isCustomerApproved}` is the caller deciding their
+  own pending approval on the Customer Approval stage, `{isCustomerReviewed}` on the
+  Customer Review stage -- `answerCustomerStageViaPatch` ends in
+  `decideChangeRequestApprovalTx`, so the calling contact's row becomes
+  `approved` / `rejected`, the siblings `cancelled`, the state moves and the flag is
+  stamped by the approving outcome, once:
+
+  | PATCH from a registered contact | State | Flag | Rows |
+  |---|---|---|---|
+  | `{isCustomerApproved: true}` in `customer_approval` | `scheduled` | `is_customer_approval_required = true` | caller `approved`, siblings `cancelled` |
+  | `{isCustomerApproved: false}` | `canceled` | not stamped | caller `rejected`, siblings `cancelled` |
+  | `{isCustomerReviewed: true}` in `customer_review` | `closed` | `is_customer_review_required = true` | caller `approved`, siblings `cancelled` |
+  | `{isCustomerReviewed: false}` | `rollback` | not stamped | caller `rejected`, siblings `cancelled` |
+
+  (`TestChangeRequestCustomerOutcomeIntegration_PatchEqualsDecisionRoute` drives
+  each row through both doors and requires identical state, flags and rows.) What
+  the old code did instead -- measured, not assumed: with a live stage a contact's
+  `{isCustomerApproved: true}` stamped the flag and left the change in Customer
+  Approval with every approver row still `requested`; a second contact's approve
+  was a silent no-op and their reject a 400 "locked"; without a live stage it was
+  the same stamp-and-stay.
+* **Refusals, in order** (the first to fail wins; nothing is written until all
+  pass, the whole PATCH is one transaction): change request not visible -> 404 (row
+  level security); caller not a **registered `PORTAL_USER` contact of the change
+  request's own project** (another project's contact, a contact with no
+  `PORTAL_USER` role, an invited one, a non-contact, an unknown user) -> **403**;
+  change request not in the answer's state (Customer Approval for
+  `isCustomerApproved`, Customer Review for `isCustomerReviewed`) -> **409**, the
+  stale-approval message (`this approval is no longer pending: the change request
+  is in Scheduled, but the Customer Approval stage can only be decided while it is in
+  Customer Approval`) -- which is also what the second contact gets after the first
+  answered; a rejection of a flag already `true` -> 400 `locked once set to true`;
+  no live customer request (nobody was asked) -> **409** `no customer approval is
+  pending ... WSO2 records the customer's approval` (the manual
+  `{state: scheduled|closed}` stays WSO2's); then the decision's own rules: the
+  creator -> 403 `the creator of a change request cannot approve it`, a contact who
+  was not asked (registered after the request went out, inactive user) -> 403 `only
+  members of the customer group ...`.
+* **Propose new implementation time = Re-schedule.** `{plannedStartOn,
+  plannedEndOn?}` from a registered contact in `customer_approval` is the process
+  diagram's "Time Change" loop started by the customer: `prepareCustomerProposal`
+  checks it (registered contact, not the creator, state `customer_approval`, not on
+  hold) and turns the request into the very `{state: authorize, plannedStartOn?,
+  plannedEndOn?}` a WSO2 user sends, so the existing Re-schedule applies unchanged:
+  "Time Change = Yes" enforced (`re-scheduling requires a changed planned start or
+  end`), the new window applied, the customer's pending request cancelled (kept as a
+  record), a **fresh CAB / ECAB approval** (Normal: CAB, the peer approval stands;
+  Emergency: ECAB), and when it is approved the cascade returns the change to
+  Customer Approval with a fresh customer stage. A Standard change has no internal
+  approval to repeat: dates applied, stays in Customer Approval, the customer asked
+  again. Anywhere but Customer Approval -> 409, on hold -> 409, creator /
+  non-contact -> 403. The webapp's modal sends only `plannedStartOn`, so a proposed
+  start after the stored end is a 400 `the planned start must not be after the
+  planned end` (the end is not shifted for the customer).
+* **Lock order.** The answer and the proposal take the `work_item` row first (a
+  `PATCH`'s own `updated_on` / `updated_by` bump, `lockCustomerAnswerRow`), then
+  `change_request` -- the order every other PATCH takes -- so a customer's answer and
+  a concurrent edit cannot deadlock. Two contacts answering at once serialise on the
+  `change_request` lock: one answers, the other gets the 409
+  (`TestChangeRequestCustomerOutcomeIntegration_ConcurrentAnswers`).
+* **Exposure of internal states (reported, not changed here).** A customer's reads are
+  scoped to the projects they are a registered contact of
+  (`change_request_visibility` / `approval_stage_visibility`, migration 0145) and
+  nothing there or in the search / get / approvals queries restricts them by *state*:
+  `POST /change-requests/search` returns a project's change requests in `new` /
+  `assess` / `authorize` to its customers too (observed on the local stack), and
+  `GET /change-requests/{id}` and its approvals follow the same policies. The
+  customer portal's webapp hides those states client-side only
+  (`resolveAllowedCrStateIds`). A server-side rule would belong in the visibility
+  policies (and the stats queries) and is a product decision about what a customer may
+  see, so it is left to a separate change.
+* Tests: `TestChangeRequestCustomerOutcomeIntegration_*` (real Postgres,
+  `CHANGE_REQUEST_TEST_DSN`: lifecycle, rejections, PATCH == decision route, out of
+  state, who may answer, nobody asked, the flag lock, the whitelist, concurrency,
+  Re-schedule from a proposal), `TestChangeRequestIntegration_PatchCustomerFlag*`
+  (the original flag authorisation, adapted), `TestClassifyExternalPatch`,
+  `TestIsExternalCaller`, `TestStateForMessage`. The integration DSN connects as a
+  Postgres superuser, which bypasses row-level security: what they assert is this
+  repository's own checks, never RLS.
 
 **`scanChangeRequestView`/`scanChangeRequestViewAndDetail` had a
 scan-destination bug** found in production logs: `wi.created_on`/
