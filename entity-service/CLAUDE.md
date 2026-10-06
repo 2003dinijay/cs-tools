@@ -3173,7 +3173,15 @@ is refused on every write path (create, PATCH, both services) with the 400
 
 The join tables have FKs with `ON DELETE CASCADE`, a lookup index each and `FORCE ROW
 LEVEL SECURITY` (project membership through `work_item.project_id`, like
-`work_item_tag`; listed in `rlsProtectedTables`). The first deployment (name order)
+`work_item_tag`; listed in `rlsProtectedTables`). Neither carried an UPDATE policy
+(entity-service only deletes and re-inserts), but `change_request_deployment` is
+also csm-sync-service's own junction (its migration 0136, the surrogate-id shape),
+and the sync writes it with `INSERT … ON CONFLICT … DO UPDATE`, whose conflict
+branch an RLS table with no UPDATE policy refuses for everyone. Migration
+**0195** adds the internal-only UPDATE policy on it (the 0190 shape: no
+project-member branch, so a customer session is refused as before; no column,
+table or type changes). `change_request_deployed_product` is ours alone and stays
+without one: `rlsCommandsDeniedOnPurpose` records why. The first deployment (name order)
 and its first deployed product are mirrored into `work_item.deployment_id` /
 `deployed_product_id` so list views keep working; `deploymentId`/`deployedProductId`
 on PATCH cannot be combined with `deploymentIds`.
