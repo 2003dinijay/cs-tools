@@ -415,6 +415,12 @@ and no `CORS`**: `Auth` is impossible there (a browser cannot send `x-jwt-assert
 handshake, so `WebSocketHandler` authenticates the token itself), and `CORS` is irrelevant since a
 WebSocket handshake is not subject to preflight. See "The AI chat agent" above.
 
+**REST timeouts are configurable** (`cmd/server/timeouts.go`): `REST_READ_TIMEOUT` (60s),
+`REST_WRITE_TIMEOUT` (60s) and `ENTITY_SERVICE_TIMEOUT` (60s), as Go duration strings. Each must parse
+and be > 0, otherwise the server exits at startup; no ordering between them is enforced. Advice only:
+keep the entity timeout shorter than the write timeout so the handler can return a clean error. The
+defaults are sized for create-case relaying ~15 MiB of inline attachments.
+
 **`CORS` must be outermost, wrapping everything including `Auth`.** A CORS preflight is a bare
 `OPTIONS` request with no JWT at all; if `Auth` ran before `CORS`, it would reject every preflight
 with 401 before the browser ever received a CORS header — which the browser then reports as
@@ -737,6 +743,13 @@ struct actually carries it), and a stray extra check on `PATCH` would just be de
   swallowing them loses real, actionable detail for no security benefit. 401/403/404 still always
   use a fixed message regardless of the upstream body — never pass through upstream text for those
   statuses.
+- **`GetMe` maps an upstream 404 to 403, not 404.** A 404 here means the caller's own authenticated
+  identity has no backing user row — not a missing resource the caller asked for by ID — and the
+  webapp's data-fetching hook for this endpoint had no handling for a bare 404, so it spun forever
+  instead of showing anything. Since "you don't have permission" is already a handled UI state,
+  `GetMe` treats this upstream 404 as 403 for the response while still logging the real cause at
+  `ERROR`. Follow this same substitution if another identity-bound "fetch my own X" endpoint hits
+  the same failure mode.
 - **Logging**: use `slog.ErrorContext` with `summarizeErr(err)`, never the raw error — an
   unrecognized error can stringify with the full request URL including query params.
   `summarizeErr` DOES include the upstream status and message for a typed `*apierror.Error` (e.g.

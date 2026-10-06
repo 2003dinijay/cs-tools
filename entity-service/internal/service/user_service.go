@@ -351,6 +351,33 @@ func (s *userService) GetMe(ctx context.Context) (domain.GetUserMeResponse, erro
 	}, nil
 }
 
+// GetUsersByIDs implements UserService.
+//
+// Ids that are not UUIDs are dropped rather than rejected. Callers build the
+// list from records whose user reference is not always a user id -- a KB
+// article's updated_by, for one, is free text (an email address, a system
+// name) -- and "user".id is a UUID column, so such a value can never match a
+// row. Passing it through makes Postgres reject the whole query ("invalid
+// input syntax for type uuid"), which fails the lookup for every valid id in
+// the same batch; a 400 (as validateUUIDs does for a single id) would fail it
+// just the same. Skipping gives the answer a query would have: no match.
+func (s *userService) GetUsersByIDs(ctx context.Context, ids []string) (domain.GetUsersByIDsResponse, error) {
+	validIDs := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if validate.IsUUID(id) {
+			validIDs = append(validIDs, id)
+		}
+	}
+	if len(validIDs) == 0 {
+		return domain.GetUsersByIDsResponse{Users: []domain.User{}}, nil
+	}
+	users, err := s.repo.GetUsersByIDs(ctx, validIDs)
+	if err != nil {
+		return domain.GetUsersByIDsResponse{}, err
+	}
+	return domain.GetUsersByIDsResponse{Users: users}, nil
+}
+
 // PatchMe implements UserService. Resolves the caller the same way GetMe
 // does (x-user-id-token's email claim -> GetUserByEmail), so there is no
 // caller-supplied id to trust -- a user can only ever update their own
@@ -416,3 +443,4 @@ func (s *userService) CreateUser(ctx context.Context, req domain.CreateUserReque
 
 	return s.repo.CreateUser(ctx, req, actor)
 }
+

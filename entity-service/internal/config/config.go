@@ -30,6 +30,16 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/validate"
 )
 
+// Defaults for the timeout settings. Create-case carries inline base64
+// attachments (up to 15 MiB), so the deadlines must be long enough for it to
+// finish. Operators may set any positive values.
+const (
+	DefaultServerReadTimeout     = 60 * time.Second
+	DefaultServerWriteTimeout    = 60 * time.Second
+	DefaultRequestTimeout        = 60 * time.Second
+	DefaultUpstreamClientTimeout = 60 * time.Second
+)
+
 // DataSource identifies which backend the service reads from.
 type DataSource string
 
@@ -64,7 +74,36 @@ type Config struct {
 	DBPassword string
 	DBName     string
 	DBSSLMode  string
-	ServerPort string
+	// DBSchema pins the connection's search_path (see DSN) so a role whose
+	// native search_path would otherwise resolve to a different same-named
+	// schema, or to "public", lands in the intended one instead — same
+	// purpose as operations/csm-sync-service's own DB_SCHEMA. Left empty,
+	// DSN falls back to "DBUser,public" — Postgres' own default
+	// search_path, made explicit here rather than left implicit,
+	// since this is the one of the two services that also sets a
+	// connection-level option (jit=off) through the same mechanism. The
+	// "public" half of that fallback matters: entity-service's migrations
+	// create every table unqualified, so every deployment's real tables
+	// live there today.
+	DBSchema string
+	// DBPoolMaxConns/DBPoolMinConns/DBPoolMaxConnLifetime/DBPoolMaxConnIdleTime
+	// tune internal/db.NewPool's pgxpool (DB_POOL_MAX_CONNS/DB_POOL_MIN_CONNS/
+	// DB_POOL_MAX_CONN_LIFETIME/DB_POOL_MAX_CONN_IDLE_TIME). Defaults (20/2/
+	// 30m/5m) are the values this file previously hardcoded in
+	// internal/db/postgres.go — an unset deployment behaves exactly as
+	// before these existed. DBPoolMaxConns falls back to its default on an
+	// unset, non-numeric, or non-positive value (a pool that may open no
+	// connections at all can never serve a single query). DBPoolMinConns
+	// falls back the same way EXCEPT zero is accepted — pgxpool genuinely
+	// permits a minimum of 0 (a deployment that doesn't want to retain any
+	// idle connections). DBPoolMaxConnLifetime/DBPoolMaxConnIdleTime fall
+	// back to theirs the same way every other duration here does
+	// (getDurationOrDefault), via loadErr.
+	DBPoolMaxConns        int32
+	DBPoolMinConns        int32
+	DBPoolMaxConnLifetime time.Duration
+	DBPoolMaxConnIdleTime time.Duration
+	ServerPort            string
 	// HealthPort is the listen port for the separate, minimal health
 	// server (internal/server.NewHealthServer). It is deliberately NOT
 	// ServerPort: that mux carries every business route and is exposed at
@@ -163,6 +202,12 @@ type Config struct {
 	// Sales Entity create endpoints this depends on are deployed, a portal
 	// that called them would write the database and leave Salesforce behind.
 	CSMMigrationPortalWritesEnabled bool
+	// CSMMigrationCustomerEngagementIngestEnabled registers POST /customer-engagements/allocation-events
+	// (CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED); off, the route is not registered.
+	CSMMigrationCustomerEngagementIngestEnabled bool
+	// CustomerEngagementFirefightingTypeID is the Firefighting type's ServiceNow sys_id
+	// (CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID); unset skips creating firefighting engagements.
+	CustomerEngagementFirefightingTypeID string
 	// GithubIntegrationEnabled gates the GitHub change-request sync: the
 	// webhook endpoint and the client that answers it.
 	//
@@ -219,6 +264,32 @@ type Config struct {
 	// pass came back short. A backlog drains at full speed regardless, so this
 	// governs only the idle case: notice latency against query volume.
 	CRNoticePollInterval time.Duration
+
+	// OutageEventHubTopic is where the outage notice drainer publishes the two
+	// outage emails (outage.notification_due, outage.communication_due) for
+	// csm-notification-service to send. Its own topic for the same reason as
+	// CREventHubTopic. The drainer also needs event publishing
+	// (EVENT_HUB_BROKER + EVENT_PUBLISHING_ENABLED) and a database; the
+	// recipient lists below are what actually switch each email on.
+	OutageEventHubTopic string
+	// SREEventHubTopic, when set, is the ONE topic both the change-request
+	// notices and the outage emails publish to (sre-events), overriding
+	// CREventHubTopic and OutageEventHubTopic. csm-notification-service routes
+	// them by event type, as it already does on every topic. Empty keeps the
+	// two separate topics exactly as before.
+	SREEventHubTopic string
+	// OutageNoticePollInterval is the drainer's FALLBACK poll (default 60s).
+	// The emails normally go out about a second after an outage changes: the
+	// drainer LISTENs for migration 0186's NOTIFY. This interval only catches
+	// a change it missed while not listening; if it cannot listen at all it
+	// polls every 10s instead.
+	OutageNoticePollInterval time.Duration
+	// OutageNotificationRecipients is the audience of the internal-stakeholder
+	// notification, OutageCommunicationRecipients that of the SRE outage
+	// communication (ServiceNow resolves the group "SRE Team"). A flow with no
+	// recipients is not swept at all, so its decisions are not used up.
+	OutageNotificationRecipients  []string
+	OutageCommunicationRecipients []string
 	// CustomerRoles is a comma-separated list of ServiceNow role names
 	// (organisation-specific vocabulary, the same reasoning
 	// apps/csm-portal/backend's own CSM_TEAM_REGISTRY uses for not shipping
@@ -330,25 +401,75 @@ type Config struct {
 	AuthJWKSURL            string
 	AuthUserTokenAudiences []string
 	AuthClockSkew          time.Duration
-	// AuthInternalClientIDsRaw is the AUTH_INTERNAL_CLIENT_IDS value, a
-	// comma-separated list of Asgardeo application client ids;
-	// AuthInternalClientIDs is its parsed set. A request whose
-	// Authorization: Bearer client-credentials token names one of these ids
-	// is unconditionally treated as an internal caller with unrestricted
-	// access to every project and case, regardless of any x-user-id-token it
-	// also carries -- a forwarded user token from an internal caller is used
-	// only for attribution (created_by/updated_by), never for scoping,
-	// because every caller this deployment configures here is itself an
-	// already-trusted internal service.
+	// M2MClientIDsRaw is the M2M_CLIENT_IDS value, a comma-separated list of
+	// Asgardeo application client ids for pure machine-to-machine callers --
+	// no human in the loop at all (the GitHub webhook delivery/service-
+	// request handlers, the Salesforce partner ingest, and similar). M2MClientIDs
+	// is its parsed set. A request whose Authorization: Bearer client-
+	// credentials token names one of these ids is unconditionally treated as
+	// an internal caller with unrestricted access to every project and
+	// case, regardless of any x-user-id-token it also carries -- a
+	// forwarded user token, if present at all, is used only for
+	// attribution (created_by/updated_by), never for scoping.
 	//
-	// A client id NOT in this set is resolved purely from its
-	// x-user-id-token: an INTERNAL user_type still sees everything, an
-	// EXTERNAL (customer) user sees only their REGISTERED project_contact
-	// projects, and no user token at all is refused. Which real client ids
-	// go in this list is a deployment decision, not something this file
-	// prescribes.
-	AuthInternalClientIDsRaw string
-	AuthInternalClientIDs    map[string]bool
+	// Also gates AddCaseTagRequest.ActorEmail/CreateCaseCommentRequest.ActorEmail
+	// (internal/handler/case_handler.go): a caller whose x-jwt-assertion
+	// names a client id in this same set may claim ANY actorEmail as the
+	// acting user for a tag/comment write -- the same "M2MClientIDs wins
+	// outright, unconditionally" trust this list already carries for
+	// scoping. This used to be a second, separate email-based allowlist
+	// (M2M_TRUSTED_ACTOR_EMAILS), replaced in favor of one list to keep
+	// trusted internal callers in: a caller already trusted to bypass RLS
+	// entirely needs no second, narrower list just to claim a comment/tag
+	// author.
+	//
+	// This is deliberately NOT where apps/csm-portal/backend or
+	// apps/customer-portal/backend-v2 belong, even though both are
+	// internal-to-WSO2 services: both forward a human's own request, so
+	// both need the human's identity to actually matter for scoping --
+	// see CSMPortalBackendClientID and CustomerPortalBackendClientID below, which is why
+	// this scheme uses three distinct configs rather than one shared list a
+	// customer-facing BFF's id could be accidentally pasted into.
+	M2MClientIDsRaw string
+	M2MClientIDs    map[string]bool
+	// CSMPortalBackendClientID is CSM_PORTAL_BACKEND_CLIENT_ID, the single client id of
+	// apps/csm-portal/backend (the internal CS-engineer portal's BFF). A
+	// request whose client-credentials token names this id is treated as
+	// unrestricted ONLY if the forwarded x-user-id-token's email also ends
+	// in CSMPortalUserDomain (case-insensitive) -- unlike M2MClientIDs,
+	// trusting the client id alone is not enough, because this caller
+	// always forwards a real human's request, and that human might not
+	// actually be WSO2/partner staff (a misassigned Asgardeo role, for
+	// instance). A caller using this client id whose email doesn't match
+	// the domain is refused outright, not silently resolved some other way
+	// -- CSM portal traffic is expected to always be WSO2-domain, so a
+	// mismatch here means something upstream (the IdP, SCIM provisioning)
+	// already got it wrong, which this service should surface, not paper
+	// over.
+	//
+	// This also closes the "internal user with no `user` table row" gap:
+	// an email that matches CSMPortalUserDomain is unrestricted on domain
+	// alone, with no users-by-email lookup at all, so a WSO2 engineer who
+	// hasn't been separately provisioned a `user` row is never blocked by
+	// that.
+	CSMPortalBackendClientID string
+	// CSMPortalUserDomain is CSM_PORTAL_USER_DOMAIN, the email domain
+	// (e.g. "wso2.com", no leading "@") CSMPortalBackendClientID's forwarded
+	// caller must belong to. Required together with CSMPortalBackendClientID --
+	// see Validate.
+	CSMPortalUserDomain string
+	// CustomerPortalBackendClientID is CUSTOMER_PORTAL_BACKEND_CLIENT_ID, the single
+	// client id of apps/customer-portal/backend-v2 (or any successor). It
+	// is checked FIRST, before M2MClientIDs or CSMPortalBackendClientID, and
+	// always resolves purely from the forwarded x-user-id-token -- never
+	// unconditionally trusted, by construction, regardless of what else
+	// this client id might accidentally also appear in (M2MClientIDs, or
+	// equal to CSMPortalBackendClientID by a copy-paste mistake: see Validate).
+	// This is the structural fix for the scenario the three-config split
+	// exists to prevent: a customer-facing BFF's client id ending up
+	// wired to unconditional, RLS-bypassing access to every project and
+	// case for every customer.
+	CustomerPortalBackendClientID string
 	// SalesEntity* is the Choreo connection to REST sales/sales-entity-service
 	// (POST /customer-search), not GraphQL sales/entity-graphql-service and not
 	// Salesforce. The four connection fields are all-or-nothing like Event Hub.
@@ -358,14 +479,6 @@ type Config struct {
 	SalesEntityClientID     string
 	SalesEntityClientSecret string
 	SalesEntityScopes       string
-	// M2MTrustedActorEmails is the allowlist of service-account emails an
-	// M2M caller (no x-user-id-token, e.g. UMT via csm-integration-service)
-	// may claim as the acting user via AddCaseTagRequest.ActorEmail. An
-	// unset/empty var means no email is trusted and every such request is
-	// rejected -- this is deliberately not a default-open list, since it
-	// exists specifically to stop an M2M caller from spoofing an arbitrary
-	// actor. Compared case-insensitively in the handler.
-	M2MTrustedActorEmails []string
 
 	// Escalation* configure the fixed, deployment-specific notification
 	// recipient GROUPS EscalationService.CreateEscalation (Postgres data
@@ -400,12 +513,64 @@ type Config struct {
 	EscalationEL4CCOGroupID            string
 	EscalationEL4CROGroupID            string
 	EscalationEL5CEOGroupID            string
+
+	// RedisURL/RedisAddr/RedisPassword configure the optional user cache in
+	// front of GET /users/{id} and GET /users/me (internal/cache), with the
+	// same convention as integrations/csm-notification-service: RedisURL is a
+	// rediss://:<password>@<host>:<port> connection string for a managed,
+	// TLS-only Redis (Azure Managed Redis) and takes priority; RedisAddr/
+	// RedisPassword are the plain, non-TLS pair for a local Redis. Neither set
+	// means no cache: every read goes to Postgres, as before.
+	//
+	// The client is a plain redis.NewClient, so the target must be a
+	// non-clustered Redis or one under the "Enterprise" clustering policy, not
+	// "OSS Cluster".
+	RedisURL      string
+	RedisAddr     string
+	RedisPassword string
+	// UserCacheTTL bounds how long a cached user survives without an
+	// invalidation (USER_CACHE_TTL, default 10m). Every writer of user, role
+	// and membership data invalidates the affected user after it commits, so
+	// this is the backstop for a missed invalidation, not the main freshness
+	// mechanism.
+	UserCacheTTL time.Duration
+	// ServerReadTimeout and ServerWriteTimeout are the main API server's
+	// http.Server ReadTimeout/WriteTimeout (SERVER_READ_TIMEOUT,
+	// SERVER_WRITE_TIMEOUT). The health server keeps its own fixed timeouts.
+	ServerReadTimeout  time.Duration
+	ServerWriteTimeout time.Duration
+	// RequestTimeout cancels each request's context (REQUEST_TIMEOUT).
+	// Keeping it shorter than ServerWriteTimeout lets the handler write a
+	// clean error, but this is not enforced.
+	RequestTimeout time.Duration
+	// UpstreamClientTimeout is the data-source HTTP client timeout
+	// (UPSTREAM_CLIENT_TIMEOUT).
+	UpstreamClientTimeout time.Duration
+
+	// loadErr records the first unparsable environment value seen by Load,
+	// which has no error return. Validate reports it.
+	loadErr error
 }
 
 // Load reads configuration from environment variables and returns a populated
 // Config. Missing variables fall back to sensible defaults; callers should
 // validate required fields (e.g. DBUser, DBPassword, DBName) before use.
 func Load() *Config {
+	var loadErr error
+	duration := func(key string, def time.Duration) time.Duration {
+		d, err := getDurationOrDefault(key, def)
+		if err != nil && loadErr == nil {
+			loadErr = err
+		}
+		return d
+	}
+	intVal := func(key string, def int32, allowZero bool) int32 {
+		n, err := getInt32OrDefault(key, def, allowZero)
+		if err != nil && loadErr == nil {
+			loadErr = err
+		}
+		return n
+	}
 	cfg := &Config{
 		DBHost:                                   getEnvOrDefault("DB_HOST", "localhost"),
 		DBPort:                                   getEnvOrDefault("DB_PORT", "5432"),
@@ -414,6 +579,11 @@ func Load() *Config {
 		DBPassword:                               os.Getenv("DB_PASSWORD"),
 		DBName:                                   os.Getenv("DB_NAME"),
 		DBSSLMode:                                os.Getenv("DB_SSLMODE"),
+		DBSchema:                                 os.Getenv("DB_SCHEMA"),
+		DBPoolMaxConns:                           intVal("DB_POOL_MAX_CONNS", 20, false),
+		DBPoolMinConns:                           intVal("DB_POOL_MIN_CONNS", 2, true),
+		DBPoolMaxConnLifetime:                    duration("DB_POOL_MAX_CONN_LIFETIME", 30*time.Minute),
+		DBPoolMaxConnIdleTime:                    duration("DB_POOL_MAX_CONN_IDLE_TIME", 5*time.Minute),
 		ServerPort:                               getEnvOrDefault("SERVER_PORT", "8080"),
 		HealthPort:                               getEnvOrDefault("HEALTH_PORT", "8081"),
 		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
@@ -443,11 +613,19 @@ func Load() *Config {
 		CREventHubTopic:                               getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
 		ProjectEventHubTopic:                          getEnvOrDefault("PROJECT_EVENT_HUB_TOPIC", "project-events"),
 		CRNoticePollInterval:                          envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
+		OutageEventHubTopic:                           getEnvOrDefault("OUTAGE_EVENT_HUB_TOPIC", "outage-events"),
+		SREEventHubTopic:                              strings.TrimSpace(os.Getenv("SRE_EVENT_HUB_TOPIC")),
+		OutageNoticePollInterval:                      envDuration("OUTAGE_NOTICE_POLL_INTERVAL", 60*time.Second),
+		OutageNotificationRecipients:                  splitComma(os.Getenv("OUTAGE_NOTIFICATION_RECIPIENTS")),
+		OutageCommunicationRecipients:                 splitComma(os.Getenv("OUTAGE_COMMUNICATION_RECIPIENTS")),
 		AuthIssuer:                                    os.Getenv("AUTH_ISSUER"),
 		AuthJWKSURL:                                   os.Getenv("AUTH_JWKS_URL"),
 		AuthUserTokenAudiences:                        splitComma(os.Getenv("AUTH_USER_TOKEN_AUDIENCES")),
 		AuthClockSkew:                                 envDuration("AUTH_CLOCK_SKEW", 30*time.Second),
-		AuthInternalClientIDsRaw:                      os.Getenv("AUTH_INTERNAL_CLIENT_IDS"),
+		M2MClientIDsRaw:                               os.Getenv("M2M_CLIENT_IDS"),
+		CSMPortalBackendClientID:                      os.Getenv("CSM_PORTAL_BACKEND_CLIENT_ID"),
+		CSMPortalUserDomain:                           strings.TrimPrefix(os.Getenv("CSM_PORTAL_USER_DOMAIN"), "@"),
+		CustomerPortalBackendClientID:                 os.Getenv("CUSTOMER_PORTAL_BACKEND_CLIENT_ID"),
 		CustomerRoles:                                 splitComma(os.Getenv("CUSTOMER_ROLES")),
 		CSEngineerRole:                                os.Getenv("CS_ENGINEER_ROLE"),
 		SLARecomputeInterval:                          envDuration("SLA_RECOMPUTE_INTERVAL", 45*time.Second),
@@ -462,7 +640,6 @@ func Load() *Config {
 		SalesEntityClientSecret:                       os.Getenv("SALES_ENTITY_CLIENT_SECRET"),
 		SalesEntityScopes:                             os.Getenv("SALES_ENTITY_SCOPES"),
 		CSMMigrationMembershipRegistrationEnabled:     os.Getenv("CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED") == "true",
-		M2MTrustedActorEmails:                         splitComma(os.Getenv("M2M_TRUSTED_ACTOR_EMAILS")),
 		EscalationEL1AmericasTLGroupID:                os.Getenv("ESCALATION_EL1_AMERICAS_TL_GROUP_ID"),
 		EscalationEL2AmericasTUGroupID:                os.Getenv("ESCALATION_EL2_AMERICAS_TU_GROUP_ID"),
 		EscalationEL2ServiceProductGroupID:            os.Getenv("ESCALATION_EL2_SERVICE_PRODUCT_GROUP_ID"),
@@ -472,17 +649,43 @@ func Load() *Config {
 		EscalationEL4CCOGroupID:                       os.Getenv("ESCALATION_EL4_CCO_GROUP_ID"),
 		EscalationEL4CROGroupID:                       os.Getenv("ESCALATION_EL4_CRO_GROUP_ID"),
 		EscalationEL5CEOGroupID:                       os.Getenv("ESCALATION_EL5_CEO_GROUP_ID"),
+		ServerReadTimeout:                             duration("SERVER_READ_TIMEOUT", DefaultServerReadTimeout),
+		ServerWriteTimeout:                            duration("SERVER_WRITE_TIMEOUT", DefaultServerWriteTimeout),
+		RequestTimeout:                                duration("REQUEST_TIMEOUT", DefaultRequestTimeout),
+		UpstreamClientTimeout:                         duration("UPSTREAM_CLIENT_TIMEOUT", DefaultUpstreamClientTimeout),
+		loadErr:                                       loadErr,
 	}
-	cfg.AuthInternalClientIDs = ParseInternalClientIDs(cfg.AuthInternalClientIDsRaw)
+	cfg.M2MClientIDs = ParseInternalClientIDs(cfg.M2MClientIDsRaw)
+	if cfg.CustomerPortalBackendClientID != "" && cfg.M2MClientIDs[cfg.CustomerPortalBackendClientID] {
+		slog.Warn("CUSTOMER_PORTAL_BACKEND_CLIENT_ID is also listed in M2M_CLIENT_IDS; CustomerPortalBackendClientID is still checked first and always resolved from the forwarded user token, so this has no effect on access, but the M2M_CLIENT_IDS entry is almost certainly a copy-paste mistake",
+			"clientId", cfg.CustomerPortalBackendClientID)
+	}
+	if cfg.CSMPortalBackendClientID != "" && cfg.M2MClientIDs[cfg.CSMPortalBackendClientID] {
+		slog.Warn("CSM_PORTAL_BACKEND_CLIENT_ID is also listed in M2M_CLIENT_IDS; CSMPortalBackendClientID is still checked before M2MClientIDs and still requires a matching user-email domain, so this has no effect on access, but the M2M_CLIENT_IDS entry is almost certainly a copy-paste mistake",
+			"clientId", cfg.CSMPortalBackendClientID)
+	}
 	// Set outside the literal so its longer key does not realign every field above.
 	cfg.CSMMigrationSalesforceOpportunityIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED") == "true"
 	cfg.CSMMigrationSalesforceProjectIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED") == "true"
 	cfg.CSMMigrationSalesforceProjectInsertEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED") == "true"
 	cfg.CSMMigrationSalesforcePartnerIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED") == "true"
+	cfg.CSMMigrationCustomerEngagementIngestEnabled = os.Getenv("CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED") == "true"
+	cfg.CustomerEngagementFirefightingTypeID = strings.TrimSpace(os.Getenv("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID"))
+	cfg.RedisURL = strings.TrimSpace(os.Getenv("REDIS_URL"))
+	cfg.RedisAddr = strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	cfg.RedisPassword = os.Getenv("REDIS_PASSWORD")
+	cfg.UserCacheTTL = envDuration("USER_CACHE_TTL", 10*time.Minute)
+	cfg.applySREEventHubTopic()
 	return cfg
 }
 
-// ParseInternalClientIDs parses AUTH_INTERNAL_CLIENT_IDS ("clientId,clientId")
+// HasRedis reports whether a Redis connection is configured, which turns on
+// the user cache. Either REDIS_URL or REDIS_ADDR is enough.
+func (c *Config) HasRedis() bool {
+	return c.RedisURL != "" || c.RedisAddr != ""
+}
+
+// ParseInternalClientIDs parses a comma-separated client id list (M2M_CLIENT_IDS)
 // into a set for O(1) membership checks. Unlike most of this file's other
 // comma-separated values, this one has no per-entry validation to fail: any
 // non-empty, trimmed entry is a valid client id.
@@ -492,6 +695,48 @@ func ParseInternalClientIDs(raw string) map[string]bool {
 		out[id] = true
 	}
 	return out
+}
+
+// getDurationOrDefault parses key as a Go duration string (e.g. "60s"). An
+// unset or empty value yields defaultVal; an unparsable one is an error.
+func getDurationOrDefault(key string, defaultVal time.Duration) (time.Duration, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return defaultVal, fmt.Errorf("invalid %s %q: %w", key, v, err)
+	}
+	return d, nil
+}
+
+// getInt32OrDefault parses key as a base-10 integer. An unset/empty value
+// yields defaultVal; a non-numeric one is an error (and also falls back to
+// defaultVal) -- same fail-safe-to-default posture as an unparseable
+// duration (see getDurationOrDefault) rather than passing a bad value
+// through. allowZero distinguishes DB_POOL_MIN_CONNS (pgxpool genuinely
+// accepts 0 -- a deployment that doesn't want to retain any idle
+// connections at all) from DB_POOL_MAX_CONNS (0 or negative would
+// misconfigure pgxpool outright, since a pool that may open no connections
+// at all can never serve a single query).
+func getInt32OrDefault(key string, defaultVal int32, allowZero bool) (int32, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal, nil
+	}
+	n, err := strconv.ParseInt(v, 10, 32)
+	if err != nil {
+		return defaultVal, fmt.Errorf("invalid %s %q: %w", key, v, err)
+	}
+	if n < 0 || (n == 0 && !allowZero) {
+		want := "a positive integer"
+		if allowZero {
+			want = "a non-negative integer"
+		}
+		return defaultVal, fmt.Errorf("invalid %s %q: must be %s", key, v, want)
+	}
+	return int32(n), nil
 }
 
 func getEnvOrDefault(key, defaultVal string) string {
@@ -560,9 +805,26 @@ func (c *Config) HasDatabase() bool {
 // partially set in either mode, if
 // SERVICENOW_INTEGRATION_SERVICE_BASE_URL is missing when
 // DATA_SOURCE=servicenow, if EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/
-// EVENT_HUB_TOPIC are only partially set, or if the SALES_ENTITY_* vars are
-// only partially set.
+// EVENT_HUB_TOPIC are only partially set, if the SALES_ENTITY_* vars are
+// only partially set, or if SERVER_READ_TIMEOUT/SERVER_WRITE_TIMEOUT/
+// REQUEST_TIMEOUT/UPSTREAM_CLIENT_TIMEOUT are unparsable or not positive.
 func (c *Config) Validate() error {
+	if c.loadErr != nil {
+		return c.loadErr
+	}
+	for _, t := range []struct {
+		name string
+		val  time.Duration
+	}{
+		{"SERVER_READ_TIMEOUT", c.ServerReadTimeout},
+		{"SERVER_WRITE_TIMEOUT", c.ServerWriteTimeout},
+		{"REQUEST_TIMEOUT", c.RequestTimeout},
+		{"UPSTREAM_CLIENT_TIMEOUT", c.UpstreamClientTimeout},
+	} {
+		if t.val <= 0 {
+			return fmt.Errorf("%s must be greater than 0, got %s", t.name, t.val)
+		}
+	}
 	// The health server is a separate listener precisely so that only its
 	// own routes are reachable at public visibility (see HealthPort). Two
 	// listeners cannot share a port: the second ListenAndServe would fail
@@ -678,6 +940,17 @@ func (c *Config) Validate() error {
 	if salesEntitySet && !c.SalesEntityConfigured() {
 		return fmt.Errorf("SALES_ENTITY_BASE_URL, SALES_ENTITY_TOKEN_URL, SALES_ENTITY_CLIENT_ID, and SALES_ENTITY_CLIENT_SECRET must be set together or not at all")
 	}
+	if (c.CSMPortalBackendClientID == "") != (c.CSMPortalUserDomain == "") {
+		return fmt.Errorf("CSM_PORTAL_BACKEND_CLIENT_ID and CSM_PORTAL_USER_DOMAIN must be set together or not at all")
+	}
+	// Equal and non-empty is almost certainly a copy-paste mistake: the two
+	// roles are opposite by design (CSMPortalBackendClientID can reach unrestricted
+	// access given a matching domain; CustomerPortalBackendClientID structurally
+	// never can, see ResolveScope), so one client id can never correctly
+	// serve both at once.
+	if c.CSMPortalBackendClientID != "" && c.CSMPortalBackendClientID == c.CustomerPortalBackendClientID {
+		return fmt.Errorf("CSM_PORTAL_BACKEND_CLIENT_ID and CUSTOMER_PORTAL_BACKEND_CLIENT_ID must not be the same client id")
+	}
 	// Each Escalation*GroupID is optional (unset = no recipients from that
 	// slot, see the field's own doc comment) but, if SET, must be a
 	// well-formed "group".id -- otherwise a typo'd env var would silently
@@ -699,7 +972,31 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("%s %q is not a valid UUID", envVar, value)
 		}
 	}
+	if v := c.CustomerEngagementFirefightingTypeID; v != "" && !isSysID(v) {
+		return fmt.Errorf("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID must be a 32-character hex sys_id")
+	}
+	// The URL carries the Redis password, so neither it nor url.Parse's own
+	// error (which quotes its input) may appear in this message.
+	if c.RedisURL != "" {
+		u, err := url.Parse(c.RedisURL)
+		if err != nil || (u.Scheme != "redis" && u.Scheme != "rediss") || u.Host == "" {
+			return fmt.Errorf("REDIS_URL must be a redis:// or rediss:// connection string with a host")
+		}
+	}
 	return nil
+}
+
+// isSysID reports whether v is a 32-character lowercase hex ServiceNow sys_id.
+func isSysID(v string) bool {
+	if len(v) != 32 {
+		return false
+	}
+	for _, r := range v {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // PostgresAuthoritative reports whether PostgreSQL is the system of record:
@@ -729,6 +1026,12 @@ func (c *Config) HasPortalMembershipWrites() bool {
 		c.SalesEntityConfigured()
 }
 
+// HasCustomerEngagementIngest reports whether POST /customer-engagements/allocation-events
+// may be registered: the flag is on and PostgreSQL is authoritative.
+func (c *Config) HasCustomerEngagementIngest() bool {
+	return c.CSMMigrationCustomerEngagementIngestEnabled && c.PostgresAuthoritative()
+}
+
 // SalesEntityConfigured reports whether every REST sales/sales-entity-service env var is set.
 func (c *Config) SalesEntityConfigured() bool {
 	return c.SalesEntityBaseURL != "" &&
@@ -738,6 +1041,14 @@ func (c *Config) SalesEntityConfigured() bool {
 }
 
 // DSN constructs a PostgreSQL connection string from the config fields.
+//
+// Pins search_path to DBSchema via the "options" connection parameter, the
+// same mechanism operations/csm-sync-service's own withSchema uses. When
+// DBSchema is unset, falls back to "DBUser,public" (or just "public" with
+// no DBUser) — Postgres' own default search_path, made explicit here rather
+// than left to that default, since setting search_path at all replaces it
+// rather than extending it, and every deployment's tables today live in
+// "public" (unqualified migrations, no deployment sets DB_SCHEMA yet).
 func (c *Config) DSN() string {
 	u := &url.URL{
 		Scheme: "postgres",
@@ -748,6 +1059,36 @@ func (c *Config) DSN() string {
 	q := u.Query()
 	q.Set("sslmode", c.DBSSLMode)
 	u.RawQuery = q.Encode()
+
+	schema := c.DBSchema
+	if schema == "" {
+		// No schema configured -- mirror Postgres' own default search_path
+		// ("$user", public) explicitly, not just the "$user" half of it.
+		// An explicit search_path completely replaces Postgres' own
+		// default rather than extending it, and every deployment's tables
+		// today live in "public" (entity-service's migrations create them
+		// unqualified, and no deployment sets DB_SCHEMA yet) -- dropping
+		// "public" here would make every one of those tables unresolvable
+		// the moment this shipped. No space after the comma: the "options"
+		// connection parameter tokenizes on whitespace to separate multiple
+		// "-c name=value" entries, so a space here splits "public" off into
+		// its own (invalid) token and Postgres sees a truncated search_path
+		// value instead of the full list -- confirmed against a real
+		// connection, which rejected "<user>," as an invalid value.
+		if c.DBUser != "" {
+			schema = c.DBUser + ",public"
+		} else {
+			schema = "public"
+		}
+	}
+	// url.Values.Encode() would percent-encode the space in
+	// "-c search_path=..." as "+" (the HTML-form convention) -- pgconn's own
+	// URI parser does not decode "+" back to a space, so Postgres received a
+	// literal "+" and rejected it as an unrecognized configuration parameter
+	// (confirmed against a real connection). Escape by hand with %20
+	// instead, which pgconn does handle.
+	opts := strings.ReplaceAll(url.QueryEscape("-c search_path="+schema), "+", "%20")
+	u.RawQuery += "&options=" + opts
 	return u.String()
 }
 
@@ -799,4 +1140,15 @@ func envDurationOrOff(key string, def time.Duration) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// applySREEventHubTopic points both operations publishers at SRE_EVENT_HUB_TOPIC
+// when it is set. Done once here so every reader of CREventHubTopic and
+// OutageEventHubTopic -- the publishers and their startup log lines -- agrees.
+func (c *Config) applySREEventHubTopic() {
+	if c.SREEventHubTopic == "" {
+		return
+	}
+	c.CREventHubTopic = c.SREEventHubTopic
+	c.OutageEventHubTopic = c.SREEventHubTopic
 }

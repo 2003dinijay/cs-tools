@@ -17,6 +17,8 @@
 package config
 
 import (
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -40,6 +42,12 @@ func baseValidConfig() Config {
 		AuthIssuer:             "https://api.asgardeo.io/t/x/oauth2/token",
 		AuthJWKSURL:            "https://api.asgardeo.io/t/x/oauth2/jwks",
 		AuthUserTokenAudiences: []string{"spa"},
+		// Timeouts carry their real defaults for the same reason: Load always
+		// populates them and Validate rejects non-positive values.
+		ServerReadTimeout:     DefaultServerReadTimeout,
+		ServerWriteTimeout:    DefaultServerWriteTimeout,
+		RequestTimeout:        DefaultRequestTimeout,
+		UpstreamClientTimeout: DefaultUpstreamClientTimeout,
 	}
 }
 
@@ -333,6 +341,10 @@ func baseValidServiceNowConfig() Config {
 		AuthIssuer:             "https://api.asgardeo.io/t/x/oauth2/token",
 		AuthJWKSURL:            "https://api.asgardeo.io/t/x/oauth2/jwks",
 		AuthUserTokenAudiences: []string{"spa"},
+		ServerReadTimeout:      DefaultServerReadTimeout,
+		ServerWriteTimeout:     DefaultServerWriteTimeout,
+		RequestTimeout:         DefaultRequestTimeout,
+		UpstreamClientTimeout:  DefaultUpstreamClientTimeout,
 	}
 }
 
@@ -440,6 +452,87 @@ func TestParseInternalClientIDs(t *testing.T) {
 	// trimmed entry is a valid client id.
 	if got := ParseInternalClientIDs("a,,b"); len(got) != 2 || !got["a"] || !got["b"] {
 		t.Errorf("blank entries between commas should just be skipped, got %v", got)
+	}
+}
+
+// TestConfig_Validate_CSMPortalBackendClientIDAndDomainAllOrNothing pins the pairing
+// requirement: CSM_PORTAL_BACKEND_CLIENT_ID and CSM_PORTAL_USER_DOMAIN are only
+// meaningful together (ResolveScope's domain check needs both), so a
+// deployment setting only one almost certainly meant to set both.
+func TestConfig_Validate_CSMPortalBackendClientIDAndDomainAllOrNothing(t *testing.T) {
+	c := baseValidConfig()
+	c.CSMPortalBackendClientID = "csm-portal"
+	if err := c.Validate(); err == nil {
+		t.Error("CSMPortalBackendClientID with no CSMPortalUserDomain: want an error, got nil")
+	}
+
+	c = baseValidConfig()
+	c.CSMPortalUserDomain = "wso2.com"
+	if err := c.Validate(); err == nil {
+		t.Error("CSMPortalUserDomain with no CSMPortalBackendClientID: want an error, got nil")
+	}
+
+	c = baseValidConfig()
+	c.CSMPortalBackendClientID = "csm-portal"
+	c.CSMPortalUserDomain = "wso2.com"
+	if err := c.Validate(); err != nil {
+		t.Errorf("both set together: unexpected error: %v", err)
+	}
+}
+
+// TestConfig_Validate_RejectsSameClientIDForCSMAndCustomerPortal pins the
+// guard against the one config value that can't be resolved by ResolveScope's
+// own ordering: CSMPortalBackendClientID and CustomerPortalBackendClientID being equal would
+// mean a single client id is both "unrestricted given a matching domain" and
+// "never unrestricted, full stop" at once -- a copy-paste mistake, not a
+// valid deployment.
+func TestConfig_Validate_RejectsSameClientIDForCSMAndCustomerPortal(t *testing.T) {
+	c := baseValidConfig()
+	c.CSMPortalBackendClientID = "shared-id"
+	c.CSMPortalUserDomain = "wso2.com"
+	c.CustomerPortalBackendClientID = "shared-id"
+	if err := c.Validate(); err == nil {
+		t.Error("CSMPortalBackendClientID == CustomerPortalBackendClientID: want an error, got nil")
+	}
+}
+
+// TestConfig_Validate_DistinctCSMAndCustomerPortalBackendClientIDsAreValid guards
+// against the above check being too broad and rejecting the normal case.
+func TestConfig_Validate_DistinctCSMAndCustomerPortalBackendClientIDsAreValid(t *testing.T) {
+	c := baseValidConfig()
+	c.CSMPortalBackendClientID = "csm-portal"
+	c.CSMPortalUserDomain = "wso2.com"
+	c.CustomerPortalBackendClientID = "customer-portal"
+	if err := c.Validate(); err != nil {
+		t.Errorf("unexpected error: %v", err)
+	}
+}
+
+// TestLoad_CSMPortalUserDomain pins CSM_PORTAL_USER_DOMAIN's one bit of
+// normalization: a value typed with a leading "@" (an easy mistake, since
+// email addresses are usually written that way) is accepted the same as one
+// without, so isCSMPortalUserDomain's own "@"+domain suffix match is never
+// built from a doubled "@@".
+func TestLoad_CSMPortalUserDomain(t *testing.T) {
+	t.Setenv("CSM_PORTAL_USER_DOMAIN", "@wso2.com")
+	if got := Load().CSMPortalUserDomain; got != "wso2.com" {
+		t.Errorf("CSMPortalUserDomain = %q, want %q (leading @ stripped)", got, "wso2.com")
+	}
+
+	t.Setenv("CSM_PORTAL_USER_DOMAIN", "wso2.com")
+	if got := Load().CSMPortalUserDomain; got != "wso2.com" {
+		t.Errorf("CSMPortalUserDomain = %q, want %q (unchanged)", got, "wso2.com")
+	}
+}
+
+// TestLoad_M2MClientIDsFieldName guards against M2M_CLIENT_IDS silently
+// going unread after the AUTH_INTERNAL_CLIENT_IDS rename -- a stale env var
+// name here would leave every M2M caller unexpectedly unauthorized.
+func TestLoad_M2MClientIDsFieldName(t *testing.T) {
+	t.Setenv("M2M_CLIENT_IDS", "svc-a,svc-b")
+	got := Load().M2MClientIDs
+	if !got["svc-a"] || !got["svc-b"] || len(got) != 2 {
+		t.Errorf("M2MClientIDs = %v, want {svc-a, svc-b}", got)
 	}
 }
 
@@ -596,5 +689,308 @@ func TestLoad_SalesforceIngestRetryInterval(t *testing.T) {
 		if got := Load().SalesforceIngestRetryInterval; got != want {
 			t.Errorf("SALESFORCE_INGEST_RETRY_INTERVAL=%q -> %v, want %v", value, got, want)
 		}
+	}
+}
+
+func TestConfig_Validate_CustomerEngagementFirefightingTypeID(t *testing.T) {
+	c := baseValidConfig()
+	c.CSMMigrationCustomerEngagementIngestEnabled = true
+	if err := c.Validate(); err != nil {
+		t.Fatalf("an unset type id must not fail startup: %v", err)
+	}
+	c.CustomerEngagementFirefightingTypeID = "fc7f2d171b81f910d64e64a2604bcb9b"
+	if err := c.Validate(); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	c.CustomerEngagementFirefightingTypeID = "not-a-sys-id"
+	if c.Validate() == nil {
+		t.Error("Validate() = nil for a malformed type id")
+	}
+	if !c.HasCustomerEngagementIngest() {
+		t.Error("HasCustomerEngagementIngest() = false on a Postgres config")
+	}
+	c.DataSource = DataSourceServiceNow
+	if c.HasCustomerEngagementIngest() {
+		t.Error("HasCustomerEngagementIngest() = true on a ServiceNow config")
+	}
+}
+
+// TestConfig_Validate_RedisURL: a malformed REDIS_URL fails startup, and the
+// error never echoes the URL, since it carries the Redis password.
+func TestConfig_Validate_RedisURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "unset", url: "", wantErr: false},
+		{name: "tls", url: "rediss://:s3cr3t%3D@cache.example.net:10000", wantErr: false},
+		{name: "plain", url: "redis://localhost:6379/0", wantErr: false},
+		{name: "wrong scheme", url: "https://:s3cr3t@cache.example.net", wantErr: true},
+		{name: "no host", url: "rediss://:s3cr3t@", wantErr: true},
+		{name: "unparseable", url: "rediss://:s3cr3t@[::1", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := baseValidConfig()
+			c.RedisURL = tt.url
+			err := c.Validate()
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("Validate() = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && strings.Contains(err.Error(), "s3cr3t") {
+				t.Errorf("Validate() error leaks the password: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoad_TimeoutDefaults(t *testing.T) {
+	for _, k := range []string{"SERVER_READ_TIMEOUT", "SERVER_WRITE_TIMEOUT", "REQUEST_TIMEOUT", "UPSTREAM_CLIENT_TIMEOUT"} {
+		t.Setenv(k, "")
+	}
+	c := Load()
+	if c.ServerReadTimeout != 60*time.Second || c.ServerWriteTimeout != 60*time.Second ||
+		c.RequestTimeout != 60*time.Second || c.UpstreamClientTimeout != 60*time.Second {
+		t.Errorf("defaults = %v/%v/%v/%v, want 60s/60s/60s/60s",
+			c.ServerReadTimeout, c.ServerWriteTimeout, c.RequestTimeout, c.UpstreamClientTimeout)
+	}
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with defaults = %v, want nil", err)
+	}
+}
+
+func TestLoad_TimeoutOverrides(t *testing.T) {
+	t.Setenv("SERVER_READ_TIMEOUT", "2m")
+	t.Setenv("SERVER_WRITE_TIMEOUT", "90s")
+	t.Setenv("REQUEST_TIMEOUT", "80s")
+	t.Setenv("UPSTREAM_CLIENT_TIMEOUT", "75s")
+	c := Load()
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+	if c.ServerReadTimeout != 2*time.Minute || c.ServerWriteTimeout != 90*time.Second ||
+		c.RequestTimeout != 80*time.Second || c.UpstreamClientTimeout != 75*time.Second {
+		t.Errorf("overrides not applied: %v/%v/%v/%v",
+			c.ServerReadTimeout, c.ServerWriteTimeout, c.RequestTimeout, c.UpstreamClientTimeout)
+	}
+}
+
+func TestLoad_InvalidTimeoutFailsValidate(t *testing.T) {
+	for _, k := range []string{"SERVER_READ_TIMEOUT", "SERVER_WRITE_TIMEOUT", "REQUEST_TIMEOUT", "UPSTREAM_CLIENT_TIMEOUT"} {
+		t.Run(k, func(t *testing.T) {
+			t.Setenv(k, "fifty")
+			c := Load()
+			c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+			c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), k) {
+				t.Errorf("Validate() = %v, want an error naming %s", err, k)
+			}
+		})
+	}
+}
+
+func TestLoad_DBPoolDefaults(t *testing.T) {
+	for _, k := range []string{"DB_POOL_MAX_CONNS", "DB_POOL_MIN_CONNS", "DB_POOL_MAX_CONN_LIFETIME", "DB_POOL_MAX_CONN_IDLE_TIME"} {
+		t.Setenv(k, "")
+	}
+	c := Load()
+	if c.DBPoolMaxConns != 20 || c.DBPoolMinConns != 2 ||
+		c.DBPoolMaxConnLifetime != 30*time.Minute || c.DBPoolMaxConnIdleTime != 5*time.Minute {
+		t.Errorf("defaults = %d/%d/%v/%v, want 20/2/30m/5m",
+			c.DBPoolMaxConns, c.DBPoolMinConns, c.DBPoolMaxConnLifetime, c.DBPoolMaxConnIdleTime)
+	}
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with defaults = %v, want nil", err)
+	}
+}
+
+func TestLoad_DBPoolOverrides(t *testing.T) {
+	t.Setenv("DB_POOL_MAX_CONNS", "50")
+	t.Setenv("DB_POOL_MIN_CONNS", "5")
+	t.Setenv("DB_POOL_MAX_CONN_LIFETIME", "10m")
+	t.Setenv("DB_POOL_MAX_CONN_IDLE_TIME", "2m")
+	c := Load()
+	if c.DBPoolMaxConns != 50 || c.DBPoolMinConns != 5 ||
+		c.DBPoolMaxConnLifetime != 10*time.Minute || c.DBPoolMaxConnIdleTime != 2*time.Minute {
+		t.Errorf("overrides not applied: %d/%d/%v/%v",
+			c.DBPoolMaxConns, c.DBPoolMinConns, c.DBPoolMaxConnLifetime, c.DBPoolMaxConnIdleTime)
+	}
+}
+
+func TestLoad_InvalidDBPoolIntFallsBackToDefaultAndFailsValidate(t *testing.T) {
+	for _, tc := range []struct {
+		key, value string
+	}{
+		{"DB_POOL_MAX_CONNS", "fifty"},
+		{"DB_POOL_MIN_CONNS", "-1"},
+		{"DB_POOL_MAX_CONNS", "-3"},
+		{"DB_POOL_MAX_CONNS", "0"},
+	} {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			t.Setenv(tc.key, tc.value)
+			c := Load()
+			c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+			c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+			if c.DBPoolMaxConns != 20 && tc.key == "DB_POOL_MAX_CONNS" {
+				t.Errorf("DBPoolMaxConns = %d, want the default (20) on an invalid value", c.DBPoolMaxConns)
+			}
+			if c.DBPoolMinConns != 2 && tc.key == "DB_POOL_MIN_CONNS" {
+				t.Errorf("DBPoolMinConns = %d, want the default (2) on an invalid value", c.DBPoolMinConns)
+			}
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("Validate() = %v, want an error naming %s", err, tc.key)
+			}
+		})
+	}
+}
+
+// TestLoad_DBPoolMinConnsZeroIsValid is the regression guard for the
+// CodeRabbit-caught overreach: pgxpool genuinely permits MinConns=0 (a
+// deployment that doesn't want to retain any idle connections at all), so
+// DB_POOL_MIN_CONNS=0 must be accepted, not treated as an invalid value
+// that falls back to the default.
+func TestLoad_DBPoolMinConnsZeroIsValid(t *testing.T) {
+	t.Setenv("DB_POOL_MIN_CONNS", "0")
+	c := Load()
+	if c.DBPoolMinConns != 0 {
+		t.Errorf("DBPoolMinConns = %d, want 0", c.DBPoolMinConns)
+	}
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with DB_POOL_MIN_CONNS=0 = %v, want nil", err)
+	}
+}
+
+func TestLoad_Redis(t *testing.T) {
+	t.Setenv("REDIS_URL", "")
+	t.Setenv("REDIS_ADDR", "")
+	t.Setenv("USER_CACHE_TTL", "")
+	c := Load()
+	if c.HasRedis() {
+		t.Error("HasRedis() = true with neither REDIS_URL nor REDIS_ADDR set")
+	}
+	if c.UserCacheTTL != 10*time.Minute {
+		t.Errorf("UserCacheTTL = %v, want the 10m default", c.UserCacheTTL)
+	}
+
+	t.Setenv("REDIS_ADDR", " localhost:6379 ")
+	t.Setenv("USER_CACHE_TTL", "90s")
+	c = Load()
+	if !c.HasRedis() || c.RedisAddr != "localhost:6379" {
+		t.Errorf("HasRedis() = %v, RedisAddr = %q; want true, %q", c.HasRedis(), c.RedisAddr, "localhost:6379")
+	}
+	if c.UserCacheTTL != 90*time.Second {
+		t.Errorf("UserCacheTTL = %v, want 90s", c.UserCacheTTL)
+	}
+
+	t.Setenv("REDIS_ADDR", "")
+	t.Setenv("REDIS_URL", "rediss://:pw@cache.example.net:10000")
+	if !Load().HasRedis() {
+		t.Error("HasRedis() = false with REDIS_URL set")
+	}
+}
+
+// dsnSearchPath extracts the search_path value DSN embedded in its "options"
+// query parameter, so a test can assert on the schema alone rather than the
+// whole connection string.
+func dsnSearchPath(t *testing.T, dsn string) string {
+	t.Helper()
+	u, err := url.Parse(dsn)
+	if err != nil {
+		t.Fatalf("parse DSN %q: %v", dsn, err)
+	}
+	return strings.TrimPrefix(u.Query().Get("options"), "-c search_path=")
+}
+
+// TestConfig_DSN_SchemaFallsBackToDBUserPlusPublic pins DSN's search_path
+// behavior: an explicit DBSchema wins verbatim (no "public" appended — an
+// operator who set one is assumed to mean it), and an empty one falls back
+// to "DBUser,public" (no space — see DSN's own doc comment on why), Postgres'
+// own default search_path. "public"
+// must survive the fallback: entity-service's migrations create every table
+// unqualified, so every deployment's real tables live there, and an explicit
+// search_path replaces Postgres' own default rather than extending it — a
+// fallback of DBUser alone would make every one of those tables unresolvable.
+func TestConfig_DSN_SchemaFallsBackToDBUserPlusPublic(t *testing.T) {
+	base := baseValidConfig()
+	base.DBHost = "localhost"
+	base.DBPort = "5432"
+
+	t.Run("explicit schema wins, verbatim", func(t *testing.T) {
+		c := base
+		c.DBSchema = "csm"
+		if got := dsnSearchPath(t, c.DSN()); got != "csm" {
+			t.Errorf("search_path = %q, want %q", got, "csm")
+		}
+	})
+
+	t.Run("unset schema falls back to DBUser, public", func(t *testing.T) {
+		c := base
+		c.DBSchema = ""
+		want := c.DBUser + ",public"
+		if got := dsnSearchPath(t, c.DSN()); got != want {
+			t.Errorf("search_path = %q, want %q", got, want)
+		}
+	})
+
+	t.Run("unset schema and unset DBUser falls back to public alone", func(t *testing.T) {
+		c := base
+		c.DBSchema = ""
+		c.DBUser = ""
+		if got := dsnSearchPath(t, c.DSN()); got != "public" {
+			t.Errorf("search_path = %q, want %q", got, "public")
+		}
+	})
+}
+
+func TestSREEventHubTopicMovesBothOperationsPublishers(t *testing.T) {
+	t.Setenv("CR_EVENT_HUB_TOPIC", "cr-events")
+	t.Setenv("OUTAGE_EVENT_HUB_TOPIC", "outage-events")
+
+	t.Setenv("SRE_EVENT_HUB_TOPIC", "")
+	if c := Load(); c.CREventHubTopic != "cr-events" || c.OutageEventHubTopic != "outage-events" {
+		t.Errorf("unset SRE topic changed the publishers: cr=%q outage=%q", c.CREventHubTopic, c.OutageEventHubTopic)
+	}
+
+	t.Setenv("SRE_EVENT_HUB_TOPIC", " sre-events ")
+	c := Load()
+	if c.CREventHubTopic != "sre-events" || c.OutageEventHubTopic != "sre-events" {
+		t.Errorf("SRE topic set: cr=%q outage=%q, want both sre-events", c.CREventHubTopic, c.OutageEventHubTopic)
+	}
+	if c.EventHubTopic == "sre-events" {
+		t.Error("the case-events topic must not move")
+	}
+}
+
+func TestConfig_Validate_Timeouts(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{"zero read", func(c *Config) { c.ServerReadTimeout = 0 }, "SERVER_READ_TIMEOUT"},
+		{"negative write", func(c *Config) { c.ServerWriteTimeout = -time.Second }, "SERVER_WRITE_TIMEOUT"},
+		{"zero request", func(c *Config) { c.RequestTimeout = 0 }, "REQUEST_TIMEOUT"},
+		{"zero upstream", func(c *Config) { c.UpstreamClientTimeout = 0 }, "UPSTREAM_CLIENT_TIMEOUT"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := baseValidConfig()
+			tt.mutate(&c)
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Validate() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }

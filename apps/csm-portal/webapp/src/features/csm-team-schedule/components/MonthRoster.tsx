@@ -24,9 +24,11 @@ import type {
   ScheduleAbsenceKind,
   ScheduleAssignment,
   ScheduleShift,
-  ScheduleTier, RotaFamily } from "../types";
-import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneLabelOn, type RosterSpan, zoneColumnOf } from "../utils/rota";
-import { useTeamColour } from "../utils/teamColourContext";
+  ScheduleTier,
+  RotaFamily,
+} from "../types";
+import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneColumnOf, zoneLabelOn, type RosterSpan } from "../utils/rota";
+import { useTeamColour, useTeamName } from "../utils/teamColourContext";
 
 export type { RosterSpan };
 const SPANS: readonly RosterSpan[] = [1, 3, 6];
@@ -210,6 +212,7 @@ export default function MonthRoster({
   onEditCell,
 }: MonthRosterProps): JSX.Element {
   const teamColourOf = useTeamColour();
+  const teamNameOf = useTeamName();
   const [query, setQuery] = useState("");
   /** Fade everything that is not a turn on the rota.
    *
@@ -748,7 +751,7 @@ export default function MonthRoster({
                     </span>
                     <span className="who">{row.name}</span>
                     {isMe ? <i className="youtag">You</i> : null}
-                    <span className="team">{row.teamKey}</span>
+                    <span className="team">{teamNameOf(row.teamKey)}</span>
                   </span>
                 </th>
                 {days.map((d) => {
