@@ -120,7 +120,10 @@ func TestAuthenticate_ConcurrentBurstOnSmallPool(t *testing.T) {
 		t.Fatalf("unknown user = %v, want ErrUnauthorized", err)
 	}
 	pool.Close()
-	if err := request("other", "secret"); !errors.Is(err, ErrUnavailable) {
-		t.Fatalf("lookup on a closed pool = %v, want ErrUnavailable (503)", err)
+	if err := authn.Refresh(ctx); err == nil {
+		t.Fatal("Refresh on a closed pool must fail")
+	}
+	if err := request("test", "test"); err != nil {
+		t.Fatalf("a failed refresh must keep the last good copy, got %v", err)
 	}
 }
