@@ -3258,6 +3258,42 @@ nothing.
   creator -> 403 `the creator of a change request cannot approve it`, a contact who
   was not asked (registered after the request went out, inactive user) -> 403 `only
   members of the customer group ...`.
+* **`customerCanAnswer` -- what the portal offers.** The change request detail
+  (`GET /change-requests/{id}`, and the PATCH receipt, which is the same read:
+  `GetChangeRequestByID`) carries `customerCanAnswer` for an external caller: the
+  per-viewer "may I answer this now", so the customer portal shows Approve / Reject /
+  Propose from the server's answer instead of guessing. `hasCustomerApproved` /
+  `hasCustomerReviewed` cannot be that guess: they are the recorded OUTCOME
+  (`is_customer_approval_required` / `is_customer_review_required`, NULL until the
+  customer has approved), false for exactly as long as the change waits for the
+  customer. `customerCanAnswer` is computed by `customerCanAnswer` (read-only, no
+  locks) and is **true exactly when the answer would be accepted**: the change is in
+  Customer Approval / Customer Review; the viewer is a registered `PORTAL_USER` contact
+  of its project; the customer's request is live (a stage of that state with a
+  `requested` row); the viewer holds a `requested` row on that stage (so not a contact
+  registered afterwards, not one a sibling's answer or a Re-schedule cancelled); and
+  `approverDecisionBlock` lets them (the creator never). It reuses the answer path's
+  helpers (`liveCustomerStageForState`, `customerApproverUserID`,
+  `changeRequestCreatorsForApprover`, `callerMayGrantChangeRequestCustomerFlag`), the
+  same ones `markCanDecide` is built on for the Approvals tab, so the three cannot
+  drift. A `*bool` with `omitempty`: **present (true/false) only for an external
+  caller on the PostgreSQL data source**; **absent** for staff / internal callers /
+  the system identity, for the ServiceNow data source and when the check itself
+  failed (logged) -- absent means unknown, which is not false, and a client then
+  keeps what it did before the field existed. Never on search rows, and nothing else
+  about the approvals (approver identities, stages) is added to the customer's
+  detail. It flips to false in the very PATCH receipt of the caller's answer or
+  proposal, and back to true for the contacts once a Re-schedule has asked them
+  again (a Standard change at once, Normal / Emergency after CAB / ECAB approves).
+  It does not look at `onHold`: a held change refuses a *proposal* (409), not an
+  answer, so a client offers Propose New Time when `customerCanAnswer && state ==
+  customer_approval && !onHold`. Tests:
+  `TestChangeRequestCustomerCanAnswerIntegration_*` (lifecycle, after any answer
+  through either door, who may answer with the PATCH as the oracle, nobody asked,
+  Re-schedule flips for Normal / Standard, not on search rows),
+  `TestCustomerCanAnswer_NeedsNoQueryOutsideTheCustomerStates`,
+  `TestMarkCustomerCanAnswer_WhoIsToldWhat`,
+  `TestChangeRequest_CustomerCanAnswerJSONContract`.
 * **Propose new implementation time = Re-schedule.** `{plannedStartOn,
   plannedEndOn?}` from a registered contact in `customer_approval` is the process
   diagram's "Time Change" loop started by the customer: `prepareCustomerProposal`

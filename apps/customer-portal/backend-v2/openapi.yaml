@@ -1828,7 +1828,12 @@ paths:
   /change-requests/{id}:
     get:
       summary: Get a change request by ID.
-      description: Only entity-service's ServiceNow data source supports this route.
+      description: >-
+        Only entity-service's ServiceNow data source supports this route.
+        The detail carries `customerCanAnswer`, the per-caller answer to "may I
+        approve / reject (or confirm / fail the review of) this change request
+        now"; the approvals and the identities of the WSO2 approvers are not part
+        of the customer's detail.
       operationId: getChangeRequestsId
       parameters:
         - name: id
@@ -7942,8 +7947,32 @@ components:
               type: string
             hasCustomerApproved:
               type: boolean
+              description: >-
+                The customer's OUTCOME: true once the customer's approval has
+                been recorded. NOT "is this waiting for me" -- it is false while
+                the change waits for the customer; use customerCanAnswer.
             hasCustomerReviewed:
               type: boolean
+              description: >-
+                The customer's OUTCOME: true once the customer's review has been
+                recorded. Use customerCanAnswer for "is this waiting for me".
+            customerCanAnswer:
+              type: boolean
+              description: >-
+                Whether the signed-in customer may answer this change request
+                RIGHT NOW: approve or reject it in Customer Approval, confirm or
+                fail it in Customer Review (PATCH isCustomerApproved /
+                isCustomerReviewed). In Customer Approval it is also the "may
+                propose a new implementation time" signal, apart from the change
+                being on hold (a proposal on a held change is a 409). Computed
+                by entity-service for this caller from the approval it asked of
+                them: true only for a registered contact who still holds a
+                pending approval, false in every other state, for a contact who
+                was not asked, whose request was cancelled by a colleague's
+                answer or superseded by a re-schedule, and for the change's
+                creator. ABSENT (not false) when entity-service did not compute it
+                -- the ServiceNow data source, a non-customer caller; a client
+                then keeps its old behaviour. Passed through unchanged.
             approvedBy:
               $ref: '#/components/schemas/IdLabelRef'
             approvedOn:

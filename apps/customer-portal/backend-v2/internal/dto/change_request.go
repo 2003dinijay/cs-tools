@@ -237,6 +237,17 @@ type ChangeRequestDetails struct {
 	HasCustomerReviewed bool        `json:"hasCustomerReviewed"`
 	ApprovedBy          *IDLabelRef `json:"approvedBy,omitempty"`
 	ApprovedOn          *string     `json:"approvedOn,omitempty"`
+
+	// CustomerCanAnswer is whether the signed-in customer may answer this change
+	// request RIGHT NOW: approve or reject it in Customer Approval, confirm or
+	// fail it in Customer Review (and, in Customer Approval, propose a new
+	// implementation time unless the change is on hold). entity-service computes
+	// it for the caller from the approval it asked of them, so it is exact where
+	// hasCustomerApproved / hasCustomerReviewed (the recorded OUTCOME, not
+	// "is it waiting for me") are not; the portal shows the buttons from it.
+	// Passed through untouched, and omitted when entity-service did not compute
+	// it (nil): an absent value means "unknown", which is not the same as false.
+	CustomerCanAnswer *bool `json:"customerCanAnswer,omitempty"`
 }
 
 // MapChangeRequestDetails builds the portal response from entity-service's ChangeRequest.
@@ -254,6 +265,7 @@ func MapChangeRequestDetails(r entity.ChangeRequest) ChangeRequestDetails {
 		HasCustomerReviewed:  r.HasCustomerReviewed,
 		ApprovedBy:           entityRefToIDLabel(r.ApprovedBy),
 		ApprovedOn:           r.ApprovedOn,
+		CustomerCanAnswer:    r.CustomerCanAnswer,
 	}
 }
 

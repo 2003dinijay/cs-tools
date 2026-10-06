@@ -462,6 +462,22 @@ its own whitelist for external callers, so a request that bypassed this layer st
 change request. Route wiring is `registerChangeRequestRoutes` in `cmd/server/main.go`, covered by
 `TestChangeRequestRouteGating`.
 
+**`customerCanAnswer` on the change-request detail.** `GET /change-requests/{id}` (`dto.ChangeRequestDetails`)
+passes through entity-service's per-caller `customerCanAnswer` (`entity.ChangeRequest.CustomerCanAnswer`, a
+`*bool`, `omitempty`): whether the signed-in customer may answer the change request right now -- approve or
+reject in Customer Approval, confirm or fail the review in Customer Review, and in Customer Approval propose a
+new implementation time (a held change refuses a proposal, so the webapp also checks `onHold`/state). It is the
+portal's source for showing those buttons: `hasCustomerApproved` / `hasCustomerReviewed` are the recorded
+OUTCOME and are false for as long as the change waits for the customer, so they cannot say "waiting for me".
+Contract: **present true/false** when entity-service computed it for this customer (PostgreSQL data source);
+**absent** when it did not (ServiceNow data source, a non-customer caller, a failed check) -- *absent is not
+false*, a client falls back to what it did before. The BFF adds nothing, drops nothing and recomputes nothing
+(`TestMapChangeRequestDetails_PassesCustomerCanAnswerThrough`, `TestGetChangeRequest_CarriesCustomerCanAnswer`),
+and the customer's detail still exposes none of the approvals or WSO2 approvers' identities: the detail's whole
+key set is pinned by `TestMapChangeRequestDetails_ExposesOnlyTheCustomerFields`, so a field added to the DTO has
+to be added there on purpose. The PATCH response is unchanged (id / updatedOn / updatedBy); the webapp re-reads
+the detail after an answer.
+
 **Change-request search never asks for the internal states.** `POST /projects/{id}/change-requests/search`
 used to forward whatever `stateKeys` the caller sent -- none meant no state filter, i.e. New / Assess /
 Authorize too -- and relied on the webapp to send only the allowed keys. `dto.BuildEntitySearchChangeRequestsRequest`

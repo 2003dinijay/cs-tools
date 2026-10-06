@@ -42,6 +42,18 @@ type fakeEntityChangeRequestClient struct {
 	patchErr    error
 	decideCalls int
 	gotDecision string
+	// canAnswer is the customerCanAnswer the fake's detail carries.
+	canAnswer *bool
+}
+
+func (f *fakeEntityChangeRequestClient) GetChangeRequest(_ context.Context, id string) (entity.ChangeRequest, error) {
+	var out entity.ChangeRequest
+	out.ID = id
+	out.Number = "CHG0000001"
+	out.CreatedOn = "2026-10-06T00:00:00Z"
+	out.UpdatedOn = "2026-10-06T00:00:00Z"
+	out.CustomerCanAnswer = f.canAnswer
+	return out, nil
 }
 
 func (f *fakeEntityChangeRequestClient) UpdateChangeRequest(_ context.Context, id string, req entity.PatchChangeRequestRequest) (entity.PatchChangeRequestResponse, error) {
@@ -269,4 +281,44 @@ func TestPatchChangeRequest_CustomerUpstreamErrors(t *testing.T) {
 			t.Errorf("status %d, upstream calls %d; want 400 and none", rec.Code, fake.patchCalls)
 		}
 	})
+}
+
+// GET /change-requests/{id} hands the portal entity-service's per-viewer answer
+// exactly as it came: true, false, or nothing at all when entity-service did not
+// compute one.
+func TestGetChangeRequest_CarriesCustomerCanAnswer(t *testing.T) {
+	yes, no := true, false
+	for name, tc := range map[string]struct {
+		in   *bool
+		want any // nil = the key must be absent
+	}{
+		"not computed": {nil, nil},
+		"false":        {&no, false},
+		"true":         {&yes, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fake := &fakeEntityChangeRequestClient{canAnswer: tc.in}
+			req := authedRequest(http.MethodGet, "/change-requests/"+testChangeRequestID, "")
+			req.SetPathValue("id", testChangeRequestID)
+			rec := httptest.NewRecorder()
+			NewChangeRequestHandler(fake).GetChangeRequest(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200. body: %s", rec.Code, rec.Body.String())
+			}
+			var got map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+				t.Fatalf("body is not JSON: %v (%s)", err, rec.Body.String())
+			}
+			v, present := got["customerCanAnswer"]
+			if tc.want == nil {
+				if present {
+					t.Fatalf("customerCanAnswer = %v, want it absent", v)
+				}
+				return
+			}
+			if !present || v != tc.want {
+				t.Fatalf("customerCanAnswer = %v (present %v), want %v", v, present, tc.want)
+			}
+		})
+	}
 }

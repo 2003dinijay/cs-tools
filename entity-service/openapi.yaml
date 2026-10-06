@@ -5872,6 +5872,11 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
     get:
       summary: Get a single change request by ID (ServiceNow data source only).
+      description: >-
+        The change request detail. For a CUSTOMER (an external caller) on the
+        PostgreSQL data source it also carries `customerCanAnswer`: whether this
+        caller could give the customer's approval / review right now (see the
+        field). It is the same read the PATCH receipt is built from.
       operationId: getChangeRequest
       parameters:
         - name: id
@@ -15883,6 +15888,30 @@ components:
                 The creation form's "Customer Review" checkbox: the change
                 needs the customer's review before it is closed. When true,
                 review offers customer_review instead of closed.
+            customerCanAnswer:
+              type: boolean
+              description: >-
+                VIEWER-specific: whether the CALLER, a customer, may give the
+                customer's answer on this change request right now -- approve or
+                reject it (PATCH isCustomerApproved) in customer_approval, confirm
+                or fail it (PATCH isCustomerReviewed) in customer_review. In
+                customer_approval it is also the "may propose a new
+                implementation time" signal, apart from the change being on hold
+                (`onHold`), which refuses a proposal and not an answer.
+                True exactly when the answer would be accepted: the change is in
+                customer_approval / customer_review, the caller is a registered
+                PORTAL_USER contact of its project who holds a REQUESTED approval
+                on the live customer stage of that state, and nothing blocks them
+                from approving (the change's creator never does). False in every
+                other state, for a contact who was not asked, whose request a
+                sibling's answer cancelled or a Re-schedule superseded, and for the
+                creator. It is not the customer's OUTCOME -- that is
+                hasCustomerApproved / hasCustomerReviewed, which stay false while
+                the change waits for the customer.
+                PRESENT (true or false) only for an external caller on the
+                PostgreSQL data source; ABSENT for staff and internal callers, for
+                the ServiceNow data source and when the check could not be made.
+                Absent means unknown, which is not false. Never on search rows.
             approvedBy:
               $ref: '#/components/schemas/EntityRef'
               nullable: true

@@ -1967,6 +1967,14 @@ type ChangeRequest struct {
 	ApprovedBy          *EntityRef `json:"approvedBy"`
 	ApprovedOn          *string    `json:"approvedOn"`
 	LegalNextStates     []string   `json:"legalNextStates"`
+
+	// CustomerCanAnswer is entity-service's per-viewer answer to "may the caller
+	// answer this change request now" (approve / reject in Customer Approval,
+	// confirm / fail in Customer Review): true or false for a customer read on
+	// the PostgreSQL data source, absent (nil) when entity-service did not
+	// compute it (the ServiceNow data source, a staff caller, a failed check).
+	// Passed through unchanged -- see dto.ChangeRequestDetails.
+	CustomerCanAnswer *bool `json:"customerCanAnswer,omitempty"`
 }
 
 // PatchChangeRequestRequest is the full field set entity-service accepts for
