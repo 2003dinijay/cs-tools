@@ -241,7 +241,12 @@ services:
       DATA_SOURCE: postgres
       DB_HOST: postgres
       DB_PORT: "5432"
-      DB_USER: postgres
+      # Not `postgres`: a superuser skips every row-level-security policy, so as
+      # `postgres` any signed-in customer could read another project's change
+      # request or case by id (production's non-superuser role answers 404).
+      # The migrate service creates csm_app (scripts/csm-compose/migrate-and-seed.sh)
+      # and re-grants it on every pass, before this service starts.
+      DB_USER: csm_app
       DB_PASSWORD: devpassword
       DB_NAME: csm_platform
       DB_SSLMODE: disable
