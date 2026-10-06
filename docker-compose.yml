@@ -382,6 +382,12 @@ services:
       PRODUCT_CONSUMPTION_SUBSCRIPTION_URL: https://product-consumption.local.invalid
       REGISTRY_BASE_URL: https://registry.local.invalid
       USER_MANAGEMENT_BASE_URL: https://usermanagement.local.invalid
+      # There is no pre-cutover user-management service in this stack (the URL
+      # above is a placeholder that never resolves), so with this off
+      # GET /projects/{id}/contacts answers 500 and the portal's contact list
+      # and admin check fail. On, contacts are read from the CSM database
+      # through entity-service, which is what this stack seeds.
+      CSM_MIGRATION_PORTAL_CONTACTS_ENABLED: "true"
       AUTH_ADMIN_ROLE: cs_admin
       AUTH_JWKS_ENDPOINT: http://mock-oidc:9100/oauth2/jwks
       AUTH_ISSUER: http://localhost:9100/oauth2/token
