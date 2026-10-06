@@ -1440,6 +1440,13 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	// again, or -- Standard -- whether the customer is simply asked again.
 	var rescheduleCheckpoint *changeRequestApprovalCheckpoint
 	rescheduleAsksCustomerAgain := false
+	// A Re-schedule asks the customer again, on EVERY row: it writes our own
+	// customer_approval_required = true with the new window (see the "authorize"
+	// case), so that the CAB / ECAB approval that follows ends in Customer Approval
+	// (approvalGateTarget) also for a row whose box is false only because the
+	// column was added after it was created or synced (migration 0189 defaulted
+	// every existing row to false).
+	rescheduleRequiresCustomerApproval := false
 	approvalRequired, reviewRequired := gates.approvalRequired, gates.reviewRequired
 	if req.CustomerApprovalRequired != nil {
 		approvalRequired = *req.CustomerApprovalRequired
@@ -1471,6 +1478,7 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			if err := checkRescheduleWindow(ctx, tx, id, req.PlannedStartOn, req.PlannedEndOn); err != nil {
 				return "", err
 			}
+			rescheduleRequiresCustomerApproval = true
 			flow := changeRequestFlowForModel(gates.model)
 			switch {
 			case flow.checkpoint == nil:
@@ -1643,7 +1651,15 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	// applyCustomerStageOutcome stamps the flag with the state it moves to).
 	// The creation form's checkboxes: the requirement, not the outcome. Any
 	// edit past the gate was refused above (validateCustomerGateEdits).
-	if req.CustomerApprovalRequired != nil {
+	if rescheduleRequiresCustomerApproval {
+		// The change is in Customer Approval, so the customer's approval IS
+		// required of it, whatever an older row's box says: written with the new
+		// window in the one UPDATE. Only our own requirement column -- never the
+		// sync-owned is_customer_approval_required, which is ServiceNow's record of
+		// the customer's answer. A box sent in the same request can only be the
+		// stored value or true (the lock refused the rest), so it is not written twice.
+		crSets = append(crSets, "customer_approval_required = true")
+	} else if req.CustomerApprovalRequired != nil {
 		addCR("customer_approval_required = $%d", *req.CustomerApprovalRequired)
 	}
 	if req.CustomerReviewRequired != nil {
