@@ -44,6 +44,18 @@ ASGARDEO_ISSUER = os.environ.get("ASGARDEO_ISSUER", "")
 TIL_MODERATOR_GROUP = os.environ.get("TIL_MODERATOR_GROUP", "")
 GROUPS_CLAIM = os.environ.get("GROUPS_CLAIM", "groups")
 TIL_CHAT_SERVICE_ACCOUNT_EMAIL = os.environ.get("TIL_CHAT_SERVICE_ACCOUNT_EMAIL", "")
+# Optional. Comma-separated allowlist of OAuth client ids permitted to call
+# this API (checked against the token's `aud` and `client_id`/`azp` claims).
+# Unset (default) = any token from the configured issuer is accepted
+# regardless of which application it was issued to, same as before this
+# check existed -- deliberately opt-in rather than enabled by default, since
+# this API is meant to be called by more than one application (the One
+# WSO2 webapp's gateway-forwarded token today; a future caller with its own
+# separate Asgardeo application tomorrow), and those legitimately carry
+# different client ids from the same org.
+ASGARDEO_ALLOWED_CLIENT_IDS = {
+    c.strip() for c in os.environ.get("ASGARDEO_ALLOWED_CLIENT_IDS", "").split(",") if c.strip()
+}
 
 _jwks_cache: dict = {}
 _jwks_fetched_at: float = 0.0
@@ -82,8 +94,22 @@ async def _validate_token(token: str) -> dict:
     # so verify at that layer and apply claims validation ourselves.
     verified = jws.deserialize_compact(token, key_set, algorithms=["RS256"])
     claims = json.loads(verified.payload)
-    claims_registry = jwt.JWTClaimsRegistry(iss={"essential": True, "value": ASGARDEO_ISSUER})
+    claims_registry = jwt.JWTClaimsRegistry(
+        iss={"essential": True, "value": ASGARDEO_ISSUER},
+        exp={"essential": True},
+    )
     claims_registry.validate(claims)
+
+    if ASGARDEO_ALLOWED_CLIENT_IDS:
+        aud = claims.get("aud")
+        aud_values = aud if isinstance(aud, list) else ([aud] if aud else [])
+        client_id = claims.get("client_id") or claims.get("azp")
+        token_identities = {str(v) for v in aud_values if v}
+        if client_id:
+            token_identities.add(str(client_id))
+        if not (token_identities & ASGARDEO_ALLOWED_CLIENT_IDS):
+            raise ValueError("Token not issued to an allowed client")
+
     return claims
 
 

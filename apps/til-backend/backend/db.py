@@ -137,19 +137,25 @@ def _row_to_dict(row: dict) -> dict:
 
 
 def list_submissions(limit: int = 100, cursor: str | None = None) -> dict:
-    # Cursor = the created_at of the last row the caller already has; simple
-    # keyset pagination, newest first. Good enough until volume says otherwise.
+    # Cursor = "<created_at>|<id>" of the last row the caller already has;
+    # keyset pagination, newest first. created_at ALONE used to be the whole
+    # cursor, but created_at is microsecond-precision text, not a guaranteed-
+    # unique key -- two rows landing in the same microsecond would tie, and
+    # a strict `created_at < %s` silently drops whichever of them falls on
+    # the far side of that boundary. id (the primary key) breaks the tie.
     with pool.get_conn() as conn:
         with conn.cursor() as cur:
             if cursor:
+                cursor_created_at, _, cursor_id = cursor.rpartition("|")
                 cur.execute(
-                    "SELECT * FROM til_submissions WHERE created_at < %s "
-                    "ORDER BY created_at DESC LIMIT %s",
-                    (cursor, limit + 1),
+                    "SELECT * FROM til_submissions "
+                    "WHERE (created_at, id) < (%s, %s) "
+                    "ORDER BY created_at DESC, id DESC LIMIT %s",
+                    (cursor_created_at, cursor_id, limit + 1),
                 )
             else:
                 cur.execute(
-                    "SELECT * FROM til_submissions ORDER BY created_at DESC LIMIT %s",
+                    "SELECT * FROM til_submissions ORDER BY created_at DESC, id DESC LIMIT %s",
                     (limit + 1,),
                 )
             rows = cur.fetchall()
@@ -157,7 +163,7 @@ def list_submissions(limit: int = 100, cursor: str | None = None) -> dict:
     has_more = len(rows) > limit
     rows = rows[:limit]
     items = [_row_to_dict(r) for r in rows]
-    next_cursor = items[-1]["createdAt"] if has_more and items else None
+    next_cursor = f'{items[-1]["createdAt"]}|{items[-1]["id"]}' if has_more and items else None
     return {"items": items, "nextCursor": next_cursor}
 
 

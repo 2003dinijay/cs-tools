@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import os
 
+import html as html_module
+
 import httpx
 
 from sanitize import what_for_chat
@@ -38,7 +40,7 @@ def _build_card(who: str, where: str, what: str, where_detail: str | None, entry
     # than pass the raw markup through. See sanitize.py's what_for_chat.
     what_card_text = what_for_chat(what)
     widgets = [
-        {"textParagraph": {"text": f"<b>{who}</b>"}},
+        {"textParagraph": {"text": f"<b>{html_module.escape(who)}</b>"}},
         {"textParagraph": {"text": what_card_text}},
     ]
     # Absent (no ONE_WSO2_BASE_URL set -- see main.py) just means no button,
@@ -75,8 +77,15 @@ async def _post_to_webhook(webhook_url: str, payload: dict) -> None:
     # and one Space's dead webhook must not stop the other Space's post.
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(webhook_url, json=payload, timeout=10)
-        # 4xx/5xx intentionally not raised: see "best-effort" above.
+            response = await client.post(webhook_url, json=payload, timeout=10)
+        # Not raised (see "best-effort" above) -- but a rejected response
+        # must still be visible to an operator, same as a network failure.
+        if response.status_code >= 300:
+            print(
+                f"chat_notify: webhook rejected the post (status {response.status_code}): "
+                f"{response.text[:200]}",
+                flush=True,
+            )
     except httpx.RequestError as exc:
         # Logged, not raised -- an operator should be able to notice a dead
         # webhook URL without that failure ever touching the submitter.

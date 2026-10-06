@@ -18,7 +18,7 @@ load_dotenv()
 
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -83,7 +83,10 @@ async def list_submissions(
 
 @app.post("/submissions")
 async def create_submission(request: Request, user: dict = Depends(require_auth)):
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Request body must be valid JSON."})
     error = validate_submission_payload(body)
     if error:
         return JSONResponse(status_code=400, content={"error": error})
@@ -155,7 +158,7 @@ async def delete_submission(submission_id: str, user: dict = Depends(require_aut
         return JSONResponse(status_code=403, content={"error": "Not authorized to delete entries."})
 
     db.delete_submission(submission_id)
-    return JSONResponse(status_code=204, content=None)
+    return Response(status_code=204)
 
 
 @app.get("/health")

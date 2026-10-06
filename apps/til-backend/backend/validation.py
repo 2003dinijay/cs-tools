@@ -8,7 +8,7 @@ point in particular has no client-side validation of its own to rely on.
 """
 from __future__ import annotations
 
-from sanitize import what_plain_text
+from sanitize import sanitize_what_html, what_plain_text
 
 TIL_WHERE_OPTIONS = ("Customer", "Partner", "Internal", "Other")
 WHERE_OPTIONS_REQUIRING_DETAIL = ("Customer", "Partner", "Other")
@@ -42,11 +42,17 @@ def validate_submission_payload(body: dict) -> str | None:
     what = body.get("what")
     if not isinstance(what, str):
         return "'what' is required."
-    # `what` is rich-text HTML (TilRichTextField on the frontend) -- an
-    # editor with nothing typed still sends "<p><br></p>", not "", so an
-    # empty check (and the length limit) must read the PLAIN TEXT, not the
-    # markup. Mirrors the frontend's own isEmptyTilHtml/tilPlainTextLength.
-    what_text = what_plain_text(what)
+    # Checked on the SANITIZED html, not the raw input -- main.py stores
+    # sanitize_what_html(what), not `what` itself, and the two can disagree
+    # on emptiness: raw "<script>x</script>" has non-empty plain text ("x",
+    # what_plain_text only strips tags, not script/style CONTENT) but
+    # sanitizes down to "" (sanitize_what_html drops the whole block). Validating
+    # the raw form would let that through as a blank stored entry. `what` is
+    # rich-text HTML (TilRichTextField on the frontend) -- an editor with
+    # nothing typed still sends "<p><br></p>", not "", so an empty check
+    # (and the length limit) must read the PLAIN TEXT, not the markup.
+    # Mirrors the frontend's own isEmptyTilHtml/tilPlainTextLength.
+    what_text = what_plain_text(sanitize_what_html(what))
     if not what_text:
         return "'what' is required."
     if len(what_text) > WHAT_MAX_LENGTH:

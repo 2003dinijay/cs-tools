@@ -94,6 +94,18 @@ function onSubmitForm(event) {
     return statusDialog(error, /* isError= */ true);
   }
 
+  // event.user.email can be absent (Chat user records don't always carry
+  // it) -- if it is, submitEntry would send no onBehalfOfEmail at all, and
+  // til-backend falls back to attributing the entry to THIS SCRIPT'S OWN
+  // service account instead of rejecting it. Fail the submission instead of
+  // silently misattributing it.
+  if (!event.user.email) {
+    return statusDialog(
+      "Couldn't identify your account email -- please try again, or submit from the One WSO2 page instead.",
+      /* isError= */ true,
+    );
+  }
+
   try {
     submitEntry(who, where, what, event.user.email);
   } catch (err) {
