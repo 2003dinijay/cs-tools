@@ -576,11 +576,19 @@ type CaseRepository interface {
 
 type caseRepo struct {
 	db *Scoped
+	// vis is the change request customer-visibility policy. A few operations of
+	// this repository take an id and act on whatever work item it names (the
+	// comments, the watch list, the tags, the work-item attachments); a customer
+	// could pass a change request's id there, so those apply it (see
+	// CRVisibility.rejectHiddenChangeRequest).
+	vis CRVisibility
 }
 
-// NewCaseRepository constructs a CaseRepository backed by the given connection pool.
-func NewCaseRepository(db *Scoped) CaseRepository {
-	return &caseRepo{db: db}
+// NewCaseRepository constructs a CaseRepository backed by the given connection
+// pool. The optional CRVisibility is the change request customer-visibility
+// policy (see change_request_visibility.go).
+func NewCaseRepository(db *Scoped, vis ...CRVisibility) CaseRepository {
+	return &caseRepo{db: db, vis: firstCRVisibility(vis)}
 }
 
 // CreateCase implements CaseRepository.
@@ -1668,6 +1676,12 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 	// COALESCE($5, NOW()) rather than two separate query strings: $5 is a
 	// nil *time.Time (pgx sends SQL NULL) for the ordinary path, or a real
 	// timestamp for the mirror path.
+	// The id names ANY work item (see above), a change request included: one the
+	// caller may not see does not exist for them, exactly as through the change
+	// request routes.
+	if err := r.vis.rejectHiddenChangeRequest(ctx, r.db, req.CaseID, "case not found"); err != nil {
+		return domain.CaseComment{}, err
+	}
 	const query = `
 		INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
 		SELECT gen_random_uuid(), COALESCE($5, NOW()), $1, $2::comment_type_enum, w.id, $4
@@ -1697,6 +1711,11 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 
 // SearchCaseComments implements CaseRepository.
 func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCaseCommentsRequest) ([]domain.CaseComment, int, error) {
+	// The id names any work item, a change request included: one the caller may
+	// not see has no comments for them.
+	if err := r.vis.rejectHiddenChangeRequest(ctx, r.db, req.CaseID, "case not found"); err != nil {
+		return nil, 0, err
+	}
 	args := []any{req.CaseID}
 	typeFilter := ""
 	if req.Filters != nil && req.Filters.Type != nil {
@@ -2382,6 +2401,13 @@ func (r *caseRepo) SearchWorkItemAttachments(ctx context.Context, workItemID str
 	workItemTypes, ok := ReferenceTypeToWorkItemType[referenceType]
 	if !ok {
 		return nil, 0, &apierror.ValidationError{Msg: "referenceType is not supported by the Postgres data source: " + string(referenceType)}
+	}
+	// A change request's attachments are its own: a caller who may not see the
+	// change request gets the 404 the change request itself would give.
+	if referenceType == domain.ReferenceTypeChangeRequest {
+		if err := r.vis.requireVisibleChangeRequest(ctx, r.db, workItemID); err != nil {
+			return nil, 0, err
+		}
 	}
 
 	const where = `
@@ -3172,6 +3198,9 @@ func (r *caseRepo) SetCaseWatchList(ctx context.Context, caseID string, userIDs 
 	var updatedOn time.Time
 	var watchers []domain.WatchListUser
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		if err := r.vis.rejectHiddenChangeRequest(ctx, tx, caseID, "case not found"); err != nil {
+			return err
+		}
 		if err := tx.QueryRow(ctx, `UPDATE work_item SET updated_on = NOW(), updated_by = $2 WHERE id = $1 RETURNING updated_on`, caseID, callerEmail).Scan(&updatedOn); err != nil {
 			return fmt.Errorf("touch work_item for watch list update: %w", err)
 		}
@@ -3437,8 +3466,12 @@ func recomputeTimeCardsBillable(ctx context.Context, q txQuerier, caseID string,
 // UpdateCaseParent implements CaseRepository.
 func (r *caseRepo) UpdateCaseParent(ctx context.Context, caseID, parentID, callerEmail string) (time.Time, error) {
 	var updatedOn time.Time
+	// type = ANY(case-like): this writes a CASE's parent. Without the guard the
+	// id could name any other work item the caller can reach -- a change
+	// request a customer was never designated, for one -- and re-parent it.
 	err := r.db.QueryRow(ctx,
-		`UPDATE work_item SET parent_id = $2::uuid, updated_on = NOW(), updated_by = $3 WHERE id = $1 RETURNING updated_on`,
+		`UPDATE work_item SET parent_id = $2::uuid, updated_on = NOW(), updated_by = $3
+		  WHERE id = $1 AND type = ANY(`+caseLikeWorkItemTypes+`) RETURNING updated_on`,
 		caseID, parentID, callerEmail,
 	).Scan(&updatedOn)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -3639,6 +3672,9 @@ func scanTag(row interface{ Scan(...any) error }) (domain.Tag, error) {
 // AddCaseTag implements CaseRepository.
 func (r *caseRepo) AddCaseTag(ctx context.Context, caseID, label, callerEmail string) (domain.Tag, error) {
 	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (domain.Tag, error) {
+		if err := r.vis.rejectHiddenChangeRequest(ctx, tx, caseID, "case not found"); err != nil {
+			return domain.Tag{}, err
+		}
 		return addCaseTagTx(ctx, tx, caseID, label, callerEmail)
 	})
 }
@@ -3726,6 +3762,9 @@ func addCaseTagTx(ctx context.Context, tx pgx.Tx, caseID, label, callerEmail str
 
 // RemoveCaseTag implements CaseRepository.
 func (r *caseRepo) RemoveCaseTag(ctx context.Context, caseID, tagID, _ string) error {
+	if err := r.vis.rejectHiddenChangeRequest(ctx, r.db, caseID, "case not found"); err != nil {
+		return err
+	}
 	tag, err := r.db.Exec(ctx, `DELETE FROM work_item_tag WHERE work_item_id = $1 AND tag_id = $2`, caseID, tagID)
 	if err != nil {
 		return fmt.Errorf("remove case tag: %w", err)

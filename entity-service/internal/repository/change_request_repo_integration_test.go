@@ -2695,6 +2695,20 @@ func seedChangeRequestForCustomerFlagTest(t *testing.T, pool *repository.Scoped,
 		id, approved, reviewed)
 }
 
+// setCustomerFlagTestState moves a change request seeded by
+// seedChangeRequestForCustomerFlagTest (New) to state. What a customer can reach
+// depends on it: a change request still in New / Assess / Authorize was never
+// designated to a customer and is invisible to them (404, whatever they send),
+// while one past Authorize is visible to its project's registered contacts when
+// it is legacy (no cutover is configured in these tests).
+func setCustomerFlagTestState(t *testing.T, pool *repository.Scoped, id, state string) {
+	t.Helper()
+	sys := repository.WithSystemIdentity(context.Background())
+	if _, err := pool.Exec(sys, `UPDATE change_request SET state = $2::change_request_state_enum WHERE id = $1`, id, state); err != nil {
+		t.Fatalf("set state %s: %v", state, err)
+	}
+}
+
 // externalCallerCtx builds a ctx carrying a non-internal (Unrestricted:
 // false) caller identity for email -- repository.Scoped's own InTx/Query/
 // QueryRow/Exec only need SOME identity present (CallerIdentityFromContext's
@@ -2782,14 +2796,23 @@ func TestChangeRequestIntegration_PatchCustomerFlagQualifyingPortalUserContactNe
 	seedChangeRequestForCustomerFlagTest(t, scoped, crCustomerFlagQualifyingTestID, "CRCFQUAL01", crCustomerFlagProjectID, false, false)
 
 	yes := true
+	// New: never designated to a customer, so it does not exist for them.
+	_, err = repo.PatchChangeRequest(externalCallerCtx(crCustomerFlagPortalUserEmail), crCustomerFlagQualifyingTestID,
+		domain.PatchChangeRequestRequest{IsCustomerApproved: &yes}, crCustomerFlagPortalUserEmail)
+	var nf *apierror.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("PatchChangeRequest(isCustomerApproved=true) by a qualifying contact on a New change request: got %T (%v), want *apierror.NotFoundError", err, err)
+	}
+	// Scheduled: visible (legacy), but not waiting on the customer.
+	setCustomerFlagTestState(t, scoped, crCustomerFlagQualifyingTestID, "SCHEDULED")
 	_, err = repo.PatchChangeRequest(externalCallerCtx(crCustomerFlagPortalUserEmail), crCustomerFlagQualifyingTestID,
 		domain.PatchChangeRequestRequest{IsCustomerApproved: &yes}, crCustomerFlagPortalUserEmail)
 	var ce *apierror.ConflictError
 	if !errors.As(err, &ce) {
-		t.Fatalf("PatchChangeRequest(isCustomerApproved=true) by a qualifying contact on a New change request: got %T (%v), want *apierror.ConflictError", err, err)
+		t.Fatalf("PatchChangeRequest(isCustomerApproved=true) by a qualifying contact on a Scheduled change request: got %T (%v), want *apierror.ConflictError", err, err)
 	}
-	if !strings.Contains(ce.Msg, "no longer pending") || !strings.Contains(ce.Msg, "in New") {
-		t.Errorf("message = %q, want the stale-approval refusal naming New", ce.Msg)
+	if !strings.Contains(ce.Msg, "no longer pending") || !strings.Contains(ce.Msg, "in Scheduled") {
+		t.Errorf("message = %q, want the stale-approval refusal naming Scheduled", ce.Msg)
 	}
 
 	got, err := repo.GetChangeRequestByID(sys, crCustomerFlagQualifyingTestID)
@@ -2848,9 +2871,11 @@ func TestChangeRequestIntegration_PatchCustomerFlagContactOnDifferentProjectCann
 	if err == nil {
 		t.Fatal("PatchChangeRequest(isCustomerApproved=true) from a different project's own contact: want error, got nil")
 	}
-	var fe *apierror.ForbiddenError
-	if !errors.As(err, &fe) {
-		t.Fatalf("got %T (%v), want *apierror.ForbiddenError", err, err)
+	// Not a member of the change request's project: it does not exist for them
+	// (404), on a superuser connection as much as under row-level security.
+	var nf *apierror.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("got %T (%v), want *apierror.NotFoundError", err, err)
 	}
 
 	var gotApproved *bool
@@ -2895,6 +2920,9 @@ func TestChangeRequestIntegration_PatchCustomerFlagWrongRoleContactForbiddenStat
 	seedProjectContactWithRole(t, pool, crCustomerFlagNoRoleProjectID,
 		crCustomerFlagWrongRoleEmail, "REGISTERED", "SECURITY_CONTACT", "CR Customer Flag Wrong Role Group")
 	seedChangeRequestForCustomerFlagTest(t, scoped, crCustomerFlagWrongRoleTestID, "CRCFWRNG01", crCustomerFlagNoRoleProjectID, false, false)
+	// Waiting on the customer, so that the contact (a registered member of the
+	// project) can see the change request and reaches this feature's own check.
+	setCustomerFlagTestState(t, scoped, crCustomerFlagWrongRoleTestID, "CUSTOMER_APPROVAL")
 
 	yes := true
 	_, err = repo.PatchChangeRequest(externalCallerCtx(crCustomerFlagWrongRoleEmail), crCustomerFlagWrongRoleTestID,
@@ -2964,9 +2992,11 @@ func TestChangeRequestIntegration_PatchCustomerFlagInvitedContactCannotReach(t *
 	if err == nil {
 		t.Fatal("PatchChangeRequest(isCustomerApproved=true) from a still-INVITED PORTAL_USER contact: want error, got nil")
 	}
-	var fe *apierror.ForbiddenError
-	if !errors.As(err, &fe) {
-		t.Fatalf("got %T (%v), want *apierror.ForbiddenError", err, err)
+	// An invited contact is not a member of the project yet: the change request
+	// does not exist for them (404).
+	var nf *apierror.NotFoundError
+	if !errors.As(err, &nf) {
+		t.Fatalf("got %T (%v), want *apierror.NotFoundError", err, err)
 	}
 }
 
@@ -2996,6 +3026,8 @@ func TestChangeRequestIntegration_PatchCustomerFlagLockedTrueCannotRevert(t *tes
 	seedProjectContactWithRole(t, pool, crCustomerFlagProjectID,
 		crCustomerFlagPortalUserEmail, "REGISTERED", "PORTAL_USER", "CR Customer Flag Portal User Group")
 	seedChangeRequestForCustomerFlagTest(t, scoped, crCustomerFlagLockedTestID, "CRCFLOCK01", crCustomerFlagProjectID, true, true)
+	// Scheduled: visible to the contact (legacy), and not waiting on them.
+	setCustomerFlagTestState(t, scoped, crCustomerFlagLockedTestID, "SCHEDULED")
 
 	no := false
 
@@ -3012,7 +3044,7 @@ func TestChangeRequestIntegration_PatchCustomerFlagLockedTrueCannotRevert(t *tes
 
 	// The same qualifying contact: also refused. For a customer false is the
 	// answer "no", which only means something while the change request is in
-	// Customer Review; this record is New, so it is the stale-approval 409. (The
+	// Customer Review; this record is Scheduled, so it is the stale-approval 409. (The
 	// lock on a record that IS in the right state is asserted by
 	// TestChangeRequestCustomerOutcomeIntegration_PatchRespectsTheFlagLock.)
 	_, err = repo.PatchChangeRequest(externalCallerCtx(crCustomerFlagPortalUserEmail), crCustomerFlagLockedTestID,
@@ -3064,6 +3096,9 @@ func TestChangeRequestIntegration_PatchCustomerFlagFalseFromNonContactIsRefused(
 	seedProjectContactWithRole(t, pool, crCustomerFlagNoRoleProjectID,
 		crCustomerFlagWrongRoleEmail, "REGISTERED", "SECURITY_CONTACT", "CR Customer Flag No-op Wrong Role Group")
 	seedChangeRequestForCustomerFlagTest(t, scoped, crCustomerFlagNoOpTestID, "CRCFNOOP01", crCustomerFlagNoRoleProjectID, false, false)
+	// Scheduled: a change request this registered (but never asked) contact can
+	// see, so the request is classified and refused on its own merits.
+	setCustomerFlagTestState(t, scoped, crCustomerFlagNoOpTestID, "SCHEDULED")
 
 	no := false
 	_, err = repo.PatchChangeRequest(externalCallerCtx(crCustomerFlagWrongRoleEmail), crCustomerFlagNoOpTestID,

@@ -327,13 +327,29 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchOutOfState(t *testing.T) {
 		}
 	}
 
-	refuse("in New", "in New", true, true)
+	// Before the customer's approval is first asked (New, Assess, Authorize) the
+	// change request was never designated to a customer: it does not exist for
+	// them, so there is nothing to refuse -- 404, whatever they send.
+	hidden := func(when string) {
+		t.Helper()
+		before := f.customerSnapshot(id, map[string]string{crScopeUserA1: "alice", crScopeUserA2: "bob"})
+		for _, v := range []bool{true, false} {
+			_, err := f.approveAs(id, crScopeUserA1, v)
+			f.wantNotFound(when+": isCustomerApproved="+fmt.Sprint(v), err)
+			_, err = f.reviewAs(id, crScopeUserA1, v)
+			f.wantNotFound(when+": isCustomerReviewed="+fmt.Sprint(v), err)
+		}
+		if after := f.customerSnapshot(id, map[string]string{crScopeUserA1: "alice", crScopeUserA2: "bob"}); after != before {
+			t.Fatalf("%s: a refused answer changed the change request:\n  before: %s\n  after:  %s", when, before, after)
+		}
+	}
+	hidden("in New")
 	f.requestApproval(id)
-	refuse("in Assess", "in Assess", true, true)
+	hidden("in Assess")
 	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
 		t.Fatalf("peer approval: %v", err)
 	}
-	refuse("in Authorize", "in Authorize", true, true)
+	hidden("in Authorize")
 	if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
 		t.Fatalf("CAB approval: %v", err)
 	}
@@ -429,8 +445,17 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchWhenNobodyWasAsked(t *test
 		assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	})
 
-	t.Run("no customer request is pending", func(t *testing.T) {
+	// A change request in Customer Approval with nobody asked (no eligible
+	// contact when it got there, or it got there under an older build) has no
+	// live stage to answer. What happens depends on whether customers may see it
+	// at all: a LEGACY one (created before the strict-visibility cutover) is
+	// visible to its project's registered contacts, and the customer's first act
+	// gives it the stage it lacks, so the customer's answer is recorded like any
+	// other; a STRICT one was never designated to anybody, so it does not exist
+	// for the customers, and WSO2 records the answer as before.
+	t.Run("no customer request is pending, strict: invisible to the customers", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
+		f.useVisibility(visStrictSinceLongAgo())
 		// Project C has no contact when the change reaches Customer Approval.
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
 		f.requestApproval(id)
@@ -438,16 +463,17 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchWhenNobodyWasAsked(t *test
 		if n := len(f.customerStages(id)); n != 0 {
 			t.Fatalf("customer stage provisioned for a project without contacts: %+v", f.customerStages(id))
 		}
-		// A contact registers later; nobody was ever asked.
+		// A contact registers later; nobody was ever asked, and this change
+		// request was never designated to them.
 		const late = "3bbbbbbb-0000-0000-0000-0000000000a8"
 		f.execSQL(`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user, user_type)
 		           VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, 'Lena Late', 'Lena', 'Late', $2, true, false, 'EXTERNAL'::user_type_enum)`, late, crFlowEmail(late))
 		f.registerContact(crScopeProjectC, crScopeAccountID, late)
 
 		_, err := f.approveAs(id, late, true)
-		f.wantConflictContaining("answering with nobody asked", err, "no customer approval is pending", "WSO2 records")
+		f.wantNotFound("answering a change request nobody designated to them", err)
 		_, err = f.approveAs(id, late, false)
-		f.wantConflictContaining("rejecting with nobody asked", err, "no customer approval is pending")
+		f.wantNotFound("rejecting a change request nobody designated to them", err)
 		f.expect(id, "after the refused answers", "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
 		if a, _ := f.customerOutcome(id); a {
 			t.Fatal("flag stamped by a refused answer")
@@ -456,6 +482,43 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchWhenNobodyWasAsked(t *test
 		f.step(id, domain.ChangeRequestStateScheduled, "SCHEDULED", "implement", "canceled")
 		if a, _ := f.customerOutcome(id); !a {
 			t.Fatal("manual record of the customer's approval did not stamp the flag")
+		}
+	})
+
+	t.Run("no customer request is pending, legacy: the first customer act gives it the stage", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		// The default policy has no cutover: every change request is legacy.
+		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
+		f.requestApproval(id)
+		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
+		if n := len(f.customerStages(id)); n != 0 {
+			t.Fatalf("customer stage provisioned for a project without contacts: %+v", f.customerStages(id))
+		}
+		const late = "3bbbbbbb-0000-0000-0000-0000000000a8"
+		f.execSQL(`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user, user_type)
+		           VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, 'Lena Late', 'Lena', 'Late', $2, true, false, 'EXTERNAL'::user_type_enum)`, late, crFlowEmail(late))
+		f.registerContact(crScopeProjectC, crScopeAccountID, late)
+
+		// An answer that is refused (here: it names a window the change request
+		// does not have) provisions nothing: the stage is created only by an act
+		// that is then recorded.
+		if _, err := f.patchAsContact(id, late, domain.PatchChangeRequestRequest{IsCustomerApproved: boolp(true), ExpectedPlannedStartOn: sp("2031-01-01T00:00:00Z")}); err == nil {
+			t.Fatal("an answer for a window the change request does not have was accepted")
+		}
+		if n := len(f.customerStages(id)); n != 0 {
+			t.Fatalf("a refused answer left a customer stage behind: %+v", f.customerStages(id))
+		}
+		if _, err := f.approveAs(id, late, true); err != nil {
+			t.Fatalf("the first customer act on a stage-less legacy change request: %v", err)
+		}
+		f.expect(id, "after the answer", "SCHEDULED", "implement", "canceled")
+		st := f.customerStages(id)
+		if len(st) != 1 {
+			t.Fatalf("customer stages after the answer = %+v, want exactly the one provisioned", st)
+		}
+		assertApprovers(t, "the provisioned stage", st[0].approvers, map[string]string{late: "APPROVED"})
+		if a, _ := f.customerOutcome(id); !a {
+			t.Fatal("the answer did not stamp the customer's approval")
 		}
 	})
 }
@@ -718,10 +781,12 @@ func TestChangeRequestCustomerOutcomeIntegration_ProposeNewTimeRefusals(t *testi
 		return err
 	}
 
-	// Not before the customer's approval is what is being waited for.
-	f.wantConflictContaining("proposing in New", propose(crScopeUserA1), "only be proposed while the change request is in Customer Approval", "in New")
+	// Not before the customer's approval is what is being waited for: until
+	// then (New, Assess, Authorize) the change request was never designated to a
+	// customer, so there is nothing for them to propose on (404).
+	f.wantNotFound("proposing in New", propose(crScopeUserA1))
 	f.requestApproval(id)
-	f.wantConflictContaining("proposing in Assess", propose(crScopeUserA1), "in Assess")
+	f.wantNotFound("proposing in Assess", propose(crScopeUserA1))
 	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 
 	// Not by anyone who is not a contact of this project, nor by the creator.

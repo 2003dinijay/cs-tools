@@ -256,11 +256,18 @@ type ChangeRequestRepository interface {
 
 type changeRequestRepo struct {
 	db *Scoped
+	// vis is the customer-visibility policy (change_request_visibility.go): who
+	// of the customers may see which change request. The zero value is "no
+	// cutover": every change request is legacy.
+	vis CRVisibility
 }
 
-// NewChangeRequestRepository constructs a ChangeRequestRepository backed by the given connection pool.
-func NewChangeRequestRepository(db *Scoped) ChangeRequestRepository {
-	return &changeRequestRepo{db: db}
+// NewChangeRequestRepository constructs a ChangeRequestRepository backed by the
+// given connection pool. The optional CRVisibility is the customer-visibility
+// policy (the strict-visibility cutover instant); omitted, every change request
+// is legacy, which is what customers saw before the strict rule existed.
+func NewChangeRequestRepository(db *Scoped, vis ...CRVisibility) ChangeRequestRepository {
+	return &changeRequestRepo{db: db, vis: firstCRVisibility(vis)}
 }
 
 // changeRequestFromJoins is shared by every read method. LEFT joins
@@ -666,8 +673,14 @@ func (r *changeRequestRepo) SearchChangeRequests(ctx context.Context, req domain
 	// Planner hint for external callers only (see viewerProjectHint): without
 	// it, making the policy helpers parallel safe lets Postgres pick a parallel
 	// scan of all of work_item for a customer with a handful of change requests.
-	// RLS remains the authorization boundary.
+	// RLS remains the authorization boundary for project membership.
 	where += viewerProjectHintFor(ctx, "wi")
+	// What a customer may see of those is decided here, in SQL, by the one
+	// visibility rule (change_request_visibility.go): designated to them, or
+	// legacy. The same fragment narrows the count, the page and every other
+	// customer-reachable read, so they cannot disagree.
+	visSQL, args := r.vis.andClause(ctx, "wi", "cr", args)
+	where += visSQL
 
 	sortCol := "wi.created_on"
 	if req.SortBy.Field == domain.ChangeRequestSortFieldUpdatedOn {
@@ -742,6 +755,8 @@ func (r *changeRequestRepo) AggregateChangeRequests(ctx context.Context, req dom
 
 	where, args := changeRequestWhereClause(req.Filters, createdStartDate, createdEndDate, approval)
 	where += viewerProjectHintFor(ctx, "wi") // planner hint, external callers only; see SearchChangeRequests
+	visSQL, args := r.vis.andClause(ctx, "wi", "cr", args)
+	where += visSQL // the one visibility rule; see SearchChangeRequests
 
 	query := fmt.Sprintf(`
 		SELECT %s AS bucket, COUNT(*) AS bucket_count
@@ -826,11 +841,15 @@ const changeRequestDetailJoins = `
 
 // GetChangeRequestByID implements ChangeRequestRepository.
 func (r *changeRequestRepo) GetChangeRequestByID(ctx context.Context, id string) (domain.ChangeRequest, error) {
+	ctx = withCRVisibility(ctx, r.vis)
+	// The visibility rule is part of the one SELECT, so a change request a
+	// customer may not see is exactly as absent here as it is from the list.
+	visSQL, args := r.vis.andClause(ctx, "wi", "cr", []any{id})
 	query := "SELECT " + changeRequestSelectColumns + ", " + changeRequestDetailColumns + " " +
-		changeRequestFromJoins + " " + changeRequestDetailJoins + " WHERE wi.id = $1 AND wi.type = 'CHANGE_REQUEST'"
+		changeRequestFromJoins + " " + changeRequestDetailJoins + " WHERE wi.id = $1 AND wi.type = 'CHANGE_REQUEST'" + visSQL
 
 	var cr domain.ChangeRequest
-	row := r.db.QueryRow(ctx, query, id)
+	row := r.db.QueryRow(ctx, query, args...)
 	err := scanChangeRequestViewAndDetail(row, &cr)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ChangeRequest{}, &apierror.NotFoundError{Msg: "change request not found"}
@@ -1068,7 +1087,16 @@ var changeRequestPatchCRFKField = map[string]string{
 
 // PatchChangeRequest implements ChangeRequestRepository.
 func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, req domain.PatchChangeRequestRequest, actorEmail string) (domain.ChangeRequest, error) {
+	ctx = withCRVisibility(ctx, r.vis)
 	wiID, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (string, error) {
+		// FIRST statement of the transaction, before the request is classified
+		// or anything is locked or written: a customer who may not see this
+		// change request gets the same 404 whatever they send, even a field
+		// they could never set (which would otherwise be a 403 that confirms
+		// the change request exists).
+		if err := r.vis.requireVisibleChangeRequest(ctx, tx, id); err != nil {
+			return "", err
+		}
 		return patchChangeRequestTx(ctx, tx, id, req, actorEmail)
 	})
 	if err != nil {
@@ -2316,6 +2344,8 @@ func changeRequestEnumArgs(req domain.CreateChangeRequestRequest) (impact, risk,
 }
 
 // CreateChangeRequest implements ChangeRequestRepository.
+//
+// crvis: internal callers only: POST /change-requests is wrapped by internalOnly (server/routes.go), so no customer identity reaches it
 func (r *changeRequestRepo) CreateChangeRequest(ctx context.Context, req domain.CreateChangeRequestRequest, createdBy string) (domain.CreateChangeRequestResponse, error) {
 	if err := ValidateCreateChangeRequestType(req.Type); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
@@ -2428,6 +2458,8 @@ const createChangeRequestFromServiceNowQuery = `
 	JOIN inserted_change_request icr ON icr.id = iwi.id`
 
 // CreateChangeRequestFromServiceNow implements ChangeRequestRepository.
+//
+// crvis: internal callers only: the ServiceNow-first create runs behind POST /change-requests, wrapped by internalOnly (server/routes.go)
 func (r *changeRequestRepo) CreateChangeRequestFromServiceNow(ctx context.Context, req domain.CreateChangeRequestRequest, id, number, createdBy string) (domain.CreateChangeRequestResponse, error) {
 	if err := ValidateCreateChangeRequestType(req.Type); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
@@ -2559,6 +2591,13 @@ type changeRequestApprovalApproverRow struct {
 
 // GetChangeRequestApprovals implements ChangeRequestRepository.
 func (r *changeRequestRepo) GetChangeRequestApprovals(ctx context.Context, id string) (domain.ChangeRequestApprovals, error) {
+	ctx = withCRVisibility(ctx, r.vis)
+	// A change request the caller may not see has no approvals to show them:
+	// 404, not the empty 200 a stage-less change request answers (that answer
+	// would confirm the change request exists).
+	if err := r.vis.requireVisibleChangeRequest(ctx, r.db, id); err != nil {
+		return domain.ChangeRequestApprovals{}, err
+	}
 	stageRows, err := r.db.Query(ctx, changeRequestApprovalStagesQuery, id)
 	if err != nil {
 		return domain.ChangeRequestApprovals{}, fmt.Errorf("get change request approvals: query stages: %w", err)
@@ -2985,9 +3024,23 @@ func cancelSiblingApprovalStageApprovers(ctx context.Context, tx pgx.Tx, stageID
 // stage, so approving a CAB stage never advances a change that is somehow still
 // reading Assess.
 func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id, approverUserID, decision, actorEmail string) (string, error) {
+	ctx = withCRVisibility(ctx, r.vis)
 	// InTxReturning: Scoped stamps the caller identity on the transaction's
 	// own session (the base branch's r.db.Begin is not available on Scoped).
 	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (string, error) {
+		// First statement: a change request the caller may not see has nothing
+		// for them to decide (404), before any lock is taken.
+		if err := r.vis.requireVisibleChangeRequest(ctx, tx, id); err != nil {
+			return "", err
+		}
+		// A legacy change request already sitting in Customer Approval / Review
+		// with nobody asked (it got there under an older build) gets its live
+		// customer stage here, in the customer's own transaction, so their
+		// answer is recorded exactly like any other. See
+		// ensureCustomerStageForLegacy.
+		if err := ensureCustomerStageForLegacy(ctx, tx, id, actorEmail); err != nil {
+			return "", err
+		}
 		return decideChangeRequestApprovalTx(ctx, tx, id, approverUserID, decision, actorEmail)
 	})
 }

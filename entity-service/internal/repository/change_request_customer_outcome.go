@@ -231,7 +231,9 @@ func customerApproverUserID(ctx context.Context, tx crQuerier, workItemID, actor
 //  2. the viewer is a REGISTERED PORTAL_USER contact of the change request's own
 //     project (requireRegisteredContact's test);
 //  3. the customer's request is still pending: a live customer stage of that
-//     state (liveCustomerStageForState);
+//     state (liveCustomerStageForState) -- or, for a LEGACY change request that
+//     is waiting in that state with nobody asked at all, the stage its first
+//     customer act will create (legacyStageWouldBeProvisioned);
 //  4. the viewer holds a REQUESTED approval on that live stage -- not a contact
 //     the request was never sent to, not one whose row a sibling's answer
 //     cancelled, not one whose stage a Re-schedule superseded;
@@ -254,8 +256,15 @@ func customerCanAnswer(ctx context.Context, q crQuerier, id string, projectID *s
 		return false, err
 	}
 	live, err := liveCustomerStageForState(ctx, q, id, spec.state)
-	if err != nil || live == nil {
+	if err != nil {
 		return false, err
+	}
+	if live == nil {
+		// A legacy change request already waiting in this state with nobody
+		// asked: the stage is created when the viewer first acts
+		// (ensureCustomerStageForLegacy), so they may answer now. Read-only
+		// here: this decides, it provisions nothing.
+		return legacyStageWouldBeProvisioned(ctx, q, id, spec, viewerEmail)
 	}
 	userID, err := customerApproverUserID(ctx, q, id, viewerEmail)
 	if err != nil {
@@ -299,6 +308,162 @@ func customerHasRequestedRow(ctx context.Context, q crQuerier, stageID, userID s
 		return false, fmt.Errorf("read the caller's pending approval: %w", err)
 	}
 	return asked, nil
+}
+
+// ensureCustomerStageForLegacy gives a LEGACY change request that is sitting in
+// Customer Approval / Customer Review with no live customer stage its stage, in
+// the transaction of the customer act that needs it (the customer's answer, a
+// proposed time, a decision on the approvals route).
+//
+// Why it exists. Such a change request got into the state under an older build,
+// or from ServiceNow, which never asked the customer through a stage: it has
+// nobody to ask, so the customer's Approve answered "nobody asked" (409), and a
+// proposal had nobody to be proposed to. The change request is visible to the
+// customer (it is legacy, see change_request_visibility.go), so the act that
+// would be refused for want of a stage creates the stage instead -- the SAME
+// stage provisionCustomerStage creates on the normal path (every registered
+// PORTAL_USER contact of the project, one REQUESTED row each, the creator listed
+// CANCELLED), which also DESIGNATES the contacts: from then on the change
+// request stays visible to them in every later state, including Authorize after
+// a proposed time.
+//
+// Safe and idempotent. It does nothing unless every one of these holds, and
+// provisionCustomerStage (which it calls) re-checks under the change request's
+// row lock, so concurrent customers cannot provision twice and a re-sync cannot
+// duplicate it (the stage is found by its label and a REQUESTED row, and a stage
+// that was already decided is never reopened):
+//
+//   - the caller is a customer (an external identity), never staff;
+//   - the change request is legacy (created before the cutover instant, or no
+//     cutover is configured): a change request created after it was asked
+//     through our flow, or was never meant to be seen;
+//   - it is in Customer Approval or Customer Review right now;
+//   - no live customer stage exists for that state (an existing live stage is
+//     never touched: provisionCustomerStage would cancel one whose contacts
+//     changed, which is not this function's business);
+//   - the caller is a registered PORTAL_USER contact of the change request's own
+//     project.
+//
+// It runs in repository code only and writes only approval_stage /
+// approval_stage_approver rows through the established provisioning: the pure
+// ServiceNow data source never reaches it, and nothing of csm-sync-service's
+// own rows is changed.
+func ensureCustomerStageForLegacy(ctx context.Context, tx pgx.Tx, id, actorEmail string) error {
+	if !isExternalCaller(ctx) {
+		return nil
+	}
+	legacy, state, projectID, ok, err := crVisibilityFromContext(ctx).legacyAndState(ctx, tx, id)
+	if err != nil || !ok || !legacy {
+		return err
+	}
+	if customerStageSpecForState(state) == nil {
+		return nil
+	}
+	live, err := liveCustomerStageForState(ctx, tx, id, state)
+	if err != nil || live != nil {
+		return err
+	}
+	registered, err := callerMayGrantChangeRequestCustomerFlag(ctx, tx, projectID, actorEmail)
+	if err != nil || !registered {
+		return err
+	}
+	provisioned, err := provisionCustomerStage(ctx, tx, id, actorEmail)
+	if err != nil {
+		return fmt.Errorf("provision the customer stage of a legacy change request: %w", err)
+	}
+	if provisioned {
+		slog.InfoContext(ctx, "provisioned the customer stage of a legacy change request on the customer's first act",
+			"changeRequestId", id, "state", state)
+	}
+	return nil
+}
+
+// legacyStageWouldBeProvisioned is the read-only twin of
+// ensureCustomerStageForLegacy for customerCanAnswer: true when the viewer is a
+// customer who, by acting now, would get the legacy change request's missing
+// stage created and would be one of the people asked in it. It checks what
+// provisionCustomerStage checks, in the same terms, and never writes:
+//
+//   - the change request is legacy and waiting in the state spec belongs to
+//     (the caller has already seen there is no live stage);
+//   - no answer was ever given on a customer stage of that kind (a decided stage
+//     is never reopened);
+//   - the viewer is one of the project's registered contacts a stage would ask
+//     (customerContactUserIDs) and is not the change request's creator, and
+//     somebody other than the creator would be asked at all.
+func legacyStageWouldBeProvisioned(ctx context.Context, q crQuerier, id string, spec *customerStageSpec, viewerEmail string) (bool, error) {
+	legacy, state, projectID, ok, err := crVisibilityFromContext(ctx).legacyAndState(ctx, q, id)
+	if err != nil || !ok || !legacy || projectID == nil || state != spec.state {
+		return false, err
+	}
+	members, err := customerContactUserIDs(ctx, q, *projectID)
+	if err != nil || len(members) == 0 {
+		return false, err
+	}
+	var decided bool
+	if err := q.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM approval_stage_approver asa JOIN approval_stage ast ON ast.id = asa.stage_id
+		                 WHERE ast.work_item_id = $1 AND ast.checkpoint_label = $2 AND asa.state IN ('APPROVED', 'REJECTED'))`,
+		id, spec.label).Scan(&decided); err != nil {
+		return false, fmt.Errorf("customer can answer: check decided stage: %w", err)
+	}
+	if decided {
+		return false, nil
+	}
+	// The viewer must be one of the people a stage would ask. An email can have
+	// more than one user row; any of them counts, the row inserted is whichever
+	// the contact derivation picked.
+	rows, err := q.Query(ctx, `SELECT id::text FROM "user" WHERE LOWER(email) = LOWER($1)`, viewerEmail)
+	if err != nil {
+		return false, fmt.Errorf("customer can answer: resolve viewer: %w", err)
+	}
+	viewerIDs := map[string]bool{}
+	for rows.Next() {
+		var uid string
+		if err := rows.Scan(&uid); err != nil {
+			rows.Close()
+			return false, fmt.Errorf("customer can answer: scan viewer: %w", err)
+		}
+		viewerIDs[strings.ToLower(uid)] = true
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("customer can answer: resolve viewer: %w", err)
+	}
+	viewerID := ""
+	for _, m := range members {
+		if viewerIDs[strings.ToLower(m)] {
+			viewerID = m
+			break
+		}
+	}
+	if viewerID == "" {
+		return false, nil
+	}
+	creatorIDs, err := changeRequestCreatorsForApprover(ctx, q, id, viewerID, viewerEmail)
+	if err != nil {
+		return false, fmt.Errorf("customer can answer: %w", err)
+	}
+	// provisionCustomerStage provisions only when somebody other than the
+	// creator would be asked.
+	anyone := false
+	for _, m := range members {
+		if !creatorIDs[strings.ToLower(m)] {
+			anyone = true
+			break
+		}
+	}
+	if !anyone {
+		return false, nil
+	}
+	if err := approverDecisionBlock(ctx, q, viewerID, creatorIDs, spec.kind); err != nil {
+		var forbidden *apierror.ForbiddenError
+		if errors.As(err, &forbidden) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
 }
 
 // parseExpectedTimestamp reads the window bound a customer's answer says it was
@@ -454,6 +619,12 @@ func answerCustomerStageViaPatch(ctx context.Context, tx pgx.Tx, id string, p cu
 		return "", err
 	}
 
+	// A legacy change request that reached this state under an older build has
+	// no live customer stage; give it one now, in this transaction, so there is
+	// somebody asked and the customer's answer is recorded like any other.
+	if err := ensureCustomerStageForLegacy(ctx, tx, id, actorEmail); err != nil {
+		return "", err
+	}
 	live, err := liveCustomerStageForState(ctx, tx, id, gates.state)
 	if err != nil {
 		return "", fmt.Errorf("answer change request: %w", err)
@@ -523,6 +694,14 @@ func prepareCustomerProposal(ctx context.Context, tx pgx.Tx, id string, req doma
 		return req, err
 	}
 
+	// See answerCustomerStageViaPatch: a legacy change request waiting in
+	// Customer Approval with nobody asked is given its live stage first, so the
+	// proposal (which is also the one act that records the proposer as asked,
+	// and so keeps the change request visible to them in Authorize) has someone
+	// to be proposed to.
+	if err := ensureCustomerStageForLegacy(ctx, tx, id, actorEmail); err != nil {
+		return req, err
+	}
 	live, err := liveCustomerStageForState(ctx, tx, id, gates.state)
 	if err != nil {
 		return req, fmt.Errorf("propose implementation time: %w", err)

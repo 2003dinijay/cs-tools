@@ -143,21 +143,24 @@ func windowOf(t *testing.T, cr domain.ChangeRequest) time.Duration {
 	return end.Sub(start)
 }
 
-// A Normal change with both gates, from New to Closed: the answer is false while
-// nothing is asked of the customer, true for both contacts exactly while the
+// A Normal change with both gates, from New to Closed: invisible to the customer
+// until their approval is first asked, then true for both contacts exactly while the
 // customer's request is pending, and false again right after the answer -- in the
 // PATCH receipt too. Staff views never carry it.
 func TestChangeRequestCustomerCanAnswerIntegration_Lifecycle(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, true)
 
-	f.wantCanAnswer(id, "in New", false, crScopeUserA1, crScopeUserA2)
+	// Until the customer's approval is first asked (New, Assess, Authorize) the
+	// change request was never designated to them: they are not told false, they
+	// are told nothing, because it does not exist for them (404).
+	f.wantHiddenFrom(id, "in New", crScopeUserA1, crScopeUserA2)
 	f.requestApproval(id)
-	f.wantCanAnswer(id, "in Assess", false, crScopeUserA1, crScopeUserA2)
+	f.wantHiddenFrom(id, "in Assess", crScopeUserA1, crScopeUserA2)
 	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
 		t.Fatalf("peer approval: %v", err)
 	}
-	f.wantCanAnswer(id, "in Authorize", false, crScopeUserA1, crScopeUserA2)
+	f.wantHiddenFrom(id, "in Authorize", crScopeUserA1, crScopeUserA2)
 	if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
 		t.Fatalf("CAB approval: %v", err)
 	}
@@ -359,7 +362,25 @@ func TestChangeRequestCustomerCanAnswerIntegration_NobodyWasAsked(t *testing.T) 
 		f.wantCanAnswer(id, "for the contacts who were asked", true, crScopeUserA1, crScopeUserA2)
 		assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	})
-	t.Run("the change reached Customer Approval with nobody to ask", func(t *testing.T) {
+	t.Run("the change reached Customer Approval with nobody to ask, strict: invisible", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		f.useVisibility(visStrictSinceLongAgo())
+		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
+		f.requestApproval(id)
+		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
+		const late = "3bbbbbbb-0000-0000-0000-0000000000a8"
+		f.execSQL(`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user, user_type)
+		           VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, 'Lena Late', 'Lena', 'Late', $2, true, false, 'EXTERNAL'::user_type_enum)`, late, crFlowEmail(late))
+		f.registerContact(crScopeProjectC, crScopeAccountID, late)
+
+		// Nobody was asked, so nobody was designated: the change request does not
+		// exist for the contact who registered afterwards.
+		f.wantHiddenFrom(id, "with no customer request pending", late)
+		f.wantApproveRefused("answering with nobody asked", id, late)
+		f.setPlanned(id, rsStart1, rsEnd1)
+		f.wantProposeRefused("proposing with nobody asked", id, late)
+	})
+	t.Run("the change reached Customer Approval with nobody to ask, legacy: the customer may answer", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
 		f.requestApproval(id)
@@ -369,10 +390,14 @@ func TestChangeRequestCustomerCanAnswerIntegration_NobodyWasAsked(t *testing.T) 
 		           VALUES ($1, now(), now(), 'cr-scope-test', 'cr-scope-test', $2, 'Lena Late', 'Lena', 'Late', $2, true, false, 'EXTERNAL'::user_type_enum)`, late, crFlowEmail(late))
 		f.registerContact(crScopeProjectC, crScopeAccountID, late)
 
-		f.wantCanAnswer(id, "with no customer request pending", false, late)
-		f.wantApproveRefused("answering with nobody asked", id, late)
-		f.setPlanned(id, rsStart1, rsEnd1)
-		f.wantProposeRefused("proposing with nobody asked", id, late, "no customer approval is pending")
+		// A legacy change request is visible to its project's registered contacts and
+		// the customer's first act creates the stage it lacks, so Lena is told true
+		// (and the read itself creates nothing).
+		f.wantCanAnswer(id, "with no customer request pending (legacy)", true, late)
+		f.wantCanAnswer(id, "with no customer request pending (legacy), read again", true, late)
+		if n := len(f.customerStages(id)); n != 0 {
+			t.Fatalf("a read provisioned a customer stage: %+v", f.customerStages(id))
+		}
 	})
 }
 

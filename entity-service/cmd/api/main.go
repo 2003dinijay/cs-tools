@@ -141,7 +141,7 @@ func main() {
 				}),
 				service.NewEventPublishFailureService(repository.NewEventPublishFailureRepository(pool)),
 			)
-			crRepo := repository.NewCRNoticeRepository(repository.NewScoped(pool))
+			crRepo := repository.NewCRNoticeRepository(repository.NewScoped(pool), server.CRVisibilityFromConfig(cfg))
 			drainer := service.NewCRNoticeDrainer(
 				crRepo,
 				service.NewCRNoticeService(crRepo, crPublisher),
