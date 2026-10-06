@@ -399,11 +399,14 @@ func TestChangeRequestIntegration_DecideApprovalRejectionDoesNotCascade(t *testi
 }
 
 // TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess
-// confirms the cascade is scoped exactly to Assess->Authorize: approving an
-// approver on a change request that isn't currently in Assess (e.g. one
-// already sitting in Authorize, mid its own separate approval stage) must
-// leave state untouched -- this repository deliberately does not attempt
-// Authorize's own outgoing cascade yet.
+// confirms the cascade is scoped exactly to Assess->Authorize: approving a
+// Peer-stage approver on a change request that isn't currently in Assess (e.g.
+// one already sitting in Authorize) must leave state untouched. A stage can
+// only be decided in the state it belongs to (a Peer stage in Assess), so the
+// decision is now refused outright with a 409 rather than recorded without a
+// cascade: nothing changes, the approver row stays requested (the state
+// reconcile does not run on a refused decision). The seeded stage has no
+// label, so it is classified by position, as Peer.
 func TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess(t *testing.T) {
 	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
 	if dsn == "" {
@@ -422,18 +425,31 @@ func TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess(t *t
 	seedChangeRequestForApprovalTest(t, scoped, "AUTHORIZE")
 	seedApprovalStageForDecisionTest(t, scoped, changeRequestApprovalApproverUserID)
 
-	if _, err := repo.DecideChangeRequestApproval(sys, changeRequestApprovalTestID,
-		changeRequestApprovalApproverUserID, "approved", "cr-approval-test"); err != nil {
-		t.Fatalf("DecideChangeRequestApproval(approved): %v", err)
+	_, err = repo.DecideChangeRequestApproval(sys, changeRequestApprovalTestID,
+		changeRequestApprovalApproverUserID, "approved", "cr-approval-test")
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("DecideChangeRequestApproval(approved) outside Assess: err = %v (%T), want *apierror.ConflictError", err, err)
+	}
+	if want := "this approval is no longer pending: the change request is in Authorize, but the Peer Approval stage can only be decided while it is in Assess"; conflict.Msg != want {
+		t.Fatalf("refusal message = %q, want %q", conflict.Msg, want)
 	}
 
-	var gotState string
+	var gotState, gotStatus string
 	if scanErr := scoped.QueryRow(sys,
 		`SELECT state::TEXT FROM change_request WHERE id = $1`, changeRequestApprovalTestID).Scan(&gotState); scanErr != nil {
 		t.Fatalf("read back state: %v", scanErr)
 	}
 	if gotState != "AUTHORIZE" {
-		t.Fatalf("state after approval outside Assess = %q, want unchanged \"AUTHORIZE\"", gotState)
+		t.Fatalf("state after a refused approval outside Assess = %q, want unchanged \"AUTHORIZE\"", gotState)
+	}
+	if scanErr := scoped.QueryRow(sys,
+		`SELECT status FROM approval_stage_approver WHERE work_item_id = $1 AND approver_user_id = $2`,
+		changeRequestApprovalTestID, changeRequestApprovalApproverUserID).Scan(&gotStatus); scanErr != nil {
+		t.Fatalf("read back approver status: %v", scanErr)
+	}
+	if gotStatus != "requested" {
+		t.Fatalf("approver status after a refused decision = %q, want unchanged \"requested\"", gotStatus)
 	}
 }
 
@@ -2063,6 +2079,12 @@ func TestChangeRequestIntegration_PatchReviewRejectsWhenOnlyMemberIsRequester(t 
 // untouched by the Review stage's own, separately-provisioned approvers
 // (against a different, explicitly-supplied team), and each stage is
 // attributed to its own, distinct id rather than any one clobbering another.
+//
+// The one thing that is NOT left untouched: the change left Authorize for
+// Review without the CAB stage ever being decided, so its still-requested
+// approvers are no longer actionable and are cancelled by the move
+// (reconcileStaleApprovers) -- a stage's approvers can only act while the change
+// is in the stage's own state.
 func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testing.T) {
 	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
 	if dsn == "" {
@@ -2182,8 +2204,9 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 		}
 	}
 
-	// The CAB stage's own approvers: both CAB Approval members, freshly
-	// "requested" -- unchanged by the Review patch that followed.
+	// The CAB stage's own approvers: both CAB Approval members, requested
+	// when it was provisioned and cancelled by the Review patch that followed
+	// (the change left Authorize without the stage being decided).
 	authorizeApprovers := map[string]string{}
 	authorizeRows, err := scoped.Query(sys,
 		`SELECT approver_user_id::TEXT, status FROM approval_stage_approver WHERE stage_id = $1`, authorizeStageID)
@@ -2203,8 +2226,8 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 		t.Fatalf("Authorize approval_stage_approver rows: %v", err)
 	}
 	wantAuthorize := map[string]string{
-		crCABMemberUserID1: "requested",
-		crCABMemberUserID2: "requested",
+		crCABMemberUserID1: "cancelled",
+		crCABMemberUserID2: "cancelled",
 	}
 	if len(authorizeApprovers) != len(wantAuthorize) {
 		t.Fatalf("Authorize approval_stage_approver rows = %+v, want exactly %+v", authorizeApprovers, wantAuthorize)

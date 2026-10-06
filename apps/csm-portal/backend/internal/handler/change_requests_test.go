@@ -599,6 +599,44 @@ func TestDecideChangeRequestApproval(t *testing.T) {
 		assertStatus(t, w, http.StatusForbidden)
 		assertErrorMessage(t, w, "the creator of a change request cannot approve it")
 	})
+
+	// A decision on an approval whose stage the change has moved past (Review's
+	// approver while the change is in Customer Review / Closed) is a 409 from the
+	// entity service whose reason is shown: the approver must be able to read why
+	// the button no longer works. A 409 with no readable envelope stays generic.
+	t.Run("a 409 carrying the entity service's reason shows it", func(t *testing.T) {
+		const msg = "this approval is no longer pending: the change request is in Closed, but the Review stage can only be decided while it is in Review"
+		client := &mockEntityChangeRequestClient{
+			decideChangeRequestApprovalFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusConflict, Body: `{"code":409,"message":` + jsonQuote(msg) + `}`}
+			},
+		}
+		h := NewChangeRequestHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests/"+testCRID+"/approvals/decision", strings.NewReader(`{"decision":"approved"}`)))
+		r.SetPathValue("id", testCRID)
+		w := httptest.NewRecorder()
+		h.DecideChangeRequestApproval(w, r)
+		assertStatus(t, w, http.StatusConflict)
+		assertErrorMessage(t, w, msg)
+		assertContentType(t, w, "application/json")
+	})
+
+	t.Run("a 409 without a readable reason stays generic", func(t *testing.T) {
+		for _, body := range []string{"", "conflict upstream message", `{"code":409}`} {
+			client := &mockEntityChangeRequestClient{
+				decideChangeRequestApprovalFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					return nil, &apierror.Error{StatusCode: http.StatusConflict, Body: body}
+				},
+			}
+			h := NewChangeRequestHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests/"+testCRID+"/approvals/decision", strings.NewReader(`{"decision":"approved"}`)))
+			r.SetPathValue("id", testCRID)
+			w := httptest.NewRecorder()
+			h.DecideChangeRequestApproval(w, r)
+			assertStatus(t, w, http.StatusConflict)
+			assertErrorMessage(t, w, "Failed to submit change request approval decision.")
+		}
+	})
 }
 
 // Customer Approval / Customer Review are answered by the change's customer

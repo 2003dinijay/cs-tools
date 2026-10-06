@@ -2589,13 +2589,91 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   Rolling back stamps no `is_customer_review_required` (`isCustomerReviewed: true`
   alongside it is a 400), provisions no stage, and **cancels every still-
   `requested` approver row** of the change (all stages stay as a record; the
-  customer-group rejection cascade now does the same). **`rollback` is final**:
+  customer-group rejection cascade does the same). **`rollback` is final**:
   `legalNextStates` is none and any other state PATCH out of it is a 400
-  (`change request has been rolled back; rollback is final ...`). Cancel
-  (unlike Roll back) does not cancel the internal stages' pending approvers --
-  unchanged. The ServiceNow data source replays `stateKey` 2 like any other
-  state and `withoutManualScheduled` does not strip `rollback`. Project stats
-  "outstanding" counting is unchanged by this.
+  (`change request has been rolled back; rollback is final ...`). Cancel and
+  Close do the same since "An approval is only actionable in its stage's state"
+  (below): every `closed` / `canceled` / `rollback` change has no `requested` row
+  left, internal stages included (this supersedes the earlier "Cancel does not
+  cancel the internal stages' pending approvers"). The ServiceNow data source
+  replays `stateKey` 2 like any other state and `withoutManualScheduled` does not
+  strip `rollback`. Project stats "outstanding" counting is unchanged by this.
+* **An approval is only actionable in its stage's state** (bug: an internal
+  reviewer kept Approve / Reject on the *Review* stage of a change that was
+  already `closed`, and while it waited at `customer_review` for the customer).
+  Deciding Review changes no state -- a human moves the change on -- and nothing
+  used to cancel the Review stage's other approvers when it left Review, so their
+  rows stayed `requested` for ever. Now every stage is tied to the one state in
+  which it can be decided (`approvalStageDecidableState`,
+  `change_request_approval_flow.go`; the kind comes from `classifyApprovalStage`:
+  explicit `checkpoint_label` first, the legacy positional fallback second):
+
+  | Stage kind (label) | Decidable only while the change is in |
+  |---|---|
+  | Peer Approval (`Assess`) | `assess` |
+  | CAB Approval (`Authorize`), ECAB Approval | `authorize` |
+  | Review | `review` |
+  | Customer Approval | `customer_approval` |
+  | Customer Review | `customer_review` |
+
+  A stage of unknown kind (`stageKindOther`: a ServiceNow-synced stage past the
+  first two positions, or with an unrecognised label) and a change with a NULL or
+  unknown state are **never guarded** -- ServiceNow-synced data behaves as before.
+  It is enforced four ways:
+  * **Auto-cancel** -- `reconcileStaleApprovers`, run in the same transaction at
+    the end of every path that writes `change_request.state`: `patchChangeRequestTx`
+    (whenever the PATCH carries a state: forward moves, Re-schedule, Roll back,
+    Cancel, Close, the customer outcomes, on-hold-off-and-advance) and
+    `DecideChangeRequestApproval` (after its cascades: Peer -> Authorize, CAB /
+    ECAB -> Scheduled / Customer Approval, the customer stages' outcomes). It sets
+    to `cancelled` (stamping `updated_on` / `updated_by`) every still-`requested`
+    row of every stage whose decidable state is not the change's *current* state --
+    and **every** still-`requested` row once the change is `closed`, `canceled` or
+    `rollback`. It runs after the stage the new state needs was provisioned, so
+    that stage (the fresh CAB / ECAB stage of a Re-schedule, the Review stage on
+    entering Review, a customer stage) is kept; the superseded customer stage of a
+    Re-schedule stays as a cancelled record. Examples: Review -> Customer Review /
+    Closed / Rollback / Canceled cancels the Review approvers; leaving Customer
+    Approval cancels the customer's. Request Approval (New -> Assess provisions
+    Peer for `assess`; an Emergency's New -> Authorize provisions ECAB for
+    `authorize`; Standard has no stage) is unaffected.
+  * **Decision guard** -- `DecideChangeRequestApproval` resolves the caller's
+    pending stage (their oldest `requested` row on a stage decidable in the
+    current state, else their oldest one) and, when that stage's kind has a
+    decidable state and the change is in another *known* state, refuses with a
+    **409** `ConflictError` and changes nothing: `this approval is no longer
+    pending: the change request is in <State>, but the <Stage> stage can only be
+    decided while it is in <State>` (e.g. `... is in Closed, but the Review stage
+    can only be decided while it is in Review`). The who-may-decide checks
+    (creator, internal-only) come first. This covers rows the reconcile never saw
+    (written before it existed, or by a path that does not run it -- e.g. the
+    GitHub integration's `SetState`). The decision's UPDATE is narrowed to the
+    resolved stage, so a caller holding a stale row and a live one decides only the
+    live one. The BFF passes the 409 message through on the decision endpoint
+    (`mapApprovalDecisionError`), as it does a 403's.
+  * **`canDecide`** is `false` for a `REQUESTED` row whose stage's decidable state
+    is not the change's current state (`markCanDecide`), so the webapp (which
+    renders Approve / Reject from `canDecide`, never from the state) disables them.
+  * **Migration 0193** (`0193_change_request_cancel_stale_approvals.sql`) is the
+    data fix for rows written before this: idempotent, it cancels every `requested`
+    row (a) of any change that is `CLOSED` / `CANCELED` / `ROLLBACK`, and (b) of
+    a stage with an explicit `checkpoint_label` (the map above, in a SQL `CASE`,
+    legacy `Assess` / `Authorize` included) whose state differs from the change's
+    current state. It never touches rows of a stage with a NULL / unrecognised
+    label unless (a), a change with a NULL state, rows that are not `requested`, or
+    the change request itself; `updated_by` is
+    `migration:0193_change_request_cancel_stale_approvals`. It flags the session
+    internal (`set_config('app.is_internal', 'true', false)`, cleared at the end)
+    because `approval_stage_approver` is FORCE row-level secured. Safe to re-run.
+
+  Tests: `change_request_stale_approvals_integration_test.go`
+  (`TestChangeRequestFlowIntegration_StaleApprovals_*`: the Review -> Customer
+  Review -> Closed lifecycle with stages / row statuses / `canDecide` after every
+  step, Review -> Closed, Roll back, Cancel from every state, the Re-schedule loop,
+  Emergency / Standard unaffected, the guard on crafted legacy rows, unguarded
+  ServiceNow-style stages, the migration) and the unit tests
+  `TestApprovalStageDecidableState*` / `TestApprovalStageOutOfState` /
+  `TestStaleApprovalRefusal` in `change_request_repo_test.go`.
 * **Approver pools are INTERNAL-only.** Every internal stage (Peer, CAB, ECAB,
   Review) is decided by WSO2 staff, who see every project; an external
   (customer) user sees only the projects they are a registered contact of, so an
@@ -2635,8 +2713,10 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   * *ECAB Approval* — Emergency only, **its own group** (`ECAB Approval`), the
     only stage (no peer approval, no CAB).
   * Standard: no stage.
-  * *Review* — unchanged (assigned team, provisioned on a `{state: "review"}`
-    PATCH once exactly two stages exist, i.e. Normal only).
+  * *Review* — assigned team, provisioned on a `{state: "review"}` PATCH once
+    exactly two stages exist, i.e. Normal only. Its approvers can only decide
+    while the change is in `review`: moving on (Customer Review / Closed /
+    Rollback / Canceled) cancels the rows nobody answered.
 * **Local seed personas** (`scripts/csm-compose/seed-entity-service.sql`) — a
   separate set of people for exercising the approval and customer-approval flows
   locally, so the fixtures do not hang on jane.doe / john.smith (whose rows stay:
@@ -2707,8 +2787,9 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   enforcement points.
 * **`canDecide`** on each approver in `GET /change-requests/{id}/approvals` is
   true only on the calling user's own `REQUESTED` row when they may actually
-  decide it (not creator; an active internal user on an internal stage).
-  Additive, advisory; the
+  decide it (not creator; an active internal user on an internal stage; and the
+  change is in the state the row's stage belongs to -- see "An approval is only
+  actionable in its stage's state"). Additive, advisory; the
   decision endpoint re-checks. Postgres data source only.
 * **Rejections** of the internal stages keep the existing behaviour: siblings
   cancelled, no state change in either direction. (A *customer contact's*

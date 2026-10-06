@@ -4824,8 +4824,10 @@ type ChangeRequestApprover struct {
 	// CanDecide is true only on the CALLING user's own approver row, and only
 	// when that row is still REQUESTED and the caller may actually decide it
 	// right now: they are not the change request's creator/requester, and (for
-	// an internal stage: peer, CAB, ECAB, review) are an active internal user.
-	// The webapp should render
+	// an internal stage: peer, CAB, ECAB, review) are an active internal user,
+	// and the change request is in the state the row's stage belongs to (a
+	// REQUESTED row on a stage the change has moved past is false). The webapp
+	// should render
 	// Approve/Reject exactly when this is true. Populated by the Postgres data
 	// source only; always false on every other row and under the ServiceNow
 	// data source (where ServiceNow itself enforces who may decide).

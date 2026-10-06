@@ -1195,3 +1195,163 @@ func TestNoInternalMembersMessage(t *testing.T) {
 		}
 	}
 }
+
+// TestApprovalStageDecidableState pins the stage -> state map: the one state in
+// which a stage of each kind can be decided. An unknown kind has none.
+func TestApprovalStageDecidableState(t *testing.T) {
+	for kind, want := range map[approvalStageKind]string{
+		stageKindPeer:             "ASSESS",
+		stageKindCAB:              "AUTHORIZE",
+		stageKindECAB:             "AUTHORIZE",
+		stageKindReview:           "REVIEW",
+		stageKindCustomerApproval: "CUSTOMER_APPROVAL",
+		stageKindCustomerReview:   "CUSTOMER_REVIEW",
+		stageKindOther:            "",
+	} {
+		if got := approvalStageDecidableState(kind); got != want {
+			t.Errorf("approvalStageDecidableState(%v) = %q, want %q", kind, got, want)
+		}
+	}
+	// Every decidable state is a state the enum has, and each customer stage's
+	// own spec agrees with the map.
+	for _, kind := range []approvalStageKind{stageKindPeer, stageKindCAB, stageKindECAB, stageKindReview, stageKindCustomerApproval, stageKindCustomerReview} {
+		if !knownChangeRequestStates[approvalStageDecidableState(kind)] {
+			t.Errorf("decidable state %q of kind %v is not a known change request state", approvalStageDecidableState(kind), kind)
+		}
+		if spec := customerStageSpecForKind(kind); spec != nil && spec.state != approvalStageDecidableState(kind) {
+			t.Errorf("customer stage spec state %q != decidable state %q", spec.state, approvalStageDecidableState(kind))
+		}
+	}
+}
+
+// The map is keyed through the same classifier the read and decision paths use:
+// the explicit label first, the historical position second.
+func TestApprovalStageDecidableState_ThroughClassifier(t *testing.T) {
+	str := func(s string) *string { return &s }
+	for _, tc := range []struct {
+		label *string
+		pos   int
+		want  string
+	}{
+		{str("Peer Approval"), 0, "ASSESS"},
+		{str("Assess"), 0, "ASSESS"},
+		{str("CAB Approval"), 1, "AUTHORIZE"},
+		{str("Authorize"), 1, "AUTHORIZE"},
+		{str("ECAB Approval"), 0, "AUTHORIZE"},
+		{str("Review"), 2, "REVIEW"},
+		{str("Customer Approval"), 2, "CUSTOMER_APPROVAL"},
+		{str("Customer Review"), 4, "CUSTOMER_REVIEW"},
+		{nil, 0, "ASSESS"},
+		{nil, 1, "AUTHORIZE"},
+		// Not a stage the flow knows: never tied to a state.
+		{nil, 2, ""},
+		{nil, 5, ""},
+		{str("SN Change Approval"), 0, ""},
+		{str(""), 3, ""},
+	} {
+		if got := approvalStageDecidableState(classifyApprovalStage(tc.label, tc.pos)); got != tc.want {
+			t.Errorf("decidable state of (%v, %d) = %q, want %q", tc.label, tc.pos, got, tc.want)
+		}
+	}
+}
+
+// approvalStageOutOfState over every kind and every state: guarded exactly when
+// the kind has a state, the change's state is a known one, and they differ.
+func TestApprovalStageOutOfState(t *testing.T) {
+	states := []string{"NEW", "ASSESS", "AUTHORIZE", "CUSTOMER_APPROVAL", "SCHEDULED", "IMPLEMENT", "REVIEW", "CUSTOMER_REVIEW", "ROLLBACK", "CLOSED", "CANCELED"}
+	for _, kind := range []approvalStageKind{stageKindPeer, stageKindCAB, stageKindECAB, stageKindReview, stageKindCustomerApproval, stageKindCustomerReview} {
+		decidable := approvalStageDecidableState(kind)
+		for _, state := range states {
+			if got, want := approvalStageOutOfState(kind, state), state != decidable; got != want {
+				t.Errorf("approvalStageOutOfState(%v, %s) = %v, want %v", kind, state, got, want)
+			}
+		}
+		// Case and padding are normalised, so a state read back in any shape works.
+		if approvalStageOutOfState(kind, " "+strings.ToLower(decidable)+" ") {
+			t.Errorf("approvalStageOutOfState(%v, %q) = true for the stage's own state", kind, strings.ToLower(decidable))
+		}
+		// A NULL / unknown state is never guarded (ServiceNow-synced data).
+		for _, state := range []string{"", "   ", "ON_HOLD", "garbage"} {
+			if approvalStageOutOfState(kind, state) {
+				t.Errorf("approvalStageOutOfState(%v, %q) = true, want false for an unknown state", kind, state)
+			}
+		}
+	}
+	// An unknown kind is never guarded, in any state.
+	for _, state := range append(states, "", "garbage") {
+		if approvalStageOutOfState(stageKindOther, state) {
+			t.Errorf("approvalStageOutOfState(other, %q) = true, want false", state)
+		}
+	}
+}
+
+// knownChangeRequestStates is the enum: every domain state is in it, and the
+// terminal ones are exactly Closed, Canceled and Rollback.
+func TestKnownChangeRequestStates(t *testing.T) {
+	all := []domain.ChangeRequestState{
+		domain.ChangeRequestStateNew, domain.ChangeRequestStateAssess, domain.ChangeRequestStateAuthorize,
+		domain.ChangeRequestStateCustomerApproval, domain.ChangeRequestStateScheduled, domain.ChangeRequestStateImplement,
+		domain.ChangeRequestStateReview, domain.ChangeRequestStateCustomerReview, domain.ChangeRequestStateRollback,
+		domain.ChangeRequestStateClosed, domain.ChangeRequestStateCanceled,
+	}
+	if len(knownChangeRequestStates) != len(all) {
+		t.Errorf("knownChangeRequestStates has %d entries, want %d", len(knownChangeRequestStates), len(all))
+	}
+	terminal := 0
+	for _, s := range all {
+		label := strings.ToUpper(string(s))
+		if !knownChangeRequestStates[label] {
+			t.Errorf("state %s missing from knownChangeRequestStates", label)
+		}
+		if terminalChangeRequestState(label) {
+			terminal++
+			if _, ok := changeRequestForwardNextStates[s]; ok {
+				t.Errorf("%s is terminal but has forward moves", label)
+			}
+		}
+	}
+	if terminal != 3 {
+		t.Errorf("%d terminal states, want Closed, Canceled and Rollback", terminal)
+	}
+	if terminalChangeRequestState("") || terminalChangeRequestState("REVIEW") {
+		t.Error("an empty or non-final state reads as terminal")
+	}
+}
+
+func TestChangeRequestStateDisplayName(t *testing.T) {
+	for in, want := range map[string]string{
+		"CLOSED": "Closed", "CUSTOMER_REVIEW": "Customer Review", "CUSTOMER_APPROVAL": "Customer Approval",
+		"ASSESS": "Assess", "": "",
+	} {
+		if got := changeRequestStateDisplayName(in); got != want {
+			t.Errorf("changeRequestStateDisplayName(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// The refusal is a 409 that says where the change is and where the stage can be
+// decided -- the exact text the portal shows.
+func TestStaleApprovalRefusal(t *testing.T) {
+	for _, tc := range []struct {
+		kind  approvalStageKind
+		state string
+		want  string
+	}{
+		{stageKindReview, "CLOSED", "this approval is no longer pending: the change request is in Closed, but the Review stage can only be decided while it is in Review"},
+		{stageKindReview, "CUSTOMER_REVIEW", "this approval is no longer pending: the change request is in Customer Review, but the Review stage can only be decided while it is in Review"},
+		{stageKindPeer, "AUTHORIZE", "this approval is no longer pending: the change request is in Authorize, but the Peer Approval stage can only be decided while it is in Assess"},
+		{stageKindCAB, "SCHEDULED", "this approval is no longer pending: the change request is in Scheduled, but the CAB Approval stage can only be decided while it is in Authorize"},
+		{stageKindECAB, "CANCELED", "this approval is no longer pending: the change request is in Canceled, but the ECAB Approval stage can only be decided while it is in Authorize"},
+		{stageKindCustomerApproval, "AUTHORIZE", "this approval is no longer pending: the change request is in Authorize, but the Customer Approval stage can only be decided while it is in Customer Approval"},
+		{stageKindCustomerReview, "ROLLBACK", "this approval is no longer pending: the change request is in Rollback, but the Customer Review stage can only be decided while it is in Customer Review"},
+	} {
+		err := staleApprovalRefusal(tc.kind, tc.state)
+		var ce *apierror.ConflictError
+		if !errors.As(err, &ce) {
+			t.Fatalf("staleApprovalRefusal(%v, %s) = %T, want *apierror.ConflictError", tc.kind, tc.state, err)
+		}
+		if ce.Msg != tc.want {
+			t.Errorf("staleApprovalRefusal(%v, %s) = %q, want %q", tc.kind, tc.state, ce.Msg, tc.want)
+		}
+	}
+}

@@ -95,6 +95,29 @@ import (
 // provisionCustomerStage keeps the stage in step with the change (state and
 // project contacts) and is the one place that provisions, replaces or cancels it.
 
+// A stage can only be decided while the change request is in the state it
+// belongs to (approvalStageDecidableState): Peer in Assess, CAB / ECAB in
+// Authorize, Review in Review, Customer Approval in Customer Approval, Customer
+// Review in Customer Review. Three things keep an approver row from outliving
+// that state, and a fourth repairs the ones that already did:
+//
+//   - reconcileStaleApprovers runs at the end of every transaction that can
+//     change change_request.state (patchChangeRequestTx, DecideChangeRequestApproval)
+//     and cancels every still-requested approver row of a stage whose state the
+//     change is no longer in -- and ALL of them once it is Closed / Canceled /
+//     Rollback. Review is the case that matters most: deciding it changes no
+//     state (the change is moved on by hand), so without this its other
+//     approvers stayed actionable for ever, also while the change waited at
+//     Customer Review for the customer;
+//   - DecideChangeRequestApproval refuses a decision on such a row (409,
+//     staleApprovalRefusal), which also covers rows that predate the reconcile;
+//   - canDecide is false for such a row (markCanDecide);
+//   - migration 0193 cancels the rows already in the database.
+//
+// A stage of unknown kind (a ServiceNow-synced stage with no recognisable
+// label past the first two positions) and a change with no / unknown state are
+// never guarded.
+
 // Approver pools are INTERNAL-only. Every internal stage (Peer, CAB, ECAB,
 // Review) is decided in the portal by WSO2 staff, who see every project; an
 // external (customer) user sees only the projects they are a registered
@@ -366,6 +389,10 @@ func stageKindName(kind approvalStageKind) string {
 		return approvalStageLabelECAB
 	case stageKindReview:
 		return approvalStageLabelReview
+	case stageKindCustomerApproval:
+		return approvalStageLabelCustomerApproval
+	case stageKindCustomerReview:
+		return approvalStageLabelCustomerReview
 	}
 	return "this"
 }
@@ -986,7 +1013,8 @@ func cancelLiveCustomerStages(ctx context.Context, tx pgx.Tx, workItemID, actorE
 
 // cancelPendingApprovers cancels every still-REQUESTED approver row of the
 // change, on whatever stage (the stages stay, as a record). Used when the
-// change reaches a state nothing can be approved in any more by hand (Rollback).
+// change reaches a state nothing can be approved in any more by hand (Closed,
+// Canceled, Rollback -- see reconcileStaleApprovers, its only caller).
 func cancelPendingApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) error {
 	// approval_stage_approver writes are internal-only (see
 	// provisionApprovalStage); the caller has proven their access to the
@@ -999,6 +1027,195 @@ func cancelPendingApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 		 WHERE work_item_id = $1 AND status = 'requested'`, workItemID, actorEmail); err != nil {
 		return fmt.Errorf("cancel pending approvers: %w", err)
 	}
+	return nil
+}
+
+// ---------------------------------------------------------------------------
+// Stage <-> state: an approval is only actionable while the change is in the
+// state its stage belongs to
+// ---------------------------------------------------------------------------
+
+// Upper-case change_request_state_enum labels.
+const (
+	crStateNew              = "NEW"
+	crStateAssess           = "ASSESS"
+	crStateAuthorize        = "AUTHORIZE"
+	crStateCustomerApproval = "CUSTOMER_APPROVAL"
+	crStateScheduled        = "SCHEDULED"
+	crStateImplement        = "IMPLEMENT"
+	crStateReview           = "REVIEW"
+	crStateCustomerReview   = "CUSTOMER_REVIEW"
+	crStateRollback         = "ROLLBACK"
+	crStateClosed           = "CLOSED"
+	crStateCanceled         = "CANCELED"
+)
+
+// knownChangeRequestStates is every label of change_request_state_enum. A state
+// outside it (or a NULL one) is "unknown": nothing is guarded on such a change.
+var knownChangeRequestStates = map[string]bool{
+	crStateNew: true, crStateAssess: true, crStateAuthorize: true, crStateCustomerApproval: true,
+	crStateScheduled: true, crStateImplement: true, crStateReview: true, crStateCustomerReview: true,
+	crStateRollback: true, crStateClosed: true, crStateCanceled: true,
+}
+
+// terminalChangeRequestState reports whether the (upper-case) state is final:
+// Closed, Canceled or Rollback. Nothing can be approved on such a change.
+func terminalChangeRequestState(state string) bool {
+	switch state {
+	case crStateClosed, crStateCanceled, crStateRollback:
+		return true
+	}
+	return false
+}
+
+// approvalStageDecidableState is the one change request state in which a stage
+// of the given kind can be decided: Peer in Assess, CAB / ECAB in Authorize,
+// Review in Review, Customer Approval in Customer Approval, Customer Review in
+// Customer Review. "" for a stage of unknown kind (stageKindOther -- a
+// ServiceNow-synced stage with no recognisable label): it is not tied to any
+// state and is never guarded.
+func approvalStageDecidableState(kind approvalStageKind) string {
+	switch kind {
+	case stageKindPeer:
+		return crStateAssess
+	case stageKindCAB, stageKindECAB:
+		return crStateAuthorize
+	case stageKindReview:
+		return crStateReview
+	case stageKindCustomerApproval:
+		return crStateCustomerApproval
+	case stageKindCustomerReview:
+		return crStateCustomerReview
+	}
+	return ""
+}
+
+// approvalStageOutOfState reports whether a stage of the given kind can no
+// longer be decided because the change is in another state: the kind has a
+// decidable state, the change's (upper-case) state is a known one, and they
+// differ. False for an unknown kind and for a NULL / unknown state, so
+// ServiceNow-synced data behaves exactly as before.
+func approvalStageOutOfState(kind approvalStageKind, currentState string) bool {
+	want := approvalStageDecidableState(kind)
+	if want == "" {
+		return false
+	}
+	current := strings.ToUpper(strings.TrimSpace(currentState))
+	return knownChangeRequestStates[current] && current != want
+}
+
+// changeRequestStateDisplayName renders an upper-case state label for a
+// message: CUSTOMER_REVIEW -> "Customer Review".
+func changeRequestStateDisplayName(state string) string {
+	words := strings.Fields(strings.ReplaceAll(strings.ToLower(state), "_", " "))
+	for i, w := range words {
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
+}
+
+// staleApprovalRefusal is the 409 for a decision on a stage whose state the
+// change request has left (or never reached): the approval is no longer
+// pending, and the message says where the change is and where the stage can be
+// decided. Not a 403 -- the caller is allowed to decide, just not now.
+func staleApprovalRefusal(kind approvalStageKind, currentState string) error {
+	return &apierror.ConflictError{Msg: fmt.Sprintf(
+		"this approval is no longer pending: the change request is in %s, but the %s stage can only be decided while it is in %s",
+		changeRequestStateDisplayName(currentState), stageKindName(kind),
+		changeRequestStateDisplayName(approvalStageDecidableState(kind)))}
+}
+
+// reconcileStaleApprovers cancels the REQUESTED approver rows that are no
+// longer actionable because of the state the change request is in NOW (read
+// inside the transaction, so it sees the state this very transaction wrote):
+//
+//   - Closed, Canceled, Rollback: every still-requested row of the change, on
+//     every stage (nothing can be approved on a finished change -- this
+//     supersedes the earlier "Cancel leaves the internal stages' pending
+//     approvers" behaviour);
+//   - any other known state: the requested rows of every stage whose decidable
+//     state (approvalStageDecidableState) is not the current one -- e.g. the
+//     Review stage's approvers once the change has left Review for Customer
+//     Review, the customer's once it was re-scheduled back to Authorize.
+//
+// The stages stay as a record; only the approver rows move to `cancelled`
+// (updated_by = actorEmail, like every other cancel helper). A stage is
+// classified exactly as classifyApprovalStage does (checkpoint_label first,
+// the historical positional fallback second); a stage of unknown kind and a
+// NULL / unknown change request state are left alone.
+//
+// It must run AFTER the transaction has written the new state and provisioned
+// the stage that state needs (a stage provisioned for the current state is
+// never cancelled by it, so the order only matters the other way round).
+// Idempotent. Callers: patchChangeRequestTx and DecideChangeRequestApproval,
+// the two paths that write change_request.state.
+func reconcileStaleApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) error {
+	// approval_stage / approval_stage_approver writes are internal-only (see
+	// provisionApprovalStage); the caller has proven their access to the change
+	// by writing to it in this transaction. The reads need it too: a project
+	// member sees its stages, an unrelated reader would not.
+	if err := setCallerIdentity(ctx, tx, SearchScope{Unrestricted: true}); err != nil {
+		return fmt.Errorf("reconcile approvers: escalate identity: %w", err)
+	}
+	var state *string
+	if err := tx.QueryRow(ctx, `SELECT state::text FROM change_request WHERE id = $1`, workItemID).Scan(&state); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("reconcile approvers: read state: %w", err)
+	}
+	current := strings.ToUpper(stringOrEmpty(state))
+	if !knownChangeRequestStates[current] {
+		return nil
+	}
+	if terminalChangeRequestState(current) {
+		return cancelPendingApprovers(ctx, tx, workItemID, actorEmail)
+	}
+
+	// The stages that still hold a requested approver, with the ordinal
+	// position the classifier's fallback needs (same ordering as
+	// approvalStageInfo / changeRequestApprovalStagesQuery).
+	rows, err := tx.Query(ctx, `
+		SELECT ast.id::text, ast.checkpoint_label,
+		       (SELECT COUNT(*) FROM approval_stage earlier
+		         WHERE earlier.work_item_id = ast.work_item_id
+		           AND (earlier.created_on, earlier.id) < (ast.created_on, ast.id))
+		FROM approval_stage ast
+		WHERE ast.work_item_id = $1
+		  AND EXISTS (SELECT 1 FROM approval_stage_approver asa WHERE asa.stage_id = ast.id AND asa.status = 'requested')`,
+		workItemID)
+	if err != nil {
+		return fmt.Errorf("reconcile approvers: list live stages: %w", err)
+	}
+	var stale []string
+	for rows.Next() {
+		var stageID string
+		var label *string
+		var pos int
+		if err := rows.Scan(&stageID, &label, &pos); err != nil {
+			rows.Close()
+			return fmt.Errorf("reconcile approvers: scan stage: %w", err)
+		}
+		if approvalStageOutOfState(classifyApprovalStage(label, pos), current) {
+			stale = append(stale, stageID)
+		}
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("reconcile approvers: live stages: %w", err)
+	}
+	if len(stale) == 0 {
+		return nil
+	}
+	tag, err := tx.Exec(ctx,
+		`UPDATE approval_stage_approver SET status = 'cancelled', updated_on = NOW(), updated_by = $3
+		 WHERE work_item_id = $1 AND stage_id = ANY($2::uuid[]) AND status = 'requested'`,
+		workItemID, stale, actorEmail)
+	if err != nil {
+		return fmt.Errorf("reconcile approvers: cancel stale approvers: %w", err)
+	}
+	slog.InfoContext(ctx, "cancelled approver rows of stages the change request has left",
+		"changeRequestId", workItemID, "state", current, "stages", len(stale), "approvers", tag.RowsAffected())
 	return nil
 }
 
@@ -1128,7 +1345,7 @@ func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 // must still be in the stage's state (a stage whose change has moved on has
 // had its approvers cancelled, so this is a defence, not a path). Returns
 // whether the state moved.
-func applyCustomerStageOutcome(ctx context.Context, tx pgx.Tx, workItemID string, spec *customerStageSpec, currentState string, approved bool, actorEmail string) (bool, error) {
+func applyCustomerStageOutcome(ctx context.Context, tx pgx.Tx, workItemID string, spec *customerStageSpec, currentState string, approved bool) (bool, error) {
 	if !strings.EqualFold(currentState, spec.state) {
 		return false, nil
 	}
@@ -1147,13 +1364,9 @@ func applyCustomerStageOutcome(ctx context.Context, tx pgx.Tx, workItemID string
 	if ct.RowsAffected() == 0 {
 		return false, &apierror.NotFoundError{Msg: "change request not found"}
 	}
-	// A rolled-back change is final: the Review stage's approvers (never
-	// asked to decide, or not yet) must not stay pending on it.
-	if !approved && strings.EqualFold(spec.rejectedState, string(domain.ChangeRequestStateRollback)) {
-		if err := cancelPendingApprovers(ctx, tx, workItemID, actorEmail); err != nil {
-			return false, err
-		}
-	}
+	// Whatever the outcome leaves requested (a rolled-back / closed change is
+	// final) is cancelled by DecideChangeRequestApproval's closing
+	// reconcileStaleApprovers.
 	return true, nil
 }
 

@@ -5502,6 +5502,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: >-
+            The approval is no longer pending: the change request has moved to a
+            state the caller's stage cannot be decided in (e.g. a Review approver
+            once the change is Customer Review or Closed). The message says where
+            the change is; nothing was changed.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "413":
           description: Request entity too large.
           content:
@@ -18001,7 +18011,9 @@ components:
           description: >-
             True only on the calling user's own REQUESTED row, when they may
             actually decide it (not the change request's creator; an active
-            internal user on an internal stage -- peer, CAB, ECAB, review).
+            internal user on an internal stage -- peer, CAB, ECAB, review; and
+            the change request is in the state the stage belongs to, so a
+            REQUESTED row left on a stage the change has moved past is false).
             Render Approve/Reject on this.
         createdOn:
           type: string

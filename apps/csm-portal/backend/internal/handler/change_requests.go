@@ -334,17 +334,19 @@ func (h *ChangeRequestHandler) GetChangeRequestLinkOptions(w http.ResponseWriter
 	writeJSON(w, http.StatusOK, result)
 }
 
-// mapApprovalDecisionError is mapUpstreamErrorGeneric, except a 403 that
-// carries the entity service's own reason is shown to the caller. A refusal to
-// decide ("the creator of a change request cannot approve it", "only active
-// internal (WSO2) users can approve or reject the Peer Approval stage ...") is
-// only useful if the approver can read why; every other failure keeps the
-// generic mapping.
+// mapApprovalDecisionError is mapUpstreamErrorGeneric, except a 403 or a 409
+// that carries the entity service's own reason is shown to the caller. A
+// refusal to decide ("the creator of a change request cannot approve it",
+// "only active internal (WSO2) users can approve or reject the Peer Approval
+// stage ...", or -- a 409 -- "this approval is no longer pending: the change
+// request is in Closed, but the Review stage can only be decided while it is in
+// Review") is only useful if the approver can read why; every other failure
+// keeps the generic mapping.
 func mapApprovalDecisionError(w http.ResponseWriter, err error, fallbackMsg string) {
 	var apiErr *apierror.Error
-	if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusForbidden {
+	if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusForbidden || apiErr.StatusCode == http.StatusConflict) {
 		if msg := upstreamErrorMessageStrict(apiErr.Body, ""); msg != "" {
-			writeError(w, http.StatusForbidden, msg)
+			writeError(w, apiErr.StatusCode, msg)
 			return
 		}
 	}

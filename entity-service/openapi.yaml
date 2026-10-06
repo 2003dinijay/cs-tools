@@ -5914,6 +5914,15 @@ paths:
         customer group stages: "Customer Approval" approved -> scheduled
         (is_customer_approval_required), rejected -> canceled; "Customer Review" approved
         -> closed (is_customer_review_required), rejected -> rollback.
+
+        A stage can only be decided while the change request is in the state it belongs
+        to: Peer Approval in assess, CAB / ECAB Approval in authorize, Review in review,
+        Customer Approval in customer_approval, Customer Review in customer_review. The
+        approvers of a stage the change has left are cancelled when it moves on (all of
+        them once it is closed, canceled or rolled back), and a decision on one that was
+        missed is refused with a 409 and changes nothing. A stage of unknown kind
+        (ServiceNow-synced, no recognisable label) and a change with no state are not
+        guarded.
       operationId: decideChangeRequestApproval
       parameters:
         - name: id
@@ -5960,6 +5969,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Change request or pending approval not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >-
+            The approval is no longer pending: the change request is in a state other
+            than the one the caller's stage can be decided in (for example "this
+            approval is no longer pending: the change request is in Closed, but the
+            Review stage can only be decided while it is in Review"). Nothing was
+            changed.
           content:
             application/json:
               schema:
@@ -15955,7 +15975,11 @@ components:
             True only on the calling user's own REQUESTED row, when they may
             actually decide it (they are not the change request's creator, and
             on an internal stage -- peer, CAB, ECAB, review -- are an active
-            internal user). Advisory --
+            internal user) and the change request is in the state the row's
+            stage belongs to (peer: assess, CAB / ECAB: authorize, review:
+            review, customer approval / review: customer_approval /
+            customer_review) -- a REQUESTED row left on a stage the change has
+            moved past is false. Advisory --
             the decision endpoint re-checks. Postgres data source only; false
             elsewhere.
         createdOn:
