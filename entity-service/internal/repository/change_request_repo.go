@@ -852,6 +852,11 @@ func (r *changeRequestRepo) GetChangeRequestByID(ctx context.Context, id string)
 		}
 		cr.LegalNextStates = withoutManualCustomerOutcome(cr.State, cr.LegalNextStates, live != nil)
 	}
+
+	// For a customer reading the detail (or the PATCH receipt, which is this
+	// same read): whether they may answer it right now. Computed last, from the
+	// state just read, and only for external callers.
+	r.markCustomerCanAnswer(ctx, &cr)
 	return cr, nil
 }
 
@@ -1939,7 +1944,7 @@ func authorizeChangeRequestCustomerFlagWrite(ctx context.Context, tx pgx.Tx, id,
 // SearchChangeRequestView.Project/Case) means no project_contact row could
 // ever match, so this returns false for a non-internal caller without
 // querying.
-func callerMayGrantChangeRequestCustomerFlag(ctx context.Context, tx pgx.Tx, projectID *string, actorEmail string) (bool, error) {
+func callerMayGrantChangeRequestCustomerFlag(ctx context.Context, tx crQuerier, projectID *string, actorEmail string) (bool, error) {
 	if scope, ok := CallerIdentityFromContext(ctx); ok && scope.Unrestricted {
 		return true, nil
 	}
@@ -3108,7 +3113,7 @@ func decideChangeRequestApprovalTx(ctx context.Context, tx pgx.Tx, id, approverU
 // actorEmail is the creator's, approverUserID is added to the set. The one place
 // the "nobody approves their own change" rule is assembled, for the decision
 // itself and for the customer's other answers (a proposed implementation time).
-func changeRequestCreatorsForApprover(ctx context.Context, tx pgx.Tx, id, approverUserID, actorEmail string) (map[string]bool, error) {
+func changeRequestCreatorsForApprover(ctx context.Context, tx crQuerier, id, approverUserID, actorEmail string) (map[string]bool, error) {
 	creatorIDs, err := changeRequestCreatorUserIDs(ctx, tx, id)
 	if err != nil {
 		return nil, err

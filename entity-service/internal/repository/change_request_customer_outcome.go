@@ -20,6 +20,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"reflect"
 	"strings"
 
@@ -53,6 +54,11 @@ import (
 //     diagram's "Time Change" loop started by the customer: the same Re-schedule
 //     a WSO2 user triggers with {state: authorize, ...} (new window applied, a
 //     fresh CAB / ECAB approval, the customer asked again once it is given).
+//
+// The read side of the same rules is customerCanAnswer: the change request
+// detail tells a customer, per viewer, whether the answer would be accepted
+// right now (domain.ChangeRequest.CustomerCanAnswer), so the portal offers
+// Approve / Reject / Propose exactly when they can work.
 //
 // Everything else an external caller could send is refused: entity-service does
 // not rely on the portal in front of it to say what a customer may change
@@ -165,7 +171,7 @@ func requireRegisteredContact(ctx context.Context, tx pgx.Tx, projectID *string,
 // customerApproverUserID resolves the caller's "user" id from their email: the
 // id their approver rows are recorded against. Where an email has more than one
 // user row, the one holding a pending approval on this change request is chosen.
-func customerApproverUserID(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) (string, error) {
+func customerApproverUserID(ctx context.Context, tx crQuerier, workItemID, actorEmail string) (string, error) {
 	var userID string
 	err := tx.QueryRow(ctx, `
 		SELECT u.id::text FROM "user" u
@@ -181,6 +187,105 @@ func customerApproverUserID(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 		return "", fmt.Errorf("answer change request: resolve caller: %w", err)
 	}
 	return userID, nil
+}
+
+// customerCanAnswer reports whether viewerEmail -- a customer -- could give the
+// customer's approval / review of the change request id (in the given state,
+// of the project projectID) right now. It is the read-only twin of
+// answerCustomerStageViaPatch: the same checks, in the same order, stopping at
+// the first that would refuse the answer, but locking and writing nothing, so
+// that what the portal offers and what the PATCH accepts cannot drift apart:
+//
+//  1. the state is Customer Approval or Customer Review (customerStageSpecForState),
+//     else false -- the answer belongs to one state;
+//  2. the viewer is a REGISTERED PORTAL_USER contact of the change request's own
+//     project (requireRegisteredContact's test);
+//  3. the customer's request is still pending: a live customer stage of that
+//     state (liveCustomerStageForState);
+//  4. the viewer holds a REQUESTED approval on that live stage -- not a contact
+//     the request was never sent to, not one whose row a sibling's answer
+//     cancelled, not one whose stage a Re-schedule superseded;
+//  5. nothing blocks them from deciding it (approverDecisionBlock: the creator
+//     of the change request never approves it).
+//
+// markCanDecide answers the same question for the approvals read; they share
+// approverDecisionBlock and changeRequestCreatorsForApprover for the who-may
+// rule and the live-stage helpers for the what-is-pending rule.
+//
+// An error is a failure to find out (never "no"); the caller decides what an
+// unknown answer means.
+func customerCanAnswer(ctx context.Context, q crQuerier, id string, projectID *string, state, viewerEmail string) (bool, error) {
+	spec := customerStageSpecForState(strings.ToUpper(strings.TrimSpace(state)))
+	if spec == nil || strings.TrimSpace(viewerEmail) == "" {
+		return false, nil
+	}
+	ok, err := callerMayGrantChangeRequestCustomerFlag(ctx, q, projectID, viewerEmail)
+	if err != nil || !ok {
+		return false, err
+	}
+	live, err := liveCustomerStageForState(ctx, q, id, spec.state)
+	if err != nil || live == nil {
+		return false, err
+	}
+	userID, err := customerApproverUserID(ctx, q, id, viewerEmail)
+	if err != nil {
+		var forbidden *apierror.ForbiddenError
+		if errors.As(err, &forbidden) {
+			return false, nil
+		}
+		return false, err
+	}
+	var asked bool
+	if err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM approval_stage_approver
+		                WHERE stage_id = $1::uuid AND approver_user_id = $2::uuid AND status = 'requested')`,
+		live.stageID, userID).Scan(&asked); err != nil {
+		return false, fmt.Errorf("customer can answer: read the viewer's pending approval: %w", err)
+	}
+	if !asked {
+		return false, nil
+	}
+	creatorIDs, err := changeRequestCreatorsForApprover(ctx, q, id, userID, viewerEmail)
+	if err != nil {
+		return false, fmt.Errorf("customer can answer: %w", err)
+	}
+	if err := approverDecisionBlock(ctx, q, userID, creatorIDs, spec.kind); err != nil {
+		var forbidden *apierror.ForbiddenError
+		if errors.As(err, &forbidden) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+// markCustomerCanAnswer sets domain.ChangeRequest.CustomerCanAnswer for the
+// caller reading cr, when the caller is a customer (an external caller): true
+// or false, per customerCanAnswer. Left nil for everyone else (staff, internal
+// callers, a context with no identity) -- the field answers a customer's
+// question, and a staff view has no customer answer of its own to give -- and
+// when the check itself fails: the detail read is not worth failing for it, and
+// an absent field tells the client the answer is unknown rather than "no".
+func (r *changeRequestRepo) markCustomerCanAnswer(ctx context.Context, cr *domain.ChangeRequest) {
+	if !isExternalCaller(ctx) {
+		return
+	}
+	scope, _ := CallerIdentityFromContext(ctx)
+	var projectID *string
+	if cr.Project.ID != "" {
+		pid := cr.Project.ID
+		projectID = &pid
+	}
+	state := ""
+	if cr.State != nil {
+		state = *cr.State
+	}
+	can, err := customerCanAnswer(ctx, r.db, cr.ID, projectID, state, scope.ViewerEmail)
+	if err != nil {
+		slog.WarnContext(ctx, "get change request: customerCanAnswer left unset", "changeRequestId", cr.ID, "error", err)
+		return
+	}
+	cr.CustomerCanAnswer = &can
 }
 
 // stateForMessage is the change's (upper-case) state as a message names it: a

@@ -23,6 +23,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
@@ -180,5 +181,69 @@ func TestStateForMessage(t *testing.T) {
 	var ce *apierror.ConflictError
 	if err := staleApprovalRefusal(stageKindCustomerApproval, stateForMessage("")); !errors.As(err, &ce) || !strings.Contains(ce.Msg, "the change request is in New, but") {
 		t.Errorf("refusal for a NULL state = %v, want it to say the change is in New", err)
+	}
+}
+
+// neverQuerier is a crQuerier that fails the test if the database is touched:
+// the answers customerCanAnswer gives without asking it.
+type neverQuerier struct{ t *testing.T }
+
+func (n neverQuerier) Query(context.Context, string, ...any) (pgx.Rows, error) {
+	n.t.Helper()
+	n.t.Fatal("customerCanAnswer queried the database for an answer that needs no query")
+	return nil, nil
+}
+
+func (n neverQuerier) QueryRow(context.Context, string, ...any) pgx.Row {
+	n.t.Helper()
+	n.t.Fatal("customerCanAnswer queried the database for an answer that needs no query")
+	return nil
+}
+
+// The answer is false, without a query, for every state that has no customer
+// stage and for a viewer who cannot be identified.
+func TestCustomerCanAnswer_NeedsNoQueryOutsideTheCustomerStates(t *testing.T) {
+	for _, state := range []string{"", "new", "assess", "authorize", "scheduled", "implement", "review", "closed", "canceled", "rollback", "no-such-state"} {
+		got, err := customerCanAnswer(context.Background(), neverQuerier{t}, "cr-1", nil, state, "dave@example.com")
+		if err != nil || got {
+			t.Errorf("state %q: customerCanAnswer = %v, %v; want false, nil", state, got, err)
+		}
+	}
+	for _, email := range []string{"", "   "} {
+		got, err := customerCanAnswer(context.Background(), neverQuerier{t}, "cr-1", nil, "customer_approval", email)
+		if err != nil || got {
+			t.Errorf("viewer %q: customerCanAnswer = %v, %v; want false, nil", email, got, err)
+		}
+	}
+}
+
+// markCustomerCanAnswer sets the field for a customer only, and a customer is
+// always told true or false: here, false for a change request that is in no
+// customer state (answered without a database). Staff and an unidentified
+// caller are told nothing.
+func TestMarkCustomerCanAnswer_WhoIsToldWhat(t *testing.T) {
+	state := "scheduled"
+	repo := &changeRequestRepo{} // a nil connection: none of these answers may need one
+	customer := WithCallerIdentity(context.Background(), SearchScope{ViewerEmail: "dave@example.com"})
+
+	cr := domain.ChangeRequest{}
+	cr.ID, cr.State = "cr-1", &state
+	repo.markCustomerCanAnswer(customer, &cr)
+	if cr.CustomerCanAnswer == nil || *cr.CustomerCanAnswer {
+		t.Fatalf("a customer reading a Scheduled change request is told %v, want false", cr.CustomerCanAnswer)
+	}
+
+	for name, ctx := range map[string]context.Context{
+		"the system identity":           WithSystemIdentity(context.Background()),
+		"an unrestricted caller":        WithCallerIdentity(context.Background(), SearchScope{Unrestricted: true, ViewerEmail: "alice@example.com"}),
+		"staff holding an external one": WithCallerIdentity(context.Background(), SearchScope{ViewerEmail: "alice@example.com", HasInternalAccess: true}),
+		"no identity":                   context.Background(),
+	} {
+		cr := domain.ChangeRequest{}
+		cr.ID, cr.State = "cr-1", &state
+		repo.markCustomerCanAnswer(ctx, &cr)
+		if cr.CustomerCanAnswer != nil {
+			t.Errorf("%s is told customerCanAnswer = %v, want nothing", name, *cr.CustomerCanAnswer)
+		}
 	}
 }

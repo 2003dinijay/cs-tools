@@ -4745,6 +4745,29 @@ type ChangeRequest struct {
 	ApprovedOn               *string    `json:"approvedOn"`
 	LegalNextStates          []string   `json:"legalNextStates"`
 
+	// CustomerCanAnswer is the VIEWER-specific "may I answer this change
+	// request now": true when the caller is a customer (an external caller)
+	// who, at this moment, could give the customer's approval / review of it
+	// (PATCH {isCustomerApproved} in Customer Approval, {isCustomerReviewed} in
+	// Customer Review). In Customer Approval it is also the "may propose a new
+	// implementation time" signal, apart from the change being on hold (onHold),
+	// which refuses a proposal and not an answer. It is computed on the
+	// PostgreSQL data source for external callers only, from the same
+	// rules the answer itself is checked against (see
+	// repository.customerCanAnswer): the change is in Customer Approval /
+	// Customer Review, the caller is a registered PORTAL_USER contact of its
+	// project who holds a REQUESTED approval on the live customer stage of that
+	// state, and is not blocked from approving (the creator is). It is false for
+	// every other state, for the contact who has already been superseded
+	// (a sibling answered, the change moved on, the window was re-scheduled),
+	// and for any customer who was not asked.
+	//
+	// A pointer so that "not computed" stays distinct from false: absent (nil,
+	// omitted from the JSON) for staff and internal callers, for the
+	// ServiceNow data source, and when the check could not be made. A client
+	// that finds it absent falls back to what it knew before the field existed.
+	CustomerCanAnswer *bool `json:"customerCanAnswer,omitempty"`
+
 	// The fields below are change-request field-parity additions. All 20 are
 	// present on GET /change-requests/{id} and the PATCH receipt (both share
 	// the same mapper); none are on the search response, which was

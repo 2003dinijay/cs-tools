@@ -981,3 +981,32 @@ func TestSNChangeRequestService_RemovedFieldsAreRefused(t *testing.T) {
 		}
 	}
 }
+
+// The ServiceNow data source has no notion of who is viewing: its change request
+// detail never carries customerCanAnswer (absent means "unknown", and a client
+// falls back to the flags it already had), whatever the customer flags say.
+func TestSNChangeRequestDetail_LeavesCustomerCanAnswerAbsent(t *testing.T) {
+	t.Parallel()
+
+	const detail = `{
+		"id": "0123456789abcdef0123456789abcdef",
+		"state": {"label": "Customer Approval"},
+		"hasCustomerApproved": true,
+		"hasCustomerReviewed": false
+	}`
+	var cr snChangeRequestDetail
+	if err := json.Unmarshal([]byte(detail), &cr); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	got := mapSNChangeRequestDetailToView(cr)
+	if got.CustomerCanAnswer != nil {
+		t.Fatalf("CustomerCanAnswer = %v, want nil (absent)", *got.CustomerCanAnswer)
+	}
+	raw, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if strings.Contains(string(raw), "customerCanAnswer") {
+		t.Fatalf("the ServiceNow detail's JSON mentions customerCanAnswer: %s", raw)
+	}
+}
