@@ -188,7 +188,7 @@ func scanTimeCardView(row interface{ Scan(...any) error }) (domain.TimeCardView,
 	v.TimeReproducingDebugging = reproducing
 	v.TimeProvidingSolution = providing
 	v.TimePatching = patching
-	v.TotalTime = float64(analyzing+settingUp+reproducing+providing+patching) / 60.0
+	v.TotalTime = float64(analyzing + settingUp + reproducing + providing + patching)
 	if isBillable != nil {
 		v.HasBillable = *isBillable
 	}
@@ -486,10 +486,10 @@ func (r *timeCardRepo) SearchCaseTimeCards(ctx context.Context, req domain.Searc
 					CreatedBy: &createdBy,
 					UpdatedBy: &updatedBy,
 				},
-				TotalTime:   float64(totalMinutes) / 60.0,
+				TotalTime:   float64(totalMinutes),
 				TotalCount:  totalCount,
-				Billable:    domain.CaseTimeCardBillingInfo{TotalTime: float64(billableMinutes) / 60.0, Count: billableCount},
-				NonBillable: domain.CaseTimeCardBillingInfo{TotalTime: float64(nonBillableMinutes) / 60.0, Count: nonBillableCount},
+				Billable:    domain.CaseTimeCardBillingInfo{TotalTime: float64(billableMinutes), Count: billableCount},
+				NonBillable: domain.CaseTimeCardBillingInfo{TotalTime: float64(nonBillableMinutes), Count: nonBillableCount},
 			}
 			if projectID != nil {
 				name := ""
