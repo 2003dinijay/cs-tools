@@ -48,11 +48,17 @@ function baseResult(overrides: Partial<BeIncidentHandoffResult> = {}): BeInciden
   };
 }
 
+const TEAMS = [
+  { key: "choreo-apim-team", label: "Choreo APIM Team" },
+  { key: "choreo-runtime-team", label: "Choreo Runtime Team" },
+];
+
 describe("HandoffToSpecialistDialog — form", () => {
   it("submits the reason code alone when no team is picked", () => {
     const onSubmit = vi.fn();
     render(
       <HandoffToSpecialistDialog
+        teamOptions={TEAMS}
         isSubmitting={false}
         result={null}
         onClose={() => {}}
@@ -76,6 +82,7 @@ describe("HandoffToSpecialistDialog — form", () => {
     const onSubmit = vi.fn();
     render(
       <HandoffToSpecialistDialog
+        teamOptions={TEAMS}
         isSubmitting={false}
         result={null}
         onClose={() => {}}
@@ -100,6 +107,7 @@ describe("HandoffToSpecialistDialog — form", () => {
   it("disables Escalate until a reason is chosen", () => {
     render(
       <HandoffToSpecialistDialog
+        teamOptions={TEAMS}
         isSubmitting={false}
         result={null}
         onClose={() => {}}
@@ -113,6 +121,7 @@ describe("HandoffToSpecialistDialog — form", () => {
   it("shows a clean success result without a warning when there's no githubIssueError", () => {
     render(
       <HandoffToSpecialistDialog
+        teamOptions={TEAMS}
         isSubmitting={false}
         result={baseResult()}
         onClose={() => {}}
@@ -128,6 +137,7 @@ describe("HandoffToSpecialistDialog — form", () => {
   it("surfaces a githubIssueError distinctly on an otherwise-successful handoff", () => {
     render(
       <HandoffToSpecialistDialog
+        teamOptions={TEAMS}
         isSubmitting={false}
         result={baseResult({ githubIssueError: "GitHub issue creation failed (401)" })}
         onClose={() => {}}

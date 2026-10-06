@@ -38,41 +38,15 @@ import (
 // never called. Discovery script 68 (csm-flow-service docs) has the UI
 // action and its history.
 
-// handoffRouting is one service's specialist routing.
-type handoffRouting struct {
-	defaultGroup string
-	teams        map[domain.IncidentSpecialistHandoffEscalationTeam]string
-	githubOwner  string
-	githubRepo   string
-}
+// The routing -- which team, and so which group, a service's incidents are
+// handed to, by sub-team, and where the GitHub issue goes -- is data: the
+// Special Ops teams are team rows linked to their group (team.group_id), and
+// specialist_handoff_route (migration 0194) says which serve which service,
+// seeded with IncidentHandoffUtils' IHU_SERVICE_ROUTING. ServiceNow
+// hard-codes it.
 
-// handoffRoutingByService is IncidentHandoffUtils' IHU_SERVICE_ROUTING, keyed
-// by the service's Postgres id (its ServiceNow sys_id). The UI action also
-// branches on eleven further Choreo-family services, but its display
-// condition (WSO2AgentWorkspaceUtils.canEscalateToSpecialOps) never offers
-// the button for them, so -- like IncidentHandoffUtils -- they are not here.
-var handoffRoutingByService = map[string]handoffRouting{
-	// Choreo
-	"b9c999f8-1b86-a010-00ae-86acdd4bcb61": {
-		defaultGroup: "fe0d8868-1b0b-3010-d64e-64a2604bcb3c", // Choreo Special Ops
-		teams: map[domain.IncidentSpecialistHandoffEscalationTeam]string{
-			domain.IncidentSpecialistHandoffTeamChoreoRuntime: "80dade5d-1b70-0710-a002-c9d3604bcbd7", // Choreo Runtime Special Ops
-			domain.IncidentSpecialistHandoffTeamChoreoAPIM:    "a79a1e9d-1b70-0710-a002-c9d3604bcb20", // Choreo APIM Special Ops
-		},
-		githubOwner: "wso2-enterprise",
-		githubRepo:  "choreo",
-	},
-	// Asgardeo
-	"97ed1b8b-1ba2-6c10-00ae-86acdd4bcbd3": {
-		defaultGroup: "7fb4f4c6-1b4b-3810-aea4-a936604bcb90", // Asgardeo Special Ops
-		githubOwner:  "wso2-enterprise",
-		githubRepo:   "asgardeo-product",
-	},
-}
-
-// handoffRunbookTaskGroup is the runbook task's group, "WSO2 SRE Team" --
-// the sys_id the UI action hard-codes.
-const handoffRunbookTaskGroup = "f991f369-1b88-b410-cb68-98aebd4bcb13"
+// maxEscalationTeamLen is team.key's length.
+const maxEscalationTeamLen = 64
 
 // handoffReasons are the two reasons the UI action's modal offers: the
 // description written into the reason note, and the runbook task's subject.
@@ -112,40 +86,52 @@ func specialistHandoffConflict(detail string) error {
 }
 
 // planSpecialistHandoff is IncidentHandoffUtils.checkEligibility plus the
-// writes handOff makes, decided on the locked incident.
-func planSpecialistHandoff(req domain.HandOffIncidentToSpecialistRequest, snap repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, handoffRouting, error) {
-	var routing handoffRouting
-	ok := false
-	if snap.ServiceID != nil {
-		routing, ok = handoffRoutingByService[strings.ToLower(*snap.ServiceID)]
-	}
-	if !ok {
-		return repository.SpecialistHandoffPlan{}, routing, specialistHandoffConflict("No specialist group is configured for this incident's service.")
-	}
-	if snap.State != string(domain.IncidentStateInProgress) {
-		return repository.SpecialistHandoffPlan{}, routing, specialistHandoffConflict("Only an In Progress incident can be handed off.")
-	}
-	if snap.AssignmentGroupID != nil && strings.EqualFold(*snap.AssignmentGroupID, routing.defaultGroup) {
-		return repository.SpecialistHandoffPlan{}, routing, specialistHandoffConflict("The incident already sits with the specialist group for this service.")
-	}
-
-	group := routing.defaultGroup
-	if req.EscalationTeam != nil {
-		if g, ok := routing.teams[*req.EscalationTeam]; ok {
-			group = g
+// writes handOff makes, decided on the locked incident. route is the
+// specialist_handoff_route the incident goes to: the requested sub-team's,
+// or the service's default when the service has no such sub-team (as
+// ServiceNow ignores a team for Asgardeo).
+//
+// The runbook task goes to the same Special Ops group as the incident.
+// ServiceNow sends it to WSO2 SRE Team, which no longer exists; the Special
+// Ops team now owns its runbooks.
+func planSpecialistHandoff(req domain.HandOffIncidentToSpecialistRequest, snap repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, repository.SpecialistHandoffRoute, error) {
+	var def, route *repository.SpecialistHandoffRoute
+	for i := range snap.Routes {
+		r := &snap.Routes[i]
+		switch {
+		case r.IsDefault:
+			def = r
+		case req.EscalationTeam != nil && r.TeamKey == string(*req.EscalationTeam):
+			route = r
 		}
 	}
+	if def == nil {
+		return repository.SpecialistHandoffPlan{}, repository.SpecialistHandoffRoute{}, specialistHandoffConflict("No specialist group is configured for this incident's service.")
+	}
+	if snap.State != string(domain.IncidentStateInProgress) {
+		return repository.SpecialistHandoffPlan{}, *def, specialistHandoffConflict("Only an In Progress incident can be handed off.")
+	}
+	if def.GroupID != nil && snap.AssignmentGroupID != nil && strings.EqualFold(*snap.AssignmentGroupID, *def.GroupID) {
+		return repository.SpecialistHandoffPlan{}, *def, specialistHandoffConflict("The incident already sits with the specialist group for this service.")
+	}
+	if route == nil {
+		route = def
+	}
+	if route.GroupID == nil {
+		return repository.SpecialistHandoffPlan{}, *route, specialistHandoffConflict("The " + route.TeamName + " team has no assignment group configured.")
+	}
+
 	reason := handoffReasons[req.ReasonCode]
 	blob, err := handoffReasonBlob(req, reason.description)
 	if err != nil {
-		return repository.SpecialistHandoffPlan{}, routing, err
+		return repository.SpecialistHandoffPlan{}, *route, err
 	}
 	return repository.SpecialistHandoffPlan{
-		GroupID:     group,
+		GroupID:     *route.GroupID,
 		TaskSubject: reason.taskSubject(snap.Number),
-		TaskGroupID: handoffRunbookTaskGroup,
+		TaskGroupID: route.GroupID,
 		WorkNotes:   []string{blob},
-	}, routing, nil
+	}, *route, nil
 }
 
 // handoffReasonBlob is the reason work note, byte for byte the JSON the UI
@@ -219,16 +205,23 @@ func (s *incidentService) HandOffIncidentToSpecialist(ctx context.Context, req d
 	if err := validateHandOffRequest(req); err != nil {
 		return domain.HandOffIncidentToSpecialistResponse{}, err
 	}
+	// Any team key a route can hold; one with no route for the incident's
+	// service falls back to the service's default route.
+	if req.EscalationTeam != nil {
+		if t := strings.TrimSpace(string(*req.EscalationTeam)); t == "" || len(t) > maxEscalationTeamLen {
+			return domain.HandOffIncidentToSpecialistResponse{}, &apierror.ValidationError{Msg: "invalid escalationTeam: " + string(*req.EscalationTeam)}
+		}
+	}
 	email, label, err := s.handoffActor(ctx)
 	if err != nil {
 		return domain.HandOffIncidentToSpecialistResponse{}, err
 	}
 
-	var routing handoffRouting
+	var route repository.SpecialistHandoffRoute
 	written, err := s.repo.ApplySpecialistHandoff(ctx, req.IncidentID, email,
 		func(snap repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, error) {
 			plan, r, perr := planSpecialistHandoff(req, snap)
-			routing = r
+			route = r
 			return plan, perr
 		})
 	if err != nil {
@@ -248,7 +241,7 @@ func (s *incidentService) HandOffIncidentToSpecialist(ctx context.Context, req d
 	}
 
 	if req.CreateGithubIssue == nil || *req.CreateGithubIssue {
-		result.GithubIssue, result.GithubIssueError = s.fileHandoffIssue(ctx, routing, written.Before)
+		result.GithubIssue, result.GithubIssueError = s.fileHandoffIssue(ctx, route, written.Before)
 	}
 	if _, err := s.repo.CreateIncidentComment(ctx, req.IncidentID, domain.CommentTypeWorkNote, handoffEscalatedNote(label, result.GithubIssue), email); err != nil {
 		// The handoff itself is committed; only this note is missing.
@@ -269,19 +262,35 @@ func (s *incidentService) HandOffIncidentToSpecialist(ctx context.Context, req d
 	}, nil
 }
 
-// fileHandoffIssue opens the internal GitHub issue, titled and bodied with
-// the incident's subject and description. It never fails the handoff: a
-// missing client or a GitHub error comes back as the error text.
-func (s *incidentService) fileHandoffIssue(ctx context.Context, routing handoffRouting, inc repository.SpecialistHandoffSnapshot) (*domain.IncidentSpecialistHandoffGithubIssue, *string) {
+// fileHandoffIssue opens the internal GitHub issue in the route's
+// repository, titled and bodied with the incident's subject and description.
+// It never fails the handoff: a missing client, a route with no repository,
+// or a GitHub error comes back as the error text.
+func (s *incidentService) fileHandoffIssue(ctx context.Context, route repository.SpecialistHandoffRoute, inc repository.SpecialistHandoffSnapshot) (*domain.IncidentSpecialistHandoffGithubIssue, *string) {
 	if s.handoffIssues == nil {
 		msg := "GitHub issue creation is not configured on this deployment"
 		return nil, &msg
 	}
-	created, err := s.handoffIssues.CreateIssue(ctx, routing.githubOwner, routing.githubRepo, inc.Subject, derefString(inc.Description), nil)
+	owner, repo := derefString(route.GithubOwner), derefString(route.GithubRepo)
+	if owner == "" || repo == "" {
+		msg := "No GitHub repository is configured for this specialist route"
+		return nil, &msg
+	}
+	created, err := s.handoffIssues.CreateIssue(ctx, owner, repo, inc.Subject, derefString(inc.Description), nil)
 	if err != nil {
 		slog.WarnContext(ctx, "specialist handoff: GitHub issue not created", "incidentId", inc.IncidentID, "error", err)
 		msg := "GitHub issue creation failed: " + err.Error()
 		return nil, &msg
 	}
-	return &domain.IncidentSpecialistHandoffGithubIssue{URL: created.HTMLURL, Number: created.Number, Repo: routing.githubRepo}, nil
+	return &domain.IncidentSpecialistHandoffGithubIssue{URL: created.HTMLURL, Number: created.Number, Repo: repo}, nil
+}
+
+// ListSpecialistHandoffTeams implements IncidentService for Postgres: the
+// sub-teams specialist_handoff_route offers.
+func (s *incidentService) ListSpecialistHandoffTeams(ctx context.Context) (domain.SpecialistHandoffTeamsResponse, error) {
+	teams, err := s.repo.ListSpecialistHandoffTeams(ctx)
+	if err != nil {
+		return domain.SpecialistHandoffTeamsResponse{}, err
+	}
+	return domain.SpecialistHandoffTeamsResponse{Teams: teams}, nil
 }

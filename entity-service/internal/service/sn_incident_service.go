@@ -230,10 +230,20 @@ func validateHandOffRequest(req domain.HandOffIncidentToSpecialistRequest) error
 	if !validIncidentSpecialistHandoffReasonCode[req.ReasonCode] {
 		return &apierror.ValidationError{Msg: "invalid reasonCode: " + string(req.ReasonCode)}
 	}
-	if req.EscalationTeam != nil && !validIncidentSpecialistHandoffEscalationTeam[*req.EscalationTeam] {
-		return &apierror.ValidationError{Msg: "invalid escalationTeam: " + string(*req.EscalationTeam)}
-	}
 	return nil
+}
+
+// snSpecialistHandoffTeams are the two teams ServiceNow's handoff API
+// (IncidentHandoffUtils) accepts, with the labels its modal shows.
+var snSpecialistHandoffTeams = []domain.SpecialistHandoffTeam{
+	{Key: string(domain.IncidentSpecialistHandoffTeamChoreoAPIM), Label: "Choreo APIM Team"},
+	{Key: string(domain.IncidentSpecialistHandoffTeamChoreoRuntime), Label: "Choreo Runtime Team"},
+}
+
+// ListSpecialistHandoffTeams implements IncidentService for ServiceNow,
+// whose routing is code, not data.
+func (s *snIncidentService) ListSpecialistHandoffTeams(context.Context) (domain.SpecialistHandoffTeamsResponse, error) {
+	return domain.SpecialistHandoffTeamsResponse{Teams: snSpecialistHandoffTeams}, nil
 }
 
 var validIncidentSortField = map[domain.IncidentSortField]bool{
@@ -1953,6 +1963,9 @@ type snHandOffIncidentResponse struct {
 func (s *snIncidentService) HandOffIncidentToSpecialist(ctx context.Context, req domain.HandOffIncidentToSpecialistRequest) (domain.HandOffIncidentToSpecialistResponse, error) {
 	if err := validateHandOffRequest(req); err != nil {
 		return domain.HandOffIncidentToSpecialistResponse{}, err
+	}
+	if req.EscalationTeam != nil && !validIncidentSpecialistHandoffEscalationTeam[*req.EscalationTeam] {
+		return domain.HandOffIncidentToSpecialistResponse{}, &apierror.ValidationError{Msg: "invalid escalationTeam: " + string(*req.EscalationTeam)}
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)

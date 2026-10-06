@@ -36,7 +36,6 @@ const (
 	hoChoreoRuntime   = "80dade5d-1b70-0710-a002-c9d3604bcbd7"
 	hoChoreoAPIM      = "a79a1e9d-1b70-0710-a002-c9d3604bcb20"
 	hoAsgardeoSpecial = "7fb4f4c6-1b4b-3810-aea4-a936604bcb90"
-	hoSRETeam         = "f991f369-1b88-b410-cb68-98aebd4bcb13"
 )
 
 func hoStr(s string) *string { return &s }
@@ -45,32 +44,58 @@ func hoTeam(t domain.IncidentSpecialistHandoffEscalationTeam) *domain.IncidentSp
 	return &t
 }
 
+// hoRoutes are the rows migration 0194 seeds for a service.
+func hoRoutes(service string) []repository.SpecialistHandoffRoute {
+	choreo := func(key, name, group string, def bool) repository.SpecialistHandoffRoute {
+		return repository.SpecialistHandoffRoute{TeamKey: key, TeamName: name, IsDefault: def, GroupID: hoStr(group),
+			GithubOwner: hoStr("wso2-enterprise"), GithubRepo: hoStr("choreo")}
+	}
+	switch service {
+	case hoChoreoService:
+		return []repository.SpecialistHandoffRoute{
+			choreo("choreo-special-ops", "Choreo Special Ops", hoChoreoSpecial, true),
+			choreo("choreo-runtime-team", "Choreo Runtime Team", hoChoreoRuntime, false),
+			choreo("choreo-apim-team", "Choreo APIM Team", hoChoreoAPIM, false),
+		}
+	case hoAsgardeoService:
+		return []repository.SpecialistHandoffRoute{{TeamKey: "asgardeo-special-ops", TeamName: "Asgardeo Special Ops", IsDefault: true,
+			GroupID: hoStr(hoAsgardeoSpecial), GithubOwner: hoStr("wso2-enterprise"), GithubRepo: hoStr("asgardeo-product")}}
+	}
+	return nil
+}
+
 func hoSnapshot(service, group, state string) repository.SpecialistHandoffSnapshot {
 	snap := repository.SpecialistHandoffSnapshot{
 		IncidentID: hoIncidentID, Number: "INC0099001", Subject: "Gateway 502s", State: state,
-		Description: hoStr("All gateways return 502."),
+		Description: hoStr("All gateways return 502."), Routes: hoRoutes(service),
 	}
 	if service != "" {
 		snap.ServiceID = &service
 	}
 	if group != "" {
 		snap.AssignmentGroupID = &group
-		snap.AssignmentGroupName = hoStr("Choreo SRE Team")
+		snap.AssignmentGroupName = hoStr("Choreo Operations")
 	}
 	return snap
 }
 
 // TestPlanSpecialistHandoff_Eligibility ports IncidentHandoffUtils
-// .checkEligibility: In Progress only, a routed service only, and not
-// already with that service's default specialist group.
+// .checkEligibility: In Progress only, a service with a default route only,
+// not already with that route's group -- and a team with no group refuses.
 func TestPlanSpecialistHandoff_Eligibility(t *testing.T) {
 	req := domain.HandOffIncidentToSpecialistRequest{IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook}
+	noGroup := hoSnapshot(hoAsgardeoService, "", "IN_PROGRESS")
+	noGroup.Routes[0].GroupID = nil
+	onlySubTeams := hoSnapshot(hoChoreoService, "", "IN_PROGRESS")
+	onlySubTeams.Routes = onlySubTeams.Routes[1:]
 	for name, snap := range map[string]repository.SpecialistHandoffSnapshot{
-		"not In Progress":        hoSnapshot(hoChoreoService, "", "NEW"),
-		"no service":             hoSnapshot("", "", "IN_PROGRESS"),
-		"unrouted service":       hoSnapshot("22222222-2222-4222-8222-222222222222", "", "IN_PROGRESS"),
-		"already Choreo SpecOps": hoSnapshot(hoChoreoService, hoChoreoSpecial, "IN_PROGRESS"),
-		"already Asgardeo Ops":   hoSnapshot(hoAsgardeoService, hoAsgardeoSpecial, "IN_PROGRESS"),
+		"not In Progress":         hoSnapshot(hoChoreoService, "", "NEW"),
+		"no service":              hoSnapshot("", "", "IN_PROGRESS"),
+		"service without routes":  hoSnapshot("22222222-2222-4222-8222-222222222222", "", "IN_PROGRESS"),
+		"service without default": onlySubTeams,
+		"already Choreo SpecOps":  hoSnapshot(hoChoreoService, hoChoreoSpecial, "IN_PROGRESS"),
+		"already Asgardeo Ops":    hoSnapshot(hoAsgardeoService, hoAsgardeoSpecial, "IN_PROGRESS"),
+		"team without group":      noGroup,
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, _, err := planSpecialistHandoff(req, snap)
@@ -88,8 +113,10 @@ func TestPlanSpecialistHandoff_Eligibility(t *testing.T) {
 	}
 }
 
-// TestPlanSpecialistHandoff_Routing: the service picks the group; the team
-// only routes Choreo and is ignored for Asgardeo, as the UI action does.
+// TestPlanSpecialistHandoff_Routing: the service's routes pick the group; a
+// team the service has no route for falls back to its default, as the UI
+// action ignores a team for Asgardeo. The runbook task goes to the same
+// group as the incident.
 func TestPlanSpecialistHandoff_Routing(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -101,21 +128,22 @@ func TestPlanSpecialistHandoff_Routing(t *testing.T) {
 		{"choreo default", hoChoreoService, nil, hoChoreoSpecial, "choreo"},
 		{"choreo runtime", hoChoreoService, hoTeam(domain.IncidentSpecialistHandoffTeamChoreoRuntime), hoChoreoRuntime, "choreo"},
 		{"choreo apim", hoChoreoService, hoTeam(domain.IncidentSpecialistHandoffTeamChoreoAPIM), hoChoreoAPIM, "choreo"},
+		{"choreo unknown team", hoChoreoService, hoTeam("moesif-team"), hoChoreoSpecial, "choreo"},
 		{"asgardeo", hoAsgardeoService, nil, hoAsgardeoSpecial, "asgardeo-product"},
 		{"asgardeo ignores team", hoAsgardeoService, hoTeam(domain.IncidentSpecialistHandoffTeamChoreoRuntime), hoAsgardeoSpecial, "asgardeo-product"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			req := domain.HandOffIncidentToSpecialistRequest{IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook, EscalationTeam: c.team}
-			plan, routing, err := planSpecialistHandoff(req, hoSnapshot(c.service, "", "IN_PROGRESS"))
+			plan, route, err := planSpecialistHandoff(req, hoSnapshot(c.service, "", "IN_PROGRESS"))
 			if err != nil {
 				t.Fatalf("plan: %v", err)
 			}
-			if plan.GroupID != c.want || routing.githubRepo != c.repo || routing.githubOwner != "wso2-enterprise" {
-				t.Errorf("group %s repo %s/%s, want %s wso2-enterprise/%s", plan.GroupID, routing.githubOwner, routing.githubRepo, c.want, c.repo)
+			if plan.GroupID != c.want || derefString(route.GithubRepo) != c.repo || derefString(route.GithubOwner) != "wso2-enterprise" {
+				t.Errorf("group %s repo %s/%s, want %s wso2-enterprise/%s", plan.GroupID, derefString(route.GithubOwner), derefString(route.GithubRepo), c.want, c.repo)
 			}
-			if plan.TaskGroupID != hoSRETeam {
-				t.Errorf("runbook task group %s, want WSO2 SRE Team %s", plan.TaskGroupID, hoSRETeam)
+			if plan.TaskGroupID == nil || *plan.TaskGroupID != c.want {
+				t.Errorf("runbook task group %v, want the Special Ops group %s", plan.TaskGroupID, c.want)
 			}
 		})
 	}
@@ -227,7 +255,7 @@ func TestHandOffIncidentToSpecialist_FilesIssueAndNotes(t *testing.T) {
 	if h.GithubIssue == nil || h.GithubIssue.Number != 42 || h.GithubIssue.Repo != "choreo" || h.GithubIssueError != nil {
 		t.Errorf("github result %+v / %v", h.GithubIssue, h.GithubIssueError)
 	}
-	if h.AssignmentGroup.ID != hoChoreoSpecial || h.PreviousAssignmentGroup == nil || h.PreviousAssignmentGroup.Name != "Choreo SRE Team" {
+	if h.AssignmentGroup.ID != hoChoreoSpecial || h.PreviousAssignmentGroup == nil || h.PreviousAssignmentGroup.Name != "Choreo Operations" {
 		t.Errorf("groups %+v / %+v", h.AssignmentGroup, h.PreviousAssignmentGroup)
 	}
 	if h.Task.Number != "CS-PORTAL-000123" || h.Task.Subject != "[Runbook Task] No entry available for INC0099001" {
@@ -282,7 +310,8 @@ func TestHandOffIncidentToSpecialist_RejectsBadRequestBeforeWriting(t *testing.T
 	for name, req := range map[string]domain.HandOffIncidentToSpecialistRequest{
 		"no reason":  {IncidentID: hoIncidentID},
 		"bad reason": {IncidentID: hoIncidentID, ReasonCode: "because"},
-		"bad team":   {IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook, EscalationTeam: hoTeam("moesif-team")},
+		"blank team": {IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook, EscalationTeam: hoTeam(" ")},
+		"long team":  {IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook, EscalationTeam: hoTeam(domain.IncidentSpecialistHandoffEscalationTeam(strings.Repeat("x", 65)))},
 		"bad id":     {IncidentID: "nope", ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook},
 	} {
 		_, err := svc.HandOffIncidentToSpecialist(ctx, req)
@@ -293,5 +322,32 @@ func TestHandOffIncidentToSpecialist_RejectsBadRequestBeforeWriting(t *testing.T
 	}
 	if _, err := svc.HandOffIncidentToSpecialist(context.Background(), domain.HandOffIncidentToSpecialistRequest{IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook}); err == nil || !strings.Contains(err.Error(), "x-user-id-token") {
 		t.Errorf("missing token: %v, want an x-user-id-token error", err)
+	}
+}
+
+func TestHandOffIncidentToSpecialist_RouteWithoutRepoFilesNoIssue(t *testing.T) {
+	snap := hoSnapshot(hoAsgardeoService, "", "IN_PROGRESS")
+	snap.Routes[0].GithubRepo = nil
+	issues := &fakeHandoffIssues{}
+	req := domain.HandOffIncidentToSpecialistRequest{IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook}
+	resp, err, _, _ := handoffHarness(t, snap, issues, req)
+	if err != nil {
+		t.Fatalf("handoff: %v", err)
+	}
+	if issues.calls != 0 || resp.Handoff.GithubIssueError == nil || *resp.Handoff.GithubIssueError != "No GitHub repository is configured for this specialist route" {
+		t.Errorf("calls %d error %v", issues.calls, resp.Handoff.GithubIssueError)
+	}
+}
+
+func TestListSpecialistHandoffTeams(t *testing.T) {
+	want := []domain.SpecialistHandoffTeam{{Key: "choreo-apim-team", Label: "Choreo APIM Team"}}
+	svc := NewIncidentService(&stubIncidentRepo{specialistHandoffTeams: want}, nil)
+	got, err := svc.ListSpecialistHandoffTeams(context.Background())
+	if err != nil || len(got.Teams) != 1 || got.Teams[0] != want[0] {
+		t.Errorf("Postgres teams %+v err %v, want %+v", got.Teams, err, want)
+	}
+	sn, _ := (&snIncidentService{}).ListSpecialistHandoffTeams(context.Background())
+	if len(sn.Teams) != 2 {
+		t.Errorf("ServiceNow teams %+v, want the two its API accepts", sn.Teams)
 	}
 }

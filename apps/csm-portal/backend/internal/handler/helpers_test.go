@@ -733,6 +733,7 @@ func (m *mockEntityProductClient) GetProductRepoMapping(ctx context.Context, nam
 // ----- mock entity incident client -----
 
 type mockEntityIncidentClient struct {
+	listSpecialistHandoffTeamsFn func(ctx context.Context) ([]byte, error)
 	searchIncidentsFn          func(ctx context.Context, body []byte) ([]byte, error)
 	aggregateIncidentsFn       func(ctx context.Context, body []byte) ([]byte, error)
 	createIncidentFn           func(ctx context.Context, body []byte) ([]byte, error)
@@ -798,6 +799,13 @@ func (m *mockEntityIncidentClient) SearchIncidentActivities(ctx context.Context,
 		return m.searchIncidentActivitiesFn(ctx, id, body)
 	}
 	return []byte(`{"activity":[],"total":0,"limit":20,"offset":0,"hasMore":false}`), nil
+}
+
+func (m *mockEntityIncidentClient) ListSpecialistHandoffTeams(ctx context.Context) ([]byte, error) {
+	if m.listSpecialistHandoffTeamsFn != nil {
+		return m.listSpecialistHandoffTeamsFn(ctx)
+	}
+	return []byte(`{"teams":[]}`), nil
 }
 
 func (m *mockEntityIncidentClient) HandOffIncidentToSpecialist(ctx context.Context, id string, body []byte) ([]byte, error) {

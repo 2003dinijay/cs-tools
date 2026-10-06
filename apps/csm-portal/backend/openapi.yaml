@@ -7315,6 +7315,34 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /specialist-handoff-teams:
+    get:
+      summary: The sub-teams the "Escalate to specialist team" dialog offers.
+      operationId: listSpecialistHandoffTeams
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teams:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key:
+                          type: string
+                        label:
+                          type: string
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /incidents/{id}/specialist-handoffs:
     post:
       summary: Hand an incident off to its specialist group (backing data source only).

@@ -933,3 +933,25 @@ func TestIncidentLifecycle_WithoutSubcategory(t *testing.T) {
 		}
 	}
 }
+
+func TestListSpecialistHandoffTeams(t *testing.T) {
+	t.Run("requires authenticated user", func(t *testing.T) {
+		h := NewIncidentHandler(&mockEntityIncidentClient{})
+		w := httptest.NewRecorder()
+		h.ListSpecialistHandoffTeams(w, httptest.NewRequest(http.MethodGet, "/specialist-handoff-teams", nil))
+		assertStatus(t, w, http.StatusUnauthorized)
+	})
+
+	t.Run("passes the entity service's teams through", func(t *testing.T) {
+		const body = `{"teams":[{"key":"choreo-apim-team","label":"Choreo APIM Team"}]}`
+		h := NewIncidentHandler(&mockEntityIncidentClient{
+			listSpecialistHandoffTeamsFn: func(context.Context) ([]byte, error) { return []byte(body), nil },
+		})
+		w := httptest.NewRecorder()
+		h.ListSpecialistHandoffTeams(w, withUser(httptest.NewRequest(http.MethodGet, "/specialist-handoff-teams", nil)))
+		assertStatus(t, w, http.StatusOK)
+		if got := strings.TrimSpace(w.Body.String()); got != body {
+			t.Errorf("body %s, want %s", got, body)
+		}
+	})
+}

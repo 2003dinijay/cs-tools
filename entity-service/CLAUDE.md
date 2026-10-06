@@ -5011,10 +5011,17 @@ explicitly. `CreateConversation` followed later -- see above.
 **`HandOffIncidentToSpecialist` is implemented on Postgres** and writes
 Postgres only -- no ServiceNow call, in dual-write mode too.
 `incident_handoff_service.go` ports `IncidentHandoffUtils.handOff` (the
-"Escalate to Special Ops" UI action): eligibility as 409s, routing by
-service (`handoffRoutingByService`), and one transaction that moves
-`work_item.assignment_group_id`, clears the assignee, opens a
-portal-numbered `[Runbook Task]` and writes the reason JSON as a work note.
+"Escalate to Special Ops" UI action): eligibility as 409s, and one
+transaction that moves `work_item.assignment_group_id`, clears the assignee,
+opens a portal-numbered `[Runbook Task]` (in the same Special Ops group --
+WSO2 SRE Team no longer exists) and writes the reason JSON as a work note.
+Routing is data, not code (migration 0194): each Special Ops team is a `team`
+row (type `SPECIAL-OPS`, key = the handoff's `escalationTeam`) linked to its
+assignment group by `team.group_id`, and `specialist_handoff_route` says
+which teams serve which service (one default per service) and where the
+GitHub issue goes. `GET /specialist-handoff-teams` feeds the dialog, and
+`IncidentView.CanHandOffToSpecialist` (SN's `canEscalateToSpecialOps`)
+decides whether the portal shows the action.
 The GitHub issue and the "Escalated to Special Ops team." note follow,
 best effort, through the GitHub integration's client
 (`WithHandoffIssueCreator`; without one the handoff still succeeds and

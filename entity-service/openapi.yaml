@@ -8228,6 +8228,34 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /specialist-handoff-teams:
+    get:
+      summary: The sub-teams an incident specialist handoff can name.
+      description: >-
+        On the Postgres data sources, the teams of active, non-default
+        specialist_handoff_route rows (a team's key is the handoff's escalationTeam,
+        its name the label). On ServiceNow, the two teams its handoff API accepts.
+      operationId: listSpecialistHandoffTeams
+      responses:
+        "200":
+          description: The teams, ordered by label.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpecialistHandoffTeamsResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /incidents/{id}/specialist-handoffs:
     post:
       summary: >-
@@ -11979,6 +12007,20 @@ components:
         do not carry this requirement.
 
   schemas:
+    SpecialistHandoffTeamsResponse:
+      type: object
+      properties:
+        teams:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                description: Sent as the handoff's escalationTeam.
+              label:
+                type: string
+
     AllocationEvent:
       type: object
       description: >-

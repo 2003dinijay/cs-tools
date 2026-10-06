@@ -87,6 +87,7 @@ type stubIncidentRepo struct {
 	createIncidentComment        func(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error)
 	getIncidentByID              func(ctx context.Context, id string) (domain.IncidentView, error)
 	updateIncidentLifecycle      func(ctx context.Context, id string, u repository.IncidentLifecycleUpdate, actorEmail string) error
+	specialistHandoffTeams       []domain.SpecialistHandoffTeam
 	applySpecialistHandoff       func(ctx context.Context, id, actorEmail string, plan func(repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, error)) (repository.SpecialistHandoffWritten, error)
 	supportGroups                map[string]string // service id -> support group id; unset = none
 }
@@ -151,6 +152,10 @@ func (s *stubIncidentRepo) UpdateIncidentLifecycle(ctx context.Context, id strin
 		return s.updateIncidentLifecycle(ctx, id, u, actorEmail)
 	}
 	panic("UpdateIncidentLifecycle called unexpectedly")
+}
+
+func (s *stubIncidentRepo) ListSpecialistHandoffTeams(context.Context) ([]domain.SpecialistHandoffTeam, error) {
+	return s.specialistHandoffTeams, nil
 }
 
 func (s *stubIncidentRepo) ApplySpecialistHandoff(ctx context.Context, id, actorEmail string, plan func(repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, error)) (repository.SpecialistHandoffWritten, error) {

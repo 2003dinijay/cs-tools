@@ -310,6 +310,12 @@ func (c *CustomerEntityClient) SearchIncidentActivities(ctx context.Context, id 
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/incidents/%s/activities/search", url.PathEscape(id)), body)
 }
 
+// ListSpecialistHandoffTeams calls GET /specialist-handoff-teams on the entity service:
+// the sub-teams the incident handoff dialog offers. Raw JSON.
+func (c *CustomerEntityClient) ListSpecialistHandoffTeams(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/specialist-handoff-teams", nil)
+}
+
 // HandOffIncidentToSpecialist calls POST /incidents/{id}/specialist-handoffs on the entity
 // service: hands the incident off to its specialist group in one atomic call. Response is
 // returned as raw JSON; typed response structs are deferred.

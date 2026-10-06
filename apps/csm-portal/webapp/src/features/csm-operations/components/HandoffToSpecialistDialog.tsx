@@ -31,6 +31,7 @@ import {
 import { useState, type JSX } from "react";
 import type {
   BeHandoffEscalationTeam,
+  BeSpecialistHandoffTeam,
   BeHandoffReasonCode,
   BeIncidentHandoffResult,
 } from "@api/backend/types";
@@ -41,12 +42,9 @@ const REASON_OPTIONS: Array<{ value: BeHandoffReasonCode; label: string }> = [
   { value: "runbook-not-working", label: "Runbook doesn't solve the incident" },
 ];
 
-const TEAM_OPTIONS: Array<{ value: BeHandoffEscalationTeam; label: string }> = [
-  { value: "choreo-runtime-team", label: "Choreo Runtime Team" },
-  { value: "choreo-apim-team", label: "Choreo APIM Team" },
-];
-
 interface HandoffToSpecialistDialogProps {
+  /** The sub-teams to offer, from `GET /specialist-handoff-teams`. */
+  teamOptions: BeSpecialistHandoffTeam[];
   isSubmitting: boolean;
   /** Set once the mutation resolves with a result to show inline
    * (success, with or without a GitHub issue error) — `null` before submit
@@ -70,6 +68,7 @@ interface HandoffToSpecialistDialogProps {
  * on.
  */
 export default function HandoffToSpecialistDialog({
+  teamOptions,
   isSubmitting,
   result,
   onClose,
@@ -159,8 +158,8 @@ export default function HandoffToSpecialistDialog({
                       -- Select --
                     </Typography>
                   </MenuItem>
-                  {TEAM_OPTIONS.map((o) => (
-                    <MenuItem key={o.value} value={o.value}>
+                  {teamOptions.map((o) => (
+                    <MenuItem key={o.key} value={o.key}>
                       {o.label}
                     </MenuItem>
                   ))}

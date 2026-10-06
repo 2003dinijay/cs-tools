@@ -1703,6 +1703,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /incidents/aggregate", internalOnly(accessSvc, incidentHandler.AggregateIncidents))
 	mux.HandleFunc("POST /incidents/{id}/activities/search", internalOnly(accessSvc, incidentHandler.SearchIncidentActivities))
 	mux.HandleFunc("POST /incidents/{id}/specialist-handoffs", internalOnly(accessSvc, incidentHandler.HandOffIncidentToSpecialist))
+	mux.HandleFunc("GET /specialist-handoff-teams", internalOnly(accessSvc, incidentHandler.ListSpecialistHandoffTeams))
 
 	// Postgres-backed, and deliberately separate from outageHandler above:
 	// that one is the ServiceNow-backed outage entity API, this is only the
