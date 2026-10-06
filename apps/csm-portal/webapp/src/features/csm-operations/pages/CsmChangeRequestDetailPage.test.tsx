@@ -1154,6 +1154,7 @@ describe("CsmChangeRequestDetailPage — reports its own draft state to the tab 
 
 const LC_CREATOR = { id: "u-creator", email: "casey@example.com", name: "Casey Creator" };
 const LC_PEER = { id: "u-peer", email: "pat@example.com", name: "Pat Peer" };
+const LC_PEER_TWO = { id: "u-peer2", email: "quinn@example.com", name: "Quinn Peer" };
 const LC_CAB = { id: "u-cab", email: "cam@example.com", name: "Cam Cab" };
 const LC_ECAB = { id: "u-ecab", email: "eli@example.com", name: "Eli Ecab" };
 
@@ -1230,7 +1231,63 @@ function lcStage(name: string, group: string, who: { id: string; name: string })
   };
 }
 
+/** The one state in which each stage can be decided (the backend's approvalStageDecidableState). */
+const LC_STAGE_STATE: Record<string, string> = {
+  "Peer Approval": "assess",
+  "CAB Approval": "authorize",
+  "ECAB Approval": "authorize",
+  Review: "review",
+  "Customer Approval": "customer_approval",
+  "Customer Review": "customer_review",
+};
+
+/** "customer_review" -> "Customer Review", for the refusal message. */
+function lcStateName(state: string): string {
+  return state
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
+}
+
+/** Whether the CR has left the state this stage can be decided in. */
+function lcStageOutOfState(stage: string): boolean {
+  const decidable = LC_STAGE_STATE[stage];
+  return decidable !== undefined && decidable !== lc.cr.state;
+}
+
+/**
+ * The backend's `reconcileStaleApprovers`: after every state change the
+ * still-REQUESTED rows of every stage the CR has left are cancelled -- all of
+ * them once it is closed / canceled / rollback (the stage stays, reported
+ * PENDING). Entering Review on a Normal change provisions the Review stage
+ * (the assigned group's internal members) first.
+ */
+function lcReconcile(): void {
+  const final = ["closed", "canceled", "rollback"].includes(lc.cr.state ?? "");
+  lc.approvals = lc.approvals.map((a) => {
+    if (!final && !lcStageOutOfState(a.stage)) return a;
+    if (!a.approvers.some((p) => p.status === "REQUESTED")) return a;
+    return {
+      ...a,
+      status: a.status === "REQUESTED" ? "PENDING" : a.status,
+      approvers: a.approvers.map((p) => (p.status === "REQUESTED" ? { ...p, status: "CANCELLED" } : p)),
+    };
+  });
+}
+
 function lcSetState(state: string): void {
+  if (state === "review" && lc.cr.type === "normal" && !lc.approvals.some((a) => a.stage === "Review")) {
+    lc.approvals = [
+      ...lc.approvals,
+      {
+        stage: "Review",
+        approverType: "STATIC_GROUP",
+        approverName: "Peers",
+        status: "REQUESTED",
+        approvers: [LC_PEER, LC_PEER_TWO].map((u) => ({ id: u.id, name: u.name, status: "REQUESTED" })),
+      },
+    ];
+  }
   // Entering a customer gate provisions the group's stage (when the CR has a
   // customer group with at least one member), like the backend does.
   if ((state === "customer_approval" || state === "customer_review") && lc.customerMembers.length > 0) {
@@ -1258,11 +1315,13 @@ function lcPublish(): void {
           lcEmitsCanDecide
             ? {
                 ...a,
-                // true only on the caller's own REQUESTED row, and never for the creator
+                // true only on the caller's own REQUESTED row of a stage the CR is
+                // still in the state of, and never for the creator
                 canDecide:
                   a.id === mockCurrentUser.id &&
                   a.status === "REQUESTED" &&
-                  mockCurrentUser.id !== lc.cr.requestedBy?.id,
+                  mockCurrentUser.id !== lc.cr.requestedBy?.id &&
+                  !lcStageOutOfState(stage.stage),
               }
             : a,
         ),
@@ -1365,16 +1424,13 @@ function lcSeed(
         throw new Error('400: state "rollback" can only be set from review or customer_review');
       }
       if (lcHasLiveCustomerStage()) throw new Error("400: the customer group must decide");
-      lc.approvals = lc.approvals.map((a) => ({
-        ...a,
-        approvers: a.approvers.map((ap) => (ap.status === "REQUESTED" ? { ...ap, status: "CANCELLED" } : ap)),
-      }));
-      lcSetState("rollback");
+      lcSetState("rollback"); // the closing reconcile cancels every still-requested row
     } else if (target && target !== "scheduled" && target !== "customer_approval") {
       lcSetState(target);
     } else {
       throw new Error(`illegal manual transition to ${String(target)}`);
     }
+    lcReconcile();
     lcPublish();
   };
   patchMutateMock.mockImplementation(applyPatch);
@@ -1385,13 +1441,31 @@ function lcSeed(
   });
   // The approvals panel's Approve/Reject drives the fake as the signed-in user.
   decideApprovalMutateMock.mockImplementation((input: { decision: "approved" | "rejected" }) => {
-    const current = lc.approvals.find((a) => a.status === "REQUESTED");
+    // The caller's pending stage: their row on a stage decidable in the CR's
+    // current state, else (all of theirs are stale) their first one.
+    const mine = lc.approvals.filter(
+      (a) => a.status === "REQUESTED" && a.approvers.some((p) => p.id === mockCurrentUser.id && p.status === "REQUESTED"),
+    );
+    const current = mine.find((a) => !lcStageOutOfState(a.stage)) ?? mine[0];
     const row = current?.approvers.find((a) => a.id === mockCurrentUser.id && a.status === "REQUESTED");
     if (!current || !row || mockCurrentUser.id === lc.cr.requestedBy?.id) {
       throw new Error("403: only a non-creator approver with a pending row may decide");
     }
+    if (lcStageOutOfState(current.stage)) {
+      // The backend's 409: nothing is changed.
+      throw new BackendApiError(
+        409,
+        `this approval is no longer pending: the change request is in ${lcStateName(lc.cr.state ?? "")}, but the ${current.stage} stage can only be decided while it is in ${lcStateName(LC_STAGE_STATE[current.stage]!)}`,
+      );
+    }
     row.status = input.decision === "approved" ? "APPROVED" : "REJECTED";
     current.status = row.status;
+    if (!lcIsCustomerStage(current.stage)) {
+      // A resolving decision cancels the stage's other pending approvers.
+      current.approvers.forEach((a) => {
+        if (a !== row && a.status === "REQUESTED") a.status = "CANCELLED";
+      });
+    }
     if (lcIsCustomerStage(current.stage)) {
       // One member's decision settles the stage; the others are no longer needed.
       current.approvers.forEach((a) => {
@@ -1408,10 +1482,12 @@ function lcSeed(
       if (current.stage === "Peer Approval") {
         lcSetState("authorize");
         lc.approvals = [...lc.approvals, lcStage("CAB Approval", "CAB", LC_CAB)];
-      } else {
+      } else if (current.stage === "CAB Approval" || current.stage === "ECAB Approval") {
         lcSetState(lcAfterInternalApproval()); // CAB / ECAB approval moves the CR on itself
       }
+      // Review: the answer is recorded and the CR stays in review.
     }
+    lcReconcile();
     lcPublish();
   });
   lcPublish();
@@ -1608,6 +1684,159 @@ describe("CsmChangeRequestDetailPage — lifecycle: Normal (Request Approval -> 
     expect(screen.getByRole("button", { name: /^reject$/i })).toBeDisabled();
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
     expect(decideApprovalMutateMock).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * An approval is only actionable while the change is in its stage's state
+ * (reported bug: a reviewer kept Approve / Reject on the Review stage of a
+ * change that was already Closed, and during Customer Review). The fake backend
+ * cancels the Review rows when the change leaves Review, like the real one, and
+ * reports canDecide=false on a REQUESTED row of a stage the change has left.
+ */
+describe("CsmChangeRequestDetailPage — lifecycle: a Review approver's Approve / Reject follow the state", () => {
+  /** Drives a fresh Normal change to Review (peers, CAB, implementation) with the real clicks. */
+  function driveToReview(
+    review: boolean,
+    customerGroup?: { members: Array<{ id: string; name: string }> },
+  ): ReturnType<typeof render> {
+    lcSeed("normal", { approval: false, review }, customerGroup);
+    let view = lcOpenAs(LC_CREATOR);
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+    view = lcOpenAs(LC_PEER, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    view = lcOpenAs(LC_CAB, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    view = lcOpenAs(LC_CREATOR, view);
+    fireEvent.click(screen.getByRole("button", { name: /^start implementation$/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^mark implemented$/i }));
+    expect(currentStep()).toBe("Review");
+    return view;
+  }
+
+  const reviewControls = (name: string) => {
+    const row = approvalsRowInStage(name, "Review");
+    return {
+      approve: within(row).queryByRole("button", { name: /^approve$/i }),
+      reject: within(row).queryByRole("button", { name: /^reject$/i }),
+      status: within(row).getByText(/^(Requested|Cancelled|Approved|Rejected)$/).textContent,
+    };
+  };
+
+  it("offers Approve / Reject on the Review rows of the assigned group's members while the change is in Review, and to nobody else", () => {
+    let view = driveToReview(false);
+    // The creator: no Review row to decide (the creator cannot approve).
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+    for (const [user, name] of [[LC_PEER, "Pat Peer"], [LC_PEER_TWO, "Quinn Peer"]] as const) {
+      view = lcOpenAs(user, view);
+      const c = reviewControls(name);
+      expect(c.status).toBe("Requested");
+      expect(c.approve).toBeEnabled();
+      expect(c.reject).toBeEnabled();
+      // ...only on their own row: the other member's row has no controls.
+      expect(screen.getAllByRole("button", { name: /^approve$/i })).toHaveLength(1);
+    }
+    // A CAB member (decided long ago, not in the assigned group) has nothing to decide.
+    view = lcOpenAs(LC_CAB, view);
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("takes the controls away from every Review approver the moment the change goes to Customer Review, and Closed after the customer answers", () => {
+    let view = driveToReview(true, { members: [LC_CUST_ONE, LC_CUST_TWO] });
+    view = lcOpenAs(LC_PEER, view);
+    expect(reviewControls("Pat Peer").approve).toBeEnabled();
+
+    // The creator moves the change on to the customer's review.
+    view = lcOpenAs(LC_CREATOR, view);
+    fireEvent.click(screen.getByRole("button", { name: /^send for customer review$/i }));
+    expect(currentStep()).toBe("Customer Review");
+    expect(lc.approvals.find((a) => a.stage === "Review")?.approvers.map((a) => a.status)).toEqual(["CANCELLED", "CANCELLED"]);
+
+    for (const [user, name] of [[LC_PEER, "Pat Peer"], [LC_PEER_TWO, "Quinn Peer"]] as const) {
+      view = lcOpenAs(user, view);
+      const c = reviewControls(name);
+      expect(c.status).toBe("Cancelled");
+      expect(c.approve).toBeNull();
+      expect(c.reject).toBeNull();
+      expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
+    }
+
+    // The customer is who answers now.
+    view = lcOpenAs(LC_CUST_ONE, view);
+    expect(screen.getAllByRole("button", { name: /^approve$/i })).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(currentStep()).toBe("Closed");
+    // Closed: nothing is requested anywhere, and nobody has controls.
+    expect(lc.approvals.flatMap((a) => a.approvers).filter((a) => a.status === "REQUESTED")).toEqual([]);
+    for (const user of [LC_PEER, LC_PEER_TWO, LC_CAB, LC_CUST_TWO, LC_CUST_ONE]) {
+      view = lcOpenAs(user, view);
+      expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
+    }
+  });
+
+  it.each([
+    ["closed", "closes straight from Review", (): void => { fireEvent.click(screen.getByRole("button", { name: /^close$/i })); }],
+    ["rollback", "is rolled back", (): void => { patchMutateMock({ id: "chg-1", patch: { state: "rollback" } }); }],
+    ["canceled", "is cancelled", (): void => { patchMutateMock({ id: "chg-1", patch: { state: "canceled" } }); }],
+  ] as const)("takes the controls away when the change %s -> %s", (state, _what, moveOn) => {
+    let view = driveToReview(false);
+    view = lcOpenAs(LC_PEER, view);
+    expect(reviewControls("Pat Peer").approve).toBeEnabled();
+
+    view = lcOpenAs(LC_CREATOR, view);
+    moveOn();
+    expect(lc.cr.state).toBe(state);
+    expect(lc.approvals.flatMap((a) => a.approvers).filter((a) => a.status === "REQUESTED")).toEqual([]);
+
+    for (const [user, name] of [[LC_PEER, "Pat Peer"], [LC_PEER_TWO, "Quinn Peer"]] as const) {
+      view = lcOpenAs(user, view);
+      const c = reviewControls(name);
+      expect(c.status).toBe("Cancelled");
+      expect(c.approve).toBeNull();
+      expect(c.reject).toBeNull();
+    }
+  });
+
+  it("deciding Review records the answer, cancels the other members and leaves the change in Review", () => {
+    let view = driveToReview(false);
+    view = lcOpenAs(LC_PEER, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(currentStep()).toBe("Review"); // a human moves it on
+    expect(reviewControls("Pat Peer").status).toBe("Approved");
+    expect(reviewControls("Quinn Peer").status).toBe("Cancelled");
+    view = lcOpenAs(LC_PEER_TWO, view);
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
+    view.unmount();
+  });
+
+  it("disables a REQUESTED Review row the backend flags canDecide=false (a legacy row the change moved past), and never submits from it", () => {
+    let view = driveToReview(false);
+    // The change moved on without the sweep (a row written before it existed).
+    lc.cr = { ...lc.cr, state: "closed", legalNextStates: [] };
+    const decisionsBefore = decideApprovalMutateMock.mock.calls.length;
+    view = lcOpenAs(LC_PEER, view);
+    const c = reviewControls("Pat Peer");
+    expect(c.status).toBe("Requested");
+    expect(c.approve).toBeDisabled();
+    expect(c.reject).toBeDisabled();
+    fireEvent.click(c.approve!);
+    fireEvent.click(c.reject!);
+    expect(decideApprovalMutateMock.mock.calls.length).toBe(decisionsBefore);
+    view.unmount();
+  });
+
+  it("refuses a decision on a stale Review row with the backend's 409 and changes nothing", () => {
+    const view = driveToReview(true, { members: [LC_CUST_ONE] });
+    lc.cr = { ...lc.cr, state: "customer_review", legalNextStates: [] };
+    mockCurrentUser = { id: LC_PEER.id, email: LC_PEER.email };
+    expect(() => decideApprovalMutateMock({ decision: "approved" })).toThrow(
+      "this approval is no longer pending: the change request is in Customer Review, but the Review stage can only be decided while it is in Review",
+    );
+    expect(lc.approvals.find((a) => a.stage === "Review")?.approvers.map((a) => a.status)).toEqual(["REQUESTED", "REQUESTED"]);
+    view.unmount();
   });
 });
 

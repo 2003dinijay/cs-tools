@@ -215,6 +215,29 @@ The change request create page and edit dialog share `useChangeRequestScope` (`f
 - The detail response's `category` is the enum value (or an `{id, name|label}` ref on older responses) — always read it through `changeRequestCategoryValue` / `changeRequestCategoryLabel`.
 - e2e: `tests/e2e/utils/fakeChangeRequestApi.ts` fakes the whole slice (projects, link-options with per-project contacts, create, PATCH, detail) with the backend's own validation (including the `customerGroupId` / `environmentIds` refusals), so the cascade, wire payload, 400 path and lifecycle are tested without creating records anywhere.
 
+## Change request Approval tab: Approve / Reject follow the backend, never the state
+
+`ChangeRequestApprovals` renders Approve / Reject on the signed-in user's own `REQUESTED` row, enabled
+only when the row's `canDecide` is not `false`; it is never told the change request's state, so it cannot
+enable anything from it. The backend keeps an approval actionable only while the change is in its stage's
+state (entity service CLAUDE.md, "An approval is only actionable in its stage's state"): the rows of a stage
+the change has left (Review's once it moves to Customer Review / Closed / Rollback / Canceled) arrive
+`CANCELLED` (no controls, a dash), and a legacy `REQUESTED` one arrives with `canDecide: false` (the
+controls render disabled with the existing "You aren't able to approve or reject this stage" tooltip). A
+decision refused with a **409** (the change moved on while the page was open) shows the backend's message
+(`ChangeRequestApprovals` shows any 4xx message) and `useDecideChangeRequestApproval` refreshes the approvals,
+detail and list queries on it, so the stale row goes away.
+
+- Tests: `ChangeRequestApprovals.test.tsx` ("a Review approver across the change request's lifecycle"),
+  `CsmChangeRequestDetailPage.test.tsx` ("lifecycle: a Review approver's Approve / Reject follow the state", on its
+  stateful fake backend, which provisions the Review stage on entering Review and cancels the rows of the stages
+  the change has left after every step like the real one), `useDecideChangeRequestApproval.test.tsx` (the 409 refresh).
+- e2e: `fakeChangeRequestApi.ts` does the same (the "Review" stage for Normal changes, a reconcile after every PATCH and
+  decision, `canDecide` false and a 409 for a stale row -- `setState(...)` moves the CR without the sweep, which is how a test
+  plants a legacy row); the cases are in `change-request-lifecycle.spec.ts` ("a Review approver's controls follow the change
+  request's state", fake API) plus two against the real local stack in its "seeded fixtures" block (CHG-FIXED-002 walked through
+  Review -> Customer Review -> Closed; a planted legacy row refused with the 409 and repaired by migration 0193).
+
 ## Change request Approval tab: opening an Assignment group
 
 In `ChangeRequestApprovals`, each row's **Assignment group** is a link-button (`Link component="button"`, `aria-haspopup="dialog"`, accessible name `View members of <group>`) that opens `ApprovalGroupDialog` (`features/csm-operations/components`): the group's name as the title, **Manager / Group email / Description** when it has them, and a **"Group Members (N)"** list (name, email, a "Lead" chip for `role: "lead"`), with loading, error (`QueryErrorState` + Try again), not-found and empty states. It closes with Esc, a click outside or the Close button, and focus returns to the link.

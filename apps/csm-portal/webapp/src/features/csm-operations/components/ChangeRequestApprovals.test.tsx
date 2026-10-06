@@ -544,6 +544,100 @@ describe("ChangeRequestApprovals — the creator cannot approve", () => {
   });
 });
 
+// A Review approver's controls follow what the backend sends and nothing else:
+// the Review rows are REQUESTED (canDecide true) while the change is in Review,
+// CANCELLED once it moved on (Customer Review / Closed / Rollback / Canceled), and
+// a legacy row left REQUESTED after that arrives with canDecide=false. The panel
+// is never told the change's state, so it cannot enable anything from it.
+describe("ChangeRequestApprovals — a Review approver across the change request's lifecycle", () => {
+  type Status = "REQUESTED" | "CANCELLED" | "APPROVED";
+  const reviewData = (me: Status, canDecide?: boolean, extra: BeChangeRequestApprovalsView["approvals"] = []): BeChangeRequestApprovalsView => ({
+    approvals: [
+      { stage: "Peer Approval", approverType: "STATIC_GROUP", approverName: "Peers", status: "APPROVED", approvers: [{ id: "reviewer", name: "Rita Reviewer", status: "APPROVED" }] },
+      { stage: "CAB Approval", approverType: "STATIC_GROUP", approverName: "CAB", status: "APPROVED", approvers: [{ id: "cab", name: "Cam Cab", status: "APPROVED" }] },
+      {
+        stage: "Review",
+        approverType: "STATIC_GROUP",
+        approverName: "Peers",
+        status: me === "APPROVED" ? "APPROVED" : "PENDING",
+        approvers: [
+          { id: "reviewer", name: "Rita Reviewer", status: me, ...(canDecide === undefined ? {} : { canDecide }) },
+          { id: "colleague", name: "Cole Colleague", status: me === "REQUESTED" ? "REQUESTED" : "CANCELLED" },
+        ],
+      },
+      ...extra,
+    ],
+  });
+  const reviewRow = (name: string): HTMLElement => {
+    const row = screen
+      .getAllByText(name)
+      .map((el) => el.closest("tr"))
+      .find((tr): tr is HTMLTableRowElement => tr !== null && within(tr).queryByText("Review") !== null);
+    if (!row) throw new Error(`no Review row for ${name}`);
+    return row;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockCurrentUser("reviewer");
+    mockDecideMutation();
+  });
+
+  it("is offered Approve / Reject while the change is in Review, and not once it moved to Customer Review, Closed, Rollback or Canceled", () => {
+    // The same Review row, as the backend serves it at each step.
+    mockQueryResult({ data: reviewData("REQUESTED", true) });
+    const { rerender } = render(<ChangeRequestApprovals id="chg-1" />);
+    expect(within(reviewRow("Rita Reviewer")).getByRole("button", { name: /^approve$/i })).toBeEnabled();
+    expect(within(reviewRow("Rita Reviewer")).getByRole("button", { name: /^reject$/i })).toBeEnabled();
+
+    const customerReview = {
+      stage: "Customer Review",
+      approverType: "STATIC_GROUP" as const,
+      approverName: "Customer Group",
+      status: "REQUESTED",
+      approvers: [{ id: "contact", name: "Mia Member", status: "REQUESTED" }],
+    };
+    for (const [moved, extra] of [
+      ["Customer Review", [customerReview]],
+      ["Closed", []],
+      ["Rollback", []],
+      ["Canceled", []],
+    ] as const) {
+      // The change moved on: the reviewers' rows were cancelled, and the panel shows them as such.
+      mockQueryResult({ data: reviewData("CANCELLED", false, [...extra]) });
+      rerender(<ChangeRequestApprovals id="chg-1" />);
+      expect(within(reviewRow("Rita Reviewer")).getByText("Cancelled"), moved).toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^approve$/i }), moved).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /^reject$/i }), moved).not.toBeInTheDocument();
+    }
+    expect(decideMutateMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps a legacy REQUESTED Review row the backend flags canDecide=false disabled, and submits nothing from it", () => {
+    mockQueryResult({ data: reviewData("REQUESTED", false) });
+    render(<ChangeRequestApprovals id="chg-1" />);
+    const row = reviewRow("Rita Reviewer");
+    expect(within(row).getByText("Requested")).toBeInTheDocument();
+    expect(within(row).getByRole("button", { name: /^approve$/i })).toBeDisabled();
+    expect(within(row).getByRole("button", { name: /^reject$/i })).toBeDisabled();
+    fireEvent.click(within(row).getByRole("button", { name: /^approve$/i }));
+    fireEvent.click(within(row).getByRole("button", { name: /^reject$/i }));
+    expect(decideMutateMock).not.toHaveBeenCalled();
+  });
+
+  it("shows the backend's readable 409 when the change moved on while the page was open", () => {
+    mockQueryResult({ data: reviewData("REQUESTED", true) });
+    render(<ChangeRequestApprovals id="chg-1" />);
+    fireEvent.click(within(reviewRow("Rita Reviewer")).getByRole("button", { name: /^approve$/i }));
+    const onError = decideMutateMock.mock.calls[0]![1].onError as (e: unknown) => void;
+    const message =
+      "this approval is no longer pending: the change request is in Closed, but the Review stage can only be decided while it is in Review";
+    const err = new (BackendApiError as unknown as new (s: number, m: string) => Error)(409, message);
+    onError(err);
+    expect(showErrorMock).toHaveBeenCalledWith(message, err);
+  });
+});
+
 describe("ChangeRequestApprovals — customer group stages (Customer Approval / Customer Review)", () => {
   const customerStage = (
     stage: string,

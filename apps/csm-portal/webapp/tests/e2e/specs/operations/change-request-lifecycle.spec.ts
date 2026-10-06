@@ -93,6 +93,7 @@ const CR_NO_TEAM = "00000000-0000-0000-0000-000000001001";
 const CR_WITH_TEAM = "00000000-0000-0000-0000-000000001002";
 const CR_PENDING_APPROVAL = "00000000-0000-0000-0000-000000001003";
 const CR_RESOLVED = "00000000-0000-0000-0000-000000001004";
+const CR_IN_REVIEW = "00000000-0000-0000-0000-000000001202"; // CHG-FIXED-006 (Review, Customer Review ticked)
 const CR_CUSTOMER_APPROVAL = "00000000-0000-0000-0000-000000001303"; // CHG-FIXED-007
 const CR_CUSTOMER_REVIEW = "00000000-0000-0000-0000-000000001304"; // CHG-FIXED-008
 
@@ -111,21 +112,28 @@ const DAVE_ID = "00000000-0000-0000-0000-000000000021";
 const SEED_FILE = path.resolve(process.cwd(), "../../../scripts/csm-compose/seed-entity-service.sql");
 const POSTGRES_CONTAINER = process.env.E2E_POSTGRES_CONTAINER ?? "csm-platform-postgres-1";
 
-/** Runs SQL on the local docker-compose Postgres (psql in the container). With
- * `sql` on stdin so the whole seed file fits however large it is. */
-async function psql(sql: string): Promise<void> {
-  await new Promise<void>((resolve, reject) => {
+/** Runs SQL on the local docker-compose Postgres (psql in the container) and
+ * resolves with what it printed (unaligned, tuples only). With `sql` on stdin
+ * so the whole seed file fits however large it is. */
+async function psqlOutput(sql: string): Promise<string> {
+  return await new Promise<string>((resolve, reject) => {
     const child = spawn("docker", [
-      "exec", "-i", POSTGRES_CONTAINER, "psql", "-U", "postgres", "-d", "csm_platform", "-v", "ON_ERROR_STOP=1", "-q", "-f", "-",
+      "exec", "-i", POSTGRES_CONTAINER, "psql", "-U", "postgres", "-d", "csm_platform", "-v", "ON_ERROR_STOP=1", "-q", "-t", "-A", "-f", "-",
     ]);
+    let stdout = "";
     let stderr = "";
+    child.stdout.on("data", (d: Buffer) => (stdout += d.toString()));
     child.stderr.on("data", (d: Buffer) => (stderr += d.toString()));
     child.on("error", reject);
     child.on("close", (code) =>
-      code === 0 ? resolve() : reject(new Error(`psql exited ${code}: ${stderr}`)),
+      code === 0 ? resolve(stdout.trim()) : reject(new Error(`psql exited ${code}: ${stderr}`)),
     );
     child.stdin.end(sql);
   });
+}
+
+async function psql(sql: string): Promise<void> {
+  await psqlOutput(sql);
 }
 
 /** Restores the CHG-FIXED-* fixtures (and the personas) to their starting
@@ -470,6 +478,217 @@ test.describe("change request lifecycle — an external user cannot decide an in
       await expect(detail.approverStatus(DAVE, "Peer Approval")).toHaveText("Requested");
       await expect(detail.approverStatus(ALICE, "Peer Approval")).toHaveText("Requested");
       await expect(detail.currentStep()).toContainText("Assess");
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An approval is only actionable while the change is in its stage's state, on the real
+// stack (BFF -> entity-service -> Postgres). The reported bug: a reviewer kept Approve /
+// Reject on the Review stage of a change that was already Closed (and during Customer
+// Review). CHG-FIXED-002 is walked for real -- Request Approval, peer and CAB approval,
+// implementation, Review (its Review stage is provisioned by the code under test) -- with
+// Customer Review ticked, then moved on; a "legacy" stale row is planted directly (no code
+// path writes one any more), refused with the BFF-passed 409, and repaired by migration 0193.
+// ---------------------------------------------------------------------------
+
+const MIGRATION_0193 = path.resolve(process.cwd(), "../../../entity-service/migrations/0193_change_request_cancel_stale_approvals.sql");
+
+/** "Review/alice:requested, ..." -- every approver row of the CR's stage with this label, by user name. */
+async function stageRows(crId: string, label: string): Promise<string> {
+  return await psqlOutput(`
+    SELECT COALESCE(string_agg(u.name || ':' || asa.status, ', ' ORDER BY u.name), '')
+    FROM approval_stage_approver asa
+    JOIN approval_stage ast ON ast.id = asa.stage_id
+    JOIN "user" u ON u.id = asa.approver_user_id
+    WHERE ast.work_item_id = '${crId}' AND ast.checkpoint_label = '${label}';`);
+}
+
+async function requestedRows(crId: string): Promise<number> {
+  return Number(await psqlOutput(`SELECT COUNT(*) FROM approval_stage_approver WHERE work_item_id = '${crId}' AND status = 'requested';`));
+}
+
+test.describe("change request lifecycle — a Review approver's controls follow the state (real stack)", () => {
+  test.beforeEach(async () => {
+    await resetFixtures();
+  });
+  test.afterAll(async () => {
+    await resetFixtures();
+  });
+
+  test("Review -> Customer Review -> Closed: the reviewers lose Approve / Reject when the change leaves Review, the customer answers, nothing stays requested", async ({
+    page,
+    browser,
+  }) => {
+    test.setTimeout(240_000);
+    // CHG-FIXED-002 (New, assigned group 901, project 401) with Customer Review ticked.
+    await psql(`UPDATE change_request SET customer_review_required = true WHERE id = '${CR_WITH_TEAM}';`);
+
+    // The requester asks for approval.
+    const jane = new ChangeRequestDetailPage(page);
+    await jane.goto(CR_WITH_TEAM);
+    await jane.requestApproval();
+    await expect(jane.approverStatus(ALICE, "Peer Approval")).toHaveText("Requested");
+
+    await asPersona(browser, "crInternalApprover", async (alice) => {
+      const detail = new ChangeRequestDetailPage(alice);
+      await detail.goto(CR_WITH_TEAM);
+      await detail.approveButton(ALICE, "Peer Approval").click();
+      await expect(detail.currentStep()).toContainText("Authorize");
+      await detail.approveButton(ALICE, "CAB Approval").click();
+      await expect(detail.currentStep()).toContainText("Scheduled");
+      await alice.getByRole("button", { name: "Start implementation" }).click();
+      await expect(detail.currentStep()).toContainText("Implement");
+      await alice.getByRole("button", { name: "Mark implemented" }).click();
+      await expect(detail.currentStep()).toContainText("Review");
+
+      // Review: provisioned for the assigned group's internal members; only the signed-in
+      // user's own row has controls.
+      for (const who of [ALICE, BOB, CAROL]) await expect(detail.approverStatus(who, "Review")).toHaveText("Requested");
+      await expect(detail.approveButton(ALICE, "Review")).toBeEnabled();
+      await expect(detail.rejectButton(ALICE, "Review")).toBeEnabled();
+      await expect(detail.approveButton(CAROL, "Review")).toHaveCount(0);
+      expect(await stageRows(CR_WITH_TEAM, "Review")).toBe("Alice Perera:requested, Bob Fernando:requested, Carol Silva:requested");
+
+      // Moving on to the customer's review cancels every reviewer's row, Carol's included
+      // (the row the report was about): nobody can approve or reject the Review stage now.
+      await detail.sendForCustomerReviewButton().click();
+      await expect(detail.currentStep()).toContainText("Customer Review");
+      for (const who of [ALICE, BOB, CAROL]) await expect(detail.approverStatus(who, "Review")).toHaveText("Cancelled");
+      await expect(detail.approveButton()).toHaveCount(0);
+      await expect(detail.rejectButton()).toHaveCount(0);
+      expect(await stageRows(CR_WITH_TEAM, "Review")).toBe("Alice Perera:cancelled, Bob Fernando:cancelled, Carol Silva:cancelled");
+      await expect(detail.approverStatus(DAVE, "Customer Review")).toHaveText("Requested");
+      await expect(detail.approverStatus(ERIN, "Customer Review")).toHaveText("Requested");
+      // Even forcing the decision through the API: there is nothing pending to decide.
+      const forced = await postDecision(alice, CR_WITH_TEAM, "approved");
+      expect(forced.status, forced.body).toBe(403);
+      expect(forced.body).toContain("only members of the customer group");
+    });
+
+    // The customer answers; the change closes.
+    await asPersona(browser, "crCustomerContact", async (dave) => {
+      const detail = new ChangeRequestDetailPage(dave);
+      await detail.goto(CR_WITH_TEAM);
+      await expect(detail.approveButton(DAVE, "Customer Review")).toBeEnabled();
+      await detail.approveButton(DAVE, "Customer Review").click();
+      await expect(detail.currentStep()).toContainText("Closed");
+    });
+
+    // Closed: no approver row is requested anywhere, and the reviewer has no controls.
+    expect(await requestedRows(CR_WITH_TEAM)).toBe(0);
+    expect(await psqlOutput(`SELECT state::text FROM change_request WHERE id = '${CR_WITH_TEAM}';`)).toBe("CLOSED");
+    await asPersona(browser, "crInternalApprover", async (alice) => {
+      const detail = new ChangeRequestDetailPage(alice);
+      await detail.goto(CR_WITH_TEAM);
+      await expect(detail.currentStep()).toContainText("Closed");
+      await expect(detail.approverStatus(CAROL, "Review")).toHaveText("Cancelled");
+      await expect(detail.approveButton()).toHaveCount(0);
+      await expect(detail.rejectButton()).toHaveCount(0);
+    });
+  });
+
+  test("CHG-FIXED-006 (in Review, Customer Review ticked): sending it for customer review cancels the reviewers' rows, Carol's included", async ({ browser }) => {
+    test.setTimeout(120_000);
+    // The fixture is seeded in Review with no Review stage (nobody walked it there), so give it
+    // what entering Review provisions: the assigned group's internal members, requested.
+    const reviewStage = "00000000-0000-0000-0000-000000001921";
+    await psql(`
+      INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status, checkpoint_label)
+        VALUES ('${reviewStage}', now(), now(), 'e2e', 'e2e', '${CR_IN_REVIEW}', '00000000-0000-0000-0000-000000000901', 'requested', 'Review')
+        ON CONFLICT (id) DO NOTHING;
+      INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status) VALUES
+        ('00000000-0000-0000-0000-000000001922', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_IN_REVIEW}', '00000000-0000-0000-0000-000000000011', 'requested'),
+        ('00000000-0000-0000-0000-000000001923', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_IN_REVIEW}', '00000000-0000-0000-0000-000000000012', 'requested'),
+        ('00000000-0000-0000-0000-000000001924', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_IN_REVIEW}', '00000000-0000-0000-0000-000000000013', 'requested')
+        ON CONFLICT (id) DO UPDATE SET status = 'requested';`);
+
+    await asPersona(browser, "crInternalApprover", async (alice) => {
+      const detail = new ChangeRequestDetailPage(alice);
+      await detail.goto(CR_IN_REVIEW);
+      await expect(detail.currentStep()).toContainText("Review");
+      await expect(detail.approveButton(ALICE, "Review")).toBeEnabled();
+      expect(await stageRows(CR_IN_REVIEW, "Review")).toBe("Alice Perera:requested, Bob Fernando:requested, Carol Silva:requested");
+
+      await detail.sendForCustomerReviewButton().click();
+      await expect(detail.currentStep()).toContainText("Customer Review");
+      for (const who of [ALICE, BOB, CAROL]) await expect(detail.approverStatus(who, "Review")).toHaveText("Cancelled");
+      await expect(detail.approveButton()).toHaveCount(0);
+      await expect(detail.rejectButton()).toHaveCount(0);
+      expect(await stageRows(CR_IN_REVIEW, "Review")).toBe("Alice Perera:cancelled, Bob Fernando:cancelled, Carol Silva:cancelled");
+      // The customer contacts are asked instead.
+      expect(await stageRows(CR_IN_REVIEW, "Customer Review")).toBe("Dave Mendis:requested, Erin Jayawardena:requested");
+    });
+  });
+
+  test("a legacy REQUESTED Review row on a Closed change reads canDecide=false, the API refuses it with a 409 and migration 0193 repairs it", async ({ browser }) => {
+    test.setTimeout(150_000);
+    // The reported shape: a change that is Closed, with a Review stage whose reviewers
+    // are still requested (what the database held before the fix). Planted directly.
+    const reviewStage = "00000000-0000-0000-0000-000000001911";
+    await psql(`
+      UPDATE change_request SET state = 'CLOSED' WHERE id = '${CR_PENDING_APPROVAL}';
+      -- its Peer stage was decided long ago (alice approved, the others cancelled)
+      UPDATE approval_stage_approver SET status = CASE approver_user_id WHEN '00000000-0000-0000-0000-000000000011' THEN 'approved' ELSE 'cancelled' END
+        WHERE stage_id = '00000000-0000-0000-0000-000000001005';
+      INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status, checkpoint_label)
+        VALUES ('${reviewStage}', now() + interval '1 minute', now(), 'e2e', 'e2e', '${CR_PENDING_APPROVAL}', '00000000-0000-0000-0000-000000000901', 'requested', 'Review')
+        ON CONFLICT (id) DO NOTHING;
+      INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status) VALUES
+        ('00000000-0000-0000-0000-000000001912', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_PENDING_APPROVAL}', '00000000-0000-0000-0000-000000000011', 'requested'),
+        ('00000000-0000-0000-0000-000000001913', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_PENDING_APPROVAL}', '00000000-0000-0000-0000-000000000013', 'requested')
+        ON CONFLICT (id) DO UPDATE SET status = 'requested';`);
+
+    await asPersona(browser, "crInternalApprover", async (alice) => {
+      const detail = new ChangeRequestDetailPage(alice);
+      await detail.goto(CR_PENDING_APPROVAL);
+      await expect(detail.currentStep()).toContainText("Closed");
+      // The row still reads Requested -- it is what the database holds -- but the API says
+      // canDecide=false, so the controls are disabled (with the existing explanation).
+      await expect(detail.approverStatus(ALICE, "Review")).toHaveText("Requested");
+      await expect(detail.approveButton(ALICE, "Review")).toBeDisabled();
+      await expect(detail.rejectButton(ALICE, "Review")).toBeDisabled();
+      await expect(alice.getByLabel(/you aren't able to approve or reject this stage/i).first()).toBeVisible();
+
+      // Forced through the API anyway: refused, with the readable 409 (passed through by the BFF).
+      for (const decision of ["approved", "rejected"] as const) {
+        const { status, body } = await postDecision(alice, CR_PENDING_APPROVAL, decision);
+        expect(status, body).toBe(409);
+        expect(body).toContain(
+          "this approval is no longer pending: the change request is in Closed, but the Review stage can only be decided while it is in Review",
+        );
+      }
+      // Nothing changed.
+      expect(await stageRows(CR_PENDING_APPROVAL, "Review")).toBe("Alice Perera:requested, Carol Silva:requested");
+      expect(await psqlOutput(`SELECT state::text FROM change_request WHERE id = '${CR_PENDING_APPROVAL}';`)).toBe("CLOSED");
+    });
+
+    // The data fix: cancels the stale rows of the Closed change (both reviewers') and a labelled
+    // stage's row on a change that is in another state (CHG-FIXED-004 sits in Authorize, so a
+    // Peer Approval row still requested on it is stale), and leaves a live approval alone
+    // (CHG-FIXED-008 is in Customer Review with its Customer Review stage requested).
+    await psql(`
+      INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+        VALUES ('00000000-0000-0000-0000-000000001914', now(), now(), 'e2e', 'e2e', '00000000-0000-0000-0000-000000001008', '${CR_RESOLVED}', '00000000-0000-0000-0000-000000000013', 'requested')
+        ON CONFLICT (id) DO UPDATE SET status = 'requested';`);
+    expect(await requestedRows(CR_RESOLVED)).toBe(1);
+    const live = await requestedRows(CR_CUSTOMER_REVIEW);
+    expect(live).toBe(2);
+    await psql(fs.readFileSync(MIGRATION_0193, "utf8"));
+    expect(await requestedRows(CR_PENDING_APPROVAL)).toBe(0);
+    expect(await stageRows(CR_PENDING_APPROVAL, "Review")).toBe("Alice Perera:cancelled, Carol Silva:cancelled");
+    expect(await requestedRows(CR_RESOLVED)).toBe(0);
+    expect(await requestedRows(CR_CUSTOMER_REVIEW)).toBe(live);
+    // Idempotent.
+    await psql(fs.readFileSync(MIGRATION_0193, "utf8"));
+    expect(await stageRows(CR_PENDING_APPROVAL, "Review")).toBe("Alice Perera:cancelled, Carol Silva:cancelled");
+
+    await asPersona(browser, "crInternalApprover", async (alice) => {
+      const detail = new ChangeRequestDetailPage(alice);
+      await detail.goto(CR_PENDING_APPROVAL);
+      await expect(detail.approverStatus(ALICE, "Review")).toHaveText("Cancelled");
+      await expect(detail.approveButton()).toHaveCount(0);
+      await expect(detail.rejectButton()).toHaveCount(0);
     });
   });
 });
@@ -1681,6 +1900,193 @@ test.describe("change request approval flow — Roll back", () => {
     await expect(detail.currentStep()).toContainText("Review");
     await rollBackWithReason(page, detail, "Backout after failed verification.");
     await expectRolledBack(page, detail, api);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// An approval is only actionable while the change is in its stage's state. Reported
+// bug: an internal reviewer kept Approve / Reject on the Review stage of a change that
+// was already Closed (and while it waited at Customer Review for the customer). Deciding
+// Review changes no state -- a human moves the change on -- and nothing cancelled the
+// Review stage's other approvers when it left Review. The fake backend does what the
+// real one does now: every PATCH / decision ends by cancelling the REQUESTED rows of the
+// stages the change has left (all of them once it is closed / canceled / rollback), and
+// canDecide is false on a REQUESTED row of a stage the change has left.
+// ---------------------------------------------------------------------------
+
+/** Cancel change from the overflow menu, with the reason the dialog insists on. */
+async function cancelChangeWithReason(page: Page, detail: ChangeRequestDetailPage, reason: string): Promise<void> {
+  await detail.changeStateButton().click();
+  await detail.cancelChangeMenuItem().click();
+  const dialog = detail.reasonDialog();
+  await dialog.getByLabel("Reason").fill(reason);
+  await dialog.getByRole("button", { name: "Cancel change", exact: true }).click();
+  await expect(detail.reasonDialog()).toHaveCount(0);
+}
+
+/** Drives a fresh Normal CR (Peer, CAB, implementation) to Review, leaving the creator signed in. */
+async function driveToReview(
+  page: Page,
+  api: FakeChangeRequestApi,
+  detail: ChangeRequestDetailPage,
+): Promise<void> {
+  await approveInternally(page, api, detail);
+  await switchTo(page, api, FAKE_CREATOR);
+  await page.getByRole("button", { name: "Start implementation" }).click();
+  await expect(detail.currentStep()).toContainText("Implement");
+  await page.getByRole("button", { name: "Mark implemented" }).click();
+  await expect(detail.currentStep()).toContainText("Review");
+}
+
+/** Nobody can approve or reject anything: no controls render at all. */
+async function expectNoDecisionControls(detail: ChangeRequestDetailPage): Promise<void> {
+  await expect(detail.approveButton()).toHaveCount(0);
+  await expect(detail.rejectButton()).toHaveCount(0);
+}
+
+/** Every approver row of every stage, flattened -- nothing may still be REQUESTED on a finished change. */
+const requestedRows = (api: FakeChangeRequestApi): string[] =>
+  api.stages().flatMap((st) => st.approvers.filter((a) => a.status === "REQUESTED").map((a) => `${st.stage}/${a.name}`));
+
+const REVIEWERS = [FAKE_PEER, FAKE_PEER_COLLEAGUE] as const;
+
+test.describe("change request approval flow — a Review approver's controls follow the change request's state", () => {
+  test("Review: the assigned group's members can decide their own row, nobody else can", async ({ page }) => {
+    test.setTimeout(150_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToReview(page, api, detail);
+
+    // Provisioned for the assigned group's internal members, the creator excluded.
+    expect(api.stages().map((st) => st.stage)).toEqual(["Peer Approval", "CAB Approval", "Review"]);
+    expect(api.stages()[2]!.approvers).toEqual([
+      { name: FAKE_PEER.name, status: "REQUESTED" },
+      { name: FAKE_PEER_COLLEAGUE.name, status: "REQUESTED" },
+    ]);
+    await expectNoDecisionControls(detail); // the creator
+
+    for (const reviewer of REVIEWERS) {
+      await switchTo(page, api, reviewer);
+      await expect(detail.currentStep()).toContainText("Review");
+      await expect(detail.approverStatus(reviewer.name, "Review")).toHaveText("Requested");
+      await expect(detail.approveButton(reviewer.name, "Review")).toBeEnabled();
+      await expect(detail.rejectButton(reviewer.name, "Review")).toBeEnabled();
+      await expect(detail.approveButton()).toHaveCount(1); // their own row only
+    }
+    // A CAB member decided long ago and is not in the assigned group.
+    await switchTo(page, api, FAKE_CAB);
+    await expectNoDecisionControls(detail);
+  });
+
+  for (const moveOn of ["customer_review", "closed", "rollback", "canceled"] as const) {
+    test(`Review -> ${moveOn}: the reviewers can no longer approve or reject`, async ({ page }) => {
+      test.setTimeout(240_000);
+      const api = await installFakeChangeRequestApi(
+        page,
+        "normal",
+        FAKE_CREATOR,
+        { customerReviewRequired: moveOn === "customer_review" },
+        moveOn === "customer_review" ? ON_ACME : {},
+      );
+      const detail = new ChangeRequestDetailPage(page);
+      await driveToReview(page, api, detail);
+
+      // In Review the first reviewer can decide.
+      await switchTo(page, api, FAKE_PEER);
+      await expect(detail.approveButton("Pat Peer", "Review")).toBeEnabled();
+
+      // The creator moves the change on.
+      await switchTo(page, api, FAKE_CREATOR);
+      if (moveOn === "customer_review") {
+        await detail.sendForCustomerReviewButton().click();
+        await expect(detail.currentStep()).toContainText("Customer Review");
+      } else if (moveOn === "closed") {
+        await detail.closeButton().click();
+        await expect(detail.currentStep()).toContainText("Closed");
+      } else if (moveOn === "rollback") {
+        await rollBackWithReason(page, detail, "Smoke test failed.");
+        await expectRolledBack(page, detail, api);
+      } else {
+        await cancelChangeWithReason(page, detail, "No longer needed.");
+        await expect(page.locator(".MuiChip-label", { hasText: /^Canceled$/ }).first()).toBeVisible();
+      }
+      expect(api.state()).toBe(moveOn);
+      // The Review rows were cancelled on the way -- every one of them.
+      expect(api.stages()[2]!.approvers.map((a) => a.status)).toEqual(["CANCELLED", "CANCELLED"]);
+      if (moveOn !== "customer_review") expect(requestedRows(api)).toEqual([]);
+
+      // Both reviewers now see their rows as Cancelled, with no Approve / Reject (also after a reload).
+      for (const reviewer of REVIEWERS) {
+        await switchTo(page, api, reviewer);
+        await expect(detail.approverStatus(reviewer.name, "Review")).toHaveText("Cancelled");
+        await expectNoDecisionControls(detail);
+      }
+    });
+  }
+
+  test("Review -> Customer Review -> the customer approves -> Closed: the customer answers, nothing is requested at the end", async ({ page }) => {
+    test.setTimeout(240_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToReview(page, api, detail);
+    await detail.sendForCustomerReviewButton().click();
+    await expect(detail.currentStep()).toContainText("Customer Review");
+    expect(requestedRows(api)).toEqual(["Customer Review/Mia Member", "Customer Review/Max Member"]);
+
+    // The reviewers have nothing to decide while the customer answers...
+    await switchTo(page, api, FAKE_PEER);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Review");
+    await expectNoDecisionControls(detail);
+    // ...the customer does.
+    await switchTo(page, api, FAKE_CUST_ONE);
+    await expect(detail.approveButton(FAKE_CUST_ONE.name, "Customer Review")).toBeEnabled();
+    await detail.approve(FAKE_CUST_ONE.name, "Customer Review");
+    await expect(detail.currentStep()).toContainText("Closed");
+    expect(api.state()).toBe("closed");
+    expect(requestedRows(api)).toEqual([]);
+    for (const user of [FAKE_PEER, FAKE_PEER_COLLEAGUE, FAKE_CUST_TWO, FAKE_CUST_ONE]) {
+      await switchTo(page, api, user);
+      await expectNoDecisionControls(detail);
+    }
+  });
+
+  test("a Review decision records the answer and leaves the change in Review; the other member's row is cancelled", async ({ page }) => {
+    test.setTimeout(180_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToReview(page, api, detail);
+
+    await switchTo(page, api, FAKE_PEER);
+    await detail.approve("Pat Peer", "Review");
+    await expect(detail.approverStatus("Pat Peer", "Review")).toHaveText("Approved");
+    await expect(detail.approverStatus("Quinn Peer", "Review")).toHaveText("Cancelled");
+    expect(api.state()).toBe("review"); // a human moves it on
+    await expectNoDecisionControls(detail);
+    await switchTo(page, api, FAKE_PEER_COLLEAGUE);
+    await expectNoDecisionControls(detail);
+    await switchTo(page, api, FAKE_CREATOR);
+    await detail.closeButton().click();
+    await expect(detail.currentStep()).toContainText("Closed");
+    expect(requestedRows(api)).toEqual([]);
+  });
+
+  test("a legacy row left REQUESTED after the change moved on reads canDecide=false: the controls are disabled, with the reason", async ({ page }) => {
+    test.setTimeout(180_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToReview(page, api, detail);
+    const decisions = (): string[] => api.requests().filter((r) => r.endsWith("/approvals/decision"));
+    const decisionsBefore = decisions().length; // the Peer and CAB approvals that got it here
+    // The change moved on without the sweep (a row written before it existed).
+    api.setState("closed");
+
+    await switchTo(page, api, FAKE_PEER);
+    await expect(detail.currentStep()).toContainText("Closed");
+    await expect(detail.approverStatus("Pat Peer", "Review")).toHaveText("Requested");
+    await expect(detail.approveButton("Pat Peer", "Review")).toBeDisabled();
+    await expect(detail.rejectButton("Pat Peer", "Review")).toBeDisabled();
+    await expect(page.getByLabel(/you aren't able to approve or reject this stage/i)).toBeVisible();
+    expect(decisions()).toHaveLength(decisionsBefore); // nothing was submitted from the disabled controls
   });
 });
 

@@ -102,8 +102,8 @@ import (
 // that state, and a fourth repairs the ones that already did:
 //
 //   - reconcileStaleApprovers runs at the end of every transaction that can
-//     change change_request.state (patchChangeRequestTx, DecideChangeRequestApproval)
-//     and cancels every still-requested approver row of a stage whose state the
+//     change change_request.state (patchChangeRequestTx, DecideChangeRequestApproval,
+//     the GitHub sync's SetState) and cancels every still-requested approver row of a stage whose state the
 //     change is no longer in -- and ALL of them once it is Closed / Canceled /
 //     Rollback. Review is the case that matters most: deciding it changes no
 //     state (the change is moved on by hand), so without this its other
@@ -1148,7 +1148,8 @@ func staleApprovalRefusal(kind approvalStageKind, currentState string) error {
 // the stage that state needs (a stage provisioned for the current state is
 // never cancelled by it, so the order only matters the other way round).
 // Idempotent. Callers: patchChangeRequestTx and DecideChangeRequestApproval,
-// the two paths that write change_request.state.
+// the two paths of the approval flow that write change_request.state, and the
+// GitHub sync's githubMutationRepository.SetState.
 func reconcileStaleApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) error {
 	// approval_stage / approval_stage_approver writes are internal-only (see
 	// provisionApprovalStage); the caller has proven their access to the change

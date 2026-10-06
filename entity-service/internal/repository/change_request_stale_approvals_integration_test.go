@@ -26,6 +26,7 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 // An approval is only actionable while the change request is in the state its
@@ -999,4 +1000,32 @@ func TestChangeRequestFlowIntegration_StaleApprovals_Migration(t *testing.T) {
 			t.Errorf("migration changed a change request's state: %q -> %q", c.state, got)
 		}
 	}
+}
+
+// A state written from outside the approval flow -- the GitHub sync closing a
+// change when its issue closes -- leaves nothing actionable either: the sync's
+// own state writer runs the same reconcile in the same transaction.
+func TestChangeRequestFlowIntegration_StaleApprovals_GithubStateWriteCancels(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, false)
+	f.requestApproval(id)
+	f.approvePeerAndCAB(id, "SCHEDULED", "implement", "canceled")
+	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
+	f.wantLive(id, "in Review", map[string][]string{"Review": crStaleAssigned})
+
+	gh := repository.NewGithubMutationRepository(f.scoped)
+	// A write of the state it already holds changes nothing (and cancels nothing).
+	if changed, err := gh.SetState(f.sys, id, "REVIEW"); err != nil || changed {
+		t.Fatalf("SetState(REVIEW) on a change already in Review = %v, %v, want false, nil", changed, err)
+	}
+	f.wantLive(id, "after the redundant write", map[string][]string{"Review": crStaleAssigned})
+
+	if changed, err := gh.SetState(f.sys, id, "CLOSED"); err != nil || !changed {
+		t.Fatalf("SetState(CLOSED) = %v, %v, want true, nil", changed, err)
+	}
+	f.expect(id, "after the GitHub close", "CLOSED")
+	f.wantLive(id, "after the GitHub close", nil)
+	f.wantCanDecide(id, "after the GitHub close", nil)
+	f.wantStatuses(id, "after the GitHub close", "Review", map[string]string{crFlowPeerAID: "cancelled", crFlowPeerBID: "cancelled", crFlowOutsiderID: "cancelled"})
 }

@@ -2625,7 +2625,9 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     (whenever the PATCH carries a state: forward moves, Re-schedule, Roll back,
     Cancel, Close, the customer outcomes, on-hold-off-and-advance) and
     `DecideChangeRequestApproval` (after its cascades: Peer -> Authorize, CAB /
-    ECAB -> Scheduled / Customer Approval, the customer stages' outcomes). It sets
+    ECAB -> Scheduled / Customer Approval, the customer stages' outcomes) and the
+    GitHub sync's state writer (`githubMutationRepository.SetState`, a closed issue
+    closing the change). It sets
     to `cancelled` (stamping `updated_on` / `updated_by`) every still-`requested`
     row of every stage whose decidable state is not the change's *current* state --
     and **every** still-`requested` row once the change is `closed`, `canceled` or
@@ -2646,8 +2648,8 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     decided while it is in <State>` (e.g. `... is in Closed, but the Review stage
     can only be decided while it is in Review`). The who-may-decide checks
     (creator, internal-only) come first. This covers rows the reconcile never saw
-    (written before it existed, or by a path that does not run it -- e.g. the
-    GitHub integration's `SetState`). The decision's UPDATE is narrowed to the
+    (written before it existed, or by a path that does not run it -- e.g. a
+    direct database write or the ServiceNow sync). The decision's UPDATE is narrowed to the
     resolved stage, so a caller holding a stale row and a live one decides only the
     live one. The BFF passes the 409 message through on the decision endpoint
     (`mapApprovalDecisionError`), as it does a 403's.
@@ -2671,7 +2673,7 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   Review -> Closed lifecycle with stages / row statuses / `canDecide` after every
   step, Review -> Closed, Roll back, Cancel from every state, the Re-schedule loop,
   Emergency / Standard unaffected, the guard on crafted legacy rows, unguarded
-  ServiceNow-style stages, the migration) and the unit tests
+  ServiceNow-style stages, the GitHub state write, the migration) and the unit tests
   `TestApprovalStageDecidableState*` / `TestApprovalStageOutOfState` /
   `TestStaleApprovalRefusal` in `change_request_repo_test.go`.
 * **Approver pools are INTERNAL-only.** Every internal stage (Peer, CAB, ECAB,

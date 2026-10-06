@@ -77,6 +77,19 @@
 //     response and editable via PATCH until their gate passes; a late edit is
 //     refused with a 400 and a readable message;
 //   - the CR's creator can never approve;
+//   - an approval is only actionable while the CR is in the state its stage belongs
+//     to (Peer Approval: assess, CAB / ECAB Approval: authorize, Review: review,
+//     Customer Approval / Customer Review: the same-named state). Like the
+//     backend's reconcileStaleApprovers, every PATCH and every decision ends by
+//     cancelling the still-REQUESTED approver rows of every stage the CR has left
+//     -- ALL of them once it is closed / canceled / rollback -- so a Review
+//     approver can decide while the CR is in review and no longer after it moved
+//     on; `canDecide` is false on a REQUESTED row of a stage the CR has left (a
+//     legacy row: see `setState`, which moves the CR without that sweep), and a
+//     decision on one is a 409 with the backend's wording. Entering `review` on a
+//     Normal CR provisions the "Review" stage (the assigned group's internal
+//     members: FAKE_PEER and FAKE_PEER_COLLEAGUE). Deciding Review records the
+//     answer and cancels the siblings; the CR stays in review;
 //   - assignment groups: every internal stage carries `assignmentGroup: {id, name}`
 //     -- Peer Approval the CR's assigned group (FAKE_PEER_GROUP, "Example Corp
 //     ABT"), CAB / ECAB Approval their own groups (FAKE_CAB_GROUP /
@@ -326,6 +339,20 @@ export interface FakeChangeRequestApi {
 
 const CUSTOMER_STAGES = ["Customer Approval", "Customer Review"];
 
+/** The one state in which each stage can be decided (the backend's approvalStageDecidableState). */
+const STAGE_STATE: Record<string, string> = {
+  "Peer Approval": "assess",
+  "CAB Approval": "authorize",
+  "ECAB Approval": "authorize",
+  Review: "review",
+  "Customer Approval": "customer_approval",
+  "Customer Review": "customer_review",
+};
+/** States nothing can be approved in any more. */
+const FINAL_STATES = ["closed", "canceled", "rollback"];
+/** "customer_review" -> "Customer Review", for the refusal message. */
+const stateName = (s: string): string => s.split("_").map((w) => w.charAt(0).toUpperCase() + w.slice(1)).join(" ");
+
 function legalNextStates(state: string, flags: FakeCustomerFlags, liveCustomerStage = false): string[] {
   switch (state) {
     case "new":
@@ -413,8 +440,54 @@ export async function installFakeChangeRequestApi(
   /** Moves the CR to `next`; entering a customer gate provisions the group's stage. */
   const enter = (next: string): void => {
     state = next;
+    provisionReview();
     syncCustomerStage();
   };
+  /**
+   * Entering Review on a Normal change provisions the "Review" stage from the
+   * assigned group (its internal members, the creator excluded); Emergency and
+   * Standard changes never get one (the backend only provisions it once exactly
+   * two internal stages exist).
+   */
+  function provisionReview(): void {
+    if (state !== "review" || type !== "normal" || stages.some((s) => s.stage === "Review")) return;
+    stages = [
+      ...stages,
+      {
+        stage: "Review",
+        approverType: "STATIC_GROUP",
+        approverName: FAKE_PEER_GROUP.name,
+        assignmentGroup: { id: FAKE_PEER_GROUP.id, name: FAKE_PEER_GROUP.name },
+        status: "REQUESTED",
+        approvers: FAKE_PEER_GROUP.members.filter((m) => m.id !== FAKE_CREATOR.id).map((m) => ({ id: m.id, name: m.name, status: "REQUESTED" })),
+      },
+    ];
+  }
+  /** Whether the CR has left (or can never be in) the state the stage can be decided in. */
+  const stageOutOfState = (st: Stage): boolean => {
+    const decidable = STAGE_STATE[st.stage];
+    return decidable !== undefined && decidable !== state;
+  };
+  /**
+   * The backend's `reconcileStaleApprovers`, run at the end of every PATCH and
+   * every decision: the still-REQUESTED rows of every stage the CR has left are
+   * cancelled -- all of them once it is closed / canceled / rollback. The stage
+   * stays as a record, reported PENDING (nothing was approved or rejected on it).
+   */
+  function reconcile(): void {
+    const final = FINAL_STATES.includes(state);
+    for (const st of stages) {
+      if (!final && !stageOutOfState(st)) continue;
+      let cancelled = false;
+      for (const a of st.approvers) {
+        if (a.status === "REQUESTED") {
+          a.status = "CANCELLED";
+          cancelled = true;
+        }
+      }
+      if (cancelled && st.status === "REQUESTED") st.status = "PENDING";
+    }
+  }
   /**
    * The backend's idempotent `provisionCustomerStage`: at a customer gate the
    * project's eligible registered contacts (everyone but the creator) get
@@ -712,13 +785,30 @@ export async function installFakeChangeRequestApi(
 
       if (path.endsWith("/approvals/decision") && req.method() === "POST") {
         const { decision } = req.postDataJSON() as { decision: "approved" | "rejected" };
-        const current = stages.find((s) => s.status === "REQUESTED");
+        // The caller's pending stage: their row on a stage decidable in the CR's
+        // current state, else (all of theirs are stale) the first one.
+        const mine = stages.filter((s) => s.status === "REQUESTED" && s.approvers.some((a) => a.id === currentViewer.id && a.status === "REQUESTED"));
+        const current = mine.find((s) => !stageOutOfState(s)) ?? mine[0];
         const row = current?.approvers.find((a) => a.id === currentViewer.id && a.status === "REQUESTED");
         if (!current || !row || currentViewer.id === FAKE_CREATOR.id) {
           return json(route, { message: "Access to the requested resource is forbidden!" }, 403);
         }
+        if (stageOutOfState(current)) {
+          // Nothing is changed: the approval is no longer pending.
+          return json(
+            route,
+            {
+              message: `this approval is no longer pending: the change request is in ${stateName(state)}, but the ${current.stage} stage can only be decided while it is in ${stateName(STAGE_STATE[current.stage]!)}`,
+            },
+            409,
+          );
+        }
         row.status = decision === "approved" ? "APPROVED" : "REJECTED";
         current.status = row.status;
+        if (!CUSTOMER_STAGES.includes(current.stage)) {
+          // Like the backend, a resolving decision cancels the stage's other pending approvers.
+          for (const a of current.approvers) if (a !== row && a.status === "REQUESTED") a.status = "CANCELLED";
+        }
         if (CUSTOMER_STAGES.includes(current.stage)) {
           // One member's decision settles the stage; co-members are no longer needed.
           for (const a of current.approvers) if (a !== row && a.status === "REQUESTED") a.status = "NOT_REQUIRED";
@@ -728,10 +818,12 @@ export async function installFakeChangeRequestApi(
           if (current.stage === "Peer Approval") {
             state = "authorize";
             stages = [...stages, nextStage("CAB Approval", FAKE_CAB_GROUP, FAKE_CAB)];
-          } else {
+          } else if (current.stage === "CAB Approval" || current.stage === "ECAB Approval") {
             enter(afterInternalApproval()); // CAB / ECAB approval moves the CR on itself
           }
+          // Review: the answer is recorded, the CR stays in review (a human moves it on).
         }
+        reconcile();
         return json(route, { id: FAKE_CR_ID, state });
       }
       if (path.endsWith("/approvals") && req.method() === "GET") {
@@ -746,7 +838,8 @@ export async function installFakeChangeRequestApi(
                 st.status === "REQUESTED" &&
                 a.id === currentViewer.id &&
                 a.status === "REQUESTED" &&
-                currentViewer.id !== FAKE_CREATOR.id,
+                currentViewer.id !== FAKE_CREATOR.id &&
+                !stageOutOfState(st),
             })),
           })),
         });
@@ -810,11 +903,7 @@ export async function installFakeChangeRequestApi(
           if (hasLiveCustomerStage()) {
             return json(route, { message: "The customer group must decide the review; it cannot be rolled back manually." }, 400);
           }
-          // Rolling back cancels every still-requested approver row.
-          for (const st of stages) {
-            for (const a of st.approvers) if (a.status === "REQUESTED") a.status = "CANCELLED";
-            if (st.status === "REQUESTED") st.status = "CANCELLED";
-          }
+          // Rolling back cancels every still-requested approver row (the closing reconcile).
           state = "rollback";
         } else if (target === "authorize") {
           // Re-schedule: the one manual way into Authorize, from Customer Approval only,
@@ -879,6 +968,7 @@ export async function installFakeChangeRequestApi(
         } else {
           return json(route, { message: `Illegal transition to ${String(target)}.` }, 400);
         }
+        reconcile();
         return json(route, { id: FAKE_CR_ID, state });
       }
       if (req.method() === "GET" && path === `/change-requests/${FAKE_CR_ID}`) {

@@ -2809,9 +2809,11 @@ export interface BeChangeRequestApprover {
   /**
    * Set by the backend (Postgres source): true only on the caller's own
    * REQUESTED row, and only when they may decide it (not the creator, not an
-   * SRE on the peer stage). `false` makes the UI disable Approve/Reject for
+   * external user on an internal stage, and the change request is still in the
+   * state the row's stage belongs to -- a REQUESTED row of a stage the change
+   * has moved past is `false`). `false` makes the UI disable Approve/Reject for
    * that row; absent (ServiceNow source / older backend) means "unknown", and
-   * the UI falls back to its own creator check plus the backend's 403.
+   * the UI falls back to its own creator check plus the backend's 403 / 409.
    */
   canDecide?: boolean;
 }

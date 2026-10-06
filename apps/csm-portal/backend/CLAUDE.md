@@ -324,6 +324,18 @@ to the entity service as-is (no field allow-list), with two checks on top:
   contacts cannot reach it through this BFF. A rejected Customer Approval cancels the change, a
   rejected Customer Review moves it to `rollback`. No BFF code change was needed;
   `TestCustomerGroupApprovalMessages` pins both messages.
+* **A stale approval is a 409.** A decision on a stage whose state the change has left
+  (a Review approver once the change is in Customer Review / Closed -- the entity
+  service cancels such rows when the change moves on, and refuses a decision on one it
+  missed; see its CLAUDE.md, "An approval is only actionable in its stage's state") comes
+  back as a **409** `this approval is no longer pending: the change request is in
+  Closed, but the Review stage can only be decided while it is in Review`.
+  `mapApprovalDecisionError` passes the entity service's message through for a **409
+  as well as a 403** on the decision endpoint (a 409 with no readable `message`
+  envelope stays the generic 409); every other endpoint keeps the generic mapping.
+  `TestDecideChangeRequestApproval` pins both ("a 409 carrying the entity service's
+  reason shows it", "... without a readable reason stays generic"). `canDecide` is
+  `false` on such a row, so the portal does not offer the buttons in the first place.
 
 ## Opening an approval stage's assignment group (`GET /groups/{id}`)
 
