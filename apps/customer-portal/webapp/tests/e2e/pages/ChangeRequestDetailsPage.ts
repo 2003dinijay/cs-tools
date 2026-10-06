@@ -153,6 +153,11 @@ export class ChangeRequestDetailsPage {
     return this.page.getByRole("alert").filter({ hasText: message });
   }
 
+  /** "Back to Change Requests": the way back to the list. */
+  backButton(): Locator {
+    return this.page.getByRole("button", { name: "Back to Change Requests", exact: true });
+  }
+
   /** The confirmation shown before a reject / an "unsuccessful". */
   rejectDialog(title: string): Locator {
     return this.page.getByRole("dialog", { name: title });

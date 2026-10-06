@@ -747,30 +747,6 @@ export const CHANGE_REQUESTS_LIST = {
   numberPattern: /CHG\d+/,
 } as const;
 
-/** A change request's detail page, as far as the customer's decision goes: the
- * buttons ChangeRequestDetailsPage shows while the change is in Customer Approval
- * or Customer Review, and the banner each decision raises.
- *
- * Customer Review words the same two choices "Successful" / "Unsuccessful" rather
- * than "Approve" / "Reject". */
-export const CHANGE_REQUEST_DECISION = {
-  approve: "Approve",
-  reject: "Reject",
-  proposeNewTime: "Propose New Time",
-  reviewSuccessful: "Successful",
-  reviewUnsuccessful: "Unsuccessful",
-  back: "Back to Change Requests",
-  /** The success banner each answer raises. Matched on the opening words, which
-   * name the answer; the rest of the sentence says where the change request went
-   * next ("... It is now scheduled.") and is the app's to reword. */
-  banners: {
-    approved: /^Change request approved\./,
-    rejected: /^Change request rejected\./,
-    reviewSuccessful: /^Change request marked as successful\./,
-    reviewUnsuccessful: /^Change request marked as unsuccessful\./,
-  },
-} as const;
-
 /** A change request's detail page
  * (`/projects/:projectId/operations/change-requests/:changeRequestId`), as a
  * customer sees it while the change waits on them (Customer Approval / Customer

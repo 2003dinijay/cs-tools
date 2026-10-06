@@ -69,8 +69,8 @@ import {
   withLocalSession,
 } from "../../auth/localSessions";
 import { ChangeRequestsPage } from "../../pages/ChangeRequestsPage";
-import { ChangeRequestDetailPage } from "../../pages/ChangeRequestDetailPage";
-import { CHANGE_REQUEST_DECISION } from "../../utils/selectors";
+import { ChangeRequestDetailsPage } from "../../pages/ChangeRequestDetailsPage";
+import { CHANGE_REQUEST_DETAILS as UI } from "../../utils/selectors";
 
 withLocalSession(test, "dave");
 
@@ -97,7 +97,7 @@ async function openFixture(
   page: Page,
   number: string,
   waitingState: string,
-): Promise<ChangeRequestDetailPage> {
+): Promise<ChangeRequestDetailsPage> {
   const list = new ChangeRequestsPage(page);
   await list.open(EXAMPLE_CORP_PROJECT_ID);
   await expect(list.allRows().first()).toBeVisible({ timeout: 60_000 });
@@ -113,7 +113,7 @@ async function openFixture(
   );
 
   await row.click();
-  return new ChangeRequestDetailPage(page);
+  return new ChangeRequestDetailsPage(page);
 }
 
 test.describe("Local stack — a customer answers a change request", () => {
@@ -129,25 +129,25 @@ test.describe("Local stack — a customer answers a change request", () => {
     // Waiting for him: all three actions are offered while nobody has answered.
     // (A change request's hasCustomerApproved is the recorded OUTCOME, false until
     // this click, so the buttons cannot depend on it.)
-    await expect(detail.approveButton()).toBeVisible({ timeout: 60_000 });
-    await expect(detail.rejectButton()).toBeVisible();
-    await expect(detail.proposeNewTimeButton()).toBeVisible();
+    await expect(detail.button(UI.buttons.approve)).toBeVisible({ timeout: 60_000 });
+    await expect(detail.button(UI.buttons.reject)).toBeVisible();
+    await expect(detail.button(UI.buttons.proposeNewTime)).toBeVisible();
     await expect(detail.currentStage()).toContainText("Customer Approval");
     const detailUrl = page.url();
 
-    await detail.approveButton().click();
+    await detail.button(UI.buttons.approve).click();
 
     // The answer is applied, and the page says so without a reload throwing the
     // banner away.
     await expect(
-      detail.banner(CHANGE_REQUEST_DECISION.banners.approved),
+      detail.banner(UI.banners.approved),
     ).toBeVisible({ timeout: 30_000 });
     await expect(detail.currentStage()).toContainText("Scheduled", {
       timeout: 30_000,
     });
-    await expect(detail.approveButton()).toHaveCount(0);
-    await expect(detail.rejectButton()).toHaveCount(0);
-    await expect(detail.proposeNewTimeButton()).toHaveCount(0);
+    await expect(detail.button(UI.buttons.approve)).toHaveCount(0);
+    await expect(detail.button(UI.buttons.reject)).toHaveCount(0);
+    await expect(detail.button(UI.buttons.proposeNewTime)).toHaveCount(0);
 
     // The list a customer goes back to agrees.
     await detail.backButton().click();
@@ -164,12 +164,12 @@ test.describe("Local stack — a customer answers a change request", () => {
       try {
         const erinPage = await context.newPage();
         await erinPage.goto(detailUrl);
-        const erinDetail = new ChangeRequestDetailPage(erinPage);
+        const erinDetail = new ChangeRequestDetailsPage(erinPage);
         await expect(erinDetail.currentStage()).toContainText("Scheduled", {
           timeout: 60_000,
         });
-        await expect(erinDetail.approveButton()).toHaveCount(0);
-        await expect(erinDetail.rejectButton()).toHaveCount(0);
+        await expect(erinDetail.button(UI.buttons.approve)).toHaveCount(0);
+        await expect(erinDetail.button(UI.buttons.reject)).toHaveCount(0);
       } finally {
         await context.close();
       }
@@ -183,24 +183,24 @@ test.describe("Local stack — a customer answers a change request", () => {
 
     // Customer Review words the choice as Successful / Unsuccessful; there is no
     // new implementation time to propose once the work is done.
-    await expect(detail.reviewSuccessfulButton()).toBeVisible({
+    await expect(detail.button(UI.buttons.successful)).toBeVisible({
       timeout: 60_000,
     });
-    await expect(detail.reviewUnsuccessfulButton()).toBeVisible();
-    await expect(detail.approveButton()).toHaveCount(0);
-    await expect(detail.proposeNewTimeButton()).toHaveCount(0);
+    await expect(detail.button(UI.buttons.unsuccessful)).toBeVisible();
+    await expect(detail.button(UI.buttons.approve)).toHaveCount(0);
+    await expect(detail.button(UI.buttons.proposeNewTime)).toHaveCount(0);
     await expect(detail.currentStage()).toContainText("Customer Review");
 
-    await detail.reviewSuccessfulButton().click();
+    await detail.button(UI.buttons.successful).click();
 
     await expect(
-      detail.banner(CHANGE_REQUEST_DECISION.banners.reviewSuccessful),
+      detail.banner(UI.banners.markedSuccessful),
     ).toBeVisible({ timeout: 30_000 });
     await expect(detail.currentStage()).toContainText("Closed", {
       timeout: 30_000,
     });
-    await expect(detail.reviewSuccessfulButton()).toHaveCount(0);
-    await expect(detail.reviewUnsuccessfulButton()).toHaveCount(0);
+    await expect(detail.button(UI.buttons.successful)).toHaveCount(0);
+    await expect(detail.button(UI.buttons.unsuccessful)).toHaveCount(0);
 
     await detail.backButton().click();
     const list = new ChangeRequestsPage(page);
