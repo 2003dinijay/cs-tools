@@ -517,7 +517,13 @@ export async function staffDecides(who: StaffPersona, id: string, decision: "app
   if (result.status !== 200) throw new Error(`${who}'s ${decision} on ${id} answered ${result.status}: ${JSON.stringify(result.body)}`);
 }
 
-/** A staff state change that must succeed (`implement`, `review`, `customer_review`, `closed`, ...). */
+/**
+ * A staff state change that must succeed (`implement`, `review`, `customer_review`, `closed`, ...). It must be a LEGAL next
+ * state of the change's current one: the backend refuses a jump over a state or an approval gate (`implement` out of New
+ * with the customer's approval ticked, say), a move out of a final state (Closed, Canceled, Rollback), and the customer's
+ * own answer (`scheduled` out of Customer Approval, `closed` out of Customer Review), so a spec walks a change one edge at a
+ * time -- Request Approval, the approvals, then these moves -- and lets the customer give their own answer.
+ */
 export async function staffMoves(who: StaffPersona, id: string, state: string): Promise<void> {
   const result = await staffApi(who).patch(id, { state });
   if (result.status !== 200) throw new Error(`${who} moving ${id} to ${state} answered ${result.status}: ${JSON.stringify(result.body)}`);

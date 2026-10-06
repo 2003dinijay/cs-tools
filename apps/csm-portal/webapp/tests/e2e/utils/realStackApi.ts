@@ -199,11 +199,26 @@ export async function ok(label: string, result: ApiResult): Promise<void> {
 export type WalkTarget = "assess" | "authorize" | "scheduled" | "implement" | "review" | "closed" | "canceled";
 
 /**
- * Walks a NORMAL change request whose customer boxes are both unticked to `target` through the real flow: Request Approval
- * (jane), the Peer approval and the CAB approval (alice), then the engineer's own moves. (With a box ticked the customer
- * is asked at the gate; a spec that wants that walks it by hand.)
+ * Walks a NORMAL change request to `target` through the real flow, one LEGAL edge of the state machine at a time (the
+ * backend refuses a jump over a state or an approval gate, and a move out of a final state): Request Approval (jane), the
+ * Peer approval and the CAB approval (alice), then the engineer's own moves (`implement`, `review`, `closed`).
+ *
+ * A ticked customer box puts the customer in the way, so the walk would not land where it says: with the approval box ticked
+ * the CAB's approval goes to Customer Approval, not Scheduled, and with the review box ticked Review has no Close. A spec
+ * that wants a customer gate walks it by hand (and the customer answers in the Customer Portal), so this refuses up front
+ * rather than failing three calls later on a refusal that says "cannot be set manually". The boxes may still be ticked for
+ * the targets that stop short of the gate they control (`assess`, `authorize`, `canceled`; `review` with the review box).
  */
 export async function walkTo(change: Raised, target: WalkTarget): Promise<void> {
+  const stored = (await staff("jane").get(change.id)).body;
+  const approvalInTheWay = !!stored.customerApprovalRequired && !["assess", "authorize", "canceled"].includes(target);
+  const reviewInTheWay = !!stored.customerReviewRequired && target === "closed";
+  if (approvalInTheWay || reviewInTheWay) {
+    throw new Error(
+      `walkTo(${change.number}, "${target}"): the ${approvalInTheWay ? "customer approval" : "customer review"} box is ticked, so the ` +
+        `walk would stop at ${approvalInTheWay ? "Customer Approval" : "Customer Review"} (the customer's own answer is the only way on): walk it by hand`,
+    );
+  }
   const steps: Array<() => Promise<void>> = [
     async () => ok("Request Approval", await staff("jane").patch(change.id, { state: "assess" })), // -> assess
     async () => ok("Peer approval", await staff("alice").decide(change.id, "approved")), // -> authorize
