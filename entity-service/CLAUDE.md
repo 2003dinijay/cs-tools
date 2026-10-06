@@ -6212,11 +6212,105 @@ added `work_item_feedback`, and `pgFeedbackService`
 /cases/feedback/search` and `/aggregate` for both the `postgres` and
 `postgres-servicenow-dual-write` data sources (dual write reads Postgres, never
 the backing system). `unavailableFeedbackService` is now only the fallback for
-a data source with no feedback store. Known gaps: the table stores no
-per-rating reason chips, so every `reasons_*` bucket returns an empty result;
-`GET`/`POST /cases/{id}/feedback` (the emoji submission contract) is still a
-503 on Postgres because `work_item_feedback` has no emoji id, chip ids or
-assessment id to serve it from.
+a data source with no feedback store. Known gap: the table stores no
+per-rating reason chips, so every `reasons_*` bucket returns an empty result.
+`GET`/`POST /cases/{id}/feedback` (the emoji submission contract) now has a
+real Postgres implementation too — see the dedicated section below.
+
+## GET/POST /cases/{id}/feedback and GET /metadata's feedbackEmojies on Postgres
+
+`GET`/`POST /cases/{id}/feedback` used to be a hardcoded 503 on this data
+source ("case feedback is only supported for the [synced data source]").
+Migration `0127`/`0128` (`work_item_feedback_metric`/
+`work_item_feedback_metric_option`/`work_item_feedback_reason`, mirrored
+from the same upstream sync that already populates `work_item_feedback`
+itself) give this a real implementation:
+`internal/repository/case_feedback_repo.go` (`CaseRepository.GetCaseFeedback`/
+`CreateCaseFeedback`), wired into `case_service.go`'s own `GetCaseFeedback`/
+`SubmitCaseFeedback`.
+
+**The emoji catalog is five rows, resolved by name, not by a stored FK.**
+`work_item_feedback` (migration `0102`) has no column saying which emoji/
+metric a submission picked — only a plain `rating` (1-5) and `rating_label`
+(e.g. `"Very Satisfied"`), the exact shape the upstream sync already writes.
+Every `"<rating> - Reasons"` row of `work_item_feedback_metric` is, by
+construction, its clean rating label plus the fixed `" - Reasons"` suffix,
+so `rating_label || ' - Reasons'` always resolves back to the one metric row
+a submission's `emojiId` pointed at — `caseFeedbackRatingByLabel`/
+`resolveCaseFeedbackRating` hold this fixed, closed 5-value correspondence,
+reused by both the per-case endpoints and
+`ReferenceDataRepository.ListFeedbackEmojis` (`GET /metadata`'s
+`feedbackEmojies` field) so the two can never disagree on what a "rating"
+means. A reason's own `option_value`/`reason` are kept as recorded with no
+FK to `work_item_feedback_metric_option` (migration `0128`'s own design), so
+a since-renamed-or-removed option has no current id to report — that chip
+is left out of `GetCaseFeedback`'s result entirely rather than guessed at.
+
+**Two guards, both enforced inside `CreateCaseFeedback`'s own transaction,
+in this order:**
+
+1. **The case must already be closed.** This form is a post-closure
+   satisfaction survey — the portal only ever offers it once a case has
+   closed — so a submission against a case that's still open is rejected
+   with a `409 ConflictError` ("feedback can only be submitted once the
+   case is closed"), checked via the same `caseLikeStateColumn`/
+   `caseLikeJoins` resolution `GetCaseByID`/`SearchCases` already use for
+   every case-like type, so "closed" can never drift between this check and
+   what the case detail page itself shows.
+2. **One submission per case, ever.** `work_item_feedback.work_item_id` is
+   `UNIQUE`; the insert is `ON CONFLICT (work_item_id) DO NOTHING`, and zero
+   rows returned is a second `409 ConflictError` ("feedback has already
+   been submitted for this case").
+
+Every chip submitted must belong to the submitted `emojiId`'s own option
+set — a chip from a different emoji's question is rejected with a
+`ValidationError`, not silently accepted. `CreateCaseFeedback` validates
+`emojiId` against `work_item_feedback_metric.is_active` the same way.
+
+**Identity, not invention.** `AssessmentID` (`CaseEmojiFeedback`/
+`CaseFeedbackResult`'s own wire field) is left at its Go zero value on this
+data source — there is no assessment-instance concept anywhere in this
+schema to populate it from, unlike the synced path's own real id for it.
+`SubmittedByUserID` comes from `resolveActor`, the same
+`x-user-id-token`-derived lookup every other Postgres-native write in this
+file already uses.
+
+## closed_by_user_id was never written or read on the Postgres data source
+
+Reported live: an externally-closed case showed "Case closed by system"
+regardless of who actually closed it. `closed_by_user_id` is a real column
+on all five case-like extension tables (migrations `0023`/`0024`), and the
+field it backs (`CaseView.ClosedBy`) was already wired up on the synced
+read path — but `case_repo.go` never selected it in `GetCaseByID`, and
+`UpdateCase`'s own state-transition write never set it either. Confirmed
+directly against a real case: `work_item_activity` already had the correct
+closer's email recorded for its `state` field-change entry (the identity
+was available at close time, it just never reached this column).
+
+Fixed on both sides:
+
+- **Write**: `CaseRepository.UpdateCase` gained an `actorID *string`
+  parameter — the resolved caller's own `"user"` id, threaded through
+  `updateCaseQuery` and the four `caseLikeExtensionUpdate` queries. It is
+  stamped onto `closed_by_user_id` only on a transition **to** closed, and
+  cleared back to `NULL` on a transition **away** from closed — the
+  identical transition-gated shape `closed_on` itself already has.
+  `caseService.UpdateCase` resolves `actorID` via the same `resolveActor`
+  call its `recordFieldChangeActivity` already uses, from the caller's
+  `x-user-id-token` **only** — never from the request body, and never
+  guessed at for a pure machine-to-machine caller with no end-user token
+  (that caller's close simply leaves `closed_by_user_id` unset, the same
+  best-effort posture `actorEmail` already has there).
+- **Read**: `GetCaseByID` now joins `"user" closer ON closer.id =` the new
+  `caseLikeClosedByUserIDColumn` (a `COALESCE` across all five extension
+  tables' own `closed_by_user_id`, mirroring `caseLikeClosedOnColumn`'s
+  existing shape) and populates `CaseView.ClosedBy`.
+
+**Forward-only, deliberately.** A case closed before this change keeps
+`closed_by_user_id = NULL` forever unless backfilled separately — nothing
+here retroactively derives it (e.g. from `work_item_activity`'s own
+recorded email), since that would be a data migration decision, not a code
+fix.
 
 ## CreateCase enforces a project type's product-category allow-list for case/SR
 

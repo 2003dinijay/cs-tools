@@ -1647,16 +1647,23 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 		}
 	}
 
-	// actorEmail is used only for this update's own activity-feed entry
-	// below -- resolved best-effort, not required, since this branch has
-	// never required an authenticated caller before now (no permission
-	// model exists for Postgres-side case mutations yet -- see
+	// actorEmail/actorID are resolved best-effort, not required, since this
+	// branch has never required an authenticated caller before now (no
+	// permission model exists for Postgres-side case mutations yet -- see
 	// updateCaseAssignee's own doc comment) and must not start rejecting a
 	// caller who omits x-user-id-token just because this data source can
-	// now also log field changes to work_item_activity.
+	// now also log field changes to work_item_activity and stamp who closed
+	// a case. actorID is who the repository stamps onto closed_by_user_id
+	// when this update's own state transitions to closed -- resolved here,
+	// from the caller's token, never taken from the request body (see
+	// CaseRepository.UpdateCase's own interface doc comment).
 	var actorEmail string
+	var actorID *string
 	if actor, err := s.resolveActor(ctx); err == nil {
 		actorEmail = actor.Email
+		if actor.ID != "" {
+			actorID = &actor.ID
+		}
 	}
 
 	// oldSeverity is the case's severity immediately before this update —
@@ -1670,7 +1677,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// same row lock as the write that triggers it -- see
 	// recomputeTimeCardsBillable's own doc comment for why. Nothing to call
 	// from here anymore.
-	c, oldSeverity, err := s.repo.UpdateCase(ctx, req)
+	c, oldSeverity, err := s.repo.UpdateCase(ctx, req, actorID)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
@@ -3349,12 +3356,74 @@ func (s *caseService) SearchTags(ctx context.Context, req domain.SearchTagsReque
 	return s.repo.SearchTags(ctx, req.Filters.SearchQuery, actor.Email, limit)
 }
 
-func (s *caseService) GetCaseFeedback(_ context.Context, _ string) (domain.CaseEmojiFeedback, error) {
-	return domain.CaseEmojiFeedback{}, &apierror.ServiceUnavailableError{Msg: "case feedback is only supported for the ServiceNow data source"}
+// GetCaseFeedback implements CaseService.
+func (s *caseService) GetCaseFeedback(ctx context.Context, id string) (domain.CaseEmojiFeedback, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.CaseEmojiFeedback{}, err
+	}
+
+	row, found, err := s.repo.GetCaseFeedback(ctx, id)
+	if err != nil {
+		return domain.CaseEmojiFeedback{}, err
+	}
+	if !found {
+		return domain.CaseEmojiFeedback{}, &apierror.NotFoundError{Msg: "no feedback has been submitted for this case"}
+	}
+
+	// AssessmentID is left at its zero value: this data source has no
+	// assessment-instance concept to populate it from, unlike the
+	// ServiceNow-backed path's own sys_id.
+	return domain.CaseEmojiFeedback{
+		ID: row.ID,
+		Emoji: domain.CaseFeedbackEmojiRef{
+			ID:            row.EmojiID,
+			Name:          row.EmojiName,
+			SelectedImage: row.EmojiSelectedImage,
+		},
+		ChipIDs:           row.ChipIDs,
+		CreatedBy:         row.CreatedBy,
+		CreatedOn:         row.CreatedOn,
+		AdditionalComment: row.AdditionalComment,
+	}, nil
 }
 
-func (s *caseService) SubmitCaseFeedback(_ context.Context, _ string, _ domain.SubmitCaseFeedbackRequest) (domain.SubmitCaseFeedbackResponse, error) {
-	return domain.SubmitCaseFeedbackResponse{}, &apierror.ServiceUnavailableError{Msg: "case feedback is only supported for the ServiceNow data source"}
+// SubmitCaseFeedback implements CaseService.
+func (s *caseService) SubmitCaseFeedback(ctx context.Context, id string, req domain.SubmitCaseFeedbackRequest) (domain.SubmitCaseFeedbackResponse, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+	if err := validateUUIDs("emojiId", []string{req.EmojiID}); err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+	if err := validateUUIDs("chipIds", req.ChipIDs); err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+
+	actor, err := s.resolveActor(ctx)
+	if err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+
+	created, err := s.repo.CreateCaseFeedback(ctx, id, repository.CreateCaseFeedbackParams{
+		EmojiID:           req.EmojiID,
+		ChipIDs:           req.ChipIDs,
+		AdditionalComment: req.AdditionalComment,
+		SubmittedByUserID: actor.ID,
+		ActorEmail:        actor.Email,
+	})
+	if err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+
+	return domain.SubmitCaseFeedbackResponse{
+		Message: "Feedback submitted successfully.",
+		Feedback: domain.CaseFeedbackResult{
+			ID:        created.ID,
+			CaseID:    id,
+			CreatedBy: actor.Email,
+			CreatedOn: created.CreatedOn,
+		},
+	}, nil
 }
 
 // GetAttachmentByID implements CaseService for the CSM-native (Postgres) data

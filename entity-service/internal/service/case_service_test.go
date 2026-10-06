@@ -80,6 +80,13 @@ type stubCaseRepo struct {
 	setCaseTagSNSysID             func(ctx context.Context, caseID, tagID, snSysID string) error
 	getCaseTagSNSysID             func(ctx context.Context, caseID, tagID string) (*string, error)
 	markCaseFixIssued             func(ctx context.Context, caseID string) (time.Time, bool, error)
+	getCaseFeedback               func(ctx context.Context, caseID string) (repository.CaseFeedbackRow, bool, error)
+	createCaseFeedback            func(ctx context.Context, caseID string, params repository.CreateCaseFeedbackParams) (repository.CaseFeedbackCreated, error)
+	// updateCaseActorID captures the actorID UpdateCase was last called with,
+	// for tests asserting it was resolved from the caller's token rather
+	// than left nil -- see CaseRepository.UpdateCase's own interface doc
+	// comment on what actorID is for.
+	updateCaseActorID *string
 }
 
 func (s *stubCaseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
@@ -130,7 +137,8 @@ func (s *stubCaseRepo) SearchCaseComments(ctx context.Context, req domain.Search
 	}
 	panic("not implemented")
 }
-func (s *stubCaseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+func (s *stubCaseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (domain.Case, *domain.CaseSeverity, error) {
+	s.updateCaseActorID = actorID
 	if s.updateCase != nil {
 		return s.updateCase(ctx, req)
 	}
@@ -209,6 +217,18 @@ func (s *stubCaseRepo) GetCaseTagSNSysID(ctx context.Context, caseID, tagID stri
 	return nil, nil
 }
 func (s *stubCaseRepo) SearchTags(context.Context, string, string, int) ([]domain.Tag, error) {
+	panic("not implemented")
+}
+func (s *stubCaseRepo) GetCaseFeedback(ctx context.Context, caseID string) (repository.CaseFeedbackRow, bool, error) {
+	if s.getCaseFeedback != nil {
+		return s.getCaseFeedback(ctx, caseID)
+	}
+	panic("not implemented")
+}
+func (s *stubCaseRepo) CreateCaseFeedback(ctx context.Context, caseID string, params repository.CreateCaseFeedbackParams) (repository.CaseFeedbackCreated, error) {
+	if s.createCaseFeedback != nil {
+		return s.createCaseFeedback(ctx, caseID, params)
+	}
 	panic("not implemented")
 }
 func (s *stubCaseRepo) SetCaseWatchList(ctx context.Context, caseID string, userIDs []string, actorEmail string) ([]domain.WatchListUser, time.Time, error) {
@@ -1640,6 +1660,67 @@ func TestCaseService_UpdateCase_StatusChanged_RecipientsIncludeFreshDefaultsAndD
 		if got == "stale@example.com" {
 			t.Errorf("Recipients = %v, want it to NOT include the stale watcher's email", payload.Recipients)
 		}
+	}
+}
+
+// TestCaseService_UpdateCase_ResolvesActorIDForClosedByStamp is the
+// regression guard for a real, reported bug: a case closed through this
+// data source always had closed_by_user_id left NULL, so the case detail
+// page fell back to showing "Case closed by system" regardless of who
+// actually closed it -- CaseRepository.UpdateCase was never given an actor
+// id to stamp onto it at all. This proves UpdateCase resolves the caller's
+// own "user" id from their x-user-id-token and passes it through to the
+// repository as actorID -- never read from the request body itself, which
+// has no such field.
+func TestCaseService_UpdateCase_ResolvesActorIDForClosedByStamp(t *testing.T) {
+	closed := domain.CaseStateClosed
+	open := domain.CaseStateOpen
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ID: testDeploymentUUID, State: &open}, nil
+		},
+		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+			return domain.Case{ID: req.ID, State: req.State}, nil, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{
+		getUserByEmail: func(ctx context.Context, email string) (domain.User, error) {
+			return domain.User{ID: "closer-user-id", Email: email}, nil
+		},
+	}, nil, alwaysUnrestrictedAccess{}, nil)
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	if _, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, State: &closed}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.updateCaseActorID == nil || *repo.updateCaseActorID != "closer-user-id" {
+		t.Fatalf("UpdateCase was called with actorID = %v, want a pointer to \"closer-user-id\"", repo.updateCaseActorID)
+	}
+}
+
+// TestCaseService_UpdateCase_LeavesActorIDNilWithoutAToken proves a caller
+// with no (or an invalid) x-user-id-token still succeeds -- this branch has
+// never required an authenticated caller (see updateCaseAssignee's own doc
+// comment) -- and simply passes a nil actorID through, rather than failing
+// the whole update or guessing at who the actor is.
+func TestCaseService_UpdateCase_LeavesActorIDNilWithoutAToken(t *testing.T) {
+	closed := domain.CaseStateClosed
+	open := domain.CaseStateOpen
+	repo := &stubCaseRepo{
+		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
+			return domain.CaseView{ID: testDeploymentUUID, State: &open}, nil
+		},
+		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+			return domain.Case{ID: req.ID, State: req.State}, nil, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+
+	if _, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, State: &closed}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if repo.updateCaseActorID != nil {
+		t.Fatalf("UpdateCase was called with actorID = %v, want nil", *repo.updateCaseActorID)
 	}
 }
 

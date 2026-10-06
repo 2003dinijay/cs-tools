@@ -233,6 +233,15 @@ const caseLikeCloseNotesColumn = `COALESCE(c.close_notes, eng.close_notes, sr.cl
 const caseLikeResolvedOnColumn = `COALESCE(c.resolved_on, eng.resolved_on, sr.resolved_on, sra.resolved_on, ann.resolved_on)`
 const caseLikeClosedOnColumn = `COALESCE(c.closed_on, eng.closed_on, sr.closed_on, sra.closed_on, ann.closed_on)`
 
+// caseLikeClosedByUserIDColumn mirrors caseLikeClosedOnColumn for
+// closed_by_user_id -- a real column on all five case-like extension tables
+// (migrations 0023/0024), joined in GetCaseByID to resolve CaseView.ClosedBy.
+// Written by UpdateCase (see updateCaseQuery and caseLikeExtensionUpdate's
+// own SQL) whenever a case-like work item's own state transitions to
+// closed, using the resolved actor id from the caller's x-user-id-token --
+// never from the request payload itself.
+const caseLikeClosedByUserIDColumn = `COALESCE(c.closed_by_user_id, eng.closed_by_user_id, sr.closed_by_user_id, sra.closed_by_user_id, ann.closed_by_user_id)`
+
 // caseLikeWorkStateColumn/caseLikeResolutionCodeColumn cover the four
 // case-like tables that carry these columns (migration 0184 added them to
 // engagement/service_request/security_report_analysis, using the same enum
@@ -338,7 +347,16 @@ type CaseRepository interface {
 	// the CodeRabbit finding on PR #1683 this fixes.
 	//
 	// Returns a NotFoundError if no matching row exists.
-	UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (c domain.Case, previousSeverity *domain.CaseSeverity, err error)
+	//
+	// actorID is the resolved caller's own "user" id (from the caller's
+	// x-user-id-token, never from the request body), used only to stamp
+	// closed_by_user_id when this update's own state transitions to closed --
+	// nil when the actor couldn't be resolved (this update still succeeds;
+	// closed_by_user_id simply stays unset, the same best-effort posture
+	// recordFieldChangeActivity's own actorEmail already uses). A state
+	// transition AWAY from closed clears closed_by_user_id back to NULL,
+	// mirroring closed_on's own existing clear-on-reopen behaviour.
+	UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (c domain.Case, previousSeverity *domain.CaseSeverity, err error)
 	// CreateCaseAttachment inserts a new attachment metadata row for the case
 	// identified by req.ReferenceID. req.StorageKey must be non-nil: this data
 	// source stores file bytes externally in SFTPGo, never inline in Postgres.
@@ -427,6 +445,16 @@ type CaseRepository interface {
 	// down for the same future-authorization reason as AddCaseTag; tags are
 	// global vocabulary with no per-case or per-caller scope today.
 	SearchTags(ctx context.Context, searchQuery, callerEmail string, limit int) ([]domain.Tag, error)
+	// GetCaseFeedback returns the previously-submitted emoji feedback for
+	// caseID, and found=false when none has been submitted yet -- see
+	// case_feedback_repo.go's own doc comment for the full design (shared
+	// with CreateCaseFeedback just below).
+	GetCaseFeedback(ctx context.Context, caseID string) (CaseFeedbackRow, bool, error)
+	// CreateCaseFeedback records caseID's emoji feedback. Returns a
+	// *apierror.ConflictError if feedback was already submitted for this
+	// case (work_item_feedback.work_item_id is UNIQUE -- one submission per
+	// case, matching the ServiceNow-backed path's own one-shot survey).
+	CreateCaseFeedback(ctx context.Context, caseID string, params CreateCaseFeedbackParams) (CaseFeedbackCreated, error)
 	// SetCaseWatchList replaces the case's watch list (work_item_watcher
 	// rows keyed by the case's own id, which is also its work_item id)
 	// wholesale with userIDs, and bumps the case's underlying work_item
@@ -674,7 +702,7 @@ func createCaseTx(ctx context.Context, tx pgx.Tx, req domain.CreateCaseRequest) 
 // opened_by_user_id/account_id are resolved from req.CreatedBy (a user id)
 // via the "creator" CTE rather than taken as already-resolved values, since
 // there is no ServiceNow response to have resolved them from. severity uses
-// the same NULLIF(...,'') tolerance the pre-dispatch version of this method
+// the same NULLIF(...,”) tolerance the pre-dispatch version of this method
 // already relied on, for an unset req.Severity.
 const createCasePortalQuery = `
 	WITH creator AS (
@@ -1285,6 +1313,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		internalID                               *string
 		aeID, aeName, aeEmail                    *string
 		ackID, ackName, ackEmail                 *string
+		closerID, closerName                     *string
 		pcID, pcNum, pcType                      *string
 		rcID, rcNum                              *string
 		accountID, accountName, accountTier      *string
@@ -1333,6 +1362,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		        cre.id, cre.name, sre.id, sre.name,
 		        ae.id, COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')), ae.email,
 		        ack.id, COALESCE(ack.name, NULLIF(TRIM(CONCAT_WS(' ', ack.first_name, ack.last_name)), '')), ack.email,
+		        closer.id, COALESCE(closer.name, NULLIF(TRIM(CONCAT_WS(' ', closer.first_name, closer.last_name)), '')),
 		        pw.id, pw.number, pw.type::TEXT,
 		        rc_wi.id, rc_wi.number
 		 FROM work_item wi
@@ -1349,6 +1379,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		 LEFT JOIN product_version pv ON pv.id = dp.version_id
 		 LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id
 		 LEFT JOIN "user" ack ON ack.id = wi.acknowledged_by_user_id
+		 LEFT JOIN "user" closer ON closer.id = `+caseLikeClosedByUserIDColumn+`
 		 LEFT JOIN work_item pw ON pw.id = wi.parent_id
 		 LEFT JOIN "case" rc ON rc.id = c.related_case_id
 		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id
@@ -1371,6 +1402,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		&creTeamID, &creTeamName, &sreTeamID, &sreTeamName,
 		&aeID, &aeName, &aeEmail,
 		&ackID, &ackName, &ackEmail,
+		&closerID, &closerName,
 		&pcID, &pcNum, &pcType,
 		&rcID, &rcNum,
 	)
@@ -1539,6 +1571,9 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 			ackNameStr = *ackName
 		}
 		cv.AcknowledgedBy = &domain.AssignedEngineerRef{ID: *ackID, Name: ackNameStr, Email: ackEmail}
+	}
+	if closerID != nil {
+		cv.ClosedBy = &domain.EntityRef{ID: *closerID, Name: stringOrEmpty(closerName)}
 	}
 	if pcID != nil {
 		// work_item.parent_id (migration 0039) is a generic self-reference
@@ -1777,12 +1812,23 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 
 // updateCaseQuery is shared by both branches of UpdateCase below. case.id IS
 // work_item.id (migration 0023), so this updates both tables in one round
-// trip via a CTE: "case" carries state/severity/work_state/closed_on,
-// work_item carries everything else (including updated_on, bumped
-// unconditionally). The work_item UPDATE's "AND EXISTS (SELECT 1 FROM
-// updated_case)" guard means it only actually touches a row when the case
-// update did -- so a nonexistent id updates nothing anywhere and the final
-// join returns zero rows, not a partial update.
+// trip via a CTE: "case" carries state/severity/work_state/closed_on/
+// closed_by_user_id, work_item carries everything else (including
+// updated_on, bumped unconditionally). The work_item UPDATE's "AND EXISTS
+// (SELECT 1 FROM updated_case)" guard means it only actually touches a row
+// when the case update did -- so a nonexistent id updates nothing anywhere
+// and the final join returns zero rows, not a partial update.
+// $8 (actorID) is stamped only on a GENUINE transition INTO closed -- the
+// stored (pre-update) state must itself not already be closed, checked by
+// referencing the column's own pre-statement value on the right-hand side
+// (standard SQL UPDATE semantics: every SET expression sees the row as it
+// was before this statement, not the value state's own SET just computed) --
+// so a caller re-PATCHing an already-closed case's state to closed again
+// (a harmless, idempotent no-op everywhere else in this codebase) can never
+// overwrite the real closer with whoever/whatever happened to resend it.
+// Cleared back to NULL on a transition AWAY from closed, left untouched on
+// every other PATCH -- see UpdateCase's own interface doc comment for where
+// actorID itself comes from.
 // updateCaseQuery's $2/$3/$4 arrive already converted to their real enum
 // labels by UpdateCase below (state/work_state upper-cased, severity mapped
 // through caseSeverityToEnum) -- case_state_enum's "CLOSED" is what $2 = ”
@@ -1799,13 +1845,14 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 const updateCaseQuery = `
 	WITH updated_case AS (
 		UPDATE "case"
-		SET state           = CASE WHEN $2 <> '' THEN $2::case_state_enum ELSE state END,
-		    severity        = CASE WHEN $3 <> '' THEN $3::case_severity_enum ELSE severity END,
-		    work_state      = CASE WHEN $4 <> '' THEN $4::case_work_state_enum ELSE work_state END,
-		    closed_on       = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    resolution_code = CASE WHEN $5 <> '' THEN $5::case_resolution_code_enum ELSE resolution_code END,
-		    cause           = CASE WHEN $6 <> '' THEN $6::case_cause_enum ELSE cause END,
-		    close_notes     = COALESCE($7, close_notes)
+		SET state             = CASE WHEN $2 <> '' THEN $2::case_state_enum ELSE state END,
+		    severity          = CASE WHEN $3 <> '' THEN $3::case_severity_enum ELSE severity END,
+		    work_state        = CASE WHEN $4 <> '' THEN $4::case_work_state_enum ELSE work_state END,
+		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::case_state_enum THEN $8::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
+		    resolution_code   = CASE WHEN $5 <> '' THEN $5::case_resolution_code_enum ELSE resolution_code END,
+		    cause             = CASE WHEN $6 <> '' THEN $6::case_cause_enum ELSE cause END,
+		    close_notes       = COALESCE($7, close_notes)
 		WHERE id = $1
 		RETURNING id, severity, issue_type, state, work_state, closed_on
 	),
@@ -1826,12 +1873,13 @@ const updateCaseQuery = `
 const updateSecurityReportAnalysisQuery = `
 	WITH updated_sra AS (
 		UPDATE security_report_analysis
-		SET state           = CASE WHEN $2 <> '' THEN $2::security_report_analysis_state_enum ELSE state END,
-		    closed_on       = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    cause           = CASE WHEN $3 <> '' THEN $3::security_report_analysis_cause_enum ELSE cause END,
-		    close_notes     = COALESCE($4, close_notes),
-		    work_state      = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
-		    resolution_code = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
+		SET state             = CASE WHEN $2 <> '' THEN $2::security_report_analysis_state_enum ELSE state END,
+		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::security_report_analysis_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
+		    cause             = CASE WHEN $3 <> '' THEN $3::security_report_analysis_cause_enum ELSE cause END,
+		    close_notes       = COALESCE($4, close_notes),
+		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
 		RETURNING id, state, work_state, closed_on
 	),
@@ -1852,12 +1900,13 @@ const updateSecurityReportAnalysisQuery = `
 const updateServiceRequestQuery = `
 	WITH updated_sr AS (
 		UPDATE service_request
-		SET state           = CASE WHEN $2 <> '' THEN $2::service_request_state_enum ELSE state END,
-		    closed_on       = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    cause           = CASE WHEN $3 <> '' THEN $3::service_request_cause_enum ELSE cause END,
-		    close_notes     = COALESCE($4, close_notes),
-		    work_state      = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
-		    resolution_code = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
+		SET state             = CASE WHEN $2 <> '' THEN $2::service_request_state_enum ELSE state END,
+		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::service_request_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
+		    cause             = CASE WHEN $3 <> '' THEN $3::service_request_cause_enum ELSE cause END,
+		    close_notes       = COALESCE($4, close_notes),
+		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
 		RETURNING id, state, work_state, closed_on
 	),
@@ -1878,12 +1927,13 @@ const updateServiceRequestQuery = `
 const updateEngagementQuery = `
 	WITH updated_eng AS (
 		UPDATE engagement
-		SET state           = CASE WHEN $2 <> '' THEN $2::engagement_state_enum ELSE state END,
-		    closed_on       = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
-		    cause           = CASE WHEN $3 <> '' THEN $3::engagement_cause_enum ELSE cause END,
-		    close_notes     = COALESCE($4, close_notes),
-		    work_state      = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
-		    resolution_code = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
+		SET state             = CASE WHEN $2 <> '' THEN $2::engagement_state_enum ELSE state END,
+		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
+		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::engagement_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
+		    cause             = CASE WHEN $3 <> '' THEN $3::engagement_cause_enum ELSE cause END,
+		    close_notes       = COALESCE($4, close_notes),
+		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
 		RETURNING id, state, work_state, closed_on
 	),
@@ -1904,10 +1954,11 @@ const updateEngagementQuery = `
 const updateAnnouncementQuery = `
 	WITH updated_ann AS (
 		UPDATE announcement
-		SET state       = CASE WHEN $2 <> '' THEN $2::announcement_state_enum ELSE state END,
-		    closed_on   = CASE WHEN $2 = 'CLOSE' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSE' THEN NULL ELSE closed_on END,
-		    cause       = CASE WHEN $3 <> '' THEN $3::announcement_cause_enum ELSE cause END,
-		    close_notes = COALESCE($4, close_notes)
+		SET state             = CASE WHEN $2 <> '' THEN $2::announcement_state_enum ELSE state END,
+		    closed_on         = CASE WHEN $2 = 'CLOSE' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSE' THEN NULL ELSE closed_on END,
+		    closed_by_user_id = CASE WHEN $2 = 'CLOSE' AND state IS DISTINCT FROM 'CLOSE'::announcement_state_enum THEN $5::uuid WHEN $2 <> '' AND $2 <> 'CLOSE' THEN NULL ELSE closed_by_user_id END,
+		    cause             = CASE WHEN $3 <> '' THEN $3::announcement_cause_enum ELSE cause END,
+		    close_notes       = COALESCE($4, close_notes)
 		WHERE id = $1
 		RETURNING id, state, closed_on
 	),
@@ -1955,20 +2006,24 @@ func validateUpdateCaseFieldsForType(workItemType string, req domain.UpdateCaseR
 // caseLikeExtensionUpdate returns the update statement and its arguments for
 // a non-"case" case-like work item, plus a label for error messages. "case"
 // itself goes through updateCaseQuery, which also handles severity.
-func caseLikeExtensionUpdate(workItemType string, req domain.UpdateCaseRequest, state, workState, resolutionCode, cause string) (query string, args []any, label string, ok bool) {
+//
+// actorID is passed straight through to the query as the closed_by_user_id
+// value to stamp on a transition to closed -- see UpdateCase's own interface
+// doc comment.
+func caseLikeExtensionUpdate(workItemType string, req domain.UpdateCaseRequest, state, workState, resolutionCode, cause string, actorID *string) (query string, args []any, label string, ok bool) {
 	switch workItemType {
 	case "SECURITY_REPORT_ANALYSIS":
-		return updateSecurityReportAnalysisQuery, []any{req.ID, state, cause, req.CloseNotes, workState, resolutionCode}, "security report analysis", true
+		return updateSecurityReportAnalysisQuery, []any{req.ID, state, cause, req.CloseNotes, workState, resolutionCode, actorID}, "security report analysis", true
 	case "SERVICE_REQUEST":
-		return updateServiceRequestQuery, []any{req.ID, state, cause, req.CloseNotes, workState, resolutionCode}, "service request", true
+		return updateServiceRequestQuery, []any{req.ID, state, cause, req.CloseNotes, workState, resolutionCode, actorID}, "service request", true
 	case "ENGAGEMENT":
-		return updateEngagementQuery, []any{req.ID, state, cause, req.CloseNotes, workState, resolutionCode}, "engagement", true
+		return updateEngagementQuery, []any{req.ID, state, cause, req.CloseNotes, workState, resolutionCode, actorID}, "engagement", true
 	case "ANNOUNCEMENT":
 		annState := state
 		if annState == "CLOSED" {
 			annState = "CLOSE"
 		}
-		return updateAnnouncementQuery, []any{req.ID, annState, cause, req.CloseNotes}, "announcement", true
+		return updateAnnouncementQuery, []any{req.ID, annState, cause, req.CloseNotes, actorID}, "announcement", true
 	}
 	return "", nil, "", false
 }
@@ -2026,7 +2081,7 @@ func scanUpdatedCase(row pgx.Row) (domain.Case, error) {
 }
 
 // UpdateCase implements CaseRepository.
-func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest, actorID *string) (domain.Case, *domain.CaseSeverity, error) {
 	state := ""
 	if req.State != nil {
 		state = strings.ToUpper(string(*req.State))
@@ -2095,13 +2150,13 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 		// here would only ever surface later as a failed mirror write. Checked in
 		// a transaction serialized per assignee.
 		if req.WorkState != nil && workState == "ONGOING" {
-			return r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause)
+			return r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause, actorID)
 		}
 
 		// req.Severity == nil: severity can't change, so there's nothing to
 		// race on — skip the transaction/lock overhead entirely.
 		if req.Severity == nil {
-			c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes))
+			c, err := scanUpdatedCase(r.db.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes, actorID))
 			if errors.Is(err, pgx.ErrNoRows) {
 				return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
 			}
@@ -2121,7 +2176,7 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 				return err
 			}
 			var txErr error
-			c, txErr = scanUpdatedCase(tx.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes))
+			c, txErr = scanUpdatedCase(tx.QueryRow(ctx, updateCaseQuery, req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes, actorID))
 			if txErr != nil {
 				return txErr
 			}
@@ -2156,14 +2211,14 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest)
 		return c, previousSeverity, nil
 
 	default:
-		query, args, label, ok := caseLikeExtensionUpdate(workItemType, req, state, workState, resolutionCode, cause)
+		query, args, label, ok := caseLikeExtensionUpdate(workItemType, req, state, workState, resolutionCode, cause, actorID)
 		if !ok {
 			return domain.Case{}, nil, &apierror.ValidationError{Msg: fmt.Sprintf("unsupported work item type: %s", workItemType)}
 		}
 		// Same one-Ongoing-per-engineer rule as "case": ServiceNow keeps the
 		// work state of every case-like type in one field on one table.
 		if req.WorkState != nil && workState == "ONGOING" {
-			return r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause)
+			return r.updateCaseEnforcingOneOngoing(ctx, req, workItemType, state, severity, workState, resolutionCode, cause, actorID)
 		}
 		c, err := scanUpdatedCase(r.db.QueryRow(ctx, query, args...))
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -4055,11 +4110,11 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 // work item of any of those types, then runs the type's normal update in the
 // same transaction. An unassigned work item has no engineer to conflict with
 // and proceeds.
-func (r *caseRepo) updateCaseEnforcingOneOngoing(ctx context.Context, req domain.UpdateCaseRequest, workItemType, state, severity, workState, resolutionCode, cause string) (domain.Case, *domain.CaseSeverity, error) {
-	query, args, label := updateCaseQuery, []any{req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes}, "case"
+func (r *caseRepo) updateCaseEnforcingOneOngoing(ctx context.Context, req domain.UpdateCaseRequest, workItemType, state, severity, workState, resolutionCode, cause string, actorID *string) (domain.Case, *domain.CaseSeverity, error) {
+	query, args, label := updateCaseQuery, []any{req.ID, state, severity, workState, resolutionCode, cause, req.CloseNotes, actorID}, "case"
 	if workItemType != "CASE" {
 		var ok bool
-		query, args, label, ok = caseLikeExtensionUpdate(workItemType, req, state, workState, resolutionCode, cause)
+		query, args, label, ok = caseLikeExtensionUpdate(workItemType, req, state, workState, resolutionCode, cause, actorID)
 		if !ok {
 			return domain.Case{}, nil, &apierror.ValidationError{Msg: fmt.Sprintf("unsupported work item type: %s", workItemType)}
 		}
