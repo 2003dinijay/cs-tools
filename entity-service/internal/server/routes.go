@@ -1093,6 +1093,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// (what the call-escalation ladders start from) and takes work notes, with no ServiceNow behind it.
 		activeIncidentSvc = service.NewIncidentServiceWithPublisher(incidentRepo, userRepo, eventPublisher)
 	}
+	// Specialist handoffs on Postgres file their internal GitHub issue with
+	// the GitHub integration's client; without one they still hand off and
+	// report that no issue was filed.
+	if githubClient != nil {
+		activeIncidentSvc = service.WithHandoffIssueCreator(activeIncidentSvc, githubClient)
+	}
 	incidentHandler := handler.NewIncidentHandler(activeIncidentSvc)
 
 	problemRepo := repository.NewProblemRepository(repository.NewScoped(db))

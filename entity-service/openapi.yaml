@@ -8231,8 +8231,9 @@ paths:
   /incidents/{id}/specialist-handoffs:
     post:
       summary: >-
-        Hand an incident off to its specialist group (ServiceNow data source only). One
-        atomic call: moves the incident to the specialist group for its business service,
+        Hand an incident off to its specialist group. On the Postgres data sources the
+        handoff writes Postgres only (no ServiceNow call), mirroring ServiceNow's
+        "Escalate to Special Ops" UI action. One atomic call: moves the incident to the specialist group for its business service,
         clears the assignee, opens a runbook-gap task, and (by default) files an internal
         issue for the receiving team. Not routed through any case-escalation path -- this is
         a distinct contract sharing no vocabulary with it.

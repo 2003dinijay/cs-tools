@@ -5008,7 +5008,20 @@ of its own (unlike `incident.state`, which defaults to `'NEW'`), so
 `CreateProblem`'s portal path hardcodes it to `'NEW'::problem_state_enum`
 explicitly. `CreateConversation` followed later -- see above.
 
-**`UpdateProblem`/`UpdateIncident`/`HandOffIncidentToSpecialist` are also not
+**`HandOffIncidentToSpecialist` is implemented on Postgres** and writes
+Postgres only -- no ServiceNow call, in dual-write mode too.
+`incident_handoff_service.go` ports `IncidentHandoffUtils.handOff` (the
+"Escalate to Special Ops" UI action): eligibility as 409s, routing by
+service (`handoffRoutingByService`), and one transaction that moves
+`work_item.assignment_group_id`, clears the assignee, opens a
+portal-numbered `[Runbook Task]` and writes the reason JSON as a work note.
+The GitHub issue and the "Escalated to Special Ops team." note follow,
+best effort, through the GitHub integration's client
+(`WithHandoffIssueCreator`; without one the handoff still succeeds and
+reports `githubIssueError`). `IncidentView.SpecialistHandoff` is derived at
+read time from those notes and the task, as SN's `getHandoffSummary` does.
+
+**`UpdateProblem`/`UpdateIncident` are also not
 implemented**: `UpdateProblem.Transition` is validated
 server-side by ServiceNow's own workflow engine with no fixed, confirmed
 transition rule set to reimplement (see that field's own doc comment --
@@ -5018,13 +5031,7 @@ deliberately not a closed enum for exactly this reason);
 that do, and would need `comment`-table side effects for
 `AdditionalComments`/`WorkNotes` mirroring `caseService.UpdateCase`'s own
 comment-on-update behavior -- deferred as a unit rather than
-half-implemented; `HandOffIncidentToSpecialist` is an inherently
-ServiceNow-workflow-specific feature (moves the incident to a specialist
-group, opens a runbook-gap task, files a GitHub issue) with no
-assignment-group or handoff-tracking concept anywhere in this schema to
-derive an equivalent from. `IncidentView.SpecialistHandoff` is always `nil`
-on this data source for the same reason -- the correct "never handed off"
-representation per that field's own doc comment, not a gap.
+half-implemented.
 
 `IncidentView.WatchList`/`LinkedServiceRequests` are always empty slices on
 this data source (never populated) -- `work_item_watcher` could back the

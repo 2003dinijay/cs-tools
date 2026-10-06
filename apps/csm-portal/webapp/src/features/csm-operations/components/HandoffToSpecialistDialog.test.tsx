@@ -49,11 +49,10 @@ function baseResult(overrides: Partial<BeIncidentHandoffResult> = {}): BeInciden
 }
 
 describe("HandoffToSpecialistDialog — form", () => {
-  it("submits the mandatory reason code only when the team select is hidden", () => {
+  it("submits the reason code alone when no team is picked", () => {
     const onSubmit = vi.fn();
     render(
       <HandoffToSpecialistDialog
-        showTeamSelect={false}
         isSubmitting={false}
         result={null}
         onClose={() => {}}
@@ -61,7 +60,7 @@ describe("HandoffToSpecialistDialog — form", () => {
       />,
     );
 
-    expect(screen.queryByLabelText(/team \(applies to choreo only\)/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("combobox", { name: /escalation team \(applies to choreo only\)/i })).toBeInTheDocument();
 
     fireEvent.mouseDown(screen.getByRole("combobox", { name: /reason/i }));
     fireEvent.click(within(screen.getByRole("listbox")).getByText(/runbook doesn't solve the incident/i));
@@ -73,11 +72,10 @@ describe("HandoffToSpecialistDialog — form", () => {
     });
   });
 
-  it("shows the team select only when showTeamSelect is true, and includes the choice when submitted", () => {
+  it("always shows the team select, labelled as ServiceNow does, and includes the choice when submitted", () => {
     const onSubmit = vi.fn();
     render(
       <HandoffToSpecialistDialog
-        showTeamSelect
         isSubmitting={false}
         result={null}
         onClose={() => {}}
@@ -88,7 +86,7 @@ describe("HandoffToSpecialistDialog — form", () => {
     openSelect(/^reason$/i);
     fireEvent.click(screen.getByRole("option", { name: /runbook is not available/i }));
 
-    openSelect(/team \(applies to choreo only\)/i);
+    openSelect(/escalation team \(applies to choreo only\)/i);
     fireEvent.click(screen.getByRole("option", { name: /choreo apim team/i }));
 
     fireEvent.click(screen.getByRole("button", { name: /^escalate$/i }));
@@ -102,7 +100,6 @@ describe("HandoffToSpecialistDialog — form", () => {
   it("disables Escalate until a reason is chosen", () => {
     render(
       <HandoffToSpecialistDialog
-        showTeamSelect={false}
         isSubmitting={false}
         result={null}
         onClose={() => {}}
@@ -116,7 +113,6 @@ describe("HandoffToSpecialistDialog — form", () => {
   it("shows a clean success result without a warning when there's no githubIssueError", () => {
     render(
       <HandoffToSpecialistDialog
-        showTeamSelect={false}
         isSubmitting={false}
         result={baseResult()}
         onClose={() => {}}
@@ -132,7 +128,6 @@ describe("HandoffToSpecialistDialog — form", () => {
   it("surfaces a githubIssueError distinctly on an otherwise-successful handoff", () => {
     render(
       <HandoffToSpecialistDialog
-        showTeamSelect={false}
         isSubmitting={false}
         result={baseResult({ githubIssueError: "GitHub issue creation failed (401)" })}
         onClose={() => {}}

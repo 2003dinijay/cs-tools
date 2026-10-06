@@ -529,7 +529,6 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   // Choreo/Asgardeo-specific copy would have to — a heuristic, not a gate:
   // the select is purely a convenience, and submitting it for a non-Choreo
   // incident is harmless (the backend just ignores it).
-  const isChoreoService = /choreo/i.test(incident.service?.name ?? "");
   const hasLinks = !!(incident.parent || incident.changeRequest || incident.problem || incident.causedBy);
   const hasLinkedServiceRequests =
     !!incident.linkedServiceRequests && incident.linkedServiceRequests.length > 0;
@@ -1104,7 +1103,6 @@ export default function CsmIncidentDetailPage(): JSX.Element {
 
       {handoffOpen && (
         <HandoffToSpecialistDialog
-          showTeamSelect={isChoreoService}
           isSubmitting={handOffIncident.isPending}
           result={handoffResult}
           onClose={() => {

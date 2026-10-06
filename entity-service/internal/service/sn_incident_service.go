@@ -218,6 +218,24 @@ var validIncidentSpecialistHandoffEscalationTeam = map[domain.IncidentSpecialist
 	domain.IncidentSpecialistHandoffTeamChoreoAPIM:    true,
 }
 
+// validateHandOffRequest checks a handoff request's shape; both data
+// sources apply it before doing anything.
+func validateHandOffRequest(req domain.HandOffIncidentToSpecialistRequest) error {
+	if err := validateUUIDs("id", []string{req.IncidentID}); err != nil {
+		return err
+	}
+	if req.ReasonCode == "" {
+		return &apierror.ValidationError{Msg: "reasonCode is required"}
+	}
+	if !validIncidentSpecialistHandoffReasonCode[req.ReasonCode] {
+		return &apierror.ValidationError{Msg: "invalid reasonCode: " + string(req.ReasonCode)}
+	}
+	if req.EscalationTeam != nil && !validIncidentSpecialistHandoffEscalationTeam[*req.EscalationTeam] {
+		return &apierror.ValidationError{Msg: "invalid escalationTeam: " + string(*req.EscalationTeam)}
+	}
+	return nil
+}
+
 var validIncidentSortField = map[domain.IncidentSortField]bool{
 	domain.IncidentSortFieldCreatedOn: true,
 	domain.IncidentSortFieldUpdatedOn: true,
@@ -1933,17 +1951,8 @@ type snHandOffIncidentResponse struct {
 // POST /incidents/{id}/specialist-handoffs operation. Deliberately not routed through any
 // case-escalation code path: this is a distinct contract sharing no vocabulary with it.
 func (s *snIncidentService) HandOffIncidentToSpecialist(ctx context.Context, req domain.HandOffIncidentToSpecialistRequest) (domain.HandOffIncidentToSpecialistResponse, error) {
-	if err := validateUUIDs("id", []string{req.IncidentID}); err != nil {
+	if err := validateHandOffRequest(req); err != nil {
 		return domain.HandOffIncidentToSpecialistResponse{}, err
-	}
-	if req.ReasonCode == "" {
-		return domain.HandOffIncidentToSpecialistResponse{}, &apierror.ValidationError{Msg: "reasonCode is required"}
-	}
-	if !validIncidentSpecialistHandoffReasonCode[req.ReasonCode] {
-		return domain.HandOffIncidentToSpecialistResponse{}, &apierror.ValidationError{Msg: "invalid reasonCode: " + string(req.ReasonCode)}
-	}
-	if req.EscalationTeam != nil && !validIncidentSpecialistHandoffEscalationTeam[*req.EscalationTeam] {
-		return domain.HandOffIncidentToSpecialistResponse{}, &apierror.ValidationError{Msg: "invalid escalationTeam: " + string(*req.EscalationTeam)}
 	}
 
 	token := middleware.UserIDTokenFromContext(ctx)

@@ -47,12 +47,6 @@ const TEAM_OPTIONS: Array<{ value: BeHandoffEscalationTeam; label: string }> = [
 ];
 
 interface HandoffToSpecialistDialogProps {
-  /** Whether to show the (Choreo-only) escalation-team select — mirrors the
-   * ServiceNow modal, which labels it "(applies to Choreo only)" and shows
-   * it regardless of service, but a team choice only ever has an effect for
-   * Choreo incidents. Kept conditional here so an Asgardeo engineer isn't
-   * shown a control that does nothing for them. */
-  showTeamSelect: boolean;
   isSubmitting: boolean;
   /** Set once the mutation resolves with a result to show inline
    * (success, with or without a GitHub issue error) — `null` before submit
@@ -76,7 +70,6 @@ interface HandoffToSpecialistDialogProps {
  * on.
  */
 export default function HandoffToSpecialistDialog({
-  showTeamSelect,
   isSubmitting,
   result,
   onClose,
@@ -146,31 +139,33 @@ export default function HandoffToSpecialistDialog({
                 </Select>
               </FormControl>
 
-              {showTeamSelect && (
-                <FormControl fullWidth size="small" disabled={isSubmitting}>
-                  <InputLabel id="handoff-team-label" shrink>
-                    Team (applies to Choreo only)
-                  </InputLabel>
-                  <Select
-                    labelId="handoff-team-label"
-                    label="Team (applies to Choreo only)"
-                    value={escalationTeam}
-                    displayEmpty
-                    onChange={(e) => setEscalationTeam(e.target.value as BeHandoffEscalationTeam)}
-                  >
-                    <MenuItem value="">
-                      <Typography component="span" color="text.secondary">
-                        -- Select --
-                      </Typography>
+              {/* Shown for every incident, as ServiceNow's "Escalate to Special
+                  Ops Team" modal does; the choice only routes Choreo
+                  incidents, and the backend ignores it for any other
+                  service. */}
+              <FormControl fullWidth size="small" disabled={isSubmitting}>
+                <InputLabel id="handoff-team-label" shrink>
+                  Escalation Team (applies to Choreo only)
+                </InputLabel>
+                <Select
+                  labelId="handoff-team-label"
+                  label="Escalation Team (applies to Choreo only)"
+                  value={escalationTeam}
+                  displayEmpty
+                  onChange={(e) => setEscalationTeam(e.target.value as BeHandoffEscalationTeam)}
+                >
+                  <MenuItem value="">
+                    <Typography component="span" color="text.secondary">
+                      -- Select --
+                    </Typography>
+                  </MenuItem>
+                  {TEAM_OPTIONS.map((o) => (
+                    <MenuItem key={o.value} value={o.value}>
+                      {o.label}
                     </MenuItem>
-                    {TEAM_OPTIONS.map((o) => (
-                      <MenuItem key={o.value} value={o.value}>
-                        {o.label}
-                      </MenuItem>
-                    ))}
-                  </Select>
-                </FormControl>
-              )}
+                  ))}
+                </Select>
+              </FormControl>
             </>
           )}
         </Box>

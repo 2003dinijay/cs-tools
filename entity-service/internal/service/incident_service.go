@@ -267,6 +267,11 @@ type incidentService struct {
 	// target of its async ServiceNow mirror dispatch (see that method's own
 	// doc comment) once snWriteback below is set.
 	snMirror IncidentService
+	// handoffIssues files the GitHub issue a specialist handoff opens; nil
+	// when the GitHub integration is not configured, in which case a
+	// handoff still succeeds and reports that no issue was filed. Set with
+	// WithHandoffIssueCreator.
+	handoffIssues handoffIssueCreator
 	// snWriteback is nil in every mode except
 	// DATA_SOURCE=postgres-servicenow-dual-write, same convention as
 	// caseService's identical field -- see NewCaseServiceWithSNWriteback's
@@ -781,15 +786,4 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		Message:  "Incident updated successfully",
 		Incident: view,
 	}, nil
-}
-
-// HandOffIncidentToSpecialist is not supported for the PostgreSQL data
-// source: this is an inherently ServiceNow-workflow-specific feature (moves
-// the incident to a specialist group, opens a runbook-gap task, files a
-// GitHub issue) with no assignment-group or handoff-tracking concept
-// anywhere in this schema to derive an equivalent from.
-func (s *incidentService) HandOffIncidentToSpecialist(_ context.Context, _ domain.HandOffIncidentToSpecialistRequest) (domain.HandOffIncidentToSpecialistResponse, error) {
-	return domain.HandOffIncidentToSpecialistResponse{}, &apierror.ServiceUnavailableError{
-		Msg: "specialist handoff is not available on this data source: no assignment-group or handoff-tracking concept exists in this schema",
-	}
 }
