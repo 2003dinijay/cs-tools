@@ -31,7 +31,7 @@
 --   * The column is added WITH a gen_random_uuid() default, which Postgres evaluates once per
 --     existing row while rewriting the table: every row keeps its (change_request_id,
 --     deployment_id) pair and gets its own id, with no UPDATE. That matters because the table is
---     under FORCE ROW LEVEL SECURITY and has no UPDATE policy until migration 0195, so a plain
+--     under FORCE ROW LEVEL SECURITY and has no UPDATE policy until migration 0202, so a plain
 --     `UPDATE ... SET id = gen_random_uuid()` is a silent no-op for any role RLS applies to; the
 --     rewrite is not subject to row-level security at all. The default is then dropped: the
 --     sync's id has none ("expand_list always supplies a deterministic id").

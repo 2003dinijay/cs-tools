@@ -28,7 +28,7 @@ import (
 // 0136 migration), and the sync writes it the way it writes work_item_watcher:
 // INSERT ... ON CONFLICT (change_request_id, deployment_id) DO UPDATE. Migration
 // 0191 turned FORCE ROW LEVEL SECURITY on for it without an UPDATE policy, which
-// refuses that conflict branch for every caller; migration 0195 adds the
+// refuses that conflict branch for every caller; migration 0202 adds the
 // internal-only UPDATE policy. This is the behaviour the schema guard
 // (TestRLSSchemaIntegration_EveryProtectedTableHasAPolicyForEveryCommand) only
 // asserts structurally: an internal session (the sync connects with

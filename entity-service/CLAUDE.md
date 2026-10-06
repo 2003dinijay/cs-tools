@@ -3418,7 +3418,7 @@ LEVEL SECURITY` (project membership through `work_item.project_id`, like
 also csm-sync-service's own junction (its migration 0136, the surrogate-id shape),
 and the sync writes it with `INSERT … ON CONFLICT … DO UPDATE`, whose conflict
 branch an RLS table with no UPDATE policy refuses for everyone. Migration
-**0195** adds the internal-only UPDATE policy on it (the 0190 shape: no
+**0202** adds the internal-only UPDATE policy on it (the 0190 shape: no
 project-member branch, so a customer session is refused as before; no column,
 table or type changes). `change_request_deployed_product` is ours alone and stays
 without one: `rlsCommandsDeniedOnPurpose` records why. The first deployment (name order)
@@ -3718,7 +3718,7 @@ path).
   the PostgreSQL insert (`CreateChangeRequestFromServiceNow`, now normalising the window like the
   portal create) is in New, where nothing is locked.
 * *csm-sync-service is a separate service* (its repository is not in this checkout; what is known
-  is from the 0190 / 0195 migration headers and entity-service's own notes): it writes its tables
+  is from the 0190 / 0202 migration headers and entity-service's own notes): it writes its tables
   with plain SQL as an internal caller (`app.is_internal = true`) and **never goes through
   `PatchChangeRequest`, `validateCustomerGateEdits` or any validator here**, so none of the
   refusals can break it. It can move `project_id` or `state` of a change after New (an edit made
@@ -4097,7 +4097,7 @@ scans it once per request; 432 buffers at 25,000 contacts): there is no index on
 
 **Deliberately not done / follow-ups.** No column, table, type or policy was added; if
 database-level enforcement is wanted later it needs a policy-only migration numbered after
-`git pull` (0196 or later; upstream and this branch use up to 0195), a new session setting
+`git pull` (0203 or later; upstream and this branch use up to 0202), a new session setting
 `app.cr_strict_from` on every statement, and the same predicate as a function. The detail
 still returns `createdBy` (a staff email) to a customer. Mixed-identity staff on the
 customer portal see designated change requests only. The unlabeled-stage classification
