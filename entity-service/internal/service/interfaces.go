@@ -41,6 +41,10 @@ type UserService interface {
 	// is missing; a ValidationError when the token cannot be decoded; a
 	// NotFoundError when no user row matches the email.
 	GetMe(ctx context.Context) (domain.GetUserMeResponse, error)
+	// GetUsersByIDs returns every user matching the given ids. Not gated to
+	// any particular data source -- ids are this platform's own primary
+	// keys, so an id-based lookup works the same way regardless of source.
+	GetUsersByIDs(ctx context.Context, ids []string) (domain.GetUsersByIDsResponse, error)
 	// PatchMe updates mutable fields (today: just TimeZone) on the currently
 	// authenticated user, resolved the same way GetMe resolves its caller. A
 	// ValidationError is returned for a blank TimeZone.
@@ -59,6 +63,26 @@ type UserService interface {
 	// ServiceUnavailableError naming any requested role not seeded in the role
 	// table.
 	CreateUser(ctx context.Context, req domain.CreateUserRequest) (domain.User, error)
+}
+
+// UserCacheInvalidator clears a user's cached GET /users/{id} and
+// GET /users/me responses. Every writer of "user", user_role, account_contact
+// or project_contact rows calls it after its transaction commits, naming the
+// user by id, email, or both. It never fails: an invalidation that cannot
+// reach the cache is logged, and the entry expires after its TTL.
+type UserCacheInvalidator interface {
+	InvalidateUser(ctx context.Context, userID, email string)
+}
+
+// UserCache is the read-through store behind NewCachedUserService
+// (internal/cache.UserCache in production). A miss, including one caused by
+// an unreachable cache, reports false and the caller reads Postgres.
+type UserCache interface {
+	UserCacheInvalidator
+	GetUserDetail(ctx context.Context, id string) (domain.UserDetail, bool)
+	SetUserDetail(ctx context.Context, d domain.UserDetail)
+	GetMe(ctx context.Context, email string) (domain.GetUserMeResponse, bool)
+	SetMe(ctx context.Context, email string, me domain.GetUserMeResponse)
 }
 
 // SavedFilterViewService is the caller's own named list-filter bookmarks
@@ -647,6 +671,12 @@ type CaseService interface {
 	// access at all (a pure ServiceNow data source with no pgFallback
 	// configured), returns an empty slice and no error.
 	AccountDefaultWatcherEmails(ctx context.Context, projectID string) ([]string, error)
+	// ProjectOnboardingInfo returns projectID's own onboarding status and
+	// evaluation-account flag -- see CaseRepository.ProjectOnboardingInfo's
+	// own doc comment. A project with no linked account, or no Postgres
+	// access at all (a pure ServiceNow data source with no pgFallback
+	// configured), returns the zero values and no error.
+	ProjectOnboardingInfo(ctx context.Context, projectID string) (onboardingStatus string, isEvaluationAccount bool, err error)
 	// GetCaseEtaSharedOn returns work_item.eta_shared_on for caseID -- see
 	// CaseRepository.GetCaseEtaSharedOn's own doc comment. Lets the plain
 	// ServiceNow data source's own GetCaseByID (which has no Postgres row of
@@ -1082,9 +1112,10 @@ type IncidentService interface {
 
 	// UpdateIncident partially updates an existing incident. At least one field must be
 	// provided. A NotFoundError is returned if the incident does not exist.
-	// On DATA_SOURCE=postgres-servicenow-dual-write only WorkNotes and AdditionalComments
-	// are supported -- every other field is rejected with a ValidationError (see
-	// incidentService.UpdateIncident's own doc comment for why).
+	// On DATA_SOURCE=postgres-servicenow-dual-write only the state-transition fields
+	// (State, AssignedEngineerID, ResolutionCode, ResolutionNotes, ResolvedByID) and
+	// WorkNotes/AdditionalComments are supported -- every other field is rejected with
+	// a ValidationError (see incidentService.UpdateIncident's own doc comment).
 	UpdateIncident(ctx context.Context, req domain.UpdateIncidentRequest) (domain.UpdateIncidentResponse, error)
 
 	// SearchIncidentActivities returns a paginated activity feed for an incident.
@@ -1149,6 +1180,11 @@ type IncidentTaskService interface {
 	// GetIncidentTask returns the full detail of a single incident task by its UUID.
 	// A NotFoundError is returned if the incident task does not exist.
 	GetIncidentTask(ctx context.Context, id string) (domain.IncidentTaskDetail, error)
+
+	// UpdateIncidentTask changes an incident task's state and/or close notes
+	// and returns the updated detail. Postgres only: ServiceNow's
+	// IncidentTaskUtils has no update operation.
+	UpdateIncidentTask(ctx context.Context, req domain.UpdateIncidentTaskRequest) (domain.IncidentTaskDetail, error)
 }
 
 // ConversationService defines the operations available on the conversations entity.
@@ -1220,6 +1256,57 @@ type InstanceService interface {
 	// SearchInstanceUsageStats returns aggregated usage statistics over req's required
 	// date range. Same filter rules as SearchInstanceMetricsStats.
 	SearchInstanceUsageStats(ctx context.Context, req domain.InstanceUsageStatsRequest) (domain.InstanceUsageStatsResponse, error)
+}
+
+// KBArticleService defines the operations available on the kb_article entity.
+type KBArticleService interface {
+	// CreateKBArticle creates a new article in the draft state.
+	CreateKBArticle(ctx context.Context, req domain.CreateKBArticleRequest) (domain.CreateKBArticleResponse, error)
+	// GetKBArticle returns a single article by id.
+	GetKBArticle(ctx context.Context, id string) (domain.KBArticle, error)
+	// SearchKBArticles returns a paginated list of articles filtered by
+	// knowledge base, state, author, and title search query.
+	SearchKBArticles(ctx context.Context, req domain.SearchKBArticlesRequest) (domain.SearchKBArticlesResponse, error)
+	// UpdateKBArticleState transitions an article's state. Illegal transitions
+	// return a ValidationError.
+	UpdateKBArticleState(ctx context.Context, id string, req domain.UpdateKBArticleStateRequest) (domain.UpdateKBArticleStateResponse, error)
+	// UpdateKBArticleContent edits an existing draft's title/body.
+	UpdateKBArticleContent(ctx context.Context, id string, req domain.UpdateKBArticleContentRequest) (domain.KBArticle, error)
+	DeleteKBArticle(ctx context.Context, id string) error
+	ListKBArticleHistory(ctx context.Context, kbArticleID string) (domain.ListKBArticleHistoryResponse, error)
+}
+
+// KBManagerService defines the operations available on the kb_manager entity.
+type KBManagerUserService interface {
+	// SearchKBManagerUsers returns knowledge_base_manager_user rows
+	// matching the given filters. Called with both knowledgeBaseId and
+	// userId set, an empty result means "this user does not directly
+	// manage this knowledge base" (they may still have access via a
+	// group -- see KBManagerGroupService).
+	SearchKBManagerUsers(ctx context.Context, req domain.SearchKBManagerUsersRequest) (domain.SearchKBManagerUsersResponse, error)
+	// CreateKBManagerUser grants a user manager access to a knowledge base.
+	CreateKBManagerUser(ctx context.Context, req domain.CreateKBManagerUserRequest, createdBy string) (domain.KBManagerUser, error)
+	// DeleteKBManagerUser revokes a user's manager access to a knowledge base.
+	DeleteKBManagerUser(ctx context.Context, knowledgeBaseID, userID string) error
+}
+
+type KBManagerGroupService interface {
+	// SearchKBManagerGroups returns knowledge_base_manager_group rows
+	// matching the given filters.
+	SearchKBManagerGroups(ctx context.Context, req domain.SearchKBManagerGroupsRequest) (domain.SearchKBManagerGroupsResponse, error)
+	// CreateKBManagerGroup grants every member of a group manager access
+	// to a knowledge base.
+	CreateKBManagerGroup(ctx context.Context, req domain.CreateKBManagerGroupRequest, createdBy string) (domain.KBManagerGroup, error)
+	// DeleteKBManagerGroup revokes a group's manager access to a knowledge base.
+	DeleteKBManagerGroup(ctx context.Context, knowledgeBaseID, groupID string) error
+}
+
+// KnowledgeBaseService defines the operations available on the knowledge_base entity.
+type KnowledgeBaseService interface {
+	ListKnowledgeBases(ctx context.Context) (domain.ListKnowledgeBasesResponse, error)
+	CreateKnowledgeBase(ctx context.Context, req domain.CreateKnowledgeBaseRequest) (domain.KnowledgeBase, error)
+	UpdateKnowledgeBaseName(ctx context.Context, id string, req domain.UpdateKnowledgeBaseRequest) (domain.KnowledgeBase, error)
+	SetKnowledgeBaseActive(ctx context.Context, id string, req domain.UpdateKnowledgeBaseActiveRequest) (domain.KnowledgeBase, error)
 }
 
 // OutageService defines the operations available on the outages entity. All

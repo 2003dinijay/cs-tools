@@ -2232,6 +2232,12 @@ export interface BeDeployedProductCreatePayload {
   cores?: number;
   tps?: number;
   description?: string;
+  /**
+   * Opaque category code ("pdp" | "ms" | "ps" | "cl" | "pc", case-insensitive
+   * on write). Postgres-only -- never mirrored to ServiceNow. Omit to leave
+   * it unset.
+   */
+  category?: string;
 }
 
 export interface BeDeployedProductCreateResponse {
@@ -2259,6 +2265,14 @@ export interface BeDeployedProductDetailUpdatePayload {
    * per-entry endpoint.
    */
   updates?: BeProductUpdate[] | null;
+  /**
+   * Opaque category code ("pdp" | "ms" | "ps" | "cl" | "pc", case-insensitive
+   * on write) -- unlike every other field on this payload, this one is
+   * set-only: the BE has no way to clear it back to unset once set (the
+   * underlying column is COALESCEd, not overwritten, on this field), so
+   * `null` is not an accepted value here. Omit to leave it unchanged.
+   */
+  category?: string;
   active?: never;
 }
 
@@ -2657,6 +2671,17 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
   testPlan?: string | null;
   hasCustomerApproved?: boolean;
   hasCustomerReviewed?: boolean;
+  /**
+   * The two ServiceNow-style creation checkboxes. `customerApprovalRequired`
+   * adds a `customer_approval` step after internal (CAB/ECAB/Standard)
+   * approval and before `scheduled`; `customerReviewRequired` adds a
+   * `customer_review` step after `review` and before `closed`. Distinct from
+   * `hasCustomerApproved` / `hasCustomerReviewed`, which are the customer's
+   * confirmation outcome. Optional so a response from a backend that
+   * predates them still type-checks; absent is treated as `false`.
+   */
+  customerApprovalRequired?: boolean;
+  customerReviewRequired?: boolean;
   approvedBy?: BeEntityRef | null;
   approvedOn?: string | null;
   /**
@@ -2727,6 +2752,10 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
 
 /** An approval stage seen on a change request, e.g. Assess, Authorize. */
 export type BeChangeRequestApprovalStage = "Assess" | "Authorize" | "Customer Approval";
+// Stage names are an open, backend-owned string (`BeChangeRequestApproval.stage`):
+// beyond the above, the Peer / CAB / ECAB stages may arrive as "Peer Approval",
+// "CAB Approval", "ECAB Approval" or "Emergency CAB". Labelled by
+// `approvalStageLabel` in `changeRequests.ts`.
 
 /** Who a change-request approval stage is assigned to. */
 export type BeChangeRequestApproverType = "STATIC_GROUP" | "DYNAMIC_CONTACT";
@@ -2745,6 +2774,14 @@ export interface BeChangeRequestApprover {
   createdOn?: string | null;
   respondedOn?: string | null;
   comments?: string | null;
+  /**
+   * Set by the backend (Postgres source): true only on the caller's own
+   * REQUESTED row, and only when they may decide it (not the creator, not an
+   * SRE on the peer stage). `false` makes the UI disable Approve/Reject for
+   * that row; absent (ServiceNow source / older backend) means "unknown", and
+   * the UI falls back to its own creator check plus the backend's 403.
+   */
+  canDecide?: boolean;
 }
 
 /** One approval stage on a change request, with its individual approvers. */
@@ -2800,7 +2837,9 @@ export interface BeCreateChangeRequestPayload {
   subject: string;
   priority?: BeChangeRequestPriority;
   impact?: BeChangeRequestImpact;
-  type?: BeChangeRequestType;
+  /** Required: one of "normal" | "standard" | "emergency" (the create form
+   * offers exactly these three). Drives the approval flow server-side. */
+  type: BeChangeRequestType;
   state?: BeChangeRequestState;
   groupId?: string;
   assignedEngineerId?: string;
@@ -2817,6 +2856,12 @@ export interface BeCreateChangeRequestPayload {
   workNote?: string;
   /** "Implementation Plan visible to customers" in this portal's UI. */
   isPlanningVisibleToCustomers?: boolean;
+  /** "Customer Approval" checkbox: adds a customer approval step after
+   * internal approval, before scheduling. The create form always sends it. */
+  customerApprovalRequired?: boolean;
+  /** "Customer Review" checkbox: adds a customer review step after Review,
+   * before closing. The create form always sends it. */
+  customerReviewRequired?: boolean;
 }
 
 /** `POST /change-requests` response — the created identifiers. */
@@ -3052,6 +3097,12 @@ export interface BePatchChangeRequestPayload {
   requestedById?: string;
   /** "Implementation Plan visible to customers" in this portal's UI. */
   isPlanningVisibleToCustomers?: boolean;
+  /** Customer Approval checkbox. The backend refuses (400) a change once the
+   * CR has reached `scheduled` or later, or is in `customer_approval`. */
+  customerApprovalRequired?: boolean;
+  /** Customer Review checkbox. The backend refuses (400) a change once the CR
+   * has reached `customer_review`, `closed`, `rollback` or `canceled`. */
+  customerReviewRequired?: boolean;
 }
 
 /** `PATCH /change-requests/{id}` response — the touched identifiers. */
@@ -3272,7 +3323,8 @@ export interface BeCreateIncidentPayload {
   contactType?: BeIncidentContactType;
   impact: BeIncidentImpact;
   urgency: BeIncidentUrgency;
-  assignmentGroupId?: string;
+  // No assignmentGroupId: the backend sets the group from `serviceId`'s
+  // support group, and refuses a create that sends one.
   assignedEngineerId?: string;
   subject: string;
   watchList?: string[];
@@ -3639,11 +3691,8 @@ export interface BePatchProblemResponse {
 }
 
 /**
- * List-item shape for `POST /incident-tasks/search`. No dedicated detail
- * page exists for incident tasks in this app (unlike problem/incident), so
- * there is no separate `BeIncidentTaskDetail` type yet — `description`,
- * `priority`, `openedOn`, `closedOn` are on the backend's own
- * `GET /incident-tasks/{id}` response but have no frontend consumer today.
+ * List-item shape for `POST /incident-tasks/search`. The detail page reads
+ * `GET /incident-tasks/{id}` instead (`BeIncidentTaskDetail`).
  * `stateLabel` is a pre-humanized display string the data source already
  * resolves server-side — prefer it over trying to humanize `state` (a raw,
  * data-source-specific integer with no stable domain enum here; see the
@@ -3663,6 +3712,43 @@ export interface BeIncidentTaskSearchView {
   incident?: BeCaseNumberRef | null;
   assignmentGroup?: BeEntityRef | null;
   assignedTo?: BeEntityRef | null;
+}
+
+/** `GET /incident-tasks/{id}` response: the search view plus the fields only
+ * the detail page shows. */
+export interface BeIncidentTaskDetail extends BeIncidentTaskSearchView {
+  description?: string | null;
+  /** CRITICAL | HIGH | MODERATE | LOW | PLANNING on Postgres. */
+  priority?: string | null;
+  openedOn?: string | null;
+  closedOn?: string | null;
+  closeNotes?: string | null;
+}
+
+/** incident_task_state_enum labels, as Postgres returns them in `state`. */
+export type BeIncidentTaskState =
+  | "PENDING"
+  | "OPEN"
+  | "WORK_IN_PROGRESS"
+  | "CLOSED_COMPLETE"
+  | "CLOSED_INCOMPLETE"
+  | "CLOSED_SKIPPED";
+
+/** `PATCH /incident-tasks/{id}` body; at least one field. Returns `BeIncidentTaskDetail`. */
+export interface BeUpdateIncidentTaskPayload {
+  state?: BeIncidentTaskState;
+  closeNotes?: string;
+}
+
+/** `POST /incident-tasks/search` body. The only per-incident filter is the
+ * generic `{ field: "incidentId", op: "in" }` entry; there is no flat key. */
+export interface BeIncidentTaskSearchPayload {
+  filters?: {
+    searchQuery?: string;
+    number?: string;
+    filters?: { field: "state" | "assignmentGroupId" | "incidentId"; op: "in"; values: string[] }[];
+  };
+  pagination: { offset: number; limit: number };
 }
 
 /** Note: mirrors the problem/change-request/incident search responses — no `hasMore`. */

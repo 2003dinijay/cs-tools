@@ -51,6 +51,7 @@ import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 import { BackendApiError } from "@api/backend/client";
 import ExportPdfButton from "@components/ExportPdfButton";
+import { useCurrentUser } from "@context/current-user/CurrentUserContext";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import { useEngineerDisplayName } from "@hooks/useEngineerDisplayName";
@@ -75,6 +76,7 @@ import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
 import {
   buildCloneChangeRequestNavState,
   changeRequestBlockingReason,
+  isChangeRequestCreator,
   changeRequestCommentGateReason,
   changeRequestTransitionRequiresReason,
   changeRequestImpactColor,
@@ -120,7 +122,7 @@ function backendErrorMessage(err: unknown, fallback: string): string {
  * (`{requestApproval: true}`), but that was backwards relative to the real
  * ServiceNow process (confirmed against the live instance): it's a direct,
  * ungated state change, exactly like every other forward transition in this
- * bar ("Schedule", "Mark implemented", …) — there is no approval gate on this
+ * bar ("Mark implemented", …) — there is no approval gate on this
  * move at all. `requestApproval` is a separate, unrelated bookkeeping flag on
  * the same PATCH endpoint that this action bar no longer has any reason to
  * set.
@@ -273,6 +275,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   // fetching twice.
   const { data: approvalsData } = useGetChangeRequestApprovals(id);
   const { showError } = useErrorBanner();
+  const { user } = useCurrentUser();
   const patchCr = usePatchChangeRequest();
   const [editOpen, setEditOpen] = useState(false);
   // Kept in the URL (`?tab=`), not local state, so a shared/bookmarked link
@@ -415,6 +418,9 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   }
 
   const cr = data;
+  // The creator can't approve/reject any stage (backend-enforced); they can
+  // still cancel, which the action bar offers via `legalNextStates` as usual.
+  const isCreator = isChangeRequestCreator(cr, user);
 
   const handleExportChangeRequestPdf = async (): Promise<void> => {
     try {
@@ -432,7 +438,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   const blockingReason =
     cr.state === "closed" || cr.state === "canceled" || cr.state === "rollback"
       ? null
-      : changeRequestBlockingReason(approvalsData?.approvals);
+      : changeRequestBlockingReason(approvalsData?.approvals, cr.state);
   // A transition is in flight whenever either half of a destructive
   // transition (the reason comment, then the patch) or a plain patch is
   // running, so the bar stays disabled across both and a double-click can't
@@ -608,7 +614,11 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
             )}
           </Box>
           <Typography variant="h5">{cr.subject || "Change request"}</Typography>
-          <ChangeRequestLifecycleStepper state={cr.state} />
+          <ChangeRequestLifecycleStepper
+            state={cr.state}
+            customerApprovalRequired={cr.customerApprovalRequired}
+            customerReviewRequired={cr.customerReviewRequired}
+          />
         </Box>
         <Box sx={{ flexShrink: 0, alignSelf: { xs: "stretch", md: "flex-start" } }}>
           <Box className="csm-print-hide" sx={{ display: "flex", alignItems: "center", gap: 1 }}>
@@ -752,7 +762,8 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
               }}
             >
               <Typography variant="body2" color="text.secondary">
-                What the customer has confirmed on this change.
+                Whether this change requires customer approval and review, and what the
+                customer has confirmed on it.
               </Typography>
               <Box
                 sx={{
@@ -765,6 +776,12 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
                   },
                 }}
               >
+                <MetaCell label="Customer approval required">
+                  <YesNo value={cr.customerApprovalRequired} />
+                </MetaCell>
+                <MetaCell label="Customer review required">
+                  <YesNo value={cr.customerReviewRequired} />
+                </MetaCell>
                 <MetaCell label="Customer approved"><YesNo value={cr.hasCustomerApproved} /></MetaCell>
                 <MetaCell label="Customer reviewed"><YesNo value={cr.hasCustomerReviewed} /></MetaCell>
                 <MetaCell label="Approved by"><RefText value={cr.approvedBy} /></MetaCell>
@@ -783,7 +800,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
             >
               Internal approval workflow
             </Typography>
-            <ChangeRequestApprovals id={cr.id} />
+            <ChangeRequestApprovals id={cr.id} isCreator={isCreator} />
           </Box>
         </Box>
       )}

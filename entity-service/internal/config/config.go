@@ -178,9 +178,9 @@ type Config struct {
 	// CSMMigrationCustomerEngagementIngestEnabled registers POST /customer-engagements/allocation-events
 	// (CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED); off, the route is not registered.
 	CSMMigrationCustomerEngagementIngestEnabled bool
-	// CustomerEngagementTypeIDs maps an engagement type (FIREFIGHTING, CONSULTANCY, QSP, TRAINING,
-	// ARCHITECTURE_REVIEW) to its ServiceNow sys_id, from CUSTOMER_ENGAGEMENT_<TYPE>_TYPE_ID; unset skips.
-	CustomerEngagementTypeIDs map[string]string
+	// CustomerEngagementFirefightingTypeID is the Firefighting type's ServiceNow sys_id
+	// (CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID); unset skips creating firefighting engagements.
+	CustomerEngagementFirefightingTypeID string
 	// GithubIntegrationEnabled gates the GitHub change-request sync: the
 	// webhook endpoint and the client that answers it.
 	//
@@ -245,6 +245,12 @@ type Config struct {
 	// (EVENT_HUB_BROKER + EVENT_PUBLISHING_ENABLED) and a database; the
 	// recipient lists below are what actually switch each email on.
 	OutageEventHubTopic string
+	// SREEventHubTopic, when set, is the ONE topic both the change-request
+	// notices and the outage emails publish to (sre-events), overriding
+	// CREventHubTopic and OutageEventHubTopic. csm-notification-service routes
+	// them by event type, as it already does on every topic. Empty keeps the
+	// two separate topics exactly as before.
+	SREEventHubTopic string
 	// OutageNoticePollInterval is the drainer's FALLBACK poll (default 60s).
 	// The emails normally go out about a second after an outage changes: the
 	// drainer LISTENs for migration 0186's NOTIFY. This interval only catches
@@ -481,6 +487,27 @@ type Config struct {
 	EscalationEL4CCOGroupID            string
 	EscalationEL4CROGroupID            string
 	EscalationEL5CEOGroupID            string
+
+	// RedisURL/RedisAddr/RedisPassword configure the optional user cache in
+	// front of GET /users/{id} and GET /users/me (internal/cache), with the
+	// same convention as integrations/csm-notification-service: RedisURL is a
+	// rediss://:<password>@<host>:<port> connection string for a managed,
+	// TLS-only Redis (Azure Managed Redis) and takes priority; RedisAddr/
+	// RedisPassword are the plain, non-TLS pair for a local Redis. Neither set
+	// means no cache: every read goes to Postgres, as before.
+	//
+	// The client is a plain redis.NewClient, so the target must be a
+	// non-clustered Redis or one under the "Enterprise" clustering policy, not
+	// "OSS Cluster".
+	RedisURL      string
+	RedisAddr     string
+	RedisPassword string
+	// UserCacheTTL bounds how long a cached user survives without an
+	// invalidation (USER_CACHE_TTL, default 10m). Every writer of user, role
+	// and membership data invalidates the affected user after it commits, so
+	// this is the backstop for a missed invalidation, not the main freshness
+	// mechanism.
+	UserCacheTTL time.Duration
 }
 
 // Load reads configuration from environment variables and returns a populated
@@ -526,6 +553,7 @@ func Load() *Config {
 		ProjectEventHubTopic:                          getEnvOrDefault("PROJECT_EVENT_HUB_TOPIC", "project-events"),
 		CRNoticePollInterval:                          envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
 		OutageEventHubTopic:                           getEnvOrDefault("OUTAGE_EVENT_HUB_TOPIC", "outage-events"),
+		SREEventHubTopic:                              strings.TrimSpace(os.Getenv("SRE_EVENT_HUB_TOPIC")),
 		OutageNoticePollInterval:                      envDuration("OUTAGE_NOTICE_POLL_INTERVAL", 60*time.Second),
 		OutageNotificationRecipients:                  splitComma(os.Getenv("OUTAGE_NOTIFICATION_RECIPIENTS")),
 		OutageCommunicationRecipients:                 splitComma(os.Getenv("OUTAGE_COMMUNICATION_RECIPIENTS")),
@@ -577,13 +605,19 @@ func Load() *Config {
 	cfg.CSMMigrationSalesforceProjectInsertEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED") == "true"
 	cfg.CSMMigrationSalesforcePartnerIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED") == "true"
 	cfg.CSMMigrationCustomerEngagementIngestEnabled = os.Getenv("CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED") == "true"
-	cfg.CustomerEngagementTypeIDs = map[string]string{}
-	for _, t := range CustomerEngagementTypes {
-		if v := strings.TrimSpace(os.Getenv("CUSTOMER_ENGAGEMENT_" + t + "_TYPE_ID")); v != "" {
-			cfg.CustomerEngagementTypeIDs[t] = v
-		}
-	}
+	cfg.CustomerEngagementFirefightingTypeID = strings.TrimSpace(os.Getenv("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID"))
+	cfg.RedisURL = strings.TrimSpace(os.Getenv("REDIS_URL"))
+	cfg.RedisAddr = strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	cfg.RedisPassword = os.Getenv("REDIS_PASSWORD")
+	cfg.UserCacheTTL = envDuration("USER_CACHE_TTL", 10*time.Minute)
+	cfg.applySREEventHubTopic()
 	return cfg
+}
+
+// HasRedis reports whether a Redis connection is configured, which turns on
+// the user cache. Either REDIS_URL or REDIS_ADDR is enough.
+func (c *Config) HasRedis() bool {
+	return c.RedisURL != "" || c.RedisAddr != ""
 }
 
 // ParseInternalClientIDs parses a comma-separated client id list (M2M_CLIENT_IDS)
@@ -814,17 +848,19 @@ func (c *Config) Validate() error {
 			return fmt.Errorf("%s %q is not a valid UUID", envVar, value)
 		}
 	}
-	for t, v := range c.CustomerEngagementTypeIDs {
-		if !isSysID(v) {
-			return fmt.Errorf("CUSTOMER_ENGAGEMENT_%s_TYPE_ID must be a 32-character hex sys_id", t)
+	if v := c.CustomerEngagementFirefightingTypeID; v != "" && !isSysID(v) {
+		return fmt.Errorf("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID must be a 32-character hex sys_id")
+	}
+	// The URL carries the Redis password, so neither it nor url.Parse's own
+	// error (which quotes its input) may appear in this message.
+	if c.RedisURL != "" {
+		u, err := url.Parse(c.RedisURL)
+		if err != nil || (u.Scheme != "redis" && u.Scheme != "rediss") || u.Host == "" {
+			return fmt.Errorf("REDIS_URL must be a redis:// or rediss:// connection string with a host")
 		}
 	}
 	return nil
 }
-
-// CustomerEngagementTypes are the engagement types an allocation event can create; each
-// reads its sys_id from CUSTOMER_ENGAGEMENT_<TYPE>_TYPE_ID.
-var CustomerEngagementTypes = []string{"FIREFIGHTING", "CONSULTANCY", "QSP", "TRAINING", "ARCHITECTURE_REVIEW"}
 
 // isSysID reports whether v is a 32-character lowercase hex ServiceNow sys_id.
 func isSysID(v string) bool {
@@ -980,4 +1016,15 @@ func envDurationOrOff(key string, def time.Duration) time.Duration {
 		return 0
 	}
 	return d
+}
+
+// applySREEventHubTopic points both operations publishers at SRE_EVENT_HUB_TOPIC
+// when it is set. Done once here so every reader of CREventHubTopic and
+// OutageEventHubTopic -- the publishers and their startup log lines -- agrees.
+func (c *Config) applySREEventHubTopic() {
+	if c.SREEventHubTopic == "" {
+		return
+	}
+	c.CREventHubTopic = c.SREEventHubTopic
+	c.OutageEventHubTopic = c.SREEventHubTopic
 }

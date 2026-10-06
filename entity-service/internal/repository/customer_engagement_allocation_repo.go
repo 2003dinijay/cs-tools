@@ -47,9 +47,6 @@ type AllocationEventStore interface {
 	FindUserByEmailOrUserName(ctx context.Context, email string) (*string, error)
 	// InsertEngagement inserts unless engagement_id exists; returns the id and whether it inserted.
 	InsertEngagement(ctx context.Context, e domain.NewCustomerEngagement) (id string, created bool, err error)
-	// SetEngagementIDIfNull sets engagement_id on an engagement found by line item, when it has none;
-	// it reports whether a row was updated.
-	SetEngagementIDIfNull(ctx context.Context, id, engagementID string) (bool, error)
 	// UpdateAllocationResource updates the (engagement, allocation_id) row; nil when there is none.
 	UpdateAllocationResource(ctx context.Context, f domain.AllocationResourceFields) (*string, error)
 	// UpsertAllocationResource inserts the row, or updates it if a racing insert won.
@@ -157,27 +154,19 @@ func (s *allocationEventStore) FindUserByEmailOrUserName(ctx context.Context, em
 	return optionalID(s.q.QueryRow(ctx, findUserByEmailOrUserNameQuery, email), "find user by email")
 }
 
-// line_item_id_ref / opportunity_id hold sys_id-form refs (row uuid without dashes), as csm-sync writes them.
 const insertEngagementQuery = `
-	WITH li AS (
-		SELECT sop.id, sop.opportunity_id FROM sf_opportunity_product sop
-		WHERE $11::text IS NOT NULL AND left(sop.line_item_sf_id, 15) = left($11, 15)
-		ORDER BY (sop.opportunity_id IS NOT NULL) DESC, sop.created_on, sop.id
-		LIMIT 1)
 	INSERT INTO customer_engagement (
 		id, created_on, updated_on, created_by, updated_by, name, engagement_id, engagement_code,
-		state, delivery_mode, is_paid, account_id, engagement_type_id, planned_start_date, planned_end_date,
-		line_item_id, line_item_id_ref, opportunity_id)
-	SELECT gen_random_uuid(), now(), now(), $1, $1, $2, $3, $4,
-		'NEW', $5::customer_engagement_delivery_mode_enum, $6, $7::uuid, $8, $9::date, $10::date,
-		$11, (SELECT replace(li.id::text, '-', '') FROM li), (SELECT replace(li.opportunity_id::text, '-', '') FROM li)
+		state, delivery_mode, is_paid, account_id, engagement_type_id, planned_start_date, planned_end_date)
+	VALUES (gen_random_uuid(), now(), now(), $1, $1, $2, $3, $4,
+		'NEW', $5::customer_engagement_delivery_mode_enum, $6, $7::uuid, $8, $9::date, $10::date)
 	ON CONFLICT (engagement_id) WHERE engagement_id IS NOT NULL DO NOTHING
 	RETURNING id::text`
 
 func (s *allocationEventStore) InsertEngagement(ctx context.Context, e domain.NewCustomerEngagement) (string, bool, error) {
 	id, err := optionalID(s.q.QueryRow(ctx, insertEngagementQuery, allocationSyncActor, e.Name, e.EngagementID,
 		e.EngagementCode, e.DeliveryMode, e.IsPaid, e.AccountID, e.EngagementTypeID,
-		e.PlannedStartDate, e.PlannedEndDate, e.LineItemSfID), "insert engagement")
+		e.PlannedStartDate, e.PlannedEndDate), "insert engagement")
 	if err != nil {
 		return "", false, err
 	}
@@ -193,20 +182,6 @@ func (s *allocationEventStore) InsertEngagement(ctx context.Context, e domain.Ne
 		return "", false, fmt.Errorf("insert engagement: conflict on %q but no row found", e.EngagementID)
 	}
 	return *existing, false, nil
-}
-
-// The NOT EXISTS keeps the unique engagement_id index from failing the event.
-const setEngagementIDIfNullQuery = `
-	UPDATE customer_engagement SET engagement_id = $2, updated_on = now(), updated_by = $3
-	WHERE id = $1::uuid AND engagement_id IS NULL
-	  AND NOT EXISTS (SELECT 1 FROM customer_engagement o WHERE o.engagement_id = $2)`
-
-func (s *allocationEventStore) SetEngagementIDIfNull(ctx context.Context, id, engagementID string) (bool, error) {
-	tag, err := s.q.Exec(ctx, setEngagementIDIfNullQuery, id, engagementID, allocationSyncActor)
-	if err != nil {
-		return false, fmt.Errorf("set engagement_id: %w", err)
-	}
-	return tag.RowsAffected() > 0, nil
 }
 
 // COALESCE keeps the stored state when the event's clearance status has no enum value.

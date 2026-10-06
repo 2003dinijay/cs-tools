@@ -1,23 +1,21 @@
 # Internal API users
 
-`internal/auth` provides PBKDF2-hashed (10000 iterations, random salt) service-account credentials backed by the `alertintegration.integration_users` Cassandra table, plus an `auth.RequireAuth` middleware. It is not currently wired into any route: `/alertz` is reachable via a project-level exposure (gateway/network scoping) rather than a per-caller secret, so no route in this service enforces it today. Use `auth.RequireAuth` if a future endpoint needs per-caller authentication.
+`internal/auth` provides PBKDF2-hashed (10000 iterations, random salt) service-account credentials backed by the `integration_users` PostgreSQL table, plus an `auth.RequireAuth` middleware. `cmd/server` wraps `POST /alertz` with `auth.RequireAuth`, so every wake request needs an `integration_users` credential; provision one here and set it on sre-alert-ingestion-service as `ALERT_CORE_WAKE_USERNAME` / `ALERT_CORE_WAKE_SECRET`, otherwise each wake gets a 401 and alerts are only picked up by the `poll.interval` backstop.
 
-Secrets are never stored in plaintext; only the PBKDF2 hash and salt live in Cassandra. Each row also tracks who provisioned it, when it was last modified, when its secret was last rotated, and an optional expiry, so accounts behave closer to real identity records rather than a bare credential pair. There's no admin API or startup seeding, so accounts are managed one at a time with `cmd/user`, run against the same Cassandra instance and `CASSANDRA_*` env vars the server itself uses.
+Neither service queries `integration_users` per request. Each keeps an in-memory copy and reloads it every `postgres.auth_refresh_interval` (30s by default), so a user you create, disable, enable or rotate here takes effect within that interval. If reloads keep failing, the last good copy is used for up to `postgres.auth_max_stale` (15m), after which requests get 503 until a reload succeeds.
 
-## Upgrading from the old schema
-
-If your local/dev Cassandra already has an `integration_users` table from before this change, drop and recreate it from `schema.cql` rather than trying to `ALTER TABLE` it in by hand; the new columns (`id`, `created_by`, `updated_at`, `secret_rotated_at`, `last_used_at`, `expires_at`) aren't backfilled. This has no practical impact today since the only row anyone has created so far (`webhook-integration-user`) isn't used by any route yet.
+Secrets are never stored in plaintext; only the PBKDF2 hash and salt live in PostgreSQL. Each row also tracks who provisioned it, when it was last modified, and when its secret was last rotated, so accounts behave closer to real identity records rather than a bare credential pair. There's no admin API or startup seeding, so accounts are managed one at a time with `cmd/user`, run against the same PostgreSQL database and `PG*` env vars the server itself uses.
 
 ## cmd/user
 
 ```bash
-go run ./cmd/user create -username <name> [-secret <value>] [-created-by <who>] [-ttl <duration>] [-clear-expiry]
+go run ./cmd/user create -username <name> [-secret <value>] [-created-by <who>]
 go run ./cmd/user list [-username <name>]                    # summary table, or one user's full detail
 go run ./cmd/user enable -username <name>                    # re-enable a disabled user
 go run ./cmd/user disable -username <name>                   # disable a user
 ```
 
-Load `CASSANDRA_*` from `.env` first (it's gitignored):
+Load `PG*` from `.env` first (it's gitignored):
 
 ```bash
 set -a && source .env && set +a
@@ -40,13 +38,7 @@ Copy it into your secrets manager immediately; it is not recoverable afterwards,
 
 By default `created_by` is your `$USER` env var (falling back to `"unknown"`); pass `-created-by <who>` to set it explicitly, e.g. for an automated pipeline.
 
-## Setting a secret expiry
-
-```bash
-go run ./cmd/user create -username webhook-integration-user -ttl 4320h   # ~180 days
-```
-
-`auth.RequireAuth` rejects an expired secret the same way it rejects a wrong one: a generic 401, logged server-side as "secret expired". Omit `-ttl` for a secret that never expires (the default). To remove an expiry you previously set, pass `-clear-expiry` on the next `create`/rotate. `-ttl` and `-clear-expiry` are mutually exclusive.
+Users never expire: a user stays valid until it is disabled or its secret is rotated.
 
 ## Setting a specific secret
 
@@ -58,7 +50,7 @@ Prefer reading the value from a file or env var (e.g. `-secret "$(cat secret.txt
 
 ## Rotating a secret
 
-Re-running `create` for the same `-username` overwrites that row (upsert), but preserves its identity: `id`, `created_at`, and `created_by` stay exactly as they were (`created_by` only changes if you explicitly pass `-created-by` again), and any existing expiry is preserved unless you pass `-ttl` or `-clear-expiry`. Only `secret_hash`, `salt`, `secret_rotated_at`, and `updated_at` change. To rotate: generate or pick a new secret, re-run the command, then update the caller's stored credential to match. The old secret stops working the moment the row is overwritten, so update the caller first if a brief outage during rotation isn't acceptable.
+Re-running `create` for the same `-username` overwrites that row (upsert), but preserves its identity: `id`, `created_at`, and `created_by` stay exactly as they were (`created_by` only changes if you explicitly pass `-created-by` again). Only `secret_hash`, `salt`, `secret_rotated_at`, and `updated_at` change. To rotate: generate or pick a new secret, re-run the command, then update the caller's stored credential to match. Both services pick the new secret up at their next reload (within `postgres.auth_refresh_interval`, 30s). Until then the old secret still works and the new one doesn't, so update the caller about 30s after rotating, and expect a few 401s if it switches earlier.
 
 ## Listing users
 
@@ -67,8 +59,8 @@ go run ./cmd/user list
 ```
 
 ```
-USERNAME                       ENABLED  CREATED_BY           EXPIRES_AT
-webhook-integration-user       true     thevindu             -
+USERNAME                       ENABLED  CREATED_BY
+webhook-integration-user       true     thevindu
 ```
 
 For full detail on one user (including `id`, `updated_at`, `secret_rotated_at`, and `last_used_at`):
@@ -87,10 +79,9 @@ created_by:         thevindu
 updated_at:         2026-09-29T10:00:00Z
 secret_rotated_at:  2026-09-29T10:00:00Z
 last_used_at:       -
-expires_at:         -
 ```
 
-`last_used_at` is reserved for a future `RequireAuth` wiring and is always `-` (unset) today; nothing currently writes to it. Only metadata is shown in either view; `secret_hash`/`salt` are never printed.
+`last_used_at` is not updated by `RequireAuth` on `/alertz` and stays `-` (unset); nothing currently writes to it. Only metadata is shown in either view; `secret_hash`/`salt` are never printed.
 
 ## Enabling / disabling a user
 
@@ -99,36 +90,35 @@ go run ./cmd/user disable -username webhook-integration-user
 go run ./cmd/user enable -username webhook-integration-user
 ```
 
-`auth.RequireAuth` rejects any request for a disabled user with a generic 401. Disabling keeps the row (and its hash) intact, so re-enabling doesn't require issuing a new secret. `updated_at` is bumped either way.
+`auth.RequireAuth` rejects any request for a disabled user with a generic 401, from the next reload of `integration_users` (within 30s). Disabling keeps the row (and its hash) intact, so re-enabling doesn't require issuing a new secret. `updated_at` is bumped either way.
 
 ## Authenticating
 
-Once a route is wrapped with `auth.RequireAuth`, callers can authenticate with either header form:
+Callers of `POST /alertz` (the route wrapped with `auth.RequireAuth`) can authenticate with either header form:
 
 ```bash
 # Bearer, base64("username:secret")
 TOKEN=$(printf '%s:%s' webhook-integration-user '<secret>' | base64 | tr -d '\n')
-curl -X POST https://<host>/<protected-route> -H "Authorization: Bearer $TOKEN"
+curl -X POST https://<host>/alertz -H "Authorization: Bearer $TOKEN"
 
 # Basic, via curl's -u
-curl -X POST https://<host>/<protected-route> -u webhook-integration-user:<secret>
+curl -X POST https://<host>/alertz -u webhook-integration-user:<secret>
 ```
 
 ## Schema
 
 ```sql
-CREATE TABLE IF NOT EXISTS alertintegration.integration_users (
+CREATE TABLE IF NOT EXISTS integration_users (
   username          text PRIMARY KEY,
-  id                uuid,      -- stable identity id, generated once at creation
-  secret_hash       text,      -- base64 PBKDF2-SHA256 derived key
-  salt              text,      -- base64 random salt, unique per user
-  iterations        int,       -- PBKDF2 iteration count used for this row
-  enabled           boolean,
-  created_at        timestamp, -- account creation time, stable across rotations
-  created_by        text,      -- operator who provisioned it
-  updated_at        timestamp, -- bumped on every create/rotate/enable/disable
-  secret_rotated_at timestamp, -- bumped only when secret_hash/salt actually change
-  last_used_at      timestamp, -- reserved for future RequireAuth wiring; always null today
-  expires_at        timestamp  -- null = never expires
+  id                uuid NOT NULL DEFAULT gen_random_uuid(), -- stable identity id, generated once at creation
+  secret_hash       text NOT NULL, -- base64 PBKDF2-SHA256 derived key
+  salt              text NOT NULL, -- base64 random salt, unique per user
+  iterations        int  NOT NULL, -- PBKDF2 iteration count used for this row
+  enabled           boolean NOT NULL DEFAULT true,
+  created_at        timestamptz NOT NULL DEFAULT now(), -- account creation time, stable across rotations
+  created_by        text NOT NULL DEFAULT '', -- operator who provisioned it
+  updated_at        timestamptz NOT NULL DEFAULT now(), -- bumped on every create/rotate/enable/disable
+  secret_rotated_at timestamptz NOT NULL DEFAULT to_timestamp(0), -- bumped only when secret_hash/salt actually change
+  last_used_at      timestamptz NOT NULL DEFAULT to_timestamp(0) -- not written by RequireAuth; always unset today
 );
 ```

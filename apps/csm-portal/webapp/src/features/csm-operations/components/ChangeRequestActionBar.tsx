@@ -18,7 +18,6 @@ import { Box, Button, Menu, MenuItem, Tooltip, Typography } from "@wso2/oxygen-u
 import {
   ArrowRight,
   Ban,
-  CalendarClock,
   CheckCircle,
   ChevronDown,
   Play,
@@ -45,7 +44,8 @@ type TargetConfig = {
 
 const TARGET_CONFIG: Record<string, TargetConfig> = {
   assess: { color: "primary", icon: <Send size={16} /> },
-  scheduled: { color: "primary", icon: <CalendarClock size={16} /> },
+  // Only ever rendered from `customer_approval` ("Record customer approval").
+  scheduled: { color: "primary", icon: <UserCheck size={16} /> },
   implement: { color: "primary", icon: <Play size={16} /> },
   review: { color: "primary", icon: <CheckCircle size={16} /> },
   customer_review: { color: "primary", icon: <UserCheck size={16} /> },
@@ -78,6 +78,7 @@ const DEFAULT_TARGET_CONFIG: TargetConfig = {
  */
 const FORWARD_ORDER: readonly string[] = [
   "assess",
+  // Reachable only from `customer_approval` (see `isOfferedTarget`).
   "scheduled",
   "implement",
   "review",
@@ -111,10 +112,37 @@ const MENU_ORDER: readonly string[] = [...FORWARD_ORDER, "rollback", "canceled"]
  * Authorize with no approval behind it — the same audit hole as above, by a
  * different route.
  *
- * The exclusion is deliberately unconditional so a future backend change that
- * starts returning any of these cannot silently reopen it.
+ * `scheduled` is the same shape as `authorize`: a CR is moved to Scheduled
+ * automatically the moment its approval is granted (CAB/ECAB, or Standard's
+ * Request Approval) -- or, when the CR requires customer approval, it first
+ * waits in `customer_approval`. There is no manual "Schedule" action anywhere,
+ * with exactly one exception: leaving `customer_approval`, where
+ * `scheduled` *is* the way the customer's approval is recorded
+ * ("Record customer approval", `PATCH {state:"scheduled"}`). So `scheduled` is
+ * filtered out unless the CR's current state is `customer_approval` -- see
+ * `isOfferedTarget`.
+ *
+ * The exclusions are deliberately unconditional (the `scheduled` carve-out is
+ * keyed on the record's own state, never on what `legalNextStates` claims) so a
+ * future backend change that starts returning any of these cannot silently
+ * reopen them.
  */
-const NEVER_OFFERED_TARGETS: readonly string[] = ["rollback", "customer_approval", "authorize"];
+const NEVER_OFFERED_TARGETS: readonly string[] = [
+  "rollback",
+  "customer_approval",
+  "authorize",
+];
+
+/**
+ * `scheduled` is a manual action only from `customer_approval`, where it
+ * records the customer's approval. Everywhere else it is reached
+ * automatically, so it is never offered.
+ */
+function isOfferedTarget(target: string, currentState: string | null | undefined): boolean {
+  if (!target || target === currentState) return false;
+  if (target === "scheduled") return currentState === "customer_approval";
+  return !NEVER_OFFERED_TARGETS.includes(target);
+}
 
 /** Sort key for a target: curated order first, uncurated states after. */
 function menuRank(target: string): number {
@@ -132,7 +160,7 @@ function menuRank(target: string): number {
  * target: the same situation (legal transition, unmet prerequisite) can
  * apply to any target.
  *
- * `assess` requires `assignedTeam` — by explicit product decision, confirmed
+ * `assess` ("Request Approval") requires `assignedTeam` — by explicit product decision, confirmed
  * compulsory: the assigned team's own members are what populate the Assess
  * stage's approvers the moment the transition lands (see
  * `PatchChangeRequest`'s own doc comment in `change_request_repo.go`), so
@@ -150,7 +178,7 @@ const TARGET_BLOCKED_REASON: Record<
   (cr: BeChangeRequestDetail) => string | null
 > = {
   assess: (cr) =>
-    cr.assignedTeam ? null : "Set an assigned team before moving to Assess",
+    cr.assignedTeam ? null : "Set an assigned team before requesting approval",
 };
 
 interface ChangeRequestActionBarProps {
@@ -193,9 +221,7 @@ export default function ChangeRequestActionBar({
   // `DEFAULT_TARGET_CONFIG` alike.
   const targets = Array.from(
     new Set(
-      (cr.legalNextStates ?? []).filter(
-        (s) => !!s && s !== cr.state && !NEVER_OFFERED_TARGETS.includes(s),
-      ),
+      (cr.legalNextStates ?? []).filter((s) => isOfferedTarget(s, cr.state)),
     ),
   ).sort((a, b) => menuRank(a) - menuRank(b));
   if (targets.length === 0) return null;
@@ -216,7 +242,7 @@ export default function ChangeRequestActionBar({
 
   const renderPrimary = (target: string): JSX.Element => {
     const { color, icon } = configFor(target);
-    const label = changeRequestTransitionLabel(target);
+    const label = changeRequestTransitionLabel(target, cr.state);
     const reason = blockedReason(target);
     if (reason) {
       return (
@@ -289,7 +315,7 @@ export default function ChangeRequestActionBar({
           >
             {menuTargets.map((target) => {
               const { color, icon } = configFor(target);
-              const label = changeRequestTransitionLabel(target);
+              const label = changeRequestTransitionLabel(target, cr.state);
               const reason = blockedReason(target);
               const destructive = isDestructiveChangeRequestTransition(target);
               return (

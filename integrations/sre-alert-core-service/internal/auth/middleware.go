@@ -17,21 +17,61 @@
 package auth
 
 import (
+	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 )
 
 const bearerPrefix = "Bearer "
 
+// verifiedTTL is how long a verified credential skips the PBKDF2 check; disables and rotations still apply at the next directory refresh.
+const verifiedTTL = 60 * time.Second
+
+// verifiedCache holds a SHA-256 of each recently verified secret (never the secret), so a wake burst costs one PBKDF2 check per minute.
+type verifiedCache struct {
+	mu      sync.Mutex
+	entries map[string]verifiedEntry
+}
+
+// verifiedEntry keeps the stored hash it was verified against, so a rotation in the directory invalidates it.
+type verifiedEntry struct {
+	digest  [sha256.Size]byte
+	hash    string
+	expires time.Time
+}
+
+func (c *verifiedCache) hit(u User, secret string, now time.Time) bool {
+	c.mu.Lock()
+	e, ok := c.entries[u.Username]
+	c.mu.Unlock()
+	digest := sha256.Sum256([]byte(secret))
+	return ok && e.hash == u.SecretHash && now.Before(e.expires) && subtle.ConstantTimeCompare(e.digest[:], digest[:]) == 1
+}
+
+func (c *verifiedCache) remember(u User, secret string, now time.Time) {
+	expires := now.Add(verifiedTTL)
+	c.mu.Lock()
+	c.entries[u.Username] = verifiedEntry{digest: sha256.Sum256([]byte(secret)), hash: u.SecretHash, expires: expires}
+	c.mu.Unlock()
+}
+
 // dummySalt is used only to burn CPU time on an unknown-user auth attempt, never for real secret storage.
 var dummySalt = []byte("integration-users-timing-salt!!")
 
-// RequireAuth requires a valid Authorization header (Bearer base64("<username>:<secret>"), or Basic i.e. -u) naming an enabled integration_users row; every failure is a generic 401, and only the username is logged, never the secret.
-func RequireAuth(repo *UserRepo, logger *slog.Logger) func(http.Handler) http.Handler {
+// UserLookup finds a user without touching the database; *Directory implements it.
+type UserLookup interface {
+	Lookup(username string) (User, error)
+}
+
+// RequireAuth requires a valid Authorization header (Bearer base64("<username>:<secret>"), or Basic i.e. -u) naming an enabled integration_users row; a bad credential is a generic 401, an unusable directory a 503, and only the username is logged, never the secret.
+func RequireAuth(users UserLookup, logger *slog.Logger) func(http.Handler) http.Handler {
+	cache := &verifiedCache{entries: map[string]verifiedEntry{}}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			username, secret, ok := parseCredentials(r)
@@ -40,16 +80,16 @@ func RequireAuth(repo *UserRepo, logger *slog.Logger) func(http.Handler) http.Ha
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-
-			u, err := repo.Get(r.Context(), username)
+			u, err := users.Lookup(username)
+			if errors.Is(err, ErrDirectoryUnavailable) {
+				logger.Error("auth: integration_users copy unavailable", "username", username, "error", err)
+				http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				return
+			}
 			if err != nil {
-				if !errors.Is(err, ErrUserNotFound) {
-					logger.Error("auth: lookup failed", "username", username, "error", err)
-				} else {
-					logger.Warn("auth: unknown user", "username", username)
-					// Burn comparable time to a real VerifySecret call so response timing can't be used to enumerate usernames.
-					HashSecret(secret, dummySalt, Iterations)
-				}
+				logger.Warn("auth: unknown user", "username", username)
+				// Burn comparable time to a real VerifySecret call so response timing can't be used to enumerate usernames.
+				_, _ = HashSecret(secret, dummySalt, Iterations)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -60,18 +100,17 @@ func RequireAuth(repo *UserRepo, logger *slog.Logger) func(http.Handler) http.Ha
 				return
 			}
 
+			if cache.hit(u, secret, time.Now()) {
+				next.ServeHTTP(w, r)
+				return
+			}
+
 			if !VerifySecret(secret, u.Salt, u.SecretHash, u.Iterations) {
 				logger.Warn("auth: secret mismatch", "username", username)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-
-			if u.IsExpired(time.Now()) {
-				logger.Warn("auth: secret expired", "username", username)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-
+			cache.remember(u, secret, time.Now())
 			next.ServeHTTP(w, r)
 		})
 	}

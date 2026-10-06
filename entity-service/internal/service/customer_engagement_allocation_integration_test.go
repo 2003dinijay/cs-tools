@@ -101,7 +101,7 @@ func itCount(t *testing.T, pool *pgxpool.Pool, sql string, args ...any) int {
 func TestAllocationEventIntegration(t *testing.T) {
 	pool := newAllocationIntegrationPool(t)
 	svc := NewCustomerEngagementAllocationService(
-		repository.NewCustomerEngagementAllocationRepository(repository.NewScoped(pool)), testEngagementTypeIDs)
+		repository.NewCustomerEngagementAllocationRepository(repository.NewScoped(pool)), testFirefightingTypeID)
 	ctx := repository.WithSystemIdentity(context.Background())
 
 	ff := allocFirefightingEvent()
@@ -165,29 +165,19 @@ func TestAllocationEventIntegration(t *testing.T) {
 	if err != nil || res.Result != domain.AllocationEventCreated || res.EngagementID == nil || *res.EngagementID != itLineEngagement {
 		t.Fatalf("line item = %+v, %v", res, err)
 	}
-	if n := itCount(t, pool, `SELECT count(*) FROM customer_engagement WHERE id = $1 AND engagement_id = 'EIT0002'`, itLineEngagement); n != 1 {
-		t.Error("engagement found by line item did not get the payload's engagement_id")
+	if n := itCount(t, pool, `SELECT count(*) FROM customer_engagement WHERE id = $1 AND engagement_id IS NULL`, itLineEngagement); n != 1 {
+		t.Error("a line-item match must not fill engagement_id")
 	}
 
-	// Created from the payload: line item and opportunity refs resolved from CSM's line-item copy.
-	cr := allocLineItemEvent()
-	cr.ID, cr.Email, cr.CustomerCode = "AIT0003", "alloc-itest@wso2.com", allocStr(itAccountSfID)
-	cr.Engagement.EngagementID, cr.Engagement.ProductID = "EIT0003", allocStr(itNewLineItemSf)
-	res, err = svc.ProcessAllocationEvent(ctx, cr)
-	if err != nil || res.Result != domain.AllocationEventCreated || !res.EngagementCreated {
-		t.Fatalf("create = %+v, %v", res, err)
+	// No engagement for the line item: skipped, nothing created, even with a new engagement id.
+	miss := allocLineItemEvent()
+	miss.ID, miss.Email, miss.CustomerCode = "AIT0003", "alloc-itest@wso2.com", allocStr(itAccountSfID)
+	miss.Engagement.EngagementID, miss.Engagement.ProductID = "EIT0003", allocStr(itNewLineItemSf)
+	res, err = svc.ProcessAllocationEvent(ctx, miss)
+	if err != nil || res.Result != domain.AllocationEventSkipped || res.Reason != AllocationSkipNoLineItem {
+		t.Fatalf("missing line item = %+v, %v", res, err)
 	}
-	if n := itCount(t, pool, `SELECT count(*) FROM customer_engagement WHERE id = $1 AND engagement_id = 'EIT0003'
-		AND line_item_id = $2 AND line_item_id_ref = replace($3, '-', '') AND opportunity_id = replace($4, '-', '')
-		AND engagement_type_id = $5 AND name = 'Acme - Consulting - Delivery'`,
-		*res.EngagementID, itNewLineItemSf, itNewLineItemRow, itOpportunity, testEngagementTypeIDs["CONSULTANCY"]); n != 1 {
-		t.Error("created engagement columns are not as expected")
-	}
-
-	cr.AllocationTypeName, cr.Engagement.EngagementID, cr.ID = "Pre-Sales", "EIT0004", "AIT0004"
-	cr.Engagement.ProductID = nil
-	res, err = svc.ProcessAllocationEvent(ctx, cr)
-	if err != nil || res.Result != domain.AllocationEventSkipped || res.Reason != "allocation type Pre-Sales does not create engagements" {
-		t.Fatalf("unmapped = %+v, %v", res, err)
+	if n := itCount(t, pool, `SELECT count(*) FROM customer_engagement WHERE engagement_id = 'EIT0003'`); n != 0 {
+		t.Error("an engagement was created for a non-firefighting allocation")
 	}
 }

@@ -67,6 +67,7 @@ type stubCaseRepo struct {
 	addCaseTag                    func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
 	setCaseWatchList              func(ctx context.Context, caseID string, userIDs []string, actorEmail string) ([]domain.WatchListUser, time.Time, error)
 	accountDefaultWatcherEmails   func(ctx context.Context, projectID string) ([]string, error)
+	projectOnboardingInfo         func(ctx context.Context, projectID string) (string, bool, error)
 	getCaseEtaSharedOn            func(ctx context.Context, caseID string) (*time.Time, error)
 	projectContactEmailsByRole    func(ctx context.Context, projectID, role string) ([]string, error)
 	updateCaseAssignee            func(ctx context.Context, caseID string, userID *string, callerEmail string) (time.Time, bool, error)
@@ -222,6 +223,13 @@ func (s *stubCaseRepo) AccountDefaultWatcherEmails(ctx context.Context, projectI
 	return nil, nil
 }
 
+func (s *stubCaseRepo) ProjectOnboardingInfo(ctx context.Context, projectID string) (string, bool, error) {
+	if s.projectOnboardingInfo != nil {
+		return s.projectOnboardingInfo(ctx, projectID)
+	}
+	return "", false, nil
+}
+
 // GetCaseEtaSharedOn defaults to nil (no fix ETA shared) rather than
 // panicking, same reasoning as AccountDefaultWatcherEmails above.
 func (s *stubCaseRepo) GetCaseEtaSharedOn(ctx context.Context, caseID string) (*time.Time, error) {
@@ -355,6 +363,13 @@ func (s stubUserRepo) GetUserGroups(ctx context.Context, id string) ([]domain.Us
 	if s.getUserGroups != nil {
 		return s.getUserGroups(ctx, id)
 	}
+	return nil, nil
+}
+
+// GetUsersByIDs returns empty rather than panicking, matching
+// GetUserRoles/GetUserGroups above -- no existing test case in this
+// file exercises it.
+func (stubUserRepo) GetUsersByIDs(context.Context, []string) ([]domain.User, error) {
 	return nil, nil
 }
 

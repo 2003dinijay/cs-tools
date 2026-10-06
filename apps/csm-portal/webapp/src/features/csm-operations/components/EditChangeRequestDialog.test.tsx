@@ -453,3 +453,116 @@ describe("EditChangeRequestDialog — the 'in the past' hint follows the profile
     expect(screen.queryByText(PAST_HINT)).not.toBeInTheDocument();
   });
 });
+
+describe("EditChangeRequestDialog — Customer Approval / Customer Review checkboxes", () => {
+  const approvalBox = (): HTMLElement => screen.getByRole("checkbox", { name: "Customer Approval" });
+  const reviewBox = (): HTMLElement => screen.getByRole("checkbox", { name: "Customer Review" });
+
+  it("renders both as checkboxes reflecting the stored flags, enabled while the gates are ahead", () => {
+    renderDialog({ state: "assess", customerApprovalRequired: true, customerReviewRequired: false });
+    expect(approvalBox()).toBeChecked();
+    expect(approvalBox()).toBeEnabled();
+    expect(reviewBox()).not.toBeChecked();
+    expect(reviewBox()).toBeEnabled();
+    expect((approvalBox() as HTMLInputElement).type).toBe("checkbox");
+  });
+
+  it("treats absent flags as unchecked and leaves Save disabled with no change", () => {
+    renderDialog({ state: "new" });
+    expect(approvalBox()).not.toBeChecked();
+    expect(reviewBox()).not.toBeChecked();
+    expect(saveButton()).toBeDisabled();
+  });
+
+  it("sends only customerApprovalRequired when only Customer Approval was toggled", () => {
+    const { onSave } = renderDialog({ state: "authorize", customerApprovalRequired: false });
+    fireEvent.click(approvalBox());
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith({ customerApprovalRequired: true });
+  });
+
+  it("sends only customerReviewRequired when only Customer Review was toggled", () => {
+    const { onSave } = renderDialog({ state: "implement", customerReviewRequired: false });
+    fireEvent.click(reviewBox());
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith({ customerReviewRequired: true });
+  });
+
+  it("sends both, and can switch an enabled flag off", () => {
+    const { onSave } = renderDialog({
+      state: "assess",
+      customerApprovalRequired: true,
+      customerReviewRequired: false,
+    });
+    fireEvent.click(approvalBox());
+    fireEvent.click(reviewBox());
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith({
+      customerApprovalRequired: false,
+      customerReviewRequired: true,
+    });
+  });
+
+  it("does not send a flag that was toggled back to its original value", () => {
+    renderDialog({ state: "assess", customerApprovalRequired: false });
+    fireEvent.click(approvalBox());
+    fireEvent.click(approvalBox());
+    expect(saveButton()).toBeDisabled();
+  });
+
+  it.each(["customer_approval", "scheduled", "implement", "review", "customer_review", "closed", "rollback", "canceled"])(
+    "disables Customer Approval once the CR is in %s, with an explanation",
+    (state) => {
+      renderDialog({ state, customerApprovalRequired: true });
+      expect(approvalBox()).toBeDisabled();
+      expect(approvalBox()).toHaveAccessibleDescription(/locked/i);
+    },
+  );
+
+  it.each(["new", "assess", "authorize"])("keeps Customer Approval editable in %s", (state) => {
+    renderDialog({ state });
+    expect(approvalBox()).toBeEnabled();
+  });
+
+  it.each(["customer_review", "closed", "rollback", "canceled"])(
+    "disables Customer Review once the CR is in %s, with an explanation",
+    (state) => {
+      renderDialog({ state, customerReviewRequired: true });
+      expect(reviewBox()).toBeDisabled();
+      expect(reviewBox()).toHaveAccessibleDescription(/locked/i);
+    },
+  );
+
+  it.each(["new", "assess", "authorize", "customer_approval", "scheduled", "implement", "review"])(
+    "keeps Customer Review editable in %s",
+    (state) => {
+      renderDialog({ state });
+      expect(reviewBox()).toBeEnabled();
+    },
+  );
+
+  it("still lets Customer Review be changed while Customer Approval is locked, and sends only that", () => {
+    const { onSave } = renderDialog({
+      state: "scheduled",
+      customerApprovalRequired: true,
+      customerReviewRequired: false,
+    });
+    expect(approvalBox()).toBeDisabled();
+    fireEvent.click(reviewBox());
+    fireEvent.click(saveButton());
+    expect(onSave).toHaveBeenCalledWith({ customerReviewRequired: true });
+  });
+
+  it("shows the backend's refusal message when a late edit is rejected (400)", () => {
+    render(
+      <EditChangeRequestDialog
+        cr={{ ...BASE_CR, state: "assess" }}
+        isSaving={false}
+        saveError="customerApprovalRequired can no longer be changed once the change request is scheduled"
+        onClose={vi.fn()}
+        onSave={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("alert")).toHaveTextContent(/can no longer be changed/i);
+  });
+});

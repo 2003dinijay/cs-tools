@@ -93,6 +93,12 @@ func (f *fakeUserRepoForEscalationService) UpdateUserTimeZone(context.Context, s
 	panic("fakeUserRepoForEscalationService.UpdateUserTimeZone: not expected to be called by these tests")
 }
 
+// GetUsersByIDs returns empty, matching stubUserRepo's: no test here
+// exercises it, it only completes repository.UserRepository.
+func (f *fakeUserRepoForEscalationService) GetUsersByIDs(context.Context, []string) ([]domain.User, error) {
+	return nil, nil
+}
+
 // caseFoundInScopeRepo is the default stubCaseRepo.GetCaseByID for tests
 // unrelated to authorization: the case is always found and always in scope,
 // so those tests aren't coupled to the new access-scoping check (see

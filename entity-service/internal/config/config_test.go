@@ -682,17 +682,17 @@ func TestLoad_SalesforceIngestRetryInterval(t *testing.T) {
 	}
 }
 
-func TestConfig_Validate_CustomerEngagementTypeIDs(t *testing.T) {
+func TestConfig_Validate_CustomerEngagementFirefightingTypeID(t *testing.T) {
 	c := baseValidConfig()
 	c.CSMMigrationCustomerEngagementIngestEnabled = true
 	if err := c.Validate(); err != nil {
-		t.Fatalf("unset type ids must not fail startup: %v", err)
+		t.Fatalf("an unset type id must not fail startup: %v", err)
 	}
-	c.CustomerEngagementTypeIDs = map[string]string{"QSP": "07fd9f78478cb910a0a29cd3846d4304"}
+	c.CustomerEngagementFirefightingTypeID = "fc7f2d171b81f910d64e64a2604bcb9b"
 	if err := c.Validate(); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	c.CustomerEngagementTypeIDs["TRAINING"] = "not-a-sys-id"
+	c.CustomerEngagementFirefightingTypeID = "not-a-sys-id"
 	if c.Validate() == nil {
 		t.Error("Validate() = nil for a malformed type id")
 	}
@@ -702,6 +702,65 @@ func TestConfig_Validate_CustomerEngagementTypeIDs(t *testing.T) {
 	c.DataSource = DataSourceServiceNow
 	if c.HasCustomerEngagementIngest() {
 		t.Error("HasCustomerEngagementIngest() = true on a ServiceNow config")
+	}
+}
+
+// TestConfig_Validate_RedisURL: a malformed REDIS_URL fails startup, and the
+// error never echoes the URL, since it carries the Redis password.
+func TestConfig_Validate_RedisURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "unset", url: "", wantErr: false},
+		{name: "tls", url: "rediss://:s3cr3t%3D@cache.example.net:10000", wantErr: false},
+		{name: "plain", url: "redis://localhost:6379/0", wantErr: false},
+		{name: "wrong scheme", url: "https://:s3cr3t@cache.example.net", wantErr: true},
+		{name: "no host", url: "rediss://:s3cr3t@", wantErr: true},
+		{name: "unparseable", url: "rediss://:s3cr3t@[::1", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := baseValidConfig()
+			c.RedisURL = tt.url
+			err := c.Validate()
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("Validate() = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && strings.Contains(err.Error(), "s3cr3t") {
+				t.Errorf("Validate() error leaks the password: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoad_Redis(t *testing.T) {
+	t.Setenv("REDIS_URL", "")
+	t.Setenv("REDIS_ADDR", "")
+	t.Setenv("USER_CACHE_TTL", "")
+	c := Load()
+	if c.HasRedis() {
+		t.Error("HasRedis() = true with neither REDIS_URL nor REDIS_ADDR set")
+	}
+	if c.UserCacheTTL != 10*time.Minute {
+		t.Errorf("UserCacheTTL = %v, want the 10m default", c.UserCacheTTL)
+	}
+
+	t.Setenv("REDIS_ADDR", " localhost:6379 ")
+	t.Setenv("USER_CACHE_TTL", "90s")
+	c = Load()
+	if !c.HasRedis() || c.RedisAddr != "localhost:6379" {
+		t.Errorf("HasRedis() = %v, RedisAddr = %q; want true, %q", c.HasRedis(), c.RedisAddr, "localhost:6379")
+	}
+	if c.UserCacheTTL != 90*time.Second {
+		t.Errorf("UserCacheTTL = %v, want 90s", c.UserCacheTTL)
+	}
+
+	t.Setenv("REDIS_ADDR", "")
+	t.Setenv("REDIS_URL", "rediss://:pw@cache.example.net:10000")
+	if !Load().HasRedis() {
+		t.Error("HasRedis() = false with REDIS_URL set")
 	}
 }
 
@@ -756,4 +815,23 @@ func TestConfig_DSN_SchemaFallsBackToDBUserPlusPublic(t *testing.T) {
 			t.Errorf("search_path = %q, want %q", got, "public")
 		}
 	})
+}
+
+func TestSREEventHubTopicMovesBothOperationsPublishers(t *testing.T) {
+	t.Setenv("CR_EVENT_HUB_TOPIC", "cr-events")
+	t.Setenv("OUTAGE_EVENT_HUB_TOPIC", "outage-events")
+
+	t.Setenv("SRE_EVENT_HUB_TOPIC", "")
+	if c := Load(); c.CREventHubTopic != "cr-events" || c.OutageEventHubTopic != "outage-events" {
+		t.Errorf("unset SRE topic changed the publishers: cr=%q outage=%q", c.CREventHubTopic, c.OutageEventHubTopic)
+	}
+
+	t.Setenv("SRE_EVENT_HUB_TOPIC", " sre-events ")
+	c := Load()
+	if c.CREventHubTopic != "sre-events" || c.OutageEventHubTopic != "sre-events" {
+		t.Errorf("SRE topic set: cr=%q outage=%q, want both sre-events", c.CREventHubTopic, c.OutageEventHubTopic)
+	}
+	if c.EventHubTopic == "sre-events" {
+		t.Error("the case-events topic must not move")
+	}
 }
