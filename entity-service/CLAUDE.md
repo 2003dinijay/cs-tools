@@ -2743,9 +2743,29 @@ below).
 
 The table is the flow with both creation-form checkboxes **unticked**. With
 **Customer Approval** ticked, every "→ Scheduled" above becomes "→ **Customer
-Approval** → (customer's approval recorded) → Scheduled"; with **Customer Review**
-ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed". See
-"Customer Approval / Customer Review checkboxes" below.
+Approval** → (the customer's own approval) → Scheduled"; with **Customer Review**
+ticked, "Review → Closed" becomes "Review → **Customer Review** → (the customer's
+own review) → Closed". See "Customer Approval / Customer Review checkboxes" below.
+
+**Compliance rule: no staff action records the customer's approval or review on
+the customer's behalf.** The customer's answer is the customer's decision and
+ServiceNow's record of it is audited; a decision made for the customer and stored
+as theirs would be a compliance problem. A change in Customer Approval / Customer
+Review therefore moves on **only through the customer's own answer**, given in the
+Customer Portal (`PATCH {isCustomerApproved|isCustomerReviewed}` from a registered
+contact, or the decision route on their own approver row -- "Customer answers
+through PATCH" below). There is no "Bypass customer approval" / "Bypass customer
+review" (they were a manual `{state: scheduled}` / `{state: closed}` that stamped
+the flag): the refusal is the same whatever the project, the contacts or the
+stage (see the first bullet after the table). What staff keep: **Cancel** (any
+non-final state), **Re-schedule** out of Customer Approval (the customer is asked
+again) and **Roll back** out of Customer Review (while nobody is being asked).
+Emergency changes are acted on without the customer's consent: they do not tick
+the customer boxes. Same rule for every door: the PATCH, the decision route (a
+caller decides only their own `REQUESTED` row), create and clone (always New), the
+GitHub sync's `SetState` (refuses to leave a customer state), the dual-write mirror
+(a refused PATCH is never mirrored) and the pure ServiceNow data source (its
+offered states are filtered the same way).
 
 * **"Request Approval" is the one human action out of New** and is always sent
   as `{state: "assess"}` (legalNextStates of New is `["assess","canceled"]` for
@@ -2755,29 +2775,51 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   else is a 400). It still requires an assigned team.
 * **There is no "Schedule" action.** `scheduled` is never in `legalNextStates`
   and a manual `{state: "scheduled"}` (or `"authorize"` / `"customer_approval"`)
-  PATCH is rejected (400): Scheduled is reached only by the CAB/ECAB approval
-  cascade or by Request Approval on a Standard change -- **except from
-  `customer_approval`**, where the human action `scheduled` means "record the
-  customer's approval" (and `authorize` means Re-schedule, see below). The CSM
-  portal names that action, and the matching manual `closed` out of
-  `customer_review`, **"Bypass customer approval"** / **"Bypass customer
-  review"** (menu-only entries of its "Change state" menu that need a stated
-  reason: an engineer answers for a customer who is not asked); the wire
-  contract here is unchanged. The ServiceNow data source's own offered states are
-  filtered the same way (`withoutManualScheduled`, which keeps `scheduled` for a
-  change sitting in `customer_approval`). `legalNextStates` per state (the single
-  source of truth the webapp renders): new `[assess, canceled]`, assess
-  `[authorize, canceled]` (`authorize` is the approval path; the webapp never
-  renders it as a button), authorize `[canceled]`, customer_approval
-  `[scheduled, authorize, canceled]` (`authorize` = Re-schedule), scheduled `[implement, canceled]`, implement
-  `[review, canceled]`, review `[closed, rollback, canceled]` -- or
-  `[customer_review, rollback, canceled]` when `customerReviewRequired` --,
-  customer_review `[closed, rollback, canceled]`, terminal states none.
-  **While a live Customer Approval / Customer Review stage exists (the change
-  has registered customer contacts, see "Customer Group" below) `customer_approval` offers
-  `[authorize, canceled]` and `customer_review` only `[canceled]`**: the manual
-  `scheduled` / `closed` / `rollback` is withdrawn and refused (Re-schedule
-  stays: an internal user may re-plan, which supersedes the pending request).
+  PATCH is rejected (400) **from every state, `customer_approval` included**:
+  Scheduled is reached only by the CAB/ECAB approval cascade, by Request Approval
+  on a Standard change, or -- out of `customer_approval` -- by the customer's own
+  approval. Out of `customer_approval` the 400 is `state "scheduled" cannot be set
+  manually from customer_approval: the customer's approval can only be given by
+  the customer in the Customer Portal; cancel the change or re-schedule it
+  instead`, whatever the project (none, no contacts, only the creator), whether
+  anybody was asked, whether a stage is live or already decided, and with or
+  without `isCustomerApproved` in the body (`customerOutcomeRefusal`). The
+  same holds for `{state: "closed"}` out of `customer_review` (`... from
+  customer_review: the customer's review can only be given by the customer in the
+  Customer Portal; roll the change back or cancel it instead`, or `... cancel the
+  change instead` while the customer group is being asked, because a failed
+  review is then theirs to give too), and for **every other destination** out of a
+  customer state but Cancel, Re-schedule (`customer_approval`) and Roll back
+  (`customer_review`) -- the PATCH has no full transition graph, so
+  `{state: "implement"}` would skip the customer exactly as `scheduled` would
+  (`refuseStaffExitFromCustomerState`; staying where it is, e.g. a resent Request
+  Approval on a Standard change, is not an exit). A refused PATCH writes nothing
+  (state, flags, approver rows and `updated_on` stay). Nor can staff send the
+  customer's flags: `isCustomerApproved` / `isCustomerReviewed` from anyone but
+  the customer (an internal caller, staff who also hold an external record, an
+  internal client credential), true or false, alone or with a state, is a 400
+  `isCustomerApproved cannot be set on the customer's behalf: the customer's
+  approval can only be given by the customer in the Customer Portal` (likewise
+  `isCustomerReviewed`; `refuseStaffCustomerOutcomeFlags`) -- refused, not
+  ignored. The CSM portal has no "Bypass customer approval" / "Bypass customer
+  review" entries in its "Change state" menu any more. The ServiceNow data
+  source's own offered states are filtered the same way
+  (`withoutCustomerOutcomeStates`: `scheduled` from no state, `closed` not from
+  `customer_review`; what ServiceNow itself returns is unchanged, and a PATCH on
+  that source is forwarded to ServiceNow, which is the authority there).
+  `legalNextStates` per state (the single source of truth the webapp renders): new
+  `[assess, canceled]`, assess `[authorize, canceled]` (`authorize` is the approval
+  path; the webapp never renders it as a button), authorize `[canceled]`,
+  customer_approval `[authorize, canceled]` (`authorize` = Re-schedule), scheduled
+  `[implement, canceled]`, implement `[review, canceled]`, review
+  `[closed, rollback, canceled]` -- or `[customer_review, rollback, canceled]` when
+  `customerReviewRequired` --, customer_review `[rollback, canceled]`, terminal
+  states none. **While a live Customer Review stage exists (the project's contacts
+  are being asked, see "Customer Group" below) `customer_review` offers only
+  `[canceled]`**: the manual `rollback` is withdrawn and refused too (a member's
+  rejection rolls the change back). `customer_approval` is `[authorize, canceled]`
+  live or not (Re-schedule stays: an internal user may re-plan, which supersedes
+  the pending request).
 * **Re-schedule** (the process diagram's "Time Change" loop). In
   `customer_approval`, `PATCH {state: "authorize", plannedStartOn?,
   plannedEndOn?}` sends the change back through internal approval because the
@@ -2822,8 +2864,8 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   be set from review or customer_review`; from `customer_review` with a live
   customer stage it is refused like a manual `closed` (the group's members
   decide; their rejection already yields `rollback`). The on-hold gate applies.
-  Rolling back stamps no `is_customer_review_required` (`isCustomerReviewed: true`
-  alongside it is a 400), provisions no stage, and **cancels every still-
+  Rolling back stamps no `is_customer_review_required` (`isCustomerReviewed`
+  alongside it is a 400, as it is from staff in any request), provisions no stage, and **cancels every still-
   `REQUESTED` approver row** of the change (all stages stay as a record; the
   customer-group rejection cascade does the same). **`rollback` is final**:
   `legalNextStates` is none and any other state PATCH out of it is a 400
@@ -2832,7 +2874,7 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   (below): every `closed` / `canceled` / `rollback` change has no `REQUESTED` row
   left, internal stages included (this supersedes the earlier "Cancel does not
   cancel the internal stages' pending approvers"). The ServiceNow data source
-  replays `stateKey` 2 like any other state and `withoutManualScheduled` does not
+  replays `stateKey` 2 like any other state and `withoutCustomerOutcomeStates` does not
   strip `rollback`. Project stats "outstanding" counting is unchanged by this.
 * **An approval is only actionable in its stage's state** (bug: an internal
   reviewer kept Approve / Reject on the *Review* stage of a change that was
@@ -2972,6 +3014,14 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   | Mira Santos | `mira.santos@lumenworks.example` | `customer` → EXTERNAL | registered `PORTAL_USER` contact of the generated project **"Lumen Works Platform"** (found by name — its id is random per database; a no-op where no such project exists, picked up by the next seed run after the seed-generator created it): its Customer Group, the people asked at Customer Approval / Customer Review |
   | Noel Prasad | `noel.prasad@lumenworks.example` | `customer` → EXTERNAL | same as Mira |
 
+  * **Who can give the customer's answer, locally**: only the customer personas -- dave and
+    erin (project 401), mira and noel (Lumen Works Platform) -- in the customer portal, on
+    the change requests of their own project. alice, bob and carol (internal) are the CAB /
+    peer approvers and the staff in the CSM portal: on CHG-FIXED-007 / -008 (or any change in a
+    customer state) their `{state: "scheduled"}` / `{state: "closed"}` and their
+    `isCustomerApproved` / `isCustomerReviewed` are 400s, and `POST .../approvals/decision` is a
+    403 while the stage is live (a 404 when none is); there is no bypass. They can Cancel,
+    Re-schedule (`customer_approval`) and Roll back (`customer_review`, when nobody is asked).
   * jane.doe (internal) is the requester persona: still a *team* member of Example
     Corp ABT (so `/users/me` and `GET /teams/{id}/members` keep working) but
     deliberately out of the *group* (`team_member.group_id` NULL), and in no CAB /
@@ -3388,9 +3438,9 @@ false`, idempotent) and the API fields **`customerApprovalRequired`** /
 receipt). Postgres data source only.
 
 * **They are NOT `is_customer_approval_required` / `is_customer_review_required`.** Those two
-  record the customer's *outcome* ("the customer has confirmed"): authorized
-  (internal user or registered `PORTAL_USER` contact) and one-way-locked by
-  `authorizeChangeRequestCustomerFlagWrite`, and in the ServiceNow scripted API
+  record the customer's *outcome* ("the customer has confirmed"): stamped only by
+  the customer's own answer (`applyCustomerStageOutcome`, true only: never by staff,
+  see "The customer's outcome flags are the customer's alone" below), and in the ServiceNow scripted API
   only writable while the change is in the matching state (`isCustomerApproved:
   false` there moves it to Cancelled, `isCustomerReviewed: false` to Rollback —
   see `EditChangeRequestDialog.tsx`'s doc comment). The new columns are the
@@ -3407,15 +3457,14 @@ receipt). Postgres data source only.
   Approval on a Standard change (`requestApprovalDestination`; Standard has no
   internal approval to put the gate after, so the gate sits right after Request
   Approval — an assumption) — a change with `customerApprovalRequired` goes to
-  **`customer_approval`** instead. There `legalNextStates` is `[scheduled,
-  canceled]`; the human PATCH `{state: "scheduled"}` records the customer's
-  approval: it stamps `is_customer_approval_required = true` through the same
-  `authorizeChangeRequestCustomerFlagWrite` (authorization + lock) a direct
-  `isCustomerApproved` write uses and schedules the change. A manual `scheduled`
-  from any other state is refused; so is `{state: "scheduled",
-  isCustomerApproved: false}`. Cancel is the customer declining. The
+  **`customer_approval`** instead. There `legalNextStates` is `[authorize,
+  canceled]`: only the **customer's own approval** (Customer Portal) schedules the
+  change and stamps `is_customer_approval_required = true`; the human PATCH
+  `{state: "scheduled"}` is refused (400, from every state, with or without
+  `isCustomerApproved`, with or without anybody asked). Cancel is staff's side of
+  the customer declining; the customer's own rejection also cancels. The
   `isCustomerApproved: false → Cancelled` behaviour belongs to the ServiceNow
-  scripted API; the Postgres path never had it and still does not.
+  scripted API and, on the Postgres path, to the customer's own answer.
 * **Review gate.** `review` offers `[customer_review, rollback, canceled]` when
   `customerReviewRequired`, else `[closed, rollback, canceled]` (**a behaviour change for
   rows that predate the checkbox: they default to false and Review now offers
@@ -3423,9 +3472,12 @@ receipt). Postgres data source only.
   refused when not required ("customer review is not required …"), and
   `{state: "closed"}` from `review` is refused when required ("customer review
   is required …; move it to customer_review first"). `customer_review` offers
-  `[closed, rollback, canceled]`; closing from it stamps `is_customer_review_required = true`
-  (same authorization/lock). No other transition is graph-checked — as before,
-  the PATCH does not enforce a full transition graph.
+  `[rollback, canceled]` (`[canceled]` while the contacts are being asked): only the
+  customer's own review closes the change and stamps
+  `is_customer_review_required = true`; a manual `{state: "closed"}` out of it is a 400.
+  No other transition is graph-checked — as before, the PATCH does not enforce a full
+  transition graph -- except out of the two customer states (see "There is no
+  "Schedule" action" above).
 * **Free in New, add-only afterwards** (`validateCustomerGateEdits`, checked under the
   row locks; the whole rule, with its table, is "Customer requirements lock" below). In
   New either box can be ticked and unticked. From Request Approval on a ticked box
@@ -3569,19 +3621,22 @@ on the lock and only then commits the first one: the edit must be refused, and t
 | `PATCH /change-requests/{id}` (`patchChangeRequestTx`) | the only code that updates `work_item.project_id` / the two requirement columns of an existing change: all six rules above |
 | `POST /change-requests` and `CreateChangeRequestFromServiceNow` (SN-first create) | create in New: free (a ticked box with no project is accepted; Request Approval is what refuses it). **Clone** is a create. |
 | GitHub `CreateFromIssue` | creates in New with the project the issue maps to |
-| GitHub `SetState` (`github_mutation_repo.go`) | writes `state` by SQL (it could write NEW); **no caller exists** in the repository; it is not guarded and not a lock concern until one does |
+| GitHub `SetState` (`github_mutation_repo.go`) | writes `state` by SQL (it could write NEW); **no caller exists** in the repository; it refuses to move a change out of Customer Approval / Customer Review (a label or an issue event must not answer for the customer), and is otherwise not guarded and not a lock concern until a caller exists |
 | `DecideChangeRequestApproval` / `applyCustomerStageOutcome` | write the `is_customer_*_required` **outcome stamps** (true only) and the state moves; never the requirement columns or the project |
 | `scripts/csm-compose/seed-entity-service.sql` | the dev fixtures CHG-FIXED-005..008 are upserted (`ON CONFLICT DO UPDATE`) as a reset; every ticked fixture past New has a project (`..._CreatesAreFreeInNew` asserts it) |
 | `seed-generator/generate_workitems.go` | random rows: writes only the outcome stamps |
 | csm-sync-service (the ServiceNow sync) | see below: not an API caller |
 
-**The outcome flags stay one-way** (verified, no hole): `authorizeChangeRequestCustomerFlagWrite`
-refuses true -> false for everyone (staff, customer, internal client), `applyCustomerStageOutcome`
-only ever sets true, and no create path writes them (the only writers of
-`is_customer_(approval|review)_required` are that PATCH stamp, `applyCustomerStageOutcome` and the two
-seed scripts). Staff stamping false -> true by hand is not a hole:
-the customer is asked, and designated, by the approver rows, not by the stamp.
-`TestChangeRequestLockIntegration_OutcomeFlagsStayOneWay`.
+**The outcome flags are the customer's alone, and stay one-way** (verified, no hole):
+no staff request can write them any more (`refuseStaffCustomerOutcomeFlags` refuses
+`isCustomerApproved` / `isCustomerReviewed` from anyone but the customer, true or
+false), the customer's own answer refuses a rejection of a flag already true, and
+`applyCustomerStageOutcome` only ever sets true. No create path writes them; the only
+writers of `is_customer_(approval|review)_required` are `applyCustomerStageOutcome` (the
+customer's answer) and the two dev seed scripts (fixtures and random rows, not a runtime
+path).
+`TestChangeRequestLockIntegration_OutcomeFlagsStayOneWay`,
+`TestChangeRequestNoBypassIntegration_*`.
 
 **ServiceNow dual-write and the sync -- how these writes happen, and the decision.**
 
@@ -3614,7 +3669,7 @@ the customer is asked, and designated, by the approver rows, not by the stamp.
   `delete_sync` covers `approval_stage_approver`.
 * *Existing rows* are not migrated: a change that is already past New keeps whatever its boxes and
   project are; the rule applies to the edits made from now on, by state. A legacy change that ticked
-  a box with no project (the manual path) cannot be given one any more -- cancel and clone.
+  a box with no project cannot be given one any more -- cancel and clone.
 
 Tests: `change_request_customer_lock_test.go` (the truth table, rule order, case-insensitive
 project resend, the Request Approval guard), `change_request_customer_lock_integration_test.go`
@@ -3625,7 +3680,7 @@ is now a 400), `CloseFromReviewHonoursTheFlagInTheSamePatch` (unticking in the c
 refused; the way on is Customer Review), `PatchEditWindow` (the project moves in New only),
 `CustomerGroupFollowsTheProject` (rewritten: the stage follows the contacts of the frozen
 project), and every test that ticked a box on a change with no project (`createGated` now puts it
-on a project with no registered contacts, the one place the manual path remains).
+on a project with no registered contacts: nobody to ask, and nobody who may answer for the customer).
 
 ### Customer Group: approving / rejecting Customer Approval and Customer Review
 
@@ -3647,7 +3702,7 @@ outcome). Code: `change_request_links.go`
 * **Who is a customer contact.** A `project_contact` of the change request's
   `work_item.project_id` in state **`REGISTERED`** holding the **`PORTAL_USER`**
   project role (through `project_contact_group` → `project_group_role` →
-  `project_role` — the very chain `callerMayGrantChangeRequestCustomerFlag` uses
+  `project_role` — the very chain `callerIsRegisteredPortalContact` uses
   for "a registered contact with role X on project Y"), whose `"user"` is active.
   The name/email/user come from `account_contact.user_name` matched
   case-insensitively to `"user".user_name`, as in `ProjectContactRepository`
@@ -3696,8 +3751,8 @@ outcome). Code: `change_request_links.go`
   approver rows): the same state a human reaches with the manual Roll back
   action from `review` / `customer_review` (see "Roll back" above), and
   `canceled` for a declined approval matches the ServiceNow `isCustomerApproved:
-  false` semantics. **`rollback` is terminal** (`legalNextStates` none). The decision comes from the approval, so the flag stamp bypasses
-  `authorizeChangeRequestCustomerFlagWrite` (the decider is a project contact).
+  false` semantics. **`rollback` is terminal** (`legalNextStates` none). The decision comes from the approval, so the flag is stamped by the outcome itself
+  (`applyCustomerStageOutcome`; the decider is a project contact).
 * **A non-contact** (or anyone without a `REQUESTED` row) deciding on a change
   waiting on its live customer stage gets a **403** `only members of the
   customer group (the registered contacts of this change request's project) can
@@ -3721,7 +3776,8 @@ outcome). Code: `change_request_links.go`
   ID token for the contact, sent to this endpoint; or `customerDecides` on the fake API) and
   assert what the CSM page then shows — the deciding contact's row Approved / Rejected, the
   others' Cancelled, the change Scheduled / Closed / Canceled / Rollback. With a live stage
-  `legalNextStates` offers only `canceled` (the manual `scheduled` / `closed` is refused).
+  `legalNextStates` offers `authorize` (Re-schedule, `customer_approval` only) and `canceled`
+  (the manual `scheduled` / `closed` is refused, with or without a live stage).
   The ServiceNow workflow is the same shape (customer-side approvers answer in ServiceNow).
 * **The customer's two ways to answer are one decision.** The customer portal's
   backend-v2 reaches entity-service with the customer's own `x-user-id-token` through
@@ -3732,18 +3788,28 @@ outcome). Code: `change_request_links.go`
   through PATCH" below. backend-v2 lets customer-side roles reach both routes through a
   narrow `decide` permission (`apps/customer-portal/backend-v2/CLAUDE.md`); who may
   answer *which* change is decided here, not there.
-* **Fallback so nothing strands.** A project with no eligible contact (a ticked box
-  needs a project since the lock: Request Approval is refused without one; a change
-  with no project can still be met on rows that predate the lock): **no stage**, and
-  the manual paths work as before
-  (`customer_approval` `[scheduled, canceled]`, `customer_review` `[closed,
-  canceled]`). With a live stage, `legalNextStates` is `[canceled]` for both
-  states and a manual `{state: "scheduled"}` / `{state: "closed"}` is a **400**
-  `state "scheduled" cannot be set manually: the customer's approval has been
-  requested from the customer group (the registered contacts of the change
-  request's project) and is given by one of them approving or rejecting it in the
-  change request's approvals (POST /change-requests/{id}/approvals/decision)`. Cancel stays available and cancels
-  the pending rows.
+* **Nobody to ask: no stage, and no way for staff to answer for the customer.** A project with no
+  eligible contact (a ticked box needs a project since the lock: Request Approval is refused without
+  one; a change with no project can still be met on rows that predate the lock; a project whose only
+  contact is the creator; a legacy change with contacts but no stage yet): **no stage**.
+  `customer_approval` is `[authorize, canceled]` and `customer_review`
+  `[rollback, canceled]`, and a manual `{state: "scheduled"}` / `{state: "closed"}` is a **400**
+  exactly as with a live stage (see "There is no "Schedule" action"): the customer's approval /
+  review can only be given by the customer in the Customer Portal. Such a change waits: staff can
+  Cancel it, Re-schedule it (`customer_approval`), Roll it back (`customer_review`, nobody is being
+  asked), or have a contact registered and restate the stored `projectId` in a PATCH, which asks
+  them (`TestChangeRequestLockIntegration_NoContactsReachedTheStage`,
+  `TestChangeRequestNoBypassIntegration_ANobodyToAskChangeIsAskedOnceAContactRegisters`). A legacy
+  change that already waits in the state with contacts but no stage gets its stage from the
+  customer's own first act ("An in-flight legacy change request" below). **Open point (the user's
+  call, not decided here): Request Approval does not refuse a change whose project has no eligible
+  contact, so such a change can reach a customer state and stay there until cancelled.** With a live
+  stage, `legalNextStates` is `[authorize, canceled]` at `customer_approval` and `[canceled]` at
+  `customer_review` (the manual `rollback` is withdrawn: `state "rollback" cannot be set manually:
+  the customer's review has been requested from the customer group (the registered contacts of the
+  change request's project) and is given by one of them approving or rejecting it in the change
+  request's approvals (POST /change-requests/{id}/approvals/decision)`). Cancel stays available and
+  cancels the pending rows.
 * **Contacts changed later** (`provisionCustomerStage`, idempotent, under the
   `change_request` row lock; the stage is compared with the project's *current*
   eligible contact set). The Customer Project itself can no longer change after New
@@ -3754,14 +3820,15 @@ outcome). Code: `change_request_links.go`
   -- re-reads them. A contact registered / deregistered while a stage is live ->
   the old stage's `REQUESTED` rows are `CANCELLED` and a new stage is provisioned for
   who is registered now (never two live stages; the old stage stays as a record);
-  nobody eligible -> pending rows cancelled, manual path back; resent / unrelated
+  nobody eligible -> pending rows cancelled, nobody asked; resent / unrelated
   PATCH -> nothing. A stage already approved/rejected is never re-provisioned.
   (`TestChangeRequestFlowIntegration_CustomerGroupFollowsTheProject`; it used to move
   the project around while a stage was live, which the lock refuses.)
 * **ServiceNow.** Not mirrored beyond the existing decision replay
   (`approval_decision` writeback); no ServiceNow field names for customer-group
-  approvals are guessed. The pure ServiceNow data source is unchanged
-  (`withoutManualScheduled` still offers `scheduled` from customer approval).
+  approvals are guessed. The pure ServiceNow data source's offered states are filtered
+  like PostgreSQL's (`withoutCustomerOutcomeStates` offers no `scheduled`, and no `closed`
+  from `customer_review`); the rest of that source is unchanged.
 * **ServiceNow impact.** The dual-write mirror used to forward `customerGroupId`;
   it no longer does (nothing to send). Pure-ServiceNow reads no longer map
   `customerGroup`.
@@ -3776,8 +3843,11 @@ outcome). Code: `change_request_links.go`
   `TestChangeRequestScopeIntegration_CustomerContactsAreDerivedFromTheProject`,
   `_CreateRefusesRemovedFields`, `_PatchRefusesRemovedFields`,
   `_LinkOptions` (real Postgres), `TestRejectRemovedChangeRequestFields`,
-  `TestCustomerStageSpecs`, `TestWithoutManualCustomerOutcome`,
-  `TestCustomerStageManualRefusal`, `TestClassifyApprovalStage`.
+  `TestCustomerStageSpecs`, `TestWithoutStaffRollbackWhileCustomerReviewPending`,
+  `TestCustomerStageManualRefusal`, `TestRefuseStaffCustomerOutcomeFlags`,
+  `TestRefuseStaffExitFromCustomerState`, `TestClassifyApprovalStage`,
+  `TestChangeRequestNoBypassIntegration_*` (every situation that used to allow the
+  bypass, the exact `legalNextStates` table, the exits that stay).
 
 ### Customer visibility and the cutover
 
@@ -3998,9 +4068,12 @@ Code: `change_request_customer_outcome.go` (`classifyExternalPatch`,
 **Who is "a customer" here: an external caller** -- a resolved identity with
 `SearchScope.Unrestricted == false` and `HasInternalAccess == false`
 (`isExternalCaller`). Internal staff (and the system identity, and staff who also
-hold an external record) are untouched: their PATCH keeps the whole contract,
-including `{isCustomerApproved: true}` as a bookkeeping stamp of the flag that moves
-nothing.
+hold an external record) are NOT the customer: their PATCH keeps the whole contract
+except the customer's answer -- `isCustomerApproved` / `isCustomerReviewed` from them
+is a 400 (it used to be a bookkeeping stamp of the flag that moved nothing), and so is
+the manual `{state: scheduled|closed}` out of the customer states (see "There is no
+"Schedule" action"). A staff user who is also a registered contact answers through the
+decision route on their own `REQUESTED` row, like anyone.
 
 * **Whitelist.** An external caller's PATCH may carry exactly one of the customer's
   answer (`isCustomerApproved` **or** `isCustomerReviewed`, optionally with
@@ -4053,8 +4126,9 @@ nothing.
   implementation time of this change request changed after you opened it (it is now
   ... to ...)`;
   no live customer request and none could be created -> **409** `no customer approval
-  is pending ... WSO2 records the customer's approval` (the manual
-  `{state: scheduled|closed}` stays WSO2's): for a **legacy** change request waiting in
+  is pending on this change request: it has not been requested from the project's
+  registered contacts, so there is nothing to answer here` (WSO2 does not answer in the
+  customer's place: the manual `{state: scheduled|closed}` is a 400 too): for a **legacy** change request waiting in
   the state the first customer act *creates* the stage instead (see "An in-flight legacy
   change request"), so the 409 is left for a project with nobody to ask but the creator,
   or a stage already decided; a strict change request nobody was asked about is not
@@ -4080,7 +4154,7 @@ nothing.
   registered afterwards, not one a sibling's answer or a Re-schedule cancelled); and
   `approverDecisionBlock` lets them (the creator never). It reuses the answer path's
   helpers (`liveCustomerStageForState`, `customerApproverUserID`,
-  `changeRequestCreatorsForApprover`, `callerMayGrantChangeRequestCustomerFlag`), the
+  `changeRequestCreatorsForApprover`, `callerIsRegisteredPortalContact`), the
   same ones `markCanDecide` is built on for the Approvals tab, so the three cannot
   drift. A `*bool` with `omitempty`: **present (true/false) only for an external
   caller on the PostgreSQL data source**; **absent** for staff / internal callers /
@@ -4181,7 +4255,8 @@ nothing.
   Re-schedule from a proposal), `TestChangeRequestCustomerPrivacyIntegration_*` (the
   answer bound to the window seen, the approvals a customer reads),
   `TestChangeRequestIntegration_PatchCustomerFlag*`
-  (the original flag authorisation, adapted), `TestClassifyExternalPatch`,
+  (the original flag authorisation, rewritten: staff can no longer send the flags),
+  `TestClassifyExternalPatch`,
   `TestIsExternalCaller`, `TestStateForMessage`, `TestNormalizePlannedTimestamp_*`,
   `TestRequireFutureWindow`, `TestRedactInternalApprovalStages`. The integration DSN connects as a
   Postgres superuser, which bypasses row-level security: what they assert is this
@@ -4924,120 +4999,62 @@ mirror and the system it models.
   and a blocked-reason display on the action bar are a deliberate follow-up
   cycle once this API contract exists, not part of this change.
 
-**`is_customer_approval_required`/`is_customer_review_required` are now authorized and
-one-way-locked — the last gap in this schema's four internal approval
-checkpoints plus these two customer-facing fields had no authorization of
-its own at all before this.** `PatchChangeRequestRequest.IsCustomerApproved`/
-`IsCustomerReviewed` (`domain.ChangeRequest.HasCustomerApproved`/
-`HasCustomerReviewed` on the read side) used to be written straight through
-in `patchChangeRequestTx`, unconditionally, from any caller — exactly the
-state `EditChangeRequestDialog.tsx`'s own doc comment describes as the
-reason its edit controls for these two fields were deliberately removed
-("nothing could set them meaningfully" at the time, on the ServiceNow-backed
-data source specifically — see that comment's own, different finding
-below). This closes it on the Postgres write path, by explicit product
-decision:
+**The customer's outcome flags are the customer's alone.**
+`PatchChangeRequestRequest.IsCustomerApproved` / `IsCustomerReviewed`
+(`domain.ChangeRequest.HasCustomerApproved` / `HasCustomerReviewed` on the read side;
+columns `is_customer_approval_required` / `is_customer_review_required`, migration 0043,
+plain booleans, no `approval_stage` involvement of their own) used to be written
+straight through in `patchChangeRequestTx` from any caller, then (a first fix) from an
+internal caller or a registered `PORTAL_USER` contact, one-way-locked
+(`authorizeChangeRequestCustomerFlagWrite`). **Compliance rule (the user's decision):
+no staff action records the customer's approval or review on the customer's behalf**
+-- the answer is the customer's decision and ServiceNow's record of it is audited --
+so that function, and the internal caller's right to stamp the flags, are gone:
 
-- **No schema change, no `approval_stage` involvement at all.** These stay
-  the plain booleans they already were (migration 0043); this adds
-  authorization on top of the existing columns, not a new mechanism. (They
-  record the customer's *outcome*. The creation form's "Customer Approval" /
-  "Customer Review" checkboxes — whether the customer step is *required* — are
-  separate columns, `customer_approval_required` / `customer_review_required`;
-  recording the outcome is what `{state: "scheduled"}` out of `customer_approval`
-  and `{state: "closed"}` out of `customer_review` do through this very
-  authorization — see "Customer Approval / Customer Review checkboxes".)
-- **Who may flip a flag `false` → `true`**: either (a) an internal/staff
-  caller — `repository.CallerIdentityFromContext`'s own `Unrestricted`, the
-  exact `INTERNAL` resolution `AccessService.ResolveScope`/
-  `recompute_user_type` already use everywhere else in this service (see
-  "Token validation and caller-scoped access" above) — reused here rather
-  than re-derived, or (b) a caller who resolves, by the `x-user-id-token`
-  email claim (`actorEmail`, already threaded into `patchChangeRequestTx` as
-  a parameter — no new identity-plumbing mechanism needed), to a
-  `project_contact` row on THIS change request's OWN project
-  (`work_item.project_id`, via `change_request`'s shared-PK join), in state
-  `REGISTERED`, holding the `PORTAL_USER` project role via
-  `project_contact` → `project_contact_group` → `project_group_role` →
-  `project_role` — the identical join chain
-  `CaseRepository.ProjectContactEmailsByRole`/`ProjectContactRepository`'s
-  own `projectContactColumns` already use for "is this person a registered
-  contact with role X on project Y", reused verbatim
-  (`callerMayGrantChangeRequestCustomerFlag`, `change_request_repo.go`)
-  rather than inventing a second way to ask the same question.
-- **Once a flag is `true`, it is permanently locked — confirmed via live
-  ServiceNow inspection, not guessed.** The real change-request form renders
-  both checkboxes read-only — un-clickable — the instant either is checked
-  (confirmed by direct DOM inspection AND a physical click-test showing
-  neither toggles back off), and no sampled record's own history ever shows
-  a reversal either. A `true` → `false` attempt is therefore always
-  rejected (`ValidationError`, naming the field), for either flag,
-  regardless of who is asking — there is no override path in this cycle,
-  internal caller or not.
-- **`false` → `false` and `true` → `true` are no-ops** and always succeed
-  trivially, with no authorization check at all — a write that changes
-  nothing needs no permission to not-change it. Each field is evaluated
-  independently against its OWN current value: a single PATCH setting both
-  flags, with one already locked `true` (a no-op) and the other genuinely
-  flipping `false` → `true` (authorization-gated), succeeds as a whole —
-  one field's lock state has no bearing on the other's.
-- **A caller who is neither internal nor a qualifying contact gets a
-  `ForbiddenError`, not a `ValidationError`** — an authorization-shaped
-  rejection, matching how `apierror.ForbiddenError` is already used
-  elsewhere in this codebase for exactly that distinction
-  (`AccessService.ResolveScope`'s own "no access for this user";
-  `TimeCardRepository.TransitionTimeCardState`'s "only an eligible approver
-  ... may approve or reject this time card") — `ValidationError` stays
-  reserved for a problem with the request's own data, not with who sent it.
-- **A project with no qualifying contact simply means no external caller
-  can ever flip a flag on a change request linked to it** — accepted, by
-  design: this has **no relationship whatsoever** to
-  `legalChangeRequestNextStates`/`changeRequestForwardNextStates`, and must
-  never gate or block that change request's own lifecycle in any way;
-  nothing in this feature touches `change_request.state`, and nothing that
-  does consults it.
-- **This is a deliberate simplification of real ServiceNow's OWN behavior
-  for these two fields, not an oversight** — `EditChangeRequestDialog.tsx`'s
-  own doc comment (traced end to end: webapp → BFF → this service →
-  Ballerina → the SN scripted API's dedicated `patchCustomerApproved`/
-  `patchCustomerReviewed` handlers) found that on the ServiceNow-backed data
-  source, flipping either field is gated on the change request already
-  sitting in the matching "Customer Approval"/"Customer Review" state, AND
-  the "off" direction there is actively destructive — it drives a real
-  state transition (`isCustomerApproved: false` → Cancelled;
-  `isCustomerReviewed: false` → Rollback, a terminal dead end), not a plain
-  boolean edit. That is real, confirmed behavior for the ServiceNow data
-  source specifically (`sn_change_request_service.go`'s own PATCH path,
-  untouched by this change) — this feature is scoped to the Postgres write
-  path (`change_request_repo.go`) only, where product has explicitly
-  decided these stay plain, locked booleans with no state-machine
-  involvement, by the design above. The two data sources are intentionally
-  not symmetric here.
-- **Tests** (`change_request_repo_integration_test.go`,
-  `TestChangeRequestIntegration_PatchCustomerFlag*`): an internal caller
-  setting both flags `true` together; a REGISTERED `PORTAL_USER` contact on
-  the matching project approving; the identical contact registered on a
-  DIFFERENT project being refused; a REGISTERED contact holding no
-  `PORTAL_USER` role anywhere on the project (a literal "no qualifying
-  contact" project) being refused AND a separate `{state: "canceled"}` PATCH
-  on the very same record still succeeding right afterward; an `INVITED`
-  (not yet `REGISTERED`) `PORTAL_USER` contact being refused; both internal
-  and a qualifying contact being refused when attempting to revert an
-  already-`true` flag; an already-`false` flag staying a no-op success even
-  for a non-qualifying caller; and one field already locked `true` not
-  blocking the other's legitimate `false` → `true` flip in the same PATCH.
-  **One environment quirk surfaced while writing these, confirmed live, not
-  guessed**: the local docker-compose stack's own `CHANGE_REQUEST_TEST_DSN`
-  connects as the `postgres` role, a real Postgres superuser — superusers
-  unconditionally bypass every RLS policy regardless of
-  `FORCE ROW LEVEL SECURITY` (a Postgres behavior, not a bug in migration
-  0147's own `work_item` policies) — so the "different project"/"invited
-  contact" tests are rejected by THIS feature's own `ForbiddenError` check
-  in this environment rather than by `work_item`'s RLS returning a
-  `NotFoundError` one layer earlier, as a non-superuser deployment role
-  would instead produce for the identical scenario. Either way the caller
-  cannot flip the flag; the tests' own doc comments spell this out rather
-  than silently asserting the wrong error type.
+- **A request that carries either flag from anyone but the customer is a 400** -- the
+  caller is not an external customer answering (`isExternalCaller`, which already
+  returned through `answerCustomerStageViaPatch`): internal staff, staff who also hold
+  an external record, an internal client credential, a context with no identity. True
+  or false, alone or with a state or other fields, whatever is stored (a no-op
+  `true` -> `true` is refused too): `isCustomerApproved cannot be set on the customer's
+  behalf: the customer's approval can only be given by the customer in the Customer
+  Portal` (likewise `isCustomerReviewed` / "review"; `refuseStaffCustomerOutcomeFlags`,
+  decided before anything is looked at or written). Refused, never silently ignored,
+  so a client that still sends them (the CSM microapp's edit dialog did) learns it.
+- **The flags are stamped by exactly one thing**: the customer's own answer
+  (`applyCustomerStageOutcome`, true only), through `PATCH {isCustomerApproved|
+  isCustomerReviewed}` from a registered contact or the decision route -- see "Customer
+  answers through PATCH". The one-way lock stays there: a rejection of a flag already
+  `true` is a 400 `locked once set to true`. There is no override path for anyone.
+- **Who is "a registered contact"**: `callerIsRegisteredPortalContact` -- a
+  `project_contact` of the change request's OWN project (`work_item.project_id`), in
+  state `REGISTERED`, holding the `PORTAL_USER` project role via `project_contact_group`
+  -> `project_group_role` -> `project_role` (the join chain
+  `CaseRepository.ProjectContactEmailsByRole` / `ProjectContactRepository` use). It has
+  no shortcut for an internal caller any more, so nothing built on it can let staff answer
+  for the customer.
+- **A project with no qualifying contact** simply has nobody who can answer: the change
+  request waits in the customer state (cancel, re-schedule or, for a review, roll back; a
+  contact registered later is asked when the stored `projectId` is restated).
+- **The ServiceNow-backed data source** is a different mechanism (its scripted API's
+  dedicated `patchCustomerApproved` / `patchCustomerReviewed` handlers gate flipping either
+  field on the change sitting in the matching state, and the "off" direction there drives a
+  real state transition: `isCustomerApproved: false` -> Cancelled, `isCustomerReviewed: false`
+  -> Rollback; see `EditChangeRequestDialog.tsx`'s doc comment). `sn_change_request_service.go`
+  forwards the PATCH to ServiceNow, which is the authority there (this service cannot tell
+  staff from the customer on that source without an identity lookup); the CSM BFF refuses
+  the two flags from its staff callers for every data source. Only the offered states are
+  filtered on that source (`withoutCustomerOutcomeStates`).
+- **Tests**: `change_request_no_bypass_integration_test.go` (`TestChangeRequestNoBypassIntegration_*`),
+  `change_request_repo_integration_test.go` (`TestChangeRequestIntegration_PatchCustomerFlag*`:
+  staff refused whatever is stored; the registered contact, a contact of another project, a
+  contact with no `PORTAL_USER` role and an invited one against the customer's own answer; the
+  lock on a flag already true), `change_request_repo_test.go` (`TestRefuseStaffCustomerOutcomeFlags`,
+  `TestRefuseStaffExitFromCustomerState`). **Environment quirk**: the local docker-compose
+  stack's `CHANGE_REQUEST_TEST_DSN` connects as the `postgres` role, a Postgres superuser, which
+  bypasses every RLS policy, so a "different project" / "invited contact" PATCH is refused by this
+  code's own `ForbiddenError` instead of `work_item`'s RLS `NotFoundError`; the tests' doc comments
+  say so, and the suite is also run as `csm_app` (RLS enforced).
 
 ## Fixing case enum-casing/mapping bugs and GetCaseByID's false 404s
 

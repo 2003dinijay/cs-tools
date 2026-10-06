@@ -5801,7 +5801,36 @@ paths:
     patch:
       summary: Update a change request.
       description: >-
-        WSO2 users (internal callers) may send the whole PatchChangeRequestRequest.
+        WSO2 users (internal callers) may send the whole PatchChangeRequestRequest,
+        EXCEPT the customer's answer (below).
+
+        Compliance rule: no staff action records the customer's approval or review on
+        the customer's behalf. The customer's answer is the customer's decision and
+        ServiceNow's record of it is audited, so a decision made for the customer and
+        stored as theirs would be a compliance problem. A change request in
+        customer_approval / customer_review moves on ONLY through the customer's own
+        answer (given in the Customer Portal, below); the staff exits that stay are
+        Cancel (any state that is not final), Re-schedule ({state: "authorize"} with a
+        changed window, out of customer_approval: the customer is asked again) and
+        Rollback (out of customer_review, while nobody is being asked). So, from an
+        internal caller: {state: "scheduled"} is a 400 from EVERY state, out of
+        customer_approval included (`state "scheduled" cannot be set manually from
+        customer_approval: the customer's approval can only be given by the customer in
+        the Customer Portal; cancel the change or re-schedule it instead`);
+        {state: "closed"} out of customer_review is a 400 (`... from customer_review:
+        the customer's review can only be given by the customer in the Customer Portal;
+        roll the change back or cancel it instead`, or `cancel the change instead` while
+        the customer group is being asked); so is any other destination out of those two
+        states except canceled, authorize (customer_approval) and rollback
+        (customer_review), whichever way it is spelled, whether or not anybody was asked,
+        with or without a project, contacts or a stage; and isCustomerApproved /
+        isCustomerReviewed, true or false, alone or with a state, are a 400 (`isCustomerApproved
+        cannot be set on the customer's behalf: the customer's approval can only be
+        given by the customer in the Customer Portal`) -- refused, never ignored. A refused PATCH
+        writes nothing. A change request that reaches a customer state with nobody to ask
+        (no project, no registered contact, only the creator) therefore waits: it can be
+        cancelled or re-scheduled, or a contact registers and a PATCH restating the
+        stored projectId asks them.
 
         A CUSTOMER (an external caller: a registered contact of the change request's
         project, signed in to the customer portal) may send exactly one of the
@@ -5859,9 +5888,6 @@ paths:
         failing rule wins and a refused PATCH writes nothing. Corrections are a cancel
         and a clone.
 
-        An internal caller's isCustomerApproved / isCustomerReviewed remain a
-        bookkeeping stamp of the flag that moves nothing.
-
         A change request the CUSTOMER may not see (not designated to them and not legacy:
         see GET /change-requests/{id}) is a 404 whatever the request carries, checked
         before it is looked at. A legacy change request waiting in customer_approval /
@@ -5910,7 +5936,15 @@ paths:
             to it. Cancel it and clone it instead.";
             "approval cannot be requested: the customer's approval and/or review is required
             but no Customer Project is set, so there is nobody to ask. Select a Customer
-            Project first (or clear the requirement)."; and, when Request Approval finds
+            Project first (or clear the requirement)."; from an internal caller, the
+            customer's own answer: "state \"scheduled\" cannot be set manually from
+            customer_approval: the customer's approval can only be given by the customer in
+            the Customer Portal; cancel the change or re-schedule it instead" (likewise
+            "closed" from customer_review: "... roll the change back or cancel it instead",
+            or "... cancel the change instead" while the customer group is being asked, and
+            any other destination out of those states), "isCustomerApproved cannot be set on
+            the customer's behalf: the customer's approval can only be given by the customer
+            in the Customer Portal" (likewise isCustomerReviewed); and, when Request Approval finds
             nobody who may approve, the message names the group and ends with counts of its
             members and why none counted (by user_type, inactive, no user record, creator;
             never names).
@@ -16680,15 +16714,17 @@ components:
             hasCustomerApproved:
               type: boolean
               description: >-
-                The customer's OUTCOME: true once the customer's approval has
-                been recorded (state scheduled out of customer_approval). Not
-                the creation checkbox -- see customerApprovalRequired.
+                The customer's OUTCOME: true once the CUSTOMER has approved (in the
+                Customer Portal, which schedules the change out of
+                customer_approval); no staff action stamps it. Not the creation
+                checkbox -- see customerApprovalRequired.
             hasCustomerReviewed:
               type: boolean
               description: >-
-                The customer's OUTCOME: true once the customer's review has
-                been recorded (state closed out of customer_review). Not the
-                creation checkbox -- see customerReviewRequired.
+                The customer's OUTCOME: true once the CUSTOMER has confirmed the
+                review (in the Customer Portal, which closes the change out of
+                customer_review); no staff action stamps it. Not the creation
+                checkbox -- see customerReviewRequired.
             customerApprovalRequired:
               type: boolean
               description: >-
@@ -16749,26 +16785,27 @@ components:
                 assess: [authorize, canceled]; authorize: [canceled] (CAB/ECAB
                 approval moves the change on by itself: to scheduled, or to
                 customer_approval when customerApprovalRequired).
-                customer_approval: [scheduled, authorize, canceled] --
-                "scheduled" here means "record the customer's approval" and is
-                the ONLY state from which a manual scheduled is accepted;
-                "authorize" here means Re-schedule (PATCH {state: authorize}
-                with a changed plannedStartOn and/or plannedEndOn sends the
-                change back through CAB/ECAB approval; it is accepted from this
-                state only and refused when the window does not change). When
-                the change has a customer group with a pending "Customer
-                Approval" stage "scheduled" is withdrawn: [authorize,
-                canceled], and the decision comes from the group's members
-                through the approvals.
+                customer_approval: [authorize, canceled] -- never "scheduled":
+                only the CUSTOMER's own approval (Customer Portal) schedules the
+                change, and no staff action stands in for it, whether or not
+                anybody was asked; "authorize" here means Re-schedule (PATCH
+                {state: authorize} with a changed plannedStartOn and/or
+                plannedEndOn sends the change back through CAB/ECAB approval and
+                asks the customer again; it is accepted from this state only
+                and refused when the window does not change).
                 scheduled: [implement, canceled]; implement: [review,
                 canceled].
                 review: [customer_review, rollback, canceled] when
                 customerReviewRequired, else [closed, rollback, canceled].
-                customer_review: [closed, rollback, canceled], or [canceled]
-                while a customer group's "Customer Review" stage is pending.
+                customer_review: [rollback, canceled] -- never "closed": only
+                the CUSTOMER's own review closes the change -- or [canceled]
+                while a customer group's "Customer Review" stage is pending (a
+                failed review is then the customer's to give too).
                 "rollback" (the failed-review off-ramp) is accepted only from
                 review and customer_review; it is terminal.
                 Terminal states: none.
+                "scheduled" is offered from no state, and "closed" is not offered
+                from customer_review, on the ServiceNow data source either.
             implementationPlan:
               type: string
               nullable: true
@@ -17721,7 +17758,11 @@ components:
           type: string
           description: >-
             "new" is accepted only for a change request that is still in new (a no-op); once
-            it has left New it cannot return (400).
+            it has left New it cannot return (400). "scheduled" is never accepted from an
+            internal caller (it is reached by the approval flow, or by the customer's own
+            approval out of customer_approval); out of customer_approval / customer_review
+            only canceled, authorize (Re-schedule, customer_approval) and rollback
+            (customer_review) are accepted -- see the operation description.
           enum:
             - new
             - assess
@@ -17758,18 +17799,20 @@ components:
         isCustomerApproved:
           type: boolean
           description: >-
-            The customer's approval. From a customer (an external caller) in
-            customer_approval: true approves (scheduled), false rejects (canceled), as
-            the caller's own decision on the Customer Approval stage; refused (409) in
-            any other state. From an internal caller: a bookkeeping stamp that moves
-            nothing (true is permanent). See the operation description.
+            The customer's approval, which only the CUSTOMER can give. From a customer
+            (an external caller) in customer_approval: true approves (scheduled), false
+            rejects (canceled), as the caller's own decision on the Customer Approval
+            stage; refused (409) in any other state. From an internal caller, true or
+            false, alone or with a state: a 400 (`isCustomerApproved cannot be set on the
+            customer's behalf ...`) that writes nothing. See the operation description.
         isCustomerReviewed:
           type: boolean
           description: >-
-            The customer's review. From a customer in customer_review: true confirms
-            (closed), false fails the review (rollback), as the caller's own decision on
-            the Customer Review stage; refused (409) in any other state. From an internal
-            caller: a bookkeeping stamp that moves nothing.
+            The customer's review, which only the CUSTOMER can give. From a customer in
+            customer_review: true confirms (closed), false fails the review (rollback), as
+            the caller's own decision on the Customer Review stage; refused (409) in any
+            other state. From an internal caller: a 400 (`isCustomerReviewed cannot be set
+            on the customer's behalf ...`) that writes nothing.
         requestApproval:
           type: boolean
         isPlanningVisibleToCustomers:
