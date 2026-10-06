@@ -2775,6 +2775,21 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     approver rows, installs the personas' and **resets the fixtures to their
     starting state** (state, stamps, stages, approvers), so no volume wipe is
     needed. The Playwright suite re-runs the seed before it starts.
+  * **Who the customer portal's real-stack specs play**
+    (`apps/customer-portal/webapp/tests/e2e/specs/local/`, "State-changing local specs" in its
+    README). dave and erin answer, reject, review and propose on **CHG-FIXED-007 / -008**, and on
+    **CHG-FIXED-005** (the Standard change: `PATCH {state: assess}` by alice through the CSM BFF
+    puts it in Customer Approval with both contacts asked). **alice** is the CAB approver who
+    approves a customer's proposed window (`POST /change-requests/{id}/approvals/decision`) so the
+    change returns to Customer Approval; **mira** (Lumen Works Platform) is "a customer of another
+    project" and must get 404 on project 401's change requests. The specs re-seed in the stack's
+    Postgres (`E2E_POSTGRES_CONTAINER`, never a guessed name) before every test and after their
+    file, and read raw rows back as `postgres`, which is why the fixtures' approver rows are asserted
+    exactly: after one proposal loop the history is the cancelled Customer Approval rows, the CAB
+    stage, then fresh Customer Approval rows for dave and erin. Their planned dates are NULL in the
+    seed, so a proposal there is a whole new window, and entity-service reads the zone-less
+    `YYYY-MM-DD HH:MM:SS` both portals send in the database session's `TimeZone`: the specs hold on a
+    UTC database and fail loudly (a shifted window) on any other.
   * **What the customers can see in the customer portal.** The portal's Operations
     menu (Service requests, Change requests) comes from `GET /projects/{id}/features`,
     i.e. the project's `project_type` flags `has_service_request_read_access` /
