@@ -333,4 +333,18 @@ describe("ProblemDetailPage", () => {
       expect.objectContaining({ onSuccess: expect.any(Function), onError: expect.any(Function) }),
     );
   });
+
+  it("renders an HTML description as formatted text, not tags", () => {
+    mockQueryResult({ data: { ...BASE_PROBLEM, description: "<p>test</p><script>alert(1)</script>" } });
+    const { container } = render(<ProblemDetailPage />);
+    expect(screen.getByText("test")).toBeInTheDocument();
+    expect(screen.queryByText("<p>test</p>", { exact: false })).not.toBeInTheDocument();
+    expect(container.querySelector("script")).toBeNull();
+  });
+
+  it("keeps a plain-text description's line breaks", () => {
+    mockQueryResult({ data: { ...BASE_PROBLEM, description: "line one\nline two" } });
+    render(<ProblemDetailPage />);
+    expect(screen.getByText(/line one\s+line two/)).toBeInTheDocument();
+  });
 });
