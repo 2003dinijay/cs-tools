@@ -151,7 +151,8 @@ test.describe("Local stack — a customer proposes a new implementation time", (
     });
     try {
       const dave = new ChangeRequestDetailsPage(page);
-      const erin = new ChangeRequestDetailsPage(await erinContext.newPage());
+      const erinPage = await erinContext.newPage();
+      const erin = new ChangeRequestDetailsPage(erinPage);
       await dave.open(projectId, approval.id, approval.number);
       await erin.open(projectId, approval.id, approval.number);
       await expect(erin.button(UI.buttons.proposeNewTime)).toBeVisible();
@@ -228,6 +229,15 @@ test.describe("Local stack — a customer proposes a new implementation time", (
       await erin.button(UI.buttons.proposeNewTime).click();
       await expect(erin.proposedStart()).toHaveValue(window.start);
       await expect(erin.proposedEnd()).toHaveValue(window.end);
+
+      // Proposing the very window that is already there is refused in the dialog, before any request.
+      const patches: string[] = [];
+      erinPage.on("request", (request) => {
+        if (request.method() === "PATCH") patches.push(request.url());
+      });
+      await erin.submitProposalButton().click();
+      await expect(erin.proposeDialog().getByText(UI.propose.errors.unchanged)).toBeVisible();
+      expect(patches, "an unchanged window must not leave the browser").toEqual([]);
       await erin.proposeDialog().getByRole("button", { name: UI.propose.cancel, exact: true }).click();
       await expect(erin.proposeDialog()).toBeHidden();
 
@@ -327,5 +337,78 @@ test.describe("Local stack — a customer proposes a new implementation time", (
     await dave.button(UI.buttons.approve).click();
     await expect(dave.banner(UI.banners.approved)).toBeVisible();
     await expect(dave.currentStage()).toHaveText(UI.stages.scheduled);
+  });
+
+  test(`the loop can be repeated: dave moves the window again after CAB approved the first, the start drags the end along, and the history keeps every round`, async ({
+    page,
+    browser,
+    baseURL,
+  }) => {
+    const erinContext = await openLocalContext(test, browser, "erin", {
+      baseURL,
+      timezoneId: BROWSER_ZONE,
+    });
+    try {
+      const dave = new ChangeRequestDetailsPage(page);
+      const erin = new ChangeRequestDetailsPage(await erinContext.newPage());
+      await dave.open(projectId, approval.id, approval.number);
+
+      // Round one: dave proposes, alice (CAB) approves.
+      await dave.button(UI.buttons.proposeNewTime).click();
+      const zone = await dave.proposeTimeZone();
+      const first = futureWindow(zone, { daysAhead: 3, startHour: 16, hours: 4 });
+      await dave.fillProposedWindow(first.start, first.end);
+      await dave.submitProposalButton().click();
+      await expect(dave.banner(UI.banners.proposedNormal)).toBeVisible();
+      await expect(dave.currentStage()).toHaveText(UI.stages.authorize);
+      expect((await decideAsStaff(STAFF_APPROVERS.alice, approval.id, "approved")).status).toBe(200);
+
+      // Round two: back in Customer Approval, dave changes his mind. The dialog starts from the
+      // window on the change; moving the START moves the END with it, keeping the four hours.
+      await dave.open(projectId, approval.id, approval.number);
+      await expect(dave.currentStage()).toHaveText(UI.stages.customerApproval);
+      await dave.button(UI.buttons.proposeNewTime).click();
+      await expect(dave.proposedStart()).toHaveValue(first.start);
+      await expect(dave.proposedEnd()).toHaveValue(first.end);
+      const second = futureWindow(zone, { daysAhead: 5, startHour: 9, hours: 4 });
+      await dave.proposedStart().fill(second.start);
+      await expect(dave.proposedEnd(), "the end follows the start, same duration").toHaveValue(second.end);
+      await dave.submitProposalButton().click();
+      await expect(dave.banner(UI.banners.proposedNormal)).toBeVisible();
+      await expect(dave.currentStage()).toHaveText(UI.stages.authorize);
+      await expect(dave.answerButtons()).toHaveCount(0);
+      const mid = await changeRequestRow(approval.id);
+      expect([mid.state, mid.startUtc, mid.endUtc]).toEqual(["AUTHORIZE", second.startUtc, second.endUtc]);
+
+      // A second CAB round, decided by bob this time: back to Customer Approval, erin approves.
+      expect((await decideAsStaff(STAFF_APPROVERS.bob, approval.id, "approved")).status).toBe(200);
+      await erin.open(projectId, approval.id, approval.number);
+      await expect(erin.currentStage()).toHaveText(UI.stages.customerApproval);
+      await erin.button(UI.buttons.approve).click();
+      await expect(erin.banner(UI.banners.approved)).toBeVisible();
+      await expect(erin.currentStage()).toHaveText(UI.stages.scheduled);
+
+      const done = await changeRequestRow(approval.id);
+      expect([done.state, done.startUtc, done.endUtc]).toEqual(["SCHEDULED", second.startUtc, second.endUtc]);
+      expect(
+        (await approverRows(approval.id)).map((r) => `${r.stage}|${r.email.split("@")[0]}|${r.status}`),
+        "every round stays on record: the customers' cancelled requests, each CAB round, the final answer",
+      ).toEqual([
+        "Customer Approval|dave.mendis|cancelled",
+        "Customer Approval|erin.jayawardena|cancelled",
+        "CAB Approval|alice.perera|approved",
+        "CAB Approval|bob.fernando|cancelled",
+        "CAB Approval|carol.silva|cancelled",
+        "Customer Approval|dave.mendis|cancelled",
+        "Customer Approval|erin.jayawardena|cancelled",
+        "CAB Approval|alice.perera|cancelled",
+        "CAB Approval|bob.fernando|approved",
+        "CAB Approval|carol.silva|cancelled",
+        "Customer Approval|dave.mendis|cancelled",
+        "Customer Approval|erin.jayawardena|approved",
+      ]);
+    } finally {
+      await erinContext.close();
+    }
   });
 });

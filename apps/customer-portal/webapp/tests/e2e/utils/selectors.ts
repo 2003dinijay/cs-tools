@@ -825,6 +825,9 @@ export const CHANGE_REQUEST_DETAILS = {
       endRequired: "Enter the proposed end date and time.",
       startPast: "The proposed start must be in the future.",
       endNotAfterStart: "The proposed end must be after the proposed start.",
+      /** The window equals the one already on the change request (the backend refuses it too). */
+      unchanged:
+        "This is the same as the current schedule. Change the start or the end to propose a different time.",
       /** HTTP 409 on a proposal: WSO2 has the change on hold (an answer is still taken). */
       onHold:
         "This change request is on hold, so a new time cannot be proposed right now.",
