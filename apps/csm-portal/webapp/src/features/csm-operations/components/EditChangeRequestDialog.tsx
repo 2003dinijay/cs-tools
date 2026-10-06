@@ -196,22 +196,15 @@ function useRichTextPlanField(storedHtml?: string | null): RichTextPlanField {
  * validation rule not worth half-implementing here — see
  * `BePatchChangeRequestPayload`'s doc comment for the full reasoning on each).
  *
- * `isCustomerApproved`/`isCustomerReviewed` are deliberately NOT exposed here
- * even though the BE patch contract still accepts them (see
- * `BePatchChangeRequestPayload`). Traced end to end (webapp -> BFF -> Go
- * entity-service -> Ballerina -> the SN scripted API's dedicated
- * `patchCustomerApproved`/`patchCustomerReviewed` handlers): both are gated
- * (only accepted while the CR is already in the "Customer Approval"/
- * "Customer Review" state) but flipping either is not a boolean-field edit —
- * it drives a real state transition, and the "off" direction is destructive
- * (`isCustomerApproved: false` moves the CR to Cancelled; `isCustomerReviewed:
- * false` moves it to Rollback, a terminal dead end with no reason capture).
- * A switch labelled "Customer approved"/"Customer reviewed" strongly implies
- * a record-keeping boolean, not a one-way cancel/rollback action, so this is
- * exactly the "inventing a capability the source system doesn't expose"
- * pattern the CR approval-mechanics review warned about (no SN UI action
- * exists for either state either). Removed as a UI affordance; the BE/Go
- * plumbing is left in place since nothing else depends on removing it.
+ * `isCustomerApproved`/`isCustomerReviewed` are deliberately NOT exposed here,
+ * and not modeled in `BePatchChangeRequestPayload`: they ARE the customer's
+ * answer (the customer's approval moves the change to Scheduled, their
+ * rejection cancels it; the customer's review closes it or rolls it back),
+ * which only the customer gives, in the Customer Portal. The backend refuses
+ * both from staff outright, so a switch labelled "Customer approved" /
+ * "Customer reviewed" here would only be a way to answer for the customer.
+ * What the customer has confirmed is shown read-only (`hasCustomerApproved` /
+ * `hasCustomerReviewed`).
  */
 export default function EditChangeRequestDialog({
   cr,

@@ -1452,12 +1452,17 @@ function lcAfterInternalApproval(): string {
   return lc.cr.customerApprovalRequired ? "customer_approval" : "scheduled";
 }
 
-/** The backend's refusal of a manual answer out of a customer gate (the customer gives it in the Customer Portal). */
+/**
+ * The backend's refusal of a manual answer out of a customer gate (the customer gives it in the Customer Portal):
+ * it says what staff can do instead, which for Customer Review depends on whether the customer's request is live.
+ */
 const LC_ANSWER_REFUSAL = {
   scheduled:
     'state "scheduled" cannot be set manually from customer_approval: the customer\'s approval can only be given by the customer in the Customer Portal; cancel the change or re-schedule it instead',
-  closed:
-    'state "closed" cannot be set manually from customer_review: the customer\'s review can only be given by the customer in the Customer Portal; cancel the change or roll it back instead',
+  closed: (reviewPending: boolean): string =>
+    `state "closed" cannot be set manually from customer_review: the customer's review can only be given by the customer in the Customer Portal; ${
+      reviewPending ? "cancel the change" : "roll the change back or cancel it"
+    } instead`,
 };
 
 function lcStage(name: string, group: string, who: { id: string; name: string }): BeChangeRequestApproval {
@@ -1624,7 +1629,7 @@ function lcSeed(
       // Staff never record the customer's approval: refused whether or not anybody was asked.
       throw new BackendApiError(400, LC_ANSWER_REFUSAL.scheduled);
     } else if (target === "closed" && lc.cr.state === "customer_review") {
-      throw new BackendApiError(400, LC_ANSWER_REFUSAL.closed);
+      throw new BackendApiError(400, LC_ANSWER_REFUSAL.closed(lcHasLiveCustomerStage()));
     } else if (target === "authorize") {
       // Re-schedule: only from Customer Approval, only with a changed window.
       if (lc.cr.state !== "customer_approval") {

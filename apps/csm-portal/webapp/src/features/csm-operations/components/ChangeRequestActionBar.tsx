@@ -159,8 +159,8 @@ const MENU_ORDER: readonly string[] = [...FORWARD_ORDER, ...SECONDARY_ORDER, "ro
  * to be excluded here as "automation-only"; the backend now owns the manual
  * transition. The carve-out is still keyed on the record's own state.
  *
- * The exclusions are deliberately unconditional (the `authorize` and
- * `rollback` carve-outs are keyed on the record's own state, never on what
+ * The exclusions are deliberately unconditional (the `authorize`, `rollback`
+ * and `closed` carve-outs are keyed on the record's own state, never on what
  * `legalNextStates` claims) so a future backend change that starts returning
  * any of these cannot silently reopen them.
  */
