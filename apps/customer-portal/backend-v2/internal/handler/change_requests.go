@@ -17,10 +17,12 @@
 package handler
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/dto"
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
@@ -45,6 +47,15 @@ type entityChangeRequestClient interface {
 type ChangeRequestHandler struct {
 	entity entityChangeRequestClient
 }
+
+// Messages of PATCH /change-requests/{id} when it is served at the customer
+// level (see patchChangeRequestAsCustomer).
+const (
+	errMsgCustomerPatchFields = "Customers can only approve or reject a change request, confirm or reject its review, or propose a new implementation time. Other fields cannot be changed."
+	errMsgCustomerPatchMixed  = "Send the approval or review and a proposed implementation time as separate requests."
+	errMsgCustomerPatchBoth   = "Send either isCustomerApproved or isCustomerReviewed, not both."
+	errMsgCustomerPatchEmpty  = "At least one of isCustomerApproved, isCustomerReviewed or plannedStartOn must be provided."
+)
 
 // NewChangeRequestHandler creates a ChangeRequestHandler backed by the given entity client.
 func NewChangeRequestHandler(entity entityChangeRequestClient) *ChangeRequestHandler {
@@ -144,6 +155,18 @@ func (h *ChangeRequestHandler) GetChangeRequest(w http.ResponseWriter, r *http.R
 }
 
 // PatchChangeRequest handles PATCH /change-requests/{id}.
+//
+// The route lets two kinds of caller in (middleware.RequirePermissionOneOf) and
+// this handler honours as much of the body as the level they came in at:
+//
+//   - ActionUpdate (admin / agent / internal): the full customer-safe field set
+//     of dto.ChangeRequestUpdateRequest, as before.
+//   - ActionDecide only (customer / partner roles): the customer's own answer
+//     and nothing else -- see patchChangeRequestAsCustomer.
+//
+// Anything other than a positive match on ActionUpdate is served at the customer
+// level, including a request that never passed through the middleware: the
+// restriction cannot be lost by forgetting to wire it.
 func (h *ChangeRequestHandler) PatchChangeRequest(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -162,6 +185,11 @@ func (h *ChangeRequestHandler) PatchChangeRequest(w http.ResponseWriter, r *http
 		return
 	}
 
+	if granted, _ := middleware.GrantedActionFromContext(r.Context()); granted != middleware.ActionUpdate {
+		h.patchChangeRequestAsCustomer(w, r, user.UserID, id, body)
+		return
+	}
+
 	var req dto.ChangeRequestUpdateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
@@ -175,6 +203,66 @@ func (h *ChangeRequestHandler) PatchChangeRequest(w http.ResponseWriter, r *http
 	result, err := h.entity.UpdateChangeRequest(r.Context(), id, dto.BuildEntityPatchChangeRequestRequest(req))
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity UpdateChangeRequest failed", "userID", user.UserID, "changeRequestID", id, "err", summarizeErr(err))
+		mapUpstreamError(w, err, "Failed to update change request.")
+		return
+	}
+
+	writeJSONValue(w, http.StatusOK, dto.MapChangeRequestUpdate(result))
+}
+
+// patchChangeRequestAsCustomer serves PATCH /change-requests/{id} for a caller
+// who may give the customer's answer but not edit the change request.
+//
+// The body is decoded into dto.ChangeRequestCustomerUpdateRequest with unknown
+// fields refused, so any key outside its four fields -- a real one such as
+// "title" or "state", a misspelt one, or one that differs only in case -- is a
+// 403 and nothing is forwarded; and entity-service's request is then built from
+// those four fields alone. There is no code path by which an extra key rides
+// along.
+//
+// The body must be exactly one of:
+//
+//   - the customer's answer: isCustomerApproved (Customer Approval) or
+//     isCustomerReviewed (Customer Review), one of the two, true or false;
+//   - a proposed implementation window: plannedStartOn and/or plannedEndOn.
+//
+// Combining the two is refused (400): a customer who proposes a different time
+// has not approved the old one, and the two have different outcomes upstream.
+//
+// Whether this caller may answer THIS change request is not decided here.
+// entity-service resolves the caller from the forwarded user token and accepts
+// the answer only from a REGISTERED PORTAL_USER contact of the change request's
+// own project (a customer of another project is refused with a 403), only
+// while the change request is in the state the answer belongs to (otherwise a
+// 409), and records it exactly as the approvals/decision route does.
+func (h *ChangeRequestHandler) patchChangeRequestAsCustomer(w http.ResponseWriter, r *http.Request, userID, id string, body []byte) {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.DisallowUnknownFields()
+	var req dto.ChangeRequestCustomerUpdateRequest
+	if err := dec.Decode(&req); err != nil {
+		// encoding/json has no typed error for an unknown field.
+		if strings.HasPrefix(err.Error(), "json: unknown field ") {
+			writeError(w, http.StatusForbidden, errMsgCustomerPatchFields)
+			return
+		}
+		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	switch {
+	case !req.HasDecision() && !req.HasWindow():
+		writeError(w, http.StatusBadRequest, errMsgCustomerPatchEmpty)
+		return
+	case req.HasDecision() && req.HasWindow():
+		writeError(w, http.StatusBadRequest, errMsgCustomerPatchMixed)
+		return
+	case req.IsCustomerApproved != nil && req.IsCustomerReviewed != nil:
+		writeError(w, http.StatusBadRequest, errMsgCustomerPatchBoth)
+		return
+	}
+
+	result, err := h.entity.UpdateChangeRequest(r.Context(), id, dto.BuildEntityCustomerPatchChangeRequestRequest(req))
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity UpdateChangeRequest (customer) failed", "userID", userID, "changeRequestID", id, "err", summarizeErr(err))
 		mapUpstreamError(w, err, "Failed to update change request.")
 		return
 	}

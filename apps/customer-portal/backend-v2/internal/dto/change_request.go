@@ -320,6 +320,54 @@ func BuildEntityPatchChangeRequestRequest(req ChangeRequestUpdateRequest) entity
 	}
 }
 
+// ChangeRequestCustomerUpdateRequest is the ONLY request shape a caller who
+// holds the customer-decision grant (middleware.ActionDecide) but not
+// ActionUpdate may send to PATCH /change-requests/{id}: the customer's own
+// answer on a change request that is waiting on them, or a proposal for a
+// different implementation window.
+//
+//   - IsCustomerApproved: approve (true) or reject (false) a change request in
+//     Customer Approval.
+//   - IsCustomerReviewed: confirm the implementation succeeded (true) or failed
+//     (false) on a change request in Customer Review.
+//   - PlannedStartOn / PlannedEndOn: "propose new implementation time". The
+//     webapp sends only plannedStartOn.
+//
+// It is a struct of exactly these four fields on purpose: the handler decodes the
+// body into it with unknown fields refused, so a field that is not here cannot
+// reach entity-service however the body is spelled, and the entity-service
+// request is built from it field by field (BuildEntityCustomerPatchChangeRequestRequest)
+// rather than by copying a wider shape. Add a field here only after deciding that
+// a customer may set it.
+type ChangeRequestCustomerUpdateRequest struct {
+	IsCustomerApproved *bool   `json:"isCustomerApproved,omitempty"`
+	IsCustomerReviewed *bool   `json:"isCustomerReviewed,omitempty"`
+	PlannedStartOn     *string `json:"plannedStartOn,omitempty"`
+	PlannedEndOn       *string `json:"plannedEndOn,omitempty"`
+}
+
+// HasDecision reports whether the request carries the customer's answer.
+func (r ChangeRequestCustomerUpdateRequest) HasDecision() bool {
+	return r.IsCustomerApproved != nil || r.IsCustomerReviewed != nil
+}
+
+// HasWindow reports whether the request proposes a different planned window.
+func (r ChangeRequestCustomerUpdateRequest) HasWindow() bool {
+	return r.PlannedStartOn != nil || r.PlannedEndOn != nil
+}
+
+// BuildEntityCustomerPatchChangeRequestRequest builds entity-service's PATCH
+// request from a customer's restricted one, setting nothing but the four fields
+// it carries.
+func BuildEntityCustomerPatchChangeRequestRequest(req ChangeRequestCustomerUpdateRequest) entity.PatchChangeRequestRequest {
+	return entity.PatchChangeRequestRequest{
+		IsCustomerApproved: req.IsCustomerApproved,
+		IsCustomerReviewed: req.IsCustomerReviewed,
+		PlannedStartOn:     req.PlannedStartOn,
+		PlannedEndOn:       req.PlannedEndOn,
+	}
+}
+
 // ChangeRequestApprover is a single approver's response within an approval stage.
 type ChangeRequestApprover struct {
 	ID          string  `json:"id"`
