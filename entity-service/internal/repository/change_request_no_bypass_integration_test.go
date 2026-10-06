@@ -602,7 +602,8 @@ func TestChangeRequestNoBypassIntegration_LegalNextStatesExactTable(t *testing.T
 }
 
 // No other entry point can write the customer's outcome either. Creating a change
-// request (both create paths) ignores any state and carries no flag.
+// request (both create paths) ignores any state and carries no flag; the GitHub
+// sync's state writer refuses to move a change out of a customer state.
 func TestChangeRequestNoBypassIntegration_OtherDoorsAreClosedToo(t *testing.T) {
 	t.Run("create ignores a requested state and stamps nothing", func(t *testing.T) {
 		f := newCRFlow(t)
@@ -628,6 +629,36 @@ func TestChangeRequestNoBypassIntegration_OtherDoorsAreClosedToo(t *testing.T) {
 			if cr.State == nil || *cr.State != "new" || cr.HasCustomerApproved || cr.HasCustomerReviewed {
 				t.Fatalf("a ServiceNow-first change created with state %s = state %v approved %v reviewed %v, want new / false / false", st, cr.State, cr.HasCustomerApproved, cr.HasCustomerReviewed)
 			}
+		}
+	})
+	t.Run("the GitHub sync cannot move a change out of a customer state", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		gh := repository.NewGithubMutationRepository(f.scoped)
+		for _, tc := range []struct{ state, target string }{
+			{"CUSTOMER_APPROVAL", "SCHEDULED"}, {"CUSTOMER_APPROVAL", "IMPLEMENT"}, {"CUSTOMER_APPROVAL", "REVIEW"},
+			{"CUSTOMER_REVIEW", "CLOSED"}, {"CUSTOMER_REVIEW", "REVIEW"},
+		} {
+			id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, true)
+			f.setState(id, tc.state)
+			before := f.bypassSnapshot(id)
+			changed, err := gh.SetState(f.sys, id, tc.target)
+			var ve *apierror.ValidationError
+			if !errors.As(err, &ve) || changed || !strings.Contains(ve.Msg, "only the customer's own answer") {
+				t.Fatalf("SetState(%s -> %s) = %v, %v, want false and a refusal naming the customer's answer", tc.state, tc.target, changed, err)
+			}
+			if after := f.bypassSnapshot(id); after != before {
+				t.Fatalf("SetState(%s -> %s) changed the change request:\n  before: %s\n  after:  %s", tc.state, tc.target, before, after)
+			}
+			// A write of the state it already holds is the no-op it always was.
+			if changed, err := gh.SetState(f.sys, id, tc.state); err != nil || changed {
+				t.Fatalf("SetState(%s) on a change already there = %v, %v, want false, nil", tc.state, changed, err)
+			}
+		}
+		// Everywhere else the sync works as before.
+		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, false)
+		f.setState(id, "SCHEDULED")
+		if changed, err := gh.SetState(f.sys, id, "IMPLEMENT"); err != nil || !changed {
+			t.Fatalf("SetState(SCHEDULED -> IMPLEMENT) = %v, %v, want true, nil", changed, err)
 		}
 	})
 }

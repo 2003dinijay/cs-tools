@@ -21,9 +21,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 )
 
 // NewChangeRequestFromIssue is what a GitHub issue contributes to a new
@@ -268,6 +270,22 @@ func (r *githubMutationRepository) SetState(ctx context.Context, id, state strin
 		WHERE id = $1::uuid AND state IS DISTINCT FROM $2::change_request_state_enum`
 	changed := false
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		// A change waiting on the customer (Customer Approval / Customer Review)
+		// moves on only through the customer's own answer, never through a label
+		// or an issue event: refused, not skipped, so the sync sees it. Read under
+		// the row lock the UPDATE below would take anyway.
+		var current *string
+		switch err := tx.QueryRow(ctx, `SELECT state::text FROM change_request WHERE id = $1::uuid FOR UPDATE`, id).Scan(&current); {
+		case errors.Is(err, pgx.ErrNoRows):
+			return nil // no such change request: the UPDATE below would match nothing as well
+		case err != nil:
+			return err
+		}
+		if current != nil && customerStageSpecForState(strings.ToUpper(*current)) != nil && !strings.EqualFold(*current, state) {
+			return &apierror.ValidationError{Msg: fmt.Sprintf(
+				"state %q cannot be set from the GitHub sync: the change request is in %s, which only the customer's own answer (given in the Customer Portal) can move it out of",
+				state, strings.ToLower(*current))}
+		}
 		tag, err := tx.Exec(ctx, query, id, state)
 		if err != nil {
 			return err
