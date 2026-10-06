@@ -244,8 +244,15 @@ export function customerApi(persona: LocalPersona) {
         "POST",
         `${base}/projects/${projectId}/change-requests/search`,
         await token(),
-        { filters: {}, pagination: { offset: 0, limit: 100 } },
+        // 50 is the most the API takes per page (a larger limit answers 400, "limit cannot exceed 50").
+        { filters: {}, pagination: { offset: 0, limit: 50 } },
       );
+      // A project the caller may not read answers 403/404 and lists nothing; any other refusal (a 400 for the
+      // page size, say) must not read as "an empty list", or the assertions on what is NOT listed pass vacuously.
+      if (result.status === 403 || result.status === 404) return [];
+      if (result.status !== 200) {
+        throw new Error(`listing ${projectId}'s change requests answered ${result.status}: ${JSON.stringify(result.body)}`);
+      }
       return (result.body.changeRequests ?? []).flatMap((c) => (c.number ? [c.number] : []));
     },
     /** The id of the project this customer is a contact of, found by name (generated projects have random ids). */
