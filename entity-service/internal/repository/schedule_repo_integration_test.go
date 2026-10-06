@@ -289,7 +289,7 @@ func TestScheduleIntegration_CatalogueServesAllThreeParts(t *testing.T) {
 	}
 }
 
-// Rotas (migrations 0186-0187): the catalogue names SRE's SaaS and IaaS and
+// Rotas (migrations 0199-0200): the catalogue names SRE's SaaS and IaaS and
 // the SME product rotations, ties each zone to its rota, and reads a team's
 // rota -- and the SME family -- from its type, the way family has always been
 // read. SaaS SRE's own zones and teams must come out on the SaaS rota, so the

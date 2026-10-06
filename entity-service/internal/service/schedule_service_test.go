@@ -209,7 +209,7 @@ func TestSearchAssignmentsRejectsBadWindows(t *testing.T) {
 }
 
 // Every rota family reaches the repository: CRE and SRE as before, and SME,
-// the product special rotations added in migration 0186. An unknown family is
+// the product special rotations added in migration 0199. An unknown family is
 // still refused (TestSearchAssignmentsRejectsBadWindows).
 func TestSearchAssignmentsAcceptsEveryRotaFamily(t *testing.T) {
 	t.Parallel()

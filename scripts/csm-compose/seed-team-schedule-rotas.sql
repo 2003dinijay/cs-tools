@@ -14,7 +14,7 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Local stack only: one team per new rota (migrations 0186-0187), so the SRE
+-- Local stack only: one team per new rota (migrations 0199-0200), so the SRE
 -- and SME rota pickers have something to show. Team rows only -- no people
 -- and no generated rota: seed-team-schedule.sql generates CRE- and SRE-shaped
 -- rotas by family, and an SME rotation is neither. Roster people onto these

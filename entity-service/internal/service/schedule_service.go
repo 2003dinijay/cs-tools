@@ -204,7 +204,7 @@ func (s *scheduleService) OnDuty(ctx context.Context, at *time.Time) (domain.Sch
 // not by the head of CRE, not by anyone. The answer is a named grant somebody
 // has to be given and can be taken back, rather than widening what a lead
 // already holds: cre_rota_admin and sre_rota_admin (migration 0156), and
-// sme_rota_admin (0187), one per family, because the rotas are run by
+// sme_rota_admin (0200), one per family, because the rotas are run by
 // different people and no group has any business in another's cover.
 //
 // Leading is checked first because it is the common case by a wide margin --

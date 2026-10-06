@@ -319,10 +319,10 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
 -- team.key is shared; leave it unless nothing else has started using it.
 ```
 
-## Rotas: IaaS SRE and the SME rotations (0186–0187)
+## Rotas: IaaS SRE and the SME rotations (0199–0200)
 
 A **rota** is a named rotation inside a family. SRE runs SaaS (Apollo & Artemis)
-and IaaS. **SME**, a third family added in 0186, runs one rota per product:
+and IaaS. **SME**, a third family added in 0199, runs one rota per product:
 Asgardeo, Choreo Runtime, Bijira, Devant, WSO2 Cloud · Agent platform,
 WSO2 Cloud · Core and Moesif. The source is the "CSM SRE + SME on call" doc.
 PaaS SRE is N/A there, so it has no rota until it has a schedule.
@@ -382,7 +382,7 @@ PaaS SRE is N/A there, so it has no rota until it has a schedule.
 
 ## Change log
 
-- **0186–0187 rotas.** The SME family; `team_schedule_rota`; `zone.rota_id` (TZ1–TZ3 on `SRE_SAAS`); the zone-family check widened from SRE to SRE or SME; IaaS and seven SME rotas, each with a Day and a Night zone and window; the `sme_rota_admin` role. Additive only: no existing row, value or column changes.
+- **0199–0200 rotas.** The SME family; `team_schedule_rota`; `zone.rota_id` (TZ1–TZ3 on `SRE_SAAS`); the zone-family check widened from SRE to SRE or SME; IaaS and seven SME rotas, each with a Day and a Night zone and window; the `sme_rota_admin` role. Additive only: no existing row, value or column changes.
 - **0152–0155** replace `000088`–`000107`, which were written in the old
   up/down format. They reproduce the schema and catalogue that chain ended in
   exactly (compared with `pg_dump` against a server built from the old chain).

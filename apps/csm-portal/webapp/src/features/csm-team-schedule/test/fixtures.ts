@@ -56,7 +56,7 @@ export function shift(over: Partial<ScheduleShift> & { code: string }): Schedule
   } as ScheduleShift;
 }
 
-/** An SME rotation's two windows, as migration 0187 seeds Moesif's: a Day and
+/** An SME rotation's two windows, as migration 0200 seeds Moesif's: a Day and
  *  a Night zone each, every day of the week, the tier left to the turn. */
 export const MOE_DAY = shift({
   code: "SME_MOE_DAY", shortCode: "Day", label: "Moesif day escalation", family: "SME",

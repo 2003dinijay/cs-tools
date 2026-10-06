@@ -18,7 +18,7 @@
 -- Runtime, Bijira, Devant, WSO2 Cloud, Moesif) from "CSM SRE + SME on call".
 --
 -- Alone in its own file and outside a transaction: a value added with ADD
--- VALUE cannot be used in the transaction that adds it, so 0187 -- which seeds
+-- VALUE cannot be used in the transaction that adds it, so 0200 -- which seeds
 -- SME rotas and windows -- has to run after this one has committed. IF NOT
 -- EXISTS makes re-running a no-op. Purely additive: no existing row or value
 -- changes, and CRE / SRE keep meaning exactly what they meant.
