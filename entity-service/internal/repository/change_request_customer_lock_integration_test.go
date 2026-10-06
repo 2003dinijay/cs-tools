@@ -712,7 +712,7 @@ func TestChangeRequestLockIntegration_RequestApprovalRacingAProjectEdit(t *testi
 		defer once.Do(func() { close(locked) })
 		txErr = f.scoped.InTx(f.sys, func(tx pgx.Tx) error {
 			// What Request Approval does first: the work_item lock, then the state.
-			if _, err := tx.Exec(f.sys, `SELECT 1 FROM work_item WHERE id = $1 FOR UPDATE`, id); err != nil {
+			if _, err := tx.Exec(f.sys, `SELECT 1 FROM work_item WHERE id = $1 FOR NO KEY UPDATE`, id); err != nil {
 				return err
 			}
 			if _, err := tx.Exec(f.sys, `UPDATE change_request SET state = 'ASSESS' WHERE id = $1`, id); err != nil {
@@ -740,7 +740,7 @@ func TestChangeRequestLockIntegration_RequestApprovalRacingAProjectEdit(t *testi
 	for i := 0; i < 100 && !blocked; i++ {
 		var n int
 		if err := f.pool.QueryRow(f.sys,
-			`SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%FROM work_item%FOR UPDATE%'`).Scan(&n); err != nil {
+			`SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%FROM work_item%FOR NO KEY UPDATE%'`).Scan(&n); err != nil {
 			t.Fatalf("look for the blocked edit: %v", err)
 		}
 		blocked = n > 0
@@ -807,7 +807,7 @@ func TestChangeRequestLockIntegration_RequestApprovalAfterAProjectEditSeesThePro
 	for i := 0; i < 100 && !blocked; i++ {
 		var n int
 		if err := f.pool.QueryRow(f.sys,
-			`SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%FROM work_item%FOR UPDATE%'`).Scan(&n); err != nil {
+			`SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%FROM work_item%FOR NO KEY UPDATE%'`).Scan(&n); err != nil {
 			t.Fatalf("look for the blocked request: %v", err)
 		}
 		blocked = n > 0
@@ -827,4 +827,78 @@ func TestChangeRequestLockIntegration_RequestApprovalAfterAProjectEditSeesThePro
 		t.Fatalf("Request Approval after the project was chosen: %v", err)
 	}
 	f.expect(id, "after Request Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
+}
+
+// A PATCH that carries a state and a decision in progress on the same change
+// request do not deadlock. A decision locks change_request first and then INSERTs
+// approval_stage / approval_stage_approver rows, whose foreign keys take FOR KEY
+// SHARE on the work_item row; the PATCH holds the work_item lock while it waits
+// for the change_request one. The work_item lock is FOR NO KEY UPDATE (what the
+// PATCH's own UPDATE takes) so the two are compatible; FOR UPDATE would make the
+// decision wait for the PATCH and the PATCH for the decision, which Postgres
+// answers by aborting one of them (verified: with FOR UPDATE this test fails with
+// SQLSTATE 40P01). Deterministic: the transaction standing in for the decision
+// takes its lock, waits until the PATCH is waiting on it, and only then does the
+// INSERT.
+func TestChangeRequestLockIntegration_APatchAndADecisionDoNotDeadlock(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, false)
+
+	locked, proceed := make(chan struct{}), make(chan struct{})
+	var proceedOnce, lockedOnce sync.Once
+	t.Cleanup(func() { proceedOnce.Do(func() { close(proceed) }) })
+	var wg sync.WaitGroup
+	var txErr error
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		defer lockedOnce.Do(func() { close(locked) })
+		txErr = f.scoped.InTx(f.sys, func(tx pgx.Tx) error {
+			// What a decision does first.
+			if _, err := tx.Exec(f.sys, `SELECT 1 FROM change_request WHERE id = $1 FOR UPDATE`, id); err != nil {
+				return err
+			}
+			lockedOnce.Do(func() { close(locked) })
+			<-proceed
+			// ...and then provisions / cancels approval rows, which reference work_item.
+			_, err := tx.Exec(f.sys,
+				`INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id)
+				 VALUES (gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', $1)`, id)
+			return err
+		})
+	}()
+	<-locked
+	if txErr != nil {
+		t.Fatalf("the decision's transaction: %v", txErr)
+	}
+
+	patched := make(chan error, 1)
+	go func() {
+		_, err := f.patchState(id, domain.ChangeRequestStateCanceled)
+		patched <- err
+	}()
+	waiting := false
+	for i := 0; i < 100 && !waiting; i++ {
+		var n int
+		if err := f.pool.QueryRow(f.sys,
+			`SELECT COUNT(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND query ILIKE '%FROM change_request%FOR UPDATE%'`).Scan(&n); err != nil {
+			t.Fatalf("look for the waiting PATCH: %v", err)
+		}
+		waiting = n > 0
+		if !waiting {
+			time.Sleep(50 * time.Millisecond)
+		}
+	}
+	if !waiting {
+		t.Fatal("the PATCH never waited on the change_request lock")
+	}
+	proceedOnce.Do(func() { close(proceed) })
+	wg.Wait()
+	if txErr != nil {
+		t.Fatalf("the decision's INSERT after the PATCH took the work_item lock: %v (a deadlock between the two?)", txErr)
+	}
+	if err := <-patched; err != nil {
+		t.Fatalf("the PATCH: %v", err)
+	}
+	f.expect(id, "after the PATCH", "CANCELED")
 }

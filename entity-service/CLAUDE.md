@@ -3541,9 +3541,18 @@ review cannot be skipped by unticking it to close from Review). Corrections afte
 
 **Concurrency.** Request Approval and a project edit must not both read "New". The PATCH
 that carries a state, a project, a box or a deployment field first locks the `work_item`
-row (`SELECT ... FOR UPDATE`) and **only then** reads the `change_request` side (state,
+row (`SELECT ... FOR NO KEY UPDATE`) and **only then** reads the `change_request` side (state,
 model, both boxes, project) in a statement of its own, then locks the `change_request` row:
-the order (work_item, then change_request) every other PATCH takes. Reading the state in
+the order (work_item, then change_request) every other PATCH takes. The strength matters:
+a decision locks `change_request` first and then INSERTs `approval_stage` /
+`approval_stage_approver` rows whose foreign keys take `FOR KEY SHARE` on the same
+`work_item` row, which `FOR UPDATE` refuses -- the PATCH would wait for the decision and the
+decision for the PATCH (`deadlock detected`, SQLSTATE 40P01; the lock the old
+`planChangeRequestLinks` took, `FOR UPDATE OF wi`, had that hazard for the PATCHes that
+carried a project or deployments). `FOR NO KEY UPDATE` is what the PATCH's own UPDATE of
+`work_item` takes, excludes another PATCH and lets the decision's INSERT through
+(`TestChangeRequestLockIntegration_APatchAndADecisionDoNotDeadlock`, which fails with 40P01
+against `FOR UPDATE`). Reading the state in
 the same statement as the lock does not work: under READ COMMITTED a join read is answered
 from the statement's own snapshot, which is older than the lock's grant (the old
 `planChangeRequestLinks` did exactly that). `TestChangeRequestLockIntegration_RequestApprovalRacingAProjectEdit`

@@ -229,7 +229,8 @@ func validateCreationPhaseEdits(snap changeRequestGateSnapshot, req domain.Patch
 }
 
 // lockChangeRequestForPatch is the first thing a PATCH that carries a state, a
-// project, a box or a deployment field does: it locks the work_item row, and only
+// project, a box or a deployment field does: it locks the work_item row (FOR NO KEY
+// UPDATE, see below), and only
 // THEN reads the change_request side (state, model, both boxes, project) in a new
 // statement. Under READ COMMITTED a read that shares a statement with the lock can
 // be answered from a snapshot older than the lock's grant: Request Approval racing
@@ -238,8 +239,15 @@ func validateCreationPhaseEdits(snap changeRequestGateSnapshot, req domain.Patch
 // PATCH takes.
 func lockChangeRequestForPatch(ctx context.Context, tx pgx.Tx, id string) (changeRequestGateSnapshot, error) {
 	var locked string
+	// FOR NO KEY UPDATE, the strength the PATCH's own UPDATE of work_item takes, not
+	// FOR UPDATE: a decision (DecideChangeRequestApproval) locks change_request first
+	// and then INSERTs approval_stage / approval_stage_approver rows, whose foreign
+	// keys take FOR KEY SHARE on this very work_item row, which FOR UPDATE would
+	// refuse -- a deadlock with a PATCH that holds this lock and waits for the
+	// change_request one. Two PATCHes still exclude each other (NO KEY UPDATE
+	// conflicts with itself), which is all this lock is for.
 	err := tx.QueryRow(ctx,
-		`SELECT id::text FROM work_item WHERE id = $1::uuid AND type = 'CHANGE_REQUEST' FOR UPDATE`, id).Scan(&locked)
+		`SELECT id::text FROM work_item WHERE id = $1::uuid AND type = 'CHANGE_REQUEST' FOR NO KEY UPDATE`, id).Scan(&locked)
 	if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {
 		return changeRequestGateSnapshot{}, &apierror.NotFoundError{Msg: "change request not found"}
 	}
