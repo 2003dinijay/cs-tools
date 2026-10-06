@@ -266,6 +266,14 @@ export function customerApiFor(email: string) {
       const { customerApi: base } = await stackEndpoints();
       return call("POST", `${base}/change-requests/${changeRequestId}/approvals/decision`, await token(), body);
     },
+    /**
+     * `POST /cases/{id}/comments` with a change request's id: the customer backend forwards that route for ANY id, so it is
+     * a way a customer could comment on (or probe) a change request by its id. (A body that would be a real comment.)
+     */
+    async commentViaCaseRoute(workItemId: string, content = "E2E probe comment"): Promise<ApiResult> {
+      const { customerApi: base } = await stackEndpoints();
+      return call("POST", `${base}/cases/${workItemId}/comments`, await token(), { content });
+    },
     /** `POST /projects/{id}/change-requests/search`: the numbers the project lists. */
     async listedNumbers(projectId: string, filters: Record<string, unknown> = {}): Promise<string[]> {
       return (await this.listed(projectId, filters)).map((c) => c.number);

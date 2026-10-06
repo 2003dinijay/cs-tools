@@ -54,7 +54,7 @@
 // E2E_CSM_BFF_URL and SKIPS without them. It removes what it raised before and after.
 //
 
-import { test, expect } from "../../fixtures/test";
+import { test, expect, type Page } from "../../fixtures/test";
 import { LOCAL_PERSONAS, openLocalContext, withLocalSession } from "../../auth/localSessions";
 import { ChangeRequestDetailsPage } from "../../pages/ChangeRequestDetailsPage";
 import { ChangeRequestsPage } from "../../pages/ChangeRequestsPage";
@@ -131,6 +131,8 @@ async function expectSeenBy(
       const nothing = await api.patch(NO_SUCH_CHANGE_REQUEST, { title: "x" });
       expect((await api.patch(change.id, { title: "x" })).status, `${here}: a field no customer may set answers as for an id that does not exist`).toBe(nothing.status);
       expect((await api.decision(change.id, { decision: "approved" })).status, `${here}: decision`).toBe(404);
+      // ...nor commentable through the case route, which the customer backend forwards for any id
+      expect((await api.commentViaCaseRoute(change.id)).status, `${here}: comment through the case route`).toBe(404);
     }
 
     // The numbers on the stat cards and the dashboard are the list's, not a wider set.
@@ -144,8 +146,24 @@ async function expectSeenBy(
   expect((await dave.get(change.id)).status, `${daveHere}: detail`).toBe(404);
   expect((await dave.approvals(change.id)).status, `${daveHere}: approvals`).toBe(404);
   expect((await dave.patch(change.id, { isCustomerApproved: true })).status, `${daveHere}: answer`).toBe(404);
+  expect((await dave.commentViaCaseRoute(change.id)).status, `${daveHere}: comment through the case route`).toBe(404);
   expect(await dave.listedNumbers(FIXTURES.projectId), `${daveHere}: his own list`).not.toContain(change.number);
   expect(await dave.listedNumbers(lumen), `${daveHere}: Lumen's list`).toEqual([]);
+}
+
+/**
+ * The Operations hub's "Outstanding Change Requests / Latest 5 change requests" list, as the customer's page shows it:
+ * waits for the search that fills it, then says whether `change` is among them.
+ */
+async function expectOnHub(page: Page, lumen: string, change: RaisedChange, listed: boolean, when: string): Promise<void> {
+  const [search] = await Promise.all([
+    page.waitForResponse((r) => r.url().includes("/change-requests/search") && r.request().method() === "POST", { timeout: 60_000 }),
+    page.goto(`/projects/${lumen}/operations`),
+  ]);
+  await search.finished();
+  await expect(page.getByText("Latest 5 change requests")).toBeVisible({ timeout: 60_000 });
+  await page.waitForTimeout(600); // let the answer render
+  await expect(page.getByText(change.number, { exact: true }), `${change.number} on the Operations hub (${when})`).toHaveCount(listed ? 1 : 0);
 }
 
 test.describe("Local stack — who sees a change request, over its whole life", () => {
@@ -192,10 +210,13 @@ test.describe("Local stack — who sees a change request, over its whole life", 
       await miraList.open(lumen);
       await miraList.waitForList();
       await expect(miraList.rowByNumber(change.number), "New in mira's list").toHaveCount(0);
+      await miraList.searchFor(change.number); // not even by its number
+      await expect(miraList.rowByNumber(change.number), "New found by its number in mira's list").toHaveCount(0);
       const hidden = await miraPage.openAndSettle(lumen, change.id, change.number);
       expect(hidden.loaded, "New rendered for mira").toBe(false);
       await expect(miraPage.answerButtons()).toHaveCount(0);
       await shot(page, "01-mira-new-by-address-not-found");
+      await expectOnHub(page, lumen, change, false, "New");
       // Straight at entity-service, as the customer backend would forward it (its own machine token, mira's ID token): the
       // service itself says 404 to a read, to the approvals, to an answer and to a field no customer may set.
       if (entityServiceUrl()) {
@@ -243,6 +264,8 @@ test.describe("Local stack — who sees a change request, over its whole life", 
         await expect(miraPage.button(name), `${name} for mira`).toBeVisible();
       }
       await shot(page, "02-mira-customer-approval-detail");
+      await expectOnHub(page, lumen, change, true, "Customer Approval");
+      await shot(page, "02b-mira-operations-hub-customer-approval");
       await noelPage.open(lumen, change.id, change.number);
       await expect(noelPage.currentStage()).toHaveText(UI.stages.customerApproval);
       await expect(noelPage.button(UI.buttons.approve)).toBeVisible();
@@ -276,6 +299,8 @@ test.describe("Local stack — who sees a change request, over its whole life", 
       await expect(miraList.rowByNumber(change.number), "mira lost it from her list in Authorize").toHaveCount(1);
       await expect(miraList.rowByNumber(change.number)).toContainText("Authorize");
       await shot(page, "04-mira-list-authorize-after-proposal");
+      await expectOnHub(page, lumen, change, true, "Authorize after the proposal (outstanding for a customer)");
+      await shot(page, "04b-mira-operations-hub-authorize-after-proposal");
       await noelPage.open(lumen, change.id, change.number);
       await expect(noelPage.currentStage()).toHaveText(UI.stages.authorize);
       await expect(noelPage.answerButtons(), "noel offered an answer in Authorize").toHaveCount(0);
@@ -339,6 +364,7 @@ test.describe("Local stack — who sees a change request, over its whole life", 
       await expect(miraList.rowByNumber(change.number)).toHaveCount(1);
       await expect(miraList.rowByNumber(change.number)).toContainText("Closed");
       await shot(page, "07-mira-list-closed");
+      await expectOnHub(page, lumen, change, false, "Closed: no longer outstanding");
       await miraPage.open(lumen, change.id, change.number);
       await expect(miraPage.currentStage()).toHaveText(UI.stages.closed);
       await expect(miraPage.answerButtons()).toHaveCount(0);
