@@ -319,6 +319,11 @@ test.describe("Local stack — who sees a change request, over its whole life", 
       await expect(miraList.allRows()).toHaveCount(1);
       await shot(page, "04a-mira-list-state-filter-authorize");
       await miraList.clearFilters(); // the list remembers its filters: the later phases look at the whole list
+      // The Calendar view is the same list in a month grid: the designated change request's window (Authorize, proposed) is on it.
+      await miraList.openView("Calendar View");
+      await expect(page.getByText(change.title, { exact: false }).first(), "the proposed window on the calendar").toBeVisible({ timeout: 30_000 });
+      await shot(page, "04c-mira-calendar-view-authorize-after-proposal");
+      await miraList.openView("List View");
       await expectOnHub(page, lumen, change, true, "Authorize after the proposal (outstanding for a customer)");
       await shot(page, "04b-mira-operations-hub-authorize-after-proposal");
       await noelPage.open(lumen, change.id, change.number);

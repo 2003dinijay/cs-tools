@@ -129,7 +129,7 @@ sends the manual PATCH the backend refuses (`state "scheduled" cannot be set man
 **The real-stack lock tests** ("the customer requirements lock (real stack)" in the same spec) RAISE change
 requests through the CSM portal's backend as the seed's staff (`utils/realStackApi.ts`: jane raises, alice and bob
 approve; the mock identity provider signs any email in) and drive the Edit dialog as jane. They write, so they need the
-stack under test named explicitly and SKIP without it -- there is no default, the stock `:8082` could be somebody's running stack:
+stack under test named explicitly (the backend, the identity provider and entity-service: all three) and SKIP without it -- there is no default, the stock `:8082` could be somebody's running stack:
 
 | Variable | Meaning |
 |---|---|

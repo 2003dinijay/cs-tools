@@ -3368,7 +3368,8 @@ test.describe("the customer requirements lock (real stack)", () => {
     test.skip(
       !realStackNamed(),
       "These tests raise change requests through the CSM portal's backend, which WRITES: name the stack's own, E2E_CSM_BFF_URL " +
-        "(the isolated stack's is http://localhost:18082), together with its Postgres (E2E_POSTGRES_CONTAINER) and mock identity provider (E2E_OIDC_URL).",
+        "(the isolated stack's is http://localhost:18082), together with its mock identity provider (E2E_OIDC_URL, http://localhost:19100), " +
+        "entity-service (E2E_ENTITY_SERVICE_URL, http://localhost:18081) and Postgres (E2E_POSTGRES_CONTAINER).",
     );
     await deleteLockChanges();
   });
@@ -3689,7 +3690,7 @@ async function deleteLegacy(): Promise<void> {
 test.describe("migrated (legacy) change requests in the CSM portal (real stack)", () => {
   test.describe.configure({ timeout: 180_000 });
   test.beforeEach(async () => {
-    test.skip(!realStackNamed(), "name the stack under test: E2E_CSM_BFF_URL, E2E_POSTGRES_CONTAINER, E2E_OIDC_URL (see auth/README.md)");
+    test.skip(!realStackNamed(), "name the stack under test: E2E_CSM_BFF_URL, E2E_OIDC_URL, E2E_ENTITY_SERVICE_URL, E2E_POSTGRES_CONTAINER (see auth/README.md)");
     test.skip(!fs.existsSync(LEGACY_SQL), `the customer portal e2e fixture ${LEGACY_SQL} is not there (run from apps/csm-portal/webapp)`);
     await psql(fs.readFileSync(LEGACY_SQL, "utf8"));
   });

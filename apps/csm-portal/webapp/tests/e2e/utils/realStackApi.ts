@@ -44,9 +44,14 @@ export function bffUrl(): string | undefined {
   return process.env.E2E_CSM_BFF_URL?.trim().replace(/\/+$/, "") || undefined;
 }
 
-/** True when the specs that raise change requests through the CSM backend have been told which one. */
+/**
+ * True when the specs that raise change requests through the CSM backend have been told WHICH stack: the backend, the
+ * identity provider that signs the staff in and entity-service (where a customer's answer is applied) are all named. Naming
+ * only one would leave the others on the stock defaults of `customerPortalDecision.ts` (:9100, :8081), i.e. possibly another
+ * stack than the one written to.
+ */
 export function realStackNamed(): boolean {
-  return !!bffUrl();
+  return !!bffUrl() && !!process.env.E2E_OIDC_URL?.trim() && !!process.env.E2E_ENTITY_SERVICE_URL?.trim();
 }
 
 const FORM = { "content-type": "application/x-www-form-urlencoded" };
