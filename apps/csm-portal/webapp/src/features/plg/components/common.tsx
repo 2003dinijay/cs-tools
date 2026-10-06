@@ -128,7 +128,8 @@ export function StatTile({
 type ChipColor = "default" | "primary" | "secondary" | "success" | "error" | "info" | "warning";
 
 // A lifecycle stage and a subscription tier are IDENTITY, not judgement, so
-// both are drawn in one static accent.
+// both are drawn in one static accent: the theme's own primary, which follows
+// whichever palette the user has chosen rather than pinning a literal hue.
 //
 // They used to be colour scales — COMMERCIAL green, PLG_CS_ELIGIBLE blue,
 // ABANDONED red — which read as a verdict the data does not carry. A customer at
@@ -137,19 +138,22 @@ type ChipColor = "default" | "primary" | "secondary" | "success" | "error" | "in
 // said "healthy" two chips away, so the one axis where colour genuinely IS the
 // meaning had to compete with two where it was decoration.
 //
-// Spending no colour here leaves it available for health, below.
-const STATIC_TONE = { bgcolor: "secondary.main", color: "secondary.contrastText" } as const;
+// Spending one flat accent here leaves green and red available for health,
+// below. `primary` and not an sx override of a specific palette path, because
+// the named slot is what tracks the active theme — a run status chip reading
+// ACTIVE already uses it, and these now match it under every theme.
+const STATIC_KINDS = ["lifecycle", "tier"] as const;
+const STATIC_COLOR: ChipColor = "primary";
 
 // Health is the one axis where the colour IS the meaning, so it is the only one
 // that varies — and now the only green and red on the page.
 //
-// The lighter shades rather than the solid ones: these sit beside static accent
-// chips on the same row, and a full-strength red next to them reads as an alarm
-// rather than a state. Text takes the dark shade of the same hue, which keeps
-// contrast on a light fill where contrastText (computed for `main`) would not.
-const healthTone: Record<string, object> = {
-  HEALTHY: { bgcolor: "success.light", color: "success.dark" },
-  AT_RISK: { bgcolor: "error.light", color: "error.dark" },
+// The same two named slots the health ToggleButtonGroup in ProductTab already
+// uses, so the chip reporting a pairing's health and the control that sets it
+// are the same green and the same red rather than two approximations of them.
+const healthColor: Record<string, ChipColor> = {
+  HEALTHY: "success",
+  AT_RISK: "error",
 };
 
 // Deliberately not green/red. A playbook kind is not good or bad news; only
@@ -175,25 +179,22 @@ const valueTypeColor: Record<string, ChipColor> = {
   SINGLE_SELECT: "primary",
 };
 
-// The kinds still drawn from a named chip colour. These are not axes of a
-// pairing's state, so the reasoning above does not apply to them.
+// Every kind drawn from a named chip colour, which is now all of them but the
+// two static ones above.
 const palettes: Record<string, Record<string, ChipColor>> = {
+  health: healthColor,
   playbookType: playbookTypeColor,
   runStatus: runStatusColor,
   valueType: valueTypeColor,
 };
 
 /** Every kind a chip can be drawn for. */
-export type ChipKind = "lifecycle" | "tier" | "health" | keyof typeof palettes;
+export type ChipKind = (typeof STATIC_KINDS)[number] | keyof typeof palettes;
 
-/**
- * The sx tone for the kinds that no longer take a named chip colour, or
- * undefined for the ones that still do.
- */
-function toneFor(kind: ChipKind, value: string): object | undefined {
-  if (kind === "lifecycle" || kind === "tier") return STATIC_TONE;
-  if (kind === "health") return healthTone[value];
-  return undefined;
+/** The named chip colour for one kind and value. */
+function colorFor(kind: ChipKind, value: string): ChipColor {
+  if ((STATIC_KINDS as readonly string[]).includes(kind)) return STATIC_COLOR;
+  return palettes[kind]?.[value] ?? "default";
 }
 
 /** Enum chip whose colour comes from the named palette. */
@@ -207,9 +208,7 @@ export function StatusChip({
   size?: "small" | "medium";
 }) {
   if (!value) return <Chip label="—" size={size} variant="outlined" />;
-  const tone = toneFor(kind, value);
-  if (tone) return <Chip label={humanizeEnum(value)} size={size} sx={tone} />;
-  const color = palettes[kind]?.[value] ?? "default";
+  const color = colorFor(kind, value);
   return <Chip label={humanizeEnum(value)} size={size} color={color} variant={color === "default" ? "outlined" : "filled"} />;
 }
 

@@ -75,18 +75,20 @@ export function StageFlow({
   height = 260,
 }: {
   catalogue: LifecycleCatalogue;
+  /** The stage the pairing is standing on. Required, because this diagram only
+   *  ever draws one pairing — there is no abstract mode. */
   currentStage: LifecycleStage;
-  /** Colours the current node: green healthy, red at risk. Required, because
-   *  this diagram only ever draws one pairing — there is no abstract mode. */
   height?: number;
 }) {
   const theme = useTheme();
 
   const line = theme.palette.divider;
   const lineStrong = theme.palette.text.disabled;
-  // One static accent for the node the pairing is standing on. Health is read
-  // from its own chip now — see the comment on this component.
-  const currentColour = theme.palette.secondary.main;
+  // One static accent for the node the pairing is standing on, taken from the
+  // theme's primary so it follows whichever palette the user has chosen — the
+  // same slot the stage and tier chips beside it use. Health is read from its
+  // own chip now; see the comment on this component.
+  const currentColour = theme.palette.primary.main;
 
   const ordered = [...catalogue.stages].sort((a, b) => a.displayOrder - b.displayOrder);
   const { pos, progression, width } = layout(ordered.map((s) => s.stage));
