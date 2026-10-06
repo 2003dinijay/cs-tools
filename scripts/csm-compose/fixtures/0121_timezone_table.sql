@@ -14,27 +14,18 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- LOCAL DEVELOPMENT ONLY.
+-- LOCAL DEVELOPMENT ONLY. Not a migration: no database outside this compose stack runs it.
 --
--- GET /metadata reads its time-zone list from a `timezone` reference table
--- (reference_data_repo.go ListTimeZones: SELECT value, label FROM timezone).
--- That table exists on the live database but is declared in none of this
--- directory's migrations (see entity-service/CLAUDE.md, "Staging schema
--- drift"), so a database built here never has it and every GET /metadata
--- answers 500 `relation "timezone" does not exist`. Both portals call
--- /metadata on load, so the customer portal in particular refetches in a loop.
+-- GET /metadata reads its time-zone list from the `timezone` reference table
+-- (reference_data_repo.go ListTimeZones: SELECT value, label FROM timezone). The sync-owned
+-- migration 0121_timezone_table.sql creates the table (and 0122_user_add_timezone.sql the
+-- "user".timezone column that references it), but only the table: its rows come from
+-- ServiceNow, so a database built here has an empty list and /metadata answers `timeZones: []`.
+-- Both portals call /metadata on load, and a profile's time-zone picker needs entries.
 --
--- This creates the table with the four columns the live one has (value,
--- label, utc_offset, dst) and a small, curated stand-in list. It is attached
--- to the first migration only because a fixture has to hang off some
--- migration to run in order; nothing here depends on 0001. Safe to re-run.
-CREATE TABLE IF NOT EXISTS timezone (
-  value      TEXT PRIMARY KEY,
-  label      TEXT    NOT NULL,
-  utc_offset TEXT    NOT NULL,
-  dst        BOOLEAN NOT NULL DEFAULT FALSE
-);
-
+-- This loads a small, curated stand-in list, straight after the 0121 file that creates the
+-- table. It declares no schema: the table is the sync's, whatever its column types are on a
+-- given volume. Safe to re-run (ON CONFLICT DO NOTHING).
 INSERT INTO timezone (value, label, utc_offset, dst) VALUES
   ('Africa/Cairo',                    'Cairo',                                    '+02:00', TRUE),
   ('Africa/Johannesburg',             'Johannesburg / Pretoria',                  '+02:00', FALSE),

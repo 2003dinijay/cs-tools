@@ -3034,9 +3034,8 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     `created_by = 'local-fixture'` row, so it also corrects a database seeded earlier;
     no other flag or type is touched), and moves **"Lumen Works Platform"** (random
     project type, per database) onto "Subscription" when its type does not grant change
-    request read access. The seed also adds `"user".timezone` when missing: no migration
-    declares it, yet `GET /users/me` selects it (a 500 for every signed-in user of a
-    database built from `migrations/` alone).
+    request read access. (`"user".timezone`, which `GET /users/me` selects, is the
+    sync's: `0122_user_add_timezone.sql` adds it, so the seed no longer does.)
   * **How each caller is scoped in the compose stack** (`AccessService.ResolveScope`;
     `docker-compose.yml`'s entity-service block). A caller that is in none of
     `M2M_CLIENT_IDS` / `CSM_PORTAL_BACKEND_CLIENT_ID` / `CUSTOMER_PORTAL_BACKEND_CLIENT_ID`
@@ -5639,13 +5638,15 @@ table** (`value`, `label`, `utc_offset`, `dst`; 39 rows at the time this was
 wired up) via `ReferenceDataRepository.ListTimeZones`, mapped `value -> id`/
 `label -> label` into the same `{id, label}` `domain.ChoiceListItem` shape
 the ServiceNow-backed response already used -- no wire-contract change.
-**This table is not declared anywhere in this repo's own `migrations/`** --
-same "built outside this directory" class as several tables documented in
-"Staging schema drift" below; its existence and exact column names/types
-were confirmed by querying the live staging database directly (`information_schema.columns`),
-not by finding a migration for it. Deliberately not reconciled against the
-ServiceNow choice list's own 54-entry version (confirmed, by hand, against a
-live HAR capture of the ServiceNow-backed `GET /metadata` response) -- the
+**The table is the sync's**: `0121_timezone_table.sql` (mirrored from
+csm-sync-service) creates it, with the four columns above and no rows -- the rows
+are ServiceNow's, so a local database gets stand-ins from
+`scripts/csm-compose/fixtures/0121_timezone_table.sql`. Its column names/types
+were first confirmed by querying the live staging database directly
+(`information_schema.columns`), before that migration was mirrored. Deliberately
+not reconciled against the ServiceNow choice list's own 54-entry version
+(confirmed, by hand, against a live HAR capture of the ServiceNow-backed
+`GET /metadata` response) -- the
 two lists disagree in both size and some labels (e.g. ServiceNow's separate
 `Asia/Shanghai`="China" and `Asia/Singapore`="Singapore / Malaysia /
 Philippines" entries are one consolidated `Asia/Singapore` row here), which
@@ -6281,10 +6282,11 @@ profile's team block) and, for customers only (`user_type` EXTERNAL, emitted as
 
 ## GET/PATCH /users/me and the timezone column
 
-`"user".timezone` (`character varying`) is a real column, confirmed directly
-against the live database — it is **not declared anywhere in this repo's own
-`migrations/`**, same "built outside this directory" class as the `timezone`
-reference table (see "GET /metadata and GET /projects/{id}/metadata" above).
+`"user".timezone` (`VARCHAR(64) REFERENCES timezone(value)`) is a real column,
+added by the sync-mirrored `0122_user_add_timezone.sql` — it was first confirmed
+directly against the live database, before that migration was mirrored. The
+`timezone` reference table it points at is the sync's too (see "GET /metadata and
+GET /projects/{id}/metadata" above).
 `GetMe` was already wiring `domain.User.Timezone` through to its own response
 (`GetUserMeResponse.TimeZone`) before this was fixed — it just always came
 back `nil`, since `userColumns`/`prefixUserColumns`/`scanUser` never selected
@@ -6300,9 +6302,11 @@ now exist, resolving the caller the exact same way `GetMe` does
 (`x-user-id-token`'s email claim → `GetUserByEmail`, never a caller-supplied
 id) and writing `"user".timezone` for that row alone — a user can only ever
 update their own timezone through this endpoint, same as the ServiceNow
-path's own scoping. `timezone` is free text with no FK/enum tying it to the
-`timezone` reference table, so any non-empty value is accepted as-is; only
-a blank value is rejected (`"timeZone is required"`, mirroring
+path's own scoping. This service does not check the value against the
+`timezone` reference table, so any non-empty value passes the service; on a database
+with the sync's `0122` shape (the column REFERENCES `timezone(value)`) a value that is
+not in that table is refused by the foreign key (`user_timezone_fkey`, SQLSTATE 23503)
+and surfaces as a 500. Only a blank value is rejected up front (`"timeZone is required"`, mirroring
 `snUserService.PatchMe`'s own validation).
 
 ## POST /users creates a new "user" row (Postgres-only)

@@ -30,21 +30,6 @@
 
 BEGIN;
 
--- "user".timezone: entity-service selects it for every GET /users/me (user_repo.go's userColumns)
--- and PATCH /users/me writes it, but no migration under entity-service/migrations/ declares it --
--- real environments get it from outside this directory. A database built only from those
--- migrations (this stack's) therefore answers GET /users/me with a 500 ("column timezone does not
--- exist") for every signed-in user, in both portals, which is every page load. Added here, only
--- when missing (a check first, so a database that has it is not locked for an ALTER).
-DO $$
-BEGIN
-  IF NOT EXISTS (
-    SELECT 1 FROM information_schema.columns
-    WHERE table_schema = current_schema() AND table_name = 'user' AND column_name = 'timezone') THEN
-    ALTER TABLE "user" ADD COLUMN timezone character varying(255);
-  END IF;
-END $$;
-
 -- Roles. Names matter here: recompute_user_type() (migration 000007) treats
 -- 'admin'/'internal' as INTERNAL and 'customer'/'external'/... as EXTERNAL.
 INSERT INTO role (id, created_on, updated_on, name, description) VALUES
