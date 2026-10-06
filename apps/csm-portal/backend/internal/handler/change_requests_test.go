@@ -695,6 +695,19 @@ func TestPatchChangeRequestRefusesTheCustomersAnswer(t *testing.T) {
 		"with another field":   {`{"title":"x","isCustomerReviewed":true}`, reviewed},
 		"approval named first": {`{"isCustomerReviewed":true,"isCustomerApproved":true}`, approved},
 		"not even as a string": {`{"isCustomerApproved":"true"}`, approved},
+		// encoding/json, which the entity service decodes the body with, matches a
+		// key to a field without regard to case: every spelling is the same flag.
+		"approved in capitals":   {`{"ISCUSTOMERAPPROVED":true}`, approved},
+		"reviewed in lower case": {`{"iscustomerreviewed":true}`, reviewed},
+		"approved, mixed case":   {`{"isCUSTOMERApproved":false}`, approved},
+		"reviewed, mixed case":   {`{"IsCustomerReviewed":true}`, reviewed},
+		// A body that names the flag twice is read as the last one: null first and
+		// true after, or true first and null after, is a flag either way.
+		"a null then a true in another case": {`{"isCustomerApproved":null,"ISCUSTOMERAPPROVED":true}`, approved},
+		"a true then a null in another case": {`{"ISCUSTOMERAPPROVED":true,"isCustomerApproved":null}`, approved},
+		"reviewed null then true":            {`{"isCustomerReviewed":null,"iscustomerreviewed":false}`, reviewed},
+		"a JSON-escaped key":                 {`{"isCustomerApprov\u0065d":true}`, approved},
+		"with a state, in capitals":          {`{"state":"closed","ISCUSTOMERREVIEWED":true}`, reviewed},
 	} {
 		t.Run(name, func(t *testing.T) {
 			called := false
@@ -721,6 +734,10 @@ func TestPatchChangeRequestRefusesTheCustomersAnswer(t *testing.T) {
 		"re-schedule":               `{"state":"authorize","plannedStartOn":"2030-03-01 09:00:00"}`,
 		"a null flag is not a flag": `{"title":"x","isCustomerApproved":null}`,
 		"the requirement boxes":     `{"customerApprovalRequired":true}`,
+		// null in every spelling is still absent.
+		"nulls in two spellings": `{"title":"x","isCustomerApproved":null,"ISCUSTOMERAPPROVED":null,"IsCustomerReviewed":null}`,
+		// A flag-like key that is not the flag in any case.
+		"a different key": `{"title":"x","isCustomerApprovedBy":true}`,
 	} {
 		t.Run("passes "+name, func(t *testing.T) {
 			called := false
@@ -1472,6 +1489,61 @@ func TestChangeRequestLinkOptions(t *testing.T) {
 				assertStatus(t, w, tc.wantCode)
 				assertErrorMessage(t, w, tc.wantMsg)
 			})
+		}
+	})
+}
+
+// The BFF's body guards judge the body the way the entity service's decoder will
+// read it: a key is the field whatever its case, so a guard that looked up one
+// spelling only would be bypassed by another.
+func TestChangeRequestBodyGuardsIgnoreTheCaseOfKeys(t *testing.T) {
+	for name, tc := range map[string]struct {
+		method, path, body, want string
+	}{
+		"create without a type, Type is the type": {"POST", "/change-requests", `{"subject":"s","Type":"azure"}`, "type is not allowed: a change request must be one of standard, normal or emergency"},
+		"create with a good and a bad type":       {"POST", "/change-requests", `{"subject":"s","type":"normal","TYPE":"azure"}`, "type is not allowed: a change request must be one of standard, normal or emergency"},
+		"create, gate flag in capitals":           {"POST", "/change-requests", `{"subject":"s","type":"normal","CUSTOMERAPPROVALREQUIRED":"yes"}`, "customerApprovalRequired must be a boolean (true or false)"},
+		"patch, gate flag in lower case":          {"PATCH", "/change-requests/" + testCRID, `{"customerreviewrequired":1}`, "customerReviewRequired must be a boolean (true or false)"},
+		"patch, removed field in capitals":        {"PATCH", "/change-requests/" + testCRID, `{"CUSTOMERGROUPID":"` + scopeProjectID + `"}`, errMsgCustomerGroupIDRemoved},
+		"patch, removed field in lower case":      {"PATCH", "/change-requests/" + testCRID, `{"environmentids":[]}`, errMsgEnvironmentIDsRemoved},
+		"patch, project in capitals":              {"PATCH", "/change-requests/" + testCRID, `{"PROJECTID":"nope"}`, "projectId must be a UUID string"},
+		"patch, blank comment in capitals":        {"PATCH", "/change-requests/" + testCRID, `{"COMMENT":"  "}`, "comment must not be empty"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			client := &mockEntityChangeRequestClient{
+				createChangeRequestFn: func(_ context.Context, _ []byte) ([]byte, error) { called = true; return []byte(`{}`), nil },
+				patchChangeRequestFn:  func(_ context.Context, _ string, _ []byte) ([]byte, error) { called = true; return []byte(`{}`), nil },
+			}
+			h := NewChangeRequestHandler(client)
+			r := withUser(httptest.NewRequest(tc.method, tc.path, strings.NewReader(tc.body)))
+			w := httptest.NewRecorder()
+			if tc.method == "POST" {
+				h.CreateChangeRequest(w, r)
+			} else {
+				r.SetPathValue("id", testCRID)
+				h.PatchChangeRequest(w, r)
+			}
+			assertStatus(t, w, http.StatusBadRequest)
+			assertErrorMessage(t, w, tc.want)
+			if called {
+				t.Fatal("the entity service was called for a body the BFF refuses")
+			}
+		})
+	}
+	t.Run("a create whose type is in another case of the key is accepted", func(t *testing.T) {
+		called := false
+		client := &mockEntityChangeRequestClient{createChangeRequestFn: func(_ context.Context, _ []byte) ([]byte, error) {
+			called = true
+			return []byte(`{"message":"ok"}`), nil
+		}}
+		h := NewChangeRequestHandler(client)
+		r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(`{"subject":"s","Type":"normal"}`)))
+		w := httptest.NewRecorder()
+		h.CreateChangeRequest(w, r)
+		assertStatus(t, w, http.StatusCreated)
+		if !called {
+			t.Fatal("the create never reached the entity service")
 		}
 	})
 }

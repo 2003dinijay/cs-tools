@@ -134,6 +134,26 @@ func (h *ChangeRequestHandler) CreateChangeRequest(w http.ResponseWriter, r *htt
 	writeJSON(w, http.StatusCreated, result)
 }
 
+// payloadValues returns the value of EVERY key of payload that names field,
+// whatever its case: the entity service decodes a request body with encoding/json,
+// which matches a key to a field without regard to case, so "ISCUSTOMERAPPROVED",
+// "iscustomerreviewed" and "isCustomerApproved" are one and the same field there
+// (and when a body names it more than once, the last one wins, null included: a
+// guard that looked at one spelling only, or at the winning one only, would let
+// the other through). Every guard of this file looks fields up through it, so a
+// guard judges the body as the decoder will read it. The keys are the decoded
+// ones (a JSON escape such as "isCustomerApprov\u0065d" is already "isCustomerApproved").
+// strings.EqualFold is the comparison encoding/json itself folds keys with.
+func payloadValues(payload map[string]json.RawMessage, field string) []json.RawMessage {
+	var out []json.RawMessage
+	for key, raw := range payload {
+		if strings.EqualFold(key, field) {
+			out = append(out, raw)
+		}
+	}
+	return out
+}
+
 // changeRequestCreatableTypes are the only types a change request may be
 // created with (the entity service enforces the same set).
 var changeRequestCreatableTypes = []string{"standard", "normal", "emergency"}
@@ -148,20 +168,26 @@ func validateChangeRequestCreateType(body []byte) string {
 		return ""
 	}
 	const required = "type is required: a change request must be one of standard, normal or emergency"
-	raw, ok := payload["type"]
-	if !ok {
+	values := payloadValues(payload, "type")
+	if len(values) == 0 {
 		return required
 	}
-	var typ string
-	if err := json.Unmarshal(raw, &typ); err != nil || typ == "" {
-		return required
-	}
-	for _, allowed := range changeRequestCreatableTypes {
-		if typ == allowed {
-			return ""
+	for _, raw := range values {
+		var typ string
+		if err := json.Unmarshal(raw, &typ); err != nil || typ == "" {
+			return required
+		}
+		allowed := false
+		for _, ok := range changeRequestCreatableTypes {
+			if typ == ok {
+				allowed = true
+			}
+		}
+		if !allowed {
+			return "type is not allowed: a change request must be one of standard, normal or emergency"
 		}
 	}
-	return "type is not allowed: a change request must be one of standard, normal or emergency"
+	return ""
 }
 
 // changeRequestCustomerGateFields are the creation form's two checkboxes,
@@ -182,12 +208,10 @@ func validateChangeRequestCustomerGateFlags(body []byte) string {
 		return ""
 	}
 	for _, field := range changeRequestCustomerGateFields {
-		raw, ok := payload[field]
-		if !ok {
-			continue
-		}
-		if v := string(bytes.TrimSpace(raw)); v != "true" && v != "false" {
-			return field + " must be a boolean (true or false)"
+		for _, raw := range payloadValues(payload, field) {
+			if v := string(bytes.TrimSpace(raw)); v != "true" && v != "false" {
+				return field + " must be a boolean (true or false)"
+			}
 		}
 	}
 	return ""
@@ -211,16 +235,24 @@ const (
 
 // validateChangeRequestCustomerOutcomeFlags returns a user-facing message when
 // body carries isCustomerApproved or isCustomerReviewed with any value but null
-// (null is "absent" to the entity service), or "" otherwise. A body that is not
-// a JSON object is left for the upstream to reject.
+// (null is "absent" to the entity service), in any spelling of the key's case, or
+// "" otherwise. A body that is not a JSON object is left for the upstream to reject.
 func validateChangeRequestCustomerOutcomeFlags(body []byte) string {
 	var payload map[string]json.RawMessage
 	if err := json.Unmarshal(body, &payload); err != nil {
 		return ""
 	}
+	// Present under ANY spelling of the key, and not null in any of them: the
+	// entity service reads "ISCUSTOMERAPPROVED" as isCustomerApproved, and a body
+	// that names the flag twice ({"isCustomerApproved":null,"ISCUSTOMERAPPROVED":true})
+	// is read as whichever the decoder reaches last.
 	present := func(field string) bool {
-		raw, ok := payload[field]
-		return ok && string(bytes.TrimSpace(raw)) != "null"
+		for _, raw := range payloadValues(payload, field) {
+			if string(bytes.TrimSpace(raw)) != "null" {
+				return true
+			}
+		}
+		return false
 	}
 	if present("isCustomerApproved") {
 		return errMsgCustomerApprovedByStaff
@@ -274,50 +306,51 @@ func validateChangeRequestScopeFields(body []byte, patch bool) string {
 	}
 	isNull := func(raw json.RawMessage) bool { return string(bytes.TrimSpace(raw)) == "null" }
 
-	if raw, ok := payload["projectId"]; ok && !isUUIDString(raw) {
-		return "projectId must be a UUID string"
+	for _, raw := range payloadValues(payload, "projectId") {
+		if !isUUIDString(raw) {
+			return "projectId must be a UUID string"
+		}
 	}
-	if _, ok := payload["customerGroupId"]; ok {
+	if len(payloadValues(payload, "customerGroupId")) > 0 {
 		return errMsgCustomerGroupIDRemoved
 	}
-	if _, ok := payload["environmentIds"]; ok {
+	if len(payloadValues(payload, "environmentIds")) > 0 {
 		return errMsgEnvironmentIDsRemoved
 	}
 	for _, field := range changeRequestScopeIDArrays {
-		raw, ok := payload[field]
-		if !ok {
-			continue
-		}
-		var items []json.RawMessage
-		if err := json.Unmarshal(raw, &items); err != nil || items == nil {
-			return field + " must be an array of UUID strings"
-		}
-		if len(items) > maxChangeRequestScopeIDs {
-			return fmt.Sprintf("%s must contain at most %d entries", field, maxChangeRequestScopeIDs)
-		}
-		for _, item := range items {
-			if !isUUIDString(item) {
+		for _, raw := range payloadValues(payload, field) {
+			var items []json.RawMessage
+			if err := json.Unmarshal(raw, &items); err != nil || items == nil {
 				return field + " must be an array of UUID strings"
+			}
+			if len(items) > maxChangeRequestScopeIDs {
+				return fmt.Sprintf("%s must contain at most %d entries", field, maxChangeRequestScopeIDs)
+			}
+			for _, item := range items {
+				if !isUUIDString(item) {
+					return field + " must be an array of UUID strings"
+				}
 			}
 		}
 	}
-	if raw, ok := payload["category"]; ok && !(patch && isNull(raw)) {
+	for _, raw := range payloadValues(payload, "category") {
+		if patch && isNull(raw) {
+			continue
+		}
 		var v string
 		if err := json.Unmarshal(raw, &v); err != nil {
 			return "category must be a string"
 		}
 	}
 	for _, field := range []string{"comment", "workNote"} {
-		raw, ok := payload[field]
-		if !ok {
-			continue
-		}
-		var v string
-		if err := json.Unmarshal(raw, &v); err != nil {
-			return field + " must be a string"
-		}
-		if patch && strings.TrimSpace(v) == "" {
-			return field + " must not be empty"
+		for _, raw := range payloadValues(payload, field) {
+			var v string
+			if err := json.Unmarshal(raw, &v); err != nil {
+				return field + " must be a string"
+			}
+			if patch && strings.TrimSpace(v) == "" {
+				return field + " must not be empty"
+			}
 		}
 	}
 	return ""
@@ -353,7 +386,7 @@ func (h *ChangeRequestHandler) GetChangeRequestLinkOptions(w http.ResponseWriter
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
 	}
-	if _, ok := payload["projectId"]; !ok {
+	if len(payloadValues(payload, "projectId")) == 0 {
 		writeError(w, http.StatusBadRequest, "projectId is required")
 		return
 	}
