@@ -830,8 +830,9 @@ func TestLoad_InvalidDBPoolIntFallsBackToDefaultAndFailsValidate(t *testing.T) {
 		key, value string
 	}{
 		{"DB_POOL_MAX_CONNS", "fifty"},
-		{"DB_POOL_MIN_CONNS", "0"},
+		{"DB_POOL_MIN_CONNS", "-1"},
 		{"DB_POOL_MAX_CONNS", "-3"},
+		{"DB_POOL_MAX_CONNS", "0"},
 	} {
 		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
 			t.Setenv(tc.key, tc.value)
@@ -849,6 +850,24 @@ func TestLoad_InvalidDBPoolIntFallsBackToDefaultAndFailsValidate(t *testing.T) {
 				t.Errorf("Validate() = %v, want an error naming %s", err, tc.key)
 			}
 		})
+	}
+}
+
+// TestLoad_DBPoolMinConnsZeroIsValid is the regression guard for the
+// CodeRabbit-caught overreach: pgxpool genuinely permits MinConns=0 (a
+// deployment that doesn't want to retain any idle connections at all), so
+// DB_POOL_MIN_CONNS=0 must be accepted, not treated as an invalid value
+// that falls back to the default.
+func TestLoad_DBPoolMinConnsZeroIsValid(t *testing.T) {
+	t.Setenv("DB_POOL_MIN_CONNS", "0")
+	c := Load()
+	if c.DBPoolMinConns != 0 {
+		t.Errorf("DBPoolMinConns = %d, want 0", c.DBPoolMinConns)
+	}
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with DB_POOL_MIN_CONNS=0 = %v, want nil", err)
 	}
 }
 

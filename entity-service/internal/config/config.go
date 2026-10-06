@@ -91,11 +91,14 @@ type Config struct {
 	// DB_POOL_MAX_CONN_LIFETIME/DB_POOL_MAX_CONN_IDLE_TIME). Defaults (20/2/
 	// 30m/5m) are the values this file previously hardcoded in
 	// internal/db/postgres.go — an unset deployment behaves exactly as
-	// before these existed. DBPoolMaxConns/DBPoolMinConns fall back to their
-	// default on an unset, non-numeric, or non-positive value (a pool size
-	// of zero or less would misconfigure pgxpool); DBPoolMaxConnLifetime/
-	// DBPoolMaxConnIdleTime fall back to theirs the same way every other
-	// duration here does (getDurationOrDefault), via loadErr.
+	// before these existed. DBPoolMaxConns falls back to its default on an
+	// unset, non-numeric, or non-positive value (a pool that may open no
+	// connections at all can never serve a single query). DBPoolMinConns
+	// falls back the same way EXCEPT zero is accepted — pgxpool genuinely
+	// permits a minimum of 0 (a deployment that doesn't want to retain any
+	// idle connections). DBPoolMaxConnLifetime/DBPoolMaxConnIdleTime fall
+	// back to theirs the same way every other duration here does
+	// (getDurationOrDefault), via loadErr.
 	DBPoolMaxConns        int32
 	DBPoolMinConns        int32
 	DBPoolMaxConnLifetime time.Duration
@@ -561,8 +564,8 @@ func Load() *Config {
 		}
 		return d
 	}
-	intVal := func(key string, def int32) int32 {
-		n, err := getInt32OrDefault(key, def)
+	intVal := func(key string, def int32, allowZero bool) int32 {
+		n, err := getInt32OrDefault(key, def, allowZero)
 		if err != nil && loadErr == nil {
 			loadErr = err
 		}
@@ -577,8 +580,8 @@ func Load() *Config {
 		DBName:                                   os.Getenv("DB_NAME"),
 		DBSSLMode:                                os.Getenv("DB_SSLMODE"),
 		DBSchema:                                 os.Getenv("DB_SCHEMA"),
-		DBPoolMaxConns:                           intVal("DB_POOL_MAX_CONNS", 20),
-		DBPoolMinConns:                           intVal("DB_POOL_MIN_CONNS", 2),
+		DBPoolMaxConns:                           intVal("DB_POOL_MAX_CONNS", 20, false),
+		DBPoolMinConns:                           intVal("DB_POOL_MIN_CONNS", 2, true),
 		DBPoolMaxConnLifetime:                    duration("DB_POOL_MAX_CONN_LIFETIME", 30*time.Minute),
 		DBPoolMaxConnIdleTime:                    duration("DB_POOL_MAX_CONN_IDLE_TIME", 5*time.Minute),
 		ServerPort:                               getEnvOrDefault("SERVER_PORT", "8080"),
@@ -709,12 +712,15 @@ func getDurationOrDefault(key string, defaultVal time.Duration) (time.Duration, 
 }
 
 // getInt32OrDefault parses key as a base-10 integer. An unset/empty value
-// yields defaultVal; a non-numeric or non-positive one is an error (and also
-// falls back to defaultVal) -- a pool size of zero or less would
-// misconfigure pgxpool outright, so this fails safe the same way an
-// unparseable duration does (see getDurationOrDefault) rather than passing a
-// bad value through.
-func getInt32OrDefault(key string, defaultVal int32) (int32, error) {
+// yields defaultVal; a non-numeric one is an error (and also falls back to
+// defaultVal) -- same fail-safe-to-default posture as an unparseable
+// duration (see getDurationOrDefault) rather than passing a bad value
+// through. allowZero distinguishes DB_POOL_MIN_CONNS (pgxpool genuinely
+// accepts 0 -- a deployment that doesn't want to retain any idle
+// connections at all) from DB_POOL_MAX_CONNS (0 or negative would
+// misconfigure pgxpool outright, since a pool that may open no connections
+// at all can never serve a single query).
+func getInt32OrDefault(key string, defaultVal int32, allowZero bool) (int32, error) {
 	v := os.Getenv(key)
 	if v == "" {
 		return defaultVal, nil
@@ -723,8 +729,12 @@ func getInt32OrDefault(key string, defaultVal int32) (int32, error) {
 	if err != nil {
 		return defaultVal, fmt.Errorf("invalid %s %q: %w", key, v, err)
 	}
-	if n <= 0 {
-		return defaultVal, fmt.Errorf("invalid %s %q: must be a positive integer", key, v)
+	if n < 0 || (n == 0 && !allowZero) {
+		want := "a positive integer"
+		if allowZero {
+			want = "a non-negative integer"
+		}
+		return defaultVal, fmt.Errorf("invalid %s %q: must be %s", key, v, want)
 	}
 	return int32(n), nil
 }

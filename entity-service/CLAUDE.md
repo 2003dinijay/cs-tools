@@ -46,7 +46,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `DB_SSLMODE`  | no       | —       | `disable` or `require`    |
 | `DB_SCHEMA`   | no       | `DB_USER,public` | Pins the connection's `search_path` (`DSN`'s `options=-c search_path=...`), same purpose as `operations/csm-sync-service`'s own `DB_SCHEMA` — see that config's `withSchema`. The fallback makes explicit what Postgres' own default `search_path` (`"$user", public`) would already do implicitly — `public` must survive it, since every deployment's tables live there today (unqualified migrations). An explicit value is used verbatim, with no `public` appended |
 | `DB_POOL_MAX_CONNS` | no | `20` | pgxpool max open connections (see "Connection pool settings" below) |
-| `DB_POOL_MIN_CONNS` | no | `2` | pgxpool connections kept warm when idle |
+| `DB_POOL_MIN_CONNS` | no | `2` | pgxpool connections kept warm when idle; `0` is a valid, accepted value |
 | `DB_POOL_MAX_CONN_LIFETIME` | no | `30m` | pgxpool connection rotation interval |
 | `DB_POOL_MAX_CONN_IDLE_TIME` | no | `5m` | pgxpool idle-connection release interval |
 | `SERVER_PORT` | no       | `8080`  | Main API listen port       |
@@ -6362,7 +6362,7 @@ Tuned via `config.Config`, applied by `internal/db.NewPool`. Each is env-configu
 | Max conn lifetime   | `DB_POOL_MAX_CONN_LIFETIME`    | 30 min  |
 | Max idle time       | `DB_POOL_MAX_CONN_IDLE_TIME`   | 5 min   |
 
-`DB_POOL_MAX_CONNS`/`DB_POOL_MIN_CONNS` fall back to their default on an unset, non-numeric, or non-positive value (a pool size of zero or less would misconfigure pgxpool outright) — same fail-safe-to-default posture `getDurationOrDefault` already uses for every duration-shaped env var here, now shared by `getInt32OrDefault`. An invalid value for any of the four surfaces through `Config.Validate()` at startup (`loadErr`), the same mechanism `SERVER_READ_TIMEOUT`/etc. already use.
+`DB_POOL_MAX_CONNS` falls back to its default on an unset, non-numeric, or non-positive value (a pool that may open no connections at all can never serve a single query). `DB_POOL_MIN_CONNS` falls back the same way **except zero is accepted** — pgxpool genuinely permits a minimum of 0 (a deployment that doesn't want to retain any idle connections) — same fail-safe-to-default posture `getDurationOrDefault` already uses for every duration-shaped env var here, now shared by `getInt32OrDefault`. An invalid value for any of the four surfaces through `Config.Validate()` at startup (`loadErr`), the same mechanism `SERVER_READ_TIMEOUT`/etc. already use.
 
 ## Pagination response conventions
 
