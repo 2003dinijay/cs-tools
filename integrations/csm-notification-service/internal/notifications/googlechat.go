@@ -250,6 +250,13 @@ type chatOpenLink struct {
 // color="...">, <a href="...">), so a dynamic value that happened to
 // contain "<" or "&" must not be allowed to break out of the tag it's
 // placed in.
+//
+// Every arg is converted to a string (fmt.Sprint) before escaping, so
+// format must only ever use %s for a dynamic value — a numeric verb like
+// %.2f against the now-stringified arg fails with a Go fmt verb mismatch
+// (%!f(string=...)) instead of formatting the number. Format a non-string
+// value with fmt.Sprintf yourself first, then pass the resulting string in
+// through %s.
 func caseAlertLine(format string, args ...any) string {
 	escaped := make([]any, len(args))
 	for i, a := range args {
@@ -513,7 +520,12 @@ func (c *GoogleChatClient) SendFrustrationAlert(ctx context.Context, audience, c
 	if productName != "" {
 		lines = append(lines, caseAlertLine(`<b>%s</b>`, productName))
 	}
-	lines = append(lines, caseAlertLine(`Frustration level: <b>%.2f</b>`, frustrationLevel))
+	// caseAlertLine stringifies every arg via fmt.Sprint before escaping it
+	// (see its own doc comment) -- %.2f against the already-stringified arg
+	// would fail with a Go fmt verb mismatch (%!f(string=...)), so the float
+	// is formatted here, before caseAlertLine ever sees it, and handed in
+	// through %s like every other caseAlertLine call in this file.
+	lines = append(lines, caseAlertLine(`Frustration level: <b>%s</b>`, fmt.Sprintf("%.2f", frustrationLevel)))
 	if reason != "" {
 		lines = append(lines, caseAlertLine(`%s`, reason))
 	}
@@ -530,7 +542,17 @@ func (c *GoogleChatClient) SendFrustrationAlert(ctx context.Context, audience, c
 				},
 			},
 		},
-		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
+		// Deliberately NOT threaded (see chatCardMessage.Thread's own doc
+		// comment) -- unlike case.created/case.acknowledged, which group
+		// together because they're genuinely the same gesture on the same
+		// case, a frustration alert needs to stand out as its own visible
+		// message. Threading it under chatThreadKey(caseNumber) (an earlier
+		// version of this did, matching the other case.* cards' own
+		// ThreadKey by copying their shape without this one's different
+		// reasoning) buried every alert as a reply under that case's
+		// original case.created message -- easy to miss if that thread is
+		// already old/scrolled past, exactly the opposite of what a
+		// frustration alert is for.
 	}
 	return c.sendCardToAudience(ctx, audience, msg)
 }

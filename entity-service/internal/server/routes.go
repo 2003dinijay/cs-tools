@@ -261,6 +261,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		teamHandler = handler.NewTeamHandler(service.NewTeamService(teamRepo))
 	}
 
+	// groupDetailHandler (GET /groups/{id}: one group and its members, opened
+	// from an approval stage's assignment group) is Postgres-only for the same
+	// reason as teamHandler above, and gated on db != nil the same way.
+	var groupDetailHandler *handler.GroupDetailHandler
+	if db != nil {
+		groupDetailHandler = handler.NewGroupDetailHandler(
+			service.NewGroupDetailService(repository.NewGroupDetailRepository(db), accessSvc))
+	}
+
 	var salesforceEventHandler *handler.SalesforceEventHandler
 	// salesforcePartnerHandler is set when the partner refresh is on.
 	var salesforcePartnerHandler *handler.SalesforcePartnerHandler
@@ -588,6 +597,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// ReferenceDataRepository's own doc comment.
 	referenceDataRepo := repository.NewReferenceDataRepository(db)
 
+	// sla-duration-policy reads the small, static sla_duration_policy
+	// reference table (migration 0192) -- gated on db != nil like
+	// slaStatusHandler above, since there's nothing to read on a deployment
+	// with no Postgres pool at all. integrations/csm-notification-service
+	// fetches this once at startup to compute its own SLA due dates.
+	var slaDurationPolicyHandler *handler.SLADurationPolicyHandler
+	if db != nil {
+		slaDurationPolicyHandler = handler.NewSLADurationPolicyHandler(
+			service.NewSLADurationPolicyService(referenceDataRepo, accessSvc))
+	}
+
 	// Every project-stats route is available on both data sources. In
 	// ServiceNow mode one client-backed value satisfies all three interfaces
 	// structurally, so it is built once and shared; in Postgres mode the
@@ -842,6 +862,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// See the matching comment in the DataSourcePostgresServiceNowDualWrite
 		// case above.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		// Without this, isSupportEngineerAuthor always returns false on this
+		// data source -- the SLA response-clock completion signal and
+		// events.CommentAddedPayload.IsSupportEngineerResponse never fire for
+		// a plain DATA_SOURCE=postgres deployment. NewCaseServiceWithSNWriteback
+		// (above) already takes csEngineerRole as a constructor parameter;
+		// NewCaseService has no such parameter, hence this separate step.
+		activeCaseSvc = service.WithCSEngineerRole(activeCaseSvc, cfg.CSEngineerRole)
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MTrustedActorEmails)
 	if db != nil {
@@ -1359,6 +1386,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if slaStatusHandler != nil {
 		mux.HandleFunc("GET /sla-status", slaStatusHandler.SearchActiveSLAStatuses)
 	}
+	if slaDurationPolicyHandler != nil {
+		mux.HandleFunc("GET /sla-duration-policy", slaDurationPolicyHandler.ListSLADurationPolicy)
+	}
 	if githubDeliveryHandler != nil {
 		mux.HandleFunc("POST /github/deliveries", githubDeliveryHandler.Handle)
 		mux.HandleFunc("POST /github/service-requests", githubServiceRequestHandler.Create)
@@ -1591,8 +1621,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// internalOnly: migration 0145's change_request_write_internal_only RLS
 	// policy only ever permits an internal caller to INSERT into
-	// change_request (CreateChangeRequestRequest has no projectId field at
-	// all to check membership against) -- same posture already established
+	// change_request (the optional projectId on CreateChangeRequestRequest is
+	// the customer project the change is raised for, not the creator's own
+	// membership) -- same posture already established
 	// for POST /incidents and POST /problems below. A non-internal caller
 	// reaching changeRequestService.CreateChangeRequest's plain-Postgres
 	// path would otherwise fail the RLS check with a raw 42501 (mapped to a
@@ -1601,6 +1632,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /change-requests", internalOnly(accessSvc, changeRequestHandler.CreateChangeRequest))
 	mux.HandleFunc("POST /change-requests/search", changeRequestHandler.SearchChangeRequests)
 	mux.HandleFunc("POST /change-requests/aggregate", changeRequestHandler.AggregateChangeRequests)
+	// Internal callers only: the response lists a project's deployments and its
+	// registered customer contacts by project id, which an external caller must
+	// not be able to enumerate for projects they are not a member of.
+	mux.HandleFunc("POST /change-requests/link-options", internalOnly(accessSvc, changeRequestHandler.GetChangeRequestLinkOptions))
 	mux.HandleFunc("GET /change-requests/{id}", changeRequestHandler.GetChangeRequest)
 	mux.HandleFunc("PATCH /change-requests/{id}", changeRequestHandler.PatchChangeRequest)
 	mux.HandleFunc("GET /change-requests/{id}/approvals", changeRequestHandler.GetChangeRequestApprovals)
@@ -1631,6 +1666,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /service-offerings/search", serviceOfferingHandler.SearchServiceOfferings)
 
 	mux.HandleFunc("POST /groups/search", groupHandler.SearchGroups)
+	if groupDetailHandler != nil {
+		mux.HandleFunc("GET /groups/{id}", groupDetailHandler.GetGroup)
+	}
 
 	if configurationItemHandler != nil {
 		mux.HandleFunc("POST /configuration-items/search", configurationItemHandler.SearchConfigurationItems)

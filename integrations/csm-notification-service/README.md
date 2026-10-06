@@ -180,20 +180,20 @@ Required — a record that exhausts the main consumer's retries is published her
 
 ### SLA breach-alerting engine
 
-Optional, gated on `REDIS_URL` or `REDIS_ADDR` — unset (both) means `internal/slaengine` never polls. Not a Kafka consumer: on a plain ticker, it polls entity-service's `GET /sla-status` (backed by the real, ServiceNow-synced `sla` table, not a value this service computes itself), diffs each clock's live elapsed percentage against the last tier it alerted for (a small cursor per `(caseId, clockType)` kept in Redis), and — on a genuinely new 50%/75%/100% crossing since its last poll — publishes `sla.tier_reached` and sends a Google Chat breach alert directly (not routed through `internal/dispatch`). The first time this engine ever sees a given clock, it seeds the cursor at that clock's *current* tier without alerting — avoiding an alert flood from every SLA clock already in progress the moment this engine starts polling; only a tier crossed on a later poll is a genuine new crossing. Replaces an earlier design that registered a durable clock per case on a now-removed entity-service `sla_clocks` table (a stand-in built before the real `sla` table existed) and scheduled Redis wake-ups off a locally-computed due date — see entity-service's own `CLAUDE.md` ("SLA status") for the full history. Pausing/resuming a clock never needs a signal from this service either: ServiceNow's own SLA engine freezes `businessElapsedPercent` while paused, so a paused clock's tier simply doesn't advance until it resumes.
+Optional, gated on `REDIS_URL` or `REDIS_ADDR` — unset (both) means `internal/slaengine` never starts. Not a Kafka consumer of its own: `RegisterClocks`/`ApplyStateEffects`/`CompleteResponseClock` are called directly from three of `dispatch.Dispatcher`'s own handlers (`case.created`/`case.status_changed`/`case.comment_added`) on the existing main consumer — only the tick itself runs on its own ticker, scanning a Redis wake-index this engine computes and schedules entirely on its own (every clock's due dates, display fields, paused flag and alerted-tier cursor all live in Redis — see `internal/slaengine`'s own `CLAUDE.md` section). On a genuinely new 50%/75%/100% crossing it publishes `sla.tier_reached` and sends a Google Chat breach alert directly (not routed through `internal/dispatch`). Durations come from `GET /sla-duration-policy` — a small, static reference table, fetched once at startup, independent of the ServiceNow-synced `sla`/`sla_policy` tables an earlier design here polled in bulk every tick (that endpoint's own query turned out to be too slow at real data volumes — reliably timing out — which is what this redesign replaces). Pausing/resuming/completing a clock is driven entirely by the same three events, not a live lookup: `case.status_changed`'s `Awaiting Info`/`Solution Proposed`/`Closed` pause or complete `workaround`/`resolution`, and a qualifying support-engineer reply (`case.comment_added`'s own `isSupportEngineerResponse`, computed by entity-service) completes `response` early.
 
 `REDIS_URL` (a `rediss://:<password>@<host>:<port>` connection string, parsed with `redis.ParseURL`) is how a managed, TLS-only Redis is configured — Azure Managed Redis, Azure Cache for Redis — since the `rediss` scheme makes go-redis dial with TLS automatically; takes priority over `REDIS_ADDR`/`REDIS_PASSWORD` when set. `REDIS_ADDR`/`REDIS_PASSWORD` remain the plain, non-TLS pair for a local Redis.
 
 The client is a plain `redis.NewClient` — it only supports a non-clustered Redis (a real standalone instance, or a managed Redis under a non-clustered/"Enterprise" clustering policy, where the provider's own proxy hides the sharding). It does **not** support "OSS Cluster" policy, which needs a cluster-aware client to follow `MOVED`/`ASK` redirects. Confirm the target resource's clustering policy before pointing `REDIS_URL` at it.
 
-This engine's own narrow entity-service client talks to the same entity-service as `CUSTOMER_ENTITY_BASE_URL`/`CUSTOMER_ENTITY_SCOPES` (see [Customer entity service](#customer-entity-service) above) — not a different backend — so it reuses those same two variables, plus the shared `OAUTH2_*` credentials (all required once `REDIS_URL` or `REDIS_ADDR` is set), rather than a redundant `SLA_ENTITY_*` pair.
+This engine's own narrow entity-service client talks to the same entity-service as `CUSTOMER_ENTITY_BASE_URL`/`CUSTOMER_ENTITY_SCOPES` (see [Customer entity service](#customer-entity-service) above) — not a different backend — so it reuses those same two variables, plus the shared `OAUTH2_*` credentials (all required once `REDIS_URL` or `REDIS_ADDR` is set), rather than a redundant `SLA_ENTITY_*` pair. Unlike the design this replaced, this client is called exactly once, at startup, to fetch `GET /sla-duration-policy` — never on a recurring poll.
 
 | Variable | Description |
 |---|---|
 | `REDIS_URL` | `rediss://:<url-encoded-password>@<host>:<port>` connection string for a TLS Redis (Azure Managed Redis/Azure Cache for Redis). Percent-encode the password if it contains `+`, `/`, or `=`. Takes priority over `REDIS_ADDR`/`REDIS_PASSWORD` |
 | `REDIS_ADDR` | Redis address for a plain, non-TLS Redis, e.g. `localhost:6379`. Ignored when `REDIS_URL` is set. Unset (with `REDIS_URL` also unset) disables this whole engine |
 | `REDIS_PASSWORD` | Optional — empty for a local Redis with no auth. Ignored when `REDIS_URL` is set |
-| `SLA_TICK_INTERVAL` | How often this engine polls `GET /sla-status` and diffs tiers. Optional — defaults to `5m`. Most active SLA clocks don't change more than a few times a day, so a short interval mostly just adds load without meaningfully lowering alert latency |
+| `SLA_TICK_INTERVAL` | How often this engine scans its own Redis wake-index for a newly-due tier. Optional — defaults to `5m`. A shorter interval mostly just adds load on Redis for no real benefit, since most clocks have hours between tiers |
 
 ### Server
 
@@ -236,9 +236,9 @@ csm-notification-service/
 │   ├── dispatch/
 │   │   └── dispatch.go          # Dispatcher.Handle — envelope → validate → resolve links → group → template → EmailClient; handleProjectContactInvited (SCIM → invitation → step ledger)
 │   └── slaengine/
-│       ├── client.go            # EntityClient — narrow HTTP client for entity-service's GET /sla-status
-│       ├── redis.go             # TierStore — last-alerted-tier cursor per (caseId, clockType)
-│       └── engine.go            # Engine.Tick/RunTicker — poll, diff tiers, alert on new crossings
+│       ├── client.go            # EntityClient — fetches GET /sla-duration-policy once, at startup
+│       ├── redis.go             # Store — wake-index ZSET + per-clock metadata/paused/alerted-tier hash
+│       └── engine.go            # RegisterClocks/ApplyStateEffects/CompleteResponseClock + Tick/RunTicker
 ├── .env                         # Local config (git-ignored)
 └── go.mod
 ```
@@ -259,36 +259,6 @@ against a laptop broker), and `EVENT_HUB_BROKER`/`EVENT_HUB_CONNECTION_STRING`/
 namespace to run the whole service; there is no local-broker mode.
 
 ## Testing the incident call escalation
-
-The escalation ladder is the one flow you really want to hear before trusting
-it, and `cmd/escalation-local` exists so you can, without Event Hub. It runs
-the **real engine** (`escalation.Engine.Handle` and `.Tick`) against a real
-Redis, fed the same event envelopes Event Hub would deliver, on a compressed
-clock — one ladder minute per second by default, so a 113-minute P4 ladder
-takes under two minutes.
-
-Dry runs are not stubbed at the client boundary: the real
-`notifications.TwilioClient` is pointed at a local HTTP server through its own
-`APIBaseURL` override, so the TwiML — the SSML document especially — is built
-by production code and printed exactly as Twilio would receive it.
-
-You can also run the ladder over Google Chat instead of Twilio, which needs no
-telephony account at all - `-channel chat` posts one card per rung to the space
-`GOOGLE_CHAT_SPACES` configures, and `-channel both` does each.
-
-```bash
-docker run --rm -p 6379:6379 redis          # the ladder's durable state
-
-# 1. dry run: nothing is dialled, the TwiML is printed
-go run ./cmd/escalation-local -priority CRITICAL
-
-# 2. see a ladder stop the way section 3.0 says an elevation is acknowledged
-go run ./cmd/escalation-local -kind elevated -priority P0 -cancel-after 6s
-
-# 3. hear it, on one number you control
-go run ./cmd/escalation-local -priority P0 -live -to +9477xxxxxxx -ssml \
-    -cancel-after 10s
-```
 
 ### Testing a ladder against the local Team Schedule
 
@@ -316,30 +286,6 @@ the repo's gateway shim in front of entity-service for the run, because
 entity-service reads the caller from `x-jwt-assertion`, which only the Choreo
 gateway adds. The local seed rosters SRE engineers on L1 and L2 only, so L3
 reports NO_RECIPIENTS. `-h` lists every option.
-
-A ladder outlives the process that started it, so an interrupted run can leave
-one in Redis that the next run resumes and keeps dialling. The tool retires its
-own on exit, but `go run` does not forward signals to the child it spawns, so an
-interrupted `go run` can still orphan one. `-cleanup` retires anything left
-behind — worth running before any `--live` session:
-
-```bash
-go run ./cmd/escalation-local -cleanup
-```
-
-`--live` needs `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_FROM_NUMBER` in
-`.env`, refuses to run without an explicit `--to` (so it can never page whoever
-a real roster points at), and refuses to start at all if the plan is larger than
-`--max-calls`. Useful flags: `-shift` and `-not-abt` to exercise the section 5.0
-routing rules (`USA_WEEKEND` with and without `-not-abt` is R10 vs R12),
-`-cancel-by status|comment` for either acknowledgement gesture, and `-minute` to
-change the compression.
-
-**`cmd/ladder-harness` is a different tool**: it builds a plan and places the
-calls itself, with no engine, no durable state and no events — it answers "what
-does the ladder sound like". `cmd/escalation-local` answers "does the engine
-actually do it", including the parts only the engine has: idempotency under
-redelivery, resumption from Redis, and cancellation driven by a real event.
 
 ### Running the full service against it
 

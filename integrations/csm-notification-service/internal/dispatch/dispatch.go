@@ -84,6 +84,21 @@ type escalationDetector interface {
 	DetectEscalation(ctx context.Context, caseID, caseNumber, product, comment string) (escalation.Result, error)
 }
 
+// slaEngineService abstracts internal/slaengine.Engine for testability — the
+// three triggers that keep SLA tracking current: a new case registers its
+// clocks, a status change pauses/resumes/completes them, and a qualifying
+// support-engineer reply completes the response clock early. Each call is
+// best-effort from this dispatcher's own point of view, same posture as
+// every other independent reaction in this file (a Chat/email failure never
+// fails the whole Handle call) — slaengine.Engine itself already logs its
+// own failures and never returns an error to call sites, so there is
+// nothing for this dispatcher to join/propagate here at all.
+type slaEngineService interface {
+	RegisterClocks(ctx context.Context, caseID, priority string, createdAt time.Time, caseNumber, wso2CaseID, caseTitle, caseType, product, team string)
+	ApplyStateEffects(ctx context.Context, caseID, newStatus string)
+	CompleteResponseClock(ctx context.Context, caseID string)
+}
+
 // callSender abstracts notifications.TwilioClient's MakeCall for testability.
 type callSender interface {
 	MakeCall(ctx context.Context, to, message string) (notifications.Call, error)
@@ -175,6 +190,12 @@ type Dispatcher struct {
 	// the frustration-detection step entirely, the same optional-feature
 	// posture WithOnboarding's own cfg has.
 	frustrationDetector escalationDetector
+
+	// slaEngine is set via WithSLAEngine — nil (REDIS_ADDR/REDIS_URL unset)
+	// means handleCaseCreated/handleStatusChanged/handleCommentAdded skip
+	// their own SLA-tracking call entirely, same optional-feature posture as
+	// frustrationDetector above.
+	slaEngine slaEngineService
 
 	// emailSendingEnabled (EMAIL_SENDING_ENABLED, the disable-entirely
 	// `!= "false"` convention CALL_SENDING_ENABLED below also uses) is
@@ -302,6 +323,18 @@ func NewDispatcher(email emailSender, googleChat googleChatSender, call callSend
 // handleCommentAdded skips the step entirely rather than erroring.
 func (d *Dispatcher) WithFrustrationDetection(detector escalationDetector) *Dispatcher {
 	d.frustrationDetector = detector
+	return d
+}
+
+// WithSLAEngine configures handleCaseCreated/handleStatusChanged/
+// handleCommentAdded's SLA-tracking calls (see slaEngineService) and
+// returns d for chaining. Not part of NewDispatcher's parameter list
+// deliberately — same "optional per deployment" reasoning as
+// WithFrustrationDetection above: a deployment with no Redis configured
+// gets a nil slaEngine, and all three handlers skip their own call
+// entirely rather than erroring.
+func (d *Dispatcher) WithSLAEngine(engine slaEngineService) *Dispatcher {
+	d.slaEngine = engine
 	return d
 }
 
@@ -542,6 +575,20 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 		return fmt.Errorf("dispatch: decode case.created payload: %w", err)
 	}
 
+	// Independent of, and does not block, every reaction below — see
+	// slaEngineService's own doc comment. CreatedAt is RFC3339 on every
+	// real publisher (see events.CaseCreatedPayload.CreatedAt); a value
+	// that fails to parse skips registration rather than guessing a
+	// fallback "now" that would start every clock from the wrong instant.
+	if d.slaEngine != nil {
+		createdAt, err := time.Parse(time.RFC3339, p.CreatedAt)
+		if err != nil {
+			slog.WarnContext(ctx, "dispatch: case.created createdAt not RFC3339, sla clocks not registered", "caseId", p.CaseID, "createdAt", p.CreatedAt, "err", err)
+		} else {
+			d.slaEngine.RegisterClocks(ctx, p.CaseID, p.Priority, createdAt, p.CaseNumber, p.WSO2CaseID, p.CaseTitle, p.CaseType, p.Product, p.Team)
+		}
+	}
+
 	baseKey := recordBaseKey(record)
 	chatKey := baseKey + "/chat"
 	endRecord := d.beginRecord(baseKey)
@@ -666,6 +713,14 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 
 	d.checkFrustration(ctx, record, p)
 
+	// Independent of, and does not block, every reaction above/below — see
+	// slaEngineService's own doc comment. Entity-service has already
+	// confirmed IsSupportEngineerResponse (it owns the role data); this
+	// dispatcher does no role/identity resolution of its own.
+	if d.slaEngine != nil && p.IsSupportEngineerResponse {
+		d.slaEngine.CompleteResponseClock(ctx, p.CaseID)
+	}
+
 	groups, groupUserIDs, err := d.groupByLink(ctx, p.Recipients, p.ProjectID, p.CaseID)
 	if err != nil {
 		return err
@@ -782,6 +837,13 @@ func (d *Dispatcher) handleStatusChanged(ctx context.Context, record eventbus.Re
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return fmt.Errorf("dispatch: decode case.status_changed payload: %w", err)
 	}
+
+	// Independent of, and does not block, the email reaction below — see
+	// slaEngineService's own doc comment.
+	if d.slaEngine != nil {
+		d.slaEngine.ApplyStateEffects(ctx, p.CaseID, p.NewStatus)
+	}
+
 	groups, groupUserIDs, err := d.groupByLink(ctx, p.Recipients, p.ProjectID, p.CaseID)
 	if err != nil {
 		return err

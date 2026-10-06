@@ -71,8 +71,14 @@ func (f *fakeUserRepoForEscalationService) GetUserByEmail(_ context.Context, ema
 	}
 	return domain.User{}, &apierror.NotFoundError{Msg: "no user found with email: " + email}
 }
+func (f *fakeUserRepoForEscalationService) GetUsersByIDs(context.Context, []string) ([]domain.User, error) {
+	panic("fakeUserRepoForEscalationService.GetUsersByIDs: not expected to be called by these tests")
+}
 func (f *fakeUserRepoForEscalationService) SearchUsers(context.Context, domain.SearchUsersRequest) ([]domain.User, int, error) {
 	panic("fakeUserRepoForEscalationService.SearchUsers: not expected to be called by these tests")
+}
+func (f *fakeUserRepoForEscalationService) GetUsersByIDs(context.Context, []string) ([]domain.User, error) {
+	panic("fakeUserRepoForEscalationService.GetUsersByIDs: not expected to be called by these tests")
 }
 func (f *fakeUserRepoForEscalationService) GetUserRoles(context.Context, string) ([]string, error) {
 	panic("fakeUserRepoForEscalationService.GetUserRoles: not expected to be called by these tests")
@@ -91,12 +97,6 @@ func (f *fakeUserRepoForEscalationService) CreateUser(context.Context, domain.Cr
 }
 func (f *fakeUserRepoForEscalationService) UpdateUserTimeZone(context.Context, string, string) (time.Time, error) {
 	panic("fakeUserRepoForEscalationService.UpdateUserTimeZone: not expected to be called by these tests")
-}
-
-// GetUsersByIDs returns empty, matching stubUserRepo's: no test here
-// exercises it, it only completes repository.UserRepository.
-func (f *fakeUserRepoForEscalationService) GetUsersByIDs(context.Context, []string) ([]domain.User, error) {
-	return nil, nil
 }
 
 // caseFoundInScopeRepo is the default stubCaseRepo.GetCaseByID for tests

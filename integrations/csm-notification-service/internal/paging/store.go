@@ -147,7 +147,7 @@ type Store struct {
 }
 
 // NewStore constructs a Store. Connecting is lazy, matching
-// slaengine.NewWakeIndex and every other lazy-connect client here.
+// slaengine.NewStore and every other lazy-connect client here.
 func NewStore(rdb *redis.Client) *Store {
 	return &Store{rdb: rdb, wake: wakeKey, state: statePrefix}
 }

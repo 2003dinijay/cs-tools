@@ -24,8 +24,10 @@ service never creates incidents and never touches alert-core's own tables.
   from the database clock, and each row carries the alert's `fingerprint` so alert-core can claim
   one incident's alerts together.
 - **AWS SNS subscription handling.** When an SNS topic subscribes the AWS webhook URL, the service
-  confirms the subscription (fetching its `SubscribeURL`, only from `sns.<region>.amazonaws.com`)
-  and answers `200` without storing an alert.
+  verifies the message's SNS signature, confirms the subscription (fetching its `SubscribeURL`, only
+  from `sns.<region>.amazonaws.com`) and answers `200` without storing an alert. An
+  `UnsubscribeConfirmation` is logged and answered `200`, never stored; any other SNS message type
+  except `Notification` is rejected with `400`.
 - **Backpressure.** Accepted-but-unfinished work is capped by both a queue size and a memory
   budget; past either limit, new webhooks get `503` immediately rather than queuing indefinitely.
 - **Wake-up call.** After writing a batch, the service posts once to alert-core's `POST /alertz`
@@ -88,6 +90,7 @@ cp .env.example .env
 4. Mount a customized `config.toml` under **Manage > Configs and Secrets > File Mount** if any
    default needs changing; without it the service runs on `config.toml.example`'s values.
 5. Connect this component to `sre-alert-core-service`'s endpoint and point `ALERT_CORE_WAKE_URL`
-   at its `/alertz` path. Both services must share the same `PG*` values.
+   at its `/alertz` path. Set `ALERT_CORE_WAKE_TOKEN` (a secret, from `openssl rand -hex 32`) to the
+   same value on both components. Both services must share the same `PG*` values.
 6. Any number of replicas is safe: ids stay unique across replicas because every claim pulls from
    `alert_seq`, which can never hand out the same value twice.

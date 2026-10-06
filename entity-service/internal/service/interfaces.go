@@ -212,6 +212,14 @@ type SLAStatusService interface {
 	SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination) (domain.SearchSLAStatusResponse, error)
 }
 
+// SLADurationPolicyService backs GET /sla-duration-policy — see
+// domain.SLADurationPolicyItem's own doc comment for what it's for.
+type SLADurationPolicyService interface {
+	// ListSLADurationPolicy returns every row of sla_duration_policy,
+	// unpaginated.
+	ListSLADurationPolicy(ctx context.Context) (domain.SLADurationPolicyResponse, error)
+}
+
 // OnboardingStepService records and reads the per-membership status ledger
 // of the customer onboarding flow (onboarding_step). The DATABASE step is
 // written in-process by the Salesforce membership ingest; IDENTITY, EMAIL
@@ -698,6 +706,15 @@ type CaseService interface {
 	// CreateCaseComment creates a new comment on the case identified by req.CaseID.
 	// A ValidationError is returned for invalid input or constraint violations.
 	CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error)
+	// CreateInternalCaseComment is CreateCaseComment for an internal bookkeeping
+	// comment (for example the WORK_NOTE recorded when a case is escalated)
+	// that must be written even when the request that triggered it came from
+	// an external caller, who may not write a WORK_NOTE themselves. The author
+	// is still resolved from the caller's token. It is for server-side use only:
+	// no route may expose it, and the caller must already have authorised
+	// req.CaseID. On the Postgres data source the row is written as the
+	// system identity; on ServiceNow it is the same call as CreateCaseComment.
+	CreateInternalCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error)
 	// CreateCaseCommentAs is CreateCaseComment for a caller that already
 	// knows who is acting (actorEmail) and has no live x-user-id-token to
 	// resolve it from -- see domain.CreateCaseCommentRequest.ActorEmail's
@@ -905,6 +922,15 @@ type ChangeRequestService interface {
 
 	// PatchChangeRequest updates mutable fields on a change request identified by UUID.
 	PatchChangeRequest(ctx context.Context, id string, req domain.PatchChangeRequestRequest) (domain.PatchChangeRequestResponse, error)
+
+	// GetChangeRequestLinkOptions backs the change request form's Customer Project ->
+	// Deployments / Deployment products cascade: the project's active deployments, the
+	// deployment products that follow from the deployments chosen so far
+	// (req.DeploymentIDs, which must belong to the project) -- the same derivation
+	// create and PATCH validate against -- and the project's registered customer
+	// contacts, which are the read-only Customer Group. PostgreSQL data source only;
+	// a ValidationError on the ServiceNow data source.
+	GetChangeRequestLinkOptions(ctx context.Context, req domain.ChangeRequestLinkOptionsRequest) (domain.ChangeRequestLinkOptionsResponse, error)
 
 	// GetChangeRequestApprovals returns the approval stages and per-approver status
 	// for a single change request identified by UUID. Supported by the ServiceNow data

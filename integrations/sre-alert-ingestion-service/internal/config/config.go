@@ -291,9 +291,8 @@ type Env struct {
 	AuthAuditOnlyRaw string `env:"AUTH_AUDIT_ONLY"`
 	AuthEnabled      bool   `env:"-"`
 	AuthAuditOnly    bool   `env:"-"`
-	// WakeUsername/WakeSecret are an integration_users credential for the wake call, sent only over https.
-	WakeUsername string `env:"ALERT_CORE_WAKE_USERNAME"`
-	WakeSecret   string `env:"ALERT_CORE_WAKE_SECRET"`
+	// WakeToken is the shared ALERT_CORE_WAKE_TOKEN alerts-core checks on /alertz, sent only over https.
+	WakeToken string `env:"ALERT_CORE_WAKE_TOKEN"`
 }
 
 // LoadEnv parses Env.
@@ -303,8 +302,7 @@ func LoadEnv() (Env, error) {
 		return Env{}, fmt.Errorf("env config: %w", err)
 	}
 	e.WakeURL = strings.TrimSpace(e.WakeURL)
-	e.WakeUsername = strings.TrimSpace(e.WakeUsername)
-	e.WakeSecret = strings.TrimSpace(e.WakeSecret)
+	e.WakeToken = strings.TrimSpace(e.WakeToken)
 	var err error
 	if e.AuthEnabled, err = parseBool("AUTH_ENABLED", e.AuthEnabledRaw); err != nil {
 		return Env{}, err
