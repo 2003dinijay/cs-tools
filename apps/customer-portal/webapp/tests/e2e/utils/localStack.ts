@@ -450,21 +450,21 @@ export async function changeRequestRow(id: string): Promise<ChangeRequestRow> {
   return { state, startUtc, endUtc, title: title.join("|") };
 }
 
-/** One approver row: the stage it belongs to, who, and where it stands. */
-export type ApproverRow = { stage: string; email: string; status: string };
+/** One approver row: the stage it belongs to, who, and its approval_stage_approver.state (UPPER_SNAKE_CASE: REQUESTED, APPROVED, REJECTED, CANCELLED, ...). */
+export type ApproverRow = { stage: string; email: string; state: string };
 
 /** Every approver row of a change request, oldest stage first (the whole history). */
 export async function approverRows(id: string): Promise<ApproverRow[]> {
   const out = await psql(
-    "select s.checkpoint_label, u.email, a.status from approval_stage s " +
+    "select s.checkpoint_label, u.email, a.state from approval_stage s " +
       "join approval_stage_approver a on a.stage_id = s.id " +
       'join "user" u on u.id = a.approver_user_id ' +
       `where s.work_item_id = '${id}' order by s.created_on, s.id, u.email`,
   );
   return out
     ? out.split("\n").map((line) => {
-        const [stage, email, status] = line.split("|");
-        return { stage, email, status };
+        const [stage, email, state] = line.split("|");
+        return { stage, email, state };
       })
     : [];
 }

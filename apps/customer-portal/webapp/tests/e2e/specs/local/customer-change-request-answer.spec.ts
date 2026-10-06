@@ -114,11 +114,11 @@ test.describe("Local stack — a customer answers a change request", () => {
       expect((await changeRequestRow(approval.id)).state).toBe("SCHEDULED");
       const rows = await approverRows(approval.id);
       expect(
-        rows.map((r) => `${r.stage}|${r.email}|${r.status}`),
+        rows.map((r) => `${r.stage}|${r.email}|${r.state}`),
         "dave's row approved, the sibling's cancelled",
       ).toEqual([
-        "Customer Approval|dave.mendis@example.com|approved",
-        "Customer Approval|erin.jayawardena@example.com|cancelled",
+        "Customer Approval|dave.mendis@example.com|APPROVED",
+        "Customer Approval|erin.jayawardena@example.com|CANCELLED",
       ]);
 
       // The list moved too (the patch hook invalidates it).
@@ -178,7 +178,7 @@ test.describe("Local stack — a customer answers a change request", () => {
 
       // erin's own row was not turned into an approval by her late click.
       const rows = await approverRows(approval.id);
-      expect(rows.find((r) => r.email === LOCAL_PERSONAS.erin.email)?.status).toBe("cancelled");
+      expect(rows.find((r) => r.email === LOCAL_PERSONAS.erin.email)?.state).toBe("CANCELLED");
     } finally {
       await erinContext.close();
     }
@@ -230,9 +230,9 @@ test.describe("Local stack — a customer answers a change request", () => {
     expect((await customerApi("dave").get(approval.id)).body.state?.label).toBe("Canceled");
     expect((await changeRequestRow(approval.id)).state).toBe("CANCELED");
     const rows = await approverRows(approval.id);
-    expect(rows.map((r) => `${r.email}|${r.status}`)).toEqual([
-      "dave.mendis@example.com|rejected",
-      "erin.jayawardena@example.com|cancelled",
+    expect(rows.map((r) => `${r.email}|${r.state}`)).toEqual([
+      "dave.mendis@example.com|REJECTED",
+      "erin.jayawardena@example.com|CANCELLED",
     ]);
   });
 

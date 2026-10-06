@@ -120,9 +120,9 @@ test.describe("Local stack — who may not answer a change request", () => {
     const untouched = await changeRequestRow(approval.id);
     expect([untouched.state, untouched.startUtc, untouched.endUtc]).toEqual(["CUSTOMER_APPROVAL", "", ""]);
     expect(
-      (await approverRows(approval.id)).map((r) => `${r.email}|${r.status}`),
+      (await approverRows(approval.id)).map((r) => `${r.email}|${r.state}`),
       "the two contacts' requests are untouched",
-    ).toEqual(["dave.mendis@example.com|requested", "erin.jayawardena@example.com|requested"]);
+    ).toEqual(["dave.mendis@example.com|REQUESTED", "erin.jayawardena@example.com|REQUESTED"]);
 
     // 4. The browser, at the address she would type: under her own project and under Example Corp's.
     const context = await openLocalContext(test, browser, "mira", { baseURL });
@@ -182,7 +182,7 @@ test.describe("Local stack — who may not answer a change request", () => {
     // In Customer Approval, but erin's own request was cancelled while dave's stands
     // (what a colleague's answer or a re-schedule leaves behind): the offer is per viewer.
     await psql(
-      `update approval_stage_approver a set status = 'cancelled' from "user" u ` +
+      `update approval_stage_approver a set state = 'CANCELLED' from "user" u ` +
         `where a.approver_user_id = u.id and a.work_item_id = '${approval.id}' ` +
         `and u.email = '${LOCAL_PERSONAS.erin.email}'`,
     );
@@ -220,7 +220,7 @@ test.describe("Local stack — who may not answer a change request", () => {
     // is not "always on". erin's request on this review is cancelled (what a sibling's answer leaves);
     // dave's stands.
     await psql(
-      `update approval_stage_approver a set status = 'cancelled' from "user" u ` +
+      `update approval_stage_approver a set state = 'CANCELLED' from "user" u ` +
         `where a.approver_user_id = u.id and a.work_item_id = '${review.id}' ` +
         `and u.email = '${LOCAL_PERSONAS.erin.email}'`,
     );
@@ -286,9 +286,9 @@ test.describe("Local stack — who may not answer a change request", () => {
       "E2E fixture: change in Customer Approval with a pending customer group approval",
     ]);
     expect(
-      (await approverRows(approval.id)).map((r) => `${r.email}|${r.status}`),
+      (await approverRows(approval.id)).map((r) => `${r.email}|${r.state}`),
       "no request was answered or cancelled",
-    ).toEqual(["dave.mendis@example.com|requested", "erin.jayawardena@example.com|requested"]);
+    ).toEqual(["dave.mendis@example.com|REQUESTED", "erin.jayawardena@example.com|REQUESTED"]);
     const after = await dave.get(approval.id);
     expect(after.body.state?.label).toBe("Customer Approval");
     expect(after.body.customerCanAnswer, "dave still has his answer to give").toBe(true);

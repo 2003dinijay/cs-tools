@@ -194,11 +194,11 @@ test.describe("Local stack — a customer proposes a new implementation time", (
       expect(daveApi.body.customerCanAnswer).toBe(false);
       const loop1 = await approverRows(approval.id);
       expect(
-        loop1.filter((r) => r.stage === "Customer Approval").map((r) => `${r.email}|${r.status}`),
+        loop1.filter((r) => r.stage === "Customer Approval").map((r) => `${r.email}|${r.state}`),
         "the customers' pending request is cancelled, not answered",
-      ).toEqual(["dave.mendis@example.com|cancelled", "erin.jayawardena@example.com|cancelled"]);
+      ).toEqual(["dave.mendis@example.com|CANCELLED", "erin.jayawardena@example.com|CANCELLED"]);
       const cab = loop1.filter((r) => r.stage === "CAB Approval");
-      expect(cab.map((r) => r.status), "CAB asked").toEqual(["requested", "requested", "requested"]);
+      expect(cab.map((r) => r.state), "CAB asked").toEqual(["REQUESTED", "REQUESTED", "REQUESTED"]);
       expect(cab.map((r) => r.email)).toContain(STAFF_APPROVERS.alice);
 
       // erin, who did not propose, is not offered anything either.
@@ -224,13 +224,13 @@ test.describe("Local stack — a customer proposes a new implementation time", (
       const loop2 = await approverRows(approval.id);
       const customerStages = loop2.filter((r) => r.stage === "Customer Approval");
       expect(
-        customerStages.map((r) => `${r.email}|${r.status}`),
+        customerStages.map((r) => `${r.email}|${r.state}`),
         "the old request stays as a cancelled record; a new one is requested",
       ).toEqual([
-        "dave.mendis@example.com|cancelled",
-        "erin.jayawardena@example.com|cancelled",
-        "dave.mendis@example.com|requested",
-        "erin.jayawardena@example.com|requested",
+        "dave.mendis@example.com|CANCELLED",
+        "erin.jayawardena@example.com|CANCELLED",
+        "dave.mendis@example.com|REQUESTED",
+        "erin.jayawardena@example.com|REQUESTED",
       ]);
       expect((await changeRequestRow(approval.id)).state).toBe("CUSTOMER_APPROVAL");
       expect((await customerApi("erin").get(approval.id)).body.customerCanAnswer).toBe(true);
@@ -302,13 +302,13 @@ test.describe("Local stack — a customer proposes a new implementation time", (
       window.endUtc,
     ]);
     expect(
-      (await approverRows(standardNew.id)).map((r) => `${r.stage}|${r.email}|${r.status}`),
+      (await approverRows(standardNew.id)).map((r) => `${r.stage}|${r.email}|${r.state}`),
       "the first request is cancelled, a fresh one asked of both",
     ).toEqual([
-      "Customer Approval|dave.mendis@example.com|cancelled",
-      "Customer Approval|erin.jayawardena@example.com|cancelled",
-      "Customer Approval|dave.mendis@example.com|requested",
-      "Customer Approval|erin.jayawardena@example.com|requested",
+      "Customer Approval|dave.mendis@example.com|CANCELLED",
+      "Customer Approval|erin.jayawardena@example.com|CANCELLED",
+      "Customer Approval|dave.mendis@example.com|REQUESTED",
+      "Customer Approval|erin.jayawardena@example.com|REQUESTED",
     ]);
     expect((await customerApi("dave").get(standardNew.id)).body.customerCanAnswer).toBe(true);
 
@@ -418,12 +418,12 @@ test.describe("Local stack — a customer proposes a new implementation time", (
         endUtc: second.endUtc,
       });
       expect(
-        (await approverRows(approval.id)).filter((r) => r.stage === "Customer Approval").map((r) => `${r.email}|${r.status}`),
+        (await approverRows(approval.id)).filter((r) => r.stage === "Customer Approval").map((r) => `${r.email}|${r.state}`),
       ).toEqual([
-        "dave.mendis@example.com|cancelled",
-        "erin.jayawardena@example.com|cancelled",
-        "dave.mendis@example.com|requested",
-        "erin.jayawardena@example.com|requested",
+        "dave.mendis@example.com|CANCELLED",
+        "erin.jayawardena@example.com|CANCELLED",
+        "dave.mendis@example.com|REQUESTED",
+        "erin.jayawardena@example.com|REQUESTED",
       ]);
 
       // The page refreshed on the refusal: it now shows the new window, and Approve for THAT window is taken.
@@ -493,21 +493,21 @@ test.describe("Local stack — a customer proposes a new implementation time", (
       const done = await changeRequestRow(approval.id);
       expect([done.state, done.startUtc, done.endUtc]).toEqual(["SCHEDULED", second.startUtc, second.endUtc]);
       expect(
-        (await approverRows(approval.id)).map((r) => `${r.stage}|${r.email.split("@")[0]}|${r.status}`),
+        (await approverRows(approval.id)).map((r) => `${r.stage}|${r.email.split("@")[0]}|${r.state}`),
         "every round stays on record: the customers' cancelled requests, each CAB round, the final answer",
       ).toEqual([
-        "Customer Approval|dave.mendis|cancelled",
-        "Customer Approval|erin.jayawardena|cancelled",
-        "CAB Approval|alice.perera|approved",
-        "CAB Approval|bob.fernando|cancelled",
-        "CAB Approval|carol.silva|cancelled",
-        "Customer Approval|dave.mendis|cancelled",
-        "Customer Approval|erin.jayawardena|cancelled",
-        "CAB Approval|alice.perera|cancelled",
-        "CAB Approval|bob.fernando|approved",
-        "CAB Approval|carol.silva|cancelled",
-        "Customer Approval|dave.mendis|cancelled",
-        "Customer Approval|erin.jayawardena|approved",
+        "Customer Approval|dave.mendis|CANCELLED",
+        "Customer Approval|erin.jayawardena|CANCELLED",
+        "CAB Approval|alice.perera|APPROVED",
+        "CAB Approval|bob.fernando|CANCELLED",
+        "CAB Approval|carol.silva|CANCELLED",
+        "Customer Approval|dave.mendis|CANCELLED",
+        "Customer Approval|erin.jayawardena|CANCELLED",
+        "CAB Approval|alice.perera|CANCELLED",
+        "CAB Approval|bob.fernando|APPROVED",
+        "CAB Approval|carol.silva|CANCELLED",
+        "Customer Approval|dave.mendis|CANCELLED",
+        "Customer Approval|erin.jayawardena|APPROVED",
       ]);
     } finally {
       await erinContext.close();

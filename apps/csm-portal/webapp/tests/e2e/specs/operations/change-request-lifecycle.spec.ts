@@ -492,8 +492,8 @@ test.describe("change request lifecycle — the customer stages and the customer
       await expect(detail.rejectButton()).toHaveCount(0);
       await expectStages(detail, a.stages, a.flags);
       expect(await psqlOutput(`SELECT state::text FROM change_request WHERE id = '${a.crId}';`)).toBe(a.state);
-      // The rows as stored (by name): the decision is the row's status, the other contact's is cancelled.
-      const rows = [`${a.decider.name}:${a.decision}`, `${a.other}:cancelled`].sort().join(", ");
+      // The rows as stored (by name): the decision is the row's state (APPROVED / REJECTED), the other contact's is CANCELLED.
+      const rows = [`${a.decider.name}:${a.decision.toUpperCase()}`, `${a.other}:CANCELLED`].sort().join(", ");
       expect(await stageRows(a.crId, a.stage)).toBe(rows);
     });
   }
@@ -536,10 +536,10 @@ test.describe("change request lifecycle — the customer stages and the customer
 
 const MIGRATION_0193 = path.resolve(process.cwd(), "../../../entity-service/migrations/0193_change_request_cancel_stale_approvals.sql");
 
-/** "Review/alice:requested, ..." -- every approver row of the CR's stage with this label, by user name. */
+/** "Alice Perera:REQUESTED, ..." -- every approver row of the CR's stage with this label, by user name (state is UPPER_SNAKE_CASE, migration 0138). */
 async function stageRows(crId: string, label: string): Promise<string> {
   return await psqlOutput(`
-    SELECT COALESCE(string_agg(u.name || ':' || asa.status, ', ' ORDER BY u.name), '')
+    SELECT COALESCE(string_agg(u.name || ':' || asa.state, ', ' ORDER BY u.name), '')
     FROM approval_stage_approver asa
     JOIN approval_stage ast ON ast.id = asa.stage_id
     JOIN "user" u ON u.id = asa.approver_user_id
@@ -547,7 +547,7 @@ async function stageRows(crId: string, label: string): Promise<string> {
 }
 
 async function requestedRows(crId: string): Promise<number> {
-  return Number(await psqlOutput(`SELECT COUNT(*) FROM approval_stage_approver WHERE work_item_id = '${crId}' AND status = 'requested';`));
+  return Number(await psqlOutput(`SELECT COUNT(*) FROM approval_stage_approver WHERE work_item_id = '${crId}' AND state = 'REQUESTED';`));
 }
 
 test.describe("change request lifecycle — a Review approver's controls follow the state (real stack)", () => {
@@ -590,7 +590,7 @@ test.describe("change request lifecycle — a Review approver's controls follow 
       await expect(detail.approveButton(ALICE, "Review")).toBeEnabled();
       await expect(detail.rejectButton(ALICE, "Review")).toBeEnabled();
       await expect(detail.approveButton(CAROL, "Review")).toHaveCount(0);
-      expect(await stageRows(CR_WITH_TEAM, "Review")).toBe("Alice Perera:requested, Bob Fernando:requested, Carol Silva:requested");
+      expect(await stageRows(CR_WITH_TEAM, "Review")).toBe("Alice Perera:REQUESTED, Bob Fernando:REQUESTED, Carol Silva:REQUESTED");
 
       // Moving on to the customer's review cancels every reviewer's row, Carol's included
       // (the row the report was about): nobody can approve or reject the Review stage now.
@@ -599,7 +599,7 @@ test.describe("change request lifecycle — a Review approver's controls follow 
       for (const who of [ALICE, BOB, CAROL]) await expect(detail.approverStatus(who, "Review")).toHaveText("Cancelled");
       await expect(detail.approveButton()).toHaveCount(0);
       await expect(detail.rejectButton()).toHaveCount(0);
-      expect(await stageRows(CR_WITH_TEAM, "Review")).toBe("Alice Perera:cancelled, Bob Fernando:cancelled, Carol Silva:cancelled");
+      expect(await stageRows(CR_WITH_TEAM, "Review")).toBe("Alice Perera:CANCELLED, Bob Fernando:CANCELLED, Carol Silva:CANCELLED");
       await expect(detail.approverStatus(DAVE, "Customer Review")).toHaveText("Requested");
       await expect(detail.approverStatus(ERIN, "Customer Review")).toHaveText("Requested");
       // Even forcing the decision through the API: there is nothing pending to decide.
@@ -639,27 +639,27 @@ test.describe("change request lifecycle — a Review approver's controls follow 
       INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status, checkpoint_label)
         VALUES ('${reviewStage}', now(), now(), 'e2e', 'e2e', '${CR_IN_REVIEW}', '00000000-0000-0000-0000-000000000901', 'requested', 'Review')
         ON CONFLICT (id) DO NOTHING;
-      INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status) VALUES
-        ('00000000-0000-0000-0000-000000001922', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_IN_REVIEW}', '00000000-0000-0000-0000-000000000011', 'requested'),
-        ('00000000-0000-0000-0000-000000001923', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_IN_REVIEW}', '00000000-0000-0000-0000-000000000012', 'requested'),
-        ('00000000-0000-0000-0000-000000001924', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_IN_REVIEW}', '00000000-0000-0000-0000-000000000013', 'requested')
-        ON CONFLICT (id) DO UPDATE SET status = 'requested';`);
+      INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state) VALUES
+        ('00000000-0000-0000-0000-000000001922', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_IN_REVIEW}', '00000000-0000-0000-0000-000000000011', 'REQUESTED'),
+        ('00000000-0000-0000-0000-000000001923', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_IN_REVIEW}', '00000000-0000-0000-0000-000000000012', 'REQUESTED'),
+        ('00000000-0000-0000-0000-000000001924', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_IN_REVIEW}', '00000000-0000-0000-0000-000000000013', 'REQUESTED')
+        ON CONFLICT (id) DO UPDATE SET state = 'REQUESTED';`);
 
     await asPersona(browser, "crInternalApprover", async (alice) => {
       const detail = new ChangeRequestDetailPage(alice);
       await detail.goto(CR_IN_REVIEW);
       await expect(detail.currentStep()).toContainText("Review");
       await expect(detail.approveButton(ALICE, "Review")).toBeEnabled();
-      expect(await stageRows(CR_IN_REVIEW, "Review")).toBe("Alice Perera:requested, Bob Fernando:requested, Carol Silva:requested");
+      expect(await stageRows(CR_IN_REVIEW, "Review")).toBe("Alice Perera:REQUESTED, Bob Fernando:REQUESTED, Carol Silva:REQUESTED");
 
       await detail.sendForCustomerReviewButton().click();
       await expect(detail.currentStep()).toContainText("Customer Review");
       for (const who of [ALICE, BOB, CAROL]) await expect(detail.approverStatus(who, "Review")).toHaveText("Cancelled");
       await expect(detail.approveButton()).toHaveCount(0);
       await expect(detail.rejectButton()).toHaveCount(0);
-      expect(await stageRows(CR_IN_REVIEW, "Review")).toBe("Alice Perera:cancelled, Bob Fernando:cancelled, Carol Silva:cancelled");
+      expect(await stageRows(CR_IN_REVIEW, "Review")).toBe("Alice Perera:CANCELLED, Bob Fernando:CANCELLED, Carol Silva:CANCELLED");
       // The customer contacts are asked instead.
-      expect(await stageRows(CR_IN_REVIEW, "Customer Review")).toBe("Dave Mendis:requested, Erin Jayawardena:requested");
+      expect(await stageRows(CR_IN_REVIEW, "Customer Review")).toBe("Dave Mendis:REQUESTED, Erin Jayawardena:REQUESTED");
     });
   });
 
@@ -671,15 +671,15 @@ test.describe("change request lifecycle — a Review approver's controls follow 
     await psql(`
       UPDATE change_request SET state = 'CLOSED' WHERE id = '${CR_PENDING_APPROVAL}';
       -- its Peer stage was decided long ago (alice approved, the others cancelled)
-      UPDATE approval_stage_approver SET status = CASE approver_user_id WHEN '00000000-0000-0000-0000-000000000011' THEN 'approved' ELSE 'cancelled' END
+      UPDATE approval_stage_approver SET state = CASE approver_user_id WHEN '00000000-0000-0000-0000-000000000011' THEN 'APPROVED' ELSE 'CANCELLED' END
         WHERE stage_id = '00000000-0000-0000-0000-000000001005';
       INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status, checkpoint_label)
         VALUES ('${reviewStage}', now() + interval '1 minute', now(), 'e2e', 'e2e', '${CR_PENDING_APPROVAL}', '00000000-0000-0000-0000-000000000901', 'requested', 'Review')
         ON CONFLICT (id) DO NOTHING;
-      INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status) VALUES
-        ('00000000-0000-0000-0000-000000001912', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_PENDING_APPROVAL}', '00000000-0000-0000-0000-000000000011', 'requested'),
-        ('00000000-0000-0000-0000-000000001913', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_PENDING_APPROVAL}', '00000000-0000-0000-0000-000000000013', 'requested')
-        ON CONFLICT (id) DO UPDATE SET status = 'requested';`);
+      INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state) VALUES
+        ('00000000-0000-0000-0000-000000001912', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_PENDING_APPROVAL}', '00000000-0000-0000-0000-000000000011', 'REQUESTED'),
+        ('00000000-0000-0000-0000-000000001913', now(), now(), 'e2e', 'e2e', '${reviewStage}', '${CR_PENDING_APPROVAL}', '00000000-0000-0000-0000-000000000013', 'REQUESTED')
+        ON CONFLICT (id) DO UPDATE SET state = 'REQUESTED';`);
 
     await asPersona(browser, "crInternalApprover", async (alice) => {
       const detail = new ChangeRequestDetailPage(alice);
@@ -701,7 +701,7 @@ test.describe("change request lifecycle — a Review approver's controls follow 
         );
       }
       // Nothing changed.
-      expect(await stageRows(CR_PENDING_APPROVAL, "Review")).toBe("Alice Perera:requested, Carol Silva:requested");
+      expect(await stageRows(CR_PENDING_APPROVAL, "Review")).toBe("Alice Perera:REQUESTED, Carol Silva:REQUESTED");
       expect(await psqlOutput(`SELECT state::text FROM change_request WHERE id = '${CR_PENDING_APPROVAL}';`)).toBe("CLOSED");
     });
 
@@ -710,20 +710,20 @@ test.describe("change request lifecycle — a Review approver's controls follow 
     // Peer Approval row still requested on it is stale), and leaves a live approval alone
     // (CHG-FIXED-008 is in Customer Review with its Customer Review stage requested).
     await psql(`
-      INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
-        VALUES ('00000000-0000-0000-0000-000000001914', now(), now(), 'e2e', 'e2e', '00000000-0000-0000-0000-000000001008', '${CR_RESOLVED}', '00000000-0000-0000-0000-000000000013', 'requested')
-        ON CONFLICT (id) DO UPDATE SET status = 'requested';`);
+      INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
+        VALUES ('00000000-0000-0000-0000-000000001914', now(), now(), 'e2e', 'e2e', '00000000-0000-0000-0000-000000001008', '${CR_RESOLVED}', '00000000-0000-0000-0000-000000000013', 'REQUESTED')
+        ON CONFLICT (id) DO UPDATE SET state = 'REQUESTED';`);
     expect(await requestedRows(CR_RESOLVED)).toBe(1);
     const live = await requestedRows(CR_CUSTOMER_REVIEW);
     expect(live).toBe(2);
     await psql(fs.readFileSync(MIGRATION_0193, "utf8"));
     expect(await requestedRows(CR_PENDING_APPROVAL)).toBe(0);
-    expect(await stageRows(CR_PENDING_APPROVAL, "Review")).toBe("Alice Perera:cancelled, Carol Silva:cancelled");
+    expect(await stageRows(CR_PENDING_APPROVAL, "Review")).toBe("Alice Perera:CANCELLED, Carol Silva:CANCELLED");
     expect(await requestedRows(CR_RESOLVED)).toBe(0);
     expect(await requestedRows(CR_CUSTOMER_REVIEW)).toBe(live);
     // Idempotent.
     await psql(fs.readFileSync(MIGRATION_0193, "utf8"));
-    expect(await stageRows(CR_PENDING_APPROVAL, "Review")).toBe("Alice Perera:cancelled, Carol Silva:cancelled");
+    expect(await stageRows(CR_PENDING_APPROVAL, "Review")).toBe("Alice Perera:CANCELLED, Carol Silva:CANCELLED");
 
     await asPersona(browser, "crInternalApprover", async (alice) => {
       const detail = new ChangeRequestDetailPage(alice);
