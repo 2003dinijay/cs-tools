@@ -16,7 +16,8 @@ info:
     | `approve_time_card` | `PATCH /time-cards/{id}` when the body sets `state` (approve/reject) | time-card-approver, admin |
     | `escalate` | `POST /cases/{id}/escalations` | escalator, admin |
     | `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` | attachment-downloader, cs-engineer, admin |
-    | `write` | every other `POST`/`PATCH`/`DELETE`, including case, incident and change-request comments | cs-engineer, admin |
+    | `create_work_note` | `POST /cases/{id}/comments` with `type=work_note` (internal note) — and nothing else | worknote-creator, cs-engineer, admin |
+    | `write` | every other `POST`/`PATCH`/`DELETE`, including incident and change-request comments and case comments of any type other than `work_note` | cs-engineer, admin |
     | `admin` | `POST /users` | admin only |
     | `security_center` | `POST /products/vulnerabilities/search`, `GET /products/vulnerabilities/{id}`, and a `POST /cases/search`/`GET /cases/{id}` naming case type security_report_analysis | cs-engineer, admin |
 security:
@@ -263,6 +264,11 @@ paths:
   /cases/{id}/comments:
     post:
       summary: Create a comment on a case.
+      description: >-
+        A caller holding `write` (cs-engineer, admin) may post any comment type. A
+        worknote-creator-only caller may post only `type=work_note` (an internal
+        note); any other type is rejected with `403`. A viewer-only caller may not
+        post at all.
       operationId: postCasesIdComments
       parameters:
         - name: id
