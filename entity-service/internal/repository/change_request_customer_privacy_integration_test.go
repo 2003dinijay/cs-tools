@@ -64,6 +64,12 @@ func TestChangeRequestCustomerPrivacyIntegration_AnswerIsBoundToTheWindowSeen(t 
 		t.Fatal("a refused answer stamped the customer's approval")
 	}
 
+	// A change request with no window at all says so, rather than "not set to not set".
+	f.execSQL(`UPDATE change_request SET start_on = NULL, end_on = NULL WHERE id = $1`, id)
+	_, err = f.approveAsFor(id, crScopeUserA1, sp(rsStart1), nil)
+	f.wantConflictContaining("a window that is gone", err, changedMsg, "(it is now no planned time is set)")
+	f.setPlanned(id, rsStart1, rsEnd1)
+
 	// The window moves: Alice proposes, the CAB approves it, the customer is asked
 	// again. Bob's page still shows the old window.
 	if _, err := f.patchAsContact(id, crScopeUserA1, domain.PatchChangeRequestRequest{PlannedStartOn: sp(rsStart2), PlannedEndOn: sp(rsEnd2)}); err != nil {

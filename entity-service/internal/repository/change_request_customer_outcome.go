@@ -347,8 +347,12 @@ func checkExpectedSchedule(ctx context.Context, tx pgx.Tx, id string, expectedSt
 		}
 		return t.UTC().Format(time.RFC3339)
 	}
+	now := "no planned time is set"
+	if start != nil || end != nil {
+		now = fmt.Sprintf("%s to %s", show(start), show(end))
+	}
 	return &apierror.ConflictError{Msg: fmt.Sprintf(
-		"the planned implementation time of this change request changed after you opened it (it is now %s to %s); read it again before giving your answer", show(start), show(end))}
+		"the planned implementation time of this change request changed after you opened it (it is now %s); read it again before giving your answer", now)}
 }
 
 // markCustomerCanAnswer sets domain.ChangeRequest.CustomerCanAnswer for the
