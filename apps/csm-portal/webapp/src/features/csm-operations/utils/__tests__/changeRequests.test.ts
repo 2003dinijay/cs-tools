@@ -43,6 +43,7 @@ import {
   isCreatableChangeRequestType,
   NO_CUSTOMER_CONTACTS_HELPER,
   noCustomerContactsHelper,
+  CUSTOMER_PROJECT_FROZEN_REASON,
   CUSTOMER_REQUIREMENT_ADD_ONLY_REASON,
   CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON,
   CUSTOMER_REQUIREMENT_ONCE_SAVED_HELPER,
@@ -725,104 +726,129 @@ describe("changeRequestBlockingReason — customer states", () => {
 // The rule for the customer's part of a change request is a pure function of
 // (state, the stored tick box, whether the change request has a Customer Project),
 // and the CSM Edit dialog computes it up front, mirroring the backend. This is the
-// table, one row per case, with an id of the form
+// table, written out one row per state, with the SAME ROW IDS and outcome codes as
+// the backend's Go truth table (entity-service
+// `internal/repository/change_request_customer_lock_test.go`): a row id is
+// "<STATE>/<column>" with STATE the upper-case state ("NULL" for a change request
+// with none recorded). When the rule changes, both tables change; neither module
+// imports the other's file on purpose (the container tests copy only entity-service).
 //
-//     <kind>:<state>:<stored on|off>:<project|noproject>
+// Outcome codes:
 //
-// (kind is `approval` or `review`; the state of a change request with none recorded
-// is written `none`). The backend carries the same table in its own Go test under the
-// same ids, so a drift between the two shows up as a failing row in one of them.
+//   ok               the control may be used (in the dialog: the box may be changed)
+//   frozen           the Customer Project can no longer be changed
+//   cannot-turn-off  a ticked box can no longer be unticked
+//   gate-passed      the gate the box controls has been passed
+//   needs-project    the box cannot be ticked: there is no Customer Project to ask
 //
-// Outcomes: `editable` (the box may be changed), `add-only` (a ticked box after New,
-// read-only), `gate` (an unticked box whose gate has passed), `needs-project`
-// (an unticked box after New with no Customer Project to ask, and none can be set).
-type LockOutcome = "editable" | "add-only" | "gate" | "needs-project";
+// Columns the dialog has a control for:
+//
+//   project-change   the Customer Project of a change request that has one
+//   project-set      the Customer Project of one that has none (NULL -> X)
+//   approval-on      Customer Approval, unticked, project stored
+//   approval-on-bare the same with no Customer Project
+//   approval-off     Customer Approval, ticked (project stored)
+//   review-on / review-on-bare / review-off    the same for Customer Review
+//
+// Not columns here, because the dialog has no such control: `project-resend` (the
+// dialog resends the stored project beside changed deployments, which the backend
+// accepts as a no-op), `to-new` and `rolled-back` (the dialog never sends a state).
+type LockCode = "ok" | "frozen" | "cannot-turn-off" | "gate-passed" | "needs-project";
+const LOCK_COLUMNS = [
+  "project-change", "project-set",
+  "approval-on", "approval-on-bare", "approval-off",
+  "review-on", "review-on-bare", "review-off",
+] as const;
+type LockColumn = (typeof LOCK_COLUMNS)[number];
 
-const LOCK_REASON: Record<Exclude<LockOutcome, "editable">, (kind: "approval" | "review") => string> = {
-  "add-only": () => CUSTOMER_REQUIREMENT_ADD_ONLY_REASON,
-  "needs-project": () => CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON,
-  gate: (kind) => `Locked: the change request has already reached the customer ${kind} step or later.`,
+// One row per state, the columns in the order above. Written out, not derived from
+// the helpers: it is the statement of the rule they are held to.
+const LOCK_TABLE: Record<string, LockCode[]> = {
+  NULL:              ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"],
+  NEW:               ["ok", "ok", "ok", "ok", "ok", "ok", "ok", "ok"],
+  ASSESS:            ["frozen", "frozen", "ok", "needs-project", "cannot-turn-off", "ok", "needs-project", "cannot-turn-off"],
+  AUTHORIZE:         ["frozen", "frozen", "ok", "needs-project", "cannot-turn-off", "ok", "needs-project", "cannot-turn-off"],
+  CUSTOMER_APPROVAL: ["frozen", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "ok", "needs-project", "cannot-turn-off"],
+  SCHEDULED:         ["frozen", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "ok", "needs-project", "cannot-turn-off"],
+  IMPLEMENT:         ["frozen", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "ok", "needs-project", "cannot-turn-off"],
+  REVIEW:            ["frozen", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "ok", "needs-project", "cannot-turn-off"],
+  CUSTOMER_REVIEW:   ["frozen", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "gate-passed", "gate-passed", "cannot-turn-off"],
+  ROLLBACK:          ["frozen", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "gate-passed", "gate-passed", "cannot-turn-off"],
+  CLOSED:            ["frozen", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "gate-passed", "gate-passed", "cannot-turn-off"],
+  CANCELED:          ["frozen", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "gate-passed", "gate-passed", "cannot-turn-off"],
 };
 
-const APPROVAL_BEFORE_GATE = ["assess", "authorize"];
-const APPROVAL_GATE_PASSED = ["customer_approval", "scheduled", "implement", "review", "customer_review", "closed", "rollback", "canceled"];
-const REVIEW_BEFORE_GATE = ["assess", "authorize", "customer_approval", "scheduled", "implement", "review"];
-const REVIEW_GATE_PASSED = ["customer_review", "closed", "rollback", "canceled"];
-
-interface LockRow {
-  id: string;
-  kind: "approval" | "review";
-  state: string | undefined;
-  stored: boolean;
-  hasProject: boolean;
-  outcome: LockOutcome;
-}
-
-function lockRows(): LockRow[] {
-  const rows: LockRow[] = [];
-  const add = (kind: "approval" | "review", state: string | undefined, stored: boolean, hasProject: boolean, outcome: LockOutcome) =>
-    rows.push({
-      id: `${kind}:${state ?? "none"}:${stored ? "on" : "off"}:${hasProject ? "project" : "noproject"}`,
-      kind,
-      state,
-      stored,
-      hasProject,
-      outcome,
-    });
-  for (const [kind, before, passed] of [
-    ["approval", APPROVAL_BEFORE_GATE, APPROVAL_GATE_PASSED],
-    ["review", REVIEW_BEFORE_GATE, REVIEW_GATE_PASSED],
-  ] as const) {
-    for (const stored of [false, true]) {
-      for (const hasProject of [false, true]) {
-        // The creation phase: everything editable, whatever is stored.
-        add(kind, "new", stored, hasProject, "editable");
-        add(kind, undefined, stored, hasProject, "editable");
-        // After New: a ticked box stays ticked, in every state; an unticked one can be
-        // added only before its gate and only with a project to ask.
-        for (const state of [...before, ...passed]) {
-          if (stored) add(kind, state, stored, hasProject, "add-only");
-          else if (passed.includes(state)) add(kind, state, stored, hasProject, "gate");
-          else add(kind, state, stored, hasProject, hasProject ? "editable" : "needs-project");
-        }
-      }
-    }
+/** What the client says for one cell of the table, as an outcome code. */
+function lockOutcome(state: string | undefined, column: LockColumn): LockCode {
+  const reasonToCode = (reason: string | null, kind: "approval" | "review"): LockCode => {
+    if (reason === null) return "ok";
+    if (reason === CUSTOMER_REQUIREMENT_ADD_ONLY_REASON) return "cannot-turn-off";
+    if (reason === CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON) return "needs-project";
+    if (reason === `Locked: the change request has already reached the customer ${kind} step or later.`) return "gate-passed";
+    throw new Error(`unrecognised reason ${reason}`);
+  };
+  switch (column) {
+    case "project-change":
+    case "project-set":
+      // Whether the change request has a project makes no difference to whether it can be changed.
+      return customerProjectLockedReason(state) === CUSTOMER_PROJECT_FROZEN_REASON ? "frozen" : "ok";
+    case "approval-on":
+      return reasonToCode(customerApprovalLockedReason(state, { stored: false, hasProject: true }), "approval");
+    case "approval-on-bare":
+      return reasonToCode(customerApprovalLockedReason(state, { stored: false, hasProject: false }), "approval");
+    case "approval-off":
+      return reasonToCode(customerApprovalLockedReason(state, { stored: true, hasProject: true }), "approval");
+    case "review-on":
+      return reasonToCode(customerReviewLockedReason(state, { stored: false, hasProject: true }), "review");
+    case "review-on-bare":
+      return reasonToCode(customerReviewLockedReason(state, { stored: false, hasProject: false }), "review");
+    case "review-off":
+      return reasonToCode(customerReviewLockedReason(state, { stored: true, hasProject: true }), "review");
   }
-  return rows;
 }
+
+const LOCK_ROWS: Array<[id: string, state: string | undefined, column: LockColumn, want: LockCode]> = Object.entries(
+  LOCK_TABLE,
+).flatMap(([STATE, codes]) =>
+  LOCK_COLUMNS.map((column, i): [string, string | undefined, LockColumn, LockCode] => [
+    `${STATE}/${column}`,
+    STATE === "NULL" ? undefined : STATE.toLowerCase(),
+    column,
+    codes[i]!,
+  ]),
+);
 
 describe("customer approval / review edit rule (the table the backend carries too)", () => {
-  const rows = lockRows();
-
-  it("covers every state, both boxes, both stored values and both project cases, with unique ids", () => {
-    // 2 kinds x 2 stored x 2 project x (new + none + 10 states after New) = 96 rows.
-    expect(rows).toHaveLength(96);
-    expect(new Set(rows.map((r) => r.id)).size).toBe(rows.length);
+  it("has a row for every state of a change request, and one for none recorded", () => {
+    expect(Object.keys(LOCK_TABLE).sort()).toEqual(
+      ["ASSESS", "AUTHORIZE", "CANCELED", "CLOSED", "CUSTOMER_APPROVAL", "CUSTOMER_REVIEW", "IMPLEMENT", "NEW", "NULL", "REVIEW", "ROLLBACK", "SCHEDULED"],
+    );
+    for (const codes of Object.values(LOCK_TABLE)) expect(codes).toHaveLength(LOCK_COLUMNS.length);
+    expect(LOCK_ROWS).toHaveLength(12 * 8);
+    expect(new Set(LOCK_ROWS.map((r) => r[0])).size).toBe(LOCK_ROWS.length);
   });
 
-  it.each(rows.map((r) => [r.id, r] as const))("%s", (_id, row) => {
-    const reason = (row.kind === "approval" ? customerApprovalLockedReason : customerReviewLockedReason)(row.state, {
-      stored: row.stored,
-      hasProject: row.hasProject,
-    });
-    if (row.outcome === "editable") expect(reason).toBeNull();
-    else expect(reason).toBe(LOCK_REASON[row.outcome](row.kind));
+  it.each(LOCK_ROWS)("%s", (_id, state, column, want) => {
+    expect(lockOutcome(state, column)).toBe(want);
   });
 
-  // The rows that matter most, written out so a reader can see the rule without the generator.
-  it.each([
-    ["approval:new:off:noproject", "new", false, false, null],
-    ["approval:new:on:project", "new", true, true, null],
-    ["approval:assess:on:project", "assess", true, true, CUSTOMER_REQUIREMENT_ADD_ONLY_REASON],
-    ["approval:authorize:off:project", "authorize", false, true, null],
-    ["approval:authorize:off:noproject", "authorize", false, false, CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON],
-    ["approval:customer_approval:off:project", "customer_approval", false, true, "Locked: the change request has already reached the customer approval step or later."],
-    ["approval:scheduled:on:project", "scheduled", true, true, CUSTOMER_REQUIREMENT_ADD_ONLY_REASON],
-  ] as const)("spot check %s", (_id, state, stored, hasProject, expected) => {
-    expect(customerApprovalLockedReason(state, { stored, hasProject })).toBe(expected);
+  it("gives the reason the dialog shows for each refusal, word for word", () => {
+    expect(CUSTOMER_PROJECT_FROZEN_REASON).toBe("Fixed when approval was requested. Cancel and clone to change it.");
+    expect(CUSTOMER_REQUIREMENT_ADD_ONLY_REASON).toBe(
+      "Once approval has been requested a customer requirement can be added but never removed.",
+    );
+    expect(CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON).toBe(
+      "Needs a Customer Project, which can no longer be set. Cancel and clone.",
+    );
+    expect(customerApprovalLockedReason("scheduled", { stored: false, hasProject: true })).toBe(
+      "Locked: the change request has already reached the customer approval step or later.",
+    );
+    expect(customerReviewLockedReason("closed", { stored: false, hasProject: true })).toBe(
+      "Locked: the change request has already reached the customer review step or later.",
+    );
   });
 
-  it("the Re-schedule hole is closed: a change request that reached Customer Approval has the box ticked, and a ticked box can never be unticked", () => {
+  it("the Re-schedule hole is closed: a ticked box can never be unticked, so a change sent back to Authorize asks the same contacts", () => {
     // A change request can only be in Customer Approval (or Authorize again after a
     // Re-schedule) with the box ticked, and every state after New refuses to untick it.
     for (const state of ["authorize", "customer_approval", "scheduled"]) {

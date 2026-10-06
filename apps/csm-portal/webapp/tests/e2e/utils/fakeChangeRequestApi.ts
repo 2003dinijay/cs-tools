@@ -308,6 +308,11 @@ export const requirementCannotBeRemovedMessage = (field: string, state: string):
   `${field} can no longer be turned off: once approval has been requested a customer requirement can be added but never removed (current state: ${state}). Cancel and clone to correct it.`;
 export const requirementNeedsProjectMessage = (field: string): string =>
   `${field} cannot be turned on: this change request has no Customer Project, and one can no longer be set after approval was requested. Cancel and clone it with a project.`;
+/** The refusal of adding a customer requirement after the gate it controls has passed (entity-service validateCustomerGateEdits). */
+export const requirementGatePassedMessage = (field: "customerApprovalRequired" | "customerReviewRequired", state: string): string =>
+  field === "customerApprovalRequired"
+    ? `customerApprovalRequired can no longer be changed: the change request has already passed the approval stage (current state: ${state})`
+    : `customerReviewRequired can no longer be changed: the change request has already left the review stage (current state: ${state})`;
 export const REQUEST_APPROVAL_NEEDS_PROJECT =
   "approval cannot be requested: the customer's approval and/or review is required but no Customer Project is set, so there is nobody to ask. Select a Customer Project first (or clear the requirement).";
 
@@ -737,7 +742,7 @@ export async function installFakeChangeRequestApi(
     // 4. ... and added only before its gate, and only with a Customer Project to ask.
     for (const box of boxes) {
       if (!inNew && !box.stored && body[box.field] === true) {
-        if (box.gateLocked.includes(state)) return `${box.field} cannot be changed once the change request is ${state}`;
+        if (box.gateLocked.includes(state)) return requirementGatePassedMessage(box.field, state);
         if (!scope.projectId) return requirementNeedsProjectMessage(box.field);
       }
     }
