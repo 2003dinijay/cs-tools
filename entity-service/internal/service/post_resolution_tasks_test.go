@@ -178,3 +178,29 @@ func TestPostResolution_WriteErrorsPropagate(t *testing.T) {
 		t.Errorf("err = %v, want boom", err)
 	}
 }
+
+// Dual-write: the resolve request creates the workaround problem in both
+// stores, so the flow writes the report and alert tasks but no problem.
+func TestPostResolution_DualWriteLeavesTheProblemToTheRequest(t *testing.T) {
+	for _, src := range []repository.IncidentReportSource{
+		resolvedOn(postResolutionServiceChoreo, "SOLVED_WORK_AROUND"),
+		resolvedOn("11111111-1111-4111-8111-111111111111", "SOLVED_WORK_AROUND"),
+	} {
+		tx := &fakeIncidentReportTx{src: src}
+		if err := NewDualWriteIncidentReportService().HandleChange(context.Background(), tx,
+			incidentStateChange("IN_PROGRESS", "RESOLVED", time.Now())); err != nil {
+			t.Fatalf("HandleChange: %v", err)
+		}
+		if len(tx.problems) != 0 || len(tx.links) != 0 {
+			t.Errorf("problems %v links %v, want none in dual-write", tx.problems, tx.links)
+		}
+		if tx.reports[incidentReportTestID] == "" {
+			t.Errorf("the incident report must still be written")
+		}
+	}
+	tx := &fakeIncidentReportTx{src: resolvedOn(postResolutionServiceChoreo, "FALSE_ALARM")}
+	if err := NewDualWriteIncidentReportService().HandleChange(context.Background(), tx,
+		incidentStateChange("IN_PROGRESS", "RESOLVED", time.Now())); err != nil || len(tx.tasks) != 1 {
+		t.Errorf("alert task in dual-write: tasks %d, err %v, want 1", len(tx.tasks), err)
+	}
+}

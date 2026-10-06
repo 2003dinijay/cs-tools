@@ -6646,6 +6646,25 @@ keep that service limit, but the workaround problem is created for an incident o
 | `NOT_ACTIONABLE_ALERT` | `[Alert Task][Not Actionable Alert] <number> is not an actionable alert`, `HIGH`, WSO2 SRE Team |
 | `SOLVED_WORK_AROUND` and no `problem_id` | problem `Fix the root cause of <number>` with the incident's service, impact, urgency and priority (0188 adds `problem.service_id/impact/urgency`), `incident_id` = the incident, group Choreo Special Ops (Choreo), Asgardeo Operations Team (Asgardeo), otherwise the incident's own assignment group (none if it has none); then `incident.problem_id` = it |
 
+**Dual-write (`postgres-servicenow-dual-write`): the workaround problem is written to both
+stores, by the resolve request, not this flow.** A problem that exists only in Postgres gets a
+CS-PORTAL number and cannot be moved through its states (every problem transition is
+ServiceNow-first, by id: the PATCH 404s). The flow has no user, and the CSM API needs the caller's
+`x-user-id-token`, so `UpdateIncident` creates it (`workaround_problem.go`): when the request moves
+the incident to Resolved as Solved (Workaround) and it has no problem, `createProblemSNFirst`
+(subject + primary incident → ServiceNow's id, PRB number and priority, stored as-is), then
+`ProblemRepository.LinkWorkaroundProblem` sets the group and `incident.problem_id` in Postgres; the
+stored group is mirrored to the problem and `problemId` rides the incident's own mirror (ServiceNow's
+`createProblem` sets `u_incident` but never `incident.problem_id`). **Both stores hold the same
+values**: the CSM API takes no service, impact or urgency (discovery script 72; `ProblemUtils`
+reads only subject/description/category/subcategory/priority/originCaseId/primaryIncidentId, and the
+Priority Problem Lookup overwrites priority), so neither store gets the incident's -- that needs a
+`ProblemUtils` change first. A failure is logged and never undoes the resolve.
+`NewDualWriteIncidentReportService` (main.go) runs this flow without the problem block. Sending
+`problemId` with the Resolved state in one ServiceNow update also keeps ServiceNow's own active
+copy of this flow from creating a second problem (its block 8 needs an empty `problem_id`). Reads
+stay on Postgres.
+
 The services and groups are SN sys_ids as Postgres UUIDs, constants in
 `incident_report_service.go`. A group missing from the database leaves the record unassigned
 rather than failing the change (the insert looks the id up). **Not ported:** the runbook block
