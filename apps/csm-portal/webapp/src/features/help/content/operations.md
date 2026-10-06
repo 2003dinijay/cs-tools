@@ -121,12 +121,14 @@ From the detail page a CS engineer can:
   happens when the project has no registered contacts, when its only contact is
   the person who raised the change or its contacts are no longer active, and for
   an older change that reached the gate with no request at all. Staff never
-  answer for the customer, so the exits are the ones staff always have there:
-  **Cancel change** is the only way out of Customer Approval (**Re-schedule**
-  only sends the change back through approval, to ask the same contacts again),
-  and **Roll back** or **Cancel change** are the ways out of Customer Review.
-  The Customer Project cannot be changed to route the step once approval has been
-  requested.
+  answer for the customer, so the exits are the ones staff always have there.
+  When nobody can be asked, **Cancel change** is the only way out of Customer
+  Approval: **Re-schedule** sends the change back through approval and then asks
+  the project's registered contacts again, so it helps only if somebody can be
+  asked this time (an older change with no request, on a project that has
+  eligible contacts, is the case where it does). **Roll back** or **Cancel
+  change** are the ways out of Customer Review. The Customer Project cannot be
+  changed to route the step once approval has been requested.
 - **Approve or reject** a pending approval stage, if the engineer is listed
   as an approver on it: the Approve/Reject buttons only appear on that
   engineer's own pending approval.

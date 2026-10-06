@@ -43,6 +43,7 @@ import {
   NO_CUSTOMER_CONTACTS_HELPER,
   NOBODY_ASKED_HELPER,
   NOBODY_ASKED_WAY_OUT,
+  NOBODY_ASKED_WAY_OUT_RESCHEDULE_MAY_HELP,
   noCustomerAskedHelper,
   CUSTOMER_PROJECT_FROZEN_REASON,
   CUSTOMER_REQUIREMENT_ADD_ONLY_REASON,
@@ -1081,8 +1082,12 @@ describe("noCustomerAskedHelper (the Approval tab's note: nobody is being asked 
   });
 
   describe("a project with registered contacts, none of them waiting", () => {
+    // With registered contacts a Re-schedule asks them afresh, so Customer Approval does not claim Cancel is the only exit.
+    const withContacts = (state: (typeof GATES)[number]): string =>
+      `${NOBODY_ASKED_HELPER} ${state === "customer_approval" ? NOBODY_ASKED_WAY_OUT_RESCHEDULE_MAY_HELP : NOBODY_ASKED_WAY_OUT.customer_review}`;
+
     it.each(GATES)("says nobody is asked at %s when the approvals hold no stage at all (a legacy change with no stage)", (state) => {
-      expect(noCustomerAskedHelper(state, CONTACTS, [])).toBe(`${NOBODY_ASKED_HELPER} ${NOBODY_ASKED_WAY_OUT[state]}`);
+      expect(noCustomerAskedHelper(state, CONTACTS, [])).toBe(withContacts(state));
     });
 
     it.each(GATES)("says it at %s when every row is settled or cancelled (creator-only, deactivated contacts, a superseded request)", (state) => {
@@ -1091,7 +1096,7 @@ describe("noCustomerAskedHelper (the Approval tab's note: nobody is being asked 
         stageOf("CAB Approval", [approver("approved", "Cab")], "APPROVED"),
         stageOf("Customer Approval", [approver("CANCELLED"), approver("NOT_REQUIRED", "Contact Two")], "PENDING"),
       ];
-      expect(noCustomerAskedHelper(state, CONTACTS, rows)).toBe(`${NOBODY_ASKED_HELPER} ${NOBODY_ASKED_WAY_OUT[state]}`);
+      expect(noCustomerAskedHelper(state, CONTACTS, rows)).toBe(withContacts(state));
     });
 
     it.each(GATES)("is silent at %s once somebody is asked, whatever the stage is labelled", (state) => {
@@ -1146,8 +1151,18 @@ describe("noCustomerAskedHelper (the Approval tab's note: nobody is being asked 
     expect(NOBODY_ASKED_WAY_OUT.customer_review).not.toMatch(/\bclose\b/i);
   });
 
+  it("does not claim Cancel is the only exit from Customer Approval where a Re-schedule might find somebody to ask (registered contacts, no request)", () => {
+    // With no registered contacts a Re-schedule asks the same empty group: Cancel is the only way out, unconditionally.
+    expect(noCustomerAskedHelper("customer_approval", [])).toMatch(/Cancel change is the only way out\. Re-schedule only sends/);
+    // With contacts it says what Re-schedule does and when Cancel is the only way out.
+    const text = noCustomerAskedHelper("customer_approval", CONTACTS, []) ?? "";
+    expect(text).toMatch(/Re-schedule sends the change back through approval and then asks the project's registered contacts again/);
+    expect(text).toMatch(/helps only if someone can be asked this time; if nobody can, Cancel change is the only way out/);
+    expect(text).not.toMatch(/Cancel change is the only way out\. /);
+  });
+
   it("never offers a bypass or a manual record of the customer's answer", () => {
-    for (const text of [NO_CUSTOMER_CONTACTS_HELPER, NOBODY_ASKED_HELPER, ...Object.values(NOBODY_ASKED_WAY_OUT)]) {
+    for (const text of [NO_CUSTOMER_CONTACTS_HELPER, NOBODY_ASKED_HELPER, NOBODY_ASKED_WAY_OUT_RESCHEDULE_MAY_HELP, ...Object.values(NOBODY_ASKED_WAY_OUT)]) {
       expect(text).not.toMatch(/bypass|recorded manually|answer for/i);
     }
     expect(NOBODY_ASKED_WAY_OUT.customer_approval).toMatch(/staff never record a customer's approval/i);

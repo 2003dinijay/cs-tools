@@ -386,18 +386,32 @@ export const NOBODY_ASKED_HELPER =
 /**
  * What staff are left with, per customer gate, when nobody is being asked.
  * Staff never record a customer's approval or review, so the only exits are the
- * ones staff always have there: Cancel change out of Customer Approval
- * (Re-schedule only sends the change back through approval, to ask the same
- * contacts again, so it ends no wait), Roll back or Cancel change out of Customer
- * Review.
+ * ones staff always have there. Out of Customer Approval that is Cancel change:
+ * Re-schedule only sends the change back through approval, to ask the same group
+ * again, so it ends no wait. Out of Customer Review it is Roll back or Cancel
+ * change.
  */
 export const NOBODY_ASKED_WAY_OUT: Readonly<Record<"customer_approval" | "customer_review", string>> = {
   customer_approval:
     "Staff never record a customer's approval, so there is nobody to answer here: Cancel change is the only way out. " +
-    "Re-schedule only sends the change back through approval, to ask the same contacts again.",
+    "Re-schedule only sends the change back through approval, to ask the same group again.",
   customer_review:
     "Staff never record a customer's review, so there is nobody to answer here: Roll back or Cancel change are the only ways out.",
 };
+
+/**
+ * The same for Customer Approval when the project DOES have registered contacts
+ * and none has a request waiting. The web cannot tell whether anybody can be
+ * asked this time (the requester alone and deactivated contacts leave nobody; a
+ * legacy change that reached the gate with no request, on a project with
+ * eligible contacts, does get its question put by a Re-schedule), so it says what
+ * Re-schedule does and when Cancel change is the only way out, rather than
+ * claiming either.
+ */
+export const NOBODY_ASKED_WAY_OUT_RESCHEDULE_MAY_HELP =
+  "Staff never record a customer's approval, so there is nobody to answer here. " +
+  "Re-schedule sends the change back through approval and then asks the project's registered contacts again, " +
+  "which helps only if someone can be asked this time; if nobody can, Cancel change is the only way out.";
 
 /**
  * Whether any approver of any stage is still being asked: an approver row in
@@ -446,9 +460,9 @@ export function noCustomerAskedHelper(
   if (customerContacts === undefined) return null;
   const asked = anyApproverBeingAsked(approvals);
   if (asked === true) return null;
-  const wayOut = NOBODY_ASKED_WAY_OUT[state];
-  if (!customerContacts || customerContacts.length === 0) return `${NO_CUSTOMER_CONTACTS_HELPER} ${wayOut}`;
-  return asked === false ? `${NOBODY_ASKED_HELPER} ${wayOut}` : null;
+  if (!customerContacts || customerContacts.length === 0) return `${NO_CUSTOMER_CONTACTS_HELPER} ${NOBODY_ASKED_WAY_OUT[state]}`;
+  if (asked !== false) return null;
+  return `${NOBODY_ASKED_HELPER} ${state === "customer_approval" ? NOBODY_ASKED_WAY_OUT_RESCHEDULE_MAY_HELP : NOBODY_ASKED_WAY_OUT.customer_review}`;
 }
 
 // ---------------------------------------------------------------------------
