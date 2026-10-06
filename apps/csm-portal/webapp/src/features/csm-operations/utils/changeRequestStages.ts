@@ -166,9 +166,8 @@ function customerRejectedApproval(approvals?: readonly StageEvidence[]): boolean
  *    with its Review stage approved and be canceled there;
  *  - the customer's approval was recorded (`customerApproved`, the change's
  *    `hasCustomerApproved`: stamped when the customer approves in the customer
- *    portal or an engineer bypasses it, and locked once true): Customer Approval
- *    was passed. That holds when the change has no Customer Approval stage row
- *    at all, the bypass of a project with no registered contacts.
+ *    portal, and locked once true): Customer Approval was passed. That holds
+ *    even when the change has no Customer Approval stage row at all.
  * Nothing else is inferred: a stage that is still pending, cancelled or (but
  * for the customer's rejection, {@link customerRejectedApproval}) rejected
  * proves only that it was reached, a change with no stage rows at all

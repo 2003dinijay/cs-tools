@@ -332,9 +332,9 @@ export function changeRequestBlockingReason(
   state?: string | null,
 ): string | null {
   // The customer gates are named from the state: the CR is waiting on the
-  // customer whether the backend provisioned a "Customer Approval" /
-  // "Customer Review" stage for the customer group or (no group) the step is
-  // recorded manually. Same wording the stage label gives, never doubled.
+  // customer's own answer (given in the Customer Portal) whether or not the
+  // backend provisioned a "Customer Approval" / "Customer Review" stage for
+  // the customer group. Same wording the stage label gives, never doubled.
   if (state === "customer_approval") return "Awaiting Customer Approval";
   if (state === "customer_review") return "Awaiting Customer Review";
   // A stage whose every approver was cancelled or marked not required (a
@@ -363,14 +363,16 @@ export function changeRequestBlockingReason(
 /**
  * Helper shown in the Approval tab when a CR sits at a customer gate but its
  * Customer Project has no registered contacts, so the backend had nobody to
- * ask. `null` when the state is not a customer gate or contacts exist.
- * `customerContacts` being `undefined` (field absent from the payload, e.g.
- * another data source) is treated as "unknown" -> `null`; only an explicit
- * empty list counts as "none".
+ * ask. Staff never record a customer's approval or review, so the note says
+ * what is left. `null` when the state is not a customer gate or contacts
+ * exist. `customerContacts` being `undefined` (field absent from the payload,
+ * e.g. another data source) is treated as "unknown" -> `null`; only an
+ * explicit empty list counts as "none".
  */
 export const NO_CUSTOMER_CONTACTS_HELPER =
   "No registered customer contacts are assigned to this change request's project, so no customer approvers were assigned. " +
-  "The Customer Project is fixed once approval is requested, so it cannot be changed to route the step; until the step is routed to a contact who registers on the project, the customer's response is recorded manually.";
+  "The Customer Project is fixed once approval is requested, so it cannot be changed to route the step. " +
+  "Staff never record a customer's approval or review, so there is nobody to answer here: the change can only be re-scheduled (Customer Approval), rolled back (Customer Review) or canceled.";
 
 export function noCustomerContactsHelper(
   state: string | null | undefined,
@@ -584,16 +586,15 @@ const TRANSITION_LABEL: Record<string, string> = {
   // approval flow (Peer -> CAB for Normal, ECAB for Emergency, straight to
   // Scheduled for Standard -- all the backend's call).
   assess: "Request Approval",
-  // There is deliberately no generic entry for `scheduled`: a CR is moved to
-  // Scheduled automatically when its approval is granted, never by a manual
-  // "Schedule" action. The one exception is leaving `customer_approval`,
-  // where the move *is* a customer bypass (see `isCustomerBypassTransition`
-  // and `changeRequestTransitionLabel`'s `fromState`).
+  // There is deliberately no entry for `scheduled`: a CR is moved to
+  // Scheduled automatically when its approval is granted (the customer's own
+  // answer, for a change that needs one), never by a manual "Schedule" action.
   implement: "Start implementation",
   review: "Mark implemented",
   customer_review: "Send for customer review",
   // Plain "Close" is the move out of Review when no customer review is
-  // required. Leaving `customer_review` it is a customer bypass instead.
+  // required. Out of `customer_review` there is none: that Close is the
+  // customer's own answer.
   closed: "Close",
   rollback: "Roll back",
   canceled: "Cancel change",
@@ -613,44 +614,8 @@ function sentenceCase(raw: string): string {
   return words.charAt(0).toUpperCase() + words.slice(1).toLowerCase();
 }
 
-/**
- * True when moving to `target` from `fromState` is a **customer bypass**: an
- * engineer records the customer's answer on their behalf instead of waiting
- * for the customer, who answers in the customer portal. There are exactly two:
- * `scheduled` out of `customer_approval` (the customer's approval) and
- * `closed` out of `customer_review` (the customer's review). Nothing else is
- * one: a plain Close out of Review (no customer review required) is an
- * ordinary forward move.
- *
- * The single source of truth for what the action bar, the confirmation dialog
- * and the detail page treat as a bypass: its label, its menu-only placement,
- * its warning colour and its required reason all key off this.
- */
-export function isCustomerBypassTransition(target: string, fromState?: string | null): boolean {
-  return (
-    (target === "scheduled" && fromState === "customer_approval") ||
-    (target === "closed" && fromState === "customer_review")
-  );
-}
-
-/**
- * The transition that bypasses the customer's answer in `fromState`, or `null`
- * when `fromState` is not a customer gate. The inverse view of
- * {@link isCustomerBypassTransition}.
- */
-export function customerBypassTarget(fromState?: string | null): string | null {
-  if (fromState === "customer_approval") return "scheduled";
-  if (fromState === "customer_review") return "closed";
-  return null;
-}
-
 /** The action-phrased label for a transition target, curated or generic. */
 export function changeRequestTransitionLabel(target: string, fromState?: string | null): string {
-  // The two customer bypasses are named for what they are: an engineer
-  // answering for the customer, not an ordinary step of the process.
-  if (isCustomerBypassTransition(target, fromState)) {
-    return target === "scheduled" ? "Bypass customer approval" : "Bypass customer review";
-  }
   // `authorize` is only ever an action from `customer_approval`: the
   // planned time changed, so the change goes back through internal approval.
   if (target === "authorize" && fromState === "customer_approval") {
@@ -665,32 +630,24 @@ export function isDestructiveChangeRequestTransition(target: string): boolean {
 }
 
 /**
- * True when moving to `target` (from `fromState`, when known) must not happen
- * without a stated reason: the destructive off-ramps, and the two customer
- * bypasses (an engineer answering for the customer needs a reason on record).
- * The reason is recorded as an ordinary internal work note on the change
- * request *before* the state is patched -- the PATCH contract has no reason or
- * comment field of its own. See `ChangeRequestTransitionReasonDialog`.
- *
- * `fromState` only matters for the bypasses: `closed` needs a reason leaving
- * `customer_review` but not leaving Review.
+ * True when moving to `target` must not happen without a stated reason: the
+ * destructive off-ramps (Roll back, Cancel change). The reason is recorded as
+ * an ordinary internal work note on the change request *before* the state is
+ * patched -- the PATCH contract has no reason or comment field of its own. See
+ * `ChangeRequestTransitionReasonDialog`.
  */
-export function changeRequestTransitionRequiresReason(
-  target: string,
-  fromState?: string | null,
-): boolean {
-  return isDestructiveChangeRequestTransition(target) || isCustomerBypassTransition(target, fromState);
+export function changeRequestTransitionRequiresReason(target: string): boolean {
+  return isDestructiveChangeRequestTransition(target);
 }
 
 /**
- * A customer request that is still waiting for an answer: the Customer Approval
- * (`kind: "approval"`) or Customer Review (`kind: "review"`) stage that the
- * change's current customer gate provisioned, with at least one customer
- * contact still being asked. `contactNames` are those contacts' names
- * (non-empty ones, de-duplicated, in stage order).
+ * The customer's review of a change sitting in Customer Review, while it is
+ * still waiting for an answer: the "Customer Review" stage the change's
+ * customer gate provisioned, with at least one customer contact still being
+ * asked. `contactNames` are those contacts' names (non-empty ones,
+ * de-duplicated, in stage order).
  */
-export interface PendingCustomerRequest {
-  kind: "approval" | "review";
+export interface PendingCustomerReview {
   contactNames: string[];
   /**
    * How many contacts are being asked: every approver still `REQUESTED`, the
@@ -702,25 +659,28 @@ export interface PendingCustomerRequest {
 }
 
 /**
- * The customer request currently pending for a change sitting at a customer
- * gate, derived from its approval stages (`GET /change-requests/{id}/approvals`),
- * or `null` when `state` is not a customer gate, the approvals have not
- * loaded, or nobody is being asked (no registered contacts, or the request was
- * superseded by a Re-schedule). "Being asked" is the approver-level `REQUESTED`
- * status -- the same test the backend's refusal uses -- never the stage's own
- * status, which stays `PENDING` after every approver was cancelled.
+ * The customer review currently pending for a change in Customer Review,
+ * derived from its approval stages (`GET /change-requests/{id}/approvals`), or
+ * `null` when `state` is not Customer Review, the approvals have not loaded, or
+ * nobody is being asked (no registered contacts, or the request was
+ * superseded). "Being asked" is the approver-level `REQUESTED` status -- the
+ * same test the backend's refusal uses -- never the stage's own status, which
+ * stays `PENDING` after every approver was cancelled.
+ *
+ * Only the review is read: it is what the action bar needs, to hold Roll back
+ * (a failed review is the customer's rejection, which they give in the
+ * Customer Portal). There is nothing to read for Customer Approval, where no
+ * staff action waits on the customer's answer.
  */
-export function pendingCustomerRequest(
+export function pendingCustomerReview(
   approvals: BeChangeRequestApproval[] | null | undefined,
   state?: string | null,
-): PendingCustomerRequest | null {
-  const kind = state === "customer_approval" ? "approval" : state === "customer_review" ? "review" : null;
-  if (!kind || !approvals) return null;
-  const label = kind === "approval" ? "Customer Approval" : "Customer Review";
+): PendingCustomerReview | null {
+  if (state !== "customer_review" || !approvals) return null;
   const names: string[] = [];
   let askedCount = 0;
   for (const stage of approvals) {
-    if (knownApprovalStageLabel(stage.stage) !== label) continue;
+    if (knownApprovalStageLabel(stage.stage) !== "Customer Review") continue;
     for (const approver of stage.approvers) {
       if (approver.status.trim().toUpperCase() !== "REQUESTED") continue;
       askedCount += 1;
@@ -728,52 +688,40 @@ export function pendingCustomerRequest(
       if (name && !names.includes(name)) names.push(name);
     }
   }
-  return askedCount > 0 ? { kind, contactNames: names, askedCount } : null;
+  return askedCount > 0 ? { contactNames: names, askedCount } : null;
 }
 
-/** Most contact names spelled out in the pending-request reason before "and N more". */
+/** Most contact names spelled out in the pending-review reason before "and N more". */
 const MAX_PENDING_CONTACT_NAMES = 3;
 
 /**
  * The targets the backend leaves out of `legalNextStates` while the customer's
- * request is live in `state`, because the customer answers them in the Customer
- * Portal: the bypass out of the gate (`scheduled` / `closed`) and, at Customer
- * Review, `rollback` (a failed review is the customer's rejection). Cancel
- * stays. Empty for any state that is not a customer gate.
+ * review is live in `state`: `rollback`, because a failed review is the
+ * customer's rejection, which they give in the Customer Portal. Cancel stays.
+ * Empty for any other state, Customer Approval included: Re-schedule and Cancel
+ * change are both always on offer there.
  */
 export function customerGateWithheldTargets(state?: string | null): string[] {
-  const bypass = customerBypassTarget(state);
-  if (!bypass) return [];
-  return state === "customer_review" ? [bypass, "rollback"] : [bypass];
+  return state === "customer_review" ? ["rollback"] : [];
 }
 
 /**
- * Why `target` is unavailable while `pending` is waiting for the customer, or
- * `null` when nothing is pending. The backend refuses a manual `scheduled` /
- * `closed` / `rollback` out of a customer gate while the customer group's
- * request is live; the customer answers in the Customer Portal. `target` picks
- * the wording: the bypass by default, "rollback" for the failed review.
+ * Why Roll back is unavailable while `pending` is waiting for the customer's
+ * review, or `null` when nothing is pending. The backend refuses a manual
+ * `rollback` out of Customer Review while the customer group's review is live;
+ * the customer gives a failed review in the Customer Portal.
  */
-export function customerRequestPendingReason(
-  pending: PendingCustomerRequest | null | undefined,
-  target?: string,
-): string | null {
+export function rollbackPendingReviewReason(pending: PendingCustomerReview | null | undefined): string | null {
   if (!pending) return null;
-  const noun = pending.kind === "approval" ? "approval" : "review";
-  const rollback = target === "rollback";
   const shown = pending.contactNames.slice(0, MAX_PENDING_CONTACT_NAMES);
   if (shown.length === 0) {
-    return rollback
-      ? `Customer ${noun} is pending. A failed review is the customer's to give in the Customer Portal, so the change can't be rolled back from here.`
-      : `Customer ${noun} is pending. The customer answers in the Customer Portal, so it can't be bypassed from here.`;
+    return "Customer review is pending. A failed review is the customer's to give in the Customer Portal, so the change can't be rolled back from here.";
   }
   // Everyone asked counts, named or not: "A and 2 more" when two more people
   // (nameless, or sharing a name already shown) are being asked too.
   const more = Math.max(pending.askedCount ?? 0, pending.contactNames.length) - shown.length;
   const who = more > 0 ? `${shown.join(", ")} and ${more} more` : shown.join(", ");
-  return rollback
-    ? `Customer ${noun} is pending from ${who}. A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here.`
-    : `Customer ${noun} is pending from ${who}. They answer in the Customer Portal, so it can't be bypassed from here.`;
+  return `Customer review is pending from ${who}. A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here.`;
 }
 
 export interface ChangeRequestFilters {

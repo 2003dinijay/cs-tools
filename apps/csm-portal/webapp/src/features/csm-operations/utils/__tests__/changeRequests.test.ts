@@ -28,12 +28,10 @@ import {
   changeRequestTransitionLabel,
   changeRequestTransitionRequiresReason,
   countActiveCRFilters,
-  customerBypassTarget,
   customerGateWithheldTargets,
-  customerRequestPendingReason,
-  isCustomerBypassTransition,
   isDestructiveChangeRequestTransition,
-  pendingCustomerRequest,
+  pendingCustomerReview,
+  rollbackPendingReviewReason,
   customerApprovalLockedReason,
   customerReviewLockedReason,
   DEFAULT_CHANGE_REQUEST_CATEGORY,
@@ -395,24 +393,25 @@ describe("changeRequestTransitionLabel", () => {
     expect(changeRequestTransitionLabel("scheduled", "authorize")).not.toMatch(/^schedule$/i);
   });
 
-  it("labels scheduled 'Bypass customer approval' only when leaving customer_approval", () => {
-    expect(changeRequestTransitionLabel("scheduled", "customer_approval")).toBe(
-      "Bypass customer approval",
-    );
-    expect(changeRequestTransitionLabel("scheduled")).not.toBe("Bypass customer approval");
-    expect(changeRequestTransitionLabel("scheduled", "authorize")).not.toBe("Bypass customer approval");
-  });
-
-  it("labels closed 'Bypass customer review' only when leaving customer_review; out of Review it is plain Close", () => {
-    expect(changeRequestTransitionLabel("closed", "customer_review")).toBe("Bypass customer review");
+  it("labels closed 'Close' out of Review (or with no known state); the customer's own review is not a staff action", () => {
     expect(changeRequestTransitionLabel("closed", "review")).toBe("Close");
     expect(changeRequestTransitionLabel("closed")).toBe("Close");
   });
 
-  it("never uses the retired 'Record customer approval' wording", () => {
-    for (const from of [undefined, "new", "customer_approval", "customer_review", "review"]) {
-      for (const target of ["scheduled", "closed", "authorize", "customer_review"]) {
-        expect(changeRequestTransitionLabel(target, from)).not.toMatch(/record customer/i);
+  it("never words a transition as answering for the customer ('Bypass customer ...', the retired 'Record customer approval')", () => {
+    const states = [
+      undefined, null, "new", "assess", "authorize", "customer_approval", "scheduled", "implement",
+      "review", "customer_review", "rollback", "closed", "canceled",
+    ];
+    const targets = [
+      "assess", "authorize", "customer_approval", "scheduled", "implement", "review", "customer_review",
+      "rollback", "closed", "canceled", "awaiting_vendor",
+    ];
+    for (const from of states) {
+      for (const target of targets) {
+        expect(changeRequestTransitionLabel(target, from), `${String(from)} -> ${target}`).not.toMatch(
+          /bypass|record customer|on behalf/i,
+        );
       }
     }
   });
@@ -440,63 +439,20 @@ describe("changeRequestTransitionLabel", () => {
   });
 });
 
-describe("customer bypass transitions", () => {
-  // Every (target, fromState) pair that is, or must stay, an ordinary move: only the two
-  // customer bypasses are bypasses.
-  const STATES = [
-    "new", "assess", "authorize", "customer_approval", "scheduled", "implement", "review",
-    "customer_review", "rollback", "closed", "canceled",
-  ];
-  const TARGETS = [
-    "assess", "authorize", "customer_approval", "scheduled", "implement", "review",
-    "customer_review", "rollback", "closed", "canceled", "awaiting_vendor",
-  ];
-
-  it("is true for exactly scheduled out of customer_approval and closed out of customer_review", () => {
-    const bypasses = TARGETS.flatMap((target) =>
-      STATES.filter((from) => isCustomerBypassTransition(target, from)).map((from) => `${from} -> ${target}`),
-    );
-    expect(bypasses.sort()).toEqual(["customer_approval -> scheduled", "customer_review -> closed"]);
-  });
-
-  it("is false without a known fromState", () => {
-    expect(isCustomerBypassTransition("scheduled")).toBe(false);
-    expect(isCustomerBypassTransition("closed", null)).toBe(false);
-    expect(isCustomerBypassTransition("closed", undefined)).toBe(false);
-  });
-
-  it("names the bypass target of each customer gate, and none elsewhere", () => {
-    expect(customerBypassTarget("customer_approval")).toBe("scheduled");
-    expect(customerBypassTarget("customer_review")).toBe("closed");
-    for (const from of STATES.filter((s) => !s.startsWith("customer_"))) {
-      expect(customerBypassTarget(from), from).toBeNull();
+describe("staff never answer for the customer", () => {
+  it("needs a stated reason for exactly the destructive off-ramps, from any state", () => {
+    for (const from of [undefined, "review", "customer_approval", "customer_review", "implement"]) {
+      expect(changeRequestTransitionRequiresReason("rollback"), String(from)).toBe(true);
+      expect(changeRequestTransitionRequiresReason("canceled"), String(from)).toBe(true);
     }
-    expect(customerBypassTarget(undefined)).toBeNull();
-  });
-
-  it("agrees with customerBypassTarget for every gate", () => {
-    for (const from of STATES) {
-      const target = customerBypassTarget(from);
-      if (target) expect(isCustomerBypassTransition(target, from), from).toBe(true);
+    // Every other target is an ordinary move: no dialog. (Scheduled and closed out of a customer
+    // gate are not moves staff can make at all: the action bar never offers them.)
+    for (const target of ["assess", "authorize", "scheduled", "implement", "review", "customer_review", "closed"]) {
+      expect(changeRequestTransitionRequiresReason(target), target).toBe(false);
     }
   });
 
-  it("needs a stated reason, like Roll back and Cancel change, but only as a bypass", () => {
-    expect(changeRequestTransitionRequiresReason("scheduled", "customer_approval")).toBe(true);
-    expect(changeRequestTransitionRequiresReason("closed", "customer_review")).toBe(true);
-    // The same targets reached any other way are ordinary moves.
-    expect(changeRequestTransitionRequiresReason("closed", "review")).toBe(false);
-    expect(changeRequestTransitionRequiresReason("closed")).toBe(false);
-    expect(changeRequestTransitionRequiresReason("scheduled")).toBe(false);
-    expect(changeRequestTransitionRequiresReason("scheduled", "authorize")).toBe(false);
-    // Unchanged: the destructive off-ramps need a reason from any state.
-    for (const from of [undefined, "review", "customer_review", "implement"]) {
-      expect(changeRequestTransitionRequiresReason("rollback", from)).toBe(true);
-      expect(changeRequestTransitionRequiresReason("canceled", from)).toBe(true);
-    }
-  });
-
-  it("is not destructive (warning, never the error colour); only rollback and canceled are", () => {
+  it("is destructive for rollback and canceled only", () => {
     expect(isDestructiveChangeRequestTransition("scheduled")).toBe(false);
     expect(isDestructiveChangeRequestTransition("closed")).toBe(false);
     expect(isDestructiveChangeRequestTransition("rollback")).toBe(true);
@@ -504,7 +460,7 @@ describe("customer bypass transitions", () => {
   });
 });
 
-describe("pendingCustomerRequest", () => {
+describe("pendingCustomerReview", () => {
   const stage = (
     name: string,
     approvers: Array<[string, string]>,
@@ -517,50 +473,44 @@ describe("pendingCustomerRequest", () => {
     approvers: approvers.map(([n, st], i) => ({ id: `u-${i}`, name: n, status: st })),
   });
 
-  it("names the contacts still being asked at Customer Approval", () => {
-    expect(
-      pendingCustomerRequest(
-        [stage("Customer Approval", [["Mira Santos", "REQUESTED"], ["Noel Prasad", "REQUESTED"]])],
-        "customer_approval",
-      ),
-    ).toEqual({ kind: "approval", contactNames: ["Mira Santos", "Noel Prasad"], askedCount: 2 });
-  });
-
   it("names the contacts still being asked at Customer Review", () => {
     expect(
-      pendingCustomerRequest([stage("Customer Review", [["Mira Santos", "REQUESTED"]])], "customer_review"),
-    ).toEqual({ kind: "review", contactNames: ["Mira Santos"], askedCount: 1 });
+      pendingCustomerReview(
+        [stage("Customer Review", [["Mira Santos", "REQUESTED"], ["Noel Prasad", "REQUESTED"]])],
+        "customer_review",
+      ),
+    ).toEqual({ contactNames: ["Mira Santos", "Noel Prasad"], askedCount: 2 });
   });
 
   it("lists only the approvers still REQUESTED, case-insensitively and without duplicates", () => {
     expect(
-      pendingCustomerRequest(
+      pendingCustomerReview(
         [
-          stage("Customer Approval", [
+          stage("Customer Review", [
             ["Mira Santos", "requested"],
             ["Noel Prasad", "CANCELLED"],
             ["Mira Santos", "REQUESTED"],
           ]),
         ],
-        "customer_approval",
+        "customer_review",
       ),
-    ).toEqual({ kind: "approval", contactNames: ["Mira Santos"], askedCount: 2 });
+    ).toEqual({ contactNames: ["Mira Santos"], askedCount: 2 });
   });
 
   it("is pending even when no approver has a name", () => {
     expect(
-      pendingCustomerRequest(
-        [{ ...stage("Customer Approval", []), approvers: [{ id: "u-1", status: "REQUESTED" }] }],
-        "customer_approval",
+      pendingCustomerReview(
+        [{ ...stage("Customer Review", []), approvers: [{ id: "u-1", status: "REQUESTED" }] }],
+        "customer_review",
       ),
-    ).toEqual({ kind: "approval", contactNames: [], askedCount: 1 });
+    ).toEqual({ contactNames: [], askedCount: 1 });
   });
 
   it("counts everyone still asked, the nameless and the ones sharing a name included", () => {
-    const asked = pendingCustomerRequest(
+    const asked = pendingCustomerReview(
       [
         {
-          ...stage("Customer Approval", [["Dana Lee", "REQUESTED"]]),
+          ...stage("Customer Review", [["Dana Lee", "REQUESTED"]]),
           approvers: [
             { id: "u-1", name: "Dana Lee", status: "REQUESTED" },
             { id: "u-2", name: "", status: "REQUESTED" },
@@ -570,125 +520,113 @@ describe("pendingCustomerRequest", () => {
           ],
         },
       ],
-      "customer_approval",
+      "customer_review",
     );
-    expect(asked).toEqual({ kind: "approval", contactNames: ["Dana Lee"], askedCount: 4 });
+    expect(asked).toEqual({ contactNames: ["Dana Lee"], askedCount: 4 });
   });
 
   it("is null once nobody is being asked, whatever the stage's own status says", () => {
-    // A superseded request after a Re-schedule: the backend still reports the stage PENDING.
+    // A superseded request: the backend still reports the stage PENDING.
     expect(
-      pendingCustomerRequest(
-        [stage("Customer Approval", [["Mira Santos", "CANCELLED"]], "PENDING")],
-        "customer_approval",
+      pendingCustomerReview(
+        [stage("Customer Review", [["Mira Santos", "CANCELLED"]], "PENDING")],
+        "customer_review",
       ),
     ).toBeNull();
     expect(
-      pendingCustomerRequest(
-        [stage("Customer Approval", [["Mira Santos", "APPROVED"], ["Noel Prasad", "CANCELLED"]], "APPROVED")],
-        "customer_approval",
+      pendingCustomerReview(
+        [stage("Customer Review", [["Mira Santos", "APPROVED"], ["Noel Prasad", "CANCELLED"]], "APPROVED")],
+        "customer_review",
       ),
     ).toBeNull();
-    expect(pendingCustomerRequest([stage("Customer Approval", [])], "customer_approval")).toBeNull();
+    expect(pendingCustomerReview([stage("Customer Review", [])], "customer_review")).toBeNull();
   });
 
-  it("only looks at the stage of the change's current gate", () => {
+  it("reads only the Customer Review stage: a Customer Approval stage, or an internal one, is not it", () => {
+    const approvals = [
+      stage("Customer Approval", [["Mira Santos", "REQUESTED"]]),
+      stage("CAB Approval", [["Cam Cab", "REQUESTED"]]),
+      stage("Customer Review", [["Noel Prasad", "REQUESTED"]]),
+    ];
+    expect(pendingCustomerReview(approvals, "customer_review")?.contactNames).toEqual(["Noel Prasad"]);
+    expect(
+      pendingCustomerReview([stage("Customer Approval", [["Mira Santos", "REQUESTED"]])], "customer_review"),
+    ).toBeNull();
+    expect(pendingCustomerReview([stage("CAB Approval", [["Cam Cab", "REQUESTED"]])], "customer_review")).toBeNull();
+  });
+
+  it("is null outside Customer Review (Customer Approval included), and while the approvals have not loaded", () => {
     const approvals = [
       stage("Customer Approval", [["Mira Santos", "REQUESTED"]]),
       stage("Customer Review", [["Noel Prasad", "REQUESTED"]]),
     ];
-    expect(pendingCustomerRequest(approvals, "customer_approval")?.contactNames).toEqual(["Mira Santos"]);
-    expect(pendingCustomerRequest(approvals, "customer_review")?.contactNames).toEqual(["Noel Prasad"]);
-  });
-
-  it("ignores internal stages with REQUESTED approvers", () => {
-    expect(
-      pendingCustomerRequest([stage("CAB Approval", [["Cam Cab", "REQUESTED"]])], "customer_approval"),
-    ).toBeNull();
-  });
-
-  it("is null outside a customer gate, and while the approvals have not loaded", () => {
-    const approvals = [stage("Customer Approval", [["Mira Santos", "REQUESTED"]])];
-    for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "closed", undefined, null]) {
-      expect(pendingCustomerRequest(approvals, state), String(state)).toBeNull();
+    for (const state of [
+      "new", "assess", "authorize", "customer_approval", "scheduled", "implement", "review", "rollback", "closed", "canceled", undefined, null,
+    ]) {
+      expect(pendingCustomerReview(approvals, state), String(state)).toBeNull();
     }
-    expect(pendingCustomerRequest(undefined, "customer_approval")).toBeNull();
-    expect(pendingCustomerRequest(null, "customer_approval")).toBeNull();
+    expect(pendingCustomerReview(undefined, "customer_review")).toBeNull();
+    expect(pendingCustomerReview(null, "customer_review")).toBeNull();
   });
 });
 
-describe("customerRequestPendingReason", () => {
-  it("says who the request is waiting on and that they answer in the Customer Portal", () => {
-    expect(customerRequestPendingReason({ kind: "approval", contactNames: ["Mira Santos", "Noel Prasad"] })).toBe(
-      "Customer approval is pending from Mira Santos, Noel Prasad. They answer in the Customer Portal, so it can't be bypassed from here.",
+describe("rollbackPendingReviewReason", () => {
+  const WHY = "A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here.";
+
+  it("says who the review is waiting on and that a failed review is theirs to give in the Customer Portal", () => {
+    expect(rollbackPendingReviewReason({ contactNames: ["Mira Santos", "Noel Prasad"], askedCount: 2 })).toBe(
+      `Customer review is pending from Mira Santos, Noel Prasad. ${WHY}`,
     );
-    expect(customerRequestPendingReason({ kind: "review", contactNames: ["Mira Santos"] })).toBe(
-      "Customer review is pending from Mira Santos. They answer in the Customer Portal, so it can't be bypassed from here.",
+    expect(rollbackPendingReviewReason({ contactNames: ["Mira Santos"] })).toBe(
+      `Customer review is pending from Mira Santos. ${WHY}`,
     );
   });
 
   it("summarises a long contact list", () => {
-    expect(
-      customerRequestPendingReason({ kind: "approval", contactNames: ["A", "B", "C", "D", "E"] }),
-    ).toBe(
-      "Customer approval is pending from A, B, C and 2 more. They answer in the Customer Portal, so it can't be bypassed from here.",
+    expect(rollbackPendingReviewReason({ contactNames: ["A", "B", "C", "D", "E"] })).toBe(
+      `Customer review is pending from A, B, C and 2 more. ${WHY}`,
     );
   });
 
   it("counts the people asked who have no name (or the same one) in the 'and N more'", () => {
     // Dana Lee plus two approvers the backend sends no name for: three are asked, one is named.
-    expect(
-      customerRequestPendingReason({ kind: "approval", contactNames: ["Dana Lee"], askedCount: 3 }),
-    ).toBe(
-      "Customer approval is pending from Dana Lee and 2 more. They answer in the Customer Portal, so it can't be bypassed from here.",
+    expect(rollbackPendingReviewReason({ contactNames: ["Dana Lee"], askedCount: 3 })).toBe(
+      `Customer review is pending from Dana Lee and 2 more. ${WHY}`,
     );
     // Three contacts that share a name read as that name and two more, not as one person.
-    expect(
-      customerRequestPendingReason({ kind: "review", contactNames: ["Sam Lee"], askedCount: 3 }),
-    ).toBe(
-      "Customer review is pending from Sam Lee and 2 more. They answer in the Customer Portal, so it can't be bypassed from here.",
+    expect(rollbackPendingReviewReason({ contactNames: ["Sam Lee"], askedCount: 3 })).toBe(
+      `Customer review is pending from Sam Lee and 2 more. ${WHY}`,
     );
     // With five distinct names it still says "A, B, C and 2 more".
-    expect(
-      customerRequestPendingReason({ kind: "approval", contactNames: ["A", "B", "C", "D", "E"], askedCount: 5 }),
-    ).toContain("A, B, C and 2 more.");
+    expect(rollbackPendingReviewReason({ contactNames: ["A", "B", "C", "D", "E"], askedCount: 5 })).toContain(
+      "A, B, C and 2 more.",
+    );
     // An absent askedCount reads as the number of names.
-    expect(customerRequestPendingReason({ kind: "approval", contactNames: ["A", "B"] })).toContain("from A, B.");
-  });
-
-  it("words a rolled-back review as the customer's to give, not as a bypass", () => {
-    expect(
-      customerRequestPendingReason({ kind: "review", contactNames: ["Mira Santos", "Noel Prasad"], askedCount: 2 }, "rollback"),
-    ).toBe(
-      "Customer review is pending from Mira Santos, Noel Prasad. A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here.",
-    );
-    expect(customerRequestPendingReason({ kind: "review", contactNames: [] }, "rollback")).toBe(
-      "Customer review is pending. A failed review is the customer's to give in the Customer Portal, so the change can't be rolled back from here.",
-    );
-    expect(customerRequestPendingReason(null, "rollback")).toBeNull();
+    expect(rollbackPendingReviewReason({ contactNames: ["A", "B"] })).toContain("from A, B.");
   });
 
   it("falls back to a generic sentence without contact names", () => {
-    expect(customerRequestPendingReason({ kind: "approval", contactNames: [] })).toBe(
-      "Customer approval is pending. The customer answers in the Customer Portal, so it can't be bypassed from here.",
+    expect(rollbackPendingReviewReason({ contactNames: [] })).toBe(
+      "Customer review is pending. A failed review is the customer's to give in the Customer Portal, so the change can't be rolled back from here.",
     );
-    expect(customerRequestPendingReason({ kind: "review", contactNames: [] })).toMatch(/^Customer review is pending\./);
   });
 
-  it("is null when nothing is pending", () => {
-    expect(customerRequestPendingReason(null)).toBeNull();
-    expect(customerRequestPendingReason(undefined)).toBeNull();
+  it("is null when nothing is pending, and never speaks of a bypass", () => {
+    expect(rollbackPendingReviewReason(null)).toBeNull();
+    expect(rollbackPendingReviewReason(undefined)).toBeNull();
+    expect(rollbackPendingReviewReason({ contactNames: ["Mira Santos"] })).not.toMatch(/bypass/i);
   });
 });
 
 describe("customerGateWithheldTargets", () => {
-  it("lists what the backend withholds while the customer's request is live", () => {
-    expect(customerGateWithheldTargets("customer_approval")).toEqual(["scheduled"]);
-    expect(customerGateWithheldTargets("customer_review")).toEqual(["closed", "rollback"]);
+  it("withholds only Roll back while the customer's review is live", () => {
+    expect(customerGateWithheldTargets("customer_review")).toEqual(["rollback"]);
   });
 
-  it("is empty outside a customer gate", () => {
-    for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "closed", "rollback", "canceled", null, undefined]) {
+  it("withholds nothing at Customer Approval (Re-schedule and Cancel change are always on offer) or anywhere else", () => {
+    for (const state of [
+      "new", "assess", "authorize", "customer_approval", "scheduled", "implement", "review", "closed", "rollback", "canceled", null, undefined,
+    ]) {
       expect(customerGateWithheldTargets(state), String(state)).toEqual([]);
     }
   });
@@ -1137,5 +1075,11 @@ describe("noCustomerContactsHelper", () => {
     );
     expect(NO_CUSTOMER_CONTACTS_HELPER).not.toMatch(/changing the Customer Project and saving/i);
     expect(NO_CUSTOMER_CONTACTS_HELPER).toMatch(/fixed once approval is requested/i);
+  });
+
+  it("says staff never record the customer's answer, and what is left; it does not offer a bypass or a manual record", () => {
+    expect(NO_CUSTOMER_CONTACTS_HELPER).toMatch(/staff never record a customer's approval or review/i);
+    expect(NO_CUSTOMER_CONTACTS_HELPER).toMatch(/re-scheduled.*rolled back.*canceled/i);
+    expect(NO_CUSTOMER_CONTACTS_HELPER).not.toMatch(/bypass|recorded manually|answer for/i);
   });
 });

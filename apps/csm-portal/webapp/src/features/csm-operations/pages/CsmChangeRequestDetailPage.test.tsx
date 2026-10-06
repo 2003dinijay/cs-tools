@@ -1038,7 +1038,7 @@ describe("CsmChangeRequestDetailPage — destructive transitions need a reason f
   });
 });
 
-describe("CsmChangeRequestDetailPage — customer bypass: menu-only, a reason first, honest about a pending customer request", () => {
+describe("CsmChangeRequestDetailPage — customer gates: only the customer's own answer moves the change on", () => {
   /** The approvals the backend reports for a change at a customer gate. */
   function approvalsWith(stage: string, approvers: Array<[string, string]>): void {
     useGetChangeRequestApprovalsMock.mockReturnValue({
@@ -1059,8 +1059,8 @@ describe("CsmChangeRequestDetailPage — customer bypass: menu-only, a reason fi
     });
   }
 
-  /** A change at a customer gate with no customer request live: the backend offers the manual bypass. */
-  function renderGate(state: "customer_approval" | "customer_review"): void {
+  /** A change at a customer gate, with what the backend offers for it (default: what it offers with nobody asked). */
+  function renderGate(state: "customer_approval" | "customer_review", legalNextStates?: string[]): void {
     mockQueryResult({
       data: {
         ...BASE_CR,
@@ -1069,116 +1069,97 @@ describe("CsmChangeRequestDetailPage — customer bypass: menu-only, a reason fi
         customerReviewRequired: state === "customer_review",
         customerContacts: [],
         legalNextStates:
-          state === "customer_approval"
-            ? ["scheduled", "authorize", "canceled"]
-            : ["closed", "rollback", "canceled"],
+          legalNextStates ?? (state === "customer_approval" ? ["authorize", "canceled"] : ["rollback", "canceled"]),
       },
     });
     renderPage();
   }
 
+  const menuLabels = (): Array<string | null> => screen.getAllByRole("menuitem").map((i) => i.textContent);
+
   function typeReason(text: string): void {
     fireEvent.change(screen.getByLabelText(/reason/i), { target: { value: text } });
   }
 
-  it("is a menu item, not a button, and opens the reason dialog instead of patching", () => {
+  it("at Customer Approval the page offers Re-schedule and, in the menu, Cancel change: no Bypass, no way to record the approval", () => {
     renderGate("customer_approval");
-    expect(screen.queryByRole("button", { name: /bypass customer approval/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /bypass/i })).not.toBeInTheDocument();
     openStateMenu();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Bypass customer approval" }));
-    expect(screen.getByRole("heading", { name: "Bypass customer approval" })).toBeInTheDocument();
-    expect(screen.getByText(/records the customer's approval on their behalf/i)).toBeInTheDocument();
+    expect(menuLabels()).toEqual(["Cancel change"]);
+    expect(screen.queryByText(/bypass|on their behalf/i)).not.toBeInTheDocument();
     expect(patchMutateMock).not.toHaveBeenCalled();
     expect(patchMutateAsyncMock).not.toHaveBeenCalled();
     expect(postCommentMutateAsyncMock).not.toHaveBeenCalled();
-    // Needs a reason before it can be confirmed.
-    expect(screen.getByRole("button", { name: "Bypass customer approval" })).toBeDisabled();
   });
 
-  it("records the reason as an internal note BEFORE patching { state: 'scheduled' }, unchanged from the old action", async () => {
-    renderGate("customer_approval");
+  it("an older backend that still lists scheduled out of Customer Approval changes nothing: the entry is not rendered", () => {
+    renderGate("customer_approval", ["scheduled", "authorize", "canceled"]);
+    expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
     openStateMenu();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Bypass customer approval" }));
-    typeReason("Customer approved by phone; ticket CS-1234.");
-    fireEvent.click(screen.getByRole("button", { name: "Bypass customer approval" }));
-
-    await waitFor(() => expect(patchMutateAsyncMock).toHaveBeenCalled());
-    expect(postCommentMutateAsyncMock).toHaveBeenCalledWith({
-      changeRequestId: "chg-1",
-      bodyHtml: "Customer approved by phone; ticket CS-1234.",
-      internal: true,
-    });
-    expect(patchMutateAsyncMock).toHaveBeenCalledWith({ id: "chg-1", patch: { state: "scheduled" } });
-    expect(postCommentMutateAsyncMock.mock.invocationCallOrder[0]).toBeLessThan(
-      patchMutateAsyncMock.mock.invocationCallOrder[0],
-    );
-    // Not through the plain-transition path.
-    expect(patchMutateMock).not.toHaveBeenCalled();
-    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+    expect(menuLabels()).toEqual(["Cancel change"]);
+    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
+    // (The stepper names the Scheduled stage; it is not an action.)
+    expect(screen.queryByRole("button", { name: /^schedule|bypass/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("menuitem", { name: /schedule|bypass/i })).not.toBeInTheDocument();
   });
 
-  it("records the reason BEFORE patching { state: 'closed' } for 'Bypass customer review'", async () => {
+  it("at Customer Review (nobody asked) the menu holds Roll back and Cancel change: no Close, no Bypass, and no main button", () => {
     renderGate("customer_review");
+    expect(screen.getAllByRole("button").map((b) => b.textContent)).toContain("Change state");
+    expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /bypass/i })).not.toBeInTheDocument();
+    openStateMenu();
+    expect(menuLabels()).toEqual(["Roll back", "Cancel change"]);
+    expect(screen.queryByText(/bypass|on their behalf/i)).not.toBeInTheDocument();
+  });
+
+  it("an older backend that still lists closed out of Customer Review changes nothing: the entry is not rendered", () => {
+    renderGate("customer_review", ["closed", "rollback", "canceled"]);
     expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
     openStateMenu();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Bypass customer review" }));
-    expect(screen.getByRole("heading", { name: "Bypass customer review" })).toBeInTheDocument();
-    expect(screen.getByText(/records the customer's review on their behalf/i)).toBeInTheDocument();
-    typeReason("Customer signed off in the review call.");
-    fireEvent.click(screen.getByRole("button", { name: "Bypass customer review" }));
+    expect(menuLabels()).toEqual(["Roll back", "Cancel change"]);
+  });
+
+  it("Roll back out of Customer Review is unchanged: a reason dialog first, the reason recorded BEFORE patching { state: 'rollback' }", async () => {
+    renderGate("customer_review");
+    openStateMenu();
+    fireEvent.click(screen.getByRole("menuitem", { name: "Roll back" }));
+    expect(screen.getByRole("heading", { name: /roll back this change/i })).toBeInTheDocument();
+    expect(patchMutateAsyncMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: /^roll back$/i })).toBeDisabled(); // a reason is required
+    typeReason("The customer's review failed.");
+    fireEvent.click(screen.getByRole("button", { name: /^roll back$/i }));
 
     await waitFor(() => expect(patchMutateAsyncMock).toHaveBeenCalled());
     expect(postCommentMutateAsyncMock).toHaveBeenCalledWith({
       changeRequestId: "chg-1",
-      bodyHtml: "Customer signed off in the review call.",
+      bodyHtml: "The customer's review failed.",
       internal: true,
     });
-    expect(patchMutateAsyncMock).toHaveBeenCalledWith({ id: "chg-1", patch: { state: "closed" } });
+    expect(patchMutateAsyncMock).toHaveBeenCalledWith({ id: "chg-1", patch: { state: "rollback" } });
     expect(postCommentMutateAsyncMock.mock.invocationCallOrder[0]).toBeLessThan(
       patchMutateAsyncMock.mock.invocationCallOrder[0],
     );
     expect(patchMutateMock).not.toHaveBeenCalled();
   });
 
-  it("does NOT patch the state when the reason comment fails", async () => {
-    postCommentMutateAsyncMock.mockRejectedValueOnce(new BackendApiError(403, "Comments are disabled"));
-    renderGate("customer_approval");
-    openStateMenu();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Bypass customer approval" }));
-    typeReason("Customer approved by phone.");
-    fireEvent.click(screen.getByRole("button", { name: "Bypass customer approval" }));
-    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent(/comments are disabled/i));
-    expect(patchMutateAsyncMock).not.toHaveBeenCalled();
-    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  it("Cancel change out of a customer gate is unchanged: it opens the reason dialog instead of patching", () => {
+    for (const state of ["customer_approval", "customer_review"] as const) {
+      cleanup();
+      renderGate(state);
+      openStateMenu();
+      fireEvent.click(screen.getByRole("menuitem", { name: /cancel change/i }));
+      expect(screen.getByRole("heading", { name: /cancel this change request/i }), state).toBeInTheDocument();
+      expect(patchMutateMock).not.toHaveBeenCalled();
+      expect(patchMutateAsyncMock).not.toHaveBeenCalled();
+    }
   });
 
-  it("shows the backend's refusal, says the reason was recorded, and a retry re-sends only the state change", async () => {
-    patchMutateAsyncMock.mockRejectedValueOnce(
-      new BackendApiError(
-        400,
-        'state "scheduled" cannot be set manually: the customer\'s approval has been requested from the customer group',
-      ),
-    );
-    renderGate("customer_approval");
-    openStateMenu();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Bypass customer approval" }));
-    typeReason("Customer approved by phone.");
-    fireEvent.click(screen.getByRole("button", { name: "Bypass customer approval" }));
-
-    await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
-    expect(screen.getByRole("alert")).toHaveTextContent(/your reason was recorded as an internal note, but the state did not change/i);
-    expect(screen.getByRole("alert")).toHaveTextContent(/cannot be set manually/i);
-    expect(screen.getByLabelText(/reason/i)).toBeDisabled();
-
-    fireEvent.click(screen.getByRole("button", { name: "Bypass customer approval" }));
-    await waitFor(() => expect(patchMutateAsyncMock).toHaveBeenCalledTimes(2));
-    expect(postCommentMutateAsyncMock).toHaveBeenCalledTimes(1);
-  });
-
-  it("backing out of the dialog records nothing and changes nothing", () => {
+  it("backing out of the Roll back dialog records nothing and changes nothing", () => {
     renderGate("customer_review");
     openStateMenu();
-    fireEvent.click(screen.getByRole("menuitem", { name: "Bypass customer review" }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Roll back" }));
     typeReason("Changed my mind.");
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Go back" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -1187,12 +1168,12 @@ describe("CsmChangeRequestDetailPage — customer bypass: menu-only, a reason fi
     expect(patchMutateMock).not.toHaveBeenCalled();
   });
 
-  it("is shown disabled, naming who the customer is, while the customer's request is pending", () => {
+  it("while the customer's approval is pending the menu is still just Cancel change: nothing is added, not even a disabled entry", () => {
     approvalsWith("Customer Approval", [
       ["Mira Santos", "REQUESTED"],
       ["Noel Prasad", "REQUESTED"],
     ]);
-    // The backend leaves the bypass out of legalNextStates while the request is live.
+    // The backend leaves nothing but Re-schedule and Cancel in legalNextStates while the request is live.
     mockQueryResult({
       data: {
         ...BASE_CR,
@@ -1205,20 +1186,14 @@ describe("CsmChangeRequestDetailPage — customer bypass: menu-only, a reason fi
     renderPage();
     expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
     openStateMenu();
-    const bypass = screen.getByRole("menuitem", { name: /^Bypass customer approval: / });
-    expect(bypass).toHaveAttribute("aria-disabled", "true");
-    expect(bypass).toHaveTextContent(
-      "Customer approval is pending from Mira Santos, Noel Prasad. They answer in the Customer Portal, so it can't be bypassed from here.",
-    );
-    fireEvent.click(bypass);
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
-    expect(patchMutateMock).not.toHaveBeenCalled();
+    expect(menuLabels()).toEqual(["Cancel change"]);
+    expect(screen.queryByText(/is pending from|bypass/i)).not.toBeInTheDocument();
     // Cancel change still works, through its own dialog.
     fireEvent.click(screen.getByRole("menuitem", { name: /cancel change/i }));
     expect(screen.getByRole("heading", { name: /cancel this change request/i })).toBeInTheDocument();
   });
 
-  it("is shown disabled at Customer Review while the customer's review is pending", () => {
+  it("while the customer's review is pending, Roll back is shown disabled and names who is asked; there is no Bypass entry", () => {
     approvalsWith("Customer Review", [["Mira Santos", "REQUESTED"]]);
     mockQueryResult({
       data: {
@@ -1231,60 +1206,46 @@ describe("CsmChangeRequestDetailPage — customer bypass: menu-only, a reason fi
     });
     renderPage();
     openStateMenu();
-    const bypass = screen.getByRole("menuitem", { name: /^Bypass customer review: / });
-    expect(bypass).toHaveAttribute("aria-disabled", "true");
-    expect(bypass).toHaveTextContent("Customer review is pending from Mira Santos.");
+    const rollBack = screen.getByRole("menuitem", { name: /^Roll back: / });
+    expect(rollBack).toHaveAttribute("aria-disabled", "true");
+    expect(rollBack).toHaveTextContent(
+      "Customer review is pending from Mira Santos. A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here.",
+    );
+    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
+    fireEvent.click(rollBack);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(patchMutateAsyncMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("menuitem", { name: /cancel change/i })).not.toHaveAttribute("aria-disabled", "true");
   });
 
-  it("is enabled once nobody is being asked any more (the request was cancelled), even with old customer rows listed", () => {
-    approvalsWith("Customer Approval", [["Mira Santos", "CANCELLED"]]);
+  it("Roll back is enabled once nobody is being asked any more (the request was cancelled), even with old customer rows listed", () => {
+    approvalsWith("Customer Review", [["Mira Santos", "CANCELLED"]]);
     mockQueryResult({
       data: {
         ...BASE_CR,
-        state: "customer_approval",
-        customerApprovalRequired: true,
-        legalNextStates: ["scheduled", "authorize", "canceled"],
+        state: "customer_review",
+        customerReviewRequired: true,
+        legalNextStates: ["rollback", "canceled"],
       },
     });
     renderPage();
     openStateMenu();
-    expect(screen.getByRole("menuitem", { name: "Bypass customer approval" })).not.toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
+    expect(screen.getByRole("menuitem", { name: "Roll back" })).not.toHaveAttribute("aria-disabled", "true");
   });
 
-  it("claims nothing while the approvals have not loaded: no entry unless the backend itself offers the bypass", () => {
+  it("claims nothing while the approvals have not loaded: only what the backend itself offers", () => {
     // approvals still loading (no data): the default mock
     mockQueryResult({
       data: {
         ...BASE_CR,
-        state: "customer_approval",
-        customerApprovalRequired: true,
-        legalNextStates: ["authorize", "canceled"],
+        state: "customer_review",
+        customerReviewRequired: true,
+        legalNextStates: ["canceled"],
       },
     });
     renderPage();
     openStateMenu();
-    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Cancel change"]);
-    cleanup();
-
-    // ... and when the backend does offer it, it is enabled: the backend, which also refuses it
-    // while a customer request is live, is the authority.
-    mockQueryResult({
-      data: {
-        ...BASE_CR,
-        state: "customer_approval",
-        customerApprovalRequired: true,
-        legalNextStates: ["scheduled", "authorize", "canceled"],
-      },
-    });
-    renderPage();
-    openStateMenu();
-    expect(screen.getByRole("menuitem", { name: "Bypass customer approval" })).not.toHaveAttribute(
-      "aria-disabled",
-      "true",
-    );
+    expect(menuLabels()).toEqual(["Cancel change"]);
   });
 
   it("leaves a plain Close out of Review alone: a primary button, no dialog, a direct PATCH", () => {
@@ -1468,10 +1429,9 @@ function lcLegalNextStates(
     case "authorize":
       return ["canceled"];
     case "customer_approval":
-      // A live customer stage means the customer group decides: only cancel is
-      // offered. Without one the manual "Bypass customer approval" remains.
-      // "authorize" here is Re-schedule, offered either way.
-      return lcHasLiveCustomerStage() ? ["authorize", "canceled"] : ["scheduled", "authorize", "canceled"];
+      // Staff never record the customer's approval, live customer stage or not:
+      // Re-schedule ("authorize") and cancel are all there is.
+      return ["authorize", "canceled"];
     case "scheduled":
       return ["implement", "canceled"];
     case "implement":
@@ -1479,7 +1439,9 @@ function lcLegalNextStates(
     case "review":
       return flags.review ? ["customer_review", "rollback", "canceled"] : ["closed", "rollback", "canceled"];
     case "customer_review":
-      return lcHasLiveCustomerStage() ? ["canceled"] : ["closed", "rollback", "canceled"];
+      // The customer's review is theirs to give: no close. Roll back (a failed review) is
+      // withheld while the customer group's request is live, for the same reason.
+      return lcHasLiveCustomerStage() ? ["canceled"] : ["rollback", "canceled"];
     default:
       return [];
   }
@@ -1489,6 +1451,14 @@ function lcLegalNextStates(
 function lcAfterInternalApproval(): string {
   return lc.cr.customerApprovalRequired ? "customer_approval" : "scheduled";
 }
+
+/** The backend's refusal of a manual answer out of a customer gate (the customer gives it in the Customer Portal). */
+const LC_ANSWER_REFUSAL = {
+  scheduled:
+    'state "scheduled" cannot be set manually from customer_approval: the customer\'s approval can only be given by the customer in the Customer Portal; cancel the change or re-schedule it instead',
+  closed:
+    'state "closed" cannot be set manually from customer_review: the customer\'s review can only be given by the customer in the Customer Portal; cancel the change or roll it back instead',
+};
 
 function lcStage(name: string, group: string, who: { id: string; name: string }): BeChangeRequestApproval {
   return {
@@ -1651,10 +1621,10 @@ function lcSeed(
         lc.approvals = [lcStage("Peer Approval", "Peers", LC_PEER)];
       }
     } else if (target === "scheduled" && lc.cr.state === "customer_approval") {
-      if (lcHasLiveCustomerStage()) throw new Error("400: the customer group must decide");
-      lcSetState("scheduled"); // the customer's approval was recorded
-    } else if (target === "closed" && lc.cr.state === "customer_review" && lcHasLiveCustomerStage()) {
-      throw new Error("400: the customer group must decide");
+      // Staff never record the customer's approval: refused whether or not anybody was asked.
+      throw new BackendApiError(400, LC_ANSWER_REFUSAL.scheduled);
+    } else if (target === "closed" && lc.cr.state === "customer_review") {
+      throw new BackendApiError(400, LC_ANSWER_REFUSAL.closed);
     } else if (target === "authorize") {
       // Re-schedule: only from Customer Approval, only with a changed window.
       if (lc.cr.state !== "customer_approval") {
@@ -1823,41 +1793,6 @@ function expectNoManualSchedule(): void {
   expect(screen.queryByText(/move to assess/i)).not.toBeInTheDocument();
 }
 
-/**
- * Bypasses the customer's answer from the "Change state" menu, like an engineer would:
- * opens the entry, checks the confirmation names the action and will not confirm without a
- * reason, types one and confirms. The reason is posted as an internal work note first and
- * only then is the state PATCHed (scheduled / closed), through the dialog's own flow.
- */
-async function bypassCustomer(
-  kind: "approval" | "review",
-  reason = `Customer ${kind} confirmed by email.`,
-): Promise<void> {
-  const label = `Bypass customer ${kind}`;
-  // Never a button of its own: only the menu offers it.
-  expect(screen.queryByRole("button", { name: label })).not.toBeInTheDocument();
-  fireEvent.click(screen.getByRole("button", { name: /change state/i }));
-  fireEvent.click(screen.getByRole("menuitem", { name: label }));
-  expect(screen.getByRole("heading", { name: label })).toBeInTheDocument();
-  expect(screen.getByRole("button", { name: label })).toBeDisabled(); // a reason is required
-  fireEvent.change(screen.getByLabelText(/reason/i), { target: { value: reason } });
-  fireEvent.click(screen.getByRole("button", { name: label }));
-  await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-  expect(postCommentMutateAsyncMock).toHaveBeenLastCalledWith({
-    changeRequestId: "chg-1",
-    bodyHtml: reason,
-    internal: true,
-  });
-  expect(patchMutateAsyncMock).toHaveBeenLastCalledWith({
-    id: "chg-1",
-    patch: { state: kind === "approval" ? "scheduled" : "closed" },
-  });
-  // The reason landed first, then the state changed.
-  expect(postCommentMutateAsyncMock.mock.invocationCallOrder.at(-1)).toBeLessThan(
-    patchMutateAsyncMock.mock.invocationCallOrder.at(-1)!,
-  );
-}
-
 /** The table row of an approver. (A customer contact's name also shows as a chip in the Overview, so only table rows count.) */
 function approvalsRow(name: string): HTMLElement {
   const row = screen
@@ -1898,7 +1833,9 @@ function metaValue(label: string): string {
  * which actions exist. The CR never gets a Schedule button.
  */
 async function runNormalLifecycle(approval: boolean, review: boolean): Promise<void> {
-  lcSeed("normal", { approval, review });
+  // The project has registered contacts: the customer is asked at each customer gate, and answers in
+  // the Customer Portal (applied server-side below). Staff have no way to answer for them.
+  lcSeed("normal", { approval, review }, { members: LC_MEMBERS });
 
   // New: the creator sees Request Approval, no Schedule, no Move to Assess.
   let view = lcOpenAs(LC_CREATOR);
@@ -1944,22 +1881,23 @@ async function runNormalLifecycle(approval: boolean, review: boolean): Promise<v
   if (approval) {
     expect(currentStep()).toBe("Customer Approval");
     expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
-    // Neither Start implementation nor a Schedule button yet: only bypassing the customer (and Cancel), from the menu.
+    // Neither Start implementation nor a Schedule button yet: the customer answers in the Customer Portal,
+    // and staff keep only Re-schedule and Cancel change.
     expect(screen.queryByRole("button", { name: /start implementation/i })).not.toBeInTheDocument();
     expectNoManualSchedule();
-    expect(screen.queryByRole("button", { name: /bypass customer approval/i })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
-    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Bypass customer approval", "Cancel change"]);
-    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
-    await bypassCustomer("approval");
+    expectOnlyCancelOffered("approval");
+    // The customer approves in the Customer Portal: no PATCH is sent from this page.
+    const patchCallsBefore = patchMutateMock.mock.calls.length;
+    lcCustomerDecides(LC_CUST_ONE, "approved");
+    expect(patchMutateMock.mock.calls.length).toBe(patchCallsBefore);
   } else {
-    expect(screen.queryByText(/bypass customer approval/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
   }
 
   // Scheduled: nothing awaited, no Schedule button, ready to implement.
   expect(currentStep()).toBe("Scheduled");
   expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
-  expect(screen.queryByText(/bypass customer/i)).not.toBeInTheDocument();
+  expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
   expectNoManualSchedule();
 
   // Engineer-driven tail.
@@ -1978,18 +1916,15 @@ async function runNormalLifecycle(approval: boolean, review: boolean): Promise<v
     expect(currentStep()).toBe("Customer Review");
     expect(screen.getByText("Awaiting Customer Review")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^send for customer review$/i })).not.toBeInTheDocument();
-    // Out of Customer Review the only way forward is bypassing the customer: menu-only, never a Close button.
+    // Out of Customer Review the only way forward is the customer's own answer: no Close button, no
+    // Close in the menu, and Roll back is held back while the customer's request is live.
     expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
-    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual([
-      "Bypass customer review",
-      "Roll back",
-      "Cancel change",
-    ]);
-    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
-    await bypassCustomer("review");
+    expectOnlyCancelOffered("review");
+    const patchCallsBefore = patchMutateMock.mock.calls.length;
+    lcCustomerDecides(LC_CUST_ONE, "approved");
+    expect(patchMutateMock.mock.calls.length).toBe(patchCallsBefore);
   } else {
-    // Review offers only Close (no customer review) when not required: a plain Close, not a bypass.
+    // Review offers only Close (no customer review) when not required: a plain Close.
     expect(screen.queryByRole("button", { name: /send for customer review/i })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change state/i }));
     expect(screen.queryByRole("menuitem", { name: /customer review/i })).not.toBeInTheDocument();
@@ -2013,7 +1948,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Normal (Request Approval -> 
     [true, true],
   ])(
     "shows the right state, stage, header note and controls after every step (customerApprovalRequired=%s, customerReviewRequired=%s)",
-    // Walks the whole lifecycle with real clicks, now including the bypass dialogs: slow on a loaded machine.
+    // Walks the whole lifecycle with real clicks: slow on a loaded machine.
     { timeout: 30000 },
     async (approval, review) => {
       await runNormalLifecycle(approval, review);
@@ -2283,7 +2218,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Roll back", () => {
     fireEvent.click(screen.getByRole("button", { name: /^send for customer review$/i }));
     expect(currentStep()).toBe("Customer Review");
     expect(screen.getByText("Awaiting Customer Review")).toBeInTheDocument();
-    // No primary move (Close is the customer bypass, in the menu); Roll back sits there with Cancel.
+    // No primary move (the customer's review is theirs to give); Roll back sits in the menu with Cancel.
     expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
     await rollBackWith("The customer rejected the result.");
     expect(patchMutateAsyncMock).toHaveBeenLastCalledWith({ id: "chg-1", patch: { state: "rollback" } });
@@ -2371,9 +2306,9 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
   it("Normal with a customer group: Customer Approval -> Re-schedule -> Authorize (CAB again) -> CAB approves -> Customer Approval (asked again) -> a member approves (in the customer portal) -> Scheduled", async () => {
     let view = runToCustomerApproval({ members: LC_MEMBERS });
     expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
-    // Re-schedule sits next to nothing primary (the customer group decides); the bypass is disabled in the menu, Cancel works.
+    // Re-schedule sits next to nothing primary (the customer group decides); the menu holds Cancel only.
     expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /bypass customer approval/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /bypass/i })).not.toBeInTheDocument();
     expectOnlyCancelOffered("approval");
 
     // The dialog starts on the current window and will not submit without a change.
@@ -2410,7 +2345,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
     expect(screen.getByText("Awaiting CAB Approval")).toBeInTheDocument();
     expect(screen.queryByText("Awaiting Customer Approval")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Re-schedule" })).not.toBeInTheDocument();
-    expect(screen.queryByText(/bypass customer approval/i)).not.toBeInTheDocument();
+    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
     expect(screen.getAllByText("CAB Approval", { selector: "td" })).toHaveLength(2);
     expect(within(approvalsRowInStage("Mia Member", "Customer Approval")).getByText("Cancelled")).toBeInTheDocument();
 
@@ -2431,11 +2366,12 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
     view.unmount();
   });
 
-  it("Normal without a customer group (manual fallback): Re-schedule sits next to the Change state menu holding 'Bypass customer approval'; the loop repeats", { timeout: 30000 }, async () => {
+  it("Normal without a customer group: Re-schedule sits next to the Change state menu, which holds only Cancel change; the loop repeats and nobody can answer for the customer", { timeout: 30000 }, async () => {
     let view = runToCustomerApproval(null);
     expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change state/i }));
-    expect(screen.getByRole("menuitem", { name: "Bypass customer approval" })).toBeInTheDocument();
+    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Cancel change"]);
+    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
     for (const [start, end] of [["03/08/2030 09:00 AM", "03/08/2030 11:00 AM"], ["03/15/2030 09:00 AM", "03/15/2030 11:00 AM"]]) {
       fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));
@@ -2454,8 +2390,9 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       expect(currentStep()).toBe("Customer Approval");
       expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
     }
-    await bypassCustomer("approval");
-    expect(currentStep()).toBe("Scheduled");
+    // Nobody was asked, so nobody can answer: still Customer Approval, and the way on is Re-schedule or Cancel change.
+    expect(currentStep()).toBe("Customer Approval");
+    expect(patchMutateAsyncMock.mock.calls.every(([input]) => (input as { patch: { state?: string } }).patch.state !== "scheduled")).toBe(true);
     view.unmount();
   });
 
@@ -2608,8 +2545,8 @@ describe("CsmChangeRequestDetailPage — lifecycle: Emergency (Request Approval 
 });
 
 describe("CsmChangeRequestDetailPage — lifecycle: Emergency with Customer Approval (ECAB -> Customer Approval -> Scheduled)", () => {
-  it("waits in Customer Approval after ECAB approves, and only 'Bypass customer approval' moves it on", async () => {
-    lcSeed("emergency", { approval: true, review: false });
+  it("waits in Customer Approval after ECAB approves, and only the customer's own answer moves it on", () => {
+    lcSeed("emergency", { approval: true, review: false }, { members: LC_MEMBERS });
 
     let view = lcOpenAs(LC_CREATOR);
     fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
@@ -2625,7 +2562,12 @@ describe("CsmChangeRequestDetailPage — lifecycle: Emergency with Customer Appr
     expect(screen.queryByRole("button", { name: /start implementation/i })).not.toBeInTheDocument();
     expectNoManualSchedule();
 
-    await bypassCustomer("approval");
+    // The ECAB approver is staff like any other: no way to answer for the customer.
+    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
+    view = lcOpenAs(LC_CREATOR, view);
+    expectOnlyCancelOffered("approval");
+
+    lcCustomerDecides(LC_CUST_ONE, "approved");
     expect(currentStep()).toBe("Scheduled");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^start implementation$/i })).toBeInTheDocument();
@@ -2635,8 +2577,8 @@ describe("CsmChangeRequestDetailPage — lifecycle: Emergency with Customer Appr
 });
 
 describe("CsmChangeRequestDetailPage — lifecycle: Standard with Customer Approval (Request Approval -> Customer Approval -> Scheduled)", () => {
-  it("goes to Customer Approval, not straight to Scheduled, and has no approval stages", async () => {
-    lcSeed("standard", { approval: true, review: false });
+  it("goes to Customer Approval, not straight to Scheduled, has no approval stages of its own, and moves on only by the customer's answer", () => {
+    lcSeed("standard", { approval: true, review: false }, { members: LC_MEMBERS });
 
     const view = lcOpenAs(LC_CREATOR);
     expect(currentStep()).toBe("New");
@@ -2644,11 +2586,11 @@ describe("CsmChangeRequestDetailPage — lifecycle: Standard with Customer Appro
 
     expect(currentStep()).toBe("Customer Approval");
     expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
-    expect(screen.getByText(/no approval stages recorded/i)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /start implementation/i })).not.toBeInTheDocument();
     expectNoManualSchedule();
+    expectOnlyCancelOffered("approval");
 
-    await bypassCustomer("approval");
+    lcCustomerDecides(LC_CUST_TWO, "approved");
     expect(currentStep()).toBe("Scheduled");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^start implementation$/i })).toBeInTheDocument();
@@ -2689,7 +2631,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: defensive against a backend 
   });
 });
 
-describe("CsmChangeRequestDetailPage — lifecycle: scheduled is only ever 'Bypass customer approval'", () => {
+describe("CsmChangeRequestDetailPage — lifecycle: scheduled is never a manual action", () => {
   it("a customer_approval CR that is Canceled from the menu goes through the reason dialog", () => {
     lcSeed("normal", { approval: true, review: false });
     lcSetState("customer_approval");
@@ -2703,8 +2645,8 @@ describe("CsmChangeRequestDetailPage — lifecycle: scheduled is only ever 'Bypa
     expect(screen.getByRole("dialog")).toBeInTheDocument();
   });
 
-  it("never offers 'Bypass customer approval' from any other state, even if the backend lists scheduled", () => {
-    for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "customer_review"]) {
+  it("never offers scheduled from any state, Customer Approval included, even if the backend lists it", () => {
+    for (const state of ["new", "assess", "authorize", "customer_approval", "scheduled", "implement", "review", "customer_review"]) {
       lcSeed("normal", { approval: true, review: true });
       lcSetState(state);
       lc.cr = { ...lc.cr, legalNextStates: ["scheduled"] };
@@ -2712,15 +2654,36 @@ describe("CsmChangeRequestDetailPage — lifecycle: scheduled is only ever 'Bypa
       const view = lcOpenAs(LC_CREATOR);
       // The page is up, on that state...
       expect(screen.getByRole("list", { name: /change request lifecycle/i }), state).toBeInTheDocument();
-      // ...and scheduled, the only target listed, is filtered out of every state but Customer Approval, so
-      // the bar has nothing to offer: no button, and so no menu for the bypass to hide in. (The bypass is
-      // menu-only, so looking for it on the page without opening a menu proves nothing.)
+      // ...and scheduled, the only target listed, is filtered out of every state, so the bar has nothing to
+      // offer: no button, and so no menu for it to hide in.
       expect(screen.queryByRole("button", { name: /change state/i }), state).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /bypass|schedule/i }), state).not.toBeInTheDocument();
       expect(screen.queryByRole("menu"), state).not.toBeInTheDocument();
       expectNoManualSchedule();
       view.unmount();
     }
+  });
+
+  it("the backend refuses a manual scheduled / closed out of a customer gate whoever asks, so a stray PATCH changes nothing", async () => {
+    // Nothing in the page sends these; the fake backend (like the real one) answers them with the same refusal.
+    lcSeed("normal", { approval: true, review: false }, { members: LC_MEMBERS });
+    lcSetState("customer_approval");
+    lcPublish();
+    lcOpenAs(LC_CREATOR);
+    await expect(patchMutateAsyncMock({ id: "chg-1", patch: { state: "scheduled" } })).rejects.toThrow(
+      /can only be given by the customer in the Customer Portal/,
+    );
+    expect(lc.cr.state).toBe("customer_approval");
+    cleanup();
+
+    lcSeed("normal", { approval: false, review: true });
+    lcSetState("customer_review");
+    lcPublish();
+    lcOpenAs(LC_CREATOR);
+    await expect(patchMutateAsyncMock({ id: "chg-1", patch: { state: "closed" } })).rejects.toThrow(
+      /can only be given by the customer in the Customer Portal/,
+    );
+    expect(lc.cr.state).toBe("customer_review");
   });
 });
 
@@ -2810,8 +2773,9 @@ describe("CsmChangeRequestDetailPage — blocking reason for the customer states
 // it server-side with `lcCustomerDecides` (approve -> scheduled / closed, reject ->
 // canceled / rollback; the contact's row decided, the others' Cancelled) and assert
 // what the page then shows. With no registered contacts, or none eligible, no stage
-// exists and the manual Record-customer-approval / Close paths stay. The fake above
-// encodes exactly that.
+// exists, nobody is asked and nobody can answer: staff never record a customer's
+// approval or review, so the change can only be re-scheduled, rolled back or canceled.
+// The fake above encodes exactly that.
 // ---------------------------------------------------------------------------
 
 const LC_MEMBERS = [
@@ -2831,23 +2795,27 @@ function lcGoThroughInternalApproval(view: ReturnType<typeof render>): ReturnTyp
 }
 
 /**
- * While the customer group's request is live, Cancel is the only action that works: no primary
- * button, and in the menu the customer bypass is DISABLED -- with who the customer request is
- * waiting on and that they answer in the Customer Portal -- ahead of the enabled Cancel change.
+ * While the customer group's request is live, only the customer's own answer (in the Customer
+ * Portal) moves the change on. At Customer Approval staff keep Re-schedule and, in the menu,
+ * Cancel change; at Customer Review the menu holds Roll back DISABLED -- with who the review is
+ * waiting on and that a failed review is theirs to give in the Customer Portal -- and the enabled
+ * Cancel change. There is no main button, no Close, and nothing named Bypass.
  */
 function expectOnlyCancelOffered(kind: "approval" | "review" = "approval"): void {
-  expect(screen.queryByRole("button", { name: /bypass customer/i })).not.toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: /bypass/i })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /start implementation/i })).not.toBeInTheDocument();
+  if (kind === "approval") expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: /change state/i }));
-  // The bypass, Roll back at Customer Review (a failed review is the customer's to give) and Cancel.
-  expect(screen.getAllByRole("menuitem")).toHaveLength(kind === "review" ? 3 : 2);
-  if (kind === "review") expect(screen.getByRole("menuitem", { name: /^Roll back: / })).toHaveAttribute("aria-disabled", "true");
-  const bypass = screen.getByRole("menuitem", { name: new RegExp(`^Bypass customer ${kind}: `) });
-  expect(bypass).toHaveAttribute("aria-disabled", "true");
-  expect(bypass).toHaveTextContent(
-    `Customer ${kind} is pending from Mia Member, Max Member. They answer in the Customer Portal, so it can't be bypassed from here.`,
-  );
+  expect(screen.getAllByRole("menuitem")).toHaveLength(kind === "review" ? 2 : 1);
+  if (kind === "review") {
+    const rollBack = screen.getByRole("menuitem", { name: /^Roll back: / });
+    expect(rollBack).toHaveAttribute("aria-disabled", "true");
+    expect(rollBack).toHaveTextContent(
+      "Customer review is pending from Mia Member, Max Member. A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here.",
+    );
+  }
+  expect(screen.queryByRole("menuitem", { name: /bypass|^close$/i })).not.toBeInTheDocument();
   expect(screen.getByRole("menuitem", { name: /cancel change/i })).not.toHaveAttribute("aria-disabled", "true");
   fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
 }
@@ -2885,7 +2853,7 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     expect(within(approvalsRow("Mia Member")).getByText("Requested")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /bypass customer approval/i })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /bypass/i })).not.toBeInTheDocument();
 
     // --- a member approves in the customer portal -> Scheduled, no PATCH and no decision from this page.
     const patchCallsBefore = patchMutateMock.mock.calls.length;
@@ -2919,7 +2887,7 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     // The settled Customer Approval rows stay in the panel.
     expect(within(approvalsRowInStage("Mia Member", "Customer Approval")).getByText("Approved")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument(); // creator
-    expectOnlyCancelOffered("review"); // no manual Close while the stage is live
+    expectOnlyCancelOffered("review"); // no Close for staff: the customer's review is theirs to give
 
     // --- customer_review, non-member: nothing to decide.
     view = lcOpenAs(LC_PEER, view);
@@ -2995,8 +2963,8 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
   });
 });
 
-describe("CsmChangeRequestDetailPage — customer group: no registered customer contacts (manual fallback)", () => {
-  it("customer_approval with no registered contacts: no customer stage, the helper explains why, and Bypass customer approval still works", async () => {
+describe("CsmChangeRequestDetailPage — customer group: no registered customer contacts (nobody is asked, and staff cannot answer for them)", () => {
+  it("customer_approval with no registered contacts: no customer stage, the helper explains why and what is left, and there is no way to record the approval", () => {
     lcSeed("normal", { approval: true, review: false }, null);
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
 
@@ -3006,19 +2974,18 @@ describe("CsmChangeRequestDetailPage — customer group: no registered customer 
     // Only the settled internal stages; no customer-stage rows.
     expect(screen.queryAllByText("Customer Approval", { selector: "td" })).toHaveLength(0);
     expect(screen.getByText(/^No registered customer contacts are assigned to this change request's project, so no customer approvers were assigned\./)).toBeInTheDocument();
-    // Nobody was asked, so the bypass is on offer and enabled: no pending-request explanation.
+    expect(screen.getByText(/staff never record a customer's approval or review/i)).toBeInTheDocument();
+    // Nobody was asked and nobody can answer for the customer: Re-schedule, and Cancel change in the menu.
+    expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change state/i }));
-    expect(screen.getByRole("menuitem", { name: "Bypass customer approval" })).not.toHaveAttribute("aria-disabled", "true");
-    expect(screen.queryByText(/is pending from/i)).not.toBeInTheDocument();
+    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Cancel change"]);
+    expect(screen.queryByText(/bypass|is pending from/i)).not.toBeInTheDocument();
     fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
-
-    await bypassCustomer("approval");
-    expect(currentStep()).toBe("Scheduled");
-    expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
+    expect(currentStep()).toBe("Customer Approval");
     view.unmount();
   });
 
-  it("customer_review with no registered contacts: helper shown and 'Bypass customer review' still works", { timeout: 30000 }, async () => {
+  it("customer_review with no registered contacts: the helper is shown and the menu holds an enabled Roll back and Cancel change, never a Close", { timeout: 30000 }, () => {
     lcSeed("normal", { approval: false, review: true }, null);
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
     view = lcOpenAs(LC_CREATOR, view);
@@ -3030,12 +2997,17 @@ describe("CsmChangeRequestDetailPage — customer group: no registered customer 
     expect(screen.getByText("Awaiting Customer Review")).toBeInTheDocument();
     expect(screen.getByText(/no registered customer contacts/i)).toBeInTheDocument();
     expect(screen.queryAllByText("Customer Review", { selector: "td" })).toHaveLength(0);
-    await bypassCustomer("review");
-    expect(currentStep()).toBe("Closed");
+    expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Roll back", "Cancel change"]);
+    expect(screen.getByRole("menuitem", { name: "Roll back" })).not.toHaveAttribute("aria-disabled", "true");
+    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
+    expect(currentStep()).toBe("Customer Review");
     view.unmount();
   });
 
-  it("registered contacts none of whom is eligible (e.g. only the creator) provision no stage, so the manual path stays and no helper nags", () => {
+  it("registered contacts none of whom is eligible (e.g. only the creator) provision no stage: nobody is asked, no helper nags, and still no way to record the approval", () => {
     lcSeed("normal", { approval: true, review: false }, { members: [], contacts: [{ id: LC_CREATOR.id, name: LC_CREATOR.name }] });
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
     view = lcOpenAs(LC_CREATOR, view);
@@ -3043,7 +3015,8 @@ describe("CsmChangeRequestDetailPage — customer group: no registered customer 
     expect(screen.queryAllByText("Customer Approval", { selector: "td" })).toHaveLength(0);
     expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change state/i }));
-    expect(screen.getByRole("menuitem", { name: "Bypass customer approval" })).not.toHaveAttribute("aria-disabled", "true");
+    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Cancel change"]);
+    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
     view.unmount();
   });
 

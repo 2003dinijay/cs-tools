@@ -87,71 +87,42 @@ describe("ChangeRequestTransitionReasonDialog — per-target copy", () => {
     expect(screen.getByRole("button", { name: /cancel change/i })).toBeInTheDocument();
   });
 
-  it("names the bypass of the customer's approval, and says what it records and that the customer is not asked", () => {
-    renderDialog({ target: "scheduled", fromState: "customer_approval" });
-    expect(screen.getByRole("heading", { name: "Bypass customer approval" })).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "This records the customer's approval on their behalf and moves the change request to Scheduled. The customer is not asked.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Bypass customer approval" })).toBeInTheDocument();
-    // Not the destructive wording.
-    expect(screen.queryByText(/can't be undone|can’t be undone/i)).not.toBeInTheDocument();
-  });
-
-  it("names the bypass of the customer's review, and says what it records and that the customer is not asked", () => {
-    renderDialog({ target: "closed", fromState: "customer_review" });
-    expect(screen.getByRole("heading", { name: "Bypass customer review" })).toBeInTheDocument();
-    expect(
-      screen.getByText(
-        "This records the customer's review on their behalf and moves the change request to Closed. The customer is not asked.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Bypass customer review" })).toBeInTheDocument();
-  });
-
-  it("requires the reason for a bypass, like rollback: confirm stays disabled until it has content", () => {
-    const { onConfirm } = renderDialog({ target: "scheduled", fromState: "customer_approval" });
-    const confirm = screen.getByRole("button", { name: "Bypass customer approval" });
+  it("requires the reason for a rollback, like a cancellation: confirm stays disabled until it has content", () => {
+    const { onConfirm } = renderDialog({ target: "rollback" });
+    const confirm = screen.getByRole("button", { name: /^roll back$/i });
     expect(reasonField()).toBeRequired();
     expect(confirm).toBeDisabled();
     fireEvent.change(reasonField(), { target: { value: "   " } });
     expect(confirm).toBeDisabled();
-    fireEvent.change(reasonField(), { target: { value: "  Customer approved by phone on 6 Oct.  " } });
+    fireEvent.change(reasonField(), { target: { value: "  The customer's review failed on 6 Oct.  " } });
     expect(confirm).toBeEnabled();
     fireEvent.click(confirm);
-    expect(onConfirm).toHaveBeenCalledWith("Customer approved by phone on 6 Oct.");
+    expect(onConfirm).toHaveBeenCalledWith("The customer's review failed on 6 Oct.");
   });
 
-  it("confirms a bypass in the warning colour and a rollback / cancel in the error colour", () => {
-    renderDialog({ target: "closed", fromState: "customer_review" });
-    expect(screen.getByRole("button", { name: "Bypass customer review" }).className).toContain(
-      "MuiButton-colorWarning",
-    );
-    cleanup();
-    renderDialog({ target: "rollback", fromState: "customer_review" });
+  it("confirms a rollback and a cancellation in the error colour", () => {
+    renderDialog({ target: "rollback" });
     expect(screen.getByRole("button", { name: /^roll back$/i }).className).toContain("MuiButton-colorError");
     cleanup();
-    renderDialog({ target: "canceled", fromState: "customer_approval" });
+    renderDialog({ target: "canceled" });
     expect(screen.getByRole("button", { name: /cancel change/i }).className).toContain("MuiButton-colorError");
   });
 
-  it("keeps the same retry handling for a bypass: the recorded reason locks, only the state is retried", () => {
-    renderDialog({ target: "scheduled", fromState: "customer_approval", reasonRecorded: true });
+  it("keeps the same retry handling for a rollback: the recorded reason locks, only the state is retried", () => {
+    renderDialog({ target: "rollback", reasonRecorded: true });
     expect(reasonField()).toBeDisabled();
     expect(screen.getByText(/already recorded as an internal note/i)).toBeInTheDocument();
   });
 
-  it("shows the same target without the bypass copy when it is not leaving a customer gate", () => {
-    // `closed` out of Review is an ordinary Close, never a bypass; the dialog has no
-    // curated copy for it and falls back to the generic wording.
-    renderDialog({ target: "closed", fromState: "review" });
-    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: /^close\?$/i })).toBeInTheDocument();
-    cleanup();
-    renderDialog({ target: "closed" });
-    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
+  it("has no copy for answering on the customer's behalf: scheduled and closed fall back to the generic wording", () => {
+    // Staff never record a customer's approval or review, so the dialog is never opened for
+    // `scheduled` or `closed`; if it ever were, it must not read as a recorded customer answer.
+    for (const target of ["scheduled", "closed"]) {
+      cleanup();
+      renderDialog({ target });
+      expect(screen.queryByText(/bypass|on their behalf|the customer's (approval|review)/i)).not.toBeInTheDocument();
+      expect(screen.getByText("This change to the record can't be undone from here.")).toBeInTheDocument();
+    }
   });
 
   it("still renders for a target it has no curated copy for", () => {
@@ -194,7 +165,7 @@ describe("ChangeRequestTransitionReasonDialog — in-flight and error states", (
 
 describe("ChangeRequestTransitionReasonDialog — wording and accessibility", () => {
   it("says the reason is an internal note the customer does not see", () => {
-    renderDialog({ target: "scheduled", fromState: "customer_approval" });
+    renderDialog({ target: "rollback" });
     expect(
       screen.getByText("Recorded as an internal note (not visible to the customer) before the state changes."),
     ).toBeInTheDocument();
@@ -202,22 +173,22 @@ describe("ChangeRequestTransitionReasonDialog — wording and accessibility", ()
   });
 
   it("names the way out 'Go back', so it is never read as the action that closes the change", () => {
-    renderDialog({ target: "closed", fromState: "customer_review" });
+    renderDialog({ target: "canceled" });
     expect(screen.getByRole("button", { name: "Go back" })).toBeInTheDocument();
     // The one 'Close...' left is not a button of this dialog.
     expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Bypass customer review" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Cancel change" })).toBeInTheDocument();
   });
 
   it("describes the dialog by its body, which says what the action does", () => {
-    renderDialog({ target: "scheduled", fromState: "customer_approval" });
+    renderDialog({ target: "rollback" });
     const dialog = screen.getByRole("dialog");
     const describedBy = dialog.getAttribute("aria-describedby");
     expect(describedBy).toBeTruthy();
     expect(document.getElementById(describedBy!)).toHaveTextContent(
-      "This records the customer's approval on their behalf and moves the change request to Scheduled. The customer is not asked.",
+      "This moves the change request into Rollback to record that the review failed and the implemented change is being reversed. Rollback is final and can't be undone from here.",
     );
-    expect(dialog).toHaveAccessibleName("Bypass customer approval");
+    expect(dialog).toHaveAccessibleName("Roll back this change?");
   });
 
   it("puts focus in the Reason field once the dialog has opened, so typing right away lands in it", async () => {
@@ -228,7 +199,7 @@ describe("ChangeRequestTransitionReasonDialog — wording and accessibility", ()
   it("takes focus back from whatever grabbed it while the dialog opened (the menu it was opened from)", async () => {
     const trigger = document.createElement("button");
     document.body.appendChild(trigger);
-    renderDialog({ target: "scheduled", fromState: "customer_approval" });
+    renderDialog({ target: "rollback" });
     trigger.focus();
     await waitFor(() => expect(reasonField()).toHaveFocus());
     trigger.remove();

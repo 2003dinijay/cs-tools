@@ -81,7 +81,7 @@ import {
   changeRequestCategoryLabel,
   noCustomerContactsHelper,
   isChangeRequestCreator,
-  pendingCustomerRequest,
+  pendingCustomerReview,
   changeRequestCommentGateReason,
   changeRequestTransitionRequiresReason,
   changeRequestImpactColor,
@@ -339,16 +339,11 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   // bug: this tab's `hasDraft` never became true, so its close-confirm
   // never fired for an unsent reply.
   useReportCaseTabDraft(id, composerOpen);
-  // Transition awaiting a reason (`rollback`/`canceled`, and the two customer
-  // bypasses), with the state it leaves (a bypass is the same target as an
-  // ordinary move, told apart only by where it starts), the inline error for
+  // Transition awaiting a reason (`rollback`/`canceled`), the inline error for
   // that attempt, and whether its reason comment already landed — the last
   // one so a retry after a failed patch re-sends only the state change
   // instead of duplicating the comment.
-  const [reasonTransition, setReasonTransition] = useState<{
-    target: string;
-    fromState: string | null | undefined;
-  } | null>(null);
+  const [reasonTransition, setReasonTransition] = useState<{ target: string } | null>(null);
   const [reasonError, setReasonError] = useState<string | null>(null);
   const [reasonRecorded, setReasonRecorded] = useState(false);
   // Re-schedule (Customer Approval -> Authorize) collects the new planned
@@ -471,11 +466,12 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   // `customerContacts` absent from the payload (another data source) yields
   // null, so nothing is claimed.
   const noCustomerGroupNote = noCustomerContactsHelper(cr.state, cr.customerContacts);
-  // The customer's answer the change is waiting for, if any, from the same
-  // approval stages as the note above. The action bar uses it to show the
-  // customer bypass disabled, with who the customer request is waiting on,
-  // instead of leaving it out. `null` until the approvals load.
-  const customerRequestPending = pendingCustomerRequest(approvalsData?.approvals, cr.state);
+  // The customer's review the change is waiting for, if any, from the same
+  // approval stages as the note above. The action bar uses it to show Roll back
+  // disabled, with who the review is waiting on, instead of leaving it out (a
+  // failed review is the customer's to give in the Customer Portal). `null`
+  // until the approvals load.
+  const customerReviewPending = pendingCustomerReview(approvalsData?.approvals, cr.state);
   // A transition is in flight whenever either half of a transition that needs
   // a reason (the reason comment, then the patch) or a plain patch is
   // running, so the bar stays disabled across both and a double-click can't
@@ -484,8 +480,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
 
   /**
    * Apply `target` to this change request. Targets that need a reason (the
-   * destructive ones and the two customer bypasses) are diverted into the
-   * confirmation dialog first — see `confirmReasonTransition` for the
+   * destructive ones) are diverted into the confirmation dialog first — see `confirmReasonTransition` for the
    * comment-then-patch ordering they then follow.
    */
   const onTransition = (target: string): void => {
@@ -496,10 +491,10 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
       setRescheduleOpen(true);
       return;
     }
-    if (changeRequestTransitionRequiresReason(target, cr.state)) {
+    if (changeRequestTransitionRequiresReason(target)) {
       setReasonError(null);
       setReasonRecorded(false);
-      setReasonTransition({ target, fromState: cr.state });
+      setReasonTransition({ target });
       return;
     }
     patchCr.mutate(
@@ -524,7 +519,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
    * a retry.
    *
    * Posted as an internal work note rather than a customer-visible comment:
-   * whether a rollback/cancellation/bypass reason should be shown to the
+   * whether a rollback/cancellation reason should be shown to the
    * customer hasn't been decided, and a work note is the choice that can't leak.
    */
   const confirmReasonTransition = async (reason: string): Promise<void> => {
@@ -696,7 +691,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
             <ChangeRequestActionBar
               cr={cr}
               isPending={transitionPending}
-              pendingCustomerRequest={customerRequestPending}
+              pendingCustomerReview={customerReviewPending}
               onAction={onTransition}
             />
             <Button
@@ -1103,7 +1098,6 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
       {reasonTransition && (
         <ChangeRequestTransitionReasonDialog
           target={reasonTransition.target}
-          fromState={reasonTransition.fromState}
           isSubmitting={transitionPending}
           error={reasonError}
           reasonRecorded={reasonRecorded}

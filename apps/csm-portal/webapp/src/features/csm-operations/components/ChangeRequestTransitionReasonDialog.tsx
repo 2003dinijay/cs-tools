@@ -26,17 +26,14 @@ import {
   TextField,
 } from "@wso2/oxygen-ui";
 import { useRef, useState, type JSX } from "react";
-import {
-  changeRequestTransitionLabel,
-  isCustomerBypassTransition,
-} from "@features/csm-operations/utils/changeRequests";
+import { changeRequestTransitionLabel } from "@features/csm-operations/utils/changeRequests";
 
 interface TransitionCopy {
   title: string;
   body: string;
   confirmLabel: string;
-  /** Destructive off-ramps confirm in the error colour; a customer bypass in the warning colour. */
-  confirmColor: "error" | "warning";
+  /** Destructive off-ramps confirm in the error colour. */
+  confirmColor: "error";
 }
 
 /** Per-target copy for the two destructive transitions. */
@@ -57,38 +54,12 @@ const TRANSITION_COPY: Record<string, TransitionCopy> = {
   },
 };
 
-/**
- * Copy for the two customer bypasses, keyed by their target
- * (`isCustomerBypassTransition`): an engineer answers for the customer, who is
- * not asked.
- */
-const BYPASS_COPY: Record<string, TransitionCopy> = {
-  scheduled: {
-    title: "Bypass customer approval",
-    body:
-      "This records the customer's approval on their behalf and moves the change request to Scheduled. The customer is not asked.",
-    confirmLabel: "Bypass customer approval",
-    confirmColor: "warning",
-  },
-  closed: {
-    title: "Bypass customer review",
-    body:
-      "This records the customer's review on their behalf and moves the change request to Closed. The customer is not asked.",
-    confirmLabel: "Bypass customer review",
-    confirmColor: "warning",
-  },
-};
-
-function copyFor(target: string, fromState?: string | null): TransitionCopy {
-  if (isCustomerBypassTransition(target, fromState)) {
-    const bypass = BYPASS_COPY[target];
-    if (bypass) return bypass;
-  }
+function copyFor(target: string): TransitionCopy {
   return (
     TRANSITION_COPY[target] ?? {
-      title: `${changeRequestTransitionLabel(target, fromState)}?`,
+      title: `${changeRequestTransitionLabel(target)}?`,
       body: "This change to the record can't be undone from here.",
-      confirmLabel: changeRequestTransitionLabel(target, fromState),
+      confirmLabel: changeRequestTransitionLabel(target),
       confirmColor: "error",
     }
   );
@@ -97,12 +68,6 @@ function copyFor(target: string, fromState?: string | null): TransitionCopy {
 interface ChangeRequestTransitionReasonDialogProps {
   /** Target lifecycle state being confirmed, e.g. `rollback` or `canceled`. */
   target: string;
-  /**
-   * The state the change request is leaving. Needed only to tell a customer
-   * bypass (`scheduled` out of `customer_approval`, `closed` out of
-   * `customer_review`) from the same target reached any other way.
-   */
-  fromState?: string | null;
   /** True while the reason comment and/or the state change are in flight. */
   isSubmitting: boolean;
   /**
@@ -124,10 +89,8 @@ interface ChangeRequestTransitionReasonDialogProps {
 
 /**
  * Confirmation for a change-request transition that needs a stated reason:
- * the destructive `rollback` / `canceled` (effectively irreversible), and the
- * two customer bypasses ("Bypass customer approval" / "Bypass customer review",
- * an engineer answering for the customer). The confirm action stays disabled
- * until the Reason field has content.
+ * the destructive `rollback` / `canceled` (effectively irreversible). The
+ * confirm action stays disabled until the Reason field has content.
  *
  * The reason is *not* part of the patch body — the change-request PATCH
  * contract has no reason or comment field. The caller records it as an
@@ -137,7 +100,6 @@ interface ChangeRequestTransitionReasonDialogProps {
  */
 export default function ChangeRequestTransitionReasonDialog({
   target,
-  fromState,
   isSubmitting,
   error,
   reasonRecorded,
@@ -146,7 +108,7 @@ export default function ChangeRequestTransitionReasonDialog({
 }: ChangeRequestTransitionReasonDialogProps): JSX.Element {
   const [reason, setReason] = useState("");
   const reasonRef = useRef<HTMLTextAreaElement | null>(null);
-  const { title, body, confirmLabel, confirmColor } = copyFor(target, fromState);
+  const { title, body, confirmLabel, confirmColor } = copyFor(target);
   const canSubmit = reason.trim().length > 0 && !isSubmitting;
 
   return (
