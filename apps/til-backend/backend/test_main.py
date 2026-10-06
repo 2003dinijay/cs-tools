@@ -27,6 +27,8 @@ from conftest import TEST_DB_NAME, bootstrap_test_database
 
 os.environ.setdefault("DB_NAME", TEST_DB_NAME)
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -65,6 +67,37 @@ def test_create_submission_uses_tokens_own_email():
     resp = client.post("/submissions", json={"who": "Jane Doe, CSM", "where": "Internal", "what": "Learned X."})
     assert resp.status_code == 200
     assert resp.json()["submittedByEmail"] == "jane@example.com"
+
+
+def test_novera_notified_only_for_the_one_wso2_webapp_client():
+    # Scoped deliberately: the Chat App Dialog and Novera's own
+    # share_til_entry tool both call this same endpoint, but only the One
+    # WSO2 webapp's X-Til-Client header should trigger the Novera DM
+    # broadcast -- otherwise Novera submitting on a user's behalf would
+    # immediately notify that same user about their own entry.
+    client = client_as(HUMAN_USER)
+    with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
+        resp = client.post(
+            "/submissions",
+            json={"who": "Jane", "where": "Internal", "what": "x"},
+            headers={"X-Til-Client": "one-wso2-webapp"},
+        )
+        assert resp.status_code == 200
+        mock_notify.assert_called_once()
+
+    with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
+        resp = client.post("/submissions", json={"who": "Jane", "where": "Internal", "what": "x"})
+        assert resp.status_code == 200
+        mock_notify.assert_not_called()
+
+    with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
+        resp = client.post(
+            "/submissions",
+            json={"who": "Jane", "where": "Internal", "what": "x"},
+            headers={"X-Til-Client": "something-else"},
+        )
+        assert resp.status_code == 200
+        mock_notify.assert_not_called()
 
 
 def test_create_submission_sanitizes_what_even_if_client_skips_the_editor():

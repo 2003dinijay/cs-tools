@@ -145,7 +145,14 @@ async def create_submission(request: Request, user: dict = Depends(require_auth)
 
     entry_url = f"{ONE_WSO2_BASE_URL}/knowledge-base/{submission['id']}" if ONE_WSO2_BASE_URL else None
     await notify_new_submission(who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
-    await notify_novera(who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
+    # Novera's own DM broadcast is scoped to THIS entry point only -- not the
+    # Chat App Dialog, and not Novera's own share_til_entry tool (which would
+    # otherwise notify the very person who just submitted, about their own
+    # entry, as if someone else had). The One WSO2 webapp is the only caller
+    # that sends this header; every other caller is silently not broadcast,
+    # same as before this feature existed.
+    if request.headers.get("x-til-client") == "one-wso2-webapp":
+        await notify_novera(who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
 
     return submission
 
