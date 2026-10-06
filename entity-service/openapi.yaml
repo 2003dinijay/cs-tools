@@ -8228,11 +8228,51 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /specialist-handoff-teams:
+    get:
+      summary: The Special Ops teams an incident specialist handoff can go to.
+      description: >-
+        On the Postgres data sources, the teams SPECIALIST_HANDOFF_CONFIG gives the product
+        the service belongs to, in configured order (a team's key is the handoff's
+        escalationTeam). Several teams mean the caller must pick one; one team is the
+        handoff's target with nothing to pick; none means the service cannot be handed off.
+        On ServiceNow, its hard-coded routing: Choreo's Special Ops, Runtime and APIM teams,
+        Asgardeo's Special Ops.
+      operationId: listSpecialistHandoffTeams
+      parameters:
+        - name: serviceId
+          in: query
+          required: false
+          description: The incident's service. Omitted, every product's teams.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The teams, in configured order.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SpecialistHandoffTeamsResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /incidents/{id}/specialist-handoffs:
     post:
       summary: >-
-        Hand an incident off to its specialist group (ServiceNow data source only). One
-        atomic call: moves the incident to the specialist group for its business service,
+        Hand an incident off to its specialist group. On the Postgres data sources the
+        handoff writes Postgres only (no ServiceNow call), mirroring ServiceNow's
+        "Escalate to Special Ops" UI action. One atomic call: moves the incident to the specialist group for its business service,
         clears the assignee, opens a runbook-gap task, and (by default) files an internal
         issue for the receiving team. Not routed through any case-escalation path -- this is
         a distinct contract sharing no vocabulary with it.
@@ -11983,6 +12023,20 @@ components:
         do not carry this requirement.
 
   schemas:
+    SpecialistHandoffTeamsResponse:
+      type: object
+      properties:
+        teams:
+          type: array
+          items:
+            type: object
+            properties:
+              key:
+                type: string
+                description: Sent as the handoff's escalationTeam.
+              label:
+                type: string
+
     AllocationEvent:
       type: object
       description: >-
@@ -20607,7 +20661,7 @@ components:
         escalationTeam:
           type: string
           nullable: true
-          enum: [choreo-runtime-team, choreo-apim-team]
+          description: A team key from GET /specialist-handoff-teams; null when the product has one team.
         handedOffAt:
           type: string
         handedOffBy:
@@ -20637,8 +20691,10 @@ components:
           enum: [no-runbook, runbook-not-working]
         escalationTeam:
           type: string
-          description: Only meaningful for a Choreo-routed handoff.
-          enum: [choreo-runtime-team, choreo-apim-team]
+          maxLength: 64
+          description: >-
+            A team key from GET /specialist-handoff-teams?serviceId=. Required when the
+            incident's product has several teams (400 otherwise); ignored when it has one.
         createGithubIssue:
           type: boolean
           default: true
@@ -20679,7 +20735,7 @@ components:
             escalationTeam:
               type: string
               nullable: true
-              enum: [choreo-runtime-team, choreo-apim-team]
+              description: The team picked; null when the product has one team.
             task:
               $ref: '#/components/schemas/IncidentSpecialistHandoffTask'
             githubIssue:

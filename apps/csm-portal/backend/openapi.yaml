@@ -7315,6 +7315,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /specialist-handoff-teams:
+    get:
+      summary: The Special Ops teams the "Escalate to specialist team" dialog offers.
+      description: >-
+        The teams of the product the incident's service belongs to, from the entity
+        service's SPECIALIST_HANDOFF_CONFIG. Several teams mean the user must pick one
+        (escalationTeam); one team is the handoff's target with nothing to pick; none
+        means the service cannot be handed off.
+      operationId: listSpecialistHandoffTeams
+      parameters:
+        - name: serviceId
+          in: query
+          required: false
+          description: The incident's service. Omitted, every product's teams.
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  teams:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        key:
+                          type: string
+                        label:
+                          type: string
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /incidents/{id}/specialist-handoffs:
     post:
       summary: Hand an incident off to its specialist group (backing data source only).

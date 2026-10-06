@@ -38,6 +38,7 @@ type entityIncidentClient interface {
 	SearchComments(ctx context.Context, body []byte) ([]byte, error)
 	SearchIncidentActivities(ctx context.Context, id string, body []byte) ([]byte, error)
 	HandOffIncidentToSpecialist(ctx context.Context, id string, body []byte) ([]byte, error)
+	ListSpecialistHandoffTeams(ctx context.Context, serviceID string) ([]byte, error)
 }
 
 // searchIncidentsRequest mirrors the enum/format-constrained fields of the documented
@@ -786,5 +787,29 @@ func (h *IncidentHandler) HandOffIncidentToSpecialist(w http.ResponseWriter, r *
 			"userID", user.UserID, "incidentID", id, "githubIssueError", *envelope.Handoff.GithubIssueError)
 	}
 
+	writeJSON(w, http.StatusOK, result)
+}
+
+// ListSpecialistHandoffTeams handles GET /specialist-handoff-teams?serviceId=: the Special
+// Ops teams the "Escalate to specialist team" dialog offers for the incident's service,
+// passed through from the entity service. Several teams mean the user must pick one; one
+// team is the handoff's target with nothing to pick.
+func (h *IncidentHandler) ListSpecialistHandoffTeams(w http.ResponseWriter, r *http.Request) {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
+		return
+	}
+	serviceID := r.URL.Query().Get("serviceId")
+	if serviceID != "" && !uuidRe.MatchString(serviceID) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+	result, err := h.entity.ListSpecialistHandoffTeams(r.Context(), serviceID)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity ListSpecialistHandoffTeams failed", "userID", user.UserID, "err", err)
+		mapUpstreamError(w, err, "Failed to load the specialist teams.")
+		return
+	}
 	writeJSON(w, http.StatusOK, result)
 }

@@ -599,6 +599,7 @@ func main() {
 	route("POST /incidents/{id}/comments/search", handler.PermViewOperations, incidentHandler.SearchIncidentComments)
 	route("POST /incidents/{id}/activities/search", handler.PermViewOperations, incidentHandler.SearchIncidentActivities)
 	route("POST /incidents/{id}/specialist-handoffs", handler.PermWrite, incidentHandler.HandOffIncidentToSpecialist)
+	route("GET /specialist-handoff-teams", handler.PermViewOperations, incidentHandler.ListSpecialistHandoffTeams)
 	route("GET /alerts/{id}", handler.PermViewOperations, alertHandler.GetAlert)
 	route("GET /smart-alerts/{id}", handler.PermViewOperations, alertHandler.GetSmartAlert)
 	route("POST /change-requests/{id}/comments", handler.PermWrite, changeRequestHandler.CreateChangeRequestComment)

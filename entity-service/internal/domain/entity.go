@@ -5985,6 +5985,13 @@ type IncidentView struct {
 	// source recomputes it at read time, so a handoff performed through its own native UI
 	// reads identically to one performed through HandOffIncidentToSpecialist.
 	SpecialistHandoff *IncidentSpecialistHandoffSummary `json:"specialistHandoff"`
+	// CanHandOffToSpecialist is whether the "Escalate to specialist team"
+	// action applies right now -- ServiceNow's canEscalateToSpecialOps, which
+	// decides when the form loads whether to show the button: the incident
+	// is In Progress, its service has a default specialist route, and it is
+	// not already with that route's group. Nil when the data source does not
+	// say (ServiceNow), so a caller keeps offering the action.
+	CanHandOffToSpecialist *bool `json:"canHandOffToSpecialist,omitempty"`
 }
 
 // IncidentSpecialistHandoffReasonCode is why an incident could not be resolved through the
@@ -6019,6 +6026,18 @@ type HandOffIncidentToSpecialistRequest struct {
 	// CreateGithubIssue defaults to true upstream when omitted; set false to suppress the
 	// internal issue, e.g. on a re-handoff or when one already exists.
 	CreateGithubIssue *bool `json:"createGithubIssue,omitempty"`
+}
+
+// SpecialistHandoffTeam is a sub-team a specialist handoff can name: Key is
+// sent as HandOffIncidentToSpecialistRequest.EscalationTeam, Label is shown.
+type SpecialistHandoffTeam struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// SpecialistHandoffTeamsResponse is the response for GET /specialist-handoff-teams.
+type SpecialistHandoffTeamsResponse struct {
+	Teams []SpecialistHandoffTeam `json:"teams"`
 }
 
 // IncidentSpecialistHandoffTask is the runbook-gap task opened for the specialist team as
