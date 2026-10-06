@@ -26,8 +26,10 @@ import { type Locator, type Page, expect } from "@playwright/test";
  * Normal, ECAB for Emergency, straight to Scheduled for Standard).
  * There is deliberately no "Schedule" button: a CR is moved to Scheduled
  * automatically by its CAB/ECAB approval (or, when it requires customer
- * approval, by "Record customer approval" from the Customer Approval step) --
- * see `scheduleButton()`, which exists only so specs can assert its absence.
+ * approval, by the customer answering in the customer portal -- or by an
+ * engineer answering for them with "Bypass customer approval", a "Change state"
+ * menu entry of the Customer Approval step) -- see `scheduleButton()`, which
+ * exists only so specs can assert its absence.
  */
 export class ChangeRequestDetailPage {
   constructor(readonly page: Page) {}
@@ -83,13 +85,77 @@ export class ChangeRequestDetailPage {
     return this.page.getByText(/^Awaiting .+ (Approval|review)$/i);
   }
 
-  /** "Record customer approval" -- the only place `scheduled` is a manual action. */
-  recordCustomerApprovalButton(): Locator {
-    return this.page.getByRole("button", { name: "Record customer approval" });
+  /**
+   * Any top-level BUTTON that bypasses the customer (a bypass is a "Change
+   * state" menu entry, never a button). Only meaningful with no dialog open: the
+   * bypass dialog's own confirm button carries the same name.
+   */
+  bypassButton(): Locator {
+    return this.page.getByRole("button", { name: /bypass customer/i });
   }
 
-  async recordCustomerApproval(): Promise<void> {
-    await this.recordCustomerApprovalButton().click();
+  /** The retired name of the same action; it must not exist anywhere any more. */
+  retiredRecordCustomerApproval(): Locator {
+    return this.page.getByText(/record customer approval/i);
+  }
+
+  /**
+   * "Bypass customer approval" -- the only place `scheduled` is a manual action:
+   * an entry of the "Change state" menu at Customer Approval (open the menu
+   * first). Disabled, with its reason beside it, while the customer's request is
+   * pending; matches by prefix because a disabled entry's accessible name
+   * carries the reason.
+   */
+  bypassCustomerApprovalMenuItem(): Locator {
+    return this.page.getByRole("menuitem", { name: /^Bypass customer approval/ });
+  }
+
+  /** "Bypass customer review" -- `closed` out of Customer Review, the same kind of menu entry. */
+  bypassCustomerReviewMenuItem(): Locator {
+    return this.page.getByRole("menuitem", { name: /^Bypass customer review/ });
+  }
+
+  /** Every entry of the open "Change state" menu. */
+  menuItems(): Locator {
+    return this.page.getByRole("menuitem");
+  }
+
+  /** Opens the "Change state" menu and waits for its entries. */
+  async openChangeStateMenu(): Promise<void> {
+    await this.changeStateButton().click();
+    await expect(this.menuItems().first()).toBeVisible();
+  }
+
+  /** Closes the "Change state" menu again. */
+  async closeChangeStateMenu(): Promise<void> {
+    await this.page.keyboard.press("Escape");
+    await expect(this.menuItems()).toHaveCount(0);
+  }
+
+  /** The reason dialog a bypass opens, titled with the bypass's own name. */
+  bypassDialog(name: "Bypass customer approval" | "Bypass customer review"): Locator {
+    return this.page.getByRole("dialog").filter({ has: this.page.getByRole("heading", { name, exact: true }) });
+  }
+
+  /** The dialog's confirm button (the same words as its title). */
+  bypassConfirm(name: "Bypass customer approval" | "Bypass customer review"): Locator {
+    return this.bypassDialog(name).getByRole("button", { name, exact: true });
+  }
+
+  /**
+   * Bypasses the customer through the "Change state" menu and the reason dialog:
+   * open the menu, pick the entry, type `reason`, confirm. Returns once the
+   * dialog has closed.
+   */
+  async bypassCustomer(kind: "approval" | "review", reason: string): Promise<void> {
+    const name = kind === "approval" ? "Bypass customer approval" : "Bypass customer review";
+    await this.openChangeStateMenu();
+    await (kind === "approval" ? this.bypassCustomerApprovalMenuItem() : this.bypassCustomerReviewMenuItem()).click();
+    const dialog = this.bypassDialog(name);
+    await expect(dialog).toBeVisible();
+    await dialog.getByLabel("Reason").fill(reason);
+    await this.bypassConfirm(name).click();
+    await expect(dialog).toHaveCount(0);
   }
 
   /** Review's forward move when the CR requires customer review. */
@@ -97,7 +163,11 @@ export class ChangeRequestDetailPage {
     return this.page.getByRole("button", { name: "Send for customer review" });
   }
 
-  /** The primary "Close" button (as opposed to the overflow menu entry). */
+  /**
+   * The primary "Close" button: Review's forward move when no customer review is
+   * required. It is never there at Customer Review, where closing is the menu-only
+   * "Bypass customer review".
+   */
   closeButton(): Locator {
     return this.page.getByRole("button", { name: "Close", exact: true });
   }
@@ -118,6 +188,11 @@ export class ChangeRequestDetailPage {
    */
   stepLabels(): Locator {
     return this.lifecycleStepper().getByRole("listitem");
+  }
+
+  /** One stage of the stepper by its label ("Review" never matches "Customer Review"). */
+  stage(label: string): Locator {
+    return this.stepLabels().filter({ hasText: new RegExp(`^${label}, `) });
   }
 
   /** The Customer Approval / Customer Review checkboxes in the edit dialog. */
