@@ -136,7 +136,6 @@ export function ProductTab({
           <StageFlow
             catalogue={lifecycle}
             currentStage={detail.lifecycleStage}
-            healthState={detail.healthState}
             height={300}
           />
         ) : null}

@@ -127,29 +127,29 @@ export function StatTile({
 
 type ChipColor = "default" | "primary" | "secondary" | "success" | "error" | "info" | "warning";
 
-// Progression, not severity: neutral at entry, warming as the pairing advances,
-// accent at the commercial end, error at the closing stages. Six stages share
-// four chip colours, so the ordering has to carry the meaning the palette
-// cannot.
+// A lifecycle stage and a subscription tier are IDENTITY, not judgement, so
+// both are drawn in one static accent.
 //
-// EVERY STAGE MUST APPEAR HERE. A stage missing from this map falls through to
-// the "default" grey and is drawn as though it had no status at all — which
-// nobody notices, because a grey chip looks deliberate.
-const lifecycleColor: Record<string, ChipColor> = {
-  REGISTRATION: "default",
-  PLG_CS_ELIGIBLE: "info",
-  FIRST_VALUE_ACHIEVED: "info",
-  ACTIVATED: "primary",
-  COMMERCIAL: "success",
-  ABANDONED: "error",
-};
+// They used to be colour scales — COMMERCIAL green, PLG_CS_ELIGIBLE blue,
+// ABANDONED red — which read as a verdict the data does not carry. A customer at
+// REGISTRATION is not doing badly and one at COMMERCIAL is not doing well; they
+// are at different points. Worse, the same green that said "commercial" also
+// said "healthy" two chips away, so the one axis where colour genuinely IS the
+// meaning had to compete with two where it was decoration.
+//
+// Spending no colour here leaves it available for health, below.
+const STATIC_TONE = { bgcolor: "secondary.main", color: "secondary.contrastText" } as const;
 
-// Health is the one axis where the colour IS the meaning, so it is green and
-// red and nothing else. Everywhere health is drawn — this chip, the current
-// node in StageFlow, the legend under it — reads from here.
-const healthColor: Record<string, ChipColor> = {
-  HEALTHY: "success",
-  AT_RISK: "error",
+// Health is the one axis where the colour IS the meaning, so it is the only one
+// that varies — and now the only green and red on the page.
+//
+// The lighter shades rather than the solid ones: these sit beside static accent
+// chips on the same row, and a full-strength red next to them reads as an alarm
+// rather than a state. Text takes the dark shade of the same hue, which keeps
+// contrast on a light fill where contrastText (computed for `main`) would not.
+const healthTone: Record<string, object> = {
+  HEALTHY: { bgcolor: "success.light", color: "success.dark" },
+  AT_RISK: { bgcolor: "error.light", color: "error.dark" },
 };
 
 // Deliberately not green/red. A playbook kind is not good or bad news; only
@@ -175,29 +175,26 @@ const valueTypeColor: Record<string, ChipColor> = {
   SINGLE_SELECT: "primary",
 };
 
-// The subscription tier, recorded by hand. It overlaps with the stage on purpose
-// — PayG names the same commercial fact COMMERCIAL does — so it is coloured to
-// match rather than to compete.
-//
-// The two trial tiers share the info/warning family rather than taking unrelated
-// colours: an extension is the same situation as a trial, later. Warning rather
-// than a second shade of info, because a pairing that has already been extended
-// is the one worth looking at.
-const tierColor: Record<string, ChipColor> = {
-  FREE: "default",
-  TRIAL: "info",
-  TRIAL_EXTENDED: "warning",
-  PAYG: "primary",
-};
-
+// The kinds still drawn from a named chip colour. These are not axes of a
+// pairing's state, so the reasoning above does not apply to them.
 const palettes: Record<string, Record<string, ChipColor>> = {
-  lifecycle: lifecycleColor,
-  health: healthColor,
   playbookType: playbookTypeColor,
   runStatus: runStatusColor,
   valueType: valueTypeColor,
-  tier: tierColor,
 };
+
+/** Every kind a chip can be drawn for. */
+export type ChipKind = "lifecycle" | "tier" | "health" | keyof typeof palettes;
+
+/**
+ * The sx tone for the kinds that no longer take a named chip colour, or
+ * undefined for the ones that still do.
+ */
+function toneFor(kind: ChipKind, value: string): object | undefined {
+  if (kind === "lifecycle" || kind === "tier") return STATIC_TONE;
+  if (kind === "health") return healthTone[value];
+  return undefined;
+}
 
 /** Enum chip whose colour comes from the named palette. */
 export function StatusChip({
@@ -206,10 +203,12 @@ export function StatusChip({
   size = "small",
 }: {
   value: string | null | undefined;
-  kind: keyof typeof palettes;
+  kind: ChipKind;
   size?: "small" | "medium";
 }) {
   if (!value) return <Chip label="—" size={size} variant="outlined" />;
+  const tone = toneFor(kind, value);
+  if (tone) return <Chip label={humanizeEnum(value)} size={size} sx={tone} />;
   const color = palettes[kind]?.[value] ?? "default";
   return <Chip label={humanizeEnum(value)} size={size} color={color} variant={color === "default" ? "outlined" : "filled"} />;
 }
@@ -236,7 +235,7 @@ export function LabelledChip({
 }: {
   label: string;
   value: string | null | undefined;
-  kind: keyof typeof palettes;
+  kind: ChipKind;
   size?: "small" | "medium";
 }) {
   return (
