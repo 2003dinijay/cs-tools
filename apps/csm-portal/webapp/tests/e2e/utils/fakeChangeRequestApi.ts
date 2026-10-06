@@ -66,13 +66,20 @@
 //     (400 `environmentIds is no longer supported: ...`). While that stage is live
 //     (still has REQUESTED approvers) legalNextStates for those two states is
 //     [canceled] only, and the manual PATCH {state:"scheduled"} /
-//     {state:"closed"} is refused with a 400. A member's decision settles the
-//     stage (their co-members become NOT_REQUIRED): Customer Approval approved
-//     -> scheduled, rejected -> canceled; Customer Review approved -> closed,
-//     rejected -> rollback (terminal: legalNextStates none). With no project, or a
-//     project with no eligible contact, no stage is provisioned and the manual paths above
-//     remain. `canDecide` is true only on the signed-in member's own
-//     REQUESTED row of a live stage, never for the creator;
+//     {state:"closed"} is refused with a 400. The customer's answer is NOT given
+//     in the CSM portal -- customers sign in to the customer portal, and nobody
+//     in CSM is an approver of a customer stage -- so it never arrives through
+//     this fake's decision route (a decision POSTed there while a customer stage
+//     is live is a 403 naming the customer group, like the backend). A spec that
+//     needs the customer's answer applies it server-side with
+//     `customerDecides(contact, decision)`, which settles the stage like the
+//     backend does: the contact's own row APPROVED / REJECTED, the co-contacts'
+//     rows CANCELLED; Customer Approval approved -> scheduled, rejected ->
+//     canceled; Customer Review approved -> closed, rejected -> rollback
+//     (terminal: legalNextStates none); then the spec reloads the CSM page to see
+//     it. With no project, or a project with no eligible contact, no stage is
+//     provisioned and the manual paths above remain. `canDecide` is true only on
+//     the signed-in user's own REQUESTED row of a live stage, never for the creator;
 //   - `customerApprovalRequired` / `customerReviewRequired` are on the detail
 //     response and editable via PATCH until their gate passes; a late edit is
 //     refused with a 400 and a readable message;
@@ -335,6 +342,19 @@ export interface FakeChangeRequestApi {
    * error state), or serve normally again with `null`.
    */
   failGroups(status: number | null): void;
+  /**
+   * The customer's answer, applied server-side: stands in for the customer
+   * portal, where customers decide (they do not sign in to the CSM portal, so no
+   * CSM page ever sends this decision). `contact`'s own REQUESTED row of the live
+   * Customer Approval / Customer Review stage becomes APPROVED / REJECTED, the
+   * co-contacts' rows CANCELLED, and the CR moves on like the backend moves it
+   * (Customer Approval: approved -> scheduled, rejected -> canceled; Customer
+   * Review: approved -> closed, rejected -> rollback). Throws, like the backend's
+   * 403, when `contact` has no pending row on a live customer stage of the CR's
+   * current state (a contact of another customer, a superseded stage, ...). The
+   * open CSM page is not refreshed: reload it to see the outcome.
+   */
+  customerDecides(contact: FakeUser, decision: "approved" | "rejected"): void;
 }
 
 const CUSTOMER_STAGES = ["Customer Approval", "Customer Review"];
@@ -521,6 +541,32 @@ export async function installFakeChangeRequestApi(
         approvers: members.map((m) => ({ id: m.id, name: m.name, status: "REQUESTED" })),
       },
     ];
+  }
+
+  /**
+   * The customer's answer (see `customerDecides` on the returned API): the contact's
+   * own live row is settled, the co-contacts' rows are cancelled, and the CR moves
+   * on -- Customer Approval approved -> scheduled, rejected -> canceled; Customer
+   * Review approved -> closed, rejected -> rollback.
+   */
+  function settleCustomerStage(contact: FakeUser, decision: "approved" | "rejected"): void {
+    const current = stages.find(
+      (s) =>
+        CUSTOMER_STAGES.includes(s.stage) &&
+        s.status === "REQUESTED" &&
+        !stageOutOfState(s) &&
+        s.approvers.some((a) => a.id === contact.id && a.status === "REQUESTED"),
+    );
+    const row = current?.approvers.find((a) => a.id === contact.id && a.status === "REQUESTED");
+    if (!current || !row) {
+      throw new Error(`${contact.name} has no pending customer approval or review on this change request`);
+    }
+    row.status = decision === "approved" ? "APPROVED" : "REJECTED";
+    current.status = row.status;
+    for (const a of current.approvers) if (a !== row && a.status === "REQUESTED") a.status = "CANCELLED";
+    if (decision === "approved") enter(current.stage === "Customer Approval" ? "scheduled" : "closed");
+    else enter(current.stage === "Customer Approval" ? "canceled" : "rollback");
+    reconcile();
   }
 
   const detail = (): Record<string, unknown> => ({
@@ -786,12 +832,28 @@ export async function installFakeChangeRequestApi(
       if (path.endsWith("/approvals/decision") && req.method() === "POST") {
         const { decision } = req.postDataJSON() as { decision: "approved" | "rejected" };
         // The caller's pending stage: their row on a stage decidable in the CR's
-        // current state, else (all of theirs are stale) the first one.
-        const mine = stages.filter((s) => s.status === "REQUESTED" && s.approvers.some((a) => a.id === currentViewer.id && a.status === "REQUESTED"));
+        // current state, else (all of theirs are stale) the first one. The customer
+        // stages are not the CSM portal's to decide (see customerDecides).
+        const mine = stages.filter(
+          (s) =>
+            !CUSTOMER_STAGES.includes(s.stage) &&
+            s.status === "REQUESTED" &&
+            s.approvers.some((a) => a.id === currentViewer.id && a.status === "REQUESTED"),
+        );
         const current = mine.find((s) => !stageOutOfState(s)) ?? mine[0];
         const row = current?.approvers.find((a) => a.id === currentViewer.id && a.status === "REQUESTED");
         if (!current || !row || currentViewer.id === FAKE_CREATOR.id) {
-          return json(route, { message: "Access to the requested resource is forbidden!" }, 403);
+          // A change waiting on its live customer stage says so, like the backend.
+          const waiting = stages.find((s) => CUSTOMER_STAGES.includes(s.stage) && s.status === "REQUESTED" && !stageOutOfState(s));
+          return json(
+            route,
+            {
+              message: waiting
+                ? `only members of the customer group (the registered contacts of this change request's project) can approve or reject the customer's ${waiting.stage === "Customer Approval" ? "approval" : "review"} of this change request`
+                : "Access to the requested resource is forbidden!",
+            },
+            403,
+          );
         }
         if (stageOutOfState(current)) {
           // Nothing is changed: the approval is no longer pending.
@@ -805,16 +867,9 @@ export async function installFakeChangeRequestApi(
         }
         row.status = decision === "approved" ? "APPROVED" : "REJECTED";
         current.status = row.status;
-        if (!CUSTOMER_STAGES.includes(current.stage)) {
-          // Like the backend, a resolving decision cancels the stage's other pending approvers.
-          for (const a of current.approvers) if (a !== row && a.status === "REQUESTED") a.status = "CANCELLED";
-        }
-        if (CUSTOMER_STAGES.includes(current.stage)) {
-          // One member's decision settles the stage; co-members are no longer needed.
-          for (const a of current.approvers) if (a !== row && a.status === "REQUESTED") a.status = "NOT_REQUIRED";
-          if (decision === "approved") enter(current.stage === "Customer Approval" ? "scheduled" : "closed");
-          else enter(current.stage === "Customer Approval" ? "canceled" : "rollback");
-        } else if (decision === "approved") {
+        // Like the backend, a resolving decision cancels the stage's other pending approvers.
+        for (const a of current.approvers) if (a !== row && a.status === "REQUESTED") a.status = "CANCELLED";
+        if (decision === "approved") {
           if (current.stage === "Peer Approval") {
             state = "authorize";
             stages = [...stages, nextStage("CAB Approval", FAKE_CAB_GROUP, FAKE_CAB)];
@@ -1001,6 +1056,7 @@ export async function installFakeChangeRequestApi(
     failGroups: (status) => {
       groupFailure = status;
     },
+    customerDecides: (contact, decision) => settleCustomerStage(contact, decision),
     stages: () =>
       stages.map((st) => ({
         stage: st.stage,
