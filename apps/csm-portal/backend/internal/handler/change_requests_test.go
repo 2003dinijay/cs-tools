@@ -707,7 +707,10 @@ func TestPatchChangeRequestRefusesTheCustomersAnswer(t *testing.T) {
 		"a true then a null in another case": {`{"ISCUSTOMERAPPROVED":true,"isCustomerApproved":null}`, approved},
 		"reviewed null then true":            {`{"isCustomerReviewed":null,"iscustomerreviewed":false}`, reviewed},
 		"a JSON-escaped key":                 {`{"isCustomerApprov\u0065d":true}`, approved},
-		"with a state, in capitals":          {`{"state":"closed","ISCUSTOMERREVIEWED":true}`, reviewed},
+		// encoding/json folds a key by Unicode simple folding, not by ASCII case alone:
+		// the long s (U+017F) is an "s" to it, as it is to strings.EqualFold.
+		"a key spelled with a long s": {`{"i\u017fCu\u017ftomerReviewed":true}`, reviewed},
+		"with a state, in capitals":   {`{"state":"closed","ISCUSTOMERREVIEWED":true}`, reviewed},
 	} {
 		t.Run(name, func(t *testing.T) {
 			called := false
