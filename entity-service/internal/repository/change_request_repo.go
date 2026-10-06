@@ -1070,6 +1070,27 @@ func (r *changeRequestRepo) PatchChangeRequest(ctx context.Context, id string, r
 // timeCardRepo.createTimeCardTx). Returns the change request's id (== the
 // work_item id) on success.
 func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.PatchChangeRequestRequest, actorEmail string) (string, error) {
+	// A customer (an external caller) may only answer what is waiting on the
+	// customer or propose a new implementation time; see
+	// change_request_customer_outcome.go. Decided before anything else is looked
+	// at or written: the answer is the caller deciding their own pending approval
+	// (the same code the decision route runs), the proposal becomes the
+	// Re-schedule a WSO2 user would send, and anything else is refused.
+	if isExternalCaller(ctx) {
+		cp, err := classifyExternalPatch(req)
+		if err != nil {
+			return "", err
+		}
+		switch cp.kind {
+		case customerPatchAnswer:
+			return answerCustomerStageViaPatch(ctx, tx, id, cp, actorEmail)
+		case customerPatchProposal:
+			if req, err = prepareCustomerProposal(ctx, tx, id, req, actorEmail); err != nil {
+				return "", err
+			}
+		}
+	}
+
 	// New->Assess is compulsorily gated on an assigned team -- a real,
 	// reported bug: this used to be a frontend-only courtesy check
 	// (ChangeRequestActionBar.tsx's TARGET_BLOCKED_REASON), easily bypassed
@@ -2904,184 +2925,206 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 	// InTxReturning: Scoped stamps the caller identity on the transaction's
 	// own session (the base branch's r.db.Begin is not available on Scoped).
 	return InTxReturning(ctx, r.db, func(tx pgx.Tx) (string, error) {
-		var lockedID string
-		var lockedState *string
-		if err := tx.QueryRow(ctx, `SELECT id, state::text FROM change_request WHERE id = $1 FOR UPDATE`, id).Scan(&lockedID, &lockedState); err != nil && !errors.Is(err, pgx.ErrNoRows) {
-			return "", fmt.Errorf("decide change request approval: lock change request: %w", err)
-		}
-		// The state the change is in, fixed for this transaction by the lock
-		// ("" when NULL or not visible: nothing is guarded then).
-		crState := strings.ToUpper(stringOrEmpty(lockedState))
+		return decideChangeRequestApprovalTx(ctx, tx, id, approverUserID, decision, actorEmail)
+	})
+}
 
-		// Who-may-decide rules, before the approver row is touched. The
-		// creator rule needs no row; the internal-only rule needs the kind of the
-		// stage the caller's pending row belongs to (none found: fall through to the
-		// UPDATE below, whose zero rows produce the usual NotFoundError).
-		creatorIDs, err := changeRequestCreatorUserIDs(ctx, tx, id)
-		if err != nil {
-			return "", fmt.Errorf("decide change request approval: %w", err)
-		}
-		if actorEmail != "" {
-			// The creator is recognised by email too (work_item.created_by),
-			// covering a creator whose user row the id-based lookup missed.
-			var emailMatchesCreator bool
-			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS (SELECT 1 FROM work_item WHERE id = $1 AND LOWER(created_by) = LOWER($2))`,
-				id, actorEmail).Scan(&emailMatchesCreator); err != nil {
-				return "", fmt.Errorf("decide change request approval: check creator: %w", err)
-			}
-			if emailMatchesCreator {
-				creatorIDs[strings.ToLower(approverUserID)] = true
-			}
-		}
-		// The stage the caller is deciding: their oldest pending row on a stage
-		// that is decidable in the state the change is in; failing that (every
-		// pending row is on a stage the change has left) their oldest one, which
-		// is then refused below. None found: fall through to the UPDATE, whose
-		// zero rows produce the usual NotFoundError.
-		pendingStageID, kind, err := callerPendingApprovalStage(ctx, tx, id, approverUserID, crState)
-		if err != nil {
-			return "", fmt.Errorf("decide change request approval: %w", err)
-		}
-		if err := approverDecisionBlock(ctx, tx, approverUserID, creatorIDs, kind); err != nil {
-			return "", err
-		}
-		// An approval whose stage belongs to a state the change is no longer in
-		// is no longer pending. Refused before anything is written.
-		if pendingStageID != nil && approvalStageOutOfState(kind, crState) {
-			return "", staleApprovalRefusal(kind, crState)
-		}
+// decideChangeRequestApprovalTx is DecideChangeRequestApproval's body, run in a
+// transaction the caller owns. It is the ONE implementation of "a user decides
+// their own pending approval": the approvals/decision route calls it directly, and
+// so does the PATCH {isCustomerApproved / isCustomerReviewed} path a customer
+// uses (answerCustomerStageViaPatch), so both mechanisms record the same stage
+// rows, move the state the same way and stamp the same flags.
+func decideChangeRequestApprovalTx(ctx context.Context, tx pgx.Tx, id, approverUserID, decision, actorEmail string) (string, error) {
+	var lockedID string
+	var lockedState *string
+	if err := tx.QueryRow(ctx, `SELECT id, state::text FROM change_request WHERE id = $1 FOR UPDATE`, id).Scan(&lockedID, &lockedState); err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fmt.Errorf("decide change request approval: lock change request: %w", err)
+	}
+	// The state the change is in, fixed for this transaction by the lock
+	// ("" when NULL or not visible: nothing is guarded then).
+	crState := strings.ToUpper(stringOrEmpty(lockedState))
 
-		var approvalID string
-		var stageID *string
-		err = tx.QueryRow(ctx, decideChangeRequestApprovalQuery, id, approverUserID, decision, actorEmail, pendingStageID).Scan(&approvalID, &stageID)
-		if errors.Is(err, pgx.ErrNoRows) {
-			// A change waiting on the customer group's answer: say who may give
-			// it, rather than a bare "no pending approval" for someone who is
-			// simply not in that group.
-			if refusal, rerr := customerStageDecisionRefusal(ctx, tx, id); rerr != nil {
-				return "", rerr
-			} else if refusal != nil {
-				return "", refusal
-			}
-			return "", &apierror.NotFoundError{Msg: "no pending approval found for this change request and caller"}
-		}
-		if IsRLSPolicyViolation(err) {
-			return "", &apierror.NotFoundError{Msg: "no pending approval found for this change request and caller"}
-		}
-		if err != nil {
-			return "", fmt.Errorf("decide change request approval: %w", err)
-		}
+	// Who-may-decide rules, before the approver row is touched. The
+	// creator rule needs no row; the internal-only rule needs the kind of the
+	// stage the caller's pending row belongs to (none found: fall through to the
+	// UPDATE below, whose zero rows produce the usual NotFoundError).
+	creatorIDs, err := changeRequestCreatorsForApprover(ctx, tx, id, approverUserID, actorEmail)
+	if err != nil {
+		return "", fmt.Errorf("decide change request approval: %w", err)
+	}
+	// The stage the caller is deciding: their oldest pending row on a stage
+	// that is decidable in the state the change is in; failing that (every
+	// pending row is on a stage the change has left) their oldest one, which
+	// is then refused below. None found: fall through to the UPDATE, whose
+	// zero rows produce the usual NotFoundError.
+	pendingStageID, kind, err := callerPendingApprovalStage(ctx, tx, id, approverUserID, crState)
+	if err != nil {
+		return "", fmt.Errorf("decide change request approval: %w", err)
+	}
+	if err := approverDecisionBlock(ctx, tx, approverUserID, creatorIDs, kind); err != nil {
+		return "", err
+	}
+	// An approval whose stage belongs to a state the change is no longer in
+	// is no longer pending. Refused before anything is written.
+	if pendingStageID != nil && approvalStageOutOfState(kind, crState) {
+		return "", staleApprovalRefusal(kind, crState)
+	}
 
-		if decision == "approved" && stageID != nil {
-			var hasRejection bool
-			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND status = 'rejected')`,
-				*stageID).Scan(&hasRejection); err != nil {
-				return "", fmt.Errorf("decide change request approval: check stage rejections: %w", err)
+	var approvalID string
+	var stageID *string
+	err = tx.QueryRow(ctx, decideChangeRequestApprovalQuery, id, approverUserID, decision, actorEmail, pendingStageID).Scan(&approvalID, &stageID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A change waiting on the customer group's answer: say who may give
+		// it, rather than a bare "no pending approval" for someone who is
+		// simply not in that group.
+		if refusal, rerr := customerStageDecisionRefusal(ctx, tx, id); rerr != nil {
+			return "", rerr
+		} else if refusal != nil {
+			return "", refusal
+		}
+		return "", &apierror.NotFoundError{Msg: "no pending approval found for this change request and caller"}
+	}
+	if IsRLSPolicyViolation(err) {
+		return "", &apierror.NotFoundError{Msg: "no pending approval found for this change request and caller"}
+	}
+	if err != nil {
+		return "", fmt.Errorf("decide change request approval: %w", err)
+	}
+
+	if decision == "approved" && stageID != nil {
+		var hasRejection bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND status = 'rejected')`,
+			*stageID).Scan(&hasRejection); err != nil {
+			return "", fmt.Errorf("decide change request approval: check stage rejections: %w", err)
+		}
+		if !hasRejection {
+			// This decision resolves the stage: cancel every other
+			// still-pending approver on it.
+			if err := cancelSiblingApprovalStageApprovers(ctx, tx, *stageID, actorEmail); err != nil {
+				return "", err
 			}
-			if !hasRejection {
-				// This decision resolves the stage: cancel every other
-				// still-pending approver on it.
-				if err := cancelSiblingApprovalStageApprovers(ctx, tx, *stageID, actorEmail); err != nil {
+
+			stageKind, err := approvalStageInfo(ctx, tx, id, *stageID)
+			if err != nil {
+				return "", fmt.Errorf("decide change request approval: %w", err)
+			}
+			var currentState sql.NullString
+			var customerApprovalRequired bool
+			if err := tx.QueryRow(ctx, `SELECT state, customer_approval_required FROM change_request WHERE id = $1`, id).Scan(&currentState, &customerApprovalRequired); err != nil {
+				return "", fmt.Errorf("decide change request approval: check current state: %w", err)
+			}
+			switch {
+			case stageKind == stageKindPeer && currentState.Valid && currentState.String == "ASSESS":
+				if _, err := tx.Exec(ctx, `UPDATE change_request SET state = 'AUTHORIZE' WHERE id = $1`, id); err != nil {
+					return "", fmt.Errorf("decide change request approval: advance state: %w", err)
+				}
+				// CAB approval is right after peer approval, in its own
+				// group. Provisioned inside this transaction and NOT
+				// best-effort: see this method's doc comment.
+				if _, err := provisionApprovalStage(ctx, tx, id, nil, actorEmail, changeRequestCABCheckpoint); err != nil {
 					return "", err
 				}
-
-				stageKind, err := approvalStageInfo(ctx, tx, id, *stageID)
-				if err != nil {
-					return "", fmt.Errorf("decide change request approval: %w", err)
+			case (stageKind == stageKindCAB || stageKind == stageKindECAB) && currentState.Valid && currentState.String == "AUTHORIZE":
+				// CAB (Normal) / ECAB (Emergency) approval schedules the
+				// change automatically -- there is no manual Schedule --
+				// unless the customer's approval is required, in which case
+				// the change waits in Customer Approval for it to be
+				// recorded (a human {state: "scheduled"} from there).
+				target := approvalGateTarget(customerApprovalRequired)
+				if _, err := tx.Exec(ctx, `UPDATE change_request SET state = $2::change_request_state_enum WHERE id = $1`, id, target); err != nil {
+					return "", fmt.Errorf("decide change request approval: advance state: %w", err)
 				}
+				// Entering Customer Approval asks the customer group, when
+				// the change has one with someone eligible; otherwise the
+				// manual "record the customer's approval" stays open.
+				if target == customerApprovalStageSpec.state {
+					if _, err := provisionCustomerStage(ctx, tx, id, actorEmail); err != nil {
+						return "", err
+					}
+				}
+			case customerStageSpecForKind(stageKind) != nil && currentState.Valid:
+				// The customer group's answer: Customer Approval ->
+				// Scheduled (customer approval recorded), Customer Review
+				// -> Closed (customer review recorded).
+				if _, err := applyCustomerStageOutcome(ctx, tx, id, customerStageSpecForKind(stageKind), currentState.String, true); err != nil {
+					return "", err
+				}
+			}
+		}
+	} else if decision == "rejected" && stageID != nil {
+		// A rejection resolves the stage exactly as decisively as an
+		// approval does, so siblings are cancelled here too -- unless the
+		// stage was already resolved by an approval (a ServiceNow-synced
+		// or pre-fix stage can hold an Approved row next to still-Requested
+		// ones; a late rejection must not retroactively cancel them).
+		// change_request.state is deliberately left untouched -- see this
+		// method's doc comment.
+		var hasApproval bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND status = 'approved')`,
+			*stageID).Scan(&hasApproval); err != nil {
+			return "", fmt.Errorf("decide change request approval: check stage approvals: %w", err)
+		}
+		if !hasApproval {
+			if err := cancelSiblingApprovalStageApprovers(ctx, tx, *stageID, actorEmail); err != nil {
+				return "", err
+			}
+			// A customer group's rejection is an outcome, unlike every
+			// internal stage's: Customer Approval rejected -> Canceled,
+			// Customer Review rejected -> Rollback.
+			stageKind, err := approvalStageInfo(ctx, tx, id, *stageID)
+			if err != nil {
+				return "", fmt.Errorf("decide change request approval: %w", err)
+			}
+			if spec := customerStageSpecForKind(stageKind); spec != nil {
 				var currentState sql.NullString
-				var customerApprovalRequired bool
-				if err := tx.QueryRow(ctx, `SELECT state, customer_approval_required FROM change_request WHERE id = $1`, id).Scan(&currentState, &customerApprovalRequired); err != nil {
+				if err := tx.QueryRow(ctx, `SELECT state FROM change_request WHERE id = $1`, id).Scan(&currentState); err != nil {
 					return "", fmt.Errorf("decide change request approval: check current state: %w", err)
 				}
-				switch {
-				case stageKind == stageKindPeer && currentState.Valid && currentState.String == "ASSESS":
-					if _, err := tx.Exec(ctx, `UPDATE change_request SET state = 'AUTHORIZE' WHERE id = $1`, id); err != nil {
-						return "", fmt.Errorf("decide change request approval: advance state: %w", err)
-					}
-					// CAB approval is right after peer approval, in its own
-					// group. Provisioned inside this transaction and NOT
-					// best-effort: see this method's doc comment.
-					if _, err := provisionApprovalStage(ctx, tx, id, nil, actorEmail, changeRequestCABCheckpoint); err != nil {
-						return "", err
-					}
-				case (stageKind == stageKindCAB || stageKind == stageKindECAB) && currentState.Valid && currentState.String == "AUTHORIZE":
-					// CAB (Normal) / ECAB (Emergency) approval schedules the
-					// change automatically -- there is no manual Schedule --
-					// unless the customer's approval is required, in which case
-					// the change waits in Customer Approval for it to be
-					// recorded (a human {state: "scheduled"} from there).
-					target := approvalGateTarget(customerApprovalRequired)
-					if _, err := tx.Exec(ctx, `UPDATE change_request SET state = $2::change_request_state_enum WHERE id = $1`, id, target); err != nil {
-						return "", fmt.Errorf("decide change request approval: advance state: %w", err)
-					}
-					// Entering Customer Approval asks the customer group, when
-					// the change has one with someone eligible; otherwise the
-					// manual "record the customer's approval" stays open.
-					if target == customerApprovalStageSpec.state {
-						if _, err := provisionCustomerStage(ctx, tx, id, actorEmail); err != nil {
-							return "", err
-						}
-					}
-				case customerStageSpecForKind(stageKind) != nil && currentState.Valid:
-					// The customer group's answer: Customer Approval ->
-					// Scheduled (customer approval recorded), Customer Review
-					// -> Closed (customer review recorded).
-					if _, err := applyCustomerStageOutcome(ctx, tx, id, customerStageSpecForKind(stageKind), currentState.String, true); err != nil {
+				if currentState.Valid {
+					if _, err := applyCustomerStageOutcome(ctx, tx, id, spec, currentState.String, false); err != nil {
 						return "", err
 					}
 				}
 			}
-		} else if decision == "rejected" && stageID != nil {
-			// A rejection resolves the stage exactly as decisively as an
-			// approval does, so siblings are cancelled here too -- unless the
-			// stage was already resolved by an approval (a ServiceNow-synced
-			// or pre-fix stage can hold an Approved row next to still-Requested
-			// ones; a late rejection must not retroactively cancel them).
-			// change_request.state is deliberately left untouched -- see this
-			// method's doc comment.
-			var hasApproval bool
-			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND status = 'approved')`,
-				*stageID).Scan(&hasApproval); err != nil {
-				return "", fmt.Errorf("decide change request approval: check stage approvals: %w", err)
-			}
-			if !hasApproval {
-				if err := cancelSiblingApprovalStageApprovers(ctx, tx, *stageID, actorEmail); err != nil {
-					return "", err
-				}
-				// A customer group's rejection is an outcome, unlike every
-				// internal stage's: Customer Approval rejected -> Canceled,
-				// Customer Review rejected -> Rollback.
-				stageKind, err := approvalStageInfo(ctx, tx, id, *stageID)
-				if err != nil {
-					return "", fmt.Errorf("decide change request approval: %w", err)
-				}
-				if spec := customerStageSpecForKind(stageKind); spec != nil {
-					var currentState sql.NullString
-					if err := tx.QueryRow(ctx, `SELECT state FROM change_request WHERE id = $1`, id).Scan(&currentState); err != nil {
-						return "", fmt.Errorf("decide change request approval: check current state: %w", err)
-					}
-					if currentState.Valid {
-						if _, err := applyCustomerStageOutcome(ctx, tx, id, spec, currentState.String, false); err != nil {
-							return "", err
-						}
-					}
-				}
-			}
 		}
+	}
 
-		// The decision may have moved the change (Peer -> Authorize, CAB ->
-		// Scheduled / Customer Approval, a customer outcome -> Scheduled /
-		// Closed / Canceled / Rollback): cancel what that left actionable.
-		if err := reconcileStaleApprovers(ctx, tx, id, actorEmail); err != nil {
-			return "", err
+	// The decision may have moved the change (Peer -> Authorize, CAB ->
+	// Scheduled / Customer Approval, a customer outcome -> Scheduled /
+	// Closed / Canceled / Rollback): cancel what that left actionable.
+	if err := reconcileStaleApprovers(ctx, tx, id, actorEmail); err != nil {
+		return "", err
+	}
+
+	return approvalID, nil
+}
+
+// changeRequestCreatorsForApprover is changeRequestCreatorUserIDs plus the
+// caller: the creator is recognised by email too (work_item.created_by), which
+// covers a creator whose user row the id-based lookup missed, so when
+// actorEmail is the creator's, approverUserID is added to the set. The one place
+// the "nobody approves their own change" rule is assembled, for the decision
+// itself and for the customer's other answers (a proposed implementation time).
+func changeRequestCreatorsForApprover(ctx context.Context, tx pgx.Tx, id, approverUserID, actorEmail string) (map[string]bool, error) {
+	creatorIDs, err := changeRequestCreatorUserIDs(ctx, tx, id)
+	if err != nil {
+		return nil, err
+	}
+	if actorEmail != "" {
+		var emailMatchesCreator bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM work_item WHERE id = $1 AND LOWER(created_by) = LOWER($2))`,
+			id, actorEmail).Scan(&emailMatchesCreator); err != nil {
+			return nil, fmt.Errorf("check creator: %w", err)
 		}
-
-		return approvalID, nil
-	})
+		if emailMatchesCreator {
+			creatorIDs[strings.ToLower(approverUserID)] = true
+		}
+	}
+	return creatorIDs, nil
 }
 
 // callerPendingApprovalStage resolves which stage the caller's decision is for:

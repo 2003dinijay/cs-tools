@@ -2750,10 +2750,17 @@ func TestChangeRequestIntegration_PatchCustomerFlagInternalCallerCanSetBoth(t *t
 	}
 }
 
-// TestChangeRequestIntegration_PatchCustomerFlagQualifyingPortalUserContactCanApprove
-// confirms a REGISTERED project_contact holding PORTAL_USER on the change
-// request's OWN project may flip is_customer_approval_required false -> true.
-func TestChangeRequestIntegration_PatchCustomerFlagQualifyingPortalUserContactCanApprove(t *testing.T) {
+// TestChangeRequestIntegration_PatchCustomerFlagQualifyingPortalUserContactNeedsTheCustomerState
+// confirms what a REGISTERED project_contact holding PORTAL_USER on the change
+// request's OWN project can and cannot do with isCustomerApproved. The flag used
+// to be a plain boolean such a contact could stamp at any time; it is now the
+// customer's ANSWER (the same decision the Approvals tab records, see
+// change_request_customer_outcome.go), so on a change request that is not
+// waiting on the customer -- this one is New -- it is refused with the
+// stale-approval 409 and nothing is stamped. The answering path itself, in
+// Customer Approval and Customer Review, is covered end to end by
+// TestChangeRequestCustomerOutcomeIntegration_*.
+func TestChangeRequestIntegration_PatchCustomerFlagQualifyingPortalUserContactNeedsTheCustomerState(t *testing.T) {
 	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
 	if dsn == "" {
 		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
@@ -2765,6 +2772,7 @@ func TestChangeRequestIntegration_PatchCustomerFlagQualifyingPortalUserContactCa
 	t.Cleanup(pool.Close)
 
 	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
 	repo := repository.NewChangeRequestRepository(scoped)
 
 	seedChangeRequestCustomerFlagAccount(t, pool)
@@ -2774,13 +2782,22 @@ func TestChangeRequestIntegration_PatchCustomerFlagQualifyingPortalUserContactCa
 	seedChangeRequestForCustomerFlagTest(t, scoped, crCustomerFlagQualifyingTestID, "CRCFQUAL01", crCustomerFlagProjectID, false, false)
 
 	yes := true
-	cr, err := repo.PatchChangeRequest(externalCallerCtx(crCustomerFlagPortalUserEmail), crCustomerFlagQualifyingTestID,
+	_, err = repo.PatchChangeRequest(externalCallerCtx(crCustomerFlagPortalUserEmail), crCustomerFlagQualifyingTestID,
 		domain.PatchChangeRequestRequest{IsCustomerApproved: &yes}, crCustomerFlagPortalUserEmail)
-	if err != nil {
-		t.Fatalf("PatchChangeRequest(isCustomerApproved=true) as a REGISTERED PORTAL_USER contact on the same project: %v", err)
+	var ce *apierror.ConflictError
+	if !errors.As(err, &ce) {
+		t.Fatalf("PatchChangeRequest(isCustomerApproved=true) by a qualifying contact on a New change request: got %T (%v), want *apierror.ConflictError", err, err)
 	}
-	if !cr.HasCustomerApproved {
-		t.Error("HasCustomerApproved after patch = false, want true")
+	if !strings.Contains(ce.Msg, "no longer pending") || !strings.Contains(ce.Msg, "in New") {
+		t.Errorf("message = %q, want the stale-approval refusal naming New", ce.Msg)
+	}
+
+	got, err := repo.GetChangeRequestByID(sys, crCustomerFlagQualifyingTestID)
+	if err != nil {
+		t.Fatalf("GetChangeRequestByID: %v", err)
+	}
+	if got.HasCustomerApproved {
+		t.Error("HasCustomerApproved after the refused patch = true, want unchanged false")
 	}
 }
 
@@ -2993,14 +3010,19 @@ func TestChangeRequestIntegration_PatchCustomerFlagLockedTrueCannotRevert(t *tes
 		t.Fatalf("got %T (%v), want *apierror.ValidationError", err, err)
 	}
 
-	// The same qualifying contact that could have set it true: also rejected.
+	// The same qualifying contact: also refused. For a customer false is the
+	// answer "no", which only means something while the change request is in
+	// Customer Review; this record is New, so it is the stale-approval 409. (The
+	// lock on a record that IS in the right state is asserted by
+	// TestChangeRequestCustomerOutcomeIntegration_PatchRespectsTheFlagLock.)
 	_, err = repo.PatchChangeRequest(externalCallerCtx(crCustomerFlagPortalUserEmail), crCustomerFlagLockedTestID,
 		domain.PatchChangeRequestRequest{IsCustomerReviewed: &no}, crCustomerFlagPortalUserEmail)
 	if err == nil {
 		t.Fatal("PatchChangeRequest(isCustomerReviewed=false) as the qualifying contact against an already-true record: want error, got nil")
 	}
-	if !errors.As(err, &ve) {
-		t.Fatalf("got %T (%v), want *apierror.ValidationError", err, err)
+	var ce *apierror.ConflictError
+	if !errors.As(err, &ce) {
+		t.Fatalf("got %T (%v), want *apierror.ConflictError", err, err)
 	}
 
 	var gotApproved, gotReviewed bool
@@ -3013,12 +3035,16 @@ func TestChangeRequestIntegration_PatchCustomerFlagLockedTrueCannotRevert(t *tes
 	}
 }
 
-// TestChangeRequestIntegration_PatchCustomerFlagFalseToFalseNoOpSucceeds
-// confirms setting an already-false flag to false again is a no-op that
-// always succeeds trivially -- deliberately exercised by a caller who does
-// NOT qualify to grant it (a REGISTERED contact holding no PORTAL_USER
-// role), proving no-op writes need no authorization check at all.
-func TestChangeRequestIntegration_PatchCustomerFlagFalseToFalseNoOpSucceeds(t *testing.T) {
+// TestChangeRequestIntegration_PatchCustomerFlagFalseFromNonContactIsRefused
+// confirms that for an external caller false is not a "no change": it is the
+// customer's answer "no" (rejecting a Customer Approval / Customer Review), so a
+// caller who is not a registered PORTAL_USER contact of the change request's
+// project (here: a REGISTERED contact holding only SECURITY_CONTACT) is refused
+// even for false -- the old "a write that changes nothing needs no
+// authorization" no longer applies to a customer. An internal caller's no-op
+// false -> false is unchanged (see TestChangeRequestIntegration_PatchCustomerFlag
+// InternalCallerCanSetBoth for the internal path).
+func TestChangeRequestIntegration_PatchCustomerFlagFalseFromNonContactIsRefused(t *testing.T) {
 	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
 	if dsn == "" {
 		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
@@ -3030,6 +3056,7 @@ func TestChangeRequestIntegration_PatchCustomerFlagFalseToFalseNoOpSucceeds(t *t
 	t.Cleanup(pool.Close)
 
 	scoped := repository.NewScoped(pool)
+	sys := repository.WithSystemIdentity(context.Background())
 	repo := repository.NewChangeRequestRepository(scoped)
 
 	seedChangeRequestCustomerFlagAccount(t, pool)
@@ -3039,13 +3066,25 @@ func TestChangeRequestIntegration_PatchCustomerFlagFalseToFalseNoOpSucceeds(t *t
 	seedChangeRequestForCustomerFlagTest(t, scoped, crCustomerFlagNoOpTestID, "CRCFNOOP01", crCustomerFlagNoRoleProjectID, false, false)
 
 	no := false
-	cr, err := repo.PatchChangeRequest(externalCallerCtx(crCustomerFlagWrongRoleEmail), crCustomerFlagNoOpTestID,
+	_, err = repo.PatchChangeRequest(externalCallerCtx(crCustomerFlagWrongRoleEmail), crCustomerFlagNoOpTestID,
 		domain.PatchChangeRequestRequest{IsCustomerApproved: &no, IsCustomerReviewed: &no}, crCustomerFlagWrongRoleEmail)
-	if err != nil {
-		t.Fatalf("PatchChangeRequest(isCustomerApproved=false, isCustomerReviewed=false) no-op from a non-qualifying contact: %v", err)
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("both outcomes in one customer PATCH: got %T (%v), want *apierror.ValidationError", err, err)
 	}
-	if cr.HasCustomerApproved || cr.HasCustomerReviewed {
-		t.Fatalf("HasCustomerApproved/HasCustomerReviewed after no-op patch = %v/%v, want false/false", cr.HasCustomerApproved, cr.HasCustomerReviewed)
+	_, err = repo.PatchChangeRequest(externalCallerCtx(crCustomerFlagWrongRoleEmail), crCustomerFlagNoOpTestID,
+		domain.PatchChangeRequestRequest{IsCustomerApproved: &no}, crCustomerFlagWrongRoleEmail)
+	var fe *apierror.ForbiddenError
+	if !errors.As(err, &fe) {
+		t.Fatalf("isCustomerApproved=false from a non-qualifying contact: got %T (%v), want *apierror.ForbiddenError", err, err)
+	}
+
+	got, err := repo.GetChangeRequestByID(sys, crCustomerFlagNoOpTestID)
+	if err != nil {
+		t.Fatalf("GetChangeRequestByID: %v", err)
+	}
+	if got.HasCustomerApproved || got.HasCustomerReviewed {
+		t.Fatalf("HasCustomerApproved/HasCustomerReviewed after the refused patches = %v/%v, want false/false", got.HasCustomerApproved, got.HasCustomerReviewed)
 	}
 }
 
