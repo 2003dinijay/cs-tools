@@ -25,8 +25,8 @@
 // The contract encoded here is the one the UI is built against:
 //   - `legalNextStates` offers no manual way to `scheduled` -- except from
 //     `customer_approval`, where `scheduled` means "record the customer's
-//     approval" -- and `authorize` (listed from Assess) is the approval path,
-//     never a button;
+//     approval" (the CSM portal's "Bypass customer approval") -- and
+//     `authorize` (listed from Assess) is the approval path, never a button;
 //   - Request Approval (`PATCH {state:"assess"}`) on a Normal CR enters Assess
 //     with a "Peer Approval" stage; on an Emergency CR it enters Authorize with
 //     an "ECAB Approval" stage only; on a Standard CR it goes straight to
@@ -65,8 +65,13 @@
 //     `customerGroupId is no longer accepted: ...`), nor is `environmentIds`
 //     (400 `environmentIds is no longer supported: ...`). While that stage is live
 //     (still has REQUESTED approvers) legalNextStates for those two states is
-//     [canceled] only, and the manual PATCH {state:"scheduled"} /
-//     {state:"closed"} is refused with a 400. The customer's answer is NOT given
+//     [canceled] only (Re-schedule stays at Customer Approval), and the manual
+//     PATCH {state:"scheduled"} out of Customer Approval and {state:"closed"} /
+//     {state:"rollback"} out of Customer Review are refused with a 400 whose
+//     message is the backend's own (`customerStageManualRefusal`, mirrored in
+//     `customerStageManualRefusal` below) -- which is also why the CSM portal's
+//     "Bypass customer approval" / "Bypass customer review" menu entries are
+//     disabled while a stage is live. The customer's answer is NOT given
 //     in the CSM portal -- customers sign in to the customer portal, and nobody
 //     in CSM is an approver of a customer stage -- so it never arrives through
 //     this fake's decision route (a decision POSTed there while a customer stage
@@ -278,6 +283,18 @@ const CUSTOMER_GROUP_ID_REMOVED =
   "customerGroupId is no longer accepted: the customer group is derived from the customer project's registered contacts";
 const ENVIRONMENT_IDS_REMOVED = "environmentIds is no longer supported: deployments carry the environment";
 
+/**
+ * The 400 the backend answers a manual PATCH of a customer state's outcome with
+ * while the customer group's request is live (entity-service
+ * `customerStageManualRefusal`, a ValidationError the BFF passes through):
+ * `scheduled` out of Customer Approval, `closed` / `rollback` out of Customer
+ * Review. Same text, character for character.
+ */
+export function customerStageManualRefusal(target: "scheduled" | "closed" | "rollback"): string {
+  const what = target === "scheduled" ? "approval" : "review";
+  return `state "${target}" cannot be set manually: the customer's ${what} has been requested from the customer group (the registered contacts of the change request's project) and is given by one of them approving or rejecting it in the change request's approvals (POST /change-requests/{id}/approvals/decision)`;
+}
+
 interface Approver {
   id: string;
   name: string;
@@ -355,6 +372,16 @@ export interface FakeChangeRequestApi {
    * open CSM page is not refreshed: reload it to see the outcome.
    */
   customerDecides(contact: FakeUser, decision: "approved" | "rejected"): void;
+  /**
+   * What the backend does on the next write that touches the change's state or
+   * project (someone else's edit, a re-schedule, ...): the project's registered
+   * contacts are asked -- a live customer stage is provisioned, or a stale one
+   * replaced -- when the CR sits at a customer gate. Lets a spec make a customer
+   * request appear behind an open page, so the page still believes the manual
+   * bypass is on offer while the backend would now refuse it. The open page is
+   * not refreshed.
+   */
+  syncCustomers(): void;
 }
 
 const CUSTOMER_STAGES = ["Customer Approval", "Customer Review"];
@@ -382,7 +409,7 @@ function legalNextStates(state: string, flags: FakeCustomerFlags, liveCustomerSt
     case "authorize":
       return ["canceled"];
     case "customer_approval":
-      // scheduled = "Record customer approval", unless the customer group decides
+      // scheduled = "Bypass customer approval", unless the customer group decides
       // ... and "authorize" there is Re-schedule, which an internal user keeps
       // even while the customer group's request is pending.
       return liveCustomerStage ? ["authorize", "canceled"] : ["scheduled", "authorize", "canceled"];
@@ -955,8 +982,8 @@ export async function installFakeChangeRequestApi(
           if (state !== "review" && state !== "customer_review") {
             return json(route, { message: 'state "rollback" can only be set from review or customer_review' }, 400);
           }
-          if (hasLiveCustomerStage()) {
-            return json(route, { message: "The customer group must decide the review; it cannot be rolled back manually." }, 400);
+          if (state === "customer_review" && hasLiveCustomerStage()) {
+            return json(route, { message: customerStageManualRefusal("rollback") }, 400);
           }
           // Rolling back cancels every still-requested approver row (the closing reconcile).
           state = "rollback";
@@ -1012,9 +1039,12 @@ export async function installFakeChangeRequestApi(
           }
         } else if (target === "scheduled" && state === "customer_approval") {
           if (hasLiveCustomerStage()) {
-            return json(route, { message: "The customer group must approve this change request; it cannot be recorded manually." }, 400);
+            return json(route, { message: customerStageManualRefusal("scheduled") }, 400);
           }
           state = "scheduled"; // the customer's approval was recorded
+        } else if (target === "closed" && state === "customer_review" && hasLiveCustomerStage()) {
+          // As for scheduled above: with the customer group's review pending, closing is its members' decision.
+          return json(route, { message: customerStageManualRefusal("closed") }, 400);
         } else if (target !== "scheduled" && target !== "authorize" && target !== "customer_approval") {
           if (!legal().includes(target)) {
             return json(route, { message: `Illegal transition from ${state} to ${target}.` }, 400);
@@ -1057,6 +1087,10 @@ export async function installFakeChangeRequestApi(
       groupFailure = status;
     },
     customerDecides: (contact, decision) => settleCustomerStage(contact, decision),
+    syncCustomers: () => {
+      syncCustomerStage();
+      reconcile();
+    },
     stages: () =>
       stages.map((st) => ({
         stage: st.stage,
