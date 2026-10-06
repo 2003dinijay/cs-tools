@@ -610,21 +610,69 @@ describe("ChangeRequestActionBar — customer gates with and without a live cust
     expect(item).not.toHaveAttribute("disabled");
   });
 
-  it("customer_review with a pending request shows 'Bypass customer review' DISABLED next to Cancel", () => {
+  it("customer_review with a pending request shows 'Bypass customer review' and Roll back DISABLED next to Cancel", () => {
     const { onAction } = renderBar(
       { state: "customer_review", customerReviewRequired: true, legalNextStates: ["canceled"] },
       { pendingCustomerRequest: PENDING_REVIEW },
     );
     expect(screen.getAllByRole("button").map((b) => b.textContent)).toEqual(["Change state"]);
     openMenu();
-    const item = screen.getByRole("menuitem", { name: /^Bypass customer review: / });
-    expect(item).toHaveAttribute("aria-disabled", "true");
-    expect(item).toHaveTextContent(
-      "Customer review is pending from Mira Santos. They answer in the Customer Portal, so it can't be bypassed from here.",
-    );
-    expect(screen.getAllByRole("menuitem")).toHaveLength(2);
-    fireEvent.click(item);
+    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual([
+      "Bypass customer reviewCustomer review is pending from Mira Santos. They answer in the Customer Portal, so it can't be bypassed from here.",
+      "Roll backCustomer review is pending from Mira Santos. A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here.",
+      "Cancel change",
+    ]);
+    const bypass = screen.getByRole("menuitem", { name: /^Bypass customer review: / });
+    const rollBack = screen.getByRole("menuitem", { name: /^Roll back: / });
+    expect(bypass).toHaveAttribute("aria-disabled", "true");
+    expect(rollBack).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(bypass);
+    fireEvent.click(rollBack);
     expect(onAction).not.toHaveBeenCalled();
+    // Cancel is the one way out an engineer still has.
+    expect(screen.getByRole("menuitem", { name: /cancel change/i })).not.toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("keeps Roll back disabled at Customer Review even if an older backend still lists it, and enables it with nothing pending", () => {
+    const { onAction } = renderBar(
+      { state: "customer_review", legalNextStates: ["closed", "rollback", "canceled"] },
+      { pendingCustomerRequest: PENDING_REVIEW },
+    );
+    openMenu();
+    expect(screen.getAllByRole("menuitem")).toHaveLength(3);
+    const blocked = screen.getByRole("menuitem", { name: /^Roll back: / });
+    expect(blocked).toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(blocked);
+    expect(onAction).not.toHaveBeenCalled();
+    cleanup();
+    const second = renderBar(
+      { state: "customer_review", legalNextStates: ["closed", "rollback", "canceled"] },
+      { pendingCustomerRequest: null },
+    );
+    openMenu();
+    const free = screen.getByRole("menuitem", { name: "Roll back" });
+    expect(free).not.toHaveAttribute("aria-disabled", "true");
+    fireEvent.click(free);
+    expect(second.onAction).toHaveBeenCalledWith("rollback");
+  });
+
+  it("never blocks Roll back out of Review, whatever customer request is passed as pending", () => {
+    renderBar(
+      { state: "review", customerReviewRequired: true, legalNextStates: ["customer_review", "rollback", "canceled"] },
+      { pendingCustomerRequest: PENDING_REVIEW },
+    );
+    openMenu();
+    expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Roll back", "Cancel change"]);
+    expect(screen.getByRole("menuitem", { name: "Roll back" })).not.toHaveAttribute("aria-disabled", "true");
+  });
+
+  it("adds no Roll back to Customer Approval, where a pending request withholds only the bypass", () => {
+    renderBar(
+      { state: "customer_approval", legalNextStates: ["authorize", "canceled"] },
+      { pendingCustomerRequest: PENDING_APPROVAL },
+    );
+    openMenu();
+    expect(screen.queryByRole("menuitem", { name: /roll back/i })).not.toBeInTheDocument();
   });
 
   it("uses a generic sentence when the pending request names nobody", () => {
@@ -713,13 +761,15 @@ describe("ChangeRequestActionBar — customer gates with and without a live cust
  * destructive off-ramps.
  */
 describe("ChangeRequestActionBar — customer bypass presentation", () => {
-  it("is a warning-coloured menu item with a skip icon, not the error colour of Cancel change", () => {
+  it("is a menu item with a warning skip icon and the default label colour, not the error colour of Cancel change", () => {
     renderBar({ state: "customer_approval", legalNextStates: ["scheduled", "authorize", "canceled"] });
     openMenu();
     const bypass = screen.getByRole("menuitem", { name: "Bypass customer approval" });
     const cancel = screen.getByRole("menuitem", { name: /cancel change/i });
-    // Label: the warning shade, never the error red.
-    expect(bypass.querySelector("span")).toHaveStyle({ color: "rgb(230, 81, 0)" });
+    // Label: the default text colour (the warning orange is 3.75:1 on the light menu, and the
+    // skip icon and the word "Bypass" carry the emphasis), never the error red of Cancel change.
+    expect(bypass.querySelector("span")).not.toHaveStyle({ color: "rgb(230, 81, 0)" });
+    expect(bypass.querySelector("span")).not.toHaveStyle({ color: "rgb(211, 47, 47)" });
     expect(cancel.querySelector("span")).toHaveStyle({ color: "rgb(211, 47, 47)" });
     // Icon: warning, and a skip icon (lucide's skip-forward), distinct from Cancel's ban icon.
     const bypassIcon = bypass.querySelector("svg");
@@ -906,5 +956,21 @@ describe("ChangeRequestActionBar — Re-schedule", () => {
       expect(screen.queryByRole("button", { name: /re-schedule/i }), state).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /authorize/i }), state).not.toBeInTheDocument();
     }
+  });
+});
+
+describe("ChangeRequestActionBar — the Change state button", () => {
+  it("says whether its menu is open, and which element the menu is", () => {
+    renderBar({ state: "customer_approval", legalNextStates: ["scheduled", "authorize", "canceled"] });
+    const button = screen.getByRole("button", { name: /change state/i });
+    expect(button).toHaveAttribute("aria-haspopup", "menu");
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(button).not.toHaveAttribute("aria-controls");
+    fireEvent.click(button);
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    const menuId = button.getAttribute("aria-controls");
+    expect(menuId).toBeTruthy();
+    expect(document.getElementById(menuId!)).toBe(screen.getByRole("menu"));
+    fireEvent.keyDown(screen.getByRole("menu"), { key: "Escape" });
   });
 });

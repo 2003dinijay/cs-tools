@@ -27,10 +27,10 @@ import {
   Undo2,
   UserCheck,
 } from "@wso2/oxygen-ui-icons-react";
-import { useState, type JSX } from "react";
+import { useId, useState, type JSX } from "react";
 import {
   changeRequestTransitionLabel,
-  customerBypassTarget,
+  customerGateWithheldTargets,
   customerRequestPendingReason,
   isCustomerBypassTransition,
   isDestructiveChangeRequestTransition,
@@ -246,7 +246,9 @@ interface BlockedReasonContext {
  * entry checks the record's own state: a plain Close out of Review is never
  * blocked by a customer request): while the customer group's request is
  * pending the backend refuses to let anyone answer for the customer, since
- * they answer in the customer portal.
+ * they answer in the customer portal. `rollback` is blocked the same way out
+ * of Customer Review only (out of Review it is never blocked): a failed
+ * customer review is the customer's rejection, which they give there too.
  */
 const TARGET_BLOCKED_REASON: Record<
   string,
@@ -262,6 +264,8 @@ const TARGET_BLOCKED_REASON: Record<
     isCustomerBypassTransition("closed", cr.state)
       ? customerRequestPendingReason(pendingCustomerRequest)
       : null,
+  rollback: (cr, { pendingCustomerRequest }) =>
+    cr.state === "customer_review" ? customerRequestPendingReason(pendingCustomerRequest, "rollback") : null,
 };
 
 interface ChangeRequestActionBarProps {
@@ -272,10 +276,12 @@ interface ChangeRequestActionBarProps {
    * The customer's answer the change is still waiting for (a live Customer
    * Approval / Customer Review request), derived by the caller from the
    * change's approval stages (`pendingCustomerRequest`). While one is pending
-   * the customer bypass is shown disabled with the reason, even though the
+   * the customer bypass (and, at Customer Review, Roll back: a failed review is
+   * the customer's to give) is shown disabled with the reason, even though the
    * backend has already left it out of `legalNextStates` (it refuses it). Leave
    * it `null`/absent while the approvals are loading or when nobody is being
-   * asked: the bypass is then enabled exactly when `legalNextStates` offers it.
+   * asked: those entries are then enabled exactly when `legalNextStates`
+   * offers them.
    */
   pendingCustomerRequest?: PendingCustomerRequest | null;
   /**
@@ -307,8 +313,8 @@ interface ChangeRequestActionBarProps {
  * `customer_approval`, "Bypass customer review" out of `customer_review`) are
  * never the primary button and never an outlined button: an engineer
  * answering for the customer is a deliberate override, so it lives only in the
- * menu, in the warning colour, between the forward moves and Roll back /
- * Cancel change.
+ * menu, with a warning-coloured skip icon, between the forward moves and Roll
+ * back / Cancel change.
  */
 export default function ChangeRequestActionBar({
   cr,
@@ -317,6 +323,7 @@ export default function ChangeRequestActionBar({
   onAction,
 }: ChangeRequestActionBarProps): JSX.Element | null {
   const [stateMenuAnchor, setStateMenuAnchor] = useState<HTMLElement | null>(null);
+  const stateMenuId = useId();
 
   // Single choke point for what is renderable: the exclusion below therefore
   // covers the primary button, the overflow menu, and states rendered through
@@ -328,19 +335,18 @@ export default function ChangeRequestActionBar({
   );
   if (offered.length === 0) return null;
 
-  // While a customer request is pending the backend leaves the bypass out of
-  // `legalNextStates` (it would refuse it), so there is nothing to render a
-  // disabled entry from: add it here, so the engineer sees why it is not
-  // available instead of wondering where it went. It is only ever added
-  // alongside targets the backend did offer (so a record the caller may not
-  // transition still renders nothing), is menu-only, and `TARGET_BLOCKED_REASON`
-  // keeps it disabled -- this never makes anything clickable.
-  const bypassTarget = customerBypassTarget(cr.state);
-  const targets = (
-    pendingCustomerRequest && bypassTarget && !offered.includes(bypassTarget)
-      ? [...offered, bypassTarget]
-      : offered
-  ).sort((a, b) => menuRank(a, cr.state) - menuRank(b, cr.state));
+  // While a customer request is pending the backend leaves the bypass (and, at
+  // Customer Review, Roll back) out of `legalNextStates` (it would refuse them),
+  // so there is nothing to render a disabled entry from: add them here, so the
+  // engineer sees why they are not available instead of wondering where they
+  // went. They are only ever added alongside targets the backend did offer (so
+  // a record the caller may not transition still renders nothing), are
+  // menu-only, and `TARGET_BLOCKED_REASON` keeps them disabled -- this never
+  // makes anything clickable.
+  const withheld = pendingCustomerRequest
+    ? customerGateWithheldTargets(cr.state).filter((t) => !offered.includes(t))
+    : [];
+  const targets = [...offered, ...withheld].sort((a, b) => menuRank(a, cr.state) - menuRank(b, cr.state));
 
   const primaryTarget = targets.find((t) => isPrimaryEligible(t, cr.state));
   const secondaryTargets = targets.filter((t) => SECONDARY_ORDER.includes(t));
@@ -433,6 +439,8 @@ export default function ChangeRequestActionBar({
             endIcon={<ChevronDown size={16} />}
             disabled={isPending}
             aria-haspopup="menu"
+            aria-expanded={!!stateMenuAnchor}
+            aria-controls={stateMenuAnchor ? stateMenuId : undefined}
             onClick={(e) => setStateMenuAnchor(e.currentTarget)}
           >
             Change state
@@ -445,6 +453,7 @@ export default function ChangeRequestActionBar({
             // keyboard so its reason can actually be read, instead of the item
             // being skipped over silently.
             MenuListProps={{
+              id: stateMenuId,
               "aria-label": "Change state",
               disabledItemsFocusable: true,
             }}
@@ -454,7 +463,6 @@ export default function ChangeRequestActionBar({
               const label = changeRequestTransitionLabel(target, cr.state);
               const reason = blockedReason(target);
               const destructive = isDestructiveChangeRequestTransition(target);
-              const bypass = isCustomerBypassTransition(target, cr.state);
               const disabled = isPending || !!reason;
               return (
                 <MenuItem
@@ -473,6 +481,16 @@ export default function ChangeRequestActionBar({
                     // A blocked item dims its own icon and label (below), not
                     // the whole row: the reason beside it has to stay legible.
                     "&.Mui-disabled": { opacity: 1 },
+                    // MUI drops its keyboard-focus style for a disabled item, and a
+                    // blocked entry is deliberately reachable (`disabledItemsFocusable`)
+                    // so its reason can be read: give it back an indicator, or an
+                    // arrowing user loses track of where focus is.
+                    "&.Mui-disabled:focus-visible": {
+                      bgcolor: "action.focus",
+                      outline: "2px solid",
+                      outlineColor: "text.primary",
+                      outlineOffset: "-2px",
+                    },
                   }}
                 >
                   <Box
@@ -489,7 +507,11 @@ export default function ChangeRequestActionBar({
                     <Box
                       component="span"
                       sx={{
-                        color: destructive ? "error.main" : bypass ? "warning.dark" : "inherit",
+                        // The bypass keeps the default text colour (the warning
+                        // orange is 3.75:1 on the light menu and reads as the
+                        // brand's own orange): its skip icon and the word
+                        // "Bypass" carry the emphasis.
+                        color: destructive ? "error.main" : "inherit",
                         opacity: disabled ? 0.5 : 1,
                       }}
                     >

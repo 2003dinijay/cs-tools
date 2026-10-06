@@ -29,6 +29,7 @@ import {
   changeRequestTransitionRequiresReason,
   countActiveCRFilters,
   customerBypassTarget,
+  customerGateWithheldTargets,
   customerRequestPendingReason,
   isCustomerBypassTransition,
   isDestructiveChangeRequestTransition,
@@ -513,13 +514,13 @@ describe("pendingCustomerRequest", () => {
         [stage("Customer Approval", [["Mira Santos", "REQUESTED"], ["Noel Prasad", "REQUESTED"]])],
         "customer_approval",
       ),
-    ).toEqual({ kind: "approval", contactNames: ["Mira Santos", "Noel Prasad"] });
+    ).toEqual({ kind: "approval", contactNames: ["Mira Santos", "Noel Prasad"], askedCount: 2 });
   });
 
   it("names the contacts still being asked at Customer Review", () => {
     expect(
       pendingCustomerRequest([stage("Customer Review", [["Mira Santos", "REQUESTED"]])], "customer_review"),
-    ).toEqual({ kind: "review", contactNames: ["Mira Santos"] });
+    ).toEqual({ kind: "review", contactNames: ["Mira Santos"], askedCount: 1 });
   });
 
   it("lists only the approvers still REQUESTED, case-insensitively and without duplicates", () => {
@@ -534,7 +535,7 @@ describe("pendingCustomerRequest", () => {
         ],
         "customer_approval",
       ),
-    ).toEqual({ kind: "approval", contactNames: ["Mira Santos"] });
+    ).toEqual({ kind: "approval", contactNames: ["Mira Santos"], askedCount: 2 });
   });
 
   it("is pending even when no approver has a name", () => {
@@ -543,7 +544,26 @@ describe("pendingCustomerRequest", () => {
         [{ ...stage("Customer Approval", []), approvers: [{ id: "u-1", status: "REQUESTED" }] }],
         "customer_approval",
       ),
-    ).toEqual({ kind: "approval", contactNames: [] });
+    ).toEqual({ kind: "approval", contactNames: [], askedCount: 1 });
+  });
+
+  it("counts everyone still asked, the nameless and the ones sharing a name included", () => {
+    const asked = pendingCustomerRequest(
+      [
+        {
+          ...stage("Customer Approval", [["Dana Lee", "REQUESTED"]]),
+          approvers: [
+            { id: "u-1", name: "Dana Lee", status: "REQUESTED" },
+            { id: "u-2", name: "", status: "REQUESTED" },
+            { id: "u-3", status: "REQUESTED" },
+            { id: "u-4", name: "Dana Lee", status: "REQUESTED" },
+            { id: "u-5", name: "Sam Roe", status: "CANCELLED" },
+          ],
+        },
+      ],
+      "customer_approval",
+    );
+    expect(asked).toEqual({ kind: "approval", contactNames: ["Dana Lee"], askedCount: 4 });
   });
 
   it("is null once nobody is being asked, whatever the stage's own status says", () => {
@@ -606,6 +626,39 @@ describe("customerRequestPendingReason", () => {
     );
   });
 
+  it("counts the people asked who have no name (or the same one) in the 'and N more'", () => {
+    // Dana Lee plus two approvers the backend sends no name for: three are asked, one is named.
+    expect(
+      customerRequestPendingReason({ kind: "approval", contactNames: ["Dana Lee"], askedCount: 3 }),
+    ).toBe(
+      "Customer approval is pending from Dana Lee and 2 more. They answer in the Customer Portal, so it can't be bypassed from here.",
+    );
+    // Three contacts that share a name read as that name and two more, not as one person.
+    expect(
+      customerRequestPendingReason({ kind: "review", contactNames: ["Sam Lee"], askedCount: 3 }),
+    ).toBe(
+      "Customer review is pending from Sam Lee and 2 more. They answer in the Customer Portal, so it can't be bypassed from here.",
+    );
+    // With five distinct names it still says "A, B, C and 2 more".
+    expect(
+      customerRequestPendingReason({ kind: "approval", contactNames: ["A", "B", "C", "D", "E"], askedCount: 5 }),
+    ).toContain("A, B, C and 2 more.");
+    // An absent askedCount reads as the number of names.
+    expect(customerRequestPendingReason({ kind: "approval", contactNames: ["A", "B"] })).toContain("from A, B.");
+  });
+
+  it("words a rolled-back review as the customer's to give, not as a bypass", () => {
+    expect(
+      customerRequestPendingReason({ kind: "review", contactNames: ["Mira Santos", "Noel Prasad"], askedCount: 2 }, "rollback"),
+    ).toBe(
+      "Customer review is pending from Mira Santos, Noel Prasad. A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here.",
+    );
+    expect(customerRequestPendingReason({ kind: "review", contactNames: [] }, "rollback")).toBe(
+      "Customer review is pending. A failed review is the customer's to give in the Customer Portal, so the change can't be rolled back from here.",
+    );
+    expect(customerRequestPendingReason(null, "rollback")).toBeNull();
+  });
+
   it("falls back to a generic sentence without contact names", () => {
     expect(customerRequestPendingReason({ kind: "approval", contactNames: [] })).toBe(
       "Customer approval is pending. The customer answers in the Customer Portal, so it can't be bypassed from here.",
@@ -616,6 +669,19 @@ describe("customerRequestPendingReason", () => {
   it("is null when nothing is pending", () => {
     expect(customerRequestPendingReason(null)).toBeNull();
     expect(customerRequestPendingReason(undefined)).toBeNull();
+  });
+});
+
+describe("customerGateWithheldTargets", () => {
+  it("lists what the backend withholds while the customer's request is live", () => {
+    expect(customerGateWithheldTargets("customer_approval")).toEqual(["scheduled"]);
+    expect(customerGateWithheldTargets("customer_review")).toEqual(["closed", "rollback"]);
+  });
+
+  it("is empty outside a customer gate", () => {
+    for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "closed", "rollback", "canceled", null, undefined]) {
+      expect(customerGateWithheldTargets(state), String(state)).toEqual([]);
+    }
   });
 });
 

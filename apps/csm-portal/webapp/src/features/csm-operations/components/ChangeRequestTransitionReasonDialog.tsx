@@ -25,7 +25,7 @@ import {
   DialogTitle,
   TextField,
 } from "@wso2/oxygen-ui";
-import { useState, type JSX } from "react";
+import { useRef, useState, type JSX } from "react";
 import {
   changeRequestTransitionLabel,
   isCustomerBypassTransition,
@@ -113,7 +113,7 @@ interface ChangeRequestTransitionReasonDialogProps {
    */
   error?: string | null;
   /**
-   * True once the reason has been recorded as a comment. The field locks and
+   * True once the reason has been recorded as an internal note. The field locks and
    * a retry re-sends only the state change, so retrying after a failed patch
    * can't post the same reason twice.
    */
@@ -131,8 +131,9 @@ interface ChangeRequestTransitionReasonDialogProps {
  *
  * The reason is *not* part of the patch body — the change-request PATCH
  * contract has no reason or comment field. The caller records it as an
- * ordinary comment on the change request and only then patches the state; see
- * `CsmChangeRequestDetailPage`. This dialog only collects it.
+ * internal note on the change request (not visible to the customer) and only
+ * then patches the state; see `CsmChangeRequestDetailPage`. This dialog only
+ * collects it.
  */
 export default function ChangeRequestTransitionReasonDialog({
   target,
@@ -144,6 +145,7 @@ export default function ChangeRequestTransitionReasonDialog({
   onConfirm,
 }: ChangeRequestTransitionReasonDialogProps): JSX.Element {
   const [reason, setReason] = useState("");
+  const reasonRef = useRef<HTMLTextAreaElement | null>(null);
   const { title, body, confirmLabel, confirmColor } = copyFor(target, fromState);
   const canSubmit = reason.trim().length > 0 && !isSubmitting;
 
@@ -156,16 +158,24 @@ export default function ChangeRequestTransitionReasonDialog({
       maxWidth="xs"
       fullWidth
       aria-labelledby="cr-transition-reason-title"
+      aria-describedby="cr-transition-reason-body"
+      // Focus the field once the dialog has finished opening, not with `autoFocus`
+      // on it: the dialog opens in the same tick as the "Change state" menu
+      // closes, and that menu's own focus restore wins over `autoFocus`, leaving
+      // focus on the dialog's root and anything typed going nowhere.
+      slotProps={{ transition: { onEntered: () => reasonRef.current?.focus() } }}
     >
       <DialogTitle id="cr-transition-reason-title">{title}</DialogTitle>
       <DialogContent dividers>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 0.5 }}>
           {error && <Alert severity="error">{error}</Alert>}
-          <DialogContentText variant="body2">{body}</DialogContentText>
+          <DialogContentText id="cr-transition-reason-body" variant="body2">
+            {body}
+          </DialogContentText>
           <TextField
             label="Reason"
             required
-            autoFocus
+            inputRef={reasonRef}
             multiline
             minRows={3}
             fullWidth
@@ -175,15 +185,16 @@ export default function ChangeRequestTransitionReasonDialog({
             onChange={(e) => setReason(e.target.value)}
             helperText={
               reasonRecorded
-                ? "Already recorded as a comment — retrying will only change the state."
-                : "Recorded as a comment on this change request before the state changes."
+                ? "Already recorded as an internal note — retrying will only change the state."
+                : "Recorded as an internal note (not visible to the customer) before the state changes."
             }
           />
         </Box>
       </DialogContent>
       <DialogActions>
+        {/* Not "Close": next to a confirm that closes the change request (or cancels it) the word reads as the action. */}
         <Button color="inherit" onClick={onClose} disabled={isSubmitting}>
-          Close
+          Go back
         </Button>
         <Button
           variant="contained"

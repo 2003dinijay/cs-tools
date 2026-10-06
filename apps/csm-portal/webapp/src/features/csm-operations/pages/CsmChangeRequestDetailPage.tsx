@@ -567,7 +567,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
       setReasonRecorded(false);
     } catch (err) {
       setReasonError(
-        `Your reason was recorded as a comment, but the state did not change: ${backendErrorMessage(
+        `Your reason was recorded as an internal note, but the state did not change: ${backendErrorMessage(
           err,
           transitionFallbackMessage(target),
         )} You don't need to retype it.`,
@@ -734,6 +734,8 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         customerApprovalRequired={cr.customerApprovalRequired}
         customerReviewRequired={cr.customerReviewRequired}
         approvals={approvalsData?.approvals}
+        customerApproved={cr.hasCustomerApproved}
+        hasCustomerContacts={cr.customerContacts ? cr.customerContacts.length > 0 : undefined}
       />
 
       <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>

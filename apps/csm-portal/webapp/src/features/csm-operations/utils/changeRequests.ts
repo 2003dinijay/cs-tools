@@ -73,18 +73,12 @@ const IMPACT_COLOR: Record<BeChangeRequestImpact, ChipColor> = {
 export const CHANGE_REQUEST_STATES = Object.keys(STATE_LABEL) as BeChangeRequestState[];
 
 /**
- * The 9 states that make up the CR's linear forward path, in order —
- * `CHANGE_REQUEST_STATES` minus `rollback`/`canceled`. Those two are
- * destructive off-ramps reachable from several points in the path (see
- * `DESTRUCTIVE_TRANSITIONS` below), not sequential steps in it, so a lifecycle
- * step indicator built from this array should render them separately rather
- * than forcing them into the same line.
+ * True for `rollback`/`canceled`: the two exits off the forward path (they are
+ * reachable from several points in it, see `DESTRUCTIVE_TRANSITIONS` below).
+ * The lifecycle stepper plots them in the customer portal's place for them,
+ * after the forward stages (`CHANGE_REQUEST_LIFECYCLE_ORDER` in
+ * `changeRequestStages.ts`), and styles them as exceptions.
  */
-export const CHANGE_REQUEST_FORWARD_STATES = CHANGE_REQUEST_STATES.filter(
-  (s) => s !== "rollback" && s !== "canceled",
-);
-
-/** True for `rollback`/`canceled`: an off-ramp from the linear forward path, not a step in it. */
 export function isChangeRequestOffRampState(state?: string | null): boolean {
   return state === "rollback" || state === "canceled";
 }
@@ -576,12 +570,19 @@ export function changeRequestTransitionRequiresReason(
  * A customer request that is still waiting for an answer: the Customer Approval
  * (`kind: "approval"`) or Customer Review (`kind: "review"`) stage that the
  * change's current customer gate provisioned, with at least one customer
- * contact still being asked. `contactNames` are those contacts (de-duplicated,
- * in stage order).
+ * contact still being asked. `contactNames` are those contacts' names
+ * (non-empty ones, de-duplicated, in stage order).
  */
 export interface PendingCustomerRequest {
   kind: "approval" | "review";
   contactNames: string[];
+  /**
+   * How many contacts are being asked: every approver still `REQUESTED`, the
+   * nameless ones and the ones that share a name with another included, so it
+   * can exceed `contactNames.length` (the backend sends an empty name for a
+   * user without one). Absent reads as `contactNames.length`.
+   */
+  askedCount?: number;
 }
 
 /**
@@ -601,38 +602,62 @@ export function pendingCustomerRequest(
   if (!kind || !approvals) return null;
   const label = kind === "approval" ? "Customer Approval" : "Customer Review";
   const names: string[] = [];
-  let pending = false;
+  let askedCount = 0;
   for (const stage of approvals) {
     if (knownApprovalStageLabel(stage.stage) !== label) continue;
     for (const approver of stage.approvers) {
       if (approver.status.trim().toUpperCase() !== "REQUESTED") continue;
-      pending = true;
+      askedCount += 1;
       const name = approver.name?.trim();
       if (name && !names.includes(name)) names.push(name);
     }
   }
-  return pending ? { kind, contactNames: names } : null;
+  return askedCount > 0 ? { kind, contactNames: names, askedCount } : null;
 }
 
 /** Most contact names spelled out in the pending-request reason before "and N more". */
 const MAX_PENDING_CONTACT_NAMES = 3;
 
 /**
- * Why the customer bypass is unavailable while `pending` is waiting for the
- * customer, or `null` when nothing is pending. The backend refuses a manual
- * `scheduled` / `closed` while the customer group's request is live; the
- * customer answers in the customer portal.
+ * The targets the backend leaves out of `legalNextStates` while the customer's
+ * request is live in `state`, because the customer answers them in the Customer
+ * Portal: the bypass out of the gate (`scheduled` / `closed`) and, at Customer
+ * Review, `rollback` (a failed review is the customer's rejection). Cancel
+ * stays. Empty for any state that is not a customer gate.
  */
-export function customerRequestPendingReason(pending: PendingCustomerRequest | null | undefined): string | null {
+export function customerGateWithheldTargets(state?: string | null): string[] {
+  const bypass = customerBypassTarget(state);
+  if (!bypass) return [];
+  return state === "customer_review" ? [bypass, "rollback"] : [bypass];
+}
+
+/**
+ * Why `target` is unavailable while `pending` is waiting for the customer, or
+ * `null` when nothing is pending. The backend refuses a manual `scheduled` /
+ * `closed` / `rollback` out of a customer gate while the customer group's
+ * request is live; the customer answers in the Customer Portal. `target` picks
+ * the wording: the bypass by default, "rollback" for the failed review.
+ */
+export function customerRequestPendingReason(
+  pending: PendingCustomerRequest | null | undefined,
+  target?: string,
+): string | null {
   if (!pending) return null;
   const noun = pending.kind === "approval" ? "approval" : "review";
+  const rollback = target === "rollback";
   const shown = pending.contactNames.slice(0, MAX_PENDING_CONTACT_NAMES);
   if (shown.length === 0) {
-    return `Customer ${noun} is pending. The customer answers in the Customer Portal, so it can't be bypassed from here.`;
+    return rollback
+      ? `Customer ${noun} is pending. A failed review is the customer's to give in the Customer Portal, so the change can't be rolled back from here.`
+      : `Customer ${noun} is pending. The customer answers in the Customer Portal, so it can't be bypassed from here.`;
   }
-  const more = pending.contactNames.length - shown.length;
+  // Everyone asked counts, named or not: "A and 2 more" when two more people
+  // (nameless, or sharing a name already shown) are being asked too.
+  const more = Math.max(pending.askedCount ?? 0, pending.contactNames.length) - shown.length;
   const who = more > 0 ? `${shown.join(", ")} and ${more} more` : shown.join(", ");
-  return `Customer ${noun} is pending from ${who}. They answer in the Customer Portal, so it can't be bypassed from here.`;
+  return rollback
+    ? `Customer ${noun} is pending from ${who}. A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here.`
+    : `Customer ${noun} is pending from ${who}. They answer in the Customer Portal, so it can't be bypassed from here.`;
 }
 
 export interface ChangeRequestFilters {

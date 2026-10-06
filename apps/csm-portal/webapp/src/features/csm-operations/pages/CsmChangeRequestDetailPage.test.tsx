@@ -986,7 +986,7 @@ describe("CsmChangeRequestDetailPage — destructive transitions need a reason f
 
     await waitFor(() =>
       expect(screen.getByRole("alert")).toHaveTextContent(
-        /reason was recorded as a comment, but the state did not change/i,
+        /reason was recorded as an internal note, but the state did not change/i,
       ),
     );
     expect(screen.getByRole("alert")).toHaveTextContent(
@@ -1166,7 +1166,7 @@ describe("CsmChangeRequestDetailPage — customer bypass: menu-only, a reason fi
     fireEvent.click(screen.getByRole("button", { name: "Bypass customer approval" }));
 
     await waitFor(() => expect(screen.getByRole("alert")).toBeInTheDocument());
-    expect(screen.getByRole("alert")).toHaveTextContent(/your reason was recorded as a comment, but the state did not change/i);
+    expect(screen.getByRole("alert")).toHaveTextContent(/your reason was recorded as an internal note, but the state did not change/i);
     expect(screen.getByRole("alert")).toHaveTextContent(/cannot be set manually/i);
     expect(screen.getByLabelText(/reason/i)).toBeDisabled();
 
@@ -1180,7 +1180,7 @@ describe("CsmChangeRequestDetailPage — customer bypass: menu-only, a reason fi
     openStateMenu();
     fireEvent.click(screen.getByRole("menuitem", { name: "Bypass customer review" }));
     typeReason("Changed my mind.");
-    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Go back" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     expect(postCommentMutateAsyncMock).not.toHaveBeenCalled();
     expect(patchMutateAsyncMock).not.toHaveBeenCalled();
@@ -1793,7 +1793,10 @@ function lcCustomerDecides(contact: { id: string; name: string }, decision: "app
 
 /** A stepper stage's label: its text minus the visually-hidden ", <status>" the stepper appends. */
 function stepLabel(item: HTMLElement): string {
-  return (item.textContent ?? "").replace(/, (done|current|upcoming|not taken|history not recorded)$/, "");
+  return (item.textContent ?? "").replace(
+    /, (done|current|upcoming|not taken|history not recorded|rejected by the customer)$/,
+    "",
+  );
 }
 
 /** A stepper stage as it reads: its label plus the visually-hidden status, e.g. "Authorize, done". */
@@ -2239,8 +2242,9 @@ describe("CsmChangeRequestDetailPage — lifecycle: Roll back", () => {
     await waitFor(() => expect(lc.cr.state).toBe("rollback"));
   }
 
-  function expectRolledBack(): void {
-    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  async function expectRolledBack(): Promise<void> {
+    // The state flips before the PATCH resolves and the dialog unmounts: wait for it to go.
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
     // The stepper plots Rollback as the change's current stage. (Not through
     // the role queries: the closing dialog still marks the page aria-hidden.)
     expect(document.querySelector('[aria-current="step"]')).toHaveTextContent(/^Rollback/);
@@ -2265,7 +2269,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Roll back", () => {
     expect(postCommentMutateAsyncMock.mock.invocationCallOrder[0]).toBeLessThan(
       patchMutateAsyncMock.mock.invocationCallOrder[0],
     );
-    expectRolledBack();
+    await expectRolledBack();
     view.unmount();
   });
 
@@ -2278,19 +2282,29 @@ describe("CsmChangeRequestDetailPage — lifecycle: Roll back", () => {
     expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
     await rollBackWith("The customer rejected the result.");
     expect(patchMutateAsyncMock).toHaveBeenLastCalledWith({ id: "chg-1", patch: { state: "rollback" } });
-    expectRolledBack();
+    await expectRolledBack();
     view.unmount();
   });
 
-  it("does not offer Roll back while a customer group's review is pending (its members decide)", () => {
+  it("shows Roll back disabled, with why, while a customer group's review is pending (its members decide)", () => {
     lcSeed("normal", { approval: false, review: true }, { members: LC_MEMBERS });
     lcSetState("customer_review");
     lcPublish();
     const view = lcOpenAs(LC_CREATOR);
     expect(currentStep()).toBe("Customer Review");
     fireEvent.click(screen.getByRole("button", { name: /change state/i }));
-    expect(screen.getByRole("menuitem", { name: /cancel change/i })).toBeInTheDocument();
-    expect(screen.queryByRole("menuitem", { name: /roll back/i })).not.toBeInTheDocument();
+    expect(screen.getByRole("menuitem", { name: /cancel change/i })).not.toHaveAttribute("aria-disabled", "true");
+    const rollBack = screen.getByRole("menuitem", { name: /^Roll back: / });
+    expect(rollBack).toHaveAttribute("aria-disabled", "true");
+    expect(rollBack).toHaveTextContent(
+      "Customer review is pending from Mia Member, Max Member. A failed review is theirs to give in the Customer Portal, so the change can't be rolled back from here.",
+    );
+    // A click on it does nothing: no dialog, nothing posted or patched.
+    fireEvent.click(rollBack);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(postCommentMutateAsyncMock).not.toHaveBeenCalled();
+    expect(patchMutateAsyncMock).not.toHaveBeenCalled();
+    expect(patchMutateMock).not.toHaveBeenCalled();
     view.unmount();
   });
 
@@ -2691,7 +2705,14 @@ describe("CsmChangeRequestDetailPage — lifecycle: scheduled is only ever 'Bypa
       lc.cr = { ...lc.cr, legalNextStates: ["scheduled"] };
       lcPublish();
       const view = lcOpenAs(LC_CREATOR);
-      expect(screen.queryByText(/bypass customer approval/i)).not.toBeInTheDocument();
+      // The page is up, on that state...
+      expect(screen.getByRole("list", { name: /change request lifecycle/i }), state).toBeInTheDocument();
+      // ...and scheduled, the only target listed, is filtered out of every state but Customer Approval, so
+      // the bar has nothing to offer: no button, and so no menu for the bypass to hide in. (The bypass is
+      // menu-only, so looking for it on the page without opening a menu proves nothing.)
+      expect(screen.queryByRole("button", { name: /change state/i }), state).not.toBeInTheDocument();
+      expect(screen.queryByRole("button", { name: /bypass|schedule/i }), state).not.toBeInTheDocument();
+      expect(screen.queryByRole("menu"), state).not.toBeInTheDocument();
       expectNoManualSchedule();
       view.unmount();
     }
@@ -2814,7 +2835,9 @@ function expectOnlyCancelOffered(kind: "approval" | "review" = "approval"): void
   expect(screen.queryByRole("button", { name: /^close$/i })).not.toBeInTheDocument();
   expect(screen.queryByRole("button", { name: /start implementation/i })).not.toBeInTheDocument();
   fireEvent.click(screen.getByRole("button", { name: /change state/i }));
-  expect(screen.getAllByRole("menuitem")).toHaveLength(2);
+  // The bypass, Roll back at Customer Review (a failed review is the customer's to give) and Cancel.
+  expect(screen.getAllByRole("menuitem")).toHaveLength(kind === "review" ? 3 : 2);
+  if (kind === "review") expect(screen.getByRole("menuitem", { name: /^Roll back: / })).toHaveAttribute("aria-disabled", "true");
   const bypass = screen.getByRole("menuitem", { name: new RegExp(`^Bypass customer ${kind}: `) });
   expect(bypass).toHaveAttribute("aria-disabled", "true");
   expect(bypass).toHaveTextContent(
@@ -2917,12 +2940,14 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     expect(currentStep()).toBe("Customer Approval");
     lcCustomerDecides(LC_CUST_TWO, "rejected");
     expect(lc.cr.state).toBe("canceled");
-    // The stepper: Canceled is where the change is; the approvals (Peer and CAB approved, a Customer
-    // Approval stage entered) prove it got through Authorize, and nothing past that.
+    // The stepper: Canceled is where the change is, and the customer's rejection proves it ended at
+    // Customer Approval: everything before it is done, the stage itself rejected, nothing after it reached.
     expect(currentStep()).toBe("Canceled");
     expect(stepReading("Authorize")).toBe("Authorize, done");
-    expect(stepReading("Customer Approval")).toBe("Customer Approval, history not recorded");
+    expect(stepReading("Customer Approval")).toBe("Customer Approval, rejected by the customer");
+    expect(stepReading("Scheduled")).toBe("Scheduled, not taken");
     expect(stepReading("Rollback")).toBe("Rollback, not taken");
+    expect(screen.queryByText(/history not recorded/i)).not.toBeInTheDocument();
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
     expect(within(approvalsRow("Max Member")).getByText("Rejected")).toBeInTheDocument();
     expect(within(approvalsRowInStage("Mia Member", "Customer Approval")).getByText("Cancelled")).toBeInTheDocument();
@@ -2943,9 +2968,9 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
 
     lcCustomerDecides(LC_CUST_ONE, "rejected");
     expect(lc.cr.state).toBe("rollback");
-    // The stepper: Rollback is where the change is, and the Customer Review stage proves the customer review happened.
+    // The stepper: Rollback is where the change is, and the rejected Customer Review stage is why.
     expect(currentStep()).toBe("Rollback");
-    expect(stepReading("Customer Review")).toBe("Customer Review, done");
+    expect(stepReading("Customer Review")).toBe("Customer Review, rejected by the customer");
     expect(stepReading("Closed")).toBe("Closed, not taken");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
     expect(screen.getAllByText("Rollback", { selector: ".MuiChip-label" }).length).toBeGreaterThan(0);
