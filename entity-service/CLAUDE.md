@@ -2689,6 +2689,28 @@ the same `validChangeRequestSortField`/`validChangeRequestSortOrder` maps
 value is a 400 on both data sources instead of silently falling back to
 `created_on DESC` only on Postgres.
 
+### The approval tables are the sync layer's (state, not status)
+
+`approval_stage` and `approval_stage_approver` mirror ServiceNow's
+`sysapproval_group` / `sysapproval_approver` and are defined by csm-sync-service
+(migrations 0089 and 0138, mirrored into this folder). **This service adds no
+columns, tables or types to them and does not rename anything.** The approver's
+standing is the column **`approval_stage_approver.state`** (renamed from `status`
+by 0138), stored UPPER_SNAKE_CASE: `REQUESTED`, `APPROVED`, `REJECTED`, `NOT_REQUESTED`,
+`NOT_REQUIRED`, `CANCELLED`, `NOT_ENTITLED`. Every statement below that says an
+approver row is "requested" / "approved" / "rejected" / "cancelled" means that value
+of `state` (the request-level decision a client sends stays lowercase,
+`"approved"` / `"rejected"`; the repository writes it uppercased). The read model
+(`normalizeChangeRequestApprovalStatus`) passes the stored value through and only
+upper-cases a lowercase raw ServiceNow value, so it never double-converts; the BFFs
+and webapps compare it case-insensitively against the same UPPER_SNAKE set.
+`approval_stage.raw_status` is the raw ServiceNow `approval` passthrough and stays
+lowercase. The one column this service did add to the sync-owned `approval_stage`
+(`checkpoint_label`, migration 0179: the stage's name, NULL on a synced stage, which
+then falls back to the stage's position) predates this rule; it is kept as it stands
+until the ServiceNow table that defines approval stages / checkpoints is reconciled
+with it, and nothing further is added.
+
 ### Approval flow by change type (current behaviour)
 
 > **This section is the current contract and supersedes the Assess/Authorize/
@@ -2801,12 +2823,12 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   decide; their rejection already yields `rollback`). The on-hold gate applies.
   Rolling back stamps no `is_customer_review_required` (`isCustomerReviewed: true`
   alongside it is a 400), provisions no stage, and **cancels every still-
-  `requested` approver row** of the change (all stages stay as a record; the
+  `REQUESTED` approver row** of the change (all stages stay as a record; the
   customer-group rejection cascade does the same). **`rollback` is final**:
   `legalNextStates` is none and any other state PATCH out of it is a 400
   (`change request has been rolled back; rollback is final ...`). Cancel and
   Close do the same since "An approval is only actionable in its stage's state"
-  (below): every `closed` / `canceled` / `rollback` change has no `requested` row
+  (below): every `closed` / `canceled` / `rollback` change has no `REQUESTED` row
   left, internal stages included (this supersedes the earlier "Cancel does not
   cancel the internal stages' pending approvers"). The ServiceNow data source
   replays `stateKey` 2 like any other state and `withoutManualScheduled` does not
@@ -2816,7 +2838,7 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   already `closed`, and while it waited at `customer_review` for the customer).
   Deciding Review changes no state -- a human moves the change on -- and nothing
   used to cancel the Review stage's other approvers when it left Review, so their
-  rows stayed `requested` for ever. Now every stage is tied to the one state in
+  rows stayed `REQUESTED` for ever. Now every stage is tied to the one state in
   which it can be decided (`approvalStageDecidableState`,
   `change_request_approval_flow.go`; the kind comes from `classifyApprovalStage`:
   explicit `checkpoint_label` first, the legacy positional fallback second):
@@ -2841,9 +2863,9 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     ECAB -> Scheduled / Customer Approval, the customer stages' outcomes) and the
     GitHub sync's state writer (`githubMutationRepository.SetState`, a closed issue
     closing the change). It sets
-    to `cancelled` (stamping `updated_on` / `updated_by`) every still-`requested`
+    to `CANCELLED` (stamping `updated_on` / `updated_by`) every still-`REQUESTED`
     row of every stage whose decidable state is not the change's *current* state --
-    and **every** still-`requested` row once the change is `closed`, `canceled` or
+    and **every** still-`REQUESTED` row once the change is `closed`, `canceled` or
     `rollback`. It runs after the stage the new state needs was provisioned, so
     that stage (the fresh CAB / ECAB stage of a Re-schedule, the Review stage on
     entering Review, a customer stage) is kept; the superseded customer stage of a
@@ -2853,7 +2875,7 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     Peer for `assess`; an Emergency's New -> Authorize provisions ECAB for
     `authorize`; Standard has no stage) is unaffected.
   * **Decision guard** -- `DecideChangeRequestApproval` resolves the caller's
-    pending stage (their oldest `requested` row on a stage decidable in the
+    pending stage (their oldest `REQUESTED` row on a stage decidable in the
     current state, else their oldest one) and, when that stage's kind has a
     decidable state and the change is in another *known* state, refuses with a
     **409** `ConflictError` and changes nothing: `this approval is no longer
@@ -2870,12 +2892,12 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     is not the change's current state (`markCanDecide`), so the webapp (which
     renders Approve / Reject from `canDecide`, never from the state) disables them.
   * **Migration 0193** (`0193_change_request_cancel_stale_approvals.sql`) is the
-    data fix for rows written before this: idempotent, it cancels every `requested`
+    data fix for rows written before this: idempotent, it cancels every `REQUESTED`
     row (a) of any change that is `CLOSED` / `CANCELED` / `ROLLBACK`, and (b) of
     a stage with an explicit `checkpoint_label` (the map above, in a SQL `CASE`,
     legacy `Assess` / `Authorize` included) whose state differs from the change's
     current state. It never touches rows of a stage with a NULL / unrecognised
-    label unless (a), a change with a NULL state, rows that are not `requested`, or
+    label unless (a), a change with a NULL state, rows that are not `REQUESTED`, or
     the change request itself; `updated_by` is
     `migration:0193_change_request_cancel_stale_approvals`. It flags the session
     internal (`set_config('app.is_internal', 'true', false)`, cleared at the end)
@@ -2912,7 +2934,7 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
 * **Approver pools.**
   * *Peer Approval* — Normal only. **Every active internal member of the change's
     assigned group** (`team_member.group_id`), whatever team type that group is.
-    The creator is still listed, as a `cancelled` row, and never counts towards
+    The creator is still listed, as a `CANCELLED` row, and never counts towards
     the pool. Who is experienced enough to peer-approve is decided when people
     are added to the group (membership management), **not** when the stage is
     provisioned. The pool is the **`Devops Approval`** group
@@ -3042,8 +3064,8 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
 * **The creator may not approve at any stage** (peer, CAB, ECAB) — they may
   still cancel. The creator is the user whose email is `work_item.created_by`
   or who is `change_request.requested_by_user_id`. They are provisioned
-  `cancelled` where they are in a pool, and `DecideChangeRequestApproval`
-  refuses them with a 403 even if a `requested` row exists.
+  `CANCELLED` where they are in a pool, and `DecideChangeRequestApproval`
+  refuses them with a 403 even if a `REQUESTED` row exists.
 * **Only active internal users may decide an internal stage** — not
   provisioned, and refused (403) at decision time even if a stale row exists
   (e.g. a customer who was a member of the team before the pools were
@@ -3292,7 +3314,7 @@ project's **registered contacts** (`customerContacts` on the detail response and
 never stored, so it can never point at another customer's people: a contact belongs
 to exactly the project it was registered on. When the change reaches
 `customer_approval` / `customer_review`, **those contacts are asked**: a "Customer
-Approval" / "Customer Review" stage with one `requested` row per contact appears in the
+Approval" / "Customer Review" stage with one `REQUESTED` row per contact appears in the
 change request's approvals, and they answer it **in the customer portal** (customers do
 not sign in to the CSM portal, whose Approvals tab only *shows* the stage and its
 outcome). Code: `change_request_links.go`
@@ -3321,12 +3343,12 @@ outcome). Code: `change_request_links.go`
   The detail response drops `customerGroup` for `customerContacts:
   [{id (project_contact.id), name, email?}]` (name order).
 * **Eligible approvers** = the contacts' active users minus the CR's creator (listed
-  `cancelled` like on every other stage; they can never decide). The
+  `CANCELLED` like on every other stage; they can never decide). The
   INTERNAL-only rule does **not** apply to customer stages (the contacts are
   external).
 * **Stages.** Entering `customer_approval` writes an `approval_stage`
   `checkpoint_label = "Customer Approval"`, **`assignment_group_id` NULL** (the
-  group is not a `"group"` row), one `requested` `approval_stage_approver` per
+  group is not a `"group"` row), one `REQUESTED` `approval_stage_approver` per
   eligible contact; entering `customer_review` the same with `"Customer Review"`.
   Entry points (all call `provisionCustomerStage`): CAB / ECAB approval cascade,
   Request Approval on a Standard change, the `{state: "customer_review"}` PATCH,
@@ -3353,7 +3375,7 @@ outcome). Code: `change_request_links.go`
   `canceled` for a declined approval matches the ServiceNow `isCustomerApproved:
   false` semantics. **`rollback` is terminal** (`legalNextStates` none). The decision comes from the approval, so the flag stamp bypasses
   `authorizeChangeRequestCustomerFlagWrite` (the decider is a project contact).
-* **A non-contact** (or anyone without a `requested` row) deciding on a change
+* **A non-contact** (or anyone without a `REQUESTED` row) deciding on a change
   waiting on its live customer stage gets a **403** `only members of the
   customer group (the registered contacts of this change request's project) can
   approve or reject the customer's approval|review of this change request` (the
@@ -3362,7 +3384,7 @@ outcome). Code: `change_request_links.go`
   neither be asked about, nor decide, customer B's change request.**
 * **Who answers: the customer, in the customer portal — never in the CSM portal.**
   `DecideChangeRequestApproval` decides as the caller's own `"user"` (resolved from the
-  `x-user-id-token` email) and only on their own `requested` row, so a registered
+  `x-user-id-token` email) and only on their own `REQUESTED` row, so a registered
   contact's token is accepted by the entity service. Customers do **not** sign in to the
   CSM portal (`apps/csm-portal`; its BFF routes `POST /change-requests/{id}/approvals/decision`
   as `PermWrite`, the `cs_engineer` / `admin` roles, for internal approvers), so a CSM user
@@ -3402,7 +3424,7 @@ outcome). Code: `change_request_links.go`
   *current* eligible contact set): project set while already in the state -> the
   stage is provisioned; resent/unrelated PATCH -> nothing; project changed (or a
   contact registered / deregistered since) while a stage is live -> the old stage's
-  `requested` rows are `cancelled` and a new stage is provisioned for the new
+  `REQUESTED` rows are `CANCELLED` and a new stage is provisioned for the new
   project's contacts (never two live stages; the old stage stays as a record);
   project without contacts -> pending rows cancelled, manual path back. A stage
   already approved/rejected is never re-provisioned. Project edits follow the
@@ -3465,21 +3487,21 @@ nothing.
   own pending approval on the Customer Approval stage, `{isCustomerReviewed}` on the
   Customer Review stage -- `answerCustomerStageViaPatch` ends in
   `decideChangeRequestApprovalTx`, so the calling contact's row becomes
-  `approved` / `rejected`, the siblings `cancelled`, the state moves and the flag is
+  `APPROVED` / `REJECTED`, the siblings `CANCELLED`, the state moves and the flag is
   stamped by the approving outcome, once:
 
   | PATCH from a registered contact | State | Flag | Rows |
   |---|---|---|---|
-  | `{isCustomerApproved: true}` in `customer_approval` | `scheduled` | `is_customer_approval_required = true` | caller `approved`, siblings `cancelled` |
-  | `{isCustomerApproved: false}` | `canceled` | not stamped | caller `rejected`, siblings `cancelled` |
-  | `{isCustomerReviewed: true}` in `customer_review` | `closed` | `is_customer_review_required = true` | caller `approved`, siblings `cancelled` |
-  | `{isCustomerReviewed: false}` | `rollback` | not stamped | caller `rejected`, siblings `cancelled` |
+  | `{isCustomerApproved: true}` in `customer_approval` | `scheduled` | `is_customer_approval_required = true` | caller `APPROVED`, siblings `CANCELLED` |
+  | `{isCustomerApproved: false}` | `canceled` | not stamped | caller `REJECTED`, siblings `CANCELLED` |
+  | `{isCustomerReviewed: true}` in `customer_review` | `closed` | `is_customer_review_required = true` | caller `APPROVED`, siblings `CANCELLED` |
+  | `{isCustomerReviewed: false}` | `rollback` | not stamped | caller `REJECTED`, siblings `CANCELLED` |
 
   (`TestChangeRequestCustomerOutcomeIntegration_PatchEqualsDecisionRoute` drives
   each row through both doors and requires identical state, flags and rows.) What
   the old code did instead -- measured, not assumed: with a live stage a contact's
   `{isCustomerApproved: true}` stamped the flag and left the change in Customer
-  Approval with every approver row still `requested`; a second contact's approve
+  Approval with every approver row still `REQUESTED`; a second contact's approve
   was a silent no-op and their reject a 400 "locked"; without a live stage it was
   the same stamp-and-stay.
 * **Refusals, in order** (the first to fail wins; nothing is written until all
@@ -3515,7 +3537,7 @@ nothing.
   locks) and is **true exactly when the answer would be accepted**: the change is in
   Customer Approval / Customer Review; the viewer is a registered `PORTAL_USER` contact
   of its project; the customer's request is live (a stage of that state with a
-  `requested` row); the viewer holds a `requested` row on that stage (so not a contact
+  `REQUESTED` row); the viewer holds a `REQUESTED` row on that stage (so not a contact
   registered afterwards, not one a sibling's answer or a Re-schedule cancelled); and
   `approverDecisionBlock` lets them (the creator never). It reuses the answer path's
   helpers (`liveCustomerStageForState`, `customerApproverUserID`,
@@ -3560,7 +3582,7 @@ nothing.
   plannedEndOn?}` from a registered contact in `customer_approval` is the process
   diagram's "Time Change" loop started by the customer: `prepareCustomerProposal`
   checks it (registered contact, not the creator, state `customer_approval`, **asked**
-  -- a live customer stage on which the caller holds a `requested` row, else 409 when
+  -- a live customer stage on which the caller holds a `REQUESTED` row, else 409 when
   nobody was asked and 403 `only members of the customer group ... who have been asked`
   when the caller was not, as proposing cancels the asked contacts' pending approvals --
   the window still to come, not on hold) and turns the request into the very `{state: authorize, plannedStartOn?,
@@ -3739,14 +3761,14 @@ cases can't be told apart from here). `PatchChangeRequest` now closes that
 gap itself: whenever a `{state: "assess"}` patch succeeds and the work item
 has no `approval_stage` row yet, it creates one (`assignment_group_id` = the
 effective assigned team from this same request or already on the record),
-then inserts one `requested` `approval_stage_approver` row for every
+then inserts one `REQUESTED` `approval_stage_approver` row for every
 `team_member` whose **`group_id`** (not `team_id` — see below) matches that
 team, all inside the same transaction as the state write. `GetChangeRequestApprovals`
 needed no changes at all — it already renders whatever `approval_stage`/
 `approval_stage_approver` rows exist, regardless of who wrote them.
 
-**The change request's own requester is provisioned `cancelled`, not
-`requested`, when they are also a member of the assigned team** — mirroring
+**The change request's own requester is provisioned `CANCELLED`, not
+`REQUESTED`, when they are also a member of the assigned team** — mirroring
 ServiceNow's own real self-approval-prevention behavior, confirmed live
 against a real ServiceNow record (wso2sndev.service-now.com, CHG0039122,
 inspected directly) rather than guessed: that record's own requester was
@@ -3763,7 +3785,7 @@ changing it) so this reflects the change request's post-PATCH value, since
 the `crSets` UPDATE earlier in this same transaction may have just set it.
 **Reintroduces the identical dead-end risk the empty-group check above
 already guards against, in a new shape**: if excluding the requester would
-leave zero `requested` approvers — the requester is the assigned team's
+leave zero `REQUESTED` approvers — the requester is the assigned team's
 only member, or every member happens to be the requester via some data
 anomaly — the whole `{state: "assess"}` PATCH is rejected with a
 `ValidationError` ("the assigned team has no members other than the
@@ -3795,7 +3817,7 @@ both fixed here:**
    rather than committing a dead-end one.
 2. **`team_member` has no unique constraint on `(user_id, group_id)`.** A
    duplicated membership row would have queued one `approval_stage_approver`
-   INSERT per duplicate, seeding two `requested` rows for the same person.
+   INSERT per duplicate, seeding two `REQUESTED` rows for the same person.
    The query is now `SELECT DISTINCT user_id`, not `SELECT user_id`.
 
 **`team_member.group_id` is the real column for this, and it is distinct
@@ -4159,7 +4181,7 @@ properly: `DecideChangeRequestApproval` now applies the same
 first-responder-wins quorum rule `buildChangeRequestApprovals` uses at read
 time — a single approval, provided nobody on the same stage has rejected,
 both (1) advances `change_request.state` from Assess to Authorize and (2)
-cancels every other still-`requested` approver on that same stage, matching
+cancels every other still-`REQUESTED` approver on that same stage, matching
 real ServiceNow's own observed behavior on a genuine multi-approver group
 (confirmed live: only the 1-2 who actually responded were left
 Approved/Rejected, every other pending approver on the same group was moved
@@ -4174,13 +4196,13 @@ like an approval does, at every checkpoint — but still never touches
 `change_request.state`, in either direction.** This was a real, confirmed
 gap, not a deliberate asymmetry: `decideChangeRequestApprovalQuery` only
 ever flipped the acting approver's own row and returned, so a rejected
-stage's other `requested` approvers were left sitting there forever, with
+stage's other `REQUESTED` approvers were left sitting there forever, with
 no way to tell "this stage was rejected" apart from "nobody has looked at
 it yet" short of reading every row — exactly the same dead-end the original
 cancellation fix (above) already closed for approvals, just left open on
 the rejection side. `DecideChangeRequestApproval` now runs the identical
-`UPDATE approval_stage_approver SET status = 'cancelled' ... WHERE stage_id
-= $1 AND status = 'requested'` on a rejection too (factored into a shared
+`UPDATE approval_stage_approver SET state = 'CANCELLED' ... WHERE stage_id
+= $1 AND state = 'REQUESTED'` on a rejection too (factored into a shared
 `cancelSiblingApprovalStageApprovers` helper both branches now call), at
 Assess, Authorize, and Review alike — sibling-cancellation was never
 Assess-specific to begin with, only the state cascade is.
@@ -4214,19 +4236,19 @@ so, what should happen? Two sub-cases, handled differently and on purpose:
   `change_request` row (`SELECT ... FOR UPDATE`), serializing every
   decision against every other one for the same change request, so the
   moment any decision (approval or rejection) cancels a stage's other
-  `requested` siblings, a later decision attempt on one of those siblings
+  `REQUESTED` siblings, a later decision attempt on one of those siblings
   fails at `decideChangeRequestApprovalQuery`'s own
-  `status = 'requested'` WHERE clause first (`NotFoundError`, "no pending
+  `state = 'REQUESTED'` WHERE clause first (`NotFoundError`, "no pending
   approval found") — it never even gets a `stageID` to act on, let alone
   reaches the cancellation code.
 - Data this method did NOT itself create or resolve — a ServiceNow-synced
   stage, or one seeded before this fix shipped — has no such guarantee: an
-  `approved` row can legitimately coexist with other still-`requested` rows
+  `APPROVED` row can legitimately coexist with other still-`REQUESTED` rows
   that were never cancelled, because whatever created them predates (or is
   outside) this method's own cancellation discipline. For exactly this
   case, the rejection branch checks `hasApproval` (mirroring the existing
   approval branch's own `hasRejection` check) before cancelling anything,
-  and skips cancellation entirely when the stage already has an `approved`
+  and skips cancellation entirely when the stage already has an `APPROVED`
   row — a late/duplicate rejection on an already-resolved stage is a no-op
   on its siblings, not a destructive retroactive cancellation of approvers
   an earlier approval had every right to leave alone. Covered by
