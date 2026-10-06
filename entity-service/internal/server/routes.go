@@ -853,6 +853,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// See the matching comment in the DataSourcePostgresServiceNowDualWrite
 		// case above.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		// Without this, isSupportEngineerAuthor always returns false on this
+		// data source -- the SLA response-clock completion signal and
+		// events.CommentAddedPayload.IsSupportEngineerResponse never fire for
+		// a plain DATA_SOURCE=postgres deployment. NewCaseServiceWithSNWriteback
+		// (above) already takes csEngineerRole as a constructor parameter;
+		// NewCaseService has no such parameter, hence this separate step.
+		activeCaseSvc = service.WithCSEngineerRole(activeCaseSvc, cfg.CSEngineerRole)
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MTrustedActorEmails)
 	if db != nil {

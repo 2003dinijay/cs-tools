@@ -112,6 +112,25 @@ func WithProductCategoryEnforcement(svc CaseService, referenceDataRepo repositor
 	return svc
 }
 
+// WithCSEngineerRole attaches CS_ENGINEER_ROLE to an already-constructed
+// CaseService built via the plain NewCaseService (which has no
+// csEngineerRole parameter at all -- unlike NewCaseServiceWithSNWriteback,
+// which already takes one). Without this, isSupportEngineerAuthor always
+// returns false on that path, so a comment's author can never be confirmed
+// as a support engineer: the response-SLA early-completion signal and
+// events.CommentAddedPayload.IsSupportEngineerResponse both silently stay
+// unset for every plain DATA_SOURCE=postgres deployment. Same post-
+// construction wiring shape as WithProductCategoryEnforcement, for the same
+// reason -- NewCaseService already has 60+ call sites (every test, every
+// other DataSource branch in routes.go), and a signature change would touch
+// all of them for a capability that's optional and nil-safe to omit.
+func WithCSEngineerRole(svc CaseService, csEngineerRole string) CaseService {
+	if cs, ok := svc.(*caseService); ok {
+		cs.csEngineerRole = csEngineerRole
+	}
+	return svc
+}
+
 // caseResolutionFields carries the resolution data that accompanies a
 // closed/solution_proposed transition to the ServiceNow mirror.
 type caseResolutionFields struct {

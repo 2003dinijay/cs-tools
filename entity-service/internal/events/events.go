@@ -185,8 +185,13 @@ type CommentAddedPayload struct {
 	// own -- the signal entity-service is uniquely positioned to compute,
 	// since it owns the role data. False whenever this can't be confirmed
 	// (CSEngineerRole unset, the author's email doesn't resolve, or the
-	// role lookup fails) -- never guessed.
-	IsSupportEngineerResponse bool `json:"isSupportEngineerResponse,omitempty"`
+	// role lookup fails) -- never guessed. Deliberately no omitempty: false
+	// is a meaningful, confirmed answer here ("checked, not a support
+	// engineer"), not an absent value -- omitempty would make it
+	// indistinguishable from an older publisher that never sent this field
+	// at all, which csm-notification-service's own slaEngine needs to tell
+	// apart from a real negative.
+	IsSupportEngineerResponse bool `json:"isSupportEngineerResponse"`
 }
 
 // KBArticlePublishedPayload is the Payload shape for
