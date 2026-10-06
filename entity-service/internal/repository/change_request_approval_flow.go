@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sort"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
@@ -114,9 +115,12 @@ import (
 //   - canDecide is false for such a row (markCanDecide);
 //   - migration 0193 cancels the rows already in the database.
 //
-// A stage of unknown kind (a ServiceNow-synced stage with no recognisable
-// label past the first two positions) and a change with no / unknown state are
-// never guarded.
+// A stage of unknown kind and a change with no / unknown state are never guarded.
+// A stage with no checkpoint_label (a ServiceNow-synced one) is of unknown kind
+// unless its assignment group, the change's type and state, or its position
+// within the state the change is in say what it is (runtimeApprovalStageKind):
+// its position alone is a guess, and a guess never cancels, hides or refuses an
+// approval.
 
 // Approver pools are INTERNAL-only. Every internal stage (Peer, CAB, ECAB,
 // Review) is decided in the portal by WSO2 staff, who see every project; an
@@ -239,22 +243,81 @@ func classifyApprovalStage(label *string, position int) approvalStageKind {
 	}
 }
 
-// approvalStageInfo reads stageID's label and ordinal position among the work
-// item's stages (ordered by created_on, id -- the same ordering
-// changeRequestApprovalStagesQuery uses).
+// runtimeApprovalStageKind is the role the flow treats a stage as when it decides,
+// guards or lists what can be decided on a change request of the given
+// (upper-case) model in the given (upper-case) state. A stage with an explicit
+// checkpoint_label is classified by it (classifyApprovalStage). A stage with NONE
+// -- one csm-sync-service mirrored from ServiceNow, so migrated data -- is
+// classified only as far as the data it does carry makes provable, and never as a
+// customer stage:
+//
+//  1. the stage's own assignment group names it: the "ECAB Approval" group makes
+//     it an ECAB stage, the "CAB Approval" group a CAB stage;
+//  2. failing that, an Emergency change in Authorize has no peer stage and no CAB
+//     stage, so a stage on it can only be the ECAB's;
+//  3. failing that, the historical positional guess (0 = Peer, 1 = CAB; see
+//     classifyApprovalStage);
+//
+// and whichever of the three produced a kind, the kind COUNTS only when the state
+// it is decided in is the state the change is in (approvalStageDecidableState).
+// Otherwise the stage is stageKindOther: not tied to any state, so it is never
+// cancelled by reconcileStaleApprovers (a finished change's own terminal cancel
+// excepted), never refused as out of state, and decidable by its REQUESTED
+// approver (the creator rule still applies). That is the safe reading of a stage
+// whose position is only a guess: an Emergency change in Authorize whose single
+// synced stage sits at position 0 used to read as a PEER stage, so its approver's
+// decision was refused as stale (409) and canDecide was false; a stage at
+// position 2 can be anything; a stale position-0 stage on a change that has moved
+// on to Authorize is not a Peer approval that has gone out of date, it is a row
+// nobody can say anything about. Customer kinds are never inferred for an
+// unlabeled stage: it fails closed (the customer stages are written by this
+// service with their label, and the customer's answer is only ever accepted on
+// one of those).
+func runtimeApprovalStageKind(label *string, position int, groupName *string, model, state string) approvalStageKind {
+	if label != nil && *label != "" {
+		return classifyApprovalStage(label, position)
+	}
+	candidate := stageKindOther
+	switch strings.TrimSpace(stringOrEmpty(groupName)) {
+	case domain.ECABApprovalGroupName:
+		candidate = stageKindECAB
+	case domain.CABApprovalGroupName:
+		candidate = stageKindCAB
+	default:
+		if strings.EqualFold(strings.TrimSpace(model), "EMERGENCY") && strings.EqualFold(strings.TrimSpace(state), crStateAuthorize) {
+			candidate = stageKindECAB
+		} else {
+			candidate = classifyApprovalStage(nil, position)
+		}
+	}
+	want := approvalStageDecidableState(candidate)
+	if want == "" || !strings.EqualFold(strings.TrimSpace(state), want) {
+		return stageKindOther
+	}
+	return candidate
+}
+
+// approvalStageInfo reads stageID's label, assignment group and ordinal position
+// among the work item's stages (ordered by created_on, id -- the same ordering
+// changeRequestApprovalStagesQuery uses), and the model and state of the change
+// request, and resolves the stage's kind with runtimeApprovalStageKind.
 func approvalStageInfo(ctx context.Context, q crQuerier, workItemID, stageID string) (approvalStageKind, error) {
-	var label *string
+	var label, groupName, model, state *string
 	var pos int
 	err := q.QueryRow(ctx, `
-		SELECT ast.checkpoint_label,
+		SELECT ast.checkpoint_label, g.name,
 		       (SELECT COUNT(*) FROM approval_stage earlier
 		         WHERE earlier.work_item_id = $1
-		           AND (earlier.created_on, earlier.id) < (ast.created_on, ast.id))
-		FROM approval_stage ast WHERE ast.id = $2`, workItemID, stageID).Scan(&label, &pos)
+		           AND (earlier.created_on, earlier.id) < (ast.created_on, ast.id)),
+		       cr.change_model::text, cr.state::text
+		FROM approval_stage ast
+		LEFT JOIN "group" g ON g.id = ast.assignment_group_id
+		LEFT JOIN change_request cr ON cr.id = ast.work_item_id
+		WHERE ast.id = $2`, workItemID, stageID).Scan(&label, &groupName, &pos, &model, &state)
 	if err != nil {
 		return stageKindOther, fmt.Errorf("read approval stage: %w", err)
 	}
-	return classifyApprovalStage(label, pos), nil
+	return runtimeApprovalStageKind(label, pos, groupName, stringOrEmpty(model), stringOrEmpty(state)), nil
 }
 
 // changeRequestCreatorUserIDs returns the (lower-cased) ids of every user who
@@ -406,6 +469,23 @@ func noInternalMembersMessage(poolDescription, label string) string {
 		poolDescription, label)
 }
 
+// noInternalMembersError is the ValidationError of a pool whose members include
+// nobody who counts as an internal approver: noInternalMembersMessage plus, in
+// brackets, how many members there were and why each did not count
+// (describeExcludedMembers: counts by user_type / inactive / no user record, never
+// names), so the operator can tell "the group is empty of staff" from "the group's
+// members have not had their user type resolved yet". The rule itself is not
+// loosened: only the message changes. A failure to count leaves the plain message.
+func noInternalMembersError(ctx context.Context, q crQuerier, poolDescription, label string, members []string, creatorIDs map[string]bool) error {
+	msg := noInternalMembersMessage(poolDescription, label)
+	if summary, err := describeExcludedMembers(ctx, q, members, creatorIDs); err == nil {
+		msg += " (" + poolDescription + ": " + summary + ")"
+	} else {
+		slog.WarnContext(ctx, "could not describe the excluded group members", "pool", poolDescription, "error", err)
+	}
+	return &apierror.ValidationError{Msg: msg}
+}
+
 // namedGroup resolves a group by name: its id (preferring, when the mirror
 // produced several same-named rows, the one that actually has members) and
 // its distinct members. A member is anyone with team_member.group_id pointing
@@ -460,7 +540,11 @@ type approvalPool struct {
 // creator -- the PeerApprovalFallbackGroupName group ("Devops Approval") is
 // used instead, subject to the same rules.
 func resolvePeerPool(ctx context.Context, q crQuerier, assignedTeamID *string, creatorIDs map[string]bool) (approvalPool, error) {
-	eligible := func(members []string) ([]string, bool, error) {
+	// why is what each group that was tried yielded, for the refusal below: when
+	// nobody is eligible the caller is told how many people were looked at and why
+	// each did not count (counts only -- no names).
+	var why []string
+	eligible := func(groupLabel string, members []string) ([]string, bool, error) {
 		kept, err := onlyInternalApprovers(ctx, q, members)
 		if err != nil {
 			return nil, false, err
@@ -472,6 +556,13 @@ func resolvePeerPool(ctx context.Context, q crQuerier, assignedTeamID *string, c
 				break
 			}
 		}
+		if !requestable && len(members) > 0 {
+			summary, err := describeExcludedMembers(ctx, q, members, creatorIDs)
+			if err != nil {
+				return nil, false, err
+			}
+			why = append(why, groupLabel+": "+summary)
+		}
 		return kept, requestable, nil
 	}
 
@@ -480,7 +571,7 @@ func resolvePeerPool(ctx context.Context, q crQuerier, assignedTeamID *string, c
 		if err != nil {
 			return approvalPool{}, err
 		}
-		kept, ok, err := eligible(members)
+		kept, ok, err := eligible("the assigned group", members)
 		if err != nil {
 			return approvalPool{}, err
 		}
@@ -494,7 +585,7 @@ func resolvePeerPool(ctx context.Context, q crQuerier, assignedTeamID *string, c
 		return approvalPool{}, err
 	}
 	if exists {
-		kept, ok, err := eligible(members)
+		kept, ok, err := eligible(fmt.Sprintf("the %q group", domain.PeerApprovalFallbackGroupName), members)
 		if err != nil {
 			return approvalPool{}, err
 		}
@@ -502,9 +593,145 @@ func resolvePeerPool(ctx context.Context, q crQuerier, assignedTeamID *string, c
 			return approvalPool{groupID: gid, members: kept}, nil
 		}
 	}
-	return approvalPool{}, &apierror.ValidationError{Msg: fmt.Sprintf(
+	msg := fmt.Sprintf(
 		"no eligible peer approvers: the assigned group has no active internal members other than the change's creator (external/customer users cannot approve), and the %q group has none either",
-		domain.PeerApprovalFallbackGroupName)}
+		domain.PeerApprovalFallbackGroupName)
+	if len(why) > 0 {
+		msg += " (" + strings.Join(why, "; ") + ")"
+	}
+	return approvalPool{}, &apierror.ValidationError{Msg: msg}
+}
+
+// excludedMembers is what describeExcludedMembers counts about a group's members.
+type excludedMembers struct {
+	total int
+	// noUser: no "user" row for the member id. inactive: "user".is_active false.
+	noUser, inactive int
+	// byType: the active members whose user_type is not INTERNAL, by label ("" is
+	// reported as "no user_type").
+	byType map[string]int
+	// creator: active internal members left out only because they created / requested
+	// the change.
+	creator int
+	// eligible: active internal members who are not the creator.
+	eligible int
+}
+
+// summary renders the counts, most numerous reason first: "14 members, none
+// eligible: 9 user_type NOT_AVAILABLE, 3 inactive, 1 external, 1 creator". With an
+// eligible member left it says how many are ("14 members, 2 eligible").
+func (e excludedMembers) summary() string {
+	type reason struct {
+		label string
+		n     int
+	}
+	var reasons []reason
+	add := func(label string, n int) {
+		if n > 0 {
+			reasons = append(reasons, reason{label, n})
+		}
+	}
+	add("no user record", e.noUser)
+	add("inactive", e.inactive)
+	for t, n := range e.byType {
+		switch t {
+		case "EXTERNAL":
+			add("external", n)
+		case "SYSTEM":
+			add("system", n)
+		case "":
+			add("no user_type", n)
+		default:
+			add("user_type "+t, n)
+		}
+	}
+	add("creator", e.creator)
+	sort.SliceStable(reasons, func(i, j int) bool {
+		if reasons[i].n != reasons[j].n {
+			return reasons[i].n > reasons[j].n
+		}
+		return reasons[i].label < reasons[j].label
+	})
+	parts := make([]string, len(reasons))
+	for i, r := range reasons {
+		parts[i] = fmt.Sprintf("%d %s", r.n, r.label)
+	}
+	noun := "members"
+	if e.total == 1 {
+		noun = "member"
+	}
+	if e.eligible > 0 {
+		return fmt.Sprintf("%d %s, %d eligible", e.total, noun, e.eligible)
+	}
+	if len(parts) == 0 {
+		return fmt.Sprintf("%d %s, none eligible", e.total, noun)
+	}
+	return fmt.Sprintf("%d %s, none eligible: %s", e.total, noun, strings.Join(parts, ", "))
+}
+
+// countExcludedMembers classifies each distinct member id by why it does or does
+// not count as an approver of an internal stage (see internalApproverIDs, whose
+// rule it mirrors exactly: an active user whose user_type is INTERNAL; and the
+// creator, who is listed but never asked). Counts only: the point is to make a
+// "nobody is eligible" refusal diagnosable -- a migrated group's members may all be
+// users whose type could not be derived -- without naming anyone and without
+// loosening the rule.
+func countExcludedMembers(ctx context.Context, q crQuerier, members []string, creatorIDs map[string]bool) (excludedMembers, error) {
+	out := excludedMembers{byType: map[string]int{}}
+	seen := map[string]bool{}
+	var ids []string
+	for _, m := range members {
+		key := strings.ToLower(strings.TrimSpace(m))
+		if key == "" || seen[key] {
+			continue
+		}
+		seen[key] = true
+		ids = append(ids, key)
+	}
+	out.total = len(ids)
+	if len(ids) == 0 {
+		return out, nil
+	}
+	rows, err := q.Query(ctx, `
+		SELECT u.id::text, COALESCE(u.is_active, true), COALESCE(u.user_type::text, '')
+		FROM "user" u WHERE u.id = ANY($1::uuid[])`, ids)
+	if err != nil {
+		return out, fmt.Errorf("describe group members: %w", err)
+	}
+	defer rows.Close()
+	found := map[string]bool{}
+	for rows.Next() {
+		var id, userType string
+		var active bool
+		if err := rows.Scan(&id, &active, &userType); err != nil {
+			return out, fmt.Errorf("describe group members: scan: %w", err)
+		}
+		found[strings.ToLower(id)] = true
+		switch {
+		case !active:
+			out.inactive++
+		case userType != "INTERNAL":
+			out.byType[userType]++
+		case creatorIDs[strings.ToLower(id)]:
+			out.creator++
+		default:
+			out.eligible++
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return out, fmt.Errorf("describe group members: %w", err)
+	}
+	out.noUser = len(ids) - len(found)
+	return out, nil
+}
+
+// describeExcludedMembers is countExcludedMembers rendered for a message.
+func describeExcludedMembers(ctx context.Context, q crQuerier, members []string, creatorIDs map[string]bool) (string, error) {
+	counts, err := countExcludedMembers(ctx, q, members, creatorIDs)
+	if err != nil {
+		return "", err
+	}
+	return counts.summary(), nil
 }
 
 // resolveApprovalPool resolves checkpoint's approver pool for the change
@@ -525,11 +752,12 @@ func resolveApprovalPool(ctx context.Context, q crQuerier, cp changeRequestAppro
 		if len(members) == 0 {
 			return approvalPool{}, &apierror.ValidationError{Msg: fmt.Sprintf("the %q group has no members to provision as %s approvers", cp.GroupName, cp.Label)}
 		}
+		all := members
 		if members, err = onlyInternalApprovers(ctx, q, members); err != nil {
 			return approvalPool{}, err
 		}
 		if len(members) == 0 {
-			return approvalPool{}, &apierror.ValidationError{Msg: noInternalMembersMessage(fmt.Sprintf("the %q group", cp.GroupName), cp.Label)}
+			return approvalPool{}, noInternalMembersError(ctx, q, fmt.Sprintf("the %q group", cp.GroupName), cp.Label, all, creatorIDs)
 		}
 		requestable := false
 		for _, m := range members {
@@ -553,11 +781,12 @@ func resolveApprovalPool(ctx context.Context, q crQuerier, cp changeRequestAppro
 		if len(members) == 0 {
 			return approvalPool{}, &apierror.ValidationError{Msg: fmt.Sprintf("the assigned team has no members to provision as %s approvers", cp.Label)}
 		}
+		all := members
 		if members, err = onlyInternalApprovers(ctx, q, members); err != nil {
 			return approvalPool{}, err
 		}
 		if len(members) == 0 {
-			return approvalPool{}, &apierror.ValidationError{Msg: noInternalMembersMessage("the assigned team", cp.Label)}
+			return approvalPool{}, noInternalMembersError(ctx, q, "the assigned team", cp.Label, all, creatorIDs)
 		}
 		requestable := false
 		for _, m := range members {
@@ -1157,9 +1386,12 @@ func staleApprovalRefusal(kind approvalStageKind, currentState string) error {
 //
 // The stages stay as a record; only the approver rows move to `CANCELLED`
 // (updated_by = actorEmail, like every other cancel helper). A stage is
-// classified exactly as classifyApprovalStage does (checkpoint_label first,
-// the historical positional fallback second); a stage of unknown kind and a
-// NULL / unknown change request state are left alone.
+// classified by runtimeApprovalStageKind: its checkpoint_label first and, for a
+// stage with none (a ServiceNow-synced one), only what its group, the change's
+// type and state, and its position PROVE -- so an unlabeled stage is never
+// cancelled here because of a guess about its position: a stage of unknown kind
+// and a NULL / unknown change request state are left alone (a finished change's
+// terminal cancel, above, is the one thing that takes every row).
 //
 // It must run AFTER the transaction has written the new state and provisioned
 // the stage that state needs (a stage provisioned for the current state is
@@ -1175,8 +1407,8 @@ func reconcileStaleApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEm
 	if err := setCallerIdentity(ctx, tx, SearchScope{Unrestricted: true}); err != nil {
 		return fmt.Errorf("reconcile approvers: escalate identity: %w", err)
 	}
-	var state *string
-	if err := tx.QueryRow(ctx, `SELECT state::text FROM change_request WHERE id = $1`, workItemID).Scan(&state); err != nil {
+	var state, model *string
+	if err := tx.QueryRow(ctx, `SELECT state::text, change_model::text FROM change_request WHERE id = $1`, workItemID).Scan(&state, &model); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil
 		}
@@ -1194,11 +1426,12 @@ func reconcileStaleApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEm
 	// position the classifier's fallback needs (same ordering as
 	// approvalStageInfo / changeRequestApprovalStagesQuery).
 	rows, err := tx.Query(ctx, `
-		SELECT ast.id::text, ast.checkpoint_label,
+		SELECT ast.id::text, ast.checkpoint_label, g.name,
 		       (SELECT COUNT(*) FROM approval_stage earlier
 		         WHERE earlier.work_item_id = ast.work_item_id
 		           AND (earlier.created_on, earlier.id) < (ast.created_on, ast.id))
 		FROM approval_stage ast
+		LEFT JOIN "group" g ON g.id = ast.assignment_group_id
 		WHERE ast.work_item_id = $1
 		  AND EXISTS (SELECT 1 FROM approval_stage_approver asa WHERE asa.stage_id = ast.id AND asa.state = 'REQUESTED')`,
 		workItemID)
@@ -1208,13 +1441,13 @@ func reconcileStaleApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEm
 	var stale []string
 	for rows.Next() {
 		var stageID string
-		var label *string
+		var label, groupName *string
 		var pos int
-		if err := rows.Scan(&stageID, &label, &pos); err != nil {
+		if err := rows.Scan(&stageID, &label, &groupName, &pos); err != nil {
 			rows.Close()
 			return fmt.Errorf("reconcile approvers: scan stage: %w", err)
 		}
-		if approvalStageOutOfState(classifyApprovalStage(label, pos), current) {
+		if approvalStageOutOfState(runtimeApprovalStageKind(label, pos, groupName, stringOrEmpty(model), current), current) {
 			stale = append(stale, stageID)
 		}
 	}

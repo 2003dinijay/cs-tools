@@ -401,12 +401,17 @@ func TestChangeRequestIntegration_DecideApprovalRejectionDoesNotCascade(t *testi
 // TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess
 // confirms the cascade is scoped exactly to Assess->Authorize: approving a
 // Peer-stage approver on a change request that isn't currently in Assess (e.g.
-// one already sitting in Authorize) must leave state untouched. A stage can
-// only be decided in the state it belongs to (a Peer stage in Assess), so the
-// decision is now refused outright with a 409 rather than recorded without a
-// cascade: nothing changes, the approver row stays requested (the state
-// reconcile does not run on a refused decision). The seeded stage has no
-// label, so it is classified by position, as Peer.
+// one already sitting in Authorize) must leave state untouched.
+//
+// The seeded stage has NO label -- it is the shape csm-sync-service mirrors from
+// ServiceNow -- and sits at position 0, which the historical convention reads as
+// Peer. A position is only a guess (runtimeApprovalStageKind), and the guess
+// counts only while the change is in the state it implies: here the change is in
+// Authorize, so the stage is of no known kind, and the approver's decision is
+// RECORDED (no cascade, the state stays Authorize) instead of refused with a 409
+// as a Peer stage out of its state would be. Before migrated data was taken into
+// account this test asserted that 409; a native stage (which always has a label)
+// is still refused, see the StaleApprovals tests.
 func TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess(t *testing.T) {
 	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
 	if dsn == "" {
@@ -425,14 +430,9 @@ func TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess(t *t
 	seedChangeRequestForApprovalTest(t, scoped, "AUTHORIZE")
 	seedApprovalStageForDecisionTest(t, scoped, changeRequestApprovalApproverUserID)
 
-	_, err = repo.DecideChangeRequestApproval(sys, changeRequestApprovalTestID,
-		changeRequestApprovalApproverUserID, "approved", "cr-approval-test")
-	var conflict *apierror.ConflictError
-	if !errors.As(err, &conflict) {
-		t.Fatalf("DecideChangeRequestApproval(approved) outside Assess: err = %v (%T), want *apierror.ConflictError", err, err)
-	}
-	if want := "this approval is no longer pending: the change request is in Authorize, but the Peer Approval stage can only be decided while it is in Assess"; conflict.Msg != want {
-		t.Fatalf("refusal message = %q, want %q", conflict.Msg, want)
+	if _, err = repo.DecideChangeRequestApproval(sys, changeRequestApprovalTestID,
+		changeRequestApprovalApproverUserID, "approved", "cr-approval-test"); err != nil {
+		t.Fatalf("DecideChangeRequestApproval(approved) on an unlabeled position-0 stage of a change in Authorize: %v", err)
 	}
 
 	var gotState, gotStatus string
@@ -441,15 +441,15 @@ func TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess(t *t
 		t.Fatalf("read back state: %v", scanErr)
 	}
 	if gotState != "AUTHORIZE" {
-		t.Fatalf("state after a refused approval outside Assess = %q, want unchanged \"AUTHORIZE\"", gotState)
+		t.Fatalf("state after approving outside Assess = %q, want unchanged \"AUTHORIZE\"", gotState)
 	}
 	if scanErr := scoped.QueryRow(sys,
 		`SELECT state FROM approval_stage_approver WHERE work_item_id = $1 AND approver_user_id = $2`,
 		changeRequestApprovalTestID, changeRequestApprovalApproverUserID).Scan(&gotStatus); scanErr != nil {
 		t.Fatalf("read back approver status: %v", scanErr)
 	}
-	if gotStatus != "REQUESTED" {
-		t.Fatalf("approver status after a refused decision = %q, want unchanged \"REQUESTED\"", gotStatus)
+	if gotStatus != "APPROVED" {
+		t.Fatalf("approver status after the decision = %q, want \"APPROVED\" (recorded, no cascade)", gotStatus)
 	}
 }
 

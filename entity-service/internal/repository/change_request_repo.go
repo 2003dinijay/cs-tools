@@ -2697,6 +2697,9 @@ func (r *changeRequestRepo) GetChangeRequestApprovals(ctx context.Context, id st
 func redactInternalApprovalStages(stages []changeRequestApprovalStageRow, result *domain.ChangeRequestApprovals) {
 	for i := range result.Approvals {
 		if i < len(stages) {
+			// Customer kinds come from the label alone (a stage with none is
+			// never taken for the customer's), so the positional classifier is
+			// all this needs; everything else is internal and is cut down.
 			switch classifyApprovalStage(stages[i].checkpointLabel, i) {
 			case stageKindCustomerApproval, stageKindCustomerReview:
 				continue
@@ -2734,12 +2737,13 @@ func (r *changeRequestRepo) markCanDecide(ctx context.Context, id string, stages
 	if len(viewerIDs) == 0 {
 		return
 	}
-	var crState *string
-	if err := r.db.QueryRow(ctx, `SELECT state::text FROM change_request WHERE id = $1`, id).Scan(&crState); err != nil {
+	var crState, crModel *string
+	if err := r.db.QueryRow(ctx, `SELECT state::text, change_model::text FROM change_request WHERE id = $1`, id).Scan(&crState, &crModel); err != nil {
 		slog.WarnContext(ctx, "get change request approvals: state lookup failed, canDecide left false", "changeRequestId", id, "error", err)
 		return
 	}
 	currentState := strings.ToUpper(stringOrEmpty(crState))
+	currentModel := strings.ToUpper(stringOrEmpty(crModel))
 	creatorIDs, err := changeRequestCreatorUserIDs(ctx, r.db, id)
 	if err != nil {
 		slog.WarnContext(ctx, "get change request approvals: creator lookup failed, canDecide left false", "changeRequestId", id, "error", err)
@@ -2756,7 +2760,7 @@ func (r *changeRequestRepo) markCanDecide(ctx context.Context, id string, stages
 		if i >= len(stages) {
 			break
 		}
-		kind := classifyApprovalStage(stages[i].checkpointLabel, i)
+		kind := runtimeApprovalStageKind(stages[i].checkpointLabel, i, stages[i].assignmentGroupName, currentModel, currentState)
 		outOfState := approvalStageOutOfState(kind, currentState)
 		for j := range result.Approvals[i].Approvers {
 			ap := &result.Approvals[i].Approvers[j]
