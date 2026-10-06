@@ -17,8 +17,12 @@
 package repository
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"time"
+
+	"github.com/jackc/pgx/v5"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -110,6 +114,30 @@ func normalizePatchPlannedWindow(req domain.PatchChangeRequestRequest) (domain.P
 	return req, nil
 }
 
+// NormalizeCreatePlannedWindow is the exported entry point of
+// normalizeCreatePlannedWindow, for the service layer: the ServiceNow-first
+// (dual-write) create validates the window with it BEFORE ServiceNow is called,
+// so a refused date can never leave a ServiceNow record behind, and the
+// repository applies it again to what it writes.
+func NormalizeCreatePlannedWindow(req domain.CreateChangeRequestRequest) (domain.CreateChangeRequestRequest, error) {
+	return normalizeCreatePlannedWindow(req)
+}
+
+// PlannedTimestampForServiceNow re-writes a planned start / end the repository
+// accepted (see parsePlannedTimestamp) in the one layout ServiceNow's change
+// request API takes, "YYYY-MM-DD HH:MM:SS" in UTC, for the dual-write mirror:
+// the PostgreSQL data source accepts RFC 3339 with a zone as well, which the
+// ServiceNow service refuses ("must follow the format"), so an RFC 3339 PATCH
+// used to commit in PostgreSQL and then fail every mirror write. A value that
+// does not parse is returned unchanged (the repository has already judged it).
+func PlannedTimestampForServiceNow(value string) string {
+	t, err := parsePlannedTimestamp("plannedStartOn", value)
+	if err != nil {
+		return value
+	}
+	return t.Format(plannedTimestampZoneless)
+}
+
 // normalizeCreatePlannedWindow is normalizePatchPlannedWindow for the create
 // request's plannedStartDate / plannedEndDate.
 func normalizeCreatePlannedWindow(req domain.CreateChangeRequestRequest) (domain.CreateChangeRequestRequest, error) {
@@ -144,4 +172,32 @@ func requireFutureWindow(now time.Time, start, end *string) error {
 		}
 	}
 	return nil
+}
+
+// requireFutureEffectiveStart is requireFutureWindow's complement for a proposal
+// that does not carry a start: requireFutureWindow only judges the bounds that
+// were SENT, so an end-only proposal left the stored start in place even when it
+// had already passed. The start the change will have is the proposed one, else
+// the stored one, and it must be still to come. A change with no stored start (or
+// one the database holds as infinity) has nothing to judge.
+func requireFutureEffectiveStart(ctx context.Context, q interface {
+	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
+}, id string, now time.Time, proposedStart *string) error {
+	if proposedStart != nil {
+		return nil
+	}
+	var stored *time.Time
+	err := q.QueryRow(ctx, `SELECT CASE WHEN isfinite(start_on) THEN start_on END FROM change_request WHERE id = $1`, id).Scan(&stored)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("propose implementation time: read the planned start: %w", err)
+	}
+	if stored == nil || stored.After(now) {
+		return nil
+	}
+	return &apierror.ValidationError{Msg: fmt.Sprintf(
+		"plannedStartOn is in the past: the current planned start (%s) has passed; propose a new start as well",
+		stored.UTC().Format(time.RFC3339))}
 }

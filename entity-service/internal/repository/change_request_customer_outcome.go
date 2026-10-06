@@ -716,7 +716,13 @@ func prepareCustomerProposal(ctx context.Context, tx pgx.Tx, id string, req doma
 	if !asked {
 		return req, &apierror.ForbiddenError{Msg: "only members of the customer group (the registered contacts of this change request's project) who have been asked for the customer's approval of this change request can propose a new implementation time for it"}
 	}
-	if err := requireFutureWindow(time.Now(), req.PlannedStartOn, req.PlannedEndOn); err != nil {
+	now := time.Now()
+	if err := requireFutureWindow(now, req.PlannedStartOn, req.PlannedEndOn); err != nil {
+		return req, err
+	}
+	// A proposal that names only an end keeps the stored start: if that has gone
+	// the window would still begin in the past, so the start must be proposed too.
+	if err := requireFutureEffectiveStart(ctx, tx, id, now, req.PlannedStartOn); err != nil {
 		return req, err
 	}
 

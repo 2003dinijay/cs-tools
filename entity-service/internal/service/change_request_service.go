@@ -323,6 +323,17 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	mirrorReq := req
 	mirrorReq.CustomerApprovalRequired, mirrorReq.CustomerReviewRequired = nil, nil
 	mirrorReq.DeploymentIDs, mirrorReq.DeploymentProductIDs = nil, nil
+	// PostgreSQL has accepted the window, in either of the layouts it takes (RFC
+	// 3339, or "YYYY-MM-DD HH:MM:SS" in UTC); ServiceNow's API takes only the
+	// second, so the mirror gets it in that one (what was sent in it is unchanged).
+	if mirrorReq.PlannedStartOn != nil {
+		v := repository.PlannedTimestampForServiceNow(*mirrorReq.PlannedStartOn)
+		mirrorReq.PlannedStartOn = &v
+	}
+	if mirrorReq.PlannedEndOn != nil {
+		v := repository.PlannedTimestampForServiceNow(*mirrorReq.PlannedEndOn)
+		mirrorReq.PlannedEndOn = &v
+	}
 	// The window a customer's answer was given for is a precondition checked
 	// against PostgreSQL only; there is nothing of it to mirror.
 	mirrorReq.ExpectedPlannedStartOn, mirrorReq.ExpectedPlannedEndOn = nil, nil
@@ -432,6 +443,15 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
 	}
 	if err := validateChangeRequestCreateScope(req); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
+	// The planned window is validated BEFORE ServiceNow is called, exactly as the
+	// plain-Postgres create does it (repository.NormalizeCreatePlannedWindow): the
+	// raw text used to reach both ServiceNow and PostgreSQL's own date parser
+	// ('tomorrow', 'infinity', a year in the thousands). ServiceNow is given the
+	// original, validated text -- the layout it takes -- and PostgreSQL the parsed
+	// instant, which CreateChangeRequestFromServiceNow normalises again.
+	if _, err := repository.NormalizeCreatePlannedWindow(req); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
 	// The project / deployments / deployment products are validated BEFORE

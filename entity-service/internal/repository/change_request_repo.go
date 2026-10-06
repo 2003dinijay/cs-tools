@@ -2500,6 +2500,16 @@ func (r *changeRequestRepo) CreateChangeRequestFromServiceNow(ctx context.Contex
 	if err := ValidateCreateChangeRequestType(req.Type); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
+	// The planned window is validated and read as UTC here, as on the portal
+	// create and on a PATCH (see change_request_window.go), not left to the
+	// database's own date parser: ServiceNow has accepted the change by now, but
+	// what reaches PostgreSQL is still only ever a parsed instant. (The service
+	// validates the same window before ServiceNow is called, so for a caller that
+	// goes through it this cannot fail here.)
+	req, err := normalizeCreatePlannedWindow(req)
+	if err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
 	changeModel := ptrString(changeRequestTypeToChangeModel[*req.Type])
 	impact, risk, priority := changeRequestEnumArgs(req)
 
