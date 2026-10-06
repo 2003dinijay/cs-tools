@@ -422,6 +422,49 @@ with 401 before the browser ever received a CORS header — which the browser th
 (allow any origin, no env var) — `middleware.CORS` accepts an allow-list parameter if this ever
 needs to be restricted, but nothing in this backend currently sets one.
 
+## Permissions: who may answer a change request
+
+Route access comes from one matrix, `permissionMatrix` in `internal/middleware/rbac.go`
+(module x action -> canonical roles), enforced per route by `RequirePermission`. Change requests
+are the one module with a fifth action, **`decide`**: the customer's own answer on a change request
+that is waiting on them (approve / reject a Customer Approval, confirm / fail a Customer Review,
+propose a new implementation time) -- and nothing that edits one.
+
+| Action | Roles |
+|---|---|
+| `create`, `update` | admin, agent, internal |
+| `delete` | admin |
+| `read` | the above + customer_admin, customer_user, partner_admin, partner_user |
+| `decide` | admin, agent, internal + customer_admin, customer_user, partner_admin, partner_user |
+
+A role with no entry (the old "stakeholder", an unrecognised wire role) holds nothing. Customers
+answer in the customer portal -- the CSM portal is for WSO2 staff -- so customer-side roles
+need `decide` on exactly two routes:
+
+- `POST /change-requests/{id}/approvals/decision` -> `RequirePermission(..., ActionDecide)`.
+- `PATCH /change-requests/{id}` -> `RequirePermissionOneOf(..., ActionUpdate, ActionDecide)`, which
+  records the level that let the request in (`middleware.GrantedActionFromContext`). At `update` the
+  handler honours `dto.ChangeRequestUpdateRequest` as before; at anything else -- including a
+  request that never passed through the middleware, so the restriction cannot be lost by not
+  wiring it -- it decodes the body into `dto.ChangeRequestCustomerUpdateRequest` (exactly
+  `isCustomerApproved`, `isCustomerReviewed`, `plannedStartOn`, `plannedEndOn`) with **unknown
+  fields refused (403)**, refuses an answer combined with a proposed time or both outcomes (400),
+  and builds the entity-service request from those four fields alone. Sending `title`, `state`,
+  `requestApproval`... with an answer cannot get them through: they are not fields of the struct.
+
+`decide` is granted to every role that can read a change request on purpose: **this matrix is a
+coarse gate, entity-service decides who may answer which change request.** It resolves the caller
+from the forwarded `x-user-id-token` and accepts an answer only from a REGISTERED `PORTAL_USER`
+contact of that change request's own project (a customer of another project is refused, whatever
+role they hold here), only in the state the answer belongs to (409 otherwise, e.g. a second contact
+answering after the first), and only on the caller's own pending approval. entity-service also keeps
+its own whitelist for external callers, so a request that bypassed this layer still could not edit a
+change request. Route wiring is `registerChangeRequestRoutes` in `cmd/server/main.go`, covered by
+`TestChangeRequestRouteGating`.
+
+**When you add a field a customer may set, add it to `ChangeRequestCustomerUpdateRequest` and say
+why here; a field in `ChangeRequestUpdateRequest` is staff-only.**
+
 ## Response shaping — the "wrapper" pattern
 
 **Never return an entity-service response struct directly to the frontend.** This is the one

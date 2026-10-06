@@ -1877,10 +1877,29 @@ paths:
     patch:
       summary: Update a change request.
       description: >
-        At least one field is required. Only entity-service's ServiceNow data
-        source supports this route. State transitions are driven through
+        At least one field is required. State transitions are driven through
         isCustomerApproved/isCustomerReviewed/requestApproval, not by setting
         state directly.
+
+
+        Two levels of access. Roles that hold the `change_requests:update`
+        permission (admin, agent, internal) may send the whole
+        ChangeRequestUpdateRequest. Customer and partner roles hold only
+        `change_requests:decide` and may send the customer's own answer or a
+        proposed implementation time, nothing else: exactly one of
+        isCustomerApproved (approve / reject while the change request is in
+        Customer Approval), isCustomerReviewed (confirm / fail the review in
+        Customer Review), or plannedStartOn and/or plannedEndOn ("propose new
+        implementation time" -- it sends the change request back through
+        approval). Any other field is a 403 and nothing is forwarded; combining
+        an answer with a proposed time, or both outcomes, is a 400.
+
+
+        Whether the caller may answer THIS change request is entity-service's
+        decision from the forwarded user token: only a registered portal-user
+        contact of the change request's own project (403 otherwise), only while
+        it is in the state the answer belongs to (409 otherwise, e.g. a second
+        contact answering after the first).
       operationId: patchChangeRequestsId
       parameters:
         - name: id
@@ -1922,6 +1941,14 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
           description: NotFound
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: >-
+            The answer does not apply in the change request's state (for example
+            a second contact answering after the first). Nothing was changed.
           content:
             application/json:
               schema:
@@ -1992,7 +2019,13 @@ paths:
   /change-requests/{id}/approvals/decision:
     post:
       summary: Record the caller's decision on their own pending change-request approval.
-      description: Only entity-service's ServiceNow data source supports this route.
+      description: >
+        Requires `change_requests:decide`, which customer and partner roles
+        hold along with the WSO2-side roles. Customers answer a Customer
+        Approval / Customer Review here (or with PATCH isCustomerApproved /
+        isCustomerReviewed, the same decision); entity-service accepts a decision
+        only on the caller's own pending approval, so a customer who was not
+        asked is refused.
       operationId: postChangeRequestsIdApprovalsDecision
       parameters:
         - name: id
