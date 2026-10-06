@@ -42,10 +42,11 @@
 //
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import type { test } from "@playwright/test";
+import type { Page, test } from "@playwright/test";
 import { EXAMPLE_CORP_PROJECT_ID, LOCAL_PERSONAS, type LocalPersona } from "../auth/localSessions";
 
 /** The seeded change requests the specs drive (scripts/csm-compose/seed-entity-service.sql). */
@@ -222,9 +223,27 @@ export type CustomerChangeRequest = {
  * (their bearer token; no groups, so a customer and nothing else).
  */
 export function customerApi(persona: LocalPersona) {
+  return customerApiFor(LOCAL_PERSONAS[persona].email);
+}
+
+/** What the customer API's change request search / stats answer (the parts the specs read). */
+export type CustomerListItem = { id: string; number: string; state?: { id?: string; label?: string } | null };
+export type CustomerStats = {
+  totalCount: number;
+  activeCount: number;
+  outstandingCount: number;
+  actionRequiredCount: number;
+  stateCount: { id: string; label: string; count: number }[];
+};
+
+/**
+ * The same calls for ANY email the identity provider signs in (a seeded persona, or a contact a spec registered
+ * itself): the mock provider needs no credential, so the email alone is the caller.
+ */
+export function customerApiFor(email: string) {
   const token = async () => {
     const { customerClientId } = await stackEndpoints();
-    return mintAccessToken(LOCAL_PERSONAS[persona].email, customerClientId, "");
+    return mintAccessToken(email, customerClientId, "");
   };
   return {
     /** `GET /change-requests/{id}`. */
@@ -237,8 +256,8 @@ export function customerApi(persona: LocalPersona) {
       const { customerApi: base } = await stackEndpoints();
       return call("PATCH", `${base}/change-requests/${changeRequestId}`, await token(), body);
     },
-    /** `GET /change-requests/{id}/approvals`. */
-    async approvals(changeRequestId: string): Promise<ApiResult<{ approvals?: { stage?: string }[] }>> {
+    /** `GET /change-requests/{id}/approvals`: the raw body (a spec reads it for names it must NOT hold). */
+    async approvals(changeRequestId: string): Promise<ApiResult<{ approvals?: { stage?: string; status?: string }[] }>> {
       const { customerApi: base } = await stackEndpoints();
       return call("GET", `${base}/change-requests/${changeRequestId}/approvals`, await token());
     },
@@ -249,8 +268,12 @@ export function customerApi(persona: LocalPersona) {
     },
     /** `POST /projects/{id}/change-requests/search`: the numbers the project lists. */
     async listedNumbers(projectId: string, filters: Record<string, unknown> = {}): Promise<string[]> {
+      return (await this.listed(projectId, filters)).map((c) => c.number);
+    },
+    /** The same search, each item with its state (`{id, label}`). */
+    async listed(projectId: string, filters: Record<string, unknown> = {}): Promise<CustomerListItem[]> {
       const { customerApi: base } = await stackEndpoints();
-      const result = await call<{ changeRequests?: { number?: string }[] }>(
+      const result = await call<{ changeRequests?: CustomerListItem[] }>(
         "POST",
         `${base}/projects/${projectId}/change-requests/search`,
         await token(),
@@ -263,7 +286,24 @@ export function customerApi(persona: LocalPersona) {
       if (result.status !== 200) {
         throw new Error(`listing ${projectId}'s change requests answered ${result.status}: ${JSON.stringify(result.body)}`);
       }
-      return (result.body.changeRequests ?? []).flatMap((c) => (c.number ? [c.number] : []));
+      return (result.body.changeRequests ?? []).filter((c) => c.number);
+    },
+    /** `GET /projects/{id}/stats/change-requests`: the stat cards' counts (undefined when the project is refused). */
+    async stats(projectId: string): Promise<CustomerStats | undefined> {
+      const { customerApi: base } = await stackEndpoints();
+      const result = await call<CustomerStats>("GET", `${base}/projects/${projectId}/stats/change-requests`, await token());
+      if (result.status === 403 || result.status === 404) return undefined;
+      if (result.status !== 200) throw new Error(`stats of ${projectId} answered ${result.status}: ${JSON.stringify(result.body)}`);
+      return result.body;
+    },
+    /** `GET /projects/{id}/stats`: the dashboard's "Outstanding" change request count. */
+    async outstandingChangeRequests(projectId: string): Promise<number | undefined> {
+      const { customerApi: base } = await stackEndpoints();
+      const result = await call<{ projectStats?: { outstandingChangeRequestCount?: number } }>(
+        "GET", `${base}/projects/${projectId}/stats`, await token());
+      if (result.status === 403 || result.status === 404) return undefined;
+      if (result.status !== 200) throw new Error(`project stats of ${projectId} answered ${result.status}`);
+      return result.body.projectStats?.outstandingChangeRequestCount;
     },
     /** The id of the project this customer is a contact of, found by name (generated projects have random ids). */
     async projectIdByName(name: string): Promise<string | undefined> {
@@ -324,6 +364,392 @@ export async function patchAsStaff(
   if (!bff) throw new Error("E2E_CSM_BFF_URL is not set");
   const token = await mintAccessToken(email, "csm-portal-webapp", "cs_engineer");
   return call("PATCH", `${bff}/change-requests/${changeRequestId}`, token, body);
+}
+
+// --- WSO2 staff driving a WHOLE change request, through the CSM portal's backend --------------
+
+/** The staff who raise and approve in the specs: jane is the requester (in no approval group), the rest approve. */
+export const STAFF = { jane: "jane.doe@example.com", ...STAFF_APPROVERS } as const;
+export type StaffPersona = keyof typeof STAFF;
+
+/** "Example Corp ABT" (group 901): the assigned team of every seeded fixture, whose members (alice, bob, carol) are the Peer approvers. */
+export const EXAMPLE_CORP_ABT_GROUP_ID = "00000000-0000-0000-0000-000000000901";
+
+/**
+ * Every change request a spec RAISES (as opposed to the seeded fixtures it moves) carries this prefix in its
+ * subject, so {@link deleteRaisedChanges} can take them away again and the lists the specs count stay the same
+ * from one run to the next.
+ */
+export const RAISED_PREFIX = "E2E raised: ";
+
+/** A change request a spec raised: its id and number. */
+export type RaisedChange = { id: string; number: string; title: string };
+
+/**
+ * A staff member's own calls to the CSM portal's backend (the one the CSM webapp talks to): the `cs_engineer`
+ * group, which is what the portal's sign-in pre-fills.
+ */
+export function staffApi(who: StaffPersona) {
+  const email = STAFF[who];
+  const base = () => {
+    const bff = csmBffUrl();
+    if (!bff) throw new Error("E2E_CSM_BFF_URL is not set");
+    return bff;
+  };
+  const token = () => mintAccessToken(email, "csm-portal-webapp", "cs_engineer");
+  return {
+    email,
+    /** `GET /change-requests/{id}`: the staff view (state is lower case: `customer_approval`). */
+    async get(id: string): Promise<ApiResult<StaffChangeRequest>> {
+      return call("GET", `${base()}/change-requests/${id}`, await token());
+    },
+    /** `PATCH /change-requests/{id}`. */
+    async patch(id: string, body: unknown): Promise<ApiResult<{ message?: string }>> {
+      return call("PATCH", `${base()}/change-requests/${id}`, await token(), body);
+    },
+    /** `POST /change-requests/{id}/approvals/decision`. */
+    async decide(id: string, decision: "approved" | "rejected"): Promise<ApiResult> {
+      return call("POST", `${base()}/change-requests/${id}/approvals/decision`, await token(), { decision });
+    },
+    /** `GET /change-requests/{id}/approvals`: every stage with every approver (what staff see). */
+    async approvals(id: string): Promise<ApiResult<StaffApprovals>> {
+      return call("GET", `${base()}/change-requests/${id}/approvals`, await token());
+    },
+    /** `POST /change-requests`. */
+    async create(body: unknown): Promise<ApiResult<{ changeRequest?: { id: string; number: string } }>> {
+      return call("POST", `${base()}/change-requests`, await token(), body);
+    },
+  };
+}
+
+/** The part of the staff view of a change request the specs read. */
+export type StaffChangeRequest = {
+  id: string;
+  number: string;
+  state: string;
+  customerApprovalRequired?: boolean;
+  customerReviewRequired?: boolean;
+  project?: { id: string; name: string } | null;
+  customerContacts?: { name?: string; email?: string }[];
+  message?: string;
+};
+
+/** The staff view of the approvals: every stage with its approvers (name, status, canDecide). */
+export type StaffApprovals = {
+  approvals?: { stage: string; status?: string; approvers?: { name?: string; status?: string; canDecide?: boolean }[] }[];
+};
+
+/**
+ * Raises a change request through the CSM portal's backend as `jane` (the requester persona, in no approval
+ * group, so alice, bob and carol may all approve it), assigned to Example Corp ABT, and returns it.
+ *
+ * @param options.projectId - The Customer Project (`null`: none).
+ * @param options.approval / options.review - The two creation-form boxes.
+ * @param options.type - normal (default), standard or emergency.
+ */
+export async function raiseChange(options: {
+  title: string;
+  projectId: string | null;
+  approval: boolean;
+  review: boolean;
+  type?: "normal" | "standard" | "emergency";
+}): Promise<RaisedChange> {
+  const title = `${RAISED_PREFIX}${options.title}`;
+  const created = await staffApi("jane").create({
+    subject: title,
+    type: options.type ?? "normal",
+    groupId: EXAMPLE_CORP_ABT_GROUP_ID,
+    ...(options.projectId ? { projectId: options.projectId } : {}),
+    customerApprovalRequired: options.approval,
+    customerReviewRequired: options.review,
+  });
+  const change = created.body.changeRequest;
+  if (created.status !== 201 || !change) {
+    throw new Error(`raising "${title}" answered ${created.status}: ${JSON.stringify(created.body)}`);
+  }
+  return { id: change.id, number: change.number, title };
+}
+
+/** Request Approval (New -> Assess), as the requester. */
+export async function requestApproval(id: string): Promise<ApiResult<StaffChangeRequest>> {
+  return staffApi("jane").patch(id, { state: "assess" }) as Promise<ApiResult<StaffChangeRequest>>;
+}
+
+/** A staff decision that must succeed. */
+export async function staffDecides(who: StaffPersona, id: string, decision: "approved" | "rejected" = "approved"): Promise<void> {
+  const result = await staffApi(who).decide(id, decision);
+  if (result.status !== 200) throw new Error(`${who}'s ${decision} on ${id} answered ${result.status}: ${JSON.stringify(result.body)}`);
+}
+
+/** A staff state change that must succeed (`implement`, `review`, `customer_review`, `closed`, ...). */
+export async function staffMoves(who: StaffPersona, id: string, state: string): Promise<void> {
+  const result = await staffApi(who).patch(id, { state });
+  if (result.status !== 200) throw new Error(`${who} moving ${id} to ${state} answered ${result.status}: ${JSON.stringify(result.body)}`);
+}
+
+/** The stored state of a change request, as the stack's database holds it (UPPER_SNAKE). */
+export async function storedState(id: string): Promise<string> {
+  return (await psql(`select state from change_request where id = '${id}'`)).trim();
+}
+
+/**
+ * Takes away every change request a spec raised ({@link RAISED_PREFIX}); the cascade removes their stages and
+ * approver rows. Run it before and after a spec that raises, so a failed run leaves nothing behind either.
+ */
+export async function deleteRaisedChanges(): Promise<void> {
+  await psql(`delete from work_item where type = 'CHANGE_REQUEST' and subject like '${RAISED_PREFIX}%'`);
+}
+
+/** The id of "Lumen Works Platform" (mira and noel's project; random per database), found as mira finds it. */
+let lumenId: Promise<string> | undefined;
+export function lumenProjectId(): Promise<string> {
+  lumenId ??= (async () => {
+    const id = await customerApi("mira").projectIdByName(LOCAL_PERSONAS.mira.project);
+    if (!id) throw new Error(`${LOCAL_PERSONAS.mira.project} is not one of mira's projects: is the stack seeded?`);
+    return id;
+  })();
+  return lumenId;
+}
+
+/**
+ * Saves a screenshot of `page` as `<E2E_SHOT_DIR>/<name>.png` when that directory is named (and does nothing
+ * otherwise): the way a run leaves pictures of its key screens without a spec ever failing for want of a folder.
+ */
+export async function shot(page: Page, name: string): Promise<void> {
+  const dir = process.env.E2E_SHOT_DIR?.trim();
+  if (!dir) return;
+  fs.mkdirSync(dir, { recursive: true });
+  await page.screenshot({ path: path.join(dir, `${name}.png`) });
+}
+
+// --- What the stat cards and the dashboard say to a customer --------------------------------
+
+/** What one state adds to the project's counts for a customer who sees a change request in it (entity-service's active / outstanding / action-required states; Authorize is outstanding for a customer only). */
+export const STATE_ADDS: Record<string, { active: number; outstanding: number; actionRequired: number }> = {
+  Authorize: { active: 1, outstanding: 1, actionRequired: 0 },
+  "Customer Approval": { active: 1, outstanding: 1, actionRequired: 1 },
+  Scheduled: { active: 1, outstanding: 1, actionRequired: 0 },
+  Implement: { active: 1, outstanding: 1, actionRequired: 0 },
+  Review: { active: 1, outstanding: 1, actionRequired: 0 },
+  "Customer Review": { active: 1, outstanding: 1, actionRequired: 1 },
+  Rollback: { active: 1, outstanding: 1, actionRequired: 0 },
+  Closed: { active: 0, outstanding: 0, actionRequired: 0 },
+  Canceled: { active: 0, outstanding: 0, actionRequired: 0 },
+};
+
+/** The project's stat cards and the dashboard's Outstanding count, as one customer is told them. */
+export type Counts = {
+  total: number;
+  active: number;
+  outstanding: number;
+  actionRequired: number;
+  /** The dashboard's "Outstanding" change request count (GET /projects/{id}/stats). */
+  dashboard: number;
+  byState: Record<string, number>;
+};
+
+/** What the project's stat cards and the dashboard say right now to `email` (undefined: the project is refused them). */
+export async function customerCounts(email: string, projectId: string): Promise<Counts | undefined> {
+  const api = customerApiFor(email);
+  const stats = await api.stats(projectId);
+  if (!stats) return undefined;
+  const dashboard = (await api.outstandingChangeRequests(projectId)) ?? -1;
+  return {
+    total: stats.totalCount,
+    active: stats.activeCount,
+    outstanding: stats.outstandingCount,
+    actionRequired: stats.actionRequiredCount,
+    dashboard,
+    byState: Object.fromEntries(stats.stateCount.map((s) => [s.label, s.count])),
+  };
+}
+
+/**
+ * The counts a customer must be told once one more change request is visible to them in each of `labels` (an empty
+ * list, or null: none is, and the counts are `base`).
+ */
+export function countsWith(base: Counts, labels: string | string[] | null): Counts {
+  const list = labels === null ? [] : Array.isArray(labels) ? labels : [labels];
+  const out: Counts = { ...base, byState: { ...base.byState } };
+  for (const label of list) {
+    const add = STATE_ADDS[label];
+    out.total += 1;
+    out.active += add.active;
+    out.outstanding += add.outstanding;
+    out.actionRequired += add.actionRequired;
+    out.dashboard += add.outstanding;
+    out.byState[label] = (out.byState[label] ?? 0) + 1;
+  }
+  return out;
+}
+
+// --- Contacts registered AFTER a stage was provisioned ----------------------------------------
+
+/** The late contact: registered on Lumen Works Platform only once a change request had been put to mira and noel. */
+export const LATE_CONTACT = { email: "ozzy.late@lumenworks.example", name: "Ozzy Late" } as const;
+
+/** SQL that registers LATE_CONTACT on Lumen Works Platform exactly as the seed registers mira and noel (a customer user, a REGISTERED PORTAL_USER contact). */
+const REGISTER_LATE_CONTACT_SQL = `
+BEGIN;
+INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user)
+VALUES ('00000000-0000-0000-0000-00000e2e0001', now(), now(), 'e2e', 'e2e', '${LATE_CONTACT.email}', '${LATE_CONTACT.name}', 'Ozzy', 'Late', '${LATE_CONTACT.email}', true, false)
+ON CONFLICT (id) DO NOTHING;
+INSERT INTO user_role (id, created_on, updated_on, user_id, role_id)
+VALUES ('00000000-0000-0000-0000-00000e2e0002', now(), now(), '00000000-0000-0000-0000-00000e2e0001', '00000000-0000-0000-0000-000000000102')
+ON CONFLICT (id) DO NOTHING;
+WITH lumen AS (SELECT id, account_id FROM project WHERE name = 'Lumen Works Platform' AND account_id IS NOT NULL ORDER BY created_on, id LIMIT 1)
+INSERT INTO account_contact (id, created_on, updated_on, created_by, updated_by, is_active, user_name, account_id)
+SELECT '00000000-0000-0000-0000-00000e2e0003', now(), now(), 'e2e', 'e2e', true, '${LATE_CONTACT.email}', lumen.account_id FROM lumen
+ON CONFLICT (id) DO NOTHING;
+WITH lumen AS (SELECT id FROM project WHERE name = 'Lumen Works Platform' AND account_id IS NOT NULL ORDER BY created_on, id LIMIT 1)
+INSERT INTO project_contact (id, created_on, updated_on, created_by, updated_by, email, state, account_contact_id, project_id)
+SELECT '00000000-0000-0000-0000-00000e2e0004', now(), now(), 'e2e', 'e2e', '${LATE_CONTACT.email}', 'REGISTERED', '00000000-0000-0000-0000-00000e2e0003', lumen.id FROM lumen
+ON CONFLICT (id) DO UPDATE SET state = 'REGISTERED';
+INSERT INTO project_contact_group (id, created_on, updated_on, created_by, updated_by, project_contact_id, project_group_id)
+SELECT '00000000-0000-0000-0000-00000e2e0005', now(), now(), 'e2e', 'e2e', '00000000-0000-0000-0000-00000e2e0004', pg.id
+FROM project_group pg WHERE pg."group" = 'General Access'
+ON CONFLICT (id) DO NOTHING;
+COMMIT;`;
+
+/** Registers {@link LATE_CONTACT} on Lumen Works Platform (idempotent). */
+export async function registerLateContact(): Promise<void> {
+  await psql(REGISTER_LATE_CONTACT_SQL);
+}
+
+/** Removes {@link LATE_CONTACT} again (the cascade takes their approver rows too, if any). */
+export async function removeLateContact(): Promise<void> {
+  await psql(`
+    DELETE FROM approval_stage_approver WHERE approver_user_id = '00000000-0000-0000-0000-00000e2e0001';
+    DELETE FROM project_contact_group WHERE id = '00000000-0000-0000-0000-00000e2e0005';
+    DELETE FROM project_contact WHERE id = '00000000-0000-0000-0000-00000e2e0004';
+    DELETE FROM account_contact WHERE id = '00000000-0000-0000-0000-00000e2e0003';
+    DELETE FROM user_role WHERE id = '00000000-0000-0000-0000-00000e2e0002';
+    DELETE FROM "user" WHERE id = '00000000-0000-0000-0000-00000e2e0001';`);
+}
+
+// --- Legacy (migrated from ServiceNow) change requests -----------------------------------------
+
+const LEGACY_SEED_FILE = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "../fixtures/legacy-change-requests.sql",
+);
+
+/** The numbers of the legacy rows (fixtures/legacy-change-requests.sql), by what they are. */
+export const LEGACY = {
+  /** project 401, one per state (flags false, nothing asked of anybody). */
+  new: "CHG0039101",
+  assess: "CHG0039102",
+  authorize: "CHG0039103",
+  customerApproval: "CHG0039104",
+  scheduled: "CHG0039105",
+  implement: "CHG0039106",
+  review: "CHG0039107",
+  customerReview: "CHG0039108",
+  rollback: "CHG0039109",
+  closed: "CHG0039110",
+  canceled: "CHG0039111",
+  /** Customer Approval with a window already planned (to propose another on). */
+  customerApprovalToPropose: "CHG0039112",
+  /** Customer Approval for the second contact (erin) to answer. */
+  customerApprovalForErin: "CHG0039113",
+  /** Lumen Works Platform: the user's "Demo Test 1" shape, and a Scheduled one. */
+  lumenDemoTest: "CHG0039201",
+  lumenScheduled: "CHG0039202",
+  /** Synced stages with no label. */
+  emergencyInAuthorize: "CHG0039301",
+  staleStageScheduled: "CHG0039302",
+  /** Either side of the cutover instant. */
+  oneSecondBefore: "CHG0039401",
+  atTheInstant: "CHG0039402",
+} as const;
+
+/** The states in which a customer has always been shown a change request (everything past Authorize). */
+export const LEGACY_VISIBLE = [
+  LEGACY.customerApproval, LEGACY.scheduled, LEGACY.implement, LEGACY.review, LEGACY.customerReview, LEGACY.rollback,
+  LEGACY.closed, LEGACY.canceled, LEGACY.customerApprovalToPropose, LEGACY.customerApprovalForErin, LEGACY.staleStageScheduled,
+  LEGACY.oneSecondBefore,
+] as const;
+
+/** A legacy row's id: ServiceNow-style (md5 of the number rendered as a UUID), as the seed file writes it. */
+export function legacyId(number: string): string {
+  const hex = createHash("md5").update(`legacy-${number}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+/** (Re)writes the legacy rows to their starting state. */
+export async function seedLegacyChangeRequests(): Promise<void> {
+  await psql(fs.readFileSync(LEGACY_SEED_FILE, "utf8"));
+}
+
+/** Takes the legacy rows away again, so the specs that count a project's list do not see them. */
+export async function deleteLegacyChangeRequests(): Promise<void> {
+  await psql("delete from work_item where created_by = 'sn-sync' and number ~ '^CHG0039[1234]'");
+}
+
+/** One approver row of a change request: stage label (or "" for an unlabeled one), who, and its state. */
+export async function stageRows(id: string): Promise<string[]> {
+  const out = await psql(
+    "select coalesce(s.checkpoint_label, '(no label)') || '|' || coalesce(u.email, '(no user)') || '|' || a.state " +
+      "from approval_stage s join approval_stage_approver a on a.stage_id = s.id " +
+      'left join "user" u on u.id = a.approver_user_id ' +
+      `where s.work_item_id = '${id}' order by s.created_on, s.id, u.email nulls last`,
+  );
+  return out ? out.split("\n") : [];
+}
+
+// --- Calls straight at entity-service, as the customer portal's backend makes them ------------
+
+/** entity-service's published port (isolated stack: http://localhost:18081); undefined when unset. */
+export function entityServiceUrl(): string | undefined {
+  return process.env.E2E_ENTITY_SERVICE_URL?.trim().replace(/\/+$/, "") || undefined;
+}
+
+/**
+ * A customer's call straight to entity-service, bypassing the customer portal's backend (and so its early
+ * validation): what that backend forwards is the backend's own machine token plus the customer's own ID token
+ * (`x-user-id-token`). It proves a rule is the SERVICE's, not just the backend's.
+ */
+export async function entityAsCustomer(
+  email: string,
+  method: string,
+  pathAndQuery: string,
+  body?: unknown,
+): Promise<ApiResult> {
+  const base = entityServiceUrl();
+  if (!base) throw new Error("E2E_ENTITY_SERVICE_URL is not set");
+  const { oidc, customerClientId } = await stackEndpoints();
+  // The customer's ID token, by the same authorization-code exchange the apps perform.
+  const authorize = await fetch(`${oidc}/oauth2/authorize`, {
+    method: "POST", redirect: "manual", headers: FORM,
+    body: new URLSearchParams({ client_id: customerClientId, redirect_uri: appOrigin(), state: "e2e", scope: "openid", email, groups: "" }),
+  });
+  const code = new URL(authorize.headers.get("location") ?? "http://x").searchParams.get("code");
+  if (!code) throw new Error(`no code for ${email}`);
+  const tokens = (await (await fetch(`${oidc}/oauth2/token`, {
+    method: "POST", headers: FORM,
+    body: new URLSearchParams({ grant_type: "authorization_code", code, client_id: customerClientId, redirect_uri: appOrigin() }),
+  })).json()) as { id_token?: string };
+  // The backend's own machine token (client credentials).
+  const machine = (await (await fetch(`${oidc}/oauth2/token`, {
+    method: "POST",
+    headers: { ...FORM, authorization: `Basic ${Buffer.from("customer-portal-backend-dev-client:dev-secret").toString("base64")}` },
+    body: new URLSearchParams({ grant_type: "client_credentials" }),
+  })).json()) as { access_token?: string };
+  if (!tokens.id_token || !machine.access_token) throw new Error("the identity provider gave no token");
+  const response = await fetch(`${base}${pathAndQuery}`, {
+    method,
+    headers: {
+      authorization: `Bearer ${machine.access_token}`,
+      "x-user-id-token": tokens.id_token,
+      ...(body === undefined ? {} : { "content-type": "application/json" }),
+    },
+    body: body === undefined ? undefined : JSON.stringify(body),
+    signal: AbortSignal.timeout(30_000),
+  });
+  const text = await response.text();
+  let parsed: unknown = text;
+  try { parsed = text ? JSON.parse(text) : null; } catch { /* keep the text */ }
+  return { status: response.status, body: parsed };
 }
 
 // --- The stack's Postgres (the isolated stack's, named by the environment) ----------

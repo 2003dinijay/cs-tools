@@ -147,6 +147,32 @@ export class ChangeRequestsPage {
     });
   }
 
+  /** The list's search box ("Search change requests by number, title, or description..."). */
+  searchBox(): Locator {
+    return this.main().getByPlaceholder(/^Search change requests/);
+  }
+
+  /**
+   * Searches the list for `text` (a number, say) and waits until the search that carries it has answered, so a
+   * caller that then counts the rows (or the empty copy) is not looking at the list from before it.
+   *
+   * @param text - What to type.
+   */
+  async searchFor(text: string): Promise<void> {
+    const answered = this.page.waitForResponse(
+      (r) =>
+        r.url().includes("/change-requests/search") &&
+        r.request().method() === "POST" &&
+        (r.request().postData() ?? "").includes(text),
+      { timeout: LOAD_TIMEOUT_MS },
+    );
+    await this.searchBox().fill(text);
+    await answered;
+    await expect(
+      this.allRows().first().or(this.main().getByText(CHANGE_REQUESTS_LIST.emptyRefinedMessage)),
+    ).toBeVisible({ timeout: LOAD_TIMEOUT_MS });
+  }
+
   /**
    * The change request number a row carries.
    *
