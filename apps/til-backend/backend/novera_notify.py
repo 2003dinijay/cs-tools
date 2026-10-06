@@ -37,6 +37,7 @@ Config (env):
 """
 from __future__ import annotations
 
+import html as html_module
 import os
 
 import httpx
@@ -53,7 +54,14 @@ async def notify_novera(
     if not NOVERA_NOTIFY_URL:
         return
     payload = {
-        "who": who,
+        # Escaped for the same reason chat_notify.py escapes this exact
+        # field for the Space card: `who` is free text this service only
+        # .strip()s, never HTML-escapes, and Novera's own card embeds it
+        # directly in a textParagraph. Defense in depth -- Novera's own
+        # broadcast code escapes it too, but this shouldn't rely on that
+        # alone any more than chat_notify.py relies on the frontend editor
+        # alone.
+        "who": html_module.escape(who),
         "where": where,
         "whereDetail": where_detail,
         # Same Chat-markup subset conversion as the Space card (Novera's own
