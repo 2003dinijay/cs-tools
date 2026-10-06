@@ -2294,7 +2294,19 @@ already use — no route path, request, or response shape changed.
   own submitter) AND the card to currently be `submitted` — both checked
   under one `SELECT ... FOR UPDATE` so a concurrent approver-list edit or a
   second transition attempt can't slip through between the check and the
-  write. `CreateTimeCard` validates a supplied `projectId` against the
+  write. That guard only fires at decide-time, though — until now nothing
+  stopped the same submitter/approver pairing from being written in the
+  first place. `validateApproverIDsExcludeSubmitter` (`time_card_service.go`)
+  closes that at create/edit time instead: `CreateTimeCard`/`UpdateTimeCard`
+  both reject a request naming the submitting user among `ApproverIDs`,
+  compared against `submitterID` directly rather than re-reading the card's
+  own stored `user_id` (cheap and correct for both call sites — see that
+  function's own doc comment). The webapp's own approver picker
+  (`LogTimeCardDialog.tsx`) already filters itself out of both the live
+  search and the "Recently selected" list for the same reason, but that was
+  always a UI convenience only, never an enforced rule — a direct API call
+  (or a stale client) could still persist it before this. `CreateTimeCard`
+  validates a supplied `projectId` against the
   case's own `work_item.project_id` (`case.id` and `work_item.id` are the
   same value) rather than trusting an unrelated existing project id;
   omitting it leaves `customer_project_id` `NULL`, unchanged from before
