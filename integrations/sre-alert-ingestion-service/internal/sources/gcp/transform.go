@@ -48,8 +48,8 @@ var severityMap = map[string]string{
 	"info":     "Informational",
 }
 
-// ErrMissingBody is returned when the webhook is called with no body at all.
-var ErrMissingBody = errors.New("MISSING REQUEST BODY DATA")
+// ErrMissingBody is returned when the webhook is called with no body, or a body that isn't valid JSON at all.
+var ErrMissingBody = errors.New("missing or invalid request body")
 
 // Alert is the canonical alert model handed to the core component.
 type Alert = model.Alert
@@ -83,6 +83,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 
 	// GCP's notification channel webhook wraps the actual alert under "incident"; nested objects degrade to an empty map rather than erroring.
 	incident, _ := payload["incident"].(map[string]any)
+	documentation, _ := incident["documentation"].(map[string]any)
 	resource, _ := incident["resource"].(map[string]any)
 	labels, _ := resource["labels"].(map[string]any)
 	userLabels, _ := incident["policy_user_labels"].(map[string]any)
@@ -105,7 +106,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Environment:      configValue(cfg, "ENVIRONMENT", utils.FirstNonEmpty(utils.Str(labels, "environment"), utils.Str(userLabels, "environment"))),
 		Source:           source,
 		UniqueIdentifier: utils.Str(incident, "incident_id"),
-		Description:      utils.CompactJSON(raw),
+		// The incident summary or the policy's documentation, never the payload; the raw body is kept in raw_alerts.
+		Description: utils.FirstNonEmpty(utils.Str(incident, "summary"), utils.Str(documentation, "content")),
 	}
 	return alert, nil
 }

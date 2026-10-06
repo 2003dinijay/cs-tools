@@ -541,20 +541,37 @@ func (s *incidentService) createIncidentPortal(ctx context.Context, req domain.C
 	if err != nil {
 		return domain.CreateIncidentResponse{}, err
 	}
-	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID)
+	// The enriched publish, not the title-only one. This create path arrived
+	// from upstream calling the 4-argument form, which predates the escalation
+	// ladder: it publishes an incident.created carrying only the subject, with
+	// no team, priority or contactType. The ladder resolves its rungs from
+	// those fields, so an incident created here -- which includes every one
+	// raised by alert ingestion -- would reach csm-notification-service with
+	// nothing to escalate on, and no ladder would run for it.
+	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID,
+		resp.Incident.Number, resp.Incident.CreatedOn, s.GetIncidentByID)
 	return resp, nil
 }
 
-// incidentPriorityFor is ServiceNow's stock priority lookup (dl_u_priority):
-// impact x urgency to priority, as an incident_priority_enum label. The
-// create form's preview (webapp utils/incidentPriorityMatrix.ts) shows the
-// same matrix.
+// incidentPriorityFor is ServiceNow's incident priority lookup (dl_u_priority)
+// -- see priorityFromImpactUrgency. The create form's preview (webapp
+// utils/incidentPriorityMatrix.ts) shows the same matrix.
+func incidentPriorityFor(impact domain.IncidentImpact, urgency domain.IncidentUrgency) string {
+	return priorityFromImpactUrgency(string(impact), string(urgency))
+}
+
+// priorityFromImpactUrgency is ServiceNow's impact x urgency -> priority
+// lookup. Incidents use dl_u_priority ("Priority Lookup"), problems
+// dl_problem_priority ("Priority Problem Lookup"); both run on insert and
+// update, overwrite whatever priority was set, and hold the same nine rows
+// (discovery scripts 64 and 65), so one table serves both. Labels are the
+// shared HIGH/MEDIUM/LOW and CRITICAL..PLANNING enum spellings.
 //
 //	impact \ urgency   HIGH       MEDIUM     LOW
 //	HIGH              CRITICAL   HIGH       MODERATE
 //	MEDIUM            HIGH       MODERATE   LOW
 //	LOW               MODERATE   LOW        PLANNING
-func incidentPriorityFor(impact domain.IncidentImpact, urgency domain.IncidentUrgency) string {
+func priorityFromImpactUrgency(impact, urgency string) string {
 	rank := func(v string) int {
 		switch v {
 		case "HIGH":
@@ -565,7 +582,7 @@ func incidentPriorityFor(impact domain.IncidentImpact, urgency domain.IncidentUr
 			return 2
 		}
 	}
-	return [...]string{"CRITICAL", "HIGH", "MODERATE", "LOW", "PLANNING"}[rank(string(impact))+rank(string(urgency))]
+	return [...]string{"CRITICAL", "HIGH", "MODERATE", "LOW", "PLANNING"}[rank(impact)+rank(urgency)]
 }
 
 // createIncidentSNFirst implements CreateIncident's
@@ -616,7 +633,7 @@ func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.
 	// doc comment for why this can't just be snIncidentService's own
 	// automatic publish (that fires right after the ServiceNow POST, before
 	// this Postgres insert was even attempted).
-	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID)
+	publishIncidentCreatedEvent(ctx, s.eventPublisher, req, resp.Incident.ID, snResp.Incident.Number, snResp.Incident.CreatedOn, s.GetIncidentByID)
 	return resp, nil
 }
 
@@ -704,6 +721,18 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		return domain.UpdateIncidentResponse{}, err
 	}
 
+	// The incident before this change, so a claim or a move out of NEW can be told apart from a
+	// re-send of what it already had (publishIncidentStopSignals). Read only when one could follow.
+	var before domain.IncidentView
+	if s.eventPublisher != nil && (req.State != nil || req.AssignedEngineerID != nil) {
+		if b, err := s.repo.GetIncidentByID(ctx, req.ID); err == nil {
+			before = b
+		} else {
+			slog.WarnContext(ctx, "update incident: could not read the incident before the change; no stop signal will be sent",
+				"incidentId", req.ID, "error", err)
+		}
+	}
+
 	if hasLifecycle {
 		if actor.ID != "" {
 			lifecycle.DefaultResolvedByID = &actor.ID
@@ -722,6 +751,7 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 	if err != nil {
 		return domain.UpdateIncidentResponse{}, err
 	}
+	publishIncidentStopSignals(ctx, s.eventPublisher, req, before, view)
 
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write
 	// only (guaranteed by the s.snWriteback == nil return just below). Postgres has

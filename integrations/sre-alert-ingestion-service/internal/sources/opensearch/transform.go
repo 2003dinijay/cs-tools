@@ -101,7 +101,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Environment:      configValue(cfg, "ENVIRONMENT", ""), // never taken from payload
 		Source:           source,
 		UniqueIdentifier: utils.Str(payload, "alert_id"),
-		Description:      utils.CompactJSON(raw),
+		// The trigger's message text, never the payload; the raw body is kept in raw_alerts.
+		Description: utils.FirstNonEmpty(utils.Str(payload, "message"), utils.Str(payload, "description")),
 	}
 	return alert, nil
 }

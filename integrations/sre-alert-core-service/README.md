@@ -66,7 +66,7 @@ notifications independently until they're actually delivered.
   every retry, the service searches CSM by `correlationId` so a lost create response
   never causes a duplicate.
 - **Chat fallback.** If CSM still hasn't confirmed an incident
-  `notify.chat_fallback_delay` (60s) after it was created, it is posted once to
+  `notify.chat_fallback_delay` (25s) after it was created, it is posted once to
   `FALLBACK_CHAT_WEBHOOK_URLS`; CSM keeps retrying meanwhile. Without CSM configured,
   or after CSM permanently rejects the incident, the card is posted at once. With `chat_threading_enabled`, each incident gets its
   own thread, and Duplicate/OK alerts are collapsed into one digest reply per
@@ -113,9 +113,10 @@ confirmation being stored.
 - `internal/hub`: the `/alertz` HTTP handler that wakes the poller early.
 - `internal/postgres`: connection setup (`pgxpool`) and schema migration.
 - `internal/config`: loads and validates `config.toml`.
-- `internal/auth`: PBKDF2 hashing/verification, the `integration_users`
-  repository, and the `RequireAuth` middleware guarding `/alertz` (verified
-  credentials are cached for 60s).
+- `internal/auth`: PBKDF2 hashing/verification and the `integration_users`
+  repository (used by `cmd/user` and by sre-alert-ingestion-service's webhook auth),
+  plus `RequireWakeToken`, which guards `/alertz` with the shared
+  `ALERT_CORE_WAKE_TOKEN`.
 - `cmd/server`: wires everything together and manages startup/shutdown.
 - `cmd/user`: CLI to create/rotate, list, enable, and disable `integration_users` rows.
 

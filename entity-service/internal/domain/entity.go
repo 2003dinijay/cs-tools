@@ -787,6 +787,14 @@ type SalesforceContactUpsertResult struct {
 	IsAccountAdmin bool
 }
 
+// AffectedUser names a user a write changed, so the caller can drop that
+// user's cached profile once the write has committed. Either field may be
+// empty when the write could not resolve it.
+type AffectedUser struct {
+	ID    string
+	Email string
+}
+
 // MembershipWriteTarget is the project (and its account) a portal membership
 // write lands on, read inside the write's own transaction before the
 // Salesforce half runs. The Salesforce ids are what the Salesforce calls need;
@@ -3346,8 +3354,8 @@ type CreateCaseCommentRequest struct {
 	Content   string      `json:"content"`
 	// ActorEmail is set only by an M2M caller that has no x-user-id-token to
 	// resolve an acting user from (e.g. UMT via csm-integration-service).
-	// The handler checks it against a configured allowlist of trusted
-	// service-account emails (config.Config.M2MTrustedActorEmails) before
+	// The handler checks the caller's own x-jwt-assertion client id against
+	// the trusted M2M client set (config.Config.M2MClientIDs) before
 	// honoring it -- an arbitrary caller-supplied value is never trusted
 	// as-is, since that would let any caller claim to be any user. Mutually
 	// exclusive with a real x-user-id-token on the same request.
@@ -3362,8 +3370,8 @@ type AddCaseTagRequest struct {
 	Label  string `json:"label"`
 	// ActorEmail is set only by an M2M caller that has no x-user-id-token to
 	// resolve an acting user from (e.g. UMT via csm-integration-service).
-	// The handler checks it against a configured allowlist of trusted
-	// service-account emails (config.Config.M2MTrustedActorEmails) before
+	// The handler checks the caller's own x-jwt-assertion client id against
+	// the trusted M2M client set (config.Config.M2MClientIDs) before
 	// honoring it -- an arbitrary caller-supplied value is never trusted
 	// as-is, since that would let any caller claim to be any user. Mutually
 	// exclusive with a real x-user-id-token on the same request.
@@ -6191,6 +6199,7 @@ type ProblemDetail struct {
 	LinkedIncidents     []CaseNumberRef `json:"linkedIncidents"`
 	LinkedChangeRequest *CaseNumberRef  `json:"linkedChangeRequest"`
 	AssignedTo          *EntityRef      `json:"assignedTo"`
+	AssignmentGroup     *EntityRef      `json:"assignmentGroup"`
 	ResolutionCode      *string         `json:"resolutionCode"`
 	CauseNotes          *string         `json:"causeNotes"`
 	FixNotes            *string         `json:"fixNotes"`
@@ -6333,6 +6342,24 @@ type SearchIncidentTasksResponse struct {
 	Limit         int            `json:"limit"`
 }
 
+// IncidentTaskClosedStates are incident_task_state_enum's closed labels
+// (ServiceNow's SYSTEM_INACTIVE_STATES 3, 4, 7). A task in any other state
+// (PENDING, OPEN, WORK_IN_PROGRESS) is still open, and is closed for it when
+// its incident is closed or canceled.
+var IncidentTaskClosedStates = map[string]bool{
+	"CLOSED_COMPLETE":   true,
+	"CLOSED_INCOMPLETE": true,
+	"CLOSED_SKIPPED":    true,
+}
+
+// UpdateIncidentTaskRequest is the input for PATCH /incident-tasks/{id}.
+// At least one field must be set. State is an incident_task_state_enum label.
+type UpdateIncidentTaskRequest struct {
+	ID         string  `json:"-"`
+	State      *string `json:"state,omitempty"`
+	CloseNotes *string `json:"closeNotes,omitempty"`
+}
+
 // IncidentTaskDetail is the full detail representation returned by
 // GET /incident-tasks/{id}.
 //
@@ -6352,6 +6379,9 @@ type IncidentTaskDetail struct {
 	Priority        *string        `json:"priority"`
 	OpenedOn        *string        `json:"openedOn"`
 	ClosedOn        *string        `json:"closedOn"`
+	// CloseNotes is incident_task.close_notes; always nil on the ServiceNow
+	// data source.
+	CloseNotes *string `json:"closeNotes"`
 }
 
 // ConversationState represents the state of a conversation. All six values are
@@ -7697,6 +7727,44 @@ type SearchSLAStatusResponse struct {
 	Total    int         `json:"total"`
 	Limit    int         `json:"limit"`
 	Offset   int         `json:"offset"`
+}
+
+// SLADurationPolicyItem is one (severity, clockType) duration row from the
+// sla_duration_policy table (migration 0192) — a small, static reference
+// table seeded directly from WSO2's own published Enterprise Support Policy,
+// independent of the ServiceNow-synced "sla"/"sla_policy" tables SLAStatus
+// above reads. csm-notification-service fetches the full set once at
+// startup (GET /sla-duration-policy) to compute each case's own due dates
+// itself, rather than depending on a sync that has no plain severity column
+// to key a lookup on.
+//
+// Severity is the same uppercase English word every case.* event's own
+// Priority field already carries (e.g. "CATASTROPHIC") — not the raw
+// case_severity_enum label ("S0") the table stores it as — so a consumer
+// can match this response directly against a case.created payload's
+// Priority with no translation of its own. See
+// ReferenceDataRepository.ListSLADurationPolicy's own doc comment for the
+// S0..S4 mapping.
+type SLADurationPolicyItem struct {
+	Severity string `json:"severity"`
+	// ClockType is "response" / "workaround" / "resolution" — matches
+	// sla_policy.target's own lower-cased vocabulary (see SLAStatus.ClockType
+	// above), so a consumer already matching on that string needs no second
+	// vocabulary for this endpoint.
+	ClockType string `json:"clockType"`
+	// DurationSeconds is the policy's duration in whole seconds — not a
+	// formatted string (contrast TaskSlaDefinitionDetail.Duration above) and
+	// not an ISO-8601 duration, since the one real consumer
+	// (csm-notification-service) only ever needs to feed this straight into
+	// a time.Duration, and a plain integer needs no parsing to get there.
+	DurationSeconds int64 `json:"durationSeconds"`
+}
+
+// SLADurationPolicyResponse is the response for GET /sla-duration-policy —
+// every row in sla_duration_policy, unpaginated (at most 15 rows today: 5
+// severities × up to 3 clock types each).
+type SLADurationPolicyResponse struct {
+	Policies []SLADurationPolicyItem `json:"policies"`
 }
 
 // AnnouncementRequestState is the lifecycle state of an announcement_requests

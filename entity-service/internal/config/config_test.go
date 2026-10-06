@@ -42,6 +42,12 @@ func baseValidConfig() Config {
 		AuthIssuer:             "https://api.asgardeo.io/t/x/oauth2/token",
 		AuthJWKSURL:            "https://api.asgardeo.io/t/x/oauth2/jwks",
 		AuthUserTokenAudiences: []string{"spa"},
+		// Timeouts carry their real defaults for the same reason: Load always
+		// populates them and Validate rejects non-positive values.
+		ServerReadTimeout:     DefaultServerReadTimeout,
+		ServerWriteTimeout:    DefaultServerWriteTimeout,
+		RequestTimeout:        DefaultRequestTimeout,
+		UpstreamClientTimeout: DefaultUpstreamClientTimeout,
 	}
 }
 
@@ -335,6 +341,10 @@ func baseValidServiceNowConfig() Config {
 		AuthIssuer:             "https://api.asgardeo.io/t/x/oauth2/token",
 		AuthJWKSURL:            "https://api.asgardeo.io/t/x/oauth2/jwks",
 		AuthUserTokenAudiences: []string{"spa"},
+		ServerReadTimeout:      DefaultServerReadTimeout,
+		ServerWriteTimeout:     DefaultServerWriteTimeout,
+		RequestTimeout:         DefaultRequestTimeout,
+		UpstreamClientTimeout:  DefaultUpstreamClientTimeout,
 	}
 }
 
@@ -705,6 +715,115 @@ func TestConfig_Validate_CustomerEngagementFirefightingTypeID(t *testing.T) {
 	}
 }
 
+// TestConfig_Validate_RedisURL: a malformed REDIS_URL fails startup, and the
+// error never echoes the URL, since it carries the Redis password.
+func TestConfig_Validate_RedisURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		wantErr bool
+	}{
+		{name: "unset", url: "", wantErr: false},
+		{name: "tls", url: "rediss://:s3cr3t%3D@cache.example.net:10000", wantErr: false},
+		{name: "plain", url: "redis://localhost:6379/0", wantErr: false},
+		{name: "wrong scheme", url: "https://:s3cr3t@cache.example.net", wantErr: true},
+		{name: "no host", url: "rediss://:s3cr3t@", wantErr: true},
+		{name: "unparseable", url: "rediss://:s3cr3t@[::1", wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := baseValidConfig()
+			c.RedisURL = tt.url
+			err := c.Validate()
+			if tt.wantErr != (err != nil) {
+				t.Fatalf("Validate() = %v, wantErr %v", err, tt.wantErr)
+			}
+			if err != nil && strings.Contains(err.Error(), "s3cr3t") {
+				t.Errorf("Validate() error leaks the password: %v", err)
+			}
+		})
+	}
+}
+
+func TestLoad_TimeoutDefaults(t *testing.T) {
+	for _, k := range []string{"SERVER_READ_TIMEOUT", "SERVER_WRITE_TIMEOUT", "REQUEST_TIMEOUT", "UPSTREAM_CLIENT_TIMEOUT"} {
+		t.Setenv(k, "")
+	}
+	c := Load()
+	if c.ServerReadTimeout != 60*time.Second || c.ServerWriteTimeout != 60*time.Second ||
+		c.RequestTimeout != 60*time.Second || c.UpstreamClientTimeout != 60*time.Second {
+		t.Errorf("defaults = %v/%v/%v/%v, want 60s/60s/60s/60s",
+			c.ServerReadTimeout, c.ServerWriteTimeout, c.RequestTimeout, c.UpstreamClientTimeout)
+	}
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with defaults = %v, want nil", err)
+	}
+}
+
+func TestLoad_TimeoutOverrides(t *testing.T) {
+	t.Setenv("SERVER_READ_TIMEOUT", "2m")
+	t.Setenv("SERVER_WRITE_TIMEOUT", "90s")
+	t.Setenv("REQUEST_TIMEOUT", "80s")
+	t.Setenv("UPSTREAM_CLIENT_TIMEOUT", "75s")
+	c := Load()
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+	if err := c.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil", err)
+	}
+	if c.ServerReadTimeout != 2*time.Minute || c.ServerWriteTimeout != 90*time.Second ||
+		c.RequestTimeout != 80*time.Second || c.UpstreamClientTimeout != 75*time.Second {
+		t.Errorf("overrides not applied: %v/%v/%v/%v",
+			c.ServerReadTimeout, c.ServerWriteTimeout, c.RequestTimeout, c.UpstreamClientTimeout)
+	}
+}
+
+func TestLoad_InvalidTimeoutFailsValidate(t *testing.T) {
+	for _, k := range []string{"SERVER_READ_TIMEOUT", "SERVER_WRITE_TIMEOUT", "REQUEST_TIMEOUT", "UPSTREAM_CLIENT_TIMEOUT"} {
+		t.Run(k, func(t *testing.T) {
+			t.Setenv(k, "fifty")
+			c := Load()
+			c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+			c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), k) {
+				t.Errorf("Validate() = %v, want an error naming %s", err, k)
+			}
+		})
+	}
+}
+
+func TestLoad_Redis(t *testing.T) {
+	t.Setenv("REDIS_URL", "")
+	t.Setenv("REDIS_ADDR", "")
+	t.Setenv("USER_CACHE_TTL", "")
+	c := Load()
+	if c.HasRedis() {
+		t.Error("HasRedis() = true with neither REDIS_URL nor REDIS_ADDR set")
+	}
+	if c.UserCacheTTL != 10*time.Minute {
+		t.Errorf("UserCacheTTL = %v, want the 10m default", c.UserCacheTTL)
+	}
+
+	t.Setenv("REDIS_ADDR", " localhost:6379 ")
+	t.Setenv("USER_CACHE_TTL", "90s")
+	c = Load()
+	if !c.HasRedis() || c.RedisAddr != "localhost:6379" {
+		t.Errorf("HasRedis() = %v, RedisAddr = %q; want true, %q", c.HasRedis(), c.RedisAddr, "localhost:6379")
+	}
+	if c.UserCacheTTL != 90*time.Second {
+		t.Errorf("UserCacheTTL = %v, want 90s", c.UserCacheTTL)
+	}
+
+	t.Setenv("REDIS_ADDR", "")
+	t.Setenv("REDIS_URL", "rediss://:pw@cache.example.net:10000")
+	if !Load().HasRedis() {
+		t.Error("HasRedis() = false with REDIS_URL set")
+	}
+}
+
 // dsnSearchPath extracts the search_path value DSN embedded in its "options"
 // query parameter, so a test can assert on the schema alone rather than the
 // whole connection string.
@@ -774,5 +893,28 @@ func TestSREEventHubTopicMovesBothOperationsPublishers(t *testing.T) {
 	}
 	if c.EventHubTopic == "sre-events" {
 		t.Error("the case-events topic must not move")
+	}
+}
+
+func TestConfig_Validate_Timeouts(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{"zero read", func(c *Config) { c.ServerReadTimeout = 0 }, "SERVER_READ_TIMEOUT"},
+		{"negative write", func(c *Config) { c.ServerWriteTimeout = -time.Second }, "SERVER_WRITE_TIMEOUT"},
+		{"zero request", func(c *Config) { c.RequestTimeout = 0 }, "REQUEST_TIMEOUT"},
+		{"zero upstream", func(c *Config) { c.UpstreamClientTimeout = 0 }, "UPSTREAM_CLIENT_TIMEOUT"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := baseValidConfig()
+			tt.mutate(&c)
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("Validate() = %v, want error containing %q", err, tt.wantErr)
+			}
+		})
 	}
 }

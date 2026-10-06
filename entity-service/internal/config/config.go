@@ -30,6 +30,16 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/validate"
 )
 
+// Defaults for the timeout settings. Create-case carries inline base64
+// attachments (up to 15 MiB), so the deadlines must be long enough for it to
+// finish. Operators may set any positive values.
+const (
+	DefaultServerReadTimeout     = 60 * time.Second
+	DefaultServerWriteTimeout    = 60 * time.Second
+	DefaultRequestTimeout        = 60 * time.Second
+	DefaultUpstreamClientTimeout = 60 * time.Second
+)
+
 // DataSource identifies which backend the service reads from.
 type DataSource string
 
@@ -385,9 +395,16 @@ type Config struct {
 	// forwarded user token, if present at all, is used only for
 	// attribution (created_by/updated_by), never for scoping.
 	//
-	// Not to be confused with M2MTrustedActorEmails below, which is a
-	// completely different list (acting-user emails an M2M caller may
-	// claim, not client ids).
+	// Also gates AddCaseTagRequest.ActorEmail/CreateCaseCommentRequest.ActorEmail
+	// (internal/handler/case_handler.go): a caller whose x-jwt-assertion
+	// names a client id in this same set may claim ANY actorEmail as the
+	// acting user for a tag/comment write -- the same "M2MClientIDs wins
+	// outright, unconditionally" trust this list already carries for
+	// scoping. This used to be a second, separate email-based allowlist
+	// (M2M_TRUSTED_ACTOR_EMAILS), replaced in favor of one list to keep
+	// trusted internal callers in: a caller already trusted to bypass RLS
+	// entirely needs no second, narrower list just to claim a comment/tag
+	// author.
 	//
 	// This is deliberately NOT where apps/csm-portal/backend or
 	// apps/customer-portal/backend-v2 belong, even though both are
@@ -445,14 +462,6 @@ type Config struct {
 	SalesEntityClientID     string
 	SalesEntityClientSecret string
 	SalesEntityScopes       string
-	// M2MTrustedActorEmails is the allowlist of service-account emails an
-	// M2M caller (no x-user-id-token, e.g. UMT via csm-integration-service)
-	// may claim as the acting user via AddCaseTagRequest.ActorEmail. An
-	// unset/empty var means no email is trusted and every such request is
-	// rejected -- this is deliberately not a default-open list, since it
-	// exists specifically to stop an M2M caller from spoofing an arbitrary
-	// actor. Compared case-insensitively in the handler.
-	M2MTrustedActorEmails []string
 
 	// Escalation* configure the fixed, deployment-specific notification
 	// recipient GROUPS EscalationService.CreateEscalation (Postgres data
@@ -487,12 +496,57 @@ type Config struct {
 	EscalationEL4CCOGroupID            string
 	EscalationEL4CROGroupID            string
 	EscalationEL5CEOGroupID            string
+
+	// RedisURL/RedisAddr/RedisPassword configure the optional user cache in
+	// front of GET /users/{id} and GET /users/me (internal/cache), with the
+	// same convention as integrations/csm-notification-service: RedisURL is a
+	// rediss://:<password>@<host>:<port> connection string for a managed,
+	// TLS-only Redis (Azure Managed Redis) and takes priority; RedisAddr/
+	// RedisPassword are the plain, non-TLS pair for a local Redis. Neither set
+	// means no cache: every read goes to Postgres, as before.
+	//
+	// The client is a plain redis.NewClient, so the target must be a
+	// non-clustered Redis or one under the "Enterprise" clustering policy, not
+	// "OSS Cluster".
+	RedisURL      string
+	RedisAddr     string
+	RedisPassword string
+	// UserCacheTTL bounds how long a cached user survives without an
+	// invalidation (USER_CACHE_TTL, default 10m). Every writer of user, role
+	// and membership data invalidates the affected user after it commits, so
+	// this is the backstop for a missed invalidation, not the main freshness
+	// mechanism.
+	UserCacheTTL time.Duration
+	// ServerReadTimeout and ServerWriteTimeout are the main API server's
+	// http.Server ReadTimeout/WriteTimeout (SERVER_READ_TIMEOUT,
+	// SERVER_WRITE_TIMEOUT). The health server keeps its own fixed timeouts.
+	ServerReadTimeout  time.Duration
+	ServerWriteTimeout time.Duration
+	// RequestTimeout cancels each request's context (REQUEST_TIMEOUT).
+	// Keeping it shorter than ServerWriteTimeout lets the handler write a
+	// clean error, but this is not enforced.
+	RequestTimeout time.Duration
+	// UpstreamClientTimeout is the data-source HTTP client timeout
+	// (UPSTREAM_CLIENT_TIMEOUT).
+	UpstreamClientTimeout time.Duration
+
+	// loadErr records the first unparsable environment value seen by Load,
+	// which has no error return. Validate reports it.
+	loadErr error
 }
 
 // Load reads configuration from environment variables and returns a populated
 // Config. Missing variables fall back to sensible defaults; callers should
 // validate required fields (e.g. DBUser, DBPassword, DBName) before use.
 func Load() *Config {
+	var loadErr error
+	duration := func(key string, def time.Duration) time.Duration {
+		d, err := getDurationOrDefault(key, def)
+		if err != nil && loadErr == nil {
+			loadErr = err
+		}
+		return d
+	}
 	cfg := &Config{
 		DBHost:                                   getEnvOrDefault("DB_HOST", "localhost"),
 		DBPort:                                   getEnvOrDefault("DB_PORT", "5432"),
@@ -558,7 +612,6 @@ func Load() *Config {
 		SalesEntityClientSecret:                       os.Getenv("SALES_ENTITY_CLIENT_SECRET"),
 		SalesEntityScopes:                             os.Getenv("SALES_ENTITY_SCOPES"),
 		CSMMigrationMembershipRegistrationEnabled:     os.Getenv("CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED") == "true",
-		M2MTrustedActorEmails:                         splitComma(os.Getenv("M2M_TRUSTED_ACTOR_EMAILS")),
 		EscalationEL1AmericasTLGroupID:                os.Getenv("ESCALATION_EL1_AMERICAS_TL_GROUP_ID"),
 		EscalationEL2AmericasTUGroupID:                os.Getenv("ESCALATION_EL2_AMERICAS_TU_GROUP_ID"),
 		EscalationEL2ServiceProductGroupID:            os.Getenv("ESCALATION_EL2_SERVICE_PRODUCT_GROUP_ID"),
@@ -568,6 +621,11 @@ func Load() *Config {
 		EscalationEL4CCOGroupID:                       os.Getenv("ESCALATION_EL4_CCO_GROUP_ID"),
 		EscalationEL4CROGroupID:                       os.Getenv("ESCALATION_EL4_CRO_GROUP_ID"),
 		EscalationEL5CEOGroupID:                       os.Getenv("ESCALATION_EL5_CEO_GROUP_ID"),
+		ServerReadTimeout:                             duration("SERVER_READ_TIMEOUT", DefaultServerReadTimeout),
+		ServerWriteTimeout:                            duration("SERVER_WRITE_TIMEOUT", DefaultServerWriteTimeout),
+		RequestTimeout:                                duration("REQUEST_TIMEOUT", DefaultRequestTimeout),
+		UpstreamClientTimeout:                         duration("UPSTREAM_CLIENT_TIMEOUT", DefaultUpstreamClientTimeout),
+		loadErr:                                       loadErr,
 	}
 	cfg.M2MClientIDs = ParseInternalClientIDs(cfg.M2MClientIDsRaw)
 	if cfg.CustomerPortalBackendClientID != "" && cfg.M2MClientIDs[cfg.CustomerPortalBackendClientID] {
@@ -585,8 +643,18 @@ func Load() *Config {
 	cfg.CSMMigrationSalesforcePartnerIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED") == "true"
 	cfg.CSMMigrationCustomerEngagementIngestEnabled = os.Getenv("CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED") == "true"
 	cfg.CustomerEngagementFirefightingTypeID = strings.TrimSpace(os.Getenv("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID"))
+	cfg.RedisURL = strings.TrimSpace(os.Getenv("REDIS_URL"))
+	cfg.RedisAddr = strings.TrimSpace(os.Getenv("REDIS_ADDR"))
+	cfg.RedisPassword = os.Getenv("REDIS_PASSWORD")
+	cfg.UserCacheTTL = envDuration("USER_CACHE_TTL", 10*time.Minute)
 	cfg.applySREEventHubTopic()
 	return cfg
+}
+
+// HasRedis reports whether a Redis connection is configured, which turns on
+// the user cache. Either REDIS_URL or REDIS_ADDR is enough.
+func (c *Config) HasRedis() bool {
+	return c.RedisURL != "" || c.RedisAddr != ""
 }
 
 // ParseInternalClientIDs parses a comma-separated client id list (M2M_CLIENT_IDS)
@@ -599,6 +667,20 @@ func ParseInternalClientIDs(raw string) map[string]bool {
 		out[id] = true
 	}
 	return out
+}
+
+// getDurationOrDefault parses key as a Go duration string (e.g. "60s"). An
+// unset or empty value yields defaultVal; an unparsable one is an error.
+func getDurationOrDefault(key string, defaultVal time.Duration) (time.Duration, error) {
+	v := os.Getenv(key)
+	if v == "" {
+		return defaultVal, nil
+	}
+	d, err := time.ParseDuration(v)
+	if err != nil {
+		return defaultVal, fmt.Errorf("invalid %s %q: %w", key, v, err)
+	}
+	return d, nil
 }
 
 func getEnvOrDefault(key, defaultVal string) string {
@@ -667,9 +749,26 @@ func (c *Config) HasDatabase() bool {
 // partially set in either mode, if
 // SERVICENOW_INTEGRATION_SERVICE_BASE_URL is missing when
 // DATA_SOURCE=servicenow, if EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/
-// EVENT_HUB_TOPIC are only partially set, or if the SALES_ENTITY_* vars are
-// only partially set.
+// EVENT_HUB_TOPIC are only partially set, if the SALES_ENTITY_* vars are
+// only partially set, or if SERVER_READ_TIMEOUT/SERVER_WRITE_TIMEOUT/
+// REQUEST_TIMEOUT/UPSTREAM_CLIENT_TIMEOUT are unparsable or not positive.
 func (c *Config) Validate() error {
+	if c.loadErr != nil {
+		return c.loadErr
+	}
+	for _, t := range []struct {
+		name string
+		val  time.Duration
+	}{
+		{"SERVER_READ_TIMEOUT", c.ServerReadTimeout},
+		{"SERVER_WRITE_TIMEOUT", c.ServerWriteTimeout},
+		{"REQUEST_TIMEOUT", c.RequestTimeout},
+		{"UPSTREAM_CLIENT_TIMEOUT", c.UpstreamClientTimeout},
+	} {
+		if t.val <= 0 {
+			return fmt.Errorf("%s must be greater than 0, got %s", t.name, t.val)
+		}
+	}
 	// The health server is a separate listener precisely so that only its
 	// own routes are reachable at public visibility (see HealthPort). Two
 	// listeners cannot share a port: the second ListenAndServe would fail
@@ -819,6 +918,14 @@ func (c *Config) Validate() error {
 	}
 	if v := c.CustomerEngagementFirefightingTypeID; v != "" && !isSysID(v) {
 		return fmt.Errorf("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID must be a 32-character hex sys_id")
+	}
+	// The URL carries the Redis password, so neither it nor url.Parse's own
+	// error (which quotes its input) may appear in this message.
+	if c.RedisURL != "" {
+		u, err := url.Parse(c.RedisURL)
+		if err != nil || (u.Scheme != "redis" && u.Scheme != "rediss") || u.Host == "" {
+			return fmt.Errorf("REDIS_URL must be a redis:// or rediss:// connection string with a host")
+		}
 	}
 	return nil
 }

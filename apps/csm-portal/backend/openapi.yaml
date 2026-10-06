@@ -16,7 +16,8 @@ info:
     | `approve_time_card` | `PATCH /time-cards/{id}` when the body sets `state` (approve/reject) | time-card-approver, admin |
     | `escalate` | `POST /cases/{id}/escalations` | escalator, admin |
     | `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` | attachment-downloader, cs-engineer, admin |
-    | `write` | every other `POST`/`PATCH`/`DELETE`, including case, incident and change-request comments | cs-engineer, admin |
+    | `create_work_note` | `POST /cases/{id}/comments` with `type=work_note` (internal note) — and nothing else | worknote-creator, cs-engineer, admin |
+    | `write` | every other `POST`/`PATCH`/`DELETE`, including incident and change-request comments and case comments of any type other than `work_note` | cs-engineer, admin |
     | `admin` | `POST /users` | admin only |
     | `security_center` | `POST /products/vulnerabilities/search`, `GET /products/vulnerabilities/{id}`, and a `POST /cases/search`/`GET /cases/{id}` naming case type security_report_analysis | cs-engineer, admin |
 security:
@@ -263,6 +264,11 @@ paths:
   /cases/{id}/comments:
     post:
       summary: Create a comment on a case.
+      description: >-
+        A caller holding `write` (cs-engineer, admin) may post any comment type. A
+        worknote-creator-only caller may post only `type=work_note` (an internal
+        note); any other type is rejected with `403`. A viewer-only caller may not
+        post at all.
       operationId: postCasesIdComments
       parameters:
         - name: id
@@ -7800,6 +7806,66 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+    patch:
+      summary: >-
+        Change an incident task's state and/or close notes (Postgres data sources only).
+      description: >-
+        Closing a task (CLOSED_COMPLETE, CLOSED_INCOMPLETE or CLOSED_SKIPPED) sets it
+        inactive and records when and by whom, unless already recorded; moving it back to
+        an open state makes it active again and keeps those, as ServiceNow does. Closing or
+        canceling the parent incident closes any task still open (Closed Incomplete /
+        Closed Skipped), as ServiceNow's "Cascade closure of Incident Tasks" does.
+      operationId: updateIncidentTask
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateIncidentTaskRequest'
+      responses:
+        "200":
+          description: The updated incident task.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IncidentTaskDetail'
+        "400":
+          description: No field given, or an unknown state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Incident task not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "503":
+          description: Not available on the ServiceNow data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
 
   /incident-tasks/search:
     post:
@@ -12763,6 +12829,561 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+
+  /users/by-ids:
+    post:
+      summary: Resolve a batch of user ids to their profiles.
+      operationId: getUsersByIDs
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Matching users.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-articles:
+    post:
+      summary: Create a KB article (draft).
+      operationId: createKBArticle
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "201":
+          description: Created article.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-articles/search:
+    post:
+      summary: Search KB articles.
+      operationId: searchKBArticles
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Matching articles.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-articles/{id}:
+    get:
+      summary: Get one KB article by id.
+      operationId: getKBArticle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The requested article.
+          content:
+            application/json:
+              schema:
+                type: object
+        "404":
+          description: No such article.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+    patch:
+      summary: Edit a KB article's title/body (draft).
+      operationId: patchKBArticleContent
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated article.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+    delete:
+      summary: Delete a KB article (draft or pending_review only).
+      operationId: deleteKBArticle
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Deleted.
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-articles/{id}/state:
+    patch:
+      summary: Transition a KB article's state.
+      operationId: patchKBArticleState
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated article.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Illegal transition or bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "409":
+          description: Conflicting concurrent update.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-articles/{id}/history:
+    get:
+      summary: List a KB article's version history.
+      operationId: listKBArticleHistory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Version history.
+          content:
+            application/json:
+              schema:
+                type: object
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /knowledge-bases:
+    get:
+      summary: List active knowledge bases.
+      operationId: listKnowledgeBases
+      responses:
+        "200":
+          description: Knowledge bases.
+          content:
+            application/json:
+              schema:
+                type: object
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+    post:
+      summary: Create a knowledge base.
+      operationId: createKnowledgeBase
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "201":
+          description: Created knowledge base.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /knowledge-bases/{id}:
+    patch:
+      summary: Rename a knowledge base.
+      operationId: updateKnowledgeBaseName
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated knowledge base.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /knowledge-bases/{id}/active:
+    patch:
+      summary: Activate or deactivate a knowledge base.
+      operationId: setKnowledgeBaseActive
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Updated knowledge base.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-managers/my-knowledge-bases:
+    get:
+      summary: List knowledge bases the current user manages.
+      operationId: listMyManagedKnowledgeBases
+      responses:
+        "200":
+          description: Managed knowledge base ids.
+          content:
+            application/json:
+              schema:
+                type: object
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-manager-users:
+    post:
+      summary: Grant a user manager access to a knowledge base.
+      operationId: createKBManagerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "201":
+          description: Created grant.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+    delete:
+      summary: Revoke a user's manager access to a knowledge base.
+      operationId: deleteKBManagerUser
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "204":
+          description: Revoked.
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-manager-users/search:
+    post:
+      summary: Search knowledge-base manager users.
+      operationId: searchKBManagerUsers
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Matching manager users.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-manager-groups:
+    post:
+      summary: Grant a group manager access to a knowledge base.
+      operationId: createKBManagerGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "201":
+          description: Created grant.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+    delete:
+      summary: Revoke a group's manager access to a knowledge base.
+      operationId: deleteKBManagerGroup
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "204":
+          description: Revoked.
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+
+  /kb-manager-groups/search:
+    post:
+      summary: Search knowledge-base manager groups.
+      operationId: searchKBManagerGroups
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        "200":
+          description: Matching manager groups.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorPayload"
 
 components:
   securitySchemes:
@@ -20567,6 +21188,16 @@ components:
         offset:
           type: integer
 
+    UpdateIncidentTaskRequest:
+      type: object
+      minProperties: 1
+      properties:
+        state:
+          type: string
+          enum: [PENDING, OPEN, WORK_IN_PROGRESS, CLOSED_COMPLETE, CLOSED_INCOMPLETE, CLOSED_SKIPPED]
+        closeNotes:
+          type: string
+
     IncidentTaskDetail:
       allOf:
         - $ref: '#/components/schemas/IncidentTask'
@@ -20582,6 +21213,9 @@ components:
               type: string
               nullable: true
             closedOn:
+              type: string
+              nullable: true
+            closeNotes:
               type: string
               nullable: true
 

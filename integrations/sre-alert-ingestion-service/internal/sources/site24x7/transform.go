@@ -39,11 +39,11 @@ var severityMap = map[string]string{
 	"UP":       "OK",
 }
 
-// ErrMissingBody is returned when the webhook is called with no body at all.
-var ErrMissingBody = errors.New("MISSING REQUEST BODY DATA")
+// ErrMissingBody is returned when the webhook is called with no body, or a body that isn't valid JSON at all.
+var ErrMissingBody = errors.New("missing or invalid request body")
 
 // ErrMissingStatus is returned when neither the payload's STATUS field nor a configured Defaults.Severity is present.
-var ErrMissingStatus = errors.New("MISSING REQUIRED FIELD: STATUS")
+var ErrMissingStatus = errors.New("missing required field STATUS")
 
 // Alert is the canonical alert model handed to the core component.
 type Alert = model.Alert
@@ -93,7 +93,8 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 		Environment:      utils.FirstNonEmpty(extracted["Environment"], cfg.Defaults["Environment"]),
 		Source:           source,
 		UniqueIdentifier: utils.Str(payload, "MONITOR_ID"),
-		Description:      utils.CompactJSON(raw),
+		// Site24x7's reason text, never the payload; the raw body is kept in raw_alerts.
+		Description: utils.Str(payload, "INCIDENT_REASON"),
 	}
 	return alert, nil
 }
