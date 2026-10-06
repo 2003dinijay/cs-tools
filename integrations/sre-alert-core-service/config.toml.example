@@ -34,10 +34,6 @@ connect_base_delay = "2s"
 # Per-connection and per-query timeouts against Azure Flexible Server PostgreSQL.
 connect_timeout = "10s"
 query_timeout = "5s"
-# /alertz credentials are checked against an in-memory copy of integration_users reloaded this often; user changes apply within it.
-auth_refresh_interval = "30s"
-# While refreshes fail, the last good copy keeps serving this long; after that, /alertz answers 503.
-auth_max_stale = "15m"
 
 [notify]
 # Retries per Chat webhook call; base delay doubles each attempt.

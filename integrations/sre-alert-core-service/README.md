@@ -113,10 +113,10 @@ confirmation being stored.
 - `internal/hub`: the `/alertz` HTTP handler that wakes the poller early.
 - `internal/postgres`: connection setup (`pgxpool`) and schema migration.
 - `internal/config`: loads and validates `config.toml`.
-- `internal/auth`: PBKDF2 hashing/verification, the `integration_users`
-  repository, and the `RequireAuth` middleware guarding `/alertz`. Credentials are
-  checked against an in-memory copy of `integration_users` reloaded every
-  `postgres.auth_refresh_interval` (30s), so `/alertz` never waits on Postgres.
+- `internal/auth`: PBKDF2 hashing/verification and the `integration_users`
+  repository (used by `cmd/user` and by sre-alert-ingestion-service's webhook auth),
+  plus `RequireWakeToken`, which guards `/alertz` with the shared
+  `ALERT_CORE_WAKE_TOKEN`.
 - `cmd/server`: wires everything together and manages startup/shutdown.
 - `cmd/user`: CLI to create/rotate, list, enable, and disable `integration_users` rows.
 

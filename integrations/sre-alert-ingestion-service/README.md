@@ -90,6 +90,7 @@ cp .env.example .env
 4. Mount a customized `config.toml` under **Manage > Configs and Secrets > File Mount** if any
    default needs changing; without it the service runs on `config.toml.example`'s values.
 5. Connect this component to `sre-alert-core-service`'s endpoint and point `ALERT_CORE_WAKE_URL`
-   at its `/alertz` path. Both services must share the same `PG*` values.
+   at its `/alertz` path. Set `ALERT_CORE_WAKE_TOKEN` (a secret, from `openssl rand -hex 32`) to the
+   same value on both components. Both services must share the same `PG*` values.
 6. Any number of replicas is safe: ids stay unique across replicas because every claim pulls from
    `alert_seq`, which can never hand out the same value twice.
