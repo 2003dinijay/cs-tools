@@ -879,6 +879,14 @@ type mockEntityIncidentTaskClient struct {
 	searchIncidentTasksFn    func(ctx context.Context, body []byte) ([]byte, error)
 	aggregateIncidentTasksFn func(ctx context.Context, body []byte) ([]byte, error)
 	getIncidentTaskFn        func(ctx context.Context, id string) ([]byte, error)
+	updateIncidentTaskFn     func(ctx context.Context, id string, body []byte) ([]byte, error)
+}
+
+func (m *mockEntityIncidentTaskClient) UpdateIncidentTask(ctx context.Context, id string, body []byte) ([]byte, error) {
+	if m.updateIncidentTaskFn != nil {
+		return m.updateIncidentTaskFn(ctx, id, body)
+	}
+	return []byte(`{}`), nil
 }
 
 func (m *mockEntityIncidentTaskClient) SearchIncidentTasks(ctx context.Context, body []byte) ([]byte, error) {

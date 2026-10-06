@@ -252,6 +252,120 @@ go run ./cmd/server/main.go
 
 The server auto-loads `.env` from the working directory at startup (silently ignored if absent).
 
+`cmd/server` needs a real Event Hub: `internal/eventbus` dials its broker with
+TLS and SASL/PLAIN unconditionally (correct for Azure Event Hub, impractical
+against a laptop broker), and `EVENT_HUB_BROKER`/`EVENT_HUB_CONNECTION_STRING`/
+`EVENT_HUB_TOPIC`/`EVENT_HUB_DLQ_TOPIC` are all `mustEnv`. Point them at the dev
+namespace to run the whole service; there is no local-broker mode.
+
+## Testing the incident call escalation
+
+The escalation ladder is the one flow you really want to hear before trusting
+it, and `cmd/escalation-local` exists so you can, without Event Hub. It runs
+the **real engine** (`escalation.Engine.Handle` and `.Tick`) against a real
+Redis, fed the same event envelopes Event Hub would deliver, on a compressed
+clock — one ladder minute per second by default, so a 113-minute P4 ladder
+takes under two minutes.
+
+Dry runs are not stubbed at the client boundary: the real
+`notifications.TwilioClient` is pointed at a local HTTP server through its own
+`APIBaseURL` override, so the TwiML — the SSML document especially — is built
+by production code and printed exactly as Twilio would receive it.
+
+You can also run the ladder over Google Chat instead of Twilio, which needs no
+telephony account at all - `-channel chat` posts one card per rung to the space
+`GOOGLE_CHAT_SPACES` configures, and `-channel both` does each.
+
+```bash
+docker run --rm -p 6379:6379 redis          # the ladder's durable state
+
+# 1. dry run: nothing is dialled, the TwiML is printed
+go run ./cmd/escalation-local -priority CRITICAL
+
+# 2. see a ladder stop the way section 3.0 says an elevation is acknowledged
+go run ./cmd/escalation-local -kind elevated -priority P0 -cancel-after 6s
+
+# 3. hear it, on one number you control
+go run ./cmd/escalation-local -priority P0 -live -to +9477xxxxxxx -ssml \
+    -cancel-after 10s
+```
+
+### Testing a ladder against the local Team Schedule
+
+`scripts/csm-compose/trigger-sre-escalation.sh` runs the real engine against the
+local stack's rota and shows who each rung reaches. By default nothing leaves the
+machine: it runs on the `log` channel, which prints who each rung would reach
+and contacts nobody, so no Chat space, webhook or Twilio account is needed.
+
+```bash
+scripts/csm-compose/trigger-sre-escalation.sh                         # apollo (SRE), HIGH, logged
+scripts/csm-compose/trigger-sre-escalation.sh -p all -m 200ms         # every priority, fast
+scripts/csm-compose/trigger-sre-escalation.sh -t castor -p P0 -l both # a CRE P0: both ladders
+scripts/csm-compose/trigger-sre-escalation.sh -c 3 -o chat            # post to the space instead
+```
+
+An SRE team climbs the SRE ladder, the same clock for every priority, so
+`-p all` on one shows five identical plans; a CRE team's clock is set by the
+priority. A P0 on a CRE team climbs both ladders; `-l both` runs the CRE
+one and then the SRE one, so each can be read on its own (`-l sre` alone, on a
+CRE team below P0, schedules nothing -- that is the rule). `-o chat` needs
+`GOOGLE_CHAT_SPACES` (exported, or in the `.env` `ESCALATION_ENV_FILE` points
+at) and masks names on the cards; the default log shows real names, since it
+stays on the terminal. It needs entity-service, mock-oidc and Redis up, and runs
+the repo's gateway shim in front of entity-service for the run, because
+entity-service reads the caller from `x-jwt-assertion`, which only the Choreo
+gateway adds. The local seed rosters SRE engineers on L1 and L2 only, so L3
+reports NO_RECIPIENTS. `-h` lists every option.
+
+A ladder outlives the process that started it, so an interrupted run can leave
+one in Redis that the next run resumes and keeps dialling. The tool retires its
+own on exit, but `go run` does not forward signals to the child it spawns, so an
+interrupted `go run` can still orphan one. `-cleanup` retires anything left
+behind — worth running before any `--live` session:
+
+```bash
+go run ./cmd/escalation-local -cleanup
+```
+
+`--live` needs `TWILIO_ACCOUNT_SID`/`TWILIO_AUTH_TOKEN`/`TWILIO_FROM_NUMBER` in
+`.env`, refuses to run without an explicit `--to` (so it can never page whoever
+a real roster points at), and refuses to start at all if the plan is larger than
+`--max-calls`. Useful flags: `-shift` and `-not-abt` to exercise the section 5.0
+routing rules (`USA_WEEKEND` with and without `-not-abt` is R10 vs R12),
+`-cancel-by status|comment` for either acknowledgement gesture, and `-minute` to
+change the compression.
+
+**`cmd/ladder-harness` is a different tool**: it builds a plan and places the
+calls itself, with no engine, no durable state and no events — it answers "what
+does the ladder sound like". `cmd/escalation-local` answers "does the engine
+actually do it", including the parts only the engine has: idempotency under
+redelivery, resumption from Redis, and cancellation driven by a real event.
+
+### Running the full service against it
+
+To exercise the Kafka hop and `cmd/server` itself, point the service at the dev
+Event Hub namespace with `REDIS_ADDR=localhost:6379` and an
+`INCIDENT_ESCALATION_ROSTER`, then create a real incident through
+entity-service's `POST /incidents` and raise its priority with a `PATCH`. That
+is the only path that covers the publisher, the topic and the consumer group
+together. Note `CUSTOMER_ENTITY_BASE_URL` is optional: without it the engine
+still runs a full ladder and logs its execution summary instead of writing it
+back to the incident.
+
+Also unset `INCIDENT_DEFAULT_CALL_TO` while testing, or every incident gets
+`dispatch`'s own single immediate call as well as the ladder — the service warns
+at startup when both are live.
+
+### Redis-backed store tests
+
+`internal/paging/store_test.go` covers the ladder store against a real
+Redis and skips when none is reachable, so `go test ./...` stays dependency-free:
+
+```bash
+docker run --rm -p 6379:6379 redis
+go test ./internal/paging/ -run TestStore -v
+```
+
 ## Commands
 
 ```bash

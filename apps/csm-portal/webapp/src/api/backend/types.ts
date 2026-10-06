@@ -3691,11 +3691,8 @@ export interface BePatchProblemResponse {
 }
 
 /**
- * List-item shape for `POST /incident-tasks/search`. No dedicated detail
- * page exists for incident tasks in this app (unlike problem/incident), so
- * there is no separate `BeIncidentTaskDetail` type yet — `description`,
- * `priority`, `openedOn`, `closedOn` are on the backend's own
- * `GET /incident-tasks/{id}` response but have no frontend consumer today.
+ * List-item shape for `POST /incident-tasks/search`. The detail page reads
+ * `GET /incident-tasks/{id}` instead (`BeIncidentTaskDetail`).
  * `stateLabel` is a pre-humanized display string the data source already
  * resolves server-side — prefer it over trying to humanize `state` (a raw,
  * data-source-specific integer with no stable domain enum here; see the
@@ -3715,6 +3712,32 @@ export interface BeIncidentTaskSearchView {
   incident?: BeCaseNumberRef | null;
   assignmentGroup?: BeEntityRef | null;
   assignedTo?: BeEntityRef | null;
+}
+
+/** `GET /incident-tasks/{id}` response: the search view plus the fields only
+ * the detail page shows. */
+export interface BeIncidentTaskDetail extends BeIncidentTaskSearchView {
+  description?: string | null;
+  /** CRITICAL | HIGH | MODERATE | LOW | PLANNING on Postgres. */
+  priority?: string | null;
+  openedOn?: string | null;
+  closedOn?: string | null;
+  closeNotes?: string | null;
+}
+
+/** incident_task_state_enum labels, as Postgres returns them in `state`. */
+export type BeIncidentTaskState =
+  | "PENDING"
+  | "OPEN"
+  | "WORK_IN_PROGRESS"
+  | "CLOSED_COMPLETE"
+  | "CLOSED_INCOMPLETE"
+  | "CLOSED_SKIPPED";
+
+/** `PATCH /incident-tasks/{id}` body; at least one field. Returns `BeIncidentTaskDetail`. */
+export interface BeUpdateIncidentTaskPayload {
+  state?: BeIncidentTaskState;
+  closeNotes?: string;
 }
 
 /** `POST /incident-tasks/search` body. The only per-incident filter is the

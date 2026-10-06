@@ -56,6 +56,7 @@ type fakeTierStore struct {
 
 	getErr        error
 	setErr        error
+	advanceErr    error
 	claimErr      error
 	releaseErr    error
 	claimEmailErr error
@@ -63,6 +64,7 @@ type fakeTierStore struct {
 	forceClaimLoss map[string]bool
 
 	sets            []tierCall
+	advances        []tierCall
 	claimCalls      []tierCall
 	releaseCalls    []tierCall
 	claimEmailCalls []tierCall
@@ -92,6 +94,21 @@ func (f *fakeTierStore) SetTier(_ context.Context, caseID, clockType string, tie
 	}
 	f.tiers[f.key(caseID, clockType)] = tier
 	f.sets = append(f.sets, tierCall{caseID, clockType, tier})
+	return nil
+}
+
+// AdvanceTier mirrors TierStore.AdvanceTier's own real semantics: the
+// stored cursor only ever moves up, never down or sideways to an equal
+// value, matching the real Lua script's "candidate > current" condition.
+func (f *fakeTierStore) AdvanceTier(_ context.Context, caseID, clockType string, tier int) error {
+	if f.advanceErr != nil {
+		return f.advanceErr
+	}
+	f.advances = append(f.advances, tierCall{caseID, clockType, tier})
+	key := f.key(caseID, clockType)
+	if current, ok := f.tiers[key]; !ok || tier > current {
+		f.tiers[key] = tier
+	}
 	return nil
 }
 
@@ -291,12 +308,14 @@ func TestEngine_Tick_AlertsOnlyNewlyCrossedTier(t *testing.T) {
 	}
 }
 
-// TestEngine_Tick_AlertsEveryTierCrossedSinceLastPoll verifies that a clock
-// whose percentage jumped past more than one checkpoint between polls (a
-// slow ticker interval, or a burst of ServiceNow sync activity) still fires
-// an alert for each intermediate tier, not just the highest one reached —
-// in ascending order.
-func TestEngine_Tick_AlertsEveryTierCrossedSinceLastPoll(t *testing.T) {
+// TestEngine_Tick_CollapsesMultiTierJumpToOneAlert verifies the fix for a
+// real, reported production symptom: a clock whose percentage jumped past
+// more than one checkpoint between polls (entity-service's own upstream
+// sync can leave a clock's percentage stale for days and then update it in
+// one batch) must fire exactly ONE alert, for the highest tier reached —
+// not one alert per intermediate tier (50, then 75, then 100), which
+// produced duplicate-looking Chat cards for a single underlying change.
+func TestEngine_Tick_CollapsesMultiTierJumpToOneAlert(t *testing.T) {
 	entity := &fakeStatusLister{statuses: []SLAStatus{{CaseID: "CASE-1", ClockType: "resolution", HasBreached: true, BusinessElapsedPercent: 140}}}
 	store := newFakeTierStore()
 	store.tiers["CASE-1|resolution"] = 50
@@ -308,14 +327,14 @@ func TestEngine_Tick_AlertsEveryTierCrossedSinceLastPoll(t *testing.T) {
 	}
 
 	chat := e.chat.(*fakeChatSender)
-	if len(chat.calls) != 2 {
-		t.Fatalf("expected 2 chat alerts (75 then 100), got %+v", chat.calls)
+	if len(chat.calls) != 1 || chat.calls[0].tier != "100" {
+		t.Fatalf("chat.calls = %+v, want exactly 1 alert, for tier 100 only (not 75 too)", chat.calls)
 	}
-	if chat.calls[0].tier != "75" || chat.calls[1].tier != "100" {
-		t.Errorf("chat.calls = %+v, want tier order 75, 100", chat.calls)
+	if len(pub.calls) != 1 {
+		t.Errorf("expected exactly 1 publish, got %d", len(pub.calls))
 	}
-	if len(pub.calls) != 2 {
-		t.Errorf("expected 2 publishes, got %d", len(pub.calls))
+	if len(store.claimCalls) != 1 || store.claimCalls[0] != (tierCall{"CASE-1", "resolution", 100}) {
+		t.Errorf("claimCalls = %+v, want a single claim for tier 100 (tier 75 never claimed)", store.claimCalls)
 	}
 	if store.tiers["CASE-1|resolution"] != 100 {
 		t.Errorf("cursor = %d, want advanced to 100", store.tiers["CASE-1|resolution"])
@@ -385,10 +404,12 @@ func TestEngine_Tick_SkipsPausedClockEntirely(t *testing.T) {
 }
 
 // TestEngine_Tick_StopsAtFirstFailedTierAndKeepsCursor verifies that a
-// publish/chat failure partway through a multi-tier crossing leaves the
-// cursor at the last SUCCESSFULLY alerted tier, not the clock's current
-// tier — so the next Tick retries exactly the remaining tiers, never
-// silently skipping or double-alerting the one that already succeeded.
+// publish/chat failure on a multi-tier jump (a clock whose stored cursor is
+// several checkpoints behind its current reading) leaves the cursor
+// unchanged rather than advancing to the clock's current tier — since only
+// the current tier is ever attempted (see processStatus's own doc comment),
+// a failure here means nothing succeeded this tick, and the next Tick
+// retries the same single tier from scratch.
 func TestEngine_Tick_StopsAtFirstFailedTierAndKeepsCursor(t *testing.T) {
 	entity := &fakeStatusLister{statuses: []SLAStatus{{CaseID: "CASE-1", ClockType: "response", HasBreached: true, BusinessElapsedPercent: 140}}}
 	store := newFakeTierStore()
@@ -400,14 +421,24 @@ func TestEngine_Tick_StopsAtFirstFailedTierAndKeepsCursor(t *testing.T) {
 		t.Fatal("Tick() error = nil, want the publish failure propagated")
 	}
 	if len(pub.calls) != 1 {
-		t.Errorf("expected exactly 1 failed publish attempt (stopping before tier 100), got %d", len(pub.calls))
+		t.Errorf("expected exactly 1 failed publish attempt (for tier 100, the only tier attempted), got %d", len(pub.calls))
 	}
 	if store.tiers["CASE-1|response"] != 50 {
 		t.Errorf("cursor = %d, want left at 50 (no tier succeeded)", store.tiers["CASE-1|response"])
 	}
 }
 
-func TestEngine_Tick_ChatFailurePropagatesAndKeepsCursor(t *testing.T) {
+// TestEngine_Tick_ChatFailureLogsAndAdvancesCursorAnyway verifies the fix
+// for a real, reported production bug: a Chat send failure used to fail
+// the whole tier and make processStatus release its claim, retrying on
+// the next Tick — and since a retry resent to EVERY resolved audience
+// again, including ones that had already succeeded, a single persistently
+// broken Chat space turned into an unbounded stream of duplicate-looking
+// Chat messages, repeating every poll, forever (confirmed live against
+// real staging cases stuck exactly this way for over a day). A Chat
+// failure is now logged only — Tick succeeds, and the cursor advances
+// past the tier regardless, so there is nothing left to retry.
+func TestEngine_Tick_ChatFailureLogsAndAdvancesCursorAnyway(t *testing.T) {
 	entity := &fakeStatusLister{statuses: []SLAStatus{{CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 60}}}
 	store := newFakeTierStore()
 	store.tiers["CASE-1|response"] = 0
@@ -415,11 +446,14 @@ func TestEngine_Tick_ChatFailurePropagatesAndKeepsCursor(t *testing.T) {
 	e := newTestEngine(entity, store, pub)
 	e.chat = &fakeChatSender{err: errors.New("chat webhook unreachable")}
 
-	if err := e.Tick(context.Background()); err == nil {
-		t.Fatal("Tick() error = nil, want the chat send failure propagated")
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil (a chat failure is logged, not propagated)", err)
 	}
-	if store.tiers["CASE-1|response"] != 0 {
-		t.Errorf("cursor = %d, want left at 0 (chat send failed before it could advance)", store.tiers["CASE-1|response"])
+	if store.tiers["CASE-1|response"] != 50 {
+		t.Errorf("cursor = %d, want advanced to 50 despite the chat failure", store.tiers["CASE-1|response"])
+	}
+	if len(pub.calls) != 1 {
+		t.Errorf("expected the sla.tier_reached event still published despite the chat failure, got %d", len(pub.calls))
 	}
 }
 
@@ -428,7 +462,9 @@ func TestEngine_Tick_ChatFailurePropagatesAndKeepsCursor(t *testing.T) {
 // previously, alertTier returned before sendBreachEmails ever ran when
 // sendBreachAlert failed, so a case whose clock completed (and so dropped
 // out of the active /sla-status list) before Chat recovered never got
-// either email at all.
+// either email at all. A Chat failure no longer fails Tick at all (see
+// TestEngine_Tick_ChatFailureLogsAndAdvancesCursorAnyway), so this only
+// asserts the email side.
 func TestEngine_SendBreachEmails_StillSendsWhenChatFails(t *testing.T) {
 	entity := &fakeStatusLister{statuses: []SLAStatus{{
 		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
@@ -442,47 +478,11 @@ func TestEngine_SendBreachEmails_StillSendsWhenChatFails(t *testing.T) {
 	e.email = email
 	e.emailSendingEnabled = true
 
-	if err := e.Tick(context.Background()); err == nil {
-		t.Fatal("Tick() error = nil, want the chat send failure propagated")
+	if err := e.Tick(context.Background()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil (a chat failure is logged, not propagated)", err)
 	}
 	if len(email.calls) != 2 {
 		t.Fatalf("email calls = %d, want 2 (assignee + team) sent despite the chat failure, got %+v", len(email.calls), email.calls)
-	}
-}
-
-// TestEngine_SendBreachEmails_NotResentOnChatRetry verifies a tier retried
-// solely because the Chat alert failed does not re-send an already-
-// attempted breach email on the next Tick — the per-tier Redis claim
-// (TierStore.ClaimEmail) this closes a duplicate-send gap for.
-func TestEngine_SendBreachEmails_NotResentOnChatRetry(t *testing.T) {
-	entity := &fakeStatusLister{statuses: []SLAStatus{{
-		CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 50,
-		AssigneeEmail: "assignee@example.test", TeamEmail: "team@example.test",
-	}}}
-	store := newFakeTierStore()
-	store.tiers["CASE-1|response"] = 0
-	e := newTestEngine(entity, store, &fakePublisher{})
-	failingChat := &fakeChatSender{err: errors.New("chat webhook unreachable")}
-	e.chat = failingChat
-	email := &fakeEmailSender{}
-	e.email = email
-	e.emailSendingEnabled = true
-
-	if err := e.Tick(context.Background()); err == nil {
-		t.Fatal("first Tick() error = nil, want the chat send failure propagated")
-	}
-	if len(email.calls) != 2 {
-		t.Fatalf("after first Tick: email calls = %d, want 2", len(email.calls))
-	}
-
-	// Chat now recovers; the cursor was never advanced, so this tier is
-	// retried from scratch.
-	failingChat.err = nil
-	if err := e.Tick(context.Background()); err != nil {
-		t.Fatalf("second Tick() error = %v, want nil now that chat recovered", err)
-	}
-	if len(email.calls) != 2 {
-		t.Errorf("after second Tick: email calls = %d, want still 2 (not resent on the chat-triggered retry)", len(email.calls))
 	}
 }
 
@@ -664,6 +664,10 @@ func TestEngine_SendBreachEmails_UnresolvedAssigneeNeverSendsEvenInDebugMode(t *
 // TestEngine_Tick_JoinsErrorsAcrossStatusesButProcessesBoth verifies one
 // clock's failure doesn't stop another clock in the same poll from being
 // processed.
+// A chat failure no longer makes processStatus return an error (see
+// TestEngine_Tick_ChatFailureLogsAndAdvancesCursorAnyway), so this uses a
+// shared publish failure instead to verify Tick still joins errors across
+// multiple clocks and processes every one despite an earlier one failing.
 func TestEngine_Tick_JoinsErrorsAcrossStatusesButProcessesBoth(t *testing.T) {
 	entity := &fakeStatusLister{statuses: []SLAStatus{
 		{CaseID: "CASE-1", ClockType: "response", BusinessElapsedPercent: 80},
@@ -672,16 +676,15 @@ func TestEngine_Tick_JoinsErrorsAcrossStatusesButProcessesBoth(t *testing.T) {
 	store := newFakeTierStore()
 	store.tiers["CASE-1|response"] = 50
 	store.tiers["CASE-2|response"] = 50
-	pub := &fakePublisher{}
+	pub := &fakePublisher{err: errors.New("event hub unreachable")}
 	e := newTestEngine(entity, store, pub)
-	e.chat = &fakeChatSender{err: errors.New("chat webhook unreachable")}
 
 	err := e.Tick(context.Background())
 	if err == nil {
 		t.Fatal("Tick() error = nil, want both failures joined")
 	}
 	if len(pub.calls) != 2 {
-		t.Errorf("expected both clocks' publish attempted despite the shared chat failure, got %d", len(pub.calls))
+		t.Errorf("expected both clocks' publish attempted despite the shared failure, got %d", len(pub.calls))
 	}
 }
 
@@ -779,6 +782,61 @@ func TestEngine_Tick_RegressionReleasesClaimsAboveNewTier(t *testing.T) {
 	}
 }
 
+// TestTierStore_AdvanceTier_NeverMovesCursorBackward pins the
+// "advance-only-if-higher" contract AdvanceTier must satisfy — the fix for
+// a real concurrency gap a CodeRabbit review caught: two replicas can each
+// compute "current" from their own, slightly different /sla-status
+// snapshot for the SAME clock (one sees, say, 75%, a later one already
+// sees 100%), each win a DIFFERENT tier's Redis claim (claims are keyed
+// per tier, not per clock), and each alert successfully. If whichever
+// write happened to land second could freely overwrite the cursor, the
+// higher tier's own successful alert could be silently erased from the
+// cursor by a lower tier's later-arriving write — and once that higher
+// tier's own (now orphaned) claim eventually expires, a later poll would
+// wrongly alert it again. A lower or equal tier must never move the
+// cursor backward once a higher one is recorded.
+func TestTierStore_AdvanceTier_NeverMovesCursorBackward(t *testing.T) {
+	store := newFakeTierStore()
+	ctx := context.Background()
+
+	// No cursor yet: establishes the baseline, same as the real Lua
+	// script's "not current" branch.
+	if err := store.AdvanceTier(ctx, "CASE-1", "response", 75); err != nil {
+		t.Fatalf("AdvanceTier(75) error = %v", err)
+	}
+	if got := store.tiers["CASE-1|response"]; got != 75 {
+		t.Fatalf("cursor = %d, want 75", got)
+	}
+
+	// A genuinely higher tier (the other replica's own, later-crossing
+	// alert) advances it normally.
+	if err := store.AdvanceTier(ctx, "CASE-1", "response", 100); err != nil {
+		t.Fatalf("AdvanceTier(100) error = %v", err)
+	}
+	if got := store.tiers["CASE-1|response"]; got != 100 {
+		t.Fatalf("cursor = %d, want advanced to 100", got)
+	}
+
+	// The exact race this fix closes: a lower tier's own write lands
+	// AFTER the higher tier's write already landed (e.g. the replica that
+	// read an earlier, lower snapshot was simply slower to finish). It
+	// must not move the cursor backward.
+	if err := store.AdvanceTier(ctx, "CASE-1", "response", 75); err != nil {
+		t.Fatalf("AdvanceTier(75) error = %v", err)
+	}
+	if got := store.tiers["CASE-1|response"]; got != 100 {
+		t.Errorf("cursor = %d, want still 100 (a lower tier must never move it backward)", got)
+	}
+
+	// An equal value is also a no-op, not just a strictly lower one.
+	if err := store.AdvanceTier(ctx, "CASE-1", "response", 100); err != nil {
+		t.Fatalf("AdvanceTier(100) (repeat) error = %v", err)
+	}
+	if got := store.tiers["CASE-1|response"]; got != 100 {
+		t.Errorf("cursor = %d, want still 100", got)
+	}
+}
+
 // TestEngine_Tick_PropagatesEachTierStoreError pins the behavior of every
 // TierStore failure path processStatus has: a failed cursor read must skip
 // the clock (not reseed it and silently swallow a genuine crossing), and
@@ -819,18 +877,11 @@ func TestEngine_Tick_PropagatesEachTierStoreError(t *testing.T) {
 			setErrFn:   func(s *fakeTierStore) { s.claimErr = someErr },
 		},
 		{
-			name:       "SetTier fails advancing the cursor after a successful alert",
+			name:       "AdvanceTier fails advancing the cursor after a successful alert",
 			percent:    80,
 			seedCursor: true,
 			cursor:     50,
-			setErrFn: func(s *fakeTierStore) {
-				// Only the *second* SetTier call in this flow (the
-				// post-alert cursor advance) should fail — the store has
-				// no earlier SetTier call to conflict with in this
-				// particular scenario, so a plain unconditional setErr is
-				// enough here.
-				s.setErr = someErr
-			},
+			setErrFn:   func(s *fakeTierStore) { s.advanceErr = someErr },
 		},
 	}
 

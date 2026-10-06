@@ -33,6 +33,10 @@ service never creates incidents and never touches alert-core's own tables.
   poll interval. If the call fails, that poll still picks the rows up.
 - **Health and liveness endpoints.** `/healthz` never checks Postgres, so a database outage
   doesn't pull every replica out of rotation; `/livez` always answers `200` while the process runs.
+- **Routing signals.** Alongside the canonical fields, an alert can carry what alert-core uses to
+  choose its CSM assignment group: `assignment_group` (an AWS alarm's `AlarmDescription` JSON may
+  name one, e.g. `{"service":"...","assignment_group":"SRE - Apollo"}`) and, for AWS,
+  `source_topic` (the SNS `TopicArn`) and `source_account` (the AWS account id).
 
 ## Package layout
 
@@ -60,7 +64,7 @@ go run ./cmd/server
 go build ./... && go vet ./... && go test ./...
 ```
 
-Requires Go 1.25.5 and a non-production PostgreSQL database (never the production one) via the
+Requires Go 1.26 and a non-production PostgreSQL database (never the production one) via the
 `PG*` environment variables; see `.env.example`. Azure Flexible Server requires
 `PGSSLMODE=require` (the default); a local Postgres for development can set
 `PGSSLMODE=disable`.

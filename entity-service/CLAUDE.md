@@ -68,6 +68,9 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
 | `CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED` | no | `false` | Registers `POST /customer-engagements/allocation-events` (Postgres-authoritative only); see "Allocation events" below |
 | `CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID` | no | — | ServiceNow sys_id written as `engagement_type_id` on firefighting engagements created by allocation events. Unset skips creating them |
+| `REDIS_URL` | no | — | `rediss://:<key>@<host>:<port>` (TLS, Azure Managed Redis); wins over `REDIS_ADDR`. Turns on the user cache (see "User cache (Redis)" below). `Validate` requires a `redis`/`rediss` scheme and a host, and never echoes the URL |
+| `REDIS_ADDR` / `REDIS_PASSWORD` | no | — | Plain, non-TLS Redis for local runs. Either this or `REDIS_URL` makes `Config.HasRedis` true |
+| `USER_CACHE_TTL` | no | `10m` | Backstop lifetime of a cached user; an unparseable or non-positive value falls back to `10m` |
 
 \* `DB_USER`/`DB_PASSWORD`/`DB_NAME` are required when `DATA_SOURCE=postgres`
 and **optional** when `DATA_SOURCE=servicenow`, where entity reads and writes
@@ -137,6 +140,24 @@ Conventions to preserve when touching these:
   otherwise fill the logs. `Recovery` stays, since a panic there would take down the main API
   with it.
 
+## Cases and incidents are different entities
+
+A **case** is `POST /cases`, `domain.CaseView`, the `case.*` events. An
+**incident** is `POST /incidents`, `domain.IncidentView`, the `incident.*`
+events. Separate endpoints, separate domain types, separate handlers and
+separate service files (`sn_case_service.go` against `sn_incident_service.go`).
+A "comment added" on one is not a "comment added" on the other, which is why
+both `case.comment_added` and `incident.comment_added` exist and carry
+different payloads. Don't collapse the vocabulary: the two event families
+cannot be merged without two different payloads sharing one name.
+
+**"SRE incident" is not a third thing.** `integrations/sre-alert-ingestion-service`
+turns a vendor alert (Azure, Grafana, Site24x7, OpenSearch) into a platform
+incident by calling the same `POST /incidents` through csm-integration-service,
+so an alert-born incident is exactly the entity the `incident.*` events
+describe. csm-notification-service's call-escalation ladder escalates it like
+any other.
+
 ## Event Hub publishing
 
 `internal/eventbus` (a minimal Kafka producer for Azure Event Hub's
@@ -182,6 +203,62 @@ just a bool, either `"true"` or not. `NewRouter` returns the constructed
 `EventPublisherService` (nil if unconfigured) alongside the `http.Handler`,
 threaded through `server.New` to `cmd/api/main.go`, which calls `Close()` on
 it during shutdown, after `srv.Shutdown`.
+
+## User cache (Redis)
+
+`GET /users/{id}` and `GET /users/me` are served cache-aside from Redis when
+`Config.HasRedis()` and there is a pool. `NewRouter` wraps `userSvc` in
+`service.NewCachedUserService(inner, cache)` (`internal/service/cached_user_service.go`),
+a decorator over `UserService` that overrides `GetUser`, `GetMe`, `PatchMe`
+and `CreateUser` and passes everything else straight through. The Redis side
+lives in `internal/cache` (`NewRedisClient`, `UserCache`); the service layer
+depends only on the `service.UserCache`/`service.UserCacheInvalidator`
+interfaces in `interfaces.go`. `rdb.Close()` runs from `closePublishers` at
+shutdown.
+
+Keys (all under `entity:v1:user:`; bump `v1` when a cached shape changes):
+
+| Key | Value |
+|---|---|
+| `detail:{id}` | `domain.UserDetail` for `GET /users/{id}` |
+| `me:{id}` | `domain.GetUserMeResponse` for `GET /users/me` |
+| `id-by-email:{sha256(lower(email))}` | user id, so `GetMe` (keyed by the caller's email) and email-only invalidations can find the id |
+
+Conventions to preserve:
+
+- **Invalidate after commit, by deleting.** Every writer of user, contact or
+  membership rows calls `InvalidateUser(ctx, userID, email)` once its write has
+  succeeded: `PatchMe`/`CreateUser` in the decorator, `writeContact`/
+  `deactivateContact` (Contact writer), `ingestMembership` and the DELETED
+  branch (membership ingest), and `Invite`/`UpdateRoles`/`Deactivate`
+  (`project_membership_write_service.go`, via `MembershipWriteDeps.UserCache`).
+  The `DeactivateBySfID` repos return the affected `[]domain.AffectedUser` for
+  this. A new writer of `user`, `account_contact` or `project_contact` must do
+  the same, or its change is invisible for up to `USER_CACHE_TTL`. Never write
+  the new value into the cache from a writer; the next read repopulates it.
+- **Fail open.** Every Redis call has a short timeout and a failure is a miss,
+  never an error to the caller. Warnings are rate-limited (`warn`, once per
+  30s); a failed invalidation is logged at ERROR with the user id only.
+- **Never cache errors or not-found.** Only a successful inner result is
+  stored. `GetUser` validates the id before touching the cache.
+- **No PII in keys or logs.** Emails are hashed in keys and never logged;
+  `REDIS_URL` holds the access key, so `Validate` and `NewRedisClient` return
+  generic errors that never quote it.
+- **Keep the invalidator a nil interface when the cache is off.**
+  `userCacheInvalidator` in `routes.go` is declared as
+  `service.UserCacheInvalidator` and assigned only when the cache is built;
+  assigning a nil `*cache.UserCache` would make it non-nil (the same pitfall as
+  the health handler's pool). `invalidateUser` treats a nil invalidator as a
+  no-op.
+- **`GetMe` checks the cached email.** A `me:{id}` entry whose `Email` does not
+  match the caller is treated as a miss, which guards against a stale
+  `id-by-email` entry after an email change.
+
+Known limits: a read that races an invalidation can re-cache the old value
+until the TTL; a degraded `GetMe` (e.g. groups unavailable) is cached like any
+other success; `SearchUsers`, `GetUsersByIDs` and `DATA_SOURCE=servicenow` are
+not cached. The client is a plain `redis.NewClient`, so the target must not use
+the "OSS Cluster" clustering policy.
 
 ## Salesforce Account ingest
 
@@ -843,7 +920,7 @@ yet, retry". A 400 (Salesforce rejected the write) stays a `DownstreamError`.
 `SalesEntityMembershipClient` so the ingest cannot accidentally gain write
 access to Salesforce; `*salesentity.Client` satisfies both.
 
-Seven call sites publish today, all ServiceNow-data-source-only (`DATA_SOURCE=servicenow`;
+Ten call sites publish today, all ServiceNow-data-source-only (`DATA_SOURCE=servicenow`;
 there is no Postgres-backed equivalent for any of them). There is also one
 Postgres-only exception, but it is **not** an Event Hub publish at all, and
 it lives entirely in `case_repo.go`, not the service layer:
@@ -957,23 +1034,54 @@ revisited.
   `CaseCreatedPayload.CaseType`) — those types notify by email only, per
   the same explicit request. See that service's own `CLAUDE.md`.
 - **`snIncidentService.CreateIncident`** publishes `incident.created` via
-  `publishIncidentCreated`, called the same way. No enrichment round trip is
-  needed here: `req.Subject`/`req.AdditionalComments` already carry
-  everything the payload needs (`Title`/`ShortDescription`, the latter
-  falling back to `Subject` when `AdditionalComments` is absent).
+  `publishIncidentCreated`, called the same way. `Title`/`ShortDescription`
+  come straight from `req.Subject`/`req.AdditionalComments` (the latter
+  falling back to `Subject` when absent), and `Number`/`ReportedAt` from the
+  create response. The **escalation fields** need one best-effort
+  `GetIncidentByID` read: `csm-notification-service`'s call-escalation ladder
+  (its `internal/paging`) is keyed on the incident's *priority*, which
+  ServiceNow derives from impact and urgency and which neither `req` nor the
+  create response carries, and on the assigned team's display name, where
+  `req` has only a sys_id. That read is deliberately not fatal and not even
+  required: if it fails, the event goes out with exactly the fields it
+  carried before the ladder existed (every escalation field is `omitempty`
+  on both sides), the direct call still happens, and the ladder simply
+  doesn't start — losing the page would be strictly worse than losing the
+  ladder. `Account`/`ABTEligible` are declared on the payload but **never
+  populated** here: incidents have no account field in this domain model,
+  and this service has no product→BU mapping to derive ABT eligibility from.
+  `ABTEligible` is a `*bool` for exactly that reason — an absent value must
+  stay absent rather than decoding as an explicit `false`, which would claim
+  an answer nobody gave — see that service's own `CLAUDE.md` for what the
+  missing flag does to the USA_WEEKEND routing rule.
+  On `DATA_SOURCE=postgres` (`NewIncidentServiceWithPublisher`, with no
+  ServiceNow behind it) later work notes also go through `PATCH /incidents/{id}`
+  -- an alert-born SRE incident's follow-up alerts from `sre-alert-core-service`
+  -- written as comments in one transaction (`CreateIncidentNotes`: a work note
+  and a comment commit together or not at all), with no ServiceNow mirror. That
+  create path publishes the same enriched `incident.created` (the read-back is a
+  Postgres `GetIncidentByID`), so an alert-born incident reaches the ladder with
+  its priority and team. The same update sends `incident.acknowledged`/
+  `incident.assigned` when it moves the incident out of NEW or sets an assignee
+  (`publishIncidentStopSignals`).
   `incident.created` has exactly one reaction on the receiving side now — a
   Twilio voice call — not a Google Chat alert: `csm-notification-service`
   removed that reaction entirely, per explicit product direction (an
   incident pages on-call directly; a separate Chat post was redundant with
-  that) — see that service's own `CLAUDE.md`. `CallTo` (on-call number) is
-  never set from this service either way — per explicit decision, all
-  notification-routing resolution belongs entirely in
-  `csm-notification-service`, which substitutes its own configured
-  `INCIDENT_DEFAULT_CALL_TO` when it's absent from the payload. `Product` is
-  still accepted on the wire (decode compatibility) but no longer read by
-  `csm-notification-service` at all. Consuming events and sending
-  emails/Chat alerts/calls is never this service's job — only publishing
-  the raw fact that something happened is.
+  that). The escalation ladder's own `chat` channel is a different thing and
+  is unaffected: it posts a card per *rung* of a climbing escalation, not one
+  on creation. This service does not build or send an `IncidentLink` at all —
+  it stays strictly a publisher of the fact that an incident was created;
+  `csm-notification-service` builds its own portal link from the event's
+  `EntityID` (`recipientlinks.Resolver.IncidentLink`), the same way it
+  already builds `case.created`'s. `CallTo` (on-call number) is never set
+  from this service either — per explicit decision, all notification-routing
+  resolution belongs entirely in `csm-notification-service`, which
+  substitutes its own configured `INCIDENT_DEFAULT_CALL_TO` when it is absent
+  from the payload. `Product` is still accepted on the wire (decode
+  compatibility) but no longer read by `csm-notification-service` at all.
+  Consuming events and sending emails/Chat alerts/calls is never this
+  service's job — only publishing the raw fact that something happened is.
 - **`incidentService.createIncidentPortal`** (plain `DATA_SOURCE=postgres`)
   publishes the same `incident.created`, through the same
   `publishIncidentCreatedEvent` the dual-write path uses, once the insert
@@ -1033,6 +1141,52 @@ revisited.
   logged and the fields are simply left at their zero value — the email
   reaction `publishCommentAddedEvent` exists to drive must never be blocked
   by this enrichment failing.
+
+- **`snIncidentService.UpdateIncident`** publishes the two signals that
+  start and stop a call escalation, via `publishEscalationSignals`:
+  `incident.acknowledged` when the incident genuinely **leaves NEW** (the
+  specification's acknowledgement gesture for a newly reported incident), and
+  `incident.priority_elevated` when its priority **strictly increases in
+  urgency** (the second trigger, keyed on the new priority). A change to
+  `Impact` or `Urgency` counts as a priority change for both purposes:
+  ServiceNow derives priority from them — `CreateIncident` requires both and
+  accepts no priority at all — so a PATCH raising urgency raises the priority
+  just as surely as one naming it. Both are guarded
+  against a no-op re-PATCH the same way `publishSeverityChanged` is, which
+  needs the incident as it was *before* the PATCH — so `UpdateIncident`
+  fetches a baseline first, but only when the request touches `State` or
+  `Priority`, so every other PATCH pays no extra round trip. A failed
+  baseline fetch publishes nothing rather than guessing at a transition. The
+  elevated payload carries the same optional escalation fields as
+  `incident.created`, from the post-PATCH view, plus `ElevatedAt` (`now`,
+  the instant the ladder's offsets run from). Neither carries an actor:
+  `UpdateIncidentRequest` has none and this service cannot resolve who
+  performed an update. A third signal, **`incident.assigned`**
+  (`publishIncidentAssigned`), goes out when `AssignedEngineerID` genuinely
+  changes the assignee to someone (`incidentAssignment`: not on a re-send of
+  the same assignee, not when it is cleared), carrying the assignee's id and
+  display name from the post-PATCH view. It is the SRE escalation ladder's
+  stop signal ("assignee set on incident"); the CRE ladder ignores it. It
+  shares the pre-PATCH baseline fetch, which an `AssignedEngineerID` PATCH now
+  also triggers.
+- **`snCommentSearchService.CreateComment`** (the reference-generic comment
+  service, ServiceNow branch only) publishes `incident.comment_added` via
+  `publishIncidentCommentAdded` whenever a comment lands on an
+  `incident`-type reference. This is the **only** stop signal an
+  elevation-triggered ladder has: the specification's acknowledgement gesture
+  for a priority elevation is a *public comment*, and an elevated incident
+  has normally already left NEW, so `incident.acknowledged` can never fire
+  for it again. Work notes are published too, with `IsPublic: false` — the
+  consumer decides that only a public comment acknowledges, keeping the event
+  a statement of fact rather than baking a notification policy into the
+  service that owns the data. The payload carries **no author**, a recorded
+  known gap: incidents have no customer-portal surface today, so a public
+  comment on one is written by internal staff in practice; if that ever
+  changes, an author must be added and checked (see
+  `snCaseService.resolveCommentAuthor` for the lookup it would need). The
+  comment service gained an optional `publisher EventPublisherService` for
+  this, wired from `routes.go`'s existing `eventPublisher`; the Postgres
+  comment service publishes nothing, same as every other publisher here.
 
 `publishCaseCreated`, `publishCommentAdded`, `publishStatusChanged`, and
 `publishCaseAssigned` — every `case.*` publisher above, not
@@ -2587,7 +2741,7 @@ false`, idempotent) and the API fields **`customerApprovalRequired`** /
 `PATCH /change-requests/{id}`, returned on the detail response (and the PATCH
 receipt). Postgres data source only.
 
-* **They are NOT `is_customer_approved` / `is_customer_reviewed`.** Those two
+* **They are NOT `is_customer_approval_required` / `is_customer_review_required`.** Those two
   record the customer's *outcome* ("the customer has confirmed"): authorized
   (internal user or registered `PORTAL_USER` contact) and one-way-locked by
   `authorizeChangeRequestCustomerFlagWrite`, and in the ServiceNow scripted API
@@ -2609,7 +2763,7 @@ receipt). Postgres data source only.
   Approval — an assumption) — a change with `customerApprovalRequired` goes to
   **`customer_approval`** instead. There `legalNextStates` is `[scheduled,
   canceled]`; the human PATCH `{state: "scheduled"}` records the customer's
-  approval: it stamps `is_customer_approved = true` through the same
+  approval: it stamps `is_customer_approval_required = true` through the same
   `authorizeChangeRequestCustomerFlagWrite` (authorization + lock) a direct
   `isCustomerApproved` write uses and schedules the change. A manual `scheduled`
   from any other state is refused; so is `{state: "scheduled",
@@ -2623,7 +2777,7 @@ receipt). Postgres data source only.
   refused when not required ("customer review is not required …"), and
   `{state: "closed"}` from `review` is refused when required ("customer review
   is required …; move it to customer_review first"). `customer_review` offers
-  `[closed, canceled]`; closing from it stamps `is_customer_reviewed = true`
+  `[closed, canceled]`; closing from it stamps `is_customer_review_required = true`
   (same authorization/lock). No other transition is graph-checked — as before,
   the PATCH does not enforce a full transition graph.
 * **Editable only until the gate is passed** (`validateCustomerGateEdits`,
@@ -3291,7 +3445,7 @@ mirror and the system it models.
 - **Schema** (migration 0178): `change_request.is_on_hold BOOLEAN`,
   `on_hold_reason TEXT`, `on_hold_started_on TIMESTAMPTZ`. Shape follows two
   existing precedents in this same table rather than inventing a third: the
-  boolean naming matches `is_customer_approved`/`is_customer_reviewed`/
+  boolean naming matches `is_customer_approval_required`/`is_customer_review_required`/
   `is_planning_visible_to_customers` (migration 0043), and the
   flag-plus-"since" pairing mirrors `work_item.workaround_provided_on`/
   `workaround_provided_by_user_id` (migration 0021) — a nullable TIMESTAMPTZ
@@ -3388,7 +3542,7 @@ mirror and the system it models.
   and a blocked-reason display on the action bar are a deliberate follow-up
   cycle once this API contract exists, not part of this change.
 
-**`is_customer_approved`/`is_customer_reviewed` are now authorized and
+**`is_customer_approval_required`/`is_customer_review_required` are now authorized and
 one-way-locked — the last gap in this schema's four internal approval
 checkpoints plus these two customer-facing fields had no authorization of
 its own at all before this.** `PatchChangeRequestRequest.IsCustomerApproved`/
@@ -4270,11 +4424,21 @@ by the generic `work_item_id`. Unlike `SearchCaseActivities`, there is no
 `case_attachment`-equivalent table for incidents, so this feed can never
 have an `"attachment"` kind entry.
 
-**`UpdateConversation` is implemented** (a plain `conversation.state` enum
-write, no `work_item.number` generation needed for an update) but
-**`CreateConversation` is not**: it needs `work_item.number`, which has no
-DB default or backing sequence anywhere in `migrations/` -- the same blocker
-`CaseRepository.CreateCase` used to have.
+**`UpdateConversation` and `CreateConversation` are both implemented.**
+`CreateConversation` takes its number from `next_portal_work_item_number()`
+(migration 0140), starts the conversation `ACTIVE`, and stores the first
+message the way csm-sync-service lands ServiceNow's `u_initial_message`:
+`work_item.subject` (first 100 runes) and `work_item.description` (in full).
+`InitialMessage` on reads is that description, falling back to the earliest
+comment. Under dual-write it is ServiceNow-first and synchronous, like
+`createProblemSNFirst`, so the row carries ServiceNow's id and later comment
+mirrors target a conversation ServiceNow knows. Migration 0190 replaced
+0146's internal-only INSERT policy on `conversation` with `conversation_write`
+(internal or project member, same as `case_write`); the work_item and
+conversation rows are inserted as two statements in one transaction because
+that policy's work_item lookup cannot see a sibling CTE's insert. Without
+this, every Novera chat on Postgres failed at create and nothing was
+persisted.
 
 **`CreateProblem`/`CreateIncident` are now implemented on the plain-Postgres
 data source too**, via `next_portal_work_item_number()` (migration 0140 --
@@ -4290,9 +4454,7 @@ all). Neither needs `wso2_id`: both are excluded from
 `work_item_wso2_id_required_by_type`. `problem.state` has no column default
 of its own (unlike `incident.state`, which defaults to `'NEW'`), so
 `CreateProblem`'s portal path hardcodes it to `'NEW'::problem_state_enum`
-explicitly. `CreateConversation` was not attempted alongside these -- no
-reported need for it yet, and extending the same fix to it is a similarly
-small, mechanical follow-up should one come up.
+explicitly. `CreateConversation` followed later -- see above.
 
 **`UpdateProblem`/`UpdateIncident`/`HandOffIncidentToSpecialist` are also not
 implemented**: `UpdateProblem.Transition` is validated

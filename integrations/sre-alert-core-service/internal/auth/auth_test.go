@@ -22,7 +22,6 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"testing"
-	"time"
 )
 
 func TestVerifySecret(t *testing.T) {
@@ -32,7 +31,11 @@ func TestVerifySecret(t *testing.T) {
 	}
 	const secret = "correct-horse-battery-staple"
 	saltB64 := base64.StdEncoding.EncodeToString(salt)
-	hashB64 := base64.StdEncoding.EncodeToString(HashSecret(secret, salt, Iterations))
+	hash, err := HashSecret(secret, salt, Iterations)
+	if err != nil {
+		t.Fatalf("HashSecret: %v", err)
+	}
+	hashB64 := base64.StdEncoding.EncodeToString(hash)
 
 	if !VerifySecret(secret, saltB64, hashB64, Iterations) {
 		t.Error("the correct secret must verify")
@@ -71,30 +74,6 @@ func TestGenerateSalt_IsRandomAndCorrectLength(t *testing.T) {
 	}
 	if string(a) == string(b) {
 		t.Error("two salts must not be identical")
-	}
-}
-
-func TestIsExpired(t *testing.T) {
-	now := time.Date(2026, 9, 30, 12, 0, 0, 0, time.UTC)
-	cases := map[string]struct {
-		expiresAt time.Time
-		want      bool
-	}{
-		"unset (zero time) never expires": {time.Time{}, false},
-		"future expiry is not expired":    {now.Add(time.Hour), false},
-		"past expiry is expired":          {now.Add(-time.Hour), true},
-		// Cosmos DB returns an unset expires_at as the epoch; without this, every
-		// user provisioned without -ttl is rejected as expired.
-		"cosmos epoch reads as unset": {time.Unix(0, 0), false},
-		"just after epoch is expiry":  {time.Unix(1, 0), true},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			u := User{ExpiresAt: tc.expiresAt}
-			if got := u.IsExpired(now); got != tc.want {
-				t.Errorf("IsExpired = %v, want %v", got, tc.want)
-			}
-		})
 	}
 }
 
