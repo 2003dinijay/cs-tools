@@ -42,6 +42,7 @@ import db
 import entity_client
 from auth import require_auth
 from chat_notify import notify_new_submission
+from novera_notify import notify_novera
 from sanitize import sanitize_what_html
 from validation import TIL_WHERE_OPTIONS, WHAT_MAX_LENGTH, validate_submission_payload
 
@@ -144,6 +145,7 @@ async def create_submission(request: Request, user: dict = Depends(require_auth)
 
     entry_url = f"{ONE_WSO2_BASE_URL}/knowledge-base/{submission['id']}" if ONE_WSO2_BASE_URL else None
     await notify_new_submission(who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
+    await notify_novera(who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
 
     return submission
 
