@@ -7694,6 +7694,44 @@ type SearchSLAStatusResponse struct {
 	Offset   int         `json:"offset"`
 }
 
+// SLADurationPolicyItem is one (severity, clockType) duration row from the
+// sla_duration_policy table (migration 0192) — a small, static reference
+// table seeded directly from WSO2's own published Enterprise Support Policy,
+// independent of the ServiceNow-synced "sla"/"sla_policy" tables SLAStatus
+// above reads. csm-notification-service fetches the full set once at
+// startup (GET /sla-duration-policy) to compute each case's own due dates
+// itself, rather than depending on a sync that has no plain severity column
+// to key a lookup on.
+//
+// Severity is the same uppercase English word every case.* event's own
+// Priority field already carries (e.g. "CATASTROPHIC") — not the raw
+// case_severity_enum label ("S0") the table stores it as — so a consumer
+// can match this response directly against a case.created payload's
+// Priority with no translation of its own. See
+// ReferenceDataRepository.ListSLADurationPolicy's own doc comment for the
+// S0..S4 mapping.
+type SLADurationPolicyItem struct {
+	Severity string `json:"severity"`
+	// ClockType is "response" / "workaround" / "resolution" — matches
+	// sla_policy.target's own lower-cased vocabulary (see SLAStatus.ClockType
+	// above), so a consumer already matching on that string needs no second
+	// vocabulary for this endpoint.
+	ClockType string `json:"clockType"`
+	// DurationSeconds is the policy's duration in whole seconds — not a
+	// formatted string (contrast TaskSlaDefinitionDetail.Duration above) and
+	// not an ISO-8601 duration, since the one real consumer
+	// (csm-notification-service) only ever needs to feed this straight into
+	// a time.Duration, and a plain integer needs no parsing to get there.
+	DurationSeconds int64 `json:"durationSeconds"`
+}
+
+// SLADurationPolicyResponse is the response for GET /sla-duration-policy —
+// every row in sla_duration_policy, unpaginated (at most 15 rows today: 5
+// severities × up to 3 clock types each).
+type SLADurationPolicyResponse struct {
+	Policies []SLADurationPolicyItem `json:"policies"`
+}
+
 // AnnouncementRequestState is the lifecycle state of an announcement_requests
 // row. Like SLAClock and EventPublishFailure, this entity has no ServiceNow
 // equivalent and is always backed by Postgres regardless of DATA_SOURCE.

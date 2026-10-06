@@ -1910,6 +1910,46 @@ above: a work item with no assignee/group simply reports empty strings. A
 dedicated team table may replace the `"group"` lookup for `TeamEmail`/
 `TeamLeadName` later — noted, not yet needed.
 
+### `GET /sla-duration-policy` — a separate, static duration table for `csm-notification-service`'s own native SLA tracking
+
+`sla_duration_policy` (migration `0192`) is a small, static reference table —
+13 rows, WSO2's own published [Enterprise Support
+Policy](https://wso2.com/licenses/support-policy/6.0) durations, seeded
+directly in the migration, never touched by any sync — deliberately
+independent of both `sla`/`sla_policy` above (ServiceNow-shaped, no plain
+severity column, empty for a case that never went through that sync) and
+the CSM-native SLA clock engine's own `sla_policy_resolver.go` (reads the
+real, synced `sla_policy` table). `ReferenceDataRepository.
+ListSLADurationPolicy`/`GET /sla-duration-policy` (internal-caller-only,
+same `requireInternalCaller` gate as `GET /sla-status`) exposes it —
+`severity` already translated from the raw `case_severity_enum` label
+("S0") to the same uppercase English word a `case.*` event's own `Priority`
+field carries ("CATASTROPHIC"), via this package's own
+`caseSeverityFromEnum` — so a consumer can match this response directly
+against a `case.created` payload's `Priority` with no translation of its
+own. `integrations/csm-notification-service` fetches the full set once at
+startup to compute each case's own SLA due dates itself (see that repo's
+own `CLAUDE.md`, "SLA breach-alerting engine") — entity-service's role here
+is purely to trigger (publish the facts it already publishes, below) and
+to hand over this one piece of static policy data; that service owns all
+the actual duration bookkeeping, due-date arithmetic and alerting.
+
+**`events.CommentAddedPayload.IsSupportEngineerResponse`** is the other
+half of enabling that: true when a comment is a public comment
+(`req.Type == domain.CommentTypeComment`) authored by a user holding
+`CSEngineerRole` — computed once per comment and shared by both the
+CSM-native SLA engine's own response-clock completion and this new payload
+flag, via `case_service.go`'s `isSupportEngineerAuthor` (Postgres,
+`UserRepository.GetUserRoles`) and `sn_case_service.go`'s
+`isSupportEngineerAuthorSN` (ServiceNow, `SNUserService.SearchUsers`) —
+see `CS_ENGINEER_ROLE`'s own `.env.example` doc comment. This lets
+`csm-notification-service` complete a case's own response clock the moment
+a qualifying reply lands, with no role/identity resolution of its own —
+the one signal entity-service is uniquely positioned to compute, since it
+owns the role data. `case.created`/`case.status_changed` already carry
+everything else that service's own tracking needs (`Priority`/`CreatedAt`,
+`NewStatus`), so neither payload needed any change for this.
+
 ## CSM-native SLA clock engine
 
 `internal/service/sla_engine_service.go` (`SLAEngineService`) is what actually
