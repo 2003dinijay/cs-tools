@@ -3448,6 +3448,11 @@ export interface BeIncidentDetail extends BeIncident {
    * {@link BeSpecialistHandoffSummary}.
    */
   specialistHandoff?: BeSpecialistHandoffSummary | null;
+  /** Whether "Escalate to specialist team" applies now (In Progress, a
+   * routed service, not already with its Special Ops group) -- ServiceNow's
+   * canEscalateToSpecialOps. Absent when the backend does not say
+   * (ServiceNow data source), in which case the action stays offered. */
+  canHandOffToSpecialist?: boolean;
 }
 
 /**
@@ -4890,11 +4895,25 @@ export interface BeOutageMetadataResponse {
 // ---------------------------------------------------------------------------
 
 export type BeHandoffReasonCode = "no-runbook" | "runbook-not-working";
-export type BeHandoffEscalationTeam = "choreo-runtime-team" | "choreo-apim-team";
+/** A sub-team's key, e.g. "choreo-runtime-team". Teams are data
+ * (`GET /specialist-handoff-teams`), not a fixed list. */
+export type BeHandoffEscalationTeam = string;
+
+/** One `GET /specialist-handoff-teams` entry: `key` is sent as the handoff's
+ * `escalationTeam`, `label` is shown. */
+export interface BeSpecialistHandoffTeam {
+  key: BeHandoffEscalationTeam;
+  label: string;
+}
+
+export interface BeSpecialistHandoffTeamsResponse {
+  teams: BeSpecialistHandoffTeam[];
+}
 
 export interface BeHandOffIncidentPayload {
   reasonCode: BeHandoffReasonCode;
-  /** Choreo only; ignored (but not rejected) for any other service. */
+  /** A team key from `GET /specialist-handoff-teams`; a team the incident's
+   * service has no route for is ignored (the service's default team is used). */
   escalationTeam?: BeHandoffEscalationTeam;
   /** Defaults to `true` on the backend when omitted. */
   createGithubIssue?: boolean;

@@ -45,6 +45,10 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `DB_NAME`     | yes*     | —       | Database name              |
 | `DB_SSLMODE`  | no       | —       | `disable` or `require`    |
 | `DB_SCHEMA`   | no       | `DB_USER,public` | Pins the connection's `search_path` (`DSN`'s `options=-c search_path=...`), same purpose as `operations/csm-sync-service`'s own `DB_SCHEMA` — see that config's `withSchema`. The fallback makes explicit what Postgres' own default `search_path` (`"$user", public`) would already do implicitly — `public` must survive it, since every deployment's tables live there today (unqualified migrations). An explicit value is used verbatim, with no `public` appended |
+| `DB_POOL_MAX_CONNS` | no | `20` | pgxpool max open connections (see "Connection pool settings" below) |
+| `DB_POOL_MIN_CONNS` | no | `2` | pgxpool connections kept warm when idle; `0` is a valid, accepted value |
+| `DB_POOL_MAX_CONN_LIFETIME` | no | `30m` | pgxpool connection rotation interval |
+| `DB_POOL_MAX_CONN_IDLE_TIME` | no | `5m` | pgxpool idle-connection release interval |
 | `SERVER_PORT` | no       | `8080`  | Main API listen port       |
 | `HEALTH_PORT` | no       | `8081`  | Health probe listen port; `Validate` rejects it being equal to `SERVER_PORT` (see "Health probes" below) |
 | `SERVER_READ_TIMEOUT` | no | `60s` | Main API server read timeout (Go duration, e.g. `60s`); must be > 0 |
@@ -5449,7 +5453,12 @@ every work_item type comes from `next_portal_work_item_number()`
 (`'CS-PORTAL-' || a zero-padded sequence value`, `portal_work_item_number_seq`)
 -- a visually distinct prefix rules out any collision with ServiceNow's own
 still-running `CS` + 7-digit sync, the same reasoning migrations `0113`/`0115`
-already used for GitHub-sourced records (`CHG-GH-...`/`SR-GH-...`). `wso2_id`
+already used for GitHub-sourced records (`CHG-GH-...`/`SR-GH-...`).
+**Exception: `INCIDENT_TASK`** (migration `0201`) takes ServiceNow's format
+from 0180's TASK series, `next_work_item_number('INCIDENT_TASK')`, started at
+`TASK1000000` -- far above ServiceNow's range (TASK0084630 on staging,
+2026-10-07), as outages did with `OUT0010000`. The cutover seed script only
+moves sequences forward, so it is unaffected. `wso2_id`
 (required, by `work_item_wso2_id_required_by_type`, only for the five
 case-like types -- CASE/SERVICE_REQUEST/ENGAGEMENT/SECURITY_REPORT_ANALYSIS/
 ANNOUNCEMENT) comes from `next_portal_wso2_id(project_id)`
@@ -5914,7 +5923,34 @@ of its own (unlike `incident.state`, which defaults to `'NEW'`), so
 `CreateProblem`'s portal path hardcodes it to `'NEW'::problem_state_enum`
 explicitly. `CreateConversation` followed later -- see above.
 
-**`UpdateProblem`/`UpdateIncident`/`HandOffIncidentToSpecialist` are also not
+**`HandOffIncidentToSpecialist` is implemented on Postgres** and writes
+Postgres only -- no ServiceNow call, in dual-write mode too.
+`incident_handoff_service.go` ports `IncidentHandoffUtils.handOff` (the
+"Escalate to Special Ops" UI action): eligibility as 409s, and one
+transaction that moves `work_item.assignment_group_id`, clears the assignee,
+opens a TASK-numbered `[Runbook Task]` (in the same Special Ops group --
+WSO2 SRE Team no longer exists) and writes the reason JSON as a work note.
+Routing is configuration, not code or tables: `SPECIALIST_HANDOFF_CONFIG`
+(one line of JSON, `specialist_handoff_config.go`, validated at startup --
+a bad value refuses to start) lists products, each with its service ids,
+its Special Ops teams (`key` = the handoff's `escalationTeam`, `label`,
+`groupId`) and an optional GitHub repo. A product with several teams
+(Choreo) requires `escalationTeam`; one with a single team (Asgardeo) takes
+it and records no team, as SN does. `GET /specialist-handoff-teams?serviceId=`
+feeds the dialog, and `IncidentView.CanHandOffToSpecialist` (SN's
+`canEscalateToSpecialOps`; false when the incident is already with any of
+its product's groups) is computed in the service from the config.
+The GitHub issue and the "Escalated to Special Ops team." note follow,
+best effort. Each product's repo picks a token by `github.credential`
+(default: its owner) from the secret `SPECIALIST_HANDOFF_GITHUB_TOKENS`
+(`{"<credential>":"<token>"}`, falling back to `GITHUB_TOKEN`), one client
+per credential (`WithHandoffIssueCreators`), independent of the
+change-request GitHub sync. No token: the handoff still succeeds and reports
+`githubIssueError`. No webhook -- SN never reads anything back from the
+issue. `IncidentView.SpecialistHandoff` is derived at
+read time from those notes and the task, as SN's `getHandoffSummary` does.
+
+**`UpdateProblem`/`UpdateIncident` are also not
 implemented**: `UpdateProblem.Transition` is validated
 server-side by ServiceNow's own workflow engine with no fixed, confirmed
 transition rule set to reimplement (see that field's own doc comment --
@@ -5924,13 +5960,7 @@ deliberately not a closed enum for exactly this reason);
 that do, and would need `comment`-table side effects for
 `AdditionalComments`/`WorkNotes` mirroring `caseService.UpdateCase`'s own
 comment-on-update behavior -- deferred as a unit rather than
-half-implemented; `HandOffIncidentToSpecialist` is an inherently
-ServiceNow-workflow-specific feature (moves the incident to a specialist
-group, opens a runbook-gap task, files a GitHub issue) with no
-assignment-group or handoff-tracking concept anywhere in this schema to
-derive an equivalent from. `IncidentView.SpecialistHandoff` is always `nil`
-on this data source for the same reason -- the correct "never handed off"
-representation per that field's own doc comment, not a gap.
+half-implemented.
 
 `IncidentView.WatchList`/`LinkedServiceRequests` are always empty slices on
 this data source (never populated) -- `work_item_watcher` could back the
@@ -6842,6 +6872,39 @@ lookups (`GetUserByEmail`) leave it nil. Two things worth knowing:
 - `GET /users/{id}` (the profile page) is registered only for the ServiceNow data
   source; it is not available on Postgres at all.
 
+## POST /users/by-ids failed the whole batch on one non-UUID id
+
+Reported live: the staff portal's Knowledge page called `POST /users/by-ids` to
+resolve author names and got a 500 ("Failed to look up users."), so no row showed
+an author. The page builds the id list from each article's `authorId` **and**
+`updatedBy`, and `knowledge_article.updated_by` (migration 0044) is a free-text
+`VARCHAR(255)`, not a user reference: on one page of 20 articles, 6 values were sent,
+4 shaped like UUIDs, 1 like an email address and 1 a short plain string. `"user".id`
+is a UUID column, so `WHERE id = ANY($1)` makes Postgres reject the whole statement
+(`invalid input syntax for type uuid`, SQLSTATE 22P02) on the first value that is not
+a UUID, which also drops the lookup for the valid ids in the same batch.
+
+Fixed in `userService.GetUsersByIDs`: values that are not well-formed UUIDs
+(`validate.IsUUID`, case-insensitive) are skipped before the repository is called,
+and a batch with none left answers `{"users": []}` without querying. Skipping
+rather than rejecting is deliberate: a value that is not a UUID can never match a
+row, so the answer is the one a query would have given for an unknown id, and a 400
+(what `validateUUIDs` returns for a single path or body id) would fail the page just
+as the 500 did. The wire contract is unchanged (`openapi.yaml` only gained a
+description), the repository is untouched, and no webapp change is needed: the
+lookup tolerates whatever a caller builds its list from, and every caller of
+`useUsersByIds` (the KB All, List, Admin and Review Queue pages and the article
+timeline) benefits at once.
+
+Because ids are filtered here, a free-text `updated_by` never resolves to a name; a
+caller that wants to show one has to fall back to the raw value itself.
+
+`user_service_by_ids_test.go` pins what reaches the repository (valid ids only, in
+order; no query when none are valid; errors still propagate).
+`user_by_ids_integration_test.go` (skipped without `CASE_STATS_TEST_DSN`) runs the
+service over the real repository on a real `"user"` table; against the unfiltered
+code it fails with Postgres's own `invalid input syntax for type uuid`.
+
 ## GET /users/{id} on the Postgres data source
 
 The route was registered only for ServiceNow, so opening a user in the CSM portal
@@ -6996,6 +7059,48 @@ other reader of it. `GetProjectDetails`'s own `sf_id` scan (a separate query,
 a separate endpoint) was not touched -- not reported broken, so left alone
 rather than fixed speculatively.
 
+## SearchKBArticles failed on any page containing a row with a NULL body/state/author_id
+
+Reported live: `POST /kb-articles/search` returning 500 (`cannot scan NULL into
+*string`), which the staff portal's Knowledge page surfaced as "Failed to search
+KB articles". `knowledge_article` (migration 0044) allows NULL in `body`, `state`,
+`knowledge_base_id`, `author_id` and `latest`, and on staging 2,386 of the 7,794
+`latest = true` rows have a NULL `body`, 2,403 a NULL `author_id` and 1 a NULL
+`state` (`knowledge_base_id` had none). `domain.KBArticle` declares all five as
+required, non-pointer fields, and `scanKBArticle` scanned the columns straight
+into them, so a single such row failed the whole page.
+
+Fixed the same way as `CaseView.InternalID` and `DeploymentView.Type` (see those
+sections above): the wire contract is unchanged (`KnowledgeBaseID`/`Body`/`State`/
+`AuthorID` stay required strings, `Latest` a plain bool, `""`/`false` when the
+column is NULL, so `openapi.yaml` and the portal clients are unaffected), and only
+the scan side changes. `scanKBArticle` scans those five columns into pointer
+locals and converts them with `stringOrEmpty(...)` (`latest != nil && *latest`
+for the bool). It is the only place that scans `knowledge_article` columns, and
+`CreateKBArticle`, `GetKBArticleByID`, `SearchKBArticles`, `UpdateKBArticleState`
+and `UpdateKBArticleContent` all go through it, so every read path and every
+`RETURNING` scan is covered by the one change.
+
+`kb_article_repo_test.go` scans rows with NULL columns through a fake row that,
+like pgx, rejects a NULL into a non-pointer destination, so it fails if the scan
+reverts to plain destinations. `kb_article_repo_integration_test.go` runs search,
+get-by-id and edit against a real `knowledge_article` table (skipped without
+`CASE_STATS_TEST_DSN`).
+
+An article whose `state` is NULL reads as `state: ""`. The service's
+`isLegalKBArticleTransition` has no transition out of an unrecognised state, so
+`PATCH` on such an article returns a 400 ("invalid state transition") rather than
+a 500 — it is listed and viewable, but needs its state set before it can move
+through review.
+
+Not covered here: `knowledge_article_history` (legacy migration
+`000030_knowledge_article_history.up.sql`) is absent from the staging database.
+Two paths use it — `ListKBArticleHistory`, and the history insert inside
+`UpdateKBArticleState`'s transaction (so a state transition rolls back entirely
+there) — and both still fail until the table exists. `UpdateKBArticleContent` does
+not touch it. That is a schema gap, separate from the NULL scan above, and does not
+affect search.
+
 ## Case feedback silently 404'd on the Postgres data source instead of a documented 503
 
 Reported live: a case's Activity timeline always showed "Could not load Case
@@ -7023,11 +7128,142 @@ added `work_item_feedback`, and `pgFeedbackService`
 /cases/feedback/search` and `/aggregate` for both the `postgres` and
 `postgres-servicenow-dual-write` data sources (dual write reads Postgres, never
 the backing system). `unavailableFeedbackService` is now only the fallback for
-a data source with no feedback store. Known gaps: the table stores no
-per-rating reason chips, so every `reasons_*` bucket returns an empty result;
-`GET`/`POST /cases/{id}/feedback` (the emoji submission contract) is still a
-503 on Postgres because `work_item_feedback` has no emoji id, chip ids or
-assessment id to serve it from.
+a data source with no feedback store. Known gap: the table stores no
+per-rating reason chips, so every `reasons_*` bucket returns an empty result.
+`GET`/`POST /cases/{id}/feedback` (the emoji submission contract) now has a
+real Postgres implementation too — see the dedicated section below.
+
+## GET/POST /cases/{id}/feedback and GET /metadata's feedbackEmojies on Postgres
+
+`GET`/`POST /cases/{id}/feedback` used to be a hardcoded 503 on this data
+source ("case feedback is only supported for the [synced data source]").
+Migration `0127`/`0128` (`work_item_feedback_metric`/
+`work_item_feedback_metric_option`/`work_item_feedback_reason`, mirrored
+from the same upstream sync that already populates `work_item_feedback`
+itself) give this a real implementation:
+`internal/repository/case_feedback_repo.go` (`CaseRepository.GetCaseFeedback`/
+`CreateCaseFeedback`), wired into `case_service.go`'s own `GetCaseFeedback`/
+`SubmitCaseFeedback`.
+
+**The emoji catalog is five rows, resolved by name, not by a stored FK.**
+`work_item_feedback` (migration `0102`) has no column saying which emoji/
+metric a submission picked — only a plain `rating` (1-5) and `rating_label`
+(e.g. `"Very Satisfied"`), the exact shape the upstream sync already writes.
+Every `"<rating> - Reasons"` row of `work_item_feedback_metric` is, by
+construction, its clean rating label plus the fixed `" - Reasons"` suffix,
+so `rating_label || ' - Reasons'` always resolves back to the one metric row
+a submission's `emojiId` pointed at — `caseFeedbackRatingByLabel`/
+`resolveCaseFeedbackRating` hold this fixed, closed 5-value correspondence,
+reused by both the per-case endpoints and
+`ReferenceDataRepository.ListFeedbackEmojis` (`GET /metadata`'s
+`feedbackEmojies` field) so the two can never disagree on what a "rating"
+means. A reason's own `option_value`/`reason` are kept as recorded with no
+FK to `work_item_feedback_metric_option` (migration `0128`'s own design), so
+a since-renamed-or-removed option has no current id to report — that chip
+is left out of `GetCaseFeedback`'s result entirely rather than guessed at.
+
+**Two guards, both enforced inside `CreateCaseFeedback`'s own transaction,
+in this order:**
+
+1. **The case must already be closed.** This form is a post-closure
+   satisfaction survey — the portal only ever offers it once a case has
+   closed — so a submission against a case that's still open is rejected
+   with a `409 ConflictError` ("feedback can only be submitted once the
+   case is closed"), checked via the same `caseLikeStateColumn`/
+   `caseLikeJoins` resolution `GetCaseByID`/`SearchCases` already use for
+   every case-like type, so "closed" can never drift between this check and
+   what the case detail page itself shows.
+2. **One submission per case, ever.** `work_item_feedback.work_item_id` is
+   `UNIQUE`; the insert is `ON CONFLICT (work_item_id) DO NOTHING`, and zero
+   rows returned is a second `409 ConflictError` ("feedback has already
+   been submitted for this case").
+
+Every chip submitted must belong to the submitted `emojiId`'s own option
+set — a chip from a different emoji's question is rejected with a
+`ValidationError`, not silently accepted. `CreateCaseFeedback` validates
+`emojiId` against both `work_item_feedback_metric.is_active` and
+`selected_image IS NOT NULL` — the exact same definition `ListFeedbackEmojis`
+uses for "a real catalog emoji", so a submission can never be accepted for
+an id `GET /metadata` would never have offered as a choice in the first
+place.
+
+**`GetCaseFeedback` (the read side) is internal-caller-only — an
+external/customer caller gets `403 Forbidden` before the repository is even
+reached, by explicit product decision.** A case's submitted feedback (the
+customer's own satisfaction rating/comment) is a one-way signal meant for
+WSO2 staff, never shown back to the customer who submitted it — not even
+for a case they are themselves a registered contact on. `caseService.
+requireInternalCaller` delegates to the shared `RequireInternalCaller`
+(`require_internal.go`), the identical "no scope short of internal is safe
+to hand this out under" gate `slaStatusService`'s own `requireInternalCaller`
+already uses for the same reasoning.
+
+**`CreateCaseFeedback` (the write side) needs no equivalent explicit
+check** — a caller may only submit feedback for a case they actually have
+access to, but this is enforced entirely by RLS on the existence/state query
+above, not by a second access check in the service layer. Every request's
+identity is already stamped onto its context once, by
+`callerIdentityMiddleware` (`internal/server/identity_middleware.go`),
+before any handler runs; `CreateCaseFeedback` runs inside a transaction that
+reads that same identity and sets it as session GUCs, so `work_item`'s own
+`FORCE ROW LEVEL SECURITY` already makes a case outside the caller's scope
+return zero rows on that one query — the same "exists, just not yours ->
+NotFoundError" posture every by-id case read already has. An earlier
+revision added an explicit `GetCaseByID` call here (mirroring
+`EscalationService.CreateEscalation`'s own check-then-mutate shape) before
+realizing it was pure duplication: `GetCaseByID` is the single most
+expensive read in this file (~15 joins plus two extra round trips for
+tags/watchers), re-proving something the one lightweight query
+`CreateCaseFeedback` already runs provides for free. Removed; see
+`TestCaseFeedbackIntegration_RejectsSubmissionForAnOutOfScopeCase`
+(`case_feedback_repo_integration_test.go`) for the real, RLS-level
+regression guard — a service-layer test with a stub repository cannot
+exercise this at all, since RLS only exists in real Postgres.
+
+**Identity, not invention.** `AssessmentID` (`CaseEmojiFeedback`/
+`CaseFeedbackResult`'s own wire field) is left at its Go zero value on this
+data source — there is no assessment-instance concept anywhere in this
+schema to populate it from, unlike the synced path's own real id for it.
+`SubmittedByUserID` comes from `resolveActor`, the same
+`x-user-id-token`-derived lookup every other Postgres-native write in this
+file already uses.
+
+## closed_by_user_id was never written or read on the Postgres data source
+
+Reported live: an externally-closed case showed "Case closed by system"
+regardless of who actually closed it. `closed_by_user_id` is a real column
+on all five case-like extension tables (migrations `0023`/`0024`), and the
+field it backs (`CaseView.ClosedBy`) was already wired up on the synced
+read path — but `case_repo.go` never selected it in `GetCaseByID`, and
+`UpdateCase`'s own state-transition write never set it either. Confirmed
+directly against a real case: `work_item_activity` already had the correct
+closer's email recorded for its `state` field-change entry (the identity
+was available at close time, it just never reached this column).
+
+Fixed on both sides:
+
+- **Write**: `CaseRepository.UpdateCase` gained an `actorID *string`
+  parameter — the resolved caller's own `"user"` id, threaded through
+  `updateCaseQuery` and the four `caseLikeExtensionUpdate` queries. It is
+  stamped onto `closed_by_user_id` only on a transition **to** closed, and
+  cleared back to `NULL` on a transition **away** from closed — the
+  identical transition-gated shape `closed_on` itself already has.
+  `caseService.UpdateCase` resolves `actorID` via the same `resolveActor`
+  call its `recordFieldChangeActivity` already uses, from the caller's
+  `x-user-id-token` **only** — never from the request body, and never
+  guessed at for a pure machine-to-machine caller with no end-user token
+  (that caller's close simply leaves `closed_by_user_id` unset, the same
+  best-effort posture `actorEmail` already has there).
+- **Read**: `GetCaseByID` now joins `"user" closer ON closer.id =` the new
+  `caseLikeClosedByUserIDColumn` (a `COALESCE` across all five extension
+  tables' own `closed_by_user_id`, mirroring `caseLikeClosedOnColumn`'s
+  existing shape) and populates `CaseView.ClosedBy`.
+
+**Forward-only, deliberately.** A case closed before this change keeps
+`closed_by_user_id = NULL` forever unless backfilled separately — nothing
+here retroactively derives it (e.g. from `work_item_activity`'s own
+recorded email), since that would be a data migration decision, not a code
+fix.
 
 ## CreateCase enforces a project type's product-category allow-list for case/SR
 
@@ -7218,14 +7454,16 @@ Key conventions enforced at the DB level:
 
 ## Connection pool settings
 
-Configured in `internal/db/postgres.go`:
+Tuned via `config.Config`, applied by `internal/db.NewPool`. Each is env-configurable (`internal/config/config.go`); the values below are what an unset deployment gets — identical to what this file used to hardcode before these existed:
 
-| Setting             | Value   |
-|---------------------|---------|
-| Max connections     | 20      |
-| Min connections     | 2       |
-| Max conn lifetime   | 30 min  |
-| Max idle time       | 5 min   |
+| Setting             | Env var                       | Default |
+|---------------------|--------------------------------|---------|
+| Max connections     | `DB_POOL_MAX_CONNS`            | 20      |
+| Min connections     | `DB_POOL_MIN_CONNS`            | 2       |
+| Max conn lifetime   | `DB_POOL_MAX_CONN_LIFETIME`    | 30 min  |
+| Max idle time       | `DB_POOL_MAX_CONN_IDLE_TIME`   | 5 min   |
+
+`DB_POOL_MAX_CONNS` falls back to its default on an unset, non-numeric, or non-positive value (a pool that may open no connections at all can never serve a single query). `DB_POOL_MIN_CONNS` falls back the same way **except zero is accepted** — pgxpool genuinely permits a minimum of 0 (a deployment that doesn't want to retain any idle connections) — same fail-safe-to-default posture `getDurationOrDefault` already uses for every duration-shaped env var here, now shared by `getInt32OrDefault`. An invalid value for any of the four surfaces through `Config.Validate()` at startup (`loadErr`), the same mechanism `SERVER_READ_TIMEOUT`/etc. already use.
 
 ## Pagination response conventions
 
@@ -7350,15 +7588,35 @@ Tests: `incident_report_service_test.go` (unit), `incident_report_integration_te
 ### [WSO2 Cloud Ops] Post resolution tasks (migration 0188)
 
 Runs in the same Resolved handler, after the report, in the same transaction. SN condition:
-service Choreo or Asgardeo, state changes to Resolved. Every block is an independent If on the
-incident as it is now:
+service Choreo or Asgardeo, state changes to Resolved. **Deliberate divergence:** the alert tasks
+keep that service limit, but the workaround problem is created for an incident on **any** service
+(product decision, 2026-10-06). Every block is an independent If on the incident as it is now:
 
 | Condition (`resolution_code`) | Effect |
 |---|---|
 | `FALSE_ALARM` | incident_task `[Alert Task][Falser Alarm] <number> alert is a false alarm` (SN's spelling), `CRITICAL`, group WSO2 SRE Team |
 | `DUPLICATE` or `DUPLICATE_ALERT` | `[Alert Task][Duplicate Alert] <number> alert is a duplicate`, `CRITICAL`, WSO2 SRE Team. Both spellings are SN's one "Duplicate" choice: the sync writes `DUPLICATE_ALERT`, the portal `DUPLICATE` |
 | `NOT_ACTIONABLE_ALERT` | `[Alert Task][Not Actionable Alert] <number> is not an actionable alert`, `HIGH`, WSO2 SRE Team |
-| `SOLVED_WORK_AROUND` and no `problem_id` | problem `Fix the root cause of <number>` with the incident's service, impact, urgency and priority (0188 adds `problem.service_id/impact/urgency`), `incident_id` = the incident, group Choreo Special Ops or Asgardeo Operations Team by service; then `incident.problem_id` = it |
+| `SOLVED_WORK_AROUND` and no `problem_id` | problem `Fix the root cause of <number>` with the incident's service, impact, urgency and priority (0188 adds `problem.service_id/impact/urgency`), `incident_id` = the incident, group Choreo Special Ops (Choreo), Asgardeo Operations Team (Asgardeo), otherwise the incident's own assignment group (none if it has none); then `incident.problem_id` = it |
+
+**Dual-write (`postgres-servicenow-dual-write`): the workaround problem is written to both
+stores, by the resolve request, not this flow.** A problem that exists only in Postgres gets a
+CS-PORTAL number and cannot be moved through its states (every problem transition is
+ServiceNow-first, by id: the PATCH 404s). The flow has no user, and the CSM API needs the caller's
+`x-user-id-token`, so `UpdateIncident` creates it (`workaround_problem.go`): when the request moves
+the incident to Resolved as Solved (Workaround) and it has no problem, `createProblemSNFirst`
+(subject + primary incident → ServiceNow's id, PRB number and priority, stored as-is), then
+`ProblemRepository.LinkWorkaroundProblem` sets the group and `incident.problem_id` in Postgres; the
+stored group is mirrored to the problem and `problemId` rides the incident's own mirror (ServiceNow's
+`createProblem` sets `u_incident` but never `incident.problem_id`). **Both stores hold the same
+values**: the CSM API takes no service, impact or urgency (discovery script 72; `ProblemUtils`
+reads only subject/description/category/subcategory/priority/originCaseId/primaryIncidentId, and the
+Priority Problem Lookup overwrites priority), so neither store gets the incident's -- that needs a
+`ProblemUtils` change first. A failure is logged and never undoes the resolve.
+`NewDualWriteIncidentReportService` (main.go) runs this flow without the problem block. Sending
+`problemId` with the Resolved state in one ServiceNow update also keeps ServiceNow's own active
+copy of this flow from creating a second problem (its block 8 needs an empty `problem_id`). Reads
+stay on Postgres.
 
 The services and groups are SN sys_ids as Postgres UUIDs, constants in
 `incident_report_service.go`. A group missing from the database leaves the record unassigned

@@ -17,7 +17,8 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from "react";
-import type { ScheduleAbsence, ScheduleAbsenceKind, ScheduleAssignment, ScheduleShift, ScheduleZone } from "../types";
+import RotaPicker, { type RotaOption } from "./RotaPicker";
+import type { ScheduleAbsence, ScheduleAbsenceKind, ScheduleAssignment, ScheduleShift, ScheduleZone, RotaFamily } from "../types";
 import {
   dayLabel,
   groupBy,
@@ -100,14 +101,19 @@ interface DayLadderProps {
   absenceKinds: ScheduleAbsenceKind[];
   /** The page's own group and team state. Rendered here as well as in the
    *  toolbar -- one control in two places, as the prototype has it. */
-  family: "CRE" | "SRE";
-  onFamilyChange: (family: "CRE" | "SRE") => void;
+  family: RotaFamily;
+  onFamilyChange: (family: RotaFamily) => void;
   teamKey: string;
   onTeamKeyChange: (teamKey: string) => void;
   teams: string[];
   /** CRE and SRE in the order they should read -- the reader's own group
    *  first, because the first of a pair reads as the default. */
-  families: readonly ("CRE" | "SRE")[];
+  families: readonly RotaFamily[];
+  /** The rotas of the family on screen, the one shown, and the change; the
+   *  picker appears only when there is more than one. */
+  rotas?: readonly RotaOption[];
+  rotaCode?: string;
+  onRotaChange?: (code: string) => void;
 }
 
 interface BlockRow {
@@ -203,6 +209,9 @@ export default function DayLadder({
   onTeamKeyChange,
   teams,
   families,
+  rotas,
+  rotaCode,
+  onRotaChange,
 }: DayLadderProps): JSX.Element {
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const touched = useRef(false);
@@ -448,7 +457,7 @@ export default function DayLadder({
         {/* One group means nothing to switch to: only Today, or a manager,
             can look at the other group. */}
         {families.length > 1 ? (
-          <div className="seg teamseg" role="tablist" aria-label="Show CRE or SRE">
+          <div className="seg teamseg" role="tablist" aria-label={`Show ${families.join(" or ")}`}>
             {families.map((f) => (
               <button
                 key={f}
@@ -462,6 +471,8 @@ export default function DayLadder({
             ))}
           </div>
         ) : null}
+
+        <RotaPicker rotas={rotas} rotaCode={rotaCode} onRotaChange={onRotaChange} />
 
         <h2>
           On the rota <span className="count">{headcount}</span>

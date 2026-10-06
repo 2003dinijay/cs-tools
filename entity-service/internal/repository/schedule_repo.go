@@ -180,8 +180,8 @@ func scanAssignments(rows interface {
 // admin would quietly gain a CRE team, and it would not look like a bug in
 // either query on its own.
 const (
-	teamFamilyExpr    = `CASE WHEN lower(t.type) LIKE 'sre%' THEN 'SRE' ELSE 'CRE' END`
-	rosteredTeamWhere = `t.type IS NOT NULL AND lower(t.type) LIKE ANY (ARRAY['cre%', 'sre%'])`
+	teamFamilyExpr    = `CASE WHEN lower(t.type) LIKE 'sre%' THEN 'SRE' WHEN lower(t.type) LIKE 'sme%' THEN 'SME' ELSE 'CRE' END`
+	rosteredTeamWhere = `t.type IS NOT NULL AND lower(t.type) LIKE ANY (ARRAY['cre%', 'sre%', 'sme%'])`
 	teamDisplayOrder  = `(lower(t.type) LIKE '%abt') DESC, t.name`
 )
 
@@ -194,6 +194,7 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 		Shifts:       []domain.ScheduleShift{},
 		AbsenceKinds: []domain.ScheduleAbsenceKind{},
 		Teams:        []domain.ScheduleTeam{},
+		Rotas:        []domain.ScheduleRota{},
 	}
 
 	// The teams the rota is run for. type carries the family the registry
@@ -210,8 +211,10 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 	teamRows, err := r.db.Query(ctx, `
 		SELECT t.key, t.name,
 		       `+teamFamilyExpr+`,
-		       (row_number() OVER (ORDER BY `+teamDisplayOrder+`))::int
+		       (row_number() OVER (ORDER BY `+teamDisplayOrder+`))::int,
+		       ro.code
 		  FROM team t
+		  LEFT JOIN team_schedule_rota ro ON lower(ro.team_type) = lower(t.type) AND ro.is_active
 		 WHERE `+rosteredTeamWhere+`
 		 ORDER BY `+teamDisplayOrder)
 	if err != nil {
@@ -221,7 +224,7 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 	for teamRows.Next() {
 		var t domain.ScheduleTeam
 		var key *string
-		if err := teamRows.Scan(&key, &t.Name, &t.Family, &t.SortOrder); err != nil {
+		if err := teamRows.Scan(&key, &t.Name, &t.Family, &t.SortOrder, &t.RotaCode); err != nil {
 			return cat, fmt.Errorf("scan schedule team: %w", err)
 		}
 		t.Key = stringOrEmpty(key)
@@ -232,9 +235,10 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 	}
 
 	zoneRows, err := r.db.Query(ctx, `
-		SELECT z.id, z.code, z.label, w.code, z.sort_order
+		SELECT z.id, z.code, z.label, w.code, z.sort_order, ro.code
 		FROM team_schedule_zone z
 		LEFT JOIN team_schedule_zone w ON w.id = z.weekend_zone_id
+		LEFT JOIN team_schedule_rota ro ON ro.id = z.rota_id
 		WHERE z.is_active ORDER BY z.sort_order`)
 	if err != nil {
 		return cat, fmt.Errorf("query schedule zones: %w", err)
@@ -242,7 +246,7 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 	defer zoneRows.Close()
 	for zoneRows.Next() {
 		var z domain.ScheduleZone
-		if err := zoneRows.Scan(&z.ID, &z.Code, &z.Label, &z.WeekendZoneCode, &z.SortOrder); err != nil {
+		if err := zoneRows.Scan(&z.ID, &z.Code, &z.Label, &z.WeekendZoneCode, &z.SortOrder, &z.RotaCode); err != nil {
 			return cat, fmt.Errorf("scan schedule zone: %w", err)
 		}
 		cat.Zones = append(cat.Zones, z)
@@ -273,6 +277,26 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 	}
 	if err := shiftRows.Err(); err != nil {
 		return cat, fmt.Errorf("iterate schedule shifts: %w", err)
+	}
+
+	// The named rotations inside each family (SRE's SaaS and IaaS, SME's
+	// products), with the rules their sheets state.
+	rotaRows, err := r.db.Query(ctx, `
+		SELECT code, label, family::text, rotates, escalation_minutes, source_sheet, sort_order
+		FROM team_schedule_rota WHERE is_active ORDER BY family, sort_order, code`)
+	if err != nil {
+		return cat, fmt.Errorf("query schedule rotas: %w", err)
+	}
+	defer rotaRows.Close()
+	for rotaRows.Next() {
+		var ro domain.ScheduleRota
+		if err := rotaRows.Scan(&ro.Code, &ro.Label, &ro.Family, &ro.Rotates, &ro.EscalationMinutes, &ro.SourceSheet, &ro.SortOrder); err != nil {
+			return cat, fmt.Errorf("scan schedule rota: %w", err)
+		}
+		cat.Rotas = append(cat.Rotas, ro)
+	}
+	if err := rotaRows.Err(); err != nil {
+		return cat, fmt.Errorf("iterate schedule rotas: %w", err)
 	}
 
 	kindRows, err := r.db.Query(ctx, `
@@ -821,10 +845,10 @@ func (r *scheduleRepository) RotaAdminTeamsFor(ctx context.Context, userEmail st
 		  JOIN role ro      ON ro.id = ur.role_id
 		  JOIN team t       ON `+rosteredTeamWhere+`
 		                   AND `+teamFamilyExpr+` =
-		                       CASE WHEN ro.name = 'sre_rota_admin' THEN 'SRE' ELSE 'CRE' END
+		                       CASE ro.name WHEN 'sre_rota_admin' THEN 'SRE' WHEN 'sme_rota_admin' THEN 'SME' ELSE 'CRE' END
 		 WHERE lower(u.email) = lower($1)
 		   AND u.user_type = 'INTERNAL'::user_type_enum
-		   AND ro.name IN ('cre_rota_admin', 'sre_rota_admin')
+		   AND ro.name IN ('cre_rota_admin', 'sre_rota_admin', 'sme_rota_admin')
 		 ORDER BY 1`, userEmail)
 	if err != nil {
 		return nil, fmt.Errorf("query rota admin teams: %w", err)

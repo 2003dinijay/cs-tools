@@ -795,6 +795,82 @@ func TestLoad_InvalidTimeoutFailsValidate(t *testing.T) {
 	}
 }
 
+func TestLoad_DBPoolDefaults(t *testing.T) {
+	for _, k := range []string{"DB_POOL_MAX_CONNS", "DB_POOL_MIN_CONNS", "DB_POOL_MAX_CONN_LIFETIME", "DB_POOL_MAX_CONN_IDLE_TIME"} {
+		t.Setenv(k, "")
+	}
+	c := Load()
+	if c.DBPoolMaxConns != 20 || c.DBPoolMinConns != 2 ||
+		c.DBPoolMaxConnLifetime != 30*time.Minute || c.DBPoolMaxConnIdleTime != 5*time.Minute {
+		t.Errorf("defaults = %d/%d/%v/%v, want 20/2/30m/5m",
+			c.DBPoolMaxConns, c.DBPoolMinConns, c.DBPoolMaxConnLifetime, c.DBPoolMaxConnIdleTime)
+	}
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with defaults = %v, want nil", err)
+	}
+}
+
+func TestLoad_DBPoolOverrides(t *testing.T) {
+	t.Setenv("DB_POOL_MAX_CONNS", "50")
+	t.Setenv("DB_POOL_MIN_CONNS", "5")
+	t.Setenv("DB_POOL_MAX_CONN_LIFETIME", "10m")
+	t.Setenv("DB_POOL_MAX_CONN_IDLE_TIME", "2m")
+	c := Load()
+	if c.DBPoolMaxConns != 50 || c.DBPoolMinConns != 5 ||
+		c.DBPoolMaxConnLifetime != 10*time.Minute || c.DBPoolMaxConnIdleTime != 2*time.Minute {
+		t.Errorf("overrides not applied: %d/%d/%v/%v",
+			c.DBPoolMaxConns, c.DBPoolMinConns, c.DBPoolMaxConnLifetime, c.DBPoolMaxConnIdleTime)
+	}
+}
+
+func TestLoad_InvalidDBPoolIntFallsBackToDefaultAndFailsValidate(t *testing.T) {
+	for _, tc := range []struct {
+		key, value string
+	}{
+		{"DB_POOL_MAX_CONNS", "fifty"},
+		{"DB_POOL_MIN_CONNS", "-1"},
+		{"DB_POOL_MAX_CONNS", "-3"},
+		{"DB_POOL_MAX_CONNS", "0"},
+	} {
+		t.Run(tc.key+"="+tc.value, func(t *testing.T) {
+			t.Setenv(tc.key, tc.value)
+			c := Load()
+			c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+			c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+			if c.DBPoolMaxConns != 20 && tc.key == "DB_POOL_MAX_CONNS" {
+				t.Errorf("DBPoolMaxConns = %d, want the default (20) on an invalid value", c.DBPoolMaxConns)
+			}
+			if c.DBPoolMinConns != 2 && tc.key == "DB_POOL_MIN_CONNS" {
+				t.Errorf("DBPoolMinConns = %d, want the default (2) on an invalid value", c.DBPoolMinConns)
+			}
+			err := c.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.key) {
+				t.Errorf("Validate() = %v, want an error naming %s", err, tc.key)
+			}
+		})
+	}
+}
+
+// TestLoad_DBPoolMinConnsZeroIsValid is the regression guard for the
+// CodeRabbit-caught overreach: pgxpool genuinely permits MinConns=0 (a
+// deployment that doesn't want to retain any idle connections at all), so
+// DB_POOL_MIN_CONNS=0 must be accepted, not treated as an invalid value
+// that falls back to the default.
+func TestLoad_DBPoolMinConnsZeroIsValid(t *testing.T) {
+	t.Setenv("DB_POOL_MIN_CONNS", "0")
+	c := Load()
+	if c.DBPoolMinConns != 0 {
+		t.Errorf("DBPoolMinConns = %d, want 0", c.DBPoolMinConns)
+	}
+	c.DBUser, c.DBPassword, c.DBName = "u", "p", "d"
+	c.AuthIssuer, c.AuthJWKSURL, c.AuthUserTokenAudiences = "https://issuer.example/token", "https://issuer.example/jwks", []string{"spa"}
+	if err := c.Validate(); err != nil {
+		t.Errorf("Validate() with DB_POOL_MIN_CONNS=0 = %v, want nil", err)
+	}
+}
+
 func TestLoad_Redis(t *testing.T) {
 	t.Setenv("REDIS_URL", "")
 	t.Setenv("REDIS_ADDR", "")
