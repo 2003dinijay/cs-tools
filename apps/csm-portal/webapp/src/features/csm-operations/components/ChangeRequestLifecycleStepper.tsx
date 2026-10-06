@@ -247,7 +247,10 @@ function labelColorSx(
  * Rollback / Canceled — the two exits off the path, which most changes never
  * take — are plotted in the customer portal's place for them but read as "not
  * taken" (faint, dashed) until the change actually ends in one, when that stage
- * turns error-coloured with its icon.
+ * turns error-coloured with its icon. When the customer's rejection is what
+ * ended the change (Customer Approval -> Canceled, Customer Review -> Rollback)
+ * the rejected stage shows a cross in the error colour, and the stages after it
+ * on a canceled change read "not taken": the record proves they were never reached.
  *
  * Each stage names its state in words as well as colour (a visually-hidden
  * "done" / "current" / "not taken" ...), and carries the customer portal's

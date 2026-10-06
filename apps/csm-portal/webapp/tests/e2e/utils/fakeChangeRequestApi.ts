@@ -52,7 +52,7 @@
 //     (any other state is a 400 `state "rollback" can only be set from review
 //     or customer_review`), is refused while a customer-group review stage is
 //     live, cancels every still-requested approver row, and is final (a later
-//     state change is a 400); the UI posts its reason as a comment first
+//     state change is a 400); the UI posts its reason as an internal note first
 //     (`POST /change-requests/{id}/comments`, recorded in `journal()`);
 //   - customer group: the CR's Customer Group is READ-ONLY and derived from its
 //     Customer Project -- the project's registered contacts (`customerContacts`
@@ -88,6 +88,10 @@
 //   - `customerApprovalRequired` / `customerReviewRequired` are on the detail
 //     response and editable via PATCH until their gate passes; a late edit is
 //     refused with a 400 and a readable message;
+//   - `hasCustomerApproved` / `hasCustomerReviewed` (the customer's outcome) are
+//     on the detail response and stamped true when a customer gate is left by an
+//     answer, the customer's own or an engineer's bypass: `scheduled` out of
+//     Customer Approval, `closed` out of Customer Review;
 //   - the CR's creator can never approve;
 //   - an approval is only actionable while the CR is in the state its stage belongs
 //     to (Peer Approval: assess, CAB / ECAB Approval: authorize, Review: review,
@@ -447,6 +451,10 @@ export async function installFakeChangeRequestApi(
   let type = initialType;
   let currentViewer = viewer;
   let state = "new";
+  // The customer's outcome, stamped like the backend does when a customer gate is left by an answer
+  // (the customer's own, or an engineer's bypass): `hasCustomerApproved` / `hasCustomerReviewed`.
+  let customerApproved = false;
+  let customerReviewed = false;
   let subject = "[E2E] approval flow (mocked)";
   const scope: FakeScope = {
     projectId: null,
@@ -486,6 +494,8 @@ export async function installFakeChangeRequestApi(
   const legal = (): string[] => legalNextStates(state, flags, hasLiveCustomerStage());
   /** Moves the CR to `next`; entering a customer gate provisions the group's stage. */
   const enter = (next: string): void => {
+    if (state === "customer_approval" && next === "scheduled") customerApproved = true;
+    if (state === "customer_review" && next === "closed") customerReviewed = true;
     state = next;
     provisionReview();
     syncCustomerStage();
@@ -608,6 +618,8 @@ export async function installFakeChangeRequestApi(
     requestedBy: { id: FAKE_CREATOR.id, name: FAKE_CREATOR.name },
     customerApprovalRequired: flags.customerApprovalRequired,
     customerReviewRequired: flags.customerReviewRequired,
+    hasCustomerApproved: customerApproved,
+    hasCustomerReviewed: customerReviewed,
     legalNextStates: legal(),
     plannedStartOn,
     plannedEndOn,
@@ -695,13 +707,21 @@ export async function installFakeChangeRequestApi(
     async (route) => {
       const type = route.request().resourceType();
       if (route.request().method() !== "GET" || (type !== "fetch" && type !== "xhr")) return route.fallback();
-      const real = await route.fetch();
-      const profile = (await real.json()) as Record<string, unknown>;
-      const [firstName, ...rest] = currentViewer.name.split(" ");
-      await route.fulfill({
-        response: real,
-        json: { ...profile, id: currentViewer.id, email: currentViewer.email, firstName, lastName: rest.join(" ") },
-      });
+      try {
+        const real = await route.fetch();
+        const profile = (await real.json()) as Record<string, unknown>;
+        const [firstName, ...rest] = currentViewer.name.split(" ");
+        await route.fulfill({
+          response: real,
+          json: { ...profile, id: currentViewer.id, email: currentViewer.email, firstName, lastName: rest.join(" ") },
+        });
+      } catch {
+        // The test can end (the page and its context close, and the pending response is disposed)
+        // while this is still fetching the live profile from the BFF, which is not an error of the
+        // test. There is nobody left to answer then; if the page is still there, hand the request on
+        // to the network as it is.
+        await route.fallback().catch(() => undefined);
+      }
     },
   );
 
@@ -1041,7 +1061,8 @@ export async function installFakeChangeRequestApi(
           if (hasLiveCustomerStage()) {
             return json(route, { message: customerStageManualRefusal("scheduled") }, 400);
           }
-          state = "scheduled"; // the customer's approval was recorded
+          state = "scheduled"; // the customer's approval was recorded...
+          customerApproved = true; // ...and stamped, as the backend does
         } else if (target === "closed" && state === "customer_review" && hasLiveCustomerStage()) {
           // As for scheduled above: with the customer group's review pending, closing is its members' decision.
           return json(route, { message: customerStageManualRefusal("closed") }, 400);
