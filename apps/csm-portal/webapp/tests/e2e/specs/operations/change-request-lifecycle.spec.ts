@@ -63,6 +63,7 @@
 //
 
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import type { Browser, Page } from "@playwright/test";
@@ -3665,6 +3666,86 @@ test.describe("the customer requirements lock (real stack)", () => {
     await detail.goto(cr.id);
     await expect(detail.sendForCustomerReviewButton()).toBeVisible();
     await expect(detail.closeButton()).toHaveCount(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// MIGRATED (legacy) change requests in the CSM portal, on the real stack. The customer portal's own spec
+// (customer-change-request-legacy.spec.ts) proves what CUSTOMERS see of them; this is the staff's side: the rows the
+// sync writes -- no customer-stage rows, customer flags false, an approval stage with no label -- must not lock WSO2 out
+// of their own change requests. The rows are the customer portal e2e's fixture (fixtures/legacy-change-requests.sql, ids
+// and numbers like ServiceNow's, created in 1999), written and removed here through the stack's Postgres.
+// ---------------------------------------------------------------------------
+
+const LEGACY_SQL = path.resolve(process.cwd(), "../../customer-portal/webapp/tests/e2e/fixtures/legacy-change-requests.sql");
+const legacyId = (number: string): string => {
+  const hex = createHash("md5").update(`legacy-${number}`).digest("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+};
+async function deleteLegacy(): Promise<void> {
+  await psql("delete from work_item where created_by = 'sn-sync' and number ~ '^CHG0039[1234]'");
+}
+
+test.describe("migrated (legacy) change requests in the CSM portal (real stack)", () => {
+  test.describe.configure({ timeout: 180_000 });
+  test.beforeEach(async () => {
+    test.skip(!realStackNamed(), "name the stack under test: E2E_CSM_BFF_URL, E2E_POSTGRES_CONTAINER, E2E_OIDC_URL (see auth/README.md)");
+    test.skip(!fs.existsSync(LEGACY_SQL), `the customer portal e2e fixture ${LEGACY_SQL} is not there (run from apps/csm-portal/webapp)`);
+    await psql(fs.readFileSync(LEGACY_SQL, "utf8"));
+  });
+  test.afterAll(async () => {
+    if (realStackNamed()) await deleteLegacy();
+  });
+
+  test("an Emergency change in Authorize whose only approval stage was synced with no label: its pending approver sees Approve in the Approvals tab, decides, and the change is Scheduled (it used to be refused as a stale Peer stage)", async ({ browser }) => {
+    const id = legacyId("CHG0039301");
+    await asPersona(browser, "crInternalApprover", async (page) => {
+      await pictureWindow(page);
+      const detail = new ChangeRequestDetailPage(page);
+      await detail.goto(id);
+      await expect(detail.currentStep()).toContainText("Authorize");
+      await expect(detail.approverStatus(ALICE)).toHaveText("Requested");
+      await expect(detail.approverStatus(BOB)).toHaveText("Requested");
+      // Only the signed-in user's own pending row offers Approve / Reject.
+      await expect(detail.approveButton(ALICE)).toBeVisible();
+      await expect(detail.approveButton(BOB)).toHaveCount(0);
+      await shotTo(page, "30-csm-legacy-synced-stage-pending-approver-can-decide");
+      await detail.approve(ALICE);
+      await expect(detail.currentStep()).toContainText("Scheduled");
+      await expect(detail.approverStatus(ALICE)).toHaveText("Approved");
+    });
+  });
+
+  test("a legacy change request sitting in Customer Approval with nobody asked: the Approvals tab says so, and the engineer's Bypass customer approval is on offer (no live customer request to override)", async ({ page }) => {
+    await pictureWindow(page);
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(legacyId("CHG0039104"));
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expectBypass(detail, "approval", "enabled");
+    await shotTo(page, "31-csm-legacy-customer-approval-nobody-asked");
+  });
+
+  test("a legacy change request in Scheduled with its flags false and a Customer Project: the Edit dialog freezes the project, closes the approval box (its gate is passed) and still lets the review box be added", async ({ page }) => {
+    await pictureWindow(page);
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(legacyId("CHG0039105"));
+    await expect(detail.currentStep()).toContainText("Scheduled");
+    await detail.openEditDialog();
+    await expect(detail.editProjectField()).toBeDisabled();
+    await expect(detail.editDialog().getByText(PROJECT_FROZEN_REASON)).toBeVisible();
+    await expect(detail.editCustomerApprovalCheckbox()).toBeDisabled();
+    await expect(detail.editDialog().getByText(/^Locked: the change request has already reached the customer approval step or later\./)).toBeVisible();
+    await expect(detail.editCustomerReviewCheckbox()).toBeEnabled();
+    await expect(detail.editDialog().getByText(REQUIREMENT_ONCE_SAVED)).toBeVisible();
+    await shotTo(page, "32-csm-legacy-scheduled-edit-dialog");
+    await detail.editCustomerReviewCheckbox().check();
+    await detail.saveEdit();
+    await expect(detail.editDialog()).toHaveCount(0);
+    expect((await staff("jane").get(legacyId("CHG0039105"))).body.customerReviewRequired).toBe(true);
+    // ...and then it stays: add-only holds for a migrated row exactly as for a native one.
+    const untick = await staff("jane").patch(legacyId("CHG0039105"), { customerReviewRequired: false });
+    expect(untick.status).toBe(400);
   });
 });
 
