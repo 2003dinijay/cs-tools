@@ -614,19 +614,28 @@ type changeRequestGateSnapshot struct {
 	model            string
 	approvalRequired bool
 	reviewRequired   bool
+	// projectID is the stored Customer Project (work_item.project_id), nil when
+	// the change has none.
+	projectID *string
 }
 
 // lockChangeRequestGateSnapshot reads (and locks, FOR UPDATE) the fields the
 // customer gates depend on. Locking keeps a concurrent approval decision
 // (which takes the same lock) from moving the change past a gate between this
 // read and the write that depends on it.
+//
+// The lock is on the change_request row only. A caller that must not act on a
+// stale snapshot of the work_item side (the Customer Project) locks that row
+// first and reads this afterwards, in a separate statement:
+// lockChangeRequestForPatch.
 func lockChangeRequestGateSnapshot(ctx context.Context, tx pgx.Tx, id string) (changeRequestGateSnapshot, error) {
-	var state, model *string
+	var state, model, project *string
 	var snap changeRequestGateSnapshot
 	err := tx.QueryRow(ctx,
-		`SELECT state::text, change_model::text, customer_approval_required, customer_review_required
-		 FROM change_request WHERE id = $1 FOR UPDATE`, id,
-	).Scan(&state, &model, &snap.approvalRequired, &snap.reviewRequired)
+		`SELECT cr.state::text, cr.change_model::text, cr.customer_approval_required, cr.customer_review_required, wi.project_id::text
+		 FROM change_request cr LEFT JOIN work_item wi ON wi.id = cr.id
+		 WHERE cr.id = $1 FOR UPDATE OF cr`, id,
+	).Scan(&state, &model, &snap.approvalRequired, &snap.reviewRequired, &project)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return snap, &apierror.NotFoundError{Msg: "change request not found"}
 	}
@@ -635,6 +644,10 @@ func lockChangeRequestGateSnapshot(ctx context.Context, tx pgx.Tx, id string) (c
 	}
 	snap.state = strings.ToUpper(stringOrEmpty(state))
 	snap.model = strings.ToUpper(stringOrEmpty(model))
+	if hasProjectID(project) {
+		p := strings.ToLower(strings.TrimSpace(*project))
+		snap.projectID = &p
+	}
 	return snap, nil
 }
 
@@ -685,24 +698,22 @@ func reviewRequirementEditable(state string) bool {
 	return true
 }
 
-// validateCustomerGateEdits refuses an edit of customer_approval_required /
-// customer_review_required once the gate it controls has been passed. A write
-// of the value already stored is a no-op and is always accepted, so a client
-// that resends the whole form is not punished for fields it did not touch.
+// validateCustomerGateEdits judges an edit of customer_approval_required /
+// customer_review_required against the customer requirements lock (see
+// change_request_customer_lock.go): free in New, ADD-ONLY afterwards. A write of
+// the value already stored is a no-op and is always accepted, so a client that
+// resends the whole form is not punished for fields it did not touch.
+//
+// After New, in every state: true -> false is refused. false -> true is accepted
+// only while the gate the box controls is still ahead (approvalRequirementEditable
+// / reviewRequirementEditable, the cut-offs kept from before the lock) and only on
+// a change that has a Customer Project, which can no longer be set.
 func validateCustomerGateEdits(snap changeRequestGateSnapshot, approvalRequired, reviewRequired *bool) error {
-	state := strings.ToLower(snap.state)
-	if state == "" {
-		state = "new"
+	hasProject := hasProjectID(snap.projectID)
+	if err := checkRequirementEdit(customerApprovalBox, snap.state, snap.approvalRequired, approvalRequired, hasProject); err != nil {
+		return err
 	}
-	if approvalRequired != nil && *approvalRequired != snap.approvalRequired && !approvalRequirementEditable(snap.state) {
-		return &apierror.ValidationError{Msg: fmt.Sprintf(
-			"customerApprovalRequired can no longer be changed: the change request has already passed the approval stage (current state: %s)", state)}
-	}
-	if reviewRequired != nil && *reviewRequired != snap.reviewRequired && !reviewRequirementEditable(snap.state) {
-		return &apierror.ValidationError{Msg: fmt.Sprintf(
-			"customerReviewRequired can no longer be changed: the change request has already left the review stage (current state: %s)", state)}
-	}
-	return nil
+	return checkRequirementEdit(customerReviewBox, snap.state, snap.reviewRequired, reviewRequired, hasProject)
 }
 
 // ---------------------------------------------------------------------------

@@ -396,15 +396,17 @@ func TestChangeRequestFlowIntegration_CustomerGroupFirstResponderWins(t *testing
 	}
 }
 
-// Fallback: no project, a project without registered contacts, or nobody
-// eligible among them -> no stage, and the manual paths work exactly as before.
+// Fallback: a project without registered contacts, or nobody eligible among
+// them -> no stage, and the manual paths work exactly as before. ("No project"
+// is no longer a way to get here: a box ticked on a change with no Customer
+// Project is refused at Request Approval -- see
+// TestChangeRequestLockIntegration_RequestApprovalNeedsAProject.)
 func TestChangeRequestFlowIntegration_CustomerGroupFallbackToManual(t *testing.T) {
 	cases := []struct {
 		name    string
 		project *string
 		prepare func(f *crFlow)
 	}{
-		{"no project", nil, nil},
 		{"project without registered contacts", sp(crScopeProjectC), nil},
 		{"project whose only contact is the creator", sp(crScopeProjectC), func(f *crFlow) {
 			f.registerContact(crScopeProjectC, crScopeAccountID, crFlowCreatorID)
@@ -452,26 +454,27 @@ func TestChangeRequestFlowIntegration_CustomerGroupInactiveMemberSkipped(t *test
 	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED"})
 }
 
-// The project set later (change already in Customer Approval) provisions the
-// stage; resending it is idempotent; changing the project while a stage is live
-// cancels it and provisions the new project's contacts (never two live stages);
-// a project without contacts leaves the manual path; changing the set of
-// contacts is picked up the next time the project is written; and cancelling
-// the change cancels what is pending.
+// The Customer Group follows the contacts of the project the change was
+// requested with, and only that project: the project is chosen in New and frozen
+// by Request Approval, so a change in Customer Approval can never be re-pointed
+// at another customer's contacts (the reason for the lock). What can still change
+// under it is WHO the project's contacts are: resending the stored projectId (an
+// accepted no-op write) re-derives the group, replacing a live stage whose
+// contacts are out of date with one for who is registered now -- never two live
+// stages; and cancelling the change cancels what is pending. (This test used to
+// move the project around while the stage was live; the lock refuses that, which
+// TestChangeRequestLockIntegration_ProjectIsFrozenAfterRequestApproval pins.)
 func TestChangeRequestFlowIntegration_CustomerGroupFollowsTheProject(t *testing.T) {
 	f := newCustomerGroupFlow(t)
-	id := f.createWithProject(domain.ChangeRequestTypeStandard, nil, true, true)
+	id := f.createWithProject(domain.ChangeRequestTypeStandard, sp(crScopeProjectA), true, true)
 	f.requestApproval(id)
-	f.expect(id, "in Customer Approval, no project", "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
-
-	// Project set later: the stage appears; the manual path closes.
-	f.setProject(id, crScopeProjectA)
-	f.expect(id, "after the project was set", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.expect(id, "in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	st := f.customerStages(id)
 	if len(st) != 1 {
-		t.Fatalf("stages after set = %+v", st)
+		t.Fatalf("stages after Request Approval = %+v", st)
 	}
-	assertApprovers(t, "after set", st[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+	assertApprovers(t, "after Request Approval", st[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+
 	// Resending the same project, or any unrelated PATCH, changes nothing.
 	f.setProject(id, crScopeProjectA)
 	if _, err := f.patch(id, domain.PatchChangeRequestRequest{Title: sp("renamed")}); err != nil {
@@ -481,40 +484,33 @@ func TestChangeRequestFlowIntegration_CustomerGroupFollowsTheProject(t *testing.
 		t.Fatalf("stages after idempotent resend = %+v", st)
 	}
 
-	// Project changed while live: customer A's stage is cancelled and customer
-	// B's contacts are asked instead.
-	f.setProject(id, crScopeProjectB)
-	f.expect(id, "after the project changed", "CUSTOMER_APPROVAL", "authorize", "canceled")
-	st = f.customerStages(id)
-	if len(st) != 2 || liveStages(st) != 1 {
-		t.Fatalf("stages after change = %+v, want 2 (1 live)", st)
+	// The project is frozen: another customer's project is refused and nothing
+	// follows it.
+	_, err := f.patch(id, domain.PatchChangeRequestRequest{ProjectID: sp(crScopeProjectB), DeploymentIDs: &[]string{}})
+	f.wantValidationError("moving the project in Customer Approval", err, "projectId can no longer be changed")
+	if st := f.customerStages(id); len(st) != 1 || liveStages(st) != 1 {
+		t.Fatalf("stages after the refused move = %+v", st)
 	}
-	assertApprovers(t, "old stage", st[0].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
-	assertApprovers(t, "new stage", st[1].approvers, map[string]string{crScopeUserB1: "REQUESTED"})
-	// The former project's contacts can no longer decide; the new one's can.
-	f.wantForbidden("old project's contact", f.decide(id, crScopeUserA1, "approved"), "only members of the customer group")
+	assertApprovers(t, "after the refused move", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 
-	// A project without contacts: nothing live, the manual path is back.
-	f.setProject(id, crScopeProjectC)
-	f.expect(id, "after the project lost its contacts", "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
-	if liveStages(f.customerStages(id)) != 0 {
-		t.Fatalf("a live customer stage remains for a project without contacts")
-	}
-	// Back to A: a fresh stage (the earlier one was only cancelled).
-	f.setProject(id, crScopeProjectA)
-	if st := f.customerStages(id); len(st) != 3 || liveStages(st) != 1 {
-		t.Fatalf("stages after re-setting the project = %+v, want 3 (1 live)", st)
-	}
-
-	// The contacts changed (Bob is no longer registered): the next write that
-	// touches the project replaces the stage with one for who is left.
+	// The contacts changed (Bob is no longer registered): resending the project
+	// replaces the stage with one for who is left.
 	f.execSQL(`UPDATE project_contact SET state = 'DEACTIVATED' WHERE email = $1`, crFlowEmail(crScopeUserBob))
 	f.setProject(id, crScopeProjectA)
 	st = f.customerStages(id)
-	if len(st) != 4 || liveStages(st) != 1 {
-		t.Fatalf("stages after the contact set changed = %+v, want 4 (1 live)", st)
+	if len(st) != 2 || liveStages(st) != 1 {
+		t.Fatalf("stages after the contact set changed = %+v, want 2 (1 live)", st)
 	}
-	assertApprovers(t, "after Bob left", st[3].approvers, map[string]string{crScopeUserA1: "REQUESTED"})
+	assertApprovers(t, "old stage", st[0].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
+	assertApprovers(t, "after Bob left", st[1].approvers, map[string]string{crScopeUserA1: "REQUESTED"})
+	// A contact who registered later is picked up the same way.
+	f.execSQL(`UPDATE project_contact SET state = 'REGISTERED' WHERE email = $1`, crFlowEmail(crScopeUserBob))
+	f.setProject(id, crScopeProjectA)
+	st = f.customerStages(id)
+	if len(st) != 3 || liveStages(st) != 1 {
+		t.Fatalf("stages after a contact registered = %+v, want 3 (1 live)", st)
+	}
+	assertApprovers(t, "after Bob registered again", st[2].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 
 	// Cancelling the change cancels what is pending.
 	f.step(id, domain.ChangeRequestStateCanceled, "CANCELED")

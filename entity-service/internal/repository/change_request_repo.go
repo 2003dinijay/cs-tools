@@ -1198,8 +1198,38 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	if err := RejectRemovedPatchFields(req); err != nil {
 		return "", err
 	}
-	linkPlan, err := planChangeRequestLinks(ctx, tx, id, req)
+
+	// The creation-phase gate (change_request_customer_lock.go): what may still
+	// be edited about the Customer Project and the two customer boxes is a
+	// function of the state the change is in -- all of it in New, from Request
+	// Approval on the project is frozen and the boxes can only be ticked, never
+	// unticked. The state must be the CURRENT one, so the work_item row is locked
+	// first and the change_request side is read afterwards, in a statement of its
+	// own (lockChangeRequestForPatch): a Request Approval racing a project edit
+	// then serialises on that lock instead of both reading "New". The snapshot is
+	// reused by everything below that needs the gates (it stays valid: the
+	// change_request row is locked from here to the end of the transaction).
+	var gates changeRequestGateSnapshot
+	if changeRequestPatchNeedsGate(req) {
+		var err error
+		if gates, err = lockChangeRequestForPatch(ctx, tx, id); err != nil {
+			return "", err
+		}
+		if err := validateCreationPhaseEdits(gates, req); err != nil {
+			return "", err
+		}
+	}
+	linkPlan, err := planChangeRequestLinks(ctx, tx, id, req, gates)
 	if err != nil {
+		return "", err
+	}
+	// The project the change will have once this PATCH is written: the request's,
+	// else the stored one (the only one there can be after New).
+	effectiveProject := gates.projectID
+	if req.ProjectID != nil {
+		effectiveProject = req.ProjectID
+	}
+	if err := checkSingularDeploymentFields(ctx, tx, id, req, gates, effectiveProject); err != nil {
 		return "", err
 	}
 
@@ -1350,8 +1380,9 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	//     requires the customer's approval.
 	//
 	// The gate flags in effect are the ones in this very request when it carries
-	// them, else the stored ones; an edit of a flag whose gate has been passed
-	// is refused (validateCustomerGateEdits). The row is read under FOR UPDATE.
+	// them, else the stored ones; an edit of a flag that the customer requirements
+	// lock refuses (validateCustomerGateEdits) never gets here. The row was read
+	// under FOR UPDATE by the creation-phase gate above.
 	effectiveState := req.State
 	var requestApprovalFlow *changeRequestFlow
 	// Re-schedule (see the "authorize" case below): the internal stage to run
@@ -1359,16 +1390,6 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	var rescheduleCheckpoint *changeRequestApprovalCheckpoint
 	rescheduleAsksCustomerAgain := false
 	effectiveApproved, effectiveReviewed := req.IsCustomerApproved, req.IsCustomerReviewed
-	var gates changeRequestGateSnapshot
-	if req.State != nil || req.CustomerApprovalRequired != nil || req.CustomerReviewRequired != nil {
-		var err error
-		if gates, err = lockChangeRequestGateSnapshot(ctx, tx, id); err != nil {
-			return "", err
-		}
-		if err := validateCustomerGateEdits(gates, req.CustomerApprovalRequired, req.CustomerReviewRequired); err != nil {
-			return "", err
-		}
-	}
 	approvalRequired, reviewRequired := gates.approvalRequired, gates.reviewRequired
 	if req.CustomerApprovalRequired != nil {
 		approvalRequired = *req.CustomerApprovalRequired
@@ -1382,7 +1403,7 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		// (a repeated {state: rollback} gets the "only from review" refusal
 		// below).
 		if gates.state == "ROLLBACK" && !strings.EqualFold(string(*req.State), string(domain.ChangeRequestStateRollback)) {
-			return "", &apierror.ValidationError{Msg: "change request has been rolled back; rollback is final and its state can no longer be changed"}
+			return "", &apierror.ValidationError{Msg: changeRequestRolledBackMsg}
 		}
 		switch strings.ToLower(string(*req.State)) {
 		case "authorize":
@@ -1484,6 +1505,14 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			dest := requestApprovalDestination(flow, approvalRequired)
 			if gates.state != "" && gates.state != "NEW" && !strings.EqualFold(gates.state, string(dest)) {
 				return "", &apierror.ValidationError{Msg: "approval can only be requested for a change request in the New state"}
+			}
+			// Request Approval is the moment the Customer Project is frozen: a
+			// change that needs the customer must have one, or it would reach a
+			// customer stage with nobody to ask and the project could not be set
+			// any more. The boxes and the project in effect are the request's
+			// own, else the stored ones.
+			if err := checkRequestApprovalHasProject(gates.state, approvalRequired, reviewRequired, hasProjectID(effectiveProject)); err != nil {
+				return "", err
 			}
 			effectiveState = &dest
 			requestApprovalFlow = &flow
@@ -1829,12 +1858,19 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	}
 	// The customer group (the project's registered contacts) answers Customer
 	// Approval / Customer Review through an approval stage of its own
-	// (provisionCustomerStage). Whatever this PATCH changed about the state or
-	// the project, bring that stage in step with the change as it now stands:
-	// provision it on entering the state (Request Approval on a Standard
-	// change, {state: customer_review}), replace it when the project changes,
-	// cancel it when the change leaves the state. Idempotent, and a no-op for
-	// every other state.
+	// (provisionCustomerStage). Whatever this PATCH changed about the state, or
+	// restated about the project, bring that stage in step with the change as it
+	// now stands: provision it on entering the state (Request Approval on a
+	// Standard change, {state: customer_review}), replace it when the contacts
+	// changed, cancel it when the change leaves the state. Idempotent, and a no-op
+	// for every other state.
+	//
+	// The project can only CHANGE in New (change_request_customer_lock.go), where
+	// there is no customer stage to follow it. After New the trigger on projectId
+	// is for the resend: an equal projectId is an accepted no-op write that still
+	// re-derives the contacts, which is the way a change in a customer state
+	// learns of a contact who registered after it was asked (the Customer Group
+	// is derived live and nothing else notices).
 	if req.State != nil || req.ProjectID != nil {
 		if _, err := provisionCustomerStage(ctx, tx, id, actorEmail); err != nil {
 			return "", err

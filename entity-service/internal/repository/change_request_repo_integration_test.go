@@ -4622,12 +4622,58 @@ func TestChangeRequestFlowIntegration_CreateRequiresCreatableType(t *testing.T) 
 
 func boolp(b bool) *bool { return &b }
 
-// createGated is crFlow.create with the creation form's two checkboxes.
+// The project of a customer with no registered contacts, for the tests that
+// tick a box and want the MANUAL path (no customer stage is provisioned, a human
+// records the customer's answer). Ticking a box needs a Customer Project since
+// the customer requirements lock (Request Approval is refused without one), so
+// "no customer group" is now a project without contacts rather than no project.
+const (
+	crNoContactAccountID = "3bbbbbbb-0000-0000-0000-0000000000a1"
+	crNoContactProjectID = "3bbbbbbb-0000-0000-0000-0000000000a2"
+)
+
+// noContactProject creates that project (once per flow) and removes it on
+// cleanup, after the change requests that use it.
+func (f *crFlow) noContactProject() *string {
+	f.t.Helper()
+	var exists bool
+	if err := f.scoped.QueryRow(f.sys, `SELECT EXISTS (SELECT 1 FROM project WHERE id = $1)`, crNoContactProjectID).Scan(&exists); err != nil {
+		f.t.Fatalf("check the no-contact project: %v", err)
+	}
+	if !exists {
+		exec := func(sql string, args ...any) {
+			f.t.Helper()
+			if _, err := f.scoped.Exec(f.sys, sql, args...); err != nil {
+				f.t.Fatalf("seed the no-contact project (%.60s): %v", sql, err)
+			}
+		}
+		exec(`INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id)
+		      VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', 'CR No Contact Account', 'CR-NOCONTACT-ACC', 'CR-NOCONTACT-SF') ON CONFLICT DO NOTHING`, crNoContactAccountID)
+		exec(`INSERT INTO project (id, created_on, updated_on, created_by, updated_by, key, sf_id, name, account_id)
+		      VALUES ($1, now(), now(), 'cr-flow-test', 'cr-flow-test', 'CRNOCONTACT', 'CRNOCONTACT', 'CRNOCONTACT', $2) ON CONFLICT DO NOTHING`, crNoContactProjectID, crNoContactAccountID)
+		f.t.Cleanup(func() {
+			_, _ = f.scoped.Exec(f.sys, `DELETE FROM work_item WHERE subject = $1`, crFlowSubject)
+			_, _ = f.scoped.Exec(f.sys, `DELETE FROM project WHERE id = $1`, crNoContactProjectID)
+			_, _ = f.scoped.Exec(f.sys, `DELETE FROM account WHERE id = $1`, crNoContactAccountID)
+		})
+	}
+	id := crNoContactProjectID
+	return &id
+}
+
+// createGated is crFlow.create with the creation form's two checkboxes. A change
+// that ticks a box is put on the project with no registered contacts (see
+// noContactProject), the one place left where the customer is not asked through
+// a stage.
 func (f *crFlow) createGated(typ domain.ChangeRequestType, groupID string, approval, review *bool) string {
 	f.t.Helper()
 	g := groupID
+	var project *string
+	if (approval != nil && *approval) || (review != nil && *review) {
+		project = f.noContactProject()
+	}
 	resp, err := f.repo.CreateChangeRequest(f.sys, domain.CreateChangeRequestRequest{
-		Subject: crFlowSubject, Type: &typ, GroupID: &g,
+		Subject: crFlowSubject, Type: &typ, GroupID: &g, ProjectID: project,
 		CustomerApprovalRequired: approval, CustomerReviewRequired: review,
 	}, crFlowEmail(crFlowCreatorID))
 	if err != nil {
@@ -4863,15 +4909,22 @@ func TestChangeRequestFlowIntegration_StandardCustomerApprovalTickedWithRequestA
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
 
+	// Request Approval needs a Customer Project for a box that is ticked (the
+	// project is frozen by it): here the project with no contacts, so the change
+	// waits in Customer Approval for a human to record the answer.
 	together := f.create(domain.ChangeRequestTypeStandard, crFlowGroupID)
 	st := domain.ChangeRequestStateAssess
-	if _, err := f.patch(together, domain.PatchChangeRequestRequest{State: &st, CustomerApprovalRequired: boolp(true)}); err != nil {
-		t.Fatalf("PATCH {state: assess, customerApprovalRequired: true}: %v", err)
+	if _, err := f.patch(together, domain.PatchChangeRequestRequest{State: &st, CustomerApprovalRequired: boolp(true)}); err == nil {
+		t.Fatal("PATCH {state: assess, customerApprovalRequired: true} on a change with no Customer Project was accepted")
+	}
+	f.expect(together, "after the refused combined PATCH", "NEW", "assess", "canceled")
+	if _, err := f.patch(together, domain.PatchChangeRequestRequest{State: &st, CustomerApprovalRequired: boolp(true), ProjectID: f.noContactProject()}); err != nil {
+		t.Fatalf("PATCH {state: assess, customerApprovalRequired: true, projectId}: %v", err)
 	}
 	f.expect(together, "after the combined PATCH", "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
 
 	separate := f.create(domain.ChangeRequestTypeStandard, crFlowGroupID)
-	if _, err := f.patch(separate, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(true)}); err != nil {
+	if _, err := f.patch(separate, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(true), ProjectID: f.noContactProject()}); err != nil {
 		t.Fatalf("PATCH {customerApprovalRequired: true}: %v", err)
 	}
 	f.expect(separate, "after ticking the box", "NEW", "assess", "canceled")
@@ -4937,9 +4990,12 @@ func TestChangeRequestFlowIntegration_CustomerGateFlagsAcceptedAndReturned(t *te
 	}
 }
 
-// customerApprovalRequired is editable while the change is New, Assess or
-// Authorize -- and what it is at CAB approval decides the cascade. After that
-// the gate has been passed and an edit is refused with a clear 400.
+// customerApprovalRequired is free in New, and ADD-ONLY from Request Approval on
+// (the customer requirements lock): ticking is still accepted through Assess and
+// Authorize -- what it is at CAB approval decides the cascade -- and refused with
+// a clear 400 once the gate has been passed; unticking is refused in every state
+// after New. (Before the lock it could be unticked until the gate; the old
+// assertions of that are what this replaces.)
 func TestChangeRequestFlowIntegration_CustomerApprovalRequiredEditableUntilGatePassed(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
@@ -4950,25 +5006,35 @@ func TestChangeRequestFlowIntegration_CustomerApprovalRequiredEditableUntilGateP
 		_, err := f.patch(id, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(v)})
 		return err
 	}
-	if err := set(true); err != nil {
-		t.Fatalf("tick in New: %v", err)
+	// New: both ways, with or without a project.
+	for _, v := range []bool{true, false, true} {
+		if err := set(v); err != nil {
+			t.Fatalf("set %v in New: %v", v, err)
+		}
+	}
+	// Ticked with no project: Request Approval is refused (nobody to ask), and
+	// the project, set in New, lets it through.
+	st := domain.ChangeRequestStateAssess
+	_, err := f.patch(id, domain.PatchChangeRequestRequest{State: &st})
+	f.wantValidationError("Request Approval with the box ticked and no project", err, "no Customer Project is set")
+	f.expect(id, "after the refused Request Approval", "NEW", "assess", "canceled")
+	if _, err := f.patch(id, domain.PatchChangeRequestRequest{ProjectID: f.noContactProject()}); err != nil {
+		t.Fatalf("set the project in New: %v", err)
 	}
 	f.requestApproval(id)
-	if err := set(false); err != nil {
-		t.Fatalf("untick in Assess: %v", err)
-	}
+
+	// Assess: ticked stays ticked (resending it is a no-op), unticking is refused.
 	if err := set(true); err != nil {
-		t.Fatalf("tick in Assess: %v", err)
+		t.Fatalf("resend the ticked box in Assess: %v", err)
 	}
+	f.wantValidationError("untick in Assess", set(false), "customerApprovalRequired can no longer be turned off")
 	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
 		t.Fatalf("peer approval: %v", err)
 	}
 	f.expect(id, "after peer approval", "AUTHORIZE", "canceled")
-	if err := set(false); err != nil {
-		t.Fatalf("untick in Authorize: %v", err)
-	}
-	if err := set(true); err != nil {
-		t.Fatalf("tick in Authorize: %v", err)
+	f.wantValidationError("untick in Authorize", set(false), "customerApprovalRequired can no longer be turned off")
+	if !f.get(id).CustomerApprovalRequired {
+		t.Fatal("customerApprovalRequired changed although the edit was refused")
 	}
 
 	// The value at CAB approval decides: ticked -> Customer Approval.
@@ -4978,20 +5044,20 @@ func TestChangeRequestFlowIntegration_CustomerApprovalRequiredEditableUntilGateP
 	f.expect(id, "after CAB approval", "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
 
 	// The gate has been passed: refused, state and flag unchanged.
-	f.wantValidationError("untick in Customer Approval", set(false), "customerApprovalRequired can no longer be changed")
+	f.wantValidationError("untick in Customer Approval", set(false), "customerApprovalRequired can no longer be turned off")
 	if !f.get(id).CustomerApprovalRequired {
 		t.Fatal("customerApprovalRequired changed although the edit was refused")
 	}
 	f.step(id, domain.ChangeRequestStateScheduled, "SCHEDULED", "implement", "canceled")
-	f.wantValidationError("untick in Scheduled", set(false), "customerApprovalRequired can no longer be changed")
+	f.wantValidationError("untick in Scheduled", set(false), "customerApprovalRequired can no longer be turned off")
 	// Resending the stored value is not an edit.
 	if err := set(true); err != nil {
 		t.Fatalf("resending the stored value after the gate: %v", err)
 	}
 	// ... and the refusal is atomic: nothing else in the same PATCH was written.
 	title := "should not be written"
-	_, err := f.patch(id, domain.PatchChangeRequestRequest{Title: &title, CustomerApprovalRequired: boolp(false)})
-	f.wantValidationError("title + untick in Scheduled", err, "can no longer be changed")
+	_, err = f.patch(id, domain.PatchChangeRequestRequest{Title: &title, CustomerApprovalRequired: boolp(false)})
+	f.wantValidationError("title + untick in Scheduled", err, "can no longer be turned off")
 	var subject string
 	if err := f.scoped.QueryRow(f.sys, `SELECT subject FROM work_item WHERE id = $1`, id).Scan(&subject); err != nil {
 		t.Fatalf("read subject: %v", err)
@@ -5000,24 +5066,39 @@ func TestChangeRequestFlowIntegration_CustomerApprovalRequiredEditableUntilGateP
 		t.Fatalf("subject = %q after a refused PATCH, want it untouched (%q)", subject, crFlowSubject)
 	}
 
-	// Unticked at CAB approval: straight to Scheduled.
+	// A box that was NOT ticked can still be ticked in Assess / Authorize (a peer
+	// finds the customer must approve), and it then decides the cascade; unticked
+	// at CAB approval it is straight to Scheduled.
 	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
 	id2 := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
-	if err := func() error {
-		_, err := f.patch(id2, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(true)})
-		return err
-	}(); err != nil {
-		t.Fatalf("tick: %v", err)
-	}
-	if _, err := f.patch(id2, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(false)}); err != nil {
-		t.Fatalf("untick: %v", err)
+	if _, err := f.patch(id2, domain.PatchChangeRequestRequest{ProjectID: f.noContactProject()}); err != nil {
+		t.Fatalf("set the project: %v", err)
 	}
 	f.requestApproval(id2)
-	f.approvePeerAndCAB(id2, "SCHEDULED", "implement", "canceled")
+	if _, err := f.patch(id2, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(true)}); err != nil {
+		t.Fatalf("tick in Assess: %v", err)
+	}
+	if err := f.decide(id2, crFlowPeerAID, "approved"); err != nil {
+		t.Fatalf("peer approval: %v", err)
+	}
+	f.expect(id2, "after peer approval", "AUTHORIZE", "canceled")
+	if err := f.decide(id2, crCABMemberUserID1, "approved"); err != nil {
+		t.Fatalf("CAB approval: %v", err)
+	}
+	f.expect(id2, "after CAB approval of a box ticked in Assess", "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
+
+	id3 := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
+	f.requestApproval(id3)
+	f.approvePeerAndCAB(id3, "SCHEDULED", "implement", "canceled")
+	// Past the gate even ticking is refused, with the gate's own message.
+	_, err = f.patch(id3, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(true)})
+	f.wantValidationError("tick in Scheduled", err, "customerApprovalRequired can no longer be changed")
 }
 
-// customerReviewRequired is editable until the change leaves Review -- it
-// decides what Review offers -- and refused afterwards.
+// customerReviewRequired is free in New and ADD-ONLY afterwards -- it decides
+// what Review offers, and ticking it stays possible until the change leaves
+// Review (a project is needed once approval has been requested) -- and refused
+// from Customer Review on; unticking is refused in every state after New.
 func TestChangeRequestFlowIntegration_CustomerReviewRequiredEditableUntilReviewLeft(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
@@ -5026,43 +5107,49 @@ func TestChangeRequestFlowIntegration_CustomerReviewRequiredEditableUntilReviewL
 		_, err := f.patch(id, domain.PatchChangeRequestRequest{CustomerReviewRequired: boolp(v)})
 		return err
 	}
-	for _, step := range []struct {
-		state domain.ChangeRequestState // "" = stay
-	}{{""}, {domain.ChangeRequestStateAssess}, {domain.ChangeRequestStateImplement}} {
-		if step.state != "" {
-			if _, err := f.patchState(id, step.state); err != nil {
-				t.Fatalf("PATCH state %s: %v", step.state, err)
-			}
-		}
-		if err := set(true); err != nil {
-			t.Fatalf("tick in %s: %v", f.state(id), err)
-		}
-		if err := set(false); err != nil {
-			t.Fatalf("untick in %s: %v", f.state(id), err)
+	// New: both ways, no project needed to tick it.
+	for _, v := range []bool{true, false, true, false} {
+		if err := set(v); err != nil {
+			t.Fatalf("set %v in New: %v", v, err)
 		}
 	}
+	// After New ticking needs a Customer Project, which can no longer be set:
+	// this change has none, so the add is refused...
+	f.requestApproval(id)
+	f.expect(id, "after Request Approval (nothing ticked, no project needed)", "SCHEDULED", "implement", "canceled")
+	f.wantValidationError("tick on a change with no project", func() error { return set(true) }(), "customerReviewRequired cannot be turned on")
+	f.wantValidationError("the project cannot be set after New", func() error {
+		_, err := f.patch(id, domain.PatchChangeRequestRequest{ProjectID: f.noContactProject()})
+		return err
+	}(), "projectId can no longer be changed")
 
-	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
-	// Still editable in Review, and it flips what Review offers.
-	if err := set(true); err != nil {
-		t.Fatalf("tick in Review: %v", err)
+	// ... and a change that has one can tick it through Review, once.
+	id = f.create(domain.ChangeRequestTypeStandard, crFlowGroupID)
+	if _, err := f.patch(id, domain.PatchChangeRequestRequest{ProjectID: f.noContactProject()}); err != nil {
+		t.Fatalf("set the project in New: %v", err)
 	}
-	f.expect(id, "after ticking in Review", "REVIEW", "customer_review", "rollback", "canceled")
-	if err := set(false); err != nil {
-		t.Fatalf("untick in Review: %v", err)
-	}
-	f.expect(id, "after unticking in Review", "REVIEW", "closed", "rollback", "canceled")
+	f.requestApproval(id)
+	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 	if err := set(true); err != nil {
-		t.Fatalf("tick in Review (again): %v", err)
+		t.Fatalf("tick in Implement: %v", err)
+	}
+	f.wantValidationError("untick in Implement", set(false), "customerReviewRequired can no longer be turned off")
+
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
+	// Ticked stays ticked in Review, and Review offers Customer Review.
+	f.wantValidationError("untick in Review", set(false), "customerReviewRequired can no longer be turned off")
+	f.expect(id, "after the refused untick in Review", "REVIEW", "customer_review", "rollback", "canceled")
+	if err := set(true); err != nil {
+		t.Fatalf("resend the ticked box in Review: %v", err)
 	}
 
 	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
-	f.wantValidationError("untick in Customer Review", set(false), "customerReviewRequired can no longer be changed")
+	f.wantValidationError("untick in Customer Review", set(false), "customerReviewRequired can no longer be turned off")
 	if err := set(true); err != nil {
 		t.Fatalf("resending the stored value: %v", err)
 	}
 	f.step(id, domain.ChangeRequestStateClosed, "CLOSED")
-	f.wantValidationError("untick in Closed", set(false), "customerReviewRequired can no longer be changed")
+	f.wantValidationError("untick in Closed", set(false), "customerReviewRequired can no longer be turned off")
 	f.wantValidationError("tick approval in Closed", func() error {
 		_, err := f.patch(id, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(true)})
 		return err
@@ -5070,10 +5157,29 @@ func TestChangeRequestFlowIntegration_CustomerReviewRequiredEditableUntilReviewL
 	if !f.get(id).CustomerReviewRequired {
 		t.Fatal("customerReviewRequired changed although the edit was refused")
 	}
+
+	// A box that was not ticked can still be ticked while the change is in Review,
+	// and Review then offers Customer Review.
+	other := f.create(domain.ChangeRequestTypeStandard, crFlowGroupID)
+	if _, err := f.patch(other, domain.PatchChangeRequestRequest{ProjectID: f.noContactProject()}); err != nil {
+		t.Fatalf("set the project: %v", err)
+	}
+	f.requestApproval(other)
+	f.step(other, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
+	f.step(other, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
+	if _, err := f.patch(other, domain.PatchChangeRequestRequest{CustomerReviewRequired: boolp(true)}); err != nil {
+		t.Fatalf("tick in Review: %v", err)
+	}
+	f.expect(other, "after ticking in Review", "REVIEW", "customer_review", "rollback", "canceled")
+	f.step(other, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
+	f.step(other, domain.ChangeRequestStateClosed, "CLOSED")
 }
 
-// Unticking Customer Review in the same PATCH that closes a Review lets the
-// close through; closing a required Review without unticking is refused.
+// A required review cannot be skipped by closing a Review: closing from Review is
+// refused while customerReviewRequired is set, and the box cannot be unticked in
+// the same PATCH (or any other) to let it through -- the way on is Customer
+// Review. (Unticking Customer Review in the PATCH that closes used to be the
+// way out; the customer requirements lock removed it.)
 func TestChangeRequestFlowIntegration_CloseFromReviewHonoursTheFlagInTheSamePatch(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
@@ -5087,12 +5193,18 @@ func TestChangeRequestFlowIntegration_CloseFromReviewHonoursTheFlagInTheSamePatc
 	f.wantValidationError("close a review that requires the customer", err, "customer review is required")
 	f.expect(id, "after the refused close", "REVIEW", "customer_review", "rollback", "canceled")
 
-	if _, err := f.patch(id, domain.PatchChangeRequestRequest{State: &closed, CustomerReviewRequired: boolp(false)}); err != nil {
-		t.Fatalf("PATCH {state: closed, customerReviewRequired: false}: %v", err)
+	_, err = f.patch(id, domain.PatchChangeRequestRequest{State: &closed, CustomerReviewRequired: boolp(false)})
+	f.wantValidationError("close and untick in one PATCH", err, "customerReviewRequired can no longer be turned off")
+	f.expect(id, "after the refused close-and-untick", "REVIEW", "customer_review", "rollback", "canceled")
+	if cr := f.get(id); !cr.CustomerReviewRequired {
+		t.Fatal("customerReviewRequired was unticked by a refused PATCH")
 	}
-	f.expect(id, "after closing with the box unticked", "CLOSED")
-	if _, reviewed := f.customerOutcome(id); reviewed {
-		t.Fatal("is_customer_review_required = true although the change closed straight from Review")
+
+	// The way on is Customer Review, whose manual close (no contacts to ask) records the review.
+	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "closed", "rollback", "canceled")
+	f.step(id, domain.ChangeRequestStateClosed, "CLOSED")
+	if _, reviewed := f.customerOutcome(id); !reviewed {
+		t.Fatal("is_customer_review_required = false after closing from customer_review")
 	}
 }
 
@@ -6039,8 +6151,11 @@ func TestChangeRequestScopeIntegration_PatchDeploymentProductsReadOnly(t *testin
 		[]string{crScopeDPProdOne, crScopeDPProdTwo, crScopeDPStageOne, extra})
 }
 
-// The edit window: project, deployments and deployment products
-// change freely through Scheduled and are refused from Implement on; resending
+// The edit window: deployments and deployment products change freely through
+// Scheduled and are refused from Implement on. The Customer Project is stricter
+// since the customer requirements lock: it moves only while the change is New
+// (the window used to be New through Scheduled; see
+// change_request_customer_lock_integration_test.go for the whole rule). Resending
 // the stored values is always accepted; everything else stays editable.
 func TestChangeRequestScopeIntegration_PatchEditWindow(t *testing.T) {
 	for state, open := range map[string]bool{
@@ -6071,6 +6186,11 @@ func TestChangeRequestScopeIntegration_PatchEditWindow(t *testing.T) {
 			}
 			for field, req := range attempts {
 				_, err := f.patch(id, req)
+				// The project is open in New only; the lists stay open until Implement.
+				open := open
+				if field == "projectId" {
+					open = state == "NEW"
+				}
 				if open {
 					if err != nil {
 						t.Fatalf("%s change in %s: %v", field, state, err)
