@@ -452,6 +452,134 @@ func main() {
 		}
 	}()
 
+	// The SLA breach-alerting engine is optional per deployment, gated on
+	// REDIS_ADDR or REDIS_URL being set — unset means this engine never
+	// starts, matching the "unset means don't run" convention used
+	// elsewhere in this repo's own services for an optional capability
+	// (e.g. apps/csm-portal/backend's EVENT_HUB_BROKER gate). It is not a
+	// Kafka consumer of its own either — see internal/slaengine's own
+	// CLAUDE.md section ("SLA breach alerting") for the full design:
+	// RegisterClocks/ApplyStateEffects/CompleteResponseClock are called
+	// directly from three of dispatcher's own handlers, on the existing
+	// main consumer; only the tick itself runs on its own ticker, scanning
+	// a Redis wake-index this engine computes and schedules entirely on
+	// its own, not a poll of entity-service.
+	//
+	// This whole block — Redis connection included — runs here, BEFORE any
+	// consumer starts below, specifically so dispatcher.WithSLAEngine has
+	// already set Dispatcher.slaEngine before the first case.created can
+	// ever reach handleCaseCreated. A consumer started first and wired
+	// second would let an early, unlucky delivery see a nil slaEngine,
+	// skip RegisterClocks, and still have its offset committed — silently
+	// losing that one case's SLA tracking forever, since there is no
+	// backfill (see RegisterClocks' own doc comment).
+	//
+	// REDIS_URL (a rediss://:<password>@<host>:<port> connection string,
+	// parsed via redis.ParseURL) is how a managed Redis with TLS — Azure
+	// Managed Redis, Azure Cache for Redis — gets configured: the "rediss"
+	// scheme makes go-redis dial with TLS automatically, which a plain
+	// REDIS_ADDR/REDIS_PASSWORD pair has no way to request. REDIS_ADDR/
+	// REDIS_PASSWORD remain for a local, non-TLS Redis and take effect only
+	// when REDIS_URL is unset.
+	//
+	// redisClient below is always a plain redis.NewClient, which only
+	// supports a non-clustered Redis (a single logical endpoint, whether
+	// that's a real standalone instance or Azure Managed Redis/Azure Cache
+	// for Redis under a non-clustered or "Enterprise" clustering policy,
+	// where Azure's own proxy hides the sharding). It does NOT support
+	// "OSS Cluster" policy — that needs a cluster-aware redis.NewClusterClient
+	// to follow MOVED/ASK redirects, which nothing here constructs. Confirm
+	// the target Redis resource's clustering policy is Enterprise/
+	// non-clustered before pointing REDIS_URL at it; OSS Cluster policy will
+	// fail unpredictably (slaengine.Store's key operations landing on the
+	// wrong shard) rather than at this construction site.
+	var redisClient *redis.Client
+	var slaProducer *eventbus.Producer
+	var escalationConsumers []*eventbus.Consumer
+	redisURL := os.Getenv("REDIS_URL")
+	redisAddr := os.Getenv("REDIS_ADDR")
+	if redisURL != "" || redisAddr != "" {
+		var redisOpts *redis.Options
+		if redisURL != "" {
+			var err error
+			redisOpts, err = redis.ParseURL(redisURL)
+			if err != nil {
+				// Deliberately not logging err itself: a malformed URL (e.g.
+				// a stray unescaped '%' in the password) makes Go's
+				// net/url.Parse embed the raw input string — password
+				// included — in its own error message, which would
+				// otherwise land straight in this log line.
+				slog.Error("invalid REDIS_URL: failed to parse connection string")
+				os.Exit(1)
+			}
+		} else {
+			redisOpts = &redis.Options{Addr: redisAddr, Password: os.Getenv("REDIS_PASSWORD")}
+		}
+		redisClient = redis.NewClient(redisOpts)
+
+		// slaengine.EntityClient talks to the exact same entity-service as
+		// customerEntityClient above — not a different backend — so it
+		// reuses that same CUSTOMER_ENTITY_BASE_URL/CUSTOMER_ENTITY_SCOPES
+		// pair (and the same shared OAuth2 app) rather than a redundant
+		// SLA-specific one. It's still a separate client/type from
+		// customerEntityClient, since internal/entity.CustomerEntityClient
+		// deliberately implements only POST /users/search (see its own doc
+		// comment) — not because the two point at different servers.
+		//
+		// Unlike customerEntityClient's own construction above (which reads
+		// the OAuth2 triple with plain os.Getenv, since that feature only
+		// warns-and-degrades on a missing config), mustEnv is used for all
+		// four values here: once REDIS_ADDR opts into this engine, every one
+		// of them is required for it to do anything at all — a missing
+		// credential would otherwise silently fail the one startup call this
+		// client makes.
+		slaEntityClient := slaengine.NewEntityClient(slaengine.EntityConfig{
+			BaseURL:      mustEnv("CUSTOMER_ENTITY_BASE_URL"),
+			TokenURL:     mustEnv("OAUTH2_TOKEN_URL"),
+			ClientID:     mustEnv("OAUTH2_CLIENT_ID"),
+			ClientSecret: mustEnv("OAUTH2_CLIENT_SECRET"),
+			Scopes:       splitComma(os.Getenv("CUSTOMER_ENTITY_SCOPES")),
+		})
+
+		// Reuses eventBusCfg's topic (the same one dispatcher's main consumer
+		// reads) rather than a dedicated one — no new Azure Event Hub topic
+		// needs provisioning for this feature; splitting sla.tier_reached
+		// onto its own topic is a later call once a real consumer of it
+		// exists.
+		slaProducer = eventbus.NewProducer(eventBusCfg)
+
+		// GET /sla-duration-policy is fetched exactly once, here, at
+		// startup — not refreshed again for the life of this process (see
+		// slaengine.Engine's own doc comment on why). A failure here is
+		// loud but not fatal: this is a nice-to-have engine layered on top
+		// of the notification channels this service exists for, not core
+		// delivery, so SLA tracking is simply disabled for this run rather
+		// than crash-looping the whole service over one failed startup
+		// call — restarting (or redeploying) picks it up once
+		// entity-service is reachable again. The 30s timeout bounds how
+		// long this can delay event consumption below by at most that much
+		// — acceptable once, at startup, for a feature that's otherwise
+		// entirely event-driven with no further entity-service calls.
+		slaStartupCtx, slaStartupCancel := context.WithTimeout(ctx, 30*time.Second)
+		durations, err := slaEntityClient.GetDurationPolicy(slaStartupCtx)
+		slaStartupCancel()
+		if err != nil {
+			slog.Error("slaengine: failed to fetch sla duration policy at startup, sla tracking is disabled for this run", "err", err)
+		} else {
+			slaEngine := slaengine.NewEngine(slaengine.NewStore(redisClient), slaProducer, googleChatClient, linkResolver, durations)
+			dispatcher = dispatcher.WithSLAEngine(slaEngine)
+
+			// SLA_TICK_INTERVAL defaults far above the old wake-index
+			// design's original 15s: this engine now schedules a wake entry
+			// per tier at registration time (RegisterClocks), so a tick only
+			// needs to notice whichever ones have since become due, not
+			// recompute anything — 5 minutes balances alert latency against
+			// a near-zero load on Redis either way.
+			tickInterval := envDuration("SLA_TICK_INTERVAL", 5*time.Minute)
+			go slaEngine.RunTicker(ctx, tickInterval)
+		}
+	}
+
 	mainConsumers := startConsumers(ctx, "main", eventBusCfg, consumerGroup, mainConsumerCount, dispatcher.Handle, toDeadLetter)
 	dlqConsumers := startConsumers(ctx, "dlq", dlqCfg, dlqConsumerGroup, dlqConsumerCount, dispatcher.Handle, nil)
 	// Same dispatcher as the case consumers: it already routes on the
@@ -513,111 +641,14 @@ func main() {
 	projectConsumers := startConsumers(ctx, "project", projectCfg, projectConsumerGroup, projectConsumerCount, dispatcher.Handle, projectToDeadLetter)
 	projectDLQConsumers := startConsumers(ctx, "project-dlq", projectDLQCfg, projectDLQConsumerGroup, projectDLQConsumerCount, dispatcher.Handle, nil)
 
-	// The SLA breach-alerting engine is optional per deployment, gated on
-	// REDIS_ADDR or REDIS_URL being set — unset means this engine never
-	// polls, matching the "unset means don't run" convention used elsewhere
-	// in this repo's own services for an optional capability (e.g.
-	// apps/csm-portal/backend's EVENT_HUB_BROKER gate). Unlike the design
-	// this replaced, it is no longer a Kafka consumer at all — see
-	// internal/slaengine's own CLAUDE.md section ("SLA breach alerting")
-	// for the full redesign: it polls entity-service's GET /sla-status
-	// (backed by the real, ServiceNow-synced "sla" table, not a value this
-	// service used to compute itself) on a plain ticker instead.
-	//
-	// REDIS_URL (a rediss://:<password>@<host>:<port> connection string,
-	// parsed via redis.ParseURL) is how a managed Redis with TLS — Azure
-	// Managed Redis, Azure Cache for Redis — gets configured: the "rediss"
-	// scheme makes go-redis dial with TLS automatically, which a plain
-	// REDIS_ADDR/REDIS_PASSWORD pair has no way to request. REDIS_ADDR/
-	// REDIS_PASSWORD remain for a local, non-TLS Redis and take effect only
-	// when REDIS_URL is unset.
-	//
-	// redisClient below is always a plain redis.NewClient, which only
-	// supports a non-clustered Redis (a single logical endpoint, whether
-	// that's a real standalone instance or Azure Managed Redis/Azure Cache
-	// for Redis under a non-clustered or "Enterprise" clustering policy,
-	// where Azure's own proxy hides the sharding). It does NOT support
-	// "OSS Cluster" policy — that needs a cluster-aware redis.NewClusterClient
-	// to follow MOVED/ASK redirects, which nothing here constructs. Confirm
-	// the target Redis resource's clustering policy is Enterprise/
-	// non-clustered before pointing REDIS_URL at it; OSS Cluster policy will
-	// fail unpredictably (TierStore's key operations landing on the wrong
-	// shard) rather than at this construction site.
-	var redisClient *redis.Client
-	var slaProducer *eventbus.Producer
-	var escalationConsumers []*eventbus.Consumer
-	redisURL := os.Getenv("REDIS_URL")
-	redisAddr := os.Getenv("REDIS_ADDR")
-	if redisURL != "" || redisAddr != "" {
-		var redisOpts *redis.Options
-		if redisURL != "" {
-			var err error
-			redisOpts, err = redis.ParseURL(redisURL)
-			if err != nil {
-				// Deliberately not logging err itself: a malformed URL (e.g.
-				// a stray unescaped '%' in the password) makes Go's
-				// net/url.Parse embed the raw input string — password
-				// included — in its own error message, which would
-				// otherwise land straight in this log line.
-				slog.Error("invalid REDIS_URL: failed to parse connection string")
-				os.Exit(1)
-			}
-		} else {
-			redisOpts = &redis.Options{Addr: redisAddr, Password: os.Getenv("REDIS_PASSWORD")}
-		}
-		redisClient = redis.NewClient(redisOpts)
-
-		// slaengine.EntityClient talks to the exact same entity-service as
-		// customerEntityClient above — not a different backend — so it
-		// reuses that same CUSTOMER_ENTITY_BASE_URL/CUSTOMER_ENTITY_SCOPES
-		// pair (and the same shared OAuth2 app) rather than a redundant
-		// SLA-specific one. It's still a separate client/type from
-		// customerEntityClient, since internal/entity.CustomerEntityClient
-		// deliberately implements only POST /users/search (see its own doc
-		// comment) — not because the two point at different servers.
-		//
-		// Unlike customerEntityClient's own construction above (which reads
-		// the OAuth2 triple with plain os.Getenv, since that feature only
-		// warns-and-degrades on a missing config), mustEnv is used for all
-		// four values here: once REDIS_ADDR opts into this engine, every one
-		// of them is required for it to do anything at all — a missing
-		// credential would otherwise silently fail every poll.
-		slaEntityClient := slaengine.NewEntityClient(slaengine.EntityConfig{
-			BaseURL:      mustEnv("CUSTOMER_ENTITY_BASE_URL"),
-			TokenURL:     mustEnv("OAUTH2_TOKEN_URL"),
-			ClientID:     mustEnv("OAUTH2_CLIENT_ID"),
-			ClientSecret: mustEnv("OAUTH2_CLIENT_SECRET"),
-			Scopes:       splitComma(os.Getenv("CUSTOMER_ENTITY_SCOPES")),
-		})
-
-		// Reuses eventBusCfg's topic (the same one dispatcher's main consumer
-		// reads) rather than a dedicated one — no new Azure Event Hub topic
-		// needs provisioning for this feature; splitting sla.tier_reached
-		// onto its own topic is a later call once a real consumer of it
-		// exists.
-		slaProducer = eventbus.NewProducer(eventBusCfg)
-
-		slaEngine := slaengine.NewEngine(slaEntityClient, slaengine.NewTierStore(redisClient), slaProducer, googleChatClient, linkResolver, emailClient, emailSendingEnabled, emailDebugMode, emailDebugRecipients)
-
-		// SLA_TICK_INTERVAL defaults far above the old wake-index engine's
-		// 15s: that interval made sense for firing a precomputed due date
-		// close to when it actually elapsed, but this engine now polls
-		// entity-service directly every tick (paginating through every
-		// active clock, ~5,500 as of this redesign) and only needs to
-		// notice a newly-crossed 50/75/100% checkpoint, not a specific
-		// instant — most active "sla" rows don't change more than a few
-		// times a day. 5 minutes balances alert latency against load on
-		// entity-service and Redis.
-		tickInterval := envDuration("SLA_TICK_INTERVAL", 5*time.Minute)
-		go slaEngine.RunTicker(ctx, tickInterval)
-
-		// The incident call-escalation ladder (internal/paging) shares
-		// this same Redis — its own keys, its own ZSET — and its own consumer
-		// group on the same topic, exactly as the SLA engine does. It is
-		// nested inside the Redis block for the same reason: without durable
-		// state a ladder would forget everything it had scheduled on the
-		// first restart, mid-page.
-		//
+	// The incident call-escalation ladder (internal/paging) shares the Redis
+	// connected further up (for the SLA engine, started before any consumer
+	// — see that block's own doc comment) — its own keys, its own ZSET, and
+	// its own consumer group on the same topic. Unlike the SLA engine, it
+	// has no race with dispatcher.Handle to avoid: it uses its own
+	// escalationEngine.Handle, never routed through Dispatcher, so there is
+	// no reason to also pull this forward ahead of the main consumers.
+	if redisClient != nil {
 		// It needs one more thing than Redis, though: a roster to resolve
 		// levels to people (see paging.RosterResolver for why that is
 		// configuration rather than a ServiceNow lookup today). With none

@@ -600,6 +600,122 @@ func TestDispatcher_Handle_CommentAdded(t *testing.T) {
 	}
 }
 
+// mockSLAEngine is a hand-written fake for slaEngineService.
+type mockSLAEngine struct {
+	mu                    sync.Mutex
+	registerCalls         []struct{ caseID, priority, caseNumber string }
+	applyStateCalls       []struct{ caseID, newStatus string }
+	completeResponseCalls []string
+}
+
+func (m *mockSLAEngine) RegisterClocks(_ context.Context, caseID, priority string, _ time.Time, caseNumber, _, _, _, _, _ string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.registerCalls = append(m.registerCalls, struct{ caseID, priority, caseNumber string }{caseID, priority, caseNumber})
+}
+
+func (m *mockSLAEngine) ApplyStateEffects(_ context.Context, caseID, newStatus string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.applyStateCalls = append(m.applyStateCalls, struct{ caseID, newStatus string }{caseID, newStatus})
+}
+
+func (m *mockSLAEngine) CompleteResponseClock(_ context.Context, caseID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.completeResponseCalls = append(m.completeResponseCalls, caseID)
+}
+
+// TestDispatcher_Handle_CaseCreated_RegistersSLAClocksWhenConfigured verifies
+// handleCaseCreated calls slaEngine.RegisterClocks with the payload's own
+// severity/creation time/display fields when an engine is configured — and
+// TestDispatcher_Handle_CaseCreated above (no engine configured) already
+// confirms this is skipped with no error when it isn't.
+func TestDispatcher_Handle_CaseCreated_RegistersSLAClocksWhenConfigured(t *testing.T) {
+	sla := &mockSLAEngine{}
+	d := newTestDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, &mockCallSender{}).WithSLAEngine(sla)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001","caseTitle":"Something broke","caseType":"CASE","priority":"CATASTROPHIC","product":"api-manager","createdAt":"2026-01-05T10:00:00Z","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(sla.registerCalls) != 1 {
+		t.Fatalf("expected 1 RegisterClocks call, got %d", len(sla.registerCalls))
+	}
+	got := sla.registerCalls[0]
+	if got.caseID != "CASE-1" || got.priority != "CATASTROPHIC" || got.caseNumber != "CS0001" {
+		t.Errorf("unexpected RegisterClocks args: %+v", got)
+	}
+}
+
+// TestDispatcher_Handle_CaseCreated_MalformedCreatedAt_SkipsRegistration
+// verifies a non-RFC3339 createdAt (an older/malformed publisher) is logged
+// and skipped, rather than guessing a fallback time that would start every
+// clock from the wrong instant.
+func TestDispatcher_Handle_CaseCreated_MalformedCreatedAt_SkipsRegistration(t *testing.T) {
+	sla := &mockSLAEngine{}
+	d := newTestDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, &mockCallSender{}).WithSLAEngine(sla)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"CATASTROPHIC","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(sla.registerCalls) != 0 {
+		t.Errorf("expected RegisterClocks to be skipped for a malformed createdAt, got %d calls", len(sla.registerCalls))
+	}
+}
+
+// TestDispatcher_Handle_StatusChanged_AppliesSLAStateEffectsWhenConfigured
+// verifies handleStatusChanged calls slaEngine.ApplyStateEffects.
+func TestDispatcher_Handle_StatusChanged_AppliesSLAStateEffectsWhenConfigured(t *testing.T) {
+	sla := &mockSLAEngine{}
+	d := newTestDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, &mockCallSender{}).WithSLAEngine(sla)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.status_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","newStatus":"Awaiting Info","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(sla.applyStateCalls) != 1 || sla.applyStateCalls[0].newStatus != "Awaiting Info" {
+		t.Errorf("unexpected ApplyStateEffects calls: %+v", sla.applyStateCalls)
+	}
+}
+
+// TestDispatcher_Handle_CommentAdded_CompletesResponseClockForSupportEngineer
+// verifies handleCommentAdded calls slaEngine.CompleteResponseClock only
+// when entity-service has already confirmed IsSupportEngineerResponse.
+func TestDispatcher_Handle_CommentAdded_CompletesResponseClockForSupportEngineer(t *testing.T) {
+	sla := &mockSLAEngine{}
+	d := newTestDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, &mockCallSender{}).WithSLAEngine(sla)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseComment":"fixed it","commentId":"C-1","isSupportEngineerResponse":true,"recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(sla.completeResponseCalls) != 1 || sla.completeResponseCalls[0] != "CASE-1" {
+		t.Errorf("unexpected CompleteResponseClock calls: %v", sla.completeResponseCalls)
+	}
+}
+
+// TestDispatcher_Handle_CommentAdded_NotSupportEngineer_DoesNotCompleteResponseClock
+// is the negative counterpart.
+func TestDispatcher_Handle_CommentAdded_NotSupportEngineer_DoesNotCompleteResponseClock(t *testing.T) {
+	sla := &mockSLAEngine{}
+	d := newTestDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, &mockCallSender{}).WithSLAEngine(sla)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseComment":"any update?","commentId":"C-1","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(sla.completeResponseCalls) != 0 {
+		t.Errorf("expected no CompleteResponseClock call, got %v", sla.completeResponseCalls)
+	}
+}
+
 // mockEscalationDetector is a hand-written fake for escalationDetector.
 type mockEscalationDetector struct {
 	result escalation.Result
