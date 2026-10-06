@@ -16,7 +16,7 @@
 
 import { useNavigate, useLocation } from "react-router";
 import useNormalizedIdParam from "@hooks/useNormalizedIdParam";
-import { type JSX, useMemo, useState } from "react";
+import { type JSX, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { DESCRIPTION_PURIFY_CONFIG } from "@utils/common";
 import {
@@ -54,17 +54,21 @@ import useGetChangeRequestDetails from "@features/operations/api/useGetChangeReq
 import { usePatchChangeRequest } from "@features/operations/api/usePatchChangeRequest";
 import ScheduledMaintenanceWindowCard from "@features/operations/components/change-requests/ScheduledMaintenanceWindowCard";
 import ProposeNewImplementationTimeModal from "@features/operations/components/change-requests/ProposeNewImplementationTimeModal";
+import ChangeRequestRejectConfirmDialog from "@features/operations/components/change-requests/ChangeRequestRejectConfirmDialog";
 import ChangeRequestDetailsLoadingSkeleton from "@features/operations/components/change-requests/ChangeRequestDetailsLoadingSkeleton";
 import {
   buildChangeRequestWorkflowStages,
+  describeChangeRequestActionError,
   generateChangeRequestDetailsPdf,
+  getCustomerDecisionLabels,
+  getCustomerDecisionMessages,
+  resolveCustomerDecisionMode,
 } from "@features/operations/utils/changeRequests";
 import { formatDateTime } from "@features/support/utils/support";
 import {
   formatImpactLabel,
   getChangeRequestImpactColorShades,
 } from "@features/operations/utils/changeRequestUi";
-import { ChangeRequestStates } from "@features/operations/constants/operationsConstants";
 import { ChangeRequestDecisionMode } from "@features/operations/types/changeRequests";
 
 /**
@@ -85,6 +89,8 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
   const { showError } = useErrorBanner();
   const { showSuccess } = useSuccessBanner();
   const [proposeTimeOpen, setProposeTimeOpen] = useState(false);
+  const [rejectConfirmOpen, setRejectConfirmOpen] = useState(false);
+  const answerInFlightRef = useRef(false);
 
   const {
     data: changeRequest,
@@ -98,107 +104,41 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
     () => buildChangeRequestWorkflowStages(changeRequest),
     [changeRequest],
   );
-  const currentStateLabel = changeRequest?.state?.label;
-
-  const decisionMode = ((): ChangeRequestDecisionMode => {
-    switch (currentStateLabel) {
-      case ChangeRequestStates.CUSTOMER_APPROVAL:
-        return changeRequest?.hasCustomerApproved === true
-          ? ChangeRequestDecisionMode.CUSTOMER_APPROVAL
-          : ChangeRequestDecisionMode.NONE;
-      case ChangeRequestStates.CUSTOMER_REVIEW:
-        return ChangeRequestDecisionMode.CUSTOMER_REVIEW;
-      default:
-        return ChangeRequestDecisionMode.NONE;
-    }
-  })();
-
+  const decisionMode = resolveCustomerDecisionMode(changeRequest);
   const canShowApprovalActions = decisionMode !== ChangeRequestDecisionMode.NONE;
   const canShowProposeNewTime = decisionMode === ChangeRequestDecisionMode.CUSTOMER_APPROVAL;
-
-  const approveLabel = (() => {
-    switch (decisionMode) {
-      case ChangeRequestDecisionMode.CUSTOMER_REVIEW:
-        return "Successful";
-      default:
-        return "Approve";
-    }
-  })();
-
-  const rejectLabel = (() => {
-    switch (decisionMode) {
-      case ChangeRequestDecisionMode.CUSTOMER_REVIEW:
-        return "Unsuccessful";
-      default:
-        return "Reject";
-    }
-  })();
+  const { approve: approveLabel, reject: rejectLabel } =
+    getCustomerDecisionLabels(decisionMode);
 
   const impactColor = getChangeRequestImpactColorShades(
     changeRequest?.impact?.label,
   );
 
-  const handleApproveChange = () => {
-    if (!changeRequest) return;
-    switch (decisionMode) {
-      case ChangeRequestDecisionMode.CUSTOMER_APPROVAL:
-        patchChangeRequest.mutate(
-          { isCustomerApproved: true },
-          {
-            onSuccess: () => {
-              showSuccess("Change request approved successfully.");
-              window.location.reload();
-            },
-            onError: (err) => showError(err?.message ?? "Failed to approve change request."),
-          },
-        );
-        break;
-      case ChangeRequestDecisionMode.CUSTOMER_REVIEW:
-        patchChangeRequest.mutate(
-          { isCustomerReviewed: true },
-          {
-            onSuccess: () => {
-              showSuccess("Change request marked as successful.");
-              window.location.reload();
-            },
-            onError: (err) => showError(err?.message ?? "Failed to update change request."),
-          },
-        );
-        break;
-      default:
-        break;
-    }
-  };
-
-  const handleRejectChange = () => {
-    if (!changeRequest) return;
-    switch (decisionMode) {
-      case ChangeRequestDecisionMode.CUSTOMER_APPROVAL:
-        patchChangeRequest.mutate(
-          { isCustomerApproved: false },
-          {
-            onSuccess: () => {
-              showSuccess("Change request rejected successfully.");
-              window.location.reload();
-            },
-            onError: (err) => showError(err?.message ?? "Failed to reject change request."),
-          },
-        );
-        break;
-      case ChangeRequestDecisionMode.CUSTOMER_REVIEW:
-        patchChangeRequest.mutate(
-          { isCustomerReviewed: false },
-          {
-            onSuccess: () => {
-              showSuccess("Change request marked as unsuccessful.");
-              window.location.reload();
-            },
-            onError: (err) => showError(err?.message ?? "Failed to update change request."),
-          },
-        );
-        break;
-      default:
-        break;
+  /**
+   * Sends the customer's answer. The patch hook refetches the change request
+   * before this resolves, so the page shows the new state (and no buttons) as
+   * soon as the message appears. Awaited rather than passed as `mutate`
+   * callbacks, which would be dropped if the refetch hid this page's buttons
+   * and unmounted whatever called us.
+   */
+  const submitAnswer = async (approved: boolean) => {
+    if (!changeRequest || answerInFlightRef.current) return;
+    const mode = decisionMode;
+    if (mode === ChangeRequestDecisionMode.NONE) return;
+    const messages = getCustomerDecisionMessages(mode, approved);
+    answerInFlightRef.current = true;
+    try {
+      await patchChangeRequest.mutateAsync(
+        mode === ChangeRequestDecisionMode.CUSTOMER_REVIEW
+          ? { isCustomerReviewed: approved }
+          : { isCustomerApproved: approved },
+      );
+      showSuccess(messages.success);
+    } catch (err) {
+      showError(describeChangeRequestActionError(err, messages.failure).message);
+    } finally {
+      answerInFlightRef.current = false;
+      setRejectConfirmOpen(false);
     }
   };
 
@@ -479,7 +419,7 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
                       size="small"
                       variant="outlined"
                       startIcon={<FileCheck size={14} aria-hidden />}
-                      onClick={handleApproveChange}
+                      onClick={() => void submitAnswer(true)}
                       disabled={patchChangeRequest.isPending}
                       sx={{
                         height: 32,
@@ -497,7 +437,7 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
                       size="small"
                       variant="outlined"
                       startIcon={<X size={14} aria-hidden />}
-                      onClick={handleRejectChange}
+                      onClick={() => setRejectConfirmOpen(true)}
                       disabled={patchChangeRequest.isPending}
                       sx={{
                         height: 32,
@@ -946,9 +886,16 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
       </Box>
 
       <ProposeNewImplementationTimeModal
-        open={proposeTimeOpen}
+        open={proposeTimeOpen && canShowProposeNewTime}
         onClose={() => setProposeTimeOpen(false)}
         changeRequest={changeRequest}
+      />
+      <ChangeRequestRejectConfirmDialog
+        open={rejectConfirmOpen && canShowApprovalActions}
+        mode={decisionMode}
+        isPending={patchChangeRequest.isPending}
+        onClose={() => setRejectConfirmOpen(false)}
+        onConfirm={() => void submitAnswer(false)}
       />
     </Box>
   );
