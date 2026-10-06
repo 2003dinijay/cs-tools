@@ -322,13 +322,19 @@ var problemTransitions = map[string]repository.ProblemTransition{
 // (ProblemStateUtils, discovery script 61) wants an assignee to move to
 // Assess and fix notes to move to Resolved -- the fields of its own "Assess"
 // and "Resolve" dialogs (resolve's resolution code is set by the move
-// itself). A value in the request counts, as does one already on the
-// problem. Without this, dual-write gets ServiceNow's misleading 409 ("a
+// itself). A value in the request decides; only an absent one falls back to
+// the value already on the problem. Without this, dual-write gets ServiceNow's misleading 409 ("a
 // populated 'Assigned to' is a confirmed live cause") and Postgres-only mode
 // would move a problem ServiceNow never would.
 func checkProblemTransitionRequirements(t repository.ProblemTransition, req domain.UpdateProblemRequest, current domain.ProblemDetail) error {
+	// A value in the request decides, blank or not: the same save writes it,
+	// so a blank one would clear what the problem has. Only an absent value
+	// falls back to the problem's own.
 	has := func(fromReq *string, onProblem bool) bool {
-		return (fromReq != nil && strings.TrimSpace(*fromReq) != "") || onProblem
+		if fromReq != nil {
+			return strings.TrimSpace(*fromReq) != ""
+		}
+		return onProblem
 	}
 	switch t.Name {
 	case "assess":

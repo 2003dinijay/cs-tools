@@ -355,3 +355,17 @@ func TestUpdateProblem_DualWriteTransitionSendsServiceNowDateFormat(t *testing.T
 		t.Errorf("ServiceNow got %q", toSN)
 	}
 }
+
+// A blank value in the request is what the save would write, so it must not
+// pass on the strength of what the problem already has: resolve with
+// fixNotes "" would clear the stored notes and resolve without any.
+func TestUpdateProblem_BlankRequestValueOverridesStoredOne(t *testing.T) {
+	svc := NewProblemService(&stubProblemRepo{getProblem: problemDetailStub}) // has an assignee and fix notes
+	_, err := svc.UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{
+		ID: testDeploymentUUID, Transition: strp("resolve"), FixNotes: strp(""),
+	})
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, "resolve needs fix notes") {
+		t.Errorf("err = %v, want the fix-notes ValidationError", err)
+	}
+}
