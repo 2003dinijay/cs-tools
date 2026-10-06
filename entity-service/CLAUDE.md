@@ -6541,15 +6541,16 @@ Tests: `incident_report_service_test.go` (unit), `incident_report_integration_te
 ### [WSO2 Cloud Ops] Post resolution tasks (migration 0188)
 
 Runs in the same Resolved handler, after the report, in the same transaction. SN condition:
-service Choreo or Asgardeo, state changes to Resolved. Every block is an independent If on the
-incident as it is now:
+service Choreo or Asgardeo, state changes to Resolved. **Deliberate divergence:** the alert tasks
+keep that service limit, but the workaround problem is created for an incident on **any** service
+(product decision, 2026-10-06). Every block is an independent If on the incident as it is now:
 
 | Condition (`resolution_code`) | Effect |
 |---|---|
 | `FALSE_ALARM` | incident_task `[Alert Task][Falser Alarm] <number> alert is a false alarm` (SN's spelling), `CRITICAL`, group WSO2 SRE Team |
 | `DUPLICATE` or `DUPLICATE_ALERT` | `[Alert Task][Duplicate Alert] <number> alert is a duplicate`, `CRITICAL`, WSO2 SRE Team. Both spellings are SN's one "Duplicate" choice: the sync writes `DUPLICATE_ALERT`, the portal `DUPLICATE` |
 | `NOT_ACTIONABLE_ALERT` | `[Alert Task][Not Actionable Alert] <number> is not an actionable alert`, `HIGH`, WSO2 SRE Team |
-| `SOLVED_WORK_AROUND` and no `problem_id` | problem `Fix the root cause of <number>` with the incident's service, impact, urgency and priority (0188 adds `problem.service_id/impact/urgency`), `incident_id` = the incident, group Choreo Special Ops or Asgardeo Operations Team by service; then `incident.problem_id` = it |
+| `SOLVED_WORK_AROUND` and no `problem_id` | problem `Fix the root cause of <number>` with the incident's service, impact, urgency and priority (0188 adds `problem.service_id/impact/urgency`), `incident_id` = the incident, group Choreo Special Ops (Choreo), Asgardeo Operations Team (Asgardeo), otherwise the incident's own assignment group (none if it has none); then `incident.problem_id` = it |
 
 The services and groups are SN sys_ids as Postgres UUIDs, constants in
 `incident_report_service.go`. A group missing from the database leaves the record unassigned
