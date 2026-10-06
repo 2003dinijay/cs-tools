@@ -275,6 +275,33 @@ export function customerApiFor(email: string) {
       const { customerApi: base } = await stackEndpoints();
       return call("POST", `${base}/cases/${workItemId}/comments`, await token(), { content });
     },
+    /**
+     * What the customer backend's other id-taking routes (the case's attachments, escalations, call requests and activities)
+     * answer for a work item id, one line per route with the id blanked out: a hidden change request must read exactly as an id
+     * that exists nowhere, or the answer is an oracle for whether it exists.
+     */
+    async caseRouteAnswers(workItemId: string): Promise<string[]> {
+      const { customerApi: base } = await stackEndpoints();
+      const t = await token();
+      const page = { pagination: { offset: 0, limit: 10 } };
+      const out: string[] = [];
+      for (const [method, route, body] of [
+        ["GET", `/cases/${workItemId}/attachments`, undefined],
+        ["POST", `/cases/${workItemId}/escalations/search`, page],
+        ["POST", `/cases/${workItemId}/call-requests/search`, page],
+        ["POST", `/cases/${workItemId}/activities/search`, page],
+      ] as const) {
+        const r = await call(method, `${base}${route}`, t, body);
+        out.push(`${method} ${route.replace(workItemId, "{id}")} -> ${r.status} ${JSON.stringify(r.body)}`);
+      }
+      return out;
+    },
+    /** The customer portal's global search (`POST /search`): whether its answer mentions `text` anywhere. */
+    async globalSearchMentions(text: string): Promise<boolean> {
+      const { customerApi: base } = await stackEndpoints();
+      const r = await call("POST", `${base}/search`, await token(), { query: text, pagination: { offset: 0, limit: 10 } });
+      return r.status === 200 && JSON.stringify(r.body).includes(text);
+    },
     /** `POST /projects/{id}/change-requests/search`: the numbers the project lists. */
     async listedNumbers(projectId: string, filters: Record<string, unknown> = {}): Promise<string[]> {
       return (await this.listed(projectId, filters)).map((c) => c.number);

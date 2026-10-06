@@ -114,7 +114,9 @@ async function expectSeenBy(
   for (const who of ["mira", "noel"] as const) {
     const api = customerApi(who);
     const visible = visibleTo.includes(who);
-    const here = `${change.number} (${when}) for ${who}`;
+    const here = `${change.number} (${when}) for ${who}`;    // (it exists, and WSO2's staff see it in every state: what is hidden is hidden from the customer, not gone)
+    expect((await staffApi("alice").get(change.id)).status, `${here}: staff read`).toBe(200);
+
 
     const item = (await api.listed(lumen)).find((c) => c.number === change.number);
     expect(!!item, `${here}: listed`).toBe(visible);
@@ -134,6 +136,11 @@ async function expectSeenBy(
       expect((await api.decision(change.id, { decision: "approved" })).status, `${here}: decision`).toBe(404);
       // ...nor commentable through the case route, which the customer backend forwards for any id
       expect((await api.commentViaCaseRoute(change.id)).status, `${here}: comment through the case route`).toBe(404);
+      // The case-like routes that take any work item id answer for it exactly as for an id that exists nowhere (no oracle),
+      // and the global search knows nothing of it.
+      expect(await api.caseRouteAnswers(change.id), `${here}: the case routes`).toEqual(await api.caseRouteAnswers(NO_SUCH_CHANGE_REQUEST));
+      expect(await api.globalSearchMentions(change.number), `${here}: global search by number`).toBe(false);
+      expect(await api.globalSearchMentions(change.title), `${here}: global search by title`).toBe(false);
     }
 
     // The numbers on the stat cards and the dashboard are the list's, not a wider set.
