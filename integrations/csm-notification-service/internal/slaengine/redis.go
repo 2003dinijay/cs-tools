@@ -136,28 +136,48 @@ func (s *Store) DueMembers(ctx context.Context, now time.Time) ([]string, error)
 	}).Result()
 }
 
-// SetClock writes a clock's full display-field set — called once, from
-// RegisterClocks, when the clock is first created. AlertedTier/Paused are
-// always written 0/false here: a freshly registered clock has never been
-// alerted for and is never born paused.
+// setClockScript always (re)writes the registration-time display fields
+// (safe to refresh on every call -- they're one-time facts from
+// case.created, never mutated by any later event), but only ever
+// INITIALIZES state/paused/alertedTier via HSETNX, never overwrites them.
+//
+// This matters because RegisterClocks -- and therefore SetClock -- is not
+// actually called exactly once per case: dispatch.handleCaseCreated's own
+// email/Chat reactions can fail and retry the whole record, and a
+// dead-lettered record gets a fresh retry pass on the DLQ consumer under
+// the exact same case.created payload (see recordBaseKey's own doc
+// comment in internal/dispatch) -- both redeliver the identical
+// case.created event to RegisterClocks again, potentially long after
+// ApplyStateEffects/CompleteResponseClock have already paused or
+// force-completed this clock in response to later events. A plain HSET of
+// every field on that replay would silently reset alertedTier back to 0
+// and paused back to false -- re-arming wake entries for a clock that was
+// already genuinely finished, and firing a false breach alert the next
+// time Tick finds one of them due.
+var setClockScript = redis.NewScript(`
+redis.call('HSET', KEYS[1],
+	'caseNumber', ARGV[1], 'wso2CaseId', ARGV[2], 'caseTitle', ARGV[3],
+	'caseType', ARGV[4], 'product', ARGV[5], 'team', ARGV[6], 'priority', ARGV[7],
+	'startedAt', ARGV[8])
+redis.call('HSETNX', KEYS[1], 'state', ARGV[9])
+redis.call('HSETNX', KEYS[1], 'paused', '0')
+redis.call('HSETNX', KEYS[1], 'alertedTier', '0')
+redis.call('EXPIRE', KEYS[1], ARGV[10])
+return 1
+`)
+
+// SetClock writes a clock's display-field set, initializing
+// state/paused/alertedTier only the first time this (caseID, clockType)
+// pair is ever seen -- see setClockScript's own doc comment for why a
+// later call (a retry/replay of the same case.created event) must never
+// reset them.
 func (s *Store) SetClock(ctx context.Context, caseID, clockType string, meta ClockMeta) error {
 	key := clockKey(caseID, clockType)
-	if err := s.rdb.HSet(ctx, key,
-		"caseNumber", meta.CaseNumber,
-		"wso2CaseId", meta.WSO2CaseID,
-		"caseTitle", meta.CaseTitle,
-		"caseType", meta.CaseType,
-		"product", meta.Product,
-		"team", meta.Team,
-		"priority", meta.Priority,
-		"state", meta.State,
-		"startedAt", meta.StartedAt.Unix(),
-		"paused", boolString(meta.Paused),
-		"alertedTier", meta.AlertedTier,
-	).Err(); err != nil {
-		return err
-	}
-	return s.rdb.Expire(ctx, key, clockTTL).Err()
+	return setClockScript.Run(ctx, s.rdb, []string{key},
+		meta.CaseNumber, meta.WSO2CaseID, meta.CaseTitle, meta.CaseType,
+		meta.Product, meta.Team, meta.Priority, meta.StartedAt.Unix(),
+		meta.State, int(clockTTL.Seconds()),
+	).Err()
 }
 
 // GetClock reads one clock's full state back. found=false means this

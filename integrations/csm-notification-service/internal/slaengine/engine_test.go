@@ -65,8 +65,18 @@ func (s *fakeStore) DueMembers(_ context.Context, now time.Time) ([]string, erro
 	return out, nil
 }
 
+// SetClock mirrors the real Store's own setClockScript semantics: display
+// fields always overwrite, but state/paused/alertedTier only initialize on
+// the first call for this key -- a later call (simulating a case.created
+// retry/replay) must never reset them. See redis.go's own doc comment.
 func (s *fakeStore) SetClock(_ context.Context, caseID, clockType string, meta ClockMeta) error {
-	s.clocks[caseID+"|"+clockType] = meta
+	key := caseID + "|" + clockType
+	if existing, ok := s.clocks[key]; ok {
+		meta.State = existing.State
+		meta.Paused = existing.Paused
+		meta.AlertedTier = existing.AlertedTier
+	}
+	s.clocks[key] = meta
 	return nil
 }
 
@@ -226,6 +236,39 @@ func TestRegisterClocks_UnknownSeverity_RegistersNothing(t *testing.T) {
 
 	if len(st.clocks) != 0 {
 		t.Errorf("clocks registered for an unknown severity: %+v", st.clocks)
+	}
+}
+
+// TestRegisterClocks_Replay_DoesNotResetPausedOrAlertedTier is the
+// regression guard for a real bug: dispatch.handleCaseCreated's own
+// email/Chat reactions can fail and retry the whole record, and a
+// dead-lettered record gets a fresh retry pass with the identical
+// case.created payload -- both redeliver the same event to RegisterClocks
+// again. A clock already force-completed (e.g. by CompleteResponseClock)
+// or paused (by ApplyStateEffects) in response to a LATER event must not
+// be silently reset back to "never alerted, never paused" by a replay of
+// the ORIGINAL case.created.
+func TestRegisterClocks_Replay_DoesNotResetPausedOrAlertedTier(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+	createdAt := time.Now()
+	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", createdAt, "CS0001", "", "", "CASE", "", "")
+
+	// A later event completes the response clock and pauses workaround --
+	// simulating CompleteResponseClock/ApplyStateEffects having already run
+	// before the replay below.
+	e.CompleteResponseClock(context.Background(), "case-1")
+	e.ApplyStateEffects(context.Background(), "case-1", "Awaiting Info")
+
+	// case.created is redelivered (retry or DLQ replay) with the identical
+	// payload.
+	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", createdAt, "CS0001", "", "", "CASE", "", "")
+
+	if meta, _, _ := st.GetClock(context.Background(), "case-1", ClockResponse); meta.AlertedTier != 100 {
+		t.Errorf("response AlertedTier = %d after replay, want 100 (must not reset)", meta.AlertedTier)
+	}
+	if meta, _, _ := st.GetClock(context.Background(), "case-1", ClockWorkaround); !meta.Paused {
+		t.Error("workaround Paused = false after replay, want true (must not reset)")
 	}
 }
 
