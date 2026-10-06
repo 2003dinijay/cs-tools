@@ -1835,6 +1835,13 @@ paths:
         approve / reject (or confirm / fail the review of) this change request
         now", and `isOnHold`; the approvals and the identities of the WSO2
         approvers are not part of the customer's detail.
+
+
+        A change request that was not designated to the signed-in contact (it
+        never reached a customer stage with them among the contacts asked, or it
+        belongs to another project) is a 404, exactly like one that does not
+        exist; once designated it stays readable in every later state. The same
+        holds for its approvals, the decision, and the PATCH.
       operationId: getChangeRequestsId
       parameters:
         - name: id
@@ -1912,7 +1919,13 @@ paths:
         was asked for the customer's approval (403 otherwise), only while it is
         in the state the answer belongs to (409 otherwise, e.g. a second
         contact answering after the first), and, for a proposed time, a window
-        still to come with a duration, on a change that is not on hold.
+        still to come with a duration, on a change that is not on hold. A
+        change request that was not designated to the caller is a 404 (see the
+        read). A planned time is validated here first and again by
+        entity-service: RFC 3339 or "YYYY-MM-DD HH:MM:SS" (UTC), in the years
+        2000 to 2100, never `tomorrow`, `now` or `infinity` (400); a customer's
+        proposal must also be still to come and, with both bounds, start before
+        it ends (400).
       operationId: patchChangeRequestsId
       parameters:
         - name: id
