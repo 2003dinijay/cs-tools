@@ -6085,6 +6085,48 @@ other reader of it. `GetProjectDetails`'s own `sf_id` scan (a separate query,
 a separate endpoint) was not touched -- not reported broken, so left alone
 rather than fixed speculatively.
 
+## SearchKBArticles failed on any page containing a row with a NULL body/state/author_id
+
+Reported live: `POST /kb-articles/search` returning 500 (`cannot scan NULL into
+*string`), which the staff portal's Knowledge page surfaced as "Failed to search
+KB articles". `knowledge_article` (migration 0044) allows NULL in `body`, `state`,
+`knowledge_base_id`, `author_id` and `latest`, and on staging 2,386 of the 7,794
+`latest = true` rows have a NULL `body`, 2,403 a NULL `author_id` and 1 a NULL
+`state` (`knowledge_base_id` had none). `domain.KBArticle` declares all five as
+required, non-pointer fields, and `scanKBArticle` scanned the columns straight
+into them, so a single such row failed the whole page.
+
+Fixed the same way as `CaseView.InternalID` and `DeploymentView.Type` (see those
+sections above): the wire contract is unchanged (`KnowledgeBaseID`/`Body`/`State`/
+`AuthorID` stay required strings, `Latest` a plain bool, `""`/`false` when the
+column is NULL, so `openapi.yaml` and the portal clients are unaffected), and only
+the scan side changes. `scanKBArticle` scans those five columns into pointer
+locals and converts them with `stringOrEmpty(...)` (`latest != nil && *latest`
+for the bool). It is the only place that scans `knowledge_article` columns, and
+`CreateKBArticle`, `GetKBArticleByID`, `SearchKBArticles`, `UpdateKBArticleState`
+and `UpdateKBArticleContent` all go through it, so every read path and every
+`RETURNING` scan is covered by the one change.
+
+`kb_article_repo_test.go` scans rows with NULL columns through a fake row that,
+like pgx, rejects a NULL into a non-pointer destination, so it fails if the scan
+reverts to plain destinations. `kb_article_repo_integration_test.go` runs search,
+get-by-id and edit against a real `knowledge_article` table (skipped without
+`CASE_STATS_TEST_DSN`).
+
+An article whose `state` is NULL reads as `state: ""`. The service's
+`isLegalKBArticleTransition` has no transition out of an unrecognised state, so
+`PATCH` on such an article returns a 400 ("invalid state transition") rather than
+a 500 — it is listed and viewable, but needs its state set before it can move
+through review.
+
+Not covered here: `knowledge_article_history` (legacy migration
+`000030_knowledge_article_history.up.sql`) is absent from the staging database.
+Two paths use it — `ListKBArticleHistory`, and the history insert inside
+`UpdateKBArticleState`'s transaction (so a state transition rolls back entirely
+there) — and both still fail until the table exists. `UpdateKBArticleContent` does
+not touch it. That is a schema gap, separate from the NULL scan above, and does not
+affect search.
+
 ## Case feedback silently 404'd on the Postgres data source instead of a documented 503
 
 Reported live: a case's Activity timeline always showed "Could not load Case
