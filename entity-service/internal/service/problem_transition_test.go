@@ -1,0 +1,226 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package service
+
+import (
+	"context"
+	"errors"
+	"testing"
+	"time"
+
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
+)
+
+func strp(s string) *string { return &s }
+
+// problemDetailStub answers the post-write re-read.
+func problemDetailStub(context.Context, string) (domain.ProblemDetail, error) {
+	id := testDeploymentUUID
+	return domain.ProblemDetail{ID: &id}, nil
+}
+
+func userCtxProblem(t *testing.T) context.Context {
+	return contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+}
+
+// The table is ServiceNow's ProblemUtils._PROBLEM_TRANSITIONS (101 New, 102
+// Assess, 103 RCA, 104 Fix in Progress, 106 Resolved, 107 Closed), in
+// problem_state_enum labels.
+func TestProblemTransitions_MatchServiceNow(t *testing.T) {
+	want := map[string][2]string{
+		"assess":  {"NEW", "ASSESS"},
+		"confirm": {"ASSESS", "ROOT_CAUSE_ANALYSIS"},
+		"fix":     {"ROOT_CAUSE_ANALYSIS", "FIX_IN_PROGRESS"},
+		"resolve": {"FIX_IN_PROGRESS", "RESOLVED"},
+		"close":   {"RESOLVED", "CLOSED"},
+	}
+	if len(problemTransitions) != len(want) {
+		t.Fatalf("transitions = %d, want %d", len(problemTransitions), len(want))
+	}
+	for name, ft := range want {
+		got, ok := problemTransitions[name]
+		if !ok || got.Name != name || got.From != ft[0] || got.To != ft[1] {
+			t.Errorf("%s = %+v, want %s -> %s", name, got, ft[0], ft[1])
+		}
+	}
+}
+
+// DATA_SOURCE=postgres: the move and its fields go to Postgres in one call,
+// with the from-state enforced; there is no ServiceNow to call.
+func TestUpdateProblem_PlainPostgres_TransitionEnforcesFromState(t *testing.T) {
+	var gotT repository.ProblemTransition
+	var gotEnforce bool
+	var gotReq domain.UpdateProblemRequest
+	repo := &stubProblemRepo{
+		applyProblemTransition: func(_ context.Context, req domain.UpdateProblemRequest, tr repository.ProblemTransition, enforce bool, actor string) (time.Time, error) {
+			gotReq, gotT, gotEnforce = req, tr, enforce
+			if actor != "jane.doe@example.com" {
+				t.Errorf("actor = %q", actor)
+			}
+			return time.Now(), nil
+		},
+		getProblem: problemDetailStub,
+	}
+	svc := NewProblemService(repo)
+	if _, err := svc.UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{
+		ID: testDeploymentUUID, Transition: strp(" fix "), CauseNotes: strp("disk full"), FixNotes: strp("rotate logs"),
+	}); err != nil {
+		t.Fatalf("UpdateProblem: %v", err)
+	}
+	if gotT != problemTransitions["fix"] || !gotEnforce {
+		t.Errorf("transition %+v enforce %v, want fix with the from-state enforced", gotT, gotEnforce)
+	}
+	if strOrEmpty(gotReq.CauseNotes) != "disk full" || strOrEmpty(gotReq.FixNotes) != "rotate logs" {
+		t.Errorf("fields did not ride along with the move: %+v", gotReq)
+	}
+}
+
+// DATA_SOURCE=postgres: plain fields (now including the assignment group)
+// are written; there is no mirror to dispatch.
+func TestUpdateProblem_PlainPostgres_FieldsIncludingAssignmentGroup(t *testing.T) {
+	var got domain.UpdateProblemRequest
+	repo := &stubProblemRepo{
+		updateProblemFields: func(_ context.Context, req domain.UpdateProblemRequest, _ string) (time.Time, error) {
+			got = req
+			return time.Now(), nil
+		},
+		getProblem: problemDetailStub,
+	}
+	if _, err := NewProblemService(repo).UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{
+		ID: testDeploymentUUID, AssignmentGroupID: strp(testUUID),
+	}); err != nil {
+		t.Fatalf("UpdateProblem: %v", err)
+	}
+	if strOrEmpty(got.AssignmentGroupID) != testUUID {
+		t.Errorf("assignmentGroupId = %v, want %s", got.AssignmentGroupID, testUUID)
+	}
+}
+
+// Dual-write: ServiceNow first, with the whole request; only then Postgres,
+// with the from-state NOT enforced (ServiceNow is the authority and Postgres
+// may lag it).
+func TestUpdateProblem_DualWrite_TransitionGoesToServiceNowFirst(t *testing.T) {
+	var order []string
+	mirror := &stubMirrorProblemService{
+		updateProblem: func(_ context.Context, req domain.UpdateProblemRequest) (domain.UpdateProblemResponse, error) {
+			order = append(order, "servicenow")
+			if strOrEmpty(req.Transition) != "resolve" || strOrEmpty(req.FixNotes) != "patched" {
+				t.Errorf("ServiceNow got %+v, want the transition and its fields", req)
+			}
+			return domain.UpdateProblemResponse{}, nil
+		},
+	}
+	repo := &stubProblemRepo{
+		applyProblemTransition: func(_ context.Context, _ domain.UpdateProblemRequest, tr repository.ProblemTransition, enforce bool, _ string) (time.Time, error) {
+			order = append(order, "postgres")
+			if tr != problemTransitions["resolve"] || enforce {
+				t.Errorf("Postgres got %+v enforce=%v, want resolve without the from-state check", tr, enforce)
+			}
+			return time.Now(), nil
+		},
+		getProblem: problemDetailStub,
+	}
+	svc := NewProblemServiceWithSNMirror(repo, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+	if _, err := svc.UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{
+		ID: testDeploymentUUID, Transition: strp("resolve"), FixNotes: strp("patched"),
+	}); err != nil {
+		t.Fatalf("UpdateProblem: %v", err)
+	}
+	if len(order) != 2 || order[0] != "servicenow" || order[1] != "postgres" {
+		t.Errorf("order = %v, want [servicenow postgres]", order)
+	}
+}
+
+// Dual-write: a ServiceNow refusal (e.g. its 409 when its own business rule
+// reverts the move) comes back as-is and Postgres is never written, so the
+// two never disagree about the state. The stub repo panics if called.
+func TestUpdateProblem_DualWrite_ServiceNowRefusalLeavesPostgres(t *testing.T) {
+	refusal := &apierror.ConflictError{Msg: "State transition rejected"}
+	mirror := &stubMirrorProblemService{
+		updateProblem: func(context.Context, domain.UpdateProblemRequest) (domain.UpdateProblemResponse, error) {
+			return domain.UpdateProblemResponse{}, refusal
+		},
+	}
+	svc := NewProblemServiceWithSNMirror(&stubProblemRepo{}, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+	_, err := svc.UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{ID: testDeploymentUUID, Transition: strp("confirm")})
+	if !errors.Is(err, refusal) {
+		t.Errorf("err = %v, want ServiceNow's refusal unchanged", err)
+	}
+}
+
+// Dual-write: ServiceNow moved but Postgres failed -- surfaced, not hidden.
+func TestUpdateProblem_DualWrite_PostgresFailureAfterServiceNowIsReturned(t *testing.T) {
+	boom := errors.New("connection reset")
+	mirror := &stubMirrorProblemService{
+		updateProblem: func(context.Context, domain.UpdateProblemRequest) (domain.UpdateProblemResponse, error) {
+			return domain.UpdateProblemResponse{}, nil
+		},
+	}
+	repo := &stubProblemRepo{
+		applyProblemTransition: func(context.Context, domain.UpdateProblemRequest, repository.ProblemTransition, bool, string) (time.Time, error) {
+			return time.Time{}, boom
+		},
+	}
+	svc := NewProblemServiceWithSNMirror(repo, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+	if _, err := svc.UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{ID: testDeploymentUUID, Transition: strp("assess")}); !errors.Is(err, boom) {
+		t.Errorf("err = %v, want the Postgres failure", err)
+	}
+}
+
+// Dual-write: a fields-only request with an assignment group still goes
+// Postgres first, and the async mirror carries the group to ServiceNow.
+func TestUpdateProblem_DualWrite_FieldsMirrorTheAssignmentGroup(t *testing.T) {
+	mirrored := make(chan domain.UpdateProblemRequest, 1)
+	mirror := &stubMirrorProblemService{
+		updateProblem: func(_ context.Context, req domain.UpdateProblemRequest) (domain.UpdateProblemResponse, error) {
+			mirrored <- req
+			return domain.UpdateProblemResponse{}, nil
+		},
+	}
+	repo := &stubProblemRepo{
+		updateProblemFields: func(context.Context, domain.UpdateProblemRequest, string) (time.Time, error) { return time.Now(), nil },
+		getProblem:          problemDetailStub,
+	}
+	svc := NewProblemServiceWithSNMirror(repo, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+	if _, err := svc.UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{ID: testDeploymentUUID, AssignmentGroupID: strp(testUUID)}); err != nil {
+		t.Fatalf("UpdateProblem: %v", err)
+	}
+	select {
+	case req := <-mirrored:
+		if strOrEmpty(req.AssignmentGroupID) != testUUID || req.Transition != nil {
+			t.Errorf("mirror got %+v, want the group and no transition", req)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("the assignment group was never mirrored to ServiceNow")
+	}
+}
+
+// An unknown transition is refused before anything is called, in both modes.
+func TestUpdateProblem_UnknownTransitionRejected(t *testing.T) {
+	for name, svc := range map[string]ProblemService{
+		"postgres":   NewProblemService(&stubProblemRepo{}),
+		"dual-write": NewProblemServiceWithSNMirror(&stubProblemRepo{}, &stubMirrorProblemService{}, NewSNWritebackDispatcher(&recordingSNWritebackFailures{})),
+	} {
+		_, err := svc.UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{ID: testDeploymentUUID, Transition: strp("reopen")})
+		var ve *apierror.ValidationError
+		if !errors.As(err, &ve) {
+			t.Errorf("%s: err = %T %v, want a ValidationError", name, err, err)
+		}
+	}
+}

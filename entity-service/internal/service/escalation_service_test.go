@@ -74,6 +74,10 @@ func (f *fakeUserRepoForEscalationService) GetUserByEmail(_ context.Context, ema
 func (f *fakeUserRepoForEscalationService) SearchUsers(context.Context, domain.SearchUsersRequest) ([]domain.User, int, error) {
 	panic("fakeUserRepoForEscalationService.SearchUsers: not expected to be called by these tests")
 }
+func (f *fakeUserRepoForEscalationService) GetUsersByIDs(context.Context, []string) ([]domain.User, error) {
+	panic("not implemented")
+}
+
 func (f *fakeUserRepoForEscalationService) GetUserRoles(context.Context, string) ([]string, error) {
 	panic("fakeUserRepoForEscalationService.GetUserRoles: not expected to be called by these tests")
 }
