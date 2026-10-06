@@ -57,6 +57,14 @@ export type ChangeRequestDetails = ChangeRequestItem & {
   testPlan: string | null;
   hasCustomerApproved: boolean;
   hasCustomerReviewed: boolean;
+  /**
+   * Viewer-specific: true only when the signed-in customer has a pending answer
+   * on this change request right now; false when they do not (already answered,
+   * not asked, not a contact). Omitted when the data source cannot say (the
+   * legacy ServiceNow source); the page then falls back to `hasCustomerApproved`
+   * at Customer Approval and always offers the review answer at Customer Review.
+   */
+  customerCanAnswer?: boolean;
   approvedBy: IdLabelRef | null;
   approvedOn: string | null;
 };
@@ -122,9 +130,13 @@ export type ChangeRequestSearchRequest = SearchRequestBase & {
   filters?: ChangeRequestSearchFilters;
 };
 
-// Request type for patching a change request.
+// Request type for patching a change request. The customer-portal backend takes
+// either the customer's answer (isCustomerApproved / isCustomerReviewed) or a
+// proposed window (plannedStartOn / plannedEndOn, "YYYY-MM-DD HH:MM:SS" in UTC),
+// never both in one request.
 export type PatchChangeRequestRequest = {
   plannedStartOn?: string;
+  plannedEndOn?: string;
   isCustomerApproved?: boolean;
   isCustomerReviewed?: boolean;
 };
