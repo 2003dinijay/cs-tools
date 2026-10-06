@@ -193,6 +193,44 @@ func validateChangeRequestCustomerGateFlags(body []byte) string {
 	return ""
 }
 
+// The customer's own answer is the customer's: nobody in the CSM portal (WSO2
+// staff, every caller of this BFF) records the customer's approval or review on
+// the customer's behalf -- the answer is the customer's decision and ServiceNow's
+// record of it is audited. isCustomerApproved / isCustomerReviewed are that answer,
+// which the customer gives in the Customer Portal, so a PATCH that carries either
+// (true or false, alone or with a state) is refused here with the entity service's
+// own wording, before any upstream call. The entity service refuses it too on the
+// PostgreSQL data source; this also covers the ServiceNow-backed one, where the
+// entity service forwards the PATCH and cannot tell staff from the customer. The
+// state half of the rule (no manual scheduled / closed out of Customer Approval /
+// Customer Review) is the entity service's: it needs the change request's state.
+const (
+	errMsgCustomerApprovedByStaff = "isCustomerApproved cannot be set on the customer's behalf: the customer's approval can only be given by the customer in the Customer Portal"
+	errMsgCustomerReviewedByStaff = "isCustomerReviewed cannot be set on the customer's behalf: the customer's review can only be given by the customer in the Customer Portal"
+)
+
+// validateChangeRequestCustomerOutcomeFlags returns a user-facing message when
+// body carries isCustomerApproved or isCustomerReviewed with any value but null
+// (null is "absent" to the entity service), or "" otherwise. A body that is not
+// a JSON object is left for the upstream to reject.
+func validateChangeRequestCustomerOutcomeFlags(body []byte) string {
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(body, &payload); err != nil {
+		return ""
+	}
+	present := func(field string) bool {
+		raw, ok := payload[field]
+		return ok && string(bytes.TrimSpace(raw)) != "null"
+	}
+	if present("isCustomerApproved") {
+		return errMsgCustomerApprovedByStaff
+	}
+	if present("isCustomerReviewed") {
+		return errMsgCustomerReviewedByStaff
+	}
+	return ""
+}
+
 // maxChangeRequestScopeIDs caps each of deploymentIds / deploymentProductIds
 // (the entity service enforces the same limit).
 const maxChangeRequestScopeIDs = 100
@@ -381,6 +419,11 @@ func (h *ChangeRequestHandler) PatchChangeRequest(w http.ResponseWriter, r *http
 
 	if len(body) > 0 && !json.Valid(body) {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+
+	if msg := validateChangeRequestCustomerOutcomeFlags(body); msg != "" {
+		writeError(w, http.StatusBadRequest, msg)
 		return
 	}
 

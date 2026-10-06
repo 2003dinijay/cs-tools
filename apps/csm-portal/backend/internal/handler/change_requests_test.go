@@ -661,8 +661,8 @@ func TestCustomerGroupApprovalMessages(t *testing.T) {
 		assertErrorMessage(t, w, msg)
 	})
 
-	t.Run("a manual scheduled/closed while the customer group's request is pending is a readable 400", func(t *testing.T) {
-		const msg = `state "scheduled" cannot be set manually: the customer's approval has been requested from the customer group (the registered contacts of the change request's project) and is given by one of them approving or rejecting it in the change request's approvals (POST /change-requests/{id}/approvals/decision)`
+	t.Run("a manual scheduled/closed out of a customer state is a readable 400 that says what to do instead", func(t *testing.T) {
+		const msg = `state "scheduled" cannot be set manually from customer_approval: the customer's approval can only be given by the customer in the Customer Portal; cancel the change or re-schedule it instead`
 		client := &mockEntityChangeRequestClient{
 			patchChangeRequestFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
 				return nil, &apierror.Error{StatusCode: http.StatusBadRequest, Body: `{"code":400,"message":` + jsonQuote(msg) + `}`}
@@ -679,6 +679,69 @@ func TestCustomerGroupApprovalMessages(t *testing.T) {
 }
 
 func jsonQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
+
+// The customer's answer is the customer's: the BFF refuses isCustomerApproved /
+// isCustomerReviewed from its (staff) callers before any upstream call, true or
+// false, alone or with a state, and lets everything else through untouched.
+func TestPatchChangeRequestRefusesTheCustomersAnswer(t *testing.T) {
+	const approved = "isCustomerApproved cannot be set on the customer's behalf: the customer's approval can only be given by the customer in the Customer Portal"
+	const reviewed = "isCustomerReviewed cannot be set on the customer's behalf: the customer's review can only be given by the customer in the Customer Portal"
+	for name, tc := range map[string]struct{ body, want string }{
+		"approved true":        {`{"isCustomerApproved":true}`, approved},
+		"approved false":       {`{"isCustomerApproved":false}`, approved},
+		"reviewed true":        {`{"isCustomerReviewed":true}`, reviewed},
+		"reviewed false":       {`{"isCustomerReviewed":false}`, reviewed},
+		"with a state":         {`{"state":"scheduled","isCustomerApproved":true}`, approved},
+		"with another field":   {`{"title":"x","isCustomerReviewed":true}`, reviewed},
+		"approval named first": {`{"isCustomerReviewed":true,"isCustomerApproved":true}`, approved},
+		"not even as a string": {`{"isCustomerApproved":"true"}`, approved},
+	} {
+		t.Run(name, func(t *testing.T) {
+			called := false
+			client := &mockEntityChangeRequestClient{
+				patchChangeRequestFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					called = true
+					return []byte(`{}`), nil
+				},
+			}
+			h := NewChangeRequestHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(tc.body)))
+			r.SetPathValue("id", testCRID)
+			w := httptest.NewRecorder()
+			h.PatchChangeRequest(w, r)
+			assertStatus(t, w, http.StatusBadRequest)
+			assertErrorMessage(t, w, tc.want)
+			if called {
+				t.Fatal("the entity service was called for a request the BFF refuses")
+			}
+		})
+	}
+	for name, body := range map[string]string{
+		"a state alone":             `{"state":"canceled"}`,
+		"re-schedule":               `{"state":"authorize","plannedStartOn":"2030-03-01 09:00:00"}`,
+		"a null flag is not a flag": `{"title":"x","isCustomerApproved":null}`,
+		"the requirement boxes":     `{"customerApprovalRequired":true}`,
+	} {
+		t.Run("passes "+name, func(t *testing.T) {
+			called := false
+			client := &mockEntityChangeRequestClient{
+				patchChangeRequestFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					called = true
+					return []byte(`{}`), nil
+				},
+			}
+			h := NewChangeRequestHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(body)))
+			r.SetPathValue("id", testCRID)
+			w := httptest.NewRecorder()
+			h.PatchChangeRequest(w, r)
+			assertStatus(t, w, http.StatusOK)
+			if !called {
+				t.Fatal("the PATCH never reached the entity service")
+			}
+		})
+	}
+}
 
 func TestSearchChangeRequests(t *testing.T) {
 	t.Run("requires authenticated user", func(t *testing.T) {

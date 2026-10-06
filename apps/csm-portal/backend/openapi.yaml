@@ -13475,6 +13475,15 @@ components:
           enum: [high, medium, low]
         state:
           type: string
+          description: >-
+            The next state, from the change request's own legalNextStates. "scheduled"
+            is never accepted (a 400, from every state): it is reached by the approval
+            flow or, out of customer_approval, by the customer's own approval in the
+            Customer Portal. Out of customer_approval / customer_review only canceled,
+            authorize (Re-schedule, customer_approval) and rollback (customer_review)
+            are accepted; anything else, "closed" included, is a 400 saying that the
+            customer's approval / review can only be given by the customer in the
+            Customer Portal and what to do instead.
           enum: [new, assess, authorize, customer_approval, scheduled, implement, review, customer_review, rollback, closed, canceled]
         type:
           type: string
@@ -13563,13 +13572,20 @@ components:
         isCustomerApproved:
           type: boolean
           description: >-
-            Records the customer's approval decision on the change request.
-            Mutually exclusive with isCustomerReviewed and requestApproval.
+            NOT ACCEPTED from the portal (any value but null is a 400, no upstream
+            call): the customer's approval is the customer's own decision, given in the
+            Customer Portal, and no staff action records it on their behalf (a
+            compliance rule: ServiceNow's record of it is audited). Message:
+            `isCustomerApproved cannot be set on the customer's behalf: the customer's
+            approval can only be given by the customer in the Customer Portal`.
         isCustomerReviewed:
           type: boolean
           description: >-
-            Records the customer's post-implementation review decision.
-            Mutually exclusive with isCustomerApproved and requestApproval.
+            NOT ACCEPTED from the portal (any value but null is a 400, no upstream
+            call): the customer's review is the customer's own decision, given in the
+            Customer Portal. Message: `isCustomerReviewed cannot be set on the customer's
+            behalf: the customer's review can only be given by the customer in the
+            Customer Portal`.
         requestApproval:
           type: boolean
           description: >-
@@ -18482,12 +18498,16 @@ components:
                 type and on customerApprovalRequired). assess: [authorize,
                 canceled]. authorize: [canceled] (CAB/ECAB approval moves the
                 change on by itself: to scheduled, or to customer_approval when
-                customerApprovalRequired). customer_approval: [scheduled,
-                canceled] -- "scheduled" here means "record the customer's
-                approval" and is the only state it is offered from. scheduled:
+                customerApprovalRequired). customer_approval: [authorize,
+                canceled] -- never "scheduled": only the CUSTOMER's own approval
+                (Customer Portal) schedules the change, and no staff action
+                records it for them; "authorize" here is Re-schedule. scheduled:
                 [implement, canceled]. implement: [review, canceled]. review:
-                [customer_review, canceled] when customerReviewRequired, else
-                [closed, canceled]. customer_review: [closed, canceled].
+                [customer_review, rollback, canceled] when customerReviewRequired,
+                else [closed, rollback, canceled]. customer_review: [rollback,
+                canceled] -- never "closed": only the CUSTOMER's own review closes
+                the change -- or [canceled] while the customer group's review
+                request is pending. Terminal states: none.
 
     TaskSummary:
       type: object

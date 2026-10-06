@@ -274,6 +274,17 @@ reached the browser; this is what stops them being sent at all to a caller who s
 to the entity service as-is (no field allow-list), with two checks on top:
 
 * `POST` requires `type` of `standard`, `normal` or `emergency` (`validateChangeRequestCreateType`).
+* **Compliance rule: nobody here records the customer's approval or review on the customer's
+  behalf.** `PATCH` refuses (400, no upstream call) a body that carries `isCustomerApproved` or
+  `isCustomerReviewed` with any value but `null` -- `true` or `false`, alone or with a state
+  (`validateChangeRequestCustomerOutcomeFlags`): `isCustomerApproved cannot be set on the
+  customer's behalf: the customer's approval can only be given by the customer in the Customer
+  Portal` (likewise `isCustomerReviewed` / "review"). The customer gives it in the Customer
+  Portal (`apps/customer-portal`); the answer is the customer's decision and ServiceNow's record
+  of it is audited. The state half -- no manual `{state: "scheduled"}` out of Customer Approval,
+  no `{state: "closed"}` out of Customer Review -- needs the change request's state, so it is the
+  entity service's refusal, echoed verbatim (below). There is no "Bypass customer approval" /
+  "Bypass customer review".
 * Both accept the creation form's two checkboxes, **`customerApprovalRequired`**
   and **`customerReviewRequired`**, and refuse (400, "… must be a boolean (true
   or false)") any value that is not a JSON boolean, `null` included
@@ -317,14 +328,18 @@ to the entity service as-is (no field allow-list), with two checks on top:
   (cs_engineer / admin) for internal approvers. The stages "Customer Approval" / "Customer
   Review" still appear in `GET .../approvals` (see the entity service's CLAUDE.md,
   "Customer Group") so the Approvals tab can show who was asked and the outcome. While such a
-  stage is live `legalNextStates` for those states is just `["canceled"]` and a manual
-  `{state: "scheduled"}` / `{state: "closed"}` PATCH is a 400 whose message is echoed
-  verbatim; a CSM user's decision on it is a 403 whose reason is shown
+  stage is live `legalNextStates` for Customer Review is just `["canceled"]` (Customer Approval
+  keeps Re-schedule: `["authorize", "canceled"]`), and a manual `{state: "scheduled"}` /
+  `{state: "closed"}` PATCH is a 400 -- live stage or not, whatever the project (see the entity
+  service's CLAUDE.md, "There is no "Schedule" action") -- whose message is echoed
+  verbatim (`state "scheduled" cannot be set manually from customer_approval: the customer's
+  approval can only be given by the customer in the Customer Portal; cancel the change or
+  re-schedule it instead`); a CSM user's decision on it is a 403 whose reason is shown
   (`mapApprovalDecisionError` already surfaces any 403 reason: `only members of the customer
   group (the registered contacts of this change request's project) can approve or reject …`).
   A rejected Customer Approval cancels the change, a rejected Customer Review moves it to
-  `rollback`. No BFF code change was needed; `TestCustomerGroupApprovalMessages` pins both
-  refusal messages.
+  `rollback`. `TestCustomerGroupApprovalMessages` pins both refusal messages as they are echoed,
+  `TestPatchChangeRequestRefusesTheCustomersAnswer` the BFF's own refusal of the two flags.
 * **A stale approval is a 409.** A decision on a stage whose state the change has left
   (a Review approver once the change is in Customer Review / Closed -- the entity
   service cancels such rows when the change moves on, and refuses a decision on one it
