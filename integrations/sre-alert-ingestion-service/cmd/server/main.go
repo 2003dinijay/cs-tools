@@ -123,7 +123,7 @@ func main() {
 
 	store := postgres.NewStore(pool, cfg.Store.QueryTimeout.Duration(), cfg.Store.ClaimTimeout.Duration())
 
-	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, envCfg.WakeUsername, envCfg.WakeSecret, cfg.Wake.Timeout.Duration())
+	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, envCfg.WakeToken, cfg.Wake.Timeout.Duration())
 
 	rawPayloads := payloads.New(base.With("component", "payloads"), store, payloads.Config{
 		FlushInterval: cfg.Payloads.FlushInterval.Duration(),
