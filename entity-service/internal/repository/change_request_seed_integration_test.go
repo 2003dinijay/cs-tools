@@ -423,10 +423,10 @@ func TestChangeRequestSeedIntegration_SeedIsSelfHealing(t *testing.T) {
 			t.Errorf("%s: contacts of project 401 = %q", pass, got)
 		}
 		for _, tc := range []struct{ id, want string }{
-			{seedCR003, "Peer Approval:alice.perera=requested,bob.fernando=requested,carol.silva=requested"},
-			{seedCR004, "Peer Approval:alice.perera=approved,bob.fernando=cancelled,carol.silva=cancelled"},
-			{seedCR007, "Customer Approval:dave.mendis=requested,erin.jayawardena=requested"},
-			{seedCR008, "Customer Review:dave.mendis=requested,erin.jayawardena=requested"},
+			{seedCR003, "Peer Approval:alice.perera=REQUESTED,bob.fernando=REQUESTED,carol.silva=REQUESTED"},
+			{seedCR004, "Peer Approval:alice.perera=APPROVED,bob.fernando=CANCELLED,carol.silva=CANCELLED"},
+			{seedCR007, "Customer Approval:dave.mendis=REQUESTED,erin.jayawardena=REQUESTED"},
+			{seedCR008, "Customer Review:dave.mendis=REQUESTED,erin.jayawardena=REQUESTED"},
 		} {
 			got := scalar(`SELECT string_agg(ast.checkpoint_label || ':' ||
 			                 (SELECT string_agg(split_part(u.email, '@', 1) || '=' || asa.state, ',' ORDER BY u.email)

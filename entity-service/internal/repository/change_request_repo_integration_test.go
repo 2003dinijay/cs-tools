@@ -3543,7 +3543,7 @@ func TestChangeRequestFlowIntegration_NormalFullLifecycle(t *testing.T) {
 		t.Fatalf("stages after Request Approval = %+v, want exactly one \"Peer Approval\" stage on the assigned group", stages)
 	}
 	assertApprovers(t, "peer stage", stages[0].approvers, map[string]string{
-		crFlowCreatorID: "cancelled", crFlowPeerAID: "requested", crFlowPeerBID: "requested", crFlowOutsiderID: "requested",
+		crFlowCreatorID: "CANCELLED", crFlowPeerAID: "REQUESTED", crFlowPeerBID: "REQUESTED", crFlowOutsiderID: "REQUESTED",
 	})
 	assertStates(t, "legalNextStates(Assess)", f.legal(id), "authorize", "canceled")
 
@@ -3572,9 +3572,9 @@ func TestChangeRequestFlowIntegration_NormalFullLifecycle(t *testing.T) {
 		t.Fatalf("stages after peer approval = %+v, want a second \"CAB Approval\" stage on the CAB group", stages)
 	}
 	assertApprovers(t, "peer stage after approval", stages[0].approvers, map[string]string{
-		crFlowCreatorID: "cancelled", crFlowPeerAID: "approved", crFlowPeerBID: "cancelled", crFlowOutsiderID: "cancelled",
+		crFlowCreatorID: "CANCELLED", crFlowPeerAID: "APPROVED", crFlowPeerBID: "CANCELLED", crFlowOutsiderID: "CANCELLED",
 	})
-	assertApprovers(t, "CAB stage", stages[1].approvers, map[string]string{crCABMemberUserID1: "requested", crCABMemberUserID2: "requested"})
+	assertApprovers(t, "CAB stage", stages[1].approvers, map[string]string{crCABMemberUserID1: "REQUESTED", crCABMemberUserID2: "REQUESTED"})
 	assertStates(t, "legalNextStates(Authorize)", f.legal(id), "canceled")
 
 	// A peer cannot also give the CAB approval (not in the CAB group), and no
@@ -3635,7 +3635,7 @@ func TestChangeRequestFlowIntegration_EmergencyLifecycle(t *testing.T) {
 	if len(stages) != 1 || stages[0].label != "ECAB Approval" || stages[0].groupID != crECABGroupID {
 		t.Fatalf("emergency stages = %+v, want exactly one \"ECAB Approval\" stage on the ECAB group", stages)
 	}
-	assertApprovers(t, "ECAB stage", stages[0].approvers, map[string]string{crECABMemberUserID: "requested"})
+	assertApprovers(t, "ECAB stage", stages[0].approvers, map[string]string{crECABMemberUserID: "REQUESTED"})
 	assertStates(t, "legalNextStates(Authorize)", f.legal(id), "canceled")
 
 	// Neither a peer nor a regular CAB member can decide an emergency.
@@ -3858,7 +3858,7 @@ func TestChangeRequestFlowIntegration_SRETeamAssignedGroupMembersArePeerApprover
 	f.requestApproval(id)
 
 	f.wantPeerPool(id, crFlowSREGroupID, map[string]string{
-		crFlowCreatorID: "cancelled", crFlowSREID: "requested", crFlowSREPeerID: "requested",
+		crFlowCreatorID: "CANCELLED", crFlowSREID: "REQUESTED", crFlowSREPeerID: "REQUESTED",
 	})
 
 	// They may decide, and see it: canDecide on their own row.
@@ -3870,7 +3870,7 @@ func TestChangeRequestFlowIntegration_SRETeamAssignedGroupMembersArePeerApprover
 	}
 	f.expect(id, "after the SRE-team peer approved", "AUTHORIZE", "canceled")
 	assertApprovers(t, "peer stage after approval", f.stage(id, "Peer Approval").approvers, map[string]string{
-		crFlowCreatorID: "cancelled", crFlowSREID: "approved", crFlowSREPeerID: "cancelled",
+		crFlowCreatorID: "CANCELLED", crFlowSREID: "APPROVED", crFlowSREPeerID: "CANCELLED",
 	})
 	if f.stage(id, "CAB Approval").groupID != crCABGroupID {
 		t.Fatal("the CAB stage was not provisioned on the CAB group")
@@ -3893,7 +3893,7 @@ func TestChangeRequestFlowIntegration_PeerPoolFallsBackToDevopsApprovalOnlyWhenA
 		}
 		return f
 	}
-	devopsPool := map[string]string{crDevopsMemberID1: "requested", crDevopsMemberID2: "requested"}
+	devopsPool := map[string]string{crDevopsMemberID1: "REQUESTED", crDevopsMemberID2: "REQUESTED"}
 
 	t.Run("assigned group with an eligible member does not use Devops Approval", func(t *testing.T) {
 		f := newFlow(t)
@@ -3985,25 +3985,25 @@ func TestChangeRequestFlowIntegration_MixedPoolsKeepOnlyActiveInternalUsers(t *t
 	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
 	f.requestApproval(id)
 	f.wantPeerPool(id, crFlowGroupID, map[string]string{
-		crFlowCreatorID: "cancelled", crFlowPeerAID: "requested", crFlowPeerBID: "requested", crFlowOutsiderID: "requested",
+		crFlowCreatorID: "CANCELLED", crFlowPeerAID: "REQUESTED", crFlowPeerBID: "REQUESTED", crFlowOutsiderID: "REQUESTED",
 	})
 	if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
 		t.Fatalf("peer approval: %v", err)
 	}
-	assertApprovers(t, "CAB stage", f.stage(id, "CAB Approval").approvers, map[string]string{crCABMemberUserID1: "requested"})
+	assertApprovers(t, "CAB stage", f.stage(id, "CAB Approval").approvers, map[string]string{crCABMemberUserID1: "REQUESTED"})
 	if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
 		t.Fatalf("CAB approval: %v", err)
 	}
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
 	assertApprovers(t, "Review stage", f.stage(id, "Review").approvers, map[string]string{
-		crFlowCreatorID: "cancelled", crFlowPeerAID: "requested", crFlowPeerBID: "requested", crFlowOutsiderID: "requested",
+		crFlowCreatorID: "CANCELLED", crFlowPeerAID: "REQUESTED", crFlowPeerBID: "REQUESTED", crFlowOutsiderID: "REQUESTED",
 	})
 
 	// Emergency: ECAB only.
 	eid := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
 	f.requestApproval(eid)
-	assertApprovers(t, "ECAB stage", f.stage(eid, "ECAB Approval").approvers, map[string]string{crECABMemberUserID: "requested"})
+	assertApprovers(t, "ECAB stage", f.stage(eid, "ECAB Approval").approvers, map[string]string{crECABMemberUserID: "REQUESTED"})
 }
 
 // A group made only of customers has no one to give an internal approval: the
@@ -4161,7 +4161,7 @@ func TestChangeRequestFlowIntegration_CustomerStagesStillWorkForExternalContacts
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, true)
 	f.driveToCustomerApproval(id)
 
-	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	if got := f.canDecideAs(id, crScopeUserA1); len(got) != 1 || !got[stageCustApproval+"/"+crScopeUserA1] {
 		t.Fatalf("canDecide for an external contact = %v, want their own Customer Approval row", got)
 	}
@@ -4204,7 +4204,7 @@ func TestChangeRequestFlowIntegration_LifecycleStageRowsWithInternalAndExternalM
 	f.requestApproval(id)
 	labels("Peer Approval")
 	assertApprovers(t, "peer", f.stage(id, "Peer Approval").approvers, map[string]string{
-		crFlowCreatorID: "cancelled", crFlowPeerAID: "requested", crFlowPeerBID: "requested", crFlowOutsiderID: "requested",
+		crFlowCreatorID: "CANCELLED", crFlowPeerAID: "REQUESTED", crFlowPeerBID: "REQUESTED", crFlowOutsiderID: "REQUESTED",
 	})
 
 	// 2. A peer approves -> Authorize, CAB Approval: the CAB's internal members.
@@ -4214,9 +4214,9 @@ func TestChangeRequestFlowIntegration_LifecycleStageRowsWithInternalAndExternalM
 	f.expect(id, "after the peer approved", "AUTHORIZE", "canceled")
 	labels("Peer Approval", "CAB Approval")
 	assertApprovers(t, "peer", f.stage(id, "Peer Approval").approvers, map[string]string{
-		crFlowCreatorID: "cancelled", crFlowPeerAID: "approved", crFlowPeerBID: "cancelled", crFlowOutsiderID: "cancelled",
+		crFlowCreatorID: "CANCELLED", crFlowPeerAID: "APPROVED", crFlowPeerBID: "CANCELLED", crFlowOutsiderID: "CANCELLED",
 	})
-	assertApprovers(t, "CAB", f.stage(id, "CAB Approval").approvers, map[string]string{crCABMemberUserID1: "requested", crCABMemberUserID2: "requested"})
+	assertApprovers(t, "CAB", f.stage(id, "CAB Approval").approvers, map[string]string{crCABMemberUserID1: "REQUESTED", crCABMemberUserID2: "REQUESTED"})
 
 	// 3. CAB approves -> Customer Approval: exactly the project's contacts.
 	if err := f.decide(id, crCABMemberUserID2, "approved"); err != nil {
@@ -4224,40 +4224,40 @@ func TestChangeRequestFlowIntegration_LifecycleStageRowsWithInternalAndExternalM
 	}
 	f.expect(id, "after CAB approved", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	labels("Peer Approval", "CAB Approval", "Customer Approval")
-	assertApprovers(t, "CAB", f.stage(id, "CAB Approval").approvers, map[string]string{crCABMemberUserID1: "cancelled", crCABMemberUserID2: "approved"})
-	assertApprovers(t, "Customer Approval", f.stage(id, "Customer Approval").approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+	assertApprovers(t, "CAB", f.stage(id, "CAB Approval").approvers, map[string]string{crCABMemberUserID1: "CANCELLED", crCABMemberUserID2: "APPROVED"})
+	assertApprovers(t, "Customer Approval", f.stage(id, "Customer Approval").approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 
 	// 4. A contact approves -> Scheduled.
 	if err := f.decide(id, crScopeUserA2, "approved"); err != nil {
 		t.Fatalf("customer approval: %v", err)
 	}
 	f.expect(id, "after the customer approved", "SCHEDULED", "implement", "canceled")
-	assertApprovers(t, "Customer Approval", f.stage(id, "Customer Approval").approvers, map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "approved"})
+	assertApprovers(t, "Customer Approval", f.stage(id, "Customer Approval").approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "APPROVED"})
 
 	// 5. Implement -> Review: the team's internal members again, fresh.
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
 	labels("Peer Approval", "CAB Approval", "Customer Approval", "Review")
 	assertApprovers(t, "Review", f.stage(id, "Review").approvers, map[string]string{
-		crFlowCreatorID: "cancelled", crFlowPeerAID: "requested", crFlowPeerBID: "requested", crFlowOutsiderID: "requested",
+		crFlowCreatorID: "CANCELLED", crFlowPeerAID: "REQUESTED", crFlowPeerBID: "REQUESTED", crFlowOutsiderID: "REQUESTED",
 	})
 	if err := f.decide(id, crFlowPeerBID, "approved"); err != nil {
 		t.Fatalf("review approval: %v", err)
 	}
 	f.expect(id, "after the internal review", "REVIEW", "customer_review", "rollback", "canceled")
 	assertApprovers(t, "Review", f.stage(id, "Review").approvers, map[string]string{
-		crFlowCreatorID: "cancelled", crFlowPeerAID: "cancelled", crFlowPeerBID: "approved", crFlowOutsiderID: "cancelled",
+		crFlowCreatorID: "CANCELLED", crFlowPeerAID: "CANCELLED", crFlowPeerBID: "APPROVED", crFlowOutsiderID: "CANCELLED",
 	})
 
 	// 6. Customer Review: exactly the project's contacts again; a contact closes it.
 	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "canceled")
 	labels("Peer Approval", "CAB Approval", "Customer Approval", "Review", "Customer Review")
-	assertApprovers(t, "Customer Review", f.stage(id, "Customer Review").approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+	assertApprovers(t, "Customer Review", f.stage(id, "Customer Review").approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	if err := f.decide(id, crScopeUserA1, "approved"); err != nil {
 		t.Fatalf("customer review: %v", err)
 	}
 	f.expect(id, "after the customer reviewed", "CLOSED")
-	assertApprovers(t, "Customer Review", f.stage(id, "Customer Review").approvers, map[string]string{crScopeUserA1: "approved", crScopeUserA2: "cancelled"})
+	assertApprovers(t, "Customer Review", f.stage(id, "Customer Review").approvers, map[string]string{crScopeUserA1: "APPROVED", crScopeUserA2: "CANCELLED"})
 }
 
 // A Normal change cannot be sent for approval into a flow with nobody to give
@@ -4338,7 +4338,7 @@ func TestChangeRequestFlowIntegration_CABRejectionDoesNotSchedule(t *testing.T) 
 		t.Fatalf("state after CAB rejection = %q, want AUTHORIZE (no cascade)", got)
 	}
 	stages := f.stages(id)
-	assertApprovers(t, "CAB stage after rejection", stages[1].approvers, map[string]string{crCABMemberUserID1: "rejected", crCABMemberUserID2: "cancelled"})
+	assertApprovers(t, "CAB stage after rejection", stages[1].approvers, map[string]string{crCABMemberUserID1: "REJECTED", crCABMemberUserID2: "CANCELLED"})
 }
 
 // The type cannot be changed once approval has been requested: the stages
@@ -6696,7 +6696,7 @@ func (f *crFlow) liveStageRows(id, label string) int {
 			continue
 		}
 		for _, status := range st.approvers {
-			if status == "requested" {
+			if status == "REQUESTED" {
 				n++
 			}
 		}
@@ -6746,12 +6746,12 @@ func TestChangeRequestFlowIntegration_RescheduleNormalWithCustomerGroup(t *testi
 		t.Fatalf("stages after Re-schedule = %s, want a fresh CAB stage after the customer's", got)
 	}
 	stages := f.stages(id)
-	assertApprovers(t, "customer stage after Re-schedule", stages[2].approvers, map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "cancelled"})
-	assertApprovers(t, "fresh CAB stage", stages[3].approvers, map[string]string{crCABMemberUserID1: "requested", crCABMemberUserID2: "requested"})
+	assertApprovers(t, "customer stage after Re-schedule", stages[2].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
+	assertApprovers(t, "fresh CAB stage", stages[3].approvers, map[string]string{crCABMemberUserID1: "REQUESTED", crCABMemberUserID2: "REQUESTED"})
 	if stages[3].groupID != crCABGroupID {
 		t.Fatalf("fresh CAB stage group = %s, want the CAB group", stages[3].groupID)
 	}
-	assertApprovers(t, "first CAB stage stays as a record", stages[1].approvers, map[string]string{crCABMemberUserID1: "approved", crCABMemberUserID2: "cancelled"})
+	assertApprovers(t, "first CAB stage stays as a record", stages[1].approvers, map[string]string{crCABMemberUserID1: "APPROVED", crCABMemberUserID2: "CANCELLED"})
 	if n := f.liveStageRows(id, "Peer Approval"); n != 0 {
 		t.Fatalf("%d peer approver rows requested again; the peer approval stands", n)
 	}
@@ -6779,9 +6779,9 @@ func TestChangeRequestFlowIntegration_RescheduleNormalWithCustomerGroup(t *testi
 		t.Fatalf("stages after the new CAB approval = %s", got)
 	}
 	stages = f.stages(id)
-	assertApprovers(t, "first customer stage", stages[2].approvers, map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "cancelled"})
-	assertApprovers(t, "fresh customer stage", stages[4].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
-	assertApprovers(t, "new CAB stage", stages[3].approvers, map[string]string{crCABMemberUserID1: "cancelled", crCABMemberUserID2: "approved"})
+	assertApprovers(t, "first customer stage", stages[2].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
+	assertApprovers(t, "fresh customer stage", stages[4].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+	assertApprovers(t, "new CAB stage", stages[3].approvers, map[string]string{crCABMemberUserID1: "CANCELLED", crCABMemberUserID2: "APPROVED"})
 	f.wantPlanned(id, "back in Customer Approval", rsStart2, rsEnd2)
 
 	// A member approves: Scheduled, customer approval recorded; the tail runs and
@@ -6835,7 +6835,7 @@ func TestChangeRequestFlowIntegration_RescheduleManualFallbackTwice(t *testing.T
 	}
 	stages := f.stages(id)
 	assertApprovers(t, "fresh CAB stage", stages[2].approvers, map[string]string{
-		crCABMemberUserID1: "requested", crCABMemberUserID2: "requested", crFlowCreatorID: "cancelled"})
+		crCABMemberUserID1: "REQUESTED", crCABMemberUserID2: "REQUESTED", crFlowCreatorID: "CANCELLED"})
 	var fe *apierror.ForbiddenError
 	if err := f.decide(id, crFlowCreatorID, "approved"); !errors.As(err, &fe) {
 		t.Fatalf("creator deciding the fresh CAB stage: err = %v, want ForbiddenError", err)
@@ -6897,11 +6897,11 @@ func TestChangeRequestFlowIntegration_RescheduleEmergency(t *testing.T) {
 		t.Fatalf("emergency stages after Re-schedule = %s", got)
 	}
 	stages := f.stages(id)
-	assertApprovers(t, "fresh ECAB stage", stages[2].approvers, map[string]string{crECABMemberUserID: "requested"})
+	assertApprovers(t, "fresh ECAB stage", stages[2].approvers, map[string]string{crECABMemberUserID: "REQUESTED"})
 	if stages[2].groupID != crECABGroupID {
 		t.Fatalf("fresh ECAB stage group = %s, want the ECAB group", stages[2].groupID)
 	}
-	assertApprovers(t, "superseded customer stage", stages[1].approvers, map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "cancelled"})
+	assertApprovers(t, "superseded customer stage", stages[1].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
 
 	if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
 		t.Fatalf("new ECAB approval: %v", err)
@@ -6937,8 +6937,8 @@ func TestChangeRequestFlowIntegration_RescheduleStandard(t *testing.T) {
 			t.Fatalf("stages after Re-schedule = %s, want the customer asked again with a fresh stage", got)
 		}
 		stages := f.stages(id)
-		assertApprovers(t, "superseded customer stage", stages[0].approvers, map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "cancelled"})
-		assertApprovers(t, "fresh customer stage", stages[1].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+		assertApprovers(t, "superseded customer stage", stages[0].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
+		assertApprovers(t, "fresh customer stage", stages[1].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 
 		if err := f.decide(id, crScopeUserA1, "approved"); err != nil {
 			t.Fatalf("customer approval: %v", err)

@@ -473,8 +473,8 @@ func TestChangeRequestFlowIntegration_StaleApprovals_RescheduleLoop(t *testing.T
 	}
 	f.wantLive(id, "after Re-schedule", map[string][]string{"CAB Approval#2": cab})
 	f.wantCanDecide(id, "after Re-schedule", everyone(cab, "CAB Approval#2"))
-	f.wantStatuses(id, "after Re-schedule", "Customer Approval", map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "cancelled"})
-	f.wantStatuses(id, "after Re-schedule", "CAB Approval", map[string]string{crCABMemberUserID1: "approved", crCABMemberUserID2: "cancelled"})
+	f.wantStatuses(id, "after Re-schedule", "Customer Approval", map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
+	f.wantStatuses(id, "after Re-schedule", "CAB Approval", map[string]string{crCABMemberUserID1: "APPROVED", crCABMemberUserID2: "CANCELLED"})
 
 	if err := f.decide(id, crCABMemberUserID2, "approved"); err != nil {
 		t.Fatalf("new CAB approval: %v", err)
@@ -547,7 +547,7 @@ func TestChangeRequestFlowIntegration_StaleApprovals_RescheduleEmergencyAndStand
 		f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
 		f.wantLive(id, "after Re-schedule", map[string][]string{"Customer Approval#2": cust})
 		f.wantCanDecide(id, "after Re-schedule", everyone(cust, "Customer Approval#2"))
-		f.wantStatuses(id, "after Re-schedule", "Customer Approval", map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "cancelled"})
+		f.wantStatuses(id, "after Re-schedule", "Customer Approval", map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
 	})
 }
 
@@ -1027,5 +1027,5 @@ func TestChangeRequestFlowIntegration_StaleApprovals_GithubStateWriteCancels(t *
 	f.expect(id, "after the GitHub close", "CLOSED")
 	f.wantLive(id, "after the GitHub close", nil)
 	f.wantCanDecide(id, "after the GitHub close", nil)
-	f.wantStatuses(id, "after the GitHub close", "Review", map[string]string{crFlowPeerAID: "cancelled", crFlowPeerBID: "cancelled", crFlowOutsiderID: "cancelled"})
+	f.wantStatuses(id, "after the GitHub close", "Review", map[string]string{crFlowPeerAID: "CANCELLED", crFlowPeerBID: "CANCELLED", crFlowOutsiderID: "CANCELLED"})
 }
