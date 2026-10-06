@@ -19847,8 +19847,8 @@ components:
           type: string
           nullable: true
           description: >-
-            Format: YYYY-MM-DD HH:mm:ss. Not surfaced on the native Problem form in the
-            backing data source.
+            Format: YYYY-MM-DD HH:mm:ss, in UTC (RFC3339 is also accepted). Not surfaced on
+            the native Problem form in the backing data source.
 
     UpdateProblemResponse:
       type: object

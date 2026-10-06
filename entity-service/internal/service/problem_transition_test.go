@@ -288,3 +288,70 @@ func TestUpdateProblem_RequirementsMetByTheRequest(t *testing.T) {
 		t.Errorf("moved = %v", moved)
 	}
 }
+
+// The portal sends targetResolutionDate as ServiceNow's "YYYY-MM-DD
+// HH:mm:ss" (UTC) -- the format this API documents. Postgres must get the
+// same instant as RFC3339, and the ServiceNow mirror its own format back.
+func TestUpdateProblem_TargetDateAcceptsThePortalFormat(t *testing.T) {
+	for in, want := range map[string][2]string{
+		"2026-10-06 00:00:00":       {"2026-10-06T00:00:00Z", "2026-10-06 00:00:00"},
+		"2026-10-06T05:30:00+05:30": {"2026-10-06T00:00:00Z", "2026-10-06 00:00:00"},
+	} {
+		var toPG string
+		mirrored := make(chan domain.UpdateProblemRequest, 1)
+		repo := &stubProblemRepo{
+			updateProblemFields: func(_ context.Context, req domain.UpdateProblemRequest, _ string) (time.Time, error) {
+				toPG = strOrEmpty(req.TargetResolutionDate)
+				return time.Now(), nil
+			},
+			getProblem: problemDetailStub,
+		}
+		mirror := &stubMirrorProblemService{
+			updateProblem: func(_ context.Context, req domain.UpdateProblemRequest) (domain.UpdateProblemResponse, error) {
+				mirrored <- req
+				return domain.UpdateProblemResponse{}, nil
+			},
+		}
+		svc := NewProblemServiceWithSNMirror(repo, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+		if _, err := svc.UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{ID: testDeploymentUUID, TargetResolutionDate: strp(in)}); err != nil {
+			t.Fatalf("%s: %v", in, err)
+		}
+		if toPG != want[0] {
+			t.Errorf("%s: Postgres got %q, want %q", in, toPG, want[0])
+		}
+		select {
+		case req := <-mirrored:
+			if strOrEmpty(req.TargetResolutionDate) != want[1] {
+				t.Errorf("%s: ServiceNow got %q, want %q", in, strOrEmpty(req.TargetResolutionDate), want[1])
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatalf("%s: never mirrored", in)
+		}
+	}
+}
+
+// A transition carrying a date sends ServiceNow its format too.
+func TestUpdateProblem_DualWriteTransitionSendsServiceNowDateFormat(t *testing.T) {
+	var toSN string
+	mirror := &stubMirrorProblemService{
+		updateProblem: func(_ context.Context, req domain.UpdateProblemRequest) (domain.UpdateProblemResponse, error) {
+			toSN = strOrEmpty(req.TargetResolutionDate)
+			return domain.UpdateProblemResponse{}, nil
+		},
+	}
+	repo := &stubProblemRepo{
+		getProblem: problemDetailStub,
+		applyProblemTransition: func(context.Context, domain.UpdateProblemRequest, repository.ProblemTransition, bool, string) (time.Time, error) {
+			return time.Now(), nil
+		},
+	}
+	svc := NewProblemServiceWithSNMirror(repo, mirror, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+	if _, err := svc.UpdateProblem(userCtxProblem(t), domain.UpdateProblemRequest{
+		ID: testDeploymentUUID, Transition: strp("confirm"), TargetResolutionDate: strp("2026-10-06 08:15:00"),
+	}); err != nil {
+		t.Fatalf("UpdateProblem: %v", err)
+	}
+	if toSN != "2026-10-06 08:15:00" {
+		t.Errorf("ServiceNow got %q", toSN)
+	}
+}
