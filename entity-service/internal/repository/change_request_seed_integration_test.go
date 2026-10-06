@@ -393,7 +393,7 @@ func TestChangeRequestSeedIntegration_SeedIsSelfHealing(t *testing.T) {
 	                       ('00000000-0000-0000-0000-000000001432'::uuid, '00000000-0000-0000-0000-000000001422'::uuid)) AS c(id, contact), project_group pg
 	          WHERE pg."group" = 'General Access' ON CONFLICT (id) DO NOTHING`)
 	mustExec(`DELETE FROM approval_stage_approver WHERE work_item_id IN ($1, $2, $3)`, seedCR003, seedCR007, seedCR008)
-	mustExec(`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+	mustExec(`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
 	          VALUES (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', $1, $4, 'requested'),
 	                 (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', $1, $5, 'requested'),
 	                 (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001305', $2, $4, 'requested'),
@@ -429,7 +429,7 @@ func TestChangeRequestSeedIntegration_SeedIsSelfHealing(t *testing.T) {
 			{seedCR008, "Customer Review:dave.mendis=requested,erin.jayawardena=requested"},
 		} {
 			got := scalar(`SELECT string_agg(ast.checkpoint_label || ':' ||
-			                 (SELECT string_agg(split_part(u.email, '@', 1) || '=' || asa.status, ',' ORDER BY u.email)
+			                 (SELECT string_agg(split_part(u.email, '@', 1) || '=' || asa.state, ',' ORDER BY u.email)
 			                    FROM approval_stage_approver asa JOIN "user" u ON u.id = asa.approver_user_id WHERE asa.stage_id = ast.id),
 			               ' | ' ORDER BY ast.created_on, ast.id)
 			               FROM approval_stage ast WHERE ast.work_item_id = $1`, tc.id)

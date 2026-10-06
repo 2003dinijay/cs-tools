@@ -517,9 +517,10 @@ INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, 
   ('00000000-0000-0000-0000-000000001305', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001303', NULL, 'requested', 'Customer Approval'),
   ('00000000-0000-0000-0000-000000001306', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001304', NULL, 'requested', 'Customer Review');
 
--- raw_status/status use the approval flow's lowercase vocabulary ("requested",
--- not "REQUESTED"; migration 0089's own doc comment).
-INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status) VALUES
+-- raw_status/state use the approval flow's lowercase vocabulary ("requested",
+-- not "REQUESTED"; migration 0089's own doc comment). approval_stage_approver's
+-- own column was renamed status -> state by migration 0138.
+INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state) VALUES
   -- CHG-FIXED-003: alice, bob, carol all REQUESTED
   ('00000000-0000-0000-0000-000000001006', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000011', 'requested'),
   ('00000000-0000-0000-0000-000000001007', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000012', 'requested'),

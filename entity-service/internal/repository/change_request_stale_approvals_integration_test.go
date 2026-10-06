@@ -646,7 +646,7 @@ func TestChangeRequestFlowIntegration_StaleApprovals_DecisionGuard(t *testing.T)
 	const wantReviewInCustomerReview = "this approval is no longer pending: the change request is in Customer Review, but the Review stage can only be decided while it is in Review"
 	reviewStale := func(f *crFlow, id, user string) {
 		f.t.Helper()
-		f.execSQL(`UPDATE approval_stage_approver SET status = 'requested'
+		f.execSQL(`UPDATE approval_stage_approver SET state = 'requested'
 		           WHERE approver_user_id = $2::uuid AND stage_id = (SELECT id FROM approval_stage WHERE work_item_id = $1 AND checkpoint_label = 'Review')`, id, user)
 	}
 
@@ -718,7 +718,7 @@ func TestChangeRequestFlowIntegration_StaleApprovals_DecisionGuard(t *testing.T)
 		if err := f.decide(id, crFlowPeerAID, "approved"); err != nil {
 			t.Fatalf("peer approval: %v", err)
 		}
-		f.execSQL(`UPDATE approval_stage_approver SET status = 'requested' WHERE approver_user_id = $2::uuid AND work_item_id = $1`, id, crFlowPeerBID)
+		f.execSQL(`UPDATE approval_stage_approver SET state = 'requested' WHERE approver_user_id = $2::uuid AND work_item_id = $1`, id, crFlowPeerBID)
 		f.wantCanDecide(id, "with a legacy Peer row", everyone([]string{crCABMemberUserID1, crCABMemberUserID2}, "CAB Approval"))
 		f.wantConflict("the stale Peer row", f.decide(id, crFlowPeerBID, "approved"),
 			"this approval is no longer pending: the change request is in Authorize, but the Peer Approval stage can only be decided while it is in Assess")
@@ -760,7 +760,7 @@ func (f *crFlow) seedLooseStage(id string, label *string, ageMinutes int, rows m
 		f.t.Fatalf("seed stage: %v", err)
 	}
 	for uid, status := range rows {
-		f.execSQL(`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, status)
+		f.execSQL(`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
 		           VALUES (gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', $1::uuid, $2, $3::uuid, $4)`, stageID, id, uid, status)
 	}
 	return stageID
@@ -930,7 +930,7 @@ func TestChangeRequestFlowIntegration_StaleApprovals_Migration(t *testing.T) {
 		out := map[string]rowState{}
 		for _, s := range all {
 			rows, err := f.scoped.Query(f.sys,
-				`SELECT approver_user_id::text, status, updated_by, updated_on::text FROM approval_stage_approver WHERE stage_id = $1`, s.stage)
+				`SELECT approver_user_id::text, state, updated_by, updated_on::text FROM approval_stage_approver WHERE stage_id = $1`, s.stage)
 			if err != nil {
 				t.Fatalf("read rows: %v", err)
 			}
