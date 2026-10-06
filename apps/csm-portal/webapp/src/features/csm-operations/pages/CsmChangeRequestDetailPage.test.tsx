@@ -1439,12 +1439,17 @@ function lcSeed(
     applyPatch(input as { patch: { state?: string } });
     return { id: "chg-1" };
   });
-  // The approvals panel's Approve/Reject drives the fake as the signed-in user.
+  // The approvals panel's Approve/Reject drives the fake as the signed-in user. The
+  // customer stages are not decided from this page (the customer answers in the customer
+  // portal, see `lcCustomerDecides`), so only the internal stages are candidates.
   decideApprovalMutateMock.mockImplementation((input: { decision: "approved" | "rejected" }) => {
     // The caller's pending stage: their row on a stage decidable in the CR's
     // current state, else (all of theirs are stale) their first one.
     const mine = lc.approvals.filter(
-      (a) => a.status === "REQUESTED" && a.approvers.some((p) => p.id === mockCurrentUser.id && p.status === "REQUESTED"),
+      (a) =>
+        !lcIsCustomerStage(a.stage) &&
+        a.status === "REQUESTED" &&
+        a.approvers.some((p) => p.id === mockCurrentUser.id && p.status === "REQUESTED"),
     );
     const current = mine.find((a) => !lcStageOutOfState(a.stage)) ?? mine[0];
     const row = current?.approvers.find((a) => a.id === mockCurrentUser.id && a.status === "REQUESTED");
@@ -1460,25 +1465,11 @@ function lcSeed(
     }
     row.status = input.decision === "approved" ? "APPROVED" : "REJECTED";
     current.status = row.status;
-    if (!lcIsCustomerStage(current.stage)) {
-      // A resolving decision cancels the stage's other pending approvers.
-      current.approvers.forEach((a) => {
-        if (a !== row && a.status === "REQUESTED") a.status = "CANCELLED";
-      });
-    }
-    if (lcIsCustomerStage(current.stage)) {
-      // One member's decision settles the stage; the others are no longer needed.
-      current.approvers.forEach((a) => {
-        if (a !== row && a.status === "REQUESTED") a.status = "NOT_REQUIRED";
-      });
-      if (input.decision === "approved") {
-        lcSetState(current.stage === "Customer Approval" ? "scheduled" : "closed");
-      } else {
-        // Backend rule: a declined Customer Approval cancels the change; a
-        // rejected Customer Review moves it to rollback (terminal, no actions).
-        lcSetState(current.stage === "Customer Approval" ? "canceled" : "rollback");
-      }
-    } else if (input.decision === "approved") {
+    // A resolving decision cancels the stage's other pending approvers.
+    current.approvers.forEach((a) => {
+      if (a !== row && a.status === "REQUESTED") a.status = "CANCELLED";
+    });
+    if (input.decision === "approved") {
       if (current.stage === "Peer Approval") {
         lcSetState("authorize");
         lc.approvals = [...lc.approvals, lcStage("CAB Approval", "CAB", LC_CAB)];
@@ -1499,6 +1490,36 @@ function lcOpenAs(user: { id: string; email: string }, view?: ReturnType<typeof 
   mockCurrentUser = { id: user.id, email: user.email };
   lcPublish(); // canDecide is per caller, so the fake re-serves the approvals for this user
   return renderPage();
+}
+
+/**
+ * The customer's answer, applied server-side: the customer decides in the customer portal,
+ * never in this page (customers do not sign in to the CSM portal), so no test clicks an
+ * Approve / Reject for them. Like the backend: the contact's own live row of the Customer
+ * Approval / Customer Review stage becomes APPROVED / REJECTED, the co-contacts' rows are
+ * CANCELLED, and the change moves on -- Customer Approval approved -> scheduled, rejected ->
+ * canceled; Customer Review approved -> closed, rejected -> rollback (terminal, no actions).
+ * Whatever page is mounted re-renders with the outcome.
+ */
+function lcCustomerDecides(contact: { id: string; name: string }, decision: "approved" | "rejected"): void {
+  const current = lc.approvals.find(
+    (a) =>
+      lcIsCustomerStage(a.stage) &&
+      a.status === "REQUESTED" &&
+      !lcStageOutOfState(a.stage) &&
+      a.approvers.some((p) => p.id === contact.id && p.status === "REQUESTED"),
+  );
+  const row = current?.approvers.find((p) => p.id === contact.id && p.status === "REQUESTED");
+  if (!current || !row) throw new Error(`403: ${contact.name} has no pending customer approval or review`);
+  row.status = decision === "approved" ? "APPROVED" : "REJECTED";
+  current.status = row.status;
+  current.approvers.forEach((p) => {
+    if (p !== row && p.status === "REQUESTED") p.status = "CANCELLED";
+  });
+  if (decision === "approved") lcSetState(current.stage === "Customer Approval" ? "scheduled" : "closed");
+  else lcSetState(current.stage === "Customer Approval" ? "canceled" : "rollback");
+  lcReconcile();
+  lcPublish();
 }
 
 /** The lifecycle stepper's current step label (`aria-current="step"`). */
@@ -1742,7 +1763,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: a Review approver's Approve 
     view.unmount();
   });
 
-  it("takes the controls away from every Review approver the moment the change goes to Customer Review, and Closed after the customer answers", () => {
+  it("takes the controls away from every Review approver the moment the change goes to Customer Review, and Closed after the customer answers (in the customer portal)", () => {
     let view = driveToReview(true, { members: [LC_CUST_ONE, LC_CUST_TWO] });
     view = lcOpenAs(LC_PEER, view);
     expect(reviewControls("Pat Peer").approve).toBeEnabled();
@@ -1763,18 +1784,20 @@ describe("CsmChangeRequestDetailPage — lifecycle: a Review approver's Approve 
       expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
     }
 
-    // The customer is who answers now.
-    view = lcOpenAs(LC_CUST_ONE, view);
-    expect(screen.getAllByRole("button", { name: /^approve$/i })).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    // The customer is who answers now -- in the customer portal; the CSM page shows the outcome.
+    view = lcOpenAs(LC_CREATOR, view);
+    lcCustomerDecides(LC_CUST_ONE, "approved");
     expect(currentStep()).toBe("Closed");
+    expect(within(approvalsRowInStage("Mia Member", "Customer Review")).getByText("Approved")).toBeInTheDocument();
+    expect(within(approvalsRowInStage("Max Member", "Customer Review")).getByText("Cancelled")).toBeInTheDocument();
     // Closed: nothing is requested anywhere, and nobody has controls.
     expect(lc.approvals.flatMap((a) => a.approvers).filter((a) => a.status === "REQUESTED")).toEqual([]);
-    for (const user of [LC_PEER, LC_PEER_TWO, LC_CAB, LC_CUST_TWO, LC_CUST_ONE]) {
+    for (const user of [LC_PEER, LC_PEER_TWO, LC_CAB]) {
       view = lcOpenAs(user, view);
       expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
       expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
     }
+    view.unmount();
   });
 
   it.each([
@@ -1996,7 +2019,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
     return view;
   }
 
-  it("Normal with a customer group: Customer Approval -> Re-schedule -> Authorize (CAB again) -> CAB approves -> Customer Approval (asked again) -> member approves -> Scheduled", async () => {
+  it("Normal with a customer group: Customer Approval -> Re-schedule -> Authorize (CAB again) -> CAB approves -> Customer Approval (asked again) -> a member approves (in the customer portal) -> Scheduled", async () => {
     let view = runToCustomerApproval({ members: LC_MEMBERS });
     expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
     // Re-schedule sits next to nothing primary (the customer group decides) and Cancel stays in the menu.
@@ -2052,9 +2075,10 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
     expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
     expect(screen.getAllByText("Customer Approval", { selector: "td" })).toHaveLength(4); // 2 cancelled + 2 fresh member rows
 
-    view = lcOpenAs(LC_CUST_ONE, view);
-    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    // The customer answers in the customer portal; the CSM page shows Scheduled.
+    lcCustomerDecides(LC_CUST_ONE, "approved");
     expect(lc.cr.state).toBe("scheduled");
+    expect(currentStep()).toBe("Scheduled");
     view.unmount();
   });
 
@@ -2425,10 +2449,13 @@ describe("CsmChangeRequestDetailPage — blocking reason for the customer states
 // project has eligible contacts enters `customer_approval` / `customer_review`,
 // the backend provisions a "Customer Approval" / "Customer Review" stage whose
 // approvers are those contacts. While that stage is live `legalNextStates`
-// offers only `canceled`; a contact's decision moves the CR (approve ->
-// scheduled / closed, reject -> canceled). With no registered contacts, or none
-// eligible, no stage exists and the manual Record-customer-approval / Close
-// paths stay. The fake above encodes exactly that.
+// offers only `canceled`. The contact's decision is given in the customer portal,
+// never on this page (customers do not sign in to the CSM portal): the tests apply
+// it server-side with `lcCustomerDecides` (approve -> scheduled / closed, reject ->
+// canceled / rollback; the contact's row decided, the others' Cancelled) and assert
+// what the page then shows. With no registered contacts, or none eligible, no stage
+// exists and the manual Record-customer-approval / Close paths stay. The fake above
+// encodes exactly that.
 // ---------------------------------------------------------------------------
 
 const LC_MEMBERS = [
@@ -2459,7 +2486,7 @@ function expectOnlyCancelOffered(): void {
 }
 
 describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Approval and Customer Review", () => {
-  it("walks the whole lifecycle, asserting state, stage rows and buttons for the creator, a group member and a non-member after every step", { timeout: 30000 }, () => {
+  it("walks the whole lifecycle, asserting state, stage rows and buttons for the creator and a non-member after every step, with the customer's answers (in the customer portal) applied server-side", { timeout: 30000 }, () => {
     lcSeed("normal", { approval: true, review: true }, { members: LC_MEMBERS });
 
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
@@ -2493,27 +2520,16 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Record customer approval" })).not.toBeInTheDocument();
 
-    // --- customer_approval, group member: Approve/Reject on their own row only.
-    view = lcOpenAs(LC_CUST_ONE, view);
-    expect(screen.getAllByRole("button", { name: /^approve$/i })).toHaveLength(1);
-    expect(screen.getByRole("button", { name: /^approve$/i })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /^reject$/i })).toBeEnabled();
-    expect(within(approvalsRow("Mia Member")).getByRole("button", { name: /^approve$/i })).toBeInTheDocument();
-    // No decision controls for a non-member (the row's Assignment group is a link-button of its own now).
-    expect(within(approvalsRow("Max Member")).queryByRole("button", { name: /^(approve|reject)$/i })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Record customer approval" })).not.toBeInTheDocument();
-
-    // --- member approves -> Scheduled, no manual PATCH involved.
+    // --- a member approves in the customer portal -> Scheduled, no PATCH and no decision from this page.
     const patchCallsBefore = patchMutateMock.mock.calls.length;
-    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
-    expect(decideApprovalMutateMock).toHaveBeenLastCalledWith(
-      { id: "chg-1", decision: "approved" },
-      expect.anything(),
-    );
+    const decisionsBefore = decideApprovalMutateMock.mock.calls.length;
+    lcCustomerDecides(LC_CUST_ONE, "approved");
+    expect(decideApprovalMutateMock.mock.calls.length).toBe(decisionsBefore);
     expect(patchMutateMock.mock.calls.length).toBe(patchCallsBefore);
     expect(currentStep()).toBe("Scheduled");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
     expect(within(approvalsRow("Mia Member")).getByText("Approved")).toBeInTheDocument();
+    expect(within(approvalsRowInStage("Max Member", "Customer Approval")).getByText("Cancelled")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /^start implementation$/i })).toBeInTheDocument();
     expectNoManualSchedule();
@@ -2543,37 +2559,34 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^reject$/i })).not.toBeInTheDocument();
 
-    // --- customer_review, other member approves -> Closed.
-    view = lcOpenAs(LC_CUST_TWO, view);
-    expect(screen.getAllByRole("button", { name: /^approve$/i })).toHaveLength(1);
-    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    // --- customer_review, the other member approves in the customer portal -> Closed.
+    lcCustomerDecides(LC_CUST_TWO, "approved");
     expect(currentStep()).toBe("Closed");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
+    expect(within(approvalsRowInStage("Max Member", "Customer Review")).getByText("Approved")).toBeInTheDocument();
+    expect(within(approvalsRowInStage("Mia Member", "Customer Review")).getByText("Cancelled")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /change state/i })).not.toBeInTheDocument();
     view.unmount();
   });
 
-  it("a member rejecting the Customer Approval cancels the change request", () => {
+  it("a member rejecting the Customer Approval (in the customer portal) cancels the change request, and the page shows it", () => {
     lcSeed("normal", { approval: true, review: false }, { members: LC_MEMBERS });
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
 
-    view = lcOpenAs(LC_CUST_TWO, view);
+    view = lcOpenAs(LC_CREATOR, view);
     expect(currentStep()).toBe("Customer Approval");
-    fireEvent.click(screen.getByRole("button", { name: /^reject$/i }));
-    expect(decideApprovalMutateMock).toHaveBeenLastCalledWith(
-      { id: "chg-1", decision: "rejected" },
-      expect.anything(),
-    );
+    lcCustomerDecides(LC_CUST_TWO, "rejected");
     expect(lc.cr.state).toBe("canceled");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
     expect(within(approvalsRow("Max Member")).getByText("Rejected")).toBeInTheDocument();
+    expect(within(approvalsRowInStage("Mia Member", "Customer Approval")).getByText("Cancelled")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /change state/i })).not.toBeInTheDocument();
     view.unmount();
   });
 
-  it("a member rejecting the Customer Review moves the change request to Rollback (terminal, no actions left)", () => {
+  it("a member rejecting the Customer Review (in the customer portal) moves the change request to Rollback (terminal, no actions left), and the page shows it", () => {
     lcSeed("normal", { approval: false, review: true }, { members: LC_MEMBERS });
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
     view = lcOpenAs(LC_CREATOR, view);
@@ -2583,18 +2596,18 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
     fireEvent.click(screen.getByRole("button", { name: /^send for customer review$/i }));
     expect(currentStep()).toBe("Customer Review");
 
-    view = lcOpenAs(LC_CUST_ONE, view);
-    fireEvent.click(screen.getByRole("button", { name: /^reject$/i }));
+    lcCustomerDecides(LC_CUST_ONE, "rejected");
     expect(lc.cr.state).toBe("rollback");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
     expect(screen.getAllByText("Rollback", { selector: ".MuiChip-label" }).length).toBeGreaterThan(0);
     expect(within(approvalsRowInStage("Mia Member", "Customer Review")).getByText("Rejected")).toBeInTheDocument();
+    expect(within(approvalsRowInStage("Max Member", "Customer Review")).getByText("Cancelled")).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /change state/i })).not.toBeInTheDocument();
     view.unmount();
   });
 
-  it("shows a non-creator, non-member no Approve/Reject on a live customer stage even if the backend sends canDecide=false for every row", () => {
+  it("shows a non-creator CSM user no Approve/Reject on a live customer stage (the customer answers in the customer portal)", () => {
     lcSeed("normal", { approval: true, review: false }, { members: LC_MEMBERS });
     let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
     view = lcOpenAs(LC_PEER, view);
