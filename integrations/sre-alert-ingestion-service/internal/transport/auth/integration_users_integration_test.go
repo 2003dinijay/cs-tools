@@ -67,10 +67,10 @@ func TestAuthenticate_ConcurrentBurstOnSmallPool(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := pool.Exec(ctx, `CREATE TABLE integration_users (username text PRIMARY KEY, secret_hash text, salt text,
-		iterations int, enabled boolean, expires_at timestamptz NOT NULL DEFAULT to_timestamp(0))`); err != nil {
+		iterations int, enabled boolean)`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := pool.Exec(ctx, `INSERT INTO integration_users VALUES ('test', $1, $2, 10000, true, '0001-01-01')`,
+	if _, err := pool.Exec(ctx, `INSERT INTO integration_users VALUES ('test', $1, $2, 10000, true)`,
 		base64.StdEncoding.EncodeToString(hash), base64.StdEncoding.EncodeToString(salt)); err != nil {
 		t.Fatal(err)
 	}

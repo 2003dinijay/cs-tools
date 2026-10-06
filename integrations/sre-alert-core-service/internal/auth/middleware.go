@@ -56,9 +56,6 @@ func (c *verifiedCache) hit(u User, secret string, now time.Time) bool {
 
 func (c *verifiedCache) remember(u User, secret string, now time.Time) {
 	expires := now.Add(verifiedTTL)
-	if u.ExpiresAt.After(time.Unix(0, 0)) && u.ExpiresAt.Before(expires) {
-		expires = u.ExpiresAt
-	}
 	c.mu.Lock()
 	c.entries[u.Username] = verifiedEntry{digest: sha256.Sum256([]byte(secret)), hash: u.SecretHash, expires: expires}
 	c.mu.Unlock()
@@ -99,12 +96,6 @@ func RequireAuth(users UserLookup, logger *slog.Logger) func(http.Handler) http.
 
 			if !u.Enabled {
 				logger.Warn("auth: disabled user", "username", username)
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-
-			if u.IsExpired(time.Now()) {
-				logger.Warn("auth: secret expired", "username", username)
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}

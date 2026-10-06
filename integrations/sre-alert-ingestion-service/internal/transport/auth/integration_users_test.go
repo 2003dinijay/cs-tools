@@ -131,10 +131,9 @@ func TestAuthenticate_FromMemory(t *testing.T) {
 	salt, hash := hashes(t, "s3cr3t", 10_000)
 	a := newUsers(time.Minute)
 	load(a, time.Now(), map[string]userRow{
-		"alice":   {hash: hash, salt: salt, iterations: 10_000, enabled: true},
-		"off":     {hash: hash, salt: salt, iterations: 10_000, enabled: false},
-		"expired": {hash: hash, salt: salt, iterations: 10_000, enabled: true, expiresAt: time.Now().Add(-time.Minute)},
-		"absurd":  {hash: hash, salt: salt, iterations: 50_000_000, enabled: true},
+		"alice":  {hash: hash, salt: salt, iterations: 10_000, enabled: true},
+		"off":    {hash: hash, salt: salt, iterations: 10_000, enabled: false},
+		"absurd": {hash: hash, salt: salt, iterations: 50_000_000, enabled: true},
 	})
 	cases := map[string]struct {
 		user, secret string
@@ -144,7 +143,6 @@ func TestAuthenticate_FromMemory(t *testing.T) {
 		"wrong secret":     {"alice", "nope", ErrUnauthorized},
 		"unknown user":     {"bob", "s3cr3t", ErrUnauthorized},
 		"disabled user":    {"off", "s3cr3t", ErrUnauthorized},
-		"expired user":     {"expired", "s3cr3t", ErrUnauthorized},
 		"bad iterations":   {"absurd", "s3cr3t", ErrUnauthorized},
 		"cached and valid": {"alice", "s3cr3t", nil},
 	}
@@ -234,31 +232,6 @@ func TestCache_DisabledByZeroTTL(t *testing.T) {
 	a.remember("alice", "s3cr3t", userRow{hash: "h"})
 	if a.cachedHit("alice", "s3cr3t", "h") {
 		t.Error("a zero TTL must disable caching entirely")
-	}
-}
-
-// TestCache_CappedAtRowExpiry: a cached credential never outlives its row's expires_at.
-func TestCache_CappedAtRowExpiry(t *testing.T) {
-	a := newUsers(time.Hour)
-	a.remember("alice", "s3cr3t", userRow{hash: "h", expiresAt: time.Now().Add(5 * time.Millisecond)})
-	if !a.cachedHit("alice", "s3cr3t", "h") {
-		t.Fatal("should hit immediately, well before either expiry")
-	}
-	time.Sleep(10 * time.Millisecond)
-	if a.cachedHit("alice", "s3cr3t", "h") {
-		t.Error("a credential past its row's expires_at must not be served from cache")
-	}
-}
-
-// TestCache_EpochIsNotAnExpiry: the schema's default expires_at (the Unix epoch) means unset, not already expired.
-func TestCache_EpochIsNotAnExpiry(t *testing.T) {
-	a := newUsers(time.Minute)
-	a.remember("alice", "s3cr3t", userRow{hash: "h", expiresAt: time.Unix(0, 0)})
-	if !a.cachedHit("alice", "s3cr3t", "h") {
-		t.Error("an epoch expires_at must be treated as unset")
-	}
-	if (userRow{expiresAt: time.Unix(0, 0)}).expired(time.Now()) {
-		t.Error("an epoch expires_at must not make the row expired")
 	}
 }
 

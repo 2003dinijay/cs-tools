@@ -41,7 +41,7 @@ import (
 	"sre-alert-ingestion-service/internal/transport/server"
 )
 
-// authCacheTTL is how long a verified credential is reused, capped at the row's expires_at.
+// authCacheTTL is how long a verified credential skips PBKDF2.
 const authCacheTTL = 60 * time.Second
 
 // snsConfirmTimeout bounds the SubscribeURL fetch.

@@ -104,8 +104,7 @@ CREATE TABLE IF NOT EXISTS integration_users (
   created_by         text NOT NULL DEFAULT '',
   updated_at         timestamptz NOT NULL DEFAULT now(),
   secret_rotated_at  timestamptz NOT NULL DEFAULT to_timestamp(0),
-  last_used_at       timestamptz NOT NULL DEFAULT to_timestamp(0),
-  expires_at         timestamptz NOT NULL DEFAULT to_timestamp(0)
+  last_used_at       timestamptz NOT NULL DEFAULT to_timestamp(0)
 );
 
 -- Raw webhook bodies exactly as received, before any transform; sre-alert-ingestion-service writes them in batches.

@@ -55,17 +55,11 @@ type UsersConfig struct {
 	CacheTTL time.Duration
 }
 
-// userRow is one integration_users row as the in-memory copy keeps it.
+// userRow is one integration_users row as the in-memory copy keeps it; users never expire.
 type userRow struct {
 	hash, salt string
 	iterations int
 	enabled    bool
-	expiresAt  time.Time
-}
-
-// expired treats an expires_at at or before the Unix epoch (the schema default) as unset.
-func (u userRow) expired(now time.Time) bool {
-	return u.expiresAt.After(time.Unix(0, 0)) && now.After(u.expiresAt)
 }
 
 type usersSnapshot struct {
@@ -103,7 +97,7 @@ func NewIntegrationUsers(pool *pgxpool.Pool, logger *slog.Logger, cfg UsersConfi
 func (a *IntegrationUsers) Refresh(ctx context.Context) error {
 	ctx, cancel := context.WithTimeout(ctx, a.cfg.QueryTimeout)
 	defer cancel()
-	rows, err := a.pool.Query(ctx, `SELECT username, secret_hash, salt, iterations, enabled, expires_at FROM integration_users`)
+	rows, err := a.pool.Query(ctx, `SELECT username, secret_hash, salt, iterations, enabled FROM integration_users`)
 	if err != nil {
 		return fmt.Errorf("load integration_users: %w", err)
 	}
@@ -116,9 +110,8 @@ func (a *IntegrationUsers) Refresh(ctx context.Context) error {
 			username, hash, salt *string
 			iterations           *int32
 			enabled              *bool
-			expiresAt            *time.Time
 		)
-		if err := rows.Scan(&username, &hash, &salt, &iterations, &enabled, &expiresAt); err != nil {
+		if err := rows.Scan(&username, &hash, &salt, &iterations, &enabled); err != nil {
 			return fmt.Errorf("load integration_users: %w", err)
 		}
 		if username == nil || hash == nil || salt == nil || iterations == nil || enabled == nil {
@@ -129,11 +122,7 @@ func (a *IntegrationUsers) Refresh(ctx context.Context) error {
 			skipped = append(skipped, name)
 			continue
 		}
-		row := userRow{hash: *hash, salt: *salt, iterations: int(*iterations), enabled: *enabled}
-		if expiresAt != nil {
-			row.expiresAt = *expiresAt
-		}
-		users[*username] = row
+		users[*username] = userRow{hash: *hash, salt: *salt, iterations: int(*iterations), enabled: *enabled}
 	}
 	if err := rows.Err(); err != nil {
 		return fmt.Errorf("load integration_users: %w", err)
@@ -170,7 +159,7 @@ func (a *IntegrationUsers) age() time.Duration {
 	return time.Since(s.loadedAt)
 }
 
-// Authenticate accepts an enabled, unexpired user with a matching secret; one credential suits every source.
+// Authenticate accepts an enabled user with a matching secret; one credential suits every source.
 func (a *IntegrationUsers) Authenticate(r *http.Request, _ string) error {
 	username, secret, ok := parseCredentials(r)
 	if !ok {
@@ -184,7 +173,7 @@ func (a *IntegrationUsers) Authenticate(r *http.Request, _ string) error {
 		return fmt.Errorf("%w: integration_users copy is %v old", ErrUnavailable, age.Round(time.Second))
 	}
 	row, found := snap.users[username]
-	if !found || !row.enabled || row.iterations < minIterations || row.iterations > maxIterations || row.expired(time.Now()) {
+	if !found || !row.enabled || row.iterations < minIterations || row.iterations > maxIterations {
 		return ErrUnauthorized
 	}
 	if a.cachedHit(username, secret, row.hash) {
@@ -218,15 +207,12 @@ func (a *IntegrationUsers) cachedHit(username, secret, hash string) bool {
 	return subtle.ConstantTimeCompare(got[:], e.digest[:]) == 1
 }
 
-// remember caches secret capped at the row's expires_at.
+// remember caches secret for CacheTTL.
 func (a *IntegrationUsers) remember(username, secret string, row userRow) {
 	if a.cfg.CacheTTL <= 0 {
 		return
 	}
 	expires := time.Now().Add(a.cfg.CacheTTL)
-	if row.expiresAt.After(time.Unix(0, 0)) && row.expiresAt.Before(expires) {
-		expires = row.expiresAt
-	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.cache[username] = cacheEntry{digest: sha256.Sum256([]byte(secret)), hash: row.hash, expires: expires}
