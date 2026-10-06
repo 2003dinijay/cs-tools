@@ -111,7 +111,11 @@ export class ChangeRequestDetailPage {
       .getByText(/^(Yes|No)$/);
   }
 
-  /** The lifecycle stepper's step labels, in order. */
+  /**
+   * The lifecycle stepper's stages, in order: the eleven of the customer portal's
+   * workflow (Customer Approval / Customer Review only when ticked). Each one's
+   * text is its label plus a visually-hidden status, "Review, done".
+   */
   stepLabels(): Locator {
     return this.lifecycleStepper().getByRole("listitem");
   }
