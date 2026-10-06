@@ -73,6 +73,7 @@ type visRepos struct {
 	stats    repository.ProjectStatsRepository
 	comments repository.CommentRepository
 	notices  repository.CRNoticeRepository
+	cases    repository.CaseRepository
 }
 
 func (f *crFlow) visRepos(vis repository.CRVisibility) visRepos {
@@ -81,6 +82,7 @@ func (f *crFlow) visRepos(vis repository.CRVisibility) visRepos {
 		stats:    repository.NewProjectStatsRepository(f.scoped, vis),
 		comments: repository.NewCommentRepository(f.scoped, vis),
 		notices:  repository.NewCRNoticeRepository(f.scoped, vis),
+		cases:    repository.NewCaseRepository(f.scoped, vis),
 	}
 }
 
@@ -127,8 +129,8 @@ func (f *crFlow) personas() map[string]persona {
 // seen is everything one caller can reach of one change request through the
 // customer-reachable reads.
 type seen struct {
-	listed, detail, approvals, comments bool
-	listTotal, aggTotal, statsTotal     int
+	listed, detail, approvals, comments, attachments bool
+	listTotal, aggTotal, statsTotal                  int
 }
 
 // probe reads the change request id (of project) every way a customer can.
@@ -170,6 +172,8 @@ func (f *crFlow) probe(r visRepos, ctx context.Context, id, project string) seen
 	s.approvals = visible("GetChangeRequestApprovals", err)
 	_, _, err = r.comments.SearchComments(ctx, id, domain.ReferenceTypeChangeRequest, nil, true, domain.Pagination{Limit: 10})
 	s.comments = visible("SearchComments", err)
+	_, _, err = r.cases.SearchWorkItemAttachments(ctx, id, domain.ReferenceTypeChangeRequest, domain.Pagination{Limit: 10})
+	s.attachments = visible("SearchWorkItemAttachments", err)
 
 	counts, err := r.stats.ChangeRequestStateCounts(ctx, project)
 	if err != nil {
@@ -190,7 +194,7 @@ func (f *crFlow) wantSeen(r visRepos, who persona, id, project, when string, wan
 	if want {
 		n = 1
 	}
-	if got.listed != want || got.detail != want || got.approvals != want || got.comments != want ||
+	if got.listed != want || got.detail != want || got.approvals != want || got.comments != want || got.attachments != want ||
 		got.listTotal != n || got.aggTotal != n || got.statsTotal != n {
 		f.t.Fatalf("%s as %s: visible to the caller = %v, but the reads say %+v (want every read %v and every count %d)", when, who.name, want, got, want, n)
 	}
@@ -967,5 +971,48 @@ func TestChangeRequestVisibilityIntegration_CaseEndpointsCannotReachAHiddenChang
 	for name, ctx := range map[string]context.Context{"staff": f.sys, "a designated contact": alice} {
 		_, err := cases.UpdateCaseParent(ctx, id, crScopeProjectA, crFlowEmail(crFlowCreatorID))
 		f.wantNotFound("UpdateCaseParent of a change request by "+name, err)
+	}
+}
+
+// Edges of "a registered contact of the change request's current project": a
+// contact whose membership is deactivated stops seeing what they were asked about
+// (and sees it again when they are re-registered: the designation never left);
+// the email is matched case-insensitively; and a change request with no project
+// is nobody's.
+func TestChangeRequestVisibilityIntegration_MembershipAndEmailEdges(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	vis := visStrictSinceLongAgo()
+	f.useVisibility(vis)
+	r := f.visRepos(vis)
+	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
+	f.driveToCustomerApproval(id)
+	f.phase(r, id, crScopeProjectA, "in Customer Approval", "alice", "bob")
+
+	// Alice's membership of the project is deactivated: she no longer sees it, Bob does.
+	f.execSQL(`UPDATE project_contact SET state = 'DEACTIVATED' WHERE LOWER(email) = LOWER($1)`, crFlowEmail(crScopeUserA1))
+	f.phase(r, id, crScopeProjectA, "after Alice's membership was deactivated", "bob")
+	// Re-registered: the designation was never lost.
+	f.execSQL(`UPDATE project_contact SET state = 'REGISTERED' WHERE LOWER(email) = LOWER($1)`, crFlowEmail(crScopeUserA1))
+	f.phase(r, id, crScopeProjectA, "after Alice was re-registered", "alice", "bob")
+
+	// The viewer's email in another case: the same person (the identity's own
+	// membership plumbing lower-cases too; padding is trimmed by the visibility
+	// rule but is not something the identity middleware ever produces).
+	shout := persona{"alice, shouting", repository.WithCallerIdentity(context.Background(),
+		repository.SearchScope{ViewerEmail: strings.ToUpper(crFlowEmail(crScopeUserA1))})}
+	f.wantSeen(r, shout, id, crScopeProjectA, "an upper-case email", true)
+
+	// A change request with no project: legacy or strict, a customer cannot see it.
+	orphan := f.createWithProject(domain.ChangeRequestTypeNormal, nil, false, false)
+	f.setStoredState(orphan, "SCHEDULED")
+	for _, v := range []repository.CRVisibility{{}, vis} {
+		rv := f.visRepos(v)
+		for _, who := range []string{"alice", "bob", "sam", "carol"} {
+			if _, err := rv.cr.GetChangeRequestByID(f.personas()[who].ctx, orphan); err == nil {
+				t.Fatalf("%s was handed a change request with no project", who)
+			} else {
+				f.wantNotFound("a change request with no project as "+who, err)
+			}
+		}
 	}
 }
