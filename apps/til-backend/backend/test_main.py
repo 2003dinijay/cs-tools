@@ -36,10 +36,15 @@ import db
 import main
 from auth import require_auth
 
-HUMAN_USER = {"email": "jane@example.com", "name": "Jane", "groups": [], "is_moderator": False, "is_chat_service_account": False}
-OTHER_HUMAN_USER = {"email": "sam@example.com", "name": "Sam", "groups": [], "is_moderator": False, "is_chat_service_account": False}
-MODERATOR_USER = {"email": "mod@example.com", "name": "Mod", "groups": ["til-mods"], "is_moderator": True, "is_chat_service_account": False}
-CHAT_SERVICE_ACCOUNT = {"email": "til-chat-sa@example.com", "name": "TIL Chat", "groups": [], "is_moderator": False, "is_chat_service_account": True}
+HUMAN_USER = {"email": "jane@example.com", "name": "Jane", "groups": [], "is_moderator": False, "is_chat_service_account": False, "token_identities": {"one-wso2-webapp-real-client-id"}}
+OTHER_HUMAN_USER = {"email": "sam@example.com", "name": "Sam", "groups": [], "is_moderator": False, "is_chat_service_account": False, "token_identities": {"one-wso2-webapp-real-client-id"}}
+MODERATOR_USER = {"email": "mod@example.com", "name": "Mod", "groups": ["til-mods"], "is_moderator": True, "is_chat_service_account": False, "token_identities": {"one-wso2-webapp-real-client-id"}}
+CHAT_SERVICE_ACCOUNT = {"email": "til-chat-sa@example.com", "name": "TIL Chat", "groups": [], "is_moderator": False, "is_chat_service_account": True, "token_identities": {"novera-own-client-id"}}
+# A human signed in through Novera's OWN Asgardeo application, not the
+# webapp's -- same kind of token require_auth accepts (a real, valid
+# human token), different client_id, which is exactly the distinction
+# the broadcast-scoping test below exists to prove matters.
+HUMAN_USER_VIA_NOVERA = {"email": "jane@example.com", "name": "Jane", "groups": [], "is_moderator": False, "is_chat_service_account": False, "token_identities": {"novera-own-client-id"}}
 
 
 @pytest.fixture(autouse=True)
@@ -69,35 +74,46 @@ def test_create_submission_uses_tokens_own_email():
     assert resp.json()["submittedByEmail"] == "jane@example.com"
 
 
-def test_novera_notified_only_for_the_one_wso2_webapp_client():
+def test_novera_notified_only_for_the_one_wso2_webapps_verified_client_id():
     # Scoped deliberately: the Chat App Dialog and Novera's own
-    # share_til_entry tool both call this same endpoint, but only the One
-    # WSO2 webapp's X-Til-Client header should trigger the Novera DM
-    # broadcast -- otherwise Novera submitting on a user's behalf would
-    # immediately notify that same user about their own entry.
-    client = client_as(HUMAN_USER)
-    with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
-        resp = client.post(
-            "/submissions",
-            json={"who": "Jane", "where": "Internal", "what": "x"},
-            headers={"X-Til-Client": "one-wso2-webapp"},
-        )
-        assert resp.status_code == 200
-        mock_notify.assert_called_once()
+    # share_til_entry tool both call this same endpoint, but only a token
+    # issued to the One WSO2 webapp's OWN Asgardeo client id should trigger
+    # the Novera DM broadcast -- otherwise Novera submitting on a user's
+    # behalf would immediately notify that same user about their own entry.
+    #
+    # Checked against the token's own verified client_id (main.py reads
+    # user["token_identities"], set by auth.py from the signed JWT's aud/
+    # client_id/azp claims), NOT a request header -- any already-
+    # authenticated caller could set any header value, so a header proves
+    # nothing about which application actually issued the token. This test
+    # deliberately sends a spoofed header to prove it's ignored.
+    with patch("main.ONE_WSO2_WEBAPP_CLIENT_ID", "one-wso2-webapp-real-client-id"):
+        client = client_as(HUMAN_USER)
+        with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
+            resp = client.post("/submissions", json={"who": "Jane", "where": "Internal", "what": "x"})
+            assert resp.status_code == 200
+            mock_notify.assert_called_once()
 
-    with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
-        resp = client.post("/submissions", json={"who": "Jane", "where": "Internal", "what": "x"})
-        assert resp.status_code == 200
-        mock_notify.assert_not_called()
+        # Same human, but a token issued to Novera's own Asgardeo client --
+        # not broadcast, regardless of the (spoofed) header claiming otherwise.
+        client = client_as(HUMAN_USER_VIA_NOVERA)
+        with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
+            resp = client.post(
+                "/submissions",
+                json={"who": "Jane", "where": "Internal", "what": "x"},
+                headers={"X-Til-Client": "one-wso2-webapp"},
+            )
+            assert resp.status_code == 200
+            mock_notify.assert_not_called()
 
-    with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
-        resp = client.post(
-            "/submissions",
-            json={"who": "Jane", "where": "Internal", "what": "x"},
-            headers={"X-Til-Client": "something-else"},
-        )
-        assert resp.status_code == 200
-        mock_notify.assert_not_called()
+    # ONE_WSO2_WEBAPP_CLIENT_ID unset entirely -- never broadcasts, even for
+    # the webapp's own real client id (fail closed, not "trust everyone").
+    with patch("main.ONE_WSO2_WEBAPP_CLIENT_ID", ""):
+        client = client_as(HUMAN_USER)
+        with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
+            resp = client.post("/submissions", json={"who": "Jane", "where": "Internal", "what": "x"})
+            assert resp.status_code == 200
+            mock_notify.assert_not_called()
 
 
 def test_create_submission_sanitizes_what_even_if_client_skips_the_editor():

@@ -53,25 +53,33 @@ async def notify_novera(
 ) -> None:
     if not NOVERA_NOTIFY_URL:
         return
-    payload = {
-        # Escaped for the same reason chat_notify.py escapes this exact
-        # field for the Space card: `who` is free text this service only
-        # .strip()s, never HTML-escapes, and Novera's own card embeds it
-        # directly in a textParagraph. Defense in depth -- Novera's own
-        # broadcast code escapes it too, but this shouldn't rely on that
-        # alone any more than chat_notify.py relies on the frontend editor
-        # alone.
-        "who": html_module.escape(who),
-        "where": where,
-        "whereDetail": where_detail,
-        # Same Chat-markup subset conversion as the Space card (Novera's own
-        # broadcast posts through the same Chat API cardsV2 primitive) --
-        # reusing it here keeps the two notification channels looking like
-        # the same product instead of reimplementing the format translation.
-        "what": what_for_chat(what),
-        "entryUrl": entry_url,
-    }
+    # Payload build moved INSIDE the try -- what_for_chat (or anything else
+    # here) raising would otherwise propagate straight out of this function
+    # uncaught, turning an already-saved submission into a 500 for the
+    # caller despite db.create_submission and the Space webhook post both
+    # having already succeeded. Same reasoning extends the except clause to
+    # Exception broadly, not just httpx.RequestError -- this call is
+    # best-effort by design (see module docstring), so nothing in it should
+    # ever be allowed to fail the request it's attached to.
     try:
+        payload = {
+            # Escaped for the same reason chat_notify.py escapes this exact
+            # field for the Space card: `who` is free text this service only
+            # .strip()s, never HTML-escapes, and Novera's own card embeds it
+            # directly in a textParagraph. Defense in depth -- Novera's own
+            # broadcast code escapes it too, but this shouldn't rely on that
+            # alone any more than chat_notify.py relies on the frontend editor
+            # alone.
+            "who": html_module.escape(who),
+            "where": where,
+            "whereDetail": where_detail,
+            # Same Chat-markup subset conversion as the Space card (Novera's own
+            # broadcast posts through the same Chat API cardsV2 primitive) --
+            # reusing it here keeps the two notification channels looking like
+            # the same product instead of reimplementing the format translation.
+            "what": what_for_chat(what),
+            "entryUrl": entry_url,
+        }
         async with httpx.AsyncClient() as client:
             response = await client.post(
                 NOVERA_NOTIFY_URL,
@@ -88,5 +96,5 @@ async def notify_novera(
                 f"{response.text[:200]}",
                 flush=True,
             )
-    except httpx.RequestError as exc:
+    except Exception as exc:
         print(f"novera_notify: failed to reach Novera: {exc}", flush=True)
