@@ -297,6 +297,12 @@ const changeRequestFromJoins = `
 // it does for every other work_item type; this was purely a read-side gap,
 // not a missing-data one, so no create/patch write-path changes are needed
 // alongside this join.
+//
+// start_on / end_on are read through isfinite(): a row holding Postgres'
+// 'infinity' / '-infinity' (nothing the API writes any more, see
+// change_request_window.go, but a row can get there by other doors) reads as no
+// planned time at all, instead of failing the scan into a time.Time and with it
+// the whole detail read or list the row is part of.
 const changeRequestSelectColumns = `
 	wi.id, wi.number, wi.subject, wi.description,
 	p.id, p.name,
@@ -307,7 +313,8 @@ const changeRequestSelectColumns = `
 	svc.id, svc.name,
 	so.id, so.name,
 	ae.id, COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')),
-	cr.start_on, cr.end_on, cr.impact::TEXT, cr.state::TEXT, cr.change_model::TEXT,
+	CASE WHEN isfinite(cr.start_on) THEN cr.start_on END, CASE WHEN isfinite(cr.end_on) THEN cr.end_on END,
+	cr.impact::TEXT, cr.state::TEXT, cr.change_model::TEXT,
 	wi.created_on, wi.updated_on,
 	ag.id, ag.name,
 	cr.is_on_hold, cr.on_hold_reason`
@@ -1081,6 +1088,7 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	// at or written: the answer is the caller deciding their own pending approval
 	// (the same code the decision route runs), the proposal becomes the
 	// Re-schedule a WSO2 user would send, and anything else is refused.
+	customerProposal := false
 	if isExternalCaller(ctx) {
 		cp, err := classifyExternalPatch(req)
 		if err != nil {
@@ -1090,9 +1098,25 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		case customerPatchAnswer:
 			return answerCustomerStageViaPatch(ctx, tx, id, cp, actorEmail)
 		case customerPatchProposal:
-			if req, err = prepareCustomerProposal(ctx, tx, id, req, actorEmail); err != nil {
-				return "", err
-			}
+			customerProposal = true
+		}
+	}
+
+	// The planned window is parsed before it is used for anything, by whoever
+	// sends it (see change_request_window.go): nothing but an RFC 3339 /
+	// "YYYY-MM-DD HH:MM:SS" date-time in a sane range, as UTC, reaches SQL.
+	req, err := normalizePatchPlannedWindow(req)
+	if err != nil {
+		return "", err
+	}
+	// The window a customer's answer was given for goes with that answer
+	// (classifyExternalPatch took it above); nobody else has a use for it.
+	if req.ExpectedPlannedStartOn != nil || req.ExpectedPlannedEndOn != nil {
+		return "", &apierror.ValidationError{Msg: "expectedPlannedStartOn / expectedPlannedEndOn can only accompany a customer's approval or review (isCustomerApproved / isCustomerReviewed)"}
+	}
+	if customerProposal {
+		if req, err = prepareCustomerProposal(ctx, tx, id, req, actorEmail); err != nil {
+			return "", err
 		}
 	}
 
@@ -2295,6 +2319,12 @@ func (r *changeRequestRepo) CreateChangeRequest(ctx context.Context, req domain.
 	if err := ValidateCreateChangeRequestType(req.Type); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
+	// The planned window is validated and read as UTC here, as on a PATCH (see
+	// change_request_window.go), not left to the database's own date parser.
+	req, err := normalizeCreatePlannedWindow(req)
+	if err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
 	changeModel := ptrString(changeRequestTypeToChangeModel[*req.Type])
 	impact, risk, priority := changeRequestEnumArgs(req)
 
@@ -2565,7 +2595,31 @@ func (r *changeRequestRepo) GetChangeRequestApprovals(ctx context.Context, id st
 
 	result := buildChangeRequestApprovals(stages, approvers)
 	r.markCanDecide(ctx, id, stages, approvers, &result)
+	if isExternalCaller(ctx) {
+		redactInternalApprovalStages(stages, &result)
+	}
 	return result, nil
+}
+
+// redactInternalApprovalStages cuts what a CUSTOMER may read of the approvals
+// down to what is theirs. The Customer Approval / Customer Review stages are the
+// customer's own colleagues' answers and stay whole; every other stage (Peer,
+// CAB, ECAB, Review) is WSO2's internal approval, of which the customer is told
+// the stage, that it is a stage of this change and where it stands -- not who sits
+// on it: no approver names, no internal user ids, no group.
+func redactInternalApprovalStages(stages []changeRequestApprovalStageRow, result *domain.ChangeRequestApprovals) {
+	for i := range result.Approvals {
+		if i < len(stages) {
+			switch classifyApprovalStage(stages[i].checkpointLabel, i) {
+			case stageKindCustomerApproval, stageKindCustomerReview:
+				continue
+			}
+		}
+		a := &result.Approvals[i]
+		a.ApproverName = ""
+		a.AssignmentGroup = nil
+		a.Approvers = []domain.ChangeRequestApprover{}
+	}
 }
 
 // markCanDecide sets domain.ChangeRequestApprover.CanDecide on the calling

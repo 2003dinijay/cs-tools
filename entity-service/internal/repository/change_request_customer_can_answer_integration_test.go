@@ -100,6 +100,32 @@ func (f *crFlow) wantApproveRefused(what, id, userID string) {
 	}
 }
 
+// wantProposeRefused is the proposal's twin of wantApproveRefused: customerCanAnswer
+// is also the "may propose a new implementation time" signal, so a caller told
+// false has a proposed window refused too, and it changes nothing (the change
+// keeps its window and the customer's request stays pending for those it was
+// sent to). contains, when given, is what the refusal says.
+func (f *crFlow) wantProposeRefused(what, id, userID string, contains ...string) {
+	f.t.Helper()
+	before := f.get(id)
+	stages := f.stageLabels(id)
+	_, err := f.patchAsContact(id, userID, domain.PatchChangeRequestRequest{PlannedStartOn: sp(rsStart2), PlannedEndOn: sp(rsEnd2)})
+	if err == nil {
+		f.t.Fatalf("%s: customerCanAnswer said false but proposing a new time as %s was accepted", what, userID)
+	}
+	for _, c := range contains {
+		if !strings.Contains(err.Error(), c) {
+			f.t.Fatalf("%s: the refusal %q should contain %q", what, err.Error(), c)
+		}
+	}
+	after := f.get(id)
+	if before.PlannedStartOn == nil || after.PlannedStartOn == nil || *before.PlannedStartOn != *after.PlannedStartOn ||
+		before.State == nil || after.State == nil || *before.State != *after.State || f.stageLabels(id) != stages {
+		f.t.Fatalf("%s: a refused proposal changed the change request (state %v -> %v, start %v -> %v, stages %s -> %s)",
+			what, before.State, after.State, before.PlannedStartOn, after.PlannedStartOn, stages, f.stageLabels(id))
+	}
+}
+
 // windowOf is the planned window's length.
 func windowOf(t *testing.T, cr domain.ChangeRequest) time.Duration {
 	t.Helper()
@@ -251,6 +277,7 @@ func TestChangeRequestCustomerCanAnswerIntegration_WhoMayAnswer(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	f.registerContact(crScopeProjectA, crScopeAccountID, crFlowCreatorID)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
+	f.setPlanned(id, rsStart1, rsEnd1)
 	f.driveToCustomerApproval(id)
 	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers,
 		map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested", crFlowCreatorID: "cancelled"})
@@ -274,6 +301,7 @@ func TestChangeRequestCustomerCanAnswerIntegration_WhoMayAnswer(t *testing.T) {
 		}
 		if s.user != "" {
 			f.wantApproveRefused(s.name, id, s.user)
+			f.wantProposeRefused(s.name, id, s.user)
 		}
 	}
 
@@ -295,6 +323,7 @@ func TestChangeRequestCustomerCanAnswerIntegration_WhoMayAnswer(t *testing.T) {
 		t.Fatal("a contact who is no longer registered is told customerCanAnswer = true")
 	}
 	f.wantApproveRefused("a contact no longer registered", id, crScopeUserA2)
+	f.wantProposeRefused("a contact no longer registered", id, crScopeUserA2)
 	f.execSQL(`UPDATE project_contact SET state = 'REGISTERED'::project_contact_state_enum WHERE project_id = $1 AND LOWER(email) = LOWER($2)`, crScopeProjectA, crFlowEmail(crScopeUserA2))
 
 	// Nothing above changed the change request, and the real contacts are told true.
@@ -323,7 +352,12 @@ func TestChangeRequestCustomerCanAnswerIntegration_NobodyWasAsked(t *testing.T) 
 
 		f.wantCanAnswer(id, "for the contact registered afterwards", false, zed)
 		f.wantApproveRefused("a late contact", id, zed)
+		// ...and proposing a new time is the answer's twin: it would cancel the
+		// pending approvals of the contacts who WERE asked, so it is theirs alone.
+		f.setPlanned(id, rsStart1, rsEnd1)
+		f.wantProposeRefused("a late contact", id, zed, "only members of the customer group", "have been asked")
 		f.wantCanAnswer(id, "for the contacts who were asked", true, crScopeUserA1, crScopeUserA2)
+		assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
 	})
 	t.Run("the change reached Customer Approval with nobody to ask", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
@@ -337,6 +371,8 @@ func TestChangeRequestCustomerCanAnswerIntegration_NobodyWasAsked(t *testing.T) 
 
 		f.wantCanAnswer(id, "with no customer request pending", false, late)
 		f.wantApproveRefused("answering with nobody asked", id, late)
+		f.setPlanned(id, rsStart1, rsEnd1)
+		f.wantProposeRefused("proposing with nobody asked", id, late, "no customer approval is pending")
 	})
 }
 

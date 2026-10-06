@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -36,8 +37,11 @@ import (
 //
 // Customers answer a change request in the customer portal, which sends
 // PATCH {isCustomerApproved} / {isCustomerReviewed} (the contract the portal was
-// built against ServiceNow with) or PATCH {plannedStartOn} ("propose new
-// implementation time"). The approvals are the second mechanism:
+// built against ServiceNow with), optionally with the planned window the
+// customer was looking at ({expectedPlannedStartOn, expectedPlannedEndOn}: the
+// answer then only counts if that is still the window), or PATCH
+// {plannedStartOn, plannedEndOn} ("propose new implementation time"). The
+// approvals are the second mechanism:
 // provisionCustomerStage asks the project's registered contacts through a
 // "Customer Approval" / "Customer Review" stage, decided through
 // DecideChangeRequestApproval. They are ONE mechanism with two doors here:
@@ -53,7 +57,10 @@ import (
 //   - PATCH {plannedStartOn, plannedEndOn} in Customer Approval is the process
 //     diagram's "Time Change" loop started by the customer: the same Re-schedule
 //     a WSO2 user triggers with {state: authorize, ...} (new window applied, a
-//     fresh CAB / ECAB approval, the customer asked again once it is given).
+//     fresh CAB / ECAB approval, the customer asked again once it is given). Only
+//     a contact the customer's approval has been asked of (a REQUESTED row on the
+//     live stage -- the same test as customerCanAnswer) may propose; the proposed
+//     time must be a date-time still to come.
 //
 // The read side of the same rules is customerCanAnswer: the change request
 // detail tells a customer, per viewer, whether the answer would be accepted
@@ -67,7 +74,7 @@ import (
 
 // externalPatchRefusal is the 403 for an external caller whose PATCH carries
 // anything but the customer's own answer or a proposed window.
-const externalPatchRefusal = "customers can only record the customer's approval or review (isCustomerApproved / isCustomerReviewed) or propose a new implementation time (plannedStartOn / plannedEndOn) on a change request; no other field can be changed"
+const externalPatchRefusal = "customers can only record the customer's approval or review (isCustomerApproved / isCustomerReviewed, optionally with the expectedPlannedStartOn / expectedPlannedEndOn they were shown) or propose a new implementation time (plannedStartOn / plannedEndOn) on a change request; no other field can be changed"
 
 // isExternalCaller reports whether ctx carries the identity of a customer or
 // partner: an identity was resolved for the request and it is neither
@@ -100,6 +107,11 @@ type customerPatch struct {
 	approved bool
 	// flag names the field in messages.
 	flag string
+	// expectedStart / expectedEnd are the planned window the customer was shown
+	// when they answered (customerPatchAnswer), as instants, nil when the
+	// request did not say: the answer is only recorded while it still is the
+	// window (checkExpectedSchedule).
+	expectedStart, expectedEnd *time.Time
 }
 
 // classifyExternalPatch decides what an external caller's PATCH is, or refuses
@@ -111,24 +123,42 @@ type customerPatch struct {
 func classifyExternalPatch(req domain.PatchChangeRequestRequest) (customerPatch, error) {
 	rest := req
 	rest.IsCustomerApproved, rest.IsCustomerReviewed, rest.PlannedStartOn, rest.PlannedEndOn = nil, nil, nil, nil
+	rest.ExpectedPlannedStartOn, rest.ExpectedPlannedEndOn = nil, nil
 	if !reflect.DeepEqual(rest, domain.PatchChangeRequestRequest{}) {
 		return customerPatch{}, &apierror.ForbiddenError{Msg: externalPatchRefusal}
 	}
 	hasAnswer := req.IsCustomerApproved != nil || req.IsCustomerReviewed != nil
 	hasWindow := req.PlannedStartOn != nil || req.PlannedEndOn != nil
+	hasExpected := req.ExpectedPlannedStartOn != nil || req.ExpectedPlannedEndOn != nil
 	switch {
 	case hasAnswer && hasWindow:
 		return customerPatch{}, &apierror.ValidationError{Msg: "a proposed implementation time (plannedStartOn / plannedEndOn) and the customer's approval or review (isCustomerApproved / isCustomerReviewed) must be sent in separate requests"}
 	case req.IsCustomerApproved != nil && req.IsCustomerReviewed != nil:
 		return customerPatch{}, &apierror.ValidationError{Msg: "send either isCustomerApproved or isCustomerReviewed, not both"}
+	case hasExpected && !hasAnswer:
+		return customerPatch{}, &apierror.ValidationError{Msg: "expectedPlannedStartOn / expectedPlannedEndOn go with the customer's approval or review (isCustomerApproved / isCustomerReviewed); they say which window it is given for"}
 	case req.IsCustomerApproved != nil:
-		return customerPatch{kind: customerPatchAnswer, spec: &customerApprovalStageSpec, approved: *req.IsCustomerApproved, flag: "isCustomerApproved"}, nil
+		return answerPatch(&customerApprovalStageSpec, *req.IsCustomerApproved, "isCustomerApproved", req)
 	case req.IsCustomerReviewed != nil:
-		return customerPatch{kind: customerPatchAnswer, spec: &customerReviewStageSpec, approved: *req.IsCustomerReviewed, flag: "isCustomerReviewed"}, nil
+		return answerPatch(&customerReviewStageSpec, *req.IsCustomerReviewed, "isCustomerReviewed", req)
 	case hasWindow:
 		return customerPatch{kind: customerPatchProposal}, nil
 	}
 	return customerPatch{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
+}
+
+// answerPatch is the classified customer answer, with the window the customer
+// says they were shown (when they say).
+func answerPatch(spec *customerStageSpec, approved bool, flag string, req domain.PatchChangeRequestRequest) (customerPatch, error) {
+	p := customerPatch{kind: customerPatchAnswer, spec: spec, approved: approved, flag: flag}
+	var err error
+	if p.expectedStart, err = parseExpectedTimestamp("expectedPlannedStartOn", req.ExpectedPlannedStartOn); err != nil {
+		return customerPatch{}, err
+	}
+	if p.expectedEnd, err = parseExpectedTimestamp("expectedPlannedEndOn", req.ExpectedPlannedEndOn); err != nil {
+		return customerPatch{}, err
+	}
+	return p, nil
 }
 
 // lockCustomerAnswerRow bumps the change request's work_item (updated_on /
@@ -235,12 +265,9 @@ func customerCanAnswer(ctx context.Context, q crQuerier, id string, projectID *s
 		}
 		return false, err
 	}
-	var asked bool
-	if err := q.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1 FROM approval_stage_approver
-		                WHERE stage_id = $1::uuid AND approver_user_id = $2::uuid AND status = 'requested')`,
-		live.stageID, userID).Scan(&asked); err != nil {
-		return false, fmt.Errorf("customer can answer: read the viewer's pending approval: %w", err)
+	asked, err := customerHasRequestedRow(ctx, q, live.stageID, userID)
+	if err != nil {
+		return false, fmt.Errorf("customer can answer: %w", err)
 	}
 	if !asked {
 		return false, nil
@@ -257,6 +284,71 @@ func customerCanAnswer(ctx context.Context, q crQuerier, id string, projectID *s
 		return false, err
 	}
 	return true, nil
+}
+
+// customerHasRequestedRow reports whether the user holds a REQUESTED approval on
+// the stage: the customer's request was sent to them and nothing (their own
+// answer, a sibling's, a Re-schedule) has withdrawn it. The one test behind both
+// customerCanAnswer and the proposal of a new time.
+func customerHasRequestedRow(ctx context.Context, q crQuerier, stageID, userID string) (bool, error) {
+	var asked bool
+	if err := q.QueryRow(ctx, `
+		SELECT EXISTS (SELECT 1 FROM approval_stage_approver
+		                WHERE stage_id = $1::uuid AND approver_user_id = $2::uuid AND status = 'requested')`,
+		stageID, userID).Scan(&asked); err != nil {
+		return false, fmt.Errorf("read the caller's pending approval: %w", err)
+	}
+	return asked, nil
+}
+
+// parseExpectedTimestamp reads the window bound a customer's answer says it was
+// given for: the instant the API printed (RFC 3339), or the zone-less UTC
+// layout. Deliberately not held to plannedYearMin..Max: it is only compared with
+// what is stored, never written, and a stored value outside that range (a
+// legacy row) must not stop its reader from answering.
+func parseExpectedTimestamp(field string, value *string) (*time.Time, error) {
+	if value == nil {
+		return nil, nil
+	}
+	t, err := time.Parse(time.RFC3339, *value)
+	if err != nil {
+		t, err = time.Parse(plannedTimestampZoneless, *value)
+	}
+	if err != nil {
+		return nil, &apierror.ValidationError{Msg: field + " must be a date-time as the change request shows it (RFC 3339, e.g. 2030-03-01T09:00:00Z)"}
+	}
+	t = t.UTC().Truncate(time.Microsecond)
+	return &t, nil
+}
+
+// checkExpectedSchedule is the precondition of an answer that names the window
+// it was given for: under the change request's row lock, each bound named must
+// equal the stored one, else 409. A page that was opened before the change was
+// re-scheduled (and, for a Normal change, approved again so that the customer
+// is asked afresh) would otherwise approve a time its reader never saw.
+func checkExpectedSchedule(ctx context.Context, tx pgx.Tx, id string, expectedStart, expectedEnd *time.Time) error {
+	if expectedStart == nil && expectedEnd == nil {
+		return nil
+	}
+	var start, end *time.Time
+	if err := tx.QueryRow(ctx,
+		`SELECT CASE WHEN isfinite(start_on) THEN start_on END, CASE WHEN isfinite(end_on) THEN end_on END FROM change_request WHERE id = $1`, id).Scan(&start, &end); err != nil {
+		return fmt.Errorf("answer change request: read the planned window: %w", err)
+	}
+	same := func(want, got *time.Time) bool {
+		return want == nil || (got != nil && got.UTC().Truncate(time.Microsecond).Equal(*want))
+	}
+	if same(expectedStart, start) && same(expectedEnd, end) {
+		return nil
+	}
+	show := func(t *time.Time) string {
+		if t == nil {
+			return "not set"
+		}
+		return t.UTC().Format(time.RFC3339)
+	}
+	return &apierror.ConflictError{Msg: fmt.Sprintf(
+		"the planned implementation time of this change request changed after you opened it (it is now %s to %s); read it again before giving your answer", show(start), show(end))}
 }
 
 // markCustomerCanAnswer sets domain.ChangeRequest.CustomerCanAnswer for the
@@ -314,9 +406,13 @@ func stateForMessage(state string) string {
 //     is also what a second contact gets once the first has answered;
 //  4. a rejection of a flag that is already true is refused (400): once the
 //     customer's approval / review is recorded it is final;
-//  5. the customer's request must still be pending (a live stage), else 409: with
+//  5. when the request names the planned window the customer was shown
+//     (expectedPlannedStartOn / expectedPlannedEndOn) it must still be the
+//     change's window, else 409: a page opened before the change was re-scheduled
+//     cannot approve a time its reader never saw;
+//  6. the customer's request must still be pending (a live stage), else 409: with
 //     nobody asked there is nothing to approve here, and WSO2 records the answer;
-//  6. the answer is the caller's own pending approval, decided by
+//  7. the answer is the caller's own pending approval, decided by
 //     decideChangeRequestApprovalTx: the creator may not (403), a contact who was
 //     not asked may not (403), the caller's row becomes Approved / Rejected, the
 //     others Cancelled, the state moves and an approval stamps the flag.
@@ -348,6 +444,10 @@ func answerCustomerStageViaPatch(ctx context.Context, tx pgx.Tx, id string, p cu
 		if stamped {
 			return "", &apierror.ValidationError{Msg: p.flag + " is locked once set to true and cannot be reverted to false"}
 		}
+	}
+
+	if err := checkExpectedSchedule(ctx, tx, id, p.expectedStart, p.expectedEnd); err != nil {
+		return "", err
 	}
 
 	live, err := liveCustomerStageForState(ctx, tx, id, gates.state)
@@ -384,8 +484,11 @@ func answerCustomerStageViaPatch(ctx context.Context, tx pgx.Tx, id string, p cu
 // Refused before anything is written: a change request that is not visible
 // (404), a caller who is not a registered contact of its project (403), one who
 // is the change's creator (403), a change not in Customer Approval (409 -- the
-// customer's approval is the only place a new time can be proposed), and a
-// change on hold (409).
+// customer's approval is the only place a new time can be proposed), a change
+// nobody has been asked to approve (409), a registered contact the approval was
+// not asked of (403: proposing cancels the asked contacts' pending approvals, so
+// it is open to exactly those who could answer -- customerCanAnswer's test), a
+// window that is not still to come (400), and a change on hold (409).
 func prepareCustomerProposal(ctx context.Context, tx pgx.Tx, id string, req domain.PatchChangeRequestRequest, actorEmail string) (domain.PatchChangeRequestRequest, error) {
 	projectID, err := lockCustomerAnswerRow(ctx, tx, id, actorEmail)
 	if err != nil {
@@ -413,6 +516,24 @@ func prepareCustomerProposal(ctx context.Context, tx pgx.Tx, id string, req doma
 		return req, fmt.Errorf("propose implementation time: %w", err)
 	}
 	if err := approverDecisionBlock(ctx, tx, userID, creatorIDs, stageKindCustomerApproval); err != nil {
+		return req, err
+	}
+
+	live, err := liveCustomerStageForState(ctx, tx, id, gates.state)
+	if err != nil {
+		return req, fmt.Errorf("propose implementation time: %w", err)
+	}
+	if live == nil {
+		return req, &apierror.ConflictError{Msg: "no customer approval is pending on this change request: it has not been requested from the project's registered contacts, so there is nobody for a new implementation time to be proposed to here"}
+	}
+	asked, err := customerHasRequestedRow(ctx, tx, live.stageID, userID)
+	if err != nil {
+		return req, fmt.Errorf("propose implementation time: %w", err)
+	}
+	if !asked {
+		return req, &apierror.ForbiddenError{Msg: "only members of the customer group (the registered contacts of this change request's project) who have been asked for the customer's approval of this change request can propose a new implementation time for it"}
+	}
+	if err := requireFutureWindow(time.Now(), req.PlannedStartOn, req.PlannedEndOn); err != nil {
 		return req, err
 	}
 

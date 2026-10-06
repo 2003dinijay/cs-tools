@@ -930,14 +930,17 @@ func cancelLiveStageApprovers(ctx context.Context, tx pgx.Tx, stageID, actorEmai
 // checkRescheduleWindow is the "Time Change = Yes" test of a Re-schedule:
 // the request must carry a planned start and/or end that differs from what is
 // stored (a value equal to the stored instant is not a change), and the
-// resulting window must not end before it starts.
+// resulting window must start before it ends (a zero-length window is no
+// window). start and end are the normalised values of
+// normalizePatchPlannedWindow, or nil.
 func checkRescheduleWindow(ctx context.Context, tx pgx.Tx, id string, start, end *string) error {
-	var startChanged, endChanged, inverted bool
+	var startChanged, endChanged, inverted, empty bool
 	err := tx.QueryRow(ctx, `
 		SELECT COALESCE($1::text::timestamptz IS DISTINCT FROM start_on, false) AND $1::text IS NOT NULL,
 		       COALESCE($2::text::timestamptz IS DISTINCT FROM end_on, false) AND $2::text IS NOT NULL,
-		       COALESCE(COALESCE($1::text::timestamptz, start_on) > COALESCE($2::text::timestamptz, end_on), false)
-		FROM change_request WHERE id = $3`, start, end, id).Scan(&startChanged, &endChanged, &inverted)
+		       COALESCE(COALESCE($1::text::timestamptz, start_on) > COALESCE($2::text::timestamptz, end_on), false),
+		       COALESCE(COALESCE($1::text::timestamptz, start_on) = COALESCE($2::text::timestamptz, end_on), false)
+		FROM change_request WHERE id = $3`, start, end, id).Scan(&startChanged, &endChanged, &inverted, &empty)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &apierror.NotFoundError{Msg: "change request not found"}
 	}
@@ -952,6 +955,9 @@ func checkRescheduleWindow(ctx context.Context, tx pgx.Tx, id string, start, end
 	}
 	if inverted {
 		return &apierror.ValidationError{Msg: "the planned start must not be after the planned end"}
+	}
+	if empty {
+		return &apierror.ValidationError{Msg: "the planned start must not be the same as the planned end: the window must have a duration"}
 	}
 	return nil
 }

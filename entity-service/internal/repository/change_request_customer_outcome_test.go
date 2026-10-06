@@ -22,6 +22,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -72,6 +73,25 @@ func TestClassifyExternalPatch(t *testing.T) {
 			if got.kind != customerPatchAnswer || got.spec != tc.spec || got.approved != tc.approved {
 				t.Errorf("%s: classified as %+v, want an answer for %s approved=%v", tc.name, got, tc.spec.label, tc.approved)
 			}
+		}
+	})
+
+	t.Run("an answer for the window the customer was shown", func(t *testing.T) {
+		for _, expected := range [][2]*string{{&start, nil}, {nil, &end}, {&start, &end}} {
+			got, err := classifyExternalPatch(domain.PatchChangeRequestRequest{IsCustomerApproved: &yes, ExpectedPlannedStartOn: expected[0], ExpectedPlannedEndOn: expected[1]})
+			if err != nil || got.kind != customerPatchAnswer || got.spec != &customerApprovalStageSpec {
+				t.Fatalf("classified as %+v (%v), want the approval", got, err)
+			}
+			if (expected[0] == nil) != (got.expectedStart == nil) || (expected[1] == nil) != (got.expectedEnd == nil) {
+				t.Errorf("expected window %v..%v classified as %v..%v", expected[0], expected[1], got.expectedStart, got.expectedEnd)
+			}
+			if expected[0] != nil && got.expectedStart.Format(time.RFC3339) != start {
+				t.Errorf("expected start read as %v, want %s", got.expectedStart, start)
+			}
+		}
+		got, err := classifyExternalPatch(domain.PatchChangeRequestRequest{IsCustomerReviewed: &no, ExpectedPlannedEndOn: &end})
+		if err != nil || got.kind != customerPatchAnswer || got.spec != &customerReviewStageSpec || got.expectedEnd == nil {
+			t.Fatalf("review classified as %+v (%v), want the review with its expected end", got, err)
 		}
 	})
 
@@ -128,7 +148,8 @@ func TestClassifyExternalPatch(t *testing.T) {
 		// Every field of the request is covered above or is one of the four: a
 		// field added to the contract later must either be added to this list
 		// (refused) or be a deliberate decision to let a customer set it.
-		allowed := map[string]bool{"IsCustomerApproved": true, "IsCustomerReviewed": true, "PlannedStartOn": true, "PlannedEndOn": true}
+		allowed := map[string]bool{"IsCustomerApproved": true, "IsCustomerReviewed": true, "PlannedStartOn": true, "PlannedEndOn": true,
+			"ExpectedPlannedStartOn": true, "ExpectedPlannedEndOn": true}
 		covered := map[string]bool{
 			"Title": true, "Description": true, "ProjectID": true, "State": true, "Impact": true, "AssignedTeamID": true,
 			"RequestApproval": true, "OnHold": true, "Comment": true, "WorkNote": true, "CustomerApprovalRequired": true,
@@ -155,11 +176,14 @@ func TestClassifyExternalPatch(t *testing.T) {
 			req  domain.PatchChangeRequestRequest
 			want string
 		}{
-			"both outcomes":          {domain.PatchChangeRequestRequest{IsCustomerApproved: &yes, IsCustomerReviewed: &yes}, "not both"},
-			"an answer and a window": {domain.PatchChangeRequestRequest{IsCustomerApproved: &yes, PlannedStartOn: &start}, "separate requests"},
-			"a review and a window":  {domain.PatchChangeRequestRequest{IsCustomerReviewed: &no, PlannedEndOn: &end}, "separate requests"},
-			"nothing at all":         {domain.PatchChangeRequestRequest{}, "at least one field"},
-			"all four at once":       {domain.PatchChangeRequestRequest{IsCustomerApproved: &yes, IsCustomerReviewed: &yes, PlannedStartOn: &start, PlannedEndOn: &end}, "separate requests"},
+			"both outcomes":                       {domain.PatchChangeRequestRequest{IsCustomerApproved: &yes, IsCustomerReviewed: &yes}, "not both"},
+			"an answer and a window":              {domain.PatchChangeRequestRequest{IsCustomerApproved: &yes, PlannedStartOn: &start}, "separate requests"},
+			"a review and a window":               {domain.PatchChangeRequestRequest{IsCustomerReviewed: &no, PlannedEndOn: &end}, "separate requests"},
+			"nothing at all":                      {domain.PatchChangeRequestRequest{}, "at least one field"},
+			"all four at once":                    {domain.PatchChangeRequestRequest{IsCustomerApproved: &yes, IsCustomerReviewed: &yes, PlannedStartOn: &start, PlannedEndOn: &end}, "separate requests"},
+			"the expected window alone":           {domain.PatchChangeRequestRequest{ExpectedPlannedStartOn: &start}, "go with the customer's approval or review"},
+			"the expected window with a proposal": {domain.PatchChangeRequestRequest{PlannedStartOn: &start, ExpectedPlannedEndOn: &end}, "go with the customer's approval or review"},
+			"an expected window that is no date":  {domain.PatchChangeRequestRequest{IsCustomerApproved: &yes, ExpectedPlannedStartOn: new(string)}, "expectedPlannedStartOn must be a date-time"},
 		} {
 			_, err := classifyExternalPatch(tc.req)
 			var ve *apierror.ValidationError

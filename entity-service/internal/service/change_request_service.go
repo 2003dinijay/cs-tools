@@ -323,6 +323,9 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	mirrorReq := req
 	mirrorReq.CustomerApprovalRequired, mirrorReq.CustomerReviewRequired = nil, nil
 	mirrorReq.DeploymentIDs, mirrorReq.DeploymentProductIDs = nil, nil
+	// The window a customer's answer was given for is a precondition checked
+	// against PostgreSQL only; there is nothing of it to mirror.
+	mirrorReq.ExpectedPlannedStartOn, mirrorReq.ExpectedPlannedEndOn = nil, nil
 	if s.snWriteback != nil && !reflect.DeepEqual(mirrorReq, domain.PatchChangeRequestRequest{}) {
 		mirrorID := id
 		s.snWriteback.Dispatch(ctx, "change_request", id, "patch", mirrorReq,

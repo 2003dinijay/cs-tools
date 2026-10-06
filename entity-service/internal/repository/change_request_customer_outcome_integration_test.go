@@ -633,7 +633,7 @@ func TestChangeRequestCustomerOutcomeIntegration_ProposeNewTimeReschedules(t *te
 	_, err := f.patchAsContact(id, crScopeUserA1, domain.PatchChangeRequestRequest{PlannedStartOn: sp(rsStart1)})
 	f.wantValidationError("proposing the stored start", err, "re-scheduling requires a changed planned start or end")
 	_, err = f.patchAsContact(id, crScopeUserA1, domain.PatchChangeRequestRequest{PlannedStartOn: sp("next tuesday")})
-	f.wantValidationError("proposing garbage", err, "valid date-times")
+	f.wantValidationError("proposing garbage", err, "plannedStartOn must be a valid date-time")
 	_, err = f.patchAsContact(id, crScopeUserA1, domain.PatchChangeRequestRequest{PlannedStartOn: sp(rsStart3)})
 	f.wantValidationError("proposing a start after the stored end", err, "planned start must not be after the planned end")
 	f.expect(id, "after the refused proposals", "CUSTOMER_APPROVAL", "authorize", "canceled")

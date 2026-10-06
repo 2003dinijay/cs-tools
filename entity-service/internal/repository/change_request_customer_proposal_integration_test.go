@@ -17,11 +17,14 @@
 package repository_test
 
 import (
+	"context"
+	"os"
 	"strings"
 	"testing"
-	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 // A customer proposes a new implementation time with PATCH {plannedStartOn,
@@ -137,7 +140,10 @@ func TestChangeRequestCustomerProposalIntegration_BadWindowMessages(t *testing.T
 	const (
 		notChanged  = "re-scheduling requires a changed planned start or end: send plannedStartOn and/or plannedEndOn with a value different from the stored one"
 		endsBefore  = "the planned start must not be after the planned end"
-		notADate    = "plannedStartOn and plannedEndOn must be valid date-times (RFC 3339)"
+		notADate    = "plannedStartOn must be a valid date-time"
+		endNotADate = "plannedEndOn must be a valid date-time"
+		emptyWindow = "the planned start must not be the same as the planned end"
+		inThePast   = "is in the past"
 		nothingSent = "at least one field must be provided"
 	)
 	for _, tc := range []struct {
@@ -153,8 +159,12 @@ func TestChangeRequestCustomerProposalIntegration_BadWindowMessages(t *testing.T
 		{"a start after the stored end (the end is not moved for the customer)", domain.PatchChangeRequestRequest{PlannedStartOn: sp(rsStart3)}, endsBefore},
 		{"an end before the stored start", domain.PatchChangeRequestRequest{PlannedEndOn: sp("2030-02-28T11:00:00Z")}, endsBefore},
 		{"text that is not a date", domain.PatchChangeRequestRequest{PlannedStartOn: sp("next tuesday")}, notADate},
-		{"an end that is not a date", domain.PatchChangeRequestRequest{PlannedStartOn: sp(rsStart2), PlannedEndOn: sp("later")}, notADate},
+		{"an end that is not a date", domain.PatchChangeRequestRequest{PlannedStartOn: sp(rsStart2), PlannedEndOn: sp("later")}, endNotADate},
 		{"an empty start", domain.PatchChangeRequestRequest{PlannedStartOn: sp("")}, notADate},
+		{"a window with no length", domain.PatchChangeRequestRequest{PlannedStartOn: sp(rsStart2), PlannedEndOn: sp(rsStart2)}, emptyWindow},
+		{"a window with no length, in two spellings", domain.PatchChangeRequestRequest{PlannedStartOn: sp("2030-03-08 09:00:00"), PlannedEndOn: sp("2030-03-08T14:30:00+05:30")}, emptyWindow},
+		{"a window in the past", domain.PatchChangeRequestRequest{PlannedStartOn: sp("2001-05-01T10:00:00Z"), PlannedEndOn: sp("2001-05-01T12:00:00Z")}, inThePast},
+		{"an end in the past", domain.PatchChangeRequestRequest{PlannedEndOn: sp("2001-05-01T12:00:00Z")}, inThePast},
 		{"nothing at all", domain.PatchChangeRequestRequest{}, nothingSent},
 	} {
 		_, err := f.patchAsContact(id, crScopeUserA1, tc.req)
@@ -164,12 +174,10 @@ func TestChangeRequestCustomerProposalIntegration_BadWindowMessages(t *testing.T
 		}
 	}
 
-	// A zero-length window (start == end) is not "ending before it starts".
-	if _, err := f.patchAsContact(id, crScopeUserA2, domain.PatchChangeRequestRequest{PlannedStartOn: sp(rsStart2), PlannedEndOn: sp(rsStart2)}); err != nil {
-		t.Fatalf("a zero-length window: %v", err)
-	}
-	if got := windowOf(t, f.get(id)); got != 0*time.Second {
-		t.Fatalf("zero-length window stored as %v", got)
+	// What was refused left the window as it was; a proposal that is fine still goes through.
+	f.wantPlanned(id, "after the refused proposals", rsStart1, rsEnd1)
+	if _, err := f.patchAsContact(id, crScopeUserA2, domain.PatchChangeRequestRequest{PlannedStartOn: sp(rsStart2), PlannedEndOn: sp(rsEnd2)}); err != nil {
+		t.Fatalf("a proposal that is fine: %v", err)
 	}
 
 	// Everything refused above left the change as it was (the one proposal that
@@ -205,4 +213,155 @@ func TestChangeRequestCustomerProposalIntegration_RefusedWindowChangesNothing(t 
 	}
 	assertApprovers(t, "customer request untouched", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
 	f.wantCanAnswer(id, "after the refused proposals", true, crScopeUserA1, crScopeUserA2)
+}
+
+// What reaches the database as the planned window is a date-time this service
+// parsed, never text for Postgres' own parser: 'infinity' (which stored fine and
+// then made the change request unreadable for everyone, and its project's list a
+// 500), 'now' / 'tomorrow' (relative to the server's clock), a bare date (midnight
+// in the session's zone), a zone name, a year no date-time of ours has. Each is a
+// readable 400 for a customer, as either bound, and nothing is stored: the change
+// request still reads and the stages and window are what they were.
+func TestChangeRequestCustomerProposalIntegration_HostileWindowsAreRefused(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
+	f.setPlanned(id, rsStart1, rsEnd1)
+	f.driveToCustomerApproval(id)
+	stages := f.stageLabels(id)
+
+	for _, hostile := range []string{
+		"infinity", "-infinity", "+infinity", "Infinity", "now", "today", "tomorrow", "yesterday", "epoch", "allballs",
+		"2031-05-01",                           // a date alone
+		"2031-05-01T10:00:00",                  // no zone, in the RFC 3339 shape
+		"2031-05-01 10:00:00 America/New_York", // a zone name
+		"2031-05-01 10:00:00 PST",
+		"2031-5-1 10:00:00",
+		"10000-01-01 00:00:00", "294276-12-31 23:59:59", "5874897-12-31 23:59:59",
+		"1999-12-31T23:59:59Z", "2101-01-01T00:00:00Z", "0001-01-01T00:00:00Z",
+		" 2031-05-01 10:00:00", "2031-05-01 10:00:00 ", "2031-05-01 10:00:00\x00", "",
+		"2031-05-01 10:00:00'; DROP TABLE change_request; --",
+	} {
+		for _, req := range []domain.PatchChangeRequestRequest{
+			{PlannedStartOn: sp(hostile)},
+			{PlannedEndOn: sp(hostile)},
+			{PlannedStartOn: sp("2031-05-01 10:00:00"), PlannedEndOn: sp(hostile)},
+		} {
+			_, err := f.patchAsContact(id, crScopeUserA1, req)
+			if err == nil {
+				t.Fatalf("%q was accepted as a proposed time (%+v)", hostile, req)
+			}
+			f.wantValidationError(hostile, err, "must be a valid date-time")
+		}
+	}
+
+	f.expect(id, "after the refused proposals", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.wantPlanned(id, "after the refused proposals", rsStart1, rsEnd1)
+	if got := f.stageLabels(id); got != stages {
+		t.Fatalf("a refused proposal changed the stages: %s, was %s", got, stages)
+	}
+	f.wantCanAnswer(id, "after the refused proposals", true, crScopeUserA1, crScopeUserA2)
+}
+
+// A zone-less "YYYY-MM-DD HH:MM:SS" is UTC, whatever TimeZone the database
+// session runs in: the same proposal is stored as the same instant on a UTC
+// database and on one set to Colombo (+05:30), and an RFC 3339 value keeps its offset.
+func TestChangeRequestCustomerProposalIntegration_ZonelessWindowIsUTCInAnySession(t *testing.T) {
+	dsn := os.Getenv("CHANGE_REQUEST_TEST_DSN")
+	if dsn == "" {
+		t.Skip("CHANGE_REQUEST_TEST_DSN not set")
+	}
+	for _, zone := range []string{"UTC", "Asia/Colombo", "America/Los_Angeles"} {
+		zone := zone
+		t.Run(zone, func(t *testing.T) {
+			f := newCustomerGroupFlow(t)
+			cfg, err := pgxpool.ParseConfig(dsn)
+			if err != nil {
+				t.Fatalf("parse DSN: %v", err)
+			}
+			cfg.ConnConfig.RuntimeParams["timezone"] = zone
+			pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
+			if err != nil {
+				t.Fatalf("connect: %v", err)
+			}
+			t.Cleanup(pool.Close)
+			f.pool, f.scoped = pool, repository.NewScoped(pool)
+			f.repo = repository.NewChangeRequestRepository(f.scoped)
+			var session string
+			if err := pool.QueryRow(context.Background(), `SHOW TimeZone`).Scan(&session); err != nil || session != zone {
+				t.Fatalf("session TimeZone = %q (%v), want %q", session, err, zone)
+			}
+
+			id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
+			f.setPlanned(id, rsStart1, rsEnd1)
+			f.driveToCustomerApproval(id)
+
+			if _, err := f.patchAsContact(id, crScopeUserA1, domain.PatchChangeRequestRequest{
+				PlannedStartOn: sp("2031-05-01 10:00:00"), PlannedEndOn: sp("2031-05-01T21:30:00+05:30")}); err != nil {
+				t.Fatalf("proposal: %v", err)
+			}
+			f.wantPlanned(id, "after the proposal", "2031-05-01T10:00:00Z", "2031-05-01T16:00:00Z")
+		})
+	}
+}
+
+// A row that already holds Postgres' infinity (from before the window was
+// checked, or from a door other than this API) reads as having no planned time,
+// instead of failing its whole read and the list it belongs to.
+func TestChangeRequestCustomerProposalIntegration_NonFiniteRowStillReads(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	id := f.createWithProject(domain.ChangeRequestTypeStandard, sp(crScopeProjectA), true, false)
+	f.setPlanned(id, rsStart1, rsEnd1)
+	f.requestApproval(id)
+	f.expect(id, "in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.execSQL(`UPDATE change_request SET start_on = '-infinity'::timestamptz, end_on = 'infinity'::timestamptz WHERE id = $1`, id)
+
+	cr, err := f.getAsContact(id, crScopeUserA1)
+	if err != nil {
+		t.Fatalf("GET of a change request holding infinity: %v", err)
+	}
+	if cr.PlannedStartOn != nil || cr.PlannedEndOn != nil {
+		t.Fatalf("planned window = %v .. %v, want none", cr.PlannedStartOn, cr.PlannedEndOn)
+	}
+	rows, _, err := f.repo.SearchChangeRequests(asContact(crScopeUserA1), domain.SearchChangeRequestsRequest{
+		Filters:    domain.SearchChangeRequestsFilters{ProjectIDs: []string{crScopeProjectA}},
+		Pagination: domain.Pagination{Offset: 0, Limit: 50},
+	}, nil, nil, nil, nil)
+	if err != nil {
+		t.Fatalf("the project's list with that row in it: %v", err)
+	}
+	found := false
+	for _, row := range rows {
+		found = found || row.ID == id
+	}
+	if !found {
+		t.Fatalf("the change request is missing from the project's list of %d", len(rows))
+	}
+	// ...and the customer can still answer it.
+	if _, err := f.approveAs(id, crScopeUserA1, true); err != nil {
+		t.Fatalf("approving a change request that holds infinity: %v", err)
+	}
+	f.expect(id, "after approving", "SCHEDULED", "implement", "canceled")
+}
+
+// A WSO2 user's Re-schedule is held to the same date-times, but not to "still to
+// come": re-planning a change whose window has gone by is theirs to do.
+func TestChangeRequestCustomerProposalIntegration_StaffRescheduleSharesTheParserNotThePastRule(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	id := f.createWithProject(domain.ChangeRequestTypeStandard, sp(crScopeProjectA), true, false)
+	f.setPlanned(id, "2001-02-01T10:00:00Z", "2001-02-01T12:00:00Z")
+	f.requestApproval(id)
+	f.expect(id, "in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
+
+	err := f.reschedule(id, sp("infinity"), nil)
+	f.wantValidationError("a staff Re-schedule to infinity", err, "plannedStartOn must be a valid date-time")
+	err = f.reschedule(id, sp("2001-03-01T10:00:00Z"), sp("2001-03-01T10:00:00Z"))
+	f.wantValidationError("a staff Re-schedule to an empty window", err, "the planned start must not be the same as the planned end")
+	if err := f.reschedule(id, sp("2001-03-01T10:00:00Z"), sp("2001-03-01T12:00:00Z")); err != nil {
+		t.Fatalf("a staff Re-schedule to a window in the past: %v", err)
+	}
+	f.wantPlanned(id, "after the staff Re-schedule", "2001-03-01T10:00:00Z", "2001-03-01T12:00:00Z")
+
+	// A plain PATCH of the window (the Edit dialog) is parsed the same way.
+	_, err = f.patch(id, domain.PatchChangeRequestRequest{PlannedEndOn: sp("infinity")})
+	f.wantValidationError("an Edit of the end to infinity", err, "plannedEndOn must be a valid date-time")
 }

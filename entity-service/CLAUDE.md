@@ -2559,9 +2559,12 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   peer approval); it can only be set by hand to re-schedule a change from
   customer_approval`. **"Time Change = Yes" is enforced**: the request must
   carry a start and/or end that differs from the stored instant, else 400
-  `re-scheduling requires a changed planned start or end: ...` (unparseable
-  dates: 400 `... must be valid date-times (RFC 3339)`; an end before the
-  start: 400 `the planned start must not be after the planned end`). The on-hold
+  `re-scheduling requires a changed planned start or end: ...` (a bound that is
+  not a date-time: 400 `plannedStartOn must be a valid date-time, either RFC 3339
+  ... or YYYY-MM-DD HH:MM:SS in UTC ...`, see "The planned window is parsed
+  here"; an end before the start: 400 `the planned start must not be after the
+  planned end`; an end equal to the start: 400 `... must not be the same as the
+  planned end: the window must have a duration`). The on-hold
   gate applies; the whole PATCH is one transaction, so a re-schedule that cannot
   be satisfied (e.g. the CAB group has nobody eligible) changes nothing.
   Effects: the new window is applied; the customer's pending stage is cancelled
@@ -2792,9 +2795,9 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
     file, and read raw rows back as `postgres`, which is why the fixtures' approver rows are asserted
     exactly: after one proposal loop the history is the cancelled Customer Approval rows, the CAB
     stage, then fresh Customer Approval rows for dave and erin. Their planned dates are NULL in the
-    seed, so a proposal there is a whole new window, and entity-service reads the zone-less
-    `YYYY-MM-DD HH:MM:SS` both portals send in the database session's `TimeZone`: the specs hold on a
-    UTC database and fail loudly (a shifted window) on any other.
+    seed, so a proposal there is a whole new window. entity-service reads the zone-less
+    `YYYY-MM-DD HH:MM:SS` both portals send as UTC itself (`change_request_window.go`), not in the
+    database session's `TimeZone`, so the specs hold on a database set to any zone.
   * **What the customers can see in the customer portal.** The portal's Operations
     menu (Service requests, Change requests) comes from `GET /projects/{id}/features`,
     i.e. the project's `project_type` flags `has_service_request_read_access` /
@@ -3241,12 +3244,14 @@ including `{isCustomerApproved: true}` as a bookkeeping stamp of the flag that m
 nothing.
 
 * **Whitelist.** An external caller's PATCH may carry exactly one of the customer's
-  answer (`isCustomerApproved` **or** `isCustomerReviewed`) or a proposed window
+  answer (`isCustomerApproved` **or** `isCustomerReviewed`, optionally with
+  `expectedPlannedStartOn` / `expectedPlannedEndOn`, see "The answer is bound to the
+  window the customer saw") or a proposed window
   (`plannedStartOn` and/or `plannedEndOn`), and **nothing else**: any other field
   -- title, state, project, assignee, `requestApproval`, `onHold`, comment,
   `customerApprovalRequired`, a field added later -- is a **403** `customers can
   only record the customer's approval or review ... or propose a new
-  implementation time ...`, checked by clearing the four fields and requiring the
+  implementation time ...`, checked by clearing those fields and requiring the
   rest of the request to be empty. Row-level security lets *any* member of the
   project update the row and has no notion of fields, so this is the layer that says
   what a customer may change; the portal in front of it is not relied on. Both
@@ -3283,6 +3288,10 @@ nothing.
   is in Scheduled, but the Customer Approval stage can only be decided while it is in
   Customer Approval`) -- which is also what the second contact gets after the first
   answered; a rejection of a flag already `true` -> 400 `locked once set to true`;
+  an answer that names the window it was given for (`expectedPlannedStartOn` /
+  `expectedPlannedEndOn`) while the stored window is another -> **409** `the planned
+  implementation time of this change request changed after you opened it (it is now
+  ... to ...)`;
   no live customer request (nobody was asked) -> **409** `no customer approval is
   pending ... WSO2 records the customer's approval` (the manual
   `{state: scheduled|closed}` stays WSO2's); then the decision's own rules: the
@@ -3318,18 +3327,38 @@ nothing.
   again (a Standard change at once, Normal / Emergency after CAB / ECAB approves).
   It does not look at `onHold`: a held change refuses a *proposal* (409), not an
   answer, so a client offers Propose New Time when `customerCanAnswer && state ==
-  customer_approval && !onHold`. Tests:
+  customer_approval && !onHold`; entity-service's detail carries `onHold`, and the
+  customer portal's backend-v2 passes it on as the boolean `isOnHold` (never the
+  reason). `customerCanAnswer` is also the *propose* signal: the
+  proposal is gated on the same pending-row test (`customerHasRequestedRow`), so a
+  contact told false can neither answer nor propose. Tests:
   `TestChangeRequestCustomerCanAnswerIntegration_*` (lifecycle, after any answer
   through either door, who may answer with the PATCH as the oracle, nobody asked,
   Re-schedule flips for Normal / Standard, not on search rows),
   `TestCustomerCanAnswer_NeedsNoQueryOutsideTheCustomerStates`,
   `TestMarkCustomerCanAnswer_WhoIsToldWhat`,
   `TestChangeRequest_CustomerCanAnswerJSONContract`.
+* **The answer is bound to the window the customer saw.** `{isCustomerApproved |
+  isCustomerReviewed, expectedPlannedStartOn?, expectedPlannedEndOn?}`: each bound
+  named must still equal the stored one when the answer is recorded
+  (`checkExpectedSchedule`, under the change request's row lock, right after the
+  stale-state check), else 409 and nothing changes. After a Re-schedule loop the
+  change returns to Customer Approval and the contacts are asked again with fresh
+  rows, so the stale-state check alone passes for a page opened before it -- without
+  this a stale tab approved a window its reader never saw. Omitted: no check (an answer
+  sent as before is recorded as before, and so is every integrator's). The fields
+  belong to a customer's answer only: alone or beside a proposal is a 400, and from a
+  WSO2 user's PATCH too. They are compared as instants (any of the accepted layouts;
+  not held to the year range, since they are never written). The customer portal sends
+  the `startDate` / `endDate` it read.
 * **Propose new implementation time = Re-schedule.** `{plannedStartOn,
   plannedEndOn?}` from a registered contact in `customer_approval` is the process
   diagram's "Time Change" loop started by the customer: `prepareCustomerProposal`
-  checks it (registered contact, not the creator, state `customer_approval`, not on
-  hold) and turns the request into the very `{state: authorize, plannedStartOn?,
+  checks it (registered contact, not the creator, state `customer_approval`, **asked**
+  -- a live customer stage on which the caller holds a `requested` row, else 409 when
+  nobody was asked and 403 `only members of the customer group ... who have been asked`
+  when the caller was not, as proposing cancels the asked contacts' pending approvals --
+  the window still to come, not on hold) and turns the request into the very `{state: authorize, plannedStartOn?,
   plannedEndOn?}` a WSO2 user sends, so the existing Re-schedule applies unchanged:
   "Time Change = Yes" enforced (`re-scheduling requires a changed planned start or
   end`), the new window applied, the customer's pending request cancelled (kept as a
@@ -3342,15 +3371,29 @@ nothing.
   customer), so a proposed start after the stored end is a 400 `the planned start
   must not be after the planned end`: a customer moving a change to a later date
   proposes the whole window -- the new start and the new end, the same length -- as
-  the CSM portal's Re-schedule dialog does. The formats accepted are whatever
-  PostgreSQL parses as `timestamptz`: RFC 3339 (with any offset) and the webapp's
-  `YYYY-MM-DD HH:MM:SS`, which carries no zone and is read in the database session's
-  `TimeZone` (UTC on the local stack; entity-service does not set it per connection
-  and nothing here asserts it for another database, so one configured otherwise
-  would shift the customer's time).
-  `TestChangeRequestCustomerProposalIntegration_*` pins the whole-window proposal for
-  Normal / Emergency / Standard in those formats and the messages for a bad window
-  (unchanged, ends before it starts, not a date, empty).
+  the CSM portal's Re-schedule dialog does. A window with no length (end == start) is a
+  400 for every Re-schedule, and a customer's proposal must be still to come (400 `... is
+  in the past`; a WSO2 user's Re-schedule may re-plan a window that has gone by).
+* **The planned window is parsed here, not by Postgres** (`change_request_window.go`,
+  applied at the top of `patchChangeRequestTx` for every caller, and on create). It used
+  to be bound as `$n::text::timestamptz`, which accepts `infinity`, `-infinity`, `now`,
+  `tomorrow`, `epoch`, a bare date, a zone name, years up to 294276, and reads a value
+  with no zone in the database *session's* `TimeZone`. Measured on the local stack, a
+  customer's `{plannedEndOn: "infinity"}` was stored and the PATCH answered 500 (the
+  read-back failed after the commit), after which `GET /change-requests/{id}` was a 500
+  for everybody and, once the change was in Customer Approval, so was the project's
+  whole change request search. Now exactly two layouts are accepted: RFC 3339 with a
+  zone designator, and `YYYY-MM-DD HH:MM:SS` as **UTC**, in the years 2000 to 2100 --
+  anything else is a 400 `plannedStartOn must be a valid date-time, either RFC 3339
+  (2030-03-01T09:00:00Z) or YYYY-MM-DD HH:MM:SS in UTC, in the years 2000 to 2100` --
+  and what reaches SQL is the parsed instant re-written as RFC 3339 UTC, so the stored
+  value no longer depends on the session. `changeRequestSelectColumns` also reads
+  `start_on` / `end_on` through `isfinite(...)`, so a row that holds an infinity by some
+  other door reads as having no planned time instead of failing the scan (and with it
+  the detail or the whole list). `TestChangeRequestCustomerProposalIntegration_*` pins the
+  whole-window proposal for Normal / Emergency / Standard, the messages for a bad window
+  (unchanged, ends before it starts, empty, in the past, not a date), the hostile values,
+  UTC under a Colombo / Los Angeles session and a non-finite row that still reads.
 * **Lock order.** The answer and the proposal take the `work_item` row first (a
   `PATCH`'s own `updated_on` / `updated_by` bump, `lockCustomerAnswerRow`), then
   `change_request` -- the order every other PATCH takes -- so a customer's answer and
@@ -3370,6 +3413,11 @@ nothing.
   that kept them out, by always sending the allowed keys itself; observed on the local
   stack: `POST /projects/{id}/change-requests/search` returned all eight fixtures,
   `new` / `assess` / `authorize` included, now the three customer-visible ones).
+  **Closed for customers:** `GET /change-requests/{id}/approvals` no longer names WSO2's
+  internal approvers to a customer -- the Customer Approval / Customer Review stages
+  are given whole, every other stage (Peer, CAB, ECAB, Review) as its label and status
+  only, no approver names, ids or group (`redactInternalApprovalStages`,
+  `TestChangeRequestCustomerPrivacyIntegration_ApprovalsHideWhoApprovesInternally`).
   **Still open:** `GET /change-requests/{id}` and `GET /change-requests/{id}/approvals`
   answer for any id the caller knows, whatever the state, here and through backend-v2.
   Ids are random UUIDs that now only reach a customer from a list, so this is a
@@ -3379,9 +3427,12 @@ nothing.
 * Tests: `TestChangeRequestCustomerOutcomeIntegration_*` (real Postgres,
   `CHANGE_REQUEST_TEST_DSN`: lifecycle, rejections, PATCH == decision route, out of
   state, who may answer, nobody asked, the flag lock, the whitelist, concurrency,
-  Re-schedule from a proposal), `TestChangeRequestIntegration_PatchCustomerFlag*`
+  Re-schedule from a proposal), `TestChangeRequestCustomerPrivacyIntegration_*` (the
+  answer bound to the window seen, the approvals a customer reads),
+  `TestChangeRequestIntegration_PatchCustomerFlag*`
   (the original flag authorisation, adapted), `TestClassifyExternalPatch`,
-  `TestIsExternalCaller`, `TestStateForMessage`. The integration DSN connects as a
+  `TestIsExternalCaller`, `TestStateForMessage`, `TestNormalizePlannedTimestamp_*`,
+  `TestRequireFutureWindow`, `TestRedactInternalApprovalStages`. The integration DSN connects as a
   Postgres superuser, which bypasses row-level security: what they assert is this
   repository's own checks, never RLS.
 

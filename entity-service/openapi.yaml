@@ -5736,7 +5736,7 @@ paths:
 
   /change-requests:
     post:
-      summary: Create a change request (ServiceNow data source only).
+      summary: Create a change request.
       operationId: createChangeRequest
       requestBody:
         required: true
@@ -5773,17 +5773,18 @@ paths:
 
   /change-requests/{id}:
     patch:
-      summary: Update a change request (ServiceNow data source only).
+      summary: Update a change request.
       description: >-
         WSO2 users (internal callers) may send the whole PatchChangeRequestRequest.
 
         A CUSTOMER (an external caller: a registered contact of the change request's
         project, signed in to the customer portal) may send exactly one of the
         customer's answer -- isCustomerApproved while the change request is in
-        customer_approval, isCustomerReviewed while it is in customer_review -- or a
-        proposed implementation window (plannedStartOn and/or plannedEndOn), and
-        nothing else (403 for any other field; 400 for both outcomes, or an answer
-        together with a window).
+        customer_approval, isCustomerReviewed while it is in customer_review, optionally
+        with expectedPlannedStartOn / expectedPlannedEndOn, the planned window the
+        customer was shown -- or a proposed implementation window (plannedStartOn
+        and/or plannedEndOn), and nothing else (403 for any other field; 400 for both
+        outcomes, or an answer together with a window).
 
         The answer IS the caller's decision on their own pending Customer Approval /
         Customer Review approval, recorded exactly as
@@ -5795,13 +5796,27 @@ paths:
         hasCustomerReviewed) or rollback (false). A second contact answering afterwards,
         or anyone answering in another state, gets a 409 and nothing changes; a caller
         who is not a registered PORTAL_USER contact of the change request's own
-        project gets a 403; a rejection of a flag that is already true is a 400.
+        project gets a 403; a rejection of a flag that is already true is a 400. When the
+        answer names the window it was given for (expectedPlannedStartOn /
+        expectedPlannedEndOn) it is recorded only while that is still the change
+        request's window: otherwise a 409 ("the planned implementation time ... changed
+        after you opened it") and nothing changes, so a page opened before the change was
+        re-scheduled cannot approve a time its reader never saw. Omitted, no check is made.
 
-        A proposed window, from a registered contact while the change request is in
-        customer_approval, is the Re-schedule: the new window is applied, the pending
-        customer request is cancelled, and the change goes back through CAB / ECAB
-        approval (a Standard change stays in customer_approval and the customer is asked
-        again). Anywhere else, or while on hold, it is a 409.
+        A proposed window, from a registered contact the customer's approval has been
+        asked of (the same test as customerCanAnswer: a REQUESTED approval on the live
+        Customer Approval stage) while the change request is in customer_approval, is the
+        Re-schedule: the new window is applied, the pending customer request is cancelled,
+        and the change goes back through CAB / ECAB approval (a Standard change stays in
+        customer_approval and the customer is asked again). The window must be a date-time
+        still to come, must have a duration (the end after the start; a start sent alone is
+        held against the stored end), and must differ from the stored one (400 otherwise).
+        Anywhere else, with nobody asked, or while on hold, it is a 409; a registered
+        contact who was not asked is a 403.
+
+        plannedStartOn / plannedEndOn, from any caller, are RFC 3339 or
+        "YYYY-MM-DD HH:MM:SS" (UTC), in the years 2000 to 2100: anything else
+        ("infinity", "now", a date alone, a time-zone name) is a 400 that names the field.
 
         An internal caller's isCustomerApproved / isCustomerReviewed remain a
         bookkeeping stamp of the flag that moves nothing.
@@ -5842,7 +5857,8 @@ paths:
           description: >-
             A customer sent a field other than the customer's answer or a proposed
             window, or is not a registered PORTAL_USER contact of the change
-            request's own project, or is its creator, or was not asked.
+            request's own project, or is its creator, or was not asked (a contact
+            holding no REQUESTED customer approval can neither answer nor propose).
           content:
             application/json:
               schema:
@@ -5856,7 +5872,9 @@ paths:
         "409":
           description: >-
             A customer's answer or proposal does not apply in the change request's
-            state, or nobody was asked: for example "this approval is no longer
+            state, or nobody was asked, or the planned window changed since the
+            customer's answer was composed (expectedPlannedStartOn /
+            expectedPlannedEndOn): for example "this approval is no longer
             pending: the change request is in Scheduled, but the Customer Approval
             stage can only be decided while it is in Customer Approval". Nothing was
             changed.
@@ -5871,7 +5889,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
     get:
-      summary: Get a single change request by ID (ServiceNow data source only).
+      summary: Get a single change request by ID.
       description: >-
         The change request detail. For a CUSTOMER (an external caller) on the
         PostgreSQL data source it also carries `customerCanAnswer`: whether this
@@ -5919,7 +5937,13 @@ paths:
 
   /change-requests/{id}/approvals:
     get:
-      summary: Get the approval stages for a change request (ServiceNow data source only).
+      summary: Get the approval stages for a change request.
+      description: >-
+        The approval stages of the change request and who sits on each. For a CUSTOMER
+        (an external caller) only the customer's own stages (Customer Approval /
+        Customer Review) are given whole; every internal stage (Peer, CAB, ECAB,
+        Review) is reduced to its stage label and status, with no approver names, no
+        internal user ids and no group.
       operationId: getChangeRequestApprovals
       parameters:
         - name: id
@@ -7369,7 +7393,7 @@ paths:
 
   /change-requests/search:
     post:
-      summary: Search change requests (ServiceNow data source only).
+      summary: Search change requests.
       operationId: searchChangeRequests
       requestBody:
         required: true
@@ -16853,12 +16877,27 @@ components:
           format: uuid
         plannedStartOn:
           type: string
-          description: Planned start date and time (format YYYY-MM-DD HH:MM:SS).
-          pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
+          description: >-
+            Planned start date and time: "YYYY-MM-DD HH:MM:SS" (UTC), or on the
+            PostgreSQL data source also RFC 3339 with a zone designator
+            ("2030-03-01T09:00:00Z"). Years 2000 to 2100 only; any other text
+            (Postgres' "infinity", "now", a date alone, a zone name) is a 400.
         plannedEndOn:
           type: string
-          description: Planned end date and time (format YYYY-MM-DD HH:MM:SS).
-          pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
+          description: >-
+            Planned end date and time, in the same formats as plannedStartOn.
+        expectedPlannedStartOn:
+          type: string
+          description: >-
+            Goes with a CUSTOMER's isCustomerApproved / isCustomerReviewed and
+            nothing else (400 otherwise): the planned start the customer was shown
+            (RFC 3339, as the change request reads). The answer is recorded only
+            while it is still the stored planned start, else 409. Omitted: no check.
+            PostgreSQL data source only.
+        expectedPlannedEndOn:
+          type: string
+          description: >-
+            The planned end the customer was shown; see expectedPlannedStartOn.
         impact:
           type: string
           enum:
