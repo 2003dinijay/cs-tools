@@ -65,6 +65,8 @@ var rlsProtectedTables = []string{
 	"security_report_analysis",
 	"deployment",
 	"deployed_product",
+	"change_request_deployment",
+	"change_request_deployed_product",
 }
 
 // TestRLSSchemaIntegration_EveryProtectedTableHasForceRowLevelSecurity is the

@@ -959,7 +959,7 @@ func TestEngine_SummaryReportsOnlyCallsActuallyPlaced(t *testing.T) {
 	}
 
 	// Without the flags the old approximation still applies, for a caller
-	// that genuinely has no engine (cmd/ladder-harness).
+	// that genuinely has no engine.
 	approx := st.Plan.ExecutionSummary(nil, nil, st.Cancelled, st.CancelReason)
 	approxCalls := 0
 	for _, l := range approx {

@@ -178,17 +178,16 @@ func main() {
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	// alert-ingestion authenticates against the same integration_users store its own webhooks use, held in memory so /alertz never waits on Postgres.
-	users := auth.NewDirectory(auth.NewUserRepo(pool), base.With("component", "auth"), auth.DirectoryConfig{
-		QueryTimeout:    depCfg.Postgres.QueryTimeout.Duration(),
-		RefreshInterval: depCfg.Postgres.AuthRefreshInterval.Duration(),
-		MaxStale:        depCfg.Postgres.AuthMaxStale.Duration(),
-	})
-	if err := users.Refresh(context.Background()); err != nil {
-		logger.Error("integration_users not loaded; /alertz answers 503 until a refresh succeeds", "error", err)
+	// alert-ingestion wakes the poller with a shared token, so /alertz never needs Postgres or an integration user.
+	wakeToken := strings.TrimSpace(os.Getenv("ALERT_CORE_WAKE_TOKEN"))
+	switch {
+	case wakeToken == "":
+		logger.Warn("ALERT_CORE_WAKE_TOKEN not set; /alertz rejects every wake and alerts are picked up by poll.interval alone")
+	case len(wakeToken) < auth.MinWakeTokenLen:
+		logger.Error("ALERT_CORE_WAKE_TOKEN is too short; generate one with openssl rand -hex 32", "min_length", auth.MinWakeTokenLen)
+		os.Exit(1)
 	}
-	go users.Run(pollCtx)
-	mux.Handle("/alertz", auth.RequireAuth(users, base.With("component", "auth"))(http.HandlerFunc(h.ServeAlert)))
+	mux.Handle("/alertz", auth.RequireWakeToken(wakeToken, base.With("component", "auth"))(http.HandlerFunc(h.ServeAlert)))
 
 	port := os.Getenv("PORT")
 	if port == "" {
