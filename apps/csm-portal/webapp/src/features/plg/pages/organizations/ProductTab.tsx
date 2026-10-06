@@ -763,14 +763,20 @@ function NotesCard({
 /**
  * One note in the trail, editable by whoever wrote it.
  *
- * The id is on show, in monospace and select-all-on-click, because that is what
- * makes the edit history reachable: there is deliberately no UI for reading
- * superseded wordings, but the id never changes, so
+ * The note's id used to be printed under each comment, as the handle for
+ * reading superseded wordings by hand. It was a uuid on a screen that is
+ * otherwise all prose, and it earned its place only for a query almost nobody
+ * runs, so it is gone.
  *
- *   SELECT body, edited_on, edited_by FROM plg_note_revision
- *    WHERE note_id = '<the id>' ORDER BY edited_on;
+ * Superseded wordings are still kept and still reachable — the revision rows
+ * join back through the note, so the pairing is enough and no id has to be
+ * copied off the page:
  *
- * answers "what did this say before" without a screen having to exist for it.
+ *   SELECT r.body, r.edited_on, r.edited_by
+ *     FROM plg_note_revision r
+ *     JOIN plg_note n ON n.id = r.note_id
+ *    WHERE n.org_platform_id = '<the pairing>'
+ *    ORDER BY r.edited_on;
  */
 function NoteRow({
   note,
@@ -810,7 +816,7 @@ function NoteRow({
           <Tooltip
             title={`Edited ${formatDateTime(note.updatedOn)}${
               note.updatedBy ? ` by ${note.updatedBy.name}` : ""
-            } — earlier wordings are kept against this note's id`}
+            } — earlier wordings are kept`}
           >
             <Typography variant="caption" color="text.secondary" sx={{ fontStyle: "italic" }}>
               · edited {formatDateTime(note.updatedOn)}
@@ -867,16 +873,6 @@ function NoteRow({
           {note.body}
         </Typography>
       )}
-
-      <Typography
-        variant="caption"
-        color="text.disabled"
-        display="block"
-        mt={0.5}
-        sx={{ fontFamily: "monospace", fontSize: 11, userSelect: "all" }}
-      >
-        {note.id}
-      </Typography>
 
       {update.error ? <ErrorBlock error={update.error} /> : null}
     </Box>
