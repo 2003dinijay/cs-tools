@@ -113,10 +113,20 @@ From the detail page a CS engineer can:
   **Cancel change**; at Customer Review you can **Roll back** or **Cancel
   change**, and there is no Close. While the customer's review is still pending,
   **Roll back** is held back and says who the change is waiting on, since a
-  failed review is the customer's to give in the Customer Portal. If nobody is
-  being asked (the project has no registered contacts), the Approval tab says so
-  and the change waits at the gate for the same reason: nobody can answer for the
-  customer.
+  failed review is the customer's to give in the Customer Portal.
+- **When nobody can be asked.** The customer's request goes to the Customer
+  Project's registered contacts, leaving out whoever raised the change and anyone
+  no longer active. If none of them has a request waiting, the change waits at
+  the gate with nobody to answer, and the Approval tab says so in a note. That
+  happens when the project has no registered contacts, when its only contact is
+  the person who raised the change or its contacts are no longer active, and for
+  an older change that reached the gate with no request at all. Staff never
+  answer for the customer, so the exits are the ones staff always have there:
+  **Cancel change** is the only way out of Customer Approval (**Re-schedule**
+  only sends the change back through approval, to ask the same contacts again),
+  and **Roll back** or **Cancel change** are the ways out of Customer Review.
+  The Customer Project cannot be changed to route the step once approval has been
+  requested.
 - **Approve or reject** a pending approval stage, if the engineer is listed
   as an approver on it: the Approve/Reject buttons only appear on that
   engineer's own pending approval.
