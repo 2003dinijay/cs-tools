@@ -5861,6 +5861,13 @@ paths:
 
         An internal caller's isCustomerApproved / isCustomerReviewed remain a
         bookkeeping stamp of the flag that moves nothing.
+
+        A change request the CUSTOMER may not see (not designated to them and not legacy:
+        see GET /change-requests/{id}) is a 404 whatever the request carries, checked
+        before it is looked at. A legacy change request waiting in customer_approval /
+        customer_review with nobody asked (it got there under an older build) is given its
+        customer stage by the customer's own first answer or proposal, in the same
+        transaction.
       operationId: patchChangeRequest
       parameters:
         - name: id
@@ -5959,6 +5966,15 @@ paths:
         PostgreSQL data source it also carries `customerCanAnswer`: whether this
         caller could give the customer's approval / review right now (see the
         field). It is the same read the PATCH receipt is built from.
+
+        A CUSTOMER (any caller that is not unrestricted) sees a change request only when
+        it was designated to them -- the customer's approval or review was asked of them,
+        and they are still a registered contact of its project; once designated it stays
+        visible in every later state -- or when it is a legacy one (created before
+        CR_STRICT_VISIBILITY_FROM, or no cutover is configured), which is visible to the
+        project's registered contacts past Authorize, as it always was. Any other change
+        request is absent from the list and its counts and is a 404 by id, for every read
+        and write.
       operationId: getChangeRequest
       parameters:
         - name: id
@@ -6008,6 +6024,15 @@ paths:
         Customer Review) are given whole; every internal stage (Peer, CAB, ECAB,
         Review) is reduced to its stage label and status, with no approver names, no
         internal user ids and no group.
+
+        A CUSTOMER (any caller that is not unrestricted) sees a change request only when
+        it was designated to them -- the customer's approval or review was asked of them,
+        and they are still a registered contact of its project; once designated it stays
+        visible in every later state -- or when it is a legacy one (created before
+        CR_STRICT_VISIBILITY_FROM, or no cutover is configured), which is visible to the
+        project's registered contacts past Authorize, as it always was. Any other change
+        request is absent from the list and its counts and is a 404 by id, for every read
+        and write.
       operationId: getChangeRequestApprovals
       parameters:
         - name: id
@@ -7548,6 +7573,18 @@ paths:
   /change-requests/search:
     post:
       summary: Search change requests.
+      description: >-
+        The list, its total and every count a customer's screens show are narrowed the same
+        way.
+
+        A CUSTOMER (any caller that is not unrestricted) sees a change request only when
+        it was designated to them -- the customer's approval or review was asked of them,
+        and they are still a registered contact of its project; once designated it stays
+        visible in every later state -- or when it is a legacy one (created before
+        CR_STRICT_VISIBILITY_FROM, or no cutover is configured), which is visible to the
+        project's registered contacts past Authorize, as it always was. Any other change
+        request is absent from the list and its counts and is a 404 by id, for every read
+        and write.
       operationId: searchChangeRequests
       requestBody:
         required: true

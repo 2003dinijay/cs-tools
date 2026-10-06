@@ -502,6 +502,19 @@ ON CONFLICT (id) DO NOTHING;
 -- The customer stages have no assignment group (the Customer Group is the
 -- project's contacts, not a "group" row) and carry an explicit checkpoint_label
 -- (migration 0179), which is how they are recognised.
+--
+-- WHAT A CUSTOMER SEES OF THESE (entity-service/CLAUDE.md, "Customer visibility and
+-- the cutover"; the local stack runs with CR_STRICT_VISIBILITY_FROM far in the
+-- past, so every fixture here is strict): a change request is visible to a customer
+-- only when it was DESIGNATED to them -- they hold an approver row, in any state, on
+-- one of its "Customer Approval" / "Customer Review" stages. That is exactly the
+-- approver rows of CHG-FIXED-007 and -008 below: dave and erin see those two, in every
+-- state the specs walk them through (their rows turn APPROVED / REJECTED / CANCELLED,
+-- never away). Every other fixture -- New, Assess, Authorize, the Review one with
+-- Customer Review ticked but not yet asked -- has no customer-stage row, so a customer
+-- does not see it (absent from the list and its counts, 404 by id). A fixture that must
+-- be visible to a customer needs a customer-stage approver row for them (CANCELLED
+-- counts: it is what the sibling of a contact who answered holds).
 DELETE FROM approval_stage_approver WHERE work_item_id IN (
   '00000000-0000-0000-0000-000000001001', '00000000-0000-0000-0000-000000001002',
   '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000001004',

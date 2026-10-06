@@ -3770,6 +3770,210 @@ outcome). Code: `change_request_links.go`
   `TestCustomerStageSpecs`, `TestWithoutManualCustomerOutcome`,
   `TestCustomerStageManualRefusal`, `TestClassifyApprovalStage`.
 
+### Customer visibility and the cutover
+
+**A customer sees a change request only when it was designated to them.** The rule
+(`change_request_visibility.go`, the one place it is spelled) for every caller that is
+not `Unrestricted` -- customers, and staff who also hold a customer record
+(`HasInternalAccess` without `Unrestricted`) -- is: they are a **registered contact of
+the change request's CURRENT project** AND either
+
+1. **it was designated to them**: they hold, or ever held, an `approval_stage_approver`
+   row (`REQUESTED`, `APPROVED`, `REJECTED` or `CANCELLED`; the sync's `NOT_REQUESTED` /
+   `NOT_REQUIRED` / `NOT_ENTITLED` mean "not asked") on a **"Customer Approval" /
+   "Customer Review"** stage of it. Designation is per person and permanent: it is made
+   when the stage is provisioned (`provisionCustomerStage`), nothing in this codebase
+   deletes an approver row (`reconcileStaleApprovers`, `cancelLiveCustomerStages`,
+   migration 0193 only move `REQUESTED` to `CANCELLED`), so the change request stays
+   visible in **every** later state -- Authorize after a proposed new time, Scheduled,
+   Implement, Review, Customer Review, Closed, Rollback, Canceled -- to the contact who
+   answered *and* to the siblings whose row the answer Cancelled; a contact who
+   registers **after** the stage was provisioned was never asked and does not see it;
+   moving the change request to another project takes it from the old project's
+   contacts (and gives it to nobody in the new one: nobody there was asked), moving it
+   back gives it back; or
+2. **it is legacy** (below): visible to the project's registered contacts in the states
+   customers have always seen -- everything past Authorize (Scheduled, Customer
+   Approval, Implement, Review, Customer Review, Rollback, Closed, Canceled), **never**
+   New / Assess / Authorize or a NULL state.
+
+Not visible means *absent* -- from the list, its total, the aggregate, the stat cards,
+the calendar, the exports -- and **404 `change request not found`** on every by-id
+read and write (detail, approvals, decision, PATCH of any field, comments, attachments),
+the same answer for a change request that does not exist, so an id cannot be probed.
+This supersedes the earlier interim state narrowing (backend-v2's
+`restrictToCustomerVisibleStates`, the webapp's `EXCLUDED_ALLOWED`), which must be
+removed with it -- left in, it would keep hiding a designated change request in
+Authorize: with this rule a designated change request in Authorize is shown and a
+non-designated one in Customer Approval is not.
+
+**Where it is enforced: Go SQL, not a row-level-security policy.** The legacy test needs
+the state, the creation time and a configured instant; a policy would need a new session
+setting on every statement (`queueIdentity`, `setCallerIdentity`) and `CREATE POLICY`
+takes `ACCESS EXCLUSIVE` on `work_item` (migration 0190's header records 0147 deadlocking
+the running sync); and the integration suite connects as a superuser, so an RLS-only
+guarantee could not be proven in the normal run. The fragment is **self-contained**: it
+binds the viewer's email from the Go context identity (never the `app.viewer_email`
+setting, which six mid-transaction `setCallerIdentity(Unrestricted)` calls blank) and
+checks project membership itself, so it holds for a superuser connection and a restricted
+role alike; RLS stays what it was, a second coarser line underneath. A restricted caller
+with no email matches nothing (`FALSE`). `a, b` below are the `work_item` / `change_request`
+aliases, `$e` the lower-cased email, `$c` the cutover instant (NULL when unset):
+
+```sql
+a.project_id IN (SELECT pc.project_id FROM project_contact pc
+                  WHERE LOWER(pc.email) = LOWER($e) AND pc.state = 'REGISTERED')
+AND (
+  a.id IN (SELECT ast.work_item_id
+             FROM approval_stage_approver asa JOIN approval_stage ast ON ast.id = asa.stage_id
+            WHERE ast.checkpoint_label IN ('Customer Approval', 'Customer Review')
+              AND asa.state IN ('REQUESTED', 'APPROVED', 'REJECTED', 'CANCELLED')
+              AND asa.approver_user_id IN (SELECT u.id FROM "user" u WHERE LOWER(u.email) = LOWER($e)))
+  OR (b.state::text IN ('SCHEDULED','CUSTOMER_APPROVAL','IMPLEMENT','REVIEW','CUSTOMER_REVIEW',
+                        'ROLLBACK','CLOSED','CANCELED')
+      AND ($c IS NULL OR a.created_on < $c))
+)
+```
+
+Every subquery is uncorrelated, so Postgres evaluates each once (a hashed subplan);
+`idx_user_email_lower` (migration 0192_user_email_lower_index) and
+`idx_approval_stage_approver_approver_user_id` serve the designation lookup. The labels
+and the state lists come from the Go constants and a test pins them
+(`TestCRVisibility_*`).
+
+**Per path, as implemented** (`TestChangeRequestVisibilityIntegration_*` asserts each, in
+every state, for each persona):
+
+| Path a customer can reach | Enforcement |
+|---|---|
+| `POST /change-requests/search` (list, total, calendar, CSV / PDF export, header search, stat-card filters) | the fragment in `SearchChangeRequests` (count and page) |
+| `POST /change-requests/aggregate` (not routed by backend-v2) | the fragment in `AggregateChangeRequests` |
+| `GET /change-requests/{id}`, and the PATCH receipt (the same read) | the fragment in `GetChangeRequestByID`'s single SELECT: 404 |
+| `GET /change-requests/{id}/approvals` | `requireVisibleChangeRequest` first: 404 (it used to answer an empty 200, which confirmed the id existed) |
+| `POST /change-requests/{id}/approvals/decision` | the guard is the first statement of `DecideChangeRequestApproval`'s transaction, before any lock |
+| `PATCH /change-requests/{id}` (an answer, a proposed time, any other field) | the guard is the first statement of `PatchChangeRequest`'s transaction, **before** `classifyExternalPatch`: a hidden change request is a 404 even for a field no customer may set (it would otherwise be the 403 that confirms it exists) |
+| `GET /projects/{id}/stats/change-requests`, `GET /projects/{id}/stats` (outstanding count) | the fragment in `ChangeRequestStateCounts`, `ChangeRequestResolvedBuckets` and the change request part of `OutstandingCounts`; the service counts Authorize as outstanding **for a customer only** (`crOutstandingStatesFor`), so the card matches their list |
+| `/comments`, `/comments/search` with `referenceType: change_request`, and the by-comment-id operations (get, edit, delete, edit history) | `requireVisibleReference` (create, search); a `NOT EXISTS (hidden change request)` condition on the by-id statements |
+| `POST /cases/{id}/comments` and the other case endpoints that act on **whatever work item an id names**: comments search, tags, watch list, `POST /attachments/search` with `referenceType: change_request`, `PATCH` parent | `rejectHiddenChangeRequest` / `requireVisibleChangeRequest` in `caseRepo` (customer portal's backend-v2 forwards `POST /cases/{id}/comments` for any id, so a change request's id could be passed); `UpdateCaseParent` is now restricted to case-like types |
+| change request attachments | not reachable through the customer portal (`authorizeAttachmentAccess` forces `case` / `deployment`); the entity-level search is guarded as above |
+| `POST /change-requests`, `/link-options` | `internalOnly` (route) |
+| incidents, problems, SLAs | `internalOnly`; their joins only name a linked change request |
+| global search, case activities | case-like types only |
+| customer notice mail (approval requested, plan-date answer) | `CustomerNoticeEmails`: the **designated contacts** (registered, with a customer-stage approver row), not every contact of the project; a legacy change request nobody was asked about keeps the project audience |
+
+`TestChangeRequestVisibilityLint_*` (an AST lint in the style of the row-level-security
+bypass lint) fails the build when an exported repository function touching a change
+request or its approvals neither applies the fragment / guard nor carries a
+`// crvis:<reason>` comment, and when a method of the customer-facing interfaces is
+unclassified.
+
+**Legacy and `CR_STRICT_VISIBILITY_FROM`.** Change requests migrated or synced from
+ServiceNow, and the ones raised before this rule, were never asked through our flow:
+they carry no customer-stage rows (and `customer_approval_required` /
+`customer_review_required` are false on migrated rows), so "designated" alone would hide
+every one of them from the customers who see them today. No existing column says where a
+row came from (`created_by` is an email on both, `sn_sys_id` columns exist on other
+tables only, number series and id shapes are unsafe) and no column may be added, so the
+one deterministic marker is **time**: `work_item.created_on` against the instant in
+**`CR_STRICT_VISIBILITY_FROM`** (RFC 3339 with a zone). Created **before** it = legacy;
+at or after = strict. **Unset or empty = no cutover: every change request is legacy**
+(today's visibility; the safe default and the rollback; a WARN is logged at startup,
+because it is also how a deployment that means to be strict silently is not). The local
+compose stack sets `2000-01-01T00:00:00Z`, so the seed and the specs are strict. An
+unparsable value refuses to start (`Config.Validate`); `CRVisibilityFromConfig` fails
+**closed** (strict from the epoch) should it ever be reached without `Validate`.
+
+Release procedure: set it **once per environment** to that release's own instant, never
+move it, and leave it unset to roll back. Known failure modes, deliberately accepted:
+
+* A change request **raised directly in ServiceNow after the instant** counts as new but
+  never passed our flow: it has no customer rows, so strict mode **hides it from
+  customers** until it reaches a customer state *through us* (`provisionCustomerStage`
+  designates it then). Decide per environment whether to leave the variable unset until
+  ServiceNow raising stops.
+* **Native change requests on dev older than the instant** count as legacy.
+* **Each environment needs its own value**; **moving the instant flips existing rows
+  retroactively** (earlier = more strict, later = more legacy).
+* The sync rewrites `created_on` from ServiceNow: skew matters only for rows created
+  within the sync's skew of the instant.
+* A contact who is a **registered** contact of a legacy change request's project but was
+  not asked sees it past Authorize (as before); in Authorize they do not, unless the
+  customer-stage rows designate them.
+
+**An in-flight legacy change request with no live customer stage** (the user's
+`CS-PORTAL-000026 "Demo Test 1"` on Lumen Works Platform: in Customer Approval since an
+older build) used to answer **409 "nobody asked"** to the customer's Approve. Now the
+customer's first act -- an answer (`answerCustomerStageViaPatch`), a proposed time
+(`prepareCustomerProposal`) or a decision (`DecideChangeRequestApproval`) -- calls
+`ensureCustomerStageForLegacy` in **its own transaction**, which provisions the stage
+through the same `provisionCustomerStage` the normal path uses (every registered
+`PORTAL_USER` contact of the project, one `REQUESTED` row each, the creator listed
+`CANCELLED`), which also **designates** them: the change request stays visible after the
+act (the answer's `SCHEDULED`; the proposal's `AUTHORIZE`, a state a legacy change
+request is otherwise hidden in). It acts only when the caller is a customer (never
+staff), the change request is legacy, it is in Customer Approval / Customer Review right
+now, **no live stage** exists for that state (an existing live stage is never touched),
+and the caller is a registered `PORTAL_USER` contact of its own project;
+`provisionCustomerStage` re-checks under `FOR UPDATE OF cr`, so concurrent customers
+provision exactly once (`..._LegacyInFlightGetsItsStage/two_customers_answering_at_once`),
+never reopens a stage that was decided, and a refused act rolls its provisioning back with
+it. `customerCanAnswer` is **true** for the contacts such a stage would ask, computed
+read-only (`legacyStageWouldBeProvisioned`; `GET` never writes). Nothing is backfilled and
+the pure ServiceNow data source never reaches this code. **Unverified:** whether
+csm-sync-service's `delete_sync` covers `approval_stage_approver` (its repository is not
+in this checkout): if it removes our rows, the change request reverts to legacy / hidden
+(fail closed) and the next customer act provisions the stage again. All registered
+contacts of the project are designated at the first touch (accepted).
+
+**ServiceNow dual-write and the sync.** The visibility rule is a **read** filter: it adds
+no write refusals, so the PostgreSQL-first PATCH and its asynchronous ServiceNow mirror
+are unaffected, a 404 returns before the mirror is dispatched, and csm-sync-service
+(which writes SQL as `app.is_internal = true`, never through these validators) is not
+touched. The fragment reads the change request's *current* `project_id`, so a project the
+sync moves a change request to strands stale designations (fail closed).
+
+**Cost** (`EXPLAIN (ANALYZE, BUFFERS)` as the non-superuser role on a synthetic copy of
+the schema: 400,000 work items, 200,000 change requests, 3,000 projects, 60,000 users,
+97,000 approver rows; the viewer a registered contact of 5 projects, project 0 holding
+20,086 change requests of which 516 are visible to them). The dominant cost is the
+row-level security that already ran per row; the fragment adds almost nothing and, being
+selective, often cuts the work the policy does:
+
+| Count query for project 0 | Execution | Buffers |
+|---|---|---|
+| before this change (RLS + the project hint) | 213 ms | 141,110 |
+| strict (cutover long ago: 516 visible) | 90 ms | 16,564 |
+| unset (every change request legacy: 14,530 visible) | 221 ms | 167,397 |
+| strict, the page query (`ORDER BY created_on DESC LIMIT 25`) | 66 ms | 16,570 |
+| the by-id guard | < 1 ms | 55 |
+
+The designation lookup is one hashed subplan over the viewer's own approver rows
+(`idx_approval_stage_approver_approver_user_id`, `idx_user_email_lower`). The membership
+subquery scans `project_contact` once more per statement (`setViewerProjectIDsSQL` already
+scans it once per request; 432 buffers at 25,000 contacts): there is no index on
+`lower(project_contact.email)`, and none is added here (no migration).
+
+**Deliberately not done / follow-ups.** No column, table, type or policy was added; if
+database-level enforcement is wanted later it needs a policy-only migration numbered after
+`git pull` (0196 or later; upstream and this branch use up to 0195), a new session setting
+`app.cr_strict_from` on every statement, and the same predicate as a function. The detail
+still returns `createdBy` (a staff email) to a customer. Mixed-identity staff on the
+customer portal see designated change requests only. The unlabeled-stage classification
+hardening for migrated approval stages and the diagnosable "nobody eligible" counts are
+the change request lock / dates work's (`change_request_approval_flow.go`), not this
+section's.
+
+Tests: `TestChangeRequestVisibilityIntegration_*` (real Postgres,
+`CHANGE_REQUEST_TEST_DSN`, run twice -- as a superuser and as the non-superuser
+`csm_app`: designated stays visible through the whole lifecycle and in Rollback /
+Canceled, per person and permanent, never required the customer, the legacy rule state by
+state and instant by instant incl. the cutover boundary, a legacy change request a
+customer acted on, an in-flight legacy change request gets its stage (once, concurrently),
+internal / BFF / mixed / no-email callers, comments by id, the notice audience, the stats,
+the case endpoints), `TestChangeRequestVisibilityLint_*`, `TestCRVisibility*`,
+`TestConfig_CRStrictVisibilityFrom`, `TestCRVisibilityFromConfig`,
+`TestProjectChangeRequestStats_AuthorizeIsOutstandingForCustomersOnly`.
+
 ### Customer answers through PATCH (customer portal)
 
 The customer portal was built against ServiceNow, where the customer's answer is
@@ -3824,8 +4028,9 @@ nothing.
   was a silent no-op and their reject a 400 "locked"; without a live stage it was
   the same stamp-and-stay.
 * **Refusals, in order** (the first to fail wins; nothing is written until all
-  pass, the whole PATCH is one transaction): change request not visible -> 404 (row
-  level security); caller not a **registered `PORTAL_USER` contact of the change
+  pass, the whole PATCH is one transaction): change request not visible to the caller
+  (not designated to them and not legacy, see above) -> 404, before the request is
+  even classified; caller not a **registered `PORTAL_USER` contact of the change
   request's own project** (another project's contact, a contact with no
   `PORTAL_USER` role, an invited one, a non-contact, an unknown user) -> **403**;
   change request not in the answer's state (Customer Approval for
@@ -3838,9 +4043,13 @@ nothing.
   `expectedPlannedEndOn`) while the stored window is another -> **409** `the planned
   implementation time of this change request changed after you opened it (it is now
   ... to ...)`;
-  no live customer request (nobody was asked) -> **409** `no customer approval is
-  pending ... WSO2 records the customer's approval` (the manual
-  `{state: scheduled|closed}` stays WSO2's); then the decision's own rules: the
+  no live customer request and none could be created -> **409** `no customer approval
+  is pending ... WSO2 records the customer's approval` (the manual
+  `{state: scheduled|closed}` stays WSO2's): for a **legacy** change request waiting in
+  the state the first customer act *creates* the stage instead (see "An in-flight legacy
+  change request"), so the 409 is left for a project with nobody to ask but the creator,
+  or a stage already decided; a strict change request nobody was asked about is not
+  visible at all (404); then the decision's own rules: the
   creator -> 403 `the creator of a change request cannot approve it`, a contact who
   was not asked (registered after the request went out, inactive user) -> 403 `only
   members of the customer group ...`.
@@ -3856,7 +4065,9 @@ nothing.
   locks) and is **true exactly when the answer would be accepted**: the change is in
   Customer Approval / Customer Review; the viewer is a registered `PORTAL_USER` contact
   of its project; the customer's request is live (a stage of that state with a
-  `REQUESTED` row); the viewer holds a `REQUESTED` row on that stage (so not a contact
+  `REQUESTED` row) -- or, for a **legacy** change request waiting in that state with
+  no stage at all, it would be created by the viewer's own act and they would be one
+  of the people asked (`legacyStageWouldBeProvisioned`, read-only); the viewer holds a `REQUESTED` row on that stage (so not a contact
   registered afterwards, not one a sibling's answer or a Re-schedule cancelled); and
   `approverDecisionBlock` lets them (the creator never). It reuses the answer path's
   helpers (`liveCustomerStageForState`, `customerApproverUserID`,
@@ -3946,30 +4157,15 @@ nothing.
   a concurrent edit cannot deadlock. Two contacts answering at once serialise on the
   `change_request` lock: one answers, the other gets the 409
   (`TestChangeRequestCustomerOutcomeIntegration_ConcurrentAnswers`).
-* **Exposure of internal states (partly closed in the customer portal's backend).** A
-  customer's reads here are scoped to the projects they are a registered contact of
-  (`change_request_visibility` / `approval_stage_visibility`, migration 0145) and
-  nothing there or in the search / get / approvals queries restricts them by *state*,
-  so entity-service itself returns a project's change requests in `new` / `assess` /
-  `authorize` (and the Peer / CAB stages of the latter two) to its customers. The
-  customer portal's backend-v2 is where those states are "internal, never
-  customer-facing" (it has no vocabulary for them): its change-request **search** now
-  always narrows `filters.states` to the customer-visible set, so a customer can no
-  longer list them by sending no `stateKeys` (the webapp used to be the only thing
-  that kept them out, by always sending the allowed keys itself; observed on the local
-  stack: `POST /projects/{id}/change-requests/search` returned all eight fixtures,
-  `new` / `assess` / `authorize` included, now the three customer-visible ones).
-  **Closed for customers:** `GET /change-requests/{id}/approvals` no longer names WSO2's
-  internal approvers to a customer -- the Customer Approval / Customer Review stages
-  are given whole, every other stage (Peer, CAB, ECAB, Review) as its label and status
-  only, no approver names, ids or group (`redactInternalApprovalStages`,
+* **Exposure of internal states: closed.** A customer's reads and writes of a change
+  request are decided by the visibility rule ("Customer visibility and the cutover"
+  above): New / Assess / Authorize change requests that were never designated to them are
+  absent and 404 by id, here and through backend-v2 (whose interim state narrowing is
+  superseded by it and must go). `GET /change-requests/{id}/approvals` does not name WSO2's internal
+  approvers to a customer -- the Customer Approval / Customer Review stages are given
+  whole, every other stage (Peer, CAB, ECAB, Review) as its label and status only, no
+  approver names, ids or group (`redactInternalApprovalStages`,
   `TestChangeRequestCustomerPrivacyIntegration_ApprovalsHideWhoApprovesInternally`).
-  **Still open:** `GET /change-requests/{id}` and `GET /change-requests/{id}/approvals`
-  answer for any id the caller knows, whatever the state, here and through backend-v2.
-  Ids are random UUIDs that now only reach a customer from a list, so this is a
-  disclosure only for someone who already holds one, but the rule belongs in the
-  visibility policies (and the stats queries) and is a product decision about what a
-  customer may see, so it is left to a separate change.
 * Tests: `TestChangeRequestCustomerOutcomeIntegration_*` (real Postgres,
   `CHANGE_REQUEST_TEST_DSN`: lifecycle, rejections, PATCH == decision route, out of
   state, who may answer, nobody asked, the flag lock, the whitelist, concurrency,
