@@ -3307,9 +3307,19 @@ nothing.
   Customer Approval with a fresh customer stage. A Standard change has no internal
   approval to repeat: dates applied, stays in Customer Approval, the customer asked
   again. Anywhere but Customer Approval -> 409, on hold -> 409, creator /
-  non-contact -> 403. The webapp's modal sends only `plannedStartOn`, so a proposed
-  start after the stored end is a 400 `the planned start must not be after the
-  planned end` (the end is not shifted for the customer).
+  non-contact -> 403. A start alone keeps the STORED end (it is not shifted for the
+  customer), so a proposed start after the stored end is a 400 `the planned start
+  must not be after the planned end`: a customer moving a change to a later date
+  proposes the whole window -- the new start and the new end, the same length -- as
+  the CSM portal's Re-schedule dialog does. The formats accepted are whatever
+  PostgreSQL parses as `timestamptz`: RFC 3339 (with any offset) and the webapp's
+  `YYYY-MM-DD HH:MM:SS`, which carries no zone and is read in the database session's
+  `TimeZone` (UTC on the local stack; entity-service does not set it per connection
+  and nothing here asserts it for another database, so one configured otherwise
+  would shift the customer's time).
+  `TestChangeRequestCustomerProposalIntegration_*` pins the whole-window proposal for
+  Normal / Emergency / Standard in those formats and the messages for a bad window
+  (unchanged, ends before it starts, not a date, empty).
 * **Lock order.** The answer and the proposal take the `work_item` row first (a
   `PATCH`'s own `updated_on` / `updated_by` bump, `lockCustomerAnswerRow`), then
   `change_request` -- the order every other PATCH takes -- so a customer's answer and
