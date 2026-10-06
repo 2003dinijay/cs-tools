@@ -45,6 +45,10 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `DB_NAME`     | yes*     | —       | Database name              |
 | `DB_SSLMODE`  | no       | —       | `disable` or `require`    |
 | `DB_SCHEMA`   | no       | `DB_USER,public` | Pins the connection's `search_path` (`DSN`'s `options=-c search_path=...`), same purpose as `operations/csm-sync-service`'s own `DB_SCHEMA` — see that config's `withSchema`. The fallback makes explicit what Postgres' own default `search_path` (`"$user", public`) would already do implicitly — `public` must survive it, since every deployment's tables live there today (unqualified migrations). An explicit value is used verbatim, with no `public` appended |
+| `DB_POOL_MAX_CONNS` | no | `20` | pgxpool max open connections (see "Connection pool settings" below) |
+| `DB_POOL_MIN_CONNS` | no | `2` | pgxpool connections kept warm when idle |
+| `DB_POOL_MAX_CONN_LIFETIME` | no | `30m` | pgxpool connection rotation interval |
+| `DB_POOL_MAX_CONN_IDLE_TIME` | no | `5m` | pgxpool idle-connection release interval |
 | `SERVER_PORT` | no       | `8080`  | Main API listen port       |
 | `HEALTH_PORT` | no       | `8081`  | Health probe listen port; `Validate` rejects it being equal to `SERVER_PORT` (see "Health probes" below) |
 | `SERVER_READ_TIMEOUT` | no | `60s` | Main API server read timeout (Go duration, e.g. `60s`); must be > 0 |
@@ -6349,14 +6353,16 @@ Key conventions enforced at the DB level:
 
 ## Connection pool settings
 
-Configured in `internal/db/postgres.go`:
+Tuned via `config.Config`, applied by `internal/db.NewPool`. Each is env-configurable (`internal/config/config.go`); the values below are what an unset deployment gets — identical to what this file used to hardcode before these existed:
 
-| Setting             | Value   |
-|---------------------|---------|
-| Max connections     | 20      |
-| Min connections     | 2       |
-| Max conn lifetime   | 30 min  |
-| Max idle time       | 5 min   |
+| Setting             | Env var                       | Default |
+|---------------------|--------------------------------|---------|
+| Max connections     | `DB_POOL_MAX_CONNS`            | 20      |
+| Min connections     | `DB_POOL_MIN_CONNS`            | 2       |
+| Max conn lifetime   | `DB_POOL_MAX_CONN_LIFETIME`    | 30 min  |
+| Max idle time       | `DB_POOL_MAX_CONN_IDLE_TIME`   | 5 min   |
+
+`DB_POOL_MAX_CONNS`/`DB_POOL_MIN_CONNS` fall back to their default on an unset, non-numeric, or non-positive value (a pool size of zero or less would misconfigure pgxpool outright) — same fail-safe-to-default posture `getDurationOrDefault` already uses for every duration-shaped env var here, now shared by `getInt32OrDefault`. An invalid value for any of the four surfaces through `Config.Validate()` at startup (`loadErr`), the same mechanism `SERVER_READ_TIMEOUT`/etc. already use.
 
 ## Pagination response conventions
 
