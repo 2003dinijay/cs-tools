@@ -66,6 +66,35 @@ describe("changeRequests utils", () => {
     expect(stats.totalRequests).toBe(10);
   });
 
+  it("mapChangeRequestStats files a change request waiting in Authorize under Ongoing, never under Awaiting Your Action", () => {
+    // The shape backend-v2 sends: Authorize is {id: -3, label: Authorize}; New and
+    // Assess are not sent at all.
+    const stats = mapChangeRequestStats({
+      stateCount: [
+        { id: "-3", label: "Authorize", count: 2 },
+        { id: "5", label: "Customer Approval", count: 1 },
+        { id: "-2", label: "Scheduled", count: 3 },
+        { id: "3", label: "Closed", count: 4 },
+      ],
+      totalCount: 10,
+      resolvedCount: { total: 4, currentMonth: 0, pastThirtyDays: 0 },
+    });
+    expect(stats.ongoing).toBe(5);
+    expect(stats.awaitingYourAction).toBe(1);
+    expect(stats.completed).toBe(4);
+    expect(stats.totalRequests).toBe(10);
+    expect(stats.ongoing + stats.awaitingYourAction + stats.completed).toBe(stats.totalRequests);
+  });
+
+  it("mapChangeRequestStats counts Authorize by label too when the API carries no id", () => {
+    const stats = mapChangeRequestStats({
+      stateCount: [{ id: "", label: "Authorize", count: 2 }],
+      totalCount: 2,
+      resolvedCount: { total: 0, currentMonth: 0, pastThirtyDays: 0 },
+    });
+    expect(stats.ongoing).toBe(2);
+  });
+
   it("formatChangeRequestDuration formats minutes", () => {
     expect(formatChangeRequestDuration(90)).toBe("1 hour 30 minutes");
     expect(formatChangeRequestDuration(45)).toBe("45 minutes");

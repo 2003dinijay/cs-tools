@@ -21,12 +21,14 @@ import ChangeRequestDetailsPage from "@features/operations/pages/ChangeRequestDe
 import {
   CHANGE_REQUEST_ANSWER_STALE_MESSAGE,
   CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE,
+  CHANGE_REQUEST_NOT_FOUND_MESSAGE,
   CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE,
 } from "@features/operations/utils/changeRequests";
 import { ApiError } from "@utils/ApiError";
 
 const mocks = vi.hoisted(() => ({
   changeRequest: { value: null as Record<string, unknown> | null },
+  error: { value: null as unknown },
   mutateAsync: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
@@ -36,9 +38,10 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@features/operations/api/useGetChangeRequestDetails", () => ({
   default: () => ({
     data: mocks.changeRequest.value,
+    error: mocks.error.value,
     isLoading: false,
     isFetching: false,
-    isError: false,
+    isError: mocks.error.value != null,
   }),
 }));
 
@@ -109,6 +112,7 @@ const SHOWN = { expectedPlannedStartOn: "2026-06-10T04:30:00Z", expectedPlannedE
 describe("ChangeRequestDetailsPage", () => {
   beforeEach(() => {
     mocks.changeRequest.value = makeChangeRequest();
+    mocks.error.value = null;
     mocks.mutateAsync.mockReset();
     mocks.mutateAsync.mockResolvedValue({ id: "cr-1" });
     mocks.showError.mockReset();
@@ -119,6 +123,56 @@ describe("ChangeRequestDetailsPage", () => {
   it("renders change request number when loaded", () => {
     renderPage();
     expect(screen.getByText("CHG001")).toBeInTheDocument();
+  });
+
+  describe("a change request in Authorize after the customer proposed a new time", () => {
+    beforeEach(() => {
+      mocks.changeRequest.value = makeChangeRequest({
+        state: STATES.authorize,
+        customerCanAnswer: false,
+      });
+    });
+
+    it("is still there, says where it is, and tells the customer WSO2 is reviewing it", () => {
+      renderPage();
+      expect(screen.getByText("CHG001")).toBeInTheDocument();
+      // The workflow panel marks Authorize as the current step (the same locator the
+      // e2e page object uses: the stage name sits two levels above the marker).
+      const current = screen.getAllByText("Current");
+      expect(current).toHaveLength(1);
+      expect(current[0].parentElement?.parentElement?.querySelector("p")?.textContent).toBe("Authorize");
+      expect(
+        screen.getByText(/WSO2 is reviewing this change request internally/),
+      ).toBeInTheDocument();
+    });
+
+    it("offers nothing to answer until the customer is asked again", () => {
+      renderPage();
+      for (const name of ["Propose New Time", "Approve", "Reject", "Successful", "Unsuccessful"]) {
+        expect(button(name), name).not.toBeInTheDocument();
+      }
+    });
+  });
+
+  describe("a change request that is not shared with the customer", () => {
+    it("is a plain not-found page, whatever the reason, and shows none of the change request", () => {
+      mocks.changeRequest.value = null;
+      mocks.error.value = new ApiError(404, "Not Found", "change request not found");
+      renderPage();
+      expect(screen.getByText(CHANGE_REQUEST_NOT_FOUND_MESSAGE)).toBeInTheDocument();
+      expect(screen.queryByText("CHG001")).not.toBeInTheDocument();
+      for (const name of ["Propose New Time", "Approve", "Reject", "Successful", "Unsuccessful"]) {
+        expect(button(name), name).not.toBeInTheDocument();
+      }
+    });
+
+    it("keeps the generic copy for a failure that is not a 404", () => {
+      mocks.changeRequest.value = null;
+      mocks.error.value = new ApiError(500, "Internal Server Error", "boom");
+      renderPage();
+      expect(screen.getByText("Could not load change request details.")).toBeInTheDocument();
+      expect(screen.queryByText(CHANGE_REQUEST_NOT_FOUND_MESSAGE)).not.toBeInTheDocument();
+    });
   });
 
   describe("which buttons the customer gets", () => {

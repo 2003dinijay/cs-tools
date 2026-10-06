@@ -52,6 +52,7 @@ import {
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
 import ApiErrorState from "@components/error/ApiErrorState";
+import { isNotFoundError } from "@utils/ApiError";
 import useGetChangeRequestDetails from "@features/operations/api/useGetChangeRequestDetails";
 import { usePatchChangeRequest } from "@features/operations/api/usePatchChangeRequest";
 import ScheduledMaintenanceWindowCard from "@features/operations/components/change-requests/ScheduledMaintenanceWindowCard";
@@ -59,6 +60,7 @@ import ProposeNewImplementationTimeModal from "@features/operations/components/c
 import ChangeRequestRejectConfirmDialog from "@features/operations/components/change-requests/ChangeRequestRejectConfirmDialog";
 import ChangeRequestDetailsLoadingSkeleton from "@features/operations/components/change-requests/ChangeRequestDetailsLoadingSkeleton";
 import {
+  CHANGE_REQUEST_NOT_FOUND_MESSAGE,
   buildChangeRequestWorkflowStages,
   describeChangeRequestActionError,
   generateChangeRequestDetailsPdf,
@@ -219,7 +221,11 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
         </Button>
         <ApiErrorState
           error={error}
-          fallbackMessage="Could not load change request details."
+          fallbackMessage={
+            isNotFoundError(error)
+              ? CHANGE_REQUEST_NOT_FOUND_MESSAGE
+              : "Could not load change request details."
+          }
         />
       </Stack>
     );

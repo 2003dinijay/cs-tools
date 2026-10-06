@@ -388,6 +388,14 @@ export function getCustomerDecisionMessages(
       };
 }
 
+/**
+ * The 404 of a change request's page. A change request that is not shared with
+ * this customer is a 404 exactly like one that does not exist, so the page says
+ * neither more nor less than that.
+ */
+export const CHANGE_REQUEST_NOT_FOUND_MESSAGE =
+  "This change request was not found. It may not have been shared with you.";
+
 /** A conflict (409): the answer was already given, or is no longer asked for. */
 export const CHANGE_REQUEST_ANSWER_STALE_MESSAGE =
   "This request was already answered or is no longer waiting for your answer.";

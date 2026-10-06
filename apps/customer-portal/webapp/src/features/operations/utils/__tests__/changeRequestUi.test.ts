@@ -19,6 +19,7 @@ import { ChangeRequestStates } from "@features/operations/constants/operationsCo
 import {
   formatImpactLabel,
   getChangeRequestStateColor,
+  getChangeRequestStateIcon,
   resolveChangeRequestCanonicalState,
 } from "@features/operations/utils/changeRequestUi";
 
@@ -26,6 +27,21 @@ describe("resolveChangeRequestCanonicalState", () => {
   it("maps API id to canonical label", () => {
     expect(resolveChangeRequestCanonicalState({ id: "-5", label: "x" })).toBe(
       ChangeRequestStates.NEW,
+    );
+  });
+
+  it("reads Authorize as the API now sends it, {id: -3, label: Authorize}, and gives it its own colour and icon", () => {
+    expect(resolveChangeRequestCanonicalState({ id: "-3", label: "Authorize" })).toBe(
+      ChangeRequestStates.AUTHORIZE,
+    );
+    expect(getChangeRequestStateColor({ id: "-3", label: "Authorize" })).toBe(
+      getChangeRequestStateColor("Authorize"),
+    );
+    expect(getChangeRequestStateColor({ id: "-3", label: "Authorize" })).not.toBe(
+      getChangeRequestStateColor({ id: "5", label: "Customer Approval" }),
+    );
+    expect(getChangeRequestStateIcon({ id: "-3", label: "Authorize" })).not.toBe(
+      getChangeRequestStateIcon(undefined),
     );
   });
 
