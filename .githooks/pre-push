@@ -61,6 +61,7 @@ WEBAPP_CR_TEST_FILES="
 src/features/csm-cases/components/LinkedChangeRequestsWidget.test.tsx
 src/features/csm-operations/utils/changeRequestsFiltersUrl.test.ts
 src/features/csm-operations/utils/__tests__/changeRequests.test.ts
+src/features/csm-operations/utils/__tests__/changeRequestStages.test.ts
 src/features/csm-operations/components/ChangeRequestLifecycleStepper.test.tsx
 src/features/csm-operations/components/ChangeRequestTransitionReasonDialog.test.tsx
 src/features/csm-operations/components/ChangeRequestsFilterBar.test.tsx
