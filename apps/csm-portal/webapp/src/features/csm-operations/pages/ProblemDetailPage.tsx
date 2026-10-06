@@ -26,6 +26,9 @@ import { usePatchProblem } from "@features/csm-operations/api/usePatchProblem";
 import EditProblemDialog from "@features/csm-operations/components/EditProblemDialog";
 import ProblemActionBar from "@features/csm-operations/components/ProblemActionBar";
 import ProblemFixNotesDialog from "@features/csm-operations/components/ProblemFixNotesDialog";
+import ProblemTransitionRequirementDialog, {
+  type ProblemRequirementTransition,
+} from "@features/csm-operations/components/ProblemTransitionRequirementDialog";
 import { problemStateColor, problemStateLabel } from "@features/csm-operations/utils/problems";
 import type { BeEntityRef, BeProblemRef, BeUpdateProblemPayload } from "@api/backend/types";
 import { useNavTransition } from "@hooks/useNavTransition";
@@ -125,6 +128,9 @@ export default function ProblemDetailPage(): JSX.Element {
   // `null` otherwise. Every other transition dispatches directly with no
   // intermediate dialog.
   const [fixNotesOpen, setFixNotesOpen] = useState(false);
+  // Set while the dialog collecting a move's required field is open: an
+  // assignee for Assess, fix notes for Resolved.
+  const [requirementFor, setRequirementFor] = useState<ProblemRequirementTransition | null>(null);
 
   const recordView = useRecordRecentView();
   useEffect(() => {
@@ -146,11 +152,42 @@ export default function ProblemDetailPage(): JSX.Element {
    * of responsibility as `IncidentActionBar` +
    * `CsmIncidentDetailPage.onIncidentAction`.
    */
+  const sendPatch = useCallback(
+    (patch: BeUpdateProblemPayload, onSuccess?: () => void) => {
+      if (!id) return;
+      patchProblem.mutate(
+        { id, patch },
+        {
+          onSuccess,
+          onError: (err) => {
+            const msg =
+              err instanceof BackendApiError && err.status < 500 && err.message
+                ? err.message
+                : "Could not update the problem's state. Please try again.";
+            showError(msg, err);
+          },
+        },
+      );
+    },
+    [id, patchProblem, showError],
+  );
+
   const onProblemAction = useCallback(
     (transition: string) => {
       if (!id) return;
       if (transition === "fix") {
         setFixNotesOpen(true);
+        return;
+      }
+      // ServiceNow refuses Assess without an assignee and Resolved without
+      // fix notes; ask for whichever is missing instead of sending a move
+      // that can only fail.
+      if (transition === "assess" && !data?.assignedTo?.id) {
+        setRequirementFor("assess");
+        return;
+      }
+      if (transition === "resolve" && !data?.fixNotes?.trim()) {
+        setRequirementFor("resolve");
         return;
       }
       patchProblem.mutate(
@@ -166,7 +203,7 @@ export default function ProblemDetailPage(): JSX.Element {
         },
       );
     },
-    [id, patchProblem, showError],
+    [id, data, patchProblem, showError],
   );
 
   const onFixNotesSubmit = useCallback(
@@ -498,6 +535,17 @@ export default function ProblemDetailPage(): JSX.Element {
               },
             )
           }
+        />
+      )}
+
+      {requirementFor && (
+        <ProblemTransitionRequirementDialog
+          transition={requirementFor}
+          isSubmitting={patchProblem.isPending}
+          onClose={() => {
+            if (!patchProblem.isPending) setRequirementFor(null);
+          }}
+          onConfirm={(patch) => sendPatch(patch, () => setRequirementFor(null))}
         />
       )}
 

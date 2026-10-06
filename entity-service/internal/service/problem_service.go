@@ -317,6 +317,38 @@ var problemTransitions = map[string]repository.ProblemTransition{
 	"close":   {Name: "close", From: "RESOLVED", To: "CLOSED"},
 }
 
+// checkProblemTransitionRequirements refuses a move ServiceNow would refuse
+// for a missing field, before anything is written. ServiceNow's state model
+// (ProblemStateUtils, discovery script 61) wants an assignee to move to
+// Assess and fix notes to move to Resolved -- the fields of its own "Assess"
+// and "Resolve" dialogs (resolve's resolution code is set by the move
+// itself). A value in the request decides; only an absent one falls back to
+// the value already on the problem. Without this, dual-write gets ServiceNow's misleading 409 ("a
+// populated 'Assigned to' is a confirmed live cause") and Postgres-only mode
+// would move a problem ServiceNow never would.
+func checkProblemTransitionRequirements(t repository.ProblemTransition, req domain.UpdateProblemRequest, current domain.ProblemDetail) error {
+	// A value in the request decides, blank or not: the same save writes it,
+	// so a blank one would clear what the problem has. Only an absent value
+	// falls back to the problem's own.
+	has := func(fromReq *string, onProblem bool) bool {
+		if fromReq != nil {
+			return strings.TrimSpace(*fromReq) != ""
+		}
+		return onProblem
+	}
+	switch t.Name {
+	case "assess":
+		if !has(req.AssignedToID, current.AssignedTo != nil && current.AssignedTo.ID != "") {
+			return &apierror.ValidationError{Msg: "assess needs an assignee: send assignedToId, or assign the problem first"}
+		}
+	case "resolve":
+		if !has(req.FixNotes, current.FixNotes != nil && strings.TrimSpace(*current.FixNotes) != "") {
+			return &apierror.ValidationError{Msg: "resolve needs fix notes: send fixNotes, or add them to the problem first"}
+		}
+	}
+	return nil
+}
+
 // UpdateProblem implements ProblemService for both Postgres data sources.
 // A request carries a transition (a state move), plain fields, or both --
 // the fields apply in the same save as the move, as ServiceNow's "Fix" UI
@@ -363,10 +395,17 @@ func (s *problemService) UpdateProblem(ctx context.Context, req domain.UpdatePro
 			}
 		}
 	}
+	// One instant, two spellings: Postgres gets RFC3339 (what the repository
+	// parses), ServiceNow its own "YYYY-MM-DD HH:mm:ss" (UTC), which is also
+	// what the portal sends and this API documents.
+	var snTargetDate *string
 	if req.TargetResolutionDate != nil {
-		if _, err := time.Parse(time.RFC3339, *req.TargetResolutionDate); err != nil {
-			return domain.UpdateProblemResponse{}, &apierror.ValidationError{Msg: "targetResolutionDate must be a valid RFC3339 timestamp"}
+		t, err := parseProblemTargetDate(*req.TargetResolutionDate)
+		if err != nil {
+			return domain.UpdateProblemResponse{}, err
 		}
+		pg, sn := t.Format(time.RFC3339), t.Format(problemTargetDateLayout)
+		req.TargetResolutionDate, snTargetDate = &pg, &sn
 	}
 
 	actorEmail, err := s.resolveActorEmail(ctx)
@@ -374,10 +413,22 @@ func (s *problemService) UpdateProblem(ctx context.Context, req domain.UpdatePro
 		return domain.UpdateProblemResponse{}, err
 	}
 
+	if transition != nil {
+		current, err := s.repo.GetProblem(ctx, req.ID)
+		if err != nil {
+			return domain.UpdateProblemResponse{}, err
+		}
+		if err := checkProblemTransitionRequirements(*transition, req, current); err != nil {
+			return domain.UpdateProblemResponse{}, err
+		}
+	}
+
 	var updatedOn time.Time
 	switch {
 	case transition != nil && s.snMirror != nil:
-		if _, err := s.snMirror.UpdateProblem(ctx, req); err != nil {
+		snReq := req
+		snReq.TargetResolutionDate = snTargetDate
+		if _, err := s.snMirror.UpdateProblem(ctx, snReq); err != nil {
 			return domain.UpdateProblemResponse{}, err
 		}
 		updatedOn, err = s.repo.ApplyProblemTransition(ctx, req, *transition, false, actorEmail)
@@ -399,7 +450,7 @@ func (s *problemService) UpdateProblem(ctx context.Context, req domain.UpdatePro
 		if err != nil {
 			return domain.UpdateProblemResponse{}, err
 		}
-		s.mirrorProblemFields(ctx, req)
+		s.mirrorProblemFields(ctx, req, snTargetDate)
 	}
 
 	// Re-read so State/ResolutionCode/AssignedTo show the real post-write
@@ -433,7 +484,7 @@ func (s *problemService) UpdateProblem(ctx context.Context, req domain.UpdatePro
 // has committed and before the re-read, so a failed re-read can't skip it.
 // mirrorReq carries only the fields this call set, never a transition (a
 // transition goes to ServiceNow synchronously instead).
-func (s *problemService) mirrorProblemFields(ctx context.Context, req domain.UpdateProblemRequest) {
+func (s *problemService) mirrorProblemFields(ctx context.Context, req domain.UpdateProblemRequest, snTargetDate *string) {
 	if s.snWriteback == nil {
 		return
 	}
@@ -444,13 +495,13 @@ func (s *problemService) mirrorProblemFields(ctx context.Context, req domain.Upd
 		CauseNotes:           req.CauseNotes,
 		FixNotes:             req.FixNotes,
 		Workaround:           req.Workaround,
-		TargetResolutionDate: req.TargetResolutionDate,
+		TargetResolutionDate: snTargetDate,
 	}
 	payload := map[string]any{"id": req.ID}
 	for key, val := range map[string]*string{
 		"assignedToId": req.AssignedToID, "assignmentGroupId": req.AssignmentGroupID,
 		"causeNotes": req.CauseNotes, "fixNotes": req.FixNotes, "workaround": req.Workaround,
-		"targetResolutionDate": req.TargetResolutionDate,
+		"targetResolutionDate": snTargetDate,
 	} {
 		if val != nil {
 			payload[key] = *val
@@ -470,3 +521,20 @@ const maxWorkItemSubjectLength = 512
 
 // validProblemCategoryPG is problem_category_enum's label set (migration 0059).
 var validProblemCategoryPG = map[string]bool{"SOFTWARE": true, "HARDWARE": true, "NETWORK": true, "DATABASE": true}
+
+// problemTargetDateLayout is ServiceNow's date-time format, the one
+// ProblemUtils requires for targetResolutionDate and the portal sends (UTC).
+const problemTargetDateLayout = "2006-01-02 15:04:05"
+
+// parseProblemTargetDate accepts targetResolutionDate as this API documents
+// it -- "YYYY-MM-DD HH:mm:ss", UTC -- and as RFC3339, and returns it in UTC.
+func parseProblemTargetDate(v string) (time.Time, error) {
+	v = strings.TrimSpace(v)
+	if t, err := time.ParseInLocation(problemTargetDateLayout, v, time.UTC); err == nil {
+		return t, nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		return t.UTC(), nil
+	}
+	return time.Time{}, &apierror.ValidationError{Msg: "targetResolutionDate must be YYYY-MM-DD HH:mm:ss (UTC) or an RFC3339 timestamp"}
+}
