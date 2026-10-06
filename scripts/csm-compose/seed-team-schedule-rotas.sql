@@ -39,4 +39,9 @@ FROM (VALUES
 ) AS v(key, display, type)
 ON CONFLICT (id) DO NOTHING;
 
+-- 0200 seeds IaaS's windows inactive for the deploy window (see its header);
+-- a local stack runs the rota-aware webapp, so they are switched on here.
+UPDATE team_schedule_shift SET is_active = TRUE, updated_on = NOW()
+ WHERE code IN ('SRE_IAAS_DAY', 'SRE_IAAS_NIGHT') AND NOT is_active;
+
 COMMIT;

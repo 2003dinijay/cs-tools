@@ -172,7 +172,12 @@ UPDATE team
        updated_on = NOW(),
        updated_by = 'rename-team-keys'
  WHERE name ~ '^[a-z]+$'
-   AND (lower(type) LIKE 'cre%' OR lower(type) LIKE 'sre%');
+   AND (lower(type) LIKE 'cre%' OR lower(type) LIKE 'sre%')
+   -- only the teams this script renames, including ones renamed on an earlier
+   -- run: an unrelated team with a one-word lower-case name is not ours to
+   -- touch, and its registry entry may match it by that exact name
+   AND EXISTS (SELECT 1 FROM _team_key_rename r
+                WHERE lower(team.key) IN (r.old_key, r.new_key));
 
 -- 4. Assert before committing. The failure this guards against is a child
 --    row left on a key the mapping was supposed to move -- exactly the state
@@ -187,13 +192,24 @@ DECLARE
 BEGIN
     FOR t IN SELECT tbl FROM _child_tables ORDER BY tbl LOOP
         IF to_regclass(t) IS NULL THEN CONTINUE; END IF;
+        -- A blocked mapping was skipped on purpose (step 2), so its rows are
+        -- expected to stay put: reported, never a reason to roll back the
+        -- unambiguous renames.
         EXECUTE format(
             'SELECT count(*) FROM %I c
-               JOIN _team_key_rename r ON lower(c.team_key) = r.old_key', t)
+               JOIN _team_key_rename r ON lower(c.team_key) = r.old_key
+              WHERE NOT EXISTS (SELECT 1 FROM _blocked b WHERE b.old_key = r.old_key)', t)
            INTO stranded;
         IF stranded > 0 THEN
             RAISE WARNING '% still holds % row(s) on an old key', t, stranded;
             bad := bad + stranded;
+        END IF;
+        EXECUTE format(
+            'SELECT count(*) FROM %I c
+               JOIN _blocked b ON lower(c.team_key) = b.old_key', t)
+           INTO stranded;
+        IF stranded > 0 THEN
+            RAISE NOTICE '% keeps % row(s) on a blocked key (not renamed, see above)', t, stranded;
         END IF;
     END LOOP;
     IF bad > 0 THEN
@@ -203,12 +219,31 @@ END
 $verify$;
 
 -- 5. The catalogue as it now stands, with the live rota counts beside it.
+--    Guarded like the repair and the assertion: a schedule table this
+--    database does not have is reported as NULL, rather than a query that
+--    aborts the transaction and rolls the renames back.
+CREATE TEMP TABLE _rota_counts (team_key TEXT, assignments BIGINT, absences BIGINT) ON COMMIT DROP;
+INSERT INTO _rota_counts (team_key) SELECT key FROM team;
+DO $counts$
+BEGIN
+    IF to_regclass('team_schedule_assignment') IS NOT NULL THEN
+        UPDATE _rota_counts r SET assignments =
+            (SELECT count(*) FROM team_schedule_assignment a WHERE a.team_key = r.team_key);
+    END IF;
+    IF to_regclass('team_schedule_absence') IS NOT NULL THEN
+        UPDATE _rota_counts r SET absences =
+            (SELECT count(*) FROM team_schedule_absence b WHERE b.team_key = r.team_key);
+    END IF;
+END
+$counts$;
+
 SELECT t.key,
        t.name,
        t.type,
-       (SELECT count(*) FROM team_schedule_assignment a WHERE a.team_key = t.key) AS assignments,
-       (SELECT count(*) FROM team_schedule_absence b WHERE b.team_key = t.key)    AS absences
+       c.assignments,
+       c.absences
   FROM team t
+  LEFT JOIN _rota_counts c ON c.team_key = t.key
  WHERE lower(t.type) LIKE 'cre%' OR lower(t.type) LIKE 'sre%'
  ORDER BY t.type, t.key;
 

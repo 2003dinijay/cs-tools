@@ -359,6 +359,20 @@ PaaS SRE is N/A there, so it has no rota until it has a schedule.
   scopes every view to one rota and offers a rota picker only where a family
   has more than one rota with teams, so CRE and SaaS-only SRE read as before.
 
+**IaaS windows start inactive.** The portal before this change reads every
+zoned SRE window as part of SaaS's day, week and roster. `0200` therefore
+seeds `SRE_IAAS_DAY` and `SRE_IAAS_NIGHT` with `is_active = FALSE`, so an older
+webapp still running during the deploy never sees them. Once the rota-aware
+webapp is live, switch them on together with giving the IaaS teams their type:
+
+```sql
+UPDATE team_schedule_shift SET is_active = TRUE, updated_on = NOW()
+ WHERE code IN ('SRE_IAAS_DAY', 'SRE_IAAS_NIGHT');
+```
+
+SME's windows ship active: the older portal knows only CRE and SRE and passes
+them by.
+
 **Not changed, on purpose:**
 - **`rota.escalation_minutes` is informational.** The escalation ladder
   (csm-notification-service) keeps its own timing.
@@ -382,7 +396,7 @@ PaaS SRE is N/A there, so it has no rota until it has a schedule.
 
 ## Change log
 
-- **0199–0200 rotas.** The SME family; `team_schedule_rota`; `zone.rota_id` (TZ1–TZ3 on `SRE_SAAS`); the zone-family check widened from SRE to SRE or SME; IaaS and seven SME rotas, each with a Day and a Night zone and window; the `sme_rota_admin` role. Additive only: no existing row, value or column changes.
+- **0199–0200 rotas.** The SME family; `team_schedule_rota`; `zone.rota_id` (TZ1–TZ3 on `SRE_SAAS`); the zone-family check widened from SRE to SRE or SME; IaaS and seven SME rotas, each with a Day and a Night zone and window; the `sme_rota_admin` role. Nothing is removed, renamed or re-typed, but existing objects do change: 0199 adds a value to `team_schedule_shift_family_enum`; 0200 adds the nullable column `team_schedule_zone.rota_id` and sets it on the existing TZ1–TZ3 rows, and replaces the zone-family CHECK with a wider one (every existing row satisfies it). IaaS's two windows are seeded inactive until the new webapp is deployed.
 - **0152–0155** replace `000088`–`000107`, which were written in the old
   up/down format. They reproduce the schema and catalogue that chain ended in
   exactly (compared with `pg_dump` against a server built from the old chain).

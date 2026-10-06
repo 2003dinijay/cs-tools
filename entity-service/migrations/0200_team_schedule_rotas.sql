@@ -153,14 +153,27 @@ UPDATE team_schedule_zone SET weekend_zone_id = id, updated_on = NOW()
 -- assignment -- L1, L2 or L3 -- as SRE_TZ3 does. is_rotation, because being on
 -- the rotation is the point; the no-overlap rule then keeps one person off a
 -- Day and a Night that touch.
+--
+-- IaaS's two windows are seeded INACTIVE. The portal before this change reads
+-- every zoned SRE window as a lane of SaaS's day, week and roster, and offers
+-- it in SaaS's picker; the catalogue serves only active windows, so while that
+-- portal may still be live -- this migration can run before the new webapp
+-- ships -- IaaS must not be one. Switch them on once the rota-aware webapp is
+-- deployed, with the IaaS teams' team.type (docs/team-schedule.md, Rotas):
+--   UPDATE team_schedule_shift SET is_active = TRUE, updated_on = NOW()
+--    WHERE code IN ('SRE_IAAS_DAY', 'SRE_IAAS_NIGHT');
+-- SME's windows need no such wait: that portal knows only CRE and SRE, and
+-- passes SME windows by.
 INSERT INTO team_schedule_shift
     (code, label, family, zone_id, tier, day_scope, start_minute, end_minute,
      is_on_call, is_escalation, is_rotation, required_headcount,
-     short_code, colour_token, sort_order, created_by, updated_by)
+     short_code, colour_token, sort_order, is_active, created_by, updated_by)
 SELECT v.code, v.label, v.family::team_schedule_shift_family_enum, z.id,
        NULL, 'ANY'::team_schedule_day_scope_enum, v.start_minute, v.end_minute,
        FALSE, TRUE, TRUE, NULL,
-       v.short_code, v.colour_token, v.sort_order, 'migration', 'migration'
+       v.short_code, v.colour_token, v.sort_order,
+       v.code NOT LIKE 'SRE\_IAAS\_%',   -- IaaS waits for the new portal; see above
+       'migration', 'migration'
 FROM (VALUES
     ('SRE_IAAS_DAY',   'IaaS day escalation',              'SRE', 'IAAS_D',  480, 1200, 'Day',   'TZ1', 210),
     ('SRE_IAAS_NIGHT', 'IaaS night escalation',            'SRE', 'IAAS_N', 1200, 1920, 'Night', 'TZ3', 220),

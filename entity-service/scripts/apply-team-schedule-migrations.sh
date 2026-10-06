@@ -22,7 +22,11 @@ export PGHOST="$DB_HOST" PGPORT="${DB_PORT:-5432}" PGUSER="$DB_USER" \
        PGPASSWORD="$DB_PASSWORD" PGDATABASE="$DB_NAME" PGSSLMODE="${DB_SSLMODE:-require}"
 
 APPLY="${APPLY:-0}"
-files=$(ls migrations/*.sql | sort | awk -F/ '$NF >= "0152" && /schedule/')
+# Exactly the Team Schedule chain: 0152-0168 and the rotas, 0199-0200. An
+# open-ended "schedule" match also caught 0183_service_commitment_schedule_id,
+# which is not Team Schedule at all.
+files=$(ls migrations/*.sql | sort | awk -F/ '
+  /schedule/ && (($NF >= "0152" && $NF < "0169") || ($NF >= "0199" && $NF < "0201"))')
 
 echo "target : $PGUSER@$PGHOST/$PGDATABASE"
 echo "mode   : $([ "$APPLY" = 1 ] && echo 'APPLY (writes)' || echo 'dry run (no writes)')"
