@@ -3096,6 +3096,124 @@ ticked, "Review → Closed" becomes "Review → **Customer Review** → Closed".
   Approval` / `Customer Review`; pre-existing `Assess`/`Authorize`
   labels (and unlabeled positional stages) are still recognised as peer/CAB.
 
+### Approval stages mirrored from ServiceNow (no `checkpoint_label`), and "nobody is eligible"
+
+A stage this service provisions always has its `checkpoint_label`. A stage with **none** is
+one csm-sync-service mirrored from ServiceNow (`sysapproval_group` / `sysapproval_approver`),
+i.e. migrated data: no label, an approver whose `"user"` row may be missing, an
+`assignment_group_id` that is the CAB's, some other group, or NULL (an unsynced ServiceNow
+group also yields NULL, so NULL is **not** a marker of anything). `checkpoint_label` is left
+exactly as it is (keeping or dropping it is decided once the ServiceNow table is reconciled);
+this section is about how such a stage is *read* at runtime, using only existing columns.
+
+It used to be read by its zero-based position alone (`classifyApprovalStage`: 0 = Peer, 1 =
+CAB, anything else unknown). A position is only a guess, and a wrong guess acted on data
+nobody could explain: an Emergency change in Authorize whose single synced stage sits at
+position 0 had a **Peer** stage in Authorize, so its approver's decision was refused as stale
+(409) and `canDecide` was false; a stale position-0 stage of a Normal change that had moved
+on was **cancelled** by the next state change.
+
+`runtimeApprovalStageKind(label, position, groupName, model, state)` is the runtime reading,
+used by `reconcileStaleApprovers`, `approvalStageInfo` (so also `callerPendingApprovalStage`
+and the decision itself) and `markCanDecide`. A stage with a label is read by it, as before.
+A stage with none is read as the first of these that applies, **and the result counts only in
+the state it is decided in** (`approvalStageDecidableState`: Peer in Assess, CAB / ECAB in
+Authorize), otherwise it is `stageKindOther`:
+
+1. its own assignment group: the group named `ECAB Approval` -> ECAB, `CAB Approval` -> CAB;
+2. an Emergency change in Authorize has no peer stage and no CAB stage -> ECAB;
+3. the positional guess (0 Peer, 1 CAB).
+
+`stageKindOther` is not tied to any state: it is **never cancelled** by a state move
+(`reconcileStaleApprovers`; a finished change -- Closed / Canceled / Rollback -- still cancels
+every requested row, unchanged), **never refused as out of state**, shown decidable to its
+REQUESTED approver (the creator rule still applies, and so does the internal-only rule for the
+kinds that need it: nothing is loosened) and a decision on it is recorded with no state
+cascade. **Customer kinds are never inferred for an unlabeled stage** (fail closed): the
+customer's answer is only ever accepted on a stage this service wrote with its label, a synced
+stage that names a project contact stays an ordinary stage, `customerCanAnswer` stays false for
+it, and the customer portal's approvals read cuts *every* unlabeled stage down to its label and
+status (`redactInternalApprovalStages` recognises the customer's stages by label alone).
+
+Deviation from the design note this was built from, on purpose and stricter in the safe
+direction: the note read the group-name rule (1) as unconditional; here it also requires the
+state to match, so a CAB-group row on a change that has already been scheduled is not
+cancelled by the move on. In Authorize the two readings are identical.
+
+*Display is unchanged* (the approvals read still labels an unlabeled stage positionally --
+"Assess", "Authorize", then "Customer Approval" / `DYNAMIC_CONTACT` -- which is how a synced
+Review stage at position 2 reads to staff; `changeRequestApprovalStagePosition` is the display
+fallback and is not the runtime reading). Left alone on purpose: the labels are what the
+portals have always shown for synced data.
+
+**Diagnosable "nobody eligible".** Approver pools stay INTERNAL-only (an active user whose
+`user_type` is `INTERNAL`; `internalApproverIDs` is untouched). What changed is the refusal's
+message: when Request Approval is refused because the peer pool, the CAB / ECAB group or the
+assigned team of the Review stage yields nobody, it now ends with counts of that group's
+members and why none counted -- by `user_type` (`NOT_AVAILABLE`, `EXTERNAL`, `SYSTEM`, none),
+inactive, no user record, the creator -- never names
+(`describeExcludedMembers`/`noInternalMembersError`), e.g. `the "CAB Approval" group has no
+active internal (WSO2) members to provision as CAB Approval approvers: external/customer users
+and inactive users cannot approve an internal stage (the "CAB Approval" group: 14 members, none
+eligible: 9 user_type NOT_AVAILABLE, 3 inactive, 1 external, 1 creator)`. The peer pool lists
+each group it tried (the assigned group, then `Devops Approval`).
+
+**Audit (read-only, no migration).** Run against a synced environment to see what the reading
+above changes there: stages with no label, by the change's type and state, the position guess,
+what they are read as now, how many have a REQUESTED approver, how many the position-only reading
+would have refused and cancelled (`was_guarded_before`), and how many have an approver with no user:
+
+```sql
+WITH staged AS (
+  SELECT ast.id, ast.work_item_id, g.name AS group_name,
+         (SELECT COUNT(*) FROM approval_stage earlier
+           WHERE earlier.work_item_id = ast.work_item_id
+             AND (earlier.created_on, earlier.id) < (ast.created_on, ast.id)) AS pos,
+         COALESCE(cr.change_model::text, '') AS model, COALESCE(cr.state::text, '') AS state,
+         EXISTS (SELECT 1 FROM approval_stage_approver a WHERE a.stage_id = ast.id AND a.state = 'REQUESTED') AS has_requested,
+         EXISTS (SELECT 1 FROM approval_stage_approver a WHERE a.stage_id = ast.id AND a.approver_user_id IS NULL) AS has_userless
+  FROM approval_stage ast
+  JOIN change_request cr ON cr.id = ast.work_item_id
+  LEFT JOIN "group" g ON g.id = ast.assignment_group_id
+  WHERE COALESCE(ast.checkpoint_label, '') = ''
+), classified AS (
+  SELECT s.*,
+         CASE s.pos WHEN 0 THEN 'PEER' WHEN 1 THEN 'CAB' ELSE 'OTHER' END AS positional,
+         CASE WHEN s.group_name = 'ECAB Approval' THEN 'ECAB'
+              WHEN s.group_name = 'CAB Approval' THEN 'CAB'
+              WHEN s.model = 'EMERGENCY' AND s.state = 'AUTHORIZE' THEN 'ECAB'
+              WHEN s.pos = 0 THEN 'PEER' WHEN s.pos = 1 THEN 'CAB' ELSE 'OTHER' END AS candidate
+  FROM staged s
+)
+SELECT c.model, c.state, c.positional,
+       CASE WHEN (c.candidate = 'PEER' AND c.state = 'ASSESS')
+              OR (c.candidate IN ('CAB', 'ECAB') AND c.state = 'AUTHORIZE') THEN c.candidate
+            ELSE 'OTHER' END AS kind_now,
+       COUNT(*) AS stages, COUNT(DISTINCT c.work_item_id) AS changes,
+       COUNT(*) FILTER (WHERE c.has_requested) AS with_requested_approver,
+       COUNT(*) FILTER (WHERE c.has_requested AND c.positional <> 'OTHER'
+                          AND NOT ((c.positional = 'PEER' AND c.state = 'ASSESS') OR (c.positional = 'CAB' AND c.state = 'AUTHORIZE'))
+                          AND c.state NOT IN ('CLOSED', 'CANCELED', 'ROLLBACK', '')) AS was_guarded_before,
+       COUNT(*) FILTER (WHERE c.has_userless) AS with_userless_approver,
+       COUNT(*) FILTER (WHERE c.group_name IS NULL) AS no_group
+FROM classified c
+GROUP BY 1, 2, 3, 4
+ORDER BY 1, 2, 3, 4;
+```
+
+On the local stack's database it returns no rows (nothing there is synced); it has not been run
+against a synced environment from here.
+
+Tests: `TestRuntimeApprovalStageKind` / `_NeverOutOfState` (the table, and that an unlabeled stage
+can never read as out of state or as a customer stage), `TestExcludedMembersSummary`, and against
+Postgres `TestChangeRequestSyncedStagesIntegration_*` with SN-shaped rows (an Emergency change in
+Authorize with one stage at position 0; a CAB-group stage with no label after two others; a stale
+position-0 stage on a change that moved on; a position-2 stage naming the customer's contact; an
+approver with no user; the counts). Two older tests asserted the position-only reading and were
+adapted: `TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess` (the decision is
+now recorded with no cascade instead of a 409) and the "unlabelled stage past the first two
+positions" case of `StaleApprovals_UnknownStagesAreNotGuarded`.
+
 ### Opening an approval stage's assignment group (`GET /groups/{id}`)
 
 The Approval tab's *Assignment group* is a link: it opens the group the stage was
@@ -3212,12 +3330,16 @@ on PATCH cannot be combined with `deploymentIds`.
 
 *PATCH.* Arrays replace. `deploymentIds` changed → deployments and products
 (re-derived) are rewritten; `[]` clears them. Changing `projectId` while deployments
-are stored requires `deploymentIds` in the same request. **Edit window:** project,
-deployments and deployment products can change only while the change has not reached
-`implement` (states new … scheduled); from implement/review/customer_review/rollback/
-closed/canceled a *change* is a 400 ("<field> can no longer be changed: the change
-request is in state …") while re-sending the stored value is accepted (same posture as
-the customer gate flags). Category and the journal entries are not windowed. A refused
+are stored requires `deploymentIds` in the same request. **Edit window:** deployments and
+deployment products can change only while the change has not reached `implement` (states
+new … scheduled); from implement/review/customer_review/rollback/closed/canceled a
+*change* is a 400 ("<field> can no longer be changed: the change request is in state
+…") while re-sending the stored value is accepted. They are resolved against the change's
+project, which after New is the **frozen** stored one (the single-valued
+`deploymentId` / `deployedProductId`, which skip the list rules, are held to the same
+window and the same project: `checkSingularDeploymentFields`). **The Customer Project
+itself moves in New only**: see "Customer requirements lock" below. Category and the
+journal entries are not windowed. A refused
 PATCH writes nothing (all in the PATCH transaction). `comment` / `workNote` append a
 row each; blank is refused on PATCH and ignored on create. `durationInput` is still
 unsupported on this data source.
@@ -3304,24 +3426,197 @@ receipt). Postgres data source only.
   `[closed, rollback, canceled]`; closing from it stamps `is_customer_review_required = true`
   (same authorization/lock). No other transition is graph-checked — as before,
   the PATCH does not enforce a full transition graph.
-* **Editable only until the gate is passed** (`validateCustomerGateEdits`,
-  checked under the `change_request` row lock): `customerApprovalRequired`
-  while the state is New / Assess / Authorize; `customerReviewRequired` up to
-  and including Review. A *change of value* after that is a 400 (`customerApprovalRequired
-  can no longer be changed: the change request has already passed the approval
-  stage (current state: X)` / `customerReviewRequired can no longer be changed:
-  the change request has already left the review stage (current state: X)`);
-  resending the stored value is accepted. The flag in the same PATCH wins over
-  the stored one for the state routing (`{state: "closed", customerReviewRequired:
-  false}` from a required Review closes it; `{state: "assess",
-  customerApprovalRequired: true}` on a Standard change lands in
-  `customer_approval`).
+* **Free in New, add-only afterwards** (`validateCustomerGateEdits`, checked under the
+  row locks; the whole rule, with its table, is "Customer requirements lock" below). In
+  New either box can be ticked and unticked. From Request Approval on a ticked box
+  can never be unticked (400 `customerApprovalRequired can no longer be turned off: ...`),
+  and an unticked one can still be ticked until the gate it controls has been passed --
+  `customerApprovalRequired` while the state is New / Assess / Authorize,
+  `customerReviewRequired` up to and including Review -- and only on a change that has
+  a Customer Project. Past the gate a tick is the old 400 (`customerApprovalRequired
+  can no longer be changed: the change request has already passed the approval stage
+  (current state: X)` / `customerReviewRequired can no longer be changed: the change
+  request has already left the review stage (current state: X)`); resending the stored
+  value is always accepted. The flag in the same PATCH wins over the stored one for the
+  state routing (`{state: "assess", customerApprovalRequired: true}` on a Standard
+  change lands in `customer_approval`; closing a required Review in the same PATCH that
+  unticks it is no longer possible: the way on is Customer Review).
 * **Customer Group: who gives the customer's answer.** See the next section.
 * Tests: `TestChangeRequestFlowIntegration_*CustomerGate*` /
   `*CustomerApproval*` / `*CustomerReview*` / `ManualScheduledOnlyFromCustomerApproval`
   (real Postgres, `CHANGE_REQUEST_TEST_DSN`), `TestLegalChangeRequestNextStates`,
   `TestCustomerGateHelpers`, the service tests
   `TestChangeRequestService_*CustomerGate*`, and the csm-portal BFF handler tests.
+
+### Customer requirements lock (what can still be edited once approval is requested)
+
+Decision (the product owner's, 2026-10-06): *who the customer is* (the Customer
+Project, from which the read-only Customer Group is derived) and *whether the
+customer is asked* (the two creation-form boxes `customer_approval_required` /
+`customer_review_required`, the **requirements** -- not the `is_customer_*_required`
+outcome stamps) are fixed when the change is created; Request Approval freezes the
+project and makes the boxes add-only. Code: `change_request_customer_lock.go` (the
+rules, pure functions), the creation-phase gate in `patchChangeRequestTx`,
+`validateCustomerGateEdits`, `lockChangeRequestForPatch`, `planChangeRequestLinks`,
+`checkSingularDeploymentFields`. **No column, no table, no enum, no migration, no
+"reached" marker, no backfill.**
+
+*Creation phase = the stored state is `NEW` (or NULL, a pre-lifecycle row, which counts
+as New).* A change can never return to New, so "it is in New" already says "approval has
+not been requested". The rule is a pure function of (stored state, stored value,
+requested value, whether the change has a Customer Project).
+
+| State | Project change | Project resend | Box off -> on (project stored) | Box off -> on (no project) | Box on -> off | `{state: "new"}` |
+|---|---|---|---|---|---|---|
+| New / NULL | ok | ok | ok | ok | ok | ok (no-op) |
+| Assess, Authorize | **400 frozen** | ok | ok | **400 needs a project** | **400 cannot turn off** | **400** |
+| Customer Approval, Scheduled, Implement, Review | **400 frozen** | ok | approval box **400 gate passed**; review box ok | approval **400 gate passed**; review **400 needs a project** | **400** | **400** |
+| Customer Review, Rollback, Closed, Canceled | **400 frozen** | ok | **400 gate passed** | **400 gate passed** | **400** | **400** (Rollback: "rollback is final") |
+
+(`approvalRequirementEditable` = New / Assess / Authorize, `reviewRequirementEditable` =
+everything up to and including Review: the cut-offs are the ones that existed before
+the lock. "Project stored" is the **stored** project: none can be set after New.)
+The same table is `TestCustomerRequirementsLock_TruthTable` (Go, unit, row ids
+`<STATE>/<column>`, outcome codes `ok / frozen / cannot-turn-off / gate-passed /
+needs-project / return-to-new / rolled-back`); the CSM Edit dialog computes the same
+rule client-side from the stored (state, flag, hasProject) and keeps a Vitest table with
+**the same row ids and outcome codes** (no file is shared between the modules). The server
+stays the authority and answers 400.
+
+The rules, in the order they are applied (**the first failing one wins, every refusal is a
+400, a refused PATCH writes nothing -- not even the rest of the same request**):
+
+1. `{state: "new"}` on a change that has left New -> `state "new" cannot be set: a change
+   request that has left New cannot return to it. Cancel it and clone it instead.` (On a
+   rolled-back change the existing `... rollback is final ...` message is what answers it.)
+2. `projectId` that differs from the stored one (NULL -> X included) after New ->
+   `projectId can no longer be changed: the Customer Project is fixed once approval has
+   been requested (current state: X). Cancel this change request and clone it to use
+   another project.` The stored value resent is an accepted no-op (a client that sends the
+   whole form back is not punished).
+3. A box ticked -> unticked after New -> `customerApprovalRequired can no longer be turned
+   off: once approval has been requested a customer requirement can be added but never
+   removed (current state: X). Cancel and clone to correct it.` (`customerReviewRequired`
+   likewise.)
+4. A box unticked -> ticked after New: the gate's own cut-off first (`customerApprovalRequired
+   can no longer be changed: the change request has already passed the approval stage ...`
+   / `customerReviewRequired can no longer be changed: ... already left the review stage
+   ...`), then, when the change has no Customer Project, `customerApprovalRequired cannot be
+   turned on: this change request has no Customer Project, and one can no longer be set
+   after approval was requested. Cancel and clone it with a project.`
+5. Deployments / deployment products keep the until-implement window and must belong to
+   the (frozen) project -- also `deploymentId` / `deployedProductId`, which used to skip
+   the list rules: another project's -> 400 `deploymentId does not belong to the change
+   request's project: <id>`; a change with no project takes none (`deploymentId requires a
+   Customer Project`); a changed value past `implement` -> `deploymentId can no longer be
+   changed ...`; the stored value resent is accepted in every state.
+6. **Request Approval guard.** `{state: "assess"}` (the Request Approval action) on a change
+   still in New is refused when the effective approval box or review box (the request's
+   value, else the stored one) is set and the effective project (the request's `projectId`,
+   else the stored one) is empty -> `approval cannot be requested: the customer's approval
+   and/or review is required but no Customer Project is set, so there is nobody to ask.
+   Select a Customer Project first (or clear the requirement).` For every type (a Standard
+   change would otherwise land in Customer Approval with nobody to ask), in the same PATCH
+   that clears the box or chooses the project it is accepted, and a RESEND of
+   `{state: "assess"}` on a change that already left New is the idempotent no-op it always
+   was, even for a legacy change that ticked a box with no project. (The CSM webapp mirrors
+   the guard by disabling Request Approval with the reason "Select a Customer Project before
+   requesting approval" through `TARGET_BLOCKED_REASON`; that is the CSM webapp's change, the
+   server above is the authority.)
+
+**The Re-schedule hole, closed.** A change that reached Customer Approval necessarily has
+`customer_approval_required = true`; Re-schedule (a WSO2 user's `{state: "authorize"}` or a
+customer's own proposal of a new time) sends a Normal / Emergency change back to Authorize
+and keeps a Standard one in Customer Approval. Before the lock the box could be unticked in
+Authorize (it was editable until the gate), so the CAB / ECAB approval that followed went
+straight to Scheduled and the customer was never asked about the new plan. Now the box
+cannot be unticked in Authorize (or anywhere after New), the project cannot be swapped,
+and the change cannot be sent back to New, so the approval that follows asks the same
+contacts again in a fresh stage (the superseded one stays as a record).
+`TestChangeRequestLockIntegration_RescheduleCannotReopenTheCustomersApproval` proves it for
+Normal, Emergency and Standard; `..._CustomerProposalCannotReopenTheApproval` for the
+customer's own proposal; `..._CustomerReviewCannotBeReopened` for the review (a required
+review cannot be skipped by unticking it to close from Review). Corrections after New are a
+**cancel and a clone** (Clone is a create); there is no administrator override.
+
+**Concurrency.** Request Approval and a project edit must not both read "New". The PATCH
+that carries a state, a project, a box or a deployment field first locks the `work_item`
+row (`SELECT ... FOR UPDATE`) and **only then** reads the `change_request` side (state,
+model, both boxes, project) in a statement of its own, then locks the `change_request` row:
+the order (work_item, then change_request) every other PATCH takes. Reading the state in
+the same statement as the lock does not work: under READ COMMITTED a join read is answered
+from the statement's own snapshot, which is older than the lock's grant (the old
+`planChangeRequestLinks` did exactly that). `TestChangeRequestLockIntegration_RequestApprovalRacingAProjectEdit`
+stands a transaction in for the Request Approval in progress (it holds the lock and has
+moved the state to Assess, uncommitted), starts the project edit, waits until it is blocked
+on the lock and only then commits the first one: the edit must be refused, and the test
+**fails against the one-statement lock-and-read** (verified by mutation).
+
+**Every write path of these fields** (re-grepped for `UPDATE work_item ... project_id`,
+`customer_approval_required =`, `customer_review_required =` and the state writers):
+
+| Writer | What the lock does |
+|---|---|
+| `PATCH /change-requests/{id}` (`patchChangeRequestTx`) | the only code that updates `work_item.project_id` / the two requirement columns of an existing change: all six rules above |
+| `POST /change-requests` and `CreateChangeRequestFromServiceNow` (SN-first create) | create in New: free (a ticked box with no project is accepted; Request Approval is what refuses it). **Clone** is a create. |
+| GitHub `CreateFromIssue` | creates in New with the project the issue maps to |
+| GitHub `SetState` (`github_mutation_repo.go`) | writes `state` by SQL (it could write NEW); **no caller exists** in the repository; it is not guarded and not a lock concern until one does |
+| `DecideChangeRequestApproval` / `applyCustomerStageOutcome` | write the `is_customer_*_required` **outcome stamps** (true only) and the state moves; never the requirement columns or the project |
+| `scripts/csm-compose/seed-entity-service.sql` | the dev fixtures CHG-FIXED-005..008 are upserted (`ON CONFLICT DO UPDATE`) as a reset; every ticked fixture past New has a project (`..._CreatesAreFreeInNew` asserts it) |
+| `seed-generator/generate_workitems.go` | random rows: writes only the outcome stamps |
+| csm-sync-service (the ServiceNow sync) | see below: not an API caller |
+
+**The outcome flags stay one-way** (verified, no hole): `authorizeChangeRequestCustomerFlagWrite`
+refuses true -> false for everyone (staff, customer, internal client), `applyCustomerStageOutcome`
+only ever sets true, and no create path writes them (the only writers of
+`is_customer_(approval|review)_required` are that PATCH stamp, `applyCustomerStageOutcome` and the two
+seed scripts). Staff stamping false -> true by hand is not a hole:
+the customer is asked, and designated, by the approver rows, not by the stamp.
+`TestChangeRequestLockIntegration_OutcomeFlagsStayOneWay`.
+
+**ServiceNow dual-write and the sync -- how these writes happen, and the decision.**
+
+* *PATCH is PostgreSQL-first.* `changeRequestService.PatchChangeRequest` calls the repository,
+  all rules above run inside its transaction, and only **after commit** is the asynchronous
+  mirror dispatched (`snWriteback.Dispatch` -> `snMirror.PatchChangeRequest`) with the request
+  minus the PostgreSQL-only fields (both boxes, `deploymentIds`, `deploymentProductIds`, the
+  expected window). A refusal returns before the dispatch: **nothing is mirrored and no writeback
+  failure is recorded** (`TestChangeRequestService_PatchChangeRequest_RefusalIsNeverMirrored`).
+  `projectId` is forwarded as before; it can only arrive as a resend after New. The mirror now
+  also gets `plannedStartOn` / `plannedEndOn` in ServiceNow's `YYYY-MM-DD HH:MM:SS` (UTC) layout
+  (`repository.PlannedTimestampForServiceNow`): PostgreSQL accepts RFC 3339 too, which
+  ServiceNow's service refuses, so an RFC 3339 PATCH used to commit and then fail every mirror write.
+* *Create is ServiceNow-first* (`createChangeRequestSNFirst`): type, scope and (new) the planned
+  window are validated before ServiceNow is called; ServiceNow gets no project / deployments / boxes;
+  the PostgreSQL insert (`CreateChangeRequestFromServiceNow`, now normalising the window like the
+  portal create) is in New, where nothing is locked.
+* *csm-sync-service is a separate service* (its repository is not in this checkout; what is known
+  is from the 0190 / 0195 migration headers and entity-service's own notes): it writes its tables
+  with plain SQL as an internal caller (`app.is_internal = true`) and **never goes through
+  `PatchChangeRequest`, `validateCustomerGateEdits` or any validator here**, so none of the
+  refusals can break it. It can move `project_id` or `state` of a change after New (an edit made
+  in ServiceNow); the lock does not and cannot stop that, and everything here that depends on the
+  project reads the change's *current* one (the Customer Group is derived live; a stale
+  designation fails closed). **Decision: the refusals bind API callers only, and no database
+  trigger is added** (it would also fire for the sync, whose writes are the source of truth for
+  migrated rows, and the user ruled out schema changes). Not verified here (the sync's source is
+  not in the checkout): whether it overwrites `customer_approval_required` /
+  `customer_review_required` (our 0189 columns, which it has no reason to know) and whether its
+  `delete_sync` covers `approval_stage_approver`.
+* *Existing rows* are not migrated: a change that is already past New keeps whatever its boxes and
+  project are; the rule applies to the edits made from now on, by state. A legacy change that ticked
+  a box with no project (the manual path) cannot be given one any more -- cancel and clone.
+
+Tests: `change_request_customer_lock_test.go` (the truth table, rule order, case-insensitive
+project resend, the Request Approval guard), `change_request_customer_lock_integration_test.go`
+(everything above against Postgres, as the superuser and as `csm_app`),
+`change_request_service_lock_test.go` (a refusal is never mirrored). Old tests that encoded the
+earlier rule were changed, not deleted: the two "editable until the gate" tests (an untick after New
+is now a 400), `CloseFromReviewHonoursTheFlagInTheSamePatch` (unticking in the closing PATCH is
+refused; the way on is Customer Review), `PatchEditWindow` (the project moves in New only),
+`CustomerGroupFollowsTheProject` (rewritten: the stage follows the contacts of the frozen
+project), and every test that ticked a box on a change with no project (`createGated` now puts it
+on a project with no registered contacts, the one place the manual path remains).
 
 ### Customer Group: approving / rejecting Customer Approval and Customer Review
 
@@ -3370,7 +3665,8 @@ outcome). Code: `change_request_links.go`
   eligible contact; entering `customer_review` the same with `"Customer Review"`.
   Entry points (all call `provisionCustomerStage`): CAB / ECAB approval cascade,
   Request Approval on a Standard change, the `{state: "customer_review"}` PATCH,
-  and any PATCH that carries `state` **or `projectId`**. The stage kind rides on
+  and any PATCH that carries `state` **or `projectId`** (after New an equal `projectId`
+  is the accepted no-op write that still re-derives the contacts, see below). The stage kind rides on
   `checkpoint_label` (`stageKindCustomerApproval` / `stageKindCustomerReview` in
   `classifyApprovalStage`) — **no migration**. The approvals read response shows
   them under those labels, `approverName` = `"Customer Group"` (the fixed
@@ -3427,8 +3723,10 @@ outcome). Code: `change_request_links.go`
   through PATCH" below. backend-v2 lets customer-side roles reach both routes through a
   narrow `decide` permission (`apps/customer-portal/backend-v2/CLAUDE.md`); who may
   answer *which* change is decided here, not there.
-* **Fallback so nothing strands.** No project, or a project with no eligible
-  contact: **no stage**, and the manual paths work as before
+* **Fallback so nothing strands.** A project with no eligible contact (a ticked box
+  needs a project since the lock: Request Approval is refused without one; a change
+  with no project can still be met on rows that predate the lock): **no stage**, and
+  the manual paths work as before
   (`customer_approval` `[scheduled, canceled]`, `customer_review` `[closed,
   canceled]`). With a live stage, `legalNextStates` is `[canceled]` for both
   states and a manual `{state: "scheduled"}` / `{state: "closed"}` is a **400**
@@ -3437,17 +3735,20 @@ outcome). Code: `change_request_links.go`
   request's project) and is given by one of them approving or rejecting it in the
   change request's approvals (POST /change-requests/{id}/approvals/decision)`. Cancel stays available and cancels
   the pending rows.
-* **Project (and contacts) changed later** (`provisionCustomerStage`, idempotent,
-  under the `change_request` row lock; the stage is compared with the project's
-  *current* eligible contact set): project set while already in the state -> the
-  stage is provisioned; resent/unrelated PATCH -> nothing; project changed (or a
-  contact registered / deregistered since) while a stage is live -> the old stage's
-  `REQUESTED` rows are `CANCELLED` and a new stage is provisioned for the new
-  project's contacts (never two live stages; the old stage stays as a record);
-  project without contacts -> pending rows cancelled, manual path back. A stage
-  already approved/rejected is never re-provisioned. Project edits follow the
-  existing edit window (up to `scheduled`); contacts are re-read only when a write
-  touches the state or the project.
+* **Contacts changed later** (`provisionCustomerStage`, idempotent, under the
+  `change_request` row lock; the stage is compared with the project's *current*
+  eligible contact set). The Customer Project itself can no longer change after New
+  (the lock), so what follows is about the contacts of the frozen project: a PATCH
+  that carries `state` or `projectId` -- after New an equal `projectId` is an
+  accepted no-op write that still re-derives the group, the way to tell a change in
+  Customer Approval / Customer Review about a contact who registered or left since
+  -- re-reads them. A contact registered / deregistered while a stage is live ->
+  the old stage's `REQUESTED` rows are `CANCELLED` and a new stage is provisioned for
+  who is registered now (never two live stages; the old stage stays as a record);
+  nobody eligible -> pending rows cancelled, manual path back; resent / unrelated
+  PATCH -> nothing. A stage already approved/rejected is never re-provisioned.
+  (`TestChangeRequestFlowIntegration_CustomerGroupFollowsTheProject`; it used to move
+  the project around while a stage was live, which the lock refuses.)
 * **ServiceNow.** Not mirrored beyond the existing decision replay
   (`approval_decision` writeback); no ServiceNow field names for customer-group
   approvals are guessed. The pure ServiceNow data source is unchanged

@@ -5843,6 +5843,21 @@ paths:
         plannedStartOn / plannedEndOn, from any caller, are RFC 3339 or
         "YYYY-MM-DD HH:MM:SS" (UTC), in the years 2000 to 2100: anything else
         ("infinity", "now", a date alone, a time-zone name) is a 400 that names the field.
+        A customer's proposal that names only an end keeps the stored start, which must
+        then still be to come (400 "plannedStartOn is in the past: the current planned
+        start (...) has passed; propose a new start as well").
+
+        Customer requirements lock. The Customer Project (projectId) and the two
+        creation-form boxes (customerApprovalRequired, customerReviewRequired) are free
+        while the change request is in new (or has no state). From Request Approval on,
+        for every caller: projectId is FROZEN (a different value, a first project
+        included, is a 400; resending the stored value is an accepted no-op) and the
+        boxes are ADD-ONLY (true to false is a 400 in every state; false to true is
+        accepted until the gate the box controls has been passed, and only on a change
+        request that has a project); {state: "new"} is a 400; Request Approval
+        ({state: "assess"}) is a 400 when a box is set and there is no project. The first
+        failing rule wins and a refused PATCH writes nothing. Corrections are a cancel
+        and a clone.
 
         An internal caller's isCustomerApproved / isCustomerReviewed remain a
         bookkeeping stamp of the flag that moves nothing.
@@ -5868,7 +5883,30 @@ paths:
               schema:
                 $ref: '#/components/schemas/PatchChangeRequestResponse'
         "400":
-          description: Bad request.
+          description: >-
+            Bad request: a malformed or out-of-range planned window, or a refusal of the
+            customer requirements lock, each with a readable message --
+            "projectId can no longer be changed: the Customer Project is fixed once
+            approval has been requested (current state: X). Cancel this change request and
+            clone it to use another project.";
+            "customerApprovalRequired can no longer be turned off: once approval has been
+            requested a customer requirement can be added but never removed (current state:
+            X). Cancel and clone to correct it." (likewise customerReviewRequired);
+            "customerApprovalRequired can no longer be changed: the change request has
+            already passed the approval stage (current state: X)" /
+            "customerReviewRequired can no longer be changed: the change request has already
+            left the review stage (current state: X)";
+            "customerApprovalRequired cannot be turned on: this change request has no
+            Customer Project, and one can no longer be set after approval was requested.
+            Cancel and clone it with a project." (likewise customerReviewRequired);
+            "state \"new\" cannot be set: a change request that has left New cannot return
+            to it. Cancel it and clone it instead.";
+            "approval cannot be requested: the customer's approval and/or review is required
+            but no Customer Project is set, so there is nobody to ask. Select a Customer
+            Project first (or clear the requirement)."; and, when Request Approval finds
+            nobody who may approve, the message names the group and ends with counts of its
+            members and why none counted (by user_type, inactive, no user record, creator;
+            never names).
           content:
             application/json:
               schema:
@@ -17365,11 +17403,16 @@ components:
           type: string
         plannedStartDate:
           type: string
-          description: Planned start date and time (format YYYY-MM-DD HH:MM:SS).
+          description: >-
+            Planned start date and time (format YYYY-MM-DD HH:MM:SS, UTC; the PostgreSQL
+            data source also takes RFC 3339 with a zone designator). Years 2000 to 2100
+            only; anything else ("infinity", "now", a date alone, a zone name) is a 400
+            that names the field, on both create paths (the ServiceNow-first one before
+            ServiceNow is called).
           pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
         plannedEndDate:
           type: string
-          description: Planned end date and time (format YYYY-MM-DD HH:MM:SS).
+          description: Planned end date and time, as plannedStartDate.
           pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
         comment:
           type: string
@@ -17402,7 +17445,10 @@ components:
           type: string
           format: uuid
           description: >-
-            The Customer Project (PostgreSQL data source only). Must exist.
+            The Customer Project (PostgreSQL data source only). Must exist. It is chosen
+            while the change request is new and frozen by Request Approval (see PATCH);
+            Request Approval is refused when customerApprovalRequired or
+            customerReviewRequired is set and no project was chosen.
         deploymentIds:
           type: array
           maxItems: 100
@@ -17456,14 +17502,17 @@ components:
             The "Customer Approval" checkbox: the change needs the customer's
             approval before it is scheduled (CAB / ECAB approval, or Request
             Approval on a Standard change, then moves it to customer_approval
-            instead of scheduled). Defaults to false. PostgreSQL data source
+            instead of scheduled). Defaults to false. A change request is created in
+            new, where it can still be edited freely; Request Approval is refused when a
+            box is set and no projectId was chosen (see PATCH). PostgreSQL data source
             only.
         customerReviewRequired:
           type: boolean
           description: >-
             The "Customer Review" checkbox: the change needs the customer's
             review before it is closed (review offers customer_review instead
-            of closed). Defaults to false. PostgreSQL data source only.
+            of closed). Defaults to false. As customerApprovalRequired for Request
+            Approval. PostgreSQL data source only.
 
     ChangeRequestLinkOptionsRequest:
       type: object
@@ -17577,15 +17626,25 @@ components:
         projectId:
           type: string
           format: uuid
+          description: >-
+            The Customer Project. Changeable only while the change request is new (or has
+            no state); from Request Approval on it is frozen: a different value (a first
+            project on a change request that has none included) is a 400, the stored value
+            resent is accepted. PostgreSQL data source only.
         caseId:
           type: string
           format: uuid
         deploymentId:
           type: string
           format: uuid
+          description: >-
+            Must belong to the change request's project (a change request with no project
+            takes none) and, like deploymentIds, can change only before implement; the
+            stored value resent is accepted. Cannot be combined with deploymentIds.
         deployedProductId:
           type: string
           format: uuid
+          description: Held to the same project and window as deploymentId.
         assignedEngineerId:
           type: string
           format: uuid
@@ -17623,6 +17682,9 @@ components:
             - low
         state:
           type: string
+          description: >-
+            "new" is accepted only for a change request that is still in new (a no-op); once
+            it has left New it cannot return (400).
           enum:
             - new
             - assess
@@ -17681,18 +17743,24 @@ components:
         customerApprovalRequired:
           type: boolean
           description: >-
-            The "Customer Approval" checkbox. Editable only until the approval
-            gate has been passed, i.e. while the state is new, assess or
-            authorize; a change of value afterwards is a 400 ("customerApprovalRequired
-            can no longer be changed ..."). Resending the stored value is
-            always accepted. PostgreSQL data source only.
+            The "Customer Approval" checkbox. Free while the change request is new.
+            From Request Approval on it is ADD-ONLY: true to false is a 400 in every
+            state ("customerApprovalRequired can no longer be turned off ..."); false to
+            true is accepted only while the state is assess or authorize (afterwards "can
+            no longer be changed ...: the change request has already passed the approval
+            stage") and only when the change request has a Customer Project ("cannot be
+            turned on: this change request has no Customer Project ..."). Resending the
+            stored value is always accepted. PostgreSQL data source only.
         customerReviewRequired:
           type: boolean
           description: >-
-            The "Customer Review" checkbox. Editable until the change leaves
-            review (any state up to and including review); a change of value
-            from customer_review onwards is a 400 ("customerReviewRequired can
-            no longer be changed ..."). PostgreSQL data source only.
+            The "Customer Review" checkbox. Free while the change request is new. From
+            Request Approval on it is ADD-ONLY: true to false is a 400 in every state
+            ("customerReviewRequired can no longer be turned off ..."); false to true is
+            accepted up to and including review (from customer_review onwards "can no
+            longer be changed ...: the change request has already left the review stage")
+            and only when the change request has a Customer Project. PostgreSQL data
+            source only.
         implementationPlan:
           type: string
           nullable: true
