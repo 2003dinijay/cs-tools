@@ -515,14 +515,16 @@ func main() {
 
 	// The SLA breach-alerting engine is optional per deployment, gated on
 	// REDIS_ADDR or REDIS_URL being set — unset means this engine never
-	// polls, matching the "unset means don't run" convention used elsewhere
-	// in this repo's own services for an optional capability (e.g.
-	// apps/csm-portal/backend's EVENT_HUB_BROKER gate). Unlike the design
-	// this replaced, it is no longer a Kafka consumer at all — see
-	// internal/slaengine's own CLAUDE.md section ("SLA breach alerting")
-	// for the full redesign: it polls entity-service's GET /sla-status
-	// (backed by the real, ServiceNow-synced "sla" table, not a value this
-	// service used to compute itself) on a plain ticker instead.
+	// starts, matching the "unset means don't run" convention used
+	// elsewhere in this repo's own services for an optional capability
+	// (e.g. apps/csm-portal/backend's EVENT_HUB_BROKER gate). It is not a
+	// Kafka consumer of its own either — see internal/slaengine's own
+	// CLAUDE.md section ("SLA breach alerting") for the full design:
+	// RegisterClocks/ApplyStateEffects/CompleteResponseClock are called
+	// directly from three of dispatcher's own handlers below, on the
+	// existing main consumer; only the tick itself runs on its own ticker,
+	// scanning a Redis wake-index this engine computes and schedules
+	// entirely on its own, not a poll of entity-service.
 	//
 	// REDIS_URL (a rediss://:<password>@<host>:<port> connection string,
 	// parsed via redis.ParseURL) is how a managed Redis with TLS — Azure
@@ -541,8 +543,8 @@ func main() {
 	// to follow MOVED/ASK redirects, which nothing here constructs. Confirm
 	// the target Redis resource's clustering policy is Enterprise/
 	// non-clustered before pointing REDIS_URL at it; OSS Cluster policy will
-	// fail unpredictably (TierStore's key operations landing on the wrong
-	// shard) rather than at this construction site.
+	// fail unpredictably (slaengine.Store's key operations landing on the
+	// wrong shard) rather than at this construction site.
 	var redisClient *redis.Client
 	var slaProducer *eventbus.Producer
 	var escalationConsumers []*eventbus.Consumer
@@ -581,7 +583,8 @@ func main() {
 		// warns-and-degrades on a missing config), mustEnv is used for all
 		// four values here: once REDIS_ADDR opts into this engine, every one
 		// of them is required for it to do anything at all — a missing
-		// credential would otherwise silently fail every poll.
+		// credential would otherwise silently fail the one startup call this
+		// client makes.
 		slaEntityClient := slaengine.NewEntityClient(slaengine.EntityConfig{
 			BaseURL:      mustEnv("CUSTOMER_ENTITY_BASE_URL"),
 			TokenURL:     mustEnv("OAUTH2_TOKEN_URL"),
@@ -597,19 +600,33 @@ func main() {
 		// exists.
 		slaProducer = eventbus.NewProducer(eventBusCfg)
 
-		slaEngine := slaengine.NewEngine(slaEntityClient, slaengine.NewTierStore(redisClient), slaProducer, googleChatClient, linkResolver, emailClient, emailSendingEnabled, emailDebugMode, emailDebugRecipients)
+		// GET /sla-duration-policy is fetched exactly once, here, at
+		// startup — not refreshed again for the life of this process (see
+		// slaengine.Engine's own doc comment on why). A failure here is
+		// loud but not fatal: this is a nice-to-have engine layered on top
+		// of the notification channels this service exists for, not core
+		// delivery, so SLA tracking is simply disabled for this run rather
+		// than crash-looping the whole service over one failed startup
+		// call — restarting (or redeploying) picks it up once
+		// entity-service is reachable again.
+		slaStartupCtx, slaStartupCancel := context.WithTimeout(ctx, 30*time.Second)
+		durations, err := slaEntityClient.GetDurationPolicy(slaStartupCtx)
+		slaStartupCancel()
+		if err != nil {
+			slog.Error("slaengine: failed to fetch sla duration policy at startup, sla tracking is disabled for this run", "err", err)
+		} else {
+			slaEngine := slaengine.NewEngine(slaengine.NewStore(redisClient), slaProducer, googleChatClient, linkResolver, durations)
+			dispatcher = dispatcher.WithSLAEngine(slaEngine)
 
-		// SLA_TICK_INTERVAL defaults far above the old wake-index engine's
-		// 15s: that interval made sense for firing a precomputed due date
-		// close to when it actually elapsed, but this engine now polls
-		// entity-service directly every tick (paginating through every
-		// active clock, ~5,500 as of this redesign) and only needs to
-		// notice a newly-crossed 50/75/100% checkpoint, not a specific
-		// instant — most active "sla" rows don't change more than a few
-		// times a day. 5 minutes balances alert latency against load on
-		// entity-service and Redis.
-		tickInterval := envDuration("SLA_TICK_INTERVAL", 5*time.Minute)
-		go slaEngine.RunTicker(ctx, tickInterval)
+			// SLA_TICK_INTERVAL defaults far above the old wake-index
+			// design's original 15s: this engine now schedules a wake entry
+			// per tier at registration time (RegisterClocks), so a tick only
+			// needs to notice whichever ones have since become due, not
+			// recompute anything — 5 minutes balances alert latency against
+			// a near-zero load on Redis either way.
+			tickInterval := envDuration("SLA_TICK_INTERVAL", 5*time.Minute)
+			go slaEngine.RunTicker(ctx, tickInterval)
+		}
 
 		// The incident call-escalation ladder (internal/paging) shares
 		// this same Redis — its own keys, its own ZSET — and its own consumer

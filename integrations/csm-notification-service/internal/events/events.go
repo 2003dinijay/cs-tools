@@ -91,9 +91,10 @@ const (
 	// Recipients), so dispatch.Handle's switch has no case for it; it's
 	// declared here anyway since this is the one place every event Type
 	// this service touches is registered. Published by internal/slaengine's
-	// own Engine.Tick (polling entity-service's GET /sla-status, not
-	// consuming a Kafka registration event — this service no longer has
-	// one; see that package's own doc comment for the full redesign).
+	// own Engine.Tick, scanning its own Redis wake-index for a newly-due
+	// tier — not consuming a Kafka registration event, and not polling
+	// entity-service either; see that package's own doc comment for the
+	// full design.
 	TypeSLATierReached Type = "sla.tier_reached"
 
 	// TypeCRApprovalRequested is published by csm-flow-service's
@@ -271,6 +272,15 @@ type CommentAddedPayload struct {
 	Team                    string `json:"team,omitempty"`
 	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
 	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
+	// IsSupportEngineerResponse is true when this comment is a public
+	// comment authored by a user holding entity-service's own
+	// CS_ENGINEER_ROLE -- entity-service computes this (it owns the role
+	// data; this service has no identity/role lookup of its own), so
+	// internal/slaengine's own RegisterClocks/CompleteResponseClock can
+	// complete a case's response clock the moment a qualifying reply lands
+	// with no lookup here at all. See entity-service's own
+	// CommentAddedPayload.IsSupportEngineerResponse doc comment.
+	IsSupportEngineerResponse bool `json:"isSupportEngineerResponse,omitempty"`
 }
 
 // StatusChangedPayload is TypeStatusChanged's payload. See
@@ -477,11 +487,12 @@ type IncidentAssignedPayload struct {
 }
 
 // SLATierReachedPayload is TypeSLATierReached's payload — published by
-// internal/slaengine.Engine.Tick when a poll of entity-service's GET
-// /sla-status shows a clock has newly crossed a tier (50, 75, or 100
-// percent elapsed) since the last poll. Nothing in this service consumes it
-// yet; it exists for whatever future notification (e.g. a breach-warning
-// email) or other system reacts to it.
+// internal/slaengine.Engine.Tick when its own Redis wake-index shows a
+// clock has newly crossed a tier (50, 75, or 100 percent elapsed) since it
+// was registered (case.created) or last adjusted (case.status_changed/
+// case.comment_added). Nothing in this service consumes it yet; it exists
+// for whatever future notification (e.g. a breach-warning email) or other
+// system reacts to it.
 type SLATierReachedPayload struct {
 	CaseID    string `json:"caseId"`
 	ClockType string `json:"clockType"`
