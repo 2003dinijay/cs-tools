@@ -19,6 +19,7 @@ import useNormalizedIdParam from "@hooks/useNormalizedIdParam";
 import { type JSX, useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { DESCRIPTION_PURIFY_CONFIG } from "@utils/common";
+import { useDarkMode } from "@utils/useDarkMode";
 import {
   Alert,
   Box,
@@ -30,7 +31,6 @@ import {
   Divider,
   alpha,
   colors,
-  useTheme,
 } from "@wso2/oxygen-ui";
 import {
   ArrowLeft,
@@ -100,8 +100,8 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
   // otherwise start again from the top of the document.
   const headingRef = useRef<HTMLElement | null>(null);
   const [focusHeadingPending, setFocusHeadingPending] = useState(false);
-  const theme = useTheme();
-  const isDark = theme.palette.mode === "dark";
+  // The app's own dark-mode signal (<html data-color-scheme>), which theme.palette.mode does not follow.
+  const isDark = useDarkMode();
 
   const {
     data: changeRequest,
