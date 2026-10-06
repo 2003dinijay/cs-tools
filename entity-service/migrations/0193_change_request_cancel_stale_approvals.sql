@@ -55,7 +55,7 @@
 -- stage whose label matches the change's current state (live approvals); rows of
 -- a change with a NULL state.
 --
--- Each cancelled row gets state = 'cancelled', updated_on = NOW() and
+-- Each cancelled row gets state = 'CANCELLED', updated_on = NOW() and
 -- updated_by = 'migration:0193_change_request_cancel_stale_approvals', like the
 -- application's own cancel helpers stamp the acting user. The approvals read
 -- model then shows them as Cancelled and canDecide is false.
@@ -74,10 +74,10 @@
 SELECT set_config('app.is_internal', 'true', false);
 
 UPDATE approval_stage_approver asa
-SET state = 'cancelled',
+SET state = 'CANCELLED',
     updated_on = NOW(),
     updated_by = 'migration:0193_change_request_cancel_stale_approvals'
-WHERE asa.state = 'requested'
+WHERE asa.state = 'REQUESTED'
   AND (
     -- (a) the change request is final
     EXISTS (

@@ -2101,9 +2101,9 @@ func insertApprovalStage(ctx context.Context, tx pgx.Tx, workItemID, actorEmail,
 			continue
 		}
 		seen[key] = true
-		status := "requested"
+		status := "REQUESTED"
 		if creatorIDs[key] {
-			status = "cancelled"
+			status = "CANCELLED"
 		}
 		if _, err := tx.Exec(ctx,
 			`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, work_item_id, stage_id, approver_user_id, state)
@@ -2823,7 +2823,7 @@ func buildChangeRequestApprovals(stages []changeRequestApprovalStageRow, approve
 const decideChangeRequestApprovalQuery = `
 	UPDATE approval_stage_approver
 	SET state = $3, updated_on = NOW(), updated_by = $4
-	WHERE work_item_id = $1 AND approver_user_id = $2 AND state = 'requested'
+	WHERE work_item_id = $1 AND approver_user_id = $2 AND state = 'REQUESTED'
 	  AND ($5::uuid IS NULL OR stage_id = $5::uuid)
 	RETURNING id, stage_id`
 
@@ -2835,8 +2835,8 @@ const decideChangeRequestApprovalQuery = `
 // comment for why both now resolve a stage identically.
 func cancelSiblingApprovalStageApprovers(ctx context.Context, tx pgx.Tx, stageID, actorEmail string) error {
 	if _, err := tx.Exec(ctx,
-		`UPDATE approval_stage_approver SET state = 'cancelled', updated_on = NOW(), updated_by = $2
-		 WHERE stage_id = $1 AND state = 'requested'`,
+		`UPDATE approval_stage_approver SET state = 'CANCELLED', updated_on = NOW(), updated_by = $2
+		 WHERE stage_id = $1 AND state = 'REQUESTED'`,
 		stageID, actorEmail); err != nil {
 		return fmt.Errorf("decide change request approval: cancel sibling approvers: %w", err)
 	}
@@ -2979,7 +2979,7 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 		if decision == "approved" && stageID != nil {
 			var hasRejection bool
 			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND state = 'rejected')`,
+				`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND state = 'REJECTED')`,
 				*stageID).Scan(&hasRejection); err != nil {
 				return "", fmt.Errorf("decide change request approval: check stage rejections: %w", err)
 			}
@@ -3047,7 +3047,7 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 			// method's doc comment.
 			var hasApproval bool
 			if err := tx.QueryRow(ctx,
-				`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND state = 'approved')`,
+				`SELECT EXISTS(SELECT 1 FROM approval_stage_approver WHERE stage_id = $1 AND state = 'APPROVED')`,
 				*stageID).Scan(&hasApproval); err != nil {
 				return "", fmt.Errorf("decide change request approval: check stage approvals: %w", err)
 			}
@@ -3095,7 +3095,7 @@ func (r *changeRequestRepo) DecideChangeRequestApproval(ctx context.Context, id,
 func callerPendingApprovalStage(ctx context.Context, tx pgx.Tx, workItemID, approverUserID, crState string) (*string, approvalStageKind, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT stage_id::text FROM approval_stage_approver
-		 WHERE work_item_id = $1 AND approver_user_id = $2 AND state = 'requested'
+		 WHERE work_item_id = $1 AND approver_user_id = $2 AND state = 'REQUESTED'
 		 ORDER BY created_on ASC, id ASC`, workItemID, approverUserID)
 	if err != nil {
 		return nil, stageKindOther, fmt.Errorf("find pending approval: %w", err)

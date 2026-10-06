@@ -25,3 +25,16 @@ BEGIN
         ALTER TABLE approval_stage_approver RENAME COLUMN status TO state;
     END IF;
 END$$;
+
+UPDATE approval_stage_approver
+SET state = CASE state
+    WHEN 'requested'     THEN 'REQUESTED'
+    WHEN 'approved'      THEN 'APPROVED'
+    WHEN 'rejected'      THEN 'REJECTED'
+    WHEN 'not requested' THEN 'NOT_REQUESTED'
+    WHEN 'not_required'  THEN 'NOT_REQUIRED'
+    WHEN 'cancelled'     THEN 'CANCELLED'
+    WHEN 'not_entitled'  THEN 'NOT_ENTITLED'
+    ELSE state
+END
+WHERE state IS NOT NULL;
