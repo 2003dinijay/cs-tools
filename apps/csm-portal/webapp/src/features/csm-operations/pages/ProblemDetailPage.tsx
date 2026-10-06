@@ -30,6 +30,7 @@ import ProblemTransitionRequirementDialog, {
   type ProblemRequirementTransition,
 } from "@features/csm-operations/components/ProblemTransitionRequirementDialog";
 import { problemStateColor, problemStateLabel } from "@features/csm-operations/utils/problems";
+import { sanitizeDescriptionHtml } from "@utils/sanitizeHtml";
 import type { BeEntityRef, BeProblemRef, BeUpdateProblemPayload } from "@api/backend/types";
 import { useNavTransition } from "@hooks/useNavTransition";
 import { useNormalizedIdParam } from "@hooks/useNormalizedIdParam";
@@ -94,6 +95,40 @@ function ProblemRefItem({
       icon={<LinkIcon size={14} />}
       label={label}
       onClick={() => onNavigate(`${routeBase}/${value.id}`)}
+    />
+  );
+}
+
+// A tag anywhere means the description is the rich-text editor's HTML (a
+// problem created from an incident or case carries that one's); anything
+// else is plain text, e.g. synced from ServiceNow.
+const HTML_TAG = /<\/?[a-z][\s\S]*>/i;
+
+/**
+ * A problem's description: rich-text HTML rendered through the shared
+ * description sanitiser (as the case and time-card views render theirs),
+ * plain text as-is with its line breaks.
+ */
+function ProblemDescription({ text }: { text: string }): JSX.Element {
+  if (!HTML_TAG.test(text)) {
+    return (
+      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+        {text}
+      </Typography>
+    );
+  }
+  return (
+    <Box
+      sx={{
+        typography: "body2",
+        overflowWrap: "anywhere",
+        "& p:first-of-type": { mt: 0 },
+        "& p:last-child": { mb: 0 },
+        "& ul, & ol": { my: 0.5, pl: 3 },
+        "& a": { color: "primary.main" },
+        "& img": { maxWidth: "100%", height: "auto" },
+      }}
+      dangerouslySetInnerHTML={{ __html: sanitizeDescriptionHtml(text) }}
     />
   );
 }
@@ -393,9 +428,7 @@ export default function ProblemDetailPage(): JSX.Element {
             <Typography variant="body2" color="text.secondary">
               Description
             </Typography>
-            <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-              {problem.description}
-            </Typography>
+            <ProblemDescription text={problem.description} />
           </Box>
         )}
       </Card>
