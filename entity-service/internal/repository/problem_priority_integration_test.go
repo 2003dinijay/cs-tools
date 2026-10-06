@@ -28,12 +28,13 @@ import (
 
 // A new problem gets ServiceNow's defaults -- impact Low, urgency Low,
 // priority Planning (discovery script 63) -- on both create paths, and
-// migration 0192 gives them to problems created before. Run with
+// migration 0194 gives them to problems created before. Run with
 // ENTITY_TEST_DATABASE_URL; every row it makes is deleted afterwards.
 const (
 	ppSNProblemID = "47777777-0000-0000-0000-0000000000d1"
 	ppOldID       = "47777777-0000-0000-0000-0000000000d2"
 	ppSyncedID    = "47777777-0000-0000-0000-0000000000d3"
+	ppHighID      = "47777777-0000-0000-0000-0000000000d4"
 )
 
 func ppRow(t *testing.T, ctx context.Context, pool *pgxpool.Pool, id string) [3]string {
@@ -58,7 +59,7 @@ func TestProblemPriorityIntegration(t *testing.T) {
 	}
 	var portalID string
 	cleanup := func() {
-		for _, id := range []string{ppSNProblemID, ppOldID, ppSyncedID, portalID} {
+		for _, id := range []string{ppSNProblemID, ppOldID, ppSyncedID, ppHighID, portalID} {
 			if id == "" {
 				continue
 			}
@@ -73,7 +74,8 @@ func TestProblemPriorityIntegration(t *testing.T) {
 	want := [3]string{"PLANNING", "LOW", "LOW"}
 
 	// Postgres-only create.
-	created, err := repo.CreateProblem(ctx, domain.CreateProblemRequest{Subject: "priority test (portal)"}, "t@example.com")
+	created, err := repo.CreateProblem(ctx, domain.CreateProblemRequest{Subject: "priority test (portal)"}, "t@example.com",
+		ProblemPriorityFields{Priority: "PLANNING", Impact: "LOW", Urgency: "LOW"})
 	if err != nil {
 		t.Fatalf("CreateProblem: %v", err)
 	}
@@ -91,7 +93,7 @@ func TestProblemPriorityIntegration(t *testing.T) {
 		t.Errorf("dual-write create: priority/impact/urgency = %v, want [HIGH LOW LOW]", got)
 	}
 
-	// Migration 0192: a problem created before, with no priority, gets the
+	// Migration 0194: a problem created before, with no priority, gets the
 	// defaults; a synced one with its own priority is left alone.
 	for id, prio := range map[string]any{ppOldID: nil, ppSyncedID: "CRITICAL"} {
 		if _, err := pool.Exec(ctx, `INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type)
@@ -102,17 +104,28 @@ func TestProblemPriorityIntegration(t *testing.T) {
 			t.Fatalf("seed problem: %v", err)
 		}
 	}
-	migration, err := os.ReadFile("../../migrations/0192_problem_default_priority.sql")
+	// One with impact High / urgency Medium and no priority: derived, High.
+	if _, err := pool.Exec(ctx, `INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type)
+		VALUES ($1, NOW(), NOW(), 't', 't', 'PRB-PP-d4', 'priority backfill', 'PROBLEM')`, ppHighID); err != nil {
+		t.Fatalf("seed work_item: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO problem (id, state, impact, urgency) VALUES ($1, 'NEW', 'HIGH', 'MEDIUM')`, ppHighID); err != nil {
+		t.Fatalf("seed problem: %v", err)
+	}
+	migration, err := os.ReadFile("../../migrations/0194_problem_default_priority.sql")
 	if err != nil {
 		t.Fatalf("read migration: %v", err)
 	}
 	for i := 0; i < 2; i++ { // twice: re-running it must change nothing
 		if _, err := pool.Exec(ctx, string(migration)); err != nil {
-			t.Fatalf("run migration 0192 (pass %d): %v", i+1, err)
+			t.Fatalf("run migration 0194 (pass %d): %v", i+1, err)
 		}
 	}
 	if got := ppRow(t, ctx, pool, ppOldID); got != want {
 		t.Errorf("backfilled problem: %v, want %v", got, want)
+	}
+	if got := ppRow(t, ctx, pool, ppHighID); got != [3]string{"HIGH", "HIGH", "MEDIUM"} {
+		t.Errorf("backfilled High x Medium problem: %v, want [HIGH HIGH MEDIUM]", got)
 	}
 	if got := ppRow(t, ctx, pool, ppSyncedID); got != [3]string{"CRITICAL", "", ""} {
 		t.Errorf("synced problem with its own priority was changed: %v", got)

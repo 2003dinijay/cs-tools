@@ -223,7 +223,10 @@ func (s *problemService) createProblemPortal(ctx context.Context, req domain.Cre
 	if req.Category != nil && strings.TrimSpace(*req.Category) != "" && !validProblemCategoryPG[strings.ToUpper(strings.TrimSpace(*req.Category))] {
 		return domain.ProblemDetail{}, &apierror.ValidationError{Msg: "category contains invalid value: " + *req.Category}
 	}
-	return s.repo.CreateProblem(ctx, req, createdBy)
+	// ServiceNow's problem defaults are impact and urgency 3 - Low, and the
+	// CSM API never sets them; its "Priority Problem Lookup" then derives the
+	// priority from them (discovery scripts 63-65).
+	return s.repo.CreateProblem(ctx, req, createdBy, newProblemPriorityFields())
 }
 
 // createProblemSNFirst implements CreateProblem's
@@ -560,3 +563,10 @@ func problemPriorityFromServiceNow(display *string) string {
 	return "PLANNING"
 }
 
+// newProblemPriorityFields is a new problem's impact, urgency and priority:
+// ServiceNow's defaults, 3 - Low and 3 - Low, and the priority its "Priority
+// Problem Lookup" derives from them.
+func newProblemPriorityFields() repository.ProblemPriorityFields {
+	impact, urgency := "LOW", "LOW"
+	return repository.ProblemPriorityFields{Impact: impact, Urgency: urgency, Priority: priorityFromImpactUrgency(impact, urgency)}
+}

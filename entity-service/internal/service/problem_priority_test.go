@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 // ServiceNow returns a new problem's priority as its display value; every
@@ -70,5 +71,40 @@ func TestCreateProblem_DualWriteStoresServiceNowsPriority(t *testing.T) {
 	}
 	if repo.lastCreatePriority != "PLANNING" {
 		t.Errorf("Postgres got priority %q, want PLANNING", repo.lastCreatePriority)
+	}
+}
+
+// ServiceNow's priority lookup, the same nine rows for incidents
+// (dl_u_priority) and problems (dl_problem_priority) -- discovery script 65.
+func TestPriorityFromImpactUrgency(t *testing.T) {
+	want := map[[2]string]string{
+		{"HIGH", "HIGH"}: "CRITICAL", {"HIGH", "MEDIUM"}: "HIGH", {"HIGH", "LOW"}: "MODERATE",
+		{"MEDIUM", "HIGH"}: "HIGH", {"MEDIUM", "MEDIUM"}: "MODERATE", {"MEDIUM", "LOW"}: "LOW",
+		{"LOW", "HIGH"}: "MODERATE", {"LOW", "MEDIUM"}: "LOW", {"LOW", "LOW"}: "PLANNING",
+	}
+	for in, p := range want {
+		if got := priorityFromImpactUrgency(in[0], in[1]); got != p {
+			t.Errorf("impact %s x urgency %s -> %s, want %s", in[0], in[1], got, p)
+		}
+	}
+	if f := newProblemPriorityFields(); f != (repository.ProblemPriorityFields{Priority: "PLANNING", Impact: "LOW", Urgency: "LOW"}) {
+		t.Errorf("a new problem gets %+v, want ServiceNow's LOW x LOW -> PLANNING", f)
+	}
+}
+
+// The post-resolution problem's priority is derived, as ServiceNow's problem
+// lookup overwrites the copied one -- so an incident with no priority still
+// gives its problem one.
+func TestProblemFor_DerivesPriority(t *testing.T) {
+	src := repository.IncidentReportSource{IncidentID: "inc", Number: "INC0001"}
+	m, h := "MEDIUM", "HIGH"
+	src.Impact, src.Urgency = &m, &h // Priority deliberately nil
+	p := problemFor(src)
+	if strOrEmpty(p.Priority) != "HIGH" || strOrEmpty(p.Impact) != "MEDIUM" || strOrEmpty(p.Urgency) != "HIGH" {
+		t.Errorf("priority/impact/urgency = %s/%s/%s, want HIGH/MEDIUM/HIGH", strOrEmpty(p.Priority), strOrEmpty(p.Impact), strOrEmpty(p.Urgency))
+	}
+	src.Impact, src.Urgency = nil, nil
+	if p := problemFor(src); strOrEmpty(p.Priority) != "PLANNING" {
+		t.Errorf("no impact/urgency: priority %s, want PLANNING (ServiceNow's 3 x 3 default)", strOrEmpty(p.Priority))
 	}
 }

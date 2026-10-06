@@ -68,7 +68,7 @@ func (s *stubProblemRepo) CreateProblemFromServiceNow(ctx context.Context, req d
 	}
 	panic("CreateProblemFromServiceNow called unexpectedly: Postgres must stay untouched when ServiceNow never accepts the problem")
 }
-func (s *stubProblemRepo) CreateProblem(ctx context.Context, req domain.CreateProblemRequest, createdBy string) (domain.ProblemDetail, error) {
+func (s *stubProblemRepo) CreateProblem(ctx context.Context, req domain.CreateProblemRequest, createdBy string, _ repository.ProblemPriorityFields) (domain.ProblemDetail, error) {
 	if s.createProblem != nil {
 		return s.createProblem(ctx, req, createdBy)
 	}

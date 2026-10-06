@@ -126,7 +126,7 @@ type ProblemRepository interface {
 	// ServiceNow response to confirm one from, and problem.state has no
 	// column default of its own -- confirmed against the live schema --
 	// unlike incident's).
-	CreateProblem(ctx context.Context, req domain.CreateProblemRequest, createdBy string) (domain.ProblemDetail, error)
+	CreateProblem(ctx context.Context, req domain.CreateProblemRequest, createdBy string, p ProblemPriorityFields) (domain.ProblemDetail, error)
 
 	// UpdateProblemFields writes any subset of the PATCH /problems/{id}
 	// fields that have an unambiguous, established Postgres column mapping --
@@ -158,6 +158,13 @@ type ProblemRepository interface {
 	// and Postgres may lag behind ServiceNow. See ProblemTransition for the
 	// side effects.
 	ApplyProblemTransition(ctx context.Context, req domain.UpdateProblemRequest, t ProblemTransition, enforceFrom bool, actorEmail string) (time.Time, error)
+}
+
+// ProblemPriorityFields is a new problem's impact, urgency and priority
+// (problem_*_enum labels). The service derives priority from the other two,
+// as ServiceNow's "Priority Problem Lookup" does.
+type ProblemPriorityFields struct {
+	Priority, Impact, Urgency string
 }
 
 // ProblemTransition is one move of ServiceNow's problem state model, as
@@ -502,9 +509,9 @@ const createProblemPortalQuery = `
 		       -- subcategory is matched on problem_subcategory.value (lower-case
 		       -- free text) within the chosen category; an unmatched value stays NULL.
 		       (SELECT psc.id FROM problem_subcategory psc WHERE psc.category = $7::problem_category_enum AND psc.value = LOWER($5::text)),
-		       -- ServiceNow's defaults for a new problem (discovery script 63):
-		       -- impact and urgency 3 - Low, priority 5 - Planning.
-		       'PLANNING'::problem_priority_enum, 'LOW'::problem_impact_enum, 'LOW'::problem_urgency_enum
+		       -- impact, urgency and the priority derived from them (see
+		       -- ProblemPriorityFields).
+		       $8::problem_priority_enum, $9::problem_impact_enum, $10::problem_urgency_enum
 		FROM inserted_work_item
 		RETURNING id
 	)
@@ -513,7 +520,7 @@ const createProblemPortalQuery = `
 	JOIN inserted_problem ip ON ip.id = iwi.id`
 
 // CreateProblem implements ProblemRepository.
-func (r *problemRepo) CreateProblem(ctx context.Context, req domain.CreateProblemRequest, createdBy string) (domain.ProblemDetail, error) {
+func (r *problemRepo) CreateProblem(ctx context.Context, req domain.CreateProblemRequest, createdBy string, p ProblemPriorityFields) (domain.ProblemDetail, error) {
 	var category *string
 	if req.Category != nil && strings.TrimSpace(*req.Category) != "" {
 		v := strings.ToUpper(strings.TrimSpace(*req.Category))
@@ -527,7 +534,7 @@ func (r *problemRepo) CreateProblem(ctx context.Context, req domain.CreateProble
 	err := r.db.QueryRow(ctx, createProblemPortalQuery,
 		createdBy, req.Subject, req.OriginCaseID,
 		req.PrimaryIncidentID, req.Subcategory, req.Description,
-		category,
+		category, p.Priority, p.Impact, p.Urgency,
 	).Scan(&outID, &outNumber, &outSubject, &outDescription, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
 		// problem_deny_all_insert (migration 0148) permits only an internal
