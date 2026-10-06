@@ -213,7 +213,7 @@ func TestChangeRequestFlowIntegration_StaleApprovals_ReviewToCustomerReviewToClo
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, true)
 
 	f.requestApproval(id)
-	f.expect(id, "in Assess", "ASSESS", "authorize", "canceled")
+	f.expect(id, "in Assess", "ASSESS", "canceled")
 	f.wantLive(id, "in Assess", map[string][]string{"Peer Approval": crStaleAssigned})
 	f.wantCanDecide(id, "in Assess", everyone(crStaleAssigned, "Peer Approval"))
 

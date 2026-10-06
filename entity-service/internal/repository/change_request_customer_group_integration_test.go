@@ -171,7 +171,7 @@ func (f *crFlow) wantForbidden(what string, err error, contains string) {
 func (f *crFlow) driveToCustomerApproval(id string) {
 	f.t.Helper()
 	f.requestApproval(id)
-	f.expect(id, "after Request Approval", "ASSESS", "authorize", "canceled")
+	f.expect(id, "after Request Approval", "ASSESS", "canceled")
 	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 }
 
@@ -299,7 +299,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupRejections(t *testing.T) {
 			t.Fatalf("%d approver rows still REQUESTED after the rejection", n)
 		}
 		_, err = f.patchState(id, domain.ChangeRequestStateClosed)
-		f.wantValidationError("close out of rollback", err, "rollback is final")
+		f.wantValidationError("close out of rollback", err, "a change request that is rolled back cannot be moved")
 		assertApprovers(t, "Customer Review", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REJECTED", crScopeUserA2: "CANCELLED"})
 		if _, reviewed := f.customerOutcome(id); reviewed {
 			t.Fatal("is_customer_review_required = true on a rejected review")

@@ -355,7 +355,8 @@ func TestChangeRequestLockIntegration_RequestApprovalWithoutRequirementsAndResen
 }
 
 // {state: "new"} is a no-op while New (or NULL) and a readable 400 in every other
-// state; nothing else in the request is written. Rollback keeps its own message.
+// state; nothing else in the request is written. A closed, canceled or rolled-back
+// change is refused as every request to move one is ("... cannot be moved").
 func TestChangeRequestLockIntegration_ReturnToNewIsRefused(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	for _, state := range []string{"ASSESS", "AUTHORIZE", "CUSTOMER_APPROVAL", "SCHEDULED", "IMPLEMENT", "REVIEW", "CUSTOMER_REVIEW", "ROLLBACK", "CLOSED", "CANCELED"} {
@@ -363,8 +364,11 @@ func TestChangeRequestLockIntegration_ReturnToNewIsRefused(t *testing.T) {
 		f.setState(id, state)
 		_, err := f.patch(id, domain.PatchChangeRequestRequest{State: stateptr(domain.ChangeRequestStateNew), Title: sp("must not be written")})
 		want := lockMsgReturnToNew
-		if state == "ROLLBACK" {
-			want = "rollback is final"
+		switch state {
+		case "ROLLBACK":
+			want = `state "new" cannot be set manually from rollback: a change request that is rolled back cannot be moved`
+		case "CLOSED", "CANCELED":
+			want = `state "new" cannot be set manually from ` + strings.ToLower(state) + `: a change request that is ` + strings.ToLower(state) + ` cannot be moved`
 		}
 		f.wantValidationError("{state: new} in "+state, err, want)
 		if got := f.state(id); got != state {

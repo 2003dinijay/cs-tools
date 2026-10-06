@@ -112,10 +112,6 @@ var (
 // dialog's own wording mirrors them), so they are spelled out in one place.
 const (
 	changeRequestCannotReturnToNewMsg = `state "new" cannot be set: a change request that has left New cannot return to it. Cancel it and clone it instead.`
-	// changeRequestRolledBackMsg is the refusal of every state change out of
-	// Rollback, which is final; it is what {state: "new"} gets on a rolled-back
-	// change too, since that says more than "cannot return to New".
-	changeRequestRolledBackMsg        = "change request has been rolled back; rollback is final and its state can no longer be changed"
 	changeRequestApprovalNeedsProject = "approval cannot be requested: the customer's approval and/or review is required but no Customer Project is set, so there is nobody to ask. Select a Customer Project first (or clear the requirement)."
 )
 
@@ -140,8 +136,10 @@ func checkReturnToNew(state string, requested *domain.ChangeRequestState) error 
 	if changeRequestCreationPhase(state) {
 		return nil
 	}
-	if state == crStateRollback {
-		return &apierror.ValidationError{Msg: changeRequestRolledBackMsg}
+	// A final change request is refused as every other request to move it is
+	// (changeRequestFinalRefusal), which says more than "cannot return to New".
+	if terminalChangeRequestState(state) {
+		return changeRequestFinalRefusal(state, *requested)
 	}
 	return &apierror.ValidationError{Msg: changeRequestCannotReturnToNewMsg}
 }

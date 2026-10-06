@@ -2146,6 +2146,13 @@ func TestChangeRequestIntegration_AssessAuthorizeAndReviewStagesCoexist(t *testi
 	// a deliberately different assigned team so this test also confirms
 	// Review's own provisioning uses THIS request's team, not whatever was
 	// left on work_item by the Assess/Authorize steps above.
+	//
+	// Review is entered from Implement, the only edge into it (the CAB approval
+	// and Start implementation have tests of their own): the change is put there
+	// directly, as the fixture of this test, rather than walked through them.
+	if _, err := scoped.Exec(sys, `UPDATE change_request SET state = 'IMPLEMENT' WHERE id = $1`, changeRequestAssessGateTestID); err != nil {
+		t.Fatalf("put the change request in Implement: %v", err)
+	}
 	reviewTeamID := changeRequestReviewGateGroupID
 	review := domain.ChangeRequestStateReview
 	if _, err := repo.PatchChangeRequest(sys, changeRequestAssessGateTestID,
@@ -3690,7 +3697,7 @@ func TestChangeRequestFlowIntegration_NormalFullLifecycle(t *testing.T) {
 	assertApprovers(t, "peer stage", stages[0].approvers, map[string]string{
 		crFlowCreatorID: "CANCELLED", crFlowPeerAID: "REQUESTED", crFlowPeerBID: "REQUESTED", crFlowOutsiderID: "REQUESTED",
 	})
-	assertStates(t, "legalNextStates(Assess)", f.legal(id), "authorize", "canceled")
+	assertStates(t, "legalNextStates(Assess)", f.legal(id), "canceled")
 
 	// There is no manual shortcut past the approvals.
 	for _, target := range []domain.ChangeRequestState{domain.ChangeRequestStateScheduled, domain.ChangeRequestStateAuthorize} {
@@ -4189,7 +4196,7 @@ func TestChangeRequestFlowIntegration_AllExternalGroupsAreRefusedClearly(t *test
 		f.execSQL(`UPDATE "user" SET user_type = 'EXTERNAL'::user_type_enum WHERE id = $1`, crCABMemberUserID1)
 		err := f.decide(id, crFlowPeerAID, "approved")
 		f.wantValidationError("peer approval into a CAB of customers only", err, `the "CAB Approval" group has no active internal (WSO2) members`)
-		f.expect(id, "after the refused peer approval", "ASSESS", "authorize", "canceled")
+		f.expect(id, "after the refused peer approval", "ASSESS", "canceled")
 	})
 	t.Run("Review", func(t *testing.T) {
 		f := newCRFlow(t)
@@ -4907,7 +4914,7 @@ func TestChangeRequestFlowIntegration_NormalCustomerGateLifecycles(t *testing.T)
 			f.expect(id, "after create", "NEW", "assess", "canceled")
 
 			f.requestApproval(id)
-			f.expect(id, "after Request Approval", "ASSESS", "authorize", "canceled")
+			f.expect(id, "after Request Approval", "ASSESS", "canceled")
 
 			// Both gates sit AFTER the internal approvals: nothing short-circuits them.
 			f.approvePeerAndCAB(id, map[bool]string{true: "CUSTOMER_APPROVAL", false: "SCHEDULED"}[tc.approval],
@@ -6745,7 +6752,7 @@ func (f *crFlow) wantRolledBack(id string) {
 		domain.ChangeRequestStateCustomerReview, domain.ChangeRequestStateClosed, domain.ChangeRequestStateCanceled,
 	} {
 		_, err := f.patchState(id, to)
-		f.wantValidationError("PATCH {state: "+string(to)+"} out of rollback", err, "rollback is final")
+		f.wantValidationError("PATCH {state: "+string(to)+"} out of rollback", err, "a change request that is rolled back cannot be moved")
 	}
 	_, err := f.patchState(id, domain.ChangeRequestStateRollback)
 	f.wantValidationError("PATCH {state: rollback} again", err, rollbackOnlyFromReviewMsg)
@@ -6833,8 +6840,14 @@ func TestChangeRequestFlowIntegration_RollbackRefusedFromEveryOtherState(t *test
 		}
 		_, err := f.patchState(id, domain.ChangeRequestStateRollback)
 		var ve *apierror.ValidationError
-		if !errors.As(err, &ve) || ve.Msg != rollbackOnlyFromReviewMsg {
-			t.Fatalf("PATCH {state: rollback} from %q: err = %v, want a 400 %q", st, err, rollbackOnlyFromReviewMsg)
+		// A closed or canceled change cannot be moved at all (that refusal names the
+		// state); a repeated rollback gets the "only from review" one.
+		want := rollbackOnlyFromReviewMsg
+		if st == "CLOSED" || st == "CANCELED" {
+			want = fmt.Sprintf(`state "rollback" cannot be set manually from %s: a change request that is %s cannot be moved`, strings.ToLower(st), strings.ToLower(st))
+		}
+		if !errors.As(err, &ve) || ve.Msg != want {
+			t.Fatalf("PATCH {state: rollback} from %q: err = %v, want a 400 %q", st, err, want)
 		}
 		if got := f.state(id); got != st {
 			t.Fatalf("state after the refused rollback from %q = %q, want unchanged", st, got)
@@ -7316,8 +7329,12 @@ func TestChangeRequestFlowIntegration_RescheduleRefusedFromEveryOtherState(t *te
 		}
 		err := f.reschedule(id, sp(rsStart2), sp(rsEnd2))
 		var ve *apierror.ValidationError
-		if !errors.As(err, &ve) || ve.Msg != rescheduleOnlyFromCustomerApprovalMsg {
-			t.Fatalf("manual authorize from %q: err = %v, want a 400 %q", st, err, rescheduleOnlyFromCustomerApprovalMsg)
+		want := rescheduleOnlyFromCustomerApprovalMsg
+		if st == "CLOSED" || st == "CANCELED" {
+			want = fmt.Sprintf(`state "authorize" cannot be set manually from %s: a change request that is %s cannot be moved`, strings.ToLower(st), strings.ToLower(st))
+		}
+		if !errors.As(err, &ve) || ve.Msg != want {
+			t.Fatalf("manual authorize from %q: err = %v, want a 400 %q", st, err, want)
 		}
 		if got := f.state(id); got != st {
 			t.Fatalf("state after the refused re-schedule from %q = %q", st, got)
@@ -7328,7 +7345,7 @@ func TestChangeRequestFlowIntegration_RescheduleRefusedFromEveryOtherState(t *te
 	if _, err := f.scoped.Exec(f.sys, `UPDATE change_request SET state = 'ROLLBACK' WHERE id = $1`, id); err != nil {
 		t.Fatal(err)
 	}
-	f.wantValidationError("re-schedule from rollback", f.reschedule(id, sp(rsStart2), nil), "rollback is final")
+	f.wantValidationError("re-schedule from rollback", f.reschedule(id, sp(rsStart2), nil), "a change request that is rolled back cannot be moved")
 }
 
 // The on-hold gate applies, and an unsatisfiable re-schedule (nobody can give

@@ -565,7 +565,11 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 	}{
 		{string(domain.ChangeRequestStateNew), false, []string{"assess", "canceled"}},
 		{string(domain.ChangeRequestStateNew), true, []string{"assess", "canceled"}},
-		{string(domain.ChangeRequestStateAssess), false, []string{"authorize", "canceled"}},
+		// Assess is an approval wait too: it offers only Cancel, the peer approval
+		// moves the change on by itself. (Assess -> Authorize used to be listed,
+		// although the PATCH has always refused it.)
+		{string(domain.ChangeRequestStateAssess), false, []string{"canceled"}},
+		{string(domain.ChangeRequestStateAssess), true, []string{"canceled"}},
 		// Authorize is an approval wait (CAB/ECAB): it offers no forward move
 		// at all, only Cancel -- CAB/ECAB approval moves the change on by
 		// itself (to Scheduled, or Customer Approval when the customer's
@@ -651,14 +655,14 @@ func TestLegalChangeRequestNextStates(t *testing.T) {
 		}
 	})
 
-	t.Run("authorize is offered from assess (approval path) and customer_approval (re-schedule) only", func(t *testing.T) {
+	t.Run("authorize is offered from customer_approval (re-schedule) only, never from assess (the peer approval's)", func(t *testing.T) {
 		for _, st := range []domain.ChangeRequestState{
 			domain.ChangeRequestStateNew, domain.ChangeRequestStateAssess, domain.ChangeRequestStateAuthorize,
 			domain.ChangeRequestStateCustomerApproval, domain.ChangeRequestStateScheduled, domain.ChangeRequestStateImplement,
 			domain.ChangeRequestStateReview, domain.ChangeRequestStateCustomerReview,
 			domain.ChangeRequestStateRollback, domain.ChangeRequestStateClosed, domain.ChangeRequestStateCanceled,
 		} {
-			want := st == domain.ChangeRequestStateAssess || st == domain.ChangeRequestStateCustomerApproval
+			want := st == domain.ChangeRequestStateCustomerApproval
 			s := string(st)
 			got := false
 			for _, next := range legalChangeRequestNextStates(&s, false) {

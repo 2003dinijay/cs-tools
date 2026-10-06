@@ -44,7 +44,7 @@ import (
 //	gate-passed     the gate the box controls has been passed
 //	needs-project   the box cannot be ticked: there is no Customer Project to ask
 //	return-to-new   the state cannot go back to New
-//	rolled-back     the state cannot change out of Rollback at all
+//	final           the change is closed, canceled or rolled back: its state cannot change at all
 //
 // Columns:
 //
@@ -78,9 +78,9 @@ var lockTruthTable = []lockTruthRow{
 	{"IMPLEMENT", "frozen", "ok", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "ok", "needs-project", "cannot-turn-off", "return-to-new"},
 	{"REVIEW", "frozen", "ok", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "ok", "needs-project", "cannot-turn-off", "return-to-new"},
 	{"CUSTOMER_REVIEW", "frozen", "ok", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "gate-passed", "gate-passed", "cannot-turn-off", "return-to-new"},
-	{"ROLLBACK", "frozen", "ok", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "gate-passed", "gate-passed", "cannot-turn-off", "rolled-back"},
-	{"CLOSED", "frozen", "ok", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "gate-passed", "gate-passed", "cannot-turn-off", "return-to-new"},
-	{"CANCELED", "frozen", "ok", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "gate-passed", "gate-passed", "cannot-turn-off", "return-to-new"},
+	{"ROLLBACK", "frozen", "ok", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "gate-passed", "gate-passed", "cannot-turn-off", "final"},
+	{"CLOSED", "frozen", "ok", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "gate-passed", "gate-passed", "cannot-turn-off", "final"},
+	{"CANCELED", "frozen", "ok", "frozen", "gate-passed", "gate-passed", "cannot-turn-off", "gate-passed", "gate-passed", "cannot-turn-off", "final"},
 }
 
 // lockOutcome maps a refusal to its outcome code by its message.
@@ -104,8 +104,8 @@ func lockOutcome(t *testing.T, err error) string {
 		return "needs-project"
 	case strings.Contains(m, "cannot return to it"):
 		return "return-to-new"
-	case strings.Contains(m, "rollback is final"):
-		return "rolled-back"
+	case strings.Contains(m, "cannot be moved"):
+		return "final"
 	default:
 		t.Fatalf("unrecognised refusal %q", m)
 		return ""

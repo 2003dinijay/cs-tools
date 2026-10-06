@@ -552,7 +552,7 @@ func TestChangeRequestNoBypassIntegration_LegalNextStatesExactTable(t *testing.T
 		case "NEW":
 			return []string{"assess", "canceled"}
 		case "ASSESS":
-			return []string{"authorize", "canceled"}
+			return []string{"canceled"} // waits for the peer approval, which moves it on by itself
 		case "AUTHORIZE":
 			return []string{"canceled"}
 		case "CUSTOMER_APPROVAL":

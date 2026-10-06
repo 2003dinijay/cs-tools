@@ -387,7 +387,10 @@ func ChangeRequestTypeSupported(t domain.ChangeRequestType) bool {
 
 // changeRequestForwardNextStates is the forward move(s) a HUMAN is offered out
 // of each non-terminal change_request state (domain.ChangeRequest.
-// LegalNextStates, which the webapp renders as-is). Values are
+// LegalNextStates, which the webapp renders as-is) -- and the forward moves a
+// staff PATCH {state} is accepted for: the same table drives both
+// (legalChangeRequestNextStates renders it, checkStaffStateRequest enforces it;
+// change_request_transitions.go has the whole graph). Values are
 // domain.ChangeRequestState so a typo here is a compile error.
 //
 // The graph was originally read off real change_requests on the live
@@ -397,20 +400,25 @@ func ChangeRequestTypeSupported(t domain.ChangeRequestType) bool {
 // (change_request.customer_approval_required / customer_review_required):
 //
 //   - New -> Assess is the "Request Approval" action, offered for every type.
-//   - Assess -> Authorize and Authorize -> (nothing) are approval waits: a
-//     change leaves them through DecideChangeRequestApproval's cascade.
+//   - Assess and Authorize are approval waits with NO move for staff but Cancel:
+//     a change leaves Assess through the peer approval and Authorize through the
+//     CAB / ECAB approval, i.e. through DecideChangeRequestApproval's cascade.
+//     Assess -> Authorize used to be listed here although patchChangeRequestTx has
+//     always refused it ("cannot be set manually"): listing it offered an edge
+//     the service would not take, so it is gone and the table is exactly what
+//     the PATCH accepts.
 //   - Scheduled is never offered as a target, from any state. There is no
 //     "Schedule" action: a change reaches Scheduled automatically (CAB / ECAB
 //     approval, or Request Approval on a Standard change) unless Customer
 //     Approval is required, in which case those same events move it to
 //     Customer Approval instead, and from there only the CUSTOMER's approval
 //     (given in the Customer Portal) schedules it. patchChangeRequestTx rejects
-//     a manual {state: "scheduled"} from every state.
+//     a manual {state: "scheduled"} from every other state.
 //   - Review offers Closed -- or, when customer_review_required is set,
 //     Customer Review instead (legalChangeRequestNextStates applies that
-//     branch; the map holds the default). Customer Review offers no forward
-//     move: only the CUSTOMER's review (given in the Customer Portal) closes
-//     it, so staff are left with Rollback and Cancel there.
+//     branch; the map holds both, the PATCH picks one by the same flag). Customer
+//     Review offers no forward move: only the CUSTOMER's review (given in the
+//     Customer Portal) closes it, so staff are left with Rollback and Cancel there.
 //   - Customer Approval and Customer Review are customer states: the change
 //     leaves them through the customer's own answer and nothing else, so no
 //     staff action may record that answer (patchChangeRequestTx and
@@ -424,21 +432,20 @@ func ChangeRequestTypeSupported(t domain.ChangeRequestType) bool {
 //     states, Review (the internal review failed) and Customer Review (the
 //     customer's review failed): changeRequestRollbackFrom. It is not a
 //     forward move, so it is not in this map.
+//   - Closed, Canceled and Rollback have no entry: they are final, nothing moves
+//     a change out of them by PATCH (checkStaffStateRequest).
 var changeRequestForwardNextStates = map[domain.ChangeRequestState][]domain.ChangeRequestState{
 	// New's one human action is Request Approval, always sent as
 	// {state: "assess"}; where it actually lands depends on the change's type
 	// and on customer_approval_required (see change_request_approval_flow.go).
 	domain.ChangeRequestStateNew: {domain.ChangeRequestStateAssess},
-	// Assess and Authorize are the two approval waits. Authorize is offered
-	// out of Assess as the approval path (it is reached by the peer approval
-	// cascade, never by a human PATCH -- the webapp never renders it as a
-	// button). Authorize itself offers no forward move: it leaves only through
-	// CAB/ECAB approval, which moves the change on to Scheduled (or Customer
-	// Approval).
-	domain.ChangeRequestStateAssess: {domain.ChangeRequestStateAuthorize},
-	// An empty (non-nil) entry, not a missing one: legalChangeRequestNextStates
-	// still offers Cancel for a state that has an entry, and nothing for one
-	// that does not.
+	// Assess and Authorize are the two approval waits, with an empty (non-nil)
+	// entry each, not a missing one: legalChangeRequestNextStates still offers
+	// Cancel for a state that has an entry, and nothing for one that does not.
+	// Assess leaves through the peer approval cascade (to Authorize), Authorize
+	// through CAB/ECAB approval (to Scheduled, or Customer Approval): never by a
+	// human PATCH.
+	domain.ChangeRequestStateAssess:    {},
 	domain.ChangeRequestStateAuthorize: {},
 	// Customer Approval is the customer's step: the customer's own approval (the
 	// Customer Portal) schedules the change, their rejection cancels it, and no
@@ -449,8 +456,11 @@ var changeRequestForwardNextStates = map[domain.ChangeRequestState][]domain.Chan
 	domain.ChangeRequestStateCustomerApproval: {domain.ChangeRequestStateAuthorize},
 	domain.ChangeRequestStateScheduled:        {domain.ChangeRequestStateImplement},
 	domain.ChangeRequestStateImplement:        {domain.ChangeRequestStateReview},
-	// Review's default (customer review not required) is Closed directly.
-	domain.ChangeRequestStateReview: {domain.ChangeRequestStateClosed},
+	// Review is Closed directly unless the customer's review is required, in
+	// which case it is Customer Review instead: the entry lists both (what a PATCH
+	// may name from Review), legalChangeRequestNextStates keeps the one the flag
+	// picks.
+	domain.ChangeRequestStateReview: {domain.ChangeRequestStateClosed, domain.ChangeRequestStateCustomerReview},
 	// Customer Review has an empty (non-nil) entry on purpose: the customer's own
 	// review closes the change (or rolls it back), so "closed" is NOT offered to
 	// staff. Rollback and Cancel are added by legalChangeRequestNextStates.
@@ -490,21 +500,21 @@ func legalChangeRequestNextStates(state *string, customerReviewRequired bool) []
 		return nil
 	}
 	st := domain.ChangeRequestState(*state)
-	nexts, ok := changeRequestForwardNextStates[st]
-	if !ok {
+	targets := changeRequestStaffTargets(st)
+	if targets == nil {
 		return nil
 	}
-	if st == domain.ChangeRequestStateReview && customerReviewRequired {
-		nexts = []domain.ChangeRequestState{domain.ChangeRequestStateCustomerReview}
-	}
-	result := make([]string, 0, len(nexts)+2)
-	for _, next := range nexts {
+	result := make([]string, 0, len(targets))
+	for _, next := range targets {
+		// Review lists Closed and Customer Review: the flag picks one.
+		if st == domain.ChangeRequestStateReview &&
+			((next == domain.ChangeRequestStateCustomerReview && !customerReviewRequired) ||
+				(next == domain.ChangeRequestStateClosed && customerReviewRequired)) {
+			continue
+		}
 		result = append(result, string(next))
 	}
-	if changeRequestRollbackFrom[st] {
-		result = append(result, string(domain.ChangeRequestStateRollback))
-	}
-	return append(result, string(domain.ChangeRequestStateCanceled))
+	return result
 }
 
 // changeRequestRollbackFrom is the set of states a change can be rolled back
@@ -1158,6 +1168,16 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	if err := refuseStaffCustomerOutcomeFlags(req); err != nil {
 		return "", err
 	}
+	// The requested state is read the way the table of moves is written: trimmed
+	// and lower case, whatever the caller sent. A value that is not a state of the
+	// lifecycle is refused here, before it reaches a comparison or the enum cast.
+	if req.State != nil {
+		normalized, err := normalizeRequestedChangeRequestState(*req.State)
+		if err != nil {
+			return "", err
+		}
+		req.State = &normalized
+	}
 
 	// The planned window is parsed before it is used for anything, by whoever
 	// sends it (see change_request_window.go): nothing but an RFC 3339 /
@@ -1428,11 +1448,16 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		reviewRequired = *req.CustomerReviewRequired
 	}
 	if req.State != nil {
-		// Rollback is terminal: nothing moves a rolled-back change anywhere
-		// (a repeated {state: rollback} gets the "only from review" refusal
-		// below).
-		if gates.state == "ROLLBACK" && !strings.EqualFold(string(*req.State), string(domain.ChangeRequestStateRollback)) {
-			return "", &apierror.ValidationError{Msg: changeRequestRolledBackMsg}
+		// The graph (change_request_transitions.go): a request must name the state
+		// the change is in (a resend) or a move staff may make from it. Closed,
+		// Canceled and Rollback are final -- nothing moves a change out of them -- and
+		// no request skips a gate: Assess and Authorize leave through their approvals,
+		// Customer Approval / Customer Review through the customer's answer, and a
+		// state is never jumped over (New to Implement, Scheduled to Review, ...). The
+		// targets that have a refusal of their own below (scheduled, authorize,
+		// customer_approval, rollback, assess, new) are left to it.
+		if err := checkStaffStateRequest(gates.state, *req.State, reviewRequired); err != nil {
+			return "", err
 		}
 		switch strings.ToLower(string(*req.State)) {
 		case "authorize":
