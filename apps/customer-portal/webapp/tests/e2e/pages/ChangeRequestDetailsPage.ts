@@ -66,11 +66,15 @@ export class ChangeRequestDetailsPage {
   }
 
   /**
-   * The page's own message when the change request could not be loaded (an error
-   * page for a 404 / 403 carries it).
+   * The page's own message when the change request could not be loaded: the
+   * generic one (a 403, a failure), or the plain not-found one that a change
+   * request which is not shared with the viewer gets (a 404 is exactly what a
+   * missing one answers, so the page says neither more nor less).
    */
   loadError(): Locator {
-    return this.page.getByText("Could not load change request details.");
+    return this.page
+      .getByText("Could not load change request details.")
+      .or(this.page.getByText("This change request was not found. It may not have been shared with you."));
   }
 
   /**

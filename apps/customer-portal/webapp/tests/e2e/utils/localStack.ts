@@ -237,15 +237,25 @@ export function customerApi(persona: LocalPersona) {
       const { customerApi: base } = await stackEndpoints();
       return call("PATCH", `${base}/change-requests/${changeRequestId}`, await token(), body);
     },
+    /** `GET /change-requests/{id}/approvals`. */
+    async approvals(changeRequestId: string): Promise<ApiResult<{ approvals?: { stage?: string }[] }>> {
+      const { customerApi: base } = await stackEndpoints();
+      return call("GET", `${base}/change-requests/${changeRequestId}/approvals`, await token());
+    },
+    /** `POST /change-requests/{id}/approvals/decision`: whatever body the caller wants to try. */
+    async decision(changeRequestId: string, body: unknown): Promise<ApiResult> {
+      const { customerApi: base } = await stackEndpoints();
+      return call("POST", `${base}/change-requests/${changeRequestId}/approvals/decision`, await token(), body);
+    },
     /** `POST /projects/{id}/change-requests/search`: the numbers the project lists. */
-    async listedNumbers(projectId: string): Promise<string[]> {
+    async listedNumbers(projectId: string, filters: Record<string, unknown> = {}): Promise<string[]> {
       const { customerApi: base } = await stackEndpoints();
       const result = await call<{ changeRequests?: { number?: string }[] }>(
         "POST",
         `${base}/projects/${projectId}/change-requests/search`,
         await token(),
         // 50 is the most the API takes per page (a larger limit answers 400, "limit cannot exceed 50").
-        { filters: {}, pagination: { offset: 0, limit: 50 } },
+        { filters, pagination: { offset: 0, limit: 50 } },
       );
       // A project the caller may not read answers 403/404 and lists nothing; any other refusal (a 400 for the
       // page size, say) must not read as "an empty list", or the assertions on what is NOT listed pass vacuously.
