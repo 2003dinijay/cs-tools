@@ -41,6 +41,10 @@ var defaults = map[string]string{
 // ErrMissingBody is returned when the webhook is called with no body, or a body that isn't valid JSON at all.
 var ErrMissingBody = errors.New("missing or invalid request body")
 
+// ErrUnsupportedType is returned for an SNS message that is neither a Notification nor one of the
+// confirmations the SNS handler answers before the transform runs.
+var ErrUnsupportedType = errors.New("unsupported SNS message type")
+
 // Alert is the canonical alert model handed to the core component.
 type Alert = model.Alert
 
@@ -69,6 +73,9 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 	var envelope map[string]any
 	if err := jsonnum.Unmarshal(raw, &envelope); err != nil {
 		return Alert{}, fmt.Errorf("%w: %v", ErrMissingBody, err)
+	}
+	if t := utils.Str(envelope, "Type"); t != "" && t != "Notification" {
+		return Alert{}, fmt.Errorf("%w %q", ErrUnsupportedType, t)
 	}
 
 	base := Alert{

@@ -18,6 +18,7 @@ package aws
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -98,5 +99,21 @@ func TestArnAccount(t *testing.T) {
 		if got := arnAccount(arn); got != want {
 			t.Errorf("arnAccount(%q) = %q, want %q", arn, got, want)
 		}
+	}
+}
+
+func TestTransform_RejectsNonNotificationTypes(t *testing.T) {
+	for _, typ := range []string{"UnsubscribeConfirmation", "SomethingNew"} {
+		raw := []byte(`{"Type":"` + typ + `","TopicArn":"arn:aws:sns:us-east-1:123456789012:alerts","Message":"You have chosen to deactivate subscription."}`)
+		if _, err := Transform(raw, Config{}); !errors.Is(err, ErrUnsupportedType) {
+			t.Errorf("%s: err = %v, want ErrUnsupportedType", typ, err)
+		}
+	}
+}
+
+func TestTransform_NoTypeStillTransforms(t *testing.T) {
+	raw, _ := json.Marshal(map[string]any{"Message": `{"AlarmName":"HighCPUAlarm","NewStateValue":"ALARM"}`})
+	if a, err := Transform(raw, Config{}); err != nil || a.MetricName != "HighCPUAlarm" {
+		t.Errorf("alert = %+v, err = %v", a, err)
 	}
 }
