@@ -31,6 +31,7 @@ import {
   parseBackendTimestamp,
   resolveDisplayTimeZone,
 } from "@utils/dateTime";
+import { ApiError } from "@utils/ApiError";
 
 // --- Change request stats (API → card counts) --------------------------------
 
@@ -243,6 +244,193 @@ export function getChangeRequestDecisionMode(
     return ChangeRequestDecisionMode.CUSTOMER_REVIEW;
   }
   return ChangeRequestDecisionMode.NONE;
+}
+
+/**
+ * Which customer answer the signed-in customer can give on this change request
+ * right now, and so which action buttons the details page offers.
+ *
+ * The state decides what could be asked of the customer (Customer Approval:
+ * approve / reject / propose a new time; Customer Review: successful /
+ * unsuccessful). `customerCanAnswer` (viewer-specific, from the backend) then
+ * decides whether THIS customer has such an answer pending:
+ *
+ * | state             | customerCanAnswer | hasCustomerApproved | result            |
+ * |-------------------|-------------------|---------------------|-------------------|
+ * | Customer Approval | true              | any                 | CUSTOMER_APPROVAL |
+ * | Customer Approval | false             | any                 | NONE              |
+ * | Customer Approval | absent            | true                | CUSTOMER_APPROVAL |
+ * | Customer Approval | absent            | false / absent      | NONE              |
+ * | Customer Review   | true or absent    | any                 | CUSTOMER_REVIEW   |
+ * | Customer Review   | false             | any                 | NONE              |
+ * | any other state   | any               | any                 | NONE              |
+ *
+ * `customerCanAnswer` is absent when the data source cannot say (ServiceNow);
+ * the old gate (`hasCustomerApproved` at Customer Approval) then still applies.
+ *
+ * @param changeRequest - The change request as returned by the details API.
+ * @returns {ChangeRequestDecisionMode} The answer to offer, or NONE.
+ */
+export function resolveCustomerDecisionMode(
+  changeRequest?: ChangeRequestDetails | null,
+): ChangeRequestDecisionMode {
+  const stateMode = getChangeRequestDecisionMode(changeRequest);
+  const canAnswer =
+    typeof changeRequest?.customerCanAnswer === "boolean"
+      ? changeRequest.customerCanAnswer
+      : undefined;
+
+  switch (stateMode) {
+    case ChangeRequestDecisionMode.CUSTOMER_APPROVAL:
+      return (canAnswer ?? changeRequest?.hasCustomerApproved === true)
+        ? ChangeRequestDecisionMode.CUSTOMER_APPROVAL
+        : ChangeRequestDecisionMode.NONE;
+    case ChangeRequestDecisionMode.CUSTOMER_REVIEW:
+      return canAnswer === false
+        ? ChangeRequestDecisionMode.NONE
+        : ChangeRequestDecisionMode.CUSTOMER_REVIEW;
+    default:
+      return ChangeRequestDecisionMode.NONE;
+  }
+}
+
+/** Labels of the two answer buttons for a decision mode. */
+export function getCustomerDecisionLabels(mode: ChangeRequestDecisionMode): {
+  approve: string;
+  reject: string;
+} {
+  return mode === ChangeRequestDecisionMode.CUSTOMER_REVIEW
+    ? { approve: "Successful", reject: "Unsuccessful" }
+    : { approve: "Approve", reject: "Reject" };
+}
+
+/**
+ * Copy for the confirmation shown before the answer that cannot be taken back:
+ * a rejected change is canceled, an unsuccessful one goes into rollback.
+ */
+export function getCustomerRejectConfirmCopy(mode: ChangeRequestDecisionMode): {
+  title: string;
+  message: string;
+  hint?: string;
+  confirmLabel: string;
+} {
+  if (mode === ChangeRequestDecisionMode.CUSTOMER_REVIEW) {
+    return {
+      title: "Mark this change as unsuccessful?",
+      message: "Marking it unsuccessful sends the change into rollback.",
+      confirmLabel: "Mark unsuccessful",
+    };
+  }
+  return {
+    title: "Reject this change request?",
+    message: "Rejecting cancels this change request.",
+    hint: "If you only need a different time, go back and use Propose New Time instead.",
+    confirmLabel: "Reject change request",
+  };
+}
+
+/** Toast / banner text for a customer's answer: what happened, in plain words. */
+export function getCustomerDecisionMessages(
+  mode: ChangeRequestDecisionMode,
+  approved: boolean,
+): { success: string; failure: string } {
+  if (mode === ChangeRequestDecisionMode.CUSTOMER_REVIEW) {
+    return approved
+      ? {
+          success: "Change request marked as successful. It is now closed.",
+          failure: "Could not mark the change request as successful. Please try again.",
+        }
+      : {
+          success: "Change request marked as unsuccessful. It is now in rollback.",
+          failure: "Could not mark the change request as unsuccessful. Please try again.",
+        };
+  }
+  return approved
+    ? {
+        success: "Change request approved. It is now scheduled.",
+        failure: "Could not approve the change request. Please try again.",
+      }
+    : {
+        success: "Change request rejected. It has been canceled.",
+        failure: "Could not reject the change request. Please try again.",
+      };
+}
+
+/** A conflict (409): the answer was already given, or is no longer asked for. */
+export const CHANGE_REQUEST_ANSWER_STALE_MESSAGE =
+  "This request was already answered or is no longer waiting for your answer.";
+
+/** A refusal (403): the caller is not a contact who may answer this change. */
+export const CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE =
+  "You are not one of the contacts who can answer this change request.";
+
+/** A conflict (409) on a proposal because WSO2 has the change on hold. */
+export const CHANGE_REQUEST_ON_HOLD_MESSAGE =
+  "This change request is on hold, so a new time cannot be proposed right now.";
+
+/** Backend 400 messages the customer can act on, in the customer's words. */
+const BAD_REQUEST_MESSAGES: ReadonlyArray<readonly [needle: string, message: string]> = [
+  [
+    "must not be after the planned end",
+    "The proposed end must be after the proposed start.",
+  ],
+  [
+    "requires a changed planned start or end",
+    "This is the same as the current schedule. Change the start or the end to propose a different time.",
+  ],
+  [
+    "is locked once set to true",
+    "This answer has already been given and cannot be changed.",
+  ],
+];
+
+/**
+ * Turns the error of a customer's PATCH (answer or proposed time) into text a
+ * customer can act on.
+ *
+ * `terminal` is true when retrying or editing cannot help because the change
+ * request no longer waits on this customer (409 / 403): the caller should
+ * refresh it rather than leave the customer in a form that cannot succeed.
+ *
+ * @param error - What the mutation rejected with.
+ * @param fallback - Text for failures with nothing better to say.
+ * @returns The message and whether the action is no longer possible.
+ */
+export function describeChangeRequestActionError(
+  error: unknown,
+  fallback: string,
+): { message: string; terminal: boolean } {
+  if (error instanceof ApiError) {
+    if (error.status === 409) {
+      // A hold is the one conflict that is about neither the answer nor the
+      // state: the customer is still being asked, a proposal just cannot go in.
+      if (/\bon hold\b/i.test(error.message)) {
+        return { message: CHANGE_REQUEST_ON_HOLD_MESSAGE, terminal: false };
+      }
+      return { message: CHANGE_REQUEST_ANSWER_STALE_MESSAGE, terminal: true };
+    }
+    if (error.status === 403) {
+      return { message: CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE, terminal: true };
+    }
+    const backendMessage = error.message?.trim();
+    if (error.status === 400 && backendMessage) {
+      const known = BAD_REQUEST_MESSAGES.find(([needle]) =>
+        backendMessage.includes(needle),
+      );
+      return { message: known ? known[1] : backendMessage, terminal: false };
+    }
+    // No message in the body: the hook then carries the bare status text
+    // ("Internal Server Error", "HTTP 500"), which tells a customer nothing.
+    const isBareStatus =
+      backendMessage === `${error.status} ${error.statusText}` ||
+      backendMessage === error.statusText?.trim() ||
+      backendMessage === `HTTP ${error.status}`;
+    return {
+      message: backendMessage && !isBareStatus ? backendMessage : fallback,
+      terminal: false,
+    };
+  }
+  return { message: fallback, terminal: false };
 }
 
 export function buildChangeRequestWorkflowStages(
