@@ -41,10 +41,8 @@ import (
 // Incident's category/resolution-code, there's no domain enum to reconcile
 // against the real column values at all; they're rendered as-is.
 //
-// AssignmentGroup is always nil: problem has no assignment-group column
-// anywhere (same gap as change_request's own AssignedTeamID), and a
-// caller's "assignmentGroupId" filter is silently not applied, matching
-// changeRequestWhereClause's own precedent for the identical gap.
+// AssignmentGroup is work_item.assignment_group_id (migration 0075), and the
+// "assignmentGroupId" filter applies to it.
 //
 // CreateProblem/UpdateProblem have no Postgres implementation: CreateProblem
 // needs work_item.number, which has no DB default or backing sequence
@@ -62,11 +60,11 @@ import (
 type ProblemRepository interface {
 	// SearchProblems returns a filtered, paginated slice of problems
 	// together with the total count of matching rows before pagination.
-	SearchProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs []string) ([]domain.SearchProblemView, int, error)
+	SearchProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs, assignmentGroupIDs []string) ([]domain.SearchProblemView, int, error)
 	// AggregateProblems returns server-side aggregated counts of problems
 	// per value of groupBy, capped to the top maxGroups buckets with the
 	// remainder folded into the returned OthersCount.
-	AggregateProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs []string, groupBy string, maxGroups int) (domain.AggregateResponse, error)
+	AggregateProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs, assignmentGroupIDs []string, groupBy string, maxGroups int) (domain.AggregateResponse, error)
 	// GetProblem returns the full detail of a single problem by its UUID,
 	// or a NotFoundError if no matching row exists.
 	GetProblem(ctx context.Context, id string) (domain.ProblemDetail, error)
@@ -202,9 +200,10 @@ const problemFromJoins = `
 	LEFT JOIN work_item cr_wi ON cr_wi.id = cr.id
 	LEFT JOIN work_item origin_case ON origin_case.id = wi.parent_id
 	LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id
+	LEFT JOIN "group" ag ON ag.id = wi.assignment_group_id
 	LEFT JOIN "user" rb ON rb.id = pr.resolved_by_id`
 
-func problemWhereClause(f domain.SearchProblemsFilters, states, assignedUserIDs []string) (string, []any) {
+func problemWhereClause(f domain.SearchProblemsFilters, states, assignedUserIDs, assignmentGroupIDs []string) (string, []any) {
 	where := "WHERE wi.type = 'PROBLEM'"
 	args := []any{}
 	argIdx := 1
@@ -231,8 +230,9 @@ func problemWhereClause(f domain.SearchProblemsFilters, states, assignedUserIDs 
 	if len(assignedUserIDs) > 0 {
 		add("wi.assigned_to_id = ANY($%d::uuid[])", assignedUserIDs)
 	}
-	// assignmentGroupId has no backing column -- see this file's own package
-	// doc comment; deliberately not applied here.
+	if len(assignmentGroupIDs) > 0 {
+		add("wi.assignment_group_id = ANY($%d::uuid[])", assignmentGroupIDs)
+	}
 
 	return where, args
 }
@@ -242,25 +242,30 @@ func scanSearchProblemView(row interface{ Scan(...any) error }) (domain.SearchPr
 		id, number, subject string
 		state               *string
 		aeID, aeName        *string
+		agID, agName        *string
 	)
-	if err := row.Scan(&id, &number, &subject, &state, &aeID, &aeName); err != nil {
+	if err := row.Scan(&id, &number, &subject, &state, &aeID, &aeName, &agID, &agName); err != nil {
 		return domain.SearchProblemView{}, err
 	}
 	v := domain.SearchProblemView{ID: &id, Number: &number, Subject: &subject, State: state}
 	if aeID != nil {
 		v.AssignedTo = &domain.EntityRef{ID: *aeID, Name: stringOrEmpty(aeName)}
 	}
+	if agID != nil {
+		v.AssignmentGroup = &domain.EntityRef{ID: *agID, Name: stringOrEmpty(agName)}
+	}
 	return v, nil
 }
 
 // SearchProblems implements ProblemRepository.
-func (r *problemRepo) SearchProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs []string) ([]domain.SearchProblemView, int, error) {
-	where, args := problemWhereClause(req.Filters, states, assignedUserIDs)
+func (r *problemRepo) SearchProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs, assignmentGroupIDs []string) ([]domain.SearchProblemView, int, error) {
+	where, args := problemWhereClause(req.Filters, states, assignedUserIDs, assignmentGroupIDs)
 
 	countQuery := "SELECT COUNT(*) " + problemFromJoins + " " + where
 	dataQuery := fmt.Sprintf(
 		`SELECT wi.id, wi.number, wi.subject, pr.state::TEXT, ae.id,
-		        COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), ''))
+		        COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')),
+		        ag.id, ag.name
 		 %s %s
 		 ORDER BY wi.created_on DESC, wi.id
 		 LIMIT $%d OFFSET $%d`,
@@ -318,13 +323,13 @@ var problemAggregateColumns = map[string]string{
 }
 
 // AggregateProblems implements ProblemRepository.
-func (r *problemRepo) AggregateProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs []string, groupBy string, maxGroups int) (domain.AggregateResponse, error) {
+func (r *problemRepo) AggregateProblems(ctx context.Context, req domain.SearchProblemsRequest, states, assignedUserIDs, assignmentGroupIDs []string, groupBy string, maxGroups int) (domain.AggregateResponse, error) {
 	col, ok := problemAggregateColumns[groupBy]
 	if !ok {
 		return domain.AggregateResponse{}, &apierror.ValidationError{Msg: "groupBy=" + groupBy + " is not supported on the PostgreSQL data source"}
 	}
 
-	where, args := problemWhereClause(req.Filters, states, assignedUserIDs)
+	where, args := problemWhereClause(req.Filters, states, assignedUserIDs, assignmentGroupIDs)
 
 	query := fmt.Sprintf(`
 		SELECT %s AS bucket, COUNT(*) AS bucket_count
@@ -380,7 +385,7 @@ func (r *problemRepo) GetProblem(ctx context.Context, id string) (domain.Problem
 		       ae.id, COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')),
 		       pr.resolution_code::TEXT, pr.cause_notes, pr.fix_notes, pr.workaround,
 		       pr.resolved_on, rb.id, COALESCE(rb.name, NULLIF(TRIM(CONCAT_WS(' ', rb.first_name, rb.last_name)), '')),
-		       pr.opened_on, pr.closed_on
+		       pr.opened_on, pr.closed_on, ag.id, ag.name
 		` + problemFromJoins + `
 		WHERE wi.id = $1 AND wi.type = 'PROBLEM'`
 
@@ -398,6 +403,7 @@ func (r *problemRepo) GetProblem(ctx context.Context, id string) (domain.Problem
 		resolvedOn                       *time.Time
 		rbID, rbName                     *string
 		openedOn, closedOn               *time.Time
+		agID, agName                     *string
 	)
 	err := r.db.QueryRow(ctx, query, id).Scan(
 		&id2, &number, &subject, &description, &state, &priority,
@@ -408,7 +414,7 @@ func (r *problemRepo) GetProblem(ctx context.Context, id string) (domain.Problem
 		&aeID, &aeName,
 		&resolutionCode, &causeNotes, &fixNotes, &workaround,
 		&resolvedOn, &rbID, &rbName,
-		&openedOn, &closedOn,
+		&openedOn, &closedOn, &agID, &agName,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProblemDetail{}, &apierror.NotFoundError{Msg: "problem not found"}
@@ -430,6 +436,9 @@ func (r *problemRepo) GetProblem(ctx context.Context, id string) (domain.Problem
 	}
 	if crID != nil {
 		d.LinkedChangeRequest = &domain.CaseNumberRef{ID: *crID, Number: stringOrEmpty(crNumber)}
+	}
+	if agID != nil {
+		d.AssignmentGroup = &domain.EntityRef{ID: *agID, Name: stringOrEmpty(agName)}
 	}
 	if aeID != nil {
 		d.AssignedTo = &domain.EntityRef{ID: *aeID, Name: stringOrEmpty(aeName)}

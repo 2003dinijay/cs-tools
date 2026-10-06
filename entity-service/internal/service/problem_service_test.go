@@ -49,10 +49,10 @@ func (s *stubProblemRepo) ApplyProblemTransition(ctx context.Context, req domain
 	panic("ApplyProblemTransition called unexpectedly")
 }
 
-func (s *stubProblemRepo) SearchProblems(context.Context, domain.SearchProblemsRequest, []string, []string) ([]domain.SearchProblemView, int, error) {
+func (s *stubProblemRepo) SearchProblems(context.Context, domain.SearchProblemsRequest, []string, []string, []string) ([]domain.SearchProblemView, int, error) {
 	panic("not implemented")
 }
-func (s *stubProblemRepo) AggregateProblems(context.Context, domain.SearchProblemsRequest, []string, []string, string, int) (domain.AggregateResponse, error) {
+func (s *stubProblemRepo) AggregateProblems(context.Context, domain.SearchProblemsRequest, []string, []string, []string, string, int) (domain.AggregateResponse, error) {
 	panic("not implemented")
 }
 func (s *stubProblemRepo) GetProblem(ctx context.Context, id string) (domain.ProblemDetail, error) {

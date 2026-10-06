@@ -39,16 +39,16 @@ import (
 // comment). "assignmentGroupId" is accepted (validated as UUIDs) but never
 // applied -- problem has no assignment-group column at all.
 // "assignedUserId" IS applied: work_item.assigned_to_id is a real column.
-func parseProblemFieldFiltersPostgres(filters []domain.ProblemFieldFilter) (states, assignedUserIDs []string, err error) {
+func parseProblemFieldFiltersPostgres(filters []domain.ProblemFieldFilter) (states, assignedUserIDs, assignmentGroupIDs []string, err error) {
 	for _, f := range filters {
 		if !problemFilterFieldSet[f.Field] {
-			return nil, nil, &apierror.ValidationError{Msg: "filters: unsupported field: " + f.Field}
+			return nil, nil, nil, &apierror.ValidationError{Msg: "filters: unsupported field: " + f.Field}
 		}
 		if !problemFilterOpSet[f.Op] {
-			return nil, nil, &apierror.ValidationError{Msg: "filters: unsupported op: " + f.Op}
+			return nil, nil, nil, &apierror.ValidationError{Msg: "filters: unsupported op: " + f.Op}
 		}
 		if err := requireProblemFilterValues(f); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 
 		switch f.Field {
@@ -56,23 +56,23 @@ func parseProblemFieldFiltersPostgres(filters []domain.ProblemFieldFilter) (stat
 			for _, v := range f.Values {
 				state := domain.ProblemState(v)
 				if !validProblemState[state] {
-					return nil, nil, &apierror.ValidationError{Msg: "filters: state contains invalid value: " + v}
+					return nil, nil, nil, &apierror.ValidationError{Msg: "filters: state contains invalid value: " + v}
 				}
 				states = append(states, string(state))
 			}
 		case "assignmentGroupId":
 			if err := validateUUIDs("filters: assignmentGroupId", f.Values); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
-			// Accepted, validated, but never applied -- no backing column.
+			assignmentGroupIDs = append(assignmentGroupIDs, f.Values...)
 		case "assignedUserId":
 			if err := validateUUIDs("filters: assignedUserId", f.Values); err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			assignedUserIDs = append(assignedUserIDs, f.Values...)
 		}
 	}
-	return states, assignedUserIDs, nil
+	return states, assignedUserIDs, assignmentGroupIDs, nil
 }
 
 type problemService struct {
@@ -146,12 +146,12 @@ func (s *problemService) SearchProblems(ctx context.Context, req domain.SearchPr
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchProblemsResponse{}, err
 	}
-	states, assignedUserIDs, err := parseProblemFieldFiltersPostgres(req.Filters.Filters)
+	states, assignedUserIDs, assignmentGroupIDs, err := parseProblemFieldFiltersPostgres(req.Filters.Filters)
 	if err != nil {
 		return domain.SearchProblemsResponse{}, err
 	}
 
-	views, total, err := s.repo.SearchProblems(ctx, req, states, assignedUserIDs)
+	views, total, err := s.repo.SearchProblems(ctx, req, states, assignedUserIDs, assignmentGroupIDs)
 	if err != nil {
 		return domain.SearchProblemsResponse{}, err
 	}
@@ -169,13 +169,13 @@ func (s *problemService) AggregateProblems(ctx context.Context, req domain.Aggre
 	if !validProblemAggregateField[req.GroupBy] {
 		return domain.AggregateResponse{}, &apierror.ValidationError{Msg: "groupBy contains invalid value: " + req.GroupBy}
 	}
-	states, assignedUserIDs, err := parseProblemFieldFiltersPostgres(req.Filters.Filters)
+	states, assignedUserIDs, assignmentGroupIDs, err := parseProblemFieldFiltersPostgres(req.Filters.Filters)
 	if err != nil {
 		return domain.AggregateResponse{}, err
 	}
 
 	searchReq := domain.SearchProblemsRequest{Filters: req.Filters}
-	return s.repo.AggregateProblems(ctx, searchReq, states, assignedUserIDs, req.GroupBy, req.MaxGroups)
+	return s.repo.AggregateProblems(ctx, searchReq, states, assignedUserIDs, assignmentGroupIDs, req.GroupBy, req.MaxGroups)
 }
 
 // GetProblem implements ProblemService.
@@ -472,12 +472,13 @@ func (s *problemService) UpdateProblem(ctx context.Context, req domain.UpdatePro
 	return domain.UpdateProblemResponse{
 		Message: "Problem updated successfully",
 		Problem: domain.UpdateProblemView{
-			ID:             detail.ID,
-			UpdatedOn:      &updatedOnStr,
-			UpdatedBy:      &actorEmail,
-			State:          detail.State,
-			ResolutionCode: detail.ResolutionCode,
-			AssignedTo:     detail.AssignedTo,
+			ID:              detail.ID,
+			UpdatedOn:       &updatedOnStr,
+			UpdatedBy:       &actorEmail,
+			State:           detail.State,
+			ResolutionCode:  detail.ResolutionCode,
+			AssignedTo:      detail.AssignedTo,
+			AssignmentGroup: detail.AssignmentGroup,
 		},
 	}, nil
 }
