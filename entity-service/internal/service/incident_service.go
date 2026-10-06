@@ -267,6 +267,10 @@ type incidentService struct {
 	// target of its async ServiceNow mirror dispatch (see that method's own
 	// doc comment) once snWriteback below is set.
 	snMirror IncidentService
+	// workaroundProblems creates the workaround problem when UpdateIncident
+	// resolves an incident as Solved (Workaround); dual-write only, set with
+	// WithWorkaroundProblemCreator (see workaround_problem.go).
+	workaroundProblems WorkaroundProblemCreator
 	// handoffIssues file the GitHub issue a specialist handoff opens, by
 	// credential name; a product whose credential has no client still hands
 	// off and reports that no issue was filed. Set with
@@ -732,7 +736,8 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 	// The incident before this change, so a claim or a move out of NEW can be told apart from a
 	// re-send of what it already had (publishIncidentStopSignals). Read only when one could follow.
 	var before domain.IncidentView
-	if s.eventPublisher != nil && (req.State != nil || req.AssignedEngineerID != nil) {
+	if (s.eventPublisher != nil && (req.State != nil || req.AssignedEngineerID != nil)) ||
+		(s.workaroundProblems != nil && req.State != nil) {
 		if b, err := s.repo.GetIncidentByID(ctx, req.ID); err == nil {
 			before = b
 		} else {
@@ -761,6 +766,14 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 	}
 	publishIncidentStopSignals(ctx, s.eventPublisher, req, before, view)
 
+	// Dual-write: a resolve with a workaround creates its problem in both stores.
+	problemID := s.createWorkaroundProblem(ctx, req, before, view)
+	if problemID != "" {
+		if v, err := s.incidentView(ctx, req.ID); err == nil {
+			view = v
+		}
+	}
+
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write
 	// only (guaranteed by the s.snWriteback == nil return just below). Postgres has
 	// already committed both comment rows by this point; this fires after,
@@ -782,12 +795,18 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		WorkNotes:          req.WorkNotes,
 		AdditionalComments: req.AdditionalComments,
 	}
+	payload := map[string]any{
+		"id": req.ID, "state": req.State, "assignedEngineerId": req.AssignedEngineerID,
+		"resolutionCode": req.ResolutionCode, "resolutionNotes": req.ResolutionNotes, "resolvedById": req.ResolvedByID,
+		"workNotes": req.WorkNotes, "additionalComments": req.AdditionalComments,
+	}
+	if problemID != "" {
+		// ServiceNow's incident gets the same problem link as Postgres's.
+		mirrorReq.ProblemID = &problemID
+		payload["problemId"] = problemID
+	}
 	s.snWriteback.Dispatch(ctx, "incident", req.ID, "update",
-		map[string]any{
-			"id": req.ID, "state": req.State, "assignedEngineerId": req.AssignedEngineerID,
-			"resolutionCode": req.ResolutionCode, "resolutionNotes": req.ResolutionNotes, "resolvedById": req.ResolvedByID,
-			"workNotes": req.WorkNotes, "additionalComments": req.AdditionalComments,
-		},
+		payload,
 		func(writeCtx context.Context) error {
 			_, err := s.snMirror.UpdateIncident(writeCtx, mirrorReq)
 			return err

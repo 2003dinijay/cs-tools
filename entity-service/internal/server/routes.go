@@ -1140,6 +1140,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// mirror, same as incident's own dual-write branch above.
 		snProblemMirrorSvc := service.NewServiceNowProblemService(serviceNowIntegrationServiceClient)
 		activeProblemSvc = service.NewProblemServiceWithSNMirror(problemRepo, snProblemMirrorSvc, snWritebackDispatcher)
+		// Resolving an incident as Solved (Workaround) creates its problem in
+		// both stores, in the resolve request (workaround_problem.go); the
+		// background post-resolution flow skips it in this mode (main.go).
+		// Set in place, so incidentHandler above already has it.
+		if creator, ok := activeProblemSvc.(service.WorkaroundProblemCreator); ok {
+			activeIncidentSvc = service.WithWorkaroundProblemCreator(activeIncidentSvc, creator)
+		}
 	default:
 		activeProblemSvc = service.NewProblemService(problemRepo)
 	}
