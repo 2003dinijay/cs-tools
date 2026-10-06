@@ -83,10 +83,18 @@ export function ProductTab({
       {detail.isNew ? (
         <Alert
           severity="warning"
+          /* Contained and in the theme's own primary, the same treatment every
+             Save in this feature gets. It was a bare text button in the alert's
+             inherited warning colour, which read as a second line of the
+             warning rather than the one action that clears it — the only
+             control on the page a reader has to find before anything else can
+             happen. nowrap because the label is long enough to break across two
+             lines in the alert's action slot. */
           action={
             <Button
+              variant="contained"
               size="small"
-              color="inherit"
+              sx={{ whiteSpace: "nowrap" }}
               disabled={acknowledge.isPending}
               onClick={() => acknowledge.mutate({ orgPlatformId: detail.orgPlatformId })}
             >
