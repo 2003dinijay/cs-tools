@@ -393,6 +393,33 @@ func TestSendFrustrationAlert_FormatsFrustrationLevelAsADecimal(t *testing.T) {
 	}
 }
 
+// TestSendFrustrationAlert_DoesNotThread guards against a real bug: an
+// earlier version set Thread.ThreadKey to the same chatThreadKey(caseNumber)
+// value case.created/case.acknowledged use, which buried every frustration
+// alert as a reply under that case's (possibly old, scrolled-past)
+// case.created message instead of posting as its own visible, standalone
+// message -- the opposite of what a frustration alert is for.
+func TestSendFrustrationAlert_DoesNotThread(t *testing.T) {
+	var capturedBody chatCardMessage
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = json.NewDecoder(r.Body).Decode(&capturedBody)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	c := NewGoogleChatClient(GoogleChatConfig{AudienceSpaces: []GoogleChatAudienceSpace{{Audience: "api-manager", WebhookURL: srv.URL}}})
+
+	err := c.SendFrustrationAlert(context.Background(), "api-manager",
+		"CS0448647", "WSO2-1000", "WSO2 API Manager", "reason", 0.91, "https://csm.example.com/cases/CASE-1")
+	if err != nil {
+		t.Fatalf("SendFrustrationAlert returned error: %v", err)
+	}
+
+	if capturedBody.Thread != nil {
+		t.Errorf("Thread = %+v, want nil (frustration alerts must not thread)", capturedBody.Thread)
+	}
+}
+
 // TestSendCaseCreatedAlert_UnconfiguredAudienceIsANoOpNotAnError verifies an
 // audience with no matching GOOGLE_CHAT_SPACES entry is treated as a known
 // configuration gap (logged, no HTTP request made) rather than an error —

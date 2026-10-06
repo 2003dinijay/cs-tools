@@ -542,7 +542,17 @@ func (c *GoogleChatClient) SendFrustrationAlert(ctx context.Context, audience, c
 				},
 			},
 		},
-		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
+		// Deliberately NOT threaded (see chatCardMessage.Thread's own doc
+		// comment) -- unlike case.created/case.acknowledged, which group
+		// together because they're genuinely the same gesture on the same
+		// case, a frustration alert needs to stand out as its own visible
+		// message. Threading it under chatThreadKey(caseNumber) (an earlier
+		// version of this did, matching the other case.* cards' own
+		// ThreadKey by copying their shape without this one's different
+		// reasoning) buried every alert as a reply under that case's
+		// original case.created message -- easy to miss if that thread is
+		// already old/scrolled past, exactly the opposite of what a
+		// frustration alert is for.
 	}
 	return c.sendCardToAudience(ctx, audience, msg)
 }
