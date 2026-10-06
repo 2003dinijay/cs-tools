@@ -31,19 +31,24 @@ import {
  * - `not-taken`: not part of the path this change took. Rollback and Canceled
  *   are exceptions that most changes never take, so they sit here until (and
  *   unless) the change actually ends in them; Closed and the customer review
- *   are `not-taken` on a change that ended in an exception without them.
+ *   are `not-taken` on a change that ended in an exception without them, and
+ *   so is every stage a customer's rejection proves was never reached.
  * - `unrecorded`: the stage is on the path, but the record cannot say whether
- *   the change passed through it (only ever on a canceled change: see
- *   {@link buildChangeRequestLifecycle}). Distinct from `pending` (which would
- *   claim the stage is still to come) and from `not-taken` (which would claim
- *   it was skipped).
+ *   the change passed through it (only ever on a canceled or rolled-back
+ *   change: see {@link buildChangeRequestLifecycle}). Distinct from `pending`
+ *   (which would claim the stage is still to come) and from `not-taken` (which
+ *   would claim it was skipped).
+ * - `rejected`: the customer rejected the change at this stage (Customer
+ *   Approval, which ends the change in Canceled, or Customer Review, which ends
+ *   it in Rollback). The stage was reached and answered, but not passed.
  */
 export type ChangeRequestLifecycleStatus =
   | "done"
   | "current"
   | "pending"
   | "not-taken"
-  | "unrecorded";
+  | "unrecorded"
+  | "rejected";
 
 export interface ChangeRequestLifecycleNode {
   key: BeChangeRequestState;
@@ -123,37 +128,63 @@ function stageState(row: StageEvidence): BeChangeRequestState | undefined {
   return APPROVAL_STAGE_STATE[approvalStageLabel(row.stage)];
 }
 
-/** Whether a Customer Review stage was ever provisioned for the change. */
-function customerReviewHappened(approvals?: readonly StageEvidence[]): boolean {
-  return !!approvals?.some((row) => stageState(row) === "customer_review");
+function hasStatus(row: StageEvidence, status: string): boolean {
+  return row.status.trim().toUpperCase() === status;
+}
+
+/** The stage rows of the Customer Review stage the backend provisions on entering Customer Review. */
+function customerReviewRows(approvals: readonly StageEvidence[]): StageEvidence[] {
+  return approvals.filter((row) => stageState(row) === "customer_review");
 }
 
 /**
- * How far along {@link HAPPY_PATH} the approval stages PROVE a change got, as
- * an index (-1: nothing is proven). Used only for a canceled change, whose
- * record keeps no history of where it was when it was canceled.
+ * Whether the customer rejected the change at Customer Approval. That is a
+ * decision of its own, not an internal stage's: the entity service answers it
+ * by moving the change from Customer Approval to Canceled (and only while the
+ * change is still in Customer Approval: a stale decision is refused), so a
+ * REJECTED Customer Approval stage on a canceled change proves it ended
+ * there. (An internal stage's rejection leaves the change's state alone, so it
+ * proves nothing of the kind.)
+ */
+function customerRejectedApproval(approvals?: readonly StageEvidence[]): boolean {
+  return !!approvals?.some((row) => stageState(row) === "customer_approval" && hasStatus(row, "REJECTED"));
+}
+
+/**
+ * How far along {@link HAPPY_PATH} the evidence PROVES a change got, as an
+ * index (-1: nothing is proven). Used only for a canceled change, whose record
+ * keeps no history of where it was when it was canceled.
  *
- * Two facts, both guaranteed by the entity service, count as proof:
+ * Three facts, all guaranteed by the entity service, count as proof:
  *  - a stage row exists for state S: the backend provisions a stage only as
  *    part of moving the change INTO S, so every state before S was passed
  *    (the change may have been canceled while in S itself, so S is not);
- *  - the stage for S is APPROVED: approving it is what moves the change out of
- *    S, so S was passed too.
- * Nothing else is inferred: a stage that is still pending, rejected or
- * cancelled proves only that it was reached, a change with no stage rows at all
+ *  - the stage for S is APPROVED and approving it moves the change out of S
+ *    (Peer, CAB / ECAB and the two customer stages do): S was passed too. The
+ *    Review stage is the exception: approving it only records the decision
+ *    (the engineer then moves the change on), so a change can sit in Review
+ *    with its Review stage approved and be canceled there;
+ *  - the customer's approval was recorded (`customerApproved`, the change's
+ *    `hasCustomerApproved`: stamped when the customer approves in the customer
+ *    portal or an engineer bypasses it, and locked once true): Customer Approval
+ *    was passed. That holds when the change has no Customer Approval stage row
+ *    at all, the bypass of a project with no registered contacts.
+ * Nothing else is inferred: a stage that is still pending, cancelled or (but
+ * for the customer's rejection, {@link customerRejectedApproval}) rejected
+ * proves only that it was reached, a change with no stage rows at all
  * (a Standard change, a project without registered customer contacts, a change
  * canceled at New) proves nothing, and the absence of a row proves nothing
  * either. A re-scheduled change that is canceled back at Authorize still
  * counts its first pass through Customer Approval as passed -- it was.
  */
-function provenPassedIndex(approvals?: readonly StageEvidence[]): number {
-  let passed = -1;
+function provenPassedIndex(approvals: readonly StageEvidence[] | undefined, customerApproved?: boolean): number {
+  let passed = customerApproved ? HAPPY_PATH.indexOf("customer_approval") : -1;
   for (const row of approvals ?? []) {
     const s = stageState(row);
     if (!s) continue;
     const at = HAPPY_PATH.indexOf(s);
     passed = Math.max(passed, at - 1);
-    if (row.status.trim().toUpperCase() === "APPROVED") passed = Math.max(passed, at);
+    if (s !== "review" && hasStatus(row, "APPROVED")) passed = Math.max(passed, at);
   }
   return passed;
 }
@@ -166,6 +197,15 @@ export interface BuildChangeRequestLifecycleInput {
   customerReviewRequired?: boolean;
   /** `GET /change-requests/{id}/approvals`, when loaded. Only read for a rollback or canceled change. */
   approvals?: readonly StageEvidence[];
+  /** The change's `hasCustomerApproved`: the customer's approval was recorded. Only read for a canceled change. */
+  customerApproved?: boolean;
+  /**
+   * Whether the change's project has registered customer contacts (its
+   * `customerContacts` is not empty); `undefined` = unknown. Only read for a
+   * rolled-back change, to tell a Customer Review that was skipped from one
+   * that left no trace.
+   */
+  hasCustomerContacts?: boolean;
 }
 
 /**
@@ -186,36 +226,53 @@ export interface BuildChangeRequestLifecycleInput {
  * | none / unrecognized        | all pending                       | not-taken | pending   | not-taken |
  * | new ... customer_review    | before = done, it = current, after = pending | not-taken | pending | not-taken |
  * | closed                     | all done                          | not-taken | current   | not-taken |
- * | rollback                   | through Review done; Customer Review done only if a Customer Review stage row exists, else not-taken | current | not-taken | not-taken |
- * | canceled                   | done through what the approvals prove (below), else unrecorded | not-taken | not-taken | current |
+ * | rollback                   | through Review done; Customer Review by its stage rows (below) | current | not-taken | not-taken |
+ * | canceled                   | done through what the evidence proves (below), else unrecorded | not-taken | not-taken | current |
  *
  * Rollback is only reachable from Review and Customer Review (the backend
  * refuses it anywhere else), so a rolled-back change certainly passed every
- * stage through Review; Customer Review is the one stage that could go either
- * way, and only a Customer Review stage row says it was entered. (The one case
- * this cannot tell apart: a change rolled back from Customer Review in a
- * project with no registered customer contacts leaves no such row, and reads as
- * not taken.) While the approvals are not available (`approvals` is
- * `undefined`: still loading, or the request failed) that stage is `unrecorded`
- * rather than a guess, and so is every stage of a canceled change.
+ * stage through Review. Customer Review is the one stage that could go either
+ * way, and the Customer Review stage rows say how:
+ *  - a REJECTED row is the customer's rejection, which is what rolls the change
+ *    back: the stage reads `rejected`;
+ *  - any other row means the stage was entered: `done`;
+ *  - no row, and the project has registered customer contacts
+ *    (`hasCustomerContacts`): the backend provisions the stage on entering
+ *    Customer Review whenever someone can be asked, so it was never entered:
+ *    `not-taken`;
+ *  - no row, and no contacts (or not known): a change rolled back from Customer
+ *    Review leaves no row either, so the record cannot say: `unrecorded`. (The
+ *    one case this still cannot tell apart: contacts that exist but none of
+ *    whom is eligible, such as a project whose only contact is the change's
+ *    creator, read as `not-taken`.)
+ * While the approvals are not available (`approvals` is `undefined`: still
+ * loading, or the request failed) the stage is `unrecorded` rather than a
+ * guess, and so is every stage of a canceled change.
  *
  * Canceled can be reached from every non-terminal state and the record keeps
  * no history of which, so a canceled change marks a stage `done` only when the
- * approvals PROVE it was passed (see {@link provenPassedIndex}) and shows every
+ * evidence PROVES it was passed (see {@link provenPassedIndex}) and shows every
  * other stage on the path as `unrecorded`, never as pending or skipped. Closed
- * and Rollback were certainly not taken.
+ * and Rollback were certainly not taken. The one exception is a change the
+ * customer rejected at Customer Approval (see {@link customerRejectedApproval}):
+ * that proves where it ended, so the stages before are `done`, Customer Approval
+ * is `rejected` and every stage after it `not-taken`.
  */
 export function buildChangeRequestLifecycle({
   state,
   customerApprovalRequired,
   customerReviewRequired,
   approvals,
+  customerApproved,
+  hasCustomerContacts,
 }: BuildChangeRequestLifecycleInput): ChangeRequestLifecycleNode[] {
   const onLine = (s: BeChangeRequestState): boolean => {
     if (s === "customer_approval") return customerApprovalRequired !== false || state === s;
     if (s === "customer_review") return customerReviewRequired !== false || state === s;
     return true;
   };
+
+  const customerApprovalAt = HAPPY_PATH.indexOf("customer_approval");
 
   const statusOf = (s: BeChangeRequestState): ChangeRequestLifecycleStatus => {
     const exception = isChangeRequestOffRampState(s);
@@ -226,9 +283,15 @@ export function buildChangeRequestLifecycle({
         if (s !== "customer_review") return "done";
         // Approvals not loaded (yet, or the request failed): cannot say.
         if (!approvals) return "unrecorded";
-        return customerReviewHappened(approvals) ? "done" : "not-taken";
+        const rows = customerReviewRows(approvals);
+        if (rows.length > 0) return rows.some((row) => hasStatus(row, "REJECTED")) ? "rejected" : "done";
+        return hasCustomerContacts ? "not-taken" : "unrecorded";
       }
-      return HAPPY_PATH.indexOf(s) <= provenPassedIndex(approvals) ? "done" : "unrecorded";
+      const own = HAPPY_PATH.indexOf(s);
+      if (!customerApproved && customerRejectedApproval(approvals)) {
+        return own < customerApprovalAt ? "done" : own === customerApprovalAt ? "rejected" : "not-taken";
+      }
+      return own <= provenPassedIndex(approvals, customerApproved) ? "done" : "unrecorded";
     }
     if (exception) return "not-taken";
     const at = isChangeRequestLifecycleState(state) ? HAPPY_PATH.indexOf(state) : -1;
@@ -260,5 +323,7 @@ export function changeRequestLifecycleStatusText(
       return "not taken";
     case "unrecorded":
       return "history not recorded";
+    case "rejected":
+      return "rejected by the customer";
   }
 }

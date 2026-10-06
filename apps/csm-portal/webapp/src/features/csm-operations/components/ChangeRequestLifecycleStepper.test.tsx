@@ -124,7 +124,7 @@ describe("ChangeRequestLifecycleStepper", () => {
     });
 
     it("makes Rollback the current stage of a rolled-back change", () => {
-      render(<ChangeRequestLifecycleStepper state="rollback" approvals={[]} />);
+      render(<ChangeRequestLifecycleStepper state="rollback" approvals={[]} hasCustomerContacts />);
       expect(document.querySelector('[aria-current="step"]')).toHaveTextContent("Rollback, current");
       expect(readout()).toEqual([
         "New, done",
@@ -145,10 +145,71 @@ describe("ChangeRequestLifecycleStepper", () => {
       render(
         <ChangeRequestLifecycleStepper
           state="rollback"
-          approvals={[{ stage: "Customer Review", status: "REJECTED" }]}
+          approvals={[{ stage: "Customer Review", status: "APPROVED" }]}
         />,
       );
       expect(stage("Customer Review")).toHaveTextContent("Customer Review, done");
+    });
+
+    it("says history not recorded for Customer Review of a rolled-back change when there is no stage and no contacts to have asked", () => {
+      render(<ChangeRequestLifecycleStepper state="rollback" approvals={[]} hasCustomerContacts={false} />);
+      expect(stage("Customer Review")).toHaveTextContent("Customer Review, history not recorded");
+      expect(stage("Review")).toHaveTextContent("Review, done");
+    });
+
+    it("shows Customer Review rejected on a change the customer's review rolled back, with a cross", () => {
+      render(
+        <ChangeRequestLifecycleStepper
+          state="rollback"
+          approvals={[{ stage: "Customer Review", status: "REJECTED" }]}
+        />,
+      );
+      expect(stage("Customer Review")).toHaveTextContent("Customer Review, rejected by the customer");
+      expect(stage("Customer Review").querySelector("svg")).toHaveClass("lucide-x");
+      expect(stage("Customer Review")).not.toHaveAttribute("aria-current");
+      expect(document.querySelector('[aria-current="step"]')).toHaveTextContent("Rollback, current");
+    });
+
+    it("shows a change the customer rejected at Customer Approval as canceled there, the later stages never reached", () => {
+      render(
+        <ChangeRequestLifecycleStepper
+          state="canceled"
+          approvals={[
+            { stage: "Peer Approval", status: "APPROVED" },
+            { stage: "CAB Approval", status: "APPROVED" },
+            { stage: "Customer Approval", status: "REJECTED" },
+          ]}
+        />,
+      );
+      expect(readout()).toEqual([
+        "New, done",
+        "Assess, done",
+        "Authorize, done",
+        "Customer Approval, rejected by the customer",
+        "Scheduled, not taken",
+        "Implement, not taken",
+        "Review, not taken",
+        "Customer Review, not taken",
+        "Rollback, not taken",
+        "Closed, not taken",
+        "Canceled, current",
+      ]);
+      expect(screen.queryByText(/history not recorded/i)).not.toBeInTheDocument();
+    });
+
+    it("counts a recorded customer approval on a canceled change as proof Customer Approval was passed", () => {
+      render(
+        <ChangeRequestLifecycleStepper
+          state="canceled"
+          approvals={[
+            { stage: "Peer Approval", status: "APPROVED" },
+            { stage: "CAB Approval", status: "APPROVED" },
+          ]}
+          customerApproved
+        />,
+      );
+      expect(stage("Customer Approval")).toHaveTextContent("Customer Approval, done");
+      expect(stage("Scheduled")).toHaveTextContent("Scheduled, history not recorded");
     });
 
     it("marks nothing done on a canceled change the approvals cannot vouch for", () => {
@@ -286,8 +347,24 @@ describe("ChangeRequestLifecycleStepper", () => {
     });
 
     it("leads into the current Rollback in the error colour, then dashes what was not taken", () => {
-      render(<ChangeRequestLifecycleStepper state="rollback" approvals={[{ stage: "Customer Review", status: "REJECTED" }]} />);
+      render(<ChangeRequestLifecycleStepper state="rollback" approvals={[{ stage: "Customer Review", status: "APPROVED" }]} />);
       expect(lines()).toMatchObject({ "Customer Review": "filled", Rollback: "error", Closed: "dashed", Canceled: "dashed" });
+    });
+
+    it("fills the line into a stage the customer rejected, and dashes the stages after it", () => {
+      render(
+        <ChangeRequestLifecycleStepper
+          state="canceled"
+          approvals={[{ stage: "Customer Approval", status: "REJECTED" }]}
+        />,
+      );
+      expect(lines()).toMatchObject({
+        Authorize: "filled",
+        "Customer Approval": "filled",
+        Scheduled: "dashed",
+        "Customer Review": "dashed",
+        Canceled: "error",
+      });
     });
 
     it("leads into the current Canceled in the error colour", () => {
@@ -314,8 +391,22 @@ describe("ChangeRequestLifecycleStepper", () => {
 
     it("shows the caption in a tooltip on hover", async () => {
       render(<ChangeRequestLifecycleStepper state="review" />);
+      fireEvent.mouseOver(stage("Implement"));
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(/^Change implementation$/);
+    });
+
+    it("adds what a faint or crossed marker means to the tooltip, for the stages whose status the line does not explain", async () => {
+      render(<ChangeRequestLifecycleStepper state="review" />);
       fireEvent.mouseOver(stage("Rollback"));
-      expect(await screen.findByRole("tooltip")).toHaveTextContent("Change rollback if needed");
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(/^Change rollback if needed \(not taken\)$/);
+      // The accessible description stays the plain caption.
+      expect(stage("Rollback")).toHaveAttribute("aria-description", "Change rollback if needed");
+    });
+
+    it("says history not recorded in the tooltip of a stage a canceled change cannot vouch for", async () => {
+      render(<ChangeRequestLifecycleStepper state="canceled" approvals={[]} />);
+      fireEvent.mouseOver(stage("Review"));
+      expect(await screen.findByRole("tooltip")).toHaveTextContent(/^Internal review \(history not recorded\)$/);
     });
   });
 });

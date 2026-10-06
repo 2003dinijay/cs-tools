@@ -76,6 +76,7 @@ const SHORT: Record<string, ChangeRequestLifecycleStatus> = {
   p: "pending",
   n: "not-taken",
   u: "unrecorded",
+  r: "rejected",
 };
 
 /** "d d c p ..." -> statuses in the customer portal's order, one per stage. */
@@ -150,10 +151,10 @@ describe("a change on the path (new ... closed), checkboxes unknown", () => {
 });
 
 describe("a change that was rolled back", () => {
-  const proof = [{ stage: "Customer Review", status: "REJECTED" }];
+  const proof = [{ stage: "Customer Review", status: "APPROVED" }];
 
   it("marks Rollback current and every stage through Review done", () => {
-    const s = byKey({ state: "rollback", approvals: [] });
+    const s = byKey({ state: "rollback", approvals: [], hasCustomerContacts: true });
     expect(s).toEqual({
       new: "done",
       assess: "done",
@@ -171,14 +172,30 @@ describe("a change that was rolled back", () => {
 
   it("marks Customer Review done only when a Customer Review stage proves it was entered", () => {
     expect(statuses({ state: "rollback", approvals: proof })).toEqual(row("d d d d d d d d c n n"));
-    expect(statuses({ state: "rollback", approvals: [] })).toEqual(row("d d d d d d d n c n n"));
+    expect(statuses({ state: "rollback", approvals: [], hasCustomerContacts: true })).toEqual(
+      row("d d d d d d d n c n n"),
+    );
   });
 
-  it("counts a Customer Review stage whatever its outcome, and whatever the name spelling", () => {
-    for (const status of ["APPROVED", "REJECTED", "PENDING", "CANCELLED", "REQUESTED"]) {
+  it("counts a Customer Review stage whatever its outcome (a rejection aside), and whatever the name spelling", () => {
+    for (const status of ["APPROVED", "PENDING", "CANCELLED", "REQUESTED"]) {
       expect(byKey({ state: "rollback", approvals: [{ stage: "Customer Review", status }] }).customer_review).toBe("done");
     }
     expect(byKey({ state: "rollback", approvals: [{ stage: "customer_review", status: "PENDING" }] }).customer_review).toBe("done");
+  });
+
+  it("marks Customer Review rejected when the customer rejected it, which is what rolls the change back", () => {
+    for (const status of ["REJECTED", " rejected "]) {
+      expect(statuses({ state: "rollback", approvals: [{ stage: "Customer Review", status }] })).toEqual(
+        row("d d d d d d d r c n n"),
+      );
+    }
+    // Whichever stage row says it: one rejection among the rows is enough.
+    const rows = [
+      { stage: "Customer Review", status: "CANCELLED" },
+      { stage: "Customer Review", status: "REJECTED" },
+    ];
+    expect(byKey({ state: "rollback", approvals: rows }).customer_review).toBe("rejected");
   });
 
   it("is not moved by other stages' rows, a Review row included", () => {
@@ -187,13 +204,35 @@ describe("a change that was rolled back", () => {
       { stage: "CAB Approval", status: "APPROVED" },
       { stage: "Customer Approval", status: "APPROVED" },
       { stage: "Review", status: "APPROVED" },
+      { stage: "Customer Approval", status: "REJECTED" },
     ];
-    expect(byKey({ state: "rollback", approvals: others }).customer_review).toBe("not-taken");
+    expect(byKey({ state: "rollback", approvals: others, hasCustomerContacts: true }).customer_review).toBe("not-taken");
+  });
+
+  describe("Customer Review without a stage row", () => {
+    it("is not taken only when the project has customer contacts, who would have been asked", () => {
+      expect(byKey({ state: "rollback", approvals: [], hasCustomerContacts: true }).customer_review).toBe("not-taken");
+    });
+
+    it("cannot be told when the project has no contacts: a rollback from Customer Review leaves no row either", () => {
+      expect(byKey({ state: "rollback", approvals: [], hasCustomerContacts: false }).customer_review).toBe("unrecorded");
+    });
+
+    it("cannot be told when whether it has contacts is not known", () => {
+      expect(byKey({ state: "rollback", approvals: [] }).customer_review).toBe("unrecorded");
+      expect(byKey({ state: "rollback", approvals: [], hasCustomerContacts: undefined }).customer_review).toBe("unrecorded");
+    });
+
+    it("keeps the other stages as they are whatever the contacts say", () => {
+      const without = byKey({ state: "rollback", approvals: [], hasCustomerContacts: false });
+      const withContacts = byKey({ state: "rollback", approvals: [], hasCustomerContacts: true });
+      expect({ ...without, customer_review: "x" }).toEqual({ ...withContacts, customer_review: "x" });
+    });
   });
 
   it("cannot say about Customer Review while the approvals are not loaded", () => {
     expect(byKey({ state: "rollback" }).customer_review).toBe("unrecorded");
-    expect(byKey({ state: "rollback", approvals: undefined }).customer_review).toBe("unrecorded");
+    expect(byKey({ state: "rollback", approvals: undefined, hasCustomerContacts: true }).customer_review).toBe("unrecorded");
   });
 
   it("leaves Customer Review off the line when it is not required", () => {
@@ -251,10 +290,33 @@ describe("a change that was canceled", () => {
       expect(statuses({ state: "canceled", approvals: approved })).toEqual(row("d d d d u u u u n n c"));
     });
 
-    it("a rejected stage proves only that the change reached it", () => {
-      expect(statuses({ state: "canceled", approvals: [{ stage: "Customer Approval", status: "REJECTED" }] })).toEqual(
-        row("d d d u u u u u n n c"),
+    it("an internal stage's rejection proves only that the change reached it (it leaves the change's state alone)", () => {
+      for (const stage of ["Peer Approval", "CAB Approval", "Review", "Customer Review"]) {
+        const reached = statuses({ state: "canceled", approvals: [{ stage, status: "REJECTED" }] });
+        expect(reached, stage).not.toContain("rejected");
+        expect(reached.at(-1), stage).toBe("current");
+      }
+      expect(statuses({ state: "canceled", approvals: [{ stage: "CAB Approval", status: "REJECTED" }] })).toEqual(
+        row("d d u u u u u u n n c"),
       );
+    });
+
+    it("a Review stage's approval proves the change reached Review, not that it left it", () => {
+      // Approving the Review stage only records the decision: the change stays in Review
+      // until an engineer moves it on, and it may be canceled right there.
+      expect(statuses({ state: "canceled", approvals: [{ stage: "Review", status: "APPROVED" }] })).toEqual(
+        row("d d d d d d u u n n c"),
+      );
+      expect(
+        statuses({
+          state: "canceled",
+          approvals: [
+            { stage: "Peer Approval", status: "APPROVED" },
+            { stage: "CAB Approval", status: "APPROVED" },
+            { stage: "Review", status: "APPROVED" },
+          ],
+        }),
+      ).toEqual(row("d d d d d d u u n n c"));
     });
 
     it("a Review row proves Scheduled and Implement were passed", () => {
@@ -301,7 +363,8 @@ describe("a change that was canceled", () => {
         state: "canceled",
         customerApprovalRequired: false,
         customerReviewRequired: false,
-        approvals: [{ stage: "Review", status: "APPROVED" }],
+        // Proves Review was passed, though neither customer stage is on the line.
+        approvals: [{ stage: "Customer Review", status: "CANCELLED" }],
       });
       expect(nodes.map((n) => [n.key, n.status])).toEqual([
         ["new", "done"],
@@ -314,6 +377,92 @@ describe("a change that was canceled", () => {
         ["closed", "not-taken"],
         ["canceled", "current"],
       ]);
+    });
+  });
+
+  describe("a customer's rejection at Customer Approval", () => {
+    const rejection = [
+      { stage: "Peer Approval", status: "APPROVED" },
+      { stage: "CAB Approval", status: "APPROVED" },
+      { stage: "Customer Approval", status: "REJECTED" },
+    ];
+
+    it("proves where the change ended: the stages before are done, Customer Approval is rejected, every stage after is not taken", () => {
+      expect(statuses({ state: "canceled", approvals: rejection })).toEqual(row("d d d r n n n n n n c"));
+    });
+
+    it("needs nothing but the rejected Customer Approval stage to prove it", () => {
+      expect(
+        statuses({ state: "canceled", approvals: [{ stage: "Customer Approval", status: " rejected " }] }),
+      ).toEqual(row("d d d r n n n n n n c"));
+    });
+
+    it("leaves the optional Customer Review off the line when it is not required, the later stages still not taken", () => {
+      const nodes = buildChangeRequestLifecycle({
+        state: "canceled",
+        customerReviewRequired: false,
+        approvals: rejection,
+      });
+      expect(nodes.map((n) => [n.key, n.status])).toEqual([
+        ["new", "done"],
+        ["assess", "done"],
+        ["authorize", "done"],
+        ["customer_approval", "rejected"],
+        ["scheduled", "not-taken"],
+        ["implement", "not-taken"],
+        ["review", "not-taken"],
+        ["rollback", "not-taken"],
+        ["closed", "not-taken"],
+        ["canceled", "current"],
+      ]);
+    });
+
+    it("is never read as history not recorded", () => {
+      expect(statuses({ state: "canceled", approvals: rejection })).not.toContain("unrecorded");
+    });
+
+    it("does not apply to a change that is not canceled", () => {
+      for (const state of Object.keys(FULL_LINE)) {
+        expect(statuses({ state, approvals: rejection })).toEqual(statuses({ state }));
+      }
+    });
+
+    it("yields to a recorded customer approval (the change cannot have both)", () => {
+      expect(statuses({ state: "canceled", approvals: rejection, customerApproved: true })).toEqual(
+        row("d d d d u u u u n n c"),
+      );
+    });
+  });
+
+  describe("a recorded customer approval (hasCustomerApproved)", () => {
+    it("proves Customer Approval was passed with no stage row at all, the bypass of a project without contacts", () => {
+      const internal = [
+        { stage: "Peer Approval", status: "APPROVED" },
+        { stage: "CAB Approval", status: "APPROVED" },
+      ];
+      expect(statuses({ state: "canceled", approvals: internal, customerApproved: true })).toEqual(
+        row("d d d d u u u u n n c"),
+      );
+      expect(statuses({ state: "canceled", approvals: internal, customerApproved: false })).toEqual(
+        row("d d d u u u u u n n c"),
+      );
+      expect(statuses({ state: "canceled", approvals: internal })).toEqual(row("d d d u u u u u n n c"));
+    });
+
+    it("proves nothing more than Customer Approval: the change may have been canceled in Scheduled", () => {
+      expect(statuses({ state: "canceled", approvals: [], customerApproved: true })).toEqual(row("d d d d u u u u n n c"));
+    });
+
+    it("counts alongside the stronger proof of a later stage", () => {
+      expect(
+        statuses({ state: "canceled", approvals: [{ stage: "Review", status: "PENDING" }], customerApproved: true }),
+      ).toEqual(row("d d d d d d u u n n c"));
+    });
+
+    it("is read only for a canceled change", () => {
+      for (const state of Object.keys(FULL_LINE)) {
+        expect(statuses({ state, customerApproved: true })).toEqual(statuses({ state }));
+      }
     });
   });
 
@@ -390,5 +539,6 @@ describe("changeRequestLifecycleStatusText", () => {
     expect(changeRequestLifecycleStatusText("pending")).toBe("upcoming");
     expect(changeRequestLifecycleStatusText("not-taken")).toBe("not taken");
     expect(changeRequestLifecycleStatusText("unrecorded")).toBe("history not recorded");
+    expect(changeRequestLifecycleStatusText("rejected")).toBe("rejected by the customer");
   });
 });

@@ -15,7 +15,7 @@
 // under the License.
 
 import { Box, Chip, Tooltip, Typography } from "@wso2/oxygen-ui";
-import { Ban, Check, Undo2 } from "@wso2/oxygen-ui-icons-react";
+import { Ban, Check, Undo2, X } from "@wso2/oxygen-ui-icons-react";
 import { type JSX, useEffect, useRef } from "react";
 import type { BeChangeRequestApproval } from "@api/backend/types";
 import { changeRequestStateLabel, isChangeRequestOffRampState } from "@features/csm-operations/utils/changeRequests";
@@ -28,8 +28,15 @@ import {
 } from "@features/csm-operations/utils/changeRequestStages";
 
 const NODE_SIZE = 22;
-/** How faint a stage that is not part of this change's path reads (the customer portal's disabled stage is 0.5). */
+/** How faint a stage's MARKER reads when it is not part of this change's path (the customer portal's disabled stage is 0.5). */
 const MUTED_OPACITY = 0.45;
+/**
+ * How faint such a stage's LABEL reads. Much less than its marker: the label is
+ * text, and the secondary text colour dimmed to the marker's level (or 0.6, as
+ * it was) falls below the 4.5:1 text contrast on the light theme's page
+ * backdrop. The dashed ring and the icon carry the "not part of this path" cue.
+ */
+const MUTED_LABEL_OPACITY = 0.85;
 /**
  * Narrowest a stage may get. The row is `stages x` this wide at least: a
  * container narrower than that scrolls the row inside itself instead of
@@ -67,7 +74,9 @@ function ExceptionIcon({ stage, size }: { stage: string; size: number }): JSX.El
  *  - pending: an outlined circle;
  *  - unrecorded: the same outline, faint (the record cannot say);
  *  - not-taken: a faint DASHED outline, carrying the stage's icon when it is
- *    Rollback / Canceled so it is still recognisable.
+ *    Rollback / Canceled so it is still recognisable;
+ *  - rejected: an error-coloured outline with a cross (the customer said no
+ *    here; the change ended in the Rollback / Canceled stage after it).
  *
  * Current uses `info` rather than `primary`: `primary` is this app's brand
  * accent, already used everywhere (buttons, the active tab underline, links)
@@ -112,13 +121,18 @@ function StepNode({ stage, status }: { stage: string; status: ChangeRequestLifec
             ? { bgcolor: "success.main", color: "success.contrastText" }
             : status === "current"
               ? { bgcolor: `${tone}.main`, color: `${tone}.contrastText` }
-              : {
-                  bgcolor: "transparent",
-                  border: "2px",
-                  borderStyle: status === "not-taken" ? "dashed" : "solid",
-                  borderColor: status === "not-taken" ? "text.secondary" : "divider",
-                  color: "text.secondary",
-                }),
+              : status === "rejected"
+                ? { bgcolor: "transparent", border: "2px solid", borderColor: "error.main", color: "error.main" }
+                : {
+                    bgcolor: "transparent",
+                    border: "2px",
+                    borderStyle: status === "not-taken" ? "dashed" : "solid",
+                    // Text-secondary, not the divider colour: an upcoming stage's ring
+                    // (a state-conveying graphic) needs 3:1 against the page, and it
+                    // must stay clearer than a not-taken one, which is dimmed above.
+                    borderColor: "text.secondary",
+                    color: "text.secondary",
+                  }),
         }}
       >
         {status === "done" ? (
@@ -129,6 +143,8 @@ function StepNode({ stage, status }: { stage: string; status: ChangeRequestLifec
           ) : (
             <Box sx={{ width: 7, height: 7, borderRadius: "50%", bgcolor: "info.contrastText" }} />
           )
+        ) : status === "rejected" ? (
+          <X size={12} strokeWidth={3} />
         ) : status === "not-taken" && exception ? (
           <ExceptionIcon stage={stage} size={12} />
         ) : null}
@@ -143,7 +159,7 @@ type Segment = "filled" | "error" | "dashed" | "plain";
  * How the connector LEADING INTO stage `index` is drawn (both halves of it,
  * the one ending at the previous node and the one starting at this one, use
  * the same answer so a segment never changes colour mid-way):
- *  - filled: the line is completed up to here (done / current stage);
+ *  - filled: the line is completed up to here (done / current / rejected stage);
  *  - error: into the current Rollback / Canceled;
  *  - dashed: into a stage that is not part of this change's path;
  *  - plain: the line still to be filled.
@@ -159,6 +175,7 @@ function segmentInto(nodes: readonly ChangeRequestLifecycleNode[], index: number
     case "current":
       return exception ? "error" : "filled";
     case "done":
+    case "rejected":
       return "filled";
     case "not-taken": {
       if (!exception) return "dashed";
@@ -187,10 +204,36 @@ function Connector({ segment, hidden }: { segment: Segment; hidden: boolean }): 
   );
 }
 
-function labelColor(status: ChangeRequestLifecycleStatus, exception: boolean): string {
-  if (status === "current") return exception ? "error.main" : "info.main";
-  if (status === "done") return "text.primary";
-  return "text.secondary";
+type Tone = "info" | "error";
+
+/**
+ * Typed structurally, as `CaseTabStrip` does: these members are all this needs
+ * and MUI hands the real theme over at call time.
+ */
+type ColorSchemeAwareTheme = {
+  palette: Record<Tone, { main: string; dark: string }>;
+  applyStyles: (scheme: "dark" | "light", styles: Record<string, unknown>) => Record<string, unknown>;
+};
+
+/**
+ * A tone's text colour: the dark shade on the light theme (the main shade is
+ * below 4.5:1 on its page backdrop at caption size) and the main shade on the
+ * dark one (where it is the legible one).
+ */
+function toneText(tone: Tone): (theme: ColorSchemeAwareTheme) => Record<string, unknown> {
+  return (theme) => ({
+    color: theme.palette[tone].dark,
+    ...theme.applyStyles("dark", { color: theme.palette[tone].main }),
+  });
+}
+
+function labelColorSx(
+  status: ChangeRequestLifecycleStatus,
+  exception: boolean,
+): { color: string } | ((theme: ColorSchemeAwareTheme) => Record<string, unknown>) {
+  if (status === "current") return toneText(exception ? "error" : "info");
+  if (status === "rejected") return toneText("error");
+  return { color: status === "done" ? "text.primary" : "text.secondary" };
 }
 
 /**
@@ -223,14 +266,27 @@ export default function ChangeRequestLifecycleStepper({
   customerApprovalRequired,
   customerReviewRequired,
   approvals,
+  customerApproved,
+  hasCustomerContacts,
 }: {
   state?: string | null;
   customerApprovalRequired?: boolean;
   customerReviewRequired?: boolean;
   /** `GET /change-requests/{id}/approvals`, when loaded: evidence for a rolled-back or canceled change. */
   approvals?: readonly Pick<BeChangeRequestApproval, "stage" | "status">[];
+  /** The change's `hasCustomerApproved`: more evidence for a canceled change. */
+  customerApproved?: boolean;
+  /** Whether the change's project has registered customer contacts (`undefined` = unknown): more evidence for a rolled-back change. */
+  hasCustomerContacts?: boolean;
 }): JSX.Element {
-  const nodes = buildChangeRequestLifecycle({ state, customerApprovalRequired, customerReviewRequired, approvals });
+  const nodes = buildChangeRequestLifecycle({
+    state,
+    customerApprovalRequired,
+    customerReviewRequired,
+    approvals,
+    customerApproved,
+    hasCustomerContacts,
+  });
   const unrecognizedState = !!state && !isChangeRequestLifecycleState(state);
   const lastIndex = nodes.length - 1;
 
@@ -268,8 +324,14 @@ export default function ChangeRequestLifecycleStepper({
             const into = segmentInto(nodes, index);
             const after = index < lastIndex ? segmentInto(nodes, index + 1) : "plain";
             const faint = node.status === "not-taken" || node.status === "unrecorded";
+            // The caption, and for the three statuses a glance at the line does not
+            // explain (a dashed or faint marker, a cross) what they mean.
+            const hint =
+              faint || node.status === "rejected"
+                ? `${node.caption} (${changeRequestLifecycleStatusText(node.status)})`
+                : node.caption;
             return (
-              <Tooltip key={node.key} title={node.caption} placement="bottom" arrow describeChild enterDelay={300}>
+              <Tooltip key={node.key} title={hint} placement="bottom" arrow describeChild enterDelay={300}>
                 <Box
                   role="listitem"
                   aria-current={isCurrent ? "step" : undefined}
@@ -290,14 +352,16 @@ export default function ChangeRequestLifecycleStepper({
                   <Typography
                     variant="caption"
                     align="center"
-                    sx={{
-                      mt: 0.75,
-                      maxWidth: 88,
-                      lineHeight: 1.25,
-                      fontWeight: isCurrent ? 700 : 400,
-                      color: labelColor(node.status, exception),
-                      opacity: faint ? MUTED_OPACITY + 0.15 : 1,
-                    }}
+                    sx={[
+                      {
+                        mt: 0.75,
+                        maxWidth: 88,
+                        lineHeight: 1.25,
+                        fontWeight: isCurrent ? 700 : 400,
+                        opacity: faint ? MUTED_LABEL_OPACITY : 1,
+                      },
+                      labelColorSx(node.status, exception),
+                    ]}
                   >
                     {node.label}
                     <Box component="span" sx={visuallyHidden}>
