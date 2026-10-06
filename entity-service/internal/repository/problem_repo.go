@@ -114,7 +114,7 @@ type ProblemRepository interface {
 	// problem.category. req.Subcategory is matched case-insensitively against
 	// problem_subcategory.value within that category; unmatched values remain
 	// NULL.
-	CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string) (domain.ProblemDetail, error)
+	CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string, priority string) (domain.ProblemDetail, error)
 	// CreateProblem inserts a new problem row (both work_item and "problem")
 	// for the plain-Postgres data source (no ServiceNow at all) --
 	// createProblemPortalQuery's own doc comment has the full field-by-field
@@ -496,12 +496,15 @@ const createProblemPortalQuery = `
 	),
 	inserted_problem AS (
 		INSERT INTO problem (
-			id, state, incident_id, opened_on, category, subcategory_id
+			id, state, incident_id, opened_on, category, subcategory_id, priority, impact, urgency
 		)
 		SELECT id, 'NEW'::problem_state_enum, $4::uuid, NOW(), $7::problem_category_enum,
 		       -- subcategory is matched on problem_subcategory.value (lower-case
 		       -- free text) within the chosen category; an unmatched value stays NULL.
-		       (SELECT psc.id FROM problem_subcategory psc WHERE psc.category = $7::problem_category_enum AND psc.value = LOWER($5::text))
+		       (SELECT psc.id FROM problem_subcategory psc WHERE psc.category = $7::problem_category_enum AND psc.value = LOWER($5::text)),
+		       -- ServiceNow's defaults for a new problem (discovery script 63):
+		       -- impact and urgency 3 - Low, priority 5 - Planning.
+		       'PLANNING'::problem_priority_enum, 'LOW'::problem_impact_enum, 'LOW'::problem_urgency_enum
 		FROM inserted_work_item
 		RETURNING id
 	)
@@ -586,13 +589,16 @@ const createProblemFromServiceNowQuery = `
 	),
 	inserted_problem AS (
 		INSERT INTO problem (
-			id, state, incident_id, opened_on, category, subcategory_id
+			id, state, incident_id, opened_on, category, subcategory_id, priority, impact, urgency
 		)
 		VALUES (
 			$1, $6::problem_state_enum, $7::uuid, NOW(), $9::problem_category_enum,
 			-- subcategory is matched on problem_subcategory.value (lower-case
 			-- free text) within the chosen category; an unmatched value stays NULL.
-			(SELECT id FROM problem_subcategory WHERE category = $9::problem_category_enum AND value = LOWER($10::text))
+			(SELECT id FROM problem_subcategory WHERE category = $9::problem_category_enum AND value = LOWER($10::text)),
+			-- The priority ServiceNow gave it; impact and urgency are its
+			-- defaults (3 - Low), since the CSM API never sets them.
+			$11::problem_priority_enum, 'LOW'::problem_impact_enum, 'LOW'::problem_urgency_enum
 		)
 		RETURNING id
 	)
@@ -601,7 +607,7 @@ const createProblemFromServiceNowQuery = `
 	JOIN inserted_problem ip ON ip.id = iwi.id`
 
 // CreateProblemFromServiceNow implements ProblemRepository.
-func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string) (domain.ProblemDetail, error) {
+func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string, priority string) (domain.ProblemDetail, error) {
 	// WithSystemIdentity: this insert never sets a project_id on the new
 	// work_item row at all (problems have no project concept, same as
 	// incidents -- see this file's own package doc comment), so work_item's
@@ -623,7 +629,7 @@ func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domai
 		id, createdBy,
 		number, req.Subject, req.OriginCaseID,
 		state, req.PrimaryIncidentID, req.Description,
-		category, req.Subcategory,
+		category, req.Subcategory, priority,
 	).Scan(&outID, &outNumber, &outSubject, &outDescription, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
@@ -649,6 +655,7 @@ func (r *problemRepo) CreateProblemFromServiceNow(ctx context.Context, req domai
 		Subject:     &outSubject,
 		Description: outDescription,
 		State:       state,
+		Priority:    &priority,
 	}, nil
 }
 

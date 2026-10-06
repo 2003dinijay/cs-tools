@@ -291,7 +291,7 @@ func (s *problemService) createProblemSNFirst(ctx context.Context, req domain.Cr
 		number = *snResp.Number
 	}
 
-	resp, err := s.repo.CreateProblemFromServiceNow(ctx, req, id, number, createdBy, snResp.State)
+	resp, err := s.repo.CreateProblemFromServiceNow(ctx, req, id, number, createdBy, snResp.State, problemPriorityFromServiceNow(snResp.Priority))
 	if err != nil {
 		// ServiceNow already has the problem at this point -- this is now
 		// real drift (ServiceNow has it, Postgres doesn't) needing operator
@@ -538,3 +538,25 @@ func parseProblemTargetDate(v string) (time.Time, error) {
 	}
 	return time.Time{}, &apierror.ValidationError{Msg: "targetResolutionDate must be YYYY-MM-DD HH:mm:ss (UTC) or an RFC3339 timestamp"}
 }
+
+// problemPriorityFromServiceNow turns the priority ServiceNow returns for a
+// problem it just created -- its display value, "5 - Planning" -- into the
+// problem_priority_enum label. ServiceNow gives every new problem 5 -
+// Planning (discovery script 63), which is also the fallback when the
+// response carries none or an unrecognised value.
+func problemPriorityFromServiceNow(display *string) string {
+	if display != nil {
+		switch strings.TrimSpace(*display) {
+		case "1", "1 - Critical":
+			return "CRITICAL"
+		case "2", "2 - High":
+			return "HIGH"
+		case "3", "3 - Moderate":
+			return "MODERATE"
+		case "4", "4 - Low":
+			return "LOW"
+		}
+	}
+	return "PLANNING"
+}
+
