@@ -1172,12 +1172,12 @@ func (s *caseService) CreateInternalCaseComment(ctx context.Context, req domain.
 // CreateCaseCommentAs implements CaseService for a caller that already knows
 // the acting email and has no x-user-id-token to resolve one from -- see the
 // CaseService interface's own doc comment on this method. Mirrors
-// AddCaseTagAs/addCaseTagAs: no GetUserByEmail lookup happens here, since
-// the configured M2M service-account email (config.Config.
-// M2MTrustedActorEmails) is not guaranteed to be a provisioned sys_user-
-// equivalent row -- actorEmail is used directly for both created_by and the
-// published event's author name rather than risking a hard failure over a
-// service account that was never expected to exist as a real user.
+// AddCaseTagAs/addCaseTagAs: no GetUserByEmail lookup happens here, since the
+// actorEmail an M2M caller trusted via config.Config.M2MClientIDs claims is
+// not guaranteed to be a provisioned sys_user-equivalent row -- actorEmail is
+// used directly for both created_by and the published event's author name
+// rather than risking a hard failure over a service account that was never
+// expected to exist as a real user.
 func (s *caseService) CreateCaseCommentAs(ctx context.Context, req domain.CreateCaseCommentRequest, actorEmail string) (domain.CreateCaseCommentResponse, error) {
 	return s.createCaseCommentAs(ctx, req, actorEmail, actorEmail, false)
 }

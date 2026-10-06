@@ -843,7 +843,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// case above.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
 	}
-	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MTrustedActorEmails)
+	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MClientIDs)
 	if db != nil {
 		announcementRequestHandler = handler.NewAnnouncementRequestHandler(
 			service.NewAnnouncementRequestService(repository.NewAnnouncementRequestRepository(db), activeCaseSvc, accessSvc),
@@ -864,7 +864,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if caseAttachmentOverrideSvc != nil {
 		activeAttachmentSvc = caseAttachmentOverrideSvc
 	}
-	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc, cfg.M2MTrustedActorEmails)
+	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc, cfg.M2MClientIDs)
 
 	// customer_call (migration 0073) backs call requests on the Postgres
 	// data source, so these routes are registered for both data sources.
