@@ -207,7 +207,7 @@ func customerApproverUserID(ctx context.Context, tx crQuerier, workItemID, actor
 		SELECT u.id::text FROM "user" u
 		WHERE LOWER(u.email) = LOWER($2)
 		ORDER BY EXISTS (SELECT 1 FROM approval_stage_approver asa
-		                  WHERE asa.work_item_id = $1 AND asa.approver_user_id = u.id AND asa.status = 'requested') DESC,
+		                  WHERE asa.work_item_id = $1 AND asa.approver_user_id = u.id AND asa.state = 'REQUESTED') DESC,
 		         u.created_on ASC
 		LIMIT 1`, workItemID, actorEmail).Scan(&userID)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -294,7 +294,7 @@ func customerHasRequestedRow(ctx context.Context, q crQuerier, stageID, userID s
 	var asked bool
 	if err := q.QueryRow(ctx, `
 		SELECT EXISTS (SELECT 1 FROM approval_stage_approver
-		                WHERE stage_id = $1::uuid AND approver_user_id = $2::uuid AND status = 'requested')`,
+		                WHERE stage_id = $1::uuid AND approver_user_id = $2::uuid AND state = 'REQUESTED')`,
 		stageID, userID).Scan(&asked); err != nil {
 		return false, fmt.Errorf("read the caller's pending approval: %w", err)
 	}

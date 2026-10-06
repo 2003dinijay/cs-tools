@@ -237,9 +237,10 @@ type ChangeRequestRepository interface {
 	GetChangeRequestApprovals(ctx context.Context, id string) (domain.ChangeRequestApprovals, error)
 	// DecideChangeRequestApproval flips the ONE approval_stage_approver row
 	// matching work_item_id = id AND approver_user_id = approverUserID AND
-	// status = 'requested' to decision ("approved"/"rejected", validated by
-	// the caller before this is reached), stamping actorEmail as updated_by,
-	// and returns that row's id. Returns a NotFoundError if no such row
+	// state = 'REQUESTED' to the decision (the request-level "approved" /
+	// "rejected", validated by the caller before this is reached, is stored
+	// UPPER_SNAKE_CASE as "APPROVED" / "REJECTED"), stamping actorEmail as
+	// updated_by, and returns that row's id. Returns a NotFoundError if no such row
 	// exists -- covers id not existing, the caller having no approval on
 	// this change request, and the caller's approval already being decided,
 	// all in the one WHERE clause (mirrors ServiceNow's decideApproval
@@ -2065,7 +2066,7 @@ var (
 // creator-only pool must never commit a stage nobody can decide).
 //
 // The change request's creator/requester (changeRequestCreatorUserIDs) is
-// provisioned `cancelled`, not `requested`, when they are a member of the
+// provisioned `CANCELLED`, not `REQUESTED`, when they are a member of the
 // pool: nobody approves their own change request, at any stage. This
 // mirrors ServiceNow's own self-approval prevention (confirmed live on
 // CHG0039122: the requester's sysapproval_approver row is born Cancelled).
@@ -2128,8 +2129,8 @@ func provisionApprovalStage(ctx context.Context, tx pgx.Tx, workItemID string, a
 
 // insertApprovalStage writes one approval_stage (checkpoint_label = label,
 // assignment_group_id = the pool's group) and one approval_stage_approver per
-// distinct pool member: `requested`, except the change's creator(s), who are
-// born `cancelled` (nobody approves their own change). The caller has already
+// distinct pool member: `REQUESTED`, except the change's creator(s), who are
+// born `CANCELLED` (nobody approves their own change). The caller has already
 // escalated the transaction's identity.
 //
 // checkpoint_label (migration 0179) records which checkpoint this is
@@ -2816,8 +2817,8 @@ func buildChangeRequestApprovals(stages []changeRequestApprovalStageRow, approve
 
 			// RespondedOn has no dedicated column. approval_stage_approver.
 			// updated_on changes whenever DecideChangeRequestApproval (below)
-			// or csm-sync-service's own mapper moves status away from
-			// "requested", so it doubles as the response timestamp once a
+			// or csm-sync-service's own mapper moves state away from
+			// REQUESTED, so it doubles as the response timestamp once a
 			// decision exists -- left nil while still REQUESTED (updated_on
 			// is just the row's sync/insert watermark then) or UNKNOWN
 			// (nothing meaningful to date).
@@ -2889,7 +2890,7 @@ func buildChangeRequestApprovals(stages []changeRequestApprovalStageRow, approve
 }
 
 // decideChangeRequestApprovalQuery backs DecideChangeRequestApproval. The
-// WHERE clause's state = 'requested' is the entire enforcement of "only the
+// WHERE clause's state = 'REQUESTED' is the entire enforcement of "only the
 // caller's own PENDING approval can be decided" -- see that method's own
 // doc comment. stage_id is also returned (nullable, same as everywhere else
 // in this file) so the caller can re-check that stage's own overall outcome

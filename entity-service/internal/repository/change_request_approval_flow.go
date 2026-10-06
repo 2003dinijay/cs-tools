@@ -1144,7 +1144,7 @@ func staleApprovalRefusal(kind approvalStageKind, currentState string) error {
 //     Review stage's approvers once the change has left Review for Customer
 //     Review, the customer's once it was re-scheduled back to Authorize.
 //
-// The stages stay as a record; only the approver rows move to `cancelled`
+// The stages stay as a record; only the approver rows move to `CANCELLED`
 // (updated_by = actorEmail, like every other cancel helper). A stage is
 // classified exactly as classifyApprovalStage does (checkpoint_label first,
 // the historical positional fallback second); a stage of unknown kind and a
