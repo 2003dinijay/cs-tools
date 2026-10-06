@@ -222,13 +222,13 @@ func TestChangeRequestSeedIntegration_FixtureApprovers(t *testing.T) {
 		t.Fatalf("CHG-FIXED-003 stages = %v, want one Peer Approval stage%s", f.labels(seedCR003), reset)
 	}
 	assertApprovers(t, "CHG-FIXED-003 peer"+reset, peer["Peer Approval"], map[string]string{
-		seedAliceID: "requested", seedBobID: "requested", seedCarolID: "requested"})
+		seedAliceID: "REQUESTED", seedBobID: "REQUESTED", seedCarolID: "REQUESTED"})
 	assertApprovers(t, "CHG-FIXED-004 peer"+reset, f.seededStages(seedCR004)["Peer Approval"], map[string]string{
-		seedAliceID: "approved", seedBobID: "cancelled", seedCarolID: "cancelled"})
+		seedAliceID: "APPROVED", seedBobID: "CANCELLED", seedCarolID: "CANCELLED"})
 	assertApprovers(t, "CHG-FIXED-007 customer approval"+reset, f.seededStages(seedCR007)["Customer Approval"], map[string]string{
-		seedDaveID: "requested", seedErinID: "requested"})
+		seedDaveID: "REQUESTED", seedErinID: "REQUESTED"})
 	assertApprovers(t, "CHG-FIXED-008 customer review"+reset, f.seededStages(seedCR008)["Customer Review"], map[string]string{
-		seedDaveID: "requested", seedErinID: "requested"})
+		seedDaveID: "REQUESTED", seedErinID: "REQUESTED"})
 
 	// jane.doe and john.smith hold no approver row on any fixture.
 	var n int
@@ -273,7 +273,7 @@ func TestChangeRequestSeedIntegration_AssignedGroupProvisionsOnlyTheInternalPers
 	if _, err := f.repo.PatchChangeRequest(f.sys, id, domain.PatchChangeRequestRequest{State: stateptr(domain.ChangeRequestStateAssess)}, "jane.doe@example.com"); err != nil {
 		t.Fatalf("Request Approval: %v", err)
 	}
-	f.wantPeerPool(id, seededGroupID, map[string]string{seedAliceID: "requested", seedBobID: "requested", seedCarolID: "requested"})
+	f.wantPeerPool(id, seededGroupID, map[string]string{seedAliceID: "REQUESTED", seedBobID: "REQUESTED", seedCarolID: "REQUESTED"})
 
 	// john.smith (external, in the group) cannot decide even with a row forced
 	// in; alice can, and the seeded CAB group takes over.
@@ -394,11 +394,11 @@ func TestChangeRequestSeedIntegration_SeedIsSelfHealing(t *testing.T) {
 	          WHERE pg."group" = 'General Access' ON CONFLICT (id) DO NOTHING`)
 	mustExec(`DELETE FROM approval_stage_approver WHERE work_item_id IN ($1, $2, $3)`, seedCR003, seedCR007, seedCR008)
 	mustExec(`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
-	          VALUES (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', $1, $4, 'requested'),
-	                 (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', $1, $5, 'requested'),
-	                 (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001305', $2, $4, 'requested'),
-	                 (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001305', $2, $5, 'requested'),
-	                 (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001306', $3, $4, 'requested')`,
+	          VALUES (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', $1, $4, 'REQUESTED'),
+	                 (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001005', $1, $5, 'REQUESTED'),
+	                 (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001305', $2, $4, 'REQUESTED'),
+	                 (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001305', $2, $5, 'REQUESTED'),
+	                 (gen_random_uuid(), now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001306', $3, $4, 'REQUESTED')`,
 		seedCR003, seedCR007, seedCR008, seedJaneID, seedJohnID)
 	mustExec(`INSERT INTO team_member (id, created_on, updated_on, created_by, updated_by, team_id, user_id, group_id)
 	          VALUES ('00000000-0000-0000-0000-000000001101', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000000901', $1, $3),

@@ -95,7 +95,7 @@ func TestChangeRequestCustomerProposalIntegration_WholeWindowKeepsTheDuration(t 
 			// The customer's request they were just asked is superseded: its rows are
 			// cancelled, whatever the type.
 			custom := f.customerStages(id)
-			assertApprovers(t, "the superseded customer request", custom[0].approvers, map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "cancelled"})
+			assertApprovers(t, "the superseded customer request", custom[0].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
 			if a, _ := f.customerOutcome(id); a {
 				t.Fatal("a proposal stamped the customer's approval")
 			}
@@ -103,7 +103,7 @@ func TestChangeRequestCustomerProposalIntegration_WholeWindowKeepsTheDuration(t 
 			if tc.typ == domain.ChangeRequestTypeStandard {
 				// Nothing internal to repeat: still in Customer Approval, asked again.
 				f.expect(id, "after the proposal", "CUSTOMER_APPROVAL", "authorize", "canceled")
-				assertApprovers(t, "the fresh customer request", custom[1].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+				assertApprovers(t, "the fresh customer request", custom[1].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 				f.wantCanAnswer(id, "after the proposal", true, crScopeUserA1, crScopeUserA2)
 			} else {
 				f.expect(id, "after the proposal", "AUTHORIZE", "canceled")
@@ -211,7 +211,7 @@ func TestChangeRequestCustomerProposalIntegration_RefusedWindowChangesNothing(t 
 	if got := f.stageLabels(id); got != stages {
 		t.Fatalf("stages = %s, want them untouched (%s)", got, stages)
 	}
-	assertApprovers(t, "customer request untouched", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+	assertApprovers(t, "customer request untouched", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	f.wantCanAnswer(id, "after the refused proposals", true, crScopeUserA1, crScopeUserA2)
 }
 

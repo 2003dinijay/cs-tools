@@ -677,7 +677,7 @@ func TestChangeRequestService_DecideChangeRequestApproval_MirrorFailureRecordsWr
 // TestChangeRequestService_DecideChangeRequestApproval_RepoNotFoundPropagates
 // covers the "no pending approval for this caller" case: the repo's
 // NotFoundError (no approval_stage_approver row matched work_item_id +
-// approver_user_id + status='requested') must propagate as-is, with no
+// approver_user_id + state='REQUESTED') must propagate as-is, with no
 // mirror dispatch attempted -- stubMirrorChangeRequestService here has no
 // decideChangeRequestApproval configured, so a dispatch attempt would
 // panic.

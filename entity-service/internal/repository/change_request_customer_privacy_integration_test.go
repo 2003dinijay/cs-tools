@@ -59,7 +59,7 @@ func TestChangeRequestCustomerPrivacyIntegration_AnswerIsBoundToTheWindowSeen(t 
 	_, err := f.approveAsFor(id, crScopeUserA1, sp("next tuesday"), nil)
 	f.wantValidationError("an expected window that is no date", err, "expectedPlannedStartOn must be a date-time")
 	f.expect(id, "after the refused answers", "CUSTOMER_APPROVAL", "authorize", "canceled")
-	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	if a, _ := f.customerOutcome(id); a {
 		t.Fatal("a refused answer stamped the customer's approval")
 	}

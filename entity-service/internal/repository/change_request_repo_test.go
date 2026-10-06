@@ -342,17 +342,29 @@ func TestChangeRequestApprovalStagePosition(t *testing.T) {
 	}
 }
 
-// TestNormalizeChangeRequestApprovalStatus covers all six real SN
-// sysapproval_approver.state values (migration 0089's own comment),
-// the empty/nil -> UNKNOWN cases, and an unrecognized value falling back to
-// an uppercased passthrough rather than UNKNOWN -- domain.ChangeRequestApprover.
-// Status is deliberately an open string, not a closed enum.
+// TestNormalizeChangeRequestApprovalStatus covers the shape the table really
+// has since migration 0138 -- approval_stage_approver.state already
+// UPPER_SNAKE_CASE (REQUESTED, APPROVED, REJECTED, NOT_REQUESTED, NOT_REQUIRED,
+// CANCELLED, NOT_ENTITLED), which must come out unchanged (a second
+// normalisation is a no-op) -- plus the lowercase raw ServiceNow values
+// (migration 0089's own comment) still tolerated for a row a writer has not
+// normalised, the empty/nil -> UNKNOWN cases, and an unrecognized value falling
+// back to an uppercased passthrough rather than UNKNOWN --
+// domain.ChangeRequestApprover.Status is deliberately an open string, not a
+// closed enum.
 func TestNormalizeChangeRequestApprovalStatus(t *testing.T) {
 	cases := []struct {
 		name string
 		raw  *string
 		want string
 	}{
+		{"REQUESTED as 0138 stores it", strPtrApproval("REQUESTED"), "REQUESTED"},
+		{"APPROVED as 0138 stores it", strPtrApproval("APPROVED"), "APPROVED"},
+		{"REJECTED as 0138 stores it", strPtrApproval("REJECTED"), "REJECTED"},
+		{"NOT_REQUESTED as 0138 stores it", strPtrApproval("NOT_REQUESTED"), "NOT_REQUESTED"},
+		{"NOT_REQUIRED as 0138 stores it", strPtrApproval("NOT_REQUIRED"), "NOT_REQUIRED"},
+		{"CANCELLED as 0138 stores it", strPtrApproval("CANCELLED"), "CANCELLED"},
+		{"NOT_ENTITLED as 0138 stores it", strPtrApproval("NOT_ENTITLED"), "NOT_ENTITLED"},
 		{"requested", strPtrApproval("requested"), "REQUESTED"},
 		{"approved", strPtrApproval("approved"), "APPROVED"},
 		{"rejected", strPtrApproval("rejected"), "REJECTED"},
@@ -392,14 +404,14 @@ func TestBuildChangeRequestApprovals_PositionalLabelsAndFirstResponderWinsStatus
 		// for the real bug this guards against: isMyPendingApproval
 		// (webapp) can only ever match a real user id, never a junction
 		// row's id.
-		{id: "appr-1", stageID: strPtrApproval("stage-1"), approverUserID: strPtrApproval("user-1"), approverName: "Alice", rawStatus: strPtrApproval("approved"), updatedOn: updatedOn},
-		{id: "appr-2", stageID: strPtrApproval("stage-2"), approverUserID: strPtrApproval("user-2"), approverName: "Bob", rawStatus: strPtrApproval("requested"), updatedOn: updatedOn},
+		{id: "appr-1", stageID: strPtrApproval("stage-1"), approverUserID: strPtrApproval("user-1"), approverName: "Alice", rawStatus: strPtrApproval("APPROVED"), updatedOn: updatedOn},
+		{id: "appr-2", stageID: strPtrApproval("stage-2"), approverUserID: strPtrApproval("user-2"), approverName: "Bob", rawStatus: strPtrApproval("REQUESTED"), updatedOn: updatedOn},
 		// approverUserID nil (approver_user_id null, or a since-deleted
 		// user) -- must fall back to the junction row's own id rather than
 		// an empty string.
-		{id: "appr-3", stageID: strPtrApproval("stage-2"), approverUserID: nil, approverName: "Carol", rawStatus: strPtrApproval("rejected"), updatedOn: updatedOn},
+		{id: "appr-3", stageID: strPtrApproval("stage-2"), approverUserID: nil, approverName: "Carol", rawStatus: strPtrApproval("REJECTED"), updatedOn: updatedOn},
 		// stage_id NULL -- must be dropped, not attached to any stage.
-		{id: "appr-4", stageID: nil, approverUserID: strPtrApproval("user-4"), approverName: "Orphan", rawStatus: strPtrApproval("requested"), updatedOn: updatedOn},
+		{id: "appr-4", stageID: nil, approverUserID: strPtrApproval("user-4"), approverName: "Orphan", rawStatus: strPtrApproval("REQUESTED"), updatedOn: updatedOn},
 	}
 
 	got := buildChangeRequestApprovals(stages, approvers)

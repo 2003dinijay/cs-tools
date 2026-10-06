@@ -419,8 +419,8 @@ func TestChangeRequestFlowIntegration_StaleApprovals_CancelFromEveryState(t *tes
 			}
 			for key, was := range before {
 				want := was
-				if was == "requested" {
-					want = "cancelled"
+				if was == "REQUESTED" {
+					want = "CANCELLED"
 				}
 				if after[key] != want {
 					t.Fatalf("Cancel: approver row %s = %q, want %q (was %q)", key, after[key], want, was)

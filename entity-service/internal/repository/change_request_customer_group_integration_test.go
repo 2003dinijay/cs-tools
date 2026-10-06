@@ -114,7 +114,7 @@ func liveStages(stages []crFlowStage) int {
 	n := 0
 	for _, st := range stages {
 		for _, status := range st.approvers {
-			if status == "requested" {
+			if status == "REQUESTED" {
 				n++
 				break
 			}
@@ -217,7 +217,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupNormalLifecycle(t *testing.T)
 	if ca.groupID != "" {
 		t.Fatalf("Customer Approval stage group = %s, want none (the Customer Group is the project's contacts)", ca.groupID)
 	}
-	assertApprovers(t, "Customer Approval", ca.approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+	assertApprovers(t, "Customer Approval", ca.approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	if approved, _ := f.customerOutcome(id); approved {
 		t.Fatal("is_customer_approval_required already true before any member decided")
 	}
@@ -234,7 +234,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupNormalLifecycle(t *testing.T)
 		t.Fatalf("customer approval: %v", err)
 	}
 	f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
-	assertApprovers(t, "Customer Approval after", f.stages(id)[2].approvers, map[string]string{crScopeUserA1: "approved", crScopeUserA2: "cancelled"})
+	assertApprovers(t, "Customer Approval after", f.stages(id)[2].approvers, map[string]string{crScopeUserA1: "APPROVED", crScopeUserA2: "CANCELLED"})
 	if approved, reviewed := f.customerOutcome(id); !approved || reviewed {
 		t.Fatalf("outcome after customer approval = approved:%v reviewed:%v, want true/false", approved, reviewed)
 	}
@@ -251,14 +251,14 @@ func TestChangeRequestFlowIntegration_CustomerGroupNormalLifecycle(t *testing.T)
 		t.Fatalf("stages in Customer Review = %v", got)
 	}
 	cr5 := f.stages(id)[4]
-	assertApprovers(t, "Customer Review", cr5.approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+	assertApprovers(t, "Customer Review", cr5.approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 
 	// The other member decides this time.
 	if err := f.decide(id, crScopeUserA2, "approved"); err != nil {
 		t.Fatalf("customer review: %v", err)
 	}
 	f.expect(id, "after the customer's review", "CLOSED")
-	assertApprovers(t, "Customer Review after", f.stages(id)[4].approvers, map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "approved"})
+	assertApprovers(t, "Customer Review after", f.stages(id)[4].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "APPROVED"})
 	if approved, reviewed := f.customerOutcome(id); !approved || !reviewed {
 		t.Fatalf("final outcome = approved:%v reviewed:%v, want true/true", approved, reviewed)
 	}
@@ -275,7 +275,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupRejections(t *testing.T) {
 			t.Fatalf("reject: %v", err)
 		}
 		f.expect(id, "after the customer rejected", "CANCELED")
-		assertApprovers(t, "Customer Approval", f.stages(id)[2].approvers, map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "rejected"})
+		assertApprovers(t, "Customer Approval", f.stages(id)[2].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "REJECTED"})
 		if approved, _ := f.customerOutcome(id); approved {
 			t.Fatal("is_customer_approval_required = true on a rejected approval")
 		}
@@ -300,7 +300,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupRejections(t *testing.T) {
 		}
 		_, err = f.patchState(id, domain.ChangeRequestStateClosed)
 		f.wantValidationError("close out of rollback", err, "rollback is final")
-		assertApprovers(t, "Customer Review", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "rejected", crScopeUserA2: "cancelled"})
+		assertApprovers(t, "Customer Review", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REJECTED", crScopeUserA2: "CANCELLED"})
 		if _, reviewed := f.customerOutcome(id); reviewed {
 			t.Fatal("is_customer_review_required = true on a rejected review")
 		}
@@ -318,7 +318,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupStandardRequestApproval(t *te
 	if len(st) != 1 || st[0].label != stageCustApproval {
 		t.Fatalf("customer stages = %+v", st)
 	}
-	assertApprovers(t, "Customer Approval", st[0].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+	assertApprovers(t, "Customer Approval", st[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	if err := f.decide(id, crScopeUserA1, "approved"); err != nil {
 		t.Fatalf("approve: %v", err)
 	}
@@ -354,7 +354,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupCreatorAndNonMember(t *testin
 	f.driveToCustomerApproval(id)
 
 	assertApprovers(t, "Customer Approval", f.stages(id)[2].approvers,
-		map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested", crFlowCreatorID: "cancelled"})
+		map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED", crFlowCreatorID: "CANCELLED"})
 
 	err := f.decide(id, crFlowCreatorID, "approved")
 	f.wantForbidden("creator deciding", err, "creator of a change request cannot approve")
@@ -449,7 +449,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupInactiveMemberSkipped(t *test
 	}
 	id := f.createWithProject(domain.ChangeRequestTypeStandard, sp(crScopeProjectA), true, false)
 	f.requestApproval(id)
-	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "requested"})
+	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED"})
 }
 
 // The project set later (change already in Customer Approval) provisions the
@@ -471,7 +471,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupFollowsTheProject(t *testing.
 	if len(st) != 1 {
 		t.Fatalf("stages after set = %+v", st)
 	}
-	assertApprovers(t, "after set", st[0].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+	assertApprovers(t, "after set", st[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	// Resending the same project, or any unrelated PATCH, changes nothing.
 	f.setProject(id, crScopeProjectA)
 	if _, err := f.patch(id, domain.PatchChangeRequestRequest{Title: sp("renamed")}); err != nil {
@@ -489,8 +489,8 @@ func TestChangeRequestFlowIntegration_CustomerGroupFollowsTheProject(t *testing.
 	if len(st) != 2 || liveStages(st) != 1 {
 		t.Fatalf("stages after change = %+v, want 2 (1 live)", st)
 	}
-	assertApprovers(t, "old stage", st[0].approvers, map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "cancelled"})
-	assertApprovers(t, "new stage", st[1].approvers, map[string]string{crScopeUserB1: "requested"})
+	assertApprovers(t, "old stage", st[0].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
+	assertApprovers(t, "new stage", st[1].approvers, map[string]string{crScopeUserB1: "REQUESTED"})
 	// The former project's contacts can no longer decide; the new one's can.
 	f.wantForbidden("old project's contact", f.decide(id, crScopeUserA1, "approved"), "only members of the customer group")
 
@@ -514,7 +514,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupFollowsTheProject(t *testing.
 	if len(st) != 4 || liveStages(st) != 1 {
 		t.Fatalf("stages after the contact set changed = %+v, want 4 (1 live)", st)
 	}
-	assertApprovers(t, "after Bob left", st[3].approvers, map[string]string{crScopeUserA1: "requested"})
+	assertApprovers(t, "after Bob left", st[3].approvers, map[string]string{crScopeUserA1: "REQUESTED"})
 
 	// Cancelling the change cancels what is pending.
 	f.step(id, domain.ChangeRequestStateCanceled, "CANCELED")
@@ -532,8 +532,8 @@ func TestChangeRequestFlowIntegration_CustomerGroupIsolatesCustomers(t *testing.
 	idB := f.createWithProject(domain.ChangeRequestTypeStandard, sp(crScopeProjectB), true, false)
 	f.requestApproval(idA)
 	f.requestApproval(idB)
-	assertApprovers(t, "customer A's stage", f.customerStages(idA)[0].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
-	assertApprovers(t, "customer B's stage", f.customerStages(idB)[0].approvers, map[string]string{crScopeUserB1: "requested"})
+	assertApprovers(t, "customer A's stage", f.customerStages(idA)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+	assertApprovers(t, "customer B's stage", f.customerStages(idB)[0].approvers, map[string]string{crScopeUserB1: "REQUESTED"})
 
 	// Carol (customer B) cannot answer customer A's request, nor can A's people
 	// answer B's -- and a refused answer changes nothing.

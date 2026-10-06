@@ -280,7 +280,7 @@ func TestChangeRequestCustomerCanAnswerIntegration_WhoMayAnswer(t *testing.T) {
 	f.setPlanned(id, rsStart1, rsEnd1)
 	f.driveToCustomerApproval(id)
 	assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers,
-		map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested", crFlowCreatorID: "cancelled"})
+		map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED", crFlowCreatorID: "CANCELLED"})
 
 	strangers := []struct {
 		name string
@@ -307,13 +307,13 @@ func TestChangeRequestCustomerCanAnswerIntegration_WhoMayAnswer(t *testing.T) {
 
 	// The creator holds a REQUESTED row (somebody put them back): still not told
 	// true, still refused -- the creator never approves their own change.
-	f.execSQL(`UPDATE approval_stage_approver SET status = 'requested' WHERE work_item_id = $1 AND approver_user_id = $2`, id, crFlowCreatorID)
+	f.execSQL(`UPDATE approval_stage_approver SET state = 'REQUESTED' WHERE work_item_id = $1 AND approver_user_id = $2`, id, crFlowCreatorID)
 	if f.strangerCanAnswer(asContact(crFlowCreatorID), "the creator with a requested row", id) {
 		t.Fatal("the creator holding a requested row is told customerCanAnswer = true")
 	}
 	_, err := f.approveAs(id, crFlowCreatorID, true)
 	f.wantForbidden("the creator approving", err, "creator of a change request cannot approve it")
-	f.execSQL(`UPDATE approval_stage_approver SET status = 'cancelled' WHERE work_item_id = $1 AND approver_user_id = $2`, id, crFlowCreatorID)
+	f.execSQL(`UPDATE approval_stage_approver SET state = 'CANCELLED' WHERE work_item_id = $1 AND approver_user_id = $2`, id, crFlowCreatorID)
 
 	// A contact who was asked but is no longer a REGISTERED contact (Bob, taken
 	// back to invited): the request is still on file, but the answer would be
@@ -357,7 +357,7 @@ func TestChangeRequestCustomerCanAnswerIntegration_NobodyWasAsked(t *testing.T) 
 		f.setPlanned(id, rsStart1, rsEnd1)
 		f.wantProposeRefused("a late contact", id, zed, "only members of the customer group", "have been asked")
 		f.wantCanAnswer(id, "for the contacts who were asked", true, crScopeUserA1, crScopeUserA2)
-		assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+		assertApprovers(t, "Customer Approval", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	})
 	t.Run("the change reached Customer Approval with nobody to ask", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
@@ -428,8 +428,8 @@ func TestChangeRequestCustomerCanAnswerIntegration_RescheduleFlips(t *testing.T)
 		if len(custom) != 2 {
 			t.Fatalf("customer stages = %+v, want the superseded one and a fresh one", custom)
 		}
-		assertApprovers(t, "superseded request", custom[0].approvers, map[string]string{crScopeUserA1: "cancelled", crScopeUserA2: "cancelled"})
-		assertApprovers(t, "fresh request", custom[1].approvers, map[string]string{crScopeUserA1: "requested", crScopeUserA2: "requested"})
+		assertApprovers(t, "superseded request", custom[0].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
+		assertApprovers(t, "fresh request", custom[1].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 		f.wantCanAnswer(id, "after the proposal", true, crScopeUserA1, crScopeUserA2)
 	})
 }
