@@ -729,6 +729,8 @@ export const CHANGE_REQUESTS_LIST = {
     list: "List View",
     calendar: "Calendar View",
   },
+  /** The Operations hub's footer button that opens this list. */
+  hubViewAllButton: "View all change requests",
   /** Shown when the list has nothing to show — the second only once a search or
    * filter has been applied. */
   emptyMessage: "No change requests yet.",

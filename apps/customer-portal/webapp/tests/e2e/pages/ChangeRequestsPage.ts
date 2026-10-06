@@ -90,6 +90,43 @@ export class ChangeRequestsPage {
       .filter({ hasText: CHANGE_REQUESTS_LIST.numberPattern });
   }
 
+  /**
+   * EVERY row of the list, whatever its number looks like.
+   *
+   * {@link rows} keys on `CHG<digits>`, ServiceNow's numbering, so on a database
+   * with another scheme — the local compose stack's seeded `CHG-FIXED-007`, or its
+   * generated `CR-1013` — it finds nothing, and an assertion that "no row belongs
+   * to another customer" would pass vacuously. Every row card prints its
+   * "Updated:" stamp whatever it is numbered, so that is the key here.
+   */
+  allRows(): Locator {
+    return this.main().getByRole("button").filter({ hasText: "Updated:" });
+  }
+
+  /**
+   * The row carrying a given number, in any numbering scheme.
+   *
+   * @param number - Change request number, e.g. `CHG-FIXED-007`.
+   */
+  rowByNumber(number: string): Locator {
+    return this.allRows().filter({ hasText: number });
+  }
+
+  /**
+   * The number each row of the list carries, in render order.
+   *
+   * The number is read off each card as the first token shaped like one —
+   * `CHG0038759`, `CHG-FIXED-007` or `CR-1013` — so a row whose number has none of
+   * those shapes is skipped here but still counted by {@link allRows}.
+   */
+  async listedNumbers(): Promise<string[]> {
+    const texts = await this.allRows().allInnerTexts();
+    return texts.flatMap((text) => {
+      const match = /\b(?:CHG|CR)[-A-Za-z]*-?\d+\b/.exec(text);
+      return match ? [match[0]] : [];
+    });
+  }
+
   /** The copy shown when the list has nothing to show. */
   emptyMessage(): Locator {
     return this.main().getByText(CHANGE_REQUESTS_LIST.emptyMessage);

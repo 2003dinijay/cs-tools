@@ -18,13 +18,14 @@ under the License.
 
 # Customer Portal E2E (Playwright, local)
 
-Scaffolding only — **no specs yet**. Runs locally against `pnpm run dev`
-(:3000), authenticated by a **captured browser session** so no login page or
-2FA is driven. See [`auth/README.md`](./auth/README.md) to capture one.
+Runs locally against `pnpm run dev` (:3000) or a deployed environment, authenticated by a
+**captured browser session** so no login page or 2FA is driven. See
+[`auth/README.md`](./auth/README.md) to capture one. To run against the **local compose
+stack** instead, see "Local stack" below.
 
-There is no mock backend here: specs will hit the same backend the dev server
-is configured against (`public/config.js`), so anything a spec creates is a
-**real record** in that environment. Tag created data so it stays identifiable.
+There is no mock backend here: specs hit the same backend the dev server is configured
+against (`public/config.js`), so anything a spec creates is a **real record** in that
+environment. Tag created data so it stays identifiable.
 
 ## Run
 
@@ -79,6 +80,62 @@ E2E_NO_WEBSERVER=
 `withSession()` skips (rather than fails) any test whose session bundle is
 missing or captured against a different origin than the run targets, and the
 skip message names the mismatch.
+
+## Local stack (docker-compose + the mock identity provider)
+
+Everything above targets a deployed environment and signs in as a staging account. To run
+against the **local compose stack** instead (`docker-compose up -d`; customer webapp
+`http://localhost:3000`, customer backend `:8090`, mock OIDC provider `http://localhost:9100`),
+sign in as one of the customers the local seed registers on its projects
+(`scripts/csm-compose/seed-entity-service.sql`; "Local seed personas" in
+`entity-service/CLAUDE.md`):
+
+| Persona (`E2E_LOCAL_PERSONA`) | Email | Registered contact of |
+|---|---|---|
+| `dave` | `dave.mendis@example.com` | "Example Corp Production" (project `00000000-0000-0000-0000-000000000401`) |
+| `erin` | `erin.jayawardena@example.com` | same project |
+| `mira` | `mira.santos@lumenworks.example` | "Lumen Works Platform" (a generated project: found by name, its id is random per database) |
+| `noel` | `noel.prasad@lumenworks.example` | same project |
+
+The mock provider signs in **any** email with no credential check, so nothing here needs a
+password or TOTP seed. A session is minted by driving the app's own sign-in once and is then
+replayed like any hand-captured bundle:
+
+```bash
+# from apps/customer-portal/webapp, with the stack up and seeded
+for p in dave erin mira noel; do
+  E2E_LOCAL_PERSONA=$p pnpm run test:e2e:local-auth      # writes tests/e2e/storageState/local-$p.json
+done
+node_modules/.bin/playwright test tests/e2e/specs/local --project=chromium
+```
+
+* **Groups stay empty.** The mock provider's sign-in form pre-fills its Groups box with
+  `cs_engineer`, a CSM *staff* group, and copies it into the token verbatim. The mint step clears
+  it and asserts the signed-in user holds only the `customer` role. What a customer may see comes
+  from their user record (role `customer`, a registered portal contact of a project), not from
+  the token.
+* **Tokens last one hour** and the provider issues no refresh token. Re-run the mint line to
+  refresh a bundle (it overwrites). A spec whose bundle is missing, expired, minted for another
+  origin than `E2E_BASE_URL`, or whose stack does not answer, is **skipped** with the reason, never
+  failed.
+* **Other ports.** The webapp origin is part of a bundle; mint and run against the same one:
+  `E2E_BASE_URL=http://localhost:13000 E2E_LOCAL_PERSONA=dave pnpm run test:e2e:local-auth`, then
+  `E2E_BASE_URL=http://localhost:13000 node_modules/.bin/playwright test tests/e2e/specs/local --project=chromium`.
+  (`.env.e2e` already sets `E2E_BASE_URL=http://localhost:3000` and `E2E_NO_WEBSERVER=1`.)
+* **The auth setup project** of the main config (`auth/auth.setup.ts`, the staging sign-in) skips
+  itself when no staging credentials are set, so these specs run without any.
+* **Fixtures move.** The seeded `CHG-FIXED-*` change requests are driven forward by whoever
+  approves or rejects them; `docker-compose up -d migrate` re-runs the (self-healing) seed and puts
+  them back. The read-only smoke spec here changes nothing.
+* **Operations needs the seed.** The menu appears only when the project's type grants change request
+  / service request read access; the seed sets that on the local "Subscription" type. A database
+  seeded before that existed shows no Operations menu until `migrate` is re-run.
+
+| File | Purpose |
+|---|---|
+| `auth/local-session.setup.ts` | Mints `storageState/local-<persona>.json` (run through `playwright.local-auth.config.ts`, a separate config so a regression run never mints as a side effect) |
+| `auth/localSessions.ts` | `LOCAL_PERSONAS`, `withLocalSession(test, "dave")` (replays the bundle; skips on missing / expired / wrong-origin / unreachable), `sessionMinutesLeft` |
+| `specs/local/customer-change-requests.spec.ts` | Smoke: dave lists `CHG-FIXED-007` (Customer Approval) under Operations > Change requests, and no other customer's change request |
 
 ## Layout
 
