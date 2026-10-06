@@ -200,21 +200,20 @@ func TestChangeRequestSyncedStagesIntegration_APositionZeroStageInAssessIsStillP
 }
 
 // A synced stage at position 2 is never taken for the customer's stage, however
-// the change is placed: the customer cannot answer through it (no outcome is
-// recorded, nothing moves), the customer portal's approvals read cuts it down to
-// its label and status like any internal stage, and customerCanAnswer stays false.
+// the change is placed: the customer's answer is recorded on the stage this
+// service writes for them (for a legacy change request with nobody asked, the
+// first customer act provisions it), never on the synced row they also hold; the
+// synced stage is left as it was (no outcome is recorded through it, nothing moves
+// because of it), and the customer portal's approvals read cuts it down to its
+// label and status like any internal stage.
 func TestChangeRequestSyncedStagesIntegration_APositionTwoStageIsNeverTheCustomers(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
 	f.requestApproval(id)
 	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "scheduled", "authorize", "canceled")
 	// A synced third stage naming the project's contact (and an internal person).
-	stage := f.seedSyncedStage(id, nil, 0, map[string]string{crScopeUserA1: "REQUESTED", crFlowPeerAID: "REQUESTED"})
-
-	// The customer is not offered an answer on the strength of it.
 	f.registerContact(crScopeProjectC, crScopeAccountID, crScopeUserA1)
-	f.wantCanAnswer(id, "with only an unlabeled third stage naming them", false, crScopeUserA1)
-	f.wantApproveRefused("answering through an unlabeled stage", id, crScopeUserA1)
+	synced := f.seedSyncedStage(id, nil, 0, map[string]string{crScopeUserA1: "REQUESTED", crFlowPeerAID: "REQUESTED"})
 
 	// Read as a customer: the stage is there (label, status) and nothing of its approvers.
 	view, err := f.repo.GetChangeRequestApprovals(asContact(crScopeUserA1), id)
@@ -231,7 +230,29 @@ func TestChangeRequestSyncedStagesIntegration_APositionTwoStageIsNeverTheCustome
 	if third.Stage == "" || third.Status == "" {
 		t.Fatalf("the unlabeled stage lost its label or status: %+v", third)
 	}
-	_ = stage
+
+	// The customer approves. The change request is legacy and has no live customer
+	// stage, so the first customer act provisions the labelled one; the decision is
+	// recorded THERE (the oldest REQUESTED row the contact holds is the synced one,
+	// which is not the customer's stage and must not be picked).
+	if _, err := f.approveAs(id, crScopeUserA1, true); err != nil {
+		t.Fatalf("the customer's approval: %v", err)
+	}
+	f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
+	if a, _ := f.customerOutcome(id); !a {
+		t.Fatal("the customer's approval was not recorded")
+	}
+	st := f.customerStages(id)
+	if len(st) != 1 {
+		t.Fatalf("customer stages = %+v, want the one provisioned for the answer", st)
+	}
+	assertApprovers(t, "the customer's stage", st[0].approvers, map[string]string{crScopeUserA1: "APPROVED"})
+	if got := f.approverState(synced, crScopeUserA1); got != "REQUESTED" {
+		t.Fatalf("the customer's answer landed on the synced stage: its row is %s, want it untouched", got)
+	}
+	if got := f.approverState(synced, crFlowPeerAID); got != "REQUESTED" {
+		t.Fatalf("the synced stage's other row = %s, want untouched", got)
+	}
 }
 
 // An approver whose user row is missing (the sync can leave one): nothing in the

@@ -3294,10 +3294,18 @@ func changeRequestCreatorsForApprover(ctx context.Context, tx crQuerier, id, app
 }
 
 // callerPendingApprovalStage resolves which stage the caller's decision is for:
-// among the stages they hold a REQUESTED approver row on (oldest first), the
-// first one decidable in crState (the change's upper-case state) and, when none
-// is, the oldest. Returns that stage's id and kind; (nil, stageKindOther) when
-// the caller has no pending row, or only a stage-less one.
+// among the stages they hold a REQUESTED approver row on (oldest first), the first
+// one of KNOWN kind decidable in crState (the change's upper-case state); failing
+// that the first one of unknown kind (stageKindOther: a ServiceNow-synced stage
+// that nothing proves anything about, decidable in any state); failing that, the
+// oldest, which is then refused as out of state. Returns that stage's id and kind;
+// (nil, stageKindOther) when the caller has no pending row, or only a stage-less
+// one.
+//
+// A stage of known kind in its state wins over one of unknown kind whichever is
+// older: a contact who also holds a row on a synced stage (position two, say) is
+// answering the customer's stage this service wrote for them, not that row, and a
+// decision recorded on the wrong stage moves nothing.
 func callerPendingApprovalStage(ctx context.Context, tx pgx.Tx, workItemID, approverUserID, crState string) (*string, approvalStageKind, error) {
 	rows, err := tx.Query(ctx,
 		`SELECT stage_id::text FROM approval_stage_approver
@@ -3320,8 +3328,8 @@ func callerPendingApprovalStage(ctx context.Context, tx pgx.Tx, workItemID, appr
 		return nil, stageKindOther, fmt.Errorf("find pending approval: %w", err)
 	}
 
-	var first *string
-	firstKind := stageKindOther
+	var first, unknown *string
+	firstKind, unknownKind := stageKindOther, stageKindOther
 	for _, stageID := range stageIDs {
 		if stageID == nil {
 			continue
@@ -3330,12 +3338,21 @@ func callerPendingApprovalStage(ctx context.Context, tx pgx.Tx, workItemID, appr
 		if err != nil {
 			return nil, stageKindOther, err
 		}
-		if !approvalStageOutOfState(kind, crState) {
+		switch {
+		case approvalStageDecidableState(kind) == "":
+			// Unknown kind: decidable anywhere, but only if nothing better turns up.
+			if unknown == nil {
+				unknown, unknownKind = stageID, kind
+			}
+		case !approvalStageOutOfState(kind, crState):
 			return stageID, kind, nil
 		}
 		if first == nil {
 			first, firstKind = stageID, kind
 		}
+	}
+	if unknown != nil {
+		return unknown, unknownKind, nil
 	}
 	return first, firstKind, nil
 }
