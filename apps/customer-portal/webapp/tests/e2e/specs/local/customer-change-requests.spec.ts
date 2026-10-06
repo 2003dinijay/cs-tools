@@ -31,10 +31,14 @@
 //   - the list is reachable the way a customer reaches it — side nav, Operations
 //     hub, "View all change requests";
 //   - CHG-FIXED-007 (seeded in Customer Approval, waiting for dave and erin) is
-//     listed and says so;
-//   - every row is one of Example Corp's own fixtures. Other customers' change
-//     requests exist in the same database (the seed-generator creates `CR-####`
-//     ones on its own projects), so a row of any other shape is a scoping leak.
+//     listed and says where it is (still Customer Approval on a fresh seed);
+//   - every change request the list API returns belongs to Example Corp's project.
+//     Other customers' change requests exist in the same database (the
+//     seed-generator creates `CR-####` ones on its own projects, and the CSM portal
+//     numbers its own `CS-PORTAL-######`), so a row of another project is a scoping
+//     leak. Judged on the response's project id, not on the number's shape: change
+//     requests that people legitimately create on Example Corp's project later
+//     must not fail this spec.
 //
 // Skips cleanly — never fails — without a session bundle, with an expired one, when
 // the bundle was minted for another origin, or when nothing answers at the base URL
@@ -58,8 +62,11 @@ import { projectPathPattern } from "../../utils/ids";
 
 withLocalSession(test, "dave");
 
-/** The change requests the local seed puts on Example Corp's project. */
-const EXAMPLE_CORP_FIXTURE = /^CHG-FIXED-\d{3}$/;
+/** A change request as the list API returns it: only what this spec reads. */
+interface ListedChangeRequest {
+  number: string;
+  project?: { id?: string } | null;
+}
 
 test.describe("Local stack — customer change requests", () => {
   // A cold shell load behind the project's features, then the hub, then the list.
@@ -68,6 +75,24 @@ test.describe("Local stack — customer change requests", () => {
   test(`${LOCAL_PERSONAS.dave.email} sees CHG-FIXED-007 in Customer Approval, and only his own project's change requests`, async ({
     page,
   }) => {
+    // Every change request the list API sends the page, whatever page of it.
+    const returned: ListedChangeRequest[] = [];
+    page.on("response", async (response) => {
+      if (
+        response.request().method() !== "POST" ||
+        !response.url().includes(
+          `/projects/${EXAMPLE_CORP_PROJECT_ID}/change-requests/search`,
+        ) ||
+        !response.ok()
+      ) {
+        return;
+      }
+      const body = (await response.json().catch(() => null)) as {
+        changeRequests?: ListedChangeRequest[];
+      } | null;
+      returned.push(...(body?.changeRequests ?? []));
+    });
+
     const nav = new SideNavPage(page);
     await nav.open(EXAMPLE_CORP_PROJECT_ID);
 
@@ -109,25 +134,28 @@ test.describe("Local stack — customer change requests", () => {
       "CHG-FIXED-007 is not listed — is the stack seeded, and is the fixture still in " +
         "Customer Approval (re-run the seed to reset it)?",
     ).toHaveCount(1);
-    await expect(waiting).toContainText("Customer Approval");
+    // Customer Approval until somebody answers it. customer-change-request-approval.spec.ts
+    // answers it (Scheduled; Canceled if rejected) and runs before this file, so a
+    // seed that has already been used is accepted too: what this proves is that the
+    // fixture is listed and says where it is, not that nobody has touched it.
+    // (The state is printed right after the number; the fixture's TITLE also says
+    // "Customer Approval", so the state is read from there, not from anywhere in the row.)
+    await expect(waiting).toContainText(
+      /CHG-FIXED-007\s*(Customer Approval|Scheduled|Canceled)\b/,
+    );
 
-    // Nothing of another customer's: every listed row is one of Example Corp's
-    // fixtures, whatever else the database holds.
-    const listed = await changeRequests.listedNumbers();
+    // Nothing of another customer's: whatever else the database holds, every change
+    // request the API returned for this project is this project's.
     expect(
-      listed.length,
-      "no row numbers could be read off the list",
+      returned.length,
+      "the change request search returned nothing for the project",
     ).toBeGreaterThan(0);
-    expect(
-      await changeRequests.allRows().count(),
-      "a listed row carries no number this spec can read",
-    ).toBe(listed.length);
-    for (const number of listed) {
+    for (const changeRequest of returned) {
       expect(
-        number,
-        `${number} is listed for ${LOCAL_PERSONAS.dave.email} but is not one of ` +
-          "Example Corp's own change requests — another customer's change request leaked",
-      ).toMatch(EXAMPLE_CORP_FIXTURE);
+        changeRequest.project?.id,
+        `${changeRequest.number} was returned for ${LOCAL_PERSONAS.dave.email}'s project but ` +
+          "belongs to another one — another customer's change request leaked",
+      ).toBe(EXAMPLE_CORP_PROJECT_ID);
     }
   });
 });

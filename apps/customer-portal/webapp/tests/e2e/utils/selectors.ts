@@ -760,11 +760,14 @@ export const CHANGE_REQUEST_DECISION = {
   reviewSuccessful: "Successful",
   reviewUnsuccessful: "Unsuccessful",
   back: "Back to Change Requests",
+  /** The success banner each answer raises. Matched on the opening words, which
+   * name the answer; the rest of the sentence says where the change request went
+   * next ("... It is now scheduled.") and is the app's to reword. */
   banners: {
-    approved: "Change request approved successfully.",
-    rejected: "Change request rejected successfully.",
-    reviewSuccessful: "Change request marked as successful.",
-    reviewUnsuccessful: "Change request marked as unsuccessful.",
+    approved: /^Change request approved\./,
+    rejected: /^Change request rejected\./,
+    reviewSuccessful: /^Change request marked as successful\./,
+    reviewUnsuccessful: /^Change request marked as unsuccessful\./,
   },
 } as const;
 

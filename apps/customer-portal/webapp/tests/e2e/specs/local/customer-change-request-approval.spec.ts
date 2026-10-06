@@ -77,6 +77,14 @@ withLocalSession(test, "dave");
 const SEED_HINT =
   "Re-run the seed (docker-compose up -d migrate in the compose directory) to put the fixture back.";
 
+/** Matches a list row that is `number` in the given state. The row prints the state
+ * right after the number (with line breaks in its innerText, none in its textContent,
+ * hence `\s*`); matching the state's words anywhere in the row would also match the
+ * fixtures' TITLES ("E2E fixture: change in Customer Approval ..."). */
+function rowInState(number: string, state: string): RegExp {
+  return new RegExp(`${number}\\s*${state}\\b`);
+}
+
 /**
  * Opens the project's change request list and the detail page of one fixture,
  * SKIPPING the test when the fixture is not waiting in the state it needs.
@@ -100,7 +108,7 @@ async function openFixture(
     `${number} is not listed for ${LOCAL_PERSONAS.dave.email}: is the stack seeded? ${SEED_HINT}`,
   ).toHaveCount(1);
   test.skip(
-    !(await row.innerText()).includes(waitingState),
+    !rowInState(number, waitingState).test(await row.innerText()),
     `${number} is no longer in ${waitingState} (an earlier run answered it). ${SEED_HINT}`,
   );
 
@@ -144,9 +152,10 @@ test.describe("Local stack — a customer answers a change request", () => {
     // The list a customer goes back to agrees.
     await detail.backButton().click();
     const list = new ChangeRequestsPage(page);
-    await expect(list.rowByNumber("CHG-FIXED-007")).toContainText("Scheduled", {
-      timeout: 60_000,
-    });
+    await expect(list.rowByNumber("CHG-FIXED-007")).toContainText(
+      rowInState("CHG-FIXED-007", "Scheduled"),
+      { timeout: 60_000 },
+    );
 
     // erin was asked too. dave's answer settled it: she finds nothing to answer.
     const erin = localSessionName("erin");
@@ -195,8 +204,9 @@ test.describe("Local stack — a customer answers a change request", () => {
 
     await detail.backButton().click();
     const list = new ChangeRequestsPage(page);
-    await expect(list.rowByNumber("CHG-FIXED-008")).toContainText("Closed", {
-      timeout: 60_000,
-    });
+    await expect(list.rowByNumber("CHG-FIXED-008")).toContainText(
+      rowInState("CHG-FIXED-008", "Closed"),
+      { timeout: 60_000 },
+    );
   });
 });

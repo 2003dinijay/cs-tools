@@ -68,8 +68,8 @@ export class ChangeRequestDetailPage {
   }
 
   /** The success banner a decision raises. */
-  banner(message: string): Locator {
-    return this.page.getByText(message, { exact: true });
+  banner(message: RegExp | string): Locator {
+    return this.page.getByText(message);
   }
 
   /**
