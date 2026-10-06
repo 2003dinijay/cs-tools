@@ -15,7 +15,7 @@
 // under the License.
 
 // "Home" navigates to /cases -- the CSM cases list, which is also what the
-// Sales/SA "Cases" nav item opens.
+// viewer's "Cases" nav item opens.
 import { Box, Button, Tooltip } from "@wso2/oxygen-ui";
 import { ChevronRightIcon, HomeIcon } from "@wso2/oxygen-ui-icons-react";
 import { useNavigate } from "react-router";

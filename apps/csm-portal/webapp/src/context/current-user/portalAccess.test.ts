@@ -60,10 +60,10 @@ describe("getPortalAccess", () => {
     }
   });
 
-  // The role set a Sales/SA staff member holds: viewer reads, worknote_creator
+  // The role set a viewer holds in practice: viewer reads, worknote_creator
   // is the only role that adds a comment (an internal work note), and none of
   // them is a write.
-  it("a Sales/SA role set can add internal work notes only through worknote_creator", () => {
+  it("a viewer's role set can add internal work notes only through worknote_creator", () => {
     const readers = ["viewer", "escalator", "attachment_downloader", "usage_metrics_viewer", "timecard_approver"];
     expect(getPortalAccess(readers)).toMatchObject({ canWrite: false, canAddWorkNotes: false });
     expect(getPortalAccess([...readers, "worknote_creator"])).toMatchObject({

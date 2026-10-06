@@ -51,7 +51,7 @@ export interface CurrentLocationTab {
 export function useCurrentLocationTab(): CurrentLocationTab {
   const location = useLocation();
   const isCaseRoute = matchCaseLocation(location.pathname) !== undefined;
-  // The Sales/SA view has no dashboard (its landing is the cases list), so a
+  // The viewer view has no dashboard (its landing is the cases list), so a
   // case opened first -- a reload, bookmark or emailed link -- pins that
   // instead of the CS dashboard.
   const fallbackPathname = usePortalView() === "sales-sa" ? "/cases" : "/dashboard";

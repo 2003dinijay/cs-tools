@@ -19,7 +19,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { JSX } from "react";
 import "@testing-library/jest-dom/vitest";
 import { MemoryRouter, Route, Routes } from "react-router";
-// The Sales/SA view pins the cases list, not the CS dashboard, when a case is
+// The viewer view pins the cases list, not the CS dashboard, when a case is
 // the first page a user lands on.
 let mockView: "cs-abt" | "sales-sa" = "cs-abt";
 vi.mock("@context/current-user/usePortalView", () => ({
@@ -48,7 +48,7 @@ function renderAt(path: string) {
 }
 
 describe("useCurrentLocationTab", () => {
-  it("falls back to the cases list, not the CS dashboard, in the Sales/SA view", () => {
+  it("falls back to the cases list, not the CS dashboard, in the viewer view", () => {
     mockView = "sales-sa";
     render(
       <MemoryRouter initialEntries={["/cases/CS0001"]}>

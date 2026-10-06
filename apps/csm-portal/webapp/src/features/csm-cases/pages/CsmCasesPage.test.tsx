@@ -108,7 +108,7 @@ describe("CsmCasesPage — case-type filter visibility", () => {
   });
 });
 
-// A viewer (Sales/SA) can't open service-request or security-report records,
+// A viewer can't open service-request or security-report records,
 // and an "every type" search including security reports is rejected by the
 // backend for them -- so the list is held to plain cases for them.
 describe("CsmCasesPage — viewer is held to support cases", () => {

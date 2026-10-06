@@ -428,7 +428,6 @@ func TestAccessGuard_CreateWorkNoteIsForWorknoteCreatorsCsEngineersAndAdmins(t *
 	for _, role := range []string{
 		"test-viewer", "test-escalator", "test-attachment-downloader",
 		"test-usage-metrics-viewer", "test-timecard-approver", "test-dashboard-designer",
-		"test-sales-solutions",
 	} {
 		if status, _ := serveWithRoles(g, PermCreateWorkNote, []string{role}); status != http.StatusForbidden {
 			t.Errorf("%s must not hold PermCreateWorkNote: status = %d, want 403", role, status)
@@ -441,12 +440,12 @@ func TestAccessGuard_CreateWorkNoteIsForWorknoteCreatorsCsEngineersAndAdmins(t *
 	}
 }
 
-// TestAccessGuard_SalesSAStaffRoleSet pins the role set a Sales/SA staff member
+// TestAccessGuard_ViewerWithWorknoteCreatorRoleSet pins the role set a viewer
 // holds in practice (read-only viewer plus a few specialised read/act roles,
-// with worknote_creator the only one that adds a comment): the viewer-ish
+// with worknote_creator the only one that adds a comment): the read-only
 // roles alone cannot add a work note, adding worknote_creator can, and even
 // then nothing beyond a work note is writable.
-func TestAccessGuard_SalesSAStaffRoleSet(t *testing.T) {
+func TestAccessGuard_ViewerWithWorknoteCreatorRoleSet(t *testing.T) {
 	g := NewAccessGuard(testAccessConfig())
 	readOnlyish := []string{
 		"test-viewer", "test-escalator", "test-attachment-downloader",

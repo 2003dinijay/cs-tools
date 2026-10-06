@@ -1582,7 +1582,7 @@ describe("CsmCaseDetailPage — role-based controls", () => {
   });
 
   it("a worknote_creator has no action bar and can only add an internal work note", () => {
-    // Includes the role set a Sales/SA staff member holds: viewer plus a few
+    // Includes the role set a viewer holds in practice: viewer plus a few
     // specialised read/act roles, with worknote_creator adding the one comment.
     for (const roles of [
       ["worknote_creator"],
