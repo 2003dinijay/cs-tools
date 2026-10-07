@@ -681,4 +681,78 @@ func TestChangeRequestNoBypassIntegration_OtherDoorsAreClosedToo(t *testing.T) {
 			t.Fatalf("SetState(SCHEDULED -> IMPLEMENT) = %v, %v, want true, nil", changed, err)
 		}
 	})
+	// SetState runs the transition graph a staff PATCH obeys, before any caller is wired: a final change
+	// has no exit, no step is jumped, no approval gate is skipped. Every state by every target, with the
+	// review box ticked and not: the moves it makes are exactly the plain moves of the graph (implement,
+	// closed, canceled, rollback) that legalNextStates offers from the state, nothing else changes, and a
+	// refused write leaves the change request exactly as it was.
+	t.Run("the GitHub sync obeys the transition graph", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		gh := repository.NewGithubMutationRepository(f.scoped)
+		plain := map[string]bool{"IMPLEMENT": true, "CLOSED": true, "CANCELED": true, "ROLLBACK": true}
+		for _, review := range []bool{false, true} {
+			for _, state := range append([]string{""}, allChangeRequestStates...) {
+				if state == "CUSTOMER_APPROVAL" || state == "CUSTOMER_REVIEW" {
+					continue // the customer states are the row above
+				}
+				label := state
+				if label == "" {
+					label = "NULL"
+				}
+				want := map[string]bool{}
+				// (NULL counts as New, which offers no plain move.)
+				for _, next := range wantStaffMoves(state, review) {
+					if plain[strings.ToUpper(next)] {
+						want[strings.ToUpper(next)] = true
+					}
+				}
+				for _, target := range allChangeRequestStates {
+					if target == state || (state == "" && target == "NEW") {
+						continue
+					}
+					id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, review)
+					f.setState(id, state)
+					before := f.bypassSnapshot(id)
+					changed, err := gh.SetState(f.sys, id, target)
+					what := fmt.Sprintf("review=%v SetState(%s -> %s)", review, label, target)
+					if want[target] {
+						if err != nil || !changed {
+							t.Fatalf("%s = %v, %v, want an accepted move", what, changed, err)
+						}
+						if got := f.state(id); got != target {
+							t.Fatalf("%s: the change is now %s", what, got)
+						}
+						continue
+					}
+					var ve *apierror.ValidationError
+					if !errors.As(err, &ve) || changed {
+						t.Fatalf("%s = %v, %v, want a refusal (a 400) and no change", what, changed, err)
+					}
+					if after := f.bypassSnapshot(id); after != before {
+						t.Fatalf("%s: a refused write changed the change request:\n  before: %s\n  after:  %s", what, before, after)
+					}
+				}
+			}
+		}
+		// A value that is no state is refused before it reaches the enum cast.
+		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, false)
+		var ve *apierror.ValidationError
+		if _, err := gh.SetState(f.sys, id, "closed; DROP TABLE change_request"); !errors.As(err, &ve) {
+			t.Fatalf("SetState with a hostile state = %v, want a 400", err)
+		}
+		// The two refusals the issue named: no exit from a final state, no skipped approval gate.
+		f.setState(id, "CLOSED")
+		if _, err := gh.SetState(f.sys, id, "IMPLEMENT"); !errors.As(err, &ve) || !strings.Contains(ve.Msg, "a change request that is closed cannot be moved") {
+			t.Fatalf("SetState(CLOSED -> IMPLEMENT) = %v, want the final-state refusal", err)
+		}
+		f.setState(id, "NEW")
+		if _, err := gh.SetState(f.sys, id, "ASSESS"); !errors.As(err, &ve) || !strings.Contains(ve.Msg, "approval flow") {
+			t.Fatalf("SetState(NEW -> ASSESS) = %v, want the approval-flow refusal", err)
+		}
+		f.setState(id, "REVIEW")
+		f.execSQL(`UPDATE change_request SET customer_review_required = true WHERE id = $1`, id)
+		if _, err := gh.SetState(f.sys, id, "CLOSED"); !errors.As(err, &ve) {
+			t.Fatalf("SetState(REVIEW -> CLOSED) with the customer's review required = %v, want a refusal", err)
+		}
+	})
 }
