@@ -746,13 +746,14 @@ const snUTCDateTimeLayout = "2006-01-02T15:04:05Z"
 // value is therefore converted to the zoneless UTC layout here, the same
 // conversion the dual-write mirror makes (repository.ServiceNowPlannedTimestamp,
 // which reads an instant as PlannedTimestampForServiceNow does); a value already
-// in the zoneless layout is forwarded as it was sent. Anything else is a
-// ValidationError naming the field, never an opaque downstream pattern failure:
-// "infinity", "now", "tomorrow", a date alone, a zone name; a year outside 2000 to
-// 2100 in either layout (the range the PostgreSQL data source holds every planned
-// window to); a zoneless value with a fractional second, which Go's parser takes
-// but ServiceNow's layout has none (an RFC 3339 value with one is an instant and
-// is converted to whole seconds).
+// in the zoneless layout is forwarded as it was sent (one spelled a little
+// differently, "2030-03-01 9:00:00", is written back in the layout). Anything
+// else is a ValidationError naming the field, never an opaque downstream pattern
+// failure: "infinity", "now", "tomorrow", a date alone, a zone name; a year
+// outside 2000 to 2100 in either layout (the range the PostgreSQL data source
+// holds every planned window to); a zoneless value with a fractional second,
+// which Go's parser takes but ServiceNow's layout has none (an RFC 3339 value
+// with one is an instant and is converted to whole seconds).
 func snPlannedTimestamp(field, value string) (string, error) {
 	converted, err := repository.ServiceNowPlannedTimestamp(value)
 	switch {

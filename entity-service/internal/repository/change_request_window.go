@@ -19,6 +19,7 @@ package repository
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -163,7 +164,11 @@ var (
 //     fail downstream with an opaque pattern error; rounding it off in silence is
 //     not this API's call either. (An RFC 3339 value with a fraction is an
 //     instant, read as the PostgreSQL data source reads it, and keeps being
-//     converted to whole seconds.)
+//     converted to whole seconds.) Only a REAL fraction is refused: the parser
+//     takes other forms that are not spelled as the layout is but say a whole
+//     second all the same ("2030-03-01 9:00:00", one digit of hour; two spaces
+//     between the date and the time), and those are read, and written back in
+//     the layout, as the PostgreSQL data source reads them;
 //   - a year outside 2000 to 2100, in either layout (the range the PostgreSQL
 //     data source holds every planned window to): ErrPlannedTimestampYear.
 //
@@ -174,7 +179,11 @@ func ServiceNowPlannedTimestamp(value string) (string, error) {
 		if t, err = time.Parse(plannedTimestampZoneless, value); err != nil {
 			return "", ErrPlannedTimestampFormat
 		}
-		if t.Format(plannedTimestampZoneless) != value {
+		// The layout has no '.' and no ',', so one in a value that parsed is the
+		// separator of a fraction (which the parser takes, ".000" included). A value
+		// that merely is not spelled as the layout is ("9:00:00") is no fraction:
+		// it is read, and written back below in the layout.
+		if strings.ContainsAny(value, ".,") {
 			return "", ErrPlannedTimestampFraction
 		}
 	}

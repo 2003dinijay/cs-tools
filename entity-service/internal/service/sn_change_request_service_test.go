@@ -1081,6 +1081,12 @@ func TestSNPlannedTimestamp(t *testing.T) {
 		// The edges of the years every planned window is held to.
 		"2000-01-01 00:00:00": "2000-01-01 00:00:00",
 		"2100-12-31 23:59:59": "2100-12-31 23:59:59",
+		// Not spelled as the layout is, but no fraction (Go's parser takes a one-digit hour and more
+		// than one space): read as the PostgreSQL data source reads it and written back in the layout,
+		// not refused as a "fractional second" it does not have.
+		"2030-03-01 9:00:00":   "2030-03-01 09:00:00",
+		"2030-03-01 0:00:00":   "2030-03-01 00:00:00",
+		"2030-03-01  09:00:00": "2030-03-01 09:00:00",
 	} {
 		got, err := snPlannedTimestamp("plannedStartOn", in)
 		if err != nil {
@@ -1100,6 +1106,9 @@ func TestSNPlannedTimestamp(t *testing.T) {
 		"2030-03-01 09:00:00 UTC",   // a zone name
 		"2030-03-01 09:00:00+05:30", // an offset on the zoneless layout
 		" 2030-03-01T09:00:00Z",
+		"2030-3-01 09:00:00",   // a one-digit month: the parser does not take it (only the hour is lenient)
+		"2030-03-1 09:00:00",   // a one-digit day
+		"2030-03-01 09:00:00 ", // a trailing space
 		"",
 	} {
 		_, err := snPlannedTimestamp("plannedStartOn", in)
@@ -1126,6 +1135,7 @@ func TestSNPlannedTimestamp(t *testing.T) {
 		"2030-03-01 09:00:00.5":     format + " (whole seconds only, no fractional second)",
 		"2030-03-01 09:00:00.000":   format + " (whole seconds only, no fractional second)",
 		"1999-01-01 00:00:00.5":     format + " (whole seconds only, no fractional second)",
+		"2030-03-01 9:00:00.5":      format + " (whole seconds only, no fractional second)", // an odd spelling does not hide a real fraction
 	} {
 		got, err := snPlannedTimestamp("plannedStartOn", in)
 		var ve *apierror.ValidationError
