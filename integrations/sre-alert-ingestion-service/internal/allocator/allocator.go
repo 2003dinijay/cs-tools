@@ -57,6 +57,11 @@ type Waker interface {
 	Wake()
 }
 
+// Fallback is told about alerts that could not be stored after the last retry; *dbfallback.Client implements it.
+type Fallback interface {
+	Notify(source, requestID string, alerts []model.Alert)
+}
+
 // Config tunes the allocator; see config.toml.example.
 type Config struct {
 	QueueSize int
@@ -89,10 +94,11 @@ type submission struct {
 
 // Allocator is safe for concurrent Submit calls.
 type Allocator struct {
-	logger *slog.Logger
-	store  Store
-	waker  Waker
-	cfg    Config
+	logger   *slog.Logger
+	store    Store
+	waker    Waker
+	fallback Fallback
+	cfg      Config
 
 	mu          sync.RWMutex // guards closed against the close of queue
 	closed      bool
@@ -111,12 +117,13 @@ type Allocator struct {
 	stopAt    atomic.Int64 // unix nanos; 0 until a drain deadline is set
 }
 
-// New starts the batching goroutine. waker may be nil.
-func New(logger *slog.Logger, store Store, waker Waker, cfg Config) *Allocator {
+// New starts the batching goroutine. waker and fallback may be nil.
+func New(logger *slog.Logger, store Store, waker Waker, fallback Fallback, cfg Config) *Allocator {
 	a := &Allocator{
 		logger:      logger,
 		store:       store,
 		waker:       waker,
+		fallback:    fallback,
 		cfg:         cfg,
 		queue:       make(chan *submission, cfg.QueueSize),
 		writeSem:    make(chan struct{}, cfg.WriteConcurrency),
@@ -331,6 +338,7 @@ func (a *Allocator) writeBatch(batch []*submission, n int) {
 		for _, sub := range batch {
 			a.finish(sub, Result{Err: ErrClaimFailed})
 		}
+		a.notifyFallback(batch)
 		return
 	}
 
@@ -365,6 +373,7 @@ func (a *Allocator) writeBatch(batch []*submission, n int) {
 		for _, sub := range batch {
 			a.finish(sub, Result{Err: ErrStoreFailed})
 		}
+		a.notifyFallback(batch)
 		return
 	}
 	a.logger.Info("batch written", "alerts", n, "submissions", len(batch), "first_id", rows[0].ID,
@@ -375,6 +384,16 @@ func (a *Allocator) writeBatch(batch []*submission, n int) {
 	}
 	if a.waker != nil {
 		a.waker.Wake()
+	}
+}
+
+// notifyFallback hands a batch that was not stored to the fallback Chat space, if one is configured.
+func (a *Allocator) notifyFallback(batch []*submission) {
+	if a.fallback == nil {
+		return
+	}
+	for _, sub := range batch {
+		a.fallback.Notify(sub.source, sub.requestID, sub.alerts)
 	}
 }
 

@@ -129,7 +129,7 @@ func testConfig() Config {
 
 func newTestAllocator(t *testing.T, store *fakeStore, w Waker, cfg Config) *Allocator {
 	t.Helper()
-	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)), store, w, cfg)
+	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)), store, w, nil, cfg)
 	t.Cleanup(func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -396,7 +396,7 @@ func TestShutdown_DrainsQueueThenRejects(t *testing.T) {
 	cfg := testConfig()
 	cfg.MaxBatch = 1
 	cfg.WriteConcurrency = 1
-	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)), store, nil, cfg)
+	a := New(slog.New(slog.NewTextHandler(io.Discard, nil)), store, nil, nil, cfg)
 
 	results := make(chan error, 5)
 	for i := range 5 {
@@ -495,7 +495,7 @@ func TestQueueBytes_LimitAndRelease(t *testing.T) {
 	t.Run("shutdown", func(t *testing.T) {
 		store := newFakeStore()
 		store.insertGate = make(chan struct{})
-		a := New(slog.New(slog.NewTextHandler(io.Discard, nil)), store, nil, testConfig())
+		a := New(slog.New(slog.NewTextHandler(io.Discard, nil)), store, nil, nil, testConfig())
 		done := make(chan struct{})
 		go func() {
 			_, _ = a.Submit(context.Background(), "aws", "req", []model.Alert{big})
@@ -526,5 +526,46 @@ func TestSizeOf_SharedDescriptionCountedOnce(t *testing.T) {
 	fields := sizeOf([]model.Alert{one}) - int64(len(desc))
 	if got, want := sizeOf(batch), 3*fields+int64(len(desc)); got != want {
 		t.Errorf("sizeOf = %d, want %d (description counted once)", got, want)
+	}
+}
+
+type recordingFallback struct {
+	mu     sync.Mutex
+	alerts []model.Alert
+}
+
+func (f *recordingFallback) Notify(_, _ string, alerts []model.Alert) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.alerts = append(f.alerts, alerts...)
+}
+
+func (f *recordingFallback) count() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.alerts)
+}
+
+func TestFallback_GetsOnlyAlertsThatWereNotStored(t *testing.T) {
+	cases := map[string]struct {
+		setup func(*fakeStore)
+		want  int
+	}{
+		"stored":         {func(*fakeStore) {}, 0},
+		"insert failure": {func(s *fakeStore) { s.failInserts = -1 }, 2},
+		"claim failure":  {func(s *fakeStore) { s.claimErr = errors.New("connection refused") }, 2},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			store := newFakeStore()
+			tc.setup(store)
+			fb := &recordingFallback{}
+			a := New(slog.New(slog.NewTextHandler(io.Discard, nil)), store, nil, fb, testConfig())
+			t.Cleanup(func() { _ = a.Close(context.Background()) })
+			_, _ = a.Submit(context.Background(), "aws", "req", []model.Alert{alert("svc", "a"), alert("svc", "b")})
+			if got := fb.count(); got != tc.want {
+				t.Errorf("fallback got %d alerts, want %d", got, tc.want)
+			}
+		})
 	}
 }
