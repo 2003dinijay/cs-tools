@@ -1443,15 +1443,25 @@ function lcCustomerProposal(): BeChangeRequestDetail["customerProposal"] {
   const start = lcMs(lc.customerUpdatedOn)!;
   const plannedStart = lcMs(lc.cr.plannedStartOn);
   const plannedEnd = lcMs(lc.cr.plannedEndOn);
+  // What the backend says of Accept while the proposal waits: the words of the refusal the PATCH would give.
+  const blocked = lc.onHold
+    ? "change request is on hold; take it off hold (onHold: false) before changing its state"
+    : start <= Date.now()
+      ? `the time the customer proposed (${lcRfc3339(start)}) has already passed, so it cannot be accepted: use "Propose a different time" to ask the customer to approve another time`
+      : plannedStart === null || plannedEnd === null || plannedEnd <= plannedStart
+        ? `the planned window has no length, so the customer's proposed start cannot be applied to it: use "Propose a different time"`
+        : "";
   return {
     startOn: lc.customerUpdatedOn,
     ...(pending && plannedStart !== null && plannedEnd !== null && plannedEnd > plannedStart
       ? { endOn: lcRfc3339(start + (plannedEnd - plannedStart)) }
       : {}),
     answer,
+    ...(pending ? { proposerRecorded: !!lc.proposer } : {}),
     ...(pending && lc.proposer
       ? { proposedByName: lc.proposer.name, proposedByEmail: lc.proposer.email, proposedOn: "2030-02-01T10:00:00Z" }
       : {}),
+    ...(pending ? { canAccept: blocked === "", ...(blocked ? { acceptBlockedReason: blocked } : {}) } : {}),
   };
 }
 
@@ -1782,10 +1792,15 @@ function lcRescheduleOrCounter(patch: Record<string, unknown>): void {
     (!!win.plannedStartOn && lcMs(win.plannedStartOn) !== lcMs(lc.cr.plannedStartOn)) ||
     (!!win.plannedEndOn && lcMs(win.plannedEndOn) !== lcMs(lc.cr.plannedEndOn));
   if (pending) {
-    // "Time Change = Yes" becomes "differs from the proposal": the window MAY equal the plan (decline).
-    const proposalEnd = lcMs(lcCustomerProposal()?.endOn);
-    if (newStart === lcMs(lc.customerUpdatedOn) && (proposalEnd === null || newEnd === proposalEnd)) {
-      throw new BackendApiError(400, 'the time you are proposing is the one the customer proposed: use "Accept proposed time" instead');
+    // A window that cannot be one is refused first; then "Time Change = Yes" becomes "differs from the proposal": the window MAY equal
+    // the plan (a decline), never the customer's own time (that is Accept).
+    if (win.plannedStartOn || win.plannedEndOn) {
+      if ((newStart ?? 0) > (newEnd ?? 0)) throw new BackendApiError(400, "the planned start must not be after the planned end");
+      if (newStart === newEnd) throw new BackendApiError(400, "the planned start must not be the same as the planned end: the window must have a duration");
+      const proposalEnd = lcMs(lcCustomerProposal()?.endOn);
+      if (newStart === lcMs(lc.customerUpdatedOn) && (proposalEnd === null || newEnd === proposalEnd)) {
+        throw new BackendApiError(400, 'the time you are proposing is the one the customer proposed: use "Accept proposed time" instead');
+      }
     }
   } else if (!changed) {
     throw new BackendApiError(400, "re-scheduling requires a changed planned start or end");

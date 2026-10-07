@@ -352,13 +352,15 @@ export interface CustomerProposalProposer {
 /**
  * The proposer of a pending proposal, or `null` when it is not recorded. The backend
  * names one only while the change request's last writer is still a registered contact
- * of the project (then that writer is the proposer); after any later edit, a
- * ServiceNow user writing the date (WSO2 users do too) or a sync rewrite there is nobody
- * to name, and the page must not guess: it says the proposer is not recorded.
+ * of the project (then that writer is the proposer; `proposerRecorded` says so); after any
+ * later edit, a ServiceNow user writing the date (WSO2 users do too) or a sync rewrite there
+ * is nobody to name, and the page must not guess: it says the proposer is not recorded.
  */
 export function customerProposalProposer(
-  proposal: Pick<BeChangeRequestCustomerProposal, "proposedByName" | "proposedByEmail" | "proposedOn">,
+  proposal: Pick<BeChangeRequestCustomerProposal, "proposerRecorded" | "proposedByName" | "proposedByEmail" | "proposedOn">,
 ): CustomerProposalProposer | null {
+  // The backend's own verdict first: with `proposerRecorded: false` nobody is named, whatever else came with it.
+  if (proposal.proposerRecorded === false) return null;
   const name = proposal.proposedByName?.trim() || undefined;
   const email = proposal.proposedByEmail?.trim() || undefined;
   if (!name && !email) return null;
@@ -447,17 +449,24 @@ export function formatWindowLength(ms: number): string {
  * authority and refuses each of these in words (409 / 400); the page says so up front where it
  * can know: the change is on hold (a state change is refused), the proposed time has already
  * passed (it was valid when made; accepting it would schedule the past), or there is no planned
- * window whose length the proposal could keep.
+ * window whose length the proposal could keep. The page's own reading comes first (the proposed
+ * time can pass while the page is open, and its words are short); the backend's verdict
+ * (`canAccept: false`, with its own `acceptBlockedReason`) holds the button back for anything
+ * the page cannot tell.
  */
 export function acceptProposedTimeBlockedReason(
   cr: Pick<BeChangeRequestDetail, "onHold" | "plannedStartOn" | "plannedEndOn">,
-  proposal: Pick<BeChangeRequestCustomerProposal, "startOn">,
+  proposal: Pick<BeChangeRequestCustomerProposal, "startOn" | "canAccept" | "acceptBlockedReason">,
   nowMs: number = Date.now(),
 ): string | null {
   if (cr.onHold === true) return "This change request is on hold. Take it off hold first.";
   const start = parseBackendTimestamp(proposal.startOn);
   if (start && start.getTime() <= nowMs) return "The proposed time has passed. Propose a different time.";
   if (!plannedWindowMs(cr)) return "This change request has no planned window whose length the proposed time could keep. Propose a different time.";
+  if (proposal.canAccept === false) {
+    const said = proposal.acceptBlockedReason?.trim();
+    return said ? `${said.charAt(0).toUpperCase()}${said.slice(1)}${/[.!?]$/.test(said) ? "" : "."}` : "The backend would refuse this right now. Propose a different time.";
+  }
   return null;
 }
 

@@ -2823,15 +2823,26 @@ export interface BeChangeRequestCustomerProposal {
   endOn?: string | null;
   answer: BeCustomerProposalAnswer | string;
   /**
-   * Who proposed it and when: present only while the backend can still tell,
-   * i.e. while the change request's last writer is a registered contact of the
-   * project (then it is the proposer). Absent means "not recorded" -- a later
-   * edit, a ServiceNow user writing the date, or a sync rewrote the last writer --
-   * and the page must say so rather than guess.
+   * Whether the backend can name the proposer (present only while `answer` is `pending`): `true` while
+   * the change request's last writer is still a registered contact of its project (then that writer is
+   * the proposer); `false` when it is not knowable -- a date a WSO2 user wrote in ServiceNow, one left
+   * over from an older cycle, a proposal edited over since, or a sync rewrite. The page must then say
+   * the proposer is not recorded rather than guess. Absent on a backend that predates it: the page
+   * falls back to whether a name or an email came with it.
    */
+  proposerRecorded?: boolean | null;
+  /** Who proposed it and when: only while `pending` and `proposerRecorded` is true (never an empty guess). */
   proposedByName?: string | null;
   proposedByEmail?: string | null;
   proposedOn?: string | null;
+  /**
+   * Whether "Accept proposed time" would be accepted right now, while `pending`; when it would not,
+   * `acceptBlockedReason` says why in the words of the refusal the PATCH would give (the proposed
+   * start has passed, the change is on hold, the planned window has no length to keep). The server
+   * stays the authority: every act re-checks under the row lock.
+   */
+  canAccept?: boolean | null;
+  acceptBlockedReason?: string | null;
 }
 
 /** An approval stage seen on a change request, e.g. Assess, Authorize. */

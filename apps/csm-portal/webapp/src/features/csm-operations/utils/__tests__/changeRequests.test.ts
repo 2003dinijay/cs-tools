@@ -1304,6 +1304,20 @@ describe("a time the customer proposed (ServiceNow's customer_updated_on / confi
       expect(customerProposalProposer({ proposedByEmail: "mia@example.com" })).toEqual({ name: undefined, email: "mia@example.com", on: undefined });
     });
 
+    it("follows the backend's own verdict: proposerRecorded false names nobody, whatever else came with it; true with a name or an email names them", () => {
+      expect(
+        customerProposalProposer({ proposerRecorded: false, proposedByName: "Mia Member", proposedByEmail: "mia@example.com", proposedOn: "2030-02-01T10:00:00Z" }),
+      ).toBeNull();
+      expect(customerProposalProposer({ proposerRecorded: true, proposedByEmail: "mia@example.com" })).toEqual({
+        name: undefined,
+        email: "mia@example.com",
+        on: undefined,
+      });
+      // `true` with nothing to show is still nobody to name: the page never prints an empty guess.
+      expect(customerProposalProposer({ proposerRecorded: true })).toBeNull();
+      expect(customerProposalProposer({ proposerRecorded: null, proposedByName: "Mia Member" })).toEqual({ name: "Mia Member", email: undefined, on: undefined });
+    });
+
     it("is null when it is not recorded: no name, no email (blank counts as none), whatever 'proposedOn' says", () => {
       expect(customerProposalProposer({})).toBeNull();
       expect(customerProposalProposer({ proposedByName: "  ", proposedByEmail: "", proposedOn: "2030-02-01T10:00:00Z" })).toBeNull();
@@ -1373,6 +1387,21 @@ describe("a time the customer proposed (ServiceNow's customer_updated_on / confi
       );
       // Right now counts as passed: the backend refuses a start that is not after NOW().
       expect(acceptProposedTimeBlockedReason(PLANNED, { startOn: new Date(now).toISOString() }, now)).toMatch(/has passed/);
+    });
+
+    it("holds Accept back on the backend's own verdict too, in its words, for what the page cannot tell", () => {
+      const refused = "a proposal that the data says cannot be accepted right now";
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...PROPOSAL, canAccept: false, acceptBlockedReason: refused }, now)).toBe(
+        "A proposal that the data says cannot be accepted right now.",
+      );
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...PROPOSAL, canAccept: false, acceptBlockedReason: "Already a sentence." }, now)).toBe("Already a sentence.");
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...PROPOSAL, canAccept: false }, now)).toMatch(/would refuse this right now/);
+      // canAccept true (or absent: an older backend) never holds it back by itself.
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...PROPOSAL, canAccept: true }, now)).toBeNull();
+      // The page's own reading comes first, in its shorter words.
+      expect(acceptProposedTimeBlockedReason({ ...PLANNED, onHold: true }, { ...PROPOSAL, canAccept: false, acceptBlockedReason: refused }, now)).toBe(
+        "This change request is on hold. Take it off hold first.",
+      );
     });
 
     it("says there is no planned window to keep the length of", () => {
