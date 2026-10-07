@@ -538,11 +538,26 @@ func TestChangeRequestFlowIntegration_StaleApprovals_OldFlowRescheduleStillFinis
 	}
 	f.expect(id, "back in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	f.wantCanAnswer(id, "asked again", true, crScopeUserA1, crScopeUserA2)
+	// ...and the stale date, now that the change is back in Customer Approval, is a date that differs
+	// from the plan with no answer: it WAITS, but nobody is named as its proposer (the last writer is
+	// the CAB approver, not a contact of the project), and no customer is told it is theirs. It is
+	// WSO2's to answer -- Accept applies it, or a different time asks the customers afresh -- exactly as
+	// a date a WSO2 user wrote in ServiceNow is. (C3: a stale date on re-entry never reads as "the
+	// customer proposed".)
+	f.wantAnswer(id, "back in Customer Approval with the stale date", "pending")
+	p := f.proposalOf(id)
+	if p == nil || p.ProposerRecorded == nil || *p.ProposerRecorded {
+		t.Fatalf("customerProposal on re-entry = %+v, want a pending proposal whose proposer is not recorded", p)
+	}
+	if p.ProposedByName != nil || p.ProposedByEmail != nil || p.ProposedOn != nil {
+		t.Fatalf("a stale date on re-entry was attributed to somebody: %+v", p)
+	}
 	if _, err := f.approveAs(id, crScopeUserA1, true); err != nil {
 		t.Fatalf("the customer's approval after the old-flow re-schedule: %v", err)
 	}
 	f.expect(id, "in Scheduled", "SCHEDULED", "implement", "canceled")
 	f.wantPlanned(id, "in Scheduled", rsStart2, rsEnd2)
+	f.wantAnswer(id, "in Scheduled with the stale date", "unanswered")
 }
 
 // (e, continued) Re-schedule on an Emergency change and a Standard one: the same --
