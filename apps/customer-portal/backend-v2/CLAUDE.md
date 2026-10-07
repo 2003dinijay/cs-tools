@@ -145,6 +145,18 @@ persist-reply-and-auto-resolve pattern is replicated in `SendConversationMessage
 messages — no recommendations call there; KB recommendations are attached only on a conversation's
 first message) and in `websocket.go`'s `handleMessage`.
 
+**The agent's `<thinking>` reasoning is removed before an answer leaves this backend.** The agent can
+put its reasoning inside the answer text as `<thinking>…</thinking>`, and an unfiltered answer would
+reach the browser and be stored as the conversation comment (which the CSM portal then renders too).
+`aichatagent.StripThinkingBlocks` (`internal/aichatagent/thinking.go`) removes it at the two places a
+complete answer arrives: `Client.CreateChat` (the REST turns) and the `final` event in
+`WSClient.StreamChat`, whose cleaned payload is also what the handler persists. Everything else
+`StreamChat` forwards is still verbatim, and a `final` event whose answer carried no reasoning is
+forwarded byte for byte. **Streamed `token` events are not filtered**: they can still carry the
+reasoning until the `final` event replaces them, which the webapps cover by stripping it for display
+(that fallback also covers answers stored before this existed). The webapps and the Ballerina backend
+(`ai_chat_agent:stripThinkingBlocks`) carry the same rule; keep the behaviour in step.
+
 One gap remains, flagged with a doc comment at each call site rather than worked around — do not
 build a workaround for this; wait for `entity.CreateCommentRequest` to gain the field:
 
