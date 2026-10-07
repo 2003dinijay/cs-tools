@@ -52,6 +52,10 @@ func TestChangeRequestService_PatchChangeRequest_RefusalIsNeverMirrored(t *testi
 			`state "new" cannot be set: a change request that has left New cannot return to it. Cancel it and clone it instead.`},
 		{"Request Approval with no project", domain.PatchChangeRequestRequest{State: &assess, Comment: strPtr("riding along")},
 			"approval cannot be requested: the customer's approval and/or review is required but no Customer Project is set, so there is nobody to ask. Select a Customer Project first (or clear the requirement)."},
+		{"Request Approval with nobody to ask", domain.PatchChangeRequestRequest{State: &assess},
+			"customer approval and customer review are required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first"},
+		{"ticking a box with nobody to ask", domain.PatchChangeRequestRequest{CustomerReviewRequired: boolPtr(true)},
+			"customer review is required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first"},
 		{"a malformed date", domain.PatchChangeRequestRequest{PlannedStartOn: strPtr("tomorrow")},
 			"plannedStartOn must be a valid date-time, either RFC 3339 (2030-03-01T09:00:00Z) or YYYY-MM-DD HH:MM:SS in UTC, in the years 2000 to 2100"},
 	} {

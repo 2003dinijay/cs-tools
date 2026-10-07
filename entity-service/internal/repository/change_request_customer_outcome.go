@@ -445,15 +445,8 @@ func legacyStageWouldBeProvisioned(ctx context.Context, q crQuerier, id string, 
 		return false, fmt.Errorf("customer can answer: %w", err)
 	}
 	// provisionCustomerStage provisions only when somebody other than the
-	// creator would be asked.
-	anyone := false
-	for _, m := range members {
-		if !creatorIDs[strings.ToLower(m)] {
-			anyone = true
-			break
-		}
-	}
-	if !anyone {
+	// creator would be asked (anyContactToAsk, the one definition).
+	if !anyContactToAsk(members, creatorIDs) {
 		return false, nil
 	}
 	if err := approverDecisionBlock(ctx, q, viewerID, creatorIDs, spec.kind); err != nil {

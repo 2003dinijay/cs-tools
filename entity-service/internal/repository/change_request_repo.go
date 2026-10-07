@@ -1266,6 +1266,11 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		if err := validateCreationPhaseEdits(gates, req); err != nil {
 			return "", err
 		}
+		// A box turned on after Request Approval needs somebody who can be asked
+		// (rule 4b, after the rules that need no query).
+		if err := checkTickedBoxCanBeAsked(ctx, tx, id, gates, req.CustomerApprovalRequired, req.CustomerReviewRequired); err != nil {
+			return "", err
+		}
 	}
 	linkPlan, err := planChangeRequestLinks(ctx, tx, id, req, gates)
 	if err != nil {
@@ -1559,6 +1564,13 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			// any more. The boxes and the project in effect are the request's
 			// own, else the stored ones.
 			if err := checkRequestApprovalHasProject(gates.state, approvalRequired, reviewRequired, hasProjectID(effectiveProject)); err != nil {
+				return "", err
+			}
+			// ... and with a project, it needs somebody who can be asked: the
+			// registered contacts the customer stage would ask (the same test
+			// provisionCustomerStage applies), else the change would reach Customer
+			// Approval / Customer Review with nobody to answer.
+			if err := checkRequestApprovalCanAsk(ctx, tx, id, gates.state, approvalRequired, reviewRequired, effectiveProject); err != nil {
 				return "", err
 			}
 			effectiveState = &dest

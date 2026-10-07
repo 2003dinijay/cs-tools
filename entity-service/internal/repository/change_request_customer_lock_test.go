@@ -17,6 +17,7 @@
 package repository
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -234,6 +235,99 @@ func TestCheckRequestApprovalHasProject(t *testing.T) {
 				t.Errorf("%s: err = %v, want the 400 %q", tc.name, err, changeRequestApprovalNeedsProject)
 			}
 		}
+	}
+}
+
+// The refusal's words are the API contract (openapi.yaml, the CSM webapp's Request
+// Approval note mirror them): the box(es) named, and what to do.
+func TestNobodyToAskMsg(t *testing.T) {
+	const tail = " required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first"
+	for _, tc := range []struct {
+		approval, review bool
+		want             string
+	}{
+		{true, false, "customer approval is" + tail},
+		{false, true, "customer review is" + tail},
+		{true, true, "customer approval and customer review are" + tail},
+	} {
+		if got := nobodyToAskMsg(tc.approval, tc.review); got != tc.want {
+			t.Errorf("nobodyToAskMsg(%v, %v) = %q, want %q", tc.approval, tc.review, got, tc.want)
+		}
+	}
+}
+
+// anyContactToAsk is the one definition of "somebody can be asked": a member who is
+// not one of the change's creators.
+func TestAnyContactToAsk(t *testing.T) {
+	creators := map[string]bool{"aaaa": true}
+	for _, tc := range []struct {
+		name    string
+		members []string
+		want    bool
+	}{
+		{"nobody", nil, false},
+		{"only the creator", []string{"aaaa"}, false},
+		{"the creator in another case", []string{"AAAA"}, false},
+		{"the creator and somebody else", []string{"AAAA", "bbbb"}, true},
+		{"somebody else", []string{"bbbb"}, true},
+	} {
+		if got := anyContactToAsk(tc.members, creators); got != tc.want {
+			t.Errorf("%s: anyContactToAsk = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+	if anyContactToAsk([]string{"x"}, nil) != true {
+		t.Error("a member is askable when the change has no known creator")
+	}
+}
+
+// Only a box turned ON after New is judged; unticking, resends, absent fields and
+// everything in the creation phase are not.
+func TestBoxesTurnedOnAfterNew(t *testing.T) {
+	yes, no := true, false
+	for _, tc := range []struct {
+		name             string
+		snap             changeRequestGateSnapshot
+		approval, review *bool
+		wantA, wantR     bool
+	}{
+		{"approval turned on in Assess", changeRequestGateSnapshot{state: "ASSESS"}, &yes, nil, true, false},
+		{"review turned on in Implement", changeRequestGateSnapshot{state: "IMPLEMENT"}, nil, &yes, false, true},
+		{"both turned on in Authorize", changeRequestGateSnapshot{state: "AUTHORIZE"}, &yes, &yes, true, true},
+		{"a ticked box resent", changeRequestGateSnapshot{state: "ASSESS", approvalRequired: true}, &yes, nil, false, false},
+		{"one ticked, the other turned on", changeRequestGateSnapshot{state: "ASSESS", approvalRequired: true}, &yes, &yes, false, true},
+		{"unticking is the lock's refusal", changeRequestGateSnapshot{state: "ASSESS", approvalRequired: true}, &no, nil, false, false},
+		{"an unticked box resent", changeRequestGateSnapshot{state: "ASSESS"}, &no, &no, false, false},
+		{"nothing carried", changeRequestGateSnapshot{state: "ASSESS"}, nil, nil, false, false},
+		{"New is free (Request Approval judges it)", changeRequestGateSnapshot{state: "NEW"}, &yes, &yes, false, false},
+		{"a NULL state counts as New", changeRequestGateSnapshot{state: ""}, &yes, &yes, false, false},
+	} {
+		a, r := boxesTurnedOnAfterNew(tc.snap, tc.approval, tc.review)
+		if a != tc.wantA || r != tc.wantR {
+			t.Errorf("%s: boxesTurnedOnAfterNew = %v/%v, want %v/%v", tc.name, a, r, tc.wantA, tc.wantR)
+		}
+	}
+}
+
+// The refusals that need no answer from the database never ask it: nothing ticked, no
+// project (the other rules' case), and a change beyond New for Request Approval.
+// A nil querier would panic on the first query.
+func TestNobodyToAskNeedsNoQueryWhenThereIsNothingToJudge(t *testing.T) {
+	proj := "3bbbbbbb-0000-0000-0000-000000000013"
+	if err := requireSomebodyToAsk(context.Background(), nil, "id", &proj, false, false); err != nil {
+		t.Errorf("nothing ticked: %v", err)
+	}
+	if err := requireSomebodyToAsk(context.Background(), nil, "id", nil, true, true); err != nil {
+		t.Errorf("no project: %v", err)
+	}
+	blank := "  "
+	if err := requireSomebodyToAsk(context.Background(), nil, "id", &blank, true, false); err != nil {
+		t.Errorf("a blank project: %v", err)
+	}
+	if err := checkRequestApprovalCanAsk(context.Background(), nil, "id", "ASSESS", true, true, &proj); err != nil {
+		t.Errorf("a resent Request Approval beyond New: %v", err)
+	}
+	if err := checkTickedBoxCanBeAsked(context.Background(), nil, "id", changeRequestGateSnapshot{state: "ASSESS", approvalRequired: true, projectID: &proj}, boolPtr(true), nil); err != nil {
+		t.Errorf("a box resent: %v", err)
 	}
 }
 

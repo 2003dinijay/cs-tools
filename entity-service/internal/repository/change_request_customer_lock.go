@@ -57,6 +57,17 @@ import (
 //   - Request Approval itself ({state: assess}) is refused when a box is ticked and
 //     there is no Customer Project, since the change would otherwise reach a
 //     customer stage with nobody to ask and the project could not be set again.
+//   - And it is refused when a box is ticked and the Customer Project has nobody
+//     who can be asked (customerGroupCanBeAsked: no registered portal-user
+//     contact other than the requester). With no staff action that answers for the
+//     customer the change would otherwise reach Customer Approval / Customer Review
+//     with nobody to answer, and could only be cancelled (or rolled back from
+//     Review). The add-only tick of a box after Request Approval is refused for the
+//     same reason. Only these two moments are judged: a change already beyond New
+//     is never re-judged, so a contact who is deactivated AFTER Request Approval
+//     (the residual edge) still leaves a change waiting for a contact to register,
+//     and a legacy row seeded in a customer state keeps its Cancel / Roll back /
+//     Re-schedule exits.
 //   - Corrections after New are a cancel and a clone (Clone exists); there is no
 //     administrator override.
 //
@@ -115,6 +126,21 @@ const (
 	changeRequestApprovalNeedsProject = "approval cannot be requested: the customer's approval and/or review is required but no Customer Project is set, so there is nobody to ask. Select a Customer Project first (or clear the requirement)."
 )
 
+// nobodyToAskMsg is the 400 for a customer box that is ticked (at Request Approval,
+// or turned on after it) on a Customer Project that has nobody who can be asked.
+// It names the box (or both) and says what to do. approval / review say which
+// boxes the refusal is about; at least one is true.
+func nobodyToAskMsg(approval, review bool) string {
+	what := "customer approval is"
+	switch {
+	case approval && review:
+		what = "customer approval and customer review are"
+	case review:
+		what = "customer review is"
+	}
+	return what + " required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first"
+}
+
 func customerProjectFrozenMsg(state string) string {
 	return fmt.Sprintf("projectId can no longer be changed: the Customer Project is fixed once approval has been requested (current state: %s). Cancel this change request and clone it to use another project.", lockStateName(state))
 }
@@ -167,7 +193,8 @@ func checkCustomerProjectEdit(state string, storedProject *string, requested *st
 //   - after New true -> false is refused whatever the state;
 //   - after New false -> true is refused once the box's gate is passed, with the
 //     box's existing message, and then refused when the change has no Customer
-//     Project (none can be set any more).
+//     Project (none can be set any more); whether the project has anybody to ask
+//     is a database question, so checkTickedBoxCanBeAsked judges it next.
 func checkRequirementEdit(box customerRequirementBox, state string, stored bool, requested *bool, hasProject bool) error {
 	if requested == nil || *requested == stored || changeRequestCreationPhase(state) {
 		return nil
@@ -194,6 +221,66 @@ func checkRequestApprovalHasProject(state string, approvalRequired, reviewRequir
 		return nil
 	}
 	return &apierror.ValidationError{Msg: changeRequestApprovalNeedsProject}
+}
+
+// requireSomebodyToAsk is the refusal shared by Request Approval and the add-only
+// tick of a box: the boxes named (approval / review) are required, so a customer
+// stage will be provisioned for the Customer Project, and the project must have
+// somebody who can be asked -- the very test provisionCustomerStage applies
+// (customerGroupCanBeAsked). A change with no project is not this rule's case
+// (checkRequestApprovalHasProject, needsProjectMsg own it), nor is one that needs
+// no customer step.
+func requireSomebodyToAsk(ctx context.Context, q crQuerier, workItemID string, project *string, approval, review bool) error {
+	if !(approval || review) || !hasProjectID(project) {
+		return nil
+	}
+	ok, err := customerGroupCanBeAsked(ctx, q, workItemID, strings.ToLower(strings.TrimSpace(*project)))
+	if err != nil {
+		return fmt.Errorf("patch change request: check who can be asked: %w", err)
+	}
+	if ok {
+		return nil
+	}
+	return &apierror.ValidationError{Msg: nobodyToAskMsg(approval, review)}
+}
+
+// checkRequestApprovalCanAsk is rule 7: Request Approval ({state: assess}) on a
+// change still in the creation phase is refused when a box is set (the request's
+// value, else the stored one) and the Customer Project in effect (the request's,
+// else the stored one) has nobody who can be asked. It runs after
+// checkRequestApprovalHasProject, which keeps its own message and precedence for a
+// change with no project. A resend on a change that has already left New is not
+// Request Approval and is never judged here.
+func checkRequestApprovalCanAsk(ctx context.Context, q crQuerier, workItemID, state string, approvalRequired, reviewRequired bool, project *string) error {
+	if !changeRequestCreationPhase(state) {
+		return nil
+	}
+	return requireSomebodyToAsk(ctx, q, workItemID, project, approvalRequired, reviewRequired)
+}
+
+// boxesTurnedOnAfterNew says which boxes a PATCH turns ON (false -> true) on a
+// change that has left New: the add-only edit rule 4 lets through. Unticked boxes,
+// boxes already ticked, boxes the request does not carry, and everything in the
+// creation phase are not turned on.
+func boxesTurnedOnAfterNew(snap changeRequestGateSnapshot, approvalRequired, reviewRequired *bool) (approval, review bool) {
+	if changeRequestCreationPhase(snap.state) {
+		return false, false
+	}
+	approval = approvalRequired != nil && *approvalRequired && !snap.approvalRequired
+	review = reviewRequired != nil && *reviewRequired && !snap.reviewRequired
+	return approval, review
+}
+
+// checkTickedBoxCanBeAsked is rule 4b: a box turned on after Request Approval
+// (which rule 4 let through: its gate is still ahead and the change has a
+// Customer Project) is refused when the project has nobody who can be asked, with
+// the message of Request Approval's refusal naming the box(es) turned on -- the
+// change would otherwise reach a gate nobody can answer. Only the turning-on is
+// judged: a request that leaves the boxes as they are is never re-judged, whatever
+// the project's contacts have become since.
+func checkTickedBoxCanBeAsked(ctx context.Context, q crQuerier, workItemID string, snap changeRequestGateSnapshot, approvalRequired, reviewRequired *bool) error {
+	approval, review := boxesTurnedOnAfterNew(snap, approvalRequired, reviewRequired)
+	return requireSomebodyToAsk(ctx, q, workItemID, snap.projectID, approval, review)
 }
 
 // hasProjectID reports whether a project id value is present.

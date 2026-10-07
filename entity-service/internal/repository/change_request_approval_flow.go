@@ -105,6 +105,15 @@ import (
 //	    then asks them). A legacy change that reached the state with nobody asked
 //	    gets its stage when a contact first acts (ensureCustomerStageForLegacy).
 //
+// That dead end is not produced any more by Request Approval: it is REFUSED when
+// a customer box is ticked and the project has nobody who can be asked, and so is
+// turning a box on after it (checkRequestApprovalCanAsk, checkTickedBoxCanBeAsked in
+// change_request_customer_lock.go), by asking the very test the stage provisioning
+// asks (customerGroupCanBeAsked / anyContactToAsk). What is left are the rows that
+// predate the refusal (legacy rows, seeded in a customer state) and the residual
+// edge: every registered contact deactivated AFTER Request Approval, which is not
+// built for -- a change that is beyond New is never re-judged.
+//
 // provisionCustomerStage keeps the stage in step with the change (state and
 // project contacts) and is the one place that provisions, replaces or cancels it.
 
@@ -1059,6 +1068,48 @@ func customerContactUserIDs(ctx context.Context, q crQuerier, projectID string) 
 	return ids, nil
 }
 
+// anyContactToAsk is THE definition of "somebody can be asked" for a customer
+// stage: at least one of the Customer Group's members (customerContactUserIDs:
+// the project's REGISTERED portal-user contacts whose user is active -- never an
+// invited-only or a deactivated contact) is not one of the change request's
+// creators (changeRequestCreatorUserIDs / changeRequestCreatorsForApprover: the
+// requester never approves their own change). provisionCustomerStage, the
+// read-only twin legacyStageWouldBeProvisioned and Request Approval's refusal
+// (customerGroupCanBeAsked) all ask this one function, so the refusal predicts
+// exactly the "nobody asked" outcome of the provisioning and cannot drift from it.
+func anyContactToAsk(members []string, creatorIDs map[string]bool) bool {
+	for _, m := range members {
+		if !creatorIDs[strings.ToLower(m)] {
+			return true
+		}
+	}
+	return false
+}
+
+// customerGroupCanBeAsked reports whether a customer stage of the change request
+// workItemID, provisioned now for the Customer Project projectID, would ask
+// somebody: the members the stage asks (customerContactUserIDs) and the change's
+// creators (changeRequestCreatorUserIDs), judged by anyContactToAsk -- exactly
+// what provisionCustomerStage reads. Nothing is written. A blank project has
+// nobody (the caller says that in its own words).
+func customerGroupCanBeAsked(ctx context.Context, q crQuerier, workItemID, projectID string) (bool, error) {
+	if strings.TrimSpace(projectID) == "" {
+		return false, nil
+	}
+	members, err := customerContactUserIDs(ctx, q, projectID)
+	if err != nil {
+		return false, err
+	}
+	if len(members) == 0 {
+		return false, nil
+	}
+	creatorIDs, err := changeRequestCreatorUserIDs(ctx, q, workItemID)
+	if err != nil {
+		return false, err
+	}
+	return anyContactToAsk(members, creatorIDs), nil
+}
+
 // stageApproverUserIDs lists every approver (whatever their status) of a stage.
 func stageApproverUserIDs(ctx context.Context, q crQuerier, stageID string) ([]string, error) {
 	rows, err := q.Query(ctx, `SELECT approver_user_id::text FROM approval_stage_approver WHERE stage_id = $1`, stageID)
@@ -1598,7 +1649,10 @@ func reconcileStaleApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEm
 //   - no project, or no eligible contact: no stage and nobody is asked. There is
 //     no staff path that answers for the customer: the change can be cancelled
 //     or re-scheduled, or wait for a contact to register (a PATCH that restates
-//     the project then asks them).
+//     the project then asks them). Request Approval refuses to get a change here
+//     in the first place (customerGroupCanBeAsked asks the same question); what
+//     reaches it anyway is a legacy row or a project whose contacts all left after
+//     approval was requested.
 //
 // The stage's assignment group is NULL (the Customer Group is not a "group"
 // row); the approvals read response names it "Customer Group".
@@ -1677,17 +1731,13 @@ func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEma
 	if err != nil {
 		return false, fmt.Errorf("provision customer stage: %w", err)
 	}
-	eligible := false
-	for _, m := range members {
-		if !creatorIDs[strings.ToLower(m)] {
-			eligible = true
-			break
-		}
-	}
-	if !eligible {
+	if !anyContactToAsk(members, creatorIDs) {
 		// Nobody can be asked (see the doc comment): staff can cancel or
 		// re-schedule the change but cannot answer for the customer. Say why
-		// no stage appeared.
+		// no stage appeared. Request Approval and the add-only tick of a box
+		// refuse this very case up front (customerGroupCanBeAsked), so a change
+		// that has a box ticked only gets here when its contacts went away after
+		// that, or when it is a legacy row.
 		slog.InfoContext(ctx, "customer group has no eligible approvers, customer stage not provisioned",
 			"changeRequestId", workItemID, "stage", spec.label)
 		return false, nil
