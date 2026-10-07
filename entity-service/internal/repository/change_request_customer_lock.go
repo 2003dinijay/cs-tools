@@ -46,6 +46,10 @@ import (
 //     FROZEN, for every caller, in every later state: a PATCH that changes
 //     projectId is a 400, one that resends the stored value is an accepted no-op
 //     (a client that sends the whole form back is not punished).
+//   - The change TYPE is frozen with the project: it decides the whole approval flow, so once
+//     Request Approval has chosen it a different type is a 400 and the stored one again an
+//     accepted no-op (checkChangeTypeEdit). A Standard change has no approval stage to lock
+//     it by, which is why the state, not the stage count, is the rule.
 //   - After New a box is ADD-ONLY: false -> true is allowed until the gate the box
 //     controls is passed (approvalRequirementEditable / reviewRequirementEditable),
 //     and only on a change that has a Customer Project (none can be set any more);
@@ -289,10 +293,10 @@ func hasProjectID(project *string) bool {
 }
 
 // changeRequestPatchNeedsGate reports whether the request carries anything the
-// creation-phase gate judges: the state, the project, either box, or any
+// creation-phase gate judges: the state, the project, the type, either box, or any
 // deployment field.
 func changeRequestPatchNeedsGate(req domain.PatchChangeRequestRequest) bool {
-	return req.State != nil || req.ProjectID != nil ||
+	return req.State != nil || req.ProjectID != nil || req.Type != nil ||
 		req.CustomerApprovalRequired != nil || req.CustomerReviewRequired != nil ||
 		req.DeploymentIDs != nil || req.DeploymentProductIDs != nil ||
 		req.DeploymentID != nil || req.DeployedProductID != nil
@@ -310,7 +314,35 @@ func validateCreationPhaseEdits(snap changeRequestGateSnapshot, req domain.Patch
 	if err := checkCustomerProjectEdit(snap.state, snap.projectID, req.ProjectID); err != nil {
 		return err
 	}
+	if err := checkChangeTypeEdit(snap, req.Type); err != nil {
+		return err
+	}
 	return validateCustomerGateEdits(snap, req.CustomerApprovalRequired, req.CustomerReviewRequired)
+}
+
+// changeTypeFrozenMsg is the 400 for a change of the change TYPE after Request
+// Approval (rule 2b).
+func changeTypeFrozenMsg(state string) string {
+	return fmt.Sprintf("type can no longer be changed: the change type decides the approval flow, which is fixed once approval has been requested (current state: %s). Cancel this change request and clone it to use another type.", lockStateName(state))
+}
+
+// checkChangeTypeEdit is rule 2b: the change TYPE is editable only in the creation
+// phase, like the Customer Project. The type decides the whole approval flow (Standard:
+// none; Normal: peer then CAB; Emergency: CAB only), so once the change has left New --
+// Request Approval has chosen its flow -- a type other than the stored one is a 400; the
+// stored type again (a client that resends the whole form) is an accepted no-op. Until
+// now only an approval-stage COUNT locked the type (patchChangeRequestTx still checks it,
+// as a second line), which left a Standard change -- it has no stage at all -- free to be
+// re-typed after Request Approval. A type with no change_model label is not the stored one
+// either.
+func checkChangeTypeEdit(snap changeRequestGateSnapshot, requested *domain.ChangeRequestType) error {
+	if requested == nil || changeRequestCreationPhase(snap.state) {
+		return nil
+	}
+	if model, ok := changeRequestTypeToChangeModel[*requested]; ok && snap.model != "" && strings.EqualFold(model, snap.model) {
+		return nil
+	}
+	return &apierror.ValidationError{Msg: changeTypeFrozenMsg(snap.state)}
 }
 
 // lockChangeRequestForPatch is the first thing a PATCH that carries a state, a

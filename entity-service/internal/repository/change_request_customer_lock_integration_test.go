@@ -888,3 +888,97 @@ func TestChangeRequestLockIntegration_APatchAndADecisionDoNotDeadlock(t *testing
 	}
 	f.expect(id, "after the PATCH", "CANCELED")
 }
+
+// The change TYPE is locked by state, like the Customer Project and the two boxes: free in New,
+// and once Request Approval has chosen the approval flow a different type is a 400 in every later
+// state, while the stored type again (a whole-form resend) is accepted. The lock used to be the
+// COUNT of approval stages, which a Standard change never has -- it could be re-typed after Request
+// Approval, into a flow whose stages it never got.
+func TestChangeRequestLockIntegration_TheTypeIsFrozenAfterNew(t *testing.T) {
+	typeMsg := func(state string) string {
+		return "type can no longer be changed: the change type decides the approval flow, which is fixed once approval has been requested (current state: " +
+			strings.ToLower(state) + "). Cancel this change request and clone it to use another type."
+	}
+	types := []domain.ChangeRequestType{domain.ChangeRequestTypeStandard, domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeEmergency}
+	for _, state := range []string{"", "NEW", "ASSESS", "AUTHORIZE", "CUSTOMER_APPROVAL", "SCHEDULED", "IMPLEMENT", "REVIEW", "CUSTOMER_REVIEW", "CLOSED", "CANCELED", "ROLLBACK"} {
+		for _, stored := range types {
+			state, stored := state, stored
+			name := state
+			if name == "" {
+				name = "NULL"
+			}
+			t.Run(name+"/"+string(stored), func(t *testing.T) {
+				f := newCustomerGroupFlow(t)
+				id := f.createWithProject(stored, sp(crScopeProjectA), false, false)
+				f.setState(id, state)
+				storedModel := func() string {
+					var m string
+					if err := f.scoped.QueryRow(f.sys, `SELECT change_model::text FROM change_request WHERE id = $1`, id).Scan(&m); err != nil {
+						t.Fatalf("read the change model: %v", err)
+					}
+					return m
+				}
+				before := storedModel()
+				for _, other := range types {
+					if other == stored {
+						continue
+					}
+					_, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &other, Title: sp("must not be written")})
+					if state == "" || state == "NEW" {
+						// The creation phase: free (a NULL state counts as New).
+						if err != nil {
+							t.Fatalf("re-typing to %s in %s: %v", other, name, err)
+						}
+						if got := storedModel(); got == before {
+							t.Fatalf("the type was not changed in %s", name)
+						}
+						// ...and back.
+						if _, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &stored}); err != nil {
+							t.Fatalf("re-typing back to %s in %s: %v", stored, name, err)
+						}
+						continue
+					}
+					f.wantExact("re-typing "+string(stored)+" to "+string(other)+" in "+name, err, typeMsg(state))
+					if got := storedModel(); got != before {
+						t.Fatalf("a refused re-type changed the type in %s: %s -> %s", name, before, got)
+					}
+					if got := f.subjectOf(id); got != crFlowSubject {
+						t.Fatalf("a refused re-type wrote the rest of the PATCH in %s: %q", name, got)
+					}
+				}
+				// The stored type again is no change, from every state.
+				if _, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &stored}); err != nil && state != "CLOSED" && state != "CANCELED" && state != "ROLLBACK" {
+					t.Fatalf("resending the stored type in %s: %v", name, err)
+				}
+			})
+		}
+	}
+
+	// The change the lock exists for: a Standard change after Request Approval (no stage to count).
+	t.Run("a Standard change after Request Approval, through the real flow", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		id := f.createWithProject(domain.ChangeRequestTypeStandard, sp(crScopeProjectA), false, false)
+		f.requestApproval(id)
+		f.expect(id, "after Request Approval", "SCHEDULED", "implement", "canceled")
+		if n := len(f.stages(id)); n != 0 {
+			t.Fatalf("a Standard change has %d stages, the stage-count lock never applied to it", n)
+		}
+		normal := domain.ChangeRequestTypeNormal
+		_, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &normal})
+		f.wantExact("re-typing a Standard change after Request Approval", err, typeMsg("SCHEDULED"))
+		if cr := f.get(id); cr.Type == nil || *cr.Type != string(domain.ChangeRequestTypeStandard) {
+			t.Fatalf("type = %v, want standard", cr.Type)
+		}
+	})
+	// A type with no change_model label is not the stored one either; in New it keeps its own message.
+	t.Run("an unsupported type", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, false)
+		model := domain.ChangeRequestType("model")
+		_, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &model})
+		f.wantValidationError("an unsupported type in New", err, `type "model" is not supported on the PostgreSQL data source`)
+		f.requestApproval(id)
+		_, err = f.patch(id, domain.PatchChangeRequestRequest{Type: &model})
+		f.wantExact("an unsupported type after Request Approval", err, typeMsg("ASSESS"))
+	})
+}

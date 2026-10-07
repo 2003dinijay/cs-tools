@@ -2811,7 +2811,17 @@ create: `repository.ValidateCreateChangeRequestType` is applied by both
 Postgres creates, the ServiceNow-first (dual-write) path *before* ServiceNow is
 called, the pure ServiceNow service, and the csm-portal BFF. `azure`/`infra`/…
 still exist on synced legacy rows and read back fine but cannot be chosen at
-create. The type cannot be changed by PATCH once an approval stage exists.
+create. **The type is locked by state, like the Customer Project and the two boxes** (rule 2b of
+"Customer requirements lock", `checkChangeTypeEdit`): free while the change is New (a NULL state counts
+as New), and from Request Approval on a PATCH naming a different type is a 400 `type can no longer be
+changed: the change type decides the approval flow, which is fixed once approval has been requested
+(current state: <state>). Cancel this change request and clone it to use another type.` in EVERY later
+state, while resending the stored type (a whole-form PATCH) is an accepted no-op. It used to be the COUNT
+of approval stages that locked it, which a Standard change never has (Request Approval writes no stage), so
+a Standard change could be re-typed after Request Approval; the stage-count check stays as a second line
+(`the change type cannot be changed once approval has been requested`).
+`TestChangeRequestLockIntegration_TheTypeIsFrozenAfterNew` (every state x every type, the Standard-after-Request-Approval
+case through the real flow, an unsupported type).
 
 | Type | Flow |
 |---|---|
