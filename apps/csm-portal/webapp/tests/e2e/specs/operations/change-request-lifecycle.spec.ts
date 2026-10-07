@@ -2970,6 +2970,21 @@ async function proposalWaiting(page: Page, api: FakeChangeRequestApi, detail: Ch
   await expect(detail.proposalBanner()).toBeVisible();
 }
 
+/**
+ * A picture of the page for review (previews only, never committed): written to E2E_SHOT_DIR as `<name>-<scheme>.png`, 1440 wide,
+ * in the colour scheme E2E_SHOT_SCHEME names (light, or dark by default). A no-op without the directory.
+ */
+async function proposalPicture(page: Page, name: string): Promise<void> {
+  const dir = process.env.E2E_SHOT_DIR?.trim();
+  if (!dir) return;
+  const scheme = process.env.E2E_SHOT_SCHEME === "light" ? "light" : "dark";
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.emulateMedia({ colorScheme: scheme });
+  fs.mkdirSync(dir, { recursive: true });
+  await page.waitForTimeout(600); // a dialog fades in, a theme repaints: wait it out
+  await page.screenshot({ path: path.join(dir, `${name}-${scheme}.png`) });
+}
+
 test.describe("change request approval flow — a customer's proposed time (mocked backend)", () => {
   test.describe.configure({ timeout: 240_000 });
 
@@ -2998,6 +3013,7 @@ test.describe("change request approval flow — a customer's proposed time (mock
     await expect(banner).toContainText(PROPOSED_WINDOW_TEXT);
     await expect(banner).toContainText("Same length as the planned window (2 hours)");
     await expect(banner).toContainText("Proposed by Mia Member (mia.member@acme.example)");
+    await proposalPicture(page, "01-banner-proposer-known");
     await expect(detail.acceptProposedTimeButton()).toHaveClass(/MuiButton-contained/);
     await expect(detail.proposeDifferentTimeButton()).toHaveClass(/MuiButton-outlined/);
     // The bar's own outlined action is the counter now: no Re-schedule, no bypass, Cancel is all the menu holds.
@@ -3019,6 +3035,7 @@ test.describe("change request approval flow — a customer's proposed time (mock
     await expect(detail.acceptDialog()).toContainText("The change will be scheduled for");
     await expect(detail.acceptDialog()).toContainText("The customer sees that you accepted it and is not asked again. No CAB approval is needed.");
     await expect(detail.acceptDialog().getByRole("checkbox")).toHaveCount(0); // the proposer is on record
+    await proposalPicture(page, "02-accept-dialog-proposer-known");
     expect(api.state()).toBe("customer_approval"); // nothing is sent before the engineer confirms
     await detail.acceptDialogConfirm().click();
 
@@ -3043,6 +3060,7 @@ test.describe("change request approval flow — a customer's proposed time (mock
     expect(api.customerApproved()).toBe(false);
     await expect(detail.overviewCell("Customer approved")).toContainText("Proposed time accepted");
     await expect(detail.overviewCell("Customer approved")).not.toHaveText(/\bNo\b/);
+    await proposalPicture(page, "06-after-accept-scheduled");
     await expect(detail.proposalBanner()).toHaveCount(0);
     await expect(detail.proposalWaitingReason()).toHaveCount(0);
     await expect(detail.blockingReason()).toHaveCount(0);
@@ -3063,6 +3081,7 @@ test.describe("change request approval flow — a customer's proposed time (mock
     await expect(detail.counterDialog()).toContainText("No CAB approval is needed.");
     // Prefilled with the PLANNED window; the submit says what it does.
     await expect(detail.counterSubmit("Decline proposed time")).toBeEnabled();
+    await proposalPicture(page, "03-counter-dialog-decline");
     await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START, detail.counterDialog());
     await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END, detail.counterDialog());
     await detail.counterSubmit("Propose this time").click();
@@ -3135,12 +3154,14 @@ test.describe("change request approval flow — a customer's proposed time (mock
     await proposalWaiting(page, api, detail, false);
     await expect(detail.proposalBanner()).toContainText("The proposer is not recorded.");
     await expect(detail.proposalBanner()).not.toContainText("Proposed by Mia");
+    await proposalPicture(page, "04-banner-proposer-not-recorded");
     await expect(detail.acceptProposedTimeButton()).toHaveClass(/MuiButton-outlined/);
     await expect(detail.proposeDifferentTimeButton()).toHaveClass(/MuiButton-outlined/);
 
     await detail.acceptProposedTimeButton().click();
     await expect(detail.acceptDialog()).toContainText("The proposer is not recorded.");
     await expect(detail.acceptDialogConfirm()).toBeDisabled();
+    await proposalPicture(page, "05-accept-dialog-proposer-not-recorded");
     await detail.acceptDialog().getByRole("checkbox", { name: "I have checked that the customer proposed this time." }).check();
     await expect(detail.acceptDialogConfirm()).toBeEnabled();
     await detail.acceptDialogConfirm().click();
