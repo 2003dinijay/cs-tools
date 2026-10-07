@@ -83,8 +83,8 @@ function makeChangeRequest(overrides: Record<string, unknown> = {}) {
     product: null,
     assignedEngineer: null,
     assignedTeam: null,
-    startDate: "2026-06-10T04:30:00Z",
-    endDate: "2026-06-10T06:30:00Z",
+    startDate: "2026-06-10T10:00:00Z",
+    endDate: "2026-06-10T12:00:00Z",
     createdOn: "2026-01-01",
     updatedOn: "2026-01-02",
     hasCustomerApproved: false,
@@ -109,7 +109,7 @@ function renderPage() {
 const button = (name: string) => screen.queryByRole("button", { name });
 
 /** The window makeChangeRequest shows, as an answer names it (the schedule the customer saw). */
-const SHOWN = { expectedPlannedStartOn: "2026-06-10T04:30:00Z", expectedPlannedEndOn: "2026-06-10T06:30:00Z" };
+const SHOWN = { expectedPlannedStartOn: "2026-06-10T10:00:00Z", expectedPlannedEndOn: "2026-06-10T12:00:00Z" };
 
 describe("ChangeRequestDetailsPage", () => {
   beforeEach(() => {
@@ -161,7 +161,7 @@ describe("ChangeRequestDetailsPage", () => {
 
   describe("a time the customer proposed", () => {
     const proposal = (answer: string, extra: object = {}) => ({
-      startDate: "2026-06-12T04:30:00Z",
+      startDate: "2026-06-12T10:00:00Z",
       answer,
       ...extra,
     });
@@ -171,7 +171,7 @@ describe("ChangeRequestDetailsPage", () => {
 
     describe("waiting for WSO2", () => {
       it("says so, with the proposed start, to the customer who proposed it, and keeps every answer on offer", () => {
-        mocks.changeRequest.value = asked(proposal("pending", { endDate: "2026-06-12T06:30:00Z", proposedByViewer: true }));
+        mocks.changeRequest.value = asked(proposal("pending", { endDate: "2026-06-12T12:00:00Z", proposedByViewer: true }));
         renderPage();
         const waiting = screen.getByRole("status");
         expect(waiting).toHaveAttribute("id", "cr-proposal-waiting-note");
@@ -294,8 +294,8 @@ describe("ChangeRequestDetailsPage", () => {
       beforeEach(() => {
         mocks.changeRequest.value = makeChangeRequest({
           state: STATES.scheduled,
-          startDate: "2026-06-12T04:30:00Z",
-          endDate: "2026-06-12T06:30:00Z",
+          startDate: "2026-06-12T10:00:00Z",
+          endDate: "2026-06-12T12:00:00Z",
           customerCanAnswer: false,
           hasCustomerApproved: false,
           customerProposal: proposal("agreed"),
@@ -443,7 +443,7 @@ describe("ChangeRequestDetailsPage", () => {
       mocks.changeRequest.value = makeChangeRequest({
         state: STATES.approval,
         customerCanAnswer: true,
-        startDate: "2026-06-10T04:30:00Z",
+        startDate: "2026-06-10T10:00:00Z",
         endDate: undefined,
       });
       renderPage();
@@ -451,7 +451,7 @@ describe("ChangeRequestDetailsPage", () => {
       await waitFor(() => expect(mocks.showSuccess).toHaveBeenCalledTimes(1));
       expect(mocks.mutateAsync).toHaveBeenCalledWith({
         isCustomerApproved: true,
-        expectedPlannedStartOn: "2026-06-10T04:30:00Z",
+        expectedPlannedStartOn: "2026-06-10T10:00:00Z",
       });
     });
 
@@ -705,8 +705,8 @@ describe("ChangeRequestDetailsPage", () => {
     describe("a change request with no window to move", () => {
       it.each([
         ["no start and no end", { startDate: "", endDate: "" }],
-        ["no end", { startDate: "2026-06-10T04:30:00Z", endDate: "" }],
-        ["an end that is not after the start", { startDate: "2026-06-10T06:30:00Z", endDate: "2026-06-10T04:30:00Z" }],
+        ["no end", { startDate: "2026-06-10T10:00:00Z", endDate: "" }],
+        ["an end that is not after the start", { startDate: "2026-06-10T12:00:00Z", endDate: "2026-06-10T10:00:00Z" }],
       ])("switches Propose New Time off, and says why, with %s; answering stays possible", (_name, window) => {
         mocks.changeRequest.value = makeChangeRequest({ state: STATES.approval, customerCanAnswer: true, ...window });
         renderPage();
