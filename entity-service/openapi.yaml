@@ -19976,8 +19976,7 @@ components:
             request's project, its own creator, a user who may not decide an internal
             stage, or a field a customer may not set). The list grows, so this is
             deliberately not a closed enum: a value not listed here is a newer server's.
-          examples:
-            - change_request_on_hold
+          example: change_request_on_hold
 
     SearchTaskSlasRequest:
       type: object
