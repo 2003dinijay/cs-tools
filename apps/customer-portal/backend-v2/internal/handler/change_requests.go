@@ -65,6 +65,13 @@ const (
 	errMsgCustomerPatchExpected = "expectedPlannedStartOn and expectedPlannedEndOn go with isCustomerApproved or isCustomerReviewed only."
 )
 
+// errMsgStaffPatchExpected is the 400 of PATCH /change-requests/{id} served at the
+// staff level (see PatchChangeRequest) for a body that names the planned window a
+// customer's answer was given for. That window is a precondition of the
+// customer's own answer, which no staff action gives, so on a staff body it could
+// only be a check that would never run: it is refused rather than dropped.
+const errMsgStaffPatchExpected = "expectedPlannedStartOn and expectedPlannedEndOn go with a customer's own answer (isCustomerApproved or isCustomerReviewed), which staff cannot give; remove them from this request."
+
 // NewChangeRequestHandler creates a ChangeRequestHandler backed by the given entity client.
 func NewChangeRequestHandler(entity entityChangeRequestClient) *ChangeRequestHandler {
 	return &ChangeRequestHandler{entity: entity, now: time.Now}
@@ -184,7 +191,11 @@ func (h *ChangeRequestHandler) GetChangeRequest(w http.ResponseWriter, r *http.R
 // this handler honours as much of the body as the level they came in at:
 //
 //   - ActionUpdate (admin / agent / internal): the full customer-safe field set
-//     of dto.ChangeRequestUpdateRequest, as before.
+//     of dto.ChangeRequestUpdateRequest, as before. Keys outside that set are
+//     dropped by the decode (state, assignedTeamId, ...); the one exception is the
+//     expected window of a customer's answer, which a staff body can never carry
+//     and is refused with a 400 (errMsgStaffPatchExpected) rather than dropped,
+//     because dropping it would silently lose a check the caller asked for.
 //   - ActionDecide only (customer / partner roles): the customer's own answer
 //     and nothing else -- see patchChangeRequestAsCustomer.
 //
@@ -217,6 +228,10 @@ func (h *ChangeRequestHandler) PatchChangeRequest(w http.ResponseWriter, r *http
 	var req dto.ChangeRequestUpdateRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
+		return
+	}
+	if req.HasExpectedWindow() {
+		writeError(w, http.StatusBadRequest, errMsgStaffPatchExpected)
 		return
 	}
 	if req == (dto.ChangeRequestUpdateRequest{}) {

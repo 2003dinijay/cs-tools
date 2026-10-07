@@ -1890,14 +1890,26 @@ paths:
     patch:
       summary: Update a change request.
       description: >
-        At least one field is required. State transitions are driven through
-        isCustomerApproved/isCustomerReviewed/requestApproval, not by setting
-        state directly.
+        At least one field is required. The change request's state cannot be
+        set through this operation (a `state` key is dropped).
+        isCustomerApproved and isCustomerReviewed are the customer's own answer
+        in Customer Approval / Customer Review, which moves the change request
+        on; they are the customer's alone, and no staff action records them on
+        a customer's behalf. requestApproval records that approval was
+        requested (entity-service's PostgreSQL data source sets the change
+        request's approval to REQUESTED; it moves no state).
 
 
         Two levels of access. Roles that hold the `change_requests:update`
-        permission (admin, agent, internal) may send the whole
-        ChangeRequestUpdateRequest. Customer and partner roles hold only
+        permission (admin, agent, internal) may send the edit fields and
+        requestApproval of ChangeRequestUpdateRequest; a key outside that schema
+        (state, assignedTeamId, ...) is dropped. isCustomerApproved and
+        isCustomerReviewed are the customer's answer, not an edit: from a staff
+        caller they are forwarded and entity-service refuses them (a 400, nothing
+        recorded) on its PostgreSQL data source. expectedPlannedStartOn /
+        expectedPlannedEndOn belong to a customer's answer only: on a staff body
+        they are a 400 and nothing is sent, never silently dropped. Customer and
+        partner roles hold only
         `change_requests:decide` and may send the customer's own answer or a
         proposed implementation time, nothing else: exactly one of
         isCustomerApproved (approve / reject while the change request is in
@@ -1922,10 +1934,12 @@ paths:
         still to come with a duration, on a change that is not on hold. A
         change request that was not designated to the caller is a 404 (see the
         read). A planned time is validated here first and again by
-        entity-service: RFC 3339 or "YYYY-MM-DD HH:MM:SS" (UTC), in the years
-        2000 to 2100, never `tomorrow`, `now` or `infinity` (400); a customer's
-        proposal must also be still to come and, with both bounds, start before
-        it ends (400).
+        entity-service: RFC 3339 with a zone or "YYYY-MM-DD HH:MM:SS" (UTC), in
+        the years 2000 to 2100, never `tomorrow`, `now` or `infinity` (400);
+        both layouts are accepted whichever data source entity-service runs on
+        (the ServiceNow one converts RFC 3339 to UTC "YYYY-MM-DD HH:MM:SS"
+        before forwarding it); a customer's proposal must also be still to
+        come and, with both bounds, start before it ends (400).
       operationId: patchChangeRequestsId
       parameters:
         - name: id
@@ -8021,9 +8035,13 @@ components:
 
     ChangeRequestUpdateRequest:
       description: >
-        At least one field is required. State transitions are driven through
-        isCustomerApproved/isCustomerReviewed/requestApproval, not by
-        setting state directly.
+        At least one field is required. The change request's state cannot be
+        set here (a `state` key is dropped). In Customer Approval / Customer
+        Review the change request moves on by the customer's own answer
+        (isCustomerApproved / isCustomerReviewed), which no staff action gives
+        on a customer's behalf. This is the staff-level body; the customer level
+        (PATCH, `change_requests:decide` only) is the customer's answer or a
+        proposed implementation time, see the operation.
       type: object
       properties:
         title:
@@ -8033,23 +8051,26 @@ components:
         plannedStartOn:
           type: string
           description: >-
-            A date-time, "YYYY-MM-DD HH:MM:SS" (UTC) or RFC 3339, in the years
-            2000 to 2100.
+            A date-time, "YYYY-MM-DD HH:MM:SS" (UTC) or RFC 3339 with a zone,
+            in the years 2000 to 2100. Both layouts are accepted on every data
+            source behind entity-service.
         plannedEndOn:
           type: string
           description: Same formats as plannedStartOn.
         expectedPlannedStartOn:
           type: string
           description: >-
-            Customers only, with isCustomerApproved / isCustomerReviewed: the
-            planned start the customer was shown (the detail's startDate). The
-            answer is recorded only while it is still the change's start (409
-            otherwise).
+            A CUSTOMER's answer only, with isCustomerApproved /
+            isCustomerReviewed: the planned start the customer was shown (the
+            detail's startDate). The answer is recorded only while it is still
+            the change's start (409 otherwise). On a staff body (an edit) it is
+            a 400 and nothing is sent: a staff caller gives no answer for it to
+            go with, and it is never silently dropped.
         expectedPlannedEndOn:
           type: string
           description: >-
-            Customers only, with an answer: the planned end the customer was
-            shown (the detail's endDate); see expectedPlannedStartOn.
+            A CUSTOMER's answer only: the planned end the customer was shown
+            (the detail's endDate); see expectedPlannedStartOn.
         impact:
           type: string
         type:
@@ -8068,10 +8089,24 @@ components:
           type: string
         isCustomerApproved:
           type: boolean
+          description: >-
+            The customer's own approval (true) or rejection (false) while the
+            change request is in Customer Approval: the customer level of the
+            operation. A staff caller who sends it has it forwarded and
+            refused by entity-service (a 400, nothing recorded) on its
+            PostgreSQL data source: no staff action gives it for a customer.
         isCustomerReviewed:
           type: boolean
+          description: >-
+            The customer's own confirmation (true) or failure (false) of the
+            review while the change request is in Customer Review; refused for
+            a staff caller like isCustomerApproved.
         requestApproval:
           type: boolean
+          description: >-
+            Records that approval was requested: entity-service's PostgreSQL
+            data source sets the change request's approval to REQUESTED and
+            moves no state.
 
     ChangeRequestApprover:
       type: object

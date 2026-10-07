@@ -450,7 +450,13 @@ need `decide` on exactly two routes:
 - `POST /change-requests/{id}/approvals/decision` -> `RequirePermission(..., ActionDecide)`.
 - `PATCH /change-requests/{id}` -> `RequirePermissionOneOf(..., ActionUpdate, ActionDecide)`, which
   records the level that let the request in (`middleware.GrantedActionFromContext`). At `update` the
-  handler honours `dto.ChangeRequestUpdateRequest` as before; at anything else -- including a
+  handler honours `dto.ChangeRequestUpdateRequest` as before (keys outside it, `state` and
+  `assignedTeamId` among them, are dropped by the decode) with one exception: a body that carries
+  `expectedPlannedStartOn` / `expectedPlannedEndOn` is a **400** (`errMsgStaffPatchExpected`), nothing
+  sent, because the window goes with a customer's answer, which staff cannot give -- dropping it would
+  silently lose a check the caller asked for (`TestPatchChangeRequest_StaffCannotCarryTheExpectedWindow`;
+  `null` reads as absent). `isCustomerApproved` / `isCustomerReviewed` from staff are forwarded and
+  entity-service refuses them (400) on its PostgreSQL data source; at anything else -- including a
   request that never passed through the middleware, so the restriction cannot be lost by not
   wiring it -- it decodes the body into `dto.ChangeRequestCustomerUpdateRequest` (exactly
   `isCustomerApproved`, `isCustomerReviewed`, `plannedStartOn`, `plannedEndOn`, and the answer's
@@ -506,7 +512,9 @@ silently becoming "no filter".
 **A planned time is checked here first and again upstream.** `dto.ValidatePlannedWindow` (`planned_window.go`)
 refuses, with a readable 400 and before anything is sent, a `plannedStartOn` / `plannedEndOn` (PATCH) or
 `plannedStartDate` / `plannedEndDate` (create) that is not RFC 3339 or `YYYY-MM-DD HH:MM:SS` (UTC) in the years
-2000 to 2100 -- so `tomorrow`, `now`, `infinity`, a bare date and a zone name never leave the API. A customer's
+2000 to 2100 -- so `tomorrow`, `now`, `infinity`, a bare date and a zone name never leave the API. Both
+layouts work on every data source behind entity-service (its ServiceNow service converts an RFC 3339 value to
+the zoneless UTC layout before forwarding it). A customer's
 proposal (the `PATCH` the customer level serves) is held to two more rules, the ones entity-service applies to
 it: a bound must be still to come (`h.now`, a field so a test can fix the clock) and, with both bounds, the start
 must be before the end. A staff edit and a create are checked for form and range only. The messages are

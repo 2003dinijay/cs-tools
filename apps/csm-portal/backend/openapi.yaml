@@ -13506,8 +13506,10 @@ components:
       additionalProperties: false
       description: >
         Any combination of fields may be supplied; at least one is required.
-        Omitted fields are left unchanged. isCustomerApproved, isCustomerReviewed,
-        and requestApproval are mutually exclusive: at most one may be set.
+        Omitted fields are left unchanged. isCustomerApproved and isCustomerReviewed
+        are the customer's own answer, not an edit: any value but null is refused (a
+        400, no upstream call), see each. The schema still declares that at most one of
+        isCustomerApproved, isCustomerReviewed and requestApproval may be set.
       allOf:
         - not:
             required: [isCustomerApproved, isCustomerReviewed]
@@ -13678,8 +13680,8 @@ components:
           type: boolean
           description: >-
             Transitions the change request from New to Assess and requests
-            approval. Mutually exclusive with isCustomerApproved and
-            isCustomerReviewed.
+            approval. Not combinable with isCustomerApproved or isCustomerReviewed
+            (the customer's own answer, refused for every caller of this API).
 
     PatchChangeRequestResponse:
       type: object

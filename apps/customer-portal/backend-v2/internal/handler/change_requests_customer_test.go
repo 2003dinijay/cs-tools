@@ -267,6 +267,57 @@ func TestPatchChangeRequest_StaffUnchanged(t *testing.T) {
 	}
 }
 
+// The planned window a customer's answer was given for is a precondition of the
+// customer's own answer and nothing else. A staff body can never carry one, so a
+// staff body that names it is refused with a 400 and nothing is sent: the typed
+// decode used to drop the keys, which let an edit that asked for the check succeed
+// without it (and turned a body of only those keys into "at least one field").
+func TestPatchChangeRequest_StaffCannotCarryTheExpectedWindow(t *testing.T) {
+	const want = "go with a customer's own answer (isCustomerApproved or isCustomerReviewed), which staff cannot give"
+	for _, tc := range []struct{ name, body string }{
+		{"the start beside an edit", `{"title":"new title","expectedPlannedStartOn":"2026-10-10T10:00:00Z"}`},
+		{"the end beside an edit", `{"impact":"high","expectedPlannedEndOn":"2026-10-10T12:00:00Z"}`},
+		{"both beside a window", `{"plannedStartOn":"2026-10-10 10:00:00","expectedPlannedStartOn":"2026-10-10T10:00:00Z","expectedPlannedEndOn":"2026-10-10T12:00:00Z"}`},
+		{"beside an answer (which staff cannot give either)", `{"isCustomerApproved":true,"expectedPlannedStartOn":"2026-10-10T10:00:00Z"}`},
+		{"alone", `{"expectedPlannedStartOn":"2026-10-10T10:00:00Z"}`},
+		{"spelt in another case, as the decode reads keys", `{"title":"x","EXPECTEDPLANNEDENDON":"2026-10-10T12:00:00Z"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeEntityChangeRequestClient{}
+			rec := patchAs(t, fake, middleware.ActionUpdate, tc.body)
+			if rec.Code != http.StatusBadRequest || fake.patchCalls != 0 {
+				t.Fatalf("status %d, upstream calls %d; want 400 and none (%s)", rec.Code, fake.patchCalls, rec.Body.String())
+			}
+			wantMessage(t, rec, want)
+		})
+	}
+
+	// null reads as absent, here and in entity-service: the body is an ordinary edit.
+	t.Run("null is absent", func(t *testing.T) {
+		fake := &fakeEntityChangeRequestClient{}
+		rec := patchAs(t, fake, middleware.ActionUpdate, `{"title":"x","expectedPlannedStartOn":null,"expectedPlannedEndOn":null}`)
+		if rec.Code != http.StatusOK || fake.patchCalls != 1 {
+			t.Fatalf("status %d, upstream calls %d; want 200 and 1 (%s)", rec.Code, fake.patchCalls, rec.Body.String())
+		}
+		if fake.gotPatch.ExpectedPlannedStartOn != nil || fake.gotPatch.ExpectedPlannedEndOn != nil {
+			t.Errorf("forwarded the expected window: %+v", fake.gotPatch)
+		}
+	})
+
+	// The customer level is untouched: an answer carries it through, as before.
+	t.Run("a customer's answer still carries it", func(t *testing.T) {
+		fake := &fakeEntityChangeRequestClient{}
+		rec := patchAs(t, fake, middleware.ActionDecide, `{"isCustomerApproved":true,"expectedPlannedStartOn":"2026-10-10T10:00:00Z","expectedPlannedEndOn":"2026-10-10T12:00:00Z"}`)
+		if rec.Code != http.StatusOK || fake.patchCalls != 1 {
+			t.Fatalf("status %d, upstream calls %d; want 200 and 1 (%s)", rec.Code, fake.patchCalls, rec.Body.String())
+		}
+		if fake.gotPatch.ExpectedPlannedStartOn == nil || *fake.gotPatch.ExpectedPlannedStartOn != "2026-10-10T10:00:00Z" ||
+			fake.gotPatch.ExpectedPlannedEndOn == nil || *fake.gotPatch.ExpectedPlannedEndOn != "2026-10-10T12:00:00Z" {
+			t.Errorf("forwarded %+v, want the window the customer was shown", fake.gotPatch)
+		}
+	})
+}
+
 // What the customer is told when entity-service refuses: a 409 carries its
 // readable message through, a 403 is the generic one (never upstream text), and
 // the id and body are validated before anything is sent.
