@@ -51,6 +51,9 @@ const snsConfirmTimeout = 10 * time.Second
 // dbFallbackTimeout bounds one post to the DB fallback Chat space.
 const dbFallbackTimeout = 10 * time.Second
 
+// dbFallbackDrain is the fallback Chat's own shutdown window, enough for the post in flight, one gap and the closing summary.
+const dbFallbackDrain = 5 * time.Second
+
 // dbProbeTimeout bounds GET /dbz's ping, and dbProbeEvery is how long one result is reused.
 const (
 	dbProbeTimeout = 2 * time.Second
@@ -147,7 +150,12 @@ func main() {
 			os.Exit(1)
 		}
 		fallback = chat
-		after = append(after, chat.Close)
+		// A fresh window like the raw payload flush's, so earlier drain steps can't leave it an expired context.
+		after = append(after, func(context.Context) {
+			ctx, cancel := context.WithTimeout(context.Background(), dbFallbackDrain)
+			defer cancel()
+			chat.Close(ctx)
+		})
 	}
 
 	rawPayloads := payloads.New(base.With("component", "payloads"), store, payloads.Config{

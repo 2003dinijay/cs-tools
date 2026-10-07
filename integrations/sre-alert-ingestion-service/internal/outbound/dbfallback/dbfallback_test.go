@@ -119,7 +119,7 @@ func TestNotify_PostsFailureCardThenOneReplyPerAlert(t *testing.T) {
 		{Service: "<users/all>", Severity: "Critical", MetricName: "cpu", Description: "not shown"},
 		{Service: "api", Severity: "Major", Environment: "Production"},
 	})
-	c.Close(context.Background())
+	c.wait(context.Background())
 
 	posts := cs.posts()
 	if len(posts) != 3 {
@@ -153,12 +153,12 @@ func TestNotify_OneThreadPerOutage(t *testing.T) {
 	c := newTestClient(t, cs)
 
 	c.Notify("aws", "r1", []model.Alert{{Service: "one"}})
-	c.Close(context.Background())
+	c.wait(context.Background())
 	c.Notify("aws", "r2", []model.Alert{{Service: "two"}})
-	c.Close(context.Background())
+	c.wait(context.Background())
 	c.Recovered()
 	c.Notify("aws", "r3", []model.Alert{{Service: "three"}})
-	c.Close(context.Background())
+	c.wait(context.Background())
 
 	posts := cs.posts()
 	if len(posts) != 5 {
@@ -196,13 +196,37 @@ func TestNotify_CapsPendingAndSummarisesTheRest(t *testing.T) {
 	}
 
 	c.Notify("aws", "r", nil)
-	c.Close(context.Background())
+	c.wait(context.Background())
 	posts := cs.posts()
 	if len(posts) != maxPending+2 {
 		t.Fatalf("posts = %d, want the card, %d replies and one summary", len(posts), maxPending)
 	}
 	if last := posts[len(posts)-1]; !strings.Contains(last, "50 more alert(s) not stored.") {
 		t.Errorf("last post should summarise the dropped alerts: %s", last)
+	}
+}
+
+func TestClose_SummarisesQueueAtTheUsualPace(t *testing.T) {
+	cs := newChatServer(t, ok)
+	c := newTestClient(t, cs)
+	c.gap = 100 * time.Millisecond
+	alerts := make([]model.Alert, 5)
+	for i := range alerts {
+		alerts[i] = model.Alert{Service: "svc"}
+	}
+	start := time.Now()
+	c.Notify("aws", "r", alerts)
+	c.Close(context.Background())
+
+	posts := cs.posts()
+	if len(posts) != 2 || !isParent(posts[0]) {
+		t.Fatalf("posts = %d, want the failure card and one summary instead of 5 replies", len(posts))
+	}
+	if !strings.Contains(posts[1], "5 more alert(s) not stored.") {
+		t.Errorf("summary should count every queued alert: %s", posts[1])
+	}
+	if elapsed := time.Since(start); elapsed < c.gap {
+		t.Errorf("shutdown posted after %v, before the %v gap", elapsed, c.gap)
 	}
 }
 

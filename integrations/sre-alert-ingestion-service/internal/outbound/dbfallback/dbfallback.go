@@ -85,11 +85,10 @@ type Client struct {
 	outages    int
 	parentSent bool
 	recovered  bool
-	running    bool
-	idle       *sync.Cond
-
-	stop     chan struct{}
-	stopOnce sync.Once
+	// closing makes the loop post everything still queued as one summary reply, so shutdown stays within Chat's quota.
+	closing bool
+	running bool
+	idle    *sync.Cond
 }
 
 // New returns a Client for webhookURL, which must be https since it carries the space's key and token.
@@ -121,7 +120,6 @@ func New(logger *slog.Logger, webhookURL string, timeout time.Duration) (*Client
 		host:    host,
 		http:    client,
 		gap:     sendGap,
-		stop:    make(chan struct{}),
 	}
 	c.idle = sync.NewCond(&c.mu)
 	return c, nil
@@ -159,7 +157,7 @@ func (c *Client) endThread() {
 	c.thread, c.parentSent = "", false
 }
 
-// next picks the parent card, then one reply per queued alert, then a summary of any alerts past maxPending; ok is false when nothing is left.
+// next picks the parent card, then one reply per queued alert, then a summary of any alerts past maxPending or left at shutdown; ok is false when nothing is left.
 func (c *Client) next() (msg map[string]any, alerts int, ok bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -179,6 +177,10 @@ func (c *Client) next() (msg map[string]any, alerts int, ok bool) {
 	case !c.parentSent:
 		c.parentSent = true
 		return failureCard(c.thread, time.Now()), 0, true
+	case c.closing:
+		n := len(c.pending) + c.dropped
+		c.pending, c.dropped = nil, 0
+		return summary(c.thread, n), n, true
 	case len(c.pending) > 0:
 		e := c.pending[0]
 		c.pending = c.pending[1:]
@@ -189,7 +191,7 @@ func (c *Client) next() (msg map[string]any, alerts int, ok bool) {
 	default:
 		n := c.dropped
 		c.dropped = 0
-		return reply(c.thread, fmt.Sprintf("<b>%d more alert(s) not stored.</b><br>Too many to post one by one; see the ingestion logs.", n)), n, true
+		return summary(c.thread, n), n, true
 	}
 }
 
@@ -200,19 +202,21 @@ func (c *Client) loop() {
 			return
 		}
 		c.send(msg, alerts)
-
-		t := time.NewTimer(c.gap)
-		select {
-		case <-t.C:
-		case <-c.stop:
-		}
-		t.Stop()
+		// Always waited, shutdown included, so no burst can pass Chat's per-space quota.
+		time.Sleep(c.gap)
 	}
 }
 
-// Close skips the remaining gaps so queued alerts go out now, then waits for them or ctx; used on shutdown.
+// Close posts what is still queued as one summary reply, at the usual pace, and waits for it or ctx; used on shutdown.
 func (c *Client) Close(ctx context.Context) {
-	c.stopOnce.Do(func() { close(c.stop) })
+	c.mu.Lock()
+	c.closing = true
+	c.mu.Unlock()
+	c.wait(ctx)
+}
+
+// wait blocks until nothing is queued or in flight, or ctx ends.
+func (c *Client) wait(ctx context.Context) {
 	done := make(chan struct{})
 	go func() {
 		c.mu.Lock()
@@ -317,6 +321,11 @@ func reply(thread, text string) map[string]any {
 			"card":   map[string]any{"sections": []map[string]any{{"widgets": []map[string]any{paragraph(text)}}}},
 		}},
 	}
+}
+
+// summary stands in for alerts not posted one by one; their raw bodies are in the ingestion logs.
+func summary(thread string, n int) map[string]any {
+	return reply(thread, fmt.Sprintf("<b>%d more alert(s) not stored.</b><br>Not posted one by one; see the ingestion logs.", n))
 }
 
 func paragraph(text string) map[string]any {
