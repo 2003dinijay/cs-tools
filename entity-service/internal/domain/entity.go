@@ -3903,9 +3903,9 @@ func IsCreatableChangeRequestType(t ChangeRequestType) bool {
 // from ServiceNow, so these names are the contract with that data).
 //
 //   - CABApprovalGroupName: the Change Advisory Board, the approver pool of a
-//     Normal change's second (CAB) approval stage.
-//   - ECABApprovalGroupName: the Emergency CAB, the approver pool of an
-//     Emergency change's only approval stage. A group of its own, not CAB.
+//     Normal change's second (CAB) approval stage and of an Emergency change's
+//     only approval stage (ServiceNow has no Emergency CAB: an Emergency change is
+//     approved by this same group).
 //   - PeerApprovalFallbackGroupName: the peer approval fallback group
 //     ("Devops Approval" in the ServiceNow flow). A Normal change's peer stage
 //     draws its approvers from the active internal members of the change's
@@ -3914,11 +3914,11 @@ func IsCreatableChangeRequestType(t ChangeRequestType) bool {
 //     is used. Who is experienced enough to peer-approve is decided when
 //     people are added to the group, not when the stage is provisioned.
 //
-// CAB Approval and ECAB Approval are created by migration
-// 0188_change_request_approval_groups.sql when absent.
+// CAB Approval is created by migration 0188_change_request_approval_groups.sql when
+// absent (that migration also created an "ECAB Approval" group, which nothing
+// resolves any more and which is left in place).
 const (
 	CABApprovalGroupName          = "CAB Approval"
-	ECABApprovalGroupName         = "ECAB Approval"
 	PeerApprovalFallbackGroupName = "Devops Approval"
 )
 
@@ -4980,7 +4980,7 @@ type ChangeRequestApprover struct {
 	// CanDecide is true only on the CALLING user's own approver row, and only
 	// when that row is still REQUESTED and the caller may actually decide it
 	// right now: they are not the change request's creator/requester, and (for
-	// an internal stage: peer, CAB, ECAB, review) are an active internal user,
+	// an internal stage: peer, CAB, review) are an active internal user,
 	// and the change request is in the state the row's stage belongs to (a
 	// REQUESTED row on a stage the change has moved past is false). The webapp
 	// should render

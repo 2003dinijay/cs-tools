@@ -57,7 +57,7 @@ import (
 //   - PATCH {plannedStartOn, plannedEndOn} in Customer Approval is the process
 //     diagram's "Time Change" loop started by the customer: the same Re-schedule
 //     a WSO2 user triggers with {state: authorize, ...} (new window applied, a
-//     fresh CAB / ECAB approval, the customer asked again once it is given). Only
+//     fresh CAB approval, the customer asked again once it is given). Only
 //     a contact the customer's approval has been asked of (a REQUESTED row on the
 //     live stage -- the same test as customerCanAnswer) may propose; the proposed
 //     time must be a date-time still to come.
@@ -343,7 +343,8 @@ func customerHasRequestedRow(ctx context.Context, q crQuerier, stageID, userID s
 //   - the change request is legacy (created before the cutover instant, or no
 //     cutover is configured): a change request created after it was asked
 //     through our flow, or was never meant to be seen;
-//   - it is in Customer Approval or Customer Review right now;
+//   - it is in Customer Approval or Customer Review right now, and is not an Emergency
+//     change (provisionCustomerStage gives an Emergency change no customer stage);
 //   - no live customer stage exists for that state (an existing live stage is
 //     never touched: provisionCustomerStage would cancel one whose contacts
 //     changed, which is not this function's business);
@@ -390,8 +391,9 @@ func ensureCustomerStageForLegacy(ctx context.Context, tx pgx.Tx, id, actorEmail
 // stage created and would be one of the people asked in it. It checks what
 // provisionCustomerStage checks, in the same terms, and never writes:
 //
-//   - the change request is legacy and waiting in the state spec belongs to
-//     (the caller has already seen there is no live stage);
+//   - the change request is legacy, is not an Emergency change (which is never given
+//     a customer stage) and waits in the state spec belongs to (the caller has
+//     already seen there is no live stage);
 //   - no answer was ever given on a customer stage of that kind (a decided stage
 //     is never reopened);
 //   - the viewer is one of the project's registered contacts a stage would ask
@@ -400,6 +402,10 @@ func ensureCustomerStageForLegacy(ctx context.Context, tx pgx.Tx, id, actorEmail
 func legacyStageWouldBeProvisioned(ctx context.Context, q crQuerier, id string, spec *customerStageSpec, viewerEmail string) (bool, error) {
 	legacy, state, projectID, ok, err := crVisibilityFromContext(ctx).legacyAndState(ctx, q, id)
 	if err != nil || !ok || !legacy || projectID == nil || state != spec.state {
+		return false, err
+	}
+	// An Emergency change never gets a customer stage (provisionCustomerStage).
+	if emergency, err := changeRequestIsEmergency(ctx, q, id); err != nil || emergency {
 		return false, err
 	}
 	members, err := customerContactUserIDs(ctx, q, *projectID)

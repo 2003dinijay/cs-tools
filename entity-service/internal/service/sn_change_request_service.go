@@ -818,6 +818,12 @@ func (s *snChangeRequestService) CreateChangeRequest(ctx context.Context, req do
 	if _, ok := snCRCreateTypeIDMap[*req.Type]; !ok {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("invalid type %q", *req.Type)}
 	}
+	// An Emergency change takes no customer step. The two customer boxes are not part of
+	// ServiceNow's create payload (this data source would drop them), but the refusal is
+	// the same on every create path rather than a request that is accepted and ignored.
+	if err := repository.ValidateCreateChangeRequestCustomerGates(req.Type, req.CustomerApprovalRequired, req.CustomerReviewRequired); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
 	// A change request can only ever be created at New -- see
 	// snCreateChangeRequestPayload's own doc comment for why. req.State is
 	// still accepted (rather than removed from CreateChangeRequestRequest
@@ -1659,7 +1665,7 @@ func mapSNChangeRequestDetailToView(cr snChangeRequestDetail) domain.ChangeReque
 // legalNextStates answer is the one the PostgreSQL data source gives
 // (repository.changeRequestForwardNextStates): "scheduled" is never offered,
 // from any state -- there is no Schedule action, a change becomes Scheduled when
-// its CAB (or, for Emergency, ECAB) approval is granted or, out of Customer
+// its CAB approval is granted or, out of Customer
 // Approval, when the customer approves -- and "closed" is never offered from
 // Customer Review, which only the customer's own review closes. No staff action
 // records the customer's approval or review on their behalf (a compliance rule:

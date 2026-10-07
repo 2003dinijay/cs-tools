@@ -57,7 +57,13 @@ import (
 //     necessarily has its box true, so add-only alone is what stops anything from
 //     reopening it: a Re-schedule no longer leaves Customer Approval, and an old-flow
 //     one still in flight (back in Authorize) cannot have the box unticked either, so
-//     the CAB / ECAB approval that follows still asks the same contacts.
+//     the CAB approval that follows still asks the same contacts.
+//   - An EMERGENCY change takes no customer step at all, so neither box can be set on one,
+//     in any state: a PATCH that turns one on, or that re-types a change that has one
+//     ticked into Emergency, is a 400 (checkEmergencyCustomerConsent, change_request_emergency.go).
+//     The rule judges what a request CHANGES: a write of the value a box already holds is
+//     the no-op it is everywhere here, and the flow ignores the boxes of an Emergency change
+//     whatever they say (effectiveCustomerGates).
 //   - A new REQUESTER after Request Approval is never one more person to ask about a
 //     customer gate still ahead (the requester never approves their own change): a PATCH
 //     that changes requestedById is judged with the new requester in place of the stored
@@ -331,6 +337,12 @@ func validateCreationPhaseEdits(snap changeRequestGateSnapshot, req domain.Patch
 	if err := checkChangeTypeEdit(snap, req.Type); err != nil {
 		return err
 	}
+	// Rule 2c: an Emergency change takes no customer step, so neither box can be set on
+	// one. Before the box rules below, so a tick on an Emergency change is refused for
+	// that reason and not for one the lock gives about a gate it never has.
+	if err := checkEmergencyCustomerConsent(snap, req); err != nil {
+		return err
+	}
 	return validateCustomerGateEdits(snap, req.CustomerApprovalRequired, req.CustomerReviewRequired)
 }
 
@@ -378,6 +390,8 @@ func checkRequestedByLeavesSomebodyToAsk(ctx context.Context, q crQuerier, workI
 	if req.CustomerReviewRequired != nil {
 		reviewRequired = *req.CustomerReviewRequired
 	}
+	// An Emergency change has no customer gate ahead whatever its boxes say.
+	approvalRequired, reviewRequired = effectiveCustomerGates(effectiveChangeModel(snap.model, req.Type), approvalRequired, reviewRequired)
 	approval, review := customerGatesAhead(snap.state, approvalRequired, reviewRequired)
 	return requireSomebodyToAskWith(ctx, q, workItemID, snap.projectID, approval, review, req.RequestedByID)
 }
