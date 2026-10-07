@@ -102,7 +102,10 @@ import ChangeSeverityDialog from "@features/csm-cases/components/ChangeSeverityD
 import ChangeCaseTypeDialog, {
   type CaseTypeTransferSubmission,
 } from "@features/csm-cases/components/ChangeCaseTypeDialog";
-import { hasPublicComment } from "@features/csm-cases/utils/commentContent";
+import {
+  hasPublicComment,
+  isGithubRaisedCaseNumber,
+} from "@features/csm-cases/utils/commentContent";
 import { caseTypeTransferLabel } from "@features/csm-cases/utils/caseTypeTransfer";
 import SetAutocloseHoldDialog from "@features/csm-cases/components/SetAutocloseHoldDialog";
 import EditCaseDetailsDialog, {
@@ -2089,6 +2092,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
       createdAt: data?.createdAt ?? "",
       internal: false,
       synthetic: true,
+      // A record raised from a GitHub issue has the issue body as its
+      // description: GitHub Markdown, not HTML. Without this its "### Heading"
+      // template sections render as literal text.
+      ...(isGithubRaisedCaseNumber(data?.caseNumber) && { bodyFormat: "markdown" as const }),
     };
     return [...mergedComments, synthetic];
   }, [data, descriptionEchoedInOriginComment, mergedComments]);
