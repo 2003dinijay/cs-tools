@@ -42,3 +42,26 @@ func TestSREIncidentConsumer(t *testing.T) {
 		}
 	}
 }
+
+func TestIncidentDispatchConsumer(t *testing.T) {
+	const mainGroup = "csm-notification-service"
+	sreOn := srePlan{Enabled: true, SRE: consumerTarget{"sre-events", "g"}}
+	for name, tc := range map[string]struct {
+		incidentTopic, override string
+		plan                    srePlan
+		wantTopic, wantGroup    string
+		wantOK                  bool
+	}{
+		"unset: nothing extra":                  {"", "", srePlan{}, "", "", false},
+		"same as the shared topic":              {"case-events", "", srePlan{}, "", "", false},
+		"sre-events consumer already reads it":  {"sre-events", "", sreOn, "", "", false},
+		"sre-events consumer off: own consumer": {" sre-events ", "", srePlan{}, "sre-events", mainGroup + "-incidents", true},
+		"sre-events consumer on another topic":  {"incident-events", "", sreOn, "incident-events", mainGroup + "-incidents", true},
+		"group override":                        {"sre-events", " my-group ", srePlan{}, "sre-events", "my-group", true},
+	} {
+		topic, group, ok := incidentDispatchConsumer("case-events", tc.incidentTopic, tc.override, mainGroup, tc.plan)
+		if ok != tc.wantOK || topic != tc.wantTopic || group != tc.wantGroup {
+			t.Errorf("%s: (%q, %q, %v), want (%q, %q, %v)", name, topic, group, ok, tc.wantTopic, tc.wantGroup, tc.wantOK)
+		}
+	}
+}

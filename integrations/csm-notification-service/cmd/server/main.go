@@ -656,6 +656,18 @@ func main() {
 			"dlqTopic", plan.SREDLQ.Topic, "dlqGroup", plan.SREDLQ.Group,
 			"replacesCRConsumer", !plan.StartCR, "replacesOutageConsumer", !plan.StartOutage)
 	}
+	// Incidents on their own topic (INCIDENT_EVENT_HUB_TOPIC) still reach the
+	// dispatcher. A record that exhausts its retries goes to the case DLQ,
+	// where it went while incidents shared the case topic.
+	var incidentConsumers []*eventbus.Consumer
+	if topic, group, ok := incidentDispatchConsumer(eventBusCfg.Topic, os.Getenv("INCIDENT_EVENT_HUB_TOPIC"),
+		os.Getenv("INCIDENT_CONSUMER_GROUP"), consumerGroup, plan); ok {
+		incidentCfg := eventBusCfg
+		incidentCfg.Topic = topic
+		incidentConsumers = startConsumers(ctx, "incidents", incidentCfg, group,
+			envInt("INCIDENT_CONSUMER_COUNT", 1), dispatcher.HandleShared, toDeadLetter)
+		slog.Info("incident consumer enabled", "topic", topic, "group", group)
+	}
 	// And the same for project_contact.invited: the one dispatcher routes
 	// on the envelope's Type already, and these two only ever receive the
 	// onboarding events since that is all their topic carries.
@@ -972,6 +984,9 @@ func main() {
 	for _, c := range sreDLQConsumers {
 		c.Close()
 	}
+	for _, c := range incidentConsumers {
+		c.Close()
+	}
 	for _, c := range projectConsumers {
 		c.Close()
 	}
@@ -1063,19 +1078,6 @@ func loadOnboardingConfig(steps *entity.CustomerEntityClient, emailClient *notif
 	}
 }
 
-// startConsumers starts count independent eventbus.Consumer instances, all
-// joining group and consuming cfg.Topic — Kafka's own consumer-group
-// rebalancing splits cfg.Topic's partitions across however many of them are
-// actually running, so count is a plain concurrency knob, not something this
-// function has to implement partition assignment for itself. Each instance
-// runs handle (and onExhausted, on retry exhaustion) in its own goroutine,
-// sharing ctx for shutdown.
-//
-// Before starting anything, checks cfg.Topic's real partition count and logs
-// a warning (never fails startup over this) if count exceeds it — a Kafka
-// consumer group never hands out more partitions than exist, so a consumer
-// count higher than the partition count just leaves the excess consumers
-// permanently idle rather than doing anything actively wrong.
 // sreIncidentConsumer decides whether a ladder also reads a separate incident
 // topic, and under which consumer group. Only the SRE ladder does: incidents
 // are SRE work, and the CRE ladder pages from customer cases on the shared
@@ -1092,6 +1094,37 @@ func sreIncidentConsumer(kind paging.Ladder, mainTopic, incidentTopic, groupOver
 	return topic, group, true
 }
 
+// incidentDispatchConsumer decides whether the dispatcher needs its own
+// consumer on a separate incident topic. incident.created still has a
+// dispatcher reaction (the default on-call call), so moving incidents off the
+// shared topic must not move them out of the dispatcher's reach. Nothing extra
+// when the topic is unset or the shared one, or when the sre-events consumer
+// already reads it.
+func incidentDispatchConsumer(mainTopic, incidentTopic, groupOverride, mainGroup string, plan srePlan) (topic, group string, ok bool) {
+	topic = strings.TrimSpace(incidentTopic)
+	if topic == "" || topic == mainTopic || (plan.Enabled && plan.SRE.Topic == topic) {
+		return "", "", false
+	}
+	group = strings.TrimSpace(groupOverride)
+	if group == "" {
+		group = mainGroup + "-incidents"
+	}
+	return topic, group, true
+}
+
+// startConsumers starts count independent eventbus.Consumer instances, all
+// joining group and consuming cfg.Topic — Kafka's own consumer-group
+// rebalancing splits cfg.Topic's partitions across however many of them are
+// actually running, so count is a plain concurrency knob, not something this
+// function has to implement partition assignment for itself. Each instance
+// runs handle (and onExhausted, on retry exhaustion) in its own goroutine,
+// sharing ctx for shutdown.
+//
+// Before starting anything, checks cfg.Topic's real partition count and logs
+// a warning (never fails startup over this) if count exceeds it — a Kafka
+// consumer group never hands out more partitions than exist, so a consumer
+// count higher than the partition count just leaves the excess consumers
+// permanently idle rather than doing anything actively wrong.
 func startConsumers(ctx context.Context, name string, cfg eventbus.Config, group string, count int, handle eventbus.Handle, onExhausted eventbus.OnExhausted) []*eventbus.Consumer {
 	if partitions, err := eventbus.PartitionCount(ctx, cfg); err != nil {
 		slog.Warn("failed to check partition count; skipping the consumer-count sanity check", "consumer", name, "topic", cfg.Topic, "err", err)
