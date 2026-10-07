@@ -2716,6 +2716,11 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
     // The record is shown as it is: the ECAB stage keeps its name, and there is still no Assess on the line.
     expect(within(approvalsRow("Eli Ecab")).getByText("ECAB Approval")).toBeInTheDocument();
     expect(stepReading("Assess")).toBe("Assess, not taken");
+    // The customer gate it is in is real: shown as it is, while the review it never reached reads Not applicable.
+    expect(stepLabels()).toContain("Customer Approval");
+    expect(stepLabels()).not.toContain("Customer Review");
+    expect(metaValue("Customer approval required")).toBe("Yes");
+    expect(within(screen.getByText("Customer review required").parentElement!).getByText("Not applicable")).toBeInTheDocument();
     const stagesBefore = stageNames();
 
     fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));

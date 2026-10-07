@@ -227,7 +227,7 @@ function YesNo({ value, notApplicable = false }: { value?: boolean; notApplicabl
  * because WSO2 accepted the time the customer proposed (nothing is stamped as the customer's approval
  * then: a plain "No" would mislead).
  */
-function CustomerApprovedValue({ cr }: { cr: BeChangeRequestDetail }): JSX.Element {
+function CustomerApprovedValue({ cr, notApplicable }: { cr: BeChangeRequestDetail; notApplicable: boolean }): JSX.Element {
   const display = customerApprovedDisplay(cr);
   if (display === "Proposed time accepted") {
     return (
@@ -237,7 +237,7 @@ function CustomerApprovedValue({ cr }: { cr: BeChangeRequestDetail }): JSX.Eleme
       </Box>
     );
   }
-  return <YesNo value={display === "Yes"} notApplicable={isCustomerStepNotApplicable(cr.type, display === "Yes")} />;
+  return <YesNo value={display === "Yes"} notApplicable={notApplicable} />;
 }
 
 /**
@@ -504,6 +504,10 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   const cr = data;
   // The customer's proposed time while it waits for WSO2's answer (the backend's own verdict).
   const proposal = pendingCustomerProposal(cr);
+  // An Emergency change acts without customer consent: its customer part reads "Not applicable" (a record that
+  // shows it went through a customer gate, from before that rule, is shown as it is).
+  const approvalNotApplicable = isCustomerStepNotApplicable(cr, "approval", approvalsData?.approvals);
+  const reviewNotApplicable = isCustomerStepNotApplicable(cr, "review", approvalsData?.approvals);
   // The creator can't approve/reject any stage (backend-enforced); they can
   // still cancel, which the action bar offers via `legalNextStates` as usual.
   const isCreator = isChangeRequestCreator(cr, user);
@@ -990,23 +994,16 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
                 }}
               >
                 <MetaCell label="Customer approval required">
-                  <YesNo
-                    value={cr.customerApprovalRequired}
-                    notApplicable={isCustomerStepNotApplicable(cr.type, cr.customerApprovalRequired)}
-                  />
+                  <YesNo value={cr.customerApprovalRequired} notApplicable={approvalNotApplicable} />
                 </MetaCell>
                 <MetaCell label="Customer review required">
-                  <YesNo
-                    value={cr.customerReviewRequired}
-                    notApplicable={isCustomerStepNotApplicable(cr.type, cr.customerReviewRequired)}
-                  />
+                  <YesNo value={cr.customerReviewRequired} notApplicable={reviewNotApplicable} />
                 </MetaCell>
-                <MetaCell label="Customer approved"><CustomerApprovedValue cr={cr} /></MetaCell>
+                <MetaCell label="Customer approved">
+                  <CustomerApprovedValue cr={cr} notApplicable={approvalNotApplicable} />
+                </MetaCell>
                 <MetaCell label="Customer reviewed">
-                  <YesNo
-                    value={cr.hasCustomerReviewed}
-                    notApplicable={isCustomerStepNotApplicable(cr.type, cr.hasCustomerReviewed)}
-                  />
+                  <YesNo value={cr.hasCustomerReviewed} notApplicable={reviewNotApplicable} />
                 </MetaCell>
                 <MetaCell label="Approved by"><RefText value={cr.approvedBy} /></MetaCell>
                 <MetaCell label="Approved on">

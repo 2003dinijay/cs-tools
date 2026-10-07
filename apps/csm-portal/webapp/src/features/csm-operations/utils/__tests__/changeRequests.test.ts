@@ -973,17 +973,45 @@ describe("the Emergency change type", () => {
     expect(EMERGENCY_CUSTOMER_STEPS_HELPER).toBe("Emergency changes proceed without customer approval or review.");
   });
 
-  it("treats a customer step as not applicable only on an Emergency change that does not have it", () => {
-    expect(CUSTOMER_STEP_NOT_APPLICABLE).toBe("Not applicable");
-    expect(isCustomerStepNotApplicable("emergency", false)).toBe(true);
-    expect(isCustomerStepNotApplicable("emergency", undefined)).toBe(true);
-    expect(isCustomerStepNotApplicable("emergency", null)).toBe(true);
-    // An older Emergency change that still carries the step shows it as stored.
-    expect(isCustomerStepNotApplicable("emergency", true)).toBe(false);
-    // Every other type shows Yes / No.
-    for (const type of ["normal", "standard", "model", undefined, null]) {
-      expect(isCustomerStepNotApplicable(type, false), String(type)).toBe(false);
-    }
+  describe("a customer step is not applicable to an Emergency change (the flow never asks the customer), unless the record shows it went there", () => {
+    const emergency = { type: "emergency", state: "authorize" };
+
+    it("reads Not applicable on an Emergency change, whatever its stored boxes hold", () => {
+      expect(CUSTOMER_STEP_NOT_APPLICABLE).toBe("Not applicable");
+      for (const state of ["new", "authorize", "scheduled", "implement", "review", "closed", "canceled", "rollback"]) {
+        expect(isCustomerStepNotApplicable({ type: "emergency", state }, "approval"), state).toBe(true);
+        expect(isCustomerStepNotApplicable({ type: "emergency", state }, "review"), state).toBe(true);
+      }
+    });
+
+    it("shows a step as it is when the change sits in that customer state", () => {
+      expect(isCustomerStepNotApplicable({ type: "emergency", state: "customer_approval" }, "approval")).toBe(false);
+      expect(isCustomerStepNotApplicable({ type: "emergency", state: "customer_approval" }, "review")).toBe(true);
+      expect(isCustomerStepNotApplicable({ type: "emergency", state: "customer_review" }, "review")).toBe(false);
+      expect(isCustomerStepNotApplicable({ type: "emergency", state: "customer_review" }, "approval")).toBe(true);
+    });
+
+    it("shows a step as it is when the customer's outcome is on record", () => {
+      expect(isCustomerStepNotApplicable({ ...emergency, hasCustomerApproved: true }, "approval")).toBe(false);
+      expect(isCustomerStepNotApplicable({ ...emergency, hasCustomerApproved: true }, "review")).toBe(true);
+      expect(isCustomerStepNotApplicable({ ...emergency, hasCustomerReviewed: true }, "review")).toBe(false);
+    });
+
+    it("shows a step as it is when a stage row of that gate exists, however the backend spells it", () => {
+      expect(isCustomerStepNotApplicable(emergency, "approval", [{ stage: "Customer Approval" }])).toBe(false);
+      expect(isCustomerStepNotApplicable(emergency, "approval", [{ stage: "customer_approval" }])).toBe(false);
+      expect(isCustomerStepNotApplicable(emergency, "review", [{ stage: "Customer Review" }])).toBe(false);
+      expect(isCustomerStepNotApplicable(emergency, "review", [{ stage: "Customer Approval" }])).toBe(true);
+      expect(isCustomerStepNotApplicable(emergency, "approval", [{ stage: "CAB Approval" }, { stage: "ECAB Approval" }])).toBe(true);
+      expect(isCustomerStepNotApplicable(emergency, "approval", [])).toBe(true);
+    });
+
+    it("never applies to any other type: Normal, Standard and the rest read Yes / No", () => {
+      for (const type of ["normal", "standard", "model", undefined, null]) {
+        expect(isCustomerStepNotApplicable({ type, state: "authorize" }, "approval"), String(type)).toBe(false);
+        expect(isCustomerStepNotApplicable({ type, state: "authorize" }, "review"), String(type)).toBe(false);
+      }
+    });
   });
 });
 

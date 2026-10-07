@@ -316,16 +316,27 @@ export const EMERGENCY_CUSTOMER_STEPS_HELPER = "Emergency changes proceed withou
 export const CUSTOMER_STEP_NOT_APPLICABLE = "Not applicable";
 
 /**
- * Whether a customer step (the requirement, or what the customer confirmed) is
- * not applicable to this change: it is an Emergency change and the value is not
- * set. An Emergency change raised before the rule existed can still carry a
- * ticked box, and a ticked box is shown as it is stored, never hidden.
+ * Whether a customer step -- Customer Approval or Customer Review: the requirement
+ * and what the customer confirmed -- is not applicable to this change: it is an
+ * Emergency change, which acts without customer consent (the flow ignores its two
+ * boxes), and nothing on the record shows it went through that gate. An Emergency
+ * change raised before the rule can still sit in a customer state, carry the
+ * customer's outcome or hold a stage row for the gate: then the step is shown as
+ * it is, never hidden.
+ *
+ * `approvals` is `GET /change-requests/{id}/approvals`; while it is not loaded the
+ * stage rows count for nothing, and the state and the customer's outcome speak.
  */
 export function isCustomerStepNotApplicable(
-  type: string | null | undefined,
-  value: boolean | null | undefined,
+  cr: Pick<BeChangeRequestDetail, "type" | "state" | "hasCustomerApproved" | "hasCustomerReviewed">,
+  step: "approval" | "review",
+  approvals?: readonly Pick<BeChangeRequestApproval, "stage">[],
 ): boolean {
-  return isEmergencyChangeRequestType(type) && !value;
+  if (!isEmergencyChangeRequestType(cr.type)) return false;
+  const stage = step === "approval" ? "Customer Approval" : "Customer Review";
+  const gateState = step === "approval" ? "customer_approval" : "customer_review";
+  const outcome = step === "approval" ? cr.hasCustomerApproved : cr.hasCustomerReviewed;
+  return !(cr.state === gateState || outcome === true || approvals?.some((a) => approvalStageLabel(a.stage) === stage));
 }
 
 /**

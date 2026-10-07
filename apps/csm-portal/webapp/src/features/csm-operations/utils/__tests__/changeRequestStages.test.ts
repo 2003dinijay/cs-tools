@@ -593,7 +593,7 @@ describe("an Emergency change's line: Assess is never taken (New -> Authorize, o
     expect(statuses(emergency({ state: "assess" }))).toEqual(row("d c p p p p n p n"));
   });
 
-  it("an older Emergency change still carrying the customer boxes keeps those stages on its line", () => {
+  it("an Emergency change in a customer state (raised before the rule) keeps that stage on its line, and only that one", () => {
     const nodes = buildChangeRequestLifecycle({ state: "customer_approval", type: "emergency", customerApprovalRequired: true });
     expect(nodes.map((n) => [n.key, n.status])).toEqual([
       ["new", "done"],
@@ -603,11 +603,43 @@ describe("an Emergency change's line: Assess is never taken (New -> Authorize, o
       ["scheduled", "pending"],
       ["implement", "pending"],
       ["review", "pending"],
-      ["customer_review", "pending"],
       ["rollback", "not-taken"],
       ["closed", "pending"],
       ["canceled", "not-taken"],
     ]);
+  });
+
+  it("ignores the stored boxes of an Emergency change: the flow never asks the customer, so neither stage is on the line", () => {
+    for (const flags of [{ customerApprovalRequired: true, customerReviewRequired: true }, {}, { customerApprovalRequired: undefined }]) {
+      const keys = buildChangeRequestLifecycle({ state: "authorize", type: "emergency", ...flags }).map((n) => n.key);
+      expect(keys).not.toContain("customer_approval");
+      expect(keys).not.toContain("customer_review");
+      expect(keys).toHaveLength(9);
+    }
+  });
+
+  it("keeps a customer gate the record shows an Emergency change went through: the customer's approval, or a stage row", () => {
+    expect(buildChangeRequestLifecycle({ state: "scheduled", type: "emergency", customerApproved: true }).map((n) => n.key)).toContain(
+      "customer_approval",
+    );
+    const keys = buildChangeRequestLifecycle({
+      state: "closed",
+      type: "emergency",
+      approvals: [
+        { stage: "ECAB Approval", status: "APPROVED" },
+        { stage: "Customer Approval", status: "APPROVED" },
+        { stage: "Customer Review", status: "APPROVED" },
+      ],
+    }).map((n) => n.key);
+    expect(keys).toContain("customer_approval");
+    expect(keys).toContain("customer_review");
+  });
+
+  it("a Normal change is untouched by all of this: its boxes alone decide", () => {
+    expect(buildChangeRequestLifecycle({ state: "authorize", type: "normal", customerApprovalRequired: true }).map((n) => n.key)).toContain(
+      "customer_approval",
+    );
+    expect(buildChangeRequestLifecycle({ state: "authorize", type: "normal" })).toHaveLength(11);
   });
 
   it("only Emergency skips Assess: Normal, Standard and an unknown type still pass through it", () => {
