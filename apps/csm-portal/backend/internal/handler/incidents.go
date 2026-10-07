@@ -39,6 +39,10 @@ type entityIncidentClient interface {
 	SearchIncidentActivities(ctx context.Context, id string, body []byte) ([]byte, error)
 	HandOffIncidentToSpecialist(ctx context.Context, id string, body []byte) ([]byte, error)
 	ListSpecialistHandoffTeams(ctx context.Context, serviceID string) ([]byte, error)
+	// GetUserMe resolves the caller's own platform user record — needed by
+	// the close-ownership guard in PatchIncident; see resolveCurrentUserID
+	// (cases.go), shared with CaseHandler's own identical use.
+	GetUserMe(ctx context.Context) ([]byte, error)
 }
 
 // searchIncidentsRequest mirrors the enum/format-constrained fields of the documented
@@ -557,6 +561,56 @@ func (h *IncidentHandler) PatchIncident(w http.ResponseWriter, r *http.Request) 
 	if !validateUpdateIncidentBody(body) {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
 		return
+	}
+
+	// Validate the state transition and (for a close) ownership before
+	// forwarding to the entity service — mirrors PatchCase's own shape in
+	// cases.go. One fetch of the current incident serves both checks.
+	var patch struct {
+		State *string `json:"state"`
+	}
+	patchErr := json.Unmarshal(body, &patch)
+	if patchErr == nil && patch.State != nil {
+		current, err := h.entity.GetIncident(r.Context(), id)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "entity GetIncident failed during state validation", "userID", user.UserID, "incidentID", id, "err", err)
+			mapUpstreamErrorGeneric(w, err, "Failed to update incident.")
+			return
+		}
+		var currentIncident struct {
+			State      string `json:"state"`
+			AssignedTo *struct {
+				ID string `json:"id"`
+			} `json:"assignedTo"`
+		}
+		if err := json.Unmarshal(current, &currentIncident); err != nil {
+			slog.ErrorContext(r.Context(), "failed to parse current incident state", "userID", user.UserID, "incidentID", id, "err", err)
+			writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+			return
+		}
+
+		// Scenario 3: reject an illegal from→to transition before forwarding —
+		// previously nothing server-side checked this at all (only that the
+		// target value was a legal enum member), so a direct PATCH could jump
+		// straight from NEW to CLOSED.
+		if !isValidIncidentStateTransition(currentIncident.State, *patch.State) {
+			writeError(w, http.StatusBadRequest, ErrMsgInvalidTransition)
+			return
+		}
+
+		// Scenarios 1-2: closing an incident is restricted to its own
+		// assignee, unless the caller is admin (an operational override).
+		if *patch.State == incidentStateClosed && !(h.access != nil && h.access.Permits(PermAdmin, user.Roles)) {
+			currentUserID := resolveCurrentUserID(r.Context(), h.entity, user)
+			if currentUserID == "" {
+				writeError(w, http.StatusInternalServerError, ErrMsgInternal)
+				return
+			}
+			if currentIncident.AssignedTo == nil || currentIncident.AssignedTo.ID != currentUserID {
+				writeError(w, http.StatusForbidden, ErrMsgIncidentCloseNotOwnCase)
+				return
+			}
+		}
 	}
 
 	result, err := h.entity.PatchIncident(r.Context(), id, body)
