@@ -53,6 +53,11 @@ export interface ChangeRequestDetail extends ChangeRequestSummary {
   testPlan: string | null;
   hasCustomerApproved: boolean;
   hasCustomerReviewed: boolean;
+  /**
+   * WSO2 accepted the time the customer proposed and scheduled the change by it. `hasCustomerApproved` stays false then (no
+   * staff action records the customer's approval), so "Customer Approved: No" would mislead: the page reads "Proposed time accepted".
+   */
+  proposedTimeAccepted: boolean;
   approvedBy: EntityRefDto | null;
   approvedOn: Date | null;
 }
@@ -91,6 +96,8 @@ export function toChangeRequestDetail(dto: ChangeRequestDetailDto): ChangeReques
     testPlan: dto.testPlan,
     hasCustomerApproved: dto.hasCustomerApproved,
     hasCustomerReviewed: dto.hasCustomerReviewed,
+    proposedTimeAccepted:
+      dto.customerProposal?.answer === "agreed" || dto.confirmCustomerUpdatedDate?.trim().toLowerCase() === "agree",
     approvedBy: dto.approvedBy,
     approvedOn: parseOptionalBackendTimestamp(dto.approvedOn),
   };
