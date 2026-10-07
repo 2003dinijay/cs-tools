@@ -81,7 +81,7 @@ The detail page shows:
     details** card shows further fields the backing system tracks:
     priority, requested by, change request type, likelihood, whether the
     Implementation Plan is visible to customers, when the customer last
-    updated it, work start/end, a git reference (if any), and any labels. Most
+    proposed a time and WSO2's answer to it, work start/end, a git reference (if any), and any labels. Most
     of these are read-only with no edit control anywhere yet — they're shown
     for context. "Implementation Plan visible to customers" is the exception:
     it's editable from Create/Edit (see below).
@@ -99,7 +99,8 @@ From the detail page a CS engineer can:
   record's own legal next states, so only valid transitions are ever offered.
   The forward move (for example **Request Approval**, **Start implementation**,
   **Mark implemented**, **Send for customer review**) is the main button;
-  **Re-schedule** (Customer Approval only) sits beside it; everything else is
+  **Re-schedule** (Customer Approval only; **Propose a different time** while a
+  time the customer proposed waits for you) sits beside it; everything else is
   behind the **Change state** menu. Moving to a destructive state (**Roll back**
   from Review or Customer Review, **Cancel change**) requires typing a reason
   first, which is recorded as an internal note (the customer does not see it)
@@ -109,8 +110,8 @@ From the detail page a CS engineer can:
   approval or review: while a change waits at Customer Approval or Customer
   Review, only the customer moves it on, by answering in the Customer Portal, so
   there is no action for it here, not even a greyed-out one. At
-  Customer Approval you can **Re-schedule** (the customer is asked again) or
-  **Cancel change**; at Customer Review you can **Roll back** or **Cancel
+  Customer Approval you can **Re-schedule** (the customer is asked to approve
+  the new time) or **Cancel change**; at Customer Review you can **Roll back** or **Cancel
   change**, and there is no Close. While the customer's review is still pending,
   **Roll back** is held back and says who the change is waiting on, since a
   failed review is the customer's to give in the Customer Portal.
@@ -133,11 +134,38 @@ From the detail page a CS engineer can:
   without a request. The Approval tab says so in a note, and since staff never
   answer for the customer the exits are the ones staff always have there. When
   nobody can be asked, **Cancel change** is the only way out of Customer
-  Approval: **Re-schedule** sends the change back through approval and then asks
-  the project's registered contacts again, so it helps only if somebody can be
-  asked this time (an older change with no request, on a project that has
-  eligible contacts, is the case where it does). **Roll back** or **Cancel
-  change** are the ways out of Customer Review.
+  Approval: **Re-schedule** asks the project's registered contacts again at
+  once, and is refused, with the same message as Request Approval, while nobody
+  can be asked (an older change with no request, on a project that has eligible
+  contacts, is the case where it helps). **Roll back** or **Cancel change** are
+  the ways out of Customer Review.
+- **A time the customer proposed.** A customer who cannot make the planned
+  window proposes a new **start** in the Customer Portal; the planned length
+  stays the same. The change **stays in Customer Approval** and the planned
+  window stays what you planned until you answer, so the page shows a banner
+  under the stepper ("The customer proposed a new time") with the planned window
+  beside the proposed one, who proposed it and when, and the header reads
+  "Waiting for WSO2 to respond to the customer's proposed time". You answer it
+  in one of two ways, ServiceNow's Agree and Disagree:
+  - **Accept proposed time** (after a confirmation) applies the proposal to the
+    planned window and moves the change straight to **Scheduled**. No CAB
+    approval is needed (the change itself has not changed) and the customer is
+    not asked again: the proposal is their own consent. The Customer approved
+    cell then reads "Proposed time accepted", because nobody on staff records a
+    customer's approval. Accept is held back, with the reason, while the change
+    is on hold, once the proposed time has passed, or when there is no planned
+    window to keep the length of.
+  - **Propose a different time** asks the customer to approve the time you set
+    instead (again with no CAB). Keeping the current time **declines** the
+    proposal: only the answer is recorded and the customer keeps their request
+    to approve the current time. The loop repeats with their next proposal.
+  A date a WSO2 user wrote in ServiceNow, or one left over from an earlier round,
+  looks like a proposal too. When the page cannot say who proposed the time
+  ("The proposer is not recorded.") Accept is no longer the single main button
+  and asks you to confirm that the customer really proposed it. Proposals and
+  your answers are kept in PostgreSQL only: they are not mirrored to ServiceNow
+  (there is no field for them), Accept's mirror is best effort, and while the
+  sync still runs it can rewrite these columns.
 - **Approve or reject** a pending approval stage, if the engineer is listed
   as an approver on it: the Approve/Reject buttons only appear on that
   engineer's own pending approval.
