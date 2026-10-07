@@ -5601,7 +5601,11 @@ paths:
         The body must carry `type`: one of `standard`, `normal` or `emergency`
         (400 with an explanatory message otherwise). The type decides the approval
         flow -- Standard needs none, Normal needs peer then CAB approval, Emergency
-        needs ECAB approval only.
+        needs CAB approval only (one stage in the CAB Approval group; ServiceNow
+        has no Emergency CAB). An Emergency change takes no customer step, so
+        `customerApprovalRequired` / `customerReviewRequired` cannot be true on
+        one: such a create is a 400 ("Emergency changes proceed without customer
+        consent, so customer approval and customer review cannot be required").
       operationId: createChangeRequest
       security:
         - bearerAuth: []
@@ -5620,9 +5624,11 @@ paths:
                   type: boolean
                   description: >-
                     The "Customer Approval" checkbox: the change needs the
-                    customer's approval before it is scheduled. CAB / ECAB
+                    customer's approval before it is scheduled. CAB
                     approval (or Request Approval on a Standard change) then
                     moves it to `customer_approval` instead of `scheduled`.
+                    Cannot be true when `type` is `emergency` (400: an
+                    Emergency change proceeds without customer consent).
                     Defaults to false. A non-boolean value is a 400. Request
                     Approval later needs a Customer Project that has somebody who
                     can be asked (a registered portal-user contact other than the
@@ -5634,7 +5640,8 @@ paths:
                     customer's review before it is closed. Review then offers
                     `customer_review` instead of `closed`. Defaults to false. A
                     non-boolean value is a 400. As the Customer Approval box for
-                    Request Approval.
+                    Request Approval. Cannot be true when `type` is `emergency`
+                    (the same 400).
                 projectId:
                   type: string
                   format: uuid
@@ -13648,7 +13655,9 @@ components:
             it afterwards ("customerApprovalRequired can no longer be changed ..."). Turning
             it on needs a Customer Project that has somebody who can be asked (400 "customer
             approval is required but nobody on this project can be asked ..."). Resending the
-            stored value is always accepted. A non-boolean value is a 400.
+            stored value is always accepted. It cannot be turned on for an Emergency change in
+            any state (400: "Emergency changes proceed without customer consent, so customer
+            approval and customer review cannot be required ..."). A non-boolean value is a 400.
         customerReviewRequired:
           type: boolean
           description: >-
@@ -13659,7 +13668,8 @@ components:
             customer_review onwards is a 400 ("customerReviewRequired can no longer be
             changed ..."). Turning it on needs a Customer Project that has somebody who can
             be asked (400 "customer review is required but nobody on this project can be
-            asked ..."). A non-boolean value is a 400.
+            asked ..."). It cannot be turned on for an Emergency change in any state (the same
+            400 as the Customer Approval box). A non-boolean value is a 400.
         deploymentIds:
           type: array
           items:
@@ -18694,7 +18704,7 @@ components:
                 action for every type; the state it lands in depends on the
                 type and on customerApprovalRequired). assess: [canceled] (the
                 peer approval moves the change on by itself). authorize:
-                [canceled] (CAB/ECAB approval moves the change on by itself: to
+                [canceled] (CAB approval moves the change on by itself: to
                 scheduled, or to customer_approval when customerApprovalRequired). customer_approval: [authorize,
                 canceled] -- never "scheduled": only the CUSTOMER's own approval
                 (Customer Portal) schedules the change, and no staff action
@@ -18900,7 +18910,7 @@ components:
           description: >-
             True only on the calling user's own REQUESTED row, when they may
             actually decide it (not the change request's creator; an active
-            internal user on an internal stage -- peer, CAB, ECAB, review; and
+            internal user on an internal stage -- peer, CAB, review; and
             the change request is in the state the stage belongs to, so a
             REQUESTED row left on a stage the change has moved past is false).
             Render Approve/Reject on this.
@@ -18926,8 +18936,12 @@ components:
         stage:
           type: string
           description: >-
-            "Peer Approval", "CAB Approval", "ECAB Approval" or "Review";
-            legacy/synced stages may be "Assess", "Authorize" or "Customer Approval".
+            "Peer Approval", "CAB Approval" or "Review" (an Emergency change has
+            the one "CAB Approval" stage, in the same group a Normal change's second
+            stage is); legacy/synced stages may be "Assess", "Authorize" or
+            "Customer Approval", and a stage an earlier build wrote for an Emergency
+            change is still shown as "ECAB Approval" (no longer written; decided as
+            the CAB stage).
         approverType:
           type: string
           enum: [STATIC_GROUP, DYNAMIC_CONTACT]

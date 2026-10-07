@@ -102,7 +102,7 @@ func (h *ChangeRequestHandler) CreateChangeRequest(w http.ResponseWriter, r *htt
 	}
 
 	// The change type decides the whole approval flow (Standard: none; Normal:
-	// peer then CAB; Emergency: ECAB only), so a create without one of the
+	// peer then CAB; Emergency: CAB only), so a create without one of the
 	// three is refused here with a message the form can show, rather than
 	// forwarded to be rejected with a generic one.
 	if msg := validateChangeRequestCreateType(body); msg != "" {
