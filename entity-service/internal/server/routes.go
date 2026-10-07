@@ -736,16 +736,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	// The CSM-native SLA engine (internal/service/sla_engine_service.go)
-	// writes its own source='CSM' rows into the "sla"/"sla_policy" tables
-	// the ServiceNow sync also populates (migration 0134) -- gated on db
-	// the same way slaStatusHandler above is: nowhere to store a clock at
-	// all with no database configured. activeProjectSvc backs its
-	// plan-derivation heuristic (see sla_policy_resolver.go's
-	// resolveCasePlan doc comment) and is already constructed above,
-	// regardless of DataSource.
+	// writes its own source='CSM' rows into the "sla" table (migration 0134),
+	// resolving durations from the deterministic, severity-keyed sla_policy
+	// rows migration 0203 seeds -- gated on db the same way slaStatusHandler
+	// above is: nowhere to store a clock at all with no database configured.
 	var slaEngineSvc service.SLAEngineService
 	if db != nil {
-		slaEngineSvc = service.NewSLAEngineService(repository.NewSLAEngineRepository(repository.NewScoped(db)), activeProjectSvc)
+		slaEngineSvc = service.NewSLAEngineService(repository.NewSLAEngineRepository(repository.NewScoped(db)))
 	}
 
 	caseRepo := repository.NewCaseRepository(repository.NewScoped(db))
