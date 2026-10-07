@@ -3064,9 +3064,10 @@ offered states are filtered the same way).
   (the stage stays as a record, `cancelLiveCustomerStages`) and a fresh "Customer
   Approval" stage is provisioned for the project's registered contacts
   (`provisionCustomerStage`), one `REQUESTED` row each, the creator listed cancelled:
-  the customer is asked again **at once**, for every type that reaches Customer Approval (Normal and
-  Standard; an Emergency change never does, and one that is already there from before the rule is
-  re-scheduled but asked nobody again -- `TestChangeRequestFlowIntegration_RescheduleLegacyEmergencyInCustomerApproval`). The Review checkpoint is still provisioned later (only the FIRST
+  the customer is asked again **at once**, for every change that is in Customer Approval (Normal and
+  Standard reach it; an Emergency change never enters it, but one that is already there -- from before
+  the rule, or migrated -- is re-scheduled and asked again like any other, and a Re-schedule nobody
+  can be asked about is refused whole -- `TestChangeRequestFlowIntegration_RescheduleLegacyEmergencyInCustomerApproval`). The Review checkpoint is still provisioned later (only the FIRST
   stage of each label counts for the ordinal, `provisionApprovalStage`). Stage order
   after one loop of a Normal change: Peer, CAB, Customer Approval (cancelled),
   Customer Approval (live). **A Re-schedule writes no flag at all**: not our own
@@ -3444,11 +3445,18 @@ invented an "ECAB Approval" stage in a group of its own; that is gone.
     Emergency change (whose requirement flags `is_customer_*_required` are the sync's, overwritten on every
     delta and never written by this service) and a row an earlier build created with a box ticked on the
     Emergency flow.
-  * **`provisionCustomerStage` never provisions a stage for an Emergency change**, whatever its state or
-    boxes (and `legacyStageWouldBeProvisioned` says false). A customer stage that already exists on such a
-    change (only an earlier build could have put it there) is left alone and its contacts can still answer
-    it; a Re-schedule of such a change applies the window and supersedes the stage but asks nobody again
-    (Cancel is what is left): `..._RescheduleLegacyEmergencyInCustomerApproval`.
+  * **An Emergency change that is ALREADY in a customer state is not stranded.** The rule keeps a change
+    from *entering* Customer Approval / Customer Review; it does not look at the type once a change is
+    waiting there (a row from before the rule, or a ServiceNow-migrated one that ServiceNow itself sent
+    to the customer). `provisionCustomerStage` and `legacyStageWouldBeProvisioned` therefore treat it like
+    any other change: `customerCanAnswer` is true for the project's contacts, the customer's first act gives
+    a migrated row the stage its answer is recorded on (Customer Approval -> Scheduled, Customer Review ->
+    Closed, a rejection -> Canceled / Rollback), a Re-schedule or a counter-proposal to a customer's
+    proposed time supersedes the request and **asks the contacts again** (a fresh stage, nothing through
+    CAB again), and one nobody can be asked about is refused whole with the customers' request untouched
+    (`requireSomebodyToAskForWindow`) -- a customer's request is never cancelled without a replacement.
+    `..._RescheduleLegacyEmergencyInCustomerApproval`, `..._LegacyBoxesAreIgnoredByTheGate`,
+    `..._MigratedEmergencyInACustomerStateIsAnswerable`.
   * **Clone / duplicate** is the webapp prefilling the create form from a change; there is no clone
     endpoint here. An Emergency clone cannot carry a ticked box because the create refuses one.
 * **A migrated Emergency change** (one unlabeled stage in the CAB group at position 0, `raw_status` and approver
