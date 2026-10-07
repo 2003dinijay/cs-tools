@@ -135,18 +135,31 @@ describe("ChangeRequestRescheduleDialog", () => {
     expect(screen.getByLabelText(/reason \(optional\)/i)).toBeDisabled();
   });
 
-  it("locks the reason once it is recorded, so a retry can't silently drop an edit", () => {
-    renderDialog({ reasonRecorded: true });
-    expect(screen.getByLabelText(/reason \(optional\)/i)).toBeDisabled();
-    expect(
-      screen.getByText("Already recorded as a work note — retrying will only re-schedule."),
-    ).toBeInTheDocument();
+  it("keeps the reason editable, and says it is recorded once the change has been updated (never before the PATCH)", () => {
+    renderDialog();
+    expect(screen.getByLabelText(/reason \(optional\)/i)).toBeEnabled();
+    expect(screen.getByText("Recorded as an internal work note once the change has been updated.")).toBeInTheDocument();
+    // There is no "already recorded" lock: nothing is recorded by an attempt that was refused.
+    expect(screen.queryByText(/Already recorded/)).not.toBeInTheDocument();
   });
 
-  it("keeps the reason editable until it has been recorded", () => {
-    renderDialog({ reasonRecorded: false });
-    expect(screen.getByLabelText(/reason \(optional\)/i)).toBeEnabled();
-    expect(screen.getByText("Recorded as an internal work note.")).toBeInTheDocument();
+  describe("stale: the page moved on behind a refused attempt", () => {
+    it("holds submit back and says to close the dialog, for a plain Re-schedule", () => {
+      renderDialog({ stale: true, error: "the planned implementation time of this change request changed after you opened it" });
+      fireEvent.change(pickerInput("Planned end"), { target: { value: "03/01/2030 01:00 PM" } });
+      expect(submitButton()).toBeDisabled();
+      expect(screen.getByRole("alert")).toHaveTextContent("changed after you opened it");
+      expect(screen.getByRole("status")).toHaveTextContent(/Close\s+this dialog to see the current state/);
+      // Closing is still possible, and reading the reason is unchanged.
+      expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" })).toBeEnabled();
+    });
+
+    it("is not shown, and submit follows the window alone, when nothing moved", () => {
+      renderDialog();
+      fireEvent.change(pickerInput("Planned end"), { target: { value: "03/01/2030 01:00 PM" } });
+      expect(submitButton()).toBeEnabled();
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    });
   });
 
   describe("the customer proposed a time (counter mode)", () => {
@@ -269,14 +282,19 @@ describe("ChangeRequestRescheduleDialog", () => {
       expect(dialogButton("Propose this time")).toBeDisabled();
     });
 
-    it("keeps the reason as an internal work note, locked once recorded, in the counter's own words", () => {
+    it("hands the trimmed reason to the caller, which records it after the change has been updated", () => {
       const { onSubmit } = renderDialog({ proposal: PROPOSAL });
       fireEvent.change(screen.getByLabelText(/reason \(optional\)/i), { target: { value: "  Freeze that week.  " } });
       fireEvent.click(dialogButton("Decline proposed time"));
       expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ state: "authorize" }), "Freeze that week.");
-      cleanup();
-      renderDialog({ proposal: PROPOSAL, reasonRecorded: true });
-      expect(screen.getByText("Already recorded as a work note — retrying will only answer the proposal.")).toBeInTheDocument();
+    });
+
+    it("holds the counter back when stale, the decline included", () => {
+      renderDialog({ proposal: PROPOSAL, stale: true });
+      expect(dialogButton("Decline proposed time")).toBeDisabled();
+      fireEvent.change(pickerInput("Planned start"), { target: { value: "03/15/2030 09:00 AM" } });
+      fireEvent.change(pickerInput("Planned end"), { target: { value: "03/15/2030 11:00 AM" } });
+      expect(dialogButton("Propose this time")).toBeDisabled();
     });
 
     it("shows the backend's refusal verbatim", () => {

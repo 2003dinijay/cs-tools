@@ -47,6 +47,12 @@ interface ChangeRequestAcceptProposedTimeDialogProps {
   isSubmitting: boolean;
   /** The backend's refusal for the last attempt, shown verbatim. */
   error?: string | null;
+  /**
+   * True when the page now holds something other than what this dialog was opened on (the planned
+   * window, the proposal or the state moved) and an attempt was refused: the same request would be
+   * refused again, so Accept is held back and the dialog says to close it and look at the current state.
+   */
+  stale?: boolean;
   onClose: () => void;
   /** Sends `{confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn, expectedPlannedStartOn, expectedPlannedEndOn}`. */
   onConfirm: () => void;
@@ -68,6 +74,7 @@ export default function ChangeRequestAcceptProposedTimeDialog({
   proposal,
   isSubmitting,
   error,
+  stale,
   onClose,
   onConfirm,
 }: ChangeRequestAcceptProposedTimeDialogProps): JSX.Element {
@@ -76,7 +83,7 @@ export default function ChangeRequestAcceptProposedTimeDialog({
   const proposed = proposedWindowMs(cr, proposal);
   const [checked, setChecked] = useState(false);
   const needsConfirmation = !proposer;
-  const canConfirm = !isSubmitting && (!needsConfirmation || checked);
+  const canConfirm = !stale && !isSubmitting && (!needsConfirmation || checked);
 
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth aria-labelledby="cr-accept-proposal-title">
@@ -87,6 +94,12 @@ export default function ChangeRequestAcceptProposedTimeDialog({
             <Alert severity="error" role="alert">
               {error}
             </Alert>
+          )}
+          {stale && (
+            <Typography variant="caption" color="text.secondary" role="status">
+              This change request changed while this dialog was open, so the same request would be refused again. Close
+              this dialog to see the current state.
+            </Typography>
           )}
           <Typography variant="body2" color="text.secondary">
             {`The change will be scheduled for ${formatCrWindow(proposal.startOn, proposed?.endMs ?? null)}. ` +

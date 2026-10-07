@@ -149,6 +149,17 @@ describe("ChangeRequestAcceptProposedTimeDialog", () => {
     );
   });
 
+  it("holds Accept back, and says to close the dialog, when the page moved on behind a refused attempt", () => {
+    const { onConfirm, onClose } = renderDialog({ stale: true, error: "the planned implementation time of this change request changed after you opened it" });
+    expect(screen.getByRole("alert")).toHaveTextContent("changed after you opened it");
+    expect(screen.getByRole("status")).toHaveTextContent(/Close\s+this dialog to see the current state/);
+    expect(confirmButton()).toBeDisabled();
+    fireEvent.click(confirmButton());
+    expect(onConfirm).not.toHaveBeenCalled();
+    fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));
+    expect(onClose).toHaveBeenCalled();
+  });
+
   it("closes via Close, and neither action works while submitting", () => {
     const { onClose } = renderDialog();
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" }));

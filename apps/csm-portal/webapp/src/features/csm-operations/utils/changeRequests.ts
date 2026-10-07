@@ -412,6 +412,78 @@ export function customerProposalWording(proposer: CustomerProposalProposer | nul
   return proposer ? CUSTOMER_PROPOSED_WORDING : PROPOSED_WORDING;
 }
 
+/**
+ * The stable `errorCode`s of the refusals that mean "what this dialog showed is no longer what is
+ * stored, or the answer cannot be given now": the one machine-readable thing the page may branch
+ * on (the message is for people and can change). Each comes with a 409 from entity-service, through
+ * the BFF, on the two answers to a time: Accept proposed time and the Re-schedule / counter PATCH.
+ * A code this list does not name (a newer backend) is handled as no code at all.
+ */
+export const ChangeRequestErrorCode = {
+  /** The planned window is no longer the one the page showed. */
+  SCHEDULE_CHANGED: "change_request_schedule_changed",
+  /** The change is not in Customer Approval, or nobody has been asked for the customer's approval. */
+  NOT_PROPOSABLE: "change_request_not_proposable",
+  /** Another approval, not the customer's, is being asked at the same time. */
+  PROPOSAL_NOT_NOW: "change_request_proposal_not_now",
+  /** There is no planned window to keep the length of. */
+  NO_PLANNED_WINDOW: "change_request_no_planned_window",
+  /** The change is on hold. */
+  ON_HOLD: "change_request_on_hold",
+  /** Nobody is recorded as having proposed the stored time, so it cannot be accepted. */
+  PROPOSER_NOT_RECORDED: "change_request_proposer_not_recorded",
+} as const;
+
+const STALE_ANSWER_CODES: ReadonlySet<string> = new Set(Object.values(ChangeRequestErrorCode));
+
+/** The `errorCode` the backend named on a failed request, if it named one (a `BackendApiError`'s payload). */
+export function backendErrorCode(err: unknown): string | undefined {
+  if (typeof err !== "object" || err === null) return undefined;
+  const code = (err as { payload?: { errorCode?: unknown } }).payload?.errorCode;
+  return typeof code === "string" && code ? code : undefined;
+}
+
+/**
+ * Whether a failed answer to a time (Accept proposed time, or the Re-schedule / counter PATCH) was
+ * refused because the change request is no longer what the dialog was opened on: a 409 that names one
+ * of the {@link ChangeRequestErrorCode}s. Sending the same request again would be refused the same way,
+ * so the page closes the dialog, says why and reads the change request again. Any other failure (a 400
+ * about the window, a refusal with no code or an unknown one, a server error) is the dialog's own to
+ * show: it stays open with its message.
+ */
+export function isStaleAnswerError(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  if ((err as { status?: unknown }).status !== 409) return false;
+  const code = backendErrorCode(err);
+  return code !== undefined && STALE_ANSWER_CODES.has(code);
+}
+
+/** What an answer dialog was opened on, and what the page holds for the same change request. */
+export interface AnswerSnapshot {
+  cr: Pick<BeChangeRequestDetail, "state" | "plannedStartOn" | "plannedEndOn">;
+  proposal: Pick<
+    BeChangeRequestCustomerProposal,
+    "startOn" | "proposerRecorded" | "proposedByName" | "proposedByEmail" | "proposedOn"
+  > | null;
+}
+
+/**
+ * Whether the page now holds something other than what an answer dialog was opened on: another state,
+ * another planned window, a proposal that is gone, a different one, or one whose proposer is now (not)
+ * on record. The dialog keeps what its reader was shown (what they answer is what they read), so after
+ * a refused attempt this is what tells it to stop offering the same request again, whether or not the
+ * backend named the refusal with a code.
+ */
+export function answerSnapshotMoved(shown: AnswerSnapshot, now: AnswerSnapshot): boolean {
+  const instant = (value: string | null | undefined): number | null => parseBackendTimestamp(value)?.getTime() ?? null;
+  if ((shown.cr.state ?? null) !== (now.cr.state ?? null)) return true;
+  if (instant(shown.cr.plannedStartOn) !== instant(now.cr.plannedStartOn)) return true;
+  if (instant(shown.cr.plannedEndOn) !== instant(now.cr.plannedEndOn)) return true;
+  if (!shown.proposal || !now.proposal) return !!shown.proposal !== !!now.proposal;
+  if (instant(shown.proposal.startOn) !== instant(now.proposal.startOn)) return true;
+  return !customerProposalProposer(shown.proposal) !== !customerProposalProposer(now.proposal);
+}
+
 /** Said when the proposer cannot be named (the banner and the Accept dialog). */
 export const PROPOSER_NOT_RECORDED = "The proposer is not recorded.";
 

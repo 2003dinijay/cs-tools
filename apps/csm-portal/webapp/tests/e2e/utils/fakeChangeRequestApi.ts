@@ -592,6 +592,12 @@ export interface FakeChangeRequestApi {
   /** Puts the change on / takes it off hold (a state change is then refused). */
   setOnHold(onHold: boolean): void;
   /**
+   * Somebody else re-schedules the change behind the open page: the planned window becomes `start` to `end` ("YYYY-MM-DD HH:MM:SS",
+   * UTC) and nothing else is written (a proposal that waits keeps waiting). A request that names the window the page showed is then
+   * a 409 `change_request_schedule_changed`. The open page is not refreshed.
+   */
+  moveWindow(start: string, end: string): void;
+  /**
    * An internal approval that is still being asked while the change sits in Customer Approval (an inconsistent row, or an unknown
    * approval group): a REQUESTED approver row on a non-customer stage. The backend's pending allowlist reads it as "not a proposal
    * waiting for WSO2". The open page is not refreshed.
@@ -1121,7 +1127,14 @@ export async function installFakeChangeRequestApi(
   interface Refusal {
     status: 400 | 409;
     message: string;
+    /** The stable `errorCode` the backend names the refusal by, when it names one (entity-service `apierror`). */
+    code?: string;
   }
+  /** A refusal's body: the words, and the code when there is one. */
+  const refusalBody = (refused: Refusal): { message: string; errorCode?: string } => ({
+    message: refused.message,
+    ...(refused.code ? { errorCode: refused.code } : {}),
+  });
   /** The planned window as the backend words it in a stale-window refusal (RFC 3339 bounds). */
   const plannedNow = (): string => {
     const s = instantOf(plannedStartOn);
@@ -1133,7 +1146,7 @@ export async function installFakeChangeRequestApi(
     const es = typeof body.expectedPlannedStartOn === "string" ? instantOf(body.expectedPlannedStartOn) : null;
     const ee = typeof body.expectedPlannedEndOn === "string" ? instantOf(body.expectedPlannedEndOn) : null;
     if ((es !== null && es !== instantOf(plannedStartOn)) || (ee !== null && ee !== instantOf(plannedEndOn))) {
-      return { status: 409, message: windowChangedMessage(plannedNow()) };
+      return { status: 409, message: windowChangedMessage(plannedNow()), code: "change_request_schedule_changed" };
     }
     return null;
   };
@@ -1151,7 +1164,7 @@ export async function installFakeChangeRequestApi(
     if (typeof body.expectedPlannedStartOn !== "string" || typeof body.expectedPlannedEndOn !== "string") {
       return { status: 400, message: ACCEPT_NEEDS_EXPECTED_WINDOW };
     }
-    if (state !== "customer_approval") return { status: 409, message: acceptNotInCustomerApproval(state) };
+    if (state !== "customer_approval") return { status: 409, message: acceptNotInCustomerApproval(state), code: "change_request_not_proposable" };
     if (!proposalPending()) return { status: 409, message: NO_PROPOSAL_WAITING };
     if (instantOf(body.expectedCustomerUpdatedOn) !== instantOf(customerUpdatedOn)) {
       return { status: 409, message: proposalChangedMessage(customerUpdatedOn!) };
@@ -1499,7 +1512,7 @@ export async function installFakeChangeRequestApi(
         // (`hasCustomerApproved`) is NOT stamped: no staff action records the customer's approval.
         if (body.confirmCustomerUpdatedDate !== undefined) {
           const refused = acceptRefusal(body);
-          if (refused) return json(route, { message: refused.message }, refused.status);
+          if (refused) return json(route, refusalBody(refused), refused.status);
           const start = instantOf(customerUpdatedOn)!;
           const length = instantOf(plannedEndOn)! - instantOf(plannedStartOn)!;
           plannedStartOn = plannedOf(start);
@@ -1522,7 +1535,7 @@ export async function installFakeChangeRequestApi(
         // The Time Change loop out of Customer Approval (a Re-schedule, or WSO2's counter / decline of a proposal).
         if (body.state === "authorize" && state === "customer_approval") {
           const refused = timeChangeRefusal(body);
-          if (refused) return json(route, { message: refused.message }, refused.status);
+          if (refused) return json(route, refusalBody(refused), refused.status);
         }
         // Customer scope / category (and the removed customerGroupId / environmentIds,
         // which are refused), validated like the backend.
@@ -1646,6 +1659,10 @@ export async function installFakeChangeRequestApi(
     proposal: () => ({ customerUpdatedOn, confirmation }),
     setOnHold: (next) => {
       onHold = next;
+    },
+    moveWindow: (start, end) => {
+      plannedStartOn = start;
+      plannedEndOn = end;
     },
     addInternalRequestedRow: () => {
       // An internal approval still being asked, in a group that is not the customer's: not one of ours, never reconciled away.

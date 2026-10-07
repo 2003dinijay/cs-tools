@@ -276,6 +276,15 @@ export class ChangeRequestDetailPage {
     return this.counterDialog().getByRole("button", { name: label, exact: true });
   }
 
+  /**
+   * The page's own alert for an answer dialog that was closed for the engineer because the change is no longer what it showed
+   * (a refusal with one of the stale-answer codes): the backend's words, then "The page now shows the current state." It takes
+   * focus once the dialog is gone.
+   */
+  staleAnswerNotice(): Locator {
+    return this.page.getByRole("alert").filter({ hasText: "The page now shows the current state." });
+  }
+
   /** "Re-schedule" -- the outlined button beside the primary action in Customer Approval. */
   rescheduleButton(): Locator {
     return this.page.getByRole("button", { name: "Re-schedule", exact: true });

@@ -3292,9 +3292,64 @@ test.describe("change request approval flow — a customer's proposed time (mock
     expect(api.state()).toBe("customer_approval");
     expect(api.planned()).toEqual(ORIGINAL_WINDOW);
     expect(api.proposal().confirmation).toBeNull();
+    // That refusal names no code, but the proposal the dialog showed is not the one the page holds now once the change is read
+    // again: asking again would be refused again, so Accept is held back and Close is the way on.
+    await expect(detail.acceptDialogConfirm()).toBeDisabled();
     await detail.acceptDialog().getByRole("button", { name: "Close", exact: true }).click();
     await page.reload();
     await expect(detail.proposalBanner()).toContainText("Proposed by Max Member");
+  });
+
+  test("a window re-scheduled behind an open Accept confirmation: the refusal names its code, the dialog closes, the page says why with focus on the notice, shows the new window, and Accept then goes through", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    await detail.acceptProposedTimeButton().click();
+    api.moveWindow("2030-03-02 09:00:00", "2030-03-02 11:00:00"); // behind the open dialog
+    await detail.acceptDialogConfirm().click();
+    await expect(detail.acceptDialog()).toHaveCount(0);
+    const notice = detail.staleAnswerNotice();
+    const moved = windowChangedMessage("2030-03-02T09:00:00Z to 2030-03-02T11:00:00Z");
+    await expect(notice).toContainText(`${moved.charAt(0).toUpperCase()}${moved.slice(1)}.`); // the notice states it as a sentence
+    await expect(notice).toBeFocused();
+    // Nothing was accepted, and the page read the change again: the banner shows the planned window as it is now.
+    expect(api.state()).toBe("customer_approval");
+    expect(api.proposal().confirmation).toBeNull();
+    await expect(detail.proposalBanner()).toContainText(/Mar 2, 2030, \d{1,2}:\d{2} [AP]M to Mar 2, 2030, \d{1,2}:\d{2} [AP]M/);
+    // On the current state it goes through, and the notice goes with the next dialog.
+    await detail.acceptProposedTimeButton().click();
+    await expect(notice).toHaveCount(0);
+    await detail.acceptDialogConfirm().click();
+    await expect(detail.acceptDialog()).toHaveCount(0);
+    expect(api.state()).toBe("scheduled");
+  });
+
+  test("a window re-scheduled behind an open counter: the dialog closes with no note posted, and opened again the reason is recorded exactly once", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    const reason = "Freeze that week.";
+    const fillCounter = async (): Promise<void> => {
+      await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START, detail.counterDialog());
+      await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END, detail.counterDialog());
+      await detail.counterDialog().getByLabel("Reason (optional)").fill(reason);
+    };
+    await detail.proposeDifferentTimeButton().click();
+    await fillCounter();
+    api.moveWindow("2030-03-02 09:00:00", "2030-03-02 11:00:00"); // behind the open dialog
+    await detail.counterSubmit("Propose this time").click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+    await expect(detail.staleAnswerNotice()).toBeFocused();
+    expect(api.journal()).toEqual([]); // the refused attempt left no note behind
+    expect(api.proposal().confirmation).toBeNull();
+
+    await detail.proposeDifferentTimeButton().click();
+    await expect(detail.counterDialog().getByLabel("Reason (optional)")).toHaveValue("");
+    await fillCounter();
+    await detail.counterSubmit("Propose this time").click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+    expect(api.proposal().confirmation).toBe("disagree");
+    expect(api.journal()).toEqual([{ kind: "comment", text: reason }]); // once, after the change went through
   });
 
   test("a plain Re-schedule opened before the customer proposed never answers a proposal it did not see: the API says so, in words", async ({ page }) => {

@@ -40,7 +40,9 @@ export interface BeErrorPayload {
    * The stable machine-readable name of the refusal, when the backend names it
    * (e.g. `change_request_approval_not_pending`): what a client may branch on.
    * Absent for a refusal that has none, and for an older backend. Kept on
-   * {@link BackendApiError.payload}; today's callers key on the status.
+   * {@link BackendApiError.payload}. The change request page branches on the codes of the
+   * answers to a proposed time (`ChangeRequestErrorCode` in `csm-operations/utils/changeRequests.ts`);
+   * every other caller keys on the status.
    */
   errorCode?: string;
 }

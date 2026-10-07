@@ -17,7 +17,11 @@
 import { describe, expect, it } from "vitest";
 import {
   acceptProposedTimeBlockedReason,
+  answerSnapshotMoved,
   approvalStageLabel,
+  backendErrorCode,
+  ChangeRequestErrorCode,
+  isStaleAnswerError,
   buildChangeRequestSearchFilters,
   buildCloneChangeRequestNavState,
   CHANGE_REQUEST_CREATE_TYPE_OPTIONS,
@@ -1470,6 +1474,71 @@ describe("a time the customer proposed (the previous system's customer_updated_o
       expect(customerProposalWording(recorded).bannerTitle).toBe("The customer proposed a new time");
       const notRecorded = customerProposalProposer({ proposerRecorded: false, proposedByName: "Mia Member" });
       expect(customerProposalWording(notRecorded).bannerTitle).toBe("A new time is waiting for your answer");
+    });
+  });
+
+  describe("the refusals that mean the change moved on", () => {
+    // A BackendApiError, as far as the helpers read it: a status and the payload the backend sent.
+    const refusal = (status: number, errorCode?: string): { status: number; payload?: { errorCode?: string } } => ({
+      status,
+      payload: errorCode === undefined ? undefined : { errorCode },
+    });
+
+    it("reads the errorCode off the error's payload, and nothing else", () => {
+      expect(backendErrorCode(refusal(409, "change_request_schedule_changed"))).toBe("change_request_schedule_changed");
+      expect(backendErrorCode(refusal(409))).toBeUndefined();
+      expect(backendErrorCode({ status: 409, payload: { errorCode: "" } })).toBeUndefined();
+      expect(backendErrorCode({ status: 409, payload: { errorCode: 7 } })).toBeUndefined();
+      expect(backendErrorCode({ status: 409, errorCode: "change_request_schedule_changed" })).toBeUndefined(); // not on the error itself
+      expect(backendErrorCode(new Error("boom"))).toBeUndefined();
+      for (const bad of [null, undefined, "change_request_schedule_changed", 409]) expect(backendErrorCode(bad)).toBeUndefined();
+    });
+
+    it("is stale for a 409 that names one of the codes, each of them", () => {
+      expect(Object.values(ChangeRequestErrorCode).sort()).toEqual([
+        "change_request_no_planned_window",
+        "change_request_not_proposable",
+        "change_request_on_hold",
+        "change_request_proposal_not_now",
+        "change_request_proposer_not_recorded",
+        "change_request_schedule_changed",
+      ]);
+      for (const code of Object.values(ChangeRequestErrorCode)) expect(isStaleAnswerError(refusal(409, code)), code).toBe(true);
+    });
+
+    it("is not stale for an unknown or missing code, for another status, or for something that is not an error from the backend", () => {
+      expect(isStaleAnswerError(refusal(409))).toBe(false);
+      expect(isStaleAnswerError(refusal(409, "change_request_from_the_future"))).toBe(false);
+      // The approvals' own and the 403 codes are not about a moved change.
+      for (const code of ["change_request_approval_not_pending", "change_request_not_asked", "change_request_forbidden"]) {
+        expect(isStaleAnswerError(refusal(409, code)), code).toBe(false);
+      }
+      // A code on a status other than 409 is not this refusal.
+      for (const status of [400, 403, 404, 422, 500]) expect(isStaleAnswerError(refusal(status, ChangeRequestErrorCode.SCHEDULE_CHANGED)), String(status)).toBe(false);
+      for (const bad of [null, undefined, "change_request_schedule_changed", new Error("boom")]) expect(isStaleAnswerError(bad)).toBe(false);
+    });
+  });
+
+  describe("answerSnapshotMoved", () => {
+    const cr = { state: "customer_approval", ...PLANNED };
+    const proposal = { startOn: "2030-03-08T09:00:00Z", proposerRecorded: true, proposedByName: "Mia Member" };
+    const shown = { cr, proposal };
+
+    it("is false for what the dialog was opened on, however its times are spelled", () => {
+      expect(answerSnapshotMoved(shown, shown)).toBe(false);
+      expect(answerSnapshotMoved(shown, { cr: { ...cr, plannedStartOn: "2030-03-01T09:00:00Z", plannedEndOn: "2030-03-01T11:00:00Z" }, proposal })).toBe(false);
+      expect(answerSnapshotMoved(shown, { cr, proposal: { ...proposal, startOn: "2030-03-08 09:00:00" } })).toBe(false);
+      expect(answerSnapshotMoved({ cr, proposal: null }, { cr, proposal: null })).toBe(false);
+    });
+
+    it("is true when the state, the planned window, the proposal or who proposed it moved", () => {
+      expect(answerSnapshotMoved(shown, { cr: { ...cr, state: "scheduled" }, proposal })).toBe(true);
+      expect(answerSnapshotMoved(shown, { cr: { ...cr, plannedStartOn: "2030-03-02 09:00:00" }, proposal })).toBe(true);
+      expect(answerSnapshotMoved(shown, { cr: { ...cr, plannedEndOn: "2030-03-01 12:00:00" }, proposal })).toBe(true);
+      expect(answerSnapshotMoved(shown, { cr, proposal: { ...proposal, startOn: "2030-03-20T10:00:00Z" } })).toBe(true);
+      expect(answerSnapshotMoved(shown, { cr, proposal: null })).toBe(true); // answered or gone
+      expect(answerSnapshotMoved({ cr, proposal: null }, shown)).toBe(true); // proposed behind a plain Re-schedule
+      expect(answerSnapshotMoved(shown, { cr, proposal: { startOn: proposal.startOn, proposerRecorded: false } })).toBe(true); // the proposer is no longer on record
     });
   });
 
