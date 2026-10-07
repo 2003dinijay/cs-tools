@@ -282,6 +282,14 @@ func msgAcceptTimePassed(proposed time.Time) string {
 	return fmt.Sprintf(`the time the customer proposed (%s) has already passed, so it cannot be accepted: use "Propose a different time" to ask the customer to approve another time`, fmtInstant(proposed))
 }
 
+// msgAcceptTooFarAhead is the refusal of an Accept that would write a window beyond the range
+// every planned window is held to (plannedYearMax). A customer's own proposal never gets there
+// (proposeCustomerTime refuses it), but customer_updated_on is a column ServiceNow writes too.
+func msgAcceptTooFarAhead(proposed time.Time, end time.Time) string {
+	return fmt.Sprintf(`the time the customer proposed (%s) is too far ahead to be accepted: the window would end after the year %d (%s), so use "Propose a different time" to ask the customer to approve another time`,
+		fmtInstant(proposed), plannedYearMax, fmtInstant(end))
+}
+
 func msgProposalKeepsLength(length time.Duration, end time.Time) string {
 	return fmt.Sprintf("a proposed time moves the start and keeps the planned length of %s: plannedEndOn must be %s, or be left out",
 		fmtPlannedLength(length), fmtInstant(end))
@@ -318,6 +326,9 @@ func acceptBlock(f customerProposalFacts, now time.Time) string {
 	}
 	if _, ok := f.plannedLength(); !ok {
 		return msgAcceptNoLength
+	}
+	if end := f.proposedEnd(); end != nil && f.proposed != nil && end.UTC().Year() > plannedYearMax {
+		return msgAcceptTooFarAhead(*f.proposed, *end)
 	}
 	return ""
 }
@@ -655,7 +666,9 @@ func validateAcceptRequest(req domain.PatchChangeRequestRequest) (proposed, expS
 // work_item UPDATE, the first statement); it is in Customer Approval (409); a proposal
 // waits (409); the proposal is the one the caller saw (409); the planned window is the one
 // the caller saw (409); the change is not on hold (400, the state-change gate's own text);
-// the proposed start has not passed (409); the planned window has a length to keep (409).
+// the proposed start has not passed (409); the planned window has a length to keep (409); the
+// window the proposal gives is within the range every planned window is held to (409: the
+// column is ServiceNow's to write as well).
 func acceptCustomerProposal(ctx context.Context, tx pgx.Tx, id string, req domain.PatchChangeRequestRequest, actorEmail string) (string, error) {
 	expProposed, expStart, expEnd, err := validateAcceptRequest(req)
 	if err != nil {
@@ -694,6 +707,9 @@ func acceptCustomerProposal(ctx context.Context, tx pgx.Tx, id string, req domai
 	newEnd := f.proposedEnd()
 	if newEnd == nil {
 		return "", &apierror.ConflictError{Msg: msgAcceptNoLength}
+	}
+	if newEnd.UTC().Year() > plannedYearMax {
+		return "", &apierror.ConflictError{Msg: msgAcceptTooFarAhead(*f.proposed, *newEnd)}
 	}
 
 	ct, err := tx.Exec(ctx, `

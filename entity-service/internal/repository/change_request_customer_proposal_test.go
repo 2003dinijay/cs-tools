@@ -115,6 +115,23 @@ func TestAcceptBlock(t *testing.T) {
 	if got := acceptBlock(empty, now); got != msgAcceptNoLength {
 		t.Errorf("no length: %q", got)
 	}
+	// customer_updated_on is a column ServiceNow writes too: a window the proposal would push past the
+	// range every planned window is held to is blocked, at the edge and beyond it, and not before.
+	edge := whole
+	edge.proposed, edge.start, edge.end = tm("2100-12-31T20:00:00Z"), tm("2030-03-01T09:00:00Z"), tm("2030-03-01T11:00:00Z")
+	if got := acceptBlock(edge, now); got != "" {
+		t.Errorf("a proposal whose window ends inside the last year of the range is blocked: %q", got)
+	}
+	over := edge
+	over.proposed = tm("2100-12-31T23:00:00Z")
+	if got := acceptBlock(over, now); got != msgAcceptTooFarAhead(*over.proposed, *tm("2101-01-01T01:00:00Z")) || !strings.Contains(got, "too far ahead") {
+		t.Errorf("a window that ends after the range: %q", got)
+	}
+	far := edge
+	far.proposed = tm("9999-12-31T23:30:00Z")
+	if got := acceptBlock(far, now); !strings.Contains(got, "too far ahead") || !strings.Contains(got, "10000-01-01T01:30:00Z") {
+		t.Errorf("a proposal in year 9999: %q", got)
+	}
 	// the hold is named before the passed time, as the refusals are ordered
 	both := passed
 	both.onHold = true

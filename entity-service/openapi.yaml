@@ -5855,8 +5855,9 @@ paths:
         planned window restated) it is a decline: only DISAGREE is written and the customers keep
         their request. A staff {state: "authorize"} that finds a proposal waiting must name it
         (409 otherwise); Accept / the answer is refused with a 409 when no proposal waits, the
-        proposal or the planned window is not the one named, or the proposed start has passed or
-        the planned window has no length, and with a 400 when the change request is on hold. These
+        proposal or the planned window is not the one named, or the proposed start has passed, is
+        too far ahead (the window it gives would end after the year 2100) or the planned window has
+        no length, and with a 400 when the change request is on hold. These
         are PostgreSQL-only: ServiceNow's API has no field for them, so the dual-write mirror carries
         only what PostgreSQL committed (Accept: scheduled and the window; a counter: the window, not
         the state; a customer's proposal: nothing), the sync may rewrite the columns while it runs, and
@@ -16881,7 +16882,8 @@ components:
           type: string
           description: >-
             Staff readers only, when canAccept is false: why, in the words of the refusal (on hold, the
-            proposed start has passed, the planned window has no length to keep).
+            proposed start has passed or would end beyond the year 2100, the planned window has no
+            length to keep).
 
     ChangeRequest:
       allOf:

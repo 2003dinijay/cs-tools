@@ -4335,7 +4335,12 @@ racing client never answers a proposal it did not see (409). One sent when none 
   it (it is now <start> to <end>); read it again before responding`; 400 `change request is on hold; take it off hold
   (onHold: false) before changing its state`; 409 `the time the customer proposed (<RFC 3339>) has already passed, so it
   cannot be accepted: use "Propose a different time" to ask the customer to approve another time`; 409 `the planned window
-  has no length, so the customer's proposed start cannot be applied to it: use "Propose a different time"`.
+  has no length, so the customer's proposed start cannot be applied to it: use "Propose a different time"`; 409 `the time
+  the customer proposed (<RFC 3339>) is too far ahead to be accepted: the window would end after the year 2100 (<end>),
+  so use "Propose a different time" to ask the customer to approve another time` (`customer_updated_on` is a column
+  ServiceNow writes too; a customer's own proposal never gets there, `proposeCustomerTime` refuses it, but Accept
+  writes the window it gives, which is held to the range every planned window is:
+  `TestChangeRequestProposalIntegration_AnAcceptStaysInsideTheRangeOfEveryWindow`).
 * Propose a different time / Re-schedule: the existing refusals plus 400 `customer approval is required but nobody on this
   project can be asked (...)` (a changed window only); 409 `the customer proposed a new time (<RFC 3339>) after you opened
   this change request; read it again to accept it or propose a different time`; 409 `the customer's proposed time is no
@@ -4351,7 +4356,7 @@ omitted when `customer_updated_on` is NULL or infinite): `startOn` (RFC 3339, wi
 seconds only when there are some, so it goes back as `expectedCustomerUpdatedOn` unchanged), `answer` (`pending` |
 `agreed` | `disagreed` | `unanswered`), and while pending: `endOn` (start + the planned length), `proposerRecorded`,
 and, for a staff reader, `proposedByName` / `proposedByEmail` / `proposedOn` (only when `proposerRecorded`), `canAccept`
-and `acceptBlockedReason` (on hold / the proposed start has passed / no length to keep, in the words of the refusal); for
+and `acceptBlockedReason` (on hold / the proposed start has passed / no length to keep / the window would end beyond the range every window is held to, in the words of the refusal); for
 an external reader `proposedByViewer` and no names. **Who proposed it is knowable only while `work_item.updated_by` (the
 last writer) is a registered contact of the project**; a date a WSO2 user wrote in ServiceNow, an old one, or a proposal
 edited over since reads `proposerRecorded: false` and the pages say the proposer is not recorded (nothing is added to

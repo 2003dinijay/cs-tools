@@ -455,6 +455,53 @@ func TestChangeRequestProposalIntegration_OnHoldAndPast(t *testing.T) {
 	})
 }
 
+// customer_updated_on is a column ServiceNow writes as well, and nothing there keeps it inside the
+// range every planned window is held to. Accept writes the proposal as the planned start and
+// start + the planned length as the end, so a date that would put the end past the range is not one
+// WSO2 can accept (409, the read model says so in the same words); the last window inside the range
+// is, and a different time is still WSO2's to propose.
+func TestChangeRequestProposalIntegration_AnAcceptStaysInsideTheRangeOfEveryWindow(t *testing.T) {
+	for name, tc := range map[string]struct{ start, end, refusal string }{
+		"the end passes the last year by the planned length": {"2100-12-31T23:00:00Z", "2101-01-01T01:00:00Z", ""},
+		"a date in the year 9999":                           {"9999-12-31T23:30:00Z", "10000-01-01T01:30:00Z", ""},
+		"the last window that fits":                         {"2100-12-31T20:00:00Z", "2100-12-31T22:00:00Z", "fits"},
+	} {
+		tc := tc
+		t.Run(name, func(t *testing.T) {
+			f := newCustomerGroupFlow(t)
+			id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
+			f.syncWritesConversation(id, sp(tc.start), "")
+			p := f.proposalOf(id)
+			if p == nil || p.Answer != "pending" || p.CanAccept == nil {
+				t.Fatalf("customerProposal = %+v, want a waiting proposal", p)
+			}
+			if tc.refusal == "fits" {
+				if !*p.CanAccept || p.AcceptBlockedReason != nil {
+					t.Fatalf("a window ending inside the range is blocked: %+v", p)
+				}
+				f.mustAccept(id)
+				f.expect(id, "after Accept", "SCHEDULED", "implement", "canceled")
+				f.wantPlanned(id, "after Accept", tc.start, tc.end)
+				return
+			}
+			want := "the time the customer proposed (" + tc.start + ") is too far ahead to be accepted: the window would end after the year 2100 (" + tc.end +
+				`), so use "Propose a different time" to ask the customer to approve another time`
+			if *p.CanAccept || p.AcceptBlockedReason == nil || *p.AcceptBlockedReason != want {
+				t.Fatalf("customerProposal = %+v, want Accept blocked with %q", p, want)
+			}
+			before := f.snap(id)
+			_, err := f.accept(id)
+			f.wantConflictExact("Accept beyond the range", err, want)
+			f.wantRefusedSame("Accept beyond the range", id, before, err)
+			// WSO2's own window is the answer that remains.
+			if err := f.counter(id, sp(rsStart3), sp(rsEnd3)); err != nil {
+				t.Fatalf("a different time after an unacceptable proposal: %v", err)
+			}
+			f.wantConversation(id, "after the different time", tc.start, "DISAGREE")
+		})
+	}
+}
+
 // The refusal for a window with no length is checked with a window the page can name: the
 // expectation must match the stored window, so a window the stored row does not have is the
 // stale-window 409 first, and with no end at all the page has nothing to name. The cases
