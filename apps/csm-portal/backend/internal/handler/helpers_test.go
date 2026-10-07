@@ -743,6 +743,17 @@ type mockEntityIncidentClient struct {
 	searchCommentsFn             func(ctx context.Context, body []byte) ([]byte, error)
 	searchIncidentActivitiesFn   func(ctx context.Context, id string, body []byte) ([]byte, error)
 	handOffIncidentFn            func(ctx context.Context, id string, body []byte) ([]byte, error)
+	getUserMeFn                  func(ctx context.Context) ([]byte, error)
+}
+
+// GetUserMe defaults to the platform user record for testUser/testCsEngineerUser
+// alike (the ownership check never reads user.UserID — see resolveCurrentUserID's
+// own doc comment), matching mockEntityCaseClient's identical default.
+func (m *mockEntityIncidentClient) GetUserMe(ctx context.Context) ([]byte, error) {
+	if m.getUserMeFn != nil {
+		return m.getUserMeFn(ctx)
+	}
+	return []byte(`{"id":"` + testPlatformUserID + `","email":"` + testUser.Email + `"}`), nil
 }
 
 func (m *mockEntityIncidentClient) SearchIncidents(ctx context.Context, body []byte) ([]byte, error) {

@@ -18,12 +18,14 @@ package handler
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
 func TestSearchIncidents(t *testing.T) {
@@ -452,6 +454,10 @@ func TestPatchIncident(t *testing.T) {
 		var capturedID string
 		var capturedBody []byte
 		client := &mockEntityIncidentClient{
+			getIncidentFn: func(_ context.Context, _ string) ([]byte, error) {
+				// IN_PROGRESS -> RESOLVED is a legal transition (see incident_state.go).
+				return []byte(`{"id":"` + incidentID + `","state":"IN_PROGRESS"}`), nil
+			},
 			patchIncidentFn: func(_ context.Context, id string, body []byte) ([]byte, error) {
 				capturedID = id
 				capturedBody = body
@@ -497,6 +503,168 @@ func TestPatchIncident(t *testing.T) {
 				assertContentType(t, w, "application/json")
 			})
 		}
+	})
+
+	// Transition guard (digiops-cs#3321, Scenario 3): previously nothing
+	// server-side checked that a state PATCH's target was actually reachable
+	// from the incident's current state — only that the target value was a
+	// legal enum member. See incident_state.go.
+	t.Run("transition guard", func(t *testing.T) {
+		t.Run("rejects an illegal transition (NEW straight to CLOSED)", func(t *testing.T) {
+			client := &mockEntityIncidentClient{
+				getIncidentFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + incidentID + `","state":"NEW"}`), nil
+				},
+			}
+			h := NewIncidentHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/incidents/"+incidentID, strings.NewReader(`{"state":"CLOSED"}`)))
+			r.SetPathValue("id", incidentID)
+			w := httptest.NewRecorder()
+			h.PatchIncident(w, r)
+			assertStatus(t, w, http.StatusBadRequest)
+			assertErrorMessage(t, w, ErrMsgInvalidTransition)
+		})
+
+		t.Run("allows a legal forward transition (NEW to IN_PROGRESS)", func(t *testing.T) {
+			client := &mockEntityIncidentClient{
+				getIncidentFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + incidentID + `","state":"NEW"}`), nil
+				},
+				patchIncidentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					return []byte(`{"message":"incident updated","incident":{"id":"` + incidentID + `"}}`), nil
+				},
+			}
+			h := NewIncidentHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/incidents/"+incidentID, strings.NewReader(`{"state":"IN_PROGRESS"}`)))
+			r.SetPathValue("id", incidentID)
+			w := httptest.NewRecorder()
+			h.PatchIncident(w, r)
+			assertStatus(t, w, http.StatusOK)
+		})
+
+		t.Run("allows a same-state resend with no 400", func(t *testing.T) {
+			client := &mockEntityIncidentClient{
+				getIncidentFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + incidentID + `","state":"IN_PROGRESS"}`), nil
+				},
+				patchIncidentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					return []byte(`{"message":"incident updated","incident":{"id":"` + incidentID + `"}}`), nil
+				},
+			}
+			h := NewIncidentHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/incidents/"+incidentID, strings.NewReader(`{"state":"IN_PROGRESS"}`)))
+			r.SetPathValue("id", incidentID)
+			w := httptest.NewRecorder()
+			h.PatchIncident(w, r)
+			assertStatus(t, w, http.StatusOK)
+		})
+
+		t.Run("rejects a transition out of a terminal state", func(t *testing.T) {
+			client := &mockEntityIncidentClient{
+				getIncidentFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + incidentID + `","state":"CANCELLED"}`), nil
+				},
+			}
+			h := NewIncidentHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/incidents/"+incidentID, strings.NewReader(`{"state":"IN_PROGRESS"}`)))
+			r.SetPathValue("id", incidentID)
+			w := httptest.NewRecorder()
+			h.PatchIncident(w, r)
+			assertStatus(t, w, http.StatusBadRequest)
+			assertErrorMessage(t, w, ErrMsgInvalidTransition)
+		})
+
+		t.Run("a non-state PATCH is unaffected (no fetch)", func(t *testing.T) {
+			var getIncidentCalls int
+			client := &mockEntityIncidentClient{
+				getIncidentFn: func(_ context.Context, _ string) ([]byte, error) {
+					getIncidentCalls++
+					return []byte(`{}`), nil
+				},
+				patchIncidentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					return []byte(`{"message":"incident updated","incident":{"id":"` + incidentID + `"}}`), nil
+				},
+			}
+			h := NewIncidentHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/incidents/"+incidentID, strings.NewReader(`{"subject":"Updated"}`)))
+			r.SetPathValue("id", incidentID)
+			w := httptest.NewRecorder()
+			h.PatchIncident(w, r)
+			assertStatus(t, w, http.StatusOK)
+			if getIncidentCalls != 0 {
+				t.Errorf("GetIncident calls = %d, want 0: a non-state PATCH must never trigger the transition/ownership fetch", getIncidentCalls)
+			}
+		})
+	})
+
+	// Close-ownership guard (digiops-cs#3321, Scenarios 1-2): closing an
+	// incident is restricted to its own assignee, unless the caller is
+	// admin. Mirrors PatchCase's own close-ownership guard tests.
+	t.Run("close-ownership guard", func(t *testing.T) {
+		t.Run("succeeds when caller is the assignee", func(t *testing.T) {
+			client := &mockEntityIncidentClient{
+				getIncidentFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + incidentID + `","state":"RESOLVED","assignedTo":{"id":"` + testPlatformUserID + `"}}`), nil
+				},
+				patchIncidentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					return []byte(`{"message":"incident updated","incident":{"id":"` + incidentID + `"}}`), nil
+				},
+			}
+			h := NewIncidentHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/incidents/"+incidentID, strings.NewReader(`{"state":"CLOSED"}`)))
+			r.SetPathValue("id", incidentID)
+			w := httptest.NewRecorder()
+			h.PatchIncident(w, r)
+			assertStatus(t, w, http.StatusOK)
+		})
+
+		t.Run("rejects when caller is not the assignee", func(t *testing.T) {
+			client := &mockEntityIncidentClient{
+				getIncidentFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + incidentID + `","state":"RESOLVED","assignedTo":{"id":"someone-else"}}`), nil
+				},
+			}
+			h := NewIncidentHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/incidents/"+incidentID, strings.NewReader(`{"state":"CLOSED"}`)))
+			r.SetPathValue("id", incidentID)
+			w := httptest.NewRecorder()
+			h.PatchIncident(w, r)
+			assertStatus(t, w, http.StatusForbidden)
+			assertErrorMessage(t, w, ErrMsgIncidentCloseNotOwnCase)
+		})
+
+		t.Run("rejects closing an unassigned incident", func(t *testing.T) {
+			client := &mockEntityIncidentClient{
+				getIncidentFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + incidentID + `","state":"RESOLVED"}`), nil
+				},
+			}
+			h := NewIncidentHandler(client)
+			r := withUser(httptest.NewRequest(http.MethodPatch, "/incidents/"+incidentID, strings.NewReader(`{"state":"CLOSED"}`)))
+			r.SetPathValue("id", incidentID)
+			w := httptest.NewRecorder()
+			h.PatchIncident(w, r)
+			assertStatus(t, w, http.StatusForbidden)
+			assertErrorMessage(t, w, ErrMsgIncidentCloseNotOwnCase)
+		})
+
+		t.Run("admin may close regardless of assignee", func(t *testing.T) {
+			client := &mockEntityIncidentClient{
+				getIncidentFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + incidentID + `","state":"RESOLVED","assignedTo":{"id":"someone-else"}}`), nil
+				},
+				patchIncidentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					return []byte(`{"message":"incident updated","incident":{"id":"` + incidentID + `"}}`), nil
+				},
+			}
+			h := NewIncidentHandler(client).WithAccessGuard(NewAccessGuard(testAccessConfig()))
+			r := httptest.NewRequest(http.MethodPatch, "/incidents/"+incidentID, strings.NewReader(`{"state":"CLOSED"}`))
+			r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "admin@example.com", UserID: "admin-1", Roles: []string{"test-admin"}}))
+			r.SetPathValue("id", incidentID)
+			w := httptest.NewRecorder()
+			h.PatchIncident(w, r)
+			assertStatus(t, w, http.StatusOK)
+		})
 	})
 }
 
@@ -916,16 +1084,32 @@ func TestIncidentLifecycle_WithoutSubcategory(t *testing.T) {
 	const createPayload = `{"subject":"Gateway returning 502s","category":"SERVICE_INTERRUPTION","serviceId":"22222222-2222-2222-2222-222222222222","contactType":"EMAIL","impact":"HIGH","urgency":"LOW","callerId":"11111111-1111-1111-1111-111111111111"}`
 
 	var forwarded []string
+	currentState := incidentStateNew // mirrors the real entity service's starting state
 	client := &mockEntityIncidentClient{
 		createIncidentFn: func(_ context.Context, body []byte) ([]byte, error) {
 			forwarded = append(forwarded, string(body))
 			return []byte(`{"message":"Incident created successfully.","incident":{"id":"` + incidentID + `","number":"INC0090001"}}`), nil
+		},
+		// getIncidentFn/patchIncidentFn together simulate a real backing
+		// store's state progression across the lifecycle below, since the
+		// close-ownership/transition guard now fetches the incident's
+		// current state before every state-changing PATCH. assignedTo is
+		// the test caller's own platform id, so the final close step's
+		// ownership check passes the same way a real assignee's PATCH would.
+		getIncidentFn: func(_ context.Context, _ string) ([]byte, error) {
+			return []byte(`{"id":"` + incidentID + `","state":"` + currentState + `","assignedTo":{"id":"` + testPlatformUserID + `"}}`), nil
 		},
 		patchIncidentFn: func(_ context.Context, id string, body []byte) ([]byte, error) {
 			if id != incidentID {
 				t.Errorf("PATCH forwarded for id %q, want %q", id, incidentID)
 			}
 			forwarded = append(forwarded, string(body))
+			var patch struct {
+				State string `json:"state"`
+			}
+			if err := json.Unmarshal(body, &patch); err == nil && patch.State != "" {
+				currentState = patch.State
+			}
 			return []byte(`{"message":"Incident updated successfully.","incident":{"id":"` + incidentID + `"}}`), nil
 		},
 	}
