@@ -2995,15 +2995,23 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		argIdx++
 	}
 
-	// projectOnboardingStatus: the parent project's onboarding_status (p is
-	// the LEFT JOIN below). A case whose project has no status set (NULL)
-	// satisfies notIn -- "not in progress" is true of it -- but never in.
+	// projectOnboardingStatus: the parent project's onboarding_status, matched
+	// via a targeted id lookup against "project" directly rather than through
+	// the LEFT JOIN to p -- the same "find the matching ids once, independent
+	// of every other join, instead of filtering after the join" technique
+	// caseLikeStateLookupClause uses, for the identical reason: confirmed
+	// against real production-volume data that this lets the planner drop
+	// the join to "project" from the COUNT query entirely (nothing else in a
+	// COUNT references p), where filtering through the join forces it to be
+	// evaluated for every candidate row regardless. A case whose project has
+	// no status set (NULL), or has no project at all, satisfies notIn --
+	// "not in progress" is true of it -- but never in.
 	if len(req.Parsed.ProjectOnboardingStatuses) > 0 {
 		labels, err := onboardingStatusEnumLabels("projectOnboardingStatus", req.Parsed.ProjectOnboardingStatuses)
 		if err != nil {
 			return "", nil, argIdx, err
 		}
-		where += fmt.Sprintf(" AND p.onboarding_status = ANY($%d::text[]::onboarding_status_enum[])", argIdx)
+		where += fmt.Sprintf(" AND wi.project_id = ANY(ARRAY(SELECT id FROM project WHERE onboarding_status = ANY($%d::text[]::onboarding_status_enum[])))", argIdx)
 		filterArgs = append(filterArgs, labels)
 		argIdx++
 	}
@@ -3012,7 +3020,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		if err != nil {
 			return "", nil, argIdx, err
 		}
-		where += fmt.Sprintf(" AND (p.onboarding_status IS NULL OR p.onboarding_status <> ALL($%d::text[]::onboarding_status_enum[]))", argIdx)
+		where += fmt.Sprintf(" AND (wi.project_id IS NULL OR wi.project_id = ANY(ARRAY(SELECT id FROM project WHERE onboarding_status IS NULL OR onboarding_status <> ALL($%d::text[]::onboarding_status_enum[]))))", argIdx)
 		filterArgs = append(filterArgs, labels)
 		argIdx++
 	}

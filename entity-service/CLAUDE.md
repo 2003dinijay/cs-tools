@@ -7084,18 +7084,43 @@ database time of any query this service runs, by far: every row
 the `COALESCE` can even be evaluated, for every `state` filter on every case
 search. `caseLikeStateLookupClause` (`case_field_predicates.go`) replaces the
 `WHERE` predicate for both the `state` (`in`) and `ExcludeStates` (`notIn`)
-filters with a `wi.id [NOT ]IN (SELECT id FROM <type-table> WHERE state ...
-UNION ALL ...)` lookup, scoped to exactly the type(s) the request's own
-`type` filter already named -- every dashboard widget's case search is, in
-practice, a `{type}` filter alongside a `{state}` filter, so this lets the
-planner use that type's own existing state index (e.g. `idx_case_state`) and
-skip the other four extension-table joins entirely, instead of joining
-everything and filtering after. Falls back to checking every case-like type
-(same coverage as the `COALESCE` it replaces) whenever the request names no
-type of its own -- the `DefaultTypes` case, and any `anyOf` branch that
-doesn't narrow `type` itself. The `SELECT` list's own display column still
-reads `caseLikeStateColumn` as before; only the `WHERE`-clause matching
-changed.
+filters with a `wi.id = ANY(ARRAY(SELECT id FROM <type-table> WHERE state ...
+UNION ALL ...))` lookup (`<> ALL(ARRAY(...))` for `notIn`), scoped to exactly
+the type(s) the request's own `type` filter already named -- every dashboard
+widget's case search is, in practice, a `{type}` filter alongside a `{state}`
+filter, so this lets the planner use that type's own existing state index
+(e.g. `idx_case_state`) and skip the other four extension-table joins
+entirely, instead of joining everything and filtering after. Falls back to
+checking every case-like type (same coverage as the `COALESCE` it replaces)
+whenever the request names no type of its own -- the `DefaultTypes` case, and
+any `anyOf` branch that doesn't narrow `type` itself. The `SELECT` list's own
+display column still reads `caseLikeStateColumn` as before; only the
+`WHERE`-clause matching changed.
+
+**Wrapped in `ARRAY(...)` rather than used as a bare `wi.id [NOT ]IN (...)`
+subquery.** Confirmed against real production-volume data that the `ARRAY`
+form evaluates the `UNION ALL` exactly once (an upfront, independent
+computation) and then probes `work_item`'s own primary key per element,
+while a bare `IN`/`NOT IN` subquery here is prone to being planned as a join
+against the subquery's result set instead -- which, combined with this
+schema's row-level-security predicates layered onto every table, measured
+meaningfully slower than the `ARRAY` form for the identical result. ids are
+always non-`NULL` (each branch selects a primary key), so `<> ALL` is an
+exact negation of `= ANY` here, with no three-valued-logic subtlety to
+account for.
+
+**`projectOnboardingStatus`/its `notIn` sibling get the identical treatment**
+(`buildCaseSearchWhere`, same file): matched via
+`wi.project_id = ANY(ARRAY(SELECT id FROM project WHERE onboarding_status =
+ANY(...)))` instead of through the `LEFT JOIN` to `p` -- confirmed this lets
+the planner drop the join to `project` from the `COUNT` query entirely
+(nothing else in a `COUNT` references `p`), where filtering through the join
+forces it to be evaluated for every candidate row regardless of how small
+`project` itself is. The `notIn` form preserves the exact same `NULL`
+handling as before (a case with no project, or whose project has no status
+set, satisfies `notIn` but never `in`): `(wi.project_id IS NULL OR
+wi.project_id = ANY(ARRAY(SELECT id FROM project WHERE onboarding_status IS
+NULL OR onboarding_status <> ALL(...))))`.
 
 **Known, accepted divergence**: a work_item row whose own `type` disagrees
 with which extension table actually holds its data (see the bullet above --
@@ -7107,10 +7132,10 @@ misses it whenever the request narrows `type` to something other than the
 table the row's data actually lives in (the `COALESCE` would have matched
 it there), and a `notIn` filter wrongly keeps it for the mirror-image reason
 -- its declared type's own table has no row to find, so the lookup can never
-see the state that should have excluded it, and the row passes `NOT IN`
-when the old `COALESCE` would have excluded it. Deliberately not fixed by
-always checking every table regardless of the request's own type filter --
-that would reproduce the exact cost this rewrite exists to avoid, to
+see the state that should have excluded it, and the row passes the `notIn`
+check when the old `COALESCE` would have excluded it. Deliberately not fixed
+by always checking every table regardless of the request's own type filter
+-- that would reproduce the exact cost this rewrite exists to avoid, to
 compensate for a handful of rows a separate sync-side data-quality issue
 produced, not something every case search should pay for indefinitely.
 
