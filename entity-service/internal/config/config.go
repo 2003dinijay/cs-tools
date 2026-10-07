@@ -294,6 +294,18 @@ type Config struct {
 	// them by event type, as it already does on every topic. Empty keeps the
 	// two separate topics exactly as before.
 	SREEventHubTopic string
+	// SRAlertSRETeamIDs are the SRE teams (group ids) whose new service
+	// requests are automated the way ServiceNow's "SR New Request -
+	// Acknowledge & Chat Alert" flow does it: the SR is assigned to its
+	// account's SRE team and gets the automatic acknowledgement comment. The
+	// flow's own trigger is limited to one team (MS/PC SRE Group,
+	// 6c3db375-1b1c-b2d0-a002-c9d3604bcb0c), hence a list rather than a switch.
+	// Empty -- the default -- automates no team. sr.* events are published to
+	// SREEventHubTopic regardless; this list only gates the two writes.
+	//
+	// Leave a team off while ServiceNow's flow still runs for it, or its SRs
+	// are assigned, commented on and announced twice.
+	SRAlertSRETeamIDs []string
 	// OutageNoticePollInterval is the drainer's FALLBACK poll (default 60s).
 	// The emails normally go out about a second after an outage changes: the
 	// drainer LISTENs for migration 0186's NOTIFY. This interval only catches
@@ -633,6 +645,7 @@ func Load() *Config {
 		CRNoticePollInterval:                          envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
 		OutageEventHubTopic:                           getEnvOrDefault("OUTAGE_EVENT_HUB_TOPIC", "outage-events"),
 		SREEventHubTopic:                              strings.TrimSpace(os.Getenv("SRE_EVENT_HUB_TOPIC")),
+		SRAlertSRETeamIDs:                             splitComma(os.Getenv("SR_ALERT_SRE_TEAM_IDS")),
 		OutageNoticePollInterval:                      envDuration("OUTAGE_NOTICE_POLL_INTERVAL", 60*time.Second),
 		OutageNotificationRecipients:                  splitComma(os.Getenv("OUTAGE_NOTIFICATION_RECIPIENTS")),
 		OutageCommunicationRecipients:                 splitComma(os.Getenv("OUTAGE_COMMUNICATION_RECIPIENTS")),
@@ -841,6 +854,13 @@ func (c *Config) Validate() error {
 	} {
 		if t.val <= 0 {
 			return fmt.Errorf("%s must be greater than 0, got %s", t.name, t.val)
+		}
+	}
+	// A team id that is not a UUID can never match account.sre_team_id, so
+	// the team it was meant to automate would silently never be.
+	for _, id := range c.SRAlertSRETeamIDs {
+		if !validate.IsUUID(id) {
+			return fmt.Errorf("SR_ALERT_SRE_TEAM_IDS: %q is not a UUID", id)
 		}
 	}
 	// The health server is a separate listener precisely so that only its

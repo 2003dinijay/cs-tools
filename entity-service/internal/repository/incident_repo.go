@@ -720,7 +720,7 @@ func (r *incidentRepo) ApplySpecialistHandoff(ctx context.Context, id, actorEmai
 			return SpecialistHandoffWritten{}, fmt.Errorf("specialist handoff: move incident: %w", err)
 		}
 
-		// The runbook task: a portal-numbered incident_task, OPEN and active,
+		// The runbook task: a TASK-numbered incident_task (migration 0201), OPEN and active,
 		// CRITICAL (ServiceNow's priority 1), on the incident's service.
 		err = tx.QueryRow(ctx, `
 			WITH inserted_work_item AS (
@@ -730,7 +730,7 @@ func (r *incidentRepo) ApplySpecialistHandoff(ctx context.Context, id, actorEmai
 				)
 				VALUES (
 					gen_random_uuid(), NOW(), NOW(), $1, $1,
-					next_portal_work_item_number(), $2, 'INCIDENT_TASK'::work_item_type_enum,
+					next_work_item_number('INCIDENT_TASK'), $2, 'INCIDENT_TASK'::work_item_type_enum,
 					(SELECT g.id FROM "group" g WHERE g.id = $3::uuid)
 				)
 				RETURNING id, number

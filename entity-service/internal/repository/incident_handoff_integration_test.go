@@ -117,7 +117,7 @@ func TestSpecialistHandoff_WritesAndReadsBack(t *testing.T) {
 	if seen.State != "IN_PROGRESS" || seen.ServiceID == nil || *seen.ServiceID != icServiceID || seen.Number == "" {
 		t.Errorf("snapshot %+v, want the In Progress incident on %s", seen, icServiceID)
 	}
-	if written.GroupName != "Test Sub Special Ops" || !strings.HasPrefix(written.TaskNumber, "CS-PORTAL-") {
+	if written.GroupName != "Test Sub Special Ops" || !strings.HasPrefix(written.TaskNumber, "TASK1") {
 		t.Errorf("written %+v", written)
 	}
 

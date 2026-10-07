@@ -68,6 +68,16 @@ type ProblemRepository interface {
 	// GetProblem returns the full detail of a single problem by its UUID,
 	// or a NotFoundError if no matching row exists.
 	GetProblem(ctx context.Context, id string) (domain.ProblemDetail, error)
+	// LinkWorkaroundProblem completes a workaround problem that
+	// CreateProblemFromServiceNow has just inserted for incidentID, with what
+	// ServiceNow gets too: the assignment group (mirrored as a field edit) and
+	// the incident's problem_id (mirrored on the incident), in one
+	// transaction. Nothing ServiceNow cannot hold is written, so both stores
+	// agree. A group missing from the database leaves the problem unassigned,
+	// as the Postgres-only flow does; the group actually stored is returned,
+	// so only that one is mirrored. Returns ErrIncidentNotFound if incidentID
+	// is not an incident.
+	LinkWorkaroundProblem(ctx context.Context, problemID, incidentID string, groupID *string, actorEmail string) (*string, error)
 	// CreateProblemFromServiceNow inserts a new problem row (both work_item
 	// and "problem"), for DATA_SOURCE=postgres-servicenow-dual-write's
 	// SN-first problem creation (see
@@ -802,4 +812,34 @@ func updateProblemFieldsTx(ctx context.Context, tx pgx.Tx, req domain.UpdateProb
 	}
 
 	return updatedOn, nil
+}
+
+// LinkWorkaroundProblem implements ProblemRepository.
+func (r *problemRepo) LinkWorkaroundProblem(ctx context.Context, problemID, incidentID string, groupID *string, actorEmail string) (*string, error) {
+	ctx = WithSystemIdentity(ctx)
+	var stored *string
+	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		tag, err := tx.Exec(ctx, `UPDATE incident SET problem_id = $2::uuid WHERE id = $1`, incidentID, problemID)
+		if err != nil {
+			return fmt.Errorf("link workaround problem %s to incident %s: %w", problemID, incidentID, err)
+		}
+		if tag.RowsAffected() == 0 {
+			return ErrIncidentNotFound
+		}
+		if _, err := tx.Exec(ctx, `UPDATE work_item SET updated_on = NOW(), updated_by = $2 WHERE id = $1`, incidentID, actorEmail); err != nil {
+			return fmt.Errorf("link workaround problem: touch incident %s: %w", incidentID, err)
+		}
+		if err := tx.QueryRow(ctx, `
+			UPDATE work_item
+			SET assignment_group_id = (SELECT g.id FROM "group" g WHERE g.id = $2::uuid)
+			WHERE id = $1
+			RETURNING assignment_group_id::text`, problemID, groupID).Scan(&stored); err != nil {
+			return fmt.Errorf("link workaround problem %s: group: %w", problemID, err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	return stored, nil
 }

@@ -92,6 +92,27 @@ type caseService struct {
 	// WithProductCategoryEnforcement's own doc comment.
 	referenceDataRepo   repository.ReferenceDataRepository
 	deployedProductRepo repository.DeployedProductRepository
+	// srNotices runs the service-request automation and publishes the sr.*
+	// events (see SRNoticeService). nil unless wired via WithSRNotices.
+	srNotices srNotifier
+}
+
+// srNotifier is what caseService needs from SRNoticeService; an interface so
+// tests can observe the calls.
+type srNotifier interface {
+	OnCreated(ctx context.Context, caseID string)
+	OnComment(ctx context.Context, caseID, commentID string, commentType domain.CommentType, content, authorEmail, authorName string, createdOn time.Time)
+}
+
+// WithSRNotices attaches the service-request automation to an
+// already-constructed CaseService, the same post-construction wiring as
+// WithCSEngineerRole and for the same reason. A no-op if svc is not a
+// *caseService or n is nil.
+func WithSRNotices(svc CaseService, n *SRNoticeService) CaseService {
+	if cs, ok := svc.(*caseService); ok && n != nil {
+		cs.srNotices = n
+	}
+	return svc
 }
 
 // WithProductCategoryEnforcement attaches the optional project-type
@@ -637,6 +658,11 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	// createCaseSNFirst orders it this way: publishCaseCreatedEvent's own
 	// GetCaseByID re-fetch needs them already written to resolve Recipients.
 	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, req, c.ID)
+	// Plain Postgres only: under dual-write the SR is created in ServiceNow
+	// first, where its own flow still assigns, acknowledges and announces it.
+	if req.Type == "service_request" && s.srNotices != nil {
+		s.srNotices.OnCreated(ctx, c.ID)
+	}
 	state := ""
 	if c.State != nil {
 		state = string(*c.State)
@@ -1229,6 +1255,8 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 		return domain.CreateCaseCommentResponse{}, err
 	}
 
+	s.subscribeCommenterToWatchList(ctx, req.CaseID, actorEmail)
+
 	// Computed once, used by both the SLA-engine hook and the published
 	// event's own IsSupportEngineerResponse flag below -- see
 	// isSupportEngineerAuthor's own doc comment. Only resolved when at
@@ -1262,6 +1290,13 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 			cv.WatchList = s.filterActiveWatchListUsers(ctx, cv, cv.WatchList)
 			publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.ProjectOnboardingInfo, cv, req, c.ID, authorName, actorEmail, isSupportEngineerResponse)
 		}
+	}
+
+	// sr.comment_added, for a comment on a service request. Independent of
+	// the case.comment_added publish above, which is skipped when a case has
+	// no recipients.
+	if s.srNotices != nil {
+		s.srNotices.OnComment(ctx, req.CaseID, c.ID, req.Type, req.Content, actorEmail, authorName, c.CreatedOn)
 	}
 
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write
@@ -1336,6 +1371,34 @@ func (s *caseService) completeResponseSLAOnComment(ctx context.Context, caseID s
 		return
 	}
 	s.slaEngine.CompleteResponseClock(ctx, caseID)
+}
+
+// subscribeCommenterToWatchList adds actorEmail's resolved user as a watcher
+// of caseID whenever they aren't one already -- by explicit product
+// decision, a case's watch list is no longer just who was explicitly added
+// to it, it's also whoever has actually commented on it (see
+// fetchCaseWatchers' own doc comment for the other half of that same
+// decision, the synthesized account-stakeholder entries). Scoped to this one
+// case: CaseRepository.AddCaseWatcherIfAbsent only ever touches
+// work_item_watcher rows keyed by this caseID, so commenting on one case
+// never subscribes anyone to any other.
+//
+// Best-effort and silent on failure, same posture as every other
+// comment-creation side effect in this file (completeResponseSLAOnComment,
+// publishCommentAddedEvent): the comment itself has already been written by
+// the time this runs, so a lookup or write failure here must never undo
+// that or fail the request. An actorEmail that doesn't resolve to a real
+// user row (the M2M CreateCaseCommentAs path deliberately has none -- see
+// that method's own doc comment) is skipped the same way
+// isSupportEngineerAuthor already treats it: can't confirm, not an error.
+func (s *caseService) subscribeCommenterToWatchList(ctx context.Context, caseID, actorEmail string) {
+	user, err := s.userRepo.GetUserByEmail(ctx, actorEmail)
+	if err != nil {
+		return
+	}
+	if err := s.repo.AddCaseWatcherIfAbsent(ctx, caseID, user.ID); err != nil {
+		slog.ErrorContext(ctx, "create comment: subscribe commenter to watch list failed", "caseId", caseID)
+	}
 }
 
 // isSupportEngineerAuthor resolves whether actorEmail belongs to a user
@@ -3356,8 +3419,24 @@ func (s *caseService) SearchTags(ctx context.Context, req domain.SearchTagsReque
 	return s.repo.SearchTags(ctx, req.Filters.SearchQuery, actor.Email, limit)
 }
 
+// requireInternalCaller rejects anyone whose AccessScope is not Unrestricted
+// -- delegates to the shared RequireInternalCaller (require_internal.go).
+// Backs GetCaseFeedback: a case's submitted feedback (the customer's own
+// satisfaction rating/comment, meant as a one-way signal to WSO2 staff) is
+// never shown back to an external/customer caller, by explicit product
+// decision -- not even to the customer who submitted it, and not even for a
+// case they are themselves a registered contact on. This is the identical
+// "no scope short of internal is safe to hand this out under" reasoning
+// slaStatusService's own requireInternalCaller already documents.
+func (s *caseService) requireInternalCaller(ctx context.Context) error {
+	return RequireInternalCaller(ctx, s.access, "case feedback can only be viewed by internal users")
+}
+
 // GetCaseFeedback implements CaseService.
 func (s *caseService) GetCaseFeedback(ctx context.Context, id string) (domain.CaseEmojiFeedback, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.CaseEmojiFeedback{}, err
+	}
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.CaseEmojiFeedback{}, err
 	}
@@ -3399,6 +3478,19 @@ func (s *caseService) SubmitCaseFeedback(ctx context.Context, id string, req dom
 		return domain.SubmitCaseFeedbackResponse{}, err
 	}
 
+	// A caller may only submit feedback for a case they actually have access
+	// to -- enforced by CreateCaseFeedback's own existence/state check
+	// (case_feedback_repo.go), which runs under this same request's
+	// identity (stamped onto ctx once, by callerIdentityMiddleware, before
+	// this handler ever ran): work_item's own RLS policy already makes a
+	// case outside the caller's scope invisible to that query, the same
+	// "exists, just not yours -> NotFoundError" posture every by-id case
+	// read already has. Deliberately NOT re-checked here via a second,
+	// separate GetCaseByID call (an earlier revision did this) -- that
+	// would have been a second, much heavier query (GetCaseByID's own
+	// ~15-join case-detail hydration, plus its tags/watchers round trips)
+	// re-proving something RLS already guarantees for free on the one
+	// lightweight query CreateCaseFeedback already runs.
 	actor, err := s.resolveActor(ctx)
 	if err != nil {
 		return domain.SubmitCaseFeedbackResponse{}, err

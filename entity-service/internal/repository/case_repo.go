@@ -464,6 +464,16 @@ type CaseRepository interface {
 	// caseID does not exist; a ValidationError if any userID does not
 	// exist.
 	SetCaseWatchList(ctx context.Context, caseID string, userIDs []string, callerEmail string) ([]domain.WatchListUser, time.Time, error)
+	// AddCaseWatcherIfAbsent inserts one work_item_watcher row for
+	// (caseID, userID) unless one already exists -- a targeted add, unlike
+	// SetCaseWatchList's full delete+insert replace, so it can run from a
+	// comment-creation path without disturbing whatever else is already on
+	// the watch list. A no-op, not an error, when the row already exists or
+	// caseID does not exist (the comment this follows has already been
+	// written against that same caseID, so a missing case here would be a
+	// deeper, already-surfaced problem, not something to fail subscription
+	// over).
+	AddCaseWatcherIfAbsent(ctx context.Context, caseID, userID string) error
 	// AccountDefaultWatcherEmails returns the account owning projectID's
 	// four named stakeholders' email addresses -- technical_owner_id,
 	// secondary_technical_owner_id, account_manager_id,
@@ -654,6 +664,10 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 // result since every *PortalQuery below ends in the identical trailing
 // SELECT shape that helper already expects.
 func createCaseTx(ctx context.Context, tx pgx.Tx, req domain.CreateCaseRequest) (domain.Case, error) {
+	restore, err := insertAsCheckedProjectMember(ctx, tx, req.Type, req.ProjectID)
+	if err != nil {
+		return domain.Case{}, err
+	}
 	var row pgx.Row
 	switch req.Type {
 	case "announcement":
@@ -692,7 +706,70 @@ func createCaseTx(ctx context.Context, tx pgx.Tx, req domain.CreateCaseRequest) 
 	if err != nil {
 		return domain.Case{}, mapCreateCaseError(err)
 	}
+	if err := restore(ctx); err != nil {
+		return domain.Case{}, err
+	}
 	return c, nil
+}
+
+// caseInsertsCheckedByProjectMembership are the case-like types whose
+// extension table's INSERT policy is "internal, or a member of the work
+// item's project" (case_write, migration 0147; engagement_write /
+// service_request_write / security_report_analysis_write, migration 0151).
+// announcement is deliberately absent: its own policies (000085) are not a
+// membership check, and nothing here may widen them.
+var caseInsertsCheckedByProjectMembership = map[string]bool{
+	"case": true, "service_request": true, "engagement": true, "security_report_analysis": true,
+}
+
+// insertAsCheckedProjectMember lets a project member's create through the
+// extension-table INSERT policies, which as written can never pass for one.
+//
+// Each create query inserts work_item and the extension row in ONE statement
+// (data-modifying CTEs). The extension policies find the project with a
+// subquery -- is_project_member((SELECT project_id FROM work_item WHERE id =
+// <row>.id)) -- and every sub-statement of one statement shares its snapshot,
+// so that subquery cannot see the work_item row the same statement just
+// inserted. It yields NULL, and the policy refuses every non-internal caller:
+// a customer creating a case or a service request got 404 "case not found"
+// (RLS migrations 0147/0151 met the single-statement native create of #2293).
+//
+// The fix checks, up front and under the caller's own identity, exactly what
+// those policies check -- an internal caller, or a member of req.ProjectID
+// (work_item_write already enforces the same on the work_item half) -- and
+// refuses a non-member with the same 404 RLS gave. Only then is the
+// transaction marked internal for the insert, and the caller's own value is
+// put back afterwards by the returned restore. For any other type, and for
+// an internal caller, nothing changes.
+func insertAsCheckedProjectMember(ctx context.Context, tx pgx.Tx, caseType, projectID string) (func(context.Context) error, error) {
+	noop := func(context.Context) error { return nil }
+	if !caseInsertsCheckedByProjectMembership[caseType] {
+		return noop, nil
+	}
+	var previous string
+	var internal, member bool
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(current_setting('app.is_internal', true), ''),
+		       COALESCE(current_setting('app.is_internal', true) = 'true', false),
+		       COALESCE(is_project_member($1::uuid), false)`, projectID,
+	).Scan(&previous, &internal, &member); err != nil {
+		return nil, fmt.Errorf("create case: check project membership: %w", err)
+	}
+	if internal {
+		return noop, nil
+	}
+	if !member {
+		return nil, &apierror.NotFoundError{Msg: "case not found"}
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.is_internal', 'true', true)`); err != nil {
+		return nil, fmt.Errorf("create case: mark member insert: %w", err)
+	}
+	return func(ctx context.Context) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.is_internal', $1, true)`, previous); err != nil {
+			return fmt.Errorf("create case: restore caller identity: %w", err)
+		}
+		return nil
+	}, nil
 }
 
 // createCasePortalQuery is CreateCase's (the plain-Postgres, caller-initiated
@@ -2750,7 +2827,14 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	if len(req.Parsed.CreatedBy) > 0 {
 		// work_item.created_by is already a free-text email (not a UUID FK
 		// needing a join) -- see this file's other created_by fixes.
-		where += fmt.Sprintf(" AND wi.created_by = ANY($%d)", argIdx)
+		// Case-insensitive on both sides, matching conversation_repo.go's
+		// identical CreatedByMe comparison -- this one was a plain `=` until
+		// a real, reported gap: "My Cases" showed nothing for integration
+		// users whose work_item.created_by was stored in a different case
+		// than their token's own email claim (emailFromJWT does not
+		// normalize case either), while the unfiltered case list still
+		// showed those same cases fine.
+		where += fmt.Sprintf(" AND LOWER(wi.created_by) = ANY(SELECT LOWER(x) FROM unnest($%d::text[]) x)", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.CreatedBy)
 		argIdx++
 	}
@@ -3166,29 +3250,94 @@ type rowsQuerier interface {
 // work_item_watcher's own migration comment: no per-row audit trail to sort
 // by), so results are ordered by user_name for a stable, deterministic
 // response instead.
+//
+// This is more than a plain read of work_item_watcher, by explicit product
+// decision:
+//
+//   - An EXTERNAL (customer) persisted watcher is only returned when they are
+//     currently a live (non-DEACTIVATED) project_contact on the case's own
+//     project -- a customer who has since left the project must not keep
+//     showing up as a watcher forever. An INTERNAL/SYSTEM/NOT_AVAILABLE
+//     watcher (an engineer) is never subject to this check at all: project_contact
+//     is an external-contact concept with no equivalent for staff, and an
+//     engineer's own Follow/Unfollow self-subscribe (see WatchersWidget in
+//     the CSM portal webapp) must keep working regardless of project_contact
+//     membership.
+//   - The project's account's five named stakeholders (technical owner,
+//     secondary technical owner, account manager, renewal account manager,
+//     and customer success manager) are additionally synthesized into the
+//     result, each with locked=true: they were never auto-persisted into
+//     work_item_watcher (see addRequestedWatchers' own doc comment for why
+//     that floor was removed), but the product decision here is to still
+//     *display* them on this read, read-only, so a caller can see every
+//     stakeholder associated with the case without being able to remove
+//     one. This is a strictly larger set than AccountDefaultWatcherEmails'
+//     own four -- that function deliberately excludes
+//     customer_success_manager_id from the default email audience (see its
+//     own doc comment), which is a decision about who gets emailed by
+//     default, not about who the account's named stakeholders are; this
+//     display is the latter, so the CSM is included here even though they
+//     are not unioned into a case.* email's Recipients.
+//   - A user who is both a real persisted watcher AND one of those five
+//     stakeholders appears exactly once, as the locked (stakeholder) copy --
+//     the inner DISTINCT ON picks locked=true first on a duplicate id. The
+//     outer query re-sorts by user_name afterward, since DISTINCT ON itself
+//     requires its own ORDER BY to start with the DISTINCT ON column.
+//
+// LEFT JOINs throughout the project_contact/account resolution so a case
+// with no project, or a project with no account, still returns every
+// INTERNAL watcher (and filters every EXTERNAL one, having nothing to
+// validate them against) rather than erroring or returning zero rows.
 func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]domain.WatchListUser, error) {
-	// locked mirrors AccountDefaultWatcherEmails' own four stakeholder
-	// columns (minus the email resolution), joined live rather than
-	// cross-checked against a snapshot -- see
-	// WatchListUser.Locked's own doc comment on why that's deliberate.
-	// LEFT JOINs throughout so a case with no project, or a project with no
-	// account, still returns every watcher with locked=false rather than
-	// zero rows (an INNER JOIN here would silently drop every watcher on
-	// such a case, the same class of false-empty-result bug this file's own
-	// "Case-like work_item types" fixes already guard against elsewhere).
 	rows, err := q.Query(ctx, `
-		SELECT u.id, u.user_name, COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name)), u.email,
-		       COALESCE(u.id = acct.technical_owner_id, false)
-		           OR COALESCE(u.id = acct.secondary_technical_owner_id, false)
-		           OR COALESCE(u.id = acct.account_manager_id, false)
-		           OR COALESCE(u.id = acct.renewal_account_manager_id, false) AS locked
-		FROM work_item_watcher w
-		JOIN "user" u ON u.id = w.user_id
-		LEFT JOIN work_item wi ON wi.id = w.work_item_id
-		LEFT JOIN project p ON p.id = wi.project_id
-		LEFT JOIN account acct ON acct.id = p.account_id
-		WHERE w.work_item_id = $1
-		ORDER BY u.user_name`, caseID)
+		WITH case_context AS (
+			SELECT p.id AS project_id,
+			       acct.technical_owner_id, acct.secondary_technical_owner_id,
+			       acct.account_manager_id, acct.renewal_account_manager_id,
+			       acct.customer_success_manager_id
+			FROM work_item wi
+			LEFT JOIN project p ON p.id = wi.project_id
+			LEFT JOIN account acct ON acct.id = p.account_id
+			WHERE wi.id = $1
+		),
+		persisted AS (
+			SELECT u.id, u.user_name, COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name)) AS name, u.email,
+			       false AS locked
+			FROM work_item_watcher w
+			JOIN "user" u ON u.id = w.user_id
+			WHERE w.work_item_id = $1
+			  AND (
+			    u.user_type IS DISTINCT FROM 'EXTERNAL'::user_type_enum
+			    OR EXISTS (
+			        SELECT 1 FROM project_contact pc
+			        JOIN account_contact ac ON ac.id = pc.account_contact_id
+			        WHERE LOWER(ac.user_name) = LOWER(u.user_name)
+			          AND pc.project_id = (SELECT project_id FROM case_context)
+			          AND (pc.state IS NULL OR pc.state <> 'DEACTIVATED'::project_contact_state_enum)
+			    )
+			  )
+		),
+		stakeholders AS (
+			SELECT u.id, u.user_name, COALESCE(u.name, CONCAT_WS(' ', u.first_name, u.last_name)) AS name, u.email,
+			       true AS locked
+			FROM case_context cc
+			JOIN "user" u ON u.id IN (
+			    cc.technical_owner_id, cc.secondary_technical_owner_id,
+			    cc.account_manager_id, cc.renewal_account_manager_id,
+			    cc.customer_success_manager_id
+			)
+		),
+		deduped AS (
+			SELECT DISTINCT ON (id) id, user_name, name, email, locked
+			FROM (
+			    SELECT * FROM persisted
+			    UNION ALL
+			    SELECT * FROM stakeholders
+			) combined
+			ORDER BY id, locked DESC
+		)
+		SELECT id, user_name, name, email, locked FROM deduped
+		ORDER BY user_name`, caseID)
 	if err != nil {
 		return nil, fmt.Errorf("query case watch list: %w", err)
 	}
@@ -3258,6 +3407,30 @@ func (r *caseRepo) SetCaseWatchList(ctx context.Context, caseID string, userIDs 
 		return nil, time.Time{}, err
 	}
 	return watchers, updatedOn, nil
+}
+
+// AddCaseWatcherIfAbsent implements CaseRepository.
+func (r *caseRepo) AddCaseWatcherIfAbsent(ctx context.Context, caseID, userID string) error {
+	// ON CONFLICT DO NOTHING against work_item_watcher's own UNIQUE
+	// (work_item_id, user_id) constraint, not a WHERE NOT EXISTS check --
+	// the latter is a read-then-write race: two concurrent comments from the
+	// same not-yet-a-watcher user on the same case could both pass the
+	// EXISTS check before either commits, and the loser would then fail the
+	// INSERT on the unique constraint, surfacing as a confusing error from a
+	// call site (subscribeCommenterToWatchList) that only expects "add if
+	// absent" to ever fail on something genuinely wrong. ON CONFLICT
+	// resolves that atomically at the index level instead of racing two
+	// separate statements against it.
+	_, err := r.db.Exec(ctx, `
+		INSERT INTO work_item_watcher (id, work_item_id, user_id)
+		SELECT gen_random_uuid(), wi.id, $2
+		FROM work_item wi
+		WHERE wi.id = $1
+		ON CONFLICT (work_item_id, user_id) DO NOTHING`, caseID, userID)
+	if err != nil {
+		return fmt.Errorf("add case watcher if absent: %w", err)
+	}
+	return nil
 }
 
 // AccountDefaultWatcherEmails implements CaseRepository.
