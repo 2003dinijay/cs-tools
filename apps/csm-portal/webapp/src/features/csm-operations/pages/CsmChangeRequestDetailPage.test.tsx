@@ -3018,21 +3018,20 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       view.unmount();
     });
 
-    it("a proposal that is not waiting for WSO2 shows no banner: a decided one, a closed change, one a CAB stage still blocks", () => {
-      for (const setup of [
-        // WSO2 already answered (Agree/Disagree), the change moved on, or an internal approval is still being asked.
-        () => { lc.confirmation = "disagree"; },
-        () => { lc.confirmation = "agree"; lcSetState("scheduled"); },
-        () => { lcSetState("canceled"); },
-        () => { lc.approvals = [...lc.approvals, lcStage("CAB Approval", "CAB", LC_CAB)]; },
-      ]) {
-        const view = seedProposal();
-        setup();
-        lcPublish();
-        expect(queryBanner()).not.toBeInTheDocument();
-        expect(screen.queryByText("Waiting for WSO2 to respond to the customer's proposed time")).not.toBeInTheDocument();
-        view.unmount();
-      }
+    // WSO2 already answered (Agree/Disagree), the change moved on, or an internal approval is still being asked.
+    // One case each: every one renders the whole page, so together they would outlast a single test's time limit on a busy machine.
+    it.each([
+      ["WSO2 already disagreed", () => { lc.confirmation = "disagree"; }],
+      ["WSO2 agreed and the change is Scheduled", () => { lc.confirmation = "agree"; lcSetState("scheduled"); }],
+      ["the change is Canceled", () => { lcSetState("canceled"); }],
+      ["a CAB stage is still being asked", () => { lc.approvals = [...lc.approvals, lcStage("CAB Approval", "CAB", LC_CAB)]; }],
+    ] as const)("a proposal that is not waiting for WSO2 shows no banner: %s", (_name, setup) => {
+      const view = seedProposal();
+      setup();
+      lcPublish();
+      expect(queryBanner()).not.toBeInTheDocument();
+      expect(screen.queryByText("Waiting for WSO2 to respond to the customer's proposed time")).not.toBeInTheDocument();
+      view.unmount();
     });
 
     it("a stale proposed date left over from an earlier cycle (equal to the planned start) is not a proposal waiting", () => {
