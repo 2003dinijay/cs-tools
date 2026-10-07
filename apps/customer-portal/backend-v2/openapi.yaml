@@ -1984,7 +1984,9 @@ paths:
             says which: `change_request_not_asked` (a contact the customer's request was
             never sent to) or `change_request_forbidden` (not a registered contact of the
             change request's project, its own creator, or a field a customer may not set).
-            The message is the same fixed text for all of them.
+            The message is fixed text, not the reason: the generic "forbidden" text for a
+            refusal entity-service made, and its own text ("Customers can only approve or
+            reject ...") for a field a customer may not set, which this API refuses itself.
           content:
             application/json:
               schema:

@@ -73,9 +73,15 @@ const (
 	// being asked; only the proposal is refused, as with CodeChangeRequestOnHold.
 	CodeChangeRequestNoPlannedWindow = "change_request_no_planned_window"
 
-	// CodeChangeRequestNotAsked is the 403 for a contact of the project whom the
-	// customer's request was never sent to (or whose request a sibling's answer or
-	// a re-schedule withdrew): only the contacts asked may answer or propose.
+	// CodeChangeRequestNotAsked is the 403 for a contact of the project who holds
+	// no REQUESTED row on the customer stage that is LIVE (the customer is being
+	// asked, and this contact is not among those asked): registered after the
+	// request went out, or a row of theirs cancelled directly. Only the contacts
+	// asked may answer or propose. A request that was withdrawn -- a sibling's
+	// answer settled the stage, or the change left the state -- is not this refusal:
+	// no stage is live then, and an answer is a 409
+	// CodeChangeRequestApprovalNotPending (a proposal, a 409
+	// CodeChangeRequestNotProposable).
 	CodeChangeRequestNotAsked = "change_request_not_asked"
 
 	// CodeChangeRequestForbidden is the 403 for every other refusal of who may

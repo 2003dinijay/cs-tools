@@ -6072,7 +6072,8 @@ paths:
             A customer sent a field other than the customer's answer or a proposed
             window, or is not a registered PORTAL_USER contact of the change
             request's own project, or is its creator, or was not asked (a contact
-            holding no REQUESTED customer approval can neither answer nor propose).
+            holding no REQUESTED row on the live customer stage can neither answer
+            nor propose).
             The body's `errorCode` tells the two kinds apart: `change_request_not_asked`
             for a contact who was not asked, `change_request_forbidden` for the rest.
           content:
@@ -6292,7 +6293,7 @@ paths:
             ECAB, review), or -- while the change waits on its customer group's
             Customer Approval / Customer Review -- anyone not in that group.
             The message says which; the body's `errorCode` is `change_request_not_asked`
-            for a caller who is not (or no longer) asked on the customer group's stage and
+            for a caller who holds no REQUESTED row on the customer group's live stage and
             `change_request_forbidden` for the rest.
           content:
             application/json:
@@ -20130,8 +20131,9 @@ components:
             not the customer's is also being asked; the customer's own answer is still
             possible), `change_request_no_planned_window` (409: a proposed time on a change
             request with no planned window to move; the customer's answer is still possible),
-            `change_request_not_asked` (403: a contact of the project whom the customer's
-            request was never sent to, or whose request was withdrawn), and
+            `change_request_not_asked` (403: a contact of the project who holds no REQUESTED row
+            on the live customer stage: registered after the request went out, or a row of
+            theirs cancelled directly; a withdrawn request is a 409), and
             `change_request_forbidden` (403: not a registered contact of the change
             request's project, its own creator, a user who may not decide an internal
             stage, or a field a customer may not set). The list grows, so this is
