@@ -330,9 +330,9 @@ func incidentWhereClause(f domain.SearchIncidentsFilters, priorities, states, se
 	}
 	if slaViolated != nil {
 		if *slaViolated {
-			where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM sla WHERE sla.work_item_id = wi.id AND sla.has_breached = true)")
+			where += fmt.Sprintf(" AND EXISTS (SELECT 1 FROM sla_live sla WHERE sla.work_item_id = wi.id AND sla.live_has_breached = true)")
 		} else {
-			where += fmt.Sprintf(" AND NOT EXISTS (SELECT 1 FROM sla WHERE sla.work_item_id = wi.id AND sla.has_breached = true)")
+			where += fmt.Sprintf(" AND NOT EXISTS (SELECT 1 FROM sla_live sla WHERE sla.work_item_id = wi.id AND sla.live_has_breached = true)")
 		}
 	}
 	if createdStartDate != nil {

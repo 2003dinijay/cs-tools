@@ -208,8 +208,13 @@ type EventPublisherService interface {
 type SLAStatusService interface {
 	// SearchActiveSLAStatuses returns every currently-active SLA clock across
 	// every case-like work item, paginated. A ValidationError is returned for
-	// an invalid pagination limit.
-	SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination) (domain.SearchSLAStatusResponse, error)
+	// an invalid pagination limit or an unrecognized sourceFilter.
+	// sourceFilter, case-insensitive, accepts "" (no filter), "csm" or
+	// "servicenow" -- "csm" is what csm-notification-service's own
+	// Redis-recovery reconciliation pass sends, so it only ever scans this
+	// engine's own (much smaller) row set rather than the full
+	// ServiceNow-synced table.
+	SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination, sourceFilter string) (domain.SearchSLAStatusResponse, error)
 }
 
 // SLADurationPolicyService backs GET /sla-duration-policy — see

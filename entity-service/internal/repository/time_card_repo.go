@@ -57,7 +57,9 @@ type TimeCardRepository interface {
 	// non-empty it must match the case's own project (work_item.project_id);
 	// an empty req.ProjectID leaves customer_project_id NULL. Returns a
 	// ValidationError if req.CaseID does not exist, req.ProjectID does not
-	// match the case's project, or any approver id does not exist.
+	// match the case's project, any approver id does not exist, or this
+	// would bring userID's own total minutes for req.CaseID on req.Date over
+	// maxUserTicketDailyMinutes (see that constant's own doc comment).
 	CreateTimeCard(ctx context.Context, req domain.CreateTimeCardRequest, userID string) (domain.TimeCardView, error)
 	// UpdateTimeCardFields applies req's non-nil editable fields (everything
 	// except State/LeadComment, which go through TransitionTimeCardState
@@ -69,22 +71,29 @@ type TimeCardRepository interface {
 	// a ConflictError if the card does not exist, does not belong to
 	// actorID, or is not in the "submitted" state (deliberately not
 	// distinguished, the same as DeleteTimeCard below, so the response
-	// can't be used to enumerate other users' card ids/states).
+	// can't be used to enumerate other users' card ids/states). Returns a
+	// ValidationError if changing the date and/or any of its five minute
+	// fields would bring actorID's own total for this card's case on the
+	// resolved date over maxUserTicketDailyMinutes.
 	UpdateTimeCardFields(ctx context.Context, req domain.UpdateTimeCardRequest, actorID string) (domain.TimeCardView, error)
 	// TransitionTimeCardState sets the time card identified by id to state
 	// ("approved" or "rejected", validated by the caller), recording
 	// actorID as approved_by_id when approving and leadComment (if any)
-	// regardless of which transition. Only an eligible approver (a row in
-	// time_card_approver for this card) other than the card's own submitter
-	// may do this, and only while the card is still "submitted" -- both
-	// checked and then acted on inside one transaction (a SELECT ... FOR
-	// UPDATE followed by the UPDATE) so a concurrent approver-list edit or a
-	// second transition attempt can't slip through between the check and
-	// the write. Returns a NotFoundError if id does not exist; a
-	// ForbiddenError if actorID is not an eligible approver, or is the
-	// card's own submitter (self-approval); a ConflictError if the card is
-	// not currently "submitted" (already approved/rejected/processed/
-	// recalled).
+	// regardless of which transition. May be done by either an eligible
+	// approver (a row in time_card_approver for this card) or a holder of
+	// the global "admin" role (approve-by-exception, not scoped to any
+	// particular card's own approver list -- the same "admin" role
+	// recompute_user_type, migration 0011, already treats as a distinct
+	// global grant), in both cases other than the card's own submitter, and
+	// only while the card is still "submitted" -- all checked and then acted
+	// on inside one transaction (a SELECT ... FOR UPDATE followed by the
+	// UPDATE) so a concurrent approver-list/role edit or a second transition
+	// attempt can't slip through between the check and the write. Returns a
+	// NotFoundError if id does not exist; a ForbiddenError if actorID is
+	// neither an eligible approver nor an admin, or is the card's own
+	// submitter (self-approval, blocked regardless of role); a
+	// ConflictError if the card is not currently "submitted" (already
+	// approved/rejected/processed/recalled).
 	TransitionTimeCardState(ctx context.Context, id string, state domain.TimeCardState, leadComment *string, actorID string) (domain.TimeCardView, error)
 	// DeleteTimeCard permanently deletes the time card identified by id, but
 	// only if it belongs to submitterID and is still in the "submitted"
@@ -569,6 +578,82 @@ func issueComplexityFromEnum(stored string) string {
 	}
 }
 
+// maxUserTicketDailyMinutes mirrors the old SN Portal's "no more than 8
+// hours per ticket per day" rule (digiops-cs#3270), missing from this data
+// source until now. Enforced per submitter per case per day -- two different
+// engineers logging time against the same case on the same day are each
+// judged against their own total, not a combined one. The webapp's
+// LogTimeCardDialog form carries the identical 480-minute client-side check
+// (MAX_MINUTES_PER_TICKET_PER_DAY, timeCardConstants.ts) for fast feedback,
+// but that check alone is trivially bypassable by calling this API directly
+// -- this is the real enforcement boundary.
+const maxUserTicketDailyMinutes = 480
+
+// lockUserTimeCardWrites takes a transaction-scoped advisory lock keyed on
+// userID alone (not the finer (case, user, date) tuple the cap itself is
+// judged against) -- the cap check needs to read a case's id before it can
+// form that finer key for an edit (case_id isn't on UpdateTimeCardRequest),
+// and locking on userID first avoids that chicken-and-egg ordering while
+// still closing the real race: two of this same user's create/edit calls
+// landing concurrently, each reading the other's not-yet-committed sibling
+// total and both passing. Different users never share a lock key, which is
+// fine -- the cap itself is per-submitter, so their writes never interact.
+// Must be the first statement in the transaction, before any read this
+// method's caller goes on to use for the cap check.
+func lockUserTimeCardWrites(ctx context.Context, tx pgx.Tx, userID string) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, userID); err != nil {
+		return fmt.Errorf("lock user time card writes: %w", err)
+	}
+	return nil
+}
+
+// ticketDailyCapExceeded sums every OTHER non-REJECTED time_card minute-total
+// userID has already logged against caseID on date (excludeID, when set,
+// omits one time_card id -- the row being edited -- from that sum) and
+// reports whether adding newCardTotal to it would exceed
+// maxUserTicketDailyMinutes. The caller must already hold userID's
+// lockUserTimeCardWrites lock, or two concurrent writes could each read a
+// stale sibling sum and both pass.
+func ticketDailyCapExceeded(ctx context.Context, tx pgx.Tx, caseID, userID, date string, excludeID *string, newCardTotal int) (siblingTotal int, exceeded bool, err error) {
+	// work_date = $3::text::date, not a direct ::date cast: pgx v5's date
+	// codec has no encode plan for a raw Go string once the server infers
+	// the parameter's OID as `date` -- casting through text first keeps the
+	// parameter bound as text, with the date conversion happening
+	// server-side. Same fix as this file's own filter/insert date casts
+	// above.
+	// Each column is individually COALESCEd, not just the outer SUM: a row
+	// with even one NULL duration column (a real, possible shape -- see
+	// TestTimeCardIntegration_SearchTimeCardsToleratesNullDurationColumns)
+	// makes the bare "a + b + ..." arithmetic NULL for that whole row, which
+	// SUM() then silently drops instead of counting that row's other,
+	// non-NULL minutes -- undercounting a sibling and letting the cap be
+	// bypassed.
+	err = tx.QueryRow(ctx, `
+		SELECT COALESCE(SUM(
+			COALESCE(analyzing_minutes, 0) + COALESCE(setting_up_minutes, 0) +
+			COALESCE(reproducing_debugging_minutes, 0) + COALESCE(providing_solution_minutes, 0) +
+			COALESCE(patching_minutes, 0)
+		), 0)
+		FROM time_card
+		WHERE case_id = $1::uuid AND user_id = $2::uuid AND work_date = $3::text::date AND state <> 'REJECTED'
+		  AND ($4::uuid IS NULL OR id <> $4::uuid)`,
+		caseID, userID, date, excludeID,
+	).Scan(&siblingTotal)
+	if err != nil {
+		return 0, false, fmt.Errorf("sum ticket daily minutes: %w", err)
+	}
+	return siblingTotal, siblingTotal+newCardTotal > maxUserTicketDailyMinutes, nil
+}
+
+// ticketDailyCapError is the ValidationError returned when
+// ticketDailyCapExceeded reports true.
+func ticketDailyCapError(date string, total int) error {
+	return &apierror.ValidationError{Msg: fmt.Sprintf(
+		"logging this time would bring your total for this ticket on %s to %d minutes, over the %d-hour (%d minute) per-ticket daily limit",
+		date, total, maxUserTicketDailyMinutes/60, maxUserTicketDailyMinutes,
+	)}
+}
+
 // CreateTimeCard implements TimeCardRepository.
 func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTimeCardRequest, userID string) (domain.TimeCardView, error) {
 	id, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (string, error) {
@@ -585,6 +670,10 @@ func (r *timeCardRepo) CreateTimeCard(ctx context.Context, req domain.CreateTime
 // stay plain `return "", err` instead of needing a second err-only variable
 // alongside the id this method must also hand back to its caller.
 func createTimeCardTx(ctx context.Context, tx pgx.Tx, req domain.CreateTimeCardRequest, userID string) (string, error) {
+	if err := lockUserTimeCardWrites(ctx, tx, userID); err != nil {
+		return "", err
+	}
+
 	// The case's own project is work_item.project_id -- case_id now
 	// references work_item(id) generically (migration 0041's most recent
 	// revision), not "case"(id) specifically, so this looks up work_item
@@ -611,6 +700,15 @@ func createTimeCardTx(ctx context.Context, tx pgx.Tx, req domain.CreateTimeCardR
 	}
 	if req.ProjectID != "" && (caseProjectID == nil || *caseProjectID != req.ProjectID) {
 		return "", &apierror.ValidationError{Msg: "projectId must match the case's own project"}
+	}
+
+	newTotal := req.TimeAnalyzing + req.TimeSettingUp + req.TimeReproducingDebugging + req.TimeProvidingSolution + req.TimePatching
+	siblingTotal, exceeded, err := ticketDailyCapExceeded(ctx, tx, req.CaseID, userID, req.Date, nil, newTotal)
+	if err != nil {
+		return "", err
+	}
+	if exceeded {
+		return "", ticketDailyCapError(req.Date, siblingTotal+newTotal)
 	}
 
 	// 'SUBMITTED' (not 'submitted') and issue_complexity's ::text::enum cast:
@@ -742,8 +840,72 @@ func (r *timeCardRepo) UpdateTimeCardFields(ctx context.Context, req domain.Upda
 	// ownership guard below.
 	query := fmt.Sprintf(`UPDATE time_card SET %s WHERE id = $%d AND user_id = $%d AND state = 'SUBMITTED' RETURNING id`, strings.Join(sets, ", "), argIdx, actorArg)
 
+	// Only a field this cap is actually computed from changing is worth the
+	// extra read+lock below -- an edit touching just e.g. workLogComment or
+	// approvers can never move a card's own total, so it's skipped entirely.
+	affectsDailyCap := req.Date != nil || req.TimeAnalyzing != nil || req.TimeSettingUp != nil ||
+		req.TimeReproducingDebugging != nil || req.TimeProvidingSolution != nil || req.TimePatching != nil
+
 	var id string
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		if err := lockUserTimeCardWrites(ctx, tx, actorID); err != nil {
+			return err
+		}
+
+		if affectsDailyCap {
+			var caseID string
+			var currentDate *string
+			var analyzing, settingUp, reproducing, providing, patching int
+			// Every one of the five duration columns, and work_date itself,
+			// is nullable on a real row (see
+			// TestTimeCardIntegration_SearchTimeCardsToleratesNullDurationColumns's
+			// own regression history above) -- COALESCE the minutes the same
+			// way scanTimeCardView's own select list does, and scan the date
+			// into a *string so a NULL one doesn't crash this read.
+			err := tx.QueryRow(ctx, `
+				SELECT case_id, work_date::text,
+				       COALESCE(analyzing_minutes, 0), COALESCE(setting_up_minutes, 0),
+				       COALESCE(reproducing_debugging_minutes, 0), COALESCE(providing_solution_minutes, 0),
+				       COALESCE(patching_minutes, 0)
+				FROM time_card WHERE id = $1 AND user_id = $2 AND state = 'SUBMITTED'`,
+				req.ID, actorID,
+			).Scan(&caseID, &currentDate, &analyzing, &settingUp, &reproducing, &providing, &patching)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return &apierror.ConflictError{Msg: "time card is not editable (it may not exist, may not belong to you, or is no longer in the submitted state)"}
+			}
+			if err != nil {
+				return fmt.Errorf("read time card for daily cap check: %w", err)
+			}
+			var resolvedDate string
+			if req.Date != nil {
+				resolvedDate = *req.Date
+			} else if currentDate != nil {
+				resolvedDate = *currentDate
+			}
+			// No date to key the check on at all (req.Date absent AND the
+			// stored work_date is NULL, a pre-existing data anomaly): skip
+			// rather than send an empty string into a ::date cast below.
+			if resolvedDate != "" {
+				merge := func(reqVal *int, current int) int {
+					if reqVal != nil {
+						return *reqVal
+					}
+					return current
+				}
+				newCardTotal := merge(req.TimeAnalyzing, analyzing) + merge(req.TimeSettingUp, settingUp) +
+					merge(req.TimeReproducingDebugging, reproducing) + merge(req.TimeProvidingSolution, providing) +
+					merge(req.TimePatching, patching)
+				excludeID := req.ID
+				siblingTotal, exceeded, err := ticketDailyCapExceeded(ctx, tx, caseID, actorID, resolvedDate, &excludeID, newCardTotal)
+				if err != nil {
+					return err
+				}
+				if exceeded {
+					return ticketDailyCapError(resolvedDate, siblingTotal+newCardTotal)
+				}
+			}
+		}
+
 		if err := tx.QueryRow(ctx, query, args...).Scan(&id); err != nil {
 			if errors.Is(err, pgx.ErrNoRows) {
 				return &apierror.ConflictError{Msg: "time card is not editable (it may not exist, may not belong to you, or is no longer in the submitted state)"}
@@ -784,25 +946,61 @@ func (r *timeCardRepo) UpdateTimeCardFields(ctx context.Context, req domain.Upda
 func (r *timeCardRepo) TransitionTimeCardState(ctx context.Context, id string, state domain.TimeCardState, leadComment *string, actorID string) (domain.TimeCardView, error) {
 	var returnedID string
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		// Lock the actor's admin grant, if any, BEFORE the time_card row below
+		// -- unlike the time_card_approver check (protected for free: every
+		// approver-list edit's own UPDATE on this same time_card row, in
+		// UpdateTimeCardFields, shares and serializes against the FOR UPDATE
+		// lock taken just below), an "admin" grant lives in user_role/role,
+		// a table with no relationship to any particular time_card row at
+		// all. Without locking it here too, nothing in this transaction
+		// would stop a concurrent DELETE FROM user_role revoking this exact
+		// grant from landing in the gap between this eligibility check and
+		// the UPDATE further down -- FOR UPDATE on time_card only ever locks
+		// the time_card row, never this one. Locking it first, in its own
+		// statement, means a concurrent revocation of this specific grant
+		// blocks on this transaction committing/rolling back, the same
+		// guarantee the approver-list case already had implicitly. Every
+		// matching row is locked (user_role has no UNIQUE(user_id, role_id)
+		// -- see this repository's own package doc on duplicate grants --
+		// so more than one is possible), and zero rows (not currently an
+		// admin) locks nothing, which is correct: there is no grant to
+		// protect.
+		adminGrantRows, err := tx.Query(ctx, `
+			SELECT ur.id FROM user_role ur JOIN role r ON r.id = ur.role_id
+			WHERE ur.user_id = $1 AND r.name = 'admin' FOR UPDATE OF ur`, actorID,
+		)
+		if err != nil {
+			return fmt.Errorf("lock admin role grant: %w", err)
+		}
+		isAdmin := adminGrantRows.Next()
+		adminGrantRows.Close()
+		if err := adminGrantRows.Err(); err != nil {
+			return fmt.Errorf("lock admin role grant: %w", err)
+		}
+
 		// Lock the row and check eligibility AND current state before writing
-		// anything: only an approver on this specific card, other than its own
-		// submitter, may transition it, and only while it is still "submitted"
-		// -- without that state check, an eligible approver could re-approve/
-		// reject an already approved/rejected/processed/recalled card. FOR
-		// UPDATE holds the lock across both statements in this transaction,
-		// closing the gap a plain check-then-UPDATE would leave for a
-		// concurrent approver-list edit (or a second transition attempt) to
-		// race through. Postgres applies both the SELECT and UPDATE policies
-		// to a FOR UPDATE lock -- time_card's RLS policies (migration 0144)
-		// use the same is_project_member condition for both, so a legitimate
-		// caller's own row satisfies both together.
+		// anything: only an approver on this specific card, OR a holder of the
+		// global "admin" role locked above (approve-by-exception -- see that
+		// role's own use in recompute_user_type, migration 0011), and in both
+		// cases other than the card's own submitter, may transition it, and
+		// only while it is still "submitted" -- without that state check, an
+		// eligible approver could re-approve/reject an already approved/
+		// rejected/processed/recalled card. FOR UPDATE holds the lock across
+		// both statements in this transaction, closing the gap a plain
+		// check-then-UPDATE would leave for a concurrent approver-list edit
+		// (or a second transition attempt) to race through. Postgres applies
+		// both the SELECT and UPDATE policies to a FOR UPDATE lock --
+		// time_card's RLS policies (migration 0144) use the same
+		// is_project_member condition for both, so a legitimate caller's own
+		// row satisfies both together.
 		var submitterID string
 		var currentState *string
 		var isApprover bool
-		err := tx.QueryRow(ctx, `
-			SELECT tc.user_id, tc.state::TEXT, EXISTS (
-				SELECT 1 FROM time_card_approver tca WHERE tca.time_card_id = tc.id AND tca.approver_id = $2
-			)
+		err = tx.QueryRow(ctx, `
+			SELECT tc.user_id, tc.state::TEXT,
+			       EXISTS (
+			           SELECT 1 FROM time_card_approver tca WHERE tca.time_card_id = tc.id AND tca.approver_id = $2
+			       )
 			FROM time_card tc WHERE tc.id = $1 FOR UPDATE`, id, actorID,
 		).Scan(&submitterID, &currentState, &isApprover)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -811,8 +1009,8 @@ func (r *timeCardRepo) TransitionTimeCardState(ctx context.Context, id string, s
 		if err != nil {
 			return fmt.Errorf("check time card approver eligibility: %w", err)
 		}
-		if !isApprover || submitterID == actorID {
-			return &apierror.ForbiddenError{Msg: "only an eligible approver, other than the submitter, may approve or reject this time card"}
+		if !(isApprover || isAdmin) || submitterID == actorID {
+			return &apierror.ForbiddenError{Msg: "only an eligible approver, or an admin, other than the submitter, may approve or reject this time card"}
 		}
 		// time_card_state_enum is UPPER_SNAKE_CASE; domain.TimeCardStateSubmitted
 		// is lowercase.

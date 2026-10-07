@@ -410,7 +410,7 @@ paths:
   /github/deliveries:
     post:
       summary: >-
-        Apply a GitHub delivery that operations/csm-webhooks has already
+        Apply a GitHub delivery that operations/csm-webhooks/github has already
         authenticated. That component is the public endpoint GitHub posts to;
         it verifies the X-Hub-Signature-256 HMAC over the raw body and
         forwards the result here. This service is Organization-visible and
@@ -600,6 +600,16 @@ paths:
           in: query
           schema:
             type: integer
+        - name: source
+          in: query
+          description: >-
+            Optional. "csm" restricts the result to clocks tracked natively
+            by this platform (used by integrations/csm-notification-service
+            to rebuild its own tracking state); "servicenow" restricts to
+            the synced ones. Omitted returns both.
+          schema:
+            type: string
+            enum: [csm, servicenow]
       responses:
         "200":
           description: Every currently-active SLA clock, paginated.

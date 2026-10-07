@@ -746,16 +746,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 
 	// The CSM-native SLA engine (internal/service/sla_engine_service.go)
-	// writes its own source='CSM' rows into the "sla"/"sla_policy" tables
-	// the ServiceNow sync also populates (migration 0134) -- gated on db
-	// the same way slaStatusHandler above is: nowhere to store a clock at
-	// all with no database configured. activeProjectSvc backs its
-	// plan-derivation heuristic (see sla_policy_resolver.go's
-	// resolveCasePlan doc comment) and is already constructed above,
-	// regardless of DataSource.
+	// writes its own source='CSM' rows into the "sla" table (migration 0134),
+	// resolving durations from the deterministic, severity-keyed sla_policy
+	// rows migration 0203 seeds -- gated on db the same way slaStatusHandler
+	// above is: nowhere to store a clock at all with no database configured.
 	var slaEngineSvc service.SLAEngineService
 	if db != nil {
-		slaEngineSvc = service.NewSLAEngineService(repository.NewSLAEngineRepository(repository.NewScoped(db)), activeProjectSvc)
+		slaEngineSvc = service.NewSLAEngineService(repository.NewSLAEngineRepository(repository.NewScoped(db)))
 	}
 
 	caseRepo := repository.NewCaseRepository(repository.NewScoped(db), crVisibility)
@@ -879,6 +876,28 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// (above) already takes csEngineerRole as a constructor parameter;
 		// NewCaseService has no such parameter, hence this separate step.
 		activeCaseSvc = service.WithCSEngineerRole(activeCaseSvc, cfg.CSEngineerRole)
+	}
+	// Service requests: ServiceNow's "SR New Request - Acknowledge & Chat
+	// Alert" flow and the sr.* events, on the operations topic (sre-events)
+	// with the change-request and outage notices. Postgres-backed case
+	// services only -- WithSRNotices is a no-op on the ServiceNow one -- and
+	// only with a topic to publish to: without the Chat cards the flow's
+	// acknowledgement would be posted with nothing announcing the SR, which
+	// ServiceNow never does. SR_ALERT_SRE_TEAM_IDS then decides which teams'
+	// SRs are assigned and acknowledged.
+	var srEventPublisher service.EventPublisherService
+	if db != nil && cfg.SREEventHubTopic != "" && cfg.EventHubBroker != "" && cfg.EventPublishingEnabled {
+		srEventPublisher = service.NewEventPublisherService(
+			eventbus.NewProducer(eventbus.Config{
+				Broker:           cfg.EventHubBroker,
+				ConnectionString: cfg.EventHubConnectionString,
+				Topic:            cfg.SREEventHubTopic,
+			}),
+			eventPublishFailureSvc,
+		)
+		activeCaseSvc = service.WithSRNotices(activeCaseSvc, service.NewSRNoticeService(
+			repository.NewSRNoticeRepository(repository.NewScoped(db)), srEventPublisher, cfg.SRAlertSRETeamIDs))
+		slog.Info("service request events enabled", "topic", cfg.SREEventHubTopic, "automatedTeams", len(cfg.SRAlertSRETeamIDs))
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MClientIDs)
 	if db != nil {
@@ -1033,6 +1052,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		activeCatalogSvc = service.NewCatalogService(catalogRepo)
 	}
 	catalogHandler := handler.NewCatalogHandler(activeCatalogSvc)
+	// After the switch above: a service request raised from the catalog form
+	// takes its subject and description from its answers. activeCaseSvc is the
+	// same *caseService the case handler already holds, so this reaches it.
+	activeCaseSvc = service.WithServiceRequestCatalog(activeCaseSvc, activeCatalogSvc)
 
 	// Case feedback (CSAT submissions): the ServiceNow data source reads it
 	// from the backing system; both Postgres data sources read
@@ -1860,6 +1883,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		}
 		if projectEventPublisher != nil {
 			projectEventPublisher.Close()
+		}
+		if srEventPublisher != nil {
+			srEventPublisher.Close()
 		}
 		// Last: the retry worker above can still be invalidating users
 		// until it has stopped.

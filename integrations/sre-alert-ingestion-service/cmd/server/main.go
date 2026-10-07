@@ -33,6 +33,7 @@ import (
 	"sre-alert-ingestion-service/internal/allocator"
 	"sre-alert-ingestion-service/internal/config"
 	"sre-alert-ingestion-service/internal/outbound/corewake"
+	"sre-alert-ingestion-service/internal/outbound/dbfallback"
 	"sre-alert-ingestion-service/internal/outbound/snsconfirm"
 	"sre-alert-ingestion-service/internal/payloads"
 	"sre-alert-ingestion-service/internal/postgres"
@@ -46,6 +47,15 @@ const authCacheTTL = 60 * time.Second
 
 // snsConfirmTimeout bounds the SubscribeURL fetch.
 const snsConfirmTimeout = 10 * time.Second
+
+// dbFallbackTimeout bounds one post to the DB fallback Chat space.
+const dbFallbackTimeout = 10 * time.Second
+
+// dbProbeTimeout bounds GET /dbz's ping, and dbProbeEvery is how long one result is reused.
+const (
+	dbProbeTimeout = 2 * time.Second
+	dbProbeEvery   = time.Second
+)
 
 func main() {
 	base := slog.New(slog.NewJSONHandler(os.Stdout, nil)).With("app", "sre-alert-ingestion-service")
@@ -125,6 +135,21 @@ func main() {
 
 	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, envCfg.WakeToken, cfg.Wake.Timeout.Duration())
 
+	// Alerts that fail their last write go to one Chat space; a nil fallback means they are only logged.
+	var fallback allocator.Fallback
+	after := []func(context.Context){waker.Wait}
+	if envCfg.DBFallbackChatURL == "" {
+		logger.Warn("DB_FALLBACK_CHAT_WEBHOOK_URL not set; alerts the database cannot store are only logged")
+	} else {
+		chat, err := dbfallback.New(base.With("component", "dbfallback"), envCfg.DBFallbackChatURL, dbFallbackTimeout)
+		if err != nil {
+			logger.Error("invalid db fallback chat config", "error", err)
+			os.Exit(1)
+		}
+		fallback = chat
+		after = append(after, chat.Close)
+	}
+
 	rawPayloads := payloads.New(base.With("component", "payloads"), store, payloads.Config{
 		FlushInterval: cfg.Payloads.FlushInterval.Duration(),
 		MaxBytes:      cfg.Payloads.MaxBufferBytes,
@@ -134,7 +159,7 @@ func main() {
 
 	sns := snsconfirm.New(base.With("component", "snsconfirm"), snsConfirmTimeout)
 
-	alloc := allocator.New(base.With("component", "allocator"), store, waker, allocator.Config{
+	alloc := allocator.New(base.With("component", "allocator"), store, waker, fallback, allocator.Config{
 		QueueSize:        cfg.Allocator.QueueSize,
 		QueueMaxBytes:    cfg.Allocator.QueueMaxBytes,
 		MaxBatch:         cfg.Allocator.MaxBatch,
@@ -155,6 +180,7 @@ func main() {
 		PreviewChars:    cfg.Reject.BodyPreviewChars,
 		PayloadLogBytes: cfg.Log.PayloadMaxBytes,
 		Payloads:        rawPayloads,
+		DB:              postgres.NewProbe(pool, dbProbeTimeout, dbProbeEvery),
 		ReadTimeout:     cfg.Server.ReadTimeout.Duration(),
 		WriteTimeout:    cfg.Server.WriteTimeout.Duration(),
 		IdleTimeout:     cfg.Server.IdleTimeout.Duration(),
@@ -187,7 +213,7 @@ func main() {
 			RequestWait:    cfg.Server.RequestWait.Duration(),
 			AllocatorDrain: cfg.Server.AllocatorDrain.Duration(),
 			PayloadDrain:   cfg.Server.PayloadDrain.Duration(),
-		}, waker.Wait)
+		}, after...)
 	}
 }
 
