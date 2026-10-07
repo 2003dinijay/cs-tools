@@ -1465,6 +1465,14 @@ const LC_ANSWER_REFUSAL = {
     } instead`,
 };
 
+/**
+ * The backend's refusal of Request Approval (and of ticking a customer box on after New) when the Customer Project is set but
+ * nobody on it can be asked: its registered contacts, leaving out the requester and anyone no longer active, are none.
+ * Placeholder wording until the backend's own lands.
+ */
+const LC_REQUEST_APPROVAL_NEEDS_CONTACT =
+  "customer approval is required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first";
+
 function lcStage(name: string, group: string, who: { id: string; name: string }): BeChangeRequestApproval {
   return {
     stage: name,
@@ -1633,6 +1641,16 @@ function lcSeed(
         throw new BackendApiError(400, `state "${target}" cannot be set manually from ${from}: no step or approval gate can be skipped`);
       }
     }
+    // Request Approval needs somebody to ask when the customer's part is required: a change that would reach a customer gate
+    // with nobody who can be asked is refused up front, before anything moves (the Customer Project is always set here).
+    if (
+      target === "assess" &&
+      from === "new" &&
+      (lc.cr.customerApprovalRequired || lc.cr.customerReviewRequired) &&
+      lc.customerMembers.length === 0
+    ) {
+      throw new BackendApiError(400, LC_REQUEST_APPROVAL_NEEDS_CONTACT);
+    }
     if (target === "assess") {
       if (lc.cr.type === "standard") lcSetState(lcAfterInternalApproval());
       else if (lc.cr.type === "emergency") {
@@ -1702,7 +1720,19 @@ function lcSeed(
     lcReconcile();
     lcPublish();
   };
-  patchMutateMock.mockImplementation(applyPatch);
+  // `mutate` reports a refusal through its `onError` option (the page shows the backend's words in the error banner), where
+  // `mutateAsync` rejects.
+  patchMutateMock.mockImplementation((input: { patch: { state?: string } }, options?: { onError?: (err: Error) => void }) => {
+    try {
+      applyPatch(input);
+    } catch (err) {
+      if (err instanceof BackendApiError && options?.onError) {
+        options.onError(err);
+        return;
+      }
+      throw err;
+    }
+  });
   // Destructive transitions (Cancel change, Roll back) go through mutateAsync.
   patchMutateAsyncMock.mockImplementation(async (input) => {
     applyPatch(input as { patch: { state?: string } });
@@ -1750,6 +1780,32 @@ function lcSeed(
     lcReconcile();
     lcPublish();
   });
+  lcPublish();
+}
+
+/**
+ * A change request that is ALREADY at a customer gate with nobody asked (no customer stage, nobody to answer): what an older
+ * change looks like when it reached the gate before Request Approval was refused for want of anybody to ask (or when its
+ * contacts left the project afterwards), and what a migrated one looks like when ServiceNow never put the question. Request
+ * Approval can no longer produce it, so the fake starts there: the internal approvals settled the way the flow leaves them,
+ * the gate's own exits only (Cancel, Re-schedule at Customer Approval, Roll back at Customer Review). `customerGroup` is the
+ * project's registered contacts, none of whom can be asked: `null` (none registered) or `{ members: [], contacts }`.
+ */
+function lcSeedAtGate(
+  gate: "customer_approval" | "customer_review",
+  customerGroup: Parameters<typeof lcSeed>[2] = null,
+  type: "normal" | "emergency" | "standard" = "normal",
+): void {
+  lcSeed(type, { approval: gate === "customer_approval", review: gate === "customer_review" }, customerGroup);
+  const settled = (name: string, group: string, who: { id: string; name: string }): BeChangeRequestApproval => ({
+    ...lcStage(name, group, who),
+    status: "APPROVED",
+    approvers: [{ id: who.id, name: who.name, status: "APPROVED" }],
+  });
+  lc.approvals =
+    type === "normal" ? [settled("Peer Approval", "Peers", LC_PEER), settled("CAB Approval", "CAB", LC_CAB)] : type === "emergency" ? [settled("ECAB Approval", "ECAB", LC_ECAB)] : [];
+  lcSetState(gate); // provisions nothing: nobody on the project can be asked
+  expect(lc.approvals.some((a) => lcIsCustomerStage(a.stage))).toBe(false);
   lcPublish();
 }
 
@@ -2168,7 +2224,8 @@ describe("CsmChangeRequestDetailPage — lifecycle: a Review approver's Approve 
 describe("CsmChangeRequestDetailPage — lifecycle: Roll back", () => {
   /** Normal change, no customer approval, driven by real clicks to Review. */
   function runToReview(review: boolean): ReturnType<typeof render> {
-    lcSeed("normal", { approval: false, review });
+    // A box ticked needs somebody to ask (Request Approval is refused without): the project has registered contacts.
+    lcSeed("normal", { approval: false, review }, review ? { members: LC_MEMBERS } : undefined);
     let view = lcOpenAs(LC_CREATOR);
     expect(currentStep()).toBe("New");
     fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
@@ -2238,9 +2295,9 @@ describe("CsmChangeRequestDetailPage — lifecycle: Roll back", () => {
     view.unmount();
   });
 
-  it("rolls back from Customer Review (manual fallback, no customer group) with a reason", async () => {
-    const view = runToReview(true);
-    fireEvent.click(screen.getByRole("button", { name: /^send for customer review$/i }));
+  it("rolls back from Customer Review with a reason when nobody was ever asked (an older change at the gate with no customer group)", async () => {
+    lcSeedAtGate("customer_review");
+    const view = lcOpenAs(LC_CREATOR);
     expect(currentStep()).toBe("Customer Review");
     expect(screen.getByText("Awaiting Customer Review")).toBeInTheDocument();
     // No primary move (the customer's review is theirs to give); Roll back sits in the menu with Cancel.
@@ -2391,8 +2448,11 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
     view.unmount();
   });
 
-  it("Normal without a customer group: Re-schedule sits next to the Change state menu, which holds only Cancel change; the loop repeats and nobody can answer for the customer", { timeout: 30000 }, async () => {
-    let view = runToCustomerApproval(null);
+  it("an older Normal change at Customer Approval with nobody asked: Re-schedule sits next to the Change state menu, which holds only Cancel change; the loop repeats and nobody can answer for the customer", { timeout: 30000 }, async () => {
+    // Request Approval is refused for such a project now, so the change starts at the gate (see lcSeedAtGate).
+    lcSeedAtGate("customer_approval");
+    let view = lcOpenAs(LC_CREATOR);
+    expect(currentStep()).toBe("Customer Approval");
     expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: /change state/i }));
     expect(screen.getAllByRole("menuitem").map((i) => i.textContent)).toEqual(["Cancel change"]);
@@ -2422,7 +2482,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
   });
 
   it("Emergency goes back to Authorize for ECAB approval", async () => {
-    const view = runToCustomerApproval(null, "emergency");
+    const view = runToCustomerApproval({ members: LC_MEMBERS }, "emergency");
     fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));
     expect(screen.getByText(/ECAB approval again/i)).toBeInTheDocument();
     fireEvent.change(windowPicker("Planned end"), { target: { value: "03/01/2030 01:00 PM" } });
@@ -2447,7 +2507,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
   });
 
   it("shows the backend's 400 verbatim in the dialog and keeps the state", async () => {
-    const view = runToCustomerApproval(null);
+    const view = runToCustomerApproval({ members: LC_MEMBERS });
     patchMutateAsyncMock.mockRejectedValueOnce(
       new BackendApiError(400, "re-scheduling requires a changed planned start or end"),
     );
@@ -2468,7 +2528,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
   });
 
   it("after a failed re-schedule the recorded reason is locked and a retry never posts it twice", async () => {
-    const view = runToCustomerApproval(null);
+    const view = runToCustomerApproval({ members: LC_MEMBERS });
     fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));
     fireEvent.change(windowPicker("Planned start"), { target: { value: "03/08/2030 09:00 AM" } });
     fireEvent.change(windowPicker("Planned end"), { target: { value: "03/08/2030 11:00 AM" } });
@@ -2988,12 +3048,118 @@ describe("CsmChangeRequestDetailPage — customer group: Normal with Customer Ap
   });
 });
 
-describe("CsmChangeRequestDetailPage — customer group: no registered customer contacts (nobody is asked, and staff cannot answer for them)", () => {
-  it("customer_approval with no registered contacts: no customer stage, the helper explains why and what is left, and there is no way to record the approval", () => {
-    lcSeed("normal", { approval: true, review: false }, null);
-    let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
+describe("CsmChangeRequestDetailPage — customer group: Request Approval is refused when nobody can be asked", () => {
+  /** What Request Approval does, from the New change's page: the title of the "disabled with the reason" button, and the click. */
+  const requestApprovalButton = (): HTMLElement => screen.getByRole("button", { name: /^Request Approval/ });
+  /** The disabled Request Approval, found by the reason its focusable wrapper carries (the label `Request Approval: <reason>`). */
+  const blockedRequestApproval = (reason: string): HTMLElement => {
+    const button = within(screen.getByLabelText(`Request Approval: ${reason}`)).getByRole("button", { name: "Request Approval" });
+    expect(button).toBeDisabled();
+    return button;
+  };
+  const NEEDS_CONTACT = "Register a contact for the Customer Project before requesting approval";
 
-    view = lcOpenAs(LC_CREATOR, view);
+  it("a project with no registered contacts and a customer box ticked: Request Approval is disabled with the reason, and nothing is sent", () => {
+    lcSeed("normal", { approval: true, review: false }, null);
+    const view = lcOpenAs(LC_CREATOR);
+    expect(currentStep()).toBe("New");
+    const button = blockedRequestApproval(NEEDS_CONTACT);
+    fireEvent.click(button);
+    expect(patchMutateMock).not.toHaveBeenCalled();
+    expect(patchMutateAsyncMock).not.toHaveBeenCalled();
+    expect(lc.cr.state).toBe("new");
+    view.unmount();
+  });
+
+  it.each([
+    ["normal", { approval: false, review: true }],
+    ["standard", { approval: true, review: false }],
+    ["emergency", { approval: true, review: true }],
+  ] as const)("the same for a %s change with the customer part ticked as %j", (type, flags) => {
+    lcSeed(type, flags, null);
+    const view = lcOpenAs(LC_CREATOR);
+    blockedRequestApproval(NEEDS_CONTACT);
+    view.unmount();
+  });
+
+  it("with no customer box ticked there is nobody to ask for, so Request Approval stays enabled and goes through on a project with no contacts", () => {
+    lcSeed("normal", { approval: false, review: false }, null);
+    const view = lcOpenAs(LC_CREATOR);
+    expect(requestApprovalButton()).toBeEnabled();
+    expect(requestApprovalButton()).toHaveAccessibleName("Request Approval");
+    fireEvent.click(requestApprovalButton());
+    expect(lc.cr.state).toBe("assess");
+    expect(showErrorMock).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("with a registered contact other than the requester Request Approval is enabled and goes through", () => {
+    lcSeed("normal", { approval: true, review: true }, { members: LC_MEMBERS });
+    const view = lcOpenAs(LC_CREATOR);
+    expect(requestApprovalButton()).toHaveAccessibleName("Request Approval");
+    fireEvent.click(requestApprovalButton());
+    expect(lc.cr.state).toBe("assess");
+    expect(showErrorMock).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  it("with no assigned team the team reason still comes first, and a missing Customer Project keeps its own reason", () => {
+    lcSeed("normal", { approval: true, review: false }, null);
+    lc.cr = { ...lc.cr, assignedTeam: null };
+    lcPublish();
+    let view = lcOpenAs(LC_CREATOR);
+    blockedRequestApproval("Set an assigned team before requesting approval");
+    view.unmount();
+    lcSeed("normal", { approval: true, review: false }, null);
+    lc.cr = { ...lc.cr, project: undefined };
+    lcPublish();
+    view = lcOpenAs(LC_CREATOR);
+    blockedRequestApproval("Select a Customer Project before requesting approval");
+    view.unmount();
+  });
+
+  it("claims nothing while the payload carries no customerContacts (another data source): the request goes out and the backend decides", () => {
+    lcSeed("normal", { approval: true, review: false }, null);
+    lc.cr = { ...lc.cr, customerContacts: undefined };
+    lcPublish();
+    const view = lcOpenAs(LC_CREATOR);
+    expect(requestApprovalButton()).toHaveAccessibleName("Request Approval");
+    expect(requestApprovalButton()).toBeEnabled();
+    view.unmount();
+  });
+
+  it("registered contacts none of whom can be asked (only the requester): the page cannot tell, the button is enabled, and the backend's refusal shows in the error banner while the change stays in New", () => {
+    lcSeed("normal", { approval: true, review: false }, { members: [], contacts: [{ id: LC_CREATOR.id, name: LC_CREATOR.name }] });
+    const view = lcOpenAs(LC_CREATOR);
+    expect(requestApprovalButton()).toHaveAccessibleName("Request Approval");
+    fireEvent.click(requestApprovalButton());
+    expect(patchMutateMock).toHaveBeenCalledTimes(1);
+    expect(patchMutateMock.mock.calls[0]![0]).toEqual({ id: "chg-1", patch: { state: "assess" } });
+    // The backend's own words, verbatim, in the same place every other refusal of a transition shows.
+    expect(showErrorMock).toHaveBeenCalledTimes(1);
+    expect(showErrorMock.mock.calls[0]![0]).toBe(LC_REQUEST_APPROVAL_NEEDS_CONTACT);
+    // Nothing moved: still New, no approval stage, and the Request Approval offer is still there.
+    expect(lc.cr.state).toBe("new");
+    expect(lc.approvals).toEqual([]);
+    expect(currentStep()).toBe("New");
+    expect(requestApprovalButton()).toBeEnabled();
+    view.unmount();
+  });
+
+  it("registered contacts none of whom is active: the same refusal, shown the same way", () => {
+    lcSeed("standard", { approval: true, review: false }, { members: [], contacts: [{ id: "00000000-0000-0000-0000-0000000000d1", name: "Dormant Contact" }] });
+    const view = lcOpenAs(LC_CREATOR);
+    fireEvent.click(requestApprovalButton());
+    expect(showErrorMock.mock.calls[0]![0]).toBe(LC_REQUEST_APPROVAL_NEEDS_CONTACT);
+    expect(lc.cr.state).toBe("new");
+    view.unmount();
+  });
+});
+
+describe("CsmChangeRequestDetailPage — customer group: an older change already at a customer gate with nobody asked (the dead end Request Approval no longer leads into)", () => {
+  it("customer_approval with no registered contacts: no customer stage, the helper explains why and what is left, and there is no way to record the approval", () => {
+    lcSeedAtGate("customer_approval");
+    const view = lcOpenAs(LC_CREATOR);
     expect(currentStep()).toBe("Customer Approval");
     expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
     // Only the settled internal stages; no customer-stage rows.
@@ -3011,14 +3177,9 @@ describe("CsmChangeRequestDetailPage — customer group: no registered customer 
     view.unmount();
   });
 
-  it("customer_review with no registered contacts: the helper is shown and the menu holds an enabled Roll back and Cancel change, never a Close", { timeout: 30000 }, () => {
-    lcSeed("normal", { approval: false, review: true }, null);
-    let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
-    view = lcOpenAs(LC_CREATOR, view);
-    fireEvent.click(screen.getByRole("button", { name: /^start implementation$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^mark implemented$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^send for customer review$/i }));
-
+  it("customer_review with no registered contacts: the helper is shown and the menu holds an enabled Roll back and Cancel change, never a Close", () => {
+    lcSeedAtGate("customer_review");
+    const view = lcOpenAs(LC_CREATOR);
     expect(currentStep()).toBe("Customer Review");
     expect(screen.getByText("Awaiting Customer Review")).toBeInTheDocument();
     expect(screen.getByText(/no registered customer contacts/i)).toBeInTheDocument();
@@ -3035,10 +3196,9 @@ describe("CsmChangeRequestDetailPage — customer group: no registered customer 
     view.unmount();
   });
 
-  it("registered contacts none of whom is eligible (e.g. only the creator) provision no stage: nobody is asked, the note says so (not that no contacts are registered), and still no way to record the approval", () => {
-    lcSeed("normal", { approval: true, review: false }, { members: [], contacts: [{ id: LC_CREATOR.id, name: LC_CREATOR.name }] });
-    let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
-    view = lcOpenAs(LC_CREATOR, view);
+  it("registered contacts none of whom is eligible (e.g. only the creator) left no stage: nobody is asked, the note says so (not that no contacts are registered), and still no way to record the approval", () => {
+    lcSeedAtGate("customer_approval", { members: [], contacts: [{ id: LC_CREATOR.id, name: LC_CREATOR.name }] });
+    const view = lcOpenAs(LC_CREATOR);
     expect(currentStep()).toBe("Customer Approval");
     expect(screen.queryAllByText("Customer Approval", { selector: "td" })).toHaveLength(0);
     // The project HAS a registered contact, so the "no registered contacts" reason would be false here:
@@ -3055,9 +3215,8 @@ describe("CsmChangeRequestDetailPage — customer group: no registered customer 
 
   it("registered contacts none of whom is active (deactivated) are asked nothing: the same note at Customer Approval, naming Cancel change as the way out", () => {
     // The backend asks only active contacts, so a project whose contacts were all deactivated provisions no stage.
-    lcSeed("normal", { approval: true, review: false }, { members: [], contacts: [{ id: "00000000-0000-0000-0000-0000000000d1", name: "Dormant Contact" }] });
-    let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
-    view = lcOpenAs(LC_CREATOR, view);
+    lcSeedAtGate("customer_approval", { members: [], contacts: [{ id: "00000000-0000-0000-0000-0000000000d1", name: "Dormant Contact" }] });
+    const view = lcOpenAs(LC_CREATOR);
     expect(currentStep()).toBe("Customer Approval");
     expect(screen.getByText(/^Nobody is being asked to answer at this step\./)).toBeInTheDocument();
     expect(screen.queryByText(/no registered customer contacts/i)).not.toBeInTheDocument();
@@ -3065,13 +3224,9 @@ describe("CsmChangeRequestDetailPage — customer group: no registered customer 
     view.unmount();
   });
 
-  it("the same at Customer Review: nobody eligible, the note names Roll back or Cancel change as the ways out, and Roll back is enabled", { timeout: 30000 }, () => {
-    lcSeed("normal", { approval: false, review: true }, { members: [], contacts: [{ id: LC_CREATOR.id, name: LC_CREATOR.name }] });
-    let view = lcGoThroughInternalApproval(lcOpenAs(LC_CREATOR));
-    view = lcOpenAs(LC_CREATOR, view);
-    fireEvent.click(screen.getByRole("button", { name: /^start implementation$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^mark implemented$/i }));
-    fireEvent.click(screen.getByRole("button", { name: /^send for customer review$/i }));
+  it("the same at Customer Review: nobody eligible, the note names Roll back or Cancel change as the ways out, and Roll back is enabled", () => {
+    lcSeedAtGate("customer_review", { members: [], contacts: [{ id: LC_CREATOR.id, name: LC_CREATOR.name }] });
+    const view = lcOpenAs(LC_CREATOR);
     expect(currentStep()).toBe("Customer Review");
     expect(screen.getByText(/^Nobody is being asked to answer at this step\./)).toBeInTheDocument();
     expect(screen.getByText(/Roll back or Cancel change are the only ways out/)).toBeInTheDocument();

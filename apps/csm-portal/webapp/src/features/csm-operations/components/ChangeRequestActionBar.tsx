@@ -31,6 +31,7 @@ import {
   changeRequestTransitionLabel,
   customerGateWithheldTargets,
   isDestructiveChangeRequestTransition,
+  requestApprovalNeedsContactReason,
   requestApprovalNeedsProjectReason,
   rollbackPendingReviewReason,
   type PendingCustomerReview,
@@ -225,6 +226,11 @@ interface BlockedReasonContext {
  * transition with no team regardless of what this map does — this entry is
  * what keeps the button from round-tripping into that rejection.
  *
+ * `assess` also needs somebody to ask when a customer box is ticked: a Customer
+ * Project (`requestApprovalNeedsProjectReason`) with at least one registered contact
+ * (`requestApprovalNeedsContactReason`, only where the page knows the project has
+ * none: a requester-only project is the backend's refusal, shown in the error banner).
+ *
  * `rollback` is blocked out of Customer Review only (out of Review it is never
  * blocked): while the customer group's review is pending the backend refuses
  * it, because a failed customer review is the customer's rejection, which they
@@ -235,7 +241,9 @@ const TARGET_BLOCKED_REASON: Record<
   (cr: BeChangeRequestDetail, context: BlockedReasonContext) => string | null
 > = {
   assess: (cr) =>
-    cr.assignedTeam ? requestApprovalNeedsProjectReason(cr) : "Set an assigned team before requesting approval",
+    cr.assignedTeam
+      ? (requestApprovalNeedsProjectReason(cr) ?? requestApprovalNeedsContactReason(cr))
+      : "Set an assigned team before requesting approval",
   rollback: (cr, { pendingCustomerReview }) =>
     cr.state === "customer_review" ? rollbackPendingReviewReason(pendingCustomerReview) : null,
 };

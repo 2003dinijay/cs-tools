@@ -49,10 +49,12 @@ import {
   CUSTOMER_REQUIREMENT_ADD_ONLY_REASON,
   CUSTOMER_REQUIREMENT_NEEDS_PROJECT_REASON,
   CUSTOMER_REQUIREMENT_ONCE_SAVED_HELPER,
+  REQUEST_APPROVAL_NEEDS_CONTACT_REASON,
   REQUEST_APPROVAL_NEEDS_PROJECT_REASON,
   customerProjectLockedReason,
   customerRequirementOnceSavedHelper,
   isChangeRequestCreationPhase,
+  requestApprovalNeedsContactReason,
   requestApprovalNeedsProjectReason,
 } from "@features/csm-operations/utils/changeRequests";
 import type { BeChangeRequestApproval, BeChangeRequestDetail } from "@api/backend/types";
@@ -857,6 +859,53 @@ describe("requestApprovalNeedsProjectReason", () => {
 
   it("is about the move out of New only", () => {
     expect(requestApprovalNeedsProjectReason({ state: "assess", customerApprovalRequired: true })).toBeNull();
+  });
+});
+
+describe("requestApprovalNeedsContactReason", () => {
+  const project = { id: "p1", name: "Example Corp Platform" };
+  const contact = { id: "k1", name: "Mia Member", email: "mia.member@example.com" };
+
+  it("blocks Request Approval when a customer box is ticked and the project has no registered contact (the page knows the list is empty)", () => {
+    expect(requestApprovalNeedsContactReason({ state: "new", customerApprovalRequired: true, project, customerContacts: [] })).toBe(
+      "Register a contact for the Customer Project before requesting approval",
+    );
+    expect(requestApprovalNeedsContactReason({ state: "new", customerReviewRequired: true, project, customerContacts: [] })).toBe(
+      REQUEST_APPROVAL_NEEDS_CONTACT_REASON,
+    );
+    expect(
+      requestApprovalNeedsContactReason({ state: "new", customerApprovalRequired: true, customerReviewRequired: true, project, customerContacts: [] }),
+    ).toBe(REQUEST_APPROVAL_NEEDS_CONTACT_REASON);
+    // A change with no state recorded yet is in the creation phase too.
+    expect(requestApprovalNeedsContactReason({ customerApprovalRequired: true, project, customerContacts: [] })).toBe(REQUEST_APPROVAL_NEEDS_CONTACT_REASON);
+  });
+
+  it("does not block while the project has a registered contact: the requester-only case is the backend's refusal, which the page cannot tell apart", () => {
+    expect(requestApprovalNeedsContactReason({ state: "new", customerApprovalRequired: true, project, customerContacts: [contact] })).toBeNull();
+    expect(requestApprovalNeedsContactReason({ state: "new", customerReviewRequired: true, project, customerContacts: [contact] })).toBeNull();
+  });
+
+  it("does not block when no customer part is required, however empty the group is", () => {
+    expect(requestApprovalNeedsContactReason({ state: "new", project, customerContacts: [] })).toBeNull();
+    expect(
+      requestApprovalNeedsContactReason({ state: "new", customerApprovalRequired: false, customerReviewRequired: false, project, customerContacts: [] }),
+    ).toBeNull();
+  });
+
+  it("claims nothing while the contacts are not known (not in the payload: another data source)", () => {
+    expect(requestApprovalNeedsContactReason({ state: "new", customerApprovalRequired: true, project })).toBeNull();
+    expect(requestApprovalNeedsContactReason({ state: "new", customerApprovalRequired: true, project, customerContacts: undefined })).toBeNull();
+  });
+
+  it("leaves a change with no Customer Project to its own reason, not this one", () => {
+    expect(requestApprovalNeedsContactReason({ state: "new", customerApprovalRequired: true, customerContacts: [] })).toBeNull();
+    expect(requestApprovalNeedsProjectReason({ state: "new", customerApprovalRequired: true })).toBe(REQUEST_APPROVAL_NEEDS_PROJECT_REASON);
+  });
+
+  it("is about the move out of New only", () => {
+    for (const state of ["assess", "authorize", "customer_approval", "scheduled", "review", "customer_review", "closed", "canceled", "rollback"]) {
+      expect(requestApprovalNeedsContactReason({ state, customerApprovalRequired: true, project, customerContacts: [] }), state).toBeNull();
+    }
   });
 });
 

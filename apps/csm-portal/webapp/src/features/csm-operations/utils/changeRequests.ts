@@ -621,6 +621,42 @@ export function requestApprovalNeedsProjectReason(
   return needsCustomer && !cr.project?.id ? REQUEST_APPROVAL_NEEDS_PROJECT_REASON : null;
 }
 
+/** Why Request Approval is blocked for want of anybody to ask on the Customer Project, or `null`. */
+export const REQUEST_APPROVAL_NEEDS_CONTACT_REASON = "Register a contact for the Customer Project before requesting approval";
+
+/**
+ * Request Approval (New -> Assess) is refused by the backend when the customer's
+ * approval and/or review is required and nobody on the Customer Project can be
+ * asked: the change would reach Customer Approval / Customer Review with nobody to
+ * answer, and with no way for staff to answer for the customer it could only be
+ * cancelled (or rolled back from Review). The backend asks the project's
+ * registered contacts leaving out whoever raised the change and anyone no longer
+ * active, and it answers that refusal in words.
+ *
+ * The page knows part of that: when the change's own `customerContacts` is an
+ * EMPTY list (the project has no registered contact at all, or none still active)
+ * the refusal is certain, so the action is offered disabled with the reason, like
+ * the missing-project one. It does not guess the rest (a project whose only
+ * contact is the requester, or a contact with no sign-in yet): there the request
+ * goes out and the backend's own message shows in the page's error banner, as for
+ * any other refusal. It never claims anything while `customerContacts` is
+ * `undefined` (not in the payload: another data source). With no project the
+ * missing-project reason (`requestApprovalNeedsProjectReason`) applies instead.
+ */
+export function requestApprovalNeedsContactReason(
+  cr: Pick<
+    BeChangeRequestDetail,
+    "state" | "project" | "customerApprovalRequired" | "customerReviewRequired" | "customerContacts"
+  >,
+): string | null {
+  if (!isChangeRequestCreationPhase(cr.state)) return null;
+  const needsCustomer = cr.customerApprovalRequired === true || cr.customerReviewRequired === true;
+  if (!needsCustomer || !cr.project?.id) return null;
+  return cr.customerContacts !== undefined && cr.customerContacts !== null && cr.customerContacts.length === 0
+    ? REQUEST_APPROVAL_NEEDS_CONTACT_REASON
+    : null;
+}
+
 /**
  * States from which the deployments / deployment products can no longer be
  * changed (the backend refuses with a 400 from `implement` onward). The Customer

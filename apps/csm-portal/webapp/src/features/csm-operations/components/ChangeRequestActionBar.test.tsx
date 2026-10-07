@@ -381,6 +381,65 @@ describe("ChangeRequestActionBar — per-target blocked reasons", () => {
     });
   });
 
+  describe("Request Approval needs somebody to ask when a customer box is ticked (a project with at least one registered contact)", () => {
+    const REASON = "Register a contact for the Customer Project before requesting approval";
+    const PROJECT = { id: "proj-a", name: "Example Corp Platform" };
+    const CONTACT = { id: "k1", name: "Mia Member", email: "mia.member@example.com" };
+
+    it.each([
+      ["Customer Approval", { customerApprovalRequired: true }],
+      ["Customer Review", { customerReviewRequired: true }],
+      ["both", { customerApprovalRequired: true, customerReviewRequired: true }],
+    ])("is disabled, with the reason, when %s is ticked and the project has no registered contact", (_name, flags) => {
+      const { onAction } = renderBar({ state: "new", legalNextStates: ["assess"], project: PROJECT, customerContacts: [], ...flags });
+      const button = screen.getByRole("button", { name: /request approval/i });
+      expect(button).toBeDisabled();
+      expect(button.closest('[tabindex="0"]')).toHaveAttribute("aria-label", `Request Approval: ${REASON}`);
+      fireEvent.click(button);
+      expect(onAction).not.toHaveBeenCalled();
+    });
+
+    it("is enabled while the project has a registered contact (a requester-only project is the backend's refusal, shown when it answers)", () => {
+      const { onAction } = renderBar({ state: "new", legalNextStates: ["assess"], project: PROJECT, customerContacts: [CONTACT], customerApprovalRequired: true });
+      const button = screen.getByRole("button", { name: /request approval/i });
+      expect(button).toBeEnabled();
+      fireEvent.click(button);
+      expect(onAction).toHaveBeenCalledWith("assess");
+    });
+
+    it("is enabled when no customer part is required, however few contacts the project has (a Standard change too)", () => {
+      renderBar({ state: "new", type: "standard", legalNextStates: ["assess"], project: PROJECT, customerContacts: [] });
+      expect(screen.getByRole("button", { name: /request approval/i })).toBeEnabled();
+    });
+
+    it("claims nothing while the contacts are not in the payload", () => {
+      renderBar({ state: "new", legalNextStates: ["assess"], project: PROJECT, customerApprovalRequired: true });
+      expect(screen.getByRole("button", { name: /request approval/i })).toBeEnabled();
+    });
+
+    it("names the missing project, or the missing team, before the missing contact", () => {
+      renderBar({ state: "new", legalNextStates: ["assess"], customerContacts: [], customerApprovalRequired: true });
+      expect(screen.getByRole("button", { name: /request approval/i }).closest('[tabindex="0"]')).toHaveAttribute(
+        "aria-label",
+        "Request Approval: Select a Customer Project before requesting approval",
+      );
+      cleanup();
+      renderBar({ state: "new", legalNextStates: ["assess"], assignedTeam: null, project: PROJECT, customerContacts: [], customerApprovalRequired: true });
+      expect(screen.getByRole("button", { name: /request approval/i }).closest('[tabindex="0"]')).toHaveAttribute(
+        "aria-label",
+        "Request Approval: Set an assigned team before requesting approval",
+      );
+    });
+
+    it("leaves Cancel change usable behind the menu", () => {
+      const { onAction } = renderBar({ state: "new", legalNextStates: ["assess", "canceled"], project: PROJECT, customerContacts: [], customerReviewRequired: true });
+      expect(screen.getByRole("button", { name: /request approval/i })).toBeDisabled();
+      openMenu();
+      fireEvent.click(screen.getByRole("menuitem", { name: /cancel change/i }));
+      expect(onAction).toHaveBeenCalledWith("canceled");
+    });
+  });
+
   it("blocks only the target with the unmet prerequisite, leaving the others clickable", () => {
     // `assess` is blocked *and* is first in FORWARD_ORDER, so it stays the
     // promoted (disabled) primary while `canceled` stays usable behind the
