@@ -1526,7 +1526,7 @@ func staleApprovalRefusal(kind approvalStageKind, currentState string) error {
 //   - any other known state: the requested rows of every stage whose decidable
 //     state (approvalStageDecidableState) is not the current one -- e.g. the
 //     Review stage's approvers once the change has left Review for Customer
-//     Review, the customer's once it was re-scheduled back to Authorize.
+//     Review, the customer's once an old-flow Re-schedule sent it back to Authorize.
 //
 // The stages stay as a record; only the approver rows move to `CANCELLED`
 // (updated_by = actorEmail, like every other cancel helper). A stage is

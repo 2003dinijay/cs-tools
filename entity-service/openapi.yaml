@@ -16989,11 +16989,14 @@ components:
                 customer_approval: [authorize, canceled] -- never "scheduled":
                 only the CUSTOMER's own approval (Customer Portal) schedules the
                 change, and no staff action stands in for it, whether or not
-                anybody was asked; "authorize" here means Re-schedule (PATCH
-                {state: authorize} with a changed plannedStartOn and/or
-                plannedEndOn sends the change back through CAB/ECAB approval and
-                asks the customer again; it is accepted from this state only
-                and refused when the window does not change).
+                anybody was asked; "authorize" here is the wire name of the Time
+                Change loop: Re-schedule / Propose a different time (PATCH
+                {state: authorize}); the state does NOT move, nothing goes
+                through CAB/ECAB again, and the customer is asked again when the
+                planned window changes (it is accepted from this state only,
+                and with no proposal waiting it is refused when the window does
+                not change). WSO2's acceptance of a time the customer proposed
+                is its own request (confirmCustomerUpdatedDate), not a state.
                 scheduled: [implement, canceled]; implement: [review,
                 canceled].
                 review: [customer_review, rollback, canceled] when

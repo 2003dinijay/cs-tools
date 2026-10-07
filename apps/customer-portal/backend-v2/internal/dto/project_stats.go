@@ -66,11 +66,11 @@ func mapReferenceTableItems(items []entity.ReferenceTableItem) []ReferenceItem {
 //
 // Authorize ("-3") is NOT one of them any more. A customer sees a change request
 // only once it was designated to them (it reached Customer Approval or Customer
-// Review and they were asked), and such a change request goes back to Authorize
-// when the customer proposes a new implementation time; it stays visible there,
-// so the state filter has to offer it. New and Assess cannot hold a visible
-// change request: a change leaves New when approval is requested and a designated
-// one never returns to Assess.
+// Review and they were asked), and such a change request can be back in Authorize
+// (a time proposed or a Re-schedule of the older flow, which went through the CAB
+// again); it stays visible there, so the state filter has to offer it. New and
+// Assess cannot hold a visible change request: a change leaves New when approval
+// is requested and a designated one never returns to Assess.
 var restrictedChangeRequestStateIDs = map[string]bool{"-5": true, "-4": true}
 
 // restrictedChangeRequestStateLabels is the Postgres-mode equivalent: on

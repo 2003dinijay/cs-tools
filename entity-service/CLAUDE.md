@@ -2818,10 +2818,12 @@ changed: the change type decides the approval flow, which is fixed once approval
 (current state: <state>). Cancel this change request and clone it to use another type.` in EVERY later
 state, while resending the stored type (a whole-form PATCH) is an accepted no-op. It used to be the COUNT
 of approval stages that locked it, which a Standard change never has (Request Approval writes no stage), so
-a Standard change could be re-typed after Request Approval; the stage-count check stays as a second line
-(`the change type cannot be changed once approval has been requested`).
+a Standard change could be re-typed after Request Approval; the stage-count check stays as a second line for a REAL
+change of type (`the change type cannot be changed once approval has been requested`) -- and no longer refuses a
+resend of the stored type (`resendsStoredChangeType`), which a Normal or Emergency change, having a stage, used to be
+punished for although the state rule accepts it.
 `TestChangeRequestLockIntegration_TheTypeIsFrozenAfterNew` (every state x every type, the Standard-after-Request-Approval
-case through the real flow, an unsupported type).
+case and the Normal-with-a-stage resend through the real flow, an unsupported type).
 
 | Type | Flow |
 |---|---|
@@ -4381,6 +4383,16 @@ On a migrated change in Customer Approval whose customer stage ServiceNow wrote 
 first act still gives it the one labelled stage plus one `REQUESTED` row per registered contact (the existing behaviour of
 every customer act on such a row, `change_request_synced_stages_integration_test.go`); Accept then leaves ServiceNow's
 `REQUESTED` rows alone (an unlabeled stage is of unknown kind and never cancelled by a guess).
+
+**After Accept the flag stays false, and every reader says so.** A change scheduled by Accept carries
+`hasCustomerApproved: false` (no staff action records the customer's approval), `confirmCustomerUpdatedDate: "agree"`
+and `customerProposal.answer: "agreed"`. No gate reads the flag after Customer Approval, but every page that PRINTS it
+would have shown a misleading plain "No", so each reads "Proposed time accepted" when the answer is agreed and the flag
+false: the CSM webapp (Overview cell, PDF row), the CSM microapp (Approval card), the customer webapp (stepper, window
+card) and the customer microapp (`ChangeDetailPage`, `ProgressTimeline`). NOT changed, on purpose: the legacy Ballerina
+customer-portal backend's mapping (`apps/customer-portal/backend/utils.bal`, `hasCustomerApproved:
+response.hasCustomerApproved`), which passes the flag through as ServiceNow keeps it and has no `customerProposal` to
+read; backend-v2 is the backend this work targets.
 
 **Decisions** (the user's, recorded): the mechanism is ServiceNow's own (not Authorize); the 0053 comment per customer
 proposal is accepted; a proposal is a START with the planned length kept; Decline is offered; a plain Re-schedule sends no
