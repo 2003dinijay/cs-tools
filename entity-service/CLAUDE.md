@@ -212,6 +212,33 @@ just a bool, either `"true"` or not. `NewRouter` returns the constructed
 threaded through `server.New` to `cmd/api/main.go`, which calls `Close()` on
 it during shutdown, after `srv.Shutdown`.
 
+## Service request events (`sr.*`)
+
+`SRNoticeService` (`internal/service/sr_notice_service.go`) ports ServiceNow's
+"SR New Request - Acknowledge & Chat Alert" flow (discovery scripts 73/74) and
+publishes three events to the operations topic (`SRE_EVENT_HUB_TOPIC`,
+sre-events), not the case topic: SRs belong to SRE. Types and payloads are in
+`internal/events/service_request.go`; csm-notification-service turns them into
+Chat cards in the SR's SRE-team space.
+
+- `sr.created`: every SR created on the plain-Postgres path
+  (`caseService.CreateCase`). Under dual-write the SR is created in ServiceNow
+  first and its own flow still runs there, so nothing happens here.
+- `sr.acknowledged`: when the SR's account SRE team is in
+  `SR_ALERT_SRE_TEAM_IDS`, the SR is first assigned to that team, then gets
+  ServiceNow's acknowledgement comment (word for word) and is moved to OPEN --
+  a no-op for a native SR, which is created OPEN. The comment is written
+  straight to the table, so no `case.comment_added` fires: the flow saves with
+  `setWorkflow(false)`. ServiceNow acknowledges only when its card was sent;
+  here the gate is the team being listed (product decision, 2026-10-07).
+- `sr.comment_added`: every comment or work note on an SR, from
+  `createCaseCommentAs` (plain and dual-write), independent of
+  `case.comment_added`'s recipient gate. Carries the author and the SR's tags;
+  the consumer decides the devops-sm customer-comment alert.
+
+Wired in `routes.go` only when there is an SRE topic and a publisher: the
+acknowledgement must never be posted with no card announcing the SR.
+
 ## User cache (Redis)
 
 `GET /users/{id}` and `GET /users/me` are served cache-aside from Redis when
@@ -2338,11 +2365,22 @@ already use — no route path, request, or response shape changed.
   'submitted'`) — the ServiceNow-backed implementation instead trusts SN to
   enforce both, since it just forwards the caller's token.
   `TransitionTimeCardState` (approve/reject) similarly requires the actor to
-  be an eligible approver (a `time_card_approver` row, and not the card's
-  own submitter) AND the card to currently be `submitted` — both checked
-  under one `SELECT ... FOR UPDATE` so a concurrent approver-list edit or a
+  be an eligible approver (a `time_card_approver` row for this specific
+  card) **or** a holder of the global `admin` role (`role.name = 'admin'`,
+  the same role `recompute_user_type` — migration 0011 — already treats as
+  a distinct global grant), and in either case not the card's own submitter,
+  AND the card to currently be `submitted` — all checked under one
+  `SELECT ... FOR UPDATE` so a concurrent approver-list/role edit or a
   second transition attempt can't slip through between the check and the
-  write. That guard only fires at decide-time, though — until now nothing
+  write. The `admin` branch is a deliberate "approve by exception" escape
+  hatch, added at explicit product request: unlike every other eligibility
+  check in this file, it is not scoped to any particular card at all —
+  holding `admin` lets a caller decide *any* submitted card, regardless of
+  whether `time_card_approver` lists them for it. Self-approval is still
+  blocked unconditionally, admin included. The CSM Portal webapp's own
+  `useTimecardRole` hook mirrors this exactly (`isApprover || isAdmin`) for
+  which cards it shows Approve/Reject controls on — see that repo's own
+  `CLAUDE.md`. That guard only fires at decide-time, though — until now nothing
   stopped the same submitter/approver pairing from being written in the
   first place. `validateApproverIDsExcludeSubmitter` (`time_card_service.go`)
   closes that at create/edit time instead: `CreateTimeCard`/`UpdateTimeCard`

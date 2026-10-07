@@ -79,17 +79,21 @@ type TimeCardRepository interface {
 	// TransitionTimeCardState sets the time card identified by id to state
 	// ("approved" or "rejected", validated by the caller), recording
 	// actorID as approved_by_id when approving and leadComment (if any)
-	// regardless of which transition. Only an eligible approver (a row in
-	// time_card_approver for this card) other than the card's own submitter
-	// may do this, and only while the card is still "submitted" -- both
-	// checked and then acted on inside one transaction (a SELECT ... FOR
-	// UPDATE followed by the UPDATE) so a concurrent approver-list edit or a
-	// second transition attempt can't slip through between the check and
-	// the write. Returns a NotFoundError if id does not exist; a
-	// ForbiddenError if actorID is not an eligible approver, or is the
-	// card's own submitter (self-approval); a ConflictError if the card is
-	// not currently "submitted" (already approved/rejected/processed/
-	// recalled).
+	// regardless of which transition. May be done by either an eligible
+	// approver (a row in time_card_approver for this card) or a holder of
+	// the global "admin" role (approve-by-exception, not scoped to any
+	// particular card's own approver list -- the same "admin" role
+	// recompute_user_type, migration 0011, already treats as a distinct
+	// global grant), in both cases other than the card's own submitter, and
+	// only while the card is still "submitted" -- all checked and then acted
+	// on inside one transaction (a SELECT ... FOR UPDATE followed by the
+	// UPDATE) so a concurrent approver-list/role edit or a second transition
+	// attempt can't slip through between the check and the write. Returns a
+	// NotFoundError if id does not exist; a ForbiddenError if actorID is
+	// neither an eligible approver nor an admin, or is the card's own
+	// submitter (self-approval, blocked regardless of role); a
+	// ConflictError if the card is not currently "submitted" (already
+	// approved/rejected/processed/recalled).
 	TransitionTimeCardState(ctx context.Context, id string, state domain.TimeCardState, leadComment *string, actorID string) (domain.TimeCardView, error)
 	// DeleteTimeCard permanently deletes the time card identified by id, but
 	// only if it belongs to submitterID and is still in the "submitted"
@@ -942,25 +946,61 @@ func (r *timeCardRepo) UpdateTimeCardFields(ctx context.Context, req domain.Upda
 func (r *timeCardRepo) TransitionTimeCardState(ctx context.Context, id string, state domain.TimeCardState, leadComment *string, actorID string) (domain.TimeCardView, error) {
 	var returnedID string
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		// Lock the actor's admin grant, if any, BEFORE the time_card row below
+		// -- unlike the time_card_approver check (protected for free: every
+		// approver-list edit's own UPDATE on this same time_card row, in
+		// UpdateTimeCardFields, shares and serializes against the FOR UPDATE
+		// lock taken just below), an "admin" grant lives in user_role/role,
+		// a table with no relationship to any particular time_card row at
+		// all. Without locking it here too, nothing in this transaction
+		// would stop a concurrent DELETE FROM user_role revoking this exact
+		// grant from landing in the gap between this eligibility check and
+		// the UPDATE further down -- FOR UPDATE on time_card only ever locks
+		// the time_card row, never this one. Locking it first, in its own
+		// statement, means a concurrent revocation of this specific grant
+		// blocks on this transaction committing/rolling back, the same
+		// guarantee the approver-list case already had implicitly. Every
+		// matching row is locked (user_role has no UNIQUE(user_id, role_id)
+		// -- see this repository's own package doc on duplicate grants --
+		// so more than one is possible), and zero rows (not currently an
+		// admin) locks nothing, which is correct: there is no grant to
+		// protect.
+		adminGrantRows, err := tx.Query(ctx, `
+			SELECT ur.id FROM user_role ur JOIN role r ON r.id = ur.role_id
+			WHERE ur.user_id = $1 AND r.name = 'admin' FOR UPDATE OF ur`, actorID,
+		)
+		if err != nil {
+			return fmt.Errorf("lock admin role grant: %w", err)
+		}
+		isAdmin := adminGrantRows.Next()
+		adminGrantRows.Close()
+		if err := adminGrantRows.Err(); err != nil {
+			return fmt.Errorf("lock admin role grant: %w", err)
+		}
+
 		// Lock the row and check eligibility AND current state before writing
-		// anything: only an approver on this specific card, other than its own
-		// submitter, may transition it, and only while it is still "submitted"
-		// -- without that state check, an eligible approver could re-approve/
-		// reject an already approved/rejected/processed/recalled card. FOR
-		// UPDATE holds the lock across both statements in this transaction,
-		// closing the gap a plain check-then-UPDATE would leave for a
-		// concurrent approver-list edit (or a second transition attempt) to
-		// race through. Postgres applies both the SELECT and UPDATE policies
-		// to a FOR UPDATE lock -- time_card's RLS policies (migration 0144)
-		// use the same is_project_member condition for both, so a legitimate
-		// caller's own row satisfies both together.
+		// anything: only an approver on this specific card, OR a holder of the
+		// global "admin" role locked above (approve-by-exception -- see that
+		// role's own use in recompute_user_type, migration 0011), and in both
+		// cases other than the card's own submitter, may transition it, and
+		// only while it is still "submitted" -- without that state check, an
+		// eligible approver could re-approve/reject an already approved/
+		// rejected/processed/recalled card. FOR UPDATE holds the lock across
+		// both statements in this transaction, closing the gap a plain
+		// check-then-UPDATE would leave for a concurrent approver-list edit
+		// (or a second transition attempt) to race through. Postgres applies
+		// both the SELECT and UPDATE policies to a FOR UPDATE lock --
+		// time_card's RLS policies (migration 0144) use the same
+		// is_project_member condition for both, so a legitimate caller's own
+		// row satisfies both together.
 		var submitterID string
 		var currentState *string
 		var isApprover bool
-		err := tx.QueryRow(ctx, `
-			SELECT tc.user_id, tc.state::TEXT, EXISTS (
-				SELECT 1 FROM time_card_approver tca WHERE tca.time_card_id = tc.id AND tca.approver_id = $2
-			)
+		err = tx.QueryRow(ctx, `
+			SELECT tc.user_id, tc.state::TEXT,
+			       EXISTS (
+			           SELECT 1 FROM time_card_approver tca WHERE tca.time_card_id = tc.id AND tca.approver_id = $2
+			       )
 			FROM time_card tc WHERE tc.id = $1 FOR UPDATE`, id, actorID,
 		).Scan(&submitterID, &currentState, &isApprover)
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -969,8 +1009,8 @@ func (r *timeCardRepo) TransitionTimeCardState(ctx context.Context, id string, s
 		if err != nil {
 			return fmt.Errorf("check time card approver eligibility: %w", err)
 		}
-		if !isApprover || submitterID == actorID {
-			return &apierror.ForbiddenError{Msg: "only an eligible approver, other than the submitter, may approve or reject this time card"}
+		if !(isApprover || isAdmin) || submitterID == actorID {
+			return &apierror.ForbiddenError{Msg: "only an eligible approver, or an admin, other than the submitter, may approve or reject this time card"}
 		}
 		// time_card_state_enum is UPPER_SNAKE_CASE; domain.TimeCardStateSubmitted
 		// is lowercase.
