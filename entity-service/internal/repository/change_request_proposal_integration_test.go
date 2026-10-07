@@ -329,6 +329,10 @@ func TestChangeRequestProposalIntegration_AcceptHappyAndEveryRefusal(t *testing.
 			t.Fatalf("%s: a refused Accept changed the change request:\n  before: %s\n  after:  %s", tc.name, before, after)
 		}
 	}
+	// The window the Accept names is no longer the stored one: the same machine-readable code as a
+	// customer's answer for a window that moved (the words are the staff ones).
+	_, err0 := f.patch(id, with(func(r *domain.PatchChangeRequestRequest) { r.ExpectedPlannedStartOn = sp(rsStart3) }))
+	wantRefusalCode(t, "an Accept for a planned window that moved", err0, 409, apierror.CodeChangeRequestScheduleChanged)
 	// Exact texts of the validation refusals that are whole sentences.
 	f.wantExact("an Accept that is a decline", func() error {
 		_, err := f.patch(id, with(func(r *domain.PatchChangeRequestRequest) { r.ConfirmCustomerUpdatedDate = sp("disagree") }))
@@ -1042,6 +1046,7 @@ func TestChangeRequestProposalIntegration_CustomerRefusals(t *testing.T) {
 		_, err := f.proposeAs(id, crScopeUserA1, rsStart2)
 		f.wantConflictExact("a proposal while an approval that is not the customer's is asked", err,
 			"this change request is also waiting for an approval that is not the customer's, so a new time cannot be proposed for it right now")
+		wantRefusalCode(t, "a proposal while another approval is asked", err, 409, apierror.CodeChangeRequestProposalNotNow)
 		// The first act on a migrated change gives it its labelled stage before this refusal: that
 		// existing provisioning is rolled back with the refused transaction.
 		f.wantRefusedSame("a proposal while another approval is asked", id, before, err)
@@ -1061,6 +1066,7 @@ func TestChangeRequestProposalIntegration_CustomerRefusals(t *testing.T) {
 				before := f.snap(id)
 				_, err := f.proposeAs(id, crScopeUserA1, rsStart2)
 				f.wantConflictExact("a proposal over a window with no length", err, "this change request has no planned window to move, so a new time cannot be proposed for it")
+				wantRefusalCode(t, name+": a proposal over a window with no length", err, 409, apierror.CodeChangeRequestNoPlannedWindow)
 				f.wantRefusedSame("a proposal over a window with no length", id, before, err)
 			})
 		}
