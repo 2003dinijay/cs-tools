@@ -90,15 +90,18 @@ import (
 // refuseStaffExitFromCustomerState, refuseStaffCustomerOutcomeFlags and
 // changeRequestForwardNextStates.
 //
-// EMERGENCY changes are acted on without the customer's consent: they never reach
-// Customer Approval or Customer Review and never provision a customer stage. The
-// two boxes cannot be set on one (a create or a PATCH that would is a 400:
-// checkEmergencyCustomerConsent, ValidateCreateChangeRequestCustomerGates), and the
-// flow ignores whatever the stored boxes say for a change whose type is Emergency
-// (effectiveCustomerGates), so a row that already carries one -- an Emergency
-// change from before the rule, or a ServiceNow-migrated one -- still goes CAB
-// approval -> Scheduled and Review -> Closed. Reads of the stored values are
-// untouched.
+// EMERGENCY changes are acted on without the customer's consent: they never ENTER
+// Customer Approval or Customer Review. The two boxes cannot be set on one (a create
+// or a PATCH that would is a 400: checkEmergencyCustomerConsent,
+// ValidateCreateChangeRequestCustomerGates), and the flow ignores whatever the stored
+// boxes say for a change whose type is Emergency (effectiveCustomerGates), so a row
+// that already carries one -- an Emergency change from before the rule, or a
+// ServiceNow-migrated one -- still goes CAB approval -> Scheduled and Review ->
+// Closed. Reads of the stored values are untouched. An Emergency change that is
+// ALREADY waiting in a customer state (the same two kinds of row) is not taken out of
+// the customer's hands: the customer stage logic below does not look at the type, so
+// its contacts are asked, can answer, and are asked again by a Re-schedule exactly as
+// on any other change.
 //
 // Who gives the customer's answer depends on the change's Customer Project. The
 // Customer Group is not stored or picked: it is the project's registered
@@ -1666,7 +1669,15 @@ func reconcileStaleApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEm
 //     -- has its REQUESTED approvers cancelled, so there are never two live
 //     customer stages and nobody is asked a question that no longer applies. A
 //     changed project gets a fresh stage for its own contacts (first bullet);
-//   - an Emergency change: no stage, ever (see the early return below);
+//   - an Emergency change is treated like any other. The Emergency rule keeps it from
+//     ENTERING a customer state (effectiveCustomerGates: CAB approval schedules it,
+//     Review closes it), so a state that has a customer stage is only ever one it is
+//     already waiting in -- a row from before the rule, or a ServiceNow-migrated one --
+//     and the question the customer was given there stands: it is asked, replaced
+//     on a Re-schedule and answered like the same question on any other change.
+//     Nothing here may leave such a change waiting in a customer state with nobody to
+//     answer, which is all a guard on the model would do (it would cancel the live
+//     request on a Re-schedule and put no fresh one in its place);
 //   - no project, or no eligible contact: no stage and nobody is asked. There is
 //     no staff path that answers for the customer: the change can be cancelled
 //     or re-scheduled, or wait for a contact to register (a PATCH that restates
@@ -1683,25 +1694,20 @@ func reconcileStaleApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEm
 // Approval), a {state: customer_review} PATCH, and any PATCH that sets or
 // changes the state or the project.
 func provisionCustomerStage(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) (bool, error) {
-	var state, projectID, model *string
+	var state, projectID *string
 	if err := tx.QueryRow(ctx,
-		`SELECT cr.state::text, wi.project_id::text, cr.change_model::text
+		`SELECT cr.state::text, wi.project_id::text
 		 FROM change_request cr JOIN work_item wi ON wi.id = cr.id
-		 WHERE cr.id = $1 FOR UPDATE OF cr`, workItemID).Scan(&state, &projectID, &model); err != nil {
+		 WHERE cr.id = $1 FOR UPDATE OF cr`, workItemID).Scan(&state, &projectID); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return false, nil
 		}
 		return false, fmt.Errorf("provision customer stage: read change request: %w", err)
 	}
-	// An Emergency change is acted on without the customer's consent: whatever its
-	// boxes say, and whatever state it is in (a ServiceNow-migrated one can be in a
-	// customer state; this flow never takes one there), no customer stage is ever
-	// provisioned for it. A stage that already exists is left as it is: the
-	// customer's own answer on it still works, and the state-based clean-up
-	// (reconcileStaleApprovers) is what retires it when the change leaves its state.
-	if isEmergencyModel(stringOrEmpty(model)) {
-		return false, nil
-	}
+	// No check of the change's type here, on purpose: an Emergency change is kept from
+	// ENTERING a customer state elsewhere (effectiveCustomerGates), and the only way
+	// it is in one is that it was already waiting there. Its customer's question
+	// is then answered, replaced and cancelled like anybody's.
 	spec := customerStageSpecForState(strings.ToUpper(stringOrEmpty(state)))
 	live, err := liveCustomerStages(ctx, tx, workItemID)
 	if err != nil {

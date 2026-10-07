@@ -5030,7 +5030,7 @@ func TestChangeRequestFlowIntegration_NormalCustomerGateLifecycles(t *testing.T)
 // but a row can still carry them -- one from before the rule, or a ServiceNow-migrated one
 // whose requirement flags are ServiceNow's own -- and the flow ignores them: the CAB approval
 // SCHEDULES it (never Customer Approval), Review goes straight to Closed (never Customer
-// Review), and no customer stage is ever provisioned. (Replaces the test that drove an
+// Review), so no customer stage is provisioned along the way. (Replaces the test that drove an
 // Emergency change through ECAB approval into Customer Approval.)
 func TestChangeRequestFlowIntegration_EmergencyNeverReachesACustomerState(t *testing.T) {
 	f := newCRFlow(t)
@@ -7258,12 +7258,16 @@ func TestChangeRequestFlowIntegration_RescheduleWithNobodyToAskTwice(t *testing.
 	f.step(id, domain.ChangeRequestStateCanceled, "CANCELED")
 }
 
-// An Emergency change that is ALREADY in Customer Approval -- only a row from before the rule
-// (it was moved there by a build that asked the customer) can be -- keeps the customer's request
-// it was given: the customer's own answer still works. A Re-schedule applies the window and
-// supersedes that request, but nobody is asked again: an Emergency change is never given a
-// customer stage, so it waits for a Cancel. (Replaces the test that re-scheduled an Emergency
-// change through ECAB into a fresh customer request.)
+// An Emergency change that is ALREADY in Customer Approval -- a row from before the rule, or a
+// ServiceNow-migrated one -- is not taken out of the customer's hands: the question it was
+// given stands, and every act of the Customer Approval loop works on it exactly as on any other
+// change. The customer's own answer moves it; a Re-schedule or a counter-proposal applies the
+// window, supersedes the request and ASKS THE PROJECT'S CONTACTS AGAIN (a fresh stage, nothing
+// goes through CAB again); one that cannot ask anybody is refused whole, with the customers'
+// pending request untouched (the rule every other change follows -- never a cancelled request
+// that nobody replaces). The Emergency rule only keeps such a change from ENTERING a customer
+// state (CAB approval schedules it, Review closes it). (Replaces the test that pinned a
+// Re-schedule which cancelled the request and asked nobody, so that only a Cancel was left.)
 func TestChangeRequestFlowIntegration_RescheduleLegacyEmergencyInCustomerApproval(t *testing.T) {
 	legacy := func(t *testing.T) (*crFlow, string) {
 		f := newCustomerGroupFlow(t)
@@ -7280,19 +7284,73 @@ func TestChangeRequestFlowIntegration_RescheduleLegacyEmergencyInCustomerApprova
 		f.customerApproves(id)
 		f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
 	})
-	t.Run("a Re-schedule supersedes the request and asks nobody again", func(t *testing.T) {
+	t.Run("a Re-schedule supersedes the request and asks the project's contacts again", func(t *testing.T) {
 		f, id := legacy(t)
 		if err := f.reschedule(id, nil, sp(rsEnd2)); err != nil { // only the end changes
 			t.Fatalf("re-schedule: %v", err)
 		}
 		f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
 		f.wantPlanned(id, "after Re-schedule", rsStart1, rsEnd2)
-		if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval" {
-			t.Fatalf("stages after Re-schedule = %s, want the old ones and no fresh customer stage", got)
+		// The old request stays as a record, a fresh one is live, and nothing went through CAB again.
+		if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,Customer Approval" {
+			t.Fatalf("stages after Re-schedule = %s, want the old ones and a fresh customer stage", got)
 		}
-		assertApprovers(t, "the superseded customer stage", f.stages(id)[2].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
-		// What staff keep: Cancel.
-		f.step(id, domain.ChangeRequestStateCanceled, "CANCELED")
+		stages := f.stages(id)
+		assertApprovers(t, "the superseded customer stage", stages[2].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
+		assertApprovers(t, "the fresh customer stage", stages[3].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+		f.wantCanAnswer(id, "after Re-schedule", true, crScopeUserA1, crScopeUserA2)
+		// The customer's answer on the fresh request moves it, and stamps the customer's approval.
+		if err := f.decide(id, crScopeUserA2, "approved"); err != nil {
+			t.Fatalf("the customer's answer on the fresh request: %v", err)
+		}
+		f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
+		f.wantPlanned(id, "after the customer's approval", rsStart1, rsEnd2)
+		if approved, _ := f.customerOutcome(id); !approved {
+			t.Fatal("the customer's approval was not recorded")
+		}
+	})
+	t.Run("a customer's proposed time answered with a counter-proposal asks them again", func(t *testing.T) {
+		f, id := legacy(t)
+		f.mustPropose(id, crScopeUserA1, rsStart2)
+		f.wantAnswer(id, "after the proposal", "pending")
+		if err := f.counter(id, sp(rsStart3), sp(rsEnd3)); err != nil {
+			t.Fatalf("counter-proposal: %v", err)
+		}
+		f.expect(id, "after the counter-proposal", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		f.wantPlanned(id, "after the counter-proposal", rsStart3, rsEnd3)
+		stages := f.stages(id)
+		if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,Customer Approval" {
+			t.Fatalf("stages after the counter-proposal = %s, want a fresh customer stage", got)
+		}
+		assertApprovers(t, "the fresh customer stage", stages[3].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+	})
+	t.Run("a Re-schedule nobody can be asked about is refused whole, the customers' request untouched", func(t *testing.T) {
+		f, id := legacy(t)
+		var registered []string
+		rows, err := f.scoped.Query(f.sys, `SELECT id::text FROM project_contact WHERE project_id = $1 AND state = 'REGISTERED'`, crScopeProjectA)
+		if err != nil {
+			t.Fatalf("list the registered contacts: %v", err)
+		}
+		for rows.Next() {
+			var cid string
+			if err := rows.Scan(&cid); err != nil {
+				t.Fatalf("scan contact: %v", err)
+			}
+			registered = append(registered, cid)
+		}
+		rows.Close()
+		f.execSQL(`UPDATE project_contact SET state = 'DEACTIVATED'::project_contact_state_enum WHERE id = ANY($1::uuid[])`, registered)
+		before := f.snap(id)
+		f.wantExact("re-schedule with every contact gone", f.reschedule(id, nil, sp(rsEnd2)), nobodyMsgApproval)
+		f.wantExact("counter-proposal with every contact gone", f.counter(id, sp(rsStart3), sp(rsEnd3)), nobodyMsgApproval)
+		f.expect(id, "after the refused acts", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		f.wantPlanned(id, "after the refused acts", rsStart1, rsEnd1)
+		if n := f.liveStageRows(id, "Customer Approval"); n != 2 {
+			t.Fatalf("customer request has %d live rows after the refused acts, want 2 (untouched)", n)
+		}
+		if after := f.snap(id); after != before {
+			t.Fatalf("a refused act changed the change request:\n  before: %s\n  after:  %s", before, after)
+		}
 	})
 }
 

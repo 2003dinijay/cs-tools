@@ -343,8 +343,9 @@ func customerHasRequestedRow(ctx context.Context, q crQuerier, stageID, userID s
 //   - the change request is legacy (created before the cutover instant, or no
 //     cutover is configured): a change request created after it was asked
 //     through our flow, or was never meant to be seen;
-//   - it is in Customer Approval or Customer Review right now, and is not an Emergency
-//     change (provisionCustomerStage gives an Emergency change no customer stage);
+//   - it is in Customer Approval or Customer Review right now (whatever its type: an
+//     Emergency change is never taken there by this flow, but one that is there is
+//     waiting for the customer like any other);
 //   - no live customer stage exists for that state (an existing live stage is
 //     never touched: provisionCustomerStage would cancel one whose contacts
 //     changed, which is not this function's business);
@@ -391,9 +392,9 @@ func ensureCustomerStageForLegacy(ctx context.Context, tx pgx.Tx, id, actorEmail
 // stage created and would be one of the people asked in it. It checks what
 // provisionCustomerStage checks, in the same terms, and never writes:
 //
-//   - the change request is legacy, is not an Emergency change (which is never given
-//     a customer stage) and waits in the state spec belongs to (the caller has
-//     already seen there is no live stage);
+//   - the change request is legacy and waits in the state spec belongs to (the caller
+//     has already seen there is no live stage); its type does not matter -- an Emergency
+//     change that is waiting for the customer is asked like any other;
 //   - no answer was ever given on a customer stage of that kind (a decided stage
 //     is never reopened);
 //   - the viewer is one of the project's registered contacts a stage would ask
@@ -402,10 +403,6 @@ func ensureCustomerStageForLegacy(ctx context.Context, tx pgx.Tx, id, actorEmail
 func legacyStageWouldBeProvisioned(ctx context.Context, q crQuerier, id string, spec *customerStageSpec, viewerEmail string) (bool, error) {
 	legacy, state, projectID, ok, err := crVisibilityFromContext(ctx).legacyAndState(ctx, q, id)
 	if err != nil || !ok || !legacy || projectID == nil || state != spec.state {
-		return false, err
-	}
-	// An Emergency change never gets a customer stage (provisionCustomerStage).
-	if emergency, err := changeRequestIsEmergency(ctx, q, id); err != nil || emergency {
 		return false, err
 	}
 	members, err := customerContactUserIDs(ctx, q, *projectID)

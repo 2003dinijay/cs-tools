@@ -17,18 +17,16 @@
 package repository
 
 import (
-	"context"
-	"errors"
 	"strings"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
 // This file owns the Emergency change rule: an Emergency change is acted on
-// WITHOUT the customer's consent, so it never reaches Customer Approval or
-// Customer Review and never provisions a customer stage.
+// WITHOUT the customer's consent, so it never ENTERS Customer Approval or
+// Customer Review. (One that is already waiting in one -- see below -- is not taken
+// out of the customer's hands: the question it was given stands.)
 //
 // Two halves, because the data has two origins:
 //
@@ -44,11 +42,19 @@ import (
 //     ServiceNow-migrated one (whose requirement flags are ServiceNow's, written by the
 //     sync, and never ours to edit). Nothing is rewritten and reads show what is
 //     stored, but the FLOW ignores the boxes for an Emergency change
-//     (effectiveCustomerGates): CAB approval schedules it, Review closes it, and no
-//     customer stage is ever provisioned for it (provisionCustomerStage). A write of the
+//     (effectiveCustomerGates): CAB approval schedules it and Review closes it, so
+//     nothing this flow does takes it into a customer state. A write of the
 //     value a box already holds is a no-op and is accepted, like everywhere in the lock
 //     (change_request_customer_lock.go): a client that sends the whole form back is not
 //     punished for a legacy ticked box it did not touch.
+//
+// What the rule does NOT do is strand a change that is already in a customer state (a
+// row from before the rule, or one ServiceNow itself sent to the customer): there the
+// customer's question stands and every act of the loop works as on any other change --
+// the customer's own answer moves it, a Re-schedule or a counter-proposal asks the
+// project's contacts again, and one that cannot ask anybody is refused whole
+// (provisionCustomerStage, legacyStageWouldBeProvisioned, requireSomebodyToAskForWindow).
+// Cancelling a customer's request that nobody then replaces is never an outcome.
 
 // changeModelEmergency is change_request.change_model's label for an Emergency change.
 const changeModelEmergency = "EMERGENCY"
@@ -153,18 +159,4 @@ func checkEmergencyCustomerConsent(snap changeRequestGateSnapshot, req domain.Pa
 		return &apierror.ValidationError{Msg: emergencyNoCustomerConsentMsg + ": turn off " + strings.Join(fields, " and ") + " before changing the type to emergency"}
 	}
 	return &apierror.ValidationError{Msg: emergencyNoCustomerConsentMsg + " (" + strings.Join(fields, " and ") + " must be false for an Emergency change)"}
-}
-
-// changeRequestIsEmergency reads whether the stored change_model of the change request is
-// Emergency. Compared as text so it reads the same on every shape of the enum column. A
-// change that does not exist is not Emergency.
-func changeRequestIsEmergency(ctx context.Context, q crQuerier, id string) (bool, error) {
-	var model *string
-	if err := q.QueryRow(ctx, `SELECT change_model::text FROM change_request WHERE id = $1`, id).Scan(&model); err != nil {
-		if errors.Is(err, pgx.ErrNoRows) {
-			return false, nil
-		}
-		return false, err
-	}
-	return model != nil && isEmergencyModel(*model), nil
 }

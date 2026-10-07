@@ -296,27 +296,125 @@ func TestChangeRequestEmergencyIntegration_LegacyBoxesAreIgnoredByTheGate(t *tes
 			t.Fatalf("SetState(REVIEW -> CLOSED) of a Normal change with the review box = %v, %v, want a refusal", changed, err)
 		}
 	})
-	t.Run("a customer state it was forced into asks nobody", func(t *testing.T) {
+	t.Run("a customer state it is already in keeps asking the customer", func(t *testing.T) {
+		// The rule keeps an Emergency change from ENTERING a customer state; it does not take a
+		// change that is already waiting there out of the customer's hands (a row from before the
+		// rule, or a migrated one): the contacts are asked as for any other change, and their own
+		// answer moves it.
 		f := newCustomerGroupFlow(t)
-		for _, state := range []string{"CUSTOMER_APPROVAL", "CUSTOMER_REVIEW"} {
+		for _, tc := range []struct {
+			state, after string
+			legal        []string
+			answer       func(f *crFlow, id string) error
+		}{
+			{"CUSTOMER_APPROVAL", "SCHEDULED", []string{"implement", "canceled"}, func(f *crFlow, id string) error { _, err := f.approveAs(id, crScopeUserA1, true); return err }},
+			{"CUSTOMER_REVIEW", "CLOSED", nil, func(f *crFlow, id string) error { _, err := f.reviewAs(id, crScopeUserA2, true); return err }},
+		} {
 			id := f.createWithProject(domain.ChangeRequestTypeEmergency, sp(crScopeProjectA), false, false)
 			f.execSQL(`UPDATE change_request SET customer_approval_required = true, customer_review_required = true WHERE id = $1`, id)
-			f.setState(id, state)
-			// Restating the project is what asks the contacts of a change in a customer state; for an
-			// Emergency change it provisions nothing.
+			f.setState(id, tc.state)
+			// Restating the project is what asks the contacts of a change in a customer state.
 			f.setProject(id, crScopeProjectA)
-			if st := f.customerStages(id); len(st) != 0 {
-				t.Fatalf("%s: an Emergency change was given the customer stage(s) %+v", state, st)
+			st := f.customerStages(id)
+			if len(st) != 1 {
+				t.Fatalf("%s: %d customer stages for the Emergency change, want the one the contacts are asked in", tc.state, len(st))
 			}
-			f.wantCanAnswer(id, "in "+state+" with no stage", false, crScopeUserA1, crScopeUserA2)
-			// And for a Normal change in the same state it does ask (the control).
-			n := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, true)
-			f.setState(n, state)
-			f.setProject(n, crScopeProjectA)
-			if st := f.customerStages(n); len(st) != 1 {
-				t.Fatalf("%s: the control Normal change has %d customer stages, want 1", state, len(st))
+			assertApprovers(t, tc.state+" stage", st[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+			f.wantCanAnswer(id, "in "+tc.state+" with the stage", true, crScopeUserA1, crScopeUserA2)
+			if err := tc.answer(f, id); err != nil {
+				t.Fatalf("%s: the customer's answer: %v", tc.state, err)
 			}
+			f.expect(id, "after the customer's answer in "+tc.state, tc.after, tc.legal...)
 		}
+	})
+}
+
+// A MIGRATED Emergency change that is sitting in a customer state: ServiceNow itself asked the
+// customer group (an UNLABELED stage in customer_group_id, EXTERNAL approvers), our own boxes
+// are false and the sync's requirement flags may be set. It is not stranded: it reads
+// customerCanAnswer true for the contacts, the customer's first act gives it the stage this
+// service's flow answers on, and the answer moves it -- Customer Approval to Scheduled, Customer
+// Review to Closed -- exactly as on a Normal change in the same shape. A Re-schedule re-asks
+// them, and the sync's flags are never written by any of it.
+func TestChangeRequestEmergencyIntegration_MigratedEmergencyInACustomerStateIsAnswerable(t *testing.T) {
+	// syncFlags: the sync's two requirement flags are set (they are, on the migrated rows that have a
+	// customer step at all). A row whose flag is already set cannot be given the opposite answer
+	// (the lock on isCustomerApproved / isCustomerReviewed), so the rejection cases leave them off.
+	migrated := func(t *testing.T, state string, syncFlags bool) (*crFlow, string) {
+		f := newCustomerGroupFlow(t)
+		id := f.migratedInCustomerApproval()
+		f.execSQL(`UPDATE change_request SET change_model = 'EMERGENCY', is_customer_approval_required = $2,
+		                  is_customer_review_required = $2 WHERE id = $1`, id, syncFlags)
+		f.setState(id, state)
+		if got := f.get(id).Type; got == nil || *got != "emergency" {
+			t.Fatalf("type = %v, want emergency", got)
+		}
+		return f, id
+	}
+	t.Run("Customer Approval: the customer approves", func(t *testing.T) {
+		f, id := migrated(t, "CUSTOMER_APPROVAL", true)
+		f.wantCanAnswer(id, "in Customer Approval, ServiceNow's stage only", true, crScopeUserA1, crScopeUserA2)
+		f.wantCanAnswer(id, "in Customer Approval, ServiceNow's stage only", false, crScopeUserSecurity, crScopeUserInactive)
+		if _, err := f.approveAs(id, crScopeUserA1, true); err != nil {
+			t.Fatalf("the customer's approval: %v", err)
+		}
+		f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
+		if st := f.customerStages(id); len(st) != 1 {
+			t.Fatalf("customer stages = %+v, want the one the answer was recorded on", st)
+		}
+		assertApprovers(t, "the stage the answer landed on", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "APPROVED", crScopeUserA2: "CANCELLED"})
+		if sa, sr := f.syncFlags(id); !sa || !sr {
+			t.Fatalf("the sync's flags after the answer = %v/%v, want them untouched (true/true)", sa, sr)
+		}
+	})
+	t.Run("Customer Approval: the decision route does the same", func(t *testing.T) {
+		f, id := migrated(t, "CUSTOMER_APPROVAL", true)
+		if _, err := f.repo.DecideChangeRequestApproval(asContact(crScopeUserA2), id, crScopeUserA2, "approved", crFlowEmail(crScopeUserA2)); err != nil {
+			t.Fatalf("the customer's decision: %v", err)
+		}
+		f.expect(id, "after the decision", "SCHEDULED", "implement", "canceled")
+		assertApprovers(t, "the stage the decision landed on", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "APPROVED"})
+	})
+	t.Run("Customer Approval: the customer rejects", func(t *testing.T) {
+		f, id := migrated(t, "CUSTOMER_APPROVAL", false)
+		if _, err := f.approveAs(id, crScopeUserA2, false); err != nil {
+			t.Fatalf("the customer's rejection: %v", err)
+		}
+		f.expect(id, "after the customer's rejection", "CANCELED")
+	})
+	t.Run("Customer Review: the customer confirms", func(t *testing.T) {
+		f, id := migrated(t, "CUSTOMER_REVIEW", true)
+		f.wantCanAnswer(id, "in Customer Review, ServiceNow's stage only", true, crScopeUserA1, crScopeUserA2)
+		if _, err := f.reviewAs(id, crScopeUserA2, true); err != nil {
+			t.Fatalf("the customer's review: %v", err)
+		}
+		f.expect(id, "after the customer's review", "CLOSED")
+		if sa, sr := f.syncFlags(id); !sa || !sr {
+			t.Fatalf("the sync's flags after the review = %v/%v, want them untouched (true/true)", sa, sr)
+		}
+	})
+	t.Run("Customer Review: the customer fails it", func(t *testing.T) {
+		f, id := migrated(t, "CUSTOMER_REVIEW", false)
+		if _, err := f.reviewAs(id, crScopeUserA1, false); err != nil {
+			t.Fatalf("the customer's failed review: %v", err)
+		}
+		f.expect(id, "after the failed review", "ROLLBACK")
+	})
+	t.Run("Customer Approval: a Re-schedule asks the contacts again", func(t *testing.T) {
+		f, id := migrated(t, "CUSTOMER_APPROVAL", false)
+		if err := f.reschedule(id, nil, sp(rsEnd2)); err != nil {
+			t.Fatalf("re-schedule: %v", err)
+		}
+		f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		st := f.customerStages(id)
+		if len(st) != 1 {
+			t.Fatalf("customer stages = %+v, want the fresh one this service asks in", st)
+		}
+		assertApprovers(t, "the fresh stage", st[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+		if _, err := f.approveAs(id, crScopeUserA2, true); err != nil {
+			t.Fatalf("the customer's approval of the new window: %v", err)
+		}
+		f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
 	})
 }
 
