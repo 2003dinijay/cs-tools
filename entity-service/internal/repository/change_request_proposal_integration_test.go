@@ -463,8 +463,8 @@ func TestChangeRequestProposalIntegration_OnHoldAndPast(t *testing.T) {
 func TestChangeRequestProposalIntegration_AnAcceptStaysInsideTheRangeOfEveryWindow(t *testing.T) {
 	for name, tc := range map[string]struct{ start, end, refusal string }{
 		"the end passes the last year by the planned length": {"2100-12-31T23:00:00Z", "2101-01-01T01:00:00Z", ""},
-		"a date in the year 9999":                           {"9999-12-31T23:30:00Z", "10000-01-01T01:30:00Z", ""},
-		"the last window that fits":                         {"2100-12-31T20:00:00Z", "2100-12-31T22:00:00Z", "fits"},
+		"a date in the year 9999":                            {"9999-12-31T23:30:00Z", "10000-01-01T01:30:00Z", ""},
+		"the last window that fits":                          {"2100-12-31T20:00:00Z", "2100-12-31T22:00:00Z", "fits"},
 	} {
 		tc := tc
 		t.Run(name, func(t *testing.T) {

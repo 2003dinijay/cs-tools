@@ -38,15 +38,15 @@ func spp(s string) *string { return &s }
 
 func TestFmtPlannedLength(t *testing.T) {
 	for in, want := range map[time.Duration]string{
-		2 * time.Hour:                      "2 hours",
-		time.Hour:                          "1 hour",
-		90 * time.Minute:                   "1 hour 30 minutes",
-		26 * time.Hour:                     "1 day 2 hours",
-		48 * time.Hour:                     "2 days",
-		time.Second:                        "1 second",
-		2*time.Hour + 3*time.Second:        "2 hours 3 seconds",
-		0:                                  "0 seconds",
-		500 * time.Millisecond:             "500ms",
+		2 * time.Hour:               "2 hours",
+		time.Hour:                   "1 hour",
+		90 * time.Minute:            "1 hour 30 minutes",
+		26 * time.Hour:              "1 day 2 hours",
+		48 * time.Hour:              "2 days",
+		time.Second:                 "1 second",
+		2*time.Hour + 3*time.Second: "2 hours 3 seconds",
+		0:                           "0 seconds",
+		500 * time.Millisecond:      "500ms",
 	} {
 		if got := fmtPlannedLength(in); got != want {
 			t.Errorf("fmtPlannedLength(%v) = %q, want %q", in, got, want)
@@ -81,12 +81,12 @@ func TestCustomerProposalAnswer(t *testing.T) {
 		f    customerProposalFacts
 		want string
 	}{
-		"no proposed date":         {customerProposalFacts{}, ""},
-		"pending":                  {customerProposalFacts{proposed: p, pending: true}, "pending"},
+		"no proposed date":                 {customerProposalFacts{}, ""},
+		"pending":                          {customerProposalFacts{proposed: p, pending: true}, "pending"},
 		"pending wins over a stale answer": {customerProposalFacts{proposed: p, pending: true, confirmation: "AGREE"}, "pending"},
-		"agreed":                   {customerProposalFacts{proposed: p, confirmation: "AGREE"}, "agreed"},
-		"disagreed":                {customerProposalFacts{proposed: p, confirmation: "DISAGREE"}, "disagreed"},
-		"history without an answer": {customerProposalFacts{proposed: p}, "unanswered"},
+		"agreed":                           {customerProposalFacts{proposed: p, confirmation: "AGREE"}, "agreed"},
+		"disagreed":                        {customerProposalFacts{proposed: p, confirmation: "DISAGREE"}, "disagreed"},
+		"history without an answer":        {customerProposalFacts{proposed: p}, "unanswered"},
 	} {
 		if got := customerProposalAnswer(tc.f); got != tc.want {
 			t.Errorf("%s: answer = %q, want %q", name, got, tc.want)
@@ -160,17 +160,17 @@ func TestValidateAcceptRequest(t *testing.T) {
 		mod  func(*domain.PatchChangeRequestRequest)
 		want string
 	}{
-		"disagree":            {func(r *domain.PatchChangeRequestRequest) { r.ConfirmCustomerUpdatedDate = spp("disagree") }, msgAcceptValueMustBeAgree},
-		"empty":               {func(r *domain.PatchChangeRequestRequest) { r.ConfirmCustomerUpdatedDate = spp("") }, msgAcceptValueMustBeAgree},
-		"nothing":             {func(r *domain.PatchChangeRequestRequest) { r.ConfirmCustomerUpdatedDate = nil }, msgAcceptValueMustBeAgree},
-		"a title":             {func(r *domain.PatchChangeRequestRequest) { r.Title = &title }, msgAcceptAlone},
-		"a window":            {func(r *domain.PatchChangeRequestRequest) { r.PlannedStartOn = spp("2030-03-08T09:00:00Z") }, msgAcceptAlone},
-		"no proposal":         {func(r *domain.PatchChangeRequestRequest) { r.ExpectedCustomerUpdatedOn = nil }, msgAcceptNeedsExpectedProposal},
-		"no start":            {func(r *domain.PatchChangeRequestRequest) { r.ExpectedPlannedStartOn = nil }, msgAcceptNeedsExpectedWindow},
-		"no end":              {func(r *domain.PatchChangeRequestRequest) { r.ExpectedPlannedEndOn = nil }, msgAcceptNeedsExpectedWindow},
-		"a proposal no date":  {func(r *domain.PatchChangeRequestRequest) { r.ExpectedCustomerUpdatedOn = spp("infinity") }, "expectedCustomerUpdatedOn must be a date-time"},
-		"a start no date":     {func(r *domain.PatchChangeRequestRequest) { r.ExpectedPlannedStartOn = spp("now") }, "expectedPlannedStartOn must be a date-time"},
-		"an end no date":      {func(r *domain.PatchChangeRequestRequest) { r.ExpectedPlannedEndOn = spp("2030-03-01") }, "expectedPlannedEndOn must be a date-time"},
+		"disagree":           {func(r *domain.PatchChangeRequestRequest) { r.ConfirmCustomerUpdatedDate = spp("disagree") }, msgAcceptValueMustBeAgree},
+		"empty":              {func(r *domain.PatchChangeRequestRequest) { r.ConfirmCustomerUpdatedDate = spp("") }, msgAcceptValueMustBeAgree},
+		"nothing":            {func(r *domain.PatchChangeRequestRequest) { r.ConfirmCustomerUpdatedDate = nil }, msgAcceptValueMustBeAgree},
+		"a title":            {func(r *domain.PatchChangeRequestRequest) { r.Title = &title }, msgAcceptAlone},
+		"a window":           {func(r *domain.PatchChangeRequestRequest) { r.PlannedStartOn = spp("2030-03-08T09:00:00Z") }, msgAcceptAlone},
+		"no proposal":        {func(r *domain.PatchChangeRequestRequest) { r.ExpectedCustomerUpdatedOn = nil }, msgAcceptNeedsExpectedProposal},
+		"no start":           {func(r *domain.PatchChangeRequestRequest) { r.ExpectedPlannedStartOn = nil }, msgAcceptNeedsExpectedWindow},
+		"no end":             {func(r *domain.PatchChangeRequestRequest) { r.ExpectedPlannedEndOn = nil }, msgAcceptNeedsExpectedWindow},
+		"a proposal no date": {func(r *domain.PatchChangeRequestRequest) { r.ExpectedCustomerUpdatedOn = spp("infinity") }, "expectedCustomerUpdatedOn must be a date-time"},
+		"a start no date":    {func(r *domain.PatchChangeRequestRequest) { r.ExpectedPlannedStartOn = spp("now") }, "expectedPlannedStartOn must be a date-time"},
+		"an end no date":     {func(r *domain.PatchChangeRequestRequest) { r.ExpectedPlannedEndOn = spp("2030-03-01") }, "expectedPlannedEndOn must be a date-time"},
 	} {
 		r := good
 		tc.mod(&r)
@@ -185,18 +185,18 @@ func TestValidateAcceptRequest(t *testing.T) {
 func TestJudgeStaffWindow(t *testing.T) {
 	f := customerProposalFacts{start: tm("2030-03-01T09:00:00Z"), end: tm("2030-03-01T11:00:00Z"), proposed: tm("2030-03-08T09:00:00Z"), pending: true}
 	for name, tc := range map[string]struct {
-		start, end                                         *string
+		start, end                               *string
 		changed, inverted, empty, sameAsProposal bool
 	}{
-		"the plan restated":                  {spp("2030-03-01T09:00:00Z"), spp("2030-03-01T11:00:00Z"), false, false, false, false},
-		"the plan in another zone":           {spp("2030-03-01T14:30:00+05:30"), spp("2030-03-01T16:30:00+05:30"), false, false, false, false},
-		"nothing sent":                       {nil, nil, false, false, false, false},
-		"a later window":                     {spp("2030-03-15T09:00:00Z"), spp("2030-03-15T11:00:00Z"), true, false, false, false},
-		"the proposal as a window":           {spp("2030-03-08T09:00:00Z"), spp("2030-03-08T11:00:00Z"), true, false, false, true},
-		"the proposal's start, another end":  {spp("2030-03-08T09:00:00Z"), spp("2030-03-08T12:00:00Z"), true, false, false, false},
-		"a start after the stored end":       {spp("2030-03-08T09:00:00Z"), nil, true, true, false, false},
-		"an empty window":                    {spp("2030-03-15T09:00:00Z"), spp("2030-03-15T09:00:00Z"), true, false, true, false},
-		"an end alone moved":                 {nil, spp("2030-03-01T12:00:00Z"), true, false, false, false},
+		"the plan restated":                 {spp("2030-03-01T09:00:00Z"), spp("2030-03-01T11:00:00Z"), false, false, false, false},
+		"the plan in another zone":          {spp("2030-03-01T14:30:00+05:30"), spp("2030-03-01T16:30:00+05:30"), false, false, false, false},
+		"nothing sent":                      {nil, nil, false, false, false, false},
+		"a later window":                    {spp("2030-03-15T09:00:00Z"), spp("2030-03-15T11:00:00Z"), true, false, false, false},
+		"the proposal as a window":          {spp("2030-03-08T09:00:00Z"), spp("2030-03-08T11:00:00Z"), true, false, false, true},
+		"the proposal's start, another end": {spp("2030-03-08T09:00:00Z"), spp("2030-03-08T12:00:00Z"), true, false, false, false},
+		"a start after the stored end":      {spp("2030-03-08T09:00:00Z"), nil, true, true, false, false},
+		"an empty window":                   {spp("2030-03-15T09:00:00Z"), spp("2030-03-15T09:00:00Z"), true, false, true, false},
+		"an end alone moved":                {nil, spp("2030-03-01T12:00:00Z"), true, false, false, false},
 	} {
 		w, err := judgeStaffWindow(f, tc.start, tc.end)
 		if err != nil {
