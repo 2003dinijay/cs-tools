@@ -7074,6 +7074,46 @@ result set.
   Search selects by `work_item.type` and reads the state from whichever extension
   row exists, so those 41 count as `case` + `open`.
 
+### The state filter is a targeted id lookup, not the five-table COALESCE, for `in`/`notIn`
+
+`caseLikeStateColumn`'s five-way `COALESCE` across every case-like extension
+table can never be served by an index -- it's a runtime expression, not a
+column -- and real production-volume testing confirmed it costs the most
+database time of any query this service runs, by far: every row
+`caseSearchJoins` admits has to be joined to all five extension tables before
+the `COALESCE` can even be evaluated, for every `state` filter on every case
+search. `caseLikeStateLookupClause` (`case_field_predicates.go`) replaces the
+`WHERE` predicate for both the `state` (`in`) and `ExcludeStates` (`notIn`)
+filters with a `wi.id [NOT ]IN (SELECT id FROM <type-table> WHERE state ...
+UNION ALL ...)` lookup, scoped to exactly the type(s) the request's own
+`type` filter already named -- every dashboard widget's case search is, in
+practice, a `{type}` filter alongside a `{state}` filter, so this lets the
+planner use that type's own existing state index (e.g. `idx_case_state`) and
+skip the other four extension-table joins entirely, instead of joining
+everything and filtering after. Falls back to checking every case-like type
+(same coverage as the `COALESCE` it replaces) whenever the request names no
+type of its own -- the `DefaultTypes` case, and any `anyOf` branch that
+doesn't narrow `type` itself. The `SELECT` list's own display column still
+reads `caseLikeStateColumn` as before; only the `WHERE`-clause matching
+changed.
+
+**Known, accepted divergence**: a work_item row whose own `type` disagrees
+with which extension table actually holds its data (see the bullet above --
+confirmed live, and rare) is found by the old `COALESCE` regardless of its
+declared type, since that approach blindly checks all five tables for every
+row. This lookup trusts `wi.type` and only checks that type's own table, so
+it diverges from the `COALESCE` both ways for such a row: an `in` filter
+misses it whenever the request narrows `type` to something other than the
+table the row's data actually lives in (the `COALESCE` would have matched
+it there), and a `notIn` filter wrongly keeps it for the mirror-image reason
+-- its declared type's own table has no row to find, so the lookup can never
+see the state that should have excluded it, and the row passes `NOT IN`
+when the old `COALESCE` would have excluded it. Deliberately not fixed by
+always checking every table regardless of the request's own type filter --
+that would reproduce the exact cost this rewrite exists to avoid, to
+compensate for a handful of rows a separate sync-side data-quality issue
+produced, not something every case search should pay for indefinitely.
+
 ## Announcement requests
 
 `announcement_requests` (migration `0042`, `internal/domain/entity.go`'s
