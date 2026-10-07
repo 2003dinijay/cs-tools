@@ -117,8 +117,8 @@ describe("ChangeRequestRescheduleDialog", () => {
       cleanup();
       renderDialog({ cr: { type } });
       expect(screen.getByText(/The customer is asked to approve it\. No further internal approval is needed: the change itself has not changed\./), type).toBeInTheDocument();
-      // The CAB loop is gone: nothing says the change goes back to Authorize, to the CAB or to the ECAB.
-      expect(screen.queryByText(/Authorize|CAB|ECAB|goes back|stays in Customer Approval/), type).not.toBeInTheDocument();
+      // The CAB loop is gone: nothing says the change goes back to Authorize or to the CAB.
+      expect(screen.queryByText(/Authorize|CAB|goes back|stays in Customer Approval/), type).not.toBeInTheDocument();
     }
   });
 
@@ -172,7 +172,7 @@ describe("ChangeRequestRescheduleDialog", () => {
       expect(screen.getByText(/Keep the current time to decline the proposal\. No CAB approval is needed\./)).toBeInTheDocument();
       // Nothing of the plain Re-schedule hint, and nothing of the old CAB loop.
       expect(screen.queryByText(/change the planned start or end to re-schedule/i)).not.toBeInTheDocument();
-      expect(screen.queryByText(/Authorize|ECAB|goes back/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Authorize|goes back/)).not.toBeInTheDocument();
     });
 
     it("is prefilled with the PLANNED window, not the customer's, and offers to decline as it stands", () => {

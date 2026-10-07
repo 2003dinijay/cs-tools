@@ -31,6 +31,7 @@ import {
   countActiveCRFilters,
   CUSTOMER_PROPOSAL_WAITING_REASON,
   customerApprovedDisplay,
+  CUSTOMER_STEP_NOT_APPLICABLE,
   customerGateWithheldTargets,
   customerProposalProposer,
   customerProposalProposerLabel,
@@ -52,6 +53,9 @@ import {
   isChangeRequestCategory,
   isChangeRequestCreator,
   isCreatableChangeRequestType,
+  isCustomerStepNotApplicable,
+  isEmergencyChangeRequestType,
+  EMERGENCY_CUSTOMER_STEPS_HELPER,
   anyApproverBeingAsked,
   NO_CUSTOMER_CONTACTS_HELPER,
   NOBODY_ASKED_HELPER,
@@ -319,6 +323,7 @@ describe("changeRequestBlockingReason", () => {
     ["Peer Approval", "Awaiting Peer Approval"],
     ["CAB Approval", "Awaiting CAB Approval"],
     ["CAB", "Awaiting CAB Approval"],
+    // An Emergency change raised before ECAB was retired: its stage still reads as it was named.
     ["ECAB Approval", "Awaiting ECAB Approval"],
     ["ECAB", "Awaiting ECAB Approval"],
     ["Emergency CAB", "Awaiting ECAB Approval"],
@@ -382,6 +387,7 @@ describe("approvalStageLabel", () => {
     ["Peer Approval", "Peer Approval"],
     ["Authorize", "CAB Approval"],
     ["CAB Approval", "CAB Approval"],
+    // Historic only: a stage an earlier version gave an Emergency change keeps its label.
     ["Emergency CAB", "ECAB Approval"],
     ["ECAB Approval", "ECAB Approval"],
     ["Review", "Review"],
@@ -949,6 +955,35 @@ describe("CHANGE_REQUEST_CREATE_TYPE_OPTIONS", () => {
     expect(isCreatableChangeRequestType("model")).toBe(false);
     expect(isCreatableChangeRequestType("")).toBe(false);
     expect(isCreatableChangeRequestType(undefined)).toBe(false);
+  });
+});
+
+describe("the Emergency change type", () => {
+  it("is recognised by the backend's enum value, however it is cased or padded", () => {
+    expect(isEmergencyChangeRequestType("emergency")).toBe(true);
+    expect(isEmergencyChangeRequestType(" Emergency ")).toBe(true);
+    expect(isEmergencyChangeRequestType("normal")).toBe(false);
+    expect(isEmergencyChangeRequestType("standard")).toBe(false);
+    expect(isEmergencyChangeRequestType("")).toBe(false);
+    expect(isEmergencyChangeRequestType(null)).toBe(false);
+    expect(isEmergencyChangeRequestType(undefined)).toBe(false);
+  });
+
+  it("says in one line why the two customer boxes are off", () => {
+    expect(EMERGENCY_CUSTOMER_STEPS_HELPER).toBe("Emergency changes proceed without customer approval or review.");
+  });
+
+  it("treats a customer step as not applicable only on an Emergency change that does not have it", () => {
+    expect(CUSTOMER_STEP_NOT_APPLICABLE).toBe("Not applicable");
+    expect(isCustomerStepNotApplicable("emergency", false)).toBe(true);
+    expect(isCustomerStepNotApplicable("emergency", undefined)).toBe(true);
+    expect(isCustomerStepNotApplicable("emergency", null)).toBe(true);
+    // An older Emergency change that still carries the step shows it as stored.
+    expect(isCustomerStepNotApplicable("emergency", true)).toBe(false);
+    // Every other type shows Yes / No.
+    for (const type of ["normal", "standard", "model", undefined, null]) {
+      expect(isCustomerStepNotApplicable(type, false), String(type)).toBe(false);
+    }
   });
 });
 

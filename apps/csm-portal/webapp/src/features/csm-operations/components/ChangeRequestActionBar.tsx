@@ -132,7 +132,7 @@ const MENU_ORDER: readonly string[] = [...FORWARD_ORDER, ...SECONDARY_ORDER, "ro
  * a PATCH, and nothing here records the customer's approval or review.
  *
  * `scheduled` is never offered. A CR is moved to Scheduled automatically the
- * moment its approval is granted (CAB/ECAB, Standard's Request Approval, or the
+ * moment its approval is granted (CAB, Standard's Request Approval, or the
  * customer's own approval at Customer Approval). There is no manual "Schedule"
  * action anywhere, and none out of `customer_approval` either: that move is
  * the customer's approval.

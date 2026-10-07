@@ -457,7 +457,7 @@ describe("ChangeRequestActionBar — per-target blocked reasons", () => {
 });
 
 /**
- * CAB (or ECAB) approval moves a CR to Scheduled automatically, and a Standard
+ * CAB approval moves a CR to Scheduled automatically, and a Standard
  * change goes straight there from Request Approval -- there is no manual
  * "Schedule" button. The backend no longer lists `scheduled` in
  * `legalNextStates`; the bar also filters it defensively.

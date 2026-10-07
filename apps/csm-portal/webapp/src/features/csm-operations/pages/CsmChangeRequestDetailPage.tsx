@@ -90,7 +90,9 @@ import {
   changeRequestImpactLabel,
   changeRequestStateColor,
   changeRequestStateLabel,
+  CUSTOMER_STEP_NOT_APPLICABLE,
   customerApprovedDisplay,
+  isCustomerStepNotApplicable,
   pendingCustomerProposal,
 } from "@features/csm-operations/utils/changeRequests";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
@@ -199,7 +201,19 @@ function RefChips({ values }: { values?: BeEntityRef[] | null }): JSX.Element {
   );
 }
 
-function YesNo({ value }: { value?: boolean }): JSX.Element {
+/**
+ * Yes / No, or "Not applicable" for a customer step an Emergency change does not
+ * have (it acts without customer consent: it never reaches a customer state). A
+ * step such a change still carries from before that rule reads as it is stored.
+ */
+function YesNo({ value, notApplicable = false }: { value?: boolean; notApplicable?: boolean }): JSX.Element {
+  if (notApplicable) {
+    return (
+      <Typography variant="body2" color="text.secondary">
+        {CUSTOMER_STEP_NOT_APPLICABLE}
+      </Typography>
+    );
+  }
   return (
     <Box sx={{ display: "flex", alignItems: "center", gap: 0.5 }}>
       {value ? <Check size={14} /> : <X size={14} />}
@@ -223,7 +237,7 @@ function CustomerApprovedValue({ cr }: { cr: BeChangeRequestDetail }): JSX.Eleme
       </Box>
     );
   }
-  return <YesNo value={display === "Yes"} />;
+  return <YesNo value={display === "Yes"} notApplicable={isCustomerStepNotApplicable(cr.type, display === "Yes")} />;
 }
 
 /**
@@ -830,6 +844,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         state={cr.state}
         customerApprovalRequired={cr.customerApprovalRequired}
         customerReviewRequired={cr.customerReviewRequired}
+        type={cr.type}
         approvals={approvalsData?.approvals}
         customerApproved={cr.hasCustomerApproved}
         hasCustomerContacts={cr.customerContacts ? cr.customerContacts.length > 0 : undefined}
@@ -975,13 +990,24 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
                 }}
               >
                 <MetaCell label="Customer approval required">
-                  <YesNo value={cr.customerApprovalRequired} />
+                  <YesNo
+                    value={cr.customerApprovalRequired}
+                    notApplicable={isCustomerStepNotApplicable(cr.type, cr.customerApprovalRequired)}
+                  />
                 </MetaCell>
                 <MetaCell label="Customer review required">
-                  <YesNo value={cr.customerReviewRequired} />
+                  <YesNo
+                    value={cr.customerReviewRequired}
+                    notApplicable={isCustomerStepNotApplicable(cr.type, cr.customerReviewRequired)}
+                  />
                 </MetaCell>
                 <MetaCell label="Customer approved"><CustomerApprovedValue cr={cr} /></MetaCell>
-                <MetaCell label="Customer reviewed"><YesNo value={cr.hasCustomerReviewed} /></MetaCell>
+                <MetaCell label="Customer reviewed">
+                  <YesNo
+                    value={cr.hasCustomerReviewed}
+                    notApplicable={isCustomerStepNotApplicable(cr.type, cr.hasCustomerReviewed)}
+                  />
+                </MetaCell>
                 <MetaCell label="Approved by"><RefText value={cr.approvedBy} /></MetaCell>
                 <MetaCell label="Approved on">
                   <Typography variant="body2">{formatDateTime(cr.approvedOn)}</Typography>

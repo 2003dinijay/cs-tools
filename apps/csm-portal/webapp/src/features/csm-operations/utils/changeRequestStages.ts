@@ -19,6 +19,7 @@ import {
   approvalStageLabel,
   changeRequestStateLabel,
   isChangeRequestOffRampState,
+  isEmergencyChangeRequestType,
 } from "@features/csm-operations/utils/changeRequests";
 
 /**
@@ -195,6 +196,14 @@ export interface BuildChangeRequestLifecycleInput {
   customerApprovalRequired?: boolean;
   /** The change's "Customer Review" checkbox; `undefined` = unknown. */
   customerReviewRequired?: boolean;
+  /**
+   * The change's type (`"emergency"`, `"normal"`, ...); `undefined` = unknown. An
+   * Emergency change has no Assess step (it goes from New straight to Authorize, for
+   * the CAB alone), so that stage reads `not-taken` on its line, in every state but
+   * Assess itself (an Emergency change sitting in Assess, however it got there,
+   * is shown where it is).
+   */
+  type?: string | null;
   /** `GET /change-requests/{id}/approvals`, when loaded. Only read for a rollback or canceled change. */
   approvals?: readonly StageEvidence[];
   /** The change's `hasCustomerApproved`: the customer's approval was recorded. Only read for a canceled change. */
@@ -218,6 +227,11 @@ export interface BuildChangeRequestLifecycleInput {
  *    unless the change is in that very state; an unknown (`undefined`) flag
  *    keeps the stage.
  *  - Rollback and Canceled are always on the line.
+ *  - Assess stays on the line of an Emergency change but reads `not-taken` (the
+ *    same muted, dashed marker the other stages the change does not take get): the
+ *    change goes from New straight to Authorize, with a single CAB approval. That
+ *    holds in every state, rolled back or canceled included, unless the change is
+ *    in Assess itself.
  *
  * Statuses by the change's state (a stage left off the line has no row):
  *
@@ -262,6 +276,7 @@ export function buildChangeRequestLifecycle({
   state,
   customerApprovalRequired,
   customerReviewRequired,
+  type,
   approvals,
   customerApproved,
   hasCustomerContacts,
@@ -274,7 +289,11 @@ export function buildChangeRequestLifecycle({
 
   const customerApprovalAt = HAPPY_PATH.indexOf("customer_approval");
 
+  const emergency = isEmergencyChangeRequestType(type);
+
   const statusOf = (s: BeChangeRequestState): ChangeRequestLifecycleStatus => {
+    // An Emergency change never takes Assess (its one approval is the CAB's, in Authorize).
+    if (emergency && s === "assess" && state !== s) return "not-taken";
     const exception = isChangeRequestOffRampState(s);
     if (state === "rollback" || state === "canceled") {
       if (s === state) return "current";

@@ -161,12 +161,18 @@ export function approvalStatusColor(status?: string | null): ChipColor {
 
 /**
  * Display labels for the approval stages of the change-request flow:
- * Normal changes go Peer Approval -> CAB Approval; Emergency changes have only
- * an ECAB Approval; Standard changes have neither. The backend decides which
- * stages exist -- this only maps a stage name it returned to its label, so
- * both the legacy ServiceNow-style names ("Assess", "Authorize") and the
- * explicit ones ("Peer Approval", "CAB Approval", "Emergency CAB") read the
- * same; the post-implementation "Review" stage keeps its own name. Matching is case/space/punctuation-insensitive.
+ * Normal changes go Peer Approval -> CAB Approval; Emergency changes have a
+ * single CAB Approval (there is no separate Emergency CAB: ServiceNow has none
+ * either); Standard changes have none. The backend decides which stages exist --
+ * this only maps a stage name it returned to its label, so both the legacy
+ * ServiceNow-style names ("Assess", "Authorize") and the explicit ones ("Peer
+ * Approval", "CAB Approval") read the same; the post-implementation "Review"
+ * stage keeps its own name. Matching is case/space/punctuation-insensitive.
+ *
+ * "ECAB Approval" / "Emergency CAB" are HISTORY: an Emergency change raised
+ * before ECAB was retired still carries such a stage (possibly still waiting on
+ * approvers), and it keeps reading "ECAB Approval" so the record is shown as it
+ * is. Nothing creates one any more.
  */
 const KNOWN_APPROVAL_STAGE_LABELS: Record<string, string> = {
   assess: "Peer Approval",
@@ -175,9 +181,10 @@ const KNOWN_APPROVAL_STAGE_LABELS: Record<string, string> = {
   authorize: "CAB Approval",
   cab: "CAB Approval",
   cabapproval: "CAB Approval",
+  review: "Review",
+  // Historic only (see above): a stage an earlier version provisioned for an Emergency change.
   ecab: "ECAB Approval",
   ecabapproval: "ECAB Approval",
-  review: "Review",
   emergencycab: "ECAB Approval",
   emergencycabapproval: "ECAB Approval",
   // Stages the backend provisions for the CR's customer group (its members are
@@ -203,7 +210,9 @@ export function approvalStageLabel(stage?: string | null): string {
  * is the backend's `ChangeRequestType` enum value (entity-service
  * `domain.ChangeRequestType*`: "normal" / "standard" / "emergency"); the
  * create form requires exactly one of these. The type drives the approval
- * flow server-side: Normal = Peer -> CAB, Standard = none, Emergency = ECAB.
+ * flow server-side: Normal = Peer -> CAB, Standard = none, Emergency = a single
+ * CAB stage (and no customer approval or review: see
+ * {@link EMERGENCY_CUSTOMER_STEPS_HELPER}).
  */
 export const CHANGE_REQUEST_CREATE_TYPE_OPTIONS: ReadonlyArray<{
   value: Extract<BeChangeRequestType, "normal" | "standard" | "emergency">;
@@ -290,9 +299,38 @@ export function isCreatableChangeRequestType(value: string | null | undefined): 
   return CHANGE_REQUEST_CREATE_TYPE_OPTIONS.some((o) => o.value === value);
 }
 
+/** True when `type` is Emergency (the backend's enum value "emergency"; case and padding ignored). */
+export function isEmergencyChangeRequestType(type: string | null | undefined): boolean {
+  return type?.trim().toLowerCase() === "emergency";
+}
+
+/**
+ * The one line shown where an Emergency change's two customer boxes (Customer
+ * Approval, Customer Review) sit disabled and unticked. An Emergency change acts
+ * without customer consent: it is authorized by the CAB alone and never reaches
+ * a customer state, so there is nothing for the customer to be asked.
+ */
+export const EMERGENCY_CUSTOMER_STEPS_HELPER = "Emergency changes proceed without customer approval or review.";
+
+/** What the detail page reads where a customer step does not exist for the change. */
+export const CUSTOMER_STEP_NOT_APPLICABLE = "Not applicable";
+
+/**
+ * Whether a customer step (the requirement, or what the customer confirmed) is
+ * not applicable to this change: it is an Emergency change and the value is not
+ * set. An Emergency change raised before the rule existed can still carry a
+ * ticked box, and a ticked box is shown as it is stored, never hidden.
+ */
+export function isCustomerStepNotApplicable(
+  type: string | null | undefined,
+  value: boolean | null | undefined,
+): boolean {
+  return isEmergencyChangeRequestType(type) && !value;
+}
+
 /**
  * Whether the signed-in user is the creator/requester of this change request.
- * The backend refuses approvals from the creator (Peer, CAB and ECAB alike);
+ * The backend refuses approvals from the creator (Peer and CAB alike);
  * this lets the UI say so up front rather than offering a control that will
  * 403. Defensive on purpose: the detail only carries `requestedBy` (an entity
  * ref) and `createdBy` (a display string whose shape -- id, email or name --
@@ -573,7 +611,7 @@ export function changeRequestBlockingReason(
         a.approvers.some((p) => !NO_LONGER_ASKED_APPROVER_STATUSES.has(p.status.trim().toUpperCase()))),
   );
   if (!waiting) return null;
-  // A recognised stage (Peer / CAB / ECAB) is named by its stage label, which
+  // A recognised stage (Peer / CAB) is named by its stage label, which
   // already ends in "Approval" -- so this reads "Awaiting CAB Approval" and
   // never "Awaiting CAB approval approval".
   const stageLabel = knownApprovalStageLabel(waiting.stage);
@@ -925,8 +963,8 @@ export function changeRequestScopeLockedReason(state?: string | null): string | 
  */
 const TRANSITION_LABEL: Record<string, string> = {
   // New -> Assess is the "Request Approval" action: it sends the CR into its
-  // approval flow (Peer -> CAB for Normal, ECAB for Emergency, straight to
-  // Scheduled for Standard -- all the backend's call).
+  // approval flow (Peer -> CAB for Normal, a single CAB stage for Emergency,
+  // straight to Scheduled for Standard -- all the backend's call).
   assess: "Request Approval",
   // There is deliberately no entry for `scheduled`: a CR is moved to
   // Scheduled automatically when its approval is granted (the customer's own
