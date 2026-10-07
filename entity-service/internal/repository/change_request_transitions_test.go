@@ -212,3 +212,44 @@ func TestTransitionRefusalMessages(t *testing.T) {
 		}
 	}
 }
+
+// The GitHub sync's graph: the plain moves of the table only, with the staff graph's refusals
+// (a final change has no exit, no step is jumped) and the approval flow's targets refused by name.
+func TestCheckGithubStateMove(t *testing.T) {
+	plain := map[string]bool{"implement": true, "closed": true, "canceled": true, "rollback": true}
+	for _, review := range []bool{false, true} {
+		for _, current := range []string{"", "NEW", "ASSESS", "AUTHORIZE", "SCHEDULED", "IMPLEMENT", "REVIEW", "ROLLBACK", "CLOSED", "CANCELED"} {
+			cur := strings.ToLower(current)
+			if cur == "" {
+				cur = "new"
+			}
+			offered := map[string]bool{}
+			for _, next := range legalChangeRequestNextStates(&cur, review) {
+				if plain[next] {
+					offered[next] = true
+				}
+			}
+			for _, target := range []domain.ChangeRequestState{
+				domain.ChangeRequestStateNew, domain.ChangeRequestStateAssess, domain.ChangeRequestStateAuthorize, domain.ChangeRequestStateCustomerApproval,
+				domain.ChangeRequestStateScheduled, domain.ChangeRequestStateImplement, domain.ChangeRequestStateReview, domain.ChangeRequestStateCustomerReview,
+				domain.ChangeRequestStateRollback, domain.ChangeRequestStateClosed, domain.ChangeRequestStateCanceled,
+			} {
+				err := checkGithubStateMove(current, target, review)
+				switch {
+				case string(target) == cur:
+					if err != nil {
+						t.Errorf("review=%v %s -> %s (a resend): %v", review, cur, target, err)
+					}
+				case offered[string(target)]:
+					if err != nil {
+						t.Errorf("review=%v %s -> %s is a plain edge of the graph: %v", review, cur, target, err)
+					}
+				default:
+					if err == nil {
+						t.Errorf("review=%v %s -> %s was accepted", review, cur, target)
+					}
+				}
+			}
+		}
+	}
+}
