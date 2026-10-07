@@ -7,7 +7,6 @@ endpoints:
       basePath: /
       port: 8080
     type: REST
-    # Public so components outside this network (e.g. the allocation backend on Azure) can call it.
     networkVisibilities:
       - Organization
       - Public
