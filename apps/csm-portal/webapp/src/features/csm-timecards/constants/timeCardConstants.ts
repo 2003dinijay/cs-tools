@@ -85,8 +85,8 @@ export const LEAD_COMMENT_MAX = 500;
 /**
  * Maximum minutes an engineer may log against a single ticket in one day (the
  * old SN Portal's "no more than 8 hours per ticket per day" rule, missing
- * from this form until now). Validated client-side only for now — nothing
- * else in the stack enforces this yet.
+ * from this form until now). Mirrors entity-service's maxUserTicketDailyMinutes,
+ * which is the authoritative server-side check across all of a user's cards.
  */
 export const MAX_MINUTES_PER_TICKET_PER_DAY = 480;
 
