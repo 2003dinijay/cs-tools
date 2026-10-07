@@ -16,7 +16,7 @@
 
 
 import type { ComponentProps } from "react";
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import ChangeRequestRescheduleDialog from "@features/csm-operations/components/ChangeRequestRescheduleDialog";
@@ -60,6 +60,7 @@ function pickerInput(label: string): HTMLInputElement {
 }
 
 const submitButton = (): HTMLElement => screen.getByRole("button", { name: "Re-schedule" });
+const dialogButton = (name: string): HTMLElement => within(screen.getByRole("dialog")).getByRole("button", { name });
 
 describe("ChangeRequestRescheduleDialog", () => {
   beforeEach(() => setUserPreferredTimeZone("UTC"));
@@ -111,20 +112,14 @@ describe("ChangeRequestRescheduleDialog", () => {
     expect(screen.getByRole("alert")).toHaveTextContent("re-scheduling requires a changed planned start or end");
   });
 
-  it("explains a normal change goes back to Authorize for CAB approval", () => {
-    renderDialog();
-    expect(screen.getByText(/back to Authorize for CAB approval again/i)).toBeInTheDocument();
-  });
-
-  it("says ECAB for an emergency change and nothing about Authorize for a standard one", () => {
-    renderDialog({ cr: { type: "emergency" } });
-    expect(screen.getByText(/ECAB approval again/i)).toBeInTheDocument();
-  });
-
-  it("explains a standard change stays in Customer Approval", () => {
-    renderDialog({ cr: { type: "standard" } });
-    expect(screen.getByText(/stays in Customer Approval/i)).toBeInTheDocument();
-    expect(screen.queryByText(/back to Authorize/i)).not.toBeInTheDocument();
+  it("explains the new time goes to the customer and no CAB approval is involved, for every type of change", () => {
+    for (const type of ["normal", "standard", "emergency"]) {
+      cleanup();
+      renderDialog({ cr: { type } });
+      expect(screen.getByText(/The customer is asked to approve it\. No further internal approval is needed: the change itself has not changed\./), type).toBeInTheDocument();
+      // The CAB loop is gone: nothing says the change goes back to Authorize, to the CAB or to the ECAB.
+      expect(screen.queryByText(/Authorize|CAB|ECAB|goes back|stays in Customer Approval/), type).not.toBeInTheDocument();
+    }
   });
 
   it("closes via Close", () => {
@@ -152,5 +147,106 @@ describe("ChangeRequestRescheduleDialog", () => {
     renderDialog({ reasonRecorded: false });
     expect(screen.getByLabelText(/reason \(optional\)/i)).toBeEnabled();
     expect(screen.getByText("Recorded as an internal work note.")).toBeInTheDocument();
+  });
+
+  describe("the customer proposed a time (counter mode)", () => {
+    const PROPOSAL = { startOn: "2030-03-08T09:00:00Z", endOn: "2030-03-08T11:00:00Z", answer: "pending" };
+    // The window the page showed, as received: the answer's precondition.
+    const SHOWN = { expectedPlannedStartOn: "2030-03-01 09:00:00", expectedPlannedEndOn: "2030-03-01 11:00:00" };
+
+    it("is 'Propose a different time', says CAB is not involved and that keeping the current time declines", () => {
+      renderDialog({ proposal: PROPOSAL });
+      expect(screen.getByRole("heading", { name: "Propose a different time" })).toBeInTheDocument();
+      expect(screen.getByText(/The customer proposed Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM\./)).toBeInTheDocument();
+      expect(screen.getByText(/Set the time WSO2 proposes instead and the customer is asked to approve it\./)).toBeInTheDocument();
+      expect(screen.getByText(/Keep the current time to decline the proposal\. No CAB approval is needed\./)).toBeInTheDocument();
+      // Nothing of the plain Re-schedule hint, and nothing of the old CAB loop.
+      expect(screen.queryByText(/change the planned start or end to re-schedule/i)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Authorize|ECAB|goes back/)).not.toBeInTheDocument();
+    });
+
+    it("is prefilled with the PLANNED window, not the customer's, and offers to decline as it stands", () => {
+      renderDialog({ proposal: PROPOSAL });
+      expect(pickerInput("Planned start").value).toBe("03/01/2030 09:00 AM");
+      expect(pickerInput("Planned end").value).toBe("03/01/2030 11:00 AM");
+      expect(dialogButton("Decline proposed time")).toBeEnabled();
+      expect(screen.getByText(/The current time stays, so the proposal is declined\./)).toBeInTheDocument();
+    });
+
+    it("a decline sends no window, only the version of the proposal and of the window it was shown", () => {
+      const { onSubmit } = renderDialog({ proposal: PROPOSAL });
+      fireEvent.click(dialogButton("Decline proposed time"));
+      expect(onSubmit).toHaveBeenCalledWith(
+        { state: "authorize", expectedCustomerUpdatedOn: "2030-03-08T09:00:00Z", ...SHOWN },
+        "",
+      );
+    });
+
+    it("a different time sends only what changed, with the same preconditions, and the button says what it does", () => {
+      const { onSubmit } = renderDialog({ proposal: PROPOSAL });
+      fireEvent.change(pickerInput("Planned start"), { target: { value: "03/15/2030 09:00 AM" } });
+      fireEvent.change(pickerInput("Planned end"), { target: { value: "03/15/2030 12:00 PM" } });
+      expect(screen.queryByRole("button", { name: "Decline proposed time" })).not.toBeInTheDocument();
+      expect(screen.queryByText(/so the proposal is declined/)).not.toBeInTheDocument();
+      fireEvent.click(dialogButton("Propose this time"));
+      expect(onSubmit).toHaveBeenCalledWith(
+        {
+          state: "authorize",
+          plannedStartOn: "2030-03-15 09:00:00",
+          plannedEndOn: "2030-03-15 12:00:00",
+          expectedCustomerUpdatedOn: "2030-03-08T09:00:00Z",
+          ...SHOWN,
+        },
+        "",
+      );
+    });
+
+    it("refuses to send the very time the customer proposed: that is Accept proposed time, and says so", () => {
+      const { onSubmit } = renderDialog({ proposal: PROPOSAL });
+      fireEvent.change(pickerInput("Planned start"), { target: { value: "03/08/2030 09:00 AM" } });
+      fireEvent.change(pickerInput("Planned end"), { target: { value: "03/08/2030 11:00 AM" } });
+      expect(dialogButton("Propose this time")).toBeDisabled();
+      expect(screen.getByRole("status")).toHaveTextContent("That is the time the customer proposed. Close this and use Accept proposed time instead.");
+      fireEvent.click(dialogButton("Propose this time"));
+      expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    it("the same start with another end is a different window, so it can be proposed", () => {
+      renderDialog({ proposal: PROPOSAL });
+      fireEvent.change(pickerInput("Planned start"), { target: { value: "03/08/2030 09:00 AM" } });
+      fireEvent.change(pickerInput("Planned end"), { target: { value: "03/08/2030 01:00 PM" } });
+      expect(dialogButton("Propose this time")).toBeEnabled();
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    });
+
+    it("still blocks an end that is not after the start", () => {
+      renderDialog({ proposal: PROPOSAL });
+      fireEvent.change(pickerInput("Planned start"), { target: { value: "03/01/2030 12:00 PM" } });
+      expect(screen.getByText(/planned end must be after planned start/i)).toBeInTheDocument();
+      expect(dialogButton("Propose this time")).toBeDisabled();
+    });
+
+    it("keeps the reason as an internal work note, locked once recorded, in the counter's own words", () => {
+      const { onSubmit } = renderDialog({ proposal: PROPOSAL });
+      fireEvent.change(screen.getByLabelText(/reason \(optional\)/i), { target: { value: "  Freeze that week.  " } });
+      fireEvent.click(dialogButton("Decline proposed time"));
+      expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ state: "authorize" }), "Freeze that week.");
+      cleanup();
+      renderDialog({ proposal: PROPOSAL, reasonRecorded: true });
+      expect(screen.getByText("Already recorded as a work note — retrying will only answer the proposal.")).toBeInTheDocument();
+    });
+
+    it("shows the backend's refusal verbatim", () => {
+      renderDialog({ proposal: PROPOSAL, error: "the customer's proposed time is no longer waiting for a response; read the change request again" });
+      expect(screen.getByRole("alert")).toHaveTextContent("the customer's proposed time is no longer waiting for a response; read the change request again");
+    });
+
+    it("sends nothing of the proposal when no proposal waits (a plain Re-schedule carries no version)", () => {
+      const { onSubmit } = renderDialog();
+      fireEvent.change(pickerInput("Planned end"), { target: { value: "03/01/2030 01:00 PM" } });
+      fireEvent.click(submitButton());
+      const [patch] = onSubmit.mock.calls[0] as [Record<string, unknown>];
+      expect(Object.keys(patch).sort()).toEqual(["plannedEndOn", "state"]);
+    });
   });
 });

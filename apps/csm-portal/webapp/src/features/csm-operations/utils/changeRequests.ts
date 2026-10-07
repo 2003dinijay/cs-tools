@@ -24,7 +24,7 @@ import type {
   BeChangeRequestState,
   BeChangeRequestType,
 } from "@api/backend/types";
-import { parseBackendTimestamp } from "@utils/dateTime";
+import { formatBackendTimestampForDisplay, parseBackendTimestamp } from "@utils/dateTime";
 import { isBlankHtml, sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 
 type ChipColor = "default" | "info" | "warning" | "success" | "error";
@@ -413,6 +413,20 @@ export function proposedWindowMs(
   if (end) return { startMs: start.getTime(), endMs: end.getTime() };
   const planned = plannedWindowMs(cr);
   return { startMs: start.getTime(), endMs: planned ? start.getTime() + (planned.endMs - planned.startMs) : null };
+}
+
+/** An instant as the CSM pages show a change request's times (the viewer's time zone, "Mar 1, 2030, 9:00 AM"). */
+export function formatCrDateTime(value: string | number | null | undefined): string {
+  const raw = typeof value === "number" ? (Number.isFinite(value) ? new Date(value).toISOString() : null) : value;
+  return formatBackendTimestampForDisplay(raw, { dateStyle: "medium", timeStyle: "short" }) ?? "—";
+}
+
+/** A window as "<start> to <end>", or the one bound there is, or "—". */
+export function formatCrWindow(start: string | number | null | undefined, end: string | number | null | undefined): string {
+  const from = formatCrDateTime(start);
+  const to = formatCrDateTime(end);
+  if (from === "—") return to;
+  return to === "—" ? from : `${from} to ${to}`;
 }
 
 /** A window's length as words ("2 hours", "1 hour 30 minutes", "1 day"), or "" when it has none. */

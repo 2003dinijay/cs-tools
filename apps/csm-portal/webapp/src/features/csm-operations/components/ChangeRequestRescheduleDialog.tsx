@@ -29,25 +29,30 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { useMemo, useState, type JSX } from "react";
-import type { BeChangeRequestDetail, BePatchChangeRequestPayload } from "@api/backend/types";
+import type {
+  BeChangeRequestCustomerProposal,
+  BeChangeRequestDetail,
+  BePatchChangeRequestPayload,
+} from "@api/backend/types";
+import { formatCrWindow, proposedWindowMs } from "@features/csm-operations/utils/changeRequests";
 import {
   backendUtcToZonedInput,
   formatDateTimeLocal,
+  parseBackendTimestamp,
   parseDateTimeLocal,
   zonedInputToBackendUtc,
 } from "@utils/dateTime";
 
 const { DateTimePicker, LocalizationProvider } = DatePickers;
 
-/** What approval the change goes through again, for the dialog's explanation. */
-function approvalAgain(type?: string | null): string {
-  if (type === "emergency") return "ECAB approval";
-  if (type === "standard") return "";
-  return "CAB approval";
-}
-
 interface ChangeRequestRescheduleDialogProps {
   cr: BeChangeRequestDetail;
+  /**
+   * The customer's proposed time while it waits for WSO2's answer: the dialog is then
+   * WSO2's COUNTER ("Propose a different time", or a decline that keeps the current time)
+   * instead of a plain Re-schedule. Absent = Re-schedule.
+   */
+  proposal?: BeChangeRequestCustomerProposal | null;
   /** True while the PATCH is in flight. */
   isSubmitting: boolean;
   /** The backend's refusal for the last attempt, shown verbatim. */
@@ -63,27 +68,40 @@ interface ChangeRequestRescheduleDialogProps {
   /**
    * `{state: "authorize", plannedStartOn?, plannedEndOn?}` plus the optional
    * reason ("" when none), which the caller records as an internal comment
-   * before the PATCH -- the same way a Roll back / Cancel reason is.
+   * before the PATCH -- the same way a Roll back / Cancel reason is. Answering a
+   * proposal adds `expectedCustomerUpdatedOn` (the proposal this page showed) and the
+   * planned window it showed, so a change that moved behind the dialog is refused in
+   * words instead of answering a time its reader never saw.
    */
   onSubmit: (patch: BePatchChangeRequestPayload, reason: string) => void;
 }
 
 /**
- * "Re-schedule" from Customer Approval: the planned time changed, so the change
- * goes back through internal approval (the process diagram's Time Change loop).
- * Collects the new planned start and/or end -- prefilled with the current
- * values, at least one must change -- and an optional reason. Only the changed dates are sent; the
- * backend repeats the check ("re-scheduling requires a changed planned start or
- * end") and its refusal is shown as returned.
+ * The Time Change loop out of Customer Approval, in two modes. The wire name is
+ * `{state: "authorize"}` in both, but the change NEVER leaves Customer Approval and never
+ * goes back through CAB: the change itself has not changed.
+ *
+ *  - RE-SCHEDULE (no proposal waiting): WSO2 changes the planned time and the customer is
+ *    asked to approve it. Collects the new planned start and/or end -- prefilled with the
+ *    current values, at least one must change -- and an optional reason. Only the changed
+ *    dates are sent; the backend repeats the check ("re-scheduling requires a changed planned
+ *    start or end") and its refusal is shown as returned.
+ *  - COUNTER (a customer's proposal waiting): "Propose a different time" -- ServiceNow's
+ *    "Disagree". Prefilled with the PLANNED window; any window but the very one the customer
+ *    proposed can be sent (that one is "Accept proposed time", in the banner). Leaving the
+ *    window as it is declines the proposal: the customer keeps their request to approve the
+ *    current time. A different window answers the proposal and asks the customer again.
  */
 export default function ChangeRequestRescheduleDialog({
   cr,
+  proposal,
   isSubmitting,
   error,
   reasonRecorded,
   onClose,
   onSubmit,
 }: ChangeRequestRescheduleDialogProps): JSX.Element {
+  const counter = !!proposal;
   const initialStart = useMemo(() => backendUtcToZonedInput(cr.plannedStartOn), [cr.plannedStartOn]);
   const initialEnd = useMemo(() => backendUtcToZonedInput(cr.plannedEndOn), [cr.plannedEndOn]);
   // The pickers' own values are kept as emitted, partial (Invalid Date) ones
@@ -99,26 +117,46 @@ export default function ChangeRequestRescheduleDialog({
   const startChanged = !!plannedStart && plannedStart !== initialStart;
   const endChanged = !!plannedEnd && plannedEnd !== initialEnd;
   const endBeforeStart = !!plannedStart && !!plannedEnd && endDate!.getTime() <= startDate!.getTime();
-  const canSubmit = (startChanged || endChanged) && !endBeforeStart && !isSubmitting;
+
+  const changedStartUtc = startChanged ? zonedInputToBackendUtc(plannedStart) : null;
+  const changedEndUtc = endChanged ? zonedInputToBackendUtc(plannedEnd) : null;
+
+  // Counter mode: the window WSO2 would send (what is changed, else what is planned) against the one
+  // the customer proposed. The very same window is the Accept action's, not a counter.
+  const proposed = proposal ? proposedWindowMs(cr, proposal) : null;
+  const instantOf = (utc: string | null, planned: string | null | undefined): number | null =>
+    (utc ? parseBackendTimestamp(utc) : parseBackendTimestamp(planned))?.getTime() ?? null;
+  const effectiveStartMs = instantOf(changedStartUtc, cr.plannedStartOn);
+  const effectiveEndMs = instantOf(changedEndUtc, cr.plannedEndOn);
+  const isTheCustomersTime =
+    counter &&
+    !!proposed &&
+    effectiveStartMs === proposed.startMs &&
+    (proposed.endMs === null || effectiveEndMs === proposed.endMs);
+  const keepsCurrentTime = counter && !startChanged && !endChanged;
+
+  const canSubmit = counter
+    ? !endBeforeStart && !isTheCustomersTime && !isSubmitting
+    : (startChanged || endChanged) && !endBeforeStart && !isSubmitting;
 
   const submit = (): void => {
     const patch: BePatchChangeRequestPayload = { state: "authorize" };
-    if (startChanged) {
-      const utc = zonedInputToBackendUtc(plannedStart);
-      if (utc) patch.plannedStartOn = utc;
-    }
-    if (endChanged) {
-      const utc = zonedInputToBackendUtc(plannedEnd);
-      if (utc) patch.plannedEndOn = utc;
+    if (changedStartUtc) patch.plannedStartOn = changedStartUtc;
+    if (changedEndUtc) patch.plannedEndOn = changedEndUtc;
+    if (proposal) {
+      patch.expectedCustomerUpdatedOn = proposal.startOn;
+      if (cr.plannedStartOn) patch.expectedPlannedStartOn = cr.plannedStartOn;
+      if (cr.plannedEndOn) patch.expectedPlannedEndOn = cr.plannedEndOn;
     }
     onSubmit(patch, reason.trim());
   };
 
-  const again = approvalAgain(cr.type);
+  const title = counter ? "Propose a different time" : "Re-schedule this change?";
+  const submitLabel = counter ? (keepsCurrentTime ? "Decline proposed time" : "Propose this time") : "Re-schedule";
 
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth aria-labelledby="cr-reschedule-title">
-      <DialogTitle id="cr-reschedule-title">Re-schedule this change?</DialogTitle>
+      <DialogTitle id="cr-reschedule-title">{title}</DialogTitle>
       <DialogContent dividers>
         <Box sx={{ display: "flex", flexDirection: "column", gap: 2, pt: 0.5 }}>
           {error && (
@@ -126,11 +164,18 @@ export default function ChangeRequestRescheduleDialog({
               {error}
             </Alert>
           )}
-          <Typography variant="body2" color="text.secondary">
-            {again
-              ? `Set the new planned time. The change goes back to Authorize for ${again} again, then the customer is asked to approve the new time.`
-              : "Set the new planned time. The change stays in Customer Approval and the customer is asked to approve the new time again."}
-          </Typography>
+          {counter && proposal ? (
+            <Typography variant="body2" color="text.secondary">
+              {`The customer proposed ${formatCrWindow(proposal.startOn, proposed?.endMs ?? null)}. ` +
+                "Set the time WSO2 proposes instead and the customer is asked to approve it. " +
+                "Keep the current time to decline the proposal. No CAB approval is needed."}
+            </Typography>
+          ) : (
+            <Typography variant="body2" color="text.secondary">
+              Set the new planned time. The customer is asked to approve it. No further internal approval is needed: the
+              change itself has not changed.
+            </Typography>
+          )}
           <LocalizationProvider dateAdapter={AdapterDateFns}>
             <DateTimePicker
               label="Planned start"
@@ -154,9 +199,20 @@ export default function ChangeRequestRescheduleDialog({
               }}
             />
           </LocalizationProvider>
-          {!startChanged && !endChanged && (
+          {!counter && !startChanged && !endChanged && (
             <Typography variant="caption" color="text.secondary">
               Change the planned start or end to re-schedule.
+            </Typography>
+          )}
+          {isTheCustomersTime && (
+            <Typography variant="caption" color="warning.main" role="status">
+              That is the time the customer proposed. Close this and use Accept proposed time instead.
+            </Typography>
+          )}
+          {keepsCurrentTime && !isTheCustomersTime && (
+            <Typography variant="caption" color="text.secondary">
+              The current time stays, so the proposal is declined. The customer is not asked again: their request to
+              approve the current time stays open.
             </Typography>
           )}
           <TextField
@@ -170,7 +226,7 @@ export default function ChangeRequestRescheduleDialog({
             size="small"
             helperText={
               reasonRecorded
-                ? "Already recorded as a work note — retrying will only re-schedule."
+                ? `Already recorded as a work note — retrying will only ${counter ? "answer the proposal" : "re-schedule"}.`
                 : "Recorded as an internal work note."
             }
           />
@@ -181,7 +237,7 @@ export default function ChangeRequestRescheduleDialog({
           Close
         </Button>
         <Button variant="contained" onClick={submit} disabled={!canSubmit} loading={isSubmitting}>
-          Re-schedule
+          {submitLabel}
         </Button>
       </DialogActions>
     </Dialog>
