@@ -67,9 +67,11 @@ import {
   getAnsweredWindow,
   getCustomerDecisionLabels,
   getCustomerDecisionMessages,
+  getProposalNote,
   isAwaitingInternalReview,
   resolveCustomerDecisionMode,
 } from "@features/operations/utils/changeRequests";
+import { getChangeRequestWindow } from "@features/operations/utils/changeRequestSchedule";
 import { formatDateTime } from "@features/support/utils/support";
 import {
   formatImpactLabel,
@@ -97,9 +99,11 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
   const [proposeTimeOpen, setProposeTimeOpen] = useState(false);
   const [rejectConfirmOpen, setRejectConfirmOpen] = useState(false);
   const answerInFlightRef = useRef(false);
-  // Where focus goes once an answer or a proposal has been given: the buttons
-  // that had it are gone by then, and a keyboard or screen reader user would
-  // otherwise start again from the top of the document.
+  // Where focus goes once an answer has been given: the buttons that had it are
+  // gone by then, and a keyboard or screen reader user would otherwise start again
+  // from the top of the document. (A proposal keeps the change in Customer
+  // Approval with its buttons, so closing the dialog hands focus back to the one
+  // that opened it.)
   const headingRef = useRef<HTMLElement | null>(null);
   const [focusHeadingPending, setFocusHeadingPending] = useState(false);
   // The app's own dark-mode signal (<html data-color-scheme>), which theme.palette.mode does not follow.
@@ -124,6 +128,21 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
   // switched off, with the reason beside it, rather than let a customer type a
   // whole window and be refused.
   const proposeBlockedByHold = canShowProposeNewTime && changeRequest?.isOnHold === true;
+  // A proposal moves the start and keeps the planned length, so a change request
+  // with no window (no start, no end, or an end that is not after the start) has
+  // nothing to move: the button is switched off with the reason beside it.
+  const proposeBlockedByNoWindow =
+    canShowProposeNewTime &&
+    !proposeBlockedByHold &&
+    changeRequest != null &&
+    getChangeRequestWindow(changeRequest).durationMs == null;
+  const proposeNoteId = proposeBlockedByHold
+    ? "cr-propose-hold-note"
+    : proposeBlockedByNoWindow
+      ? "cr-propose-nowindow-note"
+      : undefined;
+  // What the customer is told about a proposed time that waits for WSO2 or was not accepted.
+  const proposalNote = getProposalNote(changeRequest, canShowApprovalActions);
   const { approve: approveLabel, reject: rejectLabel } =
     getCustomerDecisionLabels(decisionMode);
 
@@ -484,10 +503,12 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
                           variant="outlined"
                           startIcon={<CalendarClock size={14} aria-hidden />}
                           onClick={() => setProposeTimeOpen(true)}
-                          disabled={patchChangeRequest.isPending || proposeBlockedByHold}
-                          aria-describedby={
-                            proposeBlockedByHold ? "cr-propose-hold-note" : undefined
+                          disabled={
+                            patchChangeRequest.isPending ||
+                            proposeBlockedByHold ||
+                            proposeBlockedByNoWindow
                           }
+                          aria-describedby={proposeNoteId}
                           sx={answerButtonSx("blue")}
                         >
                           Propose New Time
@@ -526,6 +547,19 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
                         be proposed right now. You can still approve or reject it.
                       </Typography>
                     )}
+                    {proposeBlockedByNoWindow && (
+                      <Typography
+                        id="cr-propose-nowindow-note"
+                        variant="caption"
+                        color="text.secondary"
+                        role="note"
+                        sx={{ maxWidth: 360, textAlign: { sm: "right" } }}
+                      >
+                        This change request has no planned time yet, so a new
+                        time cannot be proposed for it. You can still approve or
+                        reject it.
+                      </Typography>
+                    )}
                   </Box>
                 )}
               </Box>
@@ -534,6 +568,23 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
         </Paper>
       </Box>
 
+      {proposalNote && (
+        <Alert
+          severity="info"
+          role="status"
+          id={
+            proposalNote.kind === "waiting"
+              ? "cr-proposal-waiting-note"
+              : "cr-proposal-not-accepted-note"
+          }
+        >
+          {proposalNote.text}
+        </Alert>
+      )}
+
+      {/* Only a proposal made before a proposed time waited in Customer Approval
+          can leave a change request here: it goes back through WSO2's internal
+          approval and the customer is then asked again. */}
       {isAwaitingInternalReview(changeRequest) && (
         <Alert severity="info" role="status" id="cr-internal-review-note">
           WSO2 is reviewing this change request internally. You will be asked to
@@ -970,7 +1021,6 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
       <ProposeNewImplementationTimeModal
         open={proposeTimeOpen && canShowProposeNewTime}
         onClose={() => setProposeTimeOpen(false)}
-        onProposed={() => setFocusHeadingPending(true)}
         changeRequest={changeRequest}
       />
       <ChangeRequestRejectConfirmDialog

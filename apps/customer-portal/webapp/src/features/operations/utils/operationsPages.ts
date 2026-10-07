@@ -117,8 +117,9 @@ const CLOSED_CR_STATE_LABELS = new Set<string>([
  * decided by the server, per customer (a change request is visible once it was
  * designated to them, in whatever state it is in, and a hidden one is never
  * returned), so a state is never hidden by the page. A change request the
- * customer proposed a new time for waits in Authorize and stays on their list,
- * and the filter has to be able to name it. The filters response itself offers
+ * customer proposed a new time for before a proposal waited in Customer Approval
+ * is in Authorize and stays on their list, and the filter has to be able to
+ * name it. The filters response itself offers
  * only states a customer's change request can be in (backend-v2 leaves out New
  * and Assess), so what is sent is what the server may return.
  *
