@@ -40,6 +40,31 @@ export function sanitizeStreamToken(token: string): string {
     .replace(/\n{3,}/g, "\n\n");
 }
 
+// A complete block, an opening tag that was never closed (the answer is still
+// streaming, or was cut off), and a half-typed opening tag at the very end.
+const THINKING_BLOCK_RE = /<thinking>[\s\S]*?<\/thinking>/gi;
+const THINKING_OPEN_RE = /<thinking>[\s\S]*$/i;
+const THINKING_PARTIAL_OPEN_RE = /<t(?:h(?:i(?:n(?:k(?:i(?:n(?:g)?)?)?)?)?)?)?$/i;
+
+/**
+ * Remove the model's `<thinking>…</thinking>` reasoning from assistant text.
+ *
+ * The agent can emit its reasoning inside the answer itself, so it arrives on
+ * the stream, in the `final` payload, and in the comment the backend persisted
+ * (which is why history replays it too). Run this when text is displayed or
+ * forwarded, not when it is received: tokens are appended one at a time, and a
+ * tag split across two of them can only be recognised in the accumulated text.
+ * Only assistant text — never strip what a user typed.
+ */
+export function stripThinkingBlocks(text: string): string {
+  if (!/<t/i.test(text)) return text;
+  const stripped = text
+    .replace(THINKING_BLOCK_RE, "")
+    .replace(THINKING_OPEN_RE, "")
+    .replace(THINKING_PARTIAL_OPEN_RE, "");
+  return stripped === text ? text : stripped.trimStart();
+}
+
 // REST conversation history sometimes stores bot content as JSON; show `message` only.
 export function displayTextFromConversationContent(
   raw: string,

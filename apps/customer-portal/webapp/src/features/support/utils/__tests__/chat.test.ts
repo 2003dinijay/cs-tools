@@ -20,6 +20,7 @@ import {
   getFinalMessageFromPayload,
   sanitizeStreamToken,
   splitTokenForTyping,
+  stripThinkingBlocks,
 } from "@features/support/utils/chat";
 
 describe("splitTokenForTyping", () => {
@@ -36,6 +37,51 @@ describe("sanitizeStreamToken", () => {
   it("removes description fragments, markdown bold, and excessive newlines", () => {
     const raw = '**{"description":"ignore me","message":"Hello"}\n\n\n\nnext**';
     expect(sanitizeStreamToken(raw)).toBe('{"message":"Hello"}\n\nnext');
+  });
+});
+
+describe("stripThinkingBlocks", () => {
+  it("removes a leading thinking block and keeps the answer", () => {
+    const raw =
+      "<thinking> The user asks about Widget 2.\n- Dev: Widget 1\nI should ask.\n</thinking>\n\nI don't see Widget 2 in your environments.";
+    expect(stripThinkingBlocks(raw)).toBe(
+      "I don't see Widget 2 in your environments.",
+    );
+  });
+
+  it("removes every block, in any letter case", () => {
+    expect(
+      stripThinkingBlocks("A<thinking>x</thinking>B<Thinking>y</THINKING>C"),
+    ).toBe("ABC");
+  });
+
+  it("hides a block that is still open while the answer streams", () => {
+    expect(stripThinkingBlocks("<thinking>The user wants")).toBe("");
+    expect(stripThinkingBlocks("Done.\n<thinking>more reasoning")).toBe(
+      "Done.\n",
+    );
+  });
+
+  it("hides a half-typed opening tag at the end of the streamed text", () => {
+    for (const partial of ["<t", "<thin", "<thinking"]) {
+      expect(stripThinkingBlocks(`Hello ${partial}`)).toBe("Hello ");
+    }
+  });
+
+  it("shows only the answer, never reasoning, as a block is typed out", () => {
+    const full = "<thinking>reason</thinking>Answer";
+    // Starts at 2: a lone trailing "<" is deliberately kept (it can be real
+    // text) and is on screen for a single 20ms typing tick at most.
+    for (let i = 2; i <= full.length; i += 1) {
+      const shown = stripThinkingBlocks(full.slice(0, i));
+      expect(shown === "" || "Answer".startsWith(shown)).toBe(true);
+    }
+  });
+
+  it("returns text without a thinking tag untouched", () => {
+    const plain = "Set `a < b` and use <b>bold</b> or <thead> markup.";
+    expect(stripThinkingBlocks(plain)).toBe(plain);
+    expect(stripThinkingBlocks("")).toBe("");
   });
 });
 
