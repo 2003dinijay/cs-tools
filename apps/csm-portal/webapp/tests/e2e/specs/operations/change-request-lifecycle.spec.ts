@@ -66,7 +66,7 @@ import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
-import type { Browser, Page } from "@playwright/test";
+import type { Browser, Locator, Page } from "@playwright/test";
 import { test, expect, withRole, hasSession, openContextAs, type TimecardRole } from "../../fixtures/test";
 import { ChangeRequestCreatePage } from "../../pages/ChangeRequestCreatePage";
 import { ChangeRequestDetailPage } from "../../pages/ChangeRequestDetailPage";
@@ -101,6 +101,7 @@ import {
   requirementCannotBeRemovedMessage,
   requirementGatePassedMessage,
   requirementNeedsProjectMessage,
+  REQUEST_APPROVAL_NEEDS_CONTACT,
   REQUEST_APPROVAL_NEEDS_PROJECT,
   CANNOT_RETURN_TO_NEW,
   stateJumpMessage,
@@ -131,6 +132,7 @@ const REQUIREMENT_ADD_ONLY_REASON = "Once approval has been requested a customer
 const REQUIREMENT_NEEDS_PROJECT_REASON = "Needs a Customer Project, which can no longer be set. Cancel and clone.";
 const REQUIREMENT_ONCE_SAVED = "Once saved this can't be removed.";
 const REQUEST_APPROVAL_NEEDS_PROJECT_REASON = "Select a Customer Project before requesting approval";
+const REQUEST_APPROVAL_NEEDS_CONTACT_REASON = "Register a contact for the Customer Project before requesting approval";
 
 /** Absolute path of the seed file, from the webapp dir the specs run in. */
 const SEED_FILE = path.resolve(process.cwd(), "../../../scripts/csm-compose/seed-entity-service.sql");
@@ -1584,11 +1586,31 @@ const ROLL_BACK_OR_CANCEL_WAYS_OUT = /Roll back or Cancel change are the only wa
 const ON_ACME = { projectId: ACME.id };
 
 /**
- * A change request on a project with NO registered contacts (Gamma). A customer step needs a Customer Project (Request
- * Approval is refused without one, and the project cannot be set after New), so this is where a customer step has nobody
- * to ask -- and nobody can answer for them either: there is no manual path.
+ * A change request on a project with NO registered contacts (Gamma). Request Approval is REFUSED for it while a customer box
+ * is ticked (see "Request Approval is refused when nobody can be asked"), so no flow through the page puts a customer step
+ * there with nobody to ask; what is left is an OLDER change that reached a gate before that rule, one whose contacts left
+ * the project afterwards, or one that came over from ServiceNow with no request. Such a change starts at its gate
+ * (`openOlderChangeAt`), and nobody can answer for the customer there either: there is no manual path.
  */
 const NO_CONTACTS = { projectId: GAMMA.id };
+
+/** The stepper's label of each state `FakeChangeRequestApi.startAtState` takes. */
+const OLDER_STATE_LABEL = { review: "Review", customer_approval: "Customer Approval", customer_review: "Customer Review" } as const;
+
+/**
+ * Opens an OLDER change request: already in `state` with nobody asked (see `FakeChangeRequestApi.startAtState`), the creator
+ * signed in. Request Approval is refused for a project nobody on which can be asked, so the dead end that remains -- a change
+ * already at a customer gate with nobody to answer, where only Cancel (and Re-schedule, or Roll back) are left -- starts here.
+ */
+async function openOlderChangeAt(
+  api: FakeChangeRequestApi,
+  detail: ChangeRequestDetailPage,
+  state: keyof typeof OLDER_STATE_LABEL,
+): Promise<void> {
+  api.startAtState(state);
+  await openDetail(detail);
+  await expect(detail.currentStep()).toContainText(OLDER_STATE_LABEL[state]);
+}
 
 /**
  * The customer's request is pending, so only the customer moves the change on. At Customer Approval staff have Re-schedule
@@ -1778,16 +1800,13 @@ test.describe("change request approval flow — customer group (the project's re
     await expect(detail.stage("Customer Review")).toHaveText("Customer Review, rejected by the customer");
   });
 
-  test("a project with no registered contacts: no customer stage, the Approval tab explains why, and nobody can record the approval: Re-schedule and Cancel change are what is left", async ({
+  test("an older change at Customer Approval on a project with no registered contacts: no customer stage, the Approval tab explains why, and nobody can record the approval: Re-schedule and Cancel change are what is left", async ({
     page,
   }) => {
     test.setTimeout(120_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
-    await approveInternally(page, api, detail);
-
-    await switchTo(page, api, FAKE_CREATOR);
-    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await openOlderChangeAt(api, detail, "customer_approval");
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
     // ...and the note says plainly what is left: Cancel change is the only way out of Customer Approval.
@@ -1804,17 +1823,11 @@ test.describe("change request approval flow — customer group (the project's re
     await expect(detail.currentStep()).toContainText("Customer Approval");
   });
 
-  test("a project with no registered contacts: Customer Review shows the helper, Roll back and Cancel change are on offer, there is no Close and no Bypass", async ({ page }) => {
+  test("an older change at Customer Review on a project with no registered contacts shows the helper, Roll back and Cancel change are on offer, there is no Close and no Bypass", async ({ page }) => {
     test.setTimeout(120_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
-    await approveInternally(page, api, detail);
-
-    await switchTo(page, api, FAKE_CREATOR);
-    await page.getByRole("button", { name: "Start implementation" }).click();
-    await page.getByRole("button", { name: "Mark implemented" }).click();
-    await detail.sendForCustomerReviewButton().click();
-    await expect(detail.currentStep()).toContainText("Customer Review");
+    await openOlderChangeAt(api, detail, "customer_review");
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Review");
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
     await expect(page.getByText(ROLL_BACK_OR_CANCEL_WAYS_OUT)).toBeVisible();
@@ -1832,16 +1845,13 @@ test.describe("change request approval flow — customer group (the project's re
     expect(api.journal()).toEqual([]);
   });
 
-  test("a project without registered contacts gets no stage and the helper; the project cannot be swapped for one that has contacts (it is fixed once approval was requested), so the change waits until a contact registers on THAT project", async ({
+  test("an older change at Customer Approval on a project without registered contacts has no stage and the helper; the project cannot be swapped for one that has contacts (it is fixed once approval was requested), so the change waits until a contact registers on THAT project", async ({
     page,
   }) => {
     test.setTimeout(150_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
-    await approveInternally(page, api, detail);
-
-    await switchTo(page, api, FAKE_CREATOR);
-    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await openOlderChangeAt(api, detail, "customer_approval");
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
     await expect(detail.overviewChips("Customer group")).toHaveCount(0);
     await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Cancel change"] });
@@ -1919,15 +1929,12 @@ test.describe("change request approval flow — customer group (the project's re
     expect(api.state()).toBe("customer_approval");
   });
 
-  test("a project whose only contact is the creator provisions no stage: nobody is asked, the note says so (not that no contacts are registered), and still no way to record the approval", async ({ page }) => {
+  test("an older change at Customer Approval on a project whose only contact is the creator has no stage: nobody is asked, the note says so (not that no contacts are registered), and still no way to record the approval", async ({ page }) => {
     test.setTimeout(120_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, { projectId: GAMMA.id });
     api.setProjectContacts(GAMMA.id, [FAKE_CREATOR]);
     const detail = new ChangeRequestDetailPage(page);
-    await approveInternally(page, api, detail);
-
-    await switchTo(page, api, FAKE_CREATOR);
-    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await openOlderChangeAt(api, detail, "customer_approval");
     await expect(page.getByRole("cell", { name: "Customer Approval", exact: true })).toHaveCount(0);
     // The project HAS a registered contact, so "no registered contacts" would be false: the note says nobody has a
     // request waiting, and that Cancel change is the only way out of Customer Approval.
@@ -1938,20 +1945,14 @@ test.describe("change request approval flow — customer group (the project's re
     await expectNoBypass(detail);
   });
 
-  test("Customer Review with nobody eligible (the requester is the project's only contact) shows the same note, naming Roll back or Cancel change as the ways out", async ({ page }) => {
+  test("an older change at Customer Review with nobody eligible (the requester is the project's only contact) shows the same note, naming Roll back or Cancel change as the ways out", async ({ page }) => {
     test.setTimeout(120_000);
     // Deactivated contacts leave the same empty set (the backend asks only active contacts, and the fake only the
     // non-creators), which is all the page can see: the unit tests of the page cover that wording separately.
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, { projectId: GAMMA.id });
     api.setProjectContacts(GAMMA.id, [FAKE_CREATOR]);
     const detail = new ChangeRequestDetailPage(page);
-    await approveInternally(page, api, detail);
-
-    await switchTo(page, api, FAKE_CREATOR);
-    await page.getByRole("button", { name: "Start implementation" }).click();
-    await page.getByRole("button", { name: "Mark implemented" }).click();
-    await detail.sendForCustomerReviewButton().click();
-    await expect(detail.currentStep()).toContainText("Customer Review");
+    await openOlderChangeAt(api, detail, "customer_review");
     await expect(page.getByText(NOBODY_ASKED_TEXT)).toBeVisible();
     await expect(page.getByText(ROLL_BACK_OR_CANCEL_WAYS_OUT)).toBeVisible();
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
@@ -1970,6 +1971,164 @@ test.describe("change request approval flow — customer group (the project's re
     await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
     await expect(page.getByText(NOBODY_ASKED_TEXT)).toHaveCount(0);
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Request Approval is REFUSED when a customer box is ticked and nobody on the Customer Project can be asked (no registered
+// contact other than the requester). Such a change would reach Customer Approval / Customer Review with nobody to answer,
+// and with no staff action that answers for the customer (no Bypass) it could only be cancelled (or rolled back from
+// Review). This extends the rule that refuses Request Approval with a box ticked and no Customer Project. The page says it up
+// front where it knows (the project has no registered contact at all: the button is disabled with the reason); where it cannot
+// tell (the requester is the only contact) the request goes out and the backend's own words show in the error banner. Ticking a
+// box on after New is refused the same way, and its words show in the Edit dialog. Against the in-browser fake of the backend.
+// ---------------------------------------------------------------------------
+
+test.describe("change request approval flow — Request Approval is refused when nobody can be asked (mocked backend)", () => {
+  /** The disabled Request Approval's focusable wrapper, found by the reason it carries (`Request Approval: <reason>`). */
+  const blocked = (page: Page): Locator => page.getByLabel(`Request Approval: ${REQUEST_APPROVAL_NEEDS_CONTACT_REASON}`);
+
+  for (const [type, boxes, flags] of [
+    ["normal", "Customer Approval", { customerApprovalRequired: true }],
+    ["normal", "Customer Review", { customerReviewRequired: true }],
+    ["standard", "both boxes", { customerApprovalRequired: true, customerReviewRequired: true }],
+    ["emergency", "Customer Approval", { customerApprovalRequired: true }],
+  ] as const) {
+    test(`${type} change, ${boxes} ticked, a project with no registered contact: Request Approval is disabled with the reason, the API refuses it in the backend's words, and nothing moves`, async ({ page }) => {
+      test.setTimeout(120_000);
+      const api = await installFakeChangeRequestApi(page, type, FAKE_CREATOR, flags, NO_CONTACTS);
+      const detail = new ChangeRequestDetailPage(page);
+      await openDetail(detail);
+      await expect(detail.currentStep()).toContainText("New");
+
+      await expect(blocked(page)).toBeVisible();
+      await expect(blocked(page).getByRole("button", { name: "Request Approval" })).toBeDisabled();
+      await blocked(page).hover(); // the reason is the button's tooltip
+      await expect(page.getByRole("tooltip")).toContainText(REQUEST_APPROVAL_NEEDS_CONTACT_REASON);
+      // Cancel change is still there behind the menu: a change that cannot be sent is not stuck.
+      await detail.openChangeStateMenu();
+      await expect(detail.menuItems()).toHaveText(["Cancel change"]);
+      await detail.closeChangeStateMenu();
+
+      // The backend is the authority: asked anyway it says why in words, and moves nothing.
+      expect(await patchStateFromPage(page, "assess")).toEqual({ status: 400, message: REQUEST_APPROVAL_NEEDS_CONTACT });
+      expect(api.state()).toBe("new");
+      expect(api.stages()).toEqual([]);
+      expect(api.journal()).toEqual([]);
+      await page.reload();
+      await expect(detail.currentStep()).toContainText("New");
+      await expect(blocked(page)).toBeVisible();
+    });
+  }
+
+  test("with no customer box ticked there is nobody to ask for: Request Approval is enabled on a project with no registered contact, and goes through", async ({ page }) => {
+    test.setTimeout(120_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, {}, NO_CONTACTS);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await expect(blocked(page)).toHaveCount(0);
+    await expect(detail.requestApprovalButton()).toBeEnabled();
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Assess");
+    expect(api.state()).toBe("assess");
+  });
+
+  test("a contact registers on the project: the block lifts, Request Approval goes through, and the customer is asked at the gate", async ({ page }) => {
+    test.setTimeout(180_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await expect(blocked(page)).toBeVisible();
+
+    api.setProjectContacts(GAMMA.id, [FAKE_CUST_ONE]);
+    await page.reload();
+    await expect(blocked(page)).toHaveCount(0);
+    await expect(detail.requestApprovalButton()).toBeEnabled();
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Assess");
+    await switchTo(page, api, FAKE_PEER);
+    await detail.approve("Pat Peer");
+    await switchTo(page, api, FAKE_CAB);
+    await detail.approve("Cam Cab");
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
+    await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toHaveCount(0);
+    await expect(page.getByText(NOBODY_ASKED_TEXT)).toHaveCount(0);
+  });
+
+  test("unticking the box in the Edit dialog (allowed in New) lifts the block: the change then goes through with nobody to ask for", async ({ page }) => {
+    test.setTimeout(120_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await expect(blocked(page)).toBeVisible();
+
+    await detail.openEditDialog();
+    await expect(detail.editCustomerApprovalCheckbox()).toBeChecked();
+    await expect(detail.editCustomerApprovalCheckbox()).toBeEnabled();
+    await detail.editCustomerApprovalCheckbox().uncheck();
+    await detail.saveEdit();
+    await expect(detail.editDialog()).toHaveCount(0);
+    expect(api.flags()).toEqual({ customerApprovalRequired: false, customerReviewRequired: false });
+    await expect(blocked(page)).toHaveCount(0);
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Assess");
+  });
+
+  test("a project whose only contact is the requester: the page cannot tell, so the button is enabled; the backend's refusal shows in the error banner, the change stays in New, and a second contact lets it through", async ({ page }) => {
+    test.setTimeout(150_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
+    api.setProjectContacts(GAMMA.id, [FAKE_CREATOR]);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    // The project HAS a registered contact: nothing to say up front.
+    await expect(blocked(page)).toHaveCount(0);
+    await expect(detail.requestApprovalButton()).toBeEnabled();
+
+    await detail.requestApproval();
+    // The backend's own words, verbatim, in the same place every other refused transition shows.
+    await expect(page.getByRole("alert").filter({ hasText: REQUEST_APPROVAL_NEEDS_CONTACT })).toBeVisible();
+    expect(api.state()).toBe("new");
+    expect(api.stages()).toEqual([]);
+    await expect(detail.currentStep()).toContainText("New");
+    await expect(detail.requestApprovalButton()).toBeEnabled();
+
+    // A second contact registers: the same button now goes through.
+    api.setProjectContacts(GAMMA.id, [FAKE_CREATOR, FAKE_CUST_ONE]);
+    await page.reload();
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Assess");
+    expect(api.state()).toBe("assess");
+  });
+
+  test("after New, ticking a box on for a project nobody on which can be asked is refused too: the dialog shows the backend's words and the box is not saved", async ({ page }) => {
+    test.setTimeout(150_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, {}, NO_CONTACTS);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    // No box ticked, so Request Approval is open on a project with no contact: the change leaves New...
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Assess");
+
+    // ...and the unticked Customer Approval box can still be added until its gate, which the page does not pre-empt:
+    // the project is set, and whether anybody on it can be asked is the backend's call.
+    await detail.openEditDialog();
+    await expect(detail.editCustomerApprovalCheckbox()).toBeEnabled();
+    await detail.editCustomerApprovalCheckbox().check();
+    await detail.saveEdit();
+    await expect(detail.editDialog().getByRole("alert")).toContainText(REQUEST_APPROVAL_NEEDS_CONTACT);
+    await expect(detail.editDialog()).toBeVisible();
+    expect(api.flags()).toEqual({ customerApprovalRequired: false, customerReviewRequired: false });
+    // The refusal is the same at the API, whichever box.
+    for (const field of ["customerApprovalRequired", "customerReviewRequired"]) {
+      expect(await patchFromPage(page, { [field]: true }), field).toEqual({ status: 400, message: REQUEST_APPROVAL_NEEDS_CONTACT });
+    }
+    // Once a contact registers, the same save is accepted.
+    api.setProjectContacts(GAMMA.id, [FAKE_CUST_ONE]);
+    await detail.saveEdit();
+    await expect(detail.editDialog()).toHaveCount(0);
+    expect(api.flags()).toEqual({ customerApprovalRequired: true, customerReviewRequired: false });
   });
 });
 
@@ -2207,7 +2366,7 @@ test.describe("change request approval flow — Roll back", () => {
       page,
     }) => {
       test.setTimeout(180_000);
-      const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: review }, review ? NO_CONTACTS : {});
+      const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: review }, review ? ON_ACME : {});
       const detail = new ChangeRequestDetailPage(page);
 
       // Roll back is never on offer on the way to Review.
@@ -2254,10 +2413,10 @@ test.describe("change request approval flow — Roll back", () => {
 
       await rollBackWithReason(page, detail, "Post-deployment smoke test failed.");
       await expectRolledBack(page, detail, api);
-      // Customer Review is on the line when ticked, off it when not. The project has no registered contacts, so nobody would
-      // have been asked on entering it and no stage would exist either way: whether it was entered cannot be told (a project
-      // with contacts reads "not taken": see "Rollback from Review on a project with registered contacts").
-      if (review) await expect(detail.stage("Customer Review")).toHaveText("Customer Review, history not recorded");
+      // Customer Review is on the line when ticked, off it when not. The project's contacts would have been asked on entering it,
+      // and there is no stage for them: it was not entered, so it reads "not taken" (an older change whose project had nobody to
+      // ask leaves no such proof: see "Rollback: the stage turns current").
+      if (review) await expect(detail.stage("Customer Review")).toHaveText("Customer Review, not taken");
       else await expect(detail.stage("Customer Review")).toHaveCount(0);
       // The reason was recorded as an internal note before the state moved.
       expect(api.journal()).toContainEqual({ kind: "comment", text: "Post-deployment smoke test failed." });
@@ -2275,17 +2434,11 @@ test.describe("change request approval flow — Roll back", () => {
     });
   }
 
-  test("Normal with customer review on: Review -> Customer Review -> Roll back (no customer group: nobody is asked, so it is not held back)", async ({ page }) => {
+  test("an older Normal change at Customer Review with nobody asked: Roll back is not held back (nothing is pending), and takes a reason", async ({ page }) => {
     test.setTimeout(180_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
-    await approveInternally(page, api, detail);
-
-    await switchTo(page, api, FAKE_CREATOR);
-    await page.getByRole("button", { name: "Start implementation" }).click();
-    await page.getByRole("button", { name: "Mark implemented" }).click();
-    await expect(detail.currentStep()).toContainText("Review");
-    await detail.sendForCustomerReviewButton().click();
+    await openOlderChangeAt(api, detail, "customer_review");
 
     // Customer Review without a group: no button at all (the customer's review is theirs to give, so no Close);
     // the menu lists Roll back, then Cancel change.
@@ -2660,16 +2813,13 @@ test.describe("change request approval flow — Re-schedule", () => {
     await expectNoRescheduleOffered(detail);
   });
 
-  test("Normal without a customer group: Re-schedule is the outlined button beside Change state, which holds only Cancel change; the dialog blocks an unchanged window and shows the backend's refusal", async ({
+  test("an older Normal change at Customer Approval with no customer group: Re-schedule is the outlined button beside Change state, which holds only Cancel change; the dialog blocks an unchanged window and shows the backend's refusal", async ({
     page,
   }) => {
     test.setTimeout(240_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
-    await approveInternally(page, api, detail);
-
-    await switchTo(page, api, FAKE_CREATOR);
-    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await openOlderChangeAt(api, detail, "customer_approval");
     await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Cancel change"] });
     await expect(detail.rescheduleButton()).toBeVisible();
 
@@ -2708,7 +2858,7 @@ test.describe("change request approval flow — Re-schedule", () => {
 
   test("Emergency: Re-schedule goes back to Authorize for ECAB approval", async ({ page }) => {
     test.setTimeout(240_000);
-    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
+    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
     await openDetail(detail);
     await detail.requestApproval();
@@ -2724,7 +2874,8 @@ test.describe("change request approval flow — Re-schedule", () => {
     await detail.rescheduleSubmit().click();
     await expect(detail.currentStep()).toContainText("Authorize");
     await expect(detail.blockingReason()).toHaveText("Awaiting ECAB Approval");
-    expect(api.stages().map((s) => s.stage)).toEqual(["ECAB Approval", "ECAB Approval"]);
+    // The customer's superseded request stays as a record between the two ECAB stages.
+    expect(api.stages().map((s) => s.stage)).toEqual(["ECAB Approval", "Customer Approval", "ECAB Approval"]);
 
     await switchTo(page, api, FAKE_ECAB);
     await detail.approveButton().click();
@@ -2922,18 +3073,19 @@ test.describe("change request lifecycle — the stepper and the action bar in ev
     });
   }
 
-  test("Rollback: the stage turns current, everything through Review stays done, Closed and Canceled are not taken", async ({ page }) => {
+  test("Rollback: the stage turns current, everything through Review stays done, Closed and Canceled are not taken (an older change whose project had nobody to ask: Customer Review leaves no proof either way)", async ({ page }) => {
     test.setTimeout(240_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
-    await driveToReview(page, api, detail);
+    await openOlderChangeAt(api, detail, "review");
     // Before: Review is current and Rollback is a faint exception.
     await expectStages(detail, "d d d d d d c p n p n", { approval: false, review: true });
     await expect(detail.stage("Rollback")).toHaveText("Rollback, not taken");
 
     await rollBackWithReason(page, detail, "Smoke test failed after deployment.");
     // The project has no registered contacts, so entering Customer Review would have left no stage either:
-    // whether it was entered cannot be told, and the line says so rather than guessing "not taken".
+    // whether it was entered cannot be told, and the line says so rather than guessing "not taken". (Request Approval is
+    // refused for such a project now, so this is an older change: it starts in Review.)
     await expectStages(detail, "d d d d d d d u c n n", { approval: false, review: true });
     await expectRolledBack(page, detail, api);
     await page.reload();
@@ -3115,11 +3267,11 @@ test.describe("change request action bar — nobody answers for the customer (mo
     expect(api.state()).toBe("customer_approval");
   });
 
-  test("Customer Approval, nobody asked (no registered contacts): the same bar -- Re-schedule beside Change state, whose menu holds Cancel change -- and the same refusal in words", async ({ page }) => {
+  test("Customer Approval, nobody asked (an older change on a project with no registered contacts): the same bar -- Re-schedule beside Change state, whose menu holds Cancel change -- and the same refusal in words", async ({ page }) => {
     test.setTimeout(240_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
-    await driveToCustomerApproval(page, api, detail);
+    await openOlderChangeAt(api, detail, "customer_approval");
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
 
     await expectActionBar(detail, { primary: null, reschedule: true, menu: ["Cancel change"] });
@@ -3162,11 +3314,11 @@ test.describe("change request action bar — nobody answers for the customer (mo
     expect(api.journal()).toEqual([]);
   });
 
-  test("Customer Review, nobody asked: Roll back is the first menu entry, before Cancel change, enabled; no button or entry closes the change, and the API refuses {state: closed}", async ({ page }) => {
+  test("Customer Review, nobody asked (an older change): Roll back is the first menu entry, before Cancel change, enabled; no button or entry closes the change, and the API refuses {state: closed}", async ({ page }) => {
     test.setTimeout(240_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
-    await driveToCustomerReview(page, api, detail);
+    await openOlderChangeAt(api, detail, "customer_review");
     await expect(page.getByText(NO_CUSTOMER_GROUP_TEXT)).toBeVisible();
 
     await expectActionBar(detail, { primary: null, reschedule: false, menu: ["Roll back", "Cancel change"] });
@@ -3252,7 +3404,7 @@ test.describe("change request approval flow — the customer's own answer is the
     test.setTimeout(240_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true, customerReviewRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
-    await driveToCustomerApproval(page, api, detail);
+    await openOlderChangeAt(api, detail, "customer_approval"); // an older change: nobody was asked
 
     expect(await patchStateFromPage(page, "scheduled")).toEqual({ status: 400, message: customerAnswerRefusal("scheduled") });
     expect(api.state()).toBe("customer_approval");
@@ -3287,7 +3439,7 @@ test.describe("change request approval flow — the customer's own answer is the
     test.setTimeout(240_000);
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerReviewRequired: true }, NO_CONTACTS);
     const detail = new ChangeRequestDetailPage(page);
-    await driveToCustomerReview(page, api, detail);
+    await openOlderChangeAt(api, detail, "customer_review"); // an older change: nobody was asked
     await expectActionBar(detail, { primary: null, reschedule: false, menu: ["Roll back", "Cancel change"] }); // nobody is asked
 
     await detail.openChangeStateMenu();
@@ -3692,6 +3844,78 @@ test.describe("the customer requirements lock (real stack)", () => {
     const third = await raise({ subject: lockSubject("needs a project, chosen with the request"), projectId: null, approval: true, review: false, type: "standard" });
     expect((await staff("jane").patch(third.id, { projectId: EXAMPLE_CORP.id, state: "assess" })).status).toBe(200);
     expect(await stateOf(third.id)).toBe("customer_approval");
+  });
+
+  /**
+   * The first active project whose change requests would reach a customer gate with nobody to ask, as the BACKEND itself says it
+   * (a throwaway change on it reports no `customerContacts`): the generated projects hold no registered portal-user contact, the
+   * seeded ones (Example Corp, Other Corp) do. Not a definition of its own: the backend's list is the one asked.
+   */
+  async function projectWithNobodyToAsk(): Promise<{ id: string; name: string } | undefined> {
+    const rows = (await psqlOutput("select id::text || '|' || name from project where is_active order by name")).split("\n").filter(Boolean);
+    for (const row of rows) {
+      const [id, name] = row.split("|") as [string, string];
+      const probe = await raise({ subject: lockSubject("probe: who can be asked"), projectId: id, approval: false, review: false });
+      if ((await staff("jane").get(probe.id)).body.customerContacts?.length === 0) return { id, name };
+    }
+    return undefined;
+  }
+
+  test("Request Approval is refused when a customer box is ticked and nobody on the project can be asked: disabled with the reason, refused in the backend's words by the API, lifted by clearing the box; ticking a box on after New is refused the same way, in the dialog", async ({ page }) => {
+    await pictureWindow(page);
+    const nobody = await projectWithNobodyToAsk();
+    test.skip(!nobody, "every project of this database has a registered portal-user contact: nothing to refuse");
+    const message = (r: ApiResult) => (r.body as { message?: string }).message;
+    const cr = await raise({ subject: lockSubject("nobody to ask"), projectId: nobody!.id, approval: true, review: false });
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(cr.id);
+
+    // The page knows the project has no registered contact: Request Approval is disabled with the reason (its tooltip).
+    const blocked = page.getByLabel(`Request Approval: ${REQUEST_APPROVAL_NEEDS_CONTACT_REASON}`);
+    await expect(blocked).toBeVisible();
+    await expect(blocked.getByRole("button", { name: "Request Approval" })).toBeDisabled();
+    await blocked.hover();
+    await expect(page.getByRole("tooltip")).toContainText(REQUEST_APPROVAL_NEEDS_CONTACT_REASON);
+    await shotTo(page, "23-csm-request-approval-disabled-nobody-to-ask");
+
+    // The backend is the authority: asked anyway, it says why in the words the fake mirrors, and moves nothing.
+    const refused = await staff("jane").patch(cr.id, { state: "assess" });
+    expect([refused.status, message(refused)]).toEqual([400, REQUEST_APPROVAL_NEEDS_CONTACT]);
+    expect(await stateOf(cr.id)).toBe("new");
+    // The same for the review box, alone or with the other.
+    const second = await raise({ subject: lockSubject("nobody to ask, review only"), projectId: nobody!.id, approval: false, review: true });
+    const refusedReview = await staff("jane").patch(second.id, { state: "assess" });
+    expect([refusedReview.status, message(refusedReview)]).toEqual([400, REQUEST_APPROVAL_NEEDS_CONTACT]);
+    // ...while clearing the box in the same PATCH leaves nobody to ask for, and is accepted.
+    expect((await staff("jane").patch(second.id, { customerReviewRequired: false, state: "assess" })).status).toBe(200);
+    expect(await stateOf(second.id)).toBe("assess");
+
+    // In New the box can be cleared in the dialog: the block lifts and Request Approval goes through.
+    await detail.openEditDialog();
+    await detail.editCustomerApprovalCheckbox().uncheck();
+    await detail.saveEdit();
+    await expect(detail.editDialog()).toHaveCount(0);
+    await expect(blocked).toHaveCount(0);
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Assess");
+    expect(await stateOf(cr.id)).toBe("assess");
+
+    // After New an unticked box can still be added until its gate, but not when nobody on the project can be asked: the dialog does
+    // not pre-empt the backend, and shows its words when the save is refused.
+    await detail.openEditDialog();
+    await expect(detail.editCustomerReviewCheckbox()).toBeEnabled();
+    await detail.editCustomerReviewCheckbox().check();
+    await detail.saveEdit();
+    await expect(detail.editDialog().getByRole("alert")).toContainText(REQUEST_APPROVAL_NEEDS_CONTACT);
+    await shotTo(page, "24-csm-edit-dialog-tick-on-refused-nobody-to-ask");
+    await expect(detail.editDialog()).toBeVisible();
+    await detail.editDialog().getByRole("button", { name: "Cancel" }).click();
+    for (const field of ["customerApprovalRequired", "customerReviewRequired"]) {
+      const tick = await staff("jane").patch(cr.id, { [field]: true });
+      expect([tick.status, message(tick)], field).toEqual([400, REQUEST_APPROVAL_NEEDS_CONTACT]);
+    }
+    const stored = (await staff("jane").get(cr.id)).body;
+    expect([stored.state, stored.customerApprovalRequired, stored.customerReviewRequired]).toEqual(["assess", false, false]);
   });
 
   test("after Request Approval the Customer Project is read-only in the dialog and refused by the API; a ticked box is read-only and cannot be unticked; an unticked one can be added, once, and then cannot be removed; resending what is stored is accepted", async ({ page }) => {

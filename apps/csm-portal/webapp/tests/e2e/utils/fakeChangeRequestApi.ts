@@ -102,7 +102,13 @@
 //     it. With no project, or a project with no eligible contact, no stage is
 //     provisioned: nobody is asked and nobody can answer, so the change waits at
 //     the gate (Re-schedule, Roll back and Cancel are still on offer where they are
-//     for any gate). `canDecide` is true only on the signed-in user's own REQUESTED
+//     for any gate). Such a change can no longer be MADE by Request Approval, which is
+//     refused (a 400 with the backend's words, `REQUEST_APPROVAL_NEEDS_CONTACT`; and
+//     `REQUEST_APPROVAL_NEEDS_PROJECT` with no project at all) while a customer box is
+//     ticked and nobody on the project can be asked, so a spec that needs the dead end
+//     that remains for OLDER changes starts at the gate (`startAtState`). Ticking
+//     a customer box on after New is refused with the same words in that case.
+//     `canDecide` is true only on the signed-in user's own REQUESTED
 //     row of a live stage, never for the creator;
 //   - `customerApprovalRequired` / `customerReviewRequired` are on the detail
 //     response. They are fully editable in New (the creation phase). From the moment
@@ -154,7 +160,8 @@
 //     editable until `implement`, within the frozen project. A change can never
 //     return to New (`{state: "new"}` after New is a 400), and Request Approval
 //     (`{state: "assess"}`) is refused when a customer box is ticked and the change
-//     has no Customer Project. The detail response returns `project`, `deployments`,
+//     has no Customer Project, or has one with nobody who can be asked (no registered
+//     contact other than the creator). The detail response returns `project`, `deployments`,
 //     `deploymentProducts`, `customerContacts`, `category` (EntityRef /
 //     EntityRef[] / {id,name,email}[] / the category enum value).
 //
@@ -371,6 +378,14 @@ export const requirementGatePassedMessage = (field: "customerApprovalRequired" |
     : `customerReviewRequired can no longer be changed: the change request has already left the review stage (current state: ${state})`;
 export const REQUEST_APPROVAL_NEEDS_PROJECT =
   "approval cannot be requested: the customer's approval and/or review is required but no Customer Project is set, so there is nobody to ask. Select a Customer Project first (or clear the requirement).";
+/**
+ * The refusal of Request Approval (and of ticking a customer box on after New) when the Customer Project is set but nobody on
+ * it can be asked: its registered contacts, leaving out the requester and anyone no longer active, are none. Such a change
+ * would reach Customer Approval / Customer Review with nobody to answer, and staff never answer for the customer, so it could
+ * only be cancelled. Placeholder wording until the backend's own lands (same text, character for character, then).
+ */
+export const REQUEST_APPROVAL_NEEDS_CONTACT =
+  "customer approval is required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first";
 
 /**
  * The 400 the backend answers a manual PATCH of `rollback` out of Customer Review
@@ -480,6 +495,17 @@ export interface FakeChangeRequestApi {
    * open CSM page is not refreshed: reload it to see the outcome.
    */
   customerDecides(contact: FakeUser, decision: "approved" | "rejected"): void;
+  /**
+   * An OLDER change request, already in `state` with nobody asked: the internal approvals (Peer / CAB, or ECAB) settled the way
+   * the flow leaves them, the change in `state`, and NO customer stage and nobody to answer. Request Approval can no longer
+   * produce this change when a customer box is ticked (it is refused for a project nobody on which can be asked), so a spec that
+   * needs the dead end that remains for changes that reached a customer gate before that rule -- or whose contacts left the
+   * project afterwards, or that came over from ServiceNow without a request -- starts here: at `customer_approval` or
+   * `customer_review` (the Review stage of a Normal change settled too), or at `review` for a change that is still to go to the
+   * customer's review. Nothing is provisioned (like a legacy row: the customer stage appears only on the next write that
+   * touches the state or the project, `syncCustomers`); the open page is not refreshed. A Standard change has no internal stage.
+   */
+  startAtState(state: "review" | "customer_approval" | "customer_review"): void;
   /**
    * What the backend does on the next write that touches the change's state or
    * project (someone else's edit, a re-schedule, ...): the project's registered
@@ -605,6 +631,12 @@ export async function installFakeChangeRequestApi(
   const contacts = new Map<string, FakeUser[]>(Object.entries(FAKE_PROJECT_CONTACTS).map(([id, users]) => [id, [...users]]));
   /** The CR's customer group as the fake derives it: its project's registered contacts. */
   const currentContacts = (): FakeUser[] => (scope.projectId ? (contacts.get(scope.projectId) ?? []) : []);
+  /**
+   * Who the backend could ask at a customer gate for `projectId`: its registered contacts leaving out the requester (the one
+   * rule `syncCustomerStage` and the two refusals below share, like the backend's one provisioning function).
+   */
+  const askableContacts = (projectId: string | null | undefined): FakeUser[] =>
+    projectId ? (contacts.get(projectId) ?? []).filter((u) => u.id !== FAKE_CREATOR.id) : [];
   /** When set, GET /groups/{id} fails with this status. */
   let groupFailure: number | null = null;
   let plannedStartOn = "2030-03-01 09:00:00";
@@ -679,7 +711,7 @@ export async function installFakeChangeRequestApi(
   function syncCustomerStage(): void {
     const kind = state === "customer_approval" ? "Customer Approval" : state === "customer_review" ? "Customer Review" : null;
     if (!kind) return;
-    const members = currentContacts().filter((u) => u.id !== FAKE_CREATOR.id);
+    const members = askableContacts(scope.projectId);
     const live = stages.find((s) => s.stage === kind && s.status === "REQUESTED");
     if (live) {
       const have = live.approvers.map((a) => a.id);
@@ -838,14 +870,18 @@ export async function installFakeChangeRequestApi(
       if (!inNew && !box.stored && body[box.field] === true) {
         if (box.gateLocked.includes(state)) return requirementGatePassedMessage(box.field, state);
         if (!scope.projectId) return requirementNeedsProjectMessage(box.field);
+        // ... and only when somebody on that project can be asked (nobody can be added to the project's group by staff here).
+        if (askableContacts(scope.projectId).length === 0) return REQUEST_APPROVAL_NEEDS_CONTACT;
       }
     }
-    // 6. Request Approval needs somebody to ask when the customer's part is required.
+    // 6. Request Approval needs somebody to ask when the customer's part is required: a Customer Project, with at least one
+    // registered contact other than the requester (the same people the customer stage would ask).
     if (body.state === "assess" && inNew) {
       const approval = typeof body.customerApprovalRequired === "boolean" ? body.customerApprovalRequired : flags.customerApprovalRequired;
       const review = typeof body.customerReviewRequired === "boolean" ? body.customerReviewRequired : flags.customerReviewRequired;
       const project = typeof body.projectId === "string" && body.projectId ? body.projectId : scope.projectId;
       if ((approval || review) && !project) return REQUEST_APPROVAL_NEEDS_PROJECT;
+      if ((approval || review) && askableContacts(project).length === 0) return REQUEST_APPROVAL_NEEDS_CONTACT;
     }
     return null;
   };
@@ -1320,6 +1356,24 @@ export async function installFakeChangeRequestApi(
     syncCustomers: () => {
       syncCustomerStage();
       reconcile();
+    },
+    startAtState: (next) => {
+      const settled = (name: string, group: FakeApprovalGroup, who: FakeUser): Stage => ({
+        ...nextStage(name, group, who),
+        status: "APPROVED",
+        approvers: [{ id: who.id, name: who.name, status: "APPROVED" }],
+      });
+      const internal: Stage[] =
+        type === "normal"
+          ? [settled("Peer Approval", FAKE_PEER_GROUP, FAKE_PEER), settled("CAB Approval", FAKE_CAB_GROUP, FAKE_CAB)]
+          : type === "emergency"
+            ? [settled("ECAB Approval", FAKE_ECAB_GROUP, FAKE_ECAB)]
+            : [];
+      // The Review stage a Normal change had before it was sent to the customer's review.
+      if (next === "customer_review" && type === "normal") internal.push(settled("Review", FAKE_PEER_GROUP, FAKE_PEER));
+      stages = internal;
+      state = next;
+      provisionReview(); // the Review stage of a Normal change that sits in Review (still to be decided)
     },
     stages: () =>
       stages.map((st) => ({

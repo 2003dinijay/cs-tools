@@ -86,6 +86,8 @@ export interface StaffChangeRequest {
   customerApprovalRequired?: boolean;
   customerReviewRequired?: boolean;
   project?: { id: string; name: string } | null;
+  /** The project's registered contacts the customer stages ask (the Customer Group): empty when nobody can be asked. */
+  customerContacts?: Array<{ id: string; name: string; email?: string }>;
   message?: string;
 }
 
