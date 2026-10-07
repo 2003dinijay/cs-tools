@@ -28,20 +28,22 @@ import (
 
 // Error message constants matching the customer-portal error vocabulary.
 const (
-	ErrMsgUnauthorized           = "You are not authorized to perform this action. Please try again."
-	ErrMsgForbidden              = "Access to the requested resource is forbidden!"
-	ErrMsgNotFound               = "The requested resource was not found!"
-	ErrMsgBadRequest             = "Invalid request payload."
-	ErrMsgTooLarge               = "Request body too large."
-	ErrMsgInternal               = "An internal server error occurred. Please try again later."
-	ErrMsgInvalidTransition      = "Invalid state transition."
-	ErrMsgWorkStateNotAllowed    = "Work state can only be updated when the case is in progress."
-	ErrMsgCommentNotAllowed      = "Comments can only be added when the case is in progress and the work state is ongoing."
-	ErrMsgCommentNotOwnCase      = "Only the assigned engineer can add a public comment on this case."
-	ErrMsgWorkNoteOnClosedCase   = "Work notes cannot be added to a closed case."
-	ErrMsgCommentOnClosedCase    = "Comments cannot be added to a closed case."
-	ErrMsgAttachmentOnClosedCase = "Attachments cannot be added to a closed case."
-	ErrMsgAttachmentNotShareable = "This attachment is not available for direct download."
+	ErrMsgUnauthorized            = "You are not authorized to perform this action. Please try again."
+	ErrMsgForbidden               = "Access to the requested resource is forbidden!"
+	ErrMsgNotFound                = "The requested resource was not found!"
+	ErrMsgBadRequest              = "Invalid request payload."
+	ErrMsgTooLarge                = "Request body too large."
+	ErrMsgInternal                = "An internal server error occurred. Please try again later."
+	ErrMsgInvalidTransition       = "Invalid state transition."
+	ErrMsgWorkStateNotAllowed     = "Work state can only be updated when the case is in progress."
+	ErrMsgCommentNotAllowed       = "Comments can only be added when the case is in progress and the work state is ongoing."
+	ErrMsgCommentNotOwnCase       = "Only the assigned engineer can add a public comment on this case."
+	ErrMsgCaseCloseNotOwnCase     = "Only the assigned engineer (or an admin) can close this case."
+	ErrMsgIncidentCloseNotOwnCase = "Only the assigned engineer (or an admin) can close this incident."
+	ErrMsgWorkNoteOnClosedCase    = "Work notes cannot be added to a closed case."
+	ErrMsgCommentOnClosedCase     = "Comments cannot be added to a closed case."
+	ErrMsgAttachmentOnClosedCase  = "Attachments cannot be added to a closed case."
+	ErrMsgAttachmentNotShareable  = "This attachment is not available for direct download."
 	// ErrMsgAttachmentStorageUnsupportedRef is returned by the direct-upload
 	// (SFTPGo-backed) mint endpoint for a reference type whose attachments
 	// cannot be persisted through that storage mode yet — the caller should
