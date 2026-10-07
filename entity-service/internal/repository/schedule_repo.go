@@ -1598,11 +1598,23 @@ func (r *scheduleRepository) DeleteAbsence(ctx context.Context, id, actorEmail s
 	if _, err := tx.Exec(ctx, `DELETE FROM team_schedule_absence WHERE id = $1::uuid`, id); err != nil {
 		return fmt.Errorf("delete absence: %w", err)
 	}
-	// A removed span takes the shifts it wrote with it; an open-ended one
-	// wrote them a year ahead at most.
-	until := starts.AddDate(1, 0, 0)
+	// A removed span takes the shifts it wrote with it. An open-ended one has
+	// no end to stop at, and its shifts were written to different horizons
+	// (a year from when it was marked, or from when 0205 ran), so the bound
+	// is the person's last MOVE shift: nothing it wrote can lie past that.
+	until := starts
 	if ends != nil {
 		until = *ends
+	} else {
+		var last *time.Time
+		if err := tx.QueryRow(ctx,
+			`SELECT max(rota_date) FROM team_schedule_assignment WHERE user_id = $1::uuid AND source = 'MOVE'`,
+			userID).Scan(&last); err != nil {
+			return fmt.Errorf("read last move shift: %w", err)
+		}
+		if last != nil && last.After(until) {
+			until = *last
+		}
 	}
 	if err := syncMoveShifts(ctx, tx, userID, starts.Format("2006-01-02"), until.Format("2006-01-02"), actorEmail); err != nil {
 		return err

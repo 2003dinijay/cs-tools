@@ -374,7 +374,11 @@ export default function CellPicker({
                 >
                   Remove
                 </button>
-                {heldMove && ab.homeTeamKey ? (
+                {/* Only from a day the move still covers: a later start would
+                    send a backwards range, which the server swaps round --
+                    clearing the move's last day and whatever else lies in
+                    between. */}
+                {heldMove && ab.homeTeamKey && (!ab.endsOn || firstDay <= ab.endsOn) ? (
                   // The end of a move: back on their own team from the day
                   // picked, the days before it kept as they were.
                   <button

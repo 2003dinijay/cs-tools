@@ -321,6 +321,11 @@ export default function MonthRoster({
          *  to (the Americas team, for the Brazil rotation). Those teams' leads
          *  still own the span, so its cells are theirs to change too. */
         homeTeams: Set<string>;
+        /** The one team this row's person belongs to, where the row is under
+         *  a team a span moved them to: what its other days are, and where
+         *  editing them goes. Set where the row is seated, not picked out of
+         *  homeTeams, which can hold more than one key. */
+        homeTeam?: string;
         /** Whole-day facts: an absence, or a window that belongs to no zone. */
         days: Map<string, Cell>;
         /** Zoned facts, keyed `${iso}|${zoneCode}` -- one per sub-column. */
@@ -380,7 +385,10 @@ export default function MonthRoster({
       } else if (isLead && !redirected) {
         row.isLead = true;
       }
-      if (move?.active && teamKey === move.target) row.homeTeams.add(move.home.toLowerCase());
+      if (move?.active && teamKey === move.target) {
+        row.homeTeams.add(move.home.toLowerCase());
+        row.homeTeam = move.home;
+      }
       return row;
     };
 
@@ -630,13 +638,12 @@ export default function MonthRoster({
         : WORKING_DAY;
     };
     return (
-      row: { teamKey: string; isMember: boolean; movedDays: ReadonlySet<string>; homeTeams: ReadonlySet<string>; homeMember: boolean },
+      row: { teamKey: string; isMember: boolean; movedDays: ReadonlySet<string>; homeTeam?: string; homeMember: boolean },
       iso: string,
     ): Cell | undefined => {
       if (row.movedDays.size > 0) {
         if (row.movedDays.has(iso)) return cellFor(row.teamKey);
-        const home = [...row.homeTeams][0];
-        return home && row.homeMember ? cellFor(home) : undefined;
+        return row.homeTeam && row.homeMember ? cellFor(row.homeTeam) : undefined;
       }
       return row.isMember ? cellFor(row.teamKey) : undefined;
     };
@@ -671,7 +678,7 @@ export default function MonthRoster({
    *  when leave covers the whole day -- and had none of them before. */
   const openCell = (
     e: { currentTarget: HTMLElement },
-    row: { userId: string; name: string; teamKey: string; homeTeams?: ReadonlySet<string>; movedDays?: ReadonlySet<string> },
+    row: { userId: string; name: string; teamKey: string; homeTeam?: string; movedDays?: ReadonlySet<string> },
     iso: string,
     cell: Cell | undefined,
     zoneCode?: string,
@@ -683,8 +690,8 @@ export default function MonthRoster({
       // On a row a span moved somebody to, a day the span does not cover is
       // still their own team's: edit it there, where they are a member.
       teamKey:
-        row.homeTeams?.size && row.movedDays && !row.movedDays.has(iso)
-          ? [...row.homeTeams][0]
+        row.homeTeam && row.movedDays && !row.movedDays.has(iso)
+          ? row.homeTeam
           : row.teamKey,
       rotaDate: iso,
       shiftCode: cell?.shiftCode,

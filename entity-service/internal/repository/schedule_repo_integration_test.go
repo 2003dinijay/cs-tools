@@ -1528,6 +1528,50 @@ func TestScheduleIntegration_AMoveWritesRealShiftsAndKeepsThemInStep(t *testing.
 	}
 }
 
+// Removing an open-ended move takes every shift it wrote, however far past
+// its start they run -- the ladder would otherwise go on paging the person
+// for the team they moved to.
+func TestScheduleIntegration_RemovingAnOpenEndedMoveLeavesNoShiftBehind(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	kind := moveKind(t, pool)
+	shown := shiftWithScope(t, pool, "CRE", "WEEKDAY")
+	mustExec(t, pool, `UPDATE team_schedule_absence_kind SET shows_as_shift_code = $2 WHERE code = $1`, kind, shown)
+
+	// Open-ended, started well over a year before the shifts below.
+	var spanID string
+	if err := pool.QueryRow(ctx, `
+		INSERT INTO team_schedule_absence (id, created_on, updated_on, created_by, updated_by, user_id, team_key, kind_id, starts_on, ends_on, home_team_key)
+		SELECT gen_random_uuid(), now(), now(), 'fixture', 'fixture', $1::uuid, $2, k.id, DATE '2024-01-01', NULL, $3
+		  FROM team_schedule_absence_kind k WHERE k.code = $4
+		RETURNING id::text`, schedMemberID, schedOtherTeam, schedTeamKey, kind).Scan(&spanID); err != nil {
+		t.Fatalf("seed open-ended span: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	if err := syncMoveShifts(ctx, tx, schedMemberID, schedMonday, "2026-09-25", schedLeadEmail); err != nil {
+		t.Fatalf("syncMoveShifts: %v", err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	moves := func() int {
+		return countRows(t, pool, `SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND source = 'MOVE'`, schedMemberID)
+	}
+	if n := moves(); n != 5 {
+		t.Fatalf("seeded %d move shifts, want 5", n)
+	}
+
+	if err := repo.DeleteAbsence(ctx, spanID, schedLeadEmail, nil); err != nil {
+		t.Fatalf("DeleteAbsence: %v", err)
+	}
+	if n := moves(); n != 0 {
+		t.Fatalf("%d move shifts left behind after removing the open-ended span", n)
+	}
+}
+
 // Somebody moved to a team that works no rota (Migration) takes no rotation
 // turn while the span lasts -- and their standing hours are still theirs.
 func TestScheduleIntegration_NoRotationWhileMovedOffTheRota(t *testing.T) {

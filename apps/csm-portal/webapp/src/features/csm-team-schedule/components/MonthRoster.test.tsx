@@ -608,10 +608,15 @@ describe("MonthRoster: every team member has a row", () => {
   });
 
   it("does not add an empty home-team row for somebody shown under the team they moved to", () => {
+    const BRAZIL = {
+      id: "k-br", code: "ALLO_BR", shortCode: "BR", label: "Brazil rotation", bucket: "ALLOCATION" as const,
+      colourToken: "BR", sortOrder: 70, movesToTeamKey: "bravo", worksRotaThere: true,
+    };
     const { container } = renderRoster({
       teamKey: "alpha",
       assignments: [],
-      absences: [{ ...absence({ name: "Bruna", startsOn: "2026-09-01", endsOn: "2026-12-31", kindCode: "ANNUAL_LEAVE", teamKey: "bravo" }), homeTeamKey: "alpha" }],
+      absences: [{ ...absence({ name: "Bruna", startsOn: "2026-09-01", endsOn: "2026-12-31", kindCode: "ALLO_BR", teamKey: "bravo" }), homeTeamKey: "alpha" }],
+      absenceKinds: [ANNUAL_LEAVE, BRAZIL],
       teamMembers: { alpha: [member("u-Bruna", "Bruna", "engineer")] },
     });
     const rows = [...container.querySelectorAll("tbody tr")].map((tr) => tr.querySelector(".team")?.textContent);
