@@ -885,6 +885,20 @@ func main() {
 				escalationConsumers = append(escalationConsumers,
 					startConsumers(ctx, l.name, eventBusCfg, l.group, escalationCount, escalationEngine.Handle, escalationToDeadLetter)...)
 
+				// SRE incidents on their own topic (entity-service's
+				// INCIDENT_EVENT_HUB_TOPIC): the SRE ladder reads it as well as
+				// the shared one, which still carries the customer cases -- a
+				// case S0 pages SRE. Reading both through a switch-over is
+				// harmless: a redelivered trigger is a no-op (create-if-absent).
+				if topic, group, ok := sreIncidentConsumer(l.kind, eventBusCfg.Topic,
+					os.Getenv("INCIDENT_EVENT_HUB_TOPIC"), os.Getenv("INCIDENT_ESCALATION_SRE_INCIDENT_CONSUMER_GROUP"), l.group); ok {
+					incidentCfg := eventBusCfg
+					incidentCfg.Topic = topic
+					escalationConsumers = append(escalationConsumers,
+						startConsumers(ctx, l.name+"-incidents", incidentCfg, group, escalationCount, escalationEngine.Handle, escalationToDeadLetter)...)
+					slog.Info("incident escalation: the SRE ladder reads incidents from their own topic", "topic", topic, "group", group)
+				}
+
 				// And a consumer for that DLQ running THIS ladder's handler, so
 				// a dead-lettered record gets a retry pass from the ladder that
 				// failed it. Both ladders dead-letter onto the one topic, each
@@ -1062,6 +1076,22 @@ func loadOnboardingConfig(steps *entity.CustomerEntityClient, emailClient *notif
 // consumer group never hands out more partitions than exist, so a consumer
 // count higher than the partition count just leaves the excess consumers
 // permanently idle rather than doing anything actively wrong.
+// sreIncidentConsumer decides whether a ladder also reads a separate incident
+// topic, and under which consumer group. Only the SRE ladder does: incidents
+// are SRE work, and the CRE ladder pages from customer cases on the shared
+// topic. An unset topic, or one equal to the shared topic, adds nothing.
+func sreIncidentConsumer(kind paging.Ladder, mainTopic, incidentTopic, groupOverride, ladderGroup string) (topic, group string, ok bool) {
+	topic = strings.TrimSpace(incidentTopic)
+	if kind != paging.LadderSRE || topic == "" || topic == mainTopic {
+		return "", "", false
+	}
+	group = strings.TrimSpace(groupOverride)
+	if group == "" {
+		group = ladderGroup + "-incidents"
+	}
+	return topic, group, true
+}
+
 func startConsumers(ctx context.Context, name string, cfg eventbus.Config, group string, count int, handle eventbus.Handle, onExhausted eventbus.OnExhausted) []*eventbus.Consumer {
 	if partitions, err := eventbus.PartitionCount(ctx, cfg); err != nil {
 		slog.Warn("failed to check partition count; skipping the consumer-count sanity check", "consumer", name, "topic", cfg.Topic, "err", err)

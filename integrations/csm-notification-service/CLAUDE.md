@@ -468,6 +468,8 @@ end-to-end tools (`sre-e2e.sh`, `trigger-escalation.sh`) still publish the
 event themselves, through `entity-service/internal/tools/publishincident`, to
 drive a ladder without creating an incident.
 
+**Incident topic.** With `INCIDENT_EVENT_HUB_TOPIC` set (e.g. `sre-events`), entity-service publishes every `incident.*` event there instead of the shared topic, and the SRE ladder adds a consumer on it (group `INCIDENT_ESCALATION_SRE_INCIDENT_CONSUMER_GROUP`, default `<SRE group>-incidents`) while keeping its shared-topic consumer for customer cases (a case S0 pages SRE). The CRE ladder never reads it. All of an incident's events move together, so its stop signals arrive where its trigger did. Roll out here first, then on entity-service; reading both topics through the switch is harmless (create-if-absent). The `sre-events` dispatcher consumer (`HandleShared`) already handles the incident types (the legacy `incident.created` call, no-ops for the rest).
+
 **Wiring** (`cmd/server/main.go`): inside the Redis block, started only when
 the ladder has somebody to resolve rungs from (`escalationStartProblem`): the
 Team Schedule, with `INCIDENT_ESCALATION_RESOLVER=team-schedule` and
