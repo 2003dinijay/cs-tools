@@ -199,6 +199,45 @@ func TestChangeRequestNobodyToAskIntegration_TheRequesterIsJudgedAsItWillStand(t
 		}
 	})
 
+	// A resend of the stored requester is no change, whatever the project's contacts have become since:
+	// never re-judged. A CHANGE of the requester while nobody can be asked leaves nobody to ask and is refused.
+	t.Run("a resend is never re-judged, a change with nobody left to ask is", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		leave := f.standInContact(crScopeProjectC)
+		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
+		f.requestApproval(id)
+		f.expect(id, "in Assess", "ASSESS", "canceled")
+		leave() // every registered contact is gone after approval was requested
+		if _, err := f.patch(id, domain.PatchChangeRequestRequest{RequestedByID: asRequester(sp(crFlowCreatorID)), Title: sp("a whole-form resend")}); err != nil {
+			t.Fatalf("resending the stored requester when nobody can be asked any more: %v", err)
+		}
+		_, err := f.patch(id, domain.PatchChangeRequestRequest{RequestedByID: asRequester(&other)})
+		f.wantExact("changing the requester when nobody can be asked", err, nobodyMsgApproval)
+		if got := f.requestedBy(id); got != crFlowCreatorID {
+			t.Fatalf("a refused change wrote the requester: %q", got)
+		}
+	})
+
+	// A change that already waits in Customer Approval with the box still false (a migrated or older row): the
+	// requester edit is not a gate the box controls, but a Re-schedule asks the customers anyway, and is judged
+	// with the requester it carries.
+	t.Run("a Re-schedule of a legacy row with the box false carrying a requestedById", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		f.standInContact(crScopeProjectC)
+		id := f.legacyInCustomerApproval(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), nil, false)
+		f.setPlanned(id, rsStart1, rsEnd1)
+		_, err := f.patch(id, domain.PatchChangeRequestRequest{
+			State: stateptr(domain.ChangeRequestStateAuthorize), PlannedStartOn: sp(rsStart2), PlannedEndOn: sp(rsEnd2), RequestedByID: asRequester(&standIn)})
+		f.wantExact("a Re-schedule naming the only contact as the requester", err, nobodyMsgApproval)
+		f.wantPlanned(id, "after the refused Re-schedule", rsStart1, rsEnd1)
+		if got := f.requestedBy(id); got != crFlowCreatorID {
+			t.Fatalf("a refused Re-schedule wrote the requester: %q", got)
+		}
+		if err := f.reschedule(id, sp(rsStart2), sp(rsEnd2)); err != nil {
+			t.Fatalf("the same Re-schedule without the requester: %v", err)
+		}
+	})
+
 	t.Run("a change in New is left to Request Approval", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		f.standInContact(crScopeProjectC)
