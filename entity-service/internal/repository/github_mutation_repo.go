@@ -53,6 +53,14 @@ type NewServiceRequestFromIssue struct {
 	// Fields are the template's captured values, stored verbatim.
 	Fields    map[string]string
 	CreatedBy string
+	// ProjectID is the repository's declared project (case.project). Empty
+	// leaves it null, as for a repository mapped only in account_github_repo.
+	ProjectID string
+	// Owner and Repository are the issue's repository, kept on the record so
+	// the outbound triggers reach it without going through the account
+	// (migration 0206).
+	Owner      string
+	Repository string
 }
 
 type NewChangeRequestFromIssue struct {
@@ -394,12 +402,18 @@ func isUniqueViolation(err error) bool {
 }
 
 // workItemByIssue returns the id of the work item already holding this issue.
-func (r *githubMutationRepository) workItemByIssue(ctx context.Context, accountID string, issue int) (string, error) {
+func (r *githubMutationRepository) workItemByIssue(ctx context.Context, in NewServiceRequestFromIssue) (string, error) {
 	ctx = withGithubSystemIdentity(ctx)
+	// Mirrors the two unique indexes (0206): by repository when the record
+	// carries one, by account when it does not.
 	const q = `SELECT id::text FROM work_item
-	           WHERE account_id = NULLIF($1, '')::uuid AND github_issue_number = $2`
+	           WHERE github_issue_number = $4
+	             AND ((lower(github_owner) = lower(NULLIF($2, '')) AND lower(github_repository) = lower($3))
+	                  OR (github_owner IS NULL AND NULLIF($2, '') IS NULL AND account_id = NULLIF($1, '')::uuid))
+	           LIMIT 1`
 	var id string
-	if err := r.db.QueryRow(ctx, q, accountID, issue).Scan(&id); err != nil {
+	issue := in.IssueNumber
+	if err := r.db.QueryRow(ctx, q, in.AccountID, in.Owner, in.Repository, issue).Scan(&id); err != nil {
 		return "", fmt.Errorf("github: look up work item for issue %d: %w", issue, err)
 	}
 	return id, nil
@@ -418,24 +432,27 @@ func (r *githubMutationRepository) CreateServiceRequestFromIssue(ctx context.Con
 		const insertWorkItem = `
 			INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by,
 			                       number, wso2_id, subject, type, description,
-			                       account_id, github_issue_number)
+			                       account_id, github_issue_number,
+			                       project_id, github_owner, github_repository)
 			VALUES (gen_random_uuid(), NOW(), NOW(), $1, $1,
 			        next_github_service_request_number(),
 			        -- Required for SERVICE_REQUEST by work_item_wso2_id_required_by_type.
 			        next_github_service_request_wso2_id(),
 			        $2, 'SERVICE_REQUEST', $3,
-			        NULLIF($4, '')::uuid, $5)
+			        NULLIF($4, '')::uuid, $5,
+			        NULLIF($6, '')::uuid, NULLIF($7, ''), NULLIF($8, ''))
 			RETURNING id::text, number`
 
 		if err := tx.QueryRow(ctx, insertWorkItem,
 			in.CreatedBy, in.Subject, nullable(in.Description), in.AccountID, in.IssueNumber,
+			in.ProjectID, in.Owner, in.Repository,
 		).Scan(&id, &number); err != nil {
 			// A concurrent delivery for the same issue got here first. GitHub sends
 			// an issue as several events (opened, then labeled), so this is the
 			// ordinary case rather than an exotic one: report the record that won
 			// instead of failing, and let the caller treat it as already existing.
 			if isUniqueViolation(err) {
-				existing, lookupErr := r.workItemByIssue(ctx, in.AccountID, in.IssueNumber)
+				existing, lookupErr := r.workItemByIssue(ctx, in)
 				if lookupErr != nil {
 					return lookupErr
 				}
