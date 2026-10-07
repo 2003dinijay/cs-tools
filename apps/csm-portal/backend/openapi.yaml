@@ -5359,13 +5359,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden.
+          description: >-
+            Forbidden. The message is a fixed text; the body's `errorCode`, when
+            entity-service names the refusal, says which.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
           description: Change request not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: >-
+            The request conflicts with the change request's state; the entity service's
+            reason is echoed and nothing was changed. The body's `errorCode`, when
+            entity-service names the refusal, says which (a client never branches on the
+            message).
           content:
             application/json:
               schema:
@@ -5544,7 +5556,8 @@ paths:
             The approval is no longer pending: the change request has moved to a
             state the caller's stage cannot be decided in (e.g. a Review approver
             once the change is Customer Review or Closed). The message says where
-            the change is; nothing was changed.
+            the change is; nothing was changed. The body's `errorCode` is
+            `change_request_approval_not_pending`.
           content:
             application/json:
               schema:
@@ -13470,9 +13483,31 @@ components:
   schemas:
     ErrorPayload:
       type: object
+      description: >-
+        The body of an error response. `message` is the reason, worded for people: it
+        can change, so a client must never branch on it. `errorCode` is the stable
+        machine-readable name entity-service gave a refusal, passed through unchanged
+        on the 400, 403, 409 and 422 of PATCH /change-requests/{id} and on the 403 and
+        409 of POST /change-requests/{id}/approvals/decision; it is omitted when the
+        refusal has none, which is the body this API has always returned, so a client
+        treats its absence, and a value it does not know, as "no more specific than the
+        status". The status and the message are the same with or without it.
       properties:
         message:
           type: string
+        errorCode:
+          type: string
+          description: >-
+            Stable machine-readable name of the refusal. Named so far, the refusals of a
+            customer's answer to a change request and of the approvals decision route:
+            `change_request_on_hold` (409), `change_request_schedule_changed` (409),
+            `change_request_approval_not_pending` (409: the approval is no longer
+            pending), `change_request_not_proposable` (409), `change_request_not_asked`
+            (403: not asked on the customer group's stage) and `change_request_forbidden`
+            (403: the change request's creator, or a user who may not decide an internal
+            stage). The list grows, so this is deliberately not a closed enum.
+          examples:
+            - change_request_approval_not_pending
 
     HealthDependenciesResponse:
       type: object

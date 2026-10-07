@@ -381,6 +381,20 @@ to the entity service as-is (no field allow-list), with two checks on top:
   reason shows it", "... without a readable reason stays generic"). `canDecide` is
   `false` on such a row, so the portal does not offer the buttons in the first place.
 
+**The refusals' machine-readable `errorCode`.** entity-service names the refusals a client has
+to tell apart with a stable `errorCode` string in its error body (`change_request_approval_not_pending`
+for the 409 above, `change_request_not_asked` / `change_request_forbidden` for its 403s,
+`change_request_on_hold`, `change_request_schedule_changed`, `change_request_not_proposable`; the table is in
+its CLAUDE.md, "Error types"). The BFF passes it through, beside the message, with the status it
+gives it: `mapUpstreamError` (the PATCH handlers) on the 400, 403, 409 and 422, and
+`mapApprovalDecisionError` on the decision route's 403 and 409 (`errorBody.ErrorCode`, `writeErrorCode`,
+`upstreamErrorCode`). The code is read from the upstream envelope (`apierror.Error.Body` holds it whole,
+`maxEntityErrBody`) and kept only when it is a plain lower-case snake_case name of at most 64
+characters, so nothing else reaches a client through it; a refusal with none (an older entity
+service) adds no key, and `mapUpstreamErrorGeneric` (every other endpoint) never echoes it, as it never
+echoes the message. The CSM webapp does not branch on it today (it keys on the 409 status); it is
+there for the next client that has to. Pinned by `TestUpstreamErrorCodesPassThrough`.
+
 ## Opening an approval stage's assignment group (`GET /groups/{id}`)
 
 `GET /change-requests/{id}/approvals` now carries `assignmentGroup: {id, name}` on

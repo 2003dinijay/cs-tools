@@ -412,12 +412,13 @@ func (h *ChangeRequestHandler) GetChangeRequestLinkOptions(w http.ResponseWriter
 // stage ...", or -- a 409 -- "this approval is no longer pending: the change
 // request is in Closed, but the Review stage can only be decided while it is in
 // Review") is only useful if the approver can read why; every other failure
-// keeps the generic mapping.
+// keeps the generic mapping. The refusal's machine-readable errorCode, when
+// entity-service names one (upstreamErrorCode), goes on with it.
 func mapApprovalDecisionError(w http.ResponseWriter, err error, fallbackMsg string) {
 	var apiErr *apierror.Error
 	if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusForbidden || apiErr.StatusCode == http.StatusConflict) {
 		if msg := upstreamErrorMessageStrict(apiErr.Body, ""); msg != "" {
-			writeError(w, apiErr.StatusCode, msg)
+			writeErrorCode(w, apiErr.StatusCode, msg, upstreamErrorCode(apiErr.Body))
 			return
 		}
 	}
