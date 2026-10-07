@@ -1229,6 +1229,8 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 		return domain.CreateCaseCommentResponse{}, err
 	}
 
+	s.subscribeCommenterToWatchList(ctx, req.CaseID, actorEmail)
+
 	// Computed once, used by both the SLA-engine hook and the published
 	// event's own IsSupportEngineerResponse flag below -- see
 	// isSupportEngineerAuthor's own doc comment. Only resolved when at
@@ -1336,6 +1338,34 @@ func (s *caseService) completeResponseSLAOnComment(ctx context.Context, caseID s
 		return
 	}
 	s.slaEngine.CompleteResponseClock(ctx, caseID)
+}
+
+// subscribeCommenterToWatchList adds actorEmail's resolved user as a watcher
+// of caseID whenever they aren't one already -- by explicit product
+// decision, a case's watch list is no longer just who was explicitly added
+// to it, it's also whoever has actually commented on it (see
+// fetchCaseWatchers' own doc comment for the other half of that same
+// decision, the synthesized account-stakeholder entries). Scoped to this one
+// case: CaseRepository.AddCaseWatcherIfAbsent only ever touches
+// work_item_watcher rows keyed by this caseID, so commenting on one case
+// never subscribes anyone to any other.
+//
+// Best-effort and silent on failure, same posture as every other
+// comment-creation side effect in this file (completeResponseSLAOnComment,
+// publishCommentAddedEvent): the comment itself has already been written by
+// the time this runs, so a lookup or write failure here must never undo
+// that or fail the request. An actorEmail that doesn't resolve to a real
+// user row (the M2M CreateCaseCommentAs path deliberately has none -- see
+// that method's own doc comment) is skipped the same way
+// isSupportEngineerAuthor already treats it: can't confirm, not an error.
+func (s *caseService) subscribeCommenterToWatchList(ctx context.Context, caseID, actorEmail string) {
+	user, err := s.userRepo.GetUserByEmail(ctx, actorEmail)
+	if err != nil {
+		return
+	}
+	if err := s.repo.AddCaseWatcherIfAbsent(ctx, caseID, user.ID); err != nil {
+		slog.ErrorContext(ctx, "create comment: subscribe commenter to watch list failed", "caseId", caseID)
+	}
 }
 
 // isSupportEngineerAuthor resolves whether actorEmail belongs to a user
