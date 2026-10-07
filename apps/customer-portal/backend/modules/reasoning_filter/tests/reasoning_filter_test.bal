@@ -26,9 +26,13 @@ function stripCases() returns map<[string, string]> {
         "every block, in any letter case": ["A<thinking>x</thinking>B<Thinking>y</THINKING>C", "ABC"],
         "block that is never closed": ["<thinking>The user wants", ""],
         "unclosed block after some answer": ["Done.\n<thinking>more reasoning", "Done.\n"],
-        "half-written opening tag": ["Hello <t", "Hello "],
-        "longer half-written opening tag": ["Hello <thin", "Hello "],
-        "opening tag without its bracket": ["Hello <thinking", "Hello "],
+        "half-written opening tag after a block": ["<thinking>x</thinking>Hello <t", "Hello "],
+        "longer half-written opening tag after a block": ["A<thinking>x</thinking>B <thin", "AB "],
+        "half-written opening tag with no block is the author's text": ["Hello <t", "Hello <t"],
+        "opening tag without its bracket and no block is the author's text": ["Hello <thinking", "Hello <thinking"],
+        "whitespace left after a leading block becomes empty": ["<thinking>x</thinking>\n  ", ""],
+        "whitespace around a block that is the whole answer becomes empty": [" \n<thinking>x</thinking>\n\n\n", ""],
+        "inline whitespace left after a leading block becomes empty": ["<thinking>x</thinking>   ", ""],
         "indentation kept when a later block is removed": ["    code\n<thinking>reason</thinking>", "    code\n"],
         "first real line keeps its indentation": ["<thinking>x</thinking>\n\n    code", "    code"],
         "inline gap after a leading block is dropped": ["<thinking>x</thinking>   Answer", "Answer"],
@@ -55,23 +59,37 @@ function testStripThinkingBlocks(string input, string expected) {
     test:assertEquals(stripThinkingBlocks(input), expected);
 }
 
-// A rescan of the rest of the text for every unclosed opener takes several seconds
-// on this input; a single pass takes well under a millisecond. The bound is ~1000x
-// the real cost so load cannot flake it.
+// Many CLOSED blocks is the input that tells a linear pass from a quadratic one:
+// rebuilding the result by repeated string concatenation copies the whole result
+// each time, which is far slower, while a single pass is quick (this whole module's
+// tests run in well under a second). The 1s bound is a guard against a gross
+// regression, not a benchmark, and leaves wide room for a loaded machine. (Many
+// unclosed openers stop at the first one, so they would not discriminate.)
 @test:Config {}
-function testStripThinkingBlocksIsLinearInTheNumberOfOpeners() {
-    string[] openers = [];
+function testStripThinkingBlocksIsLinearInTheNumberOfBlocks() {
+    string[] blocks = [];
+    string[] expected = [];
     foreach int _ in 0 ..< 50000 {
-        openers.push("<thinking>x");
+        blocks.push("<thinking>x</thinking>a");
+        expected.push("a");
     }
-    string input = string:'join("", ...openers);
+    string input = string:'join("", ...blocks);
 
     time:Utc started = time:utcNow();
     string result = stripThinkingBlocks(input);
     decimal elapsed = time:utcDiffSeconds(time:utcNow(), started);
 
-    test:assertEquals(result, "");
+    test:assertEquals(result, string:'join("", ...expected));
     test:assertTrue(elapsed < 1.0d, string `took ${elapsed}s, want a single linear pass`);
+}
+
+@test:Config {}
+function testStripThinkingBlocksHandlesManyUnclosedOpeners() {
+    string[] openers = [];
+    foreach int _ in 0 ..< 50000 {
+        openers.push("<thinking>x");
+    }
+    test:assertEquals(stripThinkingBlocks(string:'join("", ...openers)), "");
 }
 
 @test:Config {}
@@ -125,11 +143,31 @@ function testScrubFinalEventLeavesUnexpectedShapesAlone() {
     map<json>[] events = [
         {"type": "final", "payload": {"message": {"message": "<thinking>x</thinking>Hi"}}},
         {"type": "final", "payload": {"conversationId": "c1"}},
-        {"type": "final", "payload": "<thinking>x</thinking>Hi"}
+        {"type": "final", "payload": "<thinking>x</thinking>Hi"},
+        {"type": "final", "payload": ()}
     ];
     foreach map<json> event in events {
         string raw = event.toJsonString();
+        map<json> original = event.clone();
         [string, map<json>] result = scrubFinalEvent(event.clone(), raw);
         test:assertEquals(result[0], raw);
+        // The payload map handed back for persisting is the same one the base code produced:
+        // the nested object when there is one, the whole event otherwise.
+        json payload = original["payload"] ?: original;
+        map<json> expectedTarget = payload is map<json> ? payload : original;
+        test:assertEquals(result[1], expectedTarget);
     }
+}
+
+@test:Config {}
+function testScrubFinalEventTurnsAReasoningOnlyAnswerIntoAnEmptyOne() returns error? {
+    map<json> event = {"type": "final", "payload": {"message": "<thinking>only this</thinking>", "resolved": true}};
+
+    [string, map<json>] result = scrubFinalEvent(event.clone(), event.toJsonString());
+
+    map<json> forwarded = <map<json>>check result[0].fromJsonString();
+    map<json> forwardedPayload = <map<json>>forwarded["payload"];
+    test:assertEquals(forwardedPayload["message"], "");
+    test:assertEquals(forwardedPayload["resolved"], true);
+    test:assertEquals(result[1]["message"], "");
 }

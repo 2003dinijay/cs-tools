@@ -152,7 +152,11 @@ reach the browser and be stored as the conversation comment (which the CSM porta
 complete answer arrives: `Client.CreateChat` (the REST turns) and the `final` event in
 `WSClient.StreamChat`, whose cleaned payload is also what the handler persists. Everything else
 `StreamChat` forwards is still verbatim, and a `final` event whose answer carried no reasoning is
-forwarded byte for byte. **Streamed `token` events are not filtered**: they can still carry the
+forwarded byte for byte. An answer that was *only* reasoning comes out empty, and entity-service
+rejects a comment with no content, so every place that stores the agent's reply skips it when empty
+(`websocket.go`'s `handleMessage`, and `CreateConversation` / `SendConversationMessage` in
+`ai_chat.go`) — the turn still succeeds and `resolved` is still honoured; the Ballerina `service.bal`
+does the same. **Streamed `token` events are not filtered**: they can still carry the
 reasoning until the `final` event replaces them, which the webapps cover by stripping it for display
 (that fallback also covers answers stored before this existed). The webapps and the Ballerina backend
 (`ai_chat_agent:stripThinkingBlocks`) carry the same rule; keep the behaviour in step.

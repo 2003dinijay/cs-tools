@@ -147,3 +147,43 @@ func TestStreamChat_StillReportsAnUpstreamError(t *testing.T) {
 		t.Errorf("error frame not forwarded as it came: %q", got)
 	}
 }
+
+func TestStreamChat_CleansTheOlderFlatShapeToo(t *testing.T) {
+	client := fakeAgent(t, `{"type":"final","message":"<thinking>x</thinking>Hello","conversationId":"c1"}`)
+	browser := &recordingConn{}
+
+	result, err := client.StreamChat(context.Background(), "p1:c1", `{"type":"user_message","message":"hi"}`, browser)
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+
+	frames := browser.all()
+	if len(frames) != 1 {
+		t.Fatalf("browser got %d frames, want 1: %q", len(frames), frames)
+	}
+	if got := messageOf(t, decodeEvent(t, []byte(frames[0]))); got != "Hello" {
+		t.Errorf("answer sent to the browser = %q", got)
+	}
+	if got := messageOf(t, result); got != "Hello" {
+		t.Errorf("answer returned for persisting = %q", got)
+	}
+}
+
+// A final event with a null payload has always returned a nil payload map and
+// the frame untouched; cleaning must not turn that into a panic or a rewrite.
+func TestStreamChat_ANullPayloadIsForwardedAsItCame(t *testing.T) {
+	const final = `{"type":"final","payload":null}`
+	client := fakeAgent(t, final)
+	browser := &recordingConn{}
+
+	result, err := client.StreamChat(context.Background(), "p1:c1", `{"type":"user_message","message":"hi"}`, browser)
+	if err != nil {
+		t.Fatalf("StreamChat: %v", err)
+	}
+	if got := browser.all(); len(got) != 1 || got[0] != final {
+		t.Errorf("frame was altered: %q", got)
+	}
+	if len(result) != 0 {
+		t.Errorf("result = %v, want an empty payload", result)
+	}
+}

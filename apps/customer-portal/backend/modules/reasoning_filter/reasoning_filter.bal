@@ -40,9 +40,11 @@ const string EVENT_PAYLOAD_KEY = "payload";
 # answer is forwarded or persisted.
 #
 # It removes complete blocks (the tag is matched case-insensitively), everything
-# after an opening tag that is never closed (an answer that was cut off), and a
-# half-written opening tag at the very end. A leading block takes the gap after
-# it with it, but the first real line keeps its own indentation. Known limits: a
+# after an opening tag that is never closed (an answer that was cut off), and, once
+# reasoning has been found, a half-written opening tag at the very end. An answer
+# with no opening tag at all is returned untouched. A leading block takes the gap
+# after it with it, but the first real line keeps its own indentation, and an
+# answer that is nothing but whitespace afterwards becomes empty. Known limits: a
 # complete block the answer merely mentions is removed too, an unclosed mention
 # hides the rest of the text, and nested blocks or a stray closing tag are left
 # as they are.
@@ -61,12 +63,14 @@ public isolated function stripThinkingBlocks(string text) returns string {
     string lower = text.toLowerAscii();
     string[] kept = [];
     int pos = 0;
+    boolean foundReasoning = false;
     while true {
         int? open = lower.indexOf(THINKING_OPEN_TAG, pos);
         if open is () {
             kept.push(text.substring(pos));
             break;
         }
+        foundReasoning = true;
         kept.push(text.substring(pos, open));
         int? closeAt = lower.indexOf(THINKING_CLOSE_TAG, open + THINKING_OPEN_TAG.length());
         if closeAt is () {
@@ -75,6 +79,12 @@ public isolated function stripThinkingBlocks(string text) returns string {
         pos = closeAt + THINKING_CLOSE_TAG.length();
     }
 
+    // Unlike the browser fallback, which sees an answer while it is still being typed, this sees a
+    // complete one: a half-written opening tag is only reasoning that was cut off if a reasoning
+    // block was found, otherwise it is the author's own text and the answer is left exactly as it came.
+    if !foundReasoning {
+        return text;
+    }
     string stripped = trimPartialOpenTag(string:'join("", ...kept));
     if stripped == text {
         return text;
@@ -87,6 +97,11 @@ public isolated function stripThinkingBlocks(string text) returns string {
     // Drop the gap but keep the first real line's own indentation: when the gap
     // spans lines, cut up to the last newline; when it is inline, cut it all.
     int gapEnd = leadingWhitespaceEnd(stripped);
+    if gapEnd == stripped.length() {
+        // Nothing but whitespace was left: empty, not blank, so a caller that skips an empty
+        // answer skips this one too.
+        return "";
+    }
     int? lastNewline = stripped.substring(0, gapEnd).lastIndexOf("\n");
     return lastNewline is () ? stripped.substring(gapEnd) : stripped.substring(lastNewline + 1);
 }

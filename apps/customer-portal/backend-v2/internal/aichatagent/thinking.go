@@ -38,12 +38,14 @@ const (
 // it is removed here, before the answer is forwarded or persisted.
 //
 // It removes complete blocks (the tag is matched case-insensitively), everything
-// after an opening tag that is never closed (an answer that was cut off), and a
-// half-written opening tag at the very end. A leading block takes the gap after
-// it with it, but the first real line keeps its own indentation. Known limits: a
-// complete block the answer merely mentions is removed too, an unclosed mention
-// hides the rest of the text, and nested blocks or a stray closing tag are left
-// as they are.
+// after an opening tag that is never closed (an answer that was cut off), and —
+// once reasoning has been found — a half-written opening tag at the very end. An
+// answer with no opening tag at all is returned untouched. A leading block takes
+// the gap after it with it, but the first real line keeps its own indentation,
+// and an answer that is nothing but whitespace afterwards becomes empty. Known
+// limits: a complete block the answer merely mentions is removed too, an unclosed
+// mention hides the rest of the text, and nested blocks or a stray closing tag
+// are left as they are.
 //
 // The browser apps carry the same rule as a display-side fallback for answers
 // stored before this ran; keep the behaviour in step with theirs.
@@ -54,12 +56,14 @@ func StripThinkingBlocks(text string) string {
 
 	var kept strings.Builder
 	pos := 0
+	foundReasoning := false
 	for {
 		open := indexASCIIFold(text, thinkingOpenTag, pos)
 		if open < 0 {
 			kept.WriteString(text[pos:])
 			break
 		}
+		foundReasoning = true
 		kept.WriteString(text[pos:open])
 		closeAt := indexASCIIFold(text, thinkingCloseTag, open+len(thinkingOpenTag))
 		if closeAt < 0 {
@@ -68,6 +72,13 @@ func StripThinkingBlocks(text string) string {
 		pos = closeAt + len(thinkingCloseTag)
 	}
 
+	// Unlike the browser fallback, which sees an answer while it is still being
+	// typed, this sees a complete one: a half-written opening tag is only reasoning
+	// that was cut off if a reasoning block was found, otherwise it is the
+	// author's own text and the answer is left exactly as it came.
+	if !foundReasoning {
+		return text
+	}
 	stripped := trimPartialOpenTag(kept.String())
 	if stripped == text {
 		return text
@@ -80,6 +91,11 @@ func StripThinkingBlocks(text string) string {
 	// Drop the gap but keep the first real line's own indentation: when the gap
 	// spans lines, cut up to the last newline; when it is inline, cut it all.
 	gapEnd := len(stripped) - len(strings.TrimLeftFunc(stripped, unicode.IsSpace))
+	if gapEnd == len(stripped) {
+		// Nothing but whitespace was left: empty, not blank, so a caller that
+		// skips an empty answer skips this one too.
+		return ""
+	}
 	if nl := strings.LastIndexByte(stripped[:gapEnd], '\n'); nl >= 0 {
 		return stripped[nl+1:]
 	}
