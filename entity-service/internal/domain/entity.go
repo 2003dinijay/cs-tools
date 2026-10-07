@@ -3221,19 +3221,22 @@ type WatchListUser struct {
 	Email    string `json:"email,omitempty"`
 	// Locked is true for an entry fetchCaseWatchers synthesized rather than
 	// read from a real work_item_watcher row: one of the case's project's
-	// account's four named stakeholders (technical owner, secondary
-	// technical owner, account manager, renewal account manager -- the same
-	// four AccountDefaultWatcherEmails resolves for the email audience).
-	// These four are never auto-persisted into work_item_watcher (see
+	// account's five named stakeholders (technical owner, secondary
+	// technical owner, account manager, renewal account manager, and
+	// customer success manager -- a strictly larger set than
+	// AccountDefaultWatcherEmails' own four, which deliberately excludes the
+	// CSM from the default email audience; that is a decision about who
+	// gets emailed, not about who the account's stakeholders are). These
+	// five are never auto-persisted into work_item_watcher (see
 	// addRequestedWatchers' own doc comment) -- fetchCaseWatchers now adds
-	// them to every read, always, specifically so a caller can see who's
-	// being emailed by default -- and this IS an enforcement signal:
-	// CaseRepository.SetCaseWatchList has no way to submit one of these four
-	// as an explicit watcher, so a Locked entry can never be removed by an
-	// add/remove request, only by the account's own stakeholder
-	// reassignment changing who resolves into this slot. A user who is both
-	// a real persisted watcher and one of the four stakeholders appears once,
-	// as the Locked copy. Postgres-data-source only -- this concept has no
+	// them to every read, always, specifically so a caller can see every
+	// stakeholder associated with the case -- and this IS an enforcement
+	// signal: CaseRepository.SetCaseWatchList has no way to submit one of
+	// these five as an explicit watcher, so a Locked entry can never be
+	// removed by an add/remove request, only by the account's own
+	// stakeholder reassignment changing who resolves into this slot. A user
+	// who is both a real persisted watcher and one of the five stakeholders
+	// appears once, as the Locked copy. Postgres-data-source only -- this concept has no
 	// ServiceNow-side equivalent, so a ServiceNow-backed watcher is always
 	// Locked: false.
 	Locked bool `json:"locked"`

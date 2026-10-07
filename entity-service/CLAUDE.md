@@ -2463,17 +2463,19 @@ changed.
   `validateWatchListProjectMembership` for a submitted id (nothing exempt
   to submit any more).
 
-  **Superseded below: `fetchCaseWatchers` now also synthesizes those same
-  four stakeholders directly into every read, not just into the email
-  audience.** The paragraph above (and `AccountDefaultWatcherEmails`) is
-  still exactly how `Recipients` is resolved for a `case.*` email — that
-  hasn't changed. What changed, by later explicit product request, is the
-  *display* side: a case's "Watchers" list in both portals previously
-  showed only real `work_item_watcher` rows, so the four stakeholders being
-  emailed by default were invisible on that list entirely — a customer or
-  engineer looking at "who's watching this case" had no way to see them.
-  `fetchCaseWatchers` (`case_repo.go`) now builds its result as a `WITH`
-  CTE rather than a single `SELECT` off `work_item_watcher`:
+  **Superseded below: `fetchCaseWatchers` now also synthesizes the
+  account's named stakeholders directly into every read, not just into the
+  email audience.** The paragraph above (and `AccountDefaultWatcherEmails`)
+  is still exactly how `Recipients` is resolved for a `case.*` email — that
+  hasn't changed, `customer_success_manager_id` included: the CSM still
+  isn't unioned into a case.* email's `Recipients`. What changed, by later
+  explicit product request, is the *display* side: a case's "Watchers" list
+  in both portals previously showed only real `work_item_watcher` rows, so
+  the stakeholders being emailed by default were invisible on that list
+  entirely — a customer or engineer looking at "who's watching this case"
+  had no way to see them. `fetchCaseWatchers` (`case_repo.go`) now builds
+  its result as a `WITH` CTE rather than a single `SELECT` off
+  `work_item_watcher`:
 
   - `persisted` reads real `work_item_watcher` rows as before, but an
     `EXTERNAL` (customer) one is only included when they are currently a
@@ -2483,19 +2485,26 @@ changed.
     subject to that check at all, which is also what keeps an engineer's
     own Follow/Unfollow self-subscribe working regardless of
     `project_contact` membership.
-  - `stakeholders` resolves the same four account roles
-    `AccountDefaultWatcherEmails` resolves, and synthesizes one row per
-    resolved stakeholder, every time, with `locked = true` — these were
-    never auto-persisted into `work_item_watcher` (see above) and still
-    aren't; this is a read-time join, not a write.
-  - A user who is both a real persisted watcher and one of the four
+  - `stakeholders` resolves **five** account roles — the same four
+    `AccountDefaultWatcherEmails` resolves, plus
+    `customer_success_manager_id` — and synthesizes one row per resolved
+    stakeholder, every time, with `locked = true`. This is a strictly
+    larger set than the email audience by deliberate product decision: the
+    CSM is a real stakeholder worth *showing* on the case, even though
+    `AccountDefaultWatcherEmails` still deliberately excludes them from the
+    default email audience (see that function's own doc comment — a
+    decision about who gets emailed, not about who the account's
+    stakeholders are). None of these five are auto-persisted into
+    `work_item_watcher` (see above) and still aren't; this is a read-time
+    join, not a write.
+  - A user who is both a real persisted watcher and one of the five
     stakeholders appears exactly once, as the locked (stakeholder) copy —
     `DISTINCT ON (id)` ordered `locked DESC` after `UNION ALL`-ing the two
     CTEs together, then re-sorted by `user_name` for a stable response.
 
   `domain.WatchListUser.Locked` therefore does carry a real enforcement
   meaning again, just not the old "mandatory floor" one: `SetCaseWatchList`
-  has no way for a caller to submit one of these four as an explicit
+  has no way for a caller to submit one of these five as an explicit
   watcher (there's no `work_item_watcher` row to add or remove), so a
   Locked entry can only ever come or go via the account's own stakeholder
   columns changing, never via an add/remove request. See that field's own

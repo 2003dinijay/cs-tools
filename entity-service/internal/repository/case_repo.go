@@ -3196,17 +3196,22 @@ type rowsQuerier interface {
 //     engineer's own Follow/Unfollow self-subscribe (see WatchersWidget in
 //     the CSM portal webapp) must keep working regardless of project_contact
 //     membership.
-//   - The project's account's four named stakeholders (technical owner,
-//     secondary technical owner, account manager, renewal account manager --
-//     the same four AccountDefaultWatcherEmails resolves for the email
-//     audience, see that function's own doc comment) are additionally
-//     synthesized into the result, each with locked=true: they were never
-//     auto-persisted into work_item_watcher (see addRequestedWatchers' own
-//     doc comment for why that floor was removed), but the product decision
-//     here is to still *display* them on this read, read-only, so a caller
-//     can see who's being emailed by default without being able to remove
-//     that default.
-//   - A user who is both a real persisted watcher AND one of those four
+//   - The project's account's five named stakeholders (technical owner,
+//     secondary technical owner, account manager, renewal account manager,
+//     and customer success manager) are additionally synthesized into the
+//     result, each with locked=true: they were never auto-persisted into
+//     work_item_watcher (see addRequestedWatchers' own doc comment for why
+//     that floor was removed), but the product decision here is to still
+//     *display* them on this read, read-only, so a caller can see every
+//     stakeholder associated with the case without being able to remove
+//     one. This is a strictly larger set than AccountDefaultWatcherEmails'
+//     own four -- that function deliberately excludes
+//     customer_success_manager_id from the default email audience (see its
+//     own doc comment), which is a decision about who gets emailed by
+//     default, not about who the account's named stakeholders are; this
+//     display is the latter, so the CSM is included here even though they
+//     are not unioned into a case.* email's Recipients.
+//   - A user who is both a real persisted watcher AND one of those five
 //     stakeholders appears exactly once, as the locked (stakeholder) copy --
 //     the inner DISTINCT ON picks locked=true first on a duplicate id. The
 //     outer query re-sorts by user_name afterward, since DISTINCT ON itself
@@ -3221,7 +3226,8 @@ func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]dom
 		WITH case_context AS (
 			SELECT p.id AS project_id,
 			       acct.technical_owner_id, acct.secondary_technical_owner_id,
-			       acct.account_manager_id, acct.renewal_account_manager_id
+			       acct.account_manager_id, acct.renewal_account_manager_id,
+			       acct.customer_success_manager_id
 			FROM work_item wi
 			LEFT JOIN project p ON p.id = wi.project_id
 			LEFT JOIN account acct ON acct.id = p.account_id
@@ -3250,7 +3256,8 @@ func fetchCaseWatchers(ctx context.Context, q rowsQuerier, caseID string) ([]dom
 			FROM case_context cc
 			JOIN "user" u ON u.id IN (
 			    cc.technical_owner_id, cc.secondary_technical_owner_id,
-			    cc.account_manager_id, cc.renewal_account_manager_id
+			    cc.account_manager_id, cc.renewal_account_manager_id,
+			    cc.customer_success_manager_id
 			)
 		),
 		deduped AS (
