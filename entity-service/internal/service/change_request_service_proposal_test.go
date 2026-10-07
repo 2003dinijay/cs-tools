@@ -64,20 +64,36 @@ var (
 	}
 )
 
-// mirrorQuietPeriod is how long runMirrorAs waits for a mirror write before it says there was none:
-// a write is handed to the dispatcher's worker at once, so this only has to outlast a goroutine.
-const mirrorQuietPeriod = 150 * time.Millisecond
+// What a test of the mirror expects of a PATCH, which decides how long runMirrorAs waits.
+type mirrorExpectation bool
+
+const (
+	// expectMirrorWrite: the mirror is to be asked to PATCH. The wait is only a ceiling (the select
+	// returns the moment the write arrives), so it is generous: a write is handed to the dispatcher's
+	// worker at once, but under -race on a loaded machine "at once" can be a while, and a positive case
+	// must not fail for that.
+	expectMirrorWrite mirrorExpectation = true
+	// expectNoMirrorWrite: the mirror is NOT to be called. There is nothing to wait for, so this is the
+	// only case that waits the whole period: long enough to outlast a goroutine, short enough not to
+	// cost the suite seconds.
+	expectNoMirrorWrite mirrorExpectation = false
+)
+
+const (
+	mirrorWriteCeiling = 2 * time.Second
+	mirrorQuietPeriod  = 150 * time.Millisecond
+)
 
 // runMirror sends req (as nobody in particular, see callerCtx) through the dual-write service whose
 // repository answers with committed, and returns what the ServiceNow mirror was asked to PATCH (nil
-// when it was not called at all).
-func runMirror(t *testing.T, req domain.PatchChangeRequestRequest, committed domain.ChangeRequest) *domain.PatchChangeRequestRequest {
+// when it was not called at all, within the wait expect gives: see mirrorExpectation).
+func runMirror(t *testing.T, expect mirrorExpectation, req domain.PatchChangeRequestRequest, committed domain.ChangeRequest) *domain.PatchChangeRequestRequest {
 	t.Helper()
-	return runMirrorAs(t, callerCtx(t, nil), req, committed)
+	return runMirrorAs(t, callerCtx(t, nil), expect, req, committed)
 }
 
 // runMirrorAs is runMirror for the caller ctx carries.
-func runMirrorAs(t *testing.T, ctx context.Context, req domain.PatchChangeRequestRequest, committed domain.ChangeRequest) *domain.PatchChangeRequestRequest {
+func runMirrorAs(t *testing.T, ctx context.Context, expect mirrorExpectation, req domain.PatchChangeRequestRequest, committed domain.ChangeRequest) *domain.PatchChangeRequestRequest {
 	t.Helper()
 	called := make(chan domain.PatchChangeRequestRequest, 1)
 	mirror := &stubMirrorChangeRequestService{
@@ -97,10 +113,14 @@ func runMirrorAs(t *testing.T, ctx context.Context, req domain.PatchChangeReques
 	if _, err := svc.PatchChangeRequest(ctx, testUUID, req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	wait := mirrorQuietPeriod
+	if expect == expectMirrorWrite {
+		wait = mirrorWriteCeiling
+	}
 	select {
 	case got := <-called:
 		return &got
-	case <-time.After(mirrorQuietPeriod):
+	case <-time.After(wait):
 		if n := failures.count(); n != 0 {
 			t.Fatalf("nothing was dispatched but %d sn_writeback_failures were recorded", n)
 		}
@@ -136,7 +156,7 @@ func TestChangeRequestService_PatchChangeRequest_TheTimeConversationMirror(t *te
 
 	t.Run("a customer's proposal mirrors nothing", func(t *testing.T) {
 		for name, req := range customerProposals {
-			got := runMirrorAs(t, callerCtx(t, &customerCaller), req, withProposal(committedAt("customer_approval", planStart, planEnd), "2030-03-08T09:00:00Z"))
+			got := runMirrorAs(t, callerCtx(t, &customerCaller), expectNoMirrorWrite, req, withProposal(committedAt("customer_approval", planStart, planEnd), "2030-03-08T09:00:00Z"))
 			if got != nil {
 				t.Fatalf("%s: the mirror was asked to PATCH %+v: the plan did not move, the proposal has no ServiceNow field", name, *got)
 			}
@@ -146,7 +166,7 @@ func TestChangeRequestService_PatchChangeRequest_TheTimeConversationMirror(t *te
 	t.Run("Accept mirrors Scheduled and the committed window, in ServiceNow's layout", func(t *testing.T) {
 		req := domain.PatchChangeRequestRequest{ConfirmCustomerUpdatedDate: sPtr("agree"), ExpectedCustomerUpdatedOn: sPtr("2030-03-08T09:00:00Z"),
 			ExpectedPlannedStartOn: sPtr(planStart), ExpectedPlannedEndOn: sPtr(planEnd)}
-		got := runMirror(t, req, committedAt("scheduled", "2030-03-08T09:00:00Z", "2030-03-08T11:00:00Z"))
+		got := runMirror(t, expectMirrorWrite, req, committedAt("scheduled", "2030-03-08T09:00:00Z", "2030-03-08T11:00:00Z"))
 		if got == nil {
 			t.Fatal("Accept was not mirrored")
 		}
@@ -162,7 +182,7 @@ func TestChangeRequestService_PatchChangeRequest_TheTimeConversationMirror(t *te
 			"a different time with the proposal and the window it saw": {State: statePtr(domain.ChangeRequestStateAuthorize), PlannedStartOn: sPtr("2030-03-08 09:00:00"), PlannedEndOn: sPtr("2030-03-08 11:00:00"),
 				ExpectedCustomerUpdatedOn: sPtr("2030-03-05T09:00:00Z"), ExpectedPlannedStartOn: sPtr(planStart), ExpectedPlannedEndOn: sPtr(planEnd)},
 		} {
-			got := runMirror(t, req, committedAt("customer_approval", "2030-03-08T09:00:00Z", "2030-03-08T11:00:00Z"))
+			got := runMirror(t, expectMirrorWrite, req, committedAt("customer_approval", "2030-03-08T09:00:00Z", "2030-03-08T11:00:00Z"))
 			if got == nil {
 				t.Fatalf("%s: nothing mirrored", name)
 			}
@@ -176,7 +196,7 @@ func TestChangeRequestService_PatchChangeRequest_TheTimeConversationMirror(t *te
 	t.Run("a decline mirrors nothing", func(t *testing.T) {
 		req := domain.PatchChangeRequestRequest{State: statePtr(domain.ChangeRequestStateAuthorize), ExpectedCustomerUpdatedOn: sPtr("2030-03-08T09:00:00Z"),
 			ExpectedPlannedStartOn: sPtr(planStart), ExpectedPlannedEndOn: sPtr(planEnd)}
-		if got := runMirror(t, req, committedAt("customer_approval", planStart, planEnd)); got != nil {
+		if got := runMirror(t, expectNoMirrorWrite, req, committedAt("customer_approval", planStart, planEnd)); got != nil {
 			t.Fatalf("a decline mirrored %+v", *got)
 		}
 	})
@@ -232,7 +252,7 @@ func TestChangeRequestService_PatchChangeRequest_ACustomersWindowIsNeverMirrored
 		"the read returned a bare change request": committedAt("", "", ""),
 	} {
 		for shape, req := range customerProposals {
-			if got := runMirrorAs(t, callerCtx(t, &customerCaller), req, committed); got != nil {
+			if got := runMirrorAs(t, callerCtx(t, &customerCaller), expectNoMirrorWrite, req, committed); got != nil {
 				t.Fatalf("%s / %s: the mirror was asked to PATCH %+v: a customer's window is a proposal, ServiceNow has no field for it and must not get it as the plan", name, shape, *got)
 			}
 		}
@@ -243,7 +263,7 @@ func TestChangeRequestService_PatchChangeRequest_ACustomersWindowIsNeverMirrored
 		withWindowShown := domain.PatchChangeRequestRequest{IsCustomerApproved: &yes, ExpectedPlannedStartOn: sPtr(planStart), ExpectedPlannedEndOn: sPtr(planEnd)}
 		want := domain.PatchChangeRequestRequest{IsCustomerApproved: &yes}
 		for name, ctx := range map[string]context.Context{"a customer": callerCtx(t, &customerCaller), "nobody in particular": callerCtx(t, nil)} {
-			got := runMirrorAs(t, ctx, withWindowShown, committedAt("scheduled", planStart, planEnd))
+			got := runMirrorAs(t, ctx, expectMirrorWrite, withWindowShown, committedAt("scheduled", planStart, planEnd))
 			if got == nil || !reflect.DeepEqual(*got, want) {
 				t.Fatalf("%s: the answer was mirrored as %+v, want exactly %+v", name, got, want)
 			}
@@ -263,7 +283,7 @@ func TestChangeRequestService_PatchChangeRequest_ACustomersWindowIsNeverMirrored
 					}(),
 					"a proposal answered in between": proposedAt(committedAt("customer_approval", "2030-03-08T09:00:00Z", "2030-03-08T11:00:00Z"), "agreed", proposed),
 				} {
-					got := runMirrorAs(t, callerCtx(t, scope), req, committed)
+					got := runMirrorAs(t, callerCtx(t, scope), expectMirrorWrite, req, committed)
 					if got == nil || got.PlannedStartOn == nil || *got.PlannedStartOn != "2030-03-08 09:00:00" {
 						t.Fatalf("%s / %s / %s: mirrored %+v, want the window as ServiceNow takes it (the plan was applied)", who, shape, name, got)
 					}
@@ -315,7 +335,7 @@ func TestChangeRequestService_PatchChangeRequest_EveryOtherPatchMirrorsAsBefore(
 	} {
 		// ...whoever of WSO2 (or nobody) sends it: only a CUSTOMER's window is held back.
 		for who, scope := range everyNonCustomerCall {
-			got := runMirrorAs(t, callerCtx(t, scope), tc.req, tc.committed)
+			got := runMirrorAs(t, callerCtx(t, scope), expectMirrorWrite, tc.req, tc.committed)
 			if got == nil {
 				t.Fatalf("%s as %s: nothing was mirrored, want %+v", tc.name, who, tc.want)
 			}
