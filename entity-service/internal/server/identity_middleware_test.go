@@ -60,7 +60,7 @@ func runIdentityMiddleware(t *testing.T, access service.AccessService) (scope re
 // database to look the user up in) is this one: the middleware must hand the scope on
 // exactly as resolved, restricted stays restricted.
 func TestCallerIdentityMiddleware_AResolvedCustomerScopeStaysRestricted(t *testing.T) {
-	want := service.AccessScope{ViewerEmail: "dana@customer.example", ProjectIDs: []string{"5aeff120-1b74-c210-2649-97a234bcb54a"}}
+	want := service.AccessScope{ViewerEmail: "dana@customer.example", ProjectIDs: []string{"00000000-0000-4000-8000-000000000001"}}
 
 	got, attached, called := runIdentityMiddleware(t, stubAccess{scope: want})
 
