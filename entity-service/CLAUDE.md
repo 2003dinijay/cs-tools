@@ -4289,6 +4289,14 @@ type, state or migration is added by this feature:
   the proposal runs its write as the system once the customer's access is proven, so the comment passes
   row-level security whatever project the parent is in, `..._TriggerCommentUnderRLS`).
 
+**Open questions, not settled by code** (the safe defaults are what is built; none of them needs a schema
+change either way): (1) whether `customer_updated_on` on rows ServiceNow wrote is a proposed START and whether
+ServiceNow's own Agree moves `start_on` to it (the user is checking this against the migrated data; the code
+treats it as a start, and the predicate cannot read a finished conversation as a waiting one whichever way the
+answer goes, because a waiting proposal needs the change to be in Customer Approval with no answer); (2) whether
+ServiceNow's change request API accepts a manual Scheduled out of Customer Approval and has any field for the two
+columns (Accept's mirror is best effort, a proposal is not mirrored: see "What is mirrored" below).
+
 Code: `change_request_customer_proposal.go`. The user's rule: *WSO2 accepts the customer's rescheduled
 time from WSO2's end; it must not go through CAB again as there is no change to the CR; accepted, the CR
 goes straight to Scheduled.*
