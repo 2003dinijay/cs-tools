@@ -664,6 +664,10 @@ func (r *caseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest)
 // result since every *PortalQuery below ends in the identical trailing
 // SELECT shape that helper already expects.
 func createCaseTx(ctx context.Context, tx pgx.Tx, req domain.CreateCaseRequest) (domain.Case, error) {
+	restore, err := insertAsCheckedProjectMember(ctx, tx, req.Type, req.ProjectID)
+	if err != nil {
+		return domain.Case{}, err
+	}
 	var row pgx.Row
 	switch req.Type {
 	case "announcement":
@@ -702,7 +706,70 @@ func createCaseTx(ctx context.Context, tx pgx.Tx, req domain.CreateCaseRequest) 
 	if err != nil {
 		return domain.Case{}, mapCreateCaseError(err)
 	}
+	if err := restore(ctx); err != nil {
+		return domain.Case{}, err
+	}
 	return c, nil
+}
+
+// caseInsertsCheckedByProjectMembership are the case-like types whose
+// extension table's INSERT policy is "internal, or a member of the work
+// item's project" (case_write, migration 0147; engagement_write /
+// service_request_write / security_report_analysis_write, migration 0151).
+// announcement is deliberately absent: its own policies (000085) are not a
+// membership check, and nothing here may widen them.
+var caseInsertsCheckedByProjectMembership = map[string]bool{
+	"case": true, "service_request": true, "engagement": true, "security_report_analysis": true,
+}
+
+// insertAsCheckedProjectMember lets a project member's create through the
+// extension-table INSERT policies, which as written can never pass for one.
+//
+// Each create query inserts work_item and the extension row in ONE statement
+// (data-modifying CTEs). The extension policies find the project with a
+// subquery -- is_project_member((SELECT project_id FROM work_item WHERE id =
+// <row>.id)) -- and every sub-statement of one statement shares its snapshot,
+// so that subquery cannot see the work_item row the same statement just
+// inserted. It yields NULL, and the policy refuses every non-internal caller:
+// a customer creating a case or a service request got 404 "case not found"
+// (RLS migrations 0147/0151 met the single-statement native create of #2293).
+//
+// The fix checks, up front and under the caller's own identity, exactly what
+// those policies check -- an internal caller, or a member of req.ProjectID
+// (work_item_write already enforces the same on the work_item half) -- and
+// refuses a non-member with the same 404 RLS gave. Only then is the
+// transaction marked internal for the insert, and the caller's own value is
+// put back afterwards by the returned restore. For any other type, and for
+// an internal caller, nothing changes.
+func insertAsCheckedProjectMember(ctx context.Context, tx pgx.Tx, caseType, projectID string) (func(context.Context) error, error) {
+	noop := func(context.Context) error { return nil }
+	if !caseInsertsCheckedByProjectMembership[caseType] {
+		return noop, nil
+	}
+	var previous string
+	var internal, member bool
+	if err := tx.QueryRow(ctx, `
+		SELECT COALESCE(current_setting('app.is_internal', true), ''),
+		       COALESCE(current_setting('app.is_internal', true) = 'true', false),
+		       COALESCE(is_project_member($1::uuid), false)`, projectID,
+	).Scan(&previous, &internal, &member); err != nil {
+		return nil, fmt.Errorf("create case: check project membership: %w", err)
+	}
+	if internal {
+		return noop, nil
+	}
+	if !member {
+		return nil, &apierror.NotFoundError{Msg: "case not found"}
+	}
+	if _, err := tx.Exec(ctx, `SELECT set_config('app.is_internal', 'true', true)`); err != nil {
+		return nil, fmt.Errorf("create case: mark member insert: %w", err)
+	}
+	return func(ctx context.Context) error {
+		if _, err := tx.Exec(ctx, `SELECT set_config('app.is_internal', $1, true)`, previous); err != nil {
+			return fmt.Errorf("create case: restore caller identity: %w", err)
+		}
+		return nil
+	}, nil
 }
 
 // createCasePortalQuery is CreateCase's (the plain-Postgres, caller-initiated
