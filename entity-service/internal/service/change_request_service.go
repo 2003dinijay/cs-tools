@@ -325,7 +325,7 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	mirrorReq.CustomerApprovalRequired, mirrorReq.CustomerReviewRequired = nil, nil
 	mirrorReq.DeploymentIDs, mirrorReq.DeploymentProductIDs = nil, nil
 	// The conversation about a time the customer proposed (confirmCustomerUpdatedDate,
-	// expectedCustomerUpdatedOn) has no field in ServiceNow's change request API: it stays
+	// expectedCustomerUpdatedOn) has no field in the previous system's change request API: it stays
 	// PostgreSQL-only. What of it changes the change request itself is mirrored from what
 	// PostgreSQL COMMITTED, and whether a window is a customer's PROPOSAL (never mirrored) is
 	// decided from the request's CALLER (mirrorOfTheTimeConversation), never from a read of the
@@ -363,7 +363,7 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	}, nil
 }
 
-// mirrorOfTheTimeConversation adjusts the best-effort ServiceNow mirror of a PATCH for the
+// mirrorOfTheTimeConversation adjusts the best-effort mirror of a PATCH to the previous system for the
 // acts of the customer's-proposed-time conversation, and ONLY for them: every other PATCH
 // mirrors exactly what it always did (mirror comes back unchanged).
 //
@@ -375,20 +375,21 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 //     two things from a customer (classifyExternalPatch): their answer (isCustomerApproved /
 //     isCustomerReviewed, mirrored as before) and a proposed window (plannedStartOn /
 //     plannedEndOn), which PostgreSQL did NOT apply as the plan: it waits for WSO2 in
-//     customer_updated_on, and ServiceNow has no field for it. Everything else is refused (403)
+//     customer_updated_on, and the previous system has no field for it. Everything else is refused (403)
 //     before this runs. This does not depend on the committed read model: the detail read
 //     (GetChangeRequestByID -> fillCustomerProposal) runs after the commit, in a separate
 //     transaction, logs and swallows its errors (CustomerProposal then stays nil) and can see
 //     a conversation that has moved on (WSO2 answered in between), and a customer's proposed
-//     time must never reach ServiceNow as the plan because of either.
-//   - Accept proposed time (confirmCustomerUpdatedDate): ServiceNow has no field for the answer,
-//     but the change moved to Scheduled with a new planned window, so that is what is mirrored,
-//     read from what PostgreSQL committed. UNVERIFIED that ServiceNow accepts a manual Scheduled
-//     out of Customer Approval: if it refuses, PostgreSQL stays committed and the refused payload
-//     lands in sn_writeback_failures.
+//     time must never reach the previous system as the plan because of either.
+//   - Accept proposed time (confirmCustomerUpdatedDate): the previous system has no field for the
+//     answer, but the change moved to Scheduled with a new planned window, so that is what is
+//     mirrored, read from what PostgreSQL committed. UNVERIFIED that the previous system accepts a
+//     manual Scheduled out of Customer Approval: if it refuses, PostgreSQL stays committed and the
+//     refused payload lands in the write-back failure record.
 //   - A Re-schedule / counter-proposal / decline names {state: "authorize"} but the change STAYS in
-//     Customer Approval: forwarding the state would put ServiceNow in Authorize while PostgreSQL is
-//     not, so the state is dropped (the window, when there is one, is mirrored as always).
+//     Customer Approval: forwarding the state would put the previous system in Authorize while
+//     PostgreSQL is not, so the state is dropped (the window, when there is one, is mirrored as
+//     always).
 //   - Second guard, for any caller: a window equal to the proposal the committed row still shows as
 //     pending, that is not the committed plan, is the proposal and is not mirrored either. It can
 //     only ever ADD to what the caller rule keeps out (it needs the read model to be there).
@@ -406,16 +407,16 @@ func mirrorOfTheTimeConversation(req, mirror domain.PatchChangeRequestRequest, c
 		mirror.State = nil
 	}
 	if mirror.State == nil && mirror.PlannedStartOn != nil && committed.CustomerProposal != nil && committed.CustomerProposal.Answer == "pending" &&
-		sameServiceNowInstant(*mirror.PlannedStartOn, committed.CustomerProposal.StartOn) &&
-		(committed.PlannedStartOn == nil || !sameServiceNowInstant(*mirror.PlannedStartOn, *committed.PlannedStartOn)) {
+		sameMirroredInstant(*mirror.PlannedStartOn, committed.CustomerProposal.StartOn) &&
+		(committed.PlannedStartOn == nil || !sameMirroredInstant(*mirror.PlannedStartOn, *committed.PlannedStartOn)) {
 		mirror.PlannedStartOn, mirror.PlannedEndOn = nil, nil
 	}
 	return mirror
 }
 
-// sameServiceNowInstant compares two planned timestamps as the mirror writes them (ServiceNow's
-// layout, UTC, whole seconds).
-func sameServiceNowInstant(a, b string) bool {
+// sameMirroredInstant compares two planned timestamps as the mirror writes them (the previous
+// system's layout, UTC, whole seconds).
+func sameMirroredInstant(a, b string) bool {
 	return repository.PlannedTimestampForServiceNow(a) == repository.PlannedTimestampForServiceNow(b)
 }
 
@@ -511,15 +512,15 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	if err := validateChangeRequestCreateScope(req); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
-	// The planned window is validated BEFORE ServiceNow is called, exactly as the
+	// The planned window is validated BEFORE the previous system is called, exactly as the
 	// plain-Postgres create does it (repository.NormalizeCreatePlannedWindow): the
-	// raw text used to reach both ServiceNow and PostgreSQL's own date parser
+	// raw text used to reach both the previous system and PostgreSQL's own date parser
 	// ('tomorrow', 'infinity', a year in the thousands). PostgreSQL then gets the
-	// request as sent (CreateChangeRequestFromServiceNow normalises the window
-	// again, to an instant) and ServiceNow the window in the layout ITS service
-	// takes, as the PATCH mirror does it (repository.PlannedTimestampForServiceNow:
-	// RFC 3339 becomes "YYYY-MM-DD HH:MM:SS" in UTC, whole seconds). The ServiceNow
-	// service converts RFC 3339 itself too (snPlannedTimestamp), but it refuses a
+	// request as sent (its create normalises the window again, to an instant) and the
+	// previous system the window in the layout ITS service takes, as the PATCH mirror
+	// does it (the mirror's timestamp conversion: RFC 3339 becomes "YYYY-MM-DD HH:MM:SS"
+	// in UTC, whole seconds). The service in front
+	// of it converts RFC 3339 itself too (snPlannedTimestamp), but it refuses a
 	// zoneless value with a fractional second, which PostgreSQL accepts, so what
 	// PostgreSQL accepted is converted here and never reaches it as typed.
 	if _, err := repository.NormalizeCreatePlannedWindow(req); err != nil {

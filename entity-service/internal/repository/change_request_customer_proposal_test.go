@@ -117,7 +117,7 @@ func TestAcceptBlock(t *testing.T) {
 	if got := acceptBlock(empty, recorded, now); got != msgAcceptNoLength {
 		t.Errorf("no length: %q", got)
 	}
-	// customer_updated_on is a column ServiceNow writes too: a window the proposal would push past the
+	// customer_updated_on is a column the previous system writes too: a window the proposal would push past the
 	// range every planned window is held to is blocked, at the edge and beyond it, and not before.
 	edge := whole
 	edge.proposed, edge.start, edge.end = tm("2100-12-31T20:00:00Z"), tm("2030-03-01T09:00:00Z"), tm("2030-03-01T11:00:00Z")

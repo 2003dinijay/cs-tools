@@ -744,7 +744,7 @@ const snUTCDateTimeLayout = "2006-01-02T15:04:05Z"
 // one, and RFC 3339 with a zone designator ("2030-03-01T09:00:00Z",
 // "...+05:30"), which the PostgreSQL data source reads as an instant. An RFC 3339
 // value is therefore converted to the zoneless UTC layout here, the same
-// conversion the dual-write mirror makes (repository.ServiceNowPlannedTimestamp,
+// conversion the dual-write mirror makes (repository.StrictMirrorPlannedTimestamp,
 // which reads an instant as PlannedTimestampForServiceNow does); a value already
 // in the zoneless layout is forwarded as it was sent (one spelled a little
 // differently, "2030-03-01 9:00:00", is written back in the layout). Anything
@@ -755,7 +755,7 @@ const snUTCDateTimeLayout = "2006-01-02T15:04:05Z"
 // which Go's parser takes but ServiceNow's layout has none (an RFC 3339 value
 // with one is an instant and is converted to whole seconds).
 func snPlannedTimestamp(field, value string) (string, error) {
-	converted, err := repository.ServiceNowPlannedTimestamp(value)
+	converted, err := repository.StrictMirrorPlannedTimestamp(value)
 	switch {
 	case err == nil:
 		return converted, nil

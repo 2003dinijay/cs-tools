@@ -1689,7 +1689,7 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	if req.CustomerApprovalRequired != nil {
 		addCR("customer_approval_required = $%d", *req.CustomerApprovalRequired)
 	}
-	// WSO2's answer to a time the customer proposed: ServiceNow's Disagree, written
+	// WSO2's answer to a time the customer proposed: the previous system's Disagree, written
 	// with the window WSO2 proposes instead (or the plan it keeps). A literal, not a
 	// bound value, so it reads the same on every shape of the enum column. Never the
 	// sync-owned requirement flags: a Re-schedule writes no flag at all (the change

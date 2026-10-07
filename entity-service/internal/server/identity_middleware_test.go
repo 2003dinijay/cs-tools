@@ -52,11 +52,11 @@ func runIdentityMiddleware(t *testing.T, access service.AccessService) (scope re
 	return scope, attached, called
 }
 
-// The ServiceNow data source's customer view (a customer never gets New, Assess or
+// The customer view of the data source that talks to the previous system directly (a customer never gets New, Assess or
 // Authorize change requests) is decided from the scope this middleware attaches, and the
 // router tests of that rule run without a database, where a customer's scope can never
 // be resolved at all (a customer is then the caller with nothing attached). The case
-// where a customer's scope IS resolved (a ServiceNow deployment that also has a
+// where a customer's scope IS resolved (a deployment of that data source that also has a
 // database to look the user up in) is this one: the middleware must hand the scope on
 // exactly as resolved, restricted stays restricted.
 func TestCallerIdentityMiddleware_AResolvedCustomerScopeStaysRestricted(t *testing.T) {
@@ -71,7 +71,7 @@ func TestCallerIdentityMiddleware_AResolvedCustomerScopeStaysRestricted(t *testi
 		t.Fatal("a resolved scope was not attached to the context")
 	}
 	if got.Unrestricted {
-		t.Error("a customer's scope came out unrestricted: every customer would get the staff view of change requests on the ServiceNow data source")
+		t.Error("a customer's scope came out unrestricted: every customer would get the staff view of change requests on the data source that talks to the previous system directly")
 	}
 	if got.ViewerEmail != want.ViewerEmail || !slices.Equal(got.ProjectIDs, want.ProjectIDs) {
 		t.Errorf("scope = %+v, want %+v", got, want)

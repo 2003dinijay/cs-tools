@@ -27,7 +27,7 @@ import (
 // The detail read's view of a customer's proposed time (fillCustomerProposal) is best effort: a
 // failure of the facts query is logged and the field stays unset, the read does not fail. That is
 // why nothing the service does with the PATCH receipt may DEPEND on customerProposal being there
-// (changeRequestService.PatchChangeRequest decides what to mirror to ServiceNow from the caller,
+// (changeRequestService.PatchChangeRequest decides what to mirror to the previous system from the caller,
 // and its tests feed it exactly this unset field). This pins the premise: the failure is real, it
 // is swallowed, and the change request comes back without a proposal although the row has one.
 func TestFillCustomerProposal_AFailedReadLeavesTheFieldUnset(t *testing.T) {

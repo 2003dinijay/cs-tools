@@ -86,7 +86,7 @@ const externalPatchRefusal = "customers can only record the customer's approval 
 // identity.
 //
 // Exported because the service layer asks the SAME question: the best-effort
-// ServiceNow mirror of a PATCH is decided from who sent it (an external caller's
+// mirror of a PATCH to the previous system is decided from who sent it (an external caller's
 // window is a proposal and is never mirrored) and not from a read of the committed
 // row, which runs after the commit, in another transaction, and may fail
 // (changeRequestService.PatchChangeRequest, mirrorOfTheTimeConversation).

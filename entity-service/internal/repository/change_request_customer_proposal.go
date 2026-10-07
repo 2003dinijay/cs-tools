@@ -31,13 +31,13 @@ import (
 )
 
 // This file owns the conversation about a time a CUSTOMER proposes for a change
-// that is waiting in Customer Approval, and WSO2's answer to it: ServiceNow's own
-// mechanism, which the synced schema already carries.
+// that is waiting in Customer Approval, and WSO2's answer to it: the previous system's
+// own mechanism, which the synced schema already carries.
 //
 //	change_request.customer_updated_on                    the customer's proposed plan START
-//	                                                      (migration 0043, u_customer_updated)
+//	                                                      (migration 0043)
 //	change_request.customer_updated_date_confirmation     WSO2's answer, AGREE | DISAGREE
-//	                                                      (u_confirm_customer_updated_date)
+//	                                                      (the confirmation of the proposed date)
 //
 // together with two triggers that already exist on change_request:
 // change_request_reset_confirmation (0052: a moved proposal clears the standing
@@ -100,8 +100,8 @@ const (
 // approval that is NOT the customer's still being asked": an EXISTS over the change's
 // approver rows that are still REQUESTED, on a stage that is not a customer stage. A
 // customer stage is one this service wrote (label "Customer Approval") or one whose
-// group is the change's customer group (customer_group_id, ServiceNow's own record of
-// who the customer is: the stages ServiceNow asked of the customer carry no label).
+// group is the change's customer group (customer_group_id, the previous system's own record
+// of who the customer is: the stages it asked of the customer carry no label).
 // Every other REQUESTED row blocks -- a Peer / CAB / ECAB / Review stage, and equally a
 // stage in a group this service has no name for, because the allowlist cannot prove it
 // is the customer's. COALESCE keeps the three-valued logic honest: a NULL label or a NULL
@@ -317,7 +317,7 @@ func msgAcceptTimePassed(proposed time.Time) string {
 
 // msgAcceptTooFarAhead is the refusal of an Accept that would write a window beyond the range
 // every planned window is held to (plannedYearMax). A customer's own proposal never gets there
-// (proposeCustomerTime refuses it), but customer_updated_on is a column ServiceNow writes too.
+// (proposeCustomerTime refuses it), but customer_updated_on is a column the previous system writes too.
 func msgAcceptTooFarAhead(proposed time.Time, end time.Time) string {
 	return fmt.Sprintf(`the time the customer proposed (%s) is too far ahead to be accepted: the window would end after the year %d (%s), so use "Propose a different time" to ask the customer to approve another time`,
 		fmtInstant(proposed), plannedYearMax, fmtInstant(end))
@@ -544,7 +544,7 @@ func (r *changeRequestRepo) fillCustomerProposal(ctx context.Context, cr *domain
 // different time").
 //
 // A proposal is a start: the planned LENGTH is kept (customer_updated_on holds one
-// instant, ServiceNow's own model). The customer's dialog sends the start plus a
+// instant, the previous system's own model). The customer's dialog sends the start plus a
 // derived end for the servers that still take a whole window; an end that is sent
 // must be exactly the derived one.
 //
@@ -950,7 +950,7 @@ func planStaffTimeResponse(ctx context.Context, tx pgx.Tx, id string, req domain
 		return timeResponse{}, err
 	}
 	if req.PlannedStartOn == nil && req.PlannedEndOn == nil {
-		// Declined, the plan unchanged: ServiceNow's Disagree. The customers keep their
+		// Declined, the plan unchanged: the previous system's Disagree. The customers keep their
 		// live request and nobody has to be found to ask.
 		return timeResponse{disagree: true}, nil
 	}

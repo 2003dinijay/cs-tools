@@ -13749,8 +13749,8 @@ components:
           enum: [agree]
           description: >-
             ACCEPT PROPOSED TIME: WSO2's acceptance of the time the customer proposed
-            (the previous system's u_confirm_customer_updated_date). "agree" is the only value
-            (to decline, propose a different time). Sent alone, with only
+            (the confirmation of the proposed date, customer_updated_date_confirmation). "agree"
+            is the only value (to decline, propose a different time). Sent alone, with only
             expectedCustomerUpdatedOn, expectedPlannedStartOn and expectedPlannedEndOn,
             all three required: the proposed start becomes the planned start (the planned
             length is kept) and the change request moves from customer_approval to

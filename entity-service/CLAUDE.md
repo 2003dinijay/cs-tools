@@ -3937,11 +3937,11 @@ path).
   expected window). A refusal returns before the dispatch: **nothing is mirrored and no writeback
   failure is recorded** (`TestChangeRequestService_PatchChangeRequest_RefusalIsNeverMirrored`).
   `projectId` is forwarded as before; it can only arrive as a resend after New. The mirror now
-  also gets `plannedStartOn` / `plannedEndOn` in ServiceNow's `YYYY-MM-DD HH:MM:SS` (UTC) layout
+  also gets `plannedStartOn` / `plannedEndOn` in the previous system's `YYYY-MM-DD HH:MM:SS` (UTC) layout
   (`repository.PlannedTimestampForServiceNow`): PostgreSQL accepts RFC 3339 too, which
-  ServiceNow's service refused, so an RFC 3339 PATCH used to commit and then fail every mirror write.
-  **The ServiceNow service takes RFC 3339 itself now** (`snPlannedTimestamp`, which calls
-  `repository.ServiceNowPlannedTimestamp`, the strict sibling of that function for a value nobody has
+  the service in front of that system refused, so an RFC 3339 PATCH used to commit and then fail every mirror write.
+  **That service takes RFC 3339 itself now** (`snPlannedTimestamp`, which calls
+  `repository.StrictMirrorPlannedTimestamp`, the strict sibling of that function for a value nobody has
   judged): on a PATCH (`plannedStartOn` / `plannedEndOn`) and on a create (`plannedStartDate` /
   `plannedEndDate`, and the `durationInput` cross-check) a value with a zone designator is converted to
   the zoneless UTC layout before it is forwarded (whole seconds), a `YYYY-MM-DD HH:MM:SS` value is
@@ -3952,13 +3952,13 @@ path).
   with a fractional second (`... (whole seconds only, no fractional second)`: Go's parser takes one
   although the layout has none, so `1999-01-01 00:00:00.5` used to travel as typed and fail downstream
   with an opaque pattern error; an RFC 3339 value with a fraction is an instant and is still converted
-  to whole seconds). The mirror's `PlannedTimestampForServiceNow` is unchanged (it hands back what it
-  cannot read, right for a window PostgreSQL already judged). The ServiceNow-first create hands
-  ServiceNow the window converted the same way the PATCH mirror does (what PostgreSQL accepted,
-  including a zoneless fraction, reaches ServiceNow as whole seconds, never refused there) and
-  PostgreSQL the request as sent. So the pure ServiceNow data source and the ServiceNow-first create
-  accept both layouts, as the PostgreSQL data source does
-  (`TestSNPlannedTimestamp`, `TestServiceNowPlannedTimestamp`,
+  to whole seconds). The mirror's own conversion is unchanged (it hands back what it
+  cannot read, right for a window PostgreSQL already judged). The create that writes the previous
+  system first hands it the window converted the same way the PATCH mirror does (what PostgreSQL
+  accepted, including a zoneless fraction, reaches it as whole seconds, never refused there) and
+  PostgreSQL the request as sent. So the data source that talks to the previous system directly and that
+  first-writing create accept both layouts, as the PostgreSQL data source does
+  (`TestSNPlannedTimestamp`, `TestStrictMirrorPlannedTimestamp`,
   `TestSNChangeRequestService_PatchChangeRequest_PlannedWindowLayouts`,
   `TestSNChangeRequestService_CreateChangeRequest_PlannedWindowLayouts`,
   `TestChangeRequestService_CreateChangeRequest_SNFirstValidatesTheWindowBeforeServiceNow`). The expected window of a
@@ -4314,11 +4314,11 @@ could be resolved (no identity, an unknown client, the customer portal's client 
 database to look the user up in), gets the customer view: fail closed**; the customer
 portal's own client is never unrestricted, even if it is also listed as machine-to-machine
 (`ResolveScope` checks it first). This is the line the Postgres rule draws (`crViewer`), so
-a ServiceNow deployment shows its staff New / Assess / Authorize exactly when they resolve
+a deployment of the data source that talks to the previous system directly shows its staff New / Assess / Authorize exactly when they resolve
 as unrestricted for every other scoped endpoint; `TestServiceNowRouter_*` drive the real
 router and fail if that stops being true. They run without a database, where a customer's
 scope is never resolved at all, so the case of a customer whose scope *is* resolved (a
-ServiceNow deployment that also has a database to look the user up in) is pinned
+deployment of that data source that also has a database to look the user up in) is pinned
 separately: `TestCallerIdentityMiddleware_*` (`identity_middleware_test.go`) fail if the
 middleware hands such a scope on as anything but restricted.
 
@@ -4441,28 +4441,28 @@ the case endpoints), `TestChangeRequestVisibilityLint_*`, `TestCRVisibility*`,
 `TestConfig_CRStrictVisibilityFrom`, `TestCRVisibilityFromConfig`,
 `TestProjectChangeRequestStats_AuthorizeIsOutstandingForCustomersOnly`.
 
-### A customer's proposed time (ServiceNow's own mechanism)
+### A customer's proposed time (a mechanism the previous system already had)
 
-ServiceNow already models the conversation and the synced schema carries it -- no column, table,
+The previous system already models the conversation and the synced schema carries it -- no column, table,
 type, state or migration is added by this feature:
 
-* `change_request.customer_updated_on` (migration 0043, `u_customer_updated`) = the customer's
+* `change_request.customer_updated_on` (migration 0043) = the customer's
   proposed plan **START**;
-* `change_request.customer_updated_date_confirmation` (`change_request_confirmation_enum`,
-  `u_confirm_customer_updated_date`) = **WSO2's answer**, `AGREE` | `DISAGREE`;
+* `change_request.customer_updated_date_confirmation` (`change_request_confirmation_enum`)
+  = **WSO2's answer** (the confirmation of the proposed date), `AGREE` | `DISAGREE`;
 * the existing triggers `change_request_reset_confirmation` (0052: a moved proposal clears the
   standing answer) and `change_request_plan_date_comment` (0053: a proposal made while the change is in
   Customer Approval writes ONE customer-visible COMMENT on the change's parent record, and, when the
-  parent has a linked GitHub issue, its queue row -- ServiceNow's own flow, accepted by the user knowingly;
+  parent has a linked GitHub issue, its queue row -- the previous system's own flow, accepted by the user knowingly;
   the proposal runs its write as the system once the customer's access is proven, so the comment passes
   row-level security whatever project the parent is in, `..._TriggerCommentUnderRLS`).
 
 **Open questions, not settled by code** (the safe defaults are what is built; none of them needs a schema
-change either way): (1) whether `customer_updated_on` on rows ServiceNow wrote is a proposed START and whether
-ServiceNow's own Agree moves `start_on` to it (the user is checking this against the migrated data; the code
+change either way): (1) whether `customer_updated_on` on rows the previous system wrote is a proposed START and whether
+its own Agree moves `start_on` to it (the user is checking this against the migrated data; the code
 treats it as a start, and the predicate cannot read a finished conversation as a waiting one whichever way the
 answer goes, because a waiting proposal needs the change to be in Customer Approval with no answer); (2) whether
-ServiceNow's change request API accepts a manual Scheduled out of Customer Approval and has any field for the two
+the previous system's change request API accepts a manual Scheduled out of Customer Approval and has any field for the two
 columns (Accept's mirror is best effort, a proposal is not mirrored: see "What is mirrored" below).
 
 Code: `change_request_customer_proposal.go`. The user's rule: *WSO2 accepts the customer's rescheduled
@@ -4474,12 +4474,13 @@ lock by every act and by the detail read (one definition: they cannot drift): th
 `CUSTOMER_APPROVAL`; `customer_updated_on` is set, finite and **differs from the planned start**; the
 confirmation is NULL; and **no approval but the customer's own is still being asked** -- the only
 `REQUESTED` approver rows are on a customer stage (label "Customer Approval", or the stage's group is the
-change's `customer_group_id`, ServiceNow's own record of who the customer is); ANY other `REQUESTED` row (Peer,
+change's `customer_group_id`, the previous system's own record of who the customer is); ANY other `REQUESTED` row (Peer,
 CAB, ECAB, Review, a stage in a group this service has no name for) blocks it. The whole predicate is
 `COALESCE`d, so a NULL state reads false. It never matches a change waiting on a live CAB stage (it is in
 Authorize), a closed / scheduled / cancelled one, a date equal to the plan, an answered one, a NULL state. It
-does not say WHO wrote the date (ServiceNow lets WSO2 users write `customer_updated_on` too, and an old one looks
-the same): the read model says so (below). `TestChangeRequestProposalIntegration_PredicateMatrix` pins native and
+does not say WHO wrote the date (the previous system lets WSO2 users write `customer_updated_on` too, and an old one looks
+the same): every act that answers a waiting time asks who proposed it (**Who proposed it**, below), and the read model
+says so. `TestChangeRequestProposalIntegration_PredicateMatrix` pins native and
 migrated-shaped rows, history, a WSO2-written date, a stale date, every kind of blocking approval, a NULL state and
 an infinite date.
 
@@ -4524,7 +4525,7 @@ The stored time stays as it was: the Re-schedule changes the planned window only
   has no length, so the customer's proposed start cannot be applied to it: use "Propose a different time"`; 409 `the time
   the customer proposed (<RFC 3339>) is too far ahead to be accepted: the window would end after the year 2100 (<end>),
   so use "Propose a different time" to ask the customer to approve another time` (`customer_updated_on` is a column
-  ServiceNow writes too; a customer's own proposal never gets there, `proposeCustomerTime` refuses it, but Accept
+  the previous system writes too; a customer's own proposal never gets there, `proposeCustomerTime` refuses it, but Accept
   writes the window it gives, which is held to the range every planned window is:
   `TestChangeRequestProposalIntegration_AnAcceptStaysInsideTheRangeOfEveryWindow`).
 * Propose a different time / Re-schedule: the existing refusals plus 400 `customer approval is required but nobody on this
@@ -4605,28 +4606,28 @@ the two columns, so **proposals and WSO2's answers are PostgreSQL-only until the
 rewrite `customer_updated_on`, the confirmation, `state`, `start_on` and `end_on` on its next pass** (true of every
 PostgreSQL-only write in the dual run). The mirror is decided for these acts only (`mirrorOfTheTimeConversation`):
 **a PATCH from an external (customer) caller never mirrors its window** (`repository.IsExternalCaller(ctx)`, the very test
-the repository used to decide what the request was: a customer's window is a proposal, the plan did not move, ServiceNow has
+the repository used to decide what the request was: a customer's window is a proposal, the plan did not move, the previous system has
 no field for it). It is decided from WHO SENT the request, not from the read model the PATCH receipt carries: that read
 (`GetChangeRequestByID` -> `fillCustomerProposal`) runs after the commit in another transaction, logs and swallows its errors
 (`customerProposal` then stays unset) and can see a conversation WSO2 has already answered, so a mirror that depended on it
-could send a customer's proposed time to ServiceNow as the plan (a second guard on the read model remains, for any caller,
+could send a customer's proposed time to the previous system as the plan (a second guard on the read model remains, for any caller,
 and can only add to this). Accept mirrors `{state: scheduled, plannedStartOn, plannedEndOn}` from the committed result
-(UNVERIFIED that ServiceNow accepts a manual Scheduled out of Customer Approval: a refusal lands in `sn_writeback_failures`,
-PostgreSQL stays committed); a Re-schedule / counter mirrors the window and not the state (ServiceNow stays in Customer
+(UNVERIFIED that the previous system accepts a manual Scheduled out of Customer Approval: a refusal lands in the mirror's write-back failure record,
+PostgreSQL stays committed); a Re-schedule / counter mirrors the window and not the state (the previous system stays in Customer
 Approval like PostgreSQL). Every other PATCH, from any staff identity, an internal client credential or no identity, mirrors
 byte for byte as before (`TestChangeRequestService_PatchChangeRequest_EveryOtherPatchMirrorsAsBefore`, run under each
 identity; `..._ACustomersWindowIsNeverMirrored` feeds the receipt of a failed read, of an answer WSO2 gave in between and of a
-colleague's later proposal; `TestFillCustomerProposal_AFailedReadLeavesTheFieldUnset` pins that the failed read is real). The pure
-ServiceNow data source refuses `confirmCustomerUpdatedDate` / `expectedCustomerUpdatedOn` up front ("answer the customer's
-proposed date in ServiceNow") and forwards proposals and Re-schedules as ever. Notices (`CR_NOTICES_ENABLED`, off by
+colleague's later proposal; `TestFillCustomerProposal_AFailedReadLeavesTheFieldUnset` pins that the failed read is real). The data source that talks to
+the previous system directly refuses `confirmCustomerUpdatedDate` / `expectedCustomerUpdatedOn` up front (it says the customer's
+proposed date is answered in that system) and forwards proposals and Re-schedules as ever. Notices (`CR_NOTICES_ENABLED`, off by
 default): the existing `planDateNotice` turns apply unchanged and no notice kind or table was added -- a proposal tells
 the "Devops Approval" team (a team nobody belongs to in this database has no recipient: the banner and the Awaiting chip are
 the signal), Accept tells the designated customers "accepted the plan start date"; **a different time and a Decline are the
-same turn**: both write `customer_updated_date_confirmation = DISAGREE`, which is ServiceNow's own Disagree, so both send the
+same turn**: both write `customer_updated_date_confirmation = DISAGREE`, which is the previous system's own Disagree, so both send the
 designated customers the one Disagree notice ("Reject the proposed plan start date" / "WSO2 Team request to change the plan
 start date"). That mail carries no time of the conversation at all: the new window of a different time is NOT in it (the
 customer reads it on the change request) and a Decline's mail does not say that the plan stands (it reads as the
-original's "request to change", exactly as ServiceNow's does); the customer finds out which on the change request, where
+original's "request to change", exactly as the previous system's does); the customer finds out which on the change request, where
 `customerProposal.answer` is `disagreed` and the planned window shows what it is. A plain Re-schedule (no proposal waiting,
 so no answer written) sends none. Pinned by `TestPlanDate_ADeclineSendsTheSameNoticeAsADifferentTime` (the two row changes
 send byte-identical notices, none carrying a date) and, on real outbox rows, by
@@ -4636,9 +4637,9 @@ send byte-identical notices, none carrying a date) and, on real outbox rows, by
 counts EVERY table around each act -- a proposal adds the `event_outbox` row of any change_request update, the 0053 comment under
 a parent (and its GitHub queue row when linked); Accept the outbox row (+ the queue row when linked); a different time / a
 Re-schedule the outbox row and the one customer stage with one row per contact; a decline the outbox row; a refused act nothing.
-On a migrated change in Customer Approval whose customer stage ServiceNow wrote (unlabeled, the customer group), the customer's
+On a migrated change in Customer Approval whose customer stage the previous system wrote (unlabeled, the customer group), the customer's
 first act still gives it the one labelled stage plus one `REQUESTED` row per registered contact (the existing behaviour of
-every customer act on such a row, `change_request_synced_stages_integration_test.go`); Accept then leaves ServiceNow's
+every customer act on such a row, `change_request_synced_stages_integration_test.go`); Accept then leaves the previous system's
 `REQUESTED` rows alone (an unlabeled stage is of unknown kind and never cancelled by a guess).
 
 **After Accept the flag stays false, and every reader says so.** A change scheduled by Accept carries
@@ -4648,10 +4649,10 @@ would have shown a misleading plain "No", so each reads "Proposed time accepted"
 false: the CSM webapp (Overview cell, PDF row), the CSM microapp (Approval card), the customer webapp (stepper, window
 card) and the customer microapp (`ChangeDetailPage`, `ProgressTimeline`). NOT changed, on purpose: the legacy Ballerina
 customer-portal backend's mapping (`apps/customer-portal/backend/utils.bal`, `hasCustomerApproved:
-response.hasCustomerApproved`), which passes the flag through as ServiceNow keeps it and has no `customerProposal` to
+response.hasCustomerApproved`), which passes the flag through as the previous system keeps it and has no `customerProposal` to
 read; backend-v2 is the backend this work targets.
 
-**Decisions** (the user's, recorded): the mechanism is ServiceNow's own (not Authorize); the 0053 comment per customer
+**Decisions** (the user's, recorded): the mechanism is the previous system's own (not Authorize); the 0053 comment per customer
 proposal is accepted; a proposal is a START with the planned length kept; Decline is offered; a plain Re-schedule sends no
 notice and keeps the wire name `authorize`; a Re-schedule or a counter-proposal is refused when nobody can be asked; the dead CAB-
 after-Re-schedule code is deleted but the cascade stays for old-flow proposals in flight; a state-less edit of the planned window

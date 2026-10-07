@@ -32,7 +32,7 @@ import (
 // is why it had to write the column. It no longer goes through CAB at all (the change
 // itself has not changed, only its time): it replaces the customers' request with a fresh
 // one in Customer Approval, writes NO requirement flag -- not our own column, never the
-// sync-owned is_customer_approval_required (ServiceNow's record of the customer's answer)
+// sync-owned is_customer_approval_required (the previous system's record of the customer's answer)
 // -- and is refused when nobody can be asked, as Request Approval is.
 //
 // Same harness as TestChangeRequestFlowIntegration_* (crFlow, DSN-gated by

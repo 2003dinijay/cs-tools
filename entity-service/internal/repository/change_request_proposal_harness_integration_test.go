@@ -30,7 +30,7 @@ import (
 
 // The harness of the customer's-proposed-time tests: a customer proposes a start
 // (customer_updated_on), WSO2 answers it (customer_updated_date_confirmation) --
-// ServiceNow's own conversation, which the synced schema carries. Same crFlow
+// the previous system's own conversation, which the synced schema carries. Same crFlow
 // harness as every TestChangeRequest*Integration_* test (DSN-gated by
 // CHANGE_REQUEST_TEST_DSN, run as a superuser and as the non-superuser csm_app).
 // The planned window of every fixture is rsStart1 .. rsEnd1, two hours long, so a
@@ -125,7 +125,7 @@ func (f *crFlow) wantConversation(id, when, wantOn, wantConfirmation string) {
 }
 
 // syncWritesConversation writes the pair directly, as csm-sync-service does for a
-// proposal made (or answered) in ServiceNow: a date and an answer ("" = none).
+// proposal made (or answered) in the previous system: a date and an answer ("" = none).
 func (f *crFlow) syncWritesConversation(id string, on *string, confirmation string) {
 	f.t.Helper()
 	f.execSQL(`UPDATE change_request SET customer_updated_on = $2::text::timestamptz,
@@ -371,7 +371,7 @@ func (f *crFlow) seedMigratedStage(id string, groupID *string, ageMinutes int, r
 }
 
 // migratedInCustomerApproval is a change in Customer Approval the way the sync leaves
-// one: planned rsStart1 .. rsEnd1, ServiceNow's customer group on it
+// one: planned rsStart1 .. rsEnd1, the previous system's customer group on it
 // (customer_group_id), our own boxes false, an UNLABELED stage in that group asking Alice
 // and Bob, a creator that is staff. It carries no proposal.
 func (f *crFlow) migratedInCustomerApproval() string {
@@ -410,8 +410,8 @@ func (f *crFlow) wantRefusedSame(what, id, before string, err error) {
 }
 
 // giveParent hangs the change request under a parent record of project A (the service request
-// a change is raised under in ServiceNow), optionally linked to a GitHub issue of an active
-// repository of the account -- the two things the existing ServiceNow-parity triggers write
+// a change is raised under in the previous system), optionally linked to a GitHub issue of an active
+// repository of the account -- the two things the existing parity triggers write
 // beside the change itself (the plan-start-date comment on the parent, the GitHub outbound
 // queue). It returns the parent's id; everything it inserts is removed with the test.
 func (f *crFlow) giveParent(id string, project string, linked bool) string {

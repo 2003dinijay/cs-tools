@@ -28,7 +28,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
-// A customer's proposed time and WSO2's answer to it: ServiceNow's own mechanism,
+// A customer's proposed time and WSO2's answer to it: the previous system's own mechanism,
 // customer_updated_on (the proposed START) and customer_updated_date_confirmation (WSO2's
 // answer). See change_request_customer_proposal.go. The harness (planLength, proposeAs,
 // acceptReq, counterReq, snap, rowCounts, migratedInCustomerApproval, ...) is in
@@ -87,7 +87,7 @@ func TestChangeRequestProposalIntegration_PredicateMatrix(t *testing.T) {
 	}
 	cab, sre, review := crCABGroupID, crFlowSREGroupID, "Review"
 	rows := []row{
-		{name: "M1 a migrated change in Customer Approval, the sync wrote the proposal, ServiceNow's own customer stage (unlabeled, the customer group) asks Alice and Bob",
+		{name: "M1 a migrated change in Customer Approval, the sync wrote the proposal, the previous system's own customer stage (unlabeled, the customer group) asks Alice and Bob",
 			setup: func(f *crFlow) string {
 				id := f.migratedInCustomerApproval()
 				f.syncWritesConversation(id, sp(future), "")
@@ -589,7 +589,7 @@ func TestChangeRequestProposalIntegration_OnHoldAndPast(t *testing.T) {
 	})
 }
 
-// customer_updated_on is a column ServiceNow writes as well, and nothing there keeps it inside the
+// customer_updated_on is a column the previous system writes as well, and nothing there keeps it inside the
 // range every planned window is held to. Accept writes the proposal as the planned start and
 // start + the planned length as the end, so a date that would put the end past the range is not one
 // WSO2 can accept (409, the read model says so in the same words); the last window inside the range
@@ -767,7 +767,7 @@ func TestChangeRequestProposalIntegration_CounterHappyAndEveryRefusal(t *testing
 	f.wantConversation(id, "after the Re-schedule", rsStart2, "DISAGREE")
 }
 
-// Decline: ServiceNow's Disagree with the plan left as it is. WSO2 need not invent a time just to
+// Decline: the previous system's Disagree with the plan left as it is. WSO2 need not invent a time just to
 // say no: only the answer is written, the customers keep their live request, and nobody has to
 // be found to ask. Re-stating the planned window is the same decline ("keep our time").
 func TestChangeRequestProposalIntegration_DeclineKeepsTheWindow(t *testing.T) {
@@ -846,7 +846,7 @@ func TestChangeRequestProposalIntegration_CounterNeedsSomebodyToAsk(t *testing.T
 // The feature adds NOTHING to the database but what each act has to write: no comment, activity
 // or marker row of its own, no column, table or type. Every act is counted over EVERY table
 // before and after, and the delta must be exactly what the contract says -- the rows that
-// ServiceNow's own mechanism already produces (the event outbox row of any change_request update;
+// the previous system's own mechanism already produces (the event outbox row of any change_request update;
 // the plan-start-date comment on the parent record and the GitHub queue row it enqueues) and the
 // one customer stage a re-ask provisions, as a Re-schedule always did.
 func TestChangeRequestProposalIntegration_NoExtraRows(t *testing.T) {
@@ -936,11 +936,11 @@ func TestChangeRequestProposalIntegration_NoExtraRows(t *testing.T) {
 			}
 		}, map[string]int{})
 
-	// A change ServiceNow already asked (migrated shape: an unlabeled customer-group stage with
+	// A change the previous system already asked (migrated shape: an unlabeled customer-group stage with
 	// REQUESTED rows): the customer's first act gives it the labelled stage it lacks, one row per
 	// contact -- the existing behaviour of every customer act on such a row, pinned
 	// (change_request_synced_stages_integration_test.go) -- and writes the proposal. That is the
-	// whole delta. WSO2's Accept then adds nothing and leaves ServiceNow's rows alone.
+	// whole delta. WSO2's Accept then adds nothing and leaves the previous system's rows alone.
 	t.Run("a migrated change: the customer's proposal, then Accept", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		id := f.migratedInCustomerApproval()
@@ -955,7 +955,7 @@ func TestChangeRequestProposalIntegration_NoExtraRows(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// The ServiceNow-parity trigger runs as the customer's own transaction
+// The parity trigger runs as the customer's own transaction
 // ---------------------------------------------------------------------------
 
 // Trigger 0053 writes the plan-start-date comment on the parent record in the customer's own
@@ -1212,11 +1212,11 @@ func TestChangeRequestProposalIntegration_CustomerRefusals(t *testing.T) {
 }
 
 // A migrated change in Customer Approval: WSO2 answers a proposal the sync wrote (or a customer
-// made) exactly as it answers any other. Accept leaves ServiceNow's own REQUESTED rows alone
+// made) exactly as it answers any other. Accept leaves the previous system's own REQUESTED rows alone
 // (an unlabeled stage is of unknown kind and never cancelled by a guess), writes no stage, and
 // the proposal that a customer's first act made waits like any other.
 func TestChangeRequestProposalIntegration_AMigratedChangeIsAnsweredLikeAnyOther(t *testing.T) {
-	t.Run("Accept leaves ServiceNow's rows alone", func(t *testing.T) {
+	t.Run("a date the sync wrote is not a customer's proposal: Accept is refused, nothing is written", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		id := f.migratedInCustomerApproval()
 		future := time.Now().UTC().AddDate(1, 0, 0).Truncate(time.Second).Format(time.RFC3339)
@@ -1246,7 +1246,7 @@ func TestChangeRequestProposalIntegration_AMigratedChangeIsAnsweredLikeAnyOther(
 		if len(after) != len(stages) {
 			t.Fatalf("Accept wrote a stage: %d -> %d", len(stages), len(after))
 		}
-		assertApprovers(t, "ServiceNow's rows after Accept", after[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+		assertApprovers(t, "the previous system's rows after Accept", after[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 		if a, _ := f.customerOutcome(id); a {
 			t.Fatal("Accept recorded the customer's approval")
 		}
@@ -1260,9 +1260,9 @@ func TestChangeRequestProposalIntegration_AMigratedChangeIsAnsweredLikeAnyOther(
 		id := f.migratedInCustomerApproval()
 		f.mustPropose(id, crScopeUserA1, rsStart2)
 		f.wantAnswer(id, "after the customer's proposal", "pending")
-		// The labelled stage the first customer act gave it, next to ServiceNow's.
+		// The labelled stage the first customer act gave it, next to the previous system's.
 		if got := f.stageLabels(id); got != ",Customer Approval" {
-			t.Fatalf("stages after the customer's proposal = %q, want ServiceNow's unlabeled one and the labelled stage", got)
+			t.Fatalf("stages after the customer's proposal = %q, want the previous system's unlabeled one and the labelled stage", got)
 		}
 		if err := f.counter(id, sp(rsStart3), sp(rsEnd3)); err != nil {
 			t.Fatalf("a different time on a migrated change: %v", err)
@@ -1273,7 +1273,7 @@ func TestChangeRequestProposalIntegration_AMigratedChangeIsAnsweredLikeAnyOther(
 			t.Fatalf("stages after the different time = %q", got)
 		}
 		stages := f.stages(id)
-		assertApprovers(t, "ServiceNow's rows are not ours to cancel", stages[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+		assertApprovers(t, "the previous system's rows are not ours to cancel", stages[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 		assertApprovers(t, "the superseded labelled request", stages[1].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
 		assertApprovers(t, "the customers asked again", stages[2].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	})
@@ -1470,7 +1470,7 @@ func TestChangeRequestProposalIntegration_RacesHaveOneWinner(t *testing.T) {
 // change_request row change: a moved customer_updated_on while the snapshot is in CUSTOMER_APPROVAL
 // (the customer proposed -- read FIRST, because the 0052 trigger clears the answer in the same write),
 // else a confirmation that changed to AGREE (WSO2 accepted) or DISAGREE (WSO2 answered with another
-// time OR declined: both write DISAGREE, so both are the one notice ServiceNow's Disagree sends --
+// time OR declined: both write DISAGREE, so both are the one notice the previous system's Disagree sends --
 // service.TestPlanDate_ADeclineSendsTheSameNoticeAsADifferentTime). The real outbox rows of a real
 // proposal, different time, decline and Accept carry exactly that, so the existing notices turn
 // without a new notice kind.

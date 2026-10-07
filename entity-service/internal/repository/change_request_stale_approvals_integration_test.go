@@ -540,10 +540,10 @@ func TestChangeRequestFlowIntegration_StaleApprovals_OldFlowRescheduleStillFinis
 	f.wantCanAnswer(id, "asked again", true, crScopeUserA1, crScopeUserA2)
 	// ...and the stale date, now that the change is back in Customer Approval, is a date that differs
 	// from the plan with no answer: it WAITS, but nobody is named as its proposer (the last writer is
-	// the CAB approver, not a contact of the project), and no customer is told it is theirs. It is
-	// WSO2's to answer -- Accept applies it, or a different time asks the customers afresh -- exactly as
-	// a date a WSO2 user wrote in ServiceNow is. (C3: a stale date on re-entry never reads as "the
-	// customer proposed".)
+	// the CAB approver, not a contact of the project), so it is no customer's proposal. Accept is
+	// refused for it (no staff action stands in for a consent nobody gave), a customer is not told
+	// it is theirs or that WSO2 is deciding on it, and a Re-schedule is a plain one. (C3: a stale
+	// date on re-entry never reads as "the customer proposed".)
 	f.wantAnswer(id, "back in Customer Approval with the stale date", "pending")
 	p := f.proposalOf(id)
 	if p == nil || p.ProposerRecorded == nil || *p.ProposerRecorded {

@@ -71,11 +71,11 @@ func TestNormalizePlannedTimestamp_RefusesWhatPostgresWouldHaveAccepted(t *testi
 	}
 }
 
-// The mirror's conversion (PlannedTimestampForServiceNow) hands back what it cannot read exactly as it
-// was typed -- right for a window the repository has already judged. The pure ServiceNow data source
-// forwards what nobody has judged, so it has its own, which refuses instead
-// (TestServiceNowPlannedTimestamp).
-func TestPlannedTimestampForServiceNow_HandsBackWhatItCannotRead(t *testing.T) {
+// The mirror's conversion hands back what it cannot read exactly as it
+// was typed -- right for a window the repository has already judged. The data source that talks to the
+// previous system directly forwards what nobody has judged, so it has its own, which refuses instead
+// (TestStrictMirrorPlannedTimestamp).
+func TestMirrorPlannedTimestamp_HandsBackWhatItCannotRead(t *testing.T) {
 	for in, want := range map[string]string{
 		"2030-03-01T14:30:00+05:30": "2030-03-01 09:00:00",
 		"2030-03-01 09:00:00":       "2030-03-01 09:00:00",
@@ -85,12 +85,12 @@ func TestPlannedTimestampForServiceNow_HandsBackWhatItCannotRead(t *testing.T) {
 		"infinity":                  "infinity",
 	} {
 		if got := PlannedTimestampForServiceNow(in); got != want {
-			t.Errorf("PlannedTimestampForServiceNow(%q) = %q, want %q", in, got, want)
+			t.Errorf("the mirror's conversion of %q = %q, want %q", in, got, want)
 		}
 	}
 }
 
-func TestServiceNowPlannedTimestamp(t *testing.T) {
+func TestStrictMirrorPlannedTimestamp(t *testing.T) {
 	for in, want := range map[string]string{
 		"2030-03-01 09:00:00":       "2030-03-01 09:00:00",
 		"2030-03-01T09:00:00Z":      "2030-03-01 09:00:00",
@@ -109,14 +109,14 @@ func TestServiceNowPlannedTimestamp(t *testing.T) {
 		"2030-03-01  09:00:00": "2030-03-01 09:00:00", // two spaces between the date and the time
 		"2030-03-01   9:05:07": "2030-03-01 09:05:07", // both
 	} {
-		got, err := ServiceNowPlannedTimestamp(in)
+		got, err := StrictMirrorPlannedTimestamp(in)
 		if err != nil || got != want {
-			t.Errorf("ServiceNowPlannedTimestamp(%q) = %q, %v; want %q", in, got, err, want)
+			t.Errorf("StrictMirrorPlannedTimestamp(%q) = %q, %v; want %q", in, got, err, want)
 		}
 	}
 
 	for in, want := range map[string]error{
-		// A zoneless value with a fractional second: Go's parser takes it, ServiceNow's layout has none.
+		// A zoneless value with a fractional second: Go's parser takes it, the previous system's layout has none.
 		"2030-03-01 09:00:00.5":         ErrPlannedTimestampFraction,
 		"2030-03-01 09:00:00.000":       ErrPlannedTimestampFraction,
 		"2030-03-01 09:00:00,5":         ErrPlannedTimestampFraction,
@@ -150,9 +150,9 @@ func TestServiceNowPlannedTimestamp(t *testing.T) {
 		"2030-03-01 09:00:00 ": ErrPlannedTimestampFormat,
 		"2030-03-01 09:00:00.": ErrPlannedTimestampFormat,
 	} {
-		got, err := ServiceNowPlannedTimestamp(in)
+		got, err := StrictMirrorPlannedTimestamp(in)
 		if !errors.Is(err, want) || got != "" {
-			t.Errorf("ServiceNowPlannedTimestamp(%q) = %q, %v; want %v", in, got, err, want)
+			t.Errorf("StrictMirrorPlannedTimestamp(%q) = %q, %v; want %v", in, got, err, want)
 		}
 	}
 }

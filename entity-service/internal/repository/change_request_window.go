@@ -122,15 +122,15 @@ func NormalizeCreatePlannedWindow(req domain.CreateChangeRequestRequest) (domain
 }
 
 // PlannedTimestampForServiceNow re-writes a planned start / end the repository
-// accepted (see parsePlannedTimestamp) in the one layout ServiceNow's change
+// accepted (see parsePlannedTimestamp) in the one layout the previous system's change
 // request API takes, "YYYY-MM-DD HH:MM:SS" in UTC, for the dual-write mirror:
 // the PostgreSQL data source accepts RFC 3339 with a zone as well, which the
-// ServiceNow service refuses ("must follow the format"), so an RFC 3339 PATCH
-// used to commit in PostgreSQL and then fail every mirror write. A value that
+// service in front of that system refuses ("must follow the format"), so an RFC 3339
+// PATCH used to commit in PostgreSQL and then fail every mirror write. A value that
 // does not parse is returned unchanged (the repository has already judged it):
 // that is right for the mirror, whose input was judged, and wrong for a value
-// nobody has judged -- the pure ServiceNow data source uses
-// ServiceNowPlannedTimestamp, which refuses it instead.
+// nobody has judged -- the data source that talks to the previous system directly
+// uses StrictMirrorPlannedTimestamp, which refuses it instead.
 func PlannedTimestampForServiceNow(value string) string {
 	t, err := parsePlannedTimestamp("plannedStartOn", value)
 	if err != nil {
@@ -139,7 +139,7 @@ func PlannedTimestampForServiceNow(value string) string {
 	return t.Format(plannedTimestampZoneless)
 }
 
-// Why ServiceNowPlannedTimestamp refused a value. A caller tells them apart with
+// Why StrictMirrorPlannedTimestamp refused a value. A caller tells them apart with
 // errors.Is; the text of the last two is what the message to the caller says.
 var (
 	// ErrPlannedTimestampFormat: neither RFC 3339 with a zone designator nor
@@ -152,15 +152,15 @@ var (
 	ErrPlannedTimestampYear = fmt.Errorf("the year must be in %d to %d", plannedYearMin, plannedYearMax)
 )
 
-// ServiceNowPlannedTimestamp is PlannedTimestampForServiceNow for a value NOBODY
-// HAS JUDGED YET -- what the pure ServiceNow data source is sent -- and it refuses
-// what that function would hand back as typed:
+// StrictMirrorPlannedTimestamp is the mirror's conversion above for a value NOBODY
+// HAS JUDGED YET -- what the data source that talks to the previous system directly
+// is sent -- and it refuses what that function would hand back as typed:
 //
 //   - a value that is neither RFC 3339 with a zone nor "YYYY-MM-DD HH:MM:SS":
 //     ErrPlannedTimestampFormat;
 //   - a ZONELESS value with a fractional second: ErrPlannedTimestampFraction.
 //     Go's parser takes one after the seconds although the layout has none and
-//     ServiceNow's pattern does not, so such a value used to travel as typed and
+//     that system's pattern does not, so such a value used to travel as typed and
 //     fail downstream with an opaque pattern error; rounding it off in silence is
 //     not this API's call either. (An RFC 3339 value with a fraction is an
 //     instant, read as the PostgreSQL data source reads it, and keeps being
@@ -172,8 +172,8 @@ var (
 //   - a year outside 2000 to 2100, in either layout (the range the PostgreSQL
 //     data source holds every planned window to): ErrPlannedTimestampYear.
 //
-// Otherwise the value, in ServiceNow's layout in UTC.
-func ServiceNowPlannedTimestamp(value string) (string, error) {
+// Otherwise the value, in the previous system's layout in UTC.
+func StrictMirrorPlannedTimestamp(value string) (string, error) {
 	t, err := time.Parse(time.RFC3339, value)
 	if err != nil {
 		if t, err = time.Parse(plannedTimestampZoneless, value); err != nil {

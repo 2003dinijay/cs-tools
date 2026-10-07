@@ -5858,14 +5858,14 @@ paths:
         the new window is applied, the pending customer request is cancelled (kept as a record)
         and a fresh one is provisioned for the project's registered contacts. Nothing goes
         through CAB / ECAB again (the change itself has not changed, only its time) and no
-        requirement flag is written (neither customer_approval_required nor the ServiceNow-owned
-        is_customer_approval_required). It is refused with the words of Request Approval's
+        requirement flag is written (neither customer_approval_required nor the
+        is_customer_approval_required flag the sync owns). It is refused with the words of Request Approval's
         refusal ("customer approval is required but nobody on this project can be asked ...")
         when nobody can be asked.
 
         A customer's proposed time (see the customerProposal read model). A customer proposes a
-        START in the Customer Portal: it is written to customer_updated_on (ServiceNow's own
-        column) and nothing else; the change request stays in customer_approval with its planned
+        START in the Customer Portal: it is written to customer_updated_on (a column the
+        previous system also fills) and nothing else; the change request stays in customer_approval with its planned
         window and the customers' request untouched, and waits for WSO2. WSO2 answers with this
         PATCH, naming the proposal (expectedCustomerUpdatedOn) and, for Accept, the planned window
         the page showed (expectedPlannedStartOn / expectedPlannedEndOn): ACCEPT PROPOSED TIME is
@@ -5889,7 +5889,8 @@ paths:
         are PostgreSQL-only: the previous system's API has no field for them, so the dual-write mirror carries
         only what PostgreSQL committed (Accept: scheduled and the window; a counter: the window, not
         the state; a customer's proposal: nothing), the sync may rewrite the columns while it runs, and
-        the pure ServiceNow data source refuses confirmCustomerUpdatedDate / expectedCustomerUpdatedOn.
+        the data source that talks to the previous system directly refuses confirmCustomerUpdatedDate /
+        expectedCustomerUpdatedOn.
 
         Compliance rule: no staff action records the customer's approval or review on
         the customer's behalf. The customer's answer is the customer's decision and
@@ -16931,7 +16932,7 @@ components:
       required: [startOn, answer]
       description: >-
         What the change request says about a time the customer proposed for it, derived on every
-        read from ServiceNow's own columns (customer_updated_on: the customer's proposed plan START;
+        read from two columns of the change request (customer_updated_on: the customer's proposed plan START;
         customer_updated_date_confirmation: WSO2's answer, AGREE / DISAGREE) and the approver rows;
         nothing extra is stored. Present on the PostgreSQL data source when customer_updated_on is
         set. While `answer` is "pending" the planned window (plannedStartOn / plannedEndOn) is still
@@ -17798,12 +17799,13 @@ components:
           type: string
           description: >-
             Planned start date and time (format YYYY-MM-DD HH:MM:SS, UTC, or RFC 3339 with
-            a zone designator, on every data source: the ServiceNow service converts an RFC
-            3339 value to the layout ServiceNow takes before it forwards it). Years 2000
-            to 2100 only (on every data source); anything else ("infinity", "now", a date
-            alone, a zone name) is a 400 that names the field, on both create paths (the
-            ServiceNow-first one before ServiceNow is called), and on the ServiceNow data
-            source so is a "YYYY-MM-DD HH:MM:SS" value with a fractional second.
+            a zone designator, on every data source: the service that talks to the previous
+            system converts an RFC 3339 value to the layout that system takes before it
+            forwards it). Years 2000 to 2100 only (on every data source); anything else
+            ("infinity", "now", a date alone, a zone name) is a 400 that names the field, on
+            both create paths (the one that writes the previous system first refuses it before
+            that system is called), and on the data source that talks to the previous system
+            directly so is a "YYYY-MM-DD HH:MM:SS" value with a fractional second.
         plannedEndDate:
           type: string
           description: Planned end date and time, as plannedStartDate.
@@ -18050,12 +18052,12 @@ components:
           type: string
           description: >-
             Planned start date and time: "YYYY-MM-DD HH:MM:SS" (UTC), or RFC 3339
-            with a zone designator ("2030-03-01T09:00:00Z"), on every data source (the
-            ServiceNow one converts RFC 3339 to UTC "YYYY-MM-DD HH:MM:SS" before it
-            forwards the value). Years 2000 to 2100 only (on every data source); any
+            with a zone designator ("2030-03-01T09:00:00Z"), on every data source (the one
+            that talks to the previous system converts RFC 3339 to UTC "YYYY-MM-DD HH:MM:SS"
+            before it forwards the value). Years 2000 to 2100 only (on every data source); any
             other text (Postgres' "infinity", "now", a date alone, a zone name) is a 400,
-            and on the ServiceNow data source so is a "YYYY-MM-DD HH:MM:SS" value with a
-            fractional second.
+            and on the data source that talks to the previous system directly so is a
+            "YYYY-MM-DD HH:MM:SS" value with a fractional second.
         plannedEndOn:
           type: string
           description: >-
@@ -18065,8 +18067,8 @@ components:
           enum: [agree]
           description: >-
             ACCEPT PROPOSED TIME: WSO2's acceptance of the time the customer proposed
-            (ServiceNow's u_confirm_customer_updated_date). "agree" is the only value (to
-            decline, propose a different time). Sent by staff alone, with only
+            (the confirmation of the proposed date, customer_updated_date_confirmation). "agree"
+            is the only value (to decline, propose a different time). Sent by staff alone, with only
             expectedCustomerUpdatedOn, expectedPlannedStartOn and expectedPlannedEndOn (all
             three required): applies the proposed start to the planned window (the planned
             length is kept), writes AGREE and moves customer_approval to scheduled in one write.
@@ -18091,8 +18093,8 @@ components:
             otherwise): the planned start the caller was shown (RFC 3339, as the change
             request reads). The answer is recorded only while it is still the stored planned
             start, else 409. Omitted: no check (required with confirmCustomerUpdatedDate).
-            PostgreSQL data source only; the ServiceNow data source makes no such check and
-            ignores the field.
+            PostgreSQL data source only; the data source that talks to the previous system
+            directly makes no such check and ignores the field.
         expectedPlannedEndOn:
           type: string
           description: >-

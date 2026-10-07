@@ -90,7 +90,7 @@ func TestChangeRequestService_PatchChangeRequest_MirrorGetsTheWindowInServiceNow
 // The ServiceNow-first create validates the planned window BEFORE ServiceNow is
 // called -- a refusal after it would leave a ServiceNow record with no PostgreSQL
 // row -- as the plain Postgres create does, so 'tomorrow' / 'infinity' / a year
-// in the thousands never reach either; and what ServiceNow is given is the window
+// in the thousands never reach either; and what the previous system is given is the window
 // in the layout its service takes ("YYYY-MM-DD HH:MM:SS" in UTC, whole seconds,
 // as the PATCH mirror gives it), whichever layout PostgreSQL accepted.
 func TestChangeRequestService_CreateChangeRequest_SNFirstValidatesTheWindowBeforeServiceNow(t *testing.T) {
@@ -146,8 +146,8 @@ func TestChangeRequestService_CreateChangeRequest_SNFirstValidatesTheWindowBefor
 		t.Errorf("PostgreSQL did not get the window: %+v", toPG)
 	}
 
-	// What PostgreSQL accepts but ServiceNow's service takes only converted (RFC 3339, a zoneless
-	// value with a fractional second) reaches ServiceNow in its layout, in whole seconds: never as
+	// What PostgreSQL accepts but the previous system's service takes only converted (RFC 3339, a zoneless
+	// value with a fractional second) reaches that system in its layout, in whole seconds: never as
 	// typed, never refused there for a form PostgreSQL took. PostgreSQL still gets the request as sent.
 	for name, tc := range map[string]struct{ start, end string }{
 		"RFC 3339 with Z":      {"2030-03-01T09:00:00Z", "2030-03-01T11:00:00Z"},
@@ -162,7 +162,7 @@ func TestChangeRequestService_CreateChangeRequest_SNFirstValidatesTheWindowBefor
 			t.Fatalf("%s: %v", name, err)
 		}
 		if toSN.PlannedStartDate == nil || *toSN.PlannedStartDate != start || toSN.PlannedEndDate == nil || *toSN.PlannedEndDate != end {
-			t.Errorf("%s: ServiceNow got the window %v .. %v, want %q .. %q", name, toSN.PlannedStartDate, toSN.PlannedEndDate, start, end)
+			t.Errorf("%s: the previous system got the window %v .. %v, want %q .. %q", name, toSN.PlannedStartDate, toSN.PlannedEndDate, start, end)
 		}
 		if toPG.PlannedStartDate == nil || *toPG.PlannedStartDate != tc.start || toPG.PlannedEndDate == nil || *toPG.PlannedEndDate != tc.end {
 			t.Errorf("%s: PostgreSQL got the window %v .. %v, want it as sent (%q .. %q)", name, toPG.PlannedStartDate, toPG.PlannedEndDate, tc.start, tc.end)

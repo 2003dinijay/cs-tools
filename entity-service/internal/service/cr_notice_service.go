@@ -339,7 +339,7 @@ func crChangedToApprovalState(change repository.OutboxChange) (string, bool) {
 //
 // DISAGREE is ONE turn: WSO2 answers a customer's proposal either with another
 // window (a counter-proposal) or by keeping the plan (a Decline), and both write
-// DISAGREE -- ServiceNow's own Disagree. So both are crTurnWSO2Rejected and send
+// DISAGREE -- the previous system's own Disagree. So both are crTurnWSO2Rejected and send
 // the same notice (the Disagree notice, "Reject the proposed plan start date");
 // there is no turn, notice kind or table of its own for a Decline, and the mail
 // carries no time, so neither the counter's new window nor "the plan stands" is

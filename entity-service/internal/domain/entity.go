@@ -4438,8 +4438,8 @@ type PatchChangeRequestRequest struct {
 	ExpectedPlannedStartOn *string `json:"expectedPlannedStartOn,omitempty"`
 	ExpectedPlannedEndOn   *string `json:"expectedPlannedEndOn,omitempty"`
 	// ConfirmCustomerUpdatedDate is WSO2's ACCEPTANCE of the time a customer
-	// proposed for the change (change_request.customer_updated_date_confirmation,
-	// ServiceNow's u_confirm_customer_updated_date): the only value this API takes
+	// proposed for the change (change_request.customer_updated_date_confirmation, the
+	// confirmation of the proposed date): the only value this API takes
 	// is "agree", sent by staff with the proposal's own version
 	// (ExpectedCustomerUpdatedOn) and the planned window the page showed
 	// (ExpectedPlannedStartOn / ExpectedPlannedEndOn, all three required). It
@@ -4848,7 +4848,7 @@ type ChangeRequest struct {
 	// CustomerProposal is the conversation about a time the customer proposed
 	// (see ChangeRequestCustomerProposal): present on the PostgreSQL data source
 	// when customer_updated_on is set, absent otherwise. It is derived from the two
-	// ServiceNow-migrated columns customer_updated_on / customer_updated_date_confirmation
+	// synced columns customer_updated_on / customer_updated_date_confirmation
 	// and the approver rows; nothing extra is stored for it.
 	CustomerProposal *ChangeRequestCustomerProposal `json:"customerProposal,omitempty"`
 
@@ -4900,12 +4900,11 @@ type ChangeRequest struct {
 }
 
 // ChangeRequestCustomerProposal is what the change request says about a time the
-// customer proposed for it. ServiceNow already models that conversation and the
-// synced schema carries it: change_request.customer_updated_on is the customer's
-// proposed plan START (u_customer_updated) and
-// change_request.customer_updated_date_confirmation is WSO2's answer, AGREE or
-// DISAGREE (u_confirm_customer_updated_date). Nothing here is stored beyond those two
-// columns; the object is derived on every read.
+// customer proposed for it. The previous system already modelled that conversation and
+// the synced schema carries it: change_request.customer_updated_on is the customer's
+// proposed plan START and change_request.customer_updated_date_confirmation is WSO2's
+// answer, AGREE or DISAGREE (the confirmation of the proposed date). Nothing here is
+// stored beyond those two columns; the object is derived on every read.
 //
 // Answer is one of
 //
