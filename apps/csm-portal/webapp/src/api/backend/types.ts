@@ -2770,8 +2770,26 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
    * `likelihood` above, this one has a write path all the way down.
    */
   isPlanningVisibleToCustomers?: boolean;
+  /**
+   * WSO2's answer to the customer's proposed time (ServiceNow's own
+   * `u_confirm_customer_updated_date`, entity-service `change_request.
+   * customer_updated_date_confirmation`): `"agree"` or `"disagree"`, absent while
+   * nothing was answered. Read-through; the answer is given by the two actions
+   * of {@link BePatchChangeRequestPayload} (`confirmCustomerUpdatedDate`, or a
+   * Re-schedule that names a time), never by writing this field.
+   */
   confirmCustomerUpdatedDate?: string | null;
+  /** The customer's proposed planned START (`u_customer_updated`), when there is one. */
   customerUpdatedOn?: string | null;
+  /**
+   * The conversation about a time the customer proposed, derived by the backend
+   * from `customerUpdatedOn` and the answer: omitted when nobody proposed
+   * anything. `answer: "pending"` is the one that needs WSO2 (see
+   * {@link BeChangeRequestCustomerProposal}).
+   */
+  customerProposal?: BeChangeRequestCustomerProposal | null;
+  /** On hold: a change that is on hold cannot change state, Accept proposed time included. */
+  onHold?: boolean | null;
   /** `read_only` in the ServiceNow dictionary — inherently read-only. */
   labels?: string[];
   deployments?: BeEntityRef[];
@@ -2780,6 +2798,40 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
   workStart?: string | null;
   workEnd?: string | null;
   gitReference?: string | null;
+}
+
+/**
+ * Where the conversation about a customer's proposed time stands. Only
+ * `pending` is actionable by WSO2: the customer proposed a time (their own
+ * answer is outstanding too: the change stays in Customer Approval) and nobody
+ * at WSO2 has answered it. `agreed` / `disagreed` are WSO2's answers; `unanswered`
+ * is a proposal the change moved on without (the customer approved the planned
+ * time anyway, or a ServiceNow user changed the date): history, no action.
+ */
+export type BeCustomerProposalAnswer = "pending" | "agreed" | "disagreed" | "unanswered";
+
+/**
+ * A time the customer proposed, as `GET /change-requests/{id}` derives it from
+ * ServiceNow's own `customer_updated_on` / `customer_updated_date_confirmation`
+ * pair (no extra table or column): the proposal waits in Customer Approval, the
+ * planned window stays what WSO2 planned until WSO2 answers.
+ */
+export interface BeChangeRequestCustomerProposal {
+  /** The proposed planned START, RFC 3339 (the customer proposes a start and keeps the planned length). */
+  startOn: string;
+  /** The proposed END (start + the planned length); present only while `answer` is `pending`. */
+  endOn?: string | null;
+  answer: BeCustomerProposalAnswer | string;
+  /**
+   * Who proposed it and when: present only while the backend can still tell,
+   * i.e. while the change request's last writer is a registered contact of the
+   * project (then it is the proposer). Absent means "not recorded" -- a later
+   * edit, a ServiceNow user writing the date, or a sync rewrote the last writer --
+   * and the page must say so rather than guess.
+   */
+  proposedByName?: string | null;
+  proposedByEmail?: string | null;
+  proposedOn?: string | null;
 }
 
 /** An approval stage seen on a change request, e.g. Assess, Authorize. */
@@ -3248,6 +3300,26 @@ export interface BePatchChangeRequestPayload {
   /** Customer Review checkbox. The backend refuses (400) a change once the CR
    * has reached `customer_review`, `closed`, `rollback` or `canceled`. */
   customerReviewRequired?: boolean;
+  /**
+   * ACCEPT the customer's proposed time (WSO2's answer, ServiceNow's "Agree"):
+   * the proposal is applied to the planned window (the planned length kept) and the
+   * change goes straight to Scheduled in one step. No CAB approval, no new customer
+   * request: the change itself has not changed. Only `"agree"` exists (to decline a
+   * proposal, Re-schedule with `state: "authorize"`: ServiceNow's "Disagree"), and it
+   * cannot be combined with any field but the three `expected*` ones below, which
+   * are REQUIRED here (`expectedCustomerUpdatedOn`) or expected (the planned
+   * window: stale = 409). Staff only; never a state, so the no-Bypass rule is untouched.
+   */
+  confirmCustomerUpdatedDate?: "agree";
+  /**
+   * The customer's proposal the page is showing (`customerProposal.startOn`,
+   * as received): the version check of every staff answer to it (Accept, or a
+   * Re-schedule that counters or declines). Required with `confirmCustomerUpdatedDate`.
+   */
+  expectedCustomerUpdatedOn?: string;
+  /** The planned window the page is showing (as received); a changed window is a 409, never an answer to a time its reader did not see. */
+  expectedPlannedStartOn?: string;
+  expectedPlannedEndOn?: string;
 }
 
 /** `PATCH /change-requests/{id}` response — the touched identifiers. */

@@ -16,6 +16,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  acceptProposedTimeBlockedReason,
   approvalStageLabel,
   buildChangeRequestSearchFilters,
   buildCloneChangeRequestNavState,
@@ -28,7 +29,17 @@ import {
   changeRequestTransitionLabel,
   changeRequestTransitionRequiresReason,
   countActiveCRFilters,
+  CUSTOMER_PROPOSAL_WAITING_REASON,
+  customerApprovedDisplay,
   customerGateWithheldTargets,
+  customerProposalProposer,
+  customerProposalProposerLabel,
+  formatWindowLength,
+  pendingCustomerProposal,
+  plannedWindowMs,
+  PROPOSER_NOT_RECORDED,
+  PROPOSER_NOT_RECORDED_ADVICE,
+  proposedWindowMs,
   isDestructiveChangeRequestTransition,
   pendingCustomerReview,
   rollbackPendingReviewReason,
@@ -422,6 +433,14 @@ describe("changeRequestTransitionLabel", () => {
     }
   });
 
+  it("labels authorize 'Propose a different time' when the customer's proposal is waiting for WSO2, and only then", () => {
+    expect(changeRequestTransitionLabel("authorize", "customer_approval", true)).toBe("Propose a different time");
+    expect(changeRequestTransitionLabel("authorize", "customer_approval", false)).toBe("Re-schedule");
+    // The flag means nothing anywhere but out of Customer Approval.
+    expect(changeRequestTransitionLabel("authorize", "assess", true)).not.toBe("Propose a different time");
+    expect(changeRequestTransitionLabel("canceled", "customer_approval", true)).toBe("Cancel change");
+  });
+
   it("labels authorize 'Re-schedule' only when leaving customer_approval", () => {
     expect(changeRequestTransitionLabel("authorize", "customer_approval")).toBe("Re-schedule");
     expect(changeRequestTransitionLabel("authorize", "assess")).not.toBe("Re-schedule");
@@ -792,9 +811,10 @@ describe("customer approval / review edit rule (the table the backend carries to
     );
   });
 
-  it("the Re-schedule hole is closed: a ticked box can never be unticked, so a change sent back to Authorize asks the same contacts", () => {
-    // A change request can only be in Customer Approval (or Authorize again after a
-    // Re-schedule) with the box ticked, and every state after New refuses to untick it.
+  it("a ticked box can never be unticked, so a Re-schedule (which never leaves Customer Approval) asks the same contacts again", () => {
+    // A change request reaches Customer Approval with the box ticked (Authorize is the
+    // state an older change that was re-scheduled before the CAB loop was removed may
+    // still sit in), and every state after New refuses to untick it.
     for (const state of ["authorize", "customer_approval", "scheduled"]) {
       expect(customerApprovalLockedReason(state, { stored: true, hasProject: true })).toBe(
         CUSTOMER_REQUIREMENT_ADD_ONLY_REASON,
@@ -1194,7 +1214,9 @@ describe("noCustomerAskedHelper (the Approval tab's note: nobody is being asked 
 
   it("says plainly that Cancel change is the only way out of Customer Approval, and Roll back or Cancel change out of Customer Review", () => {
     expect(NOBODY_ASKED_WAY_OUT.customer_approval).toMatch(/Cancel change is the only way out/);
-    expect(NOBODY_ASKED_WAY_OUT.customer_approval).toMatch(/Re-schedule only sends the change back through approval/);
+    // Re-schedule asks the contacts again at once (no trip back through approval), and is refused while nobody can be asked.
+    expect(NOBODY_ASKED_WAY_OUT.customer_approval).toMatch(/Re-schedule would ask the same group again, and it is refused while nobody can be asked/);
+    expect(NOBODY_ASKED_WAY_OUT.customer_approval).not.toMatch(/through approval/);
     expect(NOBODY_ASKED_WAY_OUT.customer_review).toMatch(/Roll back or Cancel change are the only ways out/);
     // Close is not an exit: neither text offers one.
     expect(NOBODY_ASKED_WAY_OUT.customer_review).not.toMatch(/\bclose\b/i);
@@ -1202,11 +1224,12 @@ describe("noCustomerAskedHelper (the Approval tab's note: nobody is being asked 
 
   it("does not claim Cancel is the only exit from Customer Approval where a Re-schedule might find somebody to ask (registered contacts, no request)", () => {
     // With no registered contacts a Re-schedule asks the same empty group: Cancel is the only way out, unconditionally.
-    expect(noCustomerAskedHelper("customer_approval", [])).toMatch(/Cancel change is the only way out\. Re-schedule only sends/);
+    expect(noCustomerAskedHelper("customer_approval", [])).toMatch(/Cancel change is the only way out\. Re-schedule would ask/);
     // With contacts it says what Re-schedule does and when Cancel is the only way out.
     const text = noCustomerAskedHelper("customer_approval", CONTACTS, []) ?? "";
-    expect(text).toMatch(/Re-schedule sends the change back through approval and then asks the project's registered contacts again/);
-    expect(text).toMatch(/helps only if someone can be asked this time; if nobody can, Cancel change is the only way out/);
+    expect(text).toMatch(/Re-schedule asks the project's registered contacts again at once/);
+    expect(text).not.toMatch(/back through approval/);
+    expect(text).toMatch(/helps only if someone can be asked this time \(it is refused when nobody can be\); if nobody can, Cancel change is the only way out/);
     expect(text).not.toMatch(/Cancel change is the only way out\. /);
   });
 
@@ -1242,5 +1265,156 @@ describe("anyApproverBeingAsked", () => {
     expect(anyApproverBeingAsked([])).toBe(false);
     expect(anyApproverBeingAsked([stage()])).toBe(false);
     expect(anyApproverBeingAsked([stage("APPROVED", "REJECTED", "CANCELLED", "NOT_REQUIRED", "NOT_REQUESTED", "NOT_ENTITLED")])).toBe(false);
+  });
+});
+
+describe("a time the customer proposed (ServiceNow's customer_updated_on / confirmation pair)", () => {
+  const PROPOSAL = { startOn: "2030-03-08T09:00:00Z", endOn: "2030-03-08T11:00:00Z", answer: "pending" };
+  const PLANNED = { plannedStartOn: "2030-03-01 09:00:00", plannedEndOn: "2030-03-01 11:00:00" };
+
+  describe("pendingCustomerProposal", () => {
+    it("is the backend's own verdict, and only in Customer Approval", () => {
+      expect(pendingCustomerProposal({ state: "customer_approval", customerProposal: PROPOSAL })).toBe(PROPOSAL);
+      for (const state of ["new", "assess", "authorize", "scheduled", "implement", "review", "customer_review", "closed", "canceled", "rollback", null, undefined]) {
+        expect(pendingCustomerProposal({ state, customerProposal: PROPOSAL }), String(state)).toBeNull();
+      }
+    });
+
+    it("is null for every answer but pending, and for a change with no proposal at all", () => {
+      for (const answer of ["agreed", "disagreed", "unanswered", "something-new", ""]) {
+        expect(pendingCustomerProposal({ state: "customer_approval", customerProposal: { ...PROPOSAL, answer } }), answer).toBeNull();
+      }
+      expect(pendingCustomerProposal({ state: "customer_approval" })).toBeNull();
+      expect(pendingCustomerProposal({ state: "customer_approval", customerProposal: null })).toBeNull();
+    });
+
+    it("never infers a proposal from the raw columns: customerUpdatedOn alone is not one", () => {
+      const cr = { state: "customer_approval", customerUpdatedOn: "2030-03-08T09:00:00Z", confirmCustomerUpdatedDate: null } as Pick<BeChangeRequestDetail, "state" | "customerProposal">;
+      expect(pendingCustomerProposal(cr)).toBeNull();
+    });
+  });
+
+  describe("customerProposalProposer", () => {
+    it("names the proposer only when the backend named one", () => {
+      expect(customerProposalProposer({ proposedByName: "Mia Member", proposedByEmail: "mia@example.com", proposedOn: "2030-02-01T10:00:00Z" })).toEqual({
+        name: "Mia Member",
+        email: "mia@example.com",
+        on: "2030-02-01T10:00:00Z",
+      });
+      expect(customerProposalProposer({ proposedByEmail: "mia@example.com" })).toEqual({ name: undefined, email: "mia@example.com", on: undefined });
+    });
+
+    it("is null when it is not recorded: no name, no email (blank counts as none), whatever 'proposedOn' says", () => {
+      expect(customerProposalProposer({})).toBeNull();
+      expect(customerProposalProposer({ proposedByName: "  ", proposedByEmail: "", proposedOn: "2030-02-01T10:00:00Z" })).toBeNull();
+      expect(customerProposalProposer({ proposedByName: null, proposedByEmail: null })).toBeNull();
+    });
+
+    it("labels the proposer by name and email, or whichever there is", () => {
+      expect(customerProposalProposerLabel({ name: "Mia Member", email: "mia@example.com" })).toBe("Mia Member (mia@example.com)");
+      expect(customerProposalProposerLabel({ name: "Mia Member" })).toBe("Mia Member");
+      expect(customerProposalProposerLabel({ email: "mia@example.com" })).toBe("mia@example.com");
+    });
+
+    it("says what it does not know, without guessing who or why", () => {
+      expect(PROPOSER_NOT_RECORDED).toBe("The proposer is not recorded.");
+      expect(PROPOSER_NOT_RECORDED_ADVICE).toMatch(/check that this time really came from the customer/i);
+      expect(PROPOSER_NOT_RECORDED_ADVICE).toMatch(/written by someone at WSO2/);
+      expect(PROPOSER_NOT_RECORDED_ADVICE).toMatch(/left over from an earlier round/);
+    });
+  });
+
+  describe("windows", () => {
+    it("reads the planned window, and none when it has no length", () => {
+      expect(plannedWindowMs(PLANNED)).toEqual({ startMs: Date.UTC(2030, 2, 1, 9), endMs: Date.UTC(2030, 2, 1, 11) });
+      expect(plannedWindowMs({ plannedStartOn: "2030-03-01 09:00:00", plannedEndOn: "2030-03-01 09:00:00" })).toBeNull();
+      expect(plannedWindowMs({ plannedStartOn: "2030-03-01 11:00:00", plannedEndOn: "2030-03-01 09:00:00" })).toBeNull();
+      expect(plannedWindowMs({ plannedStartOn: "2030-03-01 09:00:00" })).toBeNull();
+      expect(plannedWindowMs({})).toBeNull();
+    });
+
+    it("takes the proposed end from the backend, else keeps the planned length from the proposed start", () => {
+      expect(proposedWindowMs(PLANNED, PROPOSAL)).toEqual({ startMs: Date.UTC(2030, 2, 8, 9), endMs: Date.UTC(2030, 2, 8, 11) });
+      // No end sent: start + the planned length (2 hours).
+      expect(proposedWindowMs(PLANNED, { startOn: "2030-03-08T10:30:00Z" })).toEqual({ startMs: Date.UTC(2030, 2, 8, 10, 30), endMs: Date.UTC(2030, 2, 8, 12, 30) });
+      // No planned length to keep either: the start alone, no invented end.
+      expect(proposedWindowMs({}, { startOn: "2030-03-08T10:30:00Z" })).toEqual({ startMs: Date.UTC(2030, 2, 8, 10, 30), endMs: null });
+      expect(proposedWindowMs(PLANNED, { startOn: "not a date" })).toBeNull();
+    });
+
+    it("words a length", () => {
+      expect(formatWindowLength(2 * 3_600_000)).toBe("2 hours");
+      expect(formatWindowLength(3_600_000)).toBe("1 hour");
+      expect(formatWindowLength(90 * 60_000)).toBe("1 hour 30 minutes");
+      expect(formatWindowLength(45 * 60_000)).toBe("45 minutes");
+      expect(formatWindowLength(26 * 3_600_000)).toBe("1 day 2 hours");
+      expect(formatWindowLength(0)).toBe("");
+      expect(formatWindowLength(-5)).toBe("");
+      expect(formatWindowLength(Number.NaN)).toBe("");
+    });
+  });
+
+  describe("acceptProposedTimeBlockedReason", () => {
+    const now = Date.UTC(2030, 1, 1);
+    it("is null when the proposal is in the future, the change is not on hold and it has a planned window", () => {
+      expect(acceptProposedTimeBlockedReason({ ...PLANNED, onHold: false }, PROPOSAL, now)).toBeNull();
+      expect(acceptProposedTimeBlockedReason(PLANNED, PROPOSAL, now)).toBeNull();
+    });
+
+    it("says the change is on hold, before anything else", () => {
+      expect(acceptProposedTimeBlockedReason({ ...PLANNED, onHold: true }, { startOn: "2020-01-01T00:00:00Z" }, now)).toBe(
+        "This change request is on hold. Take it off hold first.",
+      );
+    });
+
+    it("says the proposed time has passed, pointing at the other action", () => {
+      expect(acceptProposedTimeBlockedReason(PLANNED, { startOn: "2030-01-31T23:59:00Z" }, now)).toBe(
+        "The proposed time has passed. Propose a different time.",
+      );
+      // Right now counts as passed: the backend refuses a start that is not after NOW().
+      expect(acceptProposedTimeBlockedReason(PLANNED, { startOn: new Date(now).toISOString() }, now)).toMatch(/has passed/);
+    });
+
+    it("says there is no planned window to keep the length of", () => {
+      expect(acceptProposedTimeBlockedReason({}, PROPOSAL, now)).toMatch(/no planned window whose length the proposed time could keep/);
+      expect(acceptProposedTimeBlockedReason({ plannedStartOn: "2030-03-01 09:00:00", plannedEndOn: "2030-03-01 09:00:00" }, PROPOSAL, now)).toMatch(/no planned window/);
+    });
+  });
+
+  describe("changeRequestBlockingReason with a proposal waiting", () => {
+    it("reads that the change is waiting for WSO2, not for the customer, at Customer Approval only", () => {
+      expect(CUSTOMER_PROPOSAL_WAITING_REASON).toBe("Waiting for WSO2 to respond to the customer's proposed time");
+      expect(changeRequestBlockingReason([], "customer_approval", true)).toBe(CUSTOMER_PROPOSAL_WAITING_REASON);
+      expect(changeRequestBlockingReason([], "customer_approval", false)).toBe("Awaiting Customer Approval");
+      expect(changeRequestBlockingReason([], "customer_approval")).toBe("Awaiting Customer Approval");
+      // The flag is the page's `pendingCustomerProposal`, which is only ever true in Customer Approval; the other
+      // customer gate and every approval stage keep their own words.
+      expect(changeRequestBlockingReason([], "customer_review", true)).toBe("Awaiting Customer Review");
+      expect(changeRequestBlockingReason([{ stage: "CAB Approval", approverType: "STATIC_GROUP", approverName: null, status: "REQUESTED", approvers: [] }], "authorize", true)).toBe("Awaiting CAB Approval");
+    });
+  });
+
+  describe("customerApprovedDisplay (the Overview cell, the PDF row, the microapp row)", () => {
+    it("reads Yes when the customer's own approval was recorded, whatever else is on the record", () => {
+      expect(customerApprovedDisplay({ hasCustomerApproved: true })).toBe("Yes");
+      expect(customerApprovedDisplay({ hasCustomerApproved: true, customerProposal: { startOn: "x", answer: "agreed" } })).toBe("Yes");
+    });
+
+    it("reads 'Proposed time accepted' when WSO2 accepted the customer's proposal and nothing was stamped (no staff action records the customer's approval)", () => {
+      expect(customerApprovedDisplay({ hasCustomerApproved: false, customerProposal: { startOn: "x", answer: "agreed" } })).toBe("Proposed time accepted");
+      expect(customerApprovedDisplay({ customerProposal: { startOn: "x", answer: "agreed" } })).toBe("Proposed time accepted");
+      // The raw column says the same where the derived read model is absent (another data source).
+      expect(customerApprovedDisplay({ hasCustomerApproved: false, confirmCustomerUpdatedDate: "agree" })).toBe("Proposed time accepted");
+      expect(customerApprovedDisplay({ hasCustomerApproved: false, confirmCustomerUpdatedDate: " AGREE " })).toBe("Proposed time accepted");
+    });
+
+    it("reads No for everything else: no proposal, a pending one, a declined one, a history nobody answered", () => {
+      expect(customerApprovedDisplay({})).toBe("No");
+      expect(customerApprovedDisplay({ hasCustomerApproved: false })).toBe("No");
+      for (const answer of ["pending", "disagreed", "unanswered"]) {
+        expect(customerApprovedDisplay({ hasCustomerApproved: false, customerProposal: { startOn: "x", answer } }), answer).toBe("No");
+      }
+      expect(customerApprovedDisplay({ hasCustomerApproved: false, confirmCustomerUpdatedDate: "disagree" })).toBe("No");
+    });
   });
 });
