@@ -28,7 +28,7 @@ import (
 // team space (the sr.* payload's sreTeamName as the audience). The first two
 // reproduce ServiceNow's "SR New Request - Acknowledge & Chat Alert" flow's
 // cards (built there by SRChatCardUtils); the customer-comment card has no
-// ServiceNow original. All three share chatThreadKey(number), so an SR's
+// ServiceNow original. All three share srThreadKey(caseID), so an SR's
 // created -> acknowledged -> comment alerts read as one thread in the space.
 
 // srChatTextLimit is how much of a description or comment an SR card shows:
@@ -38,6 +38,8 @@ const srChatTextLimit = 300
 
 // SRCreatedAlert is SendSRCreatedAlert's card content.
 type SRCreatedAlert struct {
+	// CaseID keys the card's thread (srThreadKey).
+	CaseID     string
 	Number     string
 	WSO2CaseID string
 	Subject    string
@@ -52,6 +54,8 @@ type SRCreatedAlert struct {
 
 // SRAcknowledgedAlert is SendSRAcknowledgedAlert's card content.
 type SRAcknowledgedAlert struct {
+	// CaseID keys the card's thread (srThreadKey).
+	CaseID     string
 	Number     string
 	WSO2CaseID string
 	// AssignmentGroupName is who the SR awaits review by; SRETeamName stands
@@ -63,6 +67,8 @@ type SRAcknowledgedAlert struct {
 
 // SRCustomerCommentAlert is SendSRCustomerCommentAlert's card content.
 type SRCustomerCommentAlert struct {
+	// CaseID keys the card's thread (srThreadKey).
+	CaseID     string
 	Number     string
 	WSO2CaseID string
 	Subject    string
@@ -94,7 +100,7 @@ func (c *GoogleChatClient) SendSRCreatedAlert(ctx context.Context, audience stri
 
 	sections := []chatCardSection{{
 		Header:  "Short Description",
-		Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: caseAlertLine(`%s`, a.Subject)}}},
+		Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: caseAlertLine(`%s`, orEmDash(a.Subject))}}},
 	}}
 	var details []string
 	if a.WSO2CaseID != "" {
@@ -122,7 +128,7 @@ func (c *GoogleChatClient) SendSRCreatedAlert(ctx context.Context, audience stri
 
 	msg := chatCardMessage{
 		CardsV2: []chatCardWrapper{{CardID: "sr-created-alert", Card: chatCard{Header: header, Sections: sections}}},
-		Thread:  &chatThread{ThreadKey: chatThreadKey(a.Number)},
+		Thread:  &chatThread{ThreadKey: srThreadKey(a.CaseID, a.Number)},
 	}
 	return c.sendCardToAudience(ctx, audience, msg)
 }
@@ -161,7 +167,7 @@ func (c *GoogleChatClient) SendSRAcknowledgedAlert(ctx context.Context, audience
 			Header:   &chatCardHeader{Title: "Acknowledged", Subtitle: subtitle},
 			Sections: sections,
 		}}},
-		Thread: &chatThread{ThreadKey: chatThreadKey(a.Number)},
+		Thread: &chatThread{ThreadKey: srThreadKey(a.CaseID, a.Number)},
 	}
 	return c.sendCardToAudience(ctx, audience, msg)
 }
@@ -196,7 +202,7 @@ func (c *GoogleChatClient) SendSRCustomerCommentAlert(ctx context.Context, audie
 			Header:   &chatCardHeader{Title: "💬 Customer comment · " + chatHeaderCaseRef(a.Number, a.WSO2CaseID), Subtitle: a.Subject},
 			Sections: []chatCardSection{{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: strings.Join(lines, "<br>")}}}}},
 		}}},
-		Thread: &chatThread{ThreadKey: chatThreadKey(a.Number)},
+		Thread: &chatThread{ThreadKey: srThreadKey(a.CaseID, a.Number)},
 	}
 	return c.sendCardToAudience(ctx, audience, msg)
 }
@@ -252,4 +258,27 @@ func srChatPlainText(s string, max int) string {
 		return string(r[:max]) + "..."
 	}
 	return text
+}
+
+// orEmDash is ServiceNow's SRChatCardUtils convention for an empty card value:
+// "—" rather than a blank line.
+func orEmDash(s string) string {
+	if strings.TrimSpace(s) == "" {
+		return "\u2014"
+	}
+	return s
+}
+
+// srThreadKey is an SR's Chat thread: "case-" + the SR's id, as ServiceNow's
+// flow keys it ('case-' + sys_id). So each new SR starts its own thread and
+// every later card about it replies there. Not chatThreadKey(number):
+// numbers are only unique within one environment, and two environments
+// posting to one space -- or a database reseeded under the same numbers --
+// would reply into another SR's thread. The number is only a fallback for a
+// card built without an id.
+func srThreadKey(caseID, number string) string {
+	if caseID != "" {
+		return "case-" + caseID
+	}
+	return chatThreadKey(number)
 }

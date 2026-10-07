@@ -214,8 +214,8 @@ func TestValidate_ServiceRequest(t *testing.T) {
 	}{
 		{"created", "SR-1", TypeSRCreated, created, false},
 		{"created minimal", "SR-1", TypeSRCreated, `{"caseId":"SR-1","number":"SR0001001","subject":"s","state":"","createdOn":"2026-10-07T10:00:00Z"}`, false},
+		{"created without subject (catalog form SR)", "SR-1", TypeSRCreated, `{"caseId":"SR-1","number":"SR0001001","subject":"","state":"Open","createdOn":"2026-10-07T10:00:00Z"}`, false},
 		{"created missing number", "SR-1", TypeSRCreated, `{"caseId":"SR-1","subject":"s","state":"Open","createdOn":"2026-10-07T10:00:00Z"}`, true},
-		{"created missing subject", "SR-1", TypeSRCreated, `{"caseId":"SR-1","number":"SR0001001","state":"Open","createdOn":"2026-10-07T10:00:00Z"}`, true},
 		{"created missing createdOn", "SR-1", TypeSRCreated, `{"caseId":"SR-1","number":"SR0001001","subject":"s","state":"Open"}`, true},
 		{"created caseId/entityId mismatch", "SR-2", TypeSRCreated, created, true},
 		{"created unknown field", "SR-1", TypeSRCreated, `{"caseId":"SR-1","number":"SR0001001","subject":"s","state":"Open","createdOn":"2026-10-07T10:00:00Z","extra":1}`, true},

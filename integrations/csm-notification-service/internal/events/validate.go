@@ -379,8 +379,12 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		// SRETeamName is deliberately NOT required on any sr.* type: an SR
 		// whose account has no SRE team is a valid event with no Chat space
 		// to go to, which dispatch skips -- rejecting it would retry and
-		// dead-letter something no retry can fix.
-		if p.CaseID == "" || p.Number == "" || p.Subject == "" || p.CreatedOn == "" {
+		// dead-letter something no retry can fix. Subject is not required
+		// either, for the same reason: an SR raised from the customer
+		// portal's catalog form has none (the form sends only the catalog
+		// variables), and ServiceNow's own card shows "—" for an empty
+		// short description rather than dropping the card.
+		if p.CaseID == "" || p.Number == "" || p.CreatedOn == "" {
 			return fmt.Errorf("events: missing required field for %s", t)
 		}
 		if p.CaseID != entityID {

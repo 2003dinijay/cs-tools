@@ -59,6 +59,7 @@ func (d *Dispatcher) handleSRCreated(ctx context.Context, record eventbus.Record
 	}
 	return d.sendSRChat(ctx, record, func() error {
 		return d.googleChat.SendSRCreatedAlert(ctx, audience, notifications.SRCreatedAlert{
+			CaseID:              p.CaseID,
 			Number:              p.Number,
 			WSO2CaseID:          p.WSO2CaseID,
 			Subject:             p.Subject,
@@ -84,6 +85,7 @@ func (d *Dispatcher) handleSRAcknowledged(ctx context.Context, record eventbus.R
 	}
 	return d.sendSRChat(ctx, record, func() error {
 		return d.googleChat.SendSRAcknowledgedAlert(ctx, audience, notifications.SRAcknowledgedAlert{
+			CaseID:              p.CaseID,
 			Number:              p.Number,
 			WSO2CaseID:          p.WSO2CaseID,
 			AssignmentGroupName: p.AssignmentGroupName,
@@ -129,6 +131,7 @@ func (d *Dispatcher) handleSRCommentAdded(ctx context.Context, record eventbus.R
 	}
 	return d.sendSRChat(ctx, record, func() error {
 		return d.googleChat.SendSRCustomerCommentAlert(ctx, audience, notifications.SRCustomerCommentAlert{
+			CaseID:      p.CaseID,
 			Number:      p.Number,
 			WSO2CaseID:  p.WSO2CaseID,
 			Subject:     truncateTitle(p.Subject, maxChatTitleLength),

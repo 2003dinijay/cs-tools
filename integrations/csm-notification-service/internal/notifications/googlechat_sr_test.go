@@ -56,8 +56,8 @@ func sectionText(s chatCardSection) string {
 
 func assertSRThread(t *testing.T, msg chatCardMessage, replyOption string) {
 	t.Helper()
-	if msg.Thread == nil || msg.Thread.ThreadKey != "case-SR0001001" {
-		t.Errorf("Thread = %+v, want threadKey case-SR0001001", msg.Thread)
+	if msg.Thread == nil || msg.Thread.ThreadKey != "case-3e6e2582-3149-4c0a-b9bf-cd0defbab51d" {
+		t.Errorf("Thread = %+v, want threadKey case-<SR id>", msg.Thread)
 	}
 	if replyOption != chatThreadReplyOption {
 		t.Errorf("messageReplyOption = %q, want %q", replyOption, chatThreadReplyOption)
@@ -67,6 +67,7 @@ func assertSRThread(t *testing.T, msg chatCardMessage, replyOption string) {
 func TestSendSRCreatedAlert_ReproducesServiceNowCard(t *testing.T) {
 	c, got := captureSRCard(t)
 	err := c.SendSRCreatedAlert(context.Background(), "MS/PC SRE Group", SRCreatedAlert{
+		CaseID: "3e6e2582-3149-4c0a-b9bf-cd0defbab51d",
 		Number: "SR0001001", WSO2CaseID: "WSO2-77", Subject: "Open port 443 & 80",
 		AssignmentGroupName: "MS/PC SRE Group", State: "Open",
 		Description: "<p>Please open <b>443</b> &amp; 80</p><script>x()</script>",
@@ -109,6 +110,7 @@ func TestSendSRCreatedAlert_ReproducesServiceNowCard(t *testing.T) {
 func TestSendSRCreatedAlert_OmitsEmptyParts(t *testing.T) {
 	c, got := captureSRCard(t)
 	if err := c.SendSRCreatedAlert(context.Background(), "MS/PC SRE Group", SRCreatedAlert{
+		CaseID: "3e6e2582-3149-4c0a-b9bf-cd0defbab51d",
 		Number: "SR0001001", Subject: "s", Description: "<p> </p>", CaseLink: "https://csm.example/cases/SR-1",
 	}); err != nil {
 		t.Fatalf("SendSRCreatedAlert: %v", err)
@@ -123,9 +125,27 @@ func TestSendSRCreatedAlert_OmitsEmptyParts(t *testing.T) {
 	}
 }
 
+// TestSendSRCreatedAlert_EmptySubjectShowsEmDash: an SR raised from the
+// customer portal's catalog form has no subject. ServiceNow's card shows "—"
+// for an empty short description; so does this one, rather than a blank line.
+func TestSendSRCreatedAlert_EmptySubjectShowsEmDash(t *testing.T) {
+	c, got := captureSRCard(t)
+	if err := c.SendSRCreatedAlert(context.Background(), "MS/PC SRE Group", SRCreatedAlert{
+		CaseID: "3e6e2582-3149-4c0a-b9bf-cd0defbab51d",
+		Number: "SR0001001", CaseLink: "https://csm.example/operations/service-requests/SR-1",
+	}); err != nil {
+		t.Fatalf("SendSRCreatedAlert: %v", err)
+	}
+	msg, _, _ := got()
+	if text := msg.CardsV2[0].Card.Sections[0].Widgets[0].TextParagraph.Text; text != "\u2014" {
+		t.Errorf("Short Description = %q, want an em dash", text)
+	}
+}
+
 func TestSendSRAcknowledgedAlert_ReproducesServiceNowCard(t *testing.T) {
 	c, got := captureSRCard(t)
 	if err := c.SendSRAcknowledgedAlert(context.Background(), "MS/PC SRE Group", SRAcknowledgedAlert{
+		CaseID: "3e6e2582-3149-4c0a-b9bf-cd0defbab51d",
 		Number: "SR0001001", WSO2CaseID: "WSO2-77", AssignmentGroupName: "Infra <Ops>", SRETeamName: "MS/PC SRE Group",
 		CaseLink: "https://csm.example/cases/SR-1",
 	}); err != nil {
@@ -154,6 +174,7 @@ func TestSendSRAcknowledgedAlert_ReproducesServiceNowCard(t *testing.T) {
 func TestSendSRAcknowledgedAlert_FallsBackToSRETeam(t *testing.T) {
 	c, got := captureSRCard(t)
 	if err := c.SendSRAcknowledgedAlert(context.Background(), "MS/PC SRE Group", SRAcknowledgedAlert{
+		CaseID: "3e6e2582-3149-4c0a-b9bf-cd0defbab51d",
 		Number: "SR0001001", SRETeamName: "MS/PC SRE Group", CaseLink: "https://csm.example/cases/SR-1",
 	}); err != nil {
 		t.Fatalf("SendSRAcknowledgedAlert: %v", err)
@@ -172,6 +193,7 @@ func TestSendSRCustomerCommentAlert_SendsExpectedCard(t *testing.T) {
 	long := strings.Repeat("a", 310)
 	c, got := captureSRCard(t)
 	if err := c.SendSRCustomerCommentAlert(context.Background(), "MS/PC SRE Group", SRCustomerCommentAlert{
+		CaseID: "3e6e2582-3149-4c0a-b9bf-cd0defbab51d",
 		Number: "SR0001001", WSO2CaseID: "WSO2-77", Subject: "Open port 443",
 		AuthorName: "Jane <Doe>", AuthorEmail: "jane@acme.com", Content: "[code]<p>" + long + "</p>[/code]",
 		CommentLink: "https://csm.example/cases/SR-1#C-2",
@@ -193,6 +215,7 @@ func TestSendSRCustomerCommentAlert_SendsExpectedCard(t *testing.T) {
 func TestSendSRCustomerCommentAlert_EmailWhenNoName(t *testing.T) {
 	c, got := captureSRCard(t)
 	if err := c.SendSRCustomerCommentAlert(context.Background(), "MS/PC SRE Group", SRCustomerCommentAlert{
+		CaseID: "3e6e2582-3149-4c0a-b9bf-cd0defbab51d",
 		Number: "SR0001001", AuthorEmail: "jane@acme.com", Content: "hi", CommentLink: "https://csm.example/cases/SR-1#C-2",
 	}); err != nil {
 		t.Fatalf("SendSRCustomerCommentAlert: %v", err)
@@ -243,5 +266,19 @@ func TestSRChatPlainText(t *testing.T) {
 				t.Errorf("srChatPlainText(%q, %d) = %q, want %q", c.in, c.max, got, c.want)
 			}
 		})
+	}
+}
+
+// TestSRThreadKey: an SR's thread follows its id, so two SRs that share a
+// number (two environments, or a reseeded database) never share a thread.
+func TestSRThreadKey(t *testing.T) {
+	if a, b := srThreadKey("id-1", "CS-PORTAL-000003"), srThreadKey("id-2", "CS-PORTAL-000003"); a == b {
+		t.Errorf("two SRs with one number share thread %q", a)
+	}
+	if got := srThreadKey("id-1", "CS-PORTAL-000003"); got != "case-id-1" {
+		t.Errorf("srThreadKey = %q, want case-id-1", got)
+	}
+	if got := srThreadKey("", "CS-PORTAL-000003"); got != chatThreadKey("CS-PORTAL-000003") {
+		t.Errorf("srThreadKey without an id = %q, want the number-based key", got)
 	}
 }
