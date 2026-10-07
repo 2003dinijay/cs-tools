@@ -3962,7 +3962,18 @@ path).
   `TestSNChangeRequestService_PatchChangeRequest_PlannedWindowLayouts`,
   `TestSNChangeRequestService_CreateChangeRequest_PlannedWindowLayouts`,
   `TestChangeRequestService_CreateChangeRequest_SNFirstValidatesTheWindowBeforeServiceNow`). The expected window of a
-  customer's answer is still PostgreSQL's alone: the ServiceNow service ignores the two fields.
+  customer's answer is still PostgreSQL's alone: the service in front of the previous system ignores the two fields.
+* *The read prints the fraction the write kept.* The planned window, `customerUpdatedOn` and the work window of the detail
+  and the list are printed as RFC 3339 in UTC **with the fractional seconds the stored value has** (`fmtInstantPtr`, RFC 3339 with
+  nanosecond digits trimmed: `2030-03-01T09:00:00.123456Z`; a whole second prints as always, so every value the previous
+  system wrote and every migrated row reads as before). The write path keeps microseconds (a browser that computes "now plus an
+  hour" sends milliseconds), and every answer that names the window it was shown (a customer's approval, Accept, a different
+  time, a decline, a Re-schedule: `expectedScheduleConflict`) compares at that precision. Printing whole seconds only would make
+  such a window unanswerable for ever: the client echoes `...:00Z`, the stored value is `...:00.123456Z`, and every attempt is
+  a 409 `change_request_schedule_changed`, however often the page is read again. Truncating on write was not chosen: it would
+  silently change what a client wrote, and the proposal read model (`customerProposal.startOn`) already printed the fraction.
+  `TestChangeRequestTimestampEchoIntegration_*` echoes a microsecond window through every one of those answers, on a native and
+  a migrated-shaped row.
 * *Create is ServiceNow-first* (`createChangeRequestSNFirst`): type, scope and (new) the planned
   window are validated before ServiceNow is called; ServiceNow gets no project / deployments / boxes;
   the PostgreSQL insert (`CreateChangeRequestFromServiceNow`, now normalising the window like the

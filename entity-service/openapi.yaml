@@ -16878,9 +16878,14 @@ components:
         plannedStartOn:
           type: string
           nullable: true
+          description: >-
+            The planned start, RFC 3339 in UTC. Printed with the fractional seconds the stored value
+            has (and none when it holds whole seconds, as every migrated row does), so that what is
+            read goes back unchanged as expectedPlannedStartOn: those compare the instants exactly.
         plannedEndOn:
           type: string
           nullable: true
+          description: The planned end, printed like plannedStartOn.
         duration:
           type: string
           nullable: true
@@ -17179,6 +17184,10 @@ components:
             customerUpdatedOn:
               type: string
               nullable: true
+              description: >-
+                The customer's proposed plan start, RFC 3339 in UTC, printed with the fractional
+                seconds it has (as customerProposal.startOn, so the two read alike). workStart /
+                workEnd are printed the same way.
             labels:
               type: array
               items:

@@ -599,12 +599,10 @@ func scanChangeRequestView(row interface{ Scan(...any) error }) (domain.SearchCh
 		v.AssignedTeam = &domain.EntityRef{ID: *agID, Name: stringOrEmpty(agName)}
 	}
 	if startOn != nil {
-		s := startOn.UTC().Format(time.RFC3339)
-		v.PlannedStartOn = &s
+		v.PlannedStartOn = fmtInstantPtr(startOn)
 	}
 	if endOn != nil {
-		s := endOn.UTC().Format(time.RFC3339)
-		v.PlannedEndOn = &s
+		v.PlannedEndOn = fmtInstantPtr(endOn)
 	}
 	if impact != nil {
 		lower := strings.ToLower(*impact)
@@ -1028,12 +1026,10 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 		v.AssignedTeam = &domain.EntityRef{ID: *agID, Name: stringOrEmpty(agName)}
 	}
 	if startOn != nil {
-		s := startOn.UTC().Format(time.RFC3339)
-		v.PlannedStartOn = &s
+		v.PlannedStartOn = fmtInstantPtr(startOn)
 	}
 	if endOn != nil {
-		s := endOn.UTC().Format(time.RFC3339)
-		v.PlannedEndOn = &s
+		v.PlannedEndOn = fmtInstantPtr(endOn)
 	}
 	if impact != nil {
 		lower := strings.ToLower(*impact)
@@ -1096,18 +1092,9 @@ func scanChangeRequestViewAndDetail(row pgx.Row, cr *domain.ChangeRequest) error
 		lower := strings.ToLower(*confirmCustomerUpdatedDate)
 		cr.ConfirmCustomerUpdatedDate = &lower
 	}
-	if customerUpdatedOn != nil {
-		s := customerUpdatedOn.UTC().Format(time.RFC3339)
-		cr.CustomerUpdatedOn = &s
-	}
-	if workStart != nil {
-		s := workStart.UTC().Format(time.RFC3339)
-		cr.WorkStart = &s
-	}
-	if workEnd != nil {
-		s := workEnd.UTC().Format(time.RFC3339)
-		cr.WorkEnd = &s
-	}
+	cr.CustomerUpdatedOn = fmtInstantPtr(customerUpdatedOn)
+	cr.WorkStart = fmtInstantPtr(workStart)
+	cr.WorkEnd = fmtInstantPtr(workEnd)
 	cr.GitReference = gitReference
 	return nil
 }
