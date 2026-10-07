@@ -323,6 +323,58 @@ describe("ChangeRequestDetailsPage", () => {
       expect(mocks.mutateAsync).not.toHaveBeenCalled();
     });
 
+    it("points at Propose New Time as the alternative while it is on", () => {
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+      const dialog = screen.getByRole("dialog", { name: "Reject this change request?" });
+      expect(within(dialog).getByText(/use Propose New Time instead/)).toBeInTheDocument();
+    });
+
+    it("does not point at Propose New Time while WSO2 has the change on hold, and says why instead", () => {
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.approval, customerCanAnswer: true, isOnHold: true });
+      renderPage();
+      // The button the dialog would point at is switched off...
+      expect(screen.getByRole("button", { name: "Propose New Time" })).toBeDisabled();
+      fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+      const dialog = screen.getByRole("dialog", { name: "Reject this change request?" });
+      // ...so the dialog says what is true, and rejecting is still possible.
+      expect(within(dialog).queryByText(/use Propose New Time instead/)).not.toBeInTheDocument();
+      expect(
+        within(dialog).getByText("A new time cannot be proposed right now because WSO2 has this change request on hold."),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Reject change request" })).toBeEnabled();
+    });
+
+    it("follows the hold if it arrives while the dialog is open", () => {
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.approval, customerCanAnswer: true });
+      const view = renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+      expect(screen.getByText(/use Propose New Time instead/)).toBeInTheDocument();
+
+      // What the refetch brings back once WSO2 has put the change on hold.
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.approval, customerCanAnswer: true, isOnHold: true });
+      view.rerender(
+        <MemoryRouter initialEntries={["/projects/p1/operations/change-requests/cr-1"]}>
+          <Routes>
+            <Route
+              path="/projects/:projectId/operations/change-requests/:changeRequestId"
+              element={<ChangeRequestDetailsPage />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+      expect(screen.queryByText(/use Propose New Time instead/)).not.toBeInTheDocument();
+      expect(screen.getByText(/WSO2 has this change request on hold/, { selector: "p" })).toBeInTheDocument();
+    });
+
+    it("never offers the Propose New Time hint to a review", () => {
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.review });
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Unsuccessful" }));
+      expect(screen.queryByText(/Propose New Time/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/on hold/)).not.toBeInTheDocument();
+    });
+
     it("sends nothing when the customer goes back", async () => {
       renderPage();
       fireEvent.click(screen.getByRole("button", { name: "Reject" }));

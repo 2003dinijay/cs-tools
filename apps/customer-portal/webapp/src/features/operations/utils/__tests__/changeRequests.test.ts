@@ -210,6 +210,43 @@ describe("customer decision copy", () => {
     );
   });
 
+  describe("the hint about a different time follows what Propose New Time can do", () => {
+    const approval = ChangeRequestDecisionMode.CUSTOMER_APPROVAL;
+
+    it("points at Propose New Time only while it is on", () => {
+      expect(getCustomerRejectConfirmCopy(approval, "available").hint).toBe(
+        "If you only need a different time, go back and use Propose New Time instead.",
+      );
+    });
+
+    it("says what is true instead while WSO2 has the change on hold, and does not point at the switched-off action", () => {
+      const { hint } = getCustomerRejectConfirmCopy(approval, "on_hold");
+      expect(hint).toBe("A new time cannot be proposed right now because WSO2 has this change request on hold.");
+      expect(hint).not.toMatch(/use Propose New Time/);
+    });
+
+    it("says nothing about it where it is not offered, and by default", () => {
+      expect(getCustomerRejectConfirmCopy(approval, "unavailable").hint).toBeUndefined();
+      expect(getCustomerRejectConfirmCopy(approval).hint).toBeUndefined();
+    });
+
+    it("keeps the consequence the same whatever the hint says", () => {
+      for (const availability of ["available", "on_hold", "unavailable"] as const) {
+        expect(getCustomerRejectConfirmCopy(approval, availability).message).toBe(
+          "Rejecting cancels this change request.",
+        );
+      }
+    });
+
+    it("has no hint for a review, whatever Propose New Time can do", () => {
+      for (const availability of ["available", "on_hold", "unavailable"] as const) {
+        expect(
+          getCustomerRejectConfirmCopy(ChangeRequestDecisionMode.CUSTOMER_REVIEW, availability).hint,
+        ).toBeUndefined();
+      }
+    });
+  });
+
   it("says what happened to the change request after an answer", () => {
     const approval = ChangeRequestDecisionMode.CUSTOMER_APPROVAL;
     const review = ChangeRequestDecisionMode.CUSTOMER_REVIEW;

@@ -22,7 +22,7 @@ import {
   type ChangeRequestState,
 } from "@features/operations/constants/operationsConstants";
 import { resolveChangeRequestCanonicalState } from "@features/operations/utils/changeRequestUi";
-import type { ChangeRequestDetails, ChangeRequestStats, ChangeRequestStatsResponse } from "@features/operations/types/changeRequests";
+import type { ChangeRequestDetails, ChangeRequestStats, ChangeRequestStatsResponse, ProposeNewTimeAvailability } from "@features/operations/types/changeRequests";
 import type { CaseComment } from "@features/support/types/cases";
 import { ChangeRequestDecisionMode } from "@features/operations/types/changeRequests";
 import type { ChangeRequestWorkflowStage } from "@features/operations/types/changeRequests";
@@ -336,11 +336,29 @@ export function getCustomerDecisionLabels(mode: ChangeRequestDecisionMode): {
     : { approve: "Approve", reject: "Reject" };
 }
 
+/** What the reject confirmation says about proposing a different time, by what the page allows. */
+const REJECT_HINTS: Record<ProposeNewTimeAvailability, string | undefined> = {
+  available:
+    "If you only need a different time, go back and use Propose New Time instead.",
+  on_hold:
+    "A new time cannot be proposed right now because WSO2 has this change request on hold.",
+  unavailable: undefined,
+};
+
 /**
  * Copy for the confirmation shown before the answer that cannot be taken back:
  * a rejected change is canceled, an unsuccessful one goes into rollback.
+ *
+ * When rejecting, the hint is about the alternative, a different time, and says
+ * only what is true of Propose New Time right now (`proposeNewTime`, as the page
+ * decides it): that it can be used, or that it cannot because WSO2 has the
+ * change on hold, and nothing at all where it is not offered. It never points at
+ * an action that is switched off.
  */
-export function getCustomerRejectConfirmCopy(mode: ChangeRequestDecisionMode): {
+export function getCustomerRejectConfirmCopy(
+  mode: ChangeRequestDecisionMode,
+  proposeNewTime: ProposeNewTimeAvailability = "unavailable",
+): {
   title: string;
   message: string;
   hint?: string;
@@ -356,7 +374,7 @@ export function getCustomerRejectConfirmCopy(mode: ChangeRequestDecisionMode): {
   return {
     title: "Reject this change request?",
     message: "Rejecting cancels this change request.",
-    hint: "If you only need a different time, go back and use Propose New Time instead.",
+    hint: REJECT_HINTS[proposeNewTime],
     confirmLabel: "Reject change request",
   };
 }

@@ -159,6 +159,20 @@ export enum ChangeRequestDecisionMode {
   NONE = "none",
 }
 
+/**
+ * Whether the customer can propose a new implementation time right now, as the
+ * page decides it (it is offered at Customer Approval only, and switched off
+ * while WSO2 has the change on hold). Wording that points a customer at Propose
+ * New Time must follow it, so that it never points at an action that is off.
+ */
+export type ProposeNewTimeAvailability =
+  /** The Propose New Time button is on. */
+  | "available"
+  /** It is offered but switched off because WSO2 has the change on hold. */
+  | "on_hold"
+  /** It is not offered at all (Customer Review). */
+  | "unavailable";
+
 // Item type for a change request workflow stage.
 export type ChangeRequestWorkflowStage = {
   name: string;
@@ -228,6 +242,13 @@ export type ProposeNewImplementationTimeModalProps = {
   onClose: () => void;
   /** Called once a proposal has been accepted, just before the dialog closes. */
   onProposed?: () => void;
+  /**
+   * Called when the backend refused the proposal for good (the change request no
+   * longer waits on this customer), just before the dialog closes: the form and
+   * the button that opened it are gone, so whoever owns the page moves focus
+   * somewhere stable. Not called for a refusal that keeps the dialog open.
+   */
+  onRefused?: () => void;
   changeRequest: ChangeRequestDetails | null;
 };
 

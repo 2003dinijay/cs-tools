@@ -25,12 +25,22 @@ import {
 } from "@wso2/oxygen-ui";
 import type { JSX } from "react";
 import { getCustomerRejectConfirmCopy } from "@features/operations/utils/changeRequests";
-import { ChangeRequestDecisionMode } from "@features/operations/types/changeRequests";
+import {
+  ChangeRequestDecisionMode,
+  type ProposeNewTimeAvailability,
+} from "@features/operations/types/changeRequests";
 
 export type ChangeRequestRejectConfirmDialogProps = {
   open: boolean;
   /** Which answer is being given; decides the wording (reject vs. unsuccessful). */
   mode: ChangeRequestDecisionMode;
+  /**
+   * Whether the page lets the customer propose a new time right now (the same
+   * answer that switches its Propose New Time button on or off). The hint about
+   * a different time follows it, so the dialog never points at an action that is
+   * off: it says the change is on hold instead, or says nothing.
+   */
+  proposeNewTime: ProposeNewTimeAvailability;
   isPending: boolean;
   onClose: () => void;
   onConfirm: () => void;
@@ -47,11 +57,12 @@ export type ChangeRequestRejectConfirmDialogProps = {
 export default function ChangeRequestRejectConfirmDialog({
   open,
   mode,
+  proposeNewTime,
   isPending,
   onClose,
   onConfirm,
 }: ChangeRequestRejectConfirmDialogProps): JSX.Element {
-  const copy = getCustomerRejectConfirmCopy(mode);
+  const copy = getCustomerRejectConfirmCopy(mode, proposeNewTime);
 
   const handleClose = (): void => {
     if (isPending) return;

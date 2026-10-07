@@ -175,6 +175,8 @@ test.describe("Local stack — a customer answers a change request", () => {
       // ...and the page now shows the truth: Scheduled, nothing left to answer.
       await expect(erin.currentStage()).toHaveText(UI.stages.scheduled);
       await expect(erin.answerButtons()).toHaveCount(0);
+      // The refusal took her buttons away: focus is on the page's heading, not lost to <body>.
+      await expect(erin.heading()).toBeFocused();
 
       // erin's own row was not turned into an approval by her late click.
       const rows = await approverRows(approval.id);
