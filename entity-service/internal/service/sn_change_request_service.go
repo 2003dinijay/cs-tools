@@ -1000,6 +1000,12 @@ func (s *snChangeRequestService) PatchChangeRequest(ctx context.Context, id stri
 	if req.DeploymentIDs != nil {
 		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "deploymentIds is not supported on the ServiceNow data source"}
 	}
+	// WSO2's answer to a time the customer proposed lives in PostgreSQL (customer_updated_on /
+	// customer_updated_date_confirmation): ServiceNow is the authority on this data source, and
+	// its own flow answers it there.
+	if req.ConfirmCustomerUpdatedDate != nil || req.ExpectedCustomerUpdatedOn != nil {
+		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "confirmCustomerUpdatedDate is not supported on the ServiceNow data source: answer the customer's proposed date in ServiceNow"}
+	}
 
 	if req.Title == nil && req.Description == nil && req.ProjectID == nil && req.CaseID == nil &&
 		req.DeploymentID == nil && req.DeployedProductID == nil && req.AssignedEngineerID == nil &&

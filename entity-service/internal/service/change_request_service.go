@@ -269,6 +269,7 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 		req.RollbackDurationText == nil &&
 		req.OnHold == nil && req.OnHoldReason == nil &&
 		req.CustomerApprovalRequired == nil && req.CustomerReviewRequired == nil &&
+		req.ConfirmCustomerUpdatedDate == nil &&
 		req.DeploymentIDs == nil && req.DeploymentProductIDs == nil &&
 		req.Comment == nil && req.WorkNote == nil && req.DurationInput == nil {
 		return domain.PatchChangeRequestResponse{}, &apierror.ValidationError{Msg: "at least one field must be provided"}
@@ -323,6 +324,12 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	mirrorReq := req
 	mirrorReq.CustomerApprovalRequired, mirrorReq.CustomerReviewRequired = nil, nil
 	mirrorReq.DeploymentIDs, mirrorReq.DeploymentProductIDs = nil, nil
+	// The conversation about a time the customer proposed (confirmCustomerUpdatedDate,
+	// expectedCustomerUpdatedOn) has no field in ServiceNow's change request API: it stays
+	// PostgreSQL-only, and what of it changes the change request itself is mirrored from what
+	// PostgreSQL COMMITTED (mirrorOfTheTimeConversation), never from what was asked.
+	mirrorReq.ConfirmCustomerUpdatedDate, mirrorReq.ExpectedCustomerUpdatedOn = nil, nil
+	mirrorReq = mirrorOfTheTimeConversation(req, mirrorReq, cr)
 	// PostgreSQL has accepted the window, in either of the layouts it takes (RFC
 	// 3339, or "YYYY-MM-DD HH:MM:SS" in UTC); ServiceNow's API takes only the
 	// second, so the mirror gets it in that one (what was sent in it is unchanged).
@@ -351,6 +358,43 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 		Message:       "Change request updated successfully",
 		ChangeRequest: cr,
 	}, nil
+}
+
+// mirrorOfTheTimeConversation adjusts the best-effort ServiceNow mirror of a PATCH for the
+// three acts of the customer's-proposed-time conversation, and ONLY for them: every other PATCH
+// mirrors exactly what it always did (mirror comes back unchanged).
+//
+//   - Accept proposed time (confirmCustomerUpdatedDate): ServiceNow has no field for the answer,
+//     but the change moved to Scheduled with a new planned window, so that is what is mirrored,
+//     read from what PostgreSQL committed. UNVERIFIED that ServiceNow accepts a manual Scheduled
+//     out of Customer Approval: if it refuses, PostgreSQL stays committed and the refused payload
+//     lands in sn_writeback_failures.
+//   - A Re-schedule / counter-proposal / decline names {state: "authorize"} but the change STAYS in
+//     Customer Approval: forwarding the state would put ServiceNow in Authorize while PostgreSQL is
+//     not, so the state is dropped (the window, when there is one, is mirrored as always).
+//   - A customer's proposal sends a window that PostgreSQL did NOT apply (it is waiting for WSO2 in
+//     customer_updated_on, the plan has not moved): nothing of it is mirrored.
+func mirrorOfTheTimeConversation(req, mirror domain.PatchChangeRequestRequest, committed domain.ChangeRequest) domain.PatchChangeRequestRequest {
+	if req.ConfirmCustomerUpdatedDate != nil {
+		scheduled := domain.ChangeRequestStateScheduled
+		return domain.PatchChangeRequestRequest{State: &scheduled, PlannedStartOn: committed.PlannedStartOn, PlannedEndOn: committed.PlannedEndOn}
+	}
+	if mirror.State != nil && strings.EqualFold(string(*mirror.State), string(domain.ChangeRequestStateAuthorize)) &&
+		committed.State != nil && strings.EqualFold(*committed.State, string(domain.ChangeRequestStateCustomerApproval)) {
+		mirror.State = nil
+	}
+	if mirror.State == nil && mirror.PlannedStartOn != nil && committed.CustomerProposal != nil && committed.CustomerProposal.Answer == "pending" &&
+		sameServiceNowInstant(*mirror.PlannedStartOn, committed.CustomerProposal.StartOn) &&
+		(committed.PlannedStartOn == nil || !sameServiceNowInstant(*mirror.PlannedStartOn, *committed.PlannedStartOn)) {
+		mirror.PlannedStartOn, mirror.PlannedEndOn = nil, nil
+	}
+	return mirror
+}
+
+// sameServiceNowInstant compares two planned timestamps as the mirror writes them (ServiceNow's
+// layout, UTC, whole seconds).
+func sameServiceNowInstant(a, b string) bool {
+	return repository.PlannedTimestampForServiceNow(a) == repository.PlannedTimestampForServiceNow(b)
 }
 
 // CreateChangeRequest implements ChangeRequestService.
