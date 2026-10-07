@@ -13521,7 +13521,8 @@ components:
             customer's answer to a change request and of the approvals decision route:
             `change_request_on_hold` (409), `change_request_schedule_changed` (409),
             `change_request_approval_not_pending` (409: the approval is no longer
-            pending), `change_request_not_proposable` (409), `change_request_not_asked`
+            pending), `change_request_not_proposable` (409), `change_request_proposal_not_now`
+            (409), `change_request_no_planned_window` (409), `change_request_not_asked`
             (403: not asked on the customer group's stage) and `change_request_forbidden`
             (403: the change request's creator, or a user who may not decide an internal
             stage). The list grows, so this is deliberately not a closed enum.

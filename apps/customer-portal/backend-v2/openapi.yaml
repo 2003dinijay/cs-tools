@@ -2004,8 +2004,11 @@ paths:
             (already answered, or nothing waits for an answer),
             `change_request_schedule_changed` (the window the answer names is no longer the
             change request's), `change_request_not_proposable` (a proposed time where none
-            can be proposed) or `change_request_on_hold` (a proposed time while WSO2 has the
-            change on hold).
+            can be proposed), `change_request_on_hold` (a proposed time while WSO2 has the
+            change on hold), `change_request_proposal_not_now` (a proposed time while an
+            approval that is not the customer's is also being asked) or
+            `change_request_no_planned_window` (a proposed time on a change request with no
+            planned window to move).
           content:
             application/json:
               schema:
@@ -6036,7 +6039,11 @@ components:
             the caller or a sibling contact, or the change request has left the state the
             answer belongs to), `change_request_not_proposable` (409: a proposed time on a
             change request that is not in Customer Approval or that nobody was asked to
-            approve), `change_request_not_asked` (403: a contact of the project whom the
+            approve), `change_request_proposal_not_now` (409: a proposed time while an
+            approval that is not the customer's is also being asked; the answer itself is
+            still possible), `change_request_no_planned_window` (409: a proposed time on a
+            change request with no planned window to move; the answer itself is still
+            possible), `change_request_not_asked` (403: a contact of the project whom the
             customer's request was never sent to) and `change_request_forbidden` (403:
             not a registered contact of the change request's project, its own creator, or
             a field a customer may not set). The list grows, so this is deliberately not
