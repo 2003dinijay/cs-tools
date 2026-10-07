@@ -33,21 +33,24 @@
  * next to each other in the roster are the ones most often compared.
  */
 export const TEAM_PALETTE: readonly string[] = [
-  "#4a7fe0",
-  "#e8962a",
-  "#2f9e8f",
-  "#c0559b",
-  "#8a63d2",
-  "#d95c5c",
-  "#3aa889",
-  "#c9a227",
-  "#5b8ff9",
-  "#a0562a",
-  // Not grey here: grey is what an unknown team falls back to, and a real
-  // team drawing in it is indistinguishable from one the catalogue has never
-  // heard of. The eleventh team hit exactly that.
-  "#7d8c21",
-  "#5a6acf",
+  // Fourteen hues, each its own colour family -- the list once held three
+  // blues, and two teams side by side in the roster read as one. Neighbours
+  // are far apart on the wheel, since teams next to each other in the roster
+  // are the ones most often compared.
+  "#3b6fd8", // blue
+  "#e07b1a", // orange
+  "#1f9e8c", // teal
+  "#c2479a", // magenta
+  "#7c55cf", // violet
+  "#d64545", // red
+  "#3f9b3a", // green
+  "#c49a12", // gold
+  "#1593b5", // cyan
+  "#9a5a2c", // brown
+  "#e05f8a", // pink
+  "#6b8a12", // olive
+  "#4b4fbf", // indigo
+  "#b5651d", // copper
 ];
 
 /**
@@ -87,7 +90,11 @@ export function zoneColour(code: string): string {
  */
 export function teamColour(order: number | undefined): string {
   if (order === undefined || order < 0) return "#6b7280";
-  return TEAM_PALETTE[order % TEAM_PALETTE.length];
+  if (order < TEAM_PALETTE.length) return TEAM_PALETTE[order];
+  // Past the palette, a generated hue rather than the first colour again: the
+  // golden angle keeps each new one as far as it can be from those before.
+  const hue = Math.round((order * 137.508 + 20) % 360);
+  return `hsl(${hue} 55% 45%)`;
 }
 
 /**
