@@ -6995,11 +6995,12 @@ func TestChangeRequestScopeIntegration_LegacyStoredGroupIsIgnored(t *testing.T) 
 // ---------------------------------------------------------------------------
 // Re-schedule: the process diagram's Time Change loop. In Customer Approval,
 // PATCH {state: "authorize", plannedStartOn/plannedEndOn} with a changed window
-// sends the change back through internal approval (Normal: a fresh CAB stage,
-// Emergency: a fresh ECAB stage), supersedes the customer's pending request and,
-// once the new approval is given, asks the customer again. Standard has no
-// internal approval to repeat: dates applied, stays in Customer Approval, the
-// customer is asked again.
+// supersedes the customer's pending request and asks the customer again, for every
+// change type: "authorize" is the wire name, the state does not move and NOTHING goes
+// through CAB / ECAB again -- the change itself has not changed, only its time. It is
+// refused when nobody can be asked, as Request Approval is. The customer's own proposed
+// time waits for WSO2 (customer_updated_on) and is answered with Accept proposed time or
+// a different time through the same wire name (change_request_proposal_*_test.go).
 // ---------------------------------------------------------------------------
 
 const (
@@ -7067,10 +7068,10 @@ func (f *crFlow) liveStageRows(id, label string) int {
 }
 
 // Normal, Customer Approval ticked, a customer group with two members: ->
-// Customer Approval (live stage) -> Re-schedule -> Authorize (fresh CAB stage,
-// customer stage cancelled) -> CAB approves -> Customer Approval (fresh customer
-// stage) -> a member approves -> Scheduled -> Implement -> Review. State,
-// legalNextStates and stages after every step.
+// Customer Approval (live stage) -> Re-schedule (twice) -> still Customer Approval, the
+// customers' request replaced by a fresh one each time, no CAB stage -> a member
+// approves -> Scheduled -> Implement -> Review. State, legalNextStates and stages after
+// every step.
 func TestChangeRequestFlowIntegration_RescheduleNormalWithCustomerGroup(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
@@ -7098,76 +7099,66 @@ func TestChangeRequestFlowIntegration_RescheduleNormalWithCustomerGroup(t *testi
 		t.Fatalf("a refused re-schedule changed the stages: %s", got)
 	}
 
-	// Re-schedule: back to Authorize with the new window and a fresh CAB stage.
+	// Re-schedule: the new window, the customers' request replaced -- no CAB, no Authorize.
 	if err := f.reschedule(id, sp(rsStart2), sp(rsEnd2)); err != nil {
 		t.Fatalf("re-schedule: %v", err)
 	}
-	f.expect(id, "after Re-schedule", "AUTHORIZE", "canceled")
+	f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	f.wantPlanned(id, "after Re-schedule", rsStart2, rsEnd2)
-	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,CAB Approval" {
-		t.Fatalf("stages after Re-schedule = %s, want a fresh CAB stage after the customer's", got)
+	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,Customer Approval" {
+		t.Fatalf("stages after Re-schedule = %s, want one fresh customer stage and no CAB", got)
 	}
 	stages := f.stages(id)
 	assertApprovers(t, "customer stage after Re-schedule", stages[2].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
-	assertApprovers(t, "fresh CAB stage", stages[3].approvers, map[string]string{crCABMemberUserID1: "REQUESTED", crCABMemberUserID2: "REQUESTED"})
-	if stages[3].groupID != crCABGroupID {
-		t.Fatalf("fresh CAB stage group = %s, want the CAB group", stages[3].groupID)
-	}
-	assertApprovers(t, "first CAB stage stays as a record", stages[1].approvers, map[string]string{crCABMemberUserID1: "APPROVED", crCABMemberUserID2: "CANCELLED"})
-	if n := f.liveStageRows(id, "Peer Approval"); n != 0 {
-		t.Fatalf("%d peer approver rows requested again; the peer approval stands", n)
+	assertApprovers(t, "fresh customer stage", stages[3].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+	assertApprovers(t, "the CAB stage stands as a record", stages[1].approvers, map[string]string{crCABMemberUserID1: "APPROVED", crCABMemberUserID2: "CANCELLED"})
+	if n := f.liveStageRows(id, "Peer Approval") + f.liveStageRows(id, "CAB Approval"); n != 0 {
+		t.Fatalf("%d internal approver rows requested again; the approvals stand", n)
 	}
 	if approved, _ := f.customerOutcome(id); approved {
 		t.Fatal("is_customer_approval_required stamped by a re-schedule")
 	}
+	f.wantCanAnswer(id, "after the Re-schedule", true, crScopeUserA1, crScopeUserA2)
 
-	// Authorize is an approval wait again: no second Re-schedule, no manual way on.
-	f.wantValidationError("re-schedule from Authorize", f.reschedule(id, sp(rsStart3), nil), rescheduleOnlyFromCustomerApprovalMsg)
+	// The loop repeats: a second Re-schedule replaces the request again.
+	if err := f.reschedule(id, sp(rsStart3), sp(rsEnd3)); err != nil {
+		t.Fatalf("second re-schedule: %v", err)
+	}
+	f.expect(id, "after the second Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.wantPlanned(id, "after the second Re-schedule", rsStart3, rsEnd3)
+	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,Customer Approval,Customer Approval" {
+		t.Fatalf("stages after the second Re-schedule = %s", got)
+	}
+
+	// Not from any other state, and no manual way on.
 	if _, err := f.patchState(id, domain.ChangeRequestStateScheduled); err == nil {
-		t.Fatal("manual {state: scheduled} from Authorize succeeded")
+		t.Fatal("manual {state: scheduled} from Customer Approval succeeded")
 	}
-	// A customer member cannot answer the superseded request, nor the CAB's.
-	if err := f.decide(id, crScopeUserA1, "approved"); err == nil {
-		t.Fatal("a customer member decided although their request was superseded")
-	}
-	f.expect(id, "after the refused decision", "AUTHORIZE", "canceled")
 
-	// The new CAB approval asks the customer again, with a fresh stage.
-	if err := f.decide(id, crCABMemberUserID2, "approved"); err != nil {
-		t.Fatalf("CAB approval after Re-schedule: %v", err)
-	}
-	f.expect(id, "after the new CAB approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
-	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,CAB Approval,Customer Approval" {
-		t.Fatalf("stages after the new CAB approval = %s", got)
-	}
-	stages = f.stages(id)
-	assertApprovers(t, "first customer stage", stages[2].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
-	assertApprovers(t, "fresh customer stage", stages[4].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
-	assertApprovers(t, "new CAB stage", stages[3].approvers, map[string]string{crCABMemberUserID1: "CANCELLED", crCABMemberUserID2: "APPROVED"})
-	f.wantPlanned(id, "back in Customer Approval", rsStart2, rsEnd2)
-
-	// A member approves: Scheduled, customer approval recorded; the tail runs and
-	// the Review stage is still provisioned (the repeated CAB stage is not a new checkpoint).
+	// A member approves the plan: Scheduled, customer approval recorded; the tail runs and
+	// the Review stage is still provisioned (the repeated customer stages are not new checkpoints).
 	if err := f.decide(id, crScopeUserA2, "approved"); err != nil {
 		t.Fatalf("customer approval: %v", err)
 	}
 	f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
+	f.wantPlanned(id, "after the customer's approval", rsStart3, rsEnd3)
 	if approved, _ := f.customerOutcome(id); !approved {
 		t.Fatal("is_customer_approval_required not stamped by the member's approval")
 	}
 	f.wantValidationError("re-schedule from Scheduled", f.reschedule(id, sp(rsStart3), nil), rescheduleOnlyFromCustomerApprovalMsg)
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
-	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,CAB Approval,Customer Approval,Review" {
+	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,Customer Approval,Customer Approval,Review" {
 		t.Fatalf("stages in Review = %s, want the Review stage after a re-schedule too", got)
 	}
 }
 
 // Normal, Customer Approval ticked, NOBODY to ask (a project with no registered
-// contacts), the creator also sits in the CAB group: Re-schedule twice. The
-// creator never gets a decidable row on a new CAB stage; rejecting the new stage
-// behaves as a CAB rejection does (the change stays in Authorize). Back in
-// Customer Approval, staff still cannot answer for the customer.
+// contacts; the contact it had when approval was requested is gone before the gate),
+// the creator also sits in the CAB group: a Re-schedule is refused -- the customers it
+// would ask cannot be asked -- with the words of Request Approval's refusal, as many
+// times as it is tried, and nothing is written. Back in Customer Approval, staff still
+// cannot answer for the customer.
 func TestChangeRequestFlowIntegration_RescheduleWithNobodyToAskTwice(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
@@ -7191,51 +7182,22 @@ func TestChangeRequestFlowIntegration_RescheduleWithNobodyToAskTwice(t *testing.
 	f.wantExact("Request Approval with nobody to ask", err, nobodyMsgApproval)
 	f.requestApprovalThenContactsLeave(id)
 	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
+	before := f.snap(id)
 
-	// Re-schedule #1.
-	if err := f.reschedule(id, sp(rsStartEarly), nil); err != nil { // only the start changes
-		t.Fatalf("re-schedule #1: %v", err)
+	for i := 1; i <= 3; i++ {
+		f.wantExact(fmt.Sprintf("re-schedule #%d with nobody to ask", i), f.reschedule(id, sp(rsStartEarly), nil), nobodyMsgApproval)
+		f.wantExact(fmt.Sprintf("re-schedule #%d, the whole window", i), f.reschedule(id, sp(rsStart2), sp(rsEnd2)), nobodyMsgApproval)
 	}
-	f.expect(id, "after Re-schedule #1", "AUTHORIZE", "canceled")
-	f.wantPlanned(id, "after Re-schedule #1", rsStartEarly, rsEnd1)
-	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,CAB Approval" {
-		t.Fatalf("stages after Re-schedule #1 = %s (no customer stage without a group)", got)
+	f.expect(id, "after the refused re-schedules", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.wantPlanned(id, "after the refused re-schedules", rsStart1, rsEnd1)
+	if after := f.snap(id); after != before {
+		t.Fatalf("a refused Re-schedule changed the change request:\n  before: %s\n  after:  %s", before, after)
 	}
-	stages := f.stages(id)
-	assertApprovers(t, "fresh CAB stage", stages[2].approvers, map[string]string{
-		crCABMemberUserID1: "REQUESTED", crCABMemberUserID2: "REQUESTED", crFlowCreatorID: "CANCELLED"})
-	var fe *apierror.ForbiddenError
-	if err := f.decide(id, crFlowCreatorID, "approved"); !errors.As(err, &fe) {
-		t.Fatalf("creator deciding the fresh CAB stage: err = %v, want ForbiddenError", err)
+	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval" {
+		t.Fatalf("stages after the refused re-schedules = %s (no customer stage without a group, no CAB again)", got)
 	}
-
-	// A CAB rejection of the new stage changes nothing about the state (as today).
-	if err := f.decide(id, crCABMemberUserID1, "rejected"); err != nil {
-		t.Fatalf("CAB rejection: %v", err)
-	}
-	f.expect(id, "after the new stage was rejected", "AUTHORIZE", "canceled")
 	if n := f.requestedApprovers(id); n != 0 {
-		t.Fatalf("%d rows still requested after the rejection resolved the stage", n)
-	}
-
-	// Start over on a second change to approve the second round and loop again.
-	id = f.createGated(domain.ChangeRequestTypeNormal, crFlowGroupID, boolp(true), nil)
-	f.setPlanned(id, rsStart1, rsEnd1)
-	f.requestApprovalThenContactsLeave(id)
-	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
-	for round, w := range [][2]string{{rsStart2, rsEnd2}, {rsStart3, rsEnd3}} {
-		if err := f.reschedule(id, sp(w[0]), sp(w[1])); err != nil {
-			t.Fatalf("re-schedule round %d: %v", round+1, err)
-		}
-		f.expect(id, "after re-schedule round", "AUTHORIZE", "canceled")
-		f.wantPlanned(id, "after re-schedule round", w[0], w[1])
-		if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
-			t.Fatalf("CAB approval round %d: %v", round+1, err)
-		}
-		f.expect(id, "back in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
-	}
-	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,CAB Approval,CAB Approval" {
-		t.Fatalf("stages after two re-schedules = %s", got)
+		t.Fatalf("%d rows requested after the refused re-schedules", n)
 	}
 	// Nobody was asked and nobody may answer for them: the refused manual
 	// scheduled stamps nothing and moves nothing.
@@ -7245,52 +7207,38 @@ func TestChangeRequestFlowIntegration_RescheduleWithNobodyToAskTwice(t *testing.
 	if approved, _ := f.customerOutcome(id); approved {
 		t.Fatal("a refused manual scheduled stamped is_customer_approval_required")
 	}
+	// What staff keep: Cancel.
+	f.step(id, domain.ChangeRequestStateCanceled, "CANCELED")
 }
 
-// Emergency with Customer Approval ticked and a customer group: a fresh ECAB stage.
+// Emergency with Customer Approval ticked and a customer group: Re-schedule asks the
+// customers again, nothing goes through ECAB again.
 func TestChangeRequestFlowIntegration_RescheduleEmergency(t *testing.T) {
 	f := newCustomerGroupFlow(t)
-	seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
-	id := f.createWithProject(domain.ChangeRequestTypeEmergency, sp(crScopeProjectA), true, false)
-	f.setPlanned(id, rsStart1, rsEnd1)
-	f.requestApproval(id)
-	f.expect(id, "after Request Approval", "AUTHORIZE", "canceled")
-	if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
-		t.Fatalf("ECAB approval: %v", err)
-	}
-	f.expect(id, "after ECAB approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	id := f.reachCustomerApproval(domain.ChangeRequestTypeEmergency)
 
 	if err := f.reschedule(id, nil, sp(rsEnd2)); err != nil { // only the end changes
 		t.Fatalf("re-schedule: %v", err)
 	}
-	f.expect(id, "after Re-schedule", "AUTHORIZE", "canceled")
+	f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	f.wantPlanned(id, "after Re-schedule", rsStart1, rsEnd2)
-	if got := f.stageLabels(id); got != "ECAB Approval,Customer Approval,ECAB Approval" {
-		t.Fatalf("emergency stages after Re-schedule = %s", got)
+	if got := f.stageLabels(id); got != "ECAB Approval,Customer Approval,Customer Approval" {
+		t.Fatalf("emergency stages after Re-schedule = %s, want one fresh customer stage and no ECAB", got)
 	}
 	stages := f.stages(id)
-	assertApprovers(t, "fresh ECAB stage", stages[2].approvers, map[string]string{crECABMemberUserID: "REQUESTED"})
-	if stages[2].groupID != crECABGroupID {
-		t.Fatalf("fresh ECAB stage group = %s, want the ECAB group", stages[2].groupID)
-	}
 	assertApprovers(t, "superseded customer stage", stages[1].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
+	assertApprovers(t, "fresh customer stage", stages[2].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+	assertApprovers(t, "the ECAB stage stands as a record", stages[0].approvers, map[string]string{crECABMemberUserID: "APPROVED"})
 
-	if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
-		t.Fatalf("new ECAB approval: %v", err)
-	}
-	f.expect(id, "after the new ECAB approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
-	if got := f.stageLabels(id); got != "ECAB Approval,Customer Approval,ECAB Approval,Customer Approval" {
-		t.Fatalf("emergency stages after the new ECAB approval = %s", got)
-	}
 	if err := f.decide(id, crScopeUserA1, "approved"); err != nil {
 		t.Fatalf("customer approval: %v", err)
 	}
 	f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
 }
 
-// Standard has no internal approval to repeat: Re-schedule applies the dates,
-// stays in Customer Approval and asks the customer again (a fresh stage when the
-// change has a customer group; with nobody to ask there is nothing to renew).
+// Standard has no internal approval either: Re-schedule applies the dates, stays in
+// Customer Approval and asks the customer again (a fresh stage when the change has a
+// customer group; with nobody to ask it is refused).
 func TestChangeRequestFlowIntegration_RescheduleStandard(t *testing.T) {
 	t.Run("with a customer group", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
@@ -7329,13 +7277,12 @@ func TestChangeRequestFlowIntegration_RescheduleStandard(t *testing.T) {
 		f.wantExact("Request Approval with nobody to ask", err, nobodyMsgApproval)
 		f.legacyInCustomerState(id, "CUSTOMER_APPROVAL")
 		f.expect(id, "the legacy row in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
-		if err := f.reschedule(id, sp(rsStartEarly), nil); err != nil {
-			t.Fatalf("re-schedule: %v", err)
-		}
-		f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
-		f.wantPlanned(id, "after Re-schedule", rsStartEarly, rsEnd1)
+		// The customers a Re-schedule would ask cannot be asked: refused, nothing written.
+		f.wantExact("re-schedule with nobody to ask", f.reschedule(id, sp(rsStartEarly), nil), nobodyMsgApproval)
+		f.expect(id, "after the refused Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		f.wantPlanned(id, "after the refused Re-schedule", rsStart1, rsEnd1)
 		if n := len(f.stages(id)); n != 0 {
-			t.Fatalf("standard change has %d stages after Re-schedule, want none", n)
+			t.Fatalf("standard change has %d stages after the refused Re-schedule, want none", n)
 		}
 		_, err = f.patchState(id, domain.ChangeRequestStateScheduled)
 		f.wantValidationError("manual scheduled with nobody to ask", err, "can only be given by the customer in the Customer Portal")
@@ -7379,9 +7326,9 @@ func TestChangeRequestFlowIntegration_RescheduleRefusedFromEveryOtherState(t *te
 	f.wantValidationError("re-schedule from rollback", f.reschedule(id, sp(rsStart2), nil), "a change request that is rolled back cannot be moved")
 }
 
-// The on-hold gate applies, and an unsatisfiable re-schedule (nobody can give
-// the new CAB approval) is refused as a whole -- window, state and the customer's
-// pending request are untouched.
+// The on-hold gate applies, and an unsatisfiable re-schedule (nobody can be asked
+// about the new time) is refused as a whole -- window, state and the customer's pending
+// request are untouched.
 func TestChangeRequestFlowIntegration_RescheduleOnHoldAndAtomic(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
@@ -7399,11 +7346,23 @@ func TestChangeRequestFlowIntegration_RescheduleOnHoldAndAtomic(t *testing.T) {
 		t.Fatalf("take off hold: %v", err)
 	}
 
-	// The CAB group is emptied: the new approval could never be given.
-	if _, err := f.scoped.Exec(f.sys, `DELETE FROM team_member WHERE group_id = $1::uuid`, crCABGroupID); err != nil {
-		t.Fatalf("empty the CAB group: %v", err)
+	// Every registered contact of the project is deactivated: nobody can be asked about the new time.
+	var registered []string
+	rows, err := f.scoped.Query(f.sys, `SELECT id::text FROM project_contact WHERE project_id = $1 AND state = 'REGISTERED'`, crScopeProjectA)
+	if err != nil {
+		t.Fatalf("list the registered contacts: %v", err)
 	}
-	f.wantValidationError("re-schedule into an empty CAB group", f.reschedule(id, sp(rsStart2), sp(rsEnd2)), "no members")
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err != nil {
+			t.Fatalf("scan contact: %v", err)
+		}
+		registered = append(registered, cid)
+	}
+	rows.Close()
+	f.execSQL(`UPDATE project_contact SET state = 'DEACTIVATED'::project_contact_state_enum WHERE id = ANY($1::uuid[])`, registered)
+	before := f.snap(id)
+	f.wantExact("re-schedule with every contact gone", f.reschedule(id, sp(rsStart2), sp(rsEnd2)), nobodyMsgApproval)
 	f.expect(id, "after the refused re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	f.wantPlanned(id, "after the refused re-schedule", rsStart1, rsEnd1)
 	if n := f.liveStageRows(id, "Customer Approval"); n != 2 {
@@ -7412,9 +7371,12 @@ func TestChangeRequestFlowIntegration_RescheduleOnHoldAndAtomic(t *testing.T) {
 	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval" {
 		t.Fatalf("stages after the refused re-schedule = %s", got)
 	}
+	if after := f.snap(id); after != before {
+		t.Fatalf("a refused re-schedule changed the change request:\n  before: %s\n  after:  %s", before, after)
+	}
+	f.execSQL(`UPDATE project_contact SET state = 'REGISTERED'::project_contact_state_enum WHERE id = ANY($1::uuid[])`, registered)
 
 	// Taking it off hold in the same PATCH works.
-	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
 	if _, err := f.patch(id, domain.PatchChangeRequestRequest{OnHold: boolp(true)}); err != nil {
 		t.Fatalf("put on hold again: %v", err)
 	}
@@ -7422,5 +7384,6 @@ func TestChangeRequestFlowIntegration_RescheduleOnHoldAndAtomic(t *testing.T) {
 		State: stateptr(domain.ChangeRequestStateAuthorize), PlannedStartOn: sp(rsStartEarly), OnHold: boolp(false)}); err != nil {
 		t.Fatalf("PATCH {state: authorize, plannedStartOn, onHold: false}: %v", err)
 	}
-	f.expect(id, "after re-scheduling and releasing the hold", "AUTHORIZE", "canceled")
+	f.expect(id, "after re-scheduling and releasing the hold", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.wantPlanned(id, "after re-scheduling and releasing the hold", rsStartEarly, rsEnd1)
 }

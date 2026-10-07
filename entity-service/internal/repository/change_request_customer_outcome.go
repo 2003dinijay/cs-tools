@@ -493,24 +493,7 @@ func checkExpectedSchedule(ctx context.Context, tx pgx.Tx, id string, expectedSt
 		`SELECT CASE WHEN isfinite(start_on) THEN start_on END, CASE WHEN isfinite(end_on) THEN end_on END FROM change_request WHERE id = $1`, id).Scan(&start, &end); err != nil {
 		return fmt.Errorf("answer change request: read the planned window: %w", err)
 	}
-	same := func(want, got *time.Time) bool {
-		return want == nil || (got != nil && got.UTC().Truncate(time.Microsecond).Equal(*want))
-	}
-	if same(expectedStart, start) && same(expectedEnd, end) {
-		return nil
-	}
-	show := func(t *time.Time) string {
-		if t == nil {
-			return "not set"
-		}
-		return t.UTC().Format(time.RFC3339)
-	}
-	now := "no planned time is set"
-	if start != nil || end != nil {
-		now = fmt.Sprintf("%s to %s", show(start), show(end))
-	}
-	return &apierror.ConflictError{Msg: fmt.Sprintf(
-		"the planned implementation time of this change request changed after you opened it (it is now %s); read it again before giving your answer", now)}
+	return expectedScheduleConflict(start, end, expectedStart, expectedEnd, "read it again before giving your answer")
 }
 
 // markCustomerCanAnswer sets domain.ChangeRequest.CustomerCanAnswer for the
@@ -640,95 +623,4 @@ func answerCustomerStageViaPatch(ctx context.Context, tx pgx.Tx, id string, p cu
 		return "", err
 	}
 	return id, nil
-}
-
-// prepareCustomerProposal checks an external caller's proposed implementation
-// window and turns the request into the Re-schedule it is: patchChangeRequestTx
-// carries on with {state: authorize, plannedStartOn?, plannedEndOn?}, the exact
-// request a WSO2 user sends to re-plan a change in Customer Approval, so the new
-// window, the fresh CAB / ECAB stage (or, for a Standard change, the customer
-// asked again) and the "Time Change = Yes" check all come from the one
-// implementation.
-//
-// Refused before anything is written: a change request that is not visible
-// (404), a caller who is not a registered contact of its project (403), one who
-// is the change's creator (403), a change not in Customer Approval (409 -- the
-// customer's approval is the only place a new time can be proposed), a change
-// nobody has been asked to approve (409), a registered contact the approval was
-// not asked of (403: proposing cancels the asked contacts' pending approvals, so
-// it is open to exactly those who could answer -- customerCanAnswer's test), a
-// window that is not still to come (400), and a change on hold (409).
-func prepareCustomerProposal(ctx context.Context, tx pgx.Tx, id string, req domain.PatchChangeRequestRequest, actorEmail string) (domain.PatchChangeRequestRequest, error) {
-	projectID, err := lockCustomerAnswerRow(ctx, tx, id, actorEmail)
-	if err != nil {
-		return req, err
-	}
-	if err := requireRegisteredContact(ctx, tx, projectID, actorEmail); err != nil {
-		return req, err
-	}
-	gates, err := lockChangeRequestGateSnapshot(ctx, tx, id)
-	if err != nil {
-		return req, err
-	}
-	if gates.state != crStateCustomerApproval {
-		return req, &apierror.ConflictError{Msg: fmt.Sprintf(
-			"a new implementation time can only be proposed while the change request is in Customer Approval, but it is in %s",
-			changeRequestStateDisplayName(stateForMessage(gates.state)))}
-	}
-
-	userID, err := customerApproverUserID(ctx, tx, id, actorEmail)
-	if err != nil {
-		return req, err
-	}
-	creatorIDs, err := changeRequestCreatorsForApprover(ctx, tx, id, userID, actorEmail)
-	if err != nil {
-		return req, fmt.Errorf("propose implementation time: %w", err)
-	}
-	if err := approverDecisionBlock(ctx, tx, userID, creatorIDs, stageKindCustomerApproval); err != nil {
-		return req, err
-	}
-
-	// See answerCustomerStageViaPatch: a legacy change request waiting in
-	// Customer Approval with nobody asked is given its live stage first, so the
-	// proposal (which is also the one act that records the proposer as asked,
-	// and so keeps the change request visible to them in Authorize) has someone
-	// to be proposed to.
-	if err := ensureCustomerStageForLegacy(ctx, tx, id, actorEmail); err != nil {
-		return req, err
-	}
-	live, err := liveCustomerStageForState(ctx, tx, id, gates.state)
-	if err != nil {
-		return req, fmt.Errorf("propose implementation time: %w", err)
-	}
-	if live == nil {
-		return req, &apierror.ConflictError{Msg: "no customer approval is pending on this change request: it has not been requested from the project's registered contacts, so there is nobody for a new implementation time to be proposed to here"}
-	}
-	asked, err := customerHasRequestedRow(ctx, tx, live.stageID, userID)
-	if err != nil {
-		return req, fmt.Errorf("propose implementation time: %w", err)
-	}
-	if !asked {
-		return req, &apierror.ForbiddenError{Msg: "only members of the customer group (the registered contacts of this change request's project) who have been asked for the customer's approval of this change request can propose a new implementation time for it"}
-	}
-	now := time.Now()
-	if err := requireFutureWindow(now, req.PlannedStartOn, req.PlannedEndOn); err != nil {
-		return req, err
-	}
-	// A proposal that names only an end keeps the stored start: if that has gone
-	// the window would still begin in the past, so the start must be proposed too.
-	if err := requireFutureEffectiveStart(ctx, tx, id, now, req.PlannedStartOn); err != nil {
-		return req, err
-	}
-
-	var onHold *bool
-	if err := tx.QueryRow(ctx, `SELECT is_on_hold FROM change_request WHERE id = $1`, id).Scan(&onHold); err != nil {
-		return req, fmt.Errorf("propose implementation time: read on-hold state: %w", err)
-	}
-	if onHold != nil && *onHold {
-		return req, &apierror.ConflictError{Msg: "this change request is on hold, so a new implementation time cannot be proposed now"}
-	}
-
-	reschedule := domain.ChangeRequestStateAuthorize
-	req.State = &reschedule
-	return req, nil
 }

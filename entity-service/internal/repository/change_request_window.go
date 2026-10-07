@@ -17,12 +17,8 @@
 package repository
 
 import (
-	"context"
-	"errors"
 	"fmt"
 	"time"
-
-	"github.com/jackc/pgx/v5"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -172,32 +168,4 @@ func requireFutureWindow(now time.Time, start, end *string) error {
 		}
 	}
 	return nil
-}
-
-// requireFutureEffectiveStart is requireFutureWindow's complement for a proposal
-// that does not carry a start: requireFutureWindow only judges the bounds that
-// were SENT, so an end-only proposal left the stored start in place even when it
-// had already passed. The start the change will have is the proposed one, else
-// the stored one, and it must be still to come. A change with no stored start (or
-// one the database holds as infinity) has nothing to judge.
-func requireFutureEffectiveStart(ctx context.Context, q interface {
-	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
-}, id string, now time.Time, proposedStart *string) error {
-	if proposedStart != nil {
-		return nil
-	}
-	var stored *time.Time
-	err := q.QueryRow(ctx, `SELECT CASE WHEN isfinite(start_on) THEN start_on END FROM change_request WHERE id = $1`, id).Scan(&stored)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("propose implementation time: read the planned start: %w", err)
-	}
-	if stored == nil || stored.After(now) {
-		return nil
-	}
-	return &apierror.ValidationError{Msg: fmt.Sprintf(
-		"plannedStartOn is in the past: the current planned start (%s) has passed; propose a new start as well",
-		stored.UTC().Format(time.RFC3339))}
 }

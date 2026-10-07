@@ -1359,40 +1359,6 @@ func checkRescheduleWindow(ctx context.Context, tx pgx.Tx, id string, start, end
 	return nil
 }
 
-// provisionReauthorizationStage opens a FRESH stage for a checkpoint that has
-// already run (CAB / ECAB after a Re-schedule): the same group, the same
-// creator exclusion, a new approval_stage row (the earlier stage stays as a
-// record). Idempotent: a stage of this label that still has a requested
-// approver is left alone. Unlike provisionApprovalStage it does not test the
-// checkpoint's ordinal position -- repeating a checkpoint is the point. A group
-// with nobody eligible is a ValidationError, so a change is never re-scheduled
-// into an approval nobody can give.
-func provisionReauthorizationStage(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string, cp changeRequestApprovalCheckpoint) error {
-	if err := setCallerIdentity(ctx, tx, SearchScope{Unrestricted: true}); err != nil {
-		return fmt.Errorf("re-schedule: escalate identity: %w", err)
-	}
-	var live bool
-	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM approval_stage ast
-		                 WHERE ast.work_item_id = $1 AND ast.checkpoint_label = $2
-		                   AND EXISTS (SELECT 1 FROM approval_stage_approver asa WHERE asa.stage_id = ast.id AND asa.state = 'REQUESTED'))`,
-		workItemID, cp.Label).Scan(&live); err != nil {
-		return fmt.Errorf("re-schedule: check live %s stage: %w", cp.Label, err)
-	}
-	if live {
-		return nil
-	}
-	creatorIDs, err := changeRequestCreatorUserIDs(ctx, tx, workItemID)
-	if err != nil {
-		return fmt.Errorf("re-schedule: %w", err)
-	}
-	pool, err := resolveApprovalPool(ctx, tx, cp, nil, creatorIDs)
-	if err != nil {
-		return err
-	}
-	return insertApprovalStage(ctx, tx, workItemID, actorEmail, cp.Label, pool, creatorIDs)
-}
-
 // cancelLiveCustomerStages cancels the requested approvers of every live
 // customer stage (the stages stay, as a record).
 func cancelLiveCustomerStages(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) error {

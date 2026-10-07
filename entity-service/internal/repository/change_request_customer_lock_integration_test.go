@@ -387,48 +387,26 @@ func TestChangeRequestLockIntegration_ReturnToNewIsRefused(t *testing.T) {
 }
 
 // A change that has reached a customer stage can never get back to a point where
-// the customer is no longer asked. Re-schedule sends a Normal / Emergency change
-// back to Authorize and a Standard one stays in Customer Approval; in none of them
-// can the box be unticked (the hole the lock exists to close), the project moved
-// or the change sent back to New, and the approval that follows asks again:
-// the same contacts, in a fresh stage, the old one kept as a record.
+// the customer is no longer asked. Re-schedule keeps every type in Customer Approval
+// (nothing goes back through CAB: the change itself has not changed) and asks the same
+// contacts again, in a fresh stage with the old one kept as a record; in none of them can
+// the box be unticked (the hole the lock exists to close), the project moved or the change
+// sent back to New. A Re-schedule writes no requirement flag: it needs none.
 func TestChangeRequestLockIntegration_RescheduleCannotReopenTheCustomersApproval(t *testing.T) {
 	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeEmergency, domain.ChangeRequestTypeStandard} {
 		typ := typ
 		t.Run(string(typ), func(t *testing.T) {
 			f := newCustomerGroupFlow(t)
-			seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
-			id := f.createWithProject(typ, sp(crScopeProjectA), true, false)
-			f.setPlanned(id, rsStart1, rsEnd1)
-			cabApprover := crCABMemberUserID1
-			switch typ {
-			case domain.ChangeRequestTypeNormal:
-				f.driveToCustomerApproval(id)
-			case domain.ChangeRequestTypeEmergency:
-				cabApprover = crECABMemberUserID
-				f.requestApproval(id)
-				if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
-					t.Fatalf("ECAB approval: %v", err)
-				}
-			default:
-				f.requestApproval(id)
-			}
-			f.expect(id, "in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
+			id := f.reachCustomerApproval(typ)
 			if len(f.customerStages(id)) != 1 {
 				t.Fatalf("customer stages before the re-schedule = %+v", f.customerStages(id))
 			}
 
-			// Re-schedule: the window moves, the customer's request is superseded.
+			// Re-schedule: the window moves, the customer's request is superseded and asked again.
 			if err := f.reschedule(id, sp(rsStart2), sp(rsEnd2)); err != nil {
 				t.Fatalf("Re-schedule: %v", err)
 			}
-			wantState := "AUTHORIZE"
-			if typ == domain.ChangeRequestTypeStandard {
-				wantState = "CUSTOMER_APPROVAL"
-			}
-			if got := f.state(id); got != wantState {
-				t.Fatalf("state after the Re-schedule = %s, want %s", got, wantState)
-			}
+			f.expect(id, "after the Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
 
 			// The hole: untick the box, in this state, alone or with anything else.
 			for _, req := range []domain.PatchChangeRequestRequest{
@@ -449,17 +427,10 @@ func TestChangeRequestLockIntegration_RescheduleCannotReopenTheCustomersApproval
 				t.Fatalf("a refused edit wrote the title: %q", got)
 			}
 
-			// Nothing else reopened: the internal approval runs again and the customer is asked again.
-			if typ != domain.ChangeRequestTypeStandard {
-				f.wantCanAnswer(id, "while the new plan awaits internal approval", false, crScopeUserA1, crScopeUserA2)
-				if err := f.decide(id, cabApprover, "approved"); err != nil {
-					t.Fatalf("approval of the new plan: %v", err)
-				}
-			}
-			f.expect(id, "after the new plan is approved", "CUSTOMER_APPROVAL", "authorize", "canceled")
+			// Nothing else reopened: the customer is asked again at once, the old request kept as a record.
 			st := f.customerStages(id)
 			if len(st) != 2 || liveStages(st) != 1 {
-				t.Fatalf("customer stages after the re-approval = %+v, want 2 (the old one cancelled, a fresh one live)", st)
+				t.Fatalf("customer stages after the Re-schedule = %+v, want 2 (the old one cancelled, a fresh one live)", st)
 			}
 			assertApprovers(t, "the superseded request", st[0].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
 			assertApprovers(t, "the fresh request", st[1].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
@@ -468,19 +439,18 @@ func TestChangeRequestLockIntegration_RescheduleCannotReopenTheCustomersApproval
 	}
 }
 
-// A customer's own proposal of a new time (the Re-schedule a contact starts) is
-// the same: they cannot take their own approval away by it either.
+// A customer's own proposal of a new time waits for WSO2: they cannot take their own
+// approval away by it either (it writes one column, customer_updated_on, and nothing
+// else), and neither can WSO2 afterwards, whether it accepts the proposal or not.
 func TestChangeRequestLockIntegration_CustomerProposalCannotReopenTheApproval(t *testing.T) {
 	f := newCustomerGroupFlow(t)
-	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
-	f.setPlanned(id, rsStart1, rsEnd1)
-	f.driveToCustomerApproval(id)
+	id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
 	start := time.Now().UTC().AddDate(1, 0, 0).Truncate(time.Second)
 	if _, err := f.patchAsContact(id, crScopeUserA1, domain.PatchChangeRequestRequest{
 		PlannedStartOn: sp(start.Format(time.RFC3339)), PlannedEndOn: sp(start.Add(2 * time.Hour).Format(time.RFC3339))}); err != nil {
 		t.Fatalf("the customer's proposal: %v", err)
 	}
-	f.expect(id, "after the proposal", "AUTHORIZE", "canceled")
+	f.expect(id, "after the proposal", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	// The customer is not entitled to the box either: it is not one of the fields they may send.
 	_, err := f.patchAsContact(id, crScopeUserA1, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(false)})
 	if err == nil {
@@ -489,11 +459,16 @@ func TestChangeRequestLockIntegration_CustomerProposalCannotReopenTheApproval(t 
 	// ...and WSO2 cannot after it.
 	_, err = f.patch(id, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(false)})
 	f.wantValidationError("unticking after the customer's proposal", err, "customerApprovalRequired "+lockMsgTurnOff)
-	if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
-		t.Fatalf("CAB approval: %v", err)
+	if _, _, approval, _ := f.lockStored(id); !approval {
+		t.Fatal("customerApprovalRequired was unticked")
 	}
-	f.expect(id, "after the new plan is approved", "CUSTOMER_APPROVAL", "authorize", "canceled")
-	f.wantCanAnswer(id, "asked again", true, crScopeUserA1, crScopeUserA2)
+	f.wantCanAnswer(id, "while the proposal waits", true, crScopeUserA1, crScopeUserA2)
+	// WSO2's answer reopens nothing: Accept schedules the change, it does not un-ask the customer.
+	f.mustAccept(id)
+	f.expect(id, "after Accept", "SCHEDULED", "implement", "canceled")
+	if _, _, approval, _ := f.lockStored(id); !approval {
+		t.Fatal("Accept turned customerApprovalRequired off")
+	}
 }
 
 // Customer Review: the same shape. A change in Review cannot turn its review

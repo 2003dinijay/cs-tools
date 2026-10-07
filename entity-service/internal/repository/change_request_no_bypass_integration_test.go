@@ -174,6 +174,16 @@ func customerApprovalScenarios() []bypassScenario {
 			f.driveToCustomerApproval(id)
 			return id
 		}, true},
+		// Accept proposed time is a door of its own (confirmCustomerUpdatedDate, only while
+		// the customer's own proposal waits): a staff-named {state: scheduled} stays refused
+		// even then, with every wording it had.
+		{"a customer's proposed time waits for WSO2", func(f *crFlow) string {
+			id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
+			f.setPlanned(id, rsStart1, rsEnd1)
+			f.driveToCustomerApproval(id)
+			f.mustPropose(id, crScopeUserA1, rsStart2)
+			return id
+		}, true},
 		{"the stage was already decided", func(f *crFlow) string {
 			id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
 			f.driveToCustomerApproval(id)
@@ -427,30 +437,30 @@ func TestChangeRequestNoBypassIntegration_TheCustomersOwnWaysStillWork(t *testin
 			typ := typ
 			t.Run(string(typ), func(t *testing.T) {
 				f := newCustomerGroupFlow(t)
-				id := f.createWithProject(typ, sp(crScopeProjectA), true, false)
-				f.setPlanned(id, rsStart1, rsEnd1)
-				if typ == domain.ChangeRequestTypeStandard {
-					f.requestApproval(id)
-					f.expect(id, "after Request Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
-				} else {
-					f.driveToCustomerApproval(id)
-				}
+				id := f.reachCustomerApproval(typ)
 				if err := f.reschedule(id, sp(rsStart2), sp(rsEnd2)); err != nil {
 					t.Fatalf("Re-schedule: %v", err)
 				}
 				f.wantPlanned(id, "after Re-schedule", rsStart2, rsEnd2)
-				if typ == domain.ChangeRequestTypeStandard {
-					f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
-					if n := f.liveStageRows(id, stageCustApproval); n != 2 {
-						t.Fatalf("customer request has %d live rows after the Re-schedule, want 2 (asked again)", n)
-					}
-				} else {
-					f.expect(id, "after Re-schedule", "AUTHORIZE", "canceled")
+				f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
+				if n := f.liveStageRows(id, stageCustApproval); n != 2 {
+					t.Fatalf("customer request has %d live rows after the Re-schedule, want 2 (asked again)", n)
 				}
 				if approved, _ := f.customerOutcome(id); approved {
 					t.Fatal("a Re-schedule stamped the customer's approval")
 				}
 			})
+		}
+	})
+	t.Run("Accept proposed time applies the customer's own proposal and records no approval", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
+		f.mustPropose(id, crScopeUserA2, rsStart2)
+		f.mustAccept(id)
+		f.expect(id, "after Accept", "SCHEDULED", "implement", "canceled")
+		f.wantPlanned(id, "after Accept", rsStart2, rsEnd2)
+		if approved, _ := f.customerOutcome(id); approved {
+			t.Fatal("Accept stamped the customer's approval: no staff action records it")
 		}
 	})
 	t.Run("Roll back from Review and from Customer Review (nobody asked) is unchanged", func(t *testing.T) {

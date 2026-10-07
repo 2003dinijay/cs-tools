@@ -438,11 +438,10 @@ func TestChangeRequestFlowIntegration_StaleApprovals_CancelFromEveryState(t *tes
 	}
 }
 
-// (e) Re-schedule loop (Customer Approval -> Authorize): the fresh CAB stage is
-// provisioned for the state the change is in, so the reconcile must keep it
-// actionable for the right people; the superseded customer stage stays as a
-// cancelled record; a later Review stage is still provisioned and is decidable
-// in Review only.
+// (e) Re-schedule loop (Customer Approval, which does not move): the customers' request
+// is replaced by a fresh one that IS actionable at once -- no CAB stage in between -- and
+// the superseded customer stage stays as a cancelled record; a later Review stage is still
+// provisioned and is decidable in Review only.
 func TestChangeRequestFlowIntegration_StaleApprovals_RescheduleLoop(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, true)
@@ -464,26 +463,19 @@ func TestChangeRequestFlowIntegration_StaleApprovals_RescheduleLoop(t *testing.T
 	f.wantLive(id, "in Customer Approval", map[string][]string{"Customer Approval": cust})
 	f.wantCanDecide(id, "in Customer Approval", everyone(cust, "Customer Approval"))
 
-	// Re-schedule: back to Authorize with a fresh CAB stage that IS actionable;
-	// the customer stage is cancelled and nobody else is.
+	// Re-schedule: the change stays in Customer Approval, the old request is cancelled
+	// and a fresh one is live; nothing else is asked.
 	if err := f.reschedule(id, sp(rsStart2), sp(rsEnd2)); err != nil {
 		t.Fatalf("re-schedule: %v", err)
 	}
-	f.expect(id, "after Re-schedule", "AUTHORIZE", "canceled")
-	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,CAB Approval" {
-		t.Fatalf("stages after Re-schedule = %s", got)
+	f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,Customer Approval" {
+		t.Fatalf("stages after Re-schedule = %s (no CAB again)", got)
 	}
-	f.wantLive(id, "after Re-schedule", map[string][]string{"CAB Approval#2": cab})
-	f.wantCanDecide(id, "after Re-schedule", everyone(cab, "CAB Approval#2"))
+	f.wantLive(id, "after Re-schedule", map[string][]string{"Customer Approval#2": cust})
+	f.wantCanDecide(id, "after Re-schedule", everyone(cust, "Customer Approval#2"))
 	f.wantStatuses(id, "after Re-schedule", "Customer Approval", map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
 	f.wantStatuses(id, "after Re-schedule", "CAB Approval", map[string]string{crCABMemberUserID1: "APPROVED", crCABMemberUserID2: "CANCELLED"})
-
-	if err := f.decide(id, crCABMemberUserID2, "approved"); err != nil {
-		t.Fatalf("new CAB approval: %v", err)
-	}
-	f.expect(id, "back in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
-	f.wantLive(id, "back in Customer Approval", map[string][]string{"Customer Approval#2": cust})
-	f.wantCanDecide(id, "back in Customer Approval", everyone(cust, "Customer Approval#2"))
 
 	if err := f.decide(id, crScopeUserA2, "approved"); err != nil {
 		t.Fatalf("customer approval: %v", err)
@@ -493,10 +485,10 @@ func TestChangeRequestFlowIntegration_StaleApprovals_RescheduleLoop(t *testing.T
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 	f.wantLive(id, "in Implement", nil)
 
-	// The Review stage is still provisioned (the repeated stages did not shift
+	// The Review stage is still provisioned (the repeated customer stage did not shift
 	// its ordinal) and is decidable in Review only.
 	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
-	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,CAB Approval,Customer Approval,Review" {
+	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,Customer Approval,Review" {
 		t.Fatalf("stages in Review = %s", got)
 	}
 	f.wantLive(id, "in Review", map[string][]string{"Review": crStaleAssigned})
@@ -513,8 +505,48 @@ func TestChangeRequestFlowIntegration_StaleApprovals_RescheduleLoop(t *testing.T
 	f.wantCanDecide(id, "in Closed", nil)
 }
 
-// (e, continued) Re-schedule on an Emergency change (a fresh ECAB stage) and a
-// Standard one (the customer is asked again, in the same state).
+// A change that was re-scheduled under the OLD flow -- back in Authorize with a fresh
+// CAB stage live and the customer's request cancelled -- may still be in flight when this
+// code runs. It finishes through the CAB as it always did (no data fix): the approval
+// cascades to Customer Approval and asks the customers afresh. It never reads as a customer's
+// proposal waiting for WSO2 (it is in Authorize and nobody wrote customer_updated_on).
+func TestChangeRequestFlowIntegration_StaleApprovals_OldFlowRescheduleStillFinishesThroughTheCAB(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
+	f.setPlanned(id, rsStart1, rsEnd1)
+	f.driveToCustomerApproval(id)
+	// Reconstruct what the old Re-schedule left: the window moved, the state back in
+	// Authorize, the customer's rows cancelled, a fresh CAB stage with live rows.
+	f.setPlanned(id, rsStart2, rsEnd2)
+	f.setState(id, "AUTHORIZE")
+	f.execSQL(`UPDATE approval_stage_approver SET state = 'CANCELLED'
+	           WHERE work_item_id = $1 AND stage_id IN (SELECT id FROM approval_stage WHERE work_item_id = $1 AND checkpoint_label = 'Customer Approval')`, id)
+	cabGroup := crCABGroupID
+	f.seedLooseStageInGroup(id, sp("CAB Approval"), &cabGroup, 1, map[string]string{crCABMemberUserID1: "REQUESTED", crCABMemberUserID2: "REQUESTED"})
+	f.expect(id, "in Authorize again", "AUTHORIZE", "canceled")
+	f.wantAnswer(id, "in Authorize", "none")
+	// A stale proposal date does not make it a proposal, and none of the new acts takes it.
+	f.syncWritesConversation(id, sp(rsStart3), "")
+	f.wantAnswer(id, "in Authorize with a stale date", "unanswered")
+	_, err := f.accept(id)
+	if err == nil {
+		t.Fatal("Accept proposed time was accepted in Authorize")
+	}
+
+	if err := f.decide(id, crCABMemberUserID2, "approved"); err != nil {
+		t.Fatalf("CAB approval of the old-flow re-schedule: %v", err)
+	}
+	f.expect(id, "back in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.wantCanAnswer(id, "asked again", true, crScopeUserA1, crScopeUserA2)
+	if _, err := f.approveAs(id, crScopeUserA1, true); err != nil {
+		t.Fatalf("the customer's approval after the old-flow re-schedule: %v", err)
+	}
+	f.expect(id, "in Scheduled", "SCHEDULED", "implement", "canceled")
+	f.wantPlanned(id, "in Scheduled", rsStart2, rsEnd2)
+}
+
+// (e, continued) Re-schedule on an Emergency change and a Standard one: the same --
+// the customer is asked again, in the same state, with no approval repeated.
 func TestChangeRequestFlowIntegration_StaleApprovals_RescheduleEmergencyAndStandard(t *testing.T) {
 	cust := []string{crScopeUserA1, crScopeUserA2}
 	t.Run("emergency", func(t *testing.T) {
@@ -532,9 +564,12 @@ func TestChangeRequestFlowIntegration_StaleApprovals_RescheduleEmergencyAndStand
 		if err := f.reschedule(id, nil, sp(rsEnd2)); err != nil {
 			t.Fatalf("re-schedule: %v", err)
 		}
-		f.expect(id, "after Re-schedule", "AUTHORIZE", "canceled")
-		f.wantLive(id, "after Re-schedule", map[string][]string{"ECAB Approval#2": {crECABMemberUserID}})
-		f.wantCanDecide(id, "after Re-schedule", everyone([]string{crECABMemberUserID}, "ECAB Approval#2"))
+		f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		f.wantLive(id, "after Re-schedule", map[string][]string{"Customer Approval#2": cust})
+		f.wantCanDecide(id, "after Re-schedule", everyone(cust, "Customer Approval#2"))
+		if got := f.stageLabels(id); got != "ECAB Approval,Customer Approval,Customer Approval" {
+			t.Fatalf("emergency stages after Re-schedule = %s (no ECAB again)", got)
+		}
 	})
 	t.Run("standard", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
@@ -765,6 +800,15 @@ func (f *crFlow) seedLooseStage(id string, label *string, ageMinutes int, rows m
 		f.execSQL(`INSERT INTO approval_stage_approver (id, created_on, updated_on, created_by, updated_by, stage_id, work_item_id, approver_user_id, state)
 		           VALUES (gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', $1::uuid, $2, $3::uuid, $4)`, stageID, id, uid, status)
 	}
+	return stageID
+}
+
+// seedLooseStageInGroup is seedLooseStage with the stage's assignment group set (what a
+// stage written by the old Re-schedule, or by the sync, carries).
+func (f *crFlow) seedLooseStageInGroup(id string, label *string, groupID *string, ageMinutes int, rows map[string]string) string {
+	f.t.Helper()
+	stageID := f.seedLooseStage(id, label, ageMinutes, rows)
+	f.execSQL(`UPDATE approval_stage SET assignment_group_id = $2::uuid WHERE id = $1::uuid`, stageID, groupID)
 	return stageID
 }
 
