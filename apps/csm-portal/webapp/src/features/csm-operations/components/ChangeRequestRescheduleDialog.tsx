@@ -53,9 +53,11 @@ const { DateTimePicker, LocalizationProvider } = DatePickers;
 interface ChangeRequestRescheduleDialogProps {
   cr: BeChangeRequestDetail;
   /**
-   * The customer's proposed time while it waits for WSO2's answer: the dialog is then
-   * WSO2's COUNTER ("Propose a different time", or a decline that keeps the current time)
-   * instead of a plain Re-schedule. Absent = Re-schedule.
+   * The time stored on the change while it waits in Customer Approval. With a customer recorded as its
+   * proposer the dialog is WSO2's COUNTER ("Propose a different time", or a decline that keeps the
+   * current time) instead of a plain Re-schedule. With nobody recorded as having proposed it there is
+   * no proposal to decline: the dialog is a plain Re-schedule (a changed window is required) that names
+   * the stored time ("Propose a different time"). Absent = Re-schedule.
    */
   proposal?: BeChangeRequestCustomerProposal | null;
   /** True while the PATCH is in flight. */
@@ -98,6 +100,11 @@ interface ChangeRequestRescheduleDialogProps {
  *    proposed can be sent (that one is "Accept proposed time", in the banner). Leaving the
  *    window as it is declines the proposal: the customer keeps their request to approve the
  *    current time. A different window answers the proposal and asks the customer again.
+ *  - A STORED TIME nobody is recorded as having proposed: also titled "Propose a different time", but
+ *    it is a plain Re-schedule. Nothing was proposed, so there is nothing to decline and the window
+ *    must change; the stored time may be named as the new window (WSO2 then asks the customer to
+ *    approve it). The request still names the stored time and the planned window the page showed,
+ *    so one that moved is refused in words instead of acted on.
  */
 export default function ChangeRequestRescheduleDialog({
   cr,
@@ -108,7 +115,11 @@ export default function ChangeRequestRescheduleDialog({
   onClose,
   onSubmit,
 }: ChangeRequestRescheduleDialogProps): JSX.Element {
-  const counter = !!proposal;
+  const proposer = proposal ? customerProposalProposer(proposal) : null;
+  // A customer's proposal waits for WSO2's answer: the counter / decline mode.
+  const counter = !!proposal && !!proposer;
+  // A time is stored but nobody is recorded as having proposed it: a plain Re-schedule that names it.
+  const storedTime = !!proposal && !proposer;
   const initialStart = useMemo(() => backendUtcToZonedInput(cr.plannedStartOn), [cr.plannedStartOn]);
   const initialEnd = useMemo(() => backendUtcToZonedInput(cr.plannedEndOn), [cr.plannedEndOn]);
   // The pickers' own values are kept as emitted, partial (Invalid Date) ones
@@ -131,8 +142,8 @@ export default function ChangeRequestRescheduleDialog({
   // Counter mode: the window WSO2 would send (what is changed, else what is planned) against the one
   // the customer proposed. The very same window is the Accept action's, not a counter.
   const proposed = proposal ? proposedWindowMs(cr, proposal) : null;
-  // "The customer proposed ..." only when the proposer is on record; otherwise the dialog just says a time was proposed.
-  const wording = customerProposalWording(proposal ? customerProposalProposer(proposal) : null);
+  // "The customer proposed ..." only when the proposer is on record; otherwise the dialog says a time is stored and nobody proposed it.
+  const wording = customerProposalWording(proposer);
   const instantOf = (utc: string | null, planned: string | null | undefined): number | null =>
     (utc ? parseBackendTimestamp(utc) : parseBackendTimestamp(planned))?.getTime() ?? null;
   const effectiveStartMs = instantOf(changedStartUtc, cr.plannedStartOn);
@@ -144,6 +155,7 @@ export default function ChangeRequestRescheduleDialog({
     (proposed.endMs === null || effectiveEndMs === proposed.endMs);
   const keepsCurrentTime = counter && !startChanged && !endChanged;
 
+  // A counter may leave the window as it is (a decline); a Re-schedule, a stored time included, must change it.
   const canSubmit =
     !stale &&
     (counter
@@ -162,8 +174,8 @@ export default function ChangeRequestRescheduleDialog({
     onSubmit(patch, reason.trim());
   };
 
-  const title = counter ? "Propose a different time" : "Re-schedule this change?";
-  const submitLabel = counter ? (keepsCurrentTime ? "Decline proposed time" : "Propose this time") : "Re-schedule";
+  const title = proposal ? "Propose a different time" : "Re-schedule this change?";
+  const submitLabel = counter ? (keepsCurrentTime ? "Decline proposed time" : "Propose this time") : storedTime ? "Propose this time" : "Re-schedule";
 
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth aria-labelledby="cr-reschedule-title">
@@ -186,6 +198,11 @@ export default function ChangeRequestRescheduleDialog({
               {`${wording.counterLead(formatCrWindow(proposal.startOn, proposed?.endMs ?? null))} ` +
                 "Set the time WSO2 proposes instead and the customer is asked to approve it. " +
                 "Keep the current time to decline the proposal. No CAB approval is needed."}
+            </Typography>
+          ) : storedTime && proposal ? (
+            <Typography variant="body2" color="text.secondary">
+              {`${wording.counterLead(formatCrWindow(proposal.startOn, proposed?.endMs ?? null))} ` +
+                "Set the time WSO2 proposes and the customer is asked to approve it. No CAB approval is needed."}
             </Typography>
           ) : (
             <Typography variant="body2" color="text.secondary">
@@ -218,7 +235,7 @@ export default function ChangeRequestRescheduleDialog({
           </LocalizationProvider>
           {!counter && !startChanged && !endChanged && (
             <Typography variant="caption" color="text.secondary">
-              Change the planned start or end to re-schedule.
+              {storedTime ? "Change the planned start or end to propose a time." : "Change the planned start or end to re-schedule."}
             </Typography>
           )}
           {isTheCustomersTime && (

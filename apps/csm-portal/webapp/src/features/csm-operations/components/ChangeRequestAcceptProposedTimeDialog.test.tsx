@@ -99,8 +99,10 @@ describe("ChangeRequestAcceptProposedTimeDialog", () => {
     });
   });
 
-  describe("the proposer is NOT recorded", () => {
-    it("labels the window 'Proposed time', not 'Proposed by the customer', however the backend says it", () => {
+  describe("nobody is recorded as the proposer (the banner does not open it for such a time)", () => {
+    // Defensive only: the dialog names nobody and asks for no confirmation to tick, there is no way to accept such a time on the
+    // engineer's say-so (the backend refuses it, errorCode change_request_proposer_not_recorded).
+    it("names nobody and labels the window neutrally, however the backend says it", () => {
       for (const proposal of [
         UNKNOWN,
         { ...UNKNOWN, proposerRecorded: false, proposedByName: "Mia Member", proposedByEmail: "mia.member@example.com" },
@@ -109,36 +111,22 @@ describe("ChangeRequestAcceptProposedTimeDialog", () => {
           <ChangeRequestAcceptProposedTimeDialog cr={CR} proposal={proposal} isSubmitting={false} onClose={vi.fn()} onConfirm={vi.fn()} />,
         );
         const dialog = screen.getByRole("dialog");
-        expect(within(dialog).getByText("Proposed time")).toBeInTheDocument();
+        expect(within(dialog).getByText("Stored time")).toBeInTheDocument();
         expect(within(dialog).queryByText("Proposed by the customer")).not.toBeInTheDocument();
         expect(dialog).not.toHaveTextContent(/Proposed by /);
-        // What follows from accepting is unchanged, and so is the caveat and the explicit confirmation.
-        expect(dialog).toHaveTextContent("The proposer is not recorded.");
-        expect(within(dialog).getByRole("checkbox", { name: "I have checked that the customer proposed this time." })).toBeInTheDocument();
         unmount();
       }
     });
 
-    it("says so and holds Accept back until the engineer confirms the customer proposed this time", () => {
+    it("has no confirmation checkbox and no 'check that' advice: the backend's refusal, not a tick, decides", () => {
       const { onConfirm } = renderDialog({ proposal: UNKNOWN });
       const dialog = screen.getByRole("dialog");
-      expect(within(dialog).getByRole("status")).toHaveTextContent("The proposer is not recorded.");
-      expect(within(dialog).getByRole("status")).toHaveTextContent(/Check that this time really came from the customer/);
-      const check = within(dialog).getByRole("checkbox", { name: "I have checked that the customer proposed this time." });
-      expect(check).not.toBeChecked();
-      expect(confirmButton()).toBeDisabled();
-      fireEvent.click(confirmButton());
-      expect(onConfirm).not.toHaveBeenCalled();
-
-      fireEvent.click(check);
-      expect(check).toBeChecked();
+      expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
+      expect(within(dialog).queryByRole("status")).not.toBeInTheDocument();
+      expect(dialog).not.toHaveTextContent(/I have checked|Check that this time|proposer is not recorded/i);
       expect(confirmButton()).toBeEnabled();
       fireEvent.click(confirmButton());
       expect(onConfirm).toHaveBeenCalledTimes(1);
-
-      // Un-ticking holds it back again.
-      fireEvent.click(check);
-      expect(confirmButton()).toBeDisabled();
     });
   });
 

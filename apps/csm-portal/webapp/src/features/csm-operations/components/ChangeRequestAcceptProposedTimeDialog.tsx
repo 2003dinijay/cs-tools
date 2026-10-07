@@ -18,15 +18,13 @@ import {
   Alert,
   Box,
   Button,
-  Checkbox,
   Dialog,
   DialogActions,
   DialogContent,
   DialogTitle,
-  FormControlLabel,
   Typography,
 } from "@wso2/oxygen-ui";
-import { useState, type JSX } from "react";
+import type { JSX } from "react";
 import type { BeChangeRequestCustomerProposal, BeChangeRequestDetail } from "@api/backend/types";
 import {
   customerProposalProposer,
@@ -34,8 +32,6 @@ import {
   customerProposalWording,
   formatCrDateTime,
   formatCrWindow,
-  PROPOSER_NOT_RECORDED,
-  PROPOSER_NOT_RECORDED_ADVICE,
   proposedWindowMs,
 } from "@features/csm-operations/utils/changeRequests";
 
@@ -64,10 +60,11 @@ interface ChangeRequestAcceptProposedTimeDialogProps {
  * engineer, and says what follows: the change goes straight to Scheduled, the customer is not asked
  * again, no CAB approval.
  *
- * When the proposer is not recorded (the date is also written by WSO2 users in the previous system, or can be
- * left over from an earlier round), it says so, labels the window "Proposed time" instead of "Proposed by
- * the customer", and Accept needs an explicit confirmation that the time really came from the customer:
- * accepting it is the engineer's decision, never a default.
+ * It is only opened for a time a registered contact is recorded as having proposed: with nobody recorded
+ * (a date WSO2 users write too, or one left over from an earlier round) the banner disables Accept and the
+ * backend refuses it, since no staff action stands in for the customer's own answer. There is no
+ * confirmation to tick instead. Should it ever be mounted for such a time it states the neutral words
+ * (nobody is named) and the server's refusal shows as it does for any other.
  */
 export default function ChangeRequestAcceptProposedTimeDialog({
   cr,
@@ -81,9 +78,7 @@ export default function ChangeRequestAcceptProposedTimeDialog({
   const proposer = customerProposalProposer(proposal);
   const wording = customerProposalWording(proposer);
   const proposed = proposedWindowMs(cr, proposal);
-  const [checked, setChecked] = useState(false);
-  const needsConfirmation = !proposer;
-  const canConfirm = !stale && !isSubmitting && (!needsConfirmation || checked);
+  const canConfirm = !stale && !isSubmitting;
 
   return (
     <Dialog open onClose={onClose} maxWidth="xs" fullWidth aria-labelledby="cr-accept-proposal-title">
@@ -119,25 +114,11 @@ export default function ChangeRequestAcceptProposedTimeDialog({
               {formatCrWindow(proposal.startOn, proposed?.endMs ?? null)}
             </Typography>
           </Box>
-          {proposer ? (
+          {proposer && (
             <Typography variant="body2" color="text.secondary">
               Proposed by {customerProposalProposerLabel(proposer)}
               {proposer.on ? ` on ${formatCrDateTime(proposer.on)}` : ""}.
             </Typography>
-          ) : (
-            <Alert severity="warning" role="status">
-              <strong>{PROPOSER_NOT_RECORDED}</strong> {PROPOSER_NOT_RECORDED_ADVICE}
-            </Alert>
-          )}
-          {needsConfirmation && (
-            <FormControlLabel
-              sx={{ alignItems: "center", m: 0 }}
-              disabled={isSubmitting}
-              control={
-                <Checkbox size="small" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
-              }
-              label={<Typography variant="body2">I have checked that the customer proposed this time.</Typography>}
-            />
           )}
         </Box>
       </DialogContent>

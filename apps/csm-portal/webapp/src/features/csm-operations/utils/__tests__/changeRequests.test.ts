@@ -42,10 +42,10 @@ import {
   formatWindowLength,
   pendingCustomerProposal,
   plannedWindowMs,
-  PROPOSAL_WAITING_REASON,
-  PROPOSER_NOT_RECORDED,
-  PROPOSER_NOT_RECORDED_ADVICE,
+  PROPOSER_NOT_RECORDED_ACCEPT_REASON,
   proposedWindowMs,
+  STORED_TIME_ADVICE,
+  storedTimeSentence,
   isDestructiveChangeRequestTransition,
   pendingCustomerReview,
   rollbackPendingReviewReason,
@@ -1336,11 +1336,18 @@ describe("a time the customer proposed (the previous system's customer_updated_o
       expect(customerProposalProposerLabel({ email: "mia@example.com" })).toBe("mia@example.com");
     });
 
-    it("says what it does not know, without guessing who or why", () => {
-      expect(PROPOSER_NOT_RECORDED).toBe("The proposer is not recorded.");
-      expect(PROPOSER_NOT_RECORDED_ADVICE).toMatch(/check that this time really came from the customer/i);
-      expect(PROPOSER_NOT_RECORDED_ADVICE).toMatch(/written by someone at WSO2/);
-      expect(PROPOSER_NOT_RECORDED_ADVICE).toMatch(/left over from an earlier round/);
+    it("says what it does not know, without guessing who or why, and never offers a way to accept it", () => {
+      expect(PROPOSER_NOT_RECORDED_ACCEPT_REASON).toMatch(/^Nobody is recorded as having proposed this time/);
+      expect(PROPOSER_NOT_RECORDED_ACCEPT_REASON).toMatch(/written by someone at WSO2 or left over from an earlier cycle/);
+      expect(PROPOSER_NOT_RECORDED_ACCEPT_REASON).toMatch(/so it cannot be accepted/);
+      expect(PROPOSER_NOT_RECORDED_ACCEPT_REASON).toMatch(/Propose a different time/);
+      expect(STORED_TIME_ADVICE).toMatch(/no proposal to accept/);
+      expect(STORED_TIME_ADVICE).toMatch(/still being asked to approve the planned time/);
+      // Nothing there invites the engineer to check and accept it anyway.
+      for (const text of [PROPOSER_NOT_RECORDED_ACCEPT_REASON, STORED_TIME_ADVICE]) expect(text).not.toMatch(/check that|before you accept|confirm/i);
+      expect(storedTimeSentence("Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM")).toBe(
+        "A time is stored (Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM) but nobody is recorded as having proposed it.",
+      );
     });
   });
 
@@ -1376,43 +1383,58 @@ describe("a time the customer proposed (the previous system's customer_updated_o
 
   describe("acceptProposedTimeBlockedReason", () => {
     const now = Date.UTC(2030, 1, 1);
+    // A customer is recorded as the proposer: the only kind of stored time that can be accepted.
+    const WHO = { proposerRecorded: true, proposedByName: "Mia Member", proposedByEmail: "mia@example.com" };
+    const RECORDED = { ...PROPOSAL, ...WHO };
     it("is null when the proposal is in the future, the change is not on hold and it has a planned window", () => {
-      expect(acceptProposedTimeBlockedReason({ ...PLANNED, onHold: false }, PROPOSAL, now)).toBeNull();
-      expect(acceptProposedTimeBlockedReason(PLANNED, PROPOSAL, now)).toBeNull();
+      expect(acceptProposedTimeBlockedReason({ ...PLANNED, onHold: false }, RECORDED, now)).toBeNull();
+      expect(acceptProposedTimeBlockedReason(PLANNED, RECORDED, now)).toBeNull();
     });
 
-    it("says the change is on hold, before anything else", () => {
-      expect(acceptProposedTimeBlockedReason({ ...PLANNED, onHold: true }, { startOn: "2020-01-01T00:00:00Z" }, now)).toBe(
+    it("is held back, before anything else, when nobody is recorded as having proposed the time: no staff action stands in for the customer's answer", () => {
+      // The backend's own words when it sends them (with canAccept false), else the page's own, in the same words.
+      const said = 'nobody is recorded as having proposed this time (it may have been written by someone at WSO2 or left over from an earlier cycle), so it cannot be accepted: use "Propose a different time" to ask the customer to approve a time';
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...PROPOSAL, canAccept: false, acceptBlockedReason: said }, now)).toBe(`${said.charAt(0).toUpperCase()}${said.slice(1)}.`);
+      expect(acceptProposedTimeBlockedReason(PLANNED, PROPOSAL, now)).toBe(PROPOSER_NOT_RECORDED_ACCEPT_REASON);
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...PROPOSAL, proposerRecorded: false, proposedByName: "Mia Member" }, now)).toBe(PROPOSER_NOT_RECORDED_ACCEPT_REASON);
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...PROPOSAL, proposedByName: "  ", proposedByEmail: null }, now)).toBe(PROPOSER_NOT_RECORDED_ACCEPT_REASON);
+      // Before every other reason, and whatever the other flags say (canAccept true included: the page's own reading is not overruled).
+      expect(acceptProposedTimeBlockedReason({ ...PLANNED, onHold: true }, { startOn: "2020-01-01T00:00:00Z", canAccept: true }, now)).toBe(PROPOSER_NOT_RECORDED_ACCEPT_REASON);
+      expect(acceptProposedTimeBlockedReason({}, PROPOSAL, now)).toBe(PROPOSER_NOT_RECORDED_ACCEPT_REASON);
+    });
+
+    it("says the change is on hold, before the other readings of the time", () => {
+      expect(acceptProposedTimeBlockedReason({ ...PLANNED, onHold: true }, { ...WHO, startOn: "2020-01-01T00:00:00Z" }, now)).toBe(
         "This change request is on hold. Take it off hold first.",
       );
     });
 
     it("says the proposed time has passed, pointing at the other action", () => {
-      expect(acceptProposedTimeBlockedReason(PLANNED, { startOn: "2030-01-31T23:59:00Z" }, now)).toBe(
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...WHO, startOn: "2030-01-31T23:59:00Z" }, now)).toBe(
         "The proposed time has passed. Propose a different time.",
       );
       // Right now counts as passed: the backend refuses a start that is not after NOW().
-      expect(acceptProposedTimeBlockedReason(PLANNED, { startOn: new Date(now).toISOString() }, now)).toMatch(/has passed/);
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...WHO, startOn: new Date(now).toISOString() }, now)).toMatch(/has passed/);
     });
 
     it("holds Accept back on the backend's own verdict too, in its words, for what the page cannot tell", () => {
       const refused = "a proposal that the data says cannot be accepted right now";
-      expect(acceptProposedTimeBlockedReason(PLANNED, { ...PROPOSAL, canAccept: false, acceptBlockedReason: refused }, now)).toBe(
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...RECORDED, canAccept: false, acceptBlockedReason: refused }, now)).toBe(
         "A proposal that the data says cannot be accepted right now.",
       );
-      expect(acceptProposedTimeBlockedReason(PLANNED, { ...PROPOSAL, canAccept: false, acceptBlockedReason: "Already a sentence." }, now)).toBe("Already a sentence.");
-      expect(acceptProposedTimeBlockedReason(PLANNED, { ...PROPOSAL, canAccept: false }, now)).toMatch(/would refuse this right now/);
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...RECORDED, canAccept: false, acceptBlockedReason: "Already a sentence." }, now)).toBe("Already a sentence.");
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...RECORDED, canAccept: false }, now)).toMatch(/would refuse this right now/);
       // canAccept true (or absent: an older backend) never holds it back by itself.
-      expect(acceptProposedTimeBlockedReason(PLANNED, { ...PROPOSAL, canAccept: true }, now)).toBeNull();
+      expect(acceptProposedTimeBlockedReason(PLANNED, { ...RECORDED, canAccept: true }, now)).toBeNull();
       // The page's own reading comes first, in its shorter words.
-      expect(acceptProposedTimeBlockedReason({ ...PLANNED, onHold: true }, { ...PROPOSAL, canAccept: false, acceptBlockedReason: refused }, now)).toBe(
+      expect(acceptProposedTimeBlockedReason({ ...PLANNED, onHold: true }, { ...RECORDED, canAccept: false, acceptBlockedReason: refused }, now)).toBe(
         "This change request is on hold. Take it off hold first.",
       );
     });
 
     it("says there is no planned window to keep the length of", () => {
-      expect(acceptProposedTimeBlockedReason({}, PROPOSAL, now)).toMatch(/no planned window whose length the proposed time could keep/);
-      expect(acceptProposedTimeBlockedReason({ plannedStartOn: "2030-03-01 09:00:00", plannedEndOn: "2030-03-01 09:00:00" }, PROPOSAL, now)).toMatch(/no planned window/);
+      expect(acceptProposedTimeBlockedReason({}, RECORDED, now)).toMatch(/no planned window whose length the proposed time could keep/);
+      expect(acceptProposedTimeBlockedReason({ plannedStartOn: "2030-03-01 09:00:00", plannedEndOn: "2030-03-01 09:00:00" }, RECORDED, now)).toMatch(/no planned window/);
     });
   });
 
@@ -1431,14 +1453,16 @@ describe("a time the customer proposed (the previous system's customer_updated_o
       expect(changeRequestBlockingReason([{ stage: "CAB Approval", approverType: "STATIC_GROUP", approverName: null, status: "REQUESTED", approvers: [] }], "authorize", RECORDED)).toBe("Awaiting CAB Approval");
     });
 
-    it("does not say the customer proposed the time when the proposer is not recorded", () => {
-      expect(PROPOSAL_WAITING_REASON).toBe("Waiting for WSO2 to respond to the proposed time");
+    it("a stored time nobody is recorded as having proposed is no proposal waiting for WSO2: the customer is still being asked, and the header says so", () => {
       // Nothing recorded at all, the backend's own "not recorded" (whatever name came with it), or a name that is blank.
-      expect(changeRequestBlockingReason([], "customer_approval", PROPOSAL)).toBe(PROPOSAL_WAITING_REASON);
-      expect(changeRequestBlockingReason([], "customer_approval", NOT_RECORDED)).toBe(PROPOSAL_WAITING_REASON);
-      expect(changeRequestBlockingReason([], "customer_approval", { ...NOT_RECORDED, proposedByName: "Mia Member", proposedByEmail: "mia@example.com" })).toBe(PROPOSAL_WAITING_REASON);
-      expect(changeRequestBlockingReason([], "customer_approval", { ...PROPOSAL, proposedByName: "  ", proposedByEmail: null })).toBe(PROPOSAL_WAITING_REASON);
-      expect(PROPOSAL_WAITING_REASON).not.toMatch(/customer/i);
+      for (const stored of [
+        PROPOSAL,
+        NOT_RECORDED,
+        { ...NOT_RECORDED, proposedByName: "Mia Member", proposedByEmail: "mia@example.com" },
+        { ...PROPOSAL, proposedByName: "  ", proposedByEmail: null },
+      ]) {
+        expect(changeRequestBlockingReason([], "customer_approval", stored)).toBe("Awaiting Customer Approval");
+      }
       // The other states are untouched.
       expect(changeRequestBlockingReason([], "customer_review", NOT_RECORDED)).toBe("Awaiting Customer Review");
     });
@@ -1458,22 +1482,23 @@ describe("a time the customer proposed (the previous system's customer_updated_o
       expect(named.isTheProposedTimeNote).toBe("That is the time the customer proposed. Close this and use Accept proposed time instead.");
     });
 
-    it("is neutral when nobody is on record", () => {
-      const neutral = customerProposalWording(null);
-      expect(neutral.bannerTitle).toBe("A new time is waiting for your answer");
-      expect(neutral.windowLabel).toBe("Proposed time");
-      expect(neutral.counterLead("Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM")).toBe("A time was proposed: Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM.");
-      expect(neutral.isTheProposedTimeNote).toBe("That is the time that was proposed. Close this and use Accept proposed time instead.");
-      for (const text of [neutral.bannerTitle, neutral.windowLabel, neutral.counterLead("x"), neutral.isTheProposedTimeNote]) {
-        expect(text).not.toMatch(/customer/i);
-      }
+    it("says a time is stored, and that nobody proposed it, when nobody is on record: nothing waits for an answer", () => {
+      const stored = customerProposalWording(null);
+      expect(stored.bannerTitle).toBe("A time is stored on this change request");
+      expect(stored.windowLabel).toBe("Stored time");
+      expect(stored.counterLead("Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM")).toBe(
+        "A time is stored (Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM) but nobody is recorded as having proposed it. There is no proposal to decline.",
+      );
+      // There is no "that is the customer's time, use Accept" note to give: nothing there can be accepted.
+      expect(stored.isTheProposedTimeNote).toBe("");
+      for (const text of [stored.bannerTitle, stored.windowLabel]) expect(text).not.toMatch(/customer|waiting|your answer/i);
     });
 
     it("follows customerProposalProposer: recorded -> customer wording, not recorded -> neutral", () => {
       const recorded = customerProposalProposer({ proposerRecorded: true, proposedByName: "Mia Member" });
       expect(customerProposalWording(recorded).bannerTitle).toBe("The customer proposed a new time");
       const notRecorded = customerProposalProposer({ proposerRecorded: false, proposedByName: "Mia Member" });
-      expect(customerProposalWording(notRecorded).bannerTitle).toBe("A new time is waiting for your answer");
+      expect(customerProposalWording(notRecorded).bannerTitle).toBe("A time is stored on this change request");
     });
   });
 

@@ -329,14 +329,17 @@ export function isChangeRequestCreator(
 /** What the header says while a proposed time waits for WSO2: the change is waiting for WSO2, not for the customer. */
 export const CUSTOMER_PROPOSAL_WAITING_REASON = "Waiting for WSO2 to respond to the customer's proposed time";
 
-/** The same note when the proposer is not recorded: it does not say the customer proposed the time. */
-export const PROPOSAL_WAITING_REASON = "Waiting for WSO2 to respond to the proposed time";
-
 /**
- * The customer's proposed time while it waits for WSO2's answer, or `null`. Only the
+ * The time stored on a change in Customer Approval that has not been answered, or `null`. Only the
  * backend's own verdict counts (`answer: "pending"`: the allowlist that keeps a
  * migrated change with a live CAB stage, a closed or a scheduled one out), and only
  * in Customer Approval, where the conversation takes place.
+ *
+ * It is a customer's PROPOSAL only when somebody is recorded as having proposed it
+ * ({@link customerProposalProposer}); a stored time nobody is recorded as having proposed (written by
+ * someone at WSO2, or left over from an earlier cycle) is returned too, so the page can say it is there,
+ * but there is no proposal to answer: Accept is refused, and "Propose a different time" is a plain
+ * Re-schedule that asks the customer to approve the time WSO2 names.
  */
 export function pendingCustomerProposal(
   cr: Pick<BeChangeRequestDetail, "state" | "customerProposal">,
@@ -353,11 +356,11 @@ export interface CustomerProposalProposer {
 }
 
 /**
- * The proposer of a pending proposal, or `null` when it is not recorded. The backend
- * names one only while the change request's last writer is still a registered contact
- * of the project (then that writer is the proposer; `proposerRecorded` says so); after any
- * later edit, a user of the previous system writing the date (WSO2 users do too) or a sync rewrite there
- * is nobody to name, and the page must not guess: it says the proposer is not recorded.
+ * The proposer of a stored time, or `null` when nobody is recorded as having proposed it. The backend
+ * names one only when a registered contact of the project is on record as having written the time
+ * (`proposerRecorded` says so); a date a user of the previous system wrote (WSO2 users do too), one
+ * left over from an earlier cycle, or a sync rewrite is nobody to name, and the page must not guess:
+ * it says nobody is recorded, and no answer is about it ({@link acceptProposedTimeBlockedReason}).
  */
 export function customerProposalProposer(
   proposal: Pick<BeChangeRequestCustomerProposal, "proposerRecorded" | "proposedByName" | "proposedByEmail" | "proposedOn">,
@@ -377,19 +380,20 @@ export function customerProposalProposerLabel(proposer: CustomerProposalProposer
 }
 
 /**
- * The words the page uses for a pending proposal. They say "the customer" only when the proposer is on
- * record ({@link customerProposalProposer}): the previous system lets WSO2 users write the proposed
+ * The words the page uses for a stored time that waits for WSO2. They say "the customer" only when the
+ * proposer is on record ({@link customerProposalProposer}): the previous system lets WSO2 users write the
  * date too, and one left over from an earlier round reads the same, so with nobody on record the page
- * must not claim the customer proposed it, next to a note that says it may not have been.
+ * must not claim the customer proposed it, and nothing in it is "waiting for your answer": there is no
+ * proposal to answer.
  */
 export interface CustomerProposalWording {
   /** The banner's title (its region name). */
   bannerTitle: string;
-  /** The label of the proposed window in the banner and the Accept dialog. */
+  /** The label of the stored window in the banner and the Accept dialog. */
   windowLabel: string;
-  /** The Re-schedule dialog's counter-mode lead for the proposed window: "<lead>." with the window formatted by the caller. */
+  /** The Re-schedule dialog's lead for the stored window: "<lead>." with the window formatted by the caller. */
   counterLead: (window: string) => string;
-  /** The counter dialog's note when the window typed in is the very one proposed. */
+  /** The counter dialog's note when the window typed in is the very one the customer proposed (only said of a recorded proposal). */
   isTheProposedTimeNote: string;
 }
 
@@ -400,17 +404,36 @@ const CUSTOMER_PROPOSED_WORDING: CustomerProposalWording = {
   isTheProposedTimeNote: "That is the time the customer proposed. Close this and use Accept proposed time instead.",
 };
 
-const PROPOSED_WORDING: CustomerProposalWording = {
-  bannerTitle: "A new time is waiting for your answer",
-  windowLabel: "Proposed time",
-  counterLead: (window) => `A time was proposed: ${window}.`,
-  isTheProposedTimeNote: "That is the time that was proposed. Close this and use Accept proposed time instead.",
+const STORED_TIME_WORDING: CustomerProposalWording = {
+  bannerTitle: "A time is stored on this change request",
+  windowLabel: "Stored time",
+  counterLead: (window) => `${storedTimeSentence(window)} There is no proposal to decline.`,
+  isTheProposedTimeNote: "",
 };
 
-/** The page's words for a pending proposal: the customer-attributed ones only when `proposer` is on record. */
-export function customerProposalWording(proposer: CustomerProposalProposer | null): CustomerProposalWording {
-  return proposer ? CUSTOMER_PROPOSED_WORDING : PROPOSED_WORDING;
+/** "A time is stored (<window>) but nobody is recorded as having proposed it." */
+export function storedTimeSentence(window: string): string {
+  return `A time is stored (${window}) but nobody is recorded as having proposed it.`;
 }
+
+/** The page's words for a stored time: the customer-attributed ones only when `proposer` is on record. */
+export function customerProposalWording(proposer: CustomerProposalProposer | null): CustomerProposalWording {
+  return proposer ? CUSTOMER_PROPOSED_WORDING : STORED_TIME_WORDING;
+}
+
+/**
+ * Why Accept is unavailable when nobody is recorded as having proposed the stored time: the words of the
+ * backend's own refusal (`change_request_proposer_not_recorded`, and the `acceptBlockedReason` it sends with
+ * `canAccept: false`), for a backend that sends none. No staff action stands in for the customer's own
+ * answer, so a time no customer is recorded as having proposed is never accepted for them.
+ */
+export const PROPOSER_NOT_RECORDED_ACCEPT_REASON =
+  'Nobody is recorded as having proposed this time (it may have been written by someone at WSO2 or left over from an earlier cycle), so it cannot be accepted: use "Propose a different time" to ask the customer to approve a time.';
+
+/** What the banner adds for a stored time nobody is recorded as having proposed: what it may be, and what is still true. */
+export const STORED_TIME_ADVICE =
+  "It may have been written by someone at WSO2 or be left over from an earlier cycle, so there is no proposal to accept. " +
+  'The customer is still being asked to approve the planned time; use "Propose a different time" to ask them to approve another time.';
 
 /**
  * The stable `errorCode`s of the refusals that mean "what this dialog showed is no longer what is
@@ -484,18 +507,6 @@ export function answerSnapshotMoved(shown: AnswerSnapshot, now: AnswerSnapshot):
   return !customerProposalProposer(shown.proposal) !== !customerProposalProposer(now.proposal);
 }
 
-/** Said when the proposer cannot be named (the banner and the Accept dialog). */
-export const PROPOSER_NOT_RECORDED = "The proposer is not recorded.";
-
-/**
- * What to do about it: the previous system lets WSO2 users write the proposed date too, and a date
- * left over from an earlier round reads the same, so accepting it is the engineer's
- * explicit decision rather than the page's default.
- */
-export const PROPOSER_NOT_RECORDED_ADVICE =
-  "Check that this time really came from the customer before you accept it: it may have been written by someone at WSO2 " +
-  "or be left over from an earlier round.";
-
 /** A window as two instants (epoch ms); `endMs` is `null` when the end is not known. */
 export interface WindowMs {
   startMs: number;
@@ -558,25 +569,32 @@ export function formatWindowLength(ms: number): string {
 /**
  * Why "Accept proposed time" is unavailable, or `null` when it is on offer. The backend is the
  * authority and refuses each of these in words (409 / 400); the page says so up front where it
- * can know: the change is on hold (a state change is refused), the proposed time has already
- * passed (it was valid when made; accepting it would schedule the past), or there is no planned
- * window whose length the proposal could keep. The page's own reading comes first (the proposed
- * time can pass while the page is open, and its words are short); the backend's verdict
- * (`canAccept: false`, with its own `acceptBlockedReason`) holds the button back for anything
- * the page cannot tell.
+ * can know. First, nobody being recorded as having proposed the time: no staff action stands in for
+ * the customer's answer, so such a time is never accepted (the backend's own words when it sends
+ * them, else {@link PROPOSER_NOT_RECORDED_ACCEPT_REASON}). Then the change being on hold (a state change
+ * is refused), the proposed time having already passed (it was valid when made; accepting it
+ * would schedule the past), or there being no planned window whose length the proposal could keep. The
+ * page's own reading comes first (the proposed time can pass while the page is open, and its words are
+ * short); the backend's verdict (`canAccept: false`, with its own `acceptBlockedReason`) holds the
+ * button back for anything the page cannot tell.
  */
 export function acceptProposedTimeBlockedReason(
   cr: Pick<BeChangeRequestDetail, "onHold" | "plannedStartOn" | "plannedEndOn">,
-  proposal: Pick<BeChangeRequestCustomerProposal, "startOn" | "canAccept" | "acceptBlockedReason">,
+  proposal: Pick<
+    BeChangeRequestCustomerProposal,
+    "startOn" | "canAccept" | "acceptBlockedReason" | "proposerRecorded" | "proposedByName" | "proposedByEmail" | "proposedOn"
+  >,
   nowMs: number = Date.now(),
 ): string | null {
+  const said = proposal.acceptBlockedReason?.trim();
+  const sentence = (text: string): string => `${text.charAt(0).toUpperCase()}${text.slice(1)}${/[.!?]$/.test(text) ? "" : "."}`;
+  if (!customerProposalProposer(proposal)) return said ? sentence(said) : PROPOSER_NOT_RECORDED_ACCEPT_REASON;
   if (cr.onHold === true) return "This change request is on hold. Take it off hold first.";
   const start = parseBackendTimestamp(proposal.startOn);
   if (start && start.getTime() <= nowMs) return "The proposed time has passed. Propose a different time.";
   if (!plannedWindowMs(cr)) return "This change request has no planned window whose length the proposed time could keep. Propose a different time.";
   if (proposal.canAccept === false) {
-    const said = proposal.acceptBlockedReason?.trim();
-    return said ? `${said.charAt(0).toUpperCase()}${said.slice(1)}${/[.!?]$/.test(said) ? "" : "."}` : "The backend would refuse this right now. Propose a different time.";
+    return said ? sentence(said) : "The backend would refuse this right now. Propose a different time.";
   }
   return null;
 }
@@ -612,10 +630,11 @@ const NO_LONGER_ASKED_APPROVER_STATUSES = new Set(["CANCELLED", "CANCELED", "NOT
  * blocking on approval — no waiting stage, or the approvals haven't loaded
  * yet — so callers should treat `null` as "no reason to show", not an error.
  *
- * `pendingProposal` (see {@link pendingCustomerProposal}) is a proposed time that nobody
+ * `pendingProposal` (see {@link pendingCustomerProposal}) is a customer's proposed time that nobody
  * at WSO2 has answered: at Customer Approval the change is then waiting for WSO2, not for
- * the customer ({@link CUSTOMER_PROPOSAL_WAITING_REASON}, or {@link PROPOSAL_WAITING_REASON}
- * when the proposer is not recorded, which does not say the customer proposed it).
+ * the customer ({@link CUSTOMER_PROPOSAL_WAITING_REASON}). A stored time that nobody is recorded as
+ * having proposed is not that: there is no proposal to answer, the customer is still being asked to
+ * approve the planned time, and the header says so ("Awaiting Customer Approval").
  */
 export function changeRequestBlockingReason(
   approvals: BeChangeRequestApproval[] | undefined,
@@ -629,8 +648,8 @@ export function changeRequestBlockingReason(
   // The one exception is a proposed time nobody at WSO2 has answered: the change
   // stays in Customer Approval, but what it is waiting for is WSO2.
   if (state === "customer_approval") {
-    if (!pendingProposal) return "Awaiting Customer Approval";
-    return customerProposalProposer(pendingProposal) ? CUSTOMER_PROPOSAL_WAITING_REASON : PROPOSAL_WAITING_REASON;
+    if (!pendingProposal || !customerProposalProposer(pendingProposal)) return "Awaiting Customer Approval";
+    return CUSTOMER_PROPOSAL_WAITING_REASON;
   }
   if (state === "customer_review") return "Awaiting Customer Review";
   // A stage whose every approver was cancelled or marked not required (a

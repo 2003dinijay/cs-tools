@@ -1455,8 +1455,11 @@ function lcCustomerProposal(): BeChangeRequestDetail["customerProposal"] {
   const start = lcMs(lc.customerUpdatedOn)!;
   const plannedStart = lcMs(lc.cr.plannedStartOn);
   const plannedEnd = lcMs(lc.cr.plannedEndOn);
-  // What the backend says of Accept while the proposal waits: the words of the refusal the PATCH would give.
-  const blocked = lc.onHold
+  // What the backend says of Accept while the proposal waits: the words of the refusal the PATCH would give. Nobody recorded as
+  // the proposer comes first: no staff action stands in for the customer's own answer.
+  const blocked = !lc.proposer
+    ? LC_PROPOSER_NOT_RECORDED
+    : lc.onHold
     ? "change request is on hold; take it off hold (onHold: false) before changing its state"
     : start <= Date.now()
       ? `the time the customer proposed (${lcRfc3339(start)}) has already passed, so it cannot be accepted: use "Propose a different time" to ask the customer to approve another time`
@@ -1478,6 +1481,10 @@ function lcCustomerProposal(): BeChangeRequestDetail["customerProposal"] {
     ...(pending ? { canAccept: blocked === "", ...(blocked ? { acceptBlockedReason: blocked } : {}) } : {}),
   };
 }
+
+/** The backend's refusal of an Accept of a stored time nobody is recorded as having proposed (and the `acceptBlockedReason` it sends with `canAccept: false`). */
+const LC_PROPOSER_NOT_RECORDED =
+  'nobody is recorded as having proposed this time (it may have been written by someone at WSO2 or left over from an earlier cycle), so it cannot be accepted: use "Propose a different time" to ask the customer to approve a time';
 
 /** True for the stages the backend provisions for the customer group. */
 function lcIsCustomerStage(name: string): boolean {
@@ -1738,6 +1745,8 @@ function lcAcceptProposal(patch: Record<string, unknown>): void {
     );
   }
   lcCheckExpectedWindow(patch);
+  // A registered contact must be recorded as the proposer: nobody else's date is accepted for them.
+  if (!lc.proposer) throw lcCoded(409, LC_PROPOSER_NOT_RECORDED, "change_request_proposer_not_recorded");
   if (lc.onHold) {
     throw new BackendApiError(400, "change request is on hold; take it off hold (onHold: false) before changing its state");
   }
@@ -1800,7 +1809,11 @@ function lcRescheduleOrCounter(patch: Record<string, unknown>): void {
       'state "authorize" cannot be set manually: it is reached automatically through the approval flow (Request Approval, then peer approval); it can only be set by hand to re-schedule a change from customer_approval',
     );
   }
-  const pending = lcProposalPending();
+  // A time is stored and unanswered (the allowlist) ...
+  const stored = lcProposalPending();
+  // ... and it is a PROPOSAL waiting for WSO2 only when a registered contact is recorded as having proposed it. A stored time nobody
+  // is recorded as having proposed (a WSO2 user's, or left over) is never answered: a plain Re-schedule stays a plain Re-schedule.
+  const pending = stored && !!lc.proposer;
   const expected = typeof patch.expectedCustomerUpdatedOn === "string" ? patch.expectedCustomerUpdatedOn : null;
   if (pending && expected === null) {
     throw new BackendApiError(
@@ -1808,10 +1821,17 @@ function lcRescheduleOrCounter(patch: Record<string, unknown>): void {
       `the customer proposed a new time (${lc.customerUpdatedOn}) after you opened this change request; read it again to accept it or propose a different time`,
     );
   }
-  if (expected !== null && !pending) {
+  if (expected !== null && !stored) {
     throw new BackendApiError(409, "the customer's proposed time is no longer waiting for a response; read the change request again");
   }
-  if (expected !== null && lcMs(expected) !== lcMs(lc.customerUpdatedOn)) {
+  if (expected !== null && stored && !pending && lcMs(expected) !== lcMs(lc.customerUpdatedOn)) {
+    // A page that showed the stored time may name it; the name must be the stored time.
+    throw new BackendApiError(
+      409,
+      `the time stored on this change request changed after you opened it (it is now ${lc.customerUpdatedOn}); read it again before responding`,
+    );
+  }
+  if (expected !== null && pending && lcMs(expected) !== lcMs(lc.customerUpdatedOn)) {
     throw new BackendApiError(
       409,
       `the customer's proposed time changed after you opened this change request (it is now ${lc.customerUpdatedOn}); read it again before responding`,
@@ -1835,6 +1855,12 @@ function lcRescheduleOrCounter(patch: Record<string, unknown>): void {
         throw new BackendApiError(400, 'the time you are proposing is the one the customer proposed: use "Accept proposed time" instead');
       }
     }
+  } else if (stored && !win.plannedStartOn && !win.plannedEndOn) {
+    // Nothing to decline: nobody is recorded as having proposed the stored time, so a request with no window is refused, never a silent Disagree.
+    throw new BackendApiError(
+      400,
+      "no customer is recorded as having proposed the time stored on this change request, so there is no proposal to decline: send the new planned window to re-schedule it",
+    );
   } else if (!changed) {
     throw new BackendApiError(400, "re-scheduling requires a changed planned start or end");
   }
@@ -2838,11 +2864,12 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
    */
   describe("the customer proposes a time", () => {
     const PROPOSED_START = "2030-03-08T09:00:00Z"; // the planned window is 2030-03-01 09:00 - 11:00 (2 hours)
-    // The banner says the customer proposed the time only when the proposer is on record; otherwise it is neutral.
+    // The banner says the customer proposed the time only when the proposer is on record; otherwise it says a time is stored.
     const CUSTOMER_TITLE = "The customer proposed a new time";
-    const NEUTRAL_TITLE = "A new time is waiting for your answer";
+    const NEUTRAL_TITLE = "A time is stored on this change request";
     const EITHER_TITLE = new RegExp(`^(${CUSTOMER_TITLE}|${NEUTRAL_TITLE})$`);
     const CUSTOMER_REASON = "Waiting for WSO2 to respond to the customer's proposed time";
+    // The header never says WSO2 is waiting to respond to a time nobody is recorded as having proposed: the customer is still being asked.
     const NEUTRAL_REASON = "Waiting for WSO2 to respond to the proposed time";
     const banner = (): HTMLElement => screen.getByRole("region", { name: EITHER_TITLE });
     const queryBanner = (): HTMLElement | null => screen.queryByRole("region", { name: EITHER_TITLE });
@@ -3013,51 +3040,110 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       view.unmount();
     });
 
-    it("the proposer is NOT recorded (a date WSO2 users write too, or one left over): the banner says so, Accept is not the primary action, and the dialog needs an explicit confirmation", async () => {
-      const view = seedProposal(false);
-      expect(screen.getByTestId("cr-proposal-proposer")).toHaveTextContent("The proposer is not recorded.");
-      expect(accept().className).toContain("MuiButton-outlined");
-      expect(counter().className).toContain("MuiButton-outlined");
-      fireEvent.click(accept());
-      expect(within(screen.getByRole("dialog")).getByRole("status")).toHaveTextContent("The proposer is not recorded.");
-      expect(dialogButton("Accept proposed time")).toBeDisabled();
-      fireEvent.click(within(screen.getByRole("dialog")).getByRole("checkbox", { name: "I have checked that the customer proposed this time." }));
-      fireEvent.click(dialogButton("Accept proposed time"));
-      await waitFor(() => expect(lc.cr.state).toBe("scheduled"));
-      view.unmount();
+    describe("nobody is recorded as having proposed the stored time (a date WSO2 users write too, or one left over from an earlier cycle)", () => {
+      const STORED_SENTENCE = "A time is stored (Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM) but nobody is recorded as having proposed it.";
+      const NOT_RECORDED_REASON = new RegExp(`^Accept proposed time: Nobody is recorded as having proposed this time`);
+
+      it("the banner says a time is stored and nobody is recorded as having proposed it; Accept is disabled with the server's reason and cannot be opened; Propose a different time stays", () => {
+        const view = seedProposal(false);
+        expect(screen.getByRole("region", { name: NEUTRAL_TITLE })).toBe(banner());
+        expect(screen.getByTestId("cr-proposal-proposer")).toHaveTextContent(STORED_SENTENCE);
+        expect(banner()).not.toHaveTextContent(/The customer proposed|Proposed by|waiting for your answer/);
+        expect(accept()).toBeDisabled();
+        expect(within(banner()).getByLabelText(NOT_RECORDED_REASON)).toHaveAttribute("tabindex", "0");
+        // The reason is the backend's own (acceptBlockedReason), capitalised into a sentence.
+        expect(within(banner()).getByLabelText(NOT_RECORDED_REASON).getAttribute("aria-label")).toBe(
+          `Accept proposed time: ${LC_PROPOSER_NOT_RECORDED.charAt(0).toUpperCase()}${LC_PROPOSER_NOT_RECORDED.slice(1)}.`,
+        );
+        fireEvent.click(accept());
+        expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+        expect(counter()).toBeEnabled();
+        expect(patchMutateAsyncMock).not.toHaveBeenCalled();
+        view.unmount();
+      });
+
+      it("the header is not 'waiting for WSO2 to respond': nothing was proposed, the customer is still being asked", () => {
+        const view = seedProposal(false);
+        expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
+        expect(screen.queryByText(NEUTRAL_REASON)).not.toBeInTheDocument();
+        expect(screen.queryByText(CUSTOMER_REASON)).not.toBeInTheDocument();
+        view.unmount();
+      });
+
+      it("Propose a different time is a plain Re-schedule: no decline, a changed window is required, the customer is asked again and NO answer is written on the stored time", async () => {
+        const view = seedProposal(false);
+        const stagesBefore = stageNames();
+        fireEvent.click(counter());
+        const dialog = screen.getByRole("dialog");
+        expect(within(dialog).getByRole("heading", { name: "Propose a different time" })).toBeInTheDocument();
+        expect(within(dialog).getByText(new RegExp(`${STORED_SENTENCE.replace(/[()]/g, "\\$&")} There is no proposal to decline\\.`))).toBeInTheDocument();
+        expect(within(dialog).queryByRole("button", { name: "Decline proposed time" })).not.toBeInTheDocument();
+        expect(dialogButton("Propose this time")).toBeDisabled(); // the window must change
+
+        fireEvent.change(windowPicker("Planned start"), { target: { value: "03/15/2030 09:00 AM" } });
+        fireEvent.change(windowPicker("Planned end"), { target: { value: "03/15/2030 12:00 PM" } });
+        fireEvent.click(dialogButton("Propose this time"));
+        await waitFor(() => expect(lc.cr.plannedStartOn).toBe("2030-03-15 09:00:00"));
+        // The stored time and the planned window it was shown go with it; nothing of a proposal's answer.
+        expect(patchMutateAsyncMock).toHaveBeenCalledWith({
+          id: "chg-1",
+          patch: {
+            state: "authorize",
+            plannedStartOn: "2030-03-15 09:00:00",
+            plannedEndOn: "2030-03-15 12:00:00",
+            expectedCustomerUpdatedOn: PROPOSED_START,
+            expectedPlannedStartOn: "2030-03-01 09:00:00",
+            expectedPlannedEndOn: "2030-03-01 11:00:00",
+          },
+        });
+        await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+        expect(lc.confirmation).toBeNull(); // no DISAGREE against a date nobody proposed
+        expect(lc.cr.state).toBe("customer_approval");
+        expect(stageNames()).toEqual([...stagesBefore, "Customer Approval"]); // the customer is asked again; no CAB
+        view.unmount();
+      });
+
+      it("a request with no window is refused with a clear 400, never a silent Disagree; an Accept sent anyway is a 409 with its code", async () => {
+        const view = seedProposal(false);
+        const before = structuredClone({ cr: lc.cr, approvals: lc.approvals, confirmation: lc.confirmation, customerUpdatedOn: lc.customerUpdatedOn });
+        await expect(patchMutateAsyncMock({ id: "chg-1", patch: { state: "authorize" } })).rejects.toMatchObject({
+          status: 400,
+          message: expect.stringMatching(/no customer is recorded as having proposed the time stored on this change request, so there is no proposal to decline: send the new planned window/),
+        });
+        await expect(
+          patchMutateAsyncMock({
+            id: "chg-1",
+            patch: {
+              confirmCustomerUpdatedDate: "agree",
+              expectedCustomerUpdatedOn: PROPOSED_START,
+              expectedPlannedStartOn: "2030-03-01 09:00:00",
+              expectedPlannedEndOn: "2030-03-01 11:00:00",
+            },
+          }),
+        ).rejects.toMatchObject({ status: 409, payload: { errorCode: "change_request_proposer_not_recorded" } });
+        expect({ cr: lc.cr, approvals: lc.approvals, confirmation: lc.confirmation, customerUpdatedOn: lc.customerUpdatedOn }).toEqual(before);
+        view.unmount();
+      });
+
+      it("a proposer that is on record again (the customer proposes once more) brings the recorded-proposer banner and Accept back", () => {
+        const view = seedProposal(false);
+        expect(accept()).toBeDisabled();
+        lcCustomerProposes(LC_CUST_TWO, "2030-03-20T10:00:00Z");
+        expect(screen.getByRole("region", { name: CUSTOMER_TITLE })).toBe(banner());
+        expect(accept()).toBeEnabled();
+        expect(accept().className).toContain("MuiButton-contained");
+        view.unmount();
+      });
     });
 
-    // The page does not say the customer proposed a time it cannot attribute to them, next to a note that it may have been written at WSO2.
-    it("the proposer is NOT recorded: the banner, the header, the Accept dialog and the counter dialog do not say the customer proposed it", async () => {
+    // The page does not say the customer proposed a time it cannot attribute to them.
+    it("the stored time nobody proposed: the counter dialog does not say the customer proposed it", () => {
       const view = seedProposal(false);
-      // Header: the neutral reason, never the customer-attributed one (nor the plain "Awaiting").
-      expect(screen.getByText(NEUTRAL_REASON)).toBeInTheDocument();
-      expect(screen.queryByText(CUSTOMER_REASON)).not.toBeInTheDocument();
-      expect(screen.queryByText("Awaiting Customer Approval")).not.toBeInTheDocument();
-      // Banner: a neutral title and window label; both windows are still there.
-      expect(screen.getByRole("region", { name: NEUTRAL_TITLE })).toBe(banner());
-      expect(screen.queryByRole("region", { name: CUSTOMER_TITLE })).not.toBeInTheDocument();
-      expect(within(banner()).getByText("Proposed time")).toBeInTheDocument();
-      expect(within(banner()).queryByText("Proposed by the customer")).not.toBeInTheDocument();
-      expect(within(banner()).getByText("Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM")).toBeInTheDocument();
-      expect(banner()).not.toHaveTextContent(/The customer proposed/);
-      expect(banner()).toHaveTextContent("The proposer is not recorded.");
-
-      // Accept dialog: the same neutral label.
-      fireEvent.click(accept());
-      let dialog = screen.getByRole("dialog");
-      expect(within(dialog).getByRole("heading", { name: "Accept the proposed time?" })).toBeInTheDocument();
-      expect(within(dialog).getByText("Proposed time")).toBeInTheDocument();
-      expect(within(dialog).queryByText("Proposed by the customer")).not.toBeInTheDocument();
-      fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
-      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
-
-      // Counter dialog: "A time was proposed: ...".
       fireEvent.click(counter());
-      dialog = screen.getByRole("dialog");
+      const dialog = screen.getByRole("dialog");
       expect(within(dialog).getByRole("heading", { name: "Propose a different time" })).toBeInTheDocument();
-      expect(within(dialog).getByText(/A time was proposed: Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM\./)).toBeInTheDocument();
       expect(within(dialog).queryByText(/The customer proposed/)).not.toBeInTheDocument();
+      expect(within(dialog).queryByRole("checkbox")).not.toBeInTheDocument();
       view.unmount();
     });
 
@@ -3066,7 +3152,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       fireEvent.click(counter());
       const dialog = screen.getByRole("dialog");
       expect(within(dialog).getByText(/The customer proposed Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM\./)).toBeInTheDocument();
-      expect(within(dialog).queryByText(/A time was proposed/)).not.toBeInTheDocument();
+      expect(within(dialog).queryByText(/A time is stored/)).not.toBeInTheDocument();
       view.unmount();
     });
 

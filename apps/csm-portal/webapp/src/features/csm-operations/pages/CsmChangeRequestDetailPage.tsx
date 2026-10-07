@@ -92,6 +92,7 @@ import {
   changeRequestStateColor,
   changeRequestStateLabel,
   customerApprovedDisplay,
+  customerProposalProposer,
   answerSnapshotMoved,
   isStaleAnswerError,
   pendingCustomerProposal,
@@ -565,7 +566,8 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   };
 
   const openAccept = (): void => {
-    if (!proposal) return;
+    // Only a time a customer is recorded as having proposed can be accepted (the banner disables the button otherwise).
+    if (!proposal || !customerProposalProposer(proposal)) return;
     setAcceptError(null);
     setStaleNotice(null);
     setAccept({ cr, proposal });

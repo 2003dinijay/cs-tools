@@ -48,8 +48,9 @@ describe("HELP_TOPIC_CONTENT", () => {
  * bullet as the Help page renders it (`markdownToHtmlProse`, `breaks: false`).
  * Markdown lazily continues a paragraph, so an indented line that follows a
  * nested bullet without a blank line in between is rendered inside that nested
- * bullet; the two paragraphs about a proposal the page cannot vouch for and
- * about where proposals are kept belong to the bullet itself, after its list.
+ * bullet; the paragraphs about a stored time nobody proposed, about a dialog the
+ * proposal moves behind, and about where proposals are kept belong to the bullet
+ * itself, after its list.
  */
 describe("Operations help: the proposed-time bullet", () => {
   const proposalItem = (): HTMLElement => {
@@ -72,21 +73,25 @@ describe("Operations help: the proposed-time bullet", () => {
     ]);
   });
 
-  it("renders the not-recorded caveat and the PostgreSQL caveat as paragraphs of the bullet, after its list", () => {
+  it("renders the three caveats (nobody recorded, a dialog that moved on, PostgreSQL only) as paragraphs of the bullet, after its list", () => {
     const children = Array.from(proposalItem().children).map((child) => child.tagName);
-    expect(children).toEqual(["P", "UL", "P", "P"]);
+    expect(children).toEqual(["P", "UL", "P", "P", "P"]);
 
-    const [, , notRecorded, postgresOnly] = Array.from(proposalItem().children);
+    const [, , notRecorded, movedOn, postgresOnly] = Array.from(proposalItem().children);
     expect(notRecorded.textContent).toContain("A date a WSO2 user wrote in the previous system");
-    expect(notRecorded.textContent).toContain("The proposer is not recorded.");
+    expect(notRecorded.textContent).toContain("nobody is recorded as having proposed it");
+    expect(notRecorded.textContent).toContain("no staff action stands in for the customer's own answer");
+    // Nothing asks the engineer to confirm and accept it anyway.
+    expect(notRecorded.textContent).not.toMatch(/confirm|check that/i);
+    expect(movedOn.textContent).toContain("dialog closes");
     expect(postgresOnly.textContent).toContain("kept in PostgreSQL only");
   });
 
-  it("keeps both caveats out of the Propose a different time answer", () => {
+  it("keeps the caveats out of the Propose a different time answer", () => {
     const answers = Array.from(proposalItem().querySelectorAll(":scope > ul > li"));
     const propose = answers[1];
     expect(propose.textContent).toContain("The loop repeats with their next proposal.");
-    expect(propose.textContent).not.toContain("not recorded");
+    expect(propose.textContent).not.toContain("nobody is recorded");
     expect(propose.textContent).not.toContain("PostgreSQL");
     expect(propose.textContent).not.toContain("previous system");
   });

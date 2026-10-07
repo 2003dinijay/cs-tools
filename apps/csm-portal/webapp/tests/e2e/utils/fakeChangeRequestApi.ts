@@ -423,6 +423,15 @@ export const ACCEPT_CANNOT_COMBINE =
 export const acceptNotInCustomerApproval = (state: string): string =>
   `a proposed time can only be accepted while the change request is in Customer Approval, but it is in ${stateName(state)}`;
 export const NO_PROPOSAL_WAITING = "no new time proposed by the customer is waiting for a response on this change request";
+/** An Accept (and the reason the read model gives with canAccept false) for a stored time nobody is recorded as having proposed. */
+export const ACCEPT_PROPOSER_NOT_RECORDED =
+  'nobody is recorded as having proposed this time (it may have been written by someone at WSO2 or left over from an earlier cycle), so it cannot be accepted: use "Propose a different time" to ask the customer to approve a time';
+/** A staff {state: "authorize"} with no window while the stored time is one nobody is recorded as having proposed: nothing to decline. */
+export const NO_RECORDED_PROPOSAL_TO_DECLINE =
+  "no customer is recorded as having proposed the time stored on this change request, so there is no proposal to decline: send the new planned window to re-schedule it";
+/** A staff Re-schedule that names the stored time it was shown (nobody recorded as its proposer) when it is no longer the stored one. */
+export const storedTimeChangedMessage = (now: string): string =>
+  `the time stored on this change request changed after you opened it (it is now ${now}); read it again before responding`;
 export const proposalChangedMessage = (now: string): string =>
   `the customer's proposed time changed after you opened this change request (it is now ${now}); read it again before responding`;
 export const windowChangedMessage = (now: string): string =>
@@ -886,7 +895,9 @@ export async function installFakeChangeRequestApi(
     const ps = instantOf(plannedStartOn);
     const pe = instantOf(plannedEndOn);
     // What the backend says of Accept while the proposal waits: the words of the refusal the PATCH would give.
-    const blocked = onHold
+    const blocked = !proposer
+      ? ACCEPT_PROPOSER_NOT_RECORDED
+      : onHold
       ? ON_HOLD_MESSAGE
       : start <= Date.now()
         ? proposalPassedMessage(customerUpdatedOn)
@@ -1171,6 +1182,8 @@ export async function installFakeChangeRequestApi(
     }
     const stale = staleWindow(body);
     if (stale) return stale;
+    // No staff action stands in for the customer's answer: a registered contact must be recorded as the proposer.
+    if (!proposer) return { status: 409, message: ACCEPT_PROPOSER_NOT_RECORDED, code: "change_request_proposer_not_recorded" };
     if (onHold) return { status: 400, message: ON_HOLD_MESSAGE };
     const start = instantOf(customerUpdatedOn)!;
     if (start <= Date.now()) return { status: 409, message: proposalPassedMessage(customerUpdatedOn!) };
@@ -1183,18 +1196,27 @@ export async function installFakeChangeRequestApi(
     return null;
   };
   /**
+   * A time is stored and unanswered (`proposalPending`) AND a registered contact is recorded as having proposed it: a customer's
+   * PROPOSAL waiting for WSO2's answer. A stored time nobody is recorded as having proposed (a WSO2 user's, or one left over from an
+   * earlier cycle) is never answered: a staff request is a plain Re-schedule about it.
+   */
+  const proposalWaits = (): boolean => proposalPending() && !!proposer;
+  /**
    * `{state: "authorize"}` out of Customer Approval, after the graph accepted it: a plain Re-schedule when no proposal waits (the
    * window must change), WSO2's COUNTER or DECLINE when one does (it must carry the proposal it answers; the window may equal the
-   * plan, which declines, but never the customer's own time, which is Accept). Nobody to ask is refused before anything is written,
-   * with the words of Request Approval -- except a decline, which touches no request.
+   * plan, which declines, but never the customer's own time, which is Accept). A stored time nobody is recorded as having proposed
+   * is no proposal: the request is a plain Re-schedule (it may name the stored time it was shown; with no window it is refused, there
+   * is nothing to decline, never a silent Disagree). Nobody to ask is refused before anything is written, with the words of Request
+   * Approval -- except a decline, which touches no request.
    */
   const timeChangeRefusal = (body: Record<string, unknown>): Refusal | null => {
-    const pending = proposalPending();
+    const stored = proposalPending();
+    const pending = proposalWaits();
     const expected = typeof body.expectedCustomerUpdatedOn === "string" ? body.expectedCustomerUpdatedOn : null;
     if (pending && expected === null) return { status: 409, message: customerProposedWhileOpenMessage(customerUpdatedOn!) };
-    if (expected !== null && !pending) return { status: 409, message: PROPOSAL_NO_LONGER_WAITING };
+    if (expected !== null && !stored) return { status: 409, message: PROPOSAL_NO_LONGER_WAITING };
     if (expected !== null && instantOf(expected) !== instantOf(customerUpdatedOn)) {
-      return { status: 409, message: proposalChangedMessage(customerUpdatedOn!) };
+      return { status: 409, message: pending ? proposalChangedMessage(customerUpdatedOn!) : storedTimeChangedMessage(customerUpdatedOn!) };
     }
     const stale = staleWindow(body);
     if (stale) return stale;
@@ -1204,6 +1226,9 @@ export async function installFakeChangeRequestApi(
       (newStart !== undefined && instantOf(newStart) !== instantOf(plannedStartOn)) || (newEnd !== undefined && instantOf(newEnd) !== instantOf(plannedEndOn));
     const effStart = instantOf(newStart ?? plannedStartOn) ?? 0;
     const effEnd = instantOf(newEnd ?? plannedEndOn) ?? 0;
+    if (stored && !pending && newStart === undefined && newEnd === undefined) {
+      return { status: 400, message: NO_RECORDED_PROPOSAL_TO_DECLINE };
+    }
     if (!pending && !changed) {
       return {
         status: 400,
@@ -1575,7 +1600,7 @@ export async function installFakeChangeRequestApi(
           // request is superseded: rows cancelled, the stage kept as a record and reported PENDING, and a fresh stage provisioned). A
           // proposal that was waiting is answered Disagree; with the window as it is, that is all that is written (a decline: the
           // customer keeps their live request). Never the stored `customerApprovalRequired`.
-          const answeringProposal = proposalPending();
+          const answeringProposal = proposalWaits(); // a stored time nobody proposed is never answered
           const newStart = typeof body.plannedStartOn === "string" ? body.plannedStartOn : undefined;
           const newEnd = typeof body.plannedEndOn === "string" ? body.plannedEndOn : undefined;
           const changed =
