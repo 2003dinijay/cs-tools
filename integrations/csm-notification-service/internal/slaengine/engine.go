@@ -450,6 +450,132 @@ func (e *Engine) sendBreachAlert(ctx context.Context, meta ClockMeta, caseID, cl
 	}
 }
 
+// entityActiveClocksClient abstracts EntityClient.GetActiveCSMSLAClocks for
+// testability.
+type entityActiveClocksClient interface {
+	GetActiveCSMSLAClocks(ctx context.Context) ([]activeSLAClock, error)
+}
+
+// Reconcile rebuilds this engine's entire Redis-held state from
+// entity-service's own durable record (GET /sla-status?source=csm) — the one
+// thing Redis itself has no durability for (see redis.go's own package doc
+// comment: every clock's state lives in Redis, nowhere else). Entity-service
+// already writes the matching source='CSM' "sla" row synchronously, in the
+// same request, for every lifecycle event this engine also reacts to (see
+// that repo's own CLAUDE.md, "CSM-native SLA clock engine") — so if this
+// engine's own Redis instance is ever flushed or replaced, this is what lets
+// it resume tracking every still-open case's clocks from that record instead
+// of silently losing them all with no way to recover, which is the normal,
+// silent outcome without this.
+//
+// Intended to run once, at process startup, before RunTicker starts (see
+// cmd/server/main.go) — not a recurring poll, and not gated on "only run if
+// Redis looks empty": calling it against a Redis instance that already holds
+// everything correctly is a safe, cheap no-op in effect, since every write
+// it makes (SetClock/AddWake/AdvanceAlertedTier) is already idempotent (see
+// each one's own doc comment in redis.go). As a side effect, this also
+// closes RegisterClocks' own documented "no backfill" gap for any case that
+// already had an entity-service "sla" row before this engine's Redis ever
+// saw it — not its primary purpose, but a natural consequence of rebuilding
+// from the same durable source.
+//
+// A fetch failure is logged and returned (so main.go can decide whether to
+// still start RunTicker) rather than treated as fatal — same "nice-to-have
+// engine, not core delivery" posture as GetDurationPolicy's own startup
+// call. A per-clock write failure is logged and the reconciliation
+// continues with the next clock — one bad row must not abandon every other
+// case's recovery.
+func (e *Engine) Reconcile(ctx context.Context, client entityActiveClocksClient) error {
+	clocks, err := client.GetActiveCSMSLAClocks(ctx)
+	if err != nil {
+		return fmt.Errorf("slaengine: reconcile: fetch active clocks: %w", err)
+	}
+
+	now := time.Now()
+	for _, c := range clocks {
+		e.reconcileClock(ctx, c, now)
+	}
+	slog.InfoContext(ctx, "slaengine: reconciled sla clocks from entity-service", "count", len(clocks))
+	return nil
+}
+
+// reconcileClock rebuilds one (caseID, clockType) clock's Redis state from
+// its durable entity-service row — the same due-date arithmetic
+// RegisterClocks uses (tierTime/avoidWeekend), just anchored on that row's
+// own StartedOn rather than a fresh case.created payload's CreatedAt, since
+// a case's three clock types aren't guaranteed to share one under every
+// historical code path (a severity revision, for one — see entity-service's
+// own CLAUDE.md, "ReviseCaseClocks").
+//
+// Unlike a fresh RegisterClocks call, this does NOT blindly schedule a wake
+// entry for every tier: a tier whose due time has already passed is instead
+// pre-marked via AdvanceAlertedTier (which never moves the cursor backward,
+// so this can never un-complete a tier Redis already knows about) — without
+// this, every already-overdue tier would be immediately picked up by the
+// very next Tick and alerted on all at once, flooding Chat with stale
+// "breach" alerts for history that's probably already been alerted on
+// before whatever wiped Redis. Only a tier still in the future gets a real
+// wake entry, so normal ticking resumes seamlessly from here.
+func (e *Engine) reconcileClock(ctx context.Context, c activeSLAClock, now time.Time) {
+	durations, ok := e.durations[strings.ToUpper(strings.TrimSpace(c.Priority))]
+	if !ok {
+		slog.WarnContext(ctx, "slaengine: reconcile: no duration policy for this severity, skipping clock", "caseId", c.CaseID, "clockType", c.ClockType, "priority", c.Priority)
+		return
+	}
+	duration, ok := durations[c.ClockType]
+	if !ok {
+		slog.WarnContext(ctx, "slaengine: reconcile: no duration policy for this clock type, skipping", "caseId", c.CaseID, "clockType", c.ClockType, "priority", c.Priority)
+		return
+	}
+	if c.StartedOn == nil {
+		slog.WarnContext(ctx, "slaengine: reconcile: no start time, skipping clock", "caseId", c.CaseID, "clockType", c.ClockType)
+		return
+	}
+	startedAt := *c.StartedOn
+
+	dueAt := startedAt.Add(duration)
+	if c.ClockType == ClockResolution && strings.EqualFold(c.Priority, "MEDIUM") {
+		dueAt = avoidWeekend(dueAt)
+	}
+	actualDuration := dueAt.Sub(startedAt)
+
+	meta := ClockMeta{
+		CaseNumber: c.CaseNumber,
+		WSO2CaseID: c.WSO2CaseID,
+		CaseTitle:  c.CaseTitle,
+		CaseType:   c.CaseType,
+		Product:    c.Product,
+		Team:       c.Team,
+		Priority:   c.Priority,
+		State:      c.State,
+		StartedAt:  startedAt,
+	}
+	if err := e.store.SetClock(ctx, c.CaseID, c.ClockType, meta); err != nil {
+		slog.ErrorContext(ctx, "slaengine: reconcile: failed to rebuild clock metadata", "caseId", c.CaseID, "clockType", c.ClockType, "err", err)
+		return
+	}
+
+	highestPastTier := 0
+	for _, tier := range tierSequence {
+		at := tierTime(startedAt, actualDuration, tier)
+		if at.After(now) {
+			if err := e.store.AddWake(ctx, wakeMember(c.CaseID, c.ClockType, tier), at); err != nil {
+				slog.ErrorContext(ctx, "slaengine: reconcile: failed to schedule sla wake entry", "caseId", c.CaseID, "clockType", c.ClockType, "tier", tier, "err", err)
+			}
+			continue
+		}
+		highestPastTier = tier
+	}
+	if highestPastTier > 0 {
+		if err := e.store.AdvanceAlertedTier(ctx, c.CaseID, c.ClockType, highestPastTier); err != nil {
+			slog.ErrorContext(ctx, "slaengine: reconcile: failed to pre-claim already-past tiers", "caseId", c.CaseID, "clockType", c.ClockType, "tier", highestPastTier, "err", err)
+		}
+	}
+	if c.IsPaused {
+		e.setPaused(ctx, c.CaseID, c.ClockType, true)
+	}
+}
+
 // RunTicker calls Tick every interval until ctx is done. Run from its own
 // goroutine (see cmd/server/main.go); a failed Tick is logged, not fatal —
 // the next tick gets another chance at whatever was due.

@@ -561,3 +561,193 @@ func TestParseWakeMember(t *testing.T) {
 		t.Error("parseWakeMember(malformed) ok = true, want false")
 	}
 }
+
+// --- Reconcile ---
+
+// fakeActiveClocksClient is an entityActiveClocksClient test double.
+type fakeActiveClocksClient struct {
+	clocks []activeSLAClock
+	err    error
+}
+
+func (f *fakeActiveClocksClient) GetActiveCSMSLAClocks(context.Context) ([]activeSLAClock, error) {
+	return f.clocks, f.err
+}
+
+func timePtr(t time.Time) *time.Time { return &t }
+
+// TestReconcileClock_PastTiersAreClaimedNotAlerted is the core regression
+// guard for the whole reconciliation feature: a clock whose response window
+// closed well before "now" (as it would after a real Redis wipe) must NOT
+// get a wake entry for that already-past tier -- scheduling one would have
+// the very next Tick immediately alert on stale history. The past tier is
+// pre-claimed via AlertedTier instead, and a still-future tier still gets a
+// real wake entry so normal ticking resumes.
+func TestReconcileClock_PastTiersAreClaimedNotAlerted(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+
+	now := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	// CATASTROPHIC response = 15m. Started 2h ago: all three tiers (50/75/100%
+	// of 15m) are long past.
+	startedAt := now.Add(-2 * time.Hour)
+
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-1", ClockType: ClockResponse, Priority: "CATASTROPHIC",
+		StartedOn: timePtr(startedAt), CaseNumber: "CS0001", Team: "Team Nova",
+	}, now)
+
+	meta, found, _ := st.GetClock(context.Background(), "case-1", ClockResponse)
+	if !found {
+		t.Fatal("clock not registered")
+	}
+	if meta.AlertedTier != 100 {
+		t.Errorf("AlertedTier = %d, want 100 (every tier already past)", meta.AlertedTier)
+	}
+	if meta.CaseNumber != "CS0001" || meta.Team != "Team Nova" {
+		t.Errorf("meta = %+v, missing expected display fields", meta)
+	}
+	for _, tier := range tierSequence {
+		if _, ok := st.wake[wakeMember("case-1", ClockResponse, tier)]; ok {
+			t.Errorf("wake entry scheduled for already-past tier %d, want none (would cause an immediate stale alert)", tier)
+		}
+	}
+}
+
+// TestReconcileClock_FutureTiersGetRealWakeEntries confirms the opposite
+// case: a clock that just started has every tier still ahead, so all three
+// get real wake entries and none are pre-claimed.
+func TestReconcileClock_FutureTiersGetRealWakeEntries(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+
+	now := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	startedAt := now.Add(-1 * time.Minute) // CATASTROPHIC response = 15m, barely started
+
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-1", ClockType: ClockResponse, Priority: "CATASTROPHIC",
+		StartedOn: timePtr(startedAt),
+	}, now)
+
+	meta, found, _ := st.GetClock(context.Background(), "case-1", ClockResponse)
+	if !found {
+		t.Fatal("clock not registered")
+	}
+	if meta.AlertedTier != 0 {
+		t.Errorf("AlertedTier = %d, want 0 (nothing past yet)", meta.AlertedTier)
+	}
+	for _, tier := range tierSequence {
+		if _, ok := st.wake[wakeMember("case-1", ClockResponse, tier)]; !ok {
+			t.Errorf("no wake entry for still-future tier %d", tier)
+		}
+	}
+}
+
+// TestReconcileClock_MixOfPastAndFutureTiers confirms a clock straddling
+// "now" (50%/75% already past, 100% still ahead) splits correctly: the
+// past tiers are claimed via the single highest-past-tier value (75, which
+// already covers 50 — see processDueMember's own ">=" comparison), and only
+// the 100% tier gets a real wake entry.
+func TestReconcileClock_MixOfPastAndFutureTiers(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+
+	now := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	// CATASTROPHIC response = 15m: 50%=7.5m, 75%=11.25m, 100%=15m.
+	// Started 12m ago: 50%/75% are past, 100% is still ~3m away.
+	startedAt := now.Add(-12 * time.Minute)
+
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-1", ClockType: ClockResponse, Priority: "CATASTROPHIC",
+		StartedOn: timePtr(startedAt),
+	}, now)
+
+	meta, _, _ := st.GetClock(context.Background(), "case-1", ClockResponse)
+	if meta.AlertedTier != 75 {
+		t.Errorf("AlertedTier = %d, want 75", meta.AlertedTier)
+	}
+	if _, ok := st.wake[wakeMember("case-1", ClockResponse, 100)]; !ok {
+		t.Error("no wake entry for the still-future 100%% tier")
+	}
+	for _, tier := range []int{50, 75} {
+		if _, ok := st.wake[wakeMember("case-1", ClockResponse, tier)]; ok {
+			t.Errorf("wake entry scheduled for already-past tier %d, want none", tier)
+		}
+	}
+}
+
+// TestReconcileClock_PausedSetsPausedFlag confirms a Postgres row reported
+// as PAUSED (stage='PAUSED') carries that through to Redis, so Tick's own
+// "drop if paused" check (see processDueMember) takes effect immediately
+// rather than only after the next real pause event.
+func TestReconcileClock_PausedSetsPausedFlag(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-1", ClockType: ClockWorkaround, Priority: "CATASTROPHIC",
+		StartedOn: timePtr(time.Now()), IsPaused: true,
+	}, time.Now())
+
+	meta, found, _ := st.GetClock(context.Background(), "case-1", ClockWorkaround)
+	if !found || !meta.Paused {
+		t.Errorf("meta = %+v (found=%v), want Paused=true", meta, found)
+	}
+}
+
+// TestReconcileClock_UnknownSeverityOrClockType_SkipsGracefully confirms a
+// row this engine's duration policy doesn't cover (e.g. a severity it was
+// never fetched for) is skipped, not a panic or a half-written clock.
+func TestReconcileClock_UnknownSeverityOrClockType_SkipsGracefully(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-1", ClockType: ClockResponse, Priority: "UNKNOWN", StartedOn: timePtr(time.Now()),
+	}, time.Now())
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-2", ClockType: ClockWorkaround, Priority: "LOW", StartedOn: timePtr(time.Now()),
+	}, time.Now())
+	e.reconcileClock(context.Background(), activeSLAClock{
+		CaseID: "case-3", ClockType: ClockResponse, Priority: "CATASTROPHIC", StartedOn: nil,
+	}, time.Now())
+
+	if len(st.clocks) != 0 {
+		t.Errorf("clocks = %+v, want none registered", st.clocks)
+	}
+}
+
+// TestEngine_Reconcile_ProcessesEveryClockFromTheClient is the end-to-end
+// path: Reconcile fetches the client's full list and rebuilds each one.
+func TestEngine_Reconcile_ProcessesEveryClockFromTheClient(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+	client := &fakeActiveClocksClient{clocks: []activeSLAClock{
+		{CaseID: "case-1", ClockType: ClockResponse, Priority: "CATASTROPHIC", StartedOn: timePtr(time.Now())},
+		{CaseID: "case-2", ClockType: ClockWorkaround, Priority: "CATASTROPHIC", StartedOn: timePtr(time.Now()), IsPaused: true},
+	}}
+
+	if err := e.Reconcile(context.Background(), client); err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+
+	if _, found, _ := st.GetClock(context.Background(), "case-1", ClockResponse); !found {
+		t.Error("case-1 response clock not rebuilt")
+	}
+	meta, found, _ := st.GetClock(context.Background(), "case-2", ClockWorkaround)
+	if !found || !meta.Paused {
+		t.Errorf("case-2 workaround clock = %+v (found=%v), want Paused=true", meta, found)
+	}
+}
+
+// TestEngine_Reconcile_ClientErrorPropagates confirms a fetch failure is
+// returned (so main.go can log it) rather than silently swallowed.
+func TestEngine_Reconcile_ClientErrorPropagates(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+	client := &fakeActiveClocksClient{err: errors.New("entity-service unreachable")}
+
+	if err := e.Reconcile(context.Background(), client); err == nil {
+		t.Fatal("Reconcile() error = nil, want the client's error propagated")
+	}
+}

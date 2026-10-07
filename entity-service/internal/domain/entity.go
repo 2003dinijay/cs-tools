@@ -7712,13 +7712,21 @@ type SLAStatus struct {
 
 // SearchSLAStatusResponse is the response for GET /sla-status — every
 // currently-active (sla.is_active = true) clock across every case-like work
-// item, paginated. integrations/csm-notification-service polls this
-// periodically and diffs BusinessElapsedPercent against what it already
-// alerted on (see that repo's internal/slaengine) rather than this service
-// pushing individual tier-crossing notifications — this service has no
-// scheduling of its own now that there's nothing to schedule: the "sla" row
-// this reads already reflects ServiceNow's own SLA computation, pauses
-// included, with no separate due-date arithmetic to get out of sync.
+// item, paginated. An earlier design had integrations/csm-notification-service
+// poll this continuously and diff BusinessElapsedPercent against what it
+// already alerted on — abandoned (see that repo's own internal/slaengine/
+// client.go doc comment: a single page measured 6-34+ seconds against real
+// data, reliably tripping the gateway timeout) in favor of a Redis-based
+// engine that tracks and alerts on its own, reacting to case.* events
+// instead of polling this endpoint at all. That engine does still call this
+// endpoint once, at process startup, with ?source=csm — a reconciliation
+// pass that rebuilds its own Redis state from this durable record if Redis
+// was ever wiped (see this field's own `source` query param doc comment).
+// This service still has no scheduling of its own: the "sla" row this reads
+// already reflects ServiceNow's own SLA computation for a source=SERVICENOW
+// row, pauses included, with no separate due-date arithmetic of its own to
+// get out of sync; a source=CSM row is this service's own CSM-native engine
+// writing the same shape (see that engine's own CLAUDE.md section).
 type SearchSLAStatusResponse struct {
 	Statuses []SLAStatus `json:"statuses"`
 	Total    int         `json:"total"`

@@ -338,12 +338,6 @@ type Config struct {
 	// "CS engineer" and "support engineer" are the same real-world role,
 	// not two different configs.
 	CSEngineerRole string
-	// SLARecomputeInterval is how often SLAEngineRecomputeWorker
-	// recomputes every CSM-native "sla" row's elapsed percentage/breach
-	// status (internal/service/sla_engine_recompute_worker.go). Same
-	// envDuration convention as CRNoticePollInterval/GithubOutboundInterval
-	// above.
-	SLARecomputeInterval time.Duration
 	// SalesforceIngestRetryInterval is how often SalesforceIngestRetryWorker
 	// re-runs Salesforce ingests that FAILED because the record's parent
 	// (project, account) was not in CSM yet
@@ -646,7 +640,6 @@ func Load() *Config {
 		CustomerPortalBackendClientID:                 os.Getenv("CUSTOMER_PORTAL_BACKEND_CLIENT_ID"),
 		CustomerRoles:                                 splitComma(os.Getenv("CUSTOMER_ROLES")),
 		CSEngineerRole:                                os.Getenv("CS_ENGINEER_ROLE"),
-		SLARecomputeInterval:                          envDuration("SLA_RECOMPUTE_INTERVAL", 45*time.Second),
 		CloudStatusServiceIDs:                         splitComma(os.Getenv("CLOUD_STATUS_SERVICE_IDS")),
 		CloudStatusDrainerEnabled:                     os.Getenv("CLOUD_STATUS_DRAINER_ENABLED") == "true",
 		CloudStatusPollInterval:                       envDuration("CLOUD_STATUS_POLL_INTERVAL", 10*time.Second),

@@ -1835,18 +1835,31 @@ second, unrelated `Publish` call folded into `CreateCase`'s response path.
 case-like work item in one paginated list** (`sla.is_active = TRUE`,
 joined through `sla_policy.target` for `clockType` — `response`/
 `workaround`/`resolution`, lower-cased from `RESPONSE`/`WORKAROUND`/
-`RESOLUTION`), not one clock for one case — `integrations/csm-notification-service`
-polls this periodically and diffs `businessElapsedPercent` against what it
-already alerted on itself (see that repo's own `internal/slaengine`), rather
-than this service pushing individual tier-crossing notifications the way the
-old design's Redis wake index did. This is a genuinely different shape from
-every other paginated endpoint in this file: its one real caller is a
-periodic bulk poll (~5,500 rows checked live), not a UI list a human scrolls
-through, so it has its own pagination cap
-(`normalizeSLAStatusPagination` — default `500`, max `2000`) well above the
-generic `20`/`50` `normalizePagination` uses everywhere else; a low cap here
-would only turn one intended round trip into over a hundred for no one's
-benefit.
+`RESOLUTION`), not one clock for one case. **Historical note: an earlier
+design had `integrations/csm-notification-service` poll this endpoint
+continuously and diff `businessElapsedPercent` against what it already
+alerted on itself — that poll was abandoned** (that repo's own
+`internal/slaengine/client.go` doc comment: a single page measured
+6-34+ seconds against real production data, reliably tripping the gateway
+timeout) **in favor of a Redis-based engine that tracks and alerts entirely
+on its own**, reacting to `case.*` events rather than polling this endpoint
+at all. This is a genuinely different shape from every other paginated
+endpoint in this file regardless: it returns every active case's SLA data
+in one bulk list with no per-project/per-case filtering, so it has its own
+pagination cap (`normalizeSLAStatusPagination` — default `500`, max `2000`)
+well above the generic `20`/`50` `normalizePagination` uses everywhere else.
+
+**`source` (query param, `csm`/`servicenow`) narrows the result to one
+`sla.source` value** — added so `csm-notification-service`'s Redis engine
+could call this endpoint again for exactly one purpose: rebuilding its own
+tracking state from Postgres if its Redis instance is ever wiped (a
+one-shot reconciliation pass at process startup, not a recurring poll — see
+that repo's own `CLAUDE.md`). `source=csm` scopes the query to just this
+engine's own, much smaller row set (`WHERE s.source = 'CSM'`, injected into
+`activeSLAStatusCTE`), so that reconciliation read never pays the cost of
+scanning the full ServiceNow-synced table the old, abandoned poll design
+choked on. Omitted (the default, and every other caller's behavior)
+means no filter, identical to this endpoint's original, unscoped shape.
 
 **`GET /sla-status` is internal-caller-only** (`slaStatusService.
 requireInternalCaller`, mirroring `onboarding_step_service.go`'s own helper
@@ -1969,29 +1982,57 @@ ServiceNow-synced `sla` row of its own to read `GET /sla-status` from, so
 without this engine it would simply never get SLA tracking at all,
 regardless of severity.
 
-- **Durations come from the real, ServiceNow-synced `sla_policy` table**
-  (`internal/service/sla_policy_resolver.go`), not a hardcoded map — the
-  now-deleted `sla_clocks` design's old approach (see "SLA status" above for
-  that history). `resolve` looks up `"<P0-P3|Query> - <Response|Workaround|
-  Resolution> (<Managed Services|Open Source>)"` by exact name, falling back
-  to the other plan label, then a loose pattern match — see its own doc
-  comment for why (in short: `resolveCasePlan`'s plan guess is a weak
-  heuristic with no reliable underlying signal, and P0 policies only exist
-  under "Managed Services" in ServiceNow's own real data, so a P0 case whose
-  plan guesses "Open Source" must still find them). **P0 (Catastrophic) had
-  no ServiceNow-synced policy at all** — migration `0136_csm_p0_sla_policies.sql`
-  seeds it directly, `source='CSM'`, durations mirroring the old deleted
-  `sla_clocks` map's own P0 entries and WSO2's published [support
-  policy](https://wso2.com/licenses/support-policy/6.0): Response 15m,
-  Workaround 4h, Resolution 48h.
-- **`internal/repository/sla_engine_repo.go`'s `RecomputeActive`** is what
-  actually advances `business_elapsed_percentage` for these rows over time —
-  flat wall-clock time since `start_on` (`(NOW() - start_on) / duration *
-  100`), no business-hours calendar, same crudeness the old deleted design
-  had. Run by `SLAEngineRecomputeWorker` (`sla_engine_recompute_worker.go`)
-  on its own ticker, default 45s — frequent enough that a 50/75/100%
-  crossing is visible well within `csm-notification-service`'s own
-  `SLA_TICK_INTERVAL` poll cadence.
+- **Durations come from deterministic, severity-keyed `sla_policy` rows this
+  engine seeds itself** (`internal/service/sla_policy_resolver.go`,
+  migration `0203_csm_sla_policy_by_severity.sql`) — not the real,
+  ServiceNow-synced `sla_policy` rows, and not a hardcoded map (the
+  now-deleted `sla_clocks` design's old approach — see "SLA status" above for
+  that history). An earlier version of this resolver looked up the real
+  synced rows by a guessed exact name (`"<P0-P3|Query> - <Response|
+  Workaround|Resolution> (<Managed Services|Open Source>)"`, with the "plan"
+  half itself guessed from a case's project subscription type), falling
+  back to a loose pattern match when that guess missed — **confirmed, against
+  real staging data, to silently find nothing for every LOW-severity case**:
+  the real synced rows for "Query" (LOW) are named things like `QuerySLA` and
+  `Onboarding Case Customer Query Response`, which never matched that assumed
+  naming convention under either plan label or the pattern fallback, so
+  `RegisterCaseClocks` registered nothing at all for any LOW-severity case —
+  this is why a real SLA breach alert (fired correctly by
+  `csm-notification-service`'s own Redis engine) never showed up in the CSM
+  Portal UI (`GET /sla-status` reads this table) for a LOW/S4 case. Migration
+  0203 seeds one `source='CSM'` row per `(severity, clock_type)` pair
+  `sla_duration_policy` (migration 0192) already defines, named
+  deterministically (`"<severity> - <target> (CSM)"`, e.g.
+  `"S4 - RESPONSE (CSM)"`) and with durations copied straight from that same
+  table — `resolve` now does a single exact-name lookup keyed on severity
+  alone, which can never miss, and the two SLA engines (this one, and
+  `csm-notification-service`'s own Redis-based tracker, which has always read
+  `sla_duration_policy` directly) can never disagree on a duration. This
+  supersedes migration `0136_csm_p0_sla_policies.sql`'s narrower precedent
+  (CSM rows for P0/Catastrophic only, under the old naming convention) —
+  0136's own rows are left in place (harmless, unreferenced) rather than
+  dropped.
+- **`internal/repository/sla_engine_repo.go`'s `RecomputeActive`** computes
+  the same flat wall-clock formula it always has (`(NOW() - start_on) /
+  duration * 100`, no business-hours calendar, same crudeness the old
+  deleted design had) — but it is no longer run by a periodic background
+  worker. `SLAEngineRecomputeWorker` (which used to call it every 45s over
+  every active `source='CSM'` row — a continuous Postgres write with no
+  bearing on alerting, since `csm-notification-service`'s Redis engine fires
+  breach alerts independently of this table) has been deleted. The `sla_live`
+  view (migration `0204_sla_live_view.sql`) reproduces the identical formula
+  live, at read time, instead: every reader of
+  `business_elapsed_percentage`/`has_breached`/`business_duration`/
+  `remaining_business_duration`/`stage` (`GET /sla-status`,
+  `POST /task-slas/search`, `GET /task-slas/{id}`, the case/incident
+  SLA-breach search filters) now reads `sla_live`'s `live_*` columns instead
+  of `sla`'s own stored ones for an `IN_PROGRESS`/`BREACHED` row; a
+  `PAUSED`/`COMPLETED`/`ACHIEVED`/`CANCELLED` row is already frozen at
+  whatever `SetPaused`/`CompleteClock` last wrote and the view simply passes
+  those columns through unchanged. `RecomputeActive` itself is untouched and
+  still exported on `SLAEngineRepository` — currently unreferenced by any
+  production code path, kept rather than deleted in case a future admin
+  "force recompute" tool ever wants it.
 - **A BREACHED clock is not terminal — it keeps being recomputed, and stays
   completable, until its own genuine finishing event.** A real, reported bug
   had `RecomputeActive` stop touching a row the instant it first flipped to

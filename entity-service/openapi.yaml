@@ -600,6 +600,16 @@ paths:
           in: query
           schema:
             type: integer
+        - name: source
+          in: query
+          description: >-
+            Optional. "csm" restricts the result to clocks tracked natively
+            by this platform (used by integrations/csm-notification-service
+            to rebuild its own tracking state); "servicenow" restricts to
+            the synced ones. Omitted returns both.
+          schema:
+            type: string
+            enum: [csm, servicenow]
       responses:
         "200":
           description: Every currently-active SLA clock, paginated.
