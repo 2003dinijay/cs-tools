@@ -4529,8 +4529,8 @@ counter mirrors the window and not the state (ServiceNow stays in Customer Appro
 mirrors byte for byte as before (`TestChangeRequestService_PatchChangeRequest_EveryOtherPatchMirrorsAsBefore`). The pure
 ServiceNow data source refuses `confirmCustomerUpdatedDate` / `expectedCustomerUpdatedOn` up front ("answer the customer's
 proposed date in ServiceNow") and forwards proposals and Re-schedules as ever. Notices (`CR_NOTICES_ENABLED`, off by
-default): the existing `planDateNotice` turns apply unchanged -- a proposal tells the "Devops Approval" team (no recipient
-while that team has no members in the synced data: banner and Awaiting chip are the signal), Accept tells the designated
+default): the existing `planDateNotice` turns apply unchanged -- a proposal tells the "Devops Approval" team (a team nobody
+belongs to in this database has no recipient: the banner and the Awaiting chip are the signal), Accept tells the designated
 customers "accepted the plan start date", a different time "Reject the proposed plan start date"; a plain Re-schedule sends
 none.
 
