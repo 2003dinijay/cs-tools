@@ -15039,6 +15039,14 @@ components:
     SearchCasesRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           $ref: '#/components/schemas/SearchCasesFilters'
         sortBy:
@@ -16358,6 +16366,14 @@ components:
     SearchChangeRequestsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -20072,6 +20088,14 @@ components:
     SearchIncidentsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -21023,6 +21047,14 @@ components:
     SearchProblemsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -21375,6 +21407,14 @@ components:
     SearchConversationsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:

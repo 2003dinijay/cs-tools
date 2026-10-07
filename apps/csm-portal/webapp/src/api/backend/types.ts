@@ -1115,6 +1115,13 @@ export interface BeCaseSearchPayload {
     field?: BeCaseSortField;
     order?: "asc" | "desc";
   };
+  /**
+   * Skip counting every matching record: the response's `total` is then -1 and
+   * only the requested page is read. For callers that never show a total
+   * (the quick-nav palette lists a handful of hits). Needs an entity service
+   * that declares the field; it rejects unknown request fields.
+   */
+  skipTotal?: boolean;
 }
 
 /**
@@ -1432,6 +1439,13 @@ export interface BeSearchConversationsPayload {
   filters?: BeSearchConversationsFilters;
   sortBy?: { field: "createdOn" | "updatedOn"; order: "asc" | "desc" };
   pagination?: BePagination;
+  /**
+   * Skip counting every matching record: the response's `total` is then -1 and
+   * only the requested page is read. For callers that never show a total
+   * (the quick-nav palette lists a handful of hits). Needs an entity service
+   * that declares the field; it rejects unknown request fields.
+   */
+  skipTotal?: boolean;
 }
 
 /** No `hasMore` on this response (unlike {@link BeSearchResponseBase}) —
@@ -3310,6 +3324,13 @@ export interface BeChangeRequestSearchPayload {
     order?: "asc" | "desc";
   };
   pagination?: BePagination;
+  /**
+   * Skip counting every matching record: the response's `total` is then -1 and
+   * only the requested page is read. For callers that never show a total
+   * (the quick-nav palette lists a handful of hits). Needs an entity service
+   * that declares the field; it rejects unknown request fields.
+   */
+  skipTotal?: boolean;
 }
 
 /** Note: the CR search response carries no `hasMore` (unlike the other searches). */
@@ -3633,6 +3654,13 @@ export interface BeIncidentSearchPayload {
     order?: "asc" | "desc";
   };
   pagination?: BePagination;
+  /**
+   * Skip counting every matching record: the response's `total` is then -1 and
+   * only the requested page is read. For callers that never show a total
+   * (the quick-nav palette lists a handful of hits). Needs an entity service
+   * that declares the field; it rejects unknown request fields.
+   */
+  skipTotal?: boolean;
 }
 
 export interface BeIncidentSearchResponse {
@@ -3728,6 +3756,13 @@ export interface BeProblemSearchFilters {
 export interface BeProblemSearchPayload {
   filters?: BeProblemSearchFilters;
   pagination?: BePagination;
+  /**
+   * Skip counting every matching record: the response's `total` is then -1 and
+   * only the requested page is read. For callers that never show a total
+   * (the quick-nav palette lists a handful of hits). Needs an entity service
+   * that declares the field; it rejects unknown request fields.
+   */
+  skipTotal?: boolean;
 }
 
 /** Note: mirrors the change-request/incident search responses — no `hasMore`. */

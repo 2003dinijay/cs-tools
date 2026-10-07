@@ -680,12 +680,19 @@ func (r *changeRequestRepo) SearchChangeRequests(ctx context.Context, req domain
 
 	eg, egCtx := errgroup.WithContext(ctx)
 
-	eg.Go(func() error {
-		if err := r.db.QueryRow(egCtx, countQuery, args...).Scan(&total); err != nil {
-			return fmt.Errorf("count change requests: %w", err)
-		}
-		return nil
-	})
+	// SkipTotal: the caller does not show a total (global search shows a handful
+	// of hits), so the COUNT is not run at all -- it is as costly as the page
+	// query and holds a second pool connection while it runs.
+	if req.SkipTotal {
+		total = domain.TotalNotComputed
+	} else {
+		eg.Go(func() error {
+			if err := r.db.QueryRow(egCtx, countQuery, args...).Scan(&total); err != nil {
+				return fmt.Errorf("count change requests: %w", err)
+			}
+			return nil
+		})
+	}
 
 	eg.Go(func() error {
 		rows, err := r.db.Query(egCtx, dataQuery, dataArgs...)

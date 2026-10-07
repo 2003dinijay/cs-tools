@@ -2867,6 +2867,10 @@ type SearchCasesRequest struct {
 	// caseGroupByFieldValues for the supported set. Requires ServiceNow data
 	// source.
 	GroupBy string `json:"groupBy,omitempty"`
+	// SkipTotal asks the search not to count every matching record. The response's
+	// total is then TotalNotComputed (-1) and only the requested page is read.
+	// For callers that never show a total, such as global search.
+	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
 // AggregateCasesRequest is the input for the dedicated case aggregate
@@ -4138,6 +4142,10 @@ type SearchChangeRequestsRequest struct {
 	Filters    SearchChangeRequestsFilters `json:"filters"`
 	SortBy     ChangeRequestSort           `json:"sortBy"`
 	Pagination Pagination                  `json:"pagination"`
+	// SkipTotal asks the search not to count every matching record. The response's
+	// total is then TotalNotComputed (-1) and only the requested page is read.
+	// For callers that never show a total, such as global search.
+	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
 // AggregateChangeRequestsRequest is the input for the dedicated change request
@@ -5669,6 +5677,10 @@ type SearchIncidentsRequest struct {
 	Filters    SearchIncidentsFilters `json:"filters"`
 	SortBy     IncidentSort           `json:"sortBy"`
 	Pagination Pagination             `json:"pagination"`
+	// SkipTotal asks the search not to count every matching record. The response's
+	// total is then TotalNotComputed (-1) and only the requested page is read.
+	// For callers that never show a total, such as global search.
+	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
 // AggregateIncidentsRequest is the input for the dedicated incident aggregate
@@ -6141,6 +6153,10 @@ type SearchProblemsFilters struct {
 type SearchProblemsRequest struct {
 	Filters    SearchProblemsFilters `json:"filters"`
 	Pagination Pagination            `json:"pagination"`
+	// SkipTotal asks the search not to count every matching record. The response's
+	// total is then TotalNotComputed (-1) and only the requested page is read.
+	// For callers that never show a total, such as global search.
+	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
 // AggregateProblemsRequest is the input for the dedicated problem aggregate
@@ -6440,11 +6456,20 @@ type SearchConversationsFilters struct {
 	CreatedBy []string `json:"createdBy,omitempty"`
 }
 
+// TotalNotComputed is the total a search response reports when the request set
+// SkipTotal: the count was not run, so there is no total to report. It is not a
+// lower bound; callers that asked to skip it must not display it.
+const TotalNotComputed = -1
+
 // SearchConversationsRequest is the input for POST /conversations/search.
 type SearchConversationsRequest struct {
 	Filters    SearchConversationsFilters `json:"filters"`
 	SortBy     ConversationSort           `json:"sortBy"`
 	Pagination Pagination                 `json:"pagination"`
+	// SkipTotal asks the search not to count every matching record. The response's
+	// total is then TotalNotComputed (-1) and only the requested page is read.
+	// For callers that never show a total, such as global search.
+	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
 // SearchConversationView is the conversation representation returned in search results.
