@@ -2575,11 +2575,12 @@ type CaseView struct {
 	WatchList []WatchListUser `json:"watchList,omitempty"`
 	// AutoclosureStep indicates where the case sits in ServiceNow's staged auto-closure
 	// sequence: DEFAULT -> FIRST_COMMENT -> ON_HOLD -> SECOND_COMMENT. Read-only —
-	// informational only; the sequence itself is fully owned by ServiceNow's own flows
-	// (ServiceNow data source only).
+	// informational only; the sequence itself is fully owned by ServiceNow's own flows.
+	// On the Postgres data sources it is csm-sync-service's copy of u_autoclosure_step,
+	// and ON_HOLD is also what AutocloseHoldUntil writes.
 	AutoclosureStep *string `json:"autoclosureStep,omitempty"`
 	// AutoclosureStateTime is when the auto-closure sequence next advances (e.g. the
-	// "eligible again after" date for a held case). Read-only (ServiceNow data source only).
+	// "eligible again after" date for a held case). Read-only.
 	AutoclosureStateTime *time.Time `json:"autoclosureStateTime,omitempty"`
 	// BestCaseFixEta is the internal-only best-case fix-commitment date, as a
 	// date-only "YYYY-MM-DD" string (ServiceNow u_best_case_fix_eta).
@@ -3075,7 +3076,9 @@ type UpdateCaseRequest struct {
 	// sequence: internally sets u_autoclosure_step = ON_HOLD and u_autoclosure_state_time
 	// to this date together, mirroring the real UX (an engineer picks a hold-until date).
 	// This is the only supported write against the auto-closure sequence — the raw step
-	// enum is not freely settable (ServiceNow data source only).
+	// enum is not freely settable. Every data source supports it: the Postgres ones store
+	// it in the extension table's autoclosure_step/autoclosure_state_on (UTC day) and, under
+	// dual-write, mirror it to ServiceNow, whose own flow does the closing.
 	AutocloseHoldUntil *time.Time `json:"autocloseHoldUntil"`
 	// Subject updates the case's short description/title (ServiceNow data source only).
 	Subject *string `json:"subject"`

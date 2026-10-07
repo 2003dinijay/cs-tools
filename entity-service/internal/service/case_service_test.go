@@ -809,7 +809,6 @@ func TestCaseService_UpdateCase_RejectsTypeTransferFields(t *testing.T) {
 		{name: "addPublicComment", req: domain.UpdateCaseRequest{ID: testDeploymentUUID, AddPublicComment: func() *bool { v := true; return &v }()}},
 		{name: "product", req: domain.UpdateCaseRequest{ID: testDeploymentUUID, Product: strPtr("WSO2 API Manager")}},
 		{name: "publicTicket", req: domain.UpdateCaseRequest{ID: testDeploymentUUID, PublicTicket: strPtr("gh-1")}},
-		{name: "autocloseHoldUntil", req: domain.UpdateCaseRequest{ID: testDeploymentUUID, AutocloseHoldUntil: func() *time.Time { v := time.Date(2026, 10, 1, 0, 0, 0, 0, time.UTC); return &v }()}},
 	}
 
 	for _, tc := range cases {
@@ -836,6 +835,7 @@ func TestCaseService_UpdateCase_RejectsExclusiveFieldCombinations(t *testing.T) 
 	ack := true
 	subject := "New subject"
 	parentID := testDeploymentUUID
+	holdUntil := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
 
 	cases := []struct {
 		name string
@@ -854,6 +854,10 @@ func TestCaseService_UpdateCase_RejectsExclusiveFieldCombinations(t *testing.T) 
 		// handled the other field.
 		{name: "assigneeEmail+closeNotes", req: domain.UpdateCaseRequest{ID: testDeploymentUUID, AssigneeEmail: json.RawMessage(`"` + email + `"`), CloseNotes: &subject}},
 		{name: "subject+closeNotes", req: domain.UpdateCaseRequest{ID: testDeploymentUUID, Subject: &subject, CloseNotes: &subject}},
+		// autocloseHoldUntil is a plain combinable field, so it obeys the same
+		// "never with an exclusive field" rule as subject does.
+		{name: "state+autocloseHoldUntil", req: domain.UpdateCaseRequest{ID: testDeploymentUUID, State: &open, AutocloseHoldUntil: &holdUntil}},
+		{name: "assigneeEmail+autocloseHoldUntil", req: domain.UpdateCaseRequest{ID: testDeploymentUUID, AssigneeEmail: json.RawMessage(`"` + email + `"`), AutocloseHoldUntil: &holdUntil}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1194,6 +1198,109 @@ func TestCaseService_UpdateCase_UpdatesFieldsBundle(t *testing.T) {
 	}
 	if resp.Case.BestCaseFixEta == nil || *resp.Case.BestCaseFixEta != bestCaseFixEta {
 		t.Errorf("response BestCaseFixEta = %v, want %q", resp.Case.BestCaseFixEta, bestCaseFixEta)
+	}
+}
+
+// TestCaseService_UpdateCase_AcceptsAutocloseHold is the regression guard for
+// digiops-cs#3318: the CSM portal's "Hold auto-closure" PATCH carries only
+// autocloseHoldUntil, which this data source used to reject with a 400 ("only
+// supported for the ServiceNow data source") even though every case-like table
+// has the autoclosure_step/autoclosure_state_on columns for it. It must reach
+// CaseRepository.UpdateCaseFields untouched, alone and beside other plain fields.
+func TestCaseService_UpdateCase_AcceptsAutocloseHold(t *testing.T) {
+	holdUntil := time.Date(2026, 10, 22, 18, 29, 0, 0, time.UTC)
+	subject := "Updated subject"
+
+	tests := []struct {
+		name string
+		req  domain.UpdateCaseRequest
+	}{
+		{name: "alone", req: domain.UpdateCaseRequest{ID: testDeploymentUUID, AutocloseHoldUntil: &holdUntil}},
+		{name: "with another plain field", req: domain.UpdateCaseRequest{ID: testDeploymentUUID, AutocloseHoldUntil: &holdUntil, Subject: &subject}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotReq domain.UpdateCaseRequest
+			repo := &stubCaseRepo{
+				updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, _, _ string) (time.Time, error) {
+					gotReq = req
+					return time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC), nil
+				},
+			}
+			userRepo := stubUserRepo{getUserByEmail: func(_ context.Context, email string) (domain.User, error) {
+				return domain.User{ID: "actor-id", Email: email}, nil
+			}}
+			svc := NewCaseService(repo, userRepo, nil, alwaysUnrestrictedAccess{}, nil)
+
+			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+			if _, err := svc.UpdateCase(ctx, tc.req); err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if gotReq.AutocloseHoldUntil == nil || !gotReq.AutocloseHoldUntil.Equal(holdUntil) {
+				t.Errorf("repo saw AutocloseHoldUntil = %v, want %v", gotReq.AutocloseHoldUntil, holdUntil)
+			}
+		})
+	}
+}
+
+// TestCaseService_UpdateCase_AutocloseHoldIsMirroredToServiceNow proves the hold
+// reaches ServiceNow under dual-write, in ServiceNow's date-only format, and is
+// recorded in the writeback payload so a failed mirror can be replayed. This is
+// the write that matters: ServiceNow's own flow is what closes (or doesn't close)
+// the case, so a hold stored only in Postgres would not stop anything.
+func TestCaseService_UpdateCase_AutocloseHoldIsMirroredToServiceNow(t *testing.T) {
+	holdUntil := time.Date(2026, 10, 22, 18, 29, 0, 0, time.UTC)
+
+	var mu sync.Mutex
+	var gotReq domain.UpdateCaseRequest
+	called := make(chan struct{})
+	mirror := &stubMirrorCaseService{
+		patchCaseFieldsBundleFn: func(_ context.Context, _ string, req domain.UpdateCaseRequest) error {
+			mu.Lock()
+			gotReq = req
+			mu.Unlock()
+			close(called)
+			return errors.New("sn down")
+		},
+	}
+	failures := &recordingSNWritebackFailures{}
+	dispatcher := NewSNWritebackDispatcher(failures)
+	repo := &stubCaseRepo{
+		updateCaseFields: func(_ context.Context, _ domain.UpdateCaseRequest, _, _ string) (time.Time, error) {
+			return time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC), nil
+		},
+	}
+	userRepo := stubUserRepo{getUserByEmail: func(_ context.Context, email string) (domain.User, error) {
+		return domain.User{ID: "actor-id", Email: email}, nil
+	}}
+	svc := NewCaseServiceWithSNWriteback(repo, userRepo, nil, alwaysUnrestrictedAccess{}, nil, dispatcher, mirror, nil, "")
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	if _, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, AutocloseHoldUntil: &holdUntil}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("mirror.patchCaseFieldsBundle was never called")
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if gotReq.AutocloseHoldUntil == nil || !gotReq.AutocloseHoldUntil.Equal(holdUntil) {
+		t.Errorf("mirror saw AutocloseHoldUntil = %v, want %v", gotReq.AutocloseHoldUntil, holdUntil)
+	}
+
+	// The mirror failed on purpose: the replay payload must carry the date.
+	waitFor(t, func() bool { return failures.count() == 1 })
+	failures.mu.Lock()
+	defer failures.mu.Unlock()
+	var payload map[string]any
+	if err := json.Unmarshal(failures.calls[0].Payload, &payload); err != nil {
+		t.Fatalf("decode writeback payload: %v", err)
+	}
+	if got := payload["autocloseHoldUntil"]; got != "2026-10-22" {
+		t.Errorf("writeback payload autocloseHoldUntil = %v, want 2026-10-22", got)
 	}
 }
 
