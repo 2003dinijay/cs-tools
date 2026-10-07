@@ -23,9 +23,9 @@ import { type Locator, type Page, expect } from "@playwright/test";
  * `ChangeRequestActionBar`'s own `legalNextStates` filtering); it will be
  * absent for a CR already past that stage. It is a plain, direct state PATCH
  * (`{state: "assess"}`) that starts the CR's approval flow (Peer -> CAB for
- * Normal, ECAB for Emergency, straight to Scheduled for Standard).
+ * Normal, one CAB approval for Emergency, straight to Scheduled for Standard).
  * There is deliberately no "Schedule" button: a CR is moved to Scheduled
- * automatically by its CAB/ECAB approval (or, when it requires customer
+ * automatically by its CAB approval (or, when it requires customer
  * approval, by the customer answering in the customer portal) -- see
  * `scheduleButton()`, which exists only so specs can assert its absence.
  * Staff never record a customer's approval or review, so there is no action for
@@ -132,12 +132,13 @@ export class ChangeRequestDetailPage {
   }
 
   /** Read-only Yes/No on the Approval tab beside a label such as
-   * "Customer approval required" / "Customer review required". */
+   * "Customer approval required" / "Customer review required" ("Not applicable" on an Emergency
+   * change, which acts without customer consent). */
   flagValue(label: string): Locator {
     return this.page
       .getByText(label, { exact: true })
       .locator("xpath=..")
-      .getByText(/^(Yes|No)$/);
+      .getByText(/^(Yes|No|Not applicable)$/);
   }
 
   /**
@@ -184,7 +185,7 @@ export class ChangeRequestDetailPage {
   }
 
   /** The "Stage" cell of the approvals table row for a named approver
-   * ("Peer Approval" | "CAB Approval" | "ECAB Approval"). */
+   * ("Peer Approval" | "CAB Approval"; "ECAB Approval" only on an older Emergency change). */
   approverStage(approverName: string): Locator {
     return this.approverRow(approverName).getByRole("cell").first();
   }
@@ -396,7 +397,7 @@ export class ChangeRequestDetailPage {
   /** The approvals table row for a named approver (e.g. "Jane Doe"). The
    * same person can sit on more than one stage (Peer Approval and CAB
    * Approval both list the seeded users), so pass `stage` ("Peer Approval" |
-   * "CAB Approval" | "ECAB Approval") to pick one stage's row. */
+   * "CAB Approval") to pick one stage's row. */
   approverRow(approverName: string, stage?: string): Locator {
     const rows = this.page.getByRole("row", { name: approverName });
     return stage ? rows.filter({ has: this.page.getByRole("cell", { name: stage, exact: true }) }) : rows;

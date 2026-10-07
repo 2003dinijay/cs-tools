@@ -106,6 +106,7 @@ import {
   customerAnswerRefusal,
   customerProposedWhileOpenMessage,
   customerStageManualRefusal,
+  emergencyNoCustomerConsentMessage,
   finalStateMessage,
   installFakeChangeRequestApi,
   NO_PROPOSAL_WAITING,
@@ -133,7 +134,7 @@ const CR_CUSTOMER_APPROVAL = "00000000-0000-0000-0000-000000001303"; // CHG-FIXE
 const CR_CUSTOMER_REVIEW = "00000000-0000-0000-0000-000000001304"; // CHG-FIXED-008
 
 /** The seed's personas, by the display name the Approvals table shows. */
-const ALICE = "Alice Perera"; // internal — peer / CAB / ECAB approver
+const ALICE = "Alice Perera"; // internal — peer / CAB approver
 const BOB = "Bob Fernando"; // internal
 const CAROL = "Carol Silva"; // internal
 const DAVE = "Dave Mendis"; // external — registered contact of project 401
@@ -845,11 +846,12 @@ test.describe("change request lifecycle — no bypass, and the stepper, while th
 //   Normal    New -> Request Approval -> Assess [Peer Approval]
 //                 -> Authorize [CAB Approval] -> (auto) Scheduled
 //                 -> Implement -> Review -> Closed
-//   Emergency New -> Request Approval -> Authorize [ECAB Approval only]
-//                 -> (auto) Scheduled
+//   Emergency New -> Request Approval -> Authorize [one CAB Approval stage: no
+//                 Peer, no Assess, no ECAB (ServiceNow has none), no customer steps]
+//                 -> (auto) Scheduled -> Implement -> Review -> Closed
 //   Standard  New -> Request Approval -> (auto) Scheduled, no approvals
 //
-// With "Customer Approval" ticked, every route above stops at Customer
+// With "Customer Approval" ticked, the Normal and Standard routes above stop at Customer
 // Approval before Scheduled until the customer answers (in the customer portal);
 // with "Customer Review" ticked, Review offers "Send for customer review" instead
 // of "Close", then Customer Review waits for the customer's answer too (there is
@@ -1084,64 +1086,140 @@ test.describe("change request approval flow — Normal", () => {
 });
 
 test.describe("change request approval flow — Emergency", () => {
-  test("Request Approval -> ECAB Approval only (no Peer or CAB) -> auto Scheduled", async ({ page }) => {
-    test.setTimeout(60_000);
+  test("Request Approval -> one CAB Approval (no Peer, no ECAB) -> auto Scheduled -> Implement -> Review -> Closed, with Assess never taken", async ({ page }) => {
+    test.setTimeout(90_000);
     const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR);
     const detail = new ChangeRequestDetailPage(page);
+    const none = { approval: false, review: false };
 
     await openDetail(detail);
+    // The line: New, Assess (not taken, like Rollback / Canceled), Authorize, ...; no customer step is on it.
+    await expectStages(detail, "c n p p p p p p n p n", none);
     await detail.requestApproval();
 
     await expect(detail.currentStep()).toContainText("Authorize");
-    await expect(detail.blockingReason()).toHaveText("Awaiting ECAB Approval");
-    await expect(detail.approverStage("Eli Ecab")).toHaveText("ECAB Approval");
+    await expectStages(detail, "d n c p p p p p n p n", none);
+    await expect(detail.blockingReason()).toHaveText("Awaiting CAB Approval");
+    await expect(detail.approverStage("Cam Cab")).toHaveText("CAB Approval");
     await expect(page.getByRole("cell", { name: "Peer Approval", exact: true })).toHaveCount(0);
-    await expect(page.getByRole("cell", { name: "CAB Approval", exact: true })).toHaveCount(0);
+    await expect(page.getByText(/ECAB/)).toHaveCount(0);
+    expect(api.stages().map((st) => st.stage)).toEqual(["CAB Approval"]);
     await expect(detail.approveButton()).toHaveCount(0); // creator
     await expectNoManualSchedule(detail);
 
-    api.setViewer(FAKE_ECAB);
+    api.setViewer(FAKE_CAB);
     await page.reload();
-    await detail.approve("Eli Ecab");
+    await detail.approve("Cam Cab");
     await expect(detail.currentStep()).toContainText("Scheduled");
+    await expectStages(detail, "d n d p c p p p n p n", none);
     await expectNoManualSchedule(detail);
+
+    await page.getByRole("button", { name: "Start implementation" }).click();
+    await expect(detail.currentStep()).toContainText("Implement");
+    await page.getByRole("button", { name: "Mark implemented" }).click();
+    await expect(detail.currentStep()).toContainText("Review");
+    // Review closes it: an Emergency change never goes to a customer review.
+    await expect(detail.sendForCustomerReviewButton()).toHaveCount(0);
+    await detail.closeButton().click();
+    await expect(detail.currentStep()).toContainText("Closed");
+    expect(api.state()).toBe("closed");
+  });
+
+  test("the customer's part reads Not applicable on the Approval tab, from New to Scheduled", async ({ page }) => {
+    test.setTimeout(60_000);
+    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, {}, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    const labels = ["Customer approval required", "Customer review required", "Customer approved", "Customer reviewed"];
+
+    await openDetail(detail);
+    for (const label of labels) await expect(detail.flagValue(label)).toHaveText("Not applicable");
+    await detail.requestApproval();
+    api.setViewer(FAKE_CAB);
+    await page.reload();
+    await detail.approve("Cam Cab");
+    await expect(detail.currentStep()).toContainText("Scheduled");
+    for (const label of labels) await expect(detail.flagValue(label)).toHaveText("Not applicable");
   });
 });
 
-test.describe("change request approval flow — Emergency with Customer Approval", () => {
-  test("ECAB approval stops at Customer Approval; only the customer's own answer (in the customer portal) reaches Scheduled", async ({ page }) => {
+// Retired: "Emergency with Customer Approval" (ECAB approval stops at Customer Approval; the customer's answer schedules it).
+// An Emergency change acts without the customer's consent: even on a project with registered contacts nobody is asked.
+test.describe("change request approval flow — an Emergency change never reaches a customer state", () => {
+  test("CAB approval schedules it straight away on a project with registered contacts, and no customer stage or request is ever made", async ({ page }) => {
     test.setTimeout(60_000);
-    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, {}, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
 
     await openDetail(detail);
-    await expect(detail.flagValue("Customer approval required")).toHaveText("Yes");
     await detail.requestApproval();
     await expect(detail.currentStep()).toContainText("Authorize");
-    await expect(detail.blockingReason()).toHaveText("Awaiting ECAB Approval");
-    await expect(page.getByRole("cell", { name: "Peer Approval", exact: true })).toHaveCount(0);
+    await expect(detail.blockingReason()).toHaveText("Awaiting CAB Approval");
+    api.setViewer(FAKE_CAB);
+    await page.reload();
+    await detail.approve("Cam Cab");
+
+    await expect(detail.currentStep()).toContainText("Scheduled");
+    await expect(detail.blockingReason()).toHaveCount(0);
+    await expect(page.getByRole("cell", { name: "Customer Approval", exact: true })).toHaveCount(0);
+    expect(api.stages().map((st) => st.stage)).toEqual(["CAB Approval"]);
+    await expectNoBypass(detail);
     await expectNoManualSchedule(detail);
+    await expect(page.getByRole("button", { name: "Start implementation" })).toBeVisible();
+  });
+
+  test("a project nobody on which can be asked does not hold Request Approval back: there is nobody to ask for", async ({ page }) => {
+    test.setTimeout(60_000);
+    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, {}, NO_CONTACTS);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    await expect(detail.requestApprovalButton()).toBeEnabled();
+    await detail.requestApproval();
+    await expect(detail.currentStep()).toContainText("Authorize");
+    expect(api.state()).toBe("authorize");
+  });
+
+  test("the API refuses a customer box on an Emergency change in the backend's words (create and PATCH), and moves nothing", async ({ page }) => {
+    test.setTimeout(60_000);
+    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, {}, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
+    for (const [field, other] of [
+      ["customerApprovalRequired", "customerReviewRequired"],
+      ["customerReviewRequired", "customerApprovalRequired"],
+    ] as const) {
+      const refused = await patchFromPage(page, { [field]: true });
+      expect(refused, field).toEqual({ status: 400, message: emergencyNoCustomerConsentMessage([field]) });
+      expect(api.flags()[other], field).toBe(false);
+    }
+    expect(api.flags()).toEqual({ customerApprovalRequired: false, customerReviewRequired: false });
+    expect(api.state()).toBe("new");
+    // A box it already holds is a no-op, accepted: a client that sends the whole form back is not punished.
+    expect((await patchFromPage(page, { customerApprovalRequired: false, customerReviewRequired: false })).status).toBe(200);
+  });
+
+  test("an OLDER Emergency change with a live ECAB stage still shows it, its asked approver can still decide it, and the CAB approval schedules it", async ({ page }) => {
+    test.setTimeout(60_000);
+    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR);
+    api.startOlderEmergencyAtAuthorize();
+    const detail = new ChangeRequestDetailPage(page);
+
+    await openDetail(detail);
+    await expect(detail.currentStep()).toContainText("Authorize");
+    await expect(detail.blockingReason()).toHaveText("Awaiting ECAB Approval");
+    await expect(detail.approverStage("Eli Ecab")).toHaveText("ECAB Approval");
+    await expect(detail.approveButton()).toHaveCount(0); // creator
+
+    // Cam Cab is a CAB member, but the stage asked Eli Ecab: a decision needs the caller's own REQUESTED row.
+    api.setViewer(FAKE_CAB);
+    await page.reload();
+    await expect(detail.approveButton()).toHaveCount(0);
 
     api.setViewer(FAKE_ECAB);
     await page.reload();
     await detail.approve("Eli Ecab");
-
-    // The ECAB approver is staff like any other: Customer Approval offers them no way to answer for the customer.
-    await expect(detail.currentStep()).toContainText("Customer Approval");
-    await expectNoBypass(detail);
-    api.setViewer(FAKE_CREATOR);
-    await page.reload();
-    await expect(detail.currentStep()).toContainText("Customer Approval");
-    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
-    await expect(page.getByRole("button", { name: "Start implementation" })).toHaveCount(0);
-    await expectNoManualSchedule(detail);
-    await expectOnlyCancelActionable(detail, "approval");
-
-    await customerAnswers(page, api, FAKE_CUST_ONE, "approved");
     await expect(detail.currentStep()).toContainText("Scheduled");
-    await expect(detail.blockingReason()).toHaveCount(0);
-    await expect(page.getByRole("button", { name: "Start implementation" })).toBeVisible();
-    await expectNoManualSchedule(detail);
+    await expect(detail.approverStatus("Eli Ecab")).toHaveText("Approved");
+    expect(api.state()).toBe("scheduled");
   });
 });
 
@@ -2007,11 +2085,10 @@ test.describe("change request approval flow — Request Approval is refused when
   /** The disabled Request Approval's focusable wrapper, found by the reason it carries (`Request Approval: <reason>`). */
   const blocked = (page: Page): Locator => page.getByLabel(`Request Approval: ${REQUEST_APPROVAL_NEEDS_CONTACT_REASON}`);
 
-  const TICKED: Array<[type: "normal" | "standard" | "emergency", boxes: string, flags: { customerApprovalRequired?: boolean; customerReviewRequired?: boolean }]> = [
+  const TICKED: Array<[type: "normal" | "standard", boxes: string, flags: { customerApprovalRequired?: boolean; customerReviewRequired?: boolean }]> = [
     ["normal", "Customer Approval", { customerApprovalRequired: true }],
     ["normal", "Customer Review", { customerReviewRequired: true }],
     ["standard", "both boxes", { customerApprovalRequired: true, customerReviewRequired: true }],
-    ["emergency", "Customer Approval", { customerApprovalRequired: true }],
   ];
   for (const [type, boxes, flags] of TICKED) {
     test(`${type} change, ${boxes} ticked, a project with no registered contact: Request Approval is disabled with the reason, the API refuses it in the backend's words, and nothing moves`, async ({ page }) => {
@@ -2291,11 +2368,29 @@ test.describe("change request approval flow — opening an Assignment group", ()
     expect(groupRequests(api)).toEqual([`GET /groups/${FAKE_CAB_GROUP.id}`, `GET /groups/${FAKE_PEER_GROUP.id}`]);
   });
 
-  test("Emergency: the ECAB Approval row opens the ECAB group", async ({ page }) => {
+  test("Emergency: the CAB Approval row opens the CAB group (its one stage is in the existing group)", async ({ page }) => {
     const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR);
     const detail = new ChangeRequestDetailPage(page);
     await openDetail(detail);
     await detail.requestApproval();
+    await expect(detail.approverStage(FAKE_CAB.name)).toHaveText("CAB Approval");
+
+    await detail.groupLink(FAKE_CAB.name, FAKE_CAB_GROUP.name, "CAB Approval").click();
+    const dialog = detail.groupDialog(FAKE_CAB_GROUP.name);
+    await expect(dialog.getByRole("heading", { name: "Group Members (3)" })).toBeVisible();
+    await expect(dialog.getByRole("listitem")).toHaveText([
+      new RegExp(FAKE_CAB.name),
+      new RegExp(FAKE_CAB_COLLEAGUE.name),
+      new RegExp(FAKE_CAB_NO_EMAIL.name),
+    ]);
+    expect(groupRequests(api)).toEqual([`GET /groups/${FAKE_CAB_GROUP.id}`]);
+  });
+
+  test("an OLDER Emergency change's ECAB Approval row still opens its (unused) ECAB group", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR);
+    api.startOlderEmergencyAtAuthorize();
+    const detail = new ChangeRequestDetailPage(page);
+    await openDetail(detail);
     await expect(detail.approverStage(FAKE_ECAB.name)).toHaveText("ECAB Approval");
 
     await detail.groupLink(FAKE_ECAB.name, FAKE_ECAB_GROUP.name, "ECAB Approval").click();
@@ -2727,7 +2822,7 @@ test.describe("change request approval flow — a Review approver's controls fol
 // ---------------------------------------------------------------------------
 // Re-schedule and the customer's proposed time -- the diagram's Time Change loop, in the previous system's own
 // mechanism. "authorize" is the wire name of the loop, but the change NEVER leaves Customer Approval and never goes
-// back through CAB / ECAB: the change itself has not changed.
+// back through CAB: the change itself has not changed.
 //
 //  - Re-schedule (an outlined button, Customer Approval only): a dialog (current window prefilled, at least one end
 //    must change, optional reason); the customer is asked to approve the new time again, in a fresh request.
@@ -2755,7 +2850,7 @@ const NEXT_WEEK_END = { month: 3, day: 8, year: 2030, hour12: 2, minute: 0, pm: 
 const ORIGINAL_WINDOW = { start: "2030-03-01 09:00:00", end: "2030-03-01 11:00:00" };
 const MOVED_TO_NEXT_WEEK = /^2030-03-0[78] \d{2}:\d{2}:00$/;
 
-/** The stage names the fake holds, in order (a Re-schedule must never add a CAB / ECAB one). */
+/** The stage names the fake holds, in order (a Re-schedule must never add a CAB one). */
 const stageNames = (api: FakeChangeRequestApi): string[] => api.stages().map((st) => st.stage);
 
 test.describe("change request approval flow — Re-schedule", () => {
@@ -2897,27 +2992,26 @@ test.describe("change request approval flow — Re-schedule", () => {
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
   });
 
-  test("Emergency (an older row sitting in Customer Approval): Re-schedule stays in Customer Approval too: no ECAB, no Authorize", async ({ page }) => {
+  test("Emergency (an OLDER row sitting in Customer Approval, its approval stage still named ECAB): Re-schedule stays in Customer Approval too: no CAB, no Authorize", async ({ page }) => {
     test.setTimeout(240_000);
     const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
+    // The shape an earlier version left: the ECAB stage settled, the change waiting on the customer (nothing creates this now).
+    api.startAtState("customer_approval");
+    api.syncCustomers(); // the customer's request, as the change got it when it reached the gate
     await openDetail(detail);
-    await detail.requestApproval();
-    await expect(detail.currentStep()).toContainText("Authorize");
-    await switchTo(page, api, FAKE_ECAB);
-    await detail.approve("Eli Ecab");
-    await switchTo(page, api, FAKE_CREATOR);
     await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.approverStage(FAKE_ECAB.name)).toHaveText("ECAB Approval");
 
     await detail.rescheduleButton().click();
-    await expect(detail.rescheduleDialog().getByText(/ECAB/)).toHaveCount(0);
+    await expect(detail.rescheduleDialog().getByText(/CAB/)).toHaveCount(0);
     await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
     await detail.rescheduleSubmit().click();
     await expect(detail.rescheduleDialog()).toHaveCount(0);
     await expect(detail.currentStep()).toContainText("Customer Approval");
     expect(api.state()).toBe("customer_approval");
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
-    // The customer's superseded request stays as a record before the fresh one; no ECAB stage was added.
+    // The customer's superseded request stays as a record before the fresh one; no CAB stage was added.
     expect(stageNames(api)).toEqual(["ECAB Approval", "Customer Approval", "Customer Approval"]);
     await expect(detail.approveButton()).toHaveCount(0);
   });
