@@ -55,7 +55,10 @@ The detail page shows:
   stage is highlighted. Rollback and Canceled are the two exits off the normal
   path, so they stay faint until the change really ends there, when the stage
   turns red. Customer Approval and Customer Review only appear when the change
-  requires them. A canceled change keeps no record of where it was canceled,
+  requires them. An **Emergency** change never takes Assess (it goes from New
+  straight to Authorize, for the CAB alone), so Assess reads "not taken" on its
+  line like Rollback and Canceled, and it never shows the two customer stages. A
+  canceled change keeps no record of where it was canceled,
   so a stage the approvals cannot prove it passed is drawn faint (and read out
   as "history not recorded") rather than guessed. When the customer rejects the
   change at Customer Approval (canceled) or Customer Review (rolled back), that
@@ -69,10 +72,13 @@ The detail page shows:
 - Tabs for **Approval**, **Plan**, **Comments**, and **Attachments**.
   - **Approval** shows whether the change requires customer approval and
     customer review, what the customer has confirmed, and a full
-    approval-stage breakdown (Peer Approval, CAB / ECAB Approval, Customer
-    Approval, Customer Review) with each individual approver's status. The
-    Assignment group of each stage is a link: it opens a dialog listing the
-    group's members. What the customer has confirmed is read-only — it is
+    approval-stage breakdown (Peer Approval, CAB Approval, Customer
+    Approval, Customer Review) with each individual approver's status. An
+    Emergency change has one stage, CAB Approval, and the customer's part reads
+    "Not applicable". (A change raised before this keeps the stage it already
+    has, even one named "ECAB Approval", and the approvers it asked can still
+    decide it.) The Assignment group of each stage is a link: it opens a dialog
+    listing the group's members. What the customer has confirmed is read-only — it is
     recorded by the approval itself.
   - **Plan** shows the change-review packet: description, justification,
     impact description, rollback plan, test plan, service outage notes, the
@@ -175,6 +181,18 @@ From the detail page a CS engineer can:
 - **Approve or reject** a pending approval stage, if the engineer is listed
   as an approver on it: the Approve/Reject buttons only appear on that
   engineer's own pending approval.
+- **Emergency changes proceed without the customer.** An Emergency change goes
+  New -> Request Approval -> Authorize (one CAB Approval stage; no Peer stage) ->
+  Scheduled, and is never sent to Customer Approval or Customer Review. In the
+  create form and the Edit dialog the two customer checkboxes are therefore
+  disabled and unticked while the type is Emergency ("Emergency changes proceed
+  without customer approval or review."); choosing Emergency clears them, and
+  choosing another type leaves them off for you to tick again. The CAB Approval
+  stage is asked of the members of the **CAB Approval** group. The ServiceNow sync
+  does not mirror that group's membership, so where nobody maintains it in the
+  portal database, Request Approval on a new Emergency change is refused with a
+  message naming the group (a data matter for whoever looks after the database:
+  there is no screen for it).
 - **Edit** the Customer Project, deployments, category, planned window,
   assignment group, assigned engineer, requested by, rollback duration,
   whether the Implementation Plan is visible to customers, the Customer

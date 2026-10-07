@@ -161,7 +161,8 @@ function customerRejectedApproval(approvals?: readonly StageEvidence[]): boolean
  *    part of moving the change INTO S, so every state before S was passed
  *    (the change may have been canceled while in S itself, so S is not);
  *  - the stage for S is APPROVED and approving it moves the change out of S
- *    (Peer, CAB / ECAB and the two customer stages do): S was passed too. The
+ *    (Peer, CAB (an older Emergency change's ECAB one too) and the two customer
+ *    stages do): S was passed too. The
  *    Review stage is the exception: approving it only records the decision
  *    (the engineer then moves the change on), so a change can sit in Review
  *    with its Review stage approved and be canceled there;

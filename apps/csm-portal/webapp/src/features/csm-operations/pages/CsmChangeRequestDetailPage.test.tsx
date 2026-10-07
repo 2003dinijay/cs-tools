@@ -3387,6 +3387,29 @@ describe("CsmChangeRequestDetailPage — lifecycle: an Emergency change never re
     view.unmount();
   });
 
+  it("Request Approval on a database where nobody maintains the CAB group: the backend's readable refusal (which group, and that the sync does not mirror it) shows verbatim in the error banner, and the change stays in New", () => {
+    // The synced data holds no members for the "CAB Approval" group (the sync mirrors a curated set of teams only), so a stage
+    // that needs it cannot be provisioned until somebody maintains the group: an ops / data matter, answered in words.
+    const refusal =
+      'the "CAB Approval" group has no members to provision as CAB Approval approvers: the ServiceNow sync does not mirror the membership of the "CAB Approval" group: it is maintained in the portal database (one team_member row per approver, with group_id set to that group)';
+    lcSeed("emergency", { approval: false, review: false }, null);
+    patchMutateMock.mockImplementationOnce((_input: unknown, options?: { onError?: (err: Error) => void }) => {
+      options?.onError?.(new BackendApiError(400, refusal));
+    });
+    const view = lcOpenAs(LC_CREATOR);
+    expect(screen.getByRole("button", { name: "Request Approval" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+    expect(showErrorMock).toHaveBeenCalledTimes(1);
+    expect(showErrorMock.mock.calls[0]![0]).toBe(refusal);
+    expect(showErrorMock.mock.calls[0]![0]).toContain('"CAB Approval" group');
+    expect(showErrorMock.mock.calls[0]![0]).toContain("sync does not mirror");
+    expect(lc.cr.state).toBe("new");
+    expect(lc.approvals).toEqual([]);
+    expect(currentStep()).toBe("New");
+    expect(screen.getByRole("button", { name: "Request Approval" })).toBeEnabled();
+    view.unmount();
+  });
+
   it("an OLDER Emergency change with a live ECAB stage still shows it, and the approvers it asked can still decide it", () => {
     lcSeed("emergency");
     // As an older version of the portal left it: Authorize, with one REQUESTED stage named ECAB.
