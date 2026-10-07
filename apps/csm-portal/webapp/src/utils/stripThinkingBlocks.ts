@@ -14,10 +14,11 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// A complete block, an opening tag that was never closed (the answer was cut
-// off), and a half-written opening tag at the very end.
-const THINKING_BLOCK_RE = /<thinking>[\s\S]*?<\/thinking>/gi;
-const THINKING_OPEN_RE = /<thinking>[\s\S]*$/i;
+// Found with sticky scans (never a backtracking pattern over the whole text), so
+// the cost stays linear however many openers there are.
+const THINKING_OPEN_RE = /<thinking>/gi;
+const THINKING_CLOSE_RE = /<\/thinking>/gi;
+// A half-written opening tag at the very end of the text (a cut-off answer).
 const THINKING_PARTIAL_OPEN_RE = /<t(?:h(?:i(?:n(?:k(?:i(?:n(?:g)?)?)?)?)?)?)?$/i;
 const LEADING_THINKING_RE = /^\s*<thinking>/i;
 
@@ -30,15 +31,33 @@ const LEADING_THINKING_RE = /^\s*<thinking>/i;
  * is why it shows up as literal text. Apply this to assistant text only — never
  * strip what a person typed.
  *
+ * Removes complete blocks, everything after an opening tag that is never closed
+ * (a stored answer that was cut off), and a half-written opening tag at the very
+ * end. Known limits: a complete block the answer merely *mentions* (e.g. in
+ * backticks) is removed too, and an unclosed mention hides the rest of the text;
+ * nested blocks and a stray closing tag are left as they are.
+ *
  * Mirrors `stripThinkingBlocks` in the customer portal webapp
  * (`features/support/utils/chat.ts`); keep the two in step.
  */
 export function stripThinkingBlocks(text: string): string {
   if (!/<t/i.test(text)) return text;
-  const stripped = text
-    .replace(THINKING_BLOCK_RE, "")
-    .replace(THINKING_OPEN_RE, "")
-    .replace(THINKING_PARTIAL_OPEN_RE, "");
+  let kept = "";
+  let pos = 0;
+  for (;;) {
+    THINKING_OPEN_RE.lastIndex = pos;
+    const open = THINKING_OPEN_RE.exec(text);
+    if (!open) {
+      kept += text.slice(pos);
+      break;
+    }
+    kept += text.slice(pos, open.index);
+    THINKING_CLOSE_RE.lastIndex = open.index + open[0].length;
+    const close = THINKING_CLOSE_RE.exec(text);
+    if (!close) break; // never closed: the rest is reasoning
+    pos = close.index + close[0].length;
+  }
+  const stripped = kept.replace(THINKING_PARTIAL_OPEN_RE, "");
   if (stripped === text) return text;
   // Only a block at the very start leaves a gap to tidy; whitespace anywhere
   // else is the author's (an indented code line must stay indented).

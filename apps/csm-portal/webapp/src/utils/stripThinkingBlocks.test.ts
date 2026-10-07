@@ -49,6 +49,15 @@ describe("stripThinkingBlocks", () => {
     );
   });
 
+  it("stays linear however many openers there are", () => {
+    const manyOpeners = "<thinking>x".repeat(50_000);
+    const started = performance.now();
+    expect(stripThinkingBlocks(manyOpeners)).toBe("");
+    // A rescan per unclosed opener takes several seconds here; a linear scan well
+    // under a millisecond. The bound is ~1000x the real cost so load can't flake it.
+    expect(performance.now() - started).toBeLessThan(1000);
+  });
+
   it("returns text without a thinking tag untouched", () => {
     const plain = "Set `a < b` and use <b>bold</b> or <thead> markup.";
     expect(stripThinkingBlocks(plain)).toBe(plain);
