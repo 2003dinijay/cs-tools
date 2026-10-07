@@ -43,3 +43,71 @@ CREATE TABLE IF NOT EXISTS til_submissions (
     -- than polluting the index.
     FULLTEXT INDEX idx_til_submissions_what_fulltext (what)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
+
+-- Migrations for existing deployments (no-op on a fresh install, where
+-- every column/index above is already in the CREATE TABLE). CREATE TABLE
+-- IF NOT EXISTS is a no-op against a database that already has this table
+-- from before `title` and these three indexes existed -- re-running this
+-- script against such a database silently applied NOTHING beyond this
+-- point without the guarded ALTERs below. Same "MySQL has no ADD COLUMN/
+-- INDEX IF NOT EXISTS, so build it conditionally via information_schema"
+-- pattern as the Novera po-agent's own db/schema.sql.
+SET @add_title := (
+    SELECT IF(
+        COUNT(*) = 0,
+        "ALTER TABLE til_submissions ADD COLUMN title VARCHAR(150) NOT NULL DEFAULT '' AFTER id",
+        'SELECT 1'
+    )
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'til_submissions'
+      AND COLUMN_NAME  = 'title'
+);
+PREPARE stmt FROM @add_title;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @add_submitted_by_email_idx := (
+    SELECT IF(
+        COUNT(*) = 0,
+        'ALTER TABLE til_submissions ADD INDEX idx_til_submissions_submitted_by_email (submitted_by_email)',
+        'SELECT 1'
+    )
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'til_submissions'
+      AND INDEX_NAME   = 'idx_til_submissions_submitted_by_email'
+);
+PREPARE stmt FROM @add_submitted_by_email_idx;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @add_where_idx := (
+    SELECT IF(
+        COUNT(*) = 0,
+        'ALTER TABLE til_submissions ADD INDEX idx_til_submissions_where (where_)',
+        'SELECT 1'
+    )
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'til_submissions'
+      AND INDEX_NAME   = 'idx_til_submissions_where'
+);
+PREPARE stmt FROM @add_where_idx;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+SET @add_what_fulltext_idx := (
+    SELECT IF(
+        COUNT(*) = 0,
+        'ALTER TABLE til_submissions ADD FULLTEXT INDEX idx_til_submissions_what_fulltext (what)',
+        'SELECT 1'
+    )
+    FROM information_schema.STATISTICS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'til_submissions'
+      AND INDEX_NAME   = 'idx_til_submissions_what_fulltext'
+);
+PREPARE stmt FROM @add_what_fulltext_idx;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
