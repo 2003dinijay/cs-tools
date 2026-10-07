@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package dbfallback posts alerts that could not be written to Postgres straight to one Google Chat space, so a database outage still reaches someone.
+// Package dbfallback posts alerts that could not be written to Postgres to one Google Chat space: a DATABASE CONNECTION FAILURE card per outage, then each alert as a reply in its thread.
 package dbfallback
 
 import (
@@ -28,6 +28,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -38,17 +39,12 @@ import (
 )
 
 const (
-	// maxPending caps alerts waiting for the next message; more are only counted.
+	// maxPending caps alerts waiting to be posted; more are only counted and summarised in one reply.
 	maxPending = 500
-	// maxListed caps alerts rendered in one card; the rest are summarised as a count.
-	maxListed = 20
-	// maxDescription and maxField truncate what is kept of each alert, in runes, so the queue stays small however large the alerts are.
-	maxDescription = 300
-	maxField       = 200
-	// maxCardBytes keeps a card's alert widgets under Chat's 32 KB card limit, leaving room for the header.
-	maxCardBytes = 28 << 10
-	// sendGap spaces messages so an outage coalesces into one card per gap instead of tripping Chat's per-space rate limit.
-	sendGap = 10 * time.Second
+	// maxField truncates each kept alert field, in runes, so the queue and every reply stay small however large the alerts are.
+	maxField = 200
+	// sendGap spaces messages to stay under Chat's limit of about one message per second per space.
+	sendGap = time.Second
 	// sendAttempts and retryBaseDelay retry 429 and 5xx answers; other 4xx answers are not retried.
 	sendAttempts   = 3
 	retryBaseDelay = 500 * time.Millisecond
@@ -58,7 +54,6 @@ const (
 type entry struct {
 	source, requestID                                    string
 	severity, service, metric, environment, category, id string
-	description                                          string
 }
 
 func newEntry(source, requestID string, a model.Alert) entry {
@@ -71,23 +66,27 @@ func newEntry(source, requestID string, a model.Alert) entry {
 		environment: truncate(a.Environment, maxField),
 		category:    truncate(a.Category, maxField),
 		id:          truncate(a.UniqueIdentifier, maxField),
-		description: truncate(a.Description, maxDescription),
 	}
 }
 
-// Client sends at most one message at a time, merging alerts reported while one is in flight or during sendGap into the next.
+// Client posts one message at a time, sendGap apart; an outage gets one thread, which ends once Recovered is called and the queue drains.
 type Client struct {
 	logger  *slog.Logger
 	url     string
 	spaceID string
+	host    string
 	http    *http.Client
 	gap     time.Duration
 
-	mu      sync.Mutex
-	pending []entry
-	dropped int
-	running bool
-	idle    *sync.Cond
+	mu         sync.Mutex
+	pending    []entry
+	dropped    int
+	thread     string
+	outages    int
+	parentSent bool
+	recovered  bool
+	running    bool
+	idle       *sync.Cond
 
 	stop     chan struct{}
 	stopOnce sync.Once
@@ -100,6 +99,14 @@ func New(logger *slog.Logger, webhookURL string, timeout time.Duration) (*Client
 		// The URL is a credential, so it is never echoed back.
 		return nil, errors.New("DB_FALLBACK_CHAT_WEBHOOK_URL must be an https Google Chat webhook URL")
 	}
+	// Replies join the thread named by the message's threadKey, or start one if it is gone.
+	q := u.Query()
+	q.Set("messageReplyOption", "REPLY_MESSAGE_FALLBACK_TO_NEW_THREAD")
+	u.RawQuery = q.Encode()
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "pod"
+	}
 	// Redirects are never followed, so the key and token only go to the configured host.
 	client := &http.Client{
 		Timeout: timeout,
@@ -109,8 +116,9 @@ func New(logger *slog.Logger, webhookURL string, timeout time.Duration) (*Client
 	}
 	c := &Client{
 		logger:  logger,
-		url:     webhookURL,
+		url:     u.String(),
 		spaceID: spaceID(webhookURL),
+		host:    host,
 		http:    client,
 		gap:     sendGap,
 		stop:    make(chan struct{}),
@@ -123,6 +131,7 @@ func New(logger *slog.Logger, webhookURL string, timeout time.Duration) (*Client
 func (c *Client) Notify(source, requestID string, alerts []model.Alert) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.recovered = false
 	for _, a := range alerts {
 		if len(c.pending) >= maxPending {
 			c.dropped++
@@ -136,20 +145,61 @@ func (c *Client) Notify(source, requestID string, alerts []model.Alert) {
 	}
 }
 
+// Recovered marks the outage over, so the next failure opens a new thread; it is cheap enough to call after every stored batch.
+func (c *Client) Recovered() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.recovered = true
+	if !c.running {
+		c.endThread()
+	}
+}
+
+func (c *Client) endThread() {
+	c.thread, c.parentSent = "", false
+}
+
+// next picks the parent card, then one reply per queued alert, then a summary of any alerts past maxPending; ok is false when nothing is left.
+func (c *Client) next() (msg map[string]any, alerts int, ok bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.pending) == 0 && c.dropped == 0 {
+		if c.recovered {
+			c.endThread()
+		}
+		c.running = false
+		c.idle.Broadcast()
+		return nil, 0, false
+	}
+	if c.thread == "" {
+		c.outages++
+		c.thread = fmt.Sprintf("db-fallback-%s-%d-%d", c.host, time.Now().UnixMilli(), c.outages)
+	}
+	switch {
+	case !c.parentSent:
+		c.parentSent = true
+		return failureCard(c.thread, time.Now()), 0, true
+	case len(c.pending) > 0:
+		e := c.pending[0]
+		c.pending = c.pending[1:]
+		if len(c.pending) == 0 {
+			c.pending = nil
+		}
+		return reply(c.thread, alertText(e)), 1, true
+	default:
+		n := c.dropped
+		c.dropped = 0
+		return reply(c.thread, fmt.Sprintf("<b>%d more alert(s) not stored.</b><br>Too many to post one by one; see the ingestion logs.", n)), n, true
+	}
+}
+
 func (c *Client) loop() {
 	for {
-		c.mu.Lock()
-		batch, dropped := c.pending, c.dropped
-		c.pending, c.dropped = nil, 0
-		if len(batch) == 0 {
-			c.running = false
-			c.idle.Broadcast()
-			c.mu.Unlock()
+		msg, alerts, ok := c.next()
+		if !ok {
 			return
 		}
-		c.mu.Unlock()
-
-		c.send(batch, dropped)
+		c.send(msg, alerts)
 
 		t := time.NewTimer(c.gap)
 		select {
@@ -160,7 +210,7 @@ func (c *Client) loop() {
 	}
 }
 
-// Close skips the remaining gap so queued alerts go out now, then waits for them or ctx; used on shutdown.
+// Close skips the remaining gaps so queued alerts go out now, then waits for them or ctx; used on shutdown.
 func (c *Client) Close(ctx context.Context) {
 	c.stopOnce.Do(func() { close(c.stop) })
 	done := make(chan struct{})
@@ -179,10 +229,10 @@ func (c *Client) Close(ctx context.Context) {
 	}
 }
 
-func (c *Client) send(batch []entry, dropped int) {
-	body, err := json.Marshal(card(batch, dropped))
+func (c *Client) send(msg map[string]any, alerts int) {
+	body, err := json.Marshal(msg)
 	if err != nil {
-		c.logger.Error("db fallback chat card could not be built", "alerts", len(batch)+dropped, "error", err)
+		c.logger.Error("db fallback chat message could not be built", "alerts", alerts, "error", err)
 		return
 	}
 	eb := backoff.NewExponentialBackOff()
@@ -195,10 +245,10 @@ func (c *Client) send(batch []entry, dropped int) {
 		return struct{}{}, err
 	}, backoff.WithBackOff(eb), backoff.WithMaxTries(sendAttempts))
 	if err != nil {
-		c.logger.Error("db fallback chat failed; these alerts were neither stored nor posted", "chat_space_id", c.spaceID, "alerts", len(batch)+dropped, "error", err)
+		c.logger.Error("db fallback chat failed; these alerts were neither stored nor posted", "chat_space_id", c.spaceID, "alerts", alerts, "error", err)
 		return
 	}
-	c.logger.Info("db fallback chat sent", "chat_space_id", c.spaceID, "alerts", len(batch)+dropped)
+	c.logger.Info("db fallback chat sent", "chat_space_id", c.spaceID, "alerts", alerts)
 }
 
 // post returns status 0 when the request never got a response.
@@ -237,39 +287,31 @@ func spaceID(webhookURL string) string {
 	return "unknown"
 }
 
-// card renders up to maxListed alerts within maxCardBytes; every alert field is escaped since it comes from the webhook sender.
-func card(batch []entry, dropped int) map[string]any {
-	total := len(batch) + dropped
-	widgets := []map[string]any{paragraph(fmt.Sprintf(
-		"%d alert(s) could not be written to the database, so no incidents will be created for them. Senders were answered 503 and may resend.", total))}
-	listed, used := 0, 0
-	for _, e := range batch {
-		if listed == maxListed {
-			break
-		}
-		w := paragraph(alertText(e))
-		size := jsonSize(w)
-		// The first alert always fits, since newEntry bounds it well under maxCardBytes.
-		if listed > 0 && used+size > maxCardBytes {
-			break
-		}
-		widgets = append(widgets, w)
-		used += size
-		listed++
-	}
-	if more := total - listed; more > 0 {
-		widgets = append(widgets, paragraph(fmt.Sprintf("<i>%d more not shown.</i>", more)))
-	}
+// failureCard opens an outage's thread; every alert that could not be stored is posted as a reply to it.
+func failureCard(thread string, started time.Time) map[string]any {
 	return map[string]any{
+		"thread": map[string]any{"threadKey": thread},
 		"cardsV2": []map[string]any{{
-			"cardId": "db-fallback",
+			"cardId": thread,
 			"card": map[string]any{
 				"header": map[string]any{
-					"title":    "<font color='#f70707'><b>DB FALLBACK | Alerts not stored</b></font>",
-					"subtitle": fmt.Sprintf("%d alert(s) received by alert ingestion", total),
+					"title":    "<font color='#f70707'><b>DATABASE CONNECTION FAILURE</b></font>",
+					"subtitle": "Alerting Component | started " + started.UTC().Format("2006-01-02 15:04:05 UTC"),
 				},
-				"sections": []map[string]any{{"widgets": widgets}},
+				"sections": []map[string]any{{"widgets": []map[string]any{paragraph(
+					"Alerts cannot be stored and no incidents will be created. Each alert is posted below in this thread.")}}},
 			},
+		}},
+	}
+}
+
+// reply is a headerless card in thread, like core's Duplicate/OK replies.
+func reply(thread, text string) map[string]any {
+	return map[string]any{
+		"thread": map[string]any{"threadKey": thread},
+		"cardsV2": []map[string]any{{
+			"cardId": thread,
+			"card":   map[string]any{"sections": []map[string]any{{"widgets": []map[string]any{paragraph(text)}}}},
 		}},
 	}
 }
@@ -278,36 +320,25 @@ func paragraph(text string) map[string]any {
 	return map[string]any{"textParagraph": map[string]any{"text": text}}
 }
 
-// jsonSize is v's encoded size, which is what counts against Chat's card limit.
-func jsonSize(v any) int {
-	b, _ := json.Marshal(v)
-	return len(b)
-}
-
+// alertText escapes every field since it comes from the webhook sender; empty fields are left out.
 func alertText(e entry) string {
 	var b strings.Builder
-	b.WriteString("<b>" + html.EscapeString(orDash(e.severity)) + " | " + html.EscapeString(orDash(e.service)) + "</b>")
+	b.WriteString("<b>Alert not stored.</b>")
 	for _, f := range []struct{ name, value string }{
+		{"Severity", e.severity},
+		{"Service", e.service},
 		{"Metric", e.metric},
 		{"Environment", e.environment},
 		{"Category", e.category},
 		{"Source", e.source},
 		{"Unique ID", e.id},
-		{"Description", e.description},
 		{"Request ID", e.requestID},
 	} {
 		if f.value != "" {
-			b.WriteString("<br><b>" + f.name + ":</b> " + html.EscapeString(f.value))
+			b.WriteString("<br>" + f.name + ": " + html.EscapeString(f.value))
 		}
 	}
 	return b.String()
-}
-
-func orDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
 }
 
 func truncate(s string, n int) string {
