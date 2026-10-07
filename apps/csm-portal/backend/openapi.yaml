@@ -5302,6 +5302,18 @@ paths:
         too, each with no upstream call. The state is the entity service's: it accepts only
         the state the change request is in or a move legalNextStates offers, and answers
         every other with a 400 whose message is echoed.
+
+        Customer requirements lock (the entity service's rules, echoed verbatim): the
+        Customer Project and the two requirement boxes are free while the change request
+        is new; from Request Approval (`{state: "assess"}`) on the project is frozen and the
+        boxes can only be turned on. A box that is set needs a Customer Project that has
+        somebody who can be asked -- a registered portal-user contact other than the
+        requester -- so Request Approval, and turning a box on after it, are a 400 on a
+        project nobody can be asked on: "customer approval is required but nobody on this
+        project can be asked (no registered contact other than the requester): register a
+        contact for the project first" ("customer review is ..." for the review box,
+        "customer approval and customer review are ..." for both). Without a Customer
+        Project at all Request Approval keeps its own message.
       operationId: patchChangeRequest
       security:
         - bearerAuth: []
@@ -5327,7 +5339,15 @@ paths:
               schema:
                 $ref: '#/components/schemas/PatchChangeRequestResponse'
         "400":
-          description: Bad request.
+          description: >-
+            Bad request. The entity service's refusals are echoed, among them the customer
+            requirements lock's: "approval cannot be requested: the customer's approval
+            and/or review is required but no Customer Project is set, ..." and "customer
+            approval is required but nobody on this project can be asked (no registered
+            contact other than the requester): register a contact for the project first"
+            (Request Approval, or a box turned on after it, on a project nobody can be asked
+            on; likewise "customer review is ..." / "customer approval and customer review
+            are ...").
           content:
             application/json:
               schema:
@@ -5571,14 +5591,18 @@ paths:
                     customer's approval before it is scheduled. CAB / ECAB
                     approval (or Request Approval on a Standard change) then
                     moves it to `customer_approval` instead of `scheduled`.
-                    Defaults to false. A non-boolean value is a 400.
+                    Defaults to false. A non-boolean value is a 400. Request
+                    Approval later needs a Customer Project that has somebody who
+                    can be asked (a registered portal-user contact other than the
+                    requester): otherwise it is a 400.
                 customerReviewRequired:
                   type: boolean
                   description: >-
                     The "Customer Review" checkbox: the change needs the
                     customer's review before it is closed. Review then offers
                     `customer_review` instead of `closed`. Defaults to false. A
-                    non-boolean value is a 400.
+                    non-boolean value is a 400. As the Customer Approval box for
+                    Request Approval.
                 projectId:
                   type: string
                   format: uuid
@@ -13560,18 +13584,25 @@ components:
         customerApprovalRequired:
           type: boolean
           description: >-
-            The "Customer Approval" checkbox. Editable only until the approval
-            gate has been passed (state new, assess or authorize); changing it
-            afterwards is a 400 ("customerApprovalRequired can no longer be
-            changed ..."). Resending the stored value is always accepted. A
-            non-boolean value is a 400.
+            The "Customer Approval" checkbox. Free while the change request is new; from
+            Request Approval on it can only be turned on, and only until the approval gate
+            has been passed (state assess or authorize): turning it off is a 400
+            ("customerApprovalRequired can no longer be turned off ...") and so is changing
+            it afterwards ("customerApprovalRequired can no longer be changed ..."). Turning
+            it on needs a Customer Project that has somebody who can be asked (400 "customer
+            approval is required but nobody on this project can be asked ..."). Resending the
+            stored value is always accepted. A non-boolean value is a 400.
         customerReviewRequired:
           type: boolean
           description: >-
-            The "Customer Review" checkbox. Editable until the change leaves
-            review (any state up to and including review); changing it from
-            customer_review onwards is a 400 ("customerReviewRequired can no
-            longer be changed ..."). A non-boolean value is a 400.
+            The "Customer Review" checkbox. Free while the change request is new; from
+            Request Approval on it can only be turned on, and only until the change leaves
+            review (any state up to and including review): turning it off is a 400
+            ("customerReviewRequired can no longer be turned off ..."), and changing it from
+            customer_review onwards is a 400 ("customerReviewRequired can no longer be
+            changed ..."). Turning it on needs a Customer Project that has somebody who can
+            be asked (400 "customer review is required but nobody on this project can be
+            asked ..."). A non-boolean value is a 400.
         deploymentIds:
           type: array
           items:

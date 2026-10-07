@@ -305,7 +305,18 @@ to the entity service as-is (no field allow-list), with two checks on top:
   until when they are editable, is the entity service's call — see its CLAUDE.md,
   "Customer Approval / Customer Review checkboxes". `PATCH` and `POST` echo the entity service's 400 message (`mapUpstreamError`), so its
   refusals ("customerApprovalRequired can no longer be changed …", "customer
-  review is required …") reach the form verbatim (`POST` does the same, see below).
+  review is required …") reach the form verbatim (`POST` does the same, see below). Among them,
+  the **customer requirements lock's nobody-to-ask refusal**: Request Approval (`{state:
+  "assess"}`) on a change that has a customer box set and a Customer Project with nobody who can
+  be asked (no registered portal-user contact other than the requester), and turning a box on
+  after it, are a 400 `customer approval is required but nobody on this project can be asked (no
+  registered contact other than the requester): register a contact for the project first`
+  (`customer review is …` / `customer approval and customer review are …`); a change with no
+  Customer Project at all keeps `approval cannot be requested: … no Customer Project is set …`.
+  The BFF neither decides nor pre-checks any of it (it has no contact data; the entity service's
+  `customerGroupCanBeAsked` is the one test, the same the customer stage's provisioning
+  applies), so `TestPatchChangeRequest_CustomerGateFlags/surfaces_the_entity_service's_refusal_messages`
+  pins that these words come through unchanged.
 * Both shape-check the customer-scope and journal fields
   (`validateChangeRequestScopeFields`): `projectId` a UUID string; `deploymentIds`,
   `deploymentProductIds` arrays of UUID strings (at most 100, `null` is not an

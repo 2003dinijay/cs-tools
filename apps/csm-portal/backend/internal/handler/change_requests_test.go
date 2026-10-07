@@ -1222,6 +1222,18 @@ func TestPatchChangeRequest_CustomerGateFlags(t *testing.T) {
 				`{"customerReviewRequired":true}`,
 				"customerReviewRequired can no longer be changed: the change request has already left the review stage (current state: closed)",
 			},
+			"Request Approval on a project nobody can be asked on": {
+				`{"state":"assess"}`,
+				"customer approval and customer review are required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first",
+			},
+			"a box turned on after Request Approval on a project nobody can be asked on": {
+				`{"customerReviewRequired":true}`,
+				"customer review is required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first",
+			},
+			"Request Approval with a box set and no Customer Project": {
+				`{"state":"assess"}`,
+				"approval cannot be requested: the customer's approval and/or review is required but no Customer Project is set, so there is nobody to ask. Select a Customer Project first (or clear the requirement).",
+			},
 			"customer_review when not required": {
 				`{"state":"customer_review"}`,
 				`state "customer_review" cannot be set: customer review is not required for this change request (customerReviewRequired is false); close it from review instead`,
