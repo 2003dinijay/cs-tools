@@ -429,6 +429,13 @@ export const windowChangedMessage = (now: string): string =>
   `the planned implementation time of this change request changed after you opened it (it is now ${now}); read it again before responding`;
 export const proposalPassedMessage = (proposed: string): string =>
   `the time the customer proposed (${proposed}) has already passed, so it cannot be accepted: use "Propose a different time" to ask the customer to approve another time`;
+/**
+ * An Accept whose window (the proposed start plus the planned length) would end after the year 2100, the last year every planned window is held
+ * to: `customer_updated_on` is a column ServiceNow writes too, so a date left far ahead can sit there. A customer's own proposal never gets that
+ * far (it is refused at the proposal). Entity-service `msgAcceptTooFarAhead`, character for character.
+ */
+export const acceptTooFarAheadMessage = (proposed: string, end: string): string =>
+  `the time the customer proposed (${proposed}) is too far ahead to be accepted: the window would end after the year 2100 (${end}), so use "Propose a different time" to ask the customer to approve another time`;
 export const ACCEPT_WINDOW_HAS_NO_LENGTH =
   'the planned window has no length, so the customer\'s proposed start cannot be applied to it: use "Propose a different time"';
 export const ON_HOLD_MESSAGE = "change request is on hold; take it off hold (onHold: false) before changing its state";
@@ -879,7 +886,9 @@ export async function installFakeChangeRequestApi(
         ? proposalPassedMessage(customerUpdatedOn)
         : ps === null || pe === null || pe <= ps
           ? ACCEPT_WINDOW_HAS_NO_LENGTH
-          : "";
+          : new Date(start + (pe - ps)).getUTCFullYear() > 2100
+            ? acceptTooFarAheadMessage(customerUpdatedOn, rfc3339Of(start + (pe - ps)))
+            : "";
     return {
       startOn: customerUpdatedOn,
       ...(pending && ps !== null && pe !== null && pe > ps ? { endOn: rfc3339Of(start + (pe - ps)) } : {}),
@@ -1155,6 +1164,9 @@ export async function installFakeChangeRequestApi(
     const ps = instantOf(plannedStartOn);
     const pe = instantOf(plannedEndOn);
     if (ps === null || pe === null || pe <= ps) return { status: 409, message: ACCEPT_WINDOW_HAS_NO_LENGTH };
+    if (new Date(start + (pe - ps)).getUTCFullYear() > 2100) {
+      return { status: 409, message: acceptTooFarAheadMessage(rfc3339Of(start), rfc3339Of(start + (pe - ps))) };
+    }
     return null;
   };
   /**

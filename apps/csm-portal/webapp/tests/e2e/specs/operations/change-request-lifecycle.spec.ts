@@ -102,6 +102,7 @@ import {
   ON_HOLD_MESSAGE,
   PROPOSAL_NO_LONGER_WAITING,
   acceptNotInCustomerApproval,
+  acceptTooFarAheadMessage,
   customerAnswerRefusal,
   customerProposedWhileOpenMessage,
   customerStageManualRefusal,
@@ -3211,7 +3212,7 @@ test.describe("change request approval flow — a customer's proposed time (mock
     expect(api.state()).toBe("authorize");
   });
 
-  test("Accept is disabled with its reason on hold or once the proposed time has passed; the API refuses both in words", async ({ page }) => {
+  test("Accept is disabled with its reason on hold, once the proposed time has passed, or when its window would end after the year 2100; the API refuses each in words", async ({ page }) => {
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
     await proposalWaiting(page, api, detail);
@@ -3235,6 +3236,28 @@ test.describe("change request approval flow — a customer's proposed time (mock
     });
     expect(api.state()).toBe("customer_approval");
     expect(api.proposal().confirmation).toBeNull();
+
+    // A date left far ahead (ServiceNow writes the column too; the customer portal refuses to make one): the planned 2-hour
+    // length from it would end after the year 2100, a window no other path may write. Held back in the backend's words, and the
+    // last window that fits is accepted.
+    api.seedProposal({ startOn: "2100-12-31T22:30:00Z", proposerKnown: true });
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.acceptProposedTimeButton()).toBeDisabled();
+    await expect(
+      detail.page.getByLabel(/^Accept proposed time: The time the customer proposed \(2100-12-31T22:30:00Z\) is too far ahead to be accepted/),
+    ).toBeVisible();
+    await expect(detail.proposeDifferentTimeButton()).toBeEnabled();
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: "2100-12-31T22:30:00Z", ...SHOWN_WINDOW })).toEqual({
+      status: 409,
+      message: acceptTooFarAheadMessage("2100-12-31T22:30:00Z", "2101-01-01T00:30:00Z"),
+    });
+    expect(api.state()).toBe("customer_approval");
+    expect(api.planned()).toEqual(ORIGINAL_WINDOW);
+    api.seedProposal({ startOn: "2100-12-31T21:30:00Z", proposerKnown: true });
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.acceptProposedTimeButton()).toBeEnabled();
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: "2100-12-31T21:30:00Z", ...SHOWN_WINDOW })).toMatchObject({ status: 200 });
+    expect(api.state()).toBe("scheduled");
   });
 
   test("a time the customer re-proposed behind an open confirmation is refused in the backend's words, the dialog keeps what the engineer was shown, and nothing is accepted", async ({ page }) => {
@@ -4973,6 +4996,33 @@ test.describe("a customer's proposed time (real stack)", () => {
       });
       expect([again.status, message(again)]).toEqual([409, NO_PROPOSAL_WAITING]);
       expect(await stateOf(applied)).toBe("customer_approval");
+    } finally {
+      await deleteLegacy();
+    }
+  });
+  test("a customer date the sync left far ahead is a proposal that cannot be accepted: the window would end after the year 2100, the read model says so in the backend's words, and the last window that fits is accepted", async () => {
+    test.skip(!fs.existsSync(LEGACY_SQL), `the customer portal e2e fixture ${LEGACY_SQL} is not there (run from apps/csm-portal/webapp)`);
+    await psql(fs.readFileSync(LEGACY_SQL, "utf8"));
+    try {
+      const id = legacyId("CHG0039112"); // Customer Approval, planned 2031-03-01 10:00 - 12:00 (2 hours), nobody asked
+      const shown = { expectedPlannedStartOn: "2031-03-01T10:00:00Z", expectedPlannedEndOn: "2031-03-01T12:00:00Z" };
+      const proposalOf = async (): Promise<Record<string, unknown> | undefined> =>
+        ((await staff("jane").get(id)).body as unknown as { customerProposal?: Record<string, unknown> }).customerProposal;
+
+      // + the 2-hour planned length = 2101-01-01T00:30:00Z: past the last year every planned window is held to.
+      await psql(`update change_request set customer_updated_on = '2100-12-31 22:30:00+00', customer_updated_date_confirmation = NULL where id = '${id}'`);
+      const blocked = acceptTooFarAheadMessage("2100-12-31T22:30:00Z", "2101-01-01T00:30:00Z");
+      expect(await proposalOf()).toMatchObject({ answer: "pending", canAccept: false, acceptBlockedReason: blocked });
+      const refused = await staff("alice").patch(id, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: "2100-12-31T22:30:00Z", ...shown });
+      expect([refused.status, (refused.body as { message?: string }).message]).toEqual([409, blocked]);
+      expect(await proposalRow(id)).toMatchObject({ state: "CUSTOMER_APPROVAL", start: "2031-03-01 10:00:00", end: "2031-03-01 12:00:00", answer: "" });
+
+      // The last window that fits: it ends 2100-12-31T23:30:00Z, still year 2100.
+      await psql(`update change_request set customer_updated_on = '2100-12-31 21:30:00+00' where id = '${id}'`);
+      expect(await proposalOf()).toMatchObject({ answer: "pending", canAccept: true });
+      const accepted = await staff("alice").patch(id, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: "2100-12-31T21:30:00Z", ...shown });
+      expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+      expect(await proposalRow(id)).toMatchObject({ state: "SCHEDULED", start: "2100-12-31 21:30:00", end: "2100-12-31 23:30:00", answer: "AGREE" });
     } finally {
       await deleteLegacy();
     }

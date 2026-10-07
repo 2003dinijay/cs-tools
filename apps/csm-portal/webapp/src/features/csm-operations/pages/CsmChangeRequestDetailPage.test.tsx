@@ -1423,6 +1423,13 @@ function lcPlanned(ms: number): string {
 function lcRfc3339(ms: number): string {
   return new Date(ms).toISOString().replace(".000Z", "Z");
 }
+/**
+ * The refusal of an Accept whose window would end after the last year every planned window is held to (entity-service
+ * `msgAcceptTooFarAhead`: `customer_updated_on` is a column ServiceNow writes too, so a date left far ahead can sit there).
+ */
+function lcTooFarAheadMessage(proposedMs: number, endMs: number): string {
+  return `the time the customer proposed (${lcRfc3339(proposedMs)}) is too far ahead to be accepted: the window would end after the year 2100 (${lcRfc3339(endMs)}), so use "Propose a different time" to ask the customer to approve another time`;
+}
 
 /**
  * The backend's allowlist for "a customer proposal is waiting for WSO2": in Customer Approval, a proposed start that differs
@@ -1450,7 +1457,9 @@ function lcCustomerProposal(): BeChangeRequestDetail["customerProposal"] {
       ? `the time the customer proposed (${lcRfc3339(start)}) has already passed, so it cannot be accepted: use "Propose a different time" to ask the customer to approve another time`
       : plannedStart === null || plannedEnd === null || plannedEnd <= plannedStart
         ? `the planned window has no length, so the customer's proposed start cannot be applied to it: use "Propose a different time"`
-        : "";
+        : new Date(start + (plannedEnd - plannedStart)).getUTCFullYear() > 2100
+          ? lcTooFarAheadMessage(start, start + (plannedEnd - plannedStart))
+          : "";
   return {
     startOn: lc.customerUpdatedOn,
     ...(pending && plannedStart !== null && plannedEnd !== null && plannedEnd > plannedStart
@@ -1723,6 +1732,9 @@ function lcAcceptProposal(patch: Record<string, unknown>): void {
   const plannedEnd = lcMs(lc.cr.plannedEndOn);
   if (plannedStart === null || plannedEnd === null || plannedEnd <= plannedStart) {
     throw new BackendApiError(409, 'the planned window has no length, so the customer\'s proposed start cannot be applied to it: use "Propose a different time"');
+  }
+  if (new Date(start + (plannedEnd - plannedStart)).getUTCFullYear() > 2100) {
+    throw new BackendApiError(409, lcTooFarAheadMessage(start, start + (plannedEnd - plannedStart)));
   }
   lc.confirmation = "agree";
   lc.cr = {
@@ -2977,6 +2989,34 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       lc.onHold = false;
       lcPublish();
       expect(accept()).toBeEnabled();
+      view.unmount();
+    });
+
+    // customer_updated_on is a column ServiceNow writes too: a date left far ahead must not become the planned window of a change.
+    it("a proposed date whose window would end after the year 2100 holds Accept back in the backend's own words; proposing a different time stays open", () => {
+      const view = seedProposal();
+      lc.customerUpdatedOn = "2100-12-31T22:30:00Z"; // + the 2-hour planned length = 2101-01-01T00:30:00Z
+      lcPublish();
+      expect(accept()).toBeDisabled();
+      expect(
+        screen.getByLabelText(
+          'Accept proposed time: The time the customer proposed (2100-12-31T22:30:00Z) is too far ahead to be accepted: the window would end after the year 2100 (2101-01-01T00:30:00Z), so use "Propose a different time" to ask the customer to approve another time.',
+        ),
+      ).toBeInTheDocument();
+      expect(counter()).toBeEnabled();
+      view.unmount();
+    });
+
+    it("the last window that fits the range is accepted: Accept is on offer and schedules it", async () => {
+      const view = seedProposal();
+      lc.customerUpdatedOn = "2100-12-31T21:30:00Z"; // + 2 hours = 2100-12-31T23:30:00Z, still year 2100
+      lcPublish();
+      expect(accept()).toBeEnabled();
+      fireEvent.click(accept());
+      fireEvent.click(dialogButton("Accept proposed time"));
+      await waitFor(() => expect(lc.cr.state).toBe("scheduled"));
+      expect(lc.cr.plannedStartOn).toBe("2100-12-31 21:30:00");
+      expect(lc.cr.plannedEndOn).toBe("2100-12-31 23:30:00");
       view.unmount();
     });
 

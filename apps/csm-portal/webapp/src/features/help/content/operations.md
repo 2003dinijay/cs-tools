@@ -153,8 +153,9 @@ From the detail page a CS engineer can:
     not asked again: the proposal is their own consent. The Customer approved
     cell then reads "Proposed time accepted", because nobody on staff records a
     customer's approval. Accept is held back, with the reason, while the change
-    is on hold, once the proposed time has passed, or when there is no planned
-    window to keep the length of.
+    is on hold, once the proposed time has passed, when there is no planned
+    window to keep the length of, or when the window it would give ends after the
+    year 2100 (a date ServiceNow left far ahead).
   - **Propose a different time** asks the customer to approve the time you set
     instead (again with no CAB). Keeping the current time **declines** the
     proposal: only the answer is recorded and the customer keeps their request
