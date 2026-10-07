@@ -148,16 +148,19 @@ func customerApprovalScenarios() []bypassScenario {
 			f.setState(id, "CUSTOMER_APPROVAL")
 			return id
 		}, false},
+		// Request Approval refuses a ticked box on a project nobody can be asked on, so
+		// these two reach the gate by the residual edge: the contact the project had
+		// when approval was requested is gone before the gate (requestApprovalThenContactsLeave).
 		{"a project with no registered contacts", func(f *crFlow) string {
 			id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
-			f.requestApproval(id)
+			f.requestApprovalThenContactsLeave(id)
 			f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 			return id
 		}, false},
 		{"a project whose only contact is the creator", func(f *crFlow) string {
 			f.registerContact(crScopeProjectC, crScopeAccountID, crFlowCreatorID)
 			id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
-			f.requestApproval(id)
+			f.requestApprovalThenContactsLeave(id)
 			f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 			return id
 		}, false},
@@ -189,7 +192,14 @@ func customerApprovalScenarios() []bypassScenario {
 func customerReviewScenarios() []bypassScenario {
 	toReview := func(f *crFlow, project *string) string {
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, project, false, true)
-		f.requestApproval(id)
+		// A project nobody can be asked on is refused at Request Approval, so those
+		// scenarios (C) lose their contact after it (the residual edge); the others
+		// have contacts throughout.
+		if project != nil && *project == crScopeProjectC {
+			f.requestApprovalThenContactsLeave(id)
+		} else {
+			f.requestApproval(id)
+		}
 		f.approvePeerAndCAB(id, "SCHEDULED", "implement", "canceled")
 		f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 		f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
@@ -453,7 +463,7 @@ func TestChangeRequestNoBypassIntegration_TheCustomersOwnWaysStillWork(t *testin
 		f.step(id, domain.ChangeRequestStateRollback, "ROLLBACK")
 
 		id2 := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), false, true)
-		f.requestApproval(id2)
+		f.requestApprovalThenContactsLeave(id2) // refused with nobody to ask; the contact leaves after (residual edge)
 		f.approvePeerAndCAB(id2, "SCHEDULED", "implement", "canceled")
 		f.step(id2, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 		f.step(id2, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
@@ -479,7 +489,7 @@ func TestChangeRequestNoBypassIntegration_TheCustomersOwnWaysStillWork(t *testin
 func TestChangeRequestNoBypassIntegration_ANobodyToAskChangeIsAskedOnceAContactRegisters(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
-	f.requestApproval(id)
+	f.requestApprovalThenContactsLeave(id) // Request Approval refuses it with nobody to ask; the contact leaves after (residual edge)
 	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 	f.wantRefusedAndUnchanged("manual scheduled with nobody to ask", id, domain.PatchChangeRequestRequest{State: ptrCRState("scheduled")}, bypassApprovalMsg)
 

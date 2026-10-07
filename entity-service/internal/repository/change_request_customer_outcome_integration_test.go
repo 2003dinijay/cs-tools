@@ -459,7 +459,7 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchWhenNobodyWasAsked(t *test
 		f.useVisibility(visStrictSinceLongAgo())
 		// Project C has no contact when the change reaches Customer Approval.
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
-		f.requestApproval(id)
+		f.requestApprovalThenContactsLeave(id)
 		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 		if n := len(f.customerStages(id)); n != 0 {
 			t.Fatalf("customer stage provisioned for a project without contacts: %+v", f.customerStages(id))
@@ -493,7 +493,7 @@ func TestChangeRequestCustomerOutcomeIntegration_PatchWhenNobodyWasAsked(t *test
 		f := newCustomerGroupFlow(t)
 		// The default policy has no cutover: every change request is legacy.
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
-		f.requestApproval(id)
+		f.requestApprovalThenContactsLeave(id)
 		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 		if n := len(f.customerStages(id)); n != 0 {
 			t.Fatalf("customer stage provisioned for a project without contacts: %+v", f.customerStages(id))

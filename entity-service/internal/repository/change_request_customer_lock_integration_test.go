@@ -545,11 +545,14 @@ func TestChangeRequestLockIntegration_CustomerReviewCannotBeReopened(t *testing.
 // for the customer: it can be cancelled or re-scheduled, or wait for a contact.
 // The lock holds there too -- the box stays ticked, the project cannot be swapped
 // for one that has contacts -- and a contact who registers afterwards is picked up
-// by resending the project, the only trigger that survives the lock.
+// by resending the project, the only trigger that survives the lock. Request
+// Approval refuses a ticked box on a project nobody can be asked on, so the way
+// to get here is the residual edge: the contact the project had when approval
+// was requested left before the gate (requestApprovalThenContactsLeave).
 func TestChangeRequestLockIntegration_NoContactsReachedTheStage(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
-	f.requestApproval(id)
+	f.requestApprovalThenContactsLeave(id)
 	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 	f.expect(id, "in Customer Approval with nobody to ask", "CUSTOMER_APPROVAL", "authorize", "canceled")
 	if n := len(f.stages(id)); n != 2 {

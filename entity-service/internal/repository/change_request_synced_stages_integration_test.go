@@ -209,7 +209,10 @@ func TestChangeRequestSyncedStagesIntegration_APositionZeroStageInAssessIsStillP
 func TestChangeRequestSyncedStagesIntegration_APositionTwoStageIsNeverTheCustomers(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
-	f.requestApproval(id)
+	// A legacy change request nobody was asked about: Request Approval refuses the
+	// project with no contacts today, so the contact it had at Request Approval is
+	// gone before the gate (the residual edge).
+	f.requestApprovalThenContactsLeave(id)
 	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 	// A synced third stage naming the project's contact (and an internal person).
 	f.registerContact(crScopeProjectC, crScopeAccountID, crScopeUserA1)

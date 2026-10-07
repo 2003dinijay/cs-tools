@@ -304,7 +304,11 @@ func TestChangeRequestTransitionsIntegration_CanceledOrClosedCannotBeRevived(t *
 		f := newCustomerGroupFlow(t)
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, f.noContactProject(), true, true)
 		f.setPlanned(id, rsStart1, rsEnd1)
-		f.driveToCustomerApproval(id)
+		// Request Approval refuses a project nobody can be asked on: the change gets to
+		// the gate with nobody asked by the residual edge (the contact it had when
+		// approval was requested is gone before the gate).
+		f.requestApprovalThenContactsLeave(id)
+		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 		if got := len(f.customerStages(id)); got != 0 {
 			t.Fatalf("customer stages = %d, want none (nobody to ask)", got)
 		}
@@ -335,7 +339,7 @@ func TestChangeRequestTransitionsIntegration_CanceledOrClosedCannotBeRevived(t *
 	t.Run("canceled in Customer Review with nobody to ask", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, f.noContactProject(), false, true)
-		f.requestApproval(id)
+		f.requestApprovalThenContactsLeave(id) // the residual edge, as above
 		f.approvePeerAndCAB(id, "SCHEDULED", "implement", "canceled")
 		f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 		f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")

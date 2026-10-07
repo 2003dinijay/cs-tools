@@ -335,9 +335,11 @@ func TestChangeRequestFlowIntegration_StaleApprovals_Rollback(t *testing.T) {
 	}
 	t.Run("customer review->rollback with no customer group", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
-		// Project C has no registered contact: no Customer Review stage.
+		// Project C has no registered contact at the review: no Customer Review stage
+		// (Request Approval refuses the project, so the contact it had when approval was
+		// requested is gone before the review: the residual edge).
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), false, true)
-		f.requestApproval(id)
+		f.requestApprovalThenContactsLeave(id)
 		f.approvePeerAndCAB(id, "SCHEDULED", "implement", "canceled")
 		f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 		f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")

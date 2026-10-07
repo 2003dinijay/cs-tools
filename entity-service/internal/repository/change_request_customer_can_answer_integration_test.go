@@ -366,7 +366,7 @@ func TestChangeRequestCustomerCanAnswerIntegration_NobodyWasAsked(t *testing.T) 
 		f := newCustomerGroupFlow(t)
 		f.useVisibility(visStrictSinceLongAgo())
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
-		f.requestApproval(id)
+		f.requestApprovalThenContactsLeave(id)
 		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 		const late = "3bbbbbbb-0000-0000-0000-0000000000a8"
 		f.execSQL(`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user, user_type)
@@ -383,7 +383,7 @@ func TestChangeRequestCustomerCanAnswerIntegration_NobodyWasAsked(t *testing.T) 
 	t.Run("the change reached Customer Approval with nobody to ask, legacy: the customer may answer", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
-		f.requestApproval(id)
+		f.requestApprovalThenContactsLeave(id)
 		f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 		const late = "3bbbbbbb-0000-0000-0000-0000000000a8"
 		f.execSQL(`INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_name, name, first_name, last_name, email, is_active, is_system_user, user_type)

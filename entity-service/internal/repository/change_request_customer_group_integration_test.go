@@ -402,7 +402,12 @@ func TestChangeRequestFlowIntegration_CustomerGroupFirstResponderWins(t *testing
 // Cancel and Re-schedule (Customer Approval) / Roll back (Customer Review). ("No
 // project" is not a way to get here: a box ticked on a change with no Customer
 // Project is refused at Request Approval -- see
-// TestChangeRequestLockIntegration_RequestApprovalNeedsAProject.)
+// TestChangeRequestLockIntegration_RequestApprovalNeedsAProject -- and so is a box
+// ticked on a project nobody can be asked on, see
+// TestChangeRequestNobodyToAskIntegration_RequestApprovalMatrix.) What is left is
+// the residual edge: the contacts the project had when approval was requested are
+// gone by the time the gate is reached, which these cases build with a stand-in
+// contact that leaves right after Request Approval (requestApprovalThenContactsLeave).
 func TestChangeRequestFlowIntegration_CustomerGroupNobodyToAsk(t *testing.T) {
 	cases := []struct {
 		name    string
@@ -423,7 +428,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupNobodyToAsk(t *testing.T) {
 					tc.prepare(f)
 				}
 				id := f.createWithProject(domain.ChangeRequestTypeNormal, tc.project, true, false)
-				f.requestApproval(id)
+				f.requestApprovalThenContactsLeave(id)
 				f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 				if n := len(f.customerStages(id)); n != 0 {
 					t.Fatalf("customer stage provisioned: %d", n)
@@ -444,7 +449,7 @@ func TestChangeRequestFlowIntegration_CustomerGroupNobodyToAsk(t *testing.T) {
 					tc.prepare(f)
 				}
 				id := f.createWithProject(domain.ChangeRequestTypeNormal, tc.project, false, true)
-				f.requestApproval(id)
+				f.requestApprovalThenContactsLeave(id)
 				f.approvePeerAndCAB(id, "SCHEDULED", "implement", "canceled")
 				f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 				f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
@@ -676,12 +681,17 @@ func TestChangeRequestFlowIntegration_StoredCustomerGroupIsNoLongerUsedForApprov
 	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectC), true, false)
 	// seededGroupID has real members (the seeded users); store it as the legacy group.
 	f.execSQL(`UPDATE change_request SET customer_group_id = $1 WHERE id = $2`, seededGroupID, id)
-	f.requestApproval(id)
+	// The legacy group does not make anybody askable either: Request Approval is
+	// refused for the project with no contacts, whoever the old group's members are.
+	_, err := f.patchState(id, domain.ChangeRequestStateAssess)
+	f.wantExact("Request Approval with only a legacy group", err, nobodyMsgApproval)
+	// What is left is the residual edge: the contacts are gone after Request Approval.
+	f.requestApprovalThenContactsLeave(id)
 	f.approvePeerAndCAB(id, "CUSTOMER_APPROVAL", "authorize", "canceled")
 	if n := len(f.customerStages(id)); n != 0 {
 		t.Fatalf("a customer stage was provisioned from the legacy group: %+v", f.customerStages(id))
 	}
-	_, err := f.patchState(id, domain.ChangeRequestStateScheduled)
+	_, err = f.patchState(id, domain.ChangeRequestStateScheduled)
 	f.wantValidationError("manual scheduled", err, "can only be given by the customer in the Customer Portal")
 	f.expect(id, "after the refused manual scheduled", "CUSTOMER_APPROVAL", "authorize", "canceled")
 }
