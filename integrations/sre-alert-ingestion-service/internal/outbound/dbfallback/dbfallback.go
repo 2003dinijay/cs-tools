@@ -287,6 +287,9 @@ func spaceID(webhookURL string) string {
 	return "unknown"
 }
 
+// ist is a fixed UTC+5:30 zone, so the card's time doesn't depend on tzdata being in the image.
+var ist = time.FixedZone("IST", 5*60*60+30*60)
+
 // failureCard opens an outage's thread; every alert that could not be stored is posted as a reply to it.
 func failureCard(thread string, started time.Time) map[string]any {
 	return map[string]any{
@@ -296,7 +299,7 @@ func failureCard(thread string, started time.Time) map[string]any {
 			"card": map[string]any{
 				"header": map[string]any{
 					"title":    "<font color='#f70707'><b>DATABASE CONNECTION FAILURE</b></font>",
-					"subtitle": "Alerting Component | started " + started.UTC().Format("2006-01-02 15:04:05 UTC"),
+					"subtitle": "Alerting Component | started " + started.In(ist).Format("2006-01-02 15:04:05 IST"),
 				},
 				"sections": []map[string]any{{"widgets": []map[string]any{paragraph(
 					"Alerts cannot be stored and no incidents will be created. Each alert is posted below in this thread.")}}},

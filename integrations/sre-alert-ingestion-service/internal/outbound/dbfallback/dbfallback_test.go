@@ -250,6 +250,17 @@ func TestSend_RetriesServerErrorsButNotClientErrors(t *testing.T) {
 	}
 }
 
+func TestFailureCard_ShowsStartInIST(t *testing.T) {
+	started := time.Date(2026, 10, 7, 9, 16, 45, 0, time.UTC)
+	body, err := json.Marshal(failureCard("thread", started))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "Alerting Component | started 2026-10-07 14:46:45 IST"; !strings.Contains(string(body), want) {
+		t.Errorf("card missing %q: %s", want, body)
+	}
+}
+
 func TestSpaceID(t *testing.T) {
 	if got := spaceID("https://chat.googleapis.com/v1/spaces/AAA/messages?key=k"); got != "AAA" {
 		t.Errorf("spaceID = %q, want AAA", got)
