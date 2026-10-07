@@ -540,6 +540,14 @@ export const CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE =
 export const CHANGE_REQUEST_NO_WINDOW_MESSAGE =
   "This change request has no planned time yet, so a new time cannot be proposed for it.";
 
+/**
+ * A conflict (409) on a proposal while an approval that is not the customer's is
+ * still being asked. The customer is never told which, or that there is one: only
+ * that a new time cannot be proposed right now.
+ */
+export const CHANGE_REQUEST_PROPOSAL_NOT_NOW_MESSAGE =
+  "A new time cannot be proposed for this change request right now. Please try again later.";
+
 /** A conflict (409) on a proposal because WSO2 has the change on hold. */
 export const CHANGE_REQUEST_ON_HOLD_MESSAGE =
   "This change request is on hold, so a new time cannot be proposed right now.";
@@ -624,6 +632,10 @@ export function describeChangeRequestActionError(
       // state: the customer is still being asked, a proposal just cannot go in.
       if (/\bon hold\b/i.test(error.message)) {
         return { message: CHANGE_REQUEST_ON_HOLD_MESSAGE, terminal: false };
+      }
+      // Another conflict about the proposal itself, and again not the customer's to act on.
+      if (/not the customer's, so a new time cannot be proposed/i.test(error.message)) {
+        return { message: CHANGE_REQUEST_PROPOSAL_NOT_NOW_MESSAGE, terminal: false };
       }
       // A conflict about the proposal itself: nothing to move. The customer is still
       // being asked; only a proposed time is refused.

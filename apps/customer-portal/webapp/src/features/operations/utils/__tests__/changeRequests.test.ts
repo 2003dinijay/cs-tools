@@ -42,6 +42,7 @@ import {
   CHANGE_REQUEST_ANSWER_STALE_MESSAGE,
   CHANGE_REQUEST_NO_WINDOW_MESSAGE,
   CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE,
+  CHANGE_REQUEST_PROPOSAL_NOT_NOW_MESSAGE,
   CHANGE_REQUEST_ON_HOLD_MESSAGE,
   CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE,
 } from "@features/operations/utils/changeRequests";
@@ -281,6 +282,19 @@ describe("describeChangeRequestActionError", () => {
     expect(CHANGE_REQUEST_NO_WINDOW_MESSAGE).toBe(
       "This change request has no planned time yet, so a new time cannot be proposed for it.",
     );
+  });
+
+  it("says only that a time cannot be proposed right now when an approval that is not the customer's is still asked, and names no stage", () => {
+    const result = describeChangeRequestActionError(
+      new ApiError(
+        409,
+        "Conflict",
+        "this change request is also waiting for an approval that is not the customer's, so a new time cannot be proposed for it right now",
+      ),
+      fallback,
+    );
+    expect(result).toEqual({ message: CHANGE_REQUEST_PROPOSAL_NOT_NOW_MESSAGE, terminal: false });
+    expect(result.message).not.toMatch(/approval|CAB|internal/i);
   });
 
   it("puts the refusals of a start-only proposal in the customer's words", () => {
