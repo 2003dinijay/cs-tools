@@ -26,7 +26,12 @@ import {
   isAwaitingInternalReview,
   getCustomerDecisionLabels,
   getCustomerDecisionMessages,
+  getCustomerProposal,
   getCustomerRejectConfirmCopy,
+  getProposalNote,
+  isProposalAccepted,
+  isProposalNotAccepted,
+  isProposalPending,
   buildChangeRequestWorkflowStages,
   mapChangeRequestStats,
   resolveCustomerDecisionMode,
@@ -35,6 +40,7 @@ import {
   AWAITING_YOUR_ACTION_STATE_IDS,
   AWAITING_LABELS,
   CHANGE_REQUEST_ANSWER_STALE_MESSAGE,
+  CHANGE_REQUEST_NO_WINDOW_MESSAGE,
   CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE,
   CHANGE_REQUEST_ON_HOLD_MESSAGE,
   CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE,
@@ -261,6 +267,43 @@ describe("describeChangeRequestActionError", () => {
     expect(CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE).toMatch(/schedule .* changed after you opened it/);
   });
 
+  it("keeps the customer where they are when a proposal is refused because there is no window to move", () => {
+    expect(
+      describeChangeRequestActionError(
+        new ApiError(
+          409,
+          "Conflict",
+          "this change request has no planned window to move, so a new time cannot be proposed for it",
+        ),
+        fallback,
+      ),
+    ).toEqual({ message: CHANGE_REQUEST_NO_WINDOW_MESSAGE, terminal: false });
+    expect(CHANGE_REQUEST_NO_WINDOW_MESSAGE).toBe(
+      "This change request has no planned time yet, so a new time cannot be proposed for it.",
+    );
+  });
+
+  it("puts the refusals of a start-only proposal in the customer's words", () => {
+    const say = (backend: string) =>
+      describeChangeRequestActionError(new ApiError(400, "Bad Request", backend), fallback);
+    expect(say("a proposed implementation time needs a new start: send plannedStartOn")).toEqual({
+      message: "Enter the proposed start date and time.",
+      terminal: false,
+    });
+    expect(
+      say("a proposed time moves the start and keeps the planned length of 2h0m0s: plannedEndOn must be 2030-03-01T11:00:00Z, or be left out").message,
+    ).toBe("A proposed time moves the start and keeps the planned length. Choose a different start.");
+    expect(
+      say("plannedStartOn is the planned start already: propose a different start").message,
+    ).toBe("This is the same as the current schedule. Choose a different start.");
+    expect(
+      say("that time is already proposed and is waiting for WSO2's response").message,
+    ).toBe("That time is already proposed and is waiting for WSO2's response. Choose a different start.");
+    expect(
+      say("WSO2 asked for a different time than that one: propose another start").message,
+    ).toBe("WSO2 asked for a different time than that one. Choose another start.");
+  });
+
   it("puts the newer window refusals in the customer's words", () => {
     const say = (backend: string) =>
       describeChangeRequestActionError(new ApiError(400, "Bad Request", backend), fallback);
@@ -300,7 +343,7 @@ describe("describeChangeRequestActionError", () => {
         new ApiError(400, "Bad Request", "re-scheduling requires a changed planned start or end: send plannedStartOn and/or plannedEndOn with a value different from the stored one"),
         fallback,
       ).message,
-    ).toMatch(/same as the current schedule/);
+    ).toBe("This is the same as the current schedule. Choose a different start.");
   });
 
   it("explains an answer that was already locked in", () => {
@@ -356,6 +399,185 @@ describe("buildChangeRequestWorkflowStages", () => {
   });
 });
 
+describe("buildChangeRequestWorkflowStages and a proposed time", () => {
+  const stageOf = (changeRequest: object, name: string) =>
+    buildChangeRequestWorkflowStages(changeRequest as never).workflowStages.find((s) => s.name === name);
+  const approval = { id: "5", label: "Customer Approval" };
+  const scheduled = { id: "-2", label: "Scheduled" };
+  const base = { hasCustomerApproved: false, hasCustomerReviewed: false };
+
+  it("says a proposed time waits for WSO2 on the Customer Approval step, in the viewer's own words when it is theirs", () => {
+    const own = stageOf(
+      { ...base, state: approval, customerProposal: { startDate: "2030-03-01 09:00:00", answer: "pending", proposedByViewer: true } },
+      "Customer Approval",
+    );
+    expect(own).toMatchObject({ current: true, completed: false, disabled: false });
+    expect(own?.description).toBe("Waiting for WSO2 to respond to your proposed time");
+
+    const colleague = stageOf(
+      { ...base, state: approval, customerProposal: { startDate: "2030-03-01 09:00:00", answer: "pending" } },
+      "Customer Approval",
+    );
+    expect(colleague?.description).toBe("A proposed time is waiting for WSO2's response");
+  });
+
+  it("keeps the usual caption when nothing is pending, and the step still current", () => {
+    for (const customerProposal of [undefined, null, { startDate: "2030-03-01 09:00:00", answer: "disagreed" }]) {
+      const step = stageOf({ ...base, state: approval, customerProposal }, "Customer Approval");
+      expect(step?.description).toBe("Customer approval received");
+      expect(step?.current).toBe(true);
+    }
+  });
+
+  it("shows Customer Approval done for a change WSO2 accepted a proposed time on, though the approval flag stays false", () => {
+    const step = stageOf(
+      { ...base, state: scheduled, customerProposal: { startDate: "2030-03-01 09:00:00", answer: "agreed" } },
+      "Customer Approval",
+    );
+    expect(step).toMatchObject({ completed: true, current: false, disabled: false });
+    expect(step?.description).toBe("Proposed time accepted by WSO2");
+    // Without the accepted proposal the same change shows the step not done.
+    const without = stageOf({ ...base, state: scheduled }, "Customer Approval");
+    expect(without).toMatchObject({ completed: false });
+    expect(without?.description).toBe("Customer approval received");
+  });
+
+  it("does not grey the step out in Implement or Review after an accepted proposal", () => {
+    for (const state of [{ id: "-1", label: "Implement" }, { id: "0", label: "Review" }]) {
+      const accepted = stageOf(
+        { ...base, state, customerProposal: { startDate: "2030-03-01 09:00:00", answer: "agreed" } },
+        "Customer Approval",
+      );
+      expect(accepted, state.label).toMatchObject({ completed: true, disabled: false });
+      expect(stageOf({ ...base, state }, "Customer Approval"), state.label).toMatchObject({ disabled: true });
+    }
+  });
+
+  it("never shows a step done for a canceled change request, accepted proposal or not", () => {
+    const canceled = stageOf(
+      { ...base, state: { id: "4", label: "Canceled" }, customerProposal: { startDate: "2030-03-01 09:00:00", answer: "agreed" } },
+      "Customer Approval",
+    );
+    expect(canceled?.completed).toBe(false);
+  });
+
+  it("a pending answer left on a change that moved on is not shown as pending", () => {
+    const step = stageOf(
+      { ...base, state: scheduled, customerProposal: { startDate: "2030-03-01 09:00:00", answer: "pending" } },
+      "Customer Approval",
+    );
+    expect(step?.description).toBe("Customer approval received");
+  });
+});
+
+describe("a customer's proposed time", () => {
+  const approval = { id: "5", label: "Customer Approval" };
+  const proposal = (answer: string, extra: object = {}) => ({
+    startDate: "2030-03-01 09:00:00",
+    answer,
+    ...extra,
+  });
+  const cr = (state: object, customerProposal: unknown, extra: object = {}) =>
+    ({
+      state,
+      startDate: "2030-02-20 09:00:00",
+      endDate: "2030-02-20 11:00:00",
+      customerProposal,
+      ...extra,
+    }) as never;
+
+  describe("getCustomerProposal", () => {
+    it("returns a proposal that has a start and a known answer", () => {
+      expect(getCustomerProposal(cr(approval, proposal("pending")))).toEqual(proposal("pending"));
+      for (const answer of ["pending", "agreed", "disagreed", "unanswered"]) {
+        expect(getCustomerProposal(cr(approval, proposal(answer)))?.answer, answer).toBe(answer);
+      }
+    });
+
+    it("returns null for nothing proposed, no start, or an answer it does not know", () => {
+      expect(getCustomerProposal(undefined)).toBeNull();
+      expect(getCustomerProposal(null)).toBeNull();
+      expect(getCustomerProposal(cr(approval, undefined))).toBeNull();
+      expect(getCustomerProposal(cr(approval, null))).toBeNull();
+      expect(getCustomerProposal(cr(approval, { answer: "pending" }))).toBeNull();
+      expect(getCustomerProposal(cr(approval, { startDate: "  ", answer: "pending" }))).toBeNull();
+      expect(getCustomerProposal(cr(approval, proposal("maybe")))).toBeNull();
+    });
+  });
+
+  describe("pending, accepted and not accepted", () => {
+    it("is pending only in Customer Approval", () => {
+      expect(isProposalPending(cr(approval, proposal("pending")))).toBe(true);
+      expect(isProposalPending(cr({ label: "Customer Approval" }, proposal("pending")))).toBe(true);
+      for (const label of ["Authorize", "Scheduled", "Customer Review", "Closed", "Canceled"]) {
+        expect(isProposalPending(cr({ id: "x", label }, proposal("pending"))), label).toBe(false);
+      }
+      for (const answer of ["agreed", "disagreed", "unanswered"]) {
+        expect(isProposalPending(cr(approval, proposal(answer))), answer).toBe(false);
+      }
+      expect(isProposalPending(cr(approval, undefined))).toBe(false);
+    });
+
+    it("is accepted whenever WSO2 agreed, whatever state the change is in", () => {
+      expect(isProposalAccepted(cr({ id: "-2", label: "Scheduled" }, proposal("agreed")))).toBe(true);
+      expect(isProposalAccepted(cr({ id: "3", label: "Closed" }, proposal("agreed")))).toBe(true);
+      expect(isProposalAccepted(cr(approval, proposal("pending")))).toBe(false);
+      expect(isProposalAccepted(cr(approval, proposal("disagreed")))).toBe(false);
+      expect(isProposalAccepted(cr(approval, undefined))).toBe(false);
+    });
+
+    it("is not accepted only while the change is still in Customer Approval", () => {
+      expect(isProposalNotAccepted(cr(approval, proposal("disagreed")))).toBe(true);
+      expect(isProposalNotAccepted(cr({ id: "-2", label: "Scheduled" }, proposal("disagreed")))).toBe(false);
+      expect(isProposalNotAccepted(cr(approval, proposal("pending")))).toBe(false);
+    });
+  });
+
+  describe("getProposalNote", () => {
+    it("tells the proposer WSO2 has not answered yet, and that Approve approves the current schedule", () => {
+      const note = getProposalNote(cr(approval, proposal("pending", { proposedByViewer: true })), true);
+      expect(note?.kind).toBe("waiting");
+      expect(note?.text).toMatch(/^Waiting for WSO2 to respond to your proposed time \(.*2030.*\)\./);
+      expect(note?.text).toMatch(/Approving now approves the current schedule \(.*February 20, 2030.*\), not the proposed time\./);
+    });
+
+    it("says a colleague's proposal, or one whose proposer is not recorded, neutrally", () => {
+      for (const extra of [{ proposedByViewer: false }, {}]) {
+        const note = getProposalNote(cr(approval, proposal("pending", extra)), true);
+        expect(note?.kind).toBe("waiting");
+        expect(note?.text).toMatch(/^A new time \(.*2030.*\) was proposed for this change request and is waiting for WSO2's response\./);
+        expect(note?.text).not.toMatch(/your proposed time/);
+      }
+    });
+
+    it("does not tell a customer with nothing to answer that Approve exists", () => {
+      const note = getProposalNote(cr(approval, proposal("pending", { proposedByViewer: true })), false);
+      expect(note?.text).toMatch(/waiting for WSO2/i);
+      expect(note?.text).not.toMatch(/Approving now/);
+    });
+
+    it("says WSO2 did not accept it, and points at the CURRENT window, never a new one", () => {
+      const note = getProposalNote(cr(approval, proposal("disagreed")), true);
+      expect(note?.kind).toBe("not-accepted");
+      expect(note?.text).toMatch(/^WSO2 did not accept the proposed time \(.*2030.*\)\./);
+      expect(note?.text).toMatch(/The current planned window is shown below: approve it, reject it, or propose another start\./);
+      expect(note?.text).not.toMatch(/new planned window/i);
+      expect(getProposalNote(cr(approval, proposal("disagreed")), false)?.text).toMatch(
+        /The current planned window is shown below\.$/,
+      );
+    });
+
+    it("has nothing to say when no proposed time is in play", () => {
+      expect(getProposalNote(cr(approval, undefined), true)).toBeNull();
+      expect(getProposalNote(cr(approval, proposal("unanswered")), true)).toBeNull();
+      expect(getProposalNote(cr({ id: "-2", label: "Scheduled" }, proposal("agreed")), true)).toBeNull();
+      expect(getProposalNote(cr({ id: "-2", label: "Scheduled" }, proposal("pending")), true)).toBeNull();
+      expect(getProposalNote(cr({ id: "-3", label: "Authorize" }, proposal("disagreed")), true)).toBeNull();
+      expect(getProposalNote(undefined, true)).toBeNull();
+    });
+  });
+});
+
 describe("getAnsweredWindow", () => {
   it("names the window the details showed, as they showed it", () => {
     expect(getAnsweredWindow({ startDate: "2026-06-10T04:30:00Z", endDate: "2026-06-10T06:30:00Z" })).toEqual({
@@ -373,7 +595,7 @@ describe("getAnsweredWindow", () => {
 });
 
 describe("isAwaitingInternalReview", () => {
-  it("is true in Authorize, where a proposed time waits for WSO2, and nowhere else", () => {
+  it("is true in Authorize, where only a proposal made before proposals waited in Customer Approval leaves a change, and nowhere else", () => {
     expect(isAwaitingInternalReview({ state: { id: "-3", label: "Authorize" } })).toBe(true);
     for (const label of ["New", "Assess", "Customer Approval", "Scheduled", "Customer Review", "Closed", "Canceled"]) {
       expect(isAwaitingInternalReview({ state: { id: "x", label } }), label).toBe(false);

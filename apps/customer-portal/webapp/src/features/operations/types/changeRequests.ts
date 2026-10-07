@@ -45,6 +45,43 @@ export type ChangeRequestItem = AuditMetadata & {
   type: IdLabelRef | null;
 };
 
+/**
+ * Where a proposed implementation time stands. The change request stays in
+ * Customer Approval through the whole conversation; only WSO2's answer moves it.
+ *
+ * - `pending`: proposed, waiting for WSO2 to accept it or suggest another time.
+ * - `agreed`: WSO2 accepted the proposed time (the change is then Scheduled).
+ * - `disagreed`: WSO2 did not accept it (it kept or changed the planned window and
+ *   the customers are asked again).
+ * - `unanswered`: a proposal on record that WSO2 never answered (the change moved
+ *   on): history, nothing to show.
+ */
+export type ChangeRequestProposalAnswer =
+  | "pending"
+  | "agreed"
+  | "disagreed"
+  | "unanswered";
+
+/**
+ * The customer-proposed time of a change request (ServiceNow's
+ * `customer_updated_on` / `customer_updated_date_confirmation` pair, read through
+ * the backend). A proposal moves the START and keeps the planned length, so it
+ * carries a start and, while it waits, the end that start implies.
+ */
+export type ChangeRequestCustomerProposal = {
+  /** The proposed start (API date-time, UTC). */
+  startDate: string;
+  /** The proposed start plus the planned length; present while the proposal is pending. */
+  endDate?: string | null;
+  answer: ChangeRequestProposalAnswer;
+  /**
+   * True when the signed-in customer made the pending proposal. Omitted when the
+   * backend cannot say who proposed it (a time proposed in ServiceNow, or
+   * edited since): the page then says "a new time was proposed" and no more.
+   */
+  proposedByViewer?: boolean;
+};
+
 // Response type for detailed change request information.
 export type ChangeRequestDetails = ChangeRequestItem & {
   description: string | null;
@@ -72,6 +109,11 @@ export type ChangeRequestDetails = ChangeRequestItem & {
    * which is not the same as "not held".
    */
   isOnHold?: boolean;
+  /**
+   * The time a customer proposed, and where WSO2's answer to it stands. Omitted
+   * when nothing was ever proposed (or the data source cannot say).
+   */
+  customerProposal?: ChangeRequestCustomerProposal | null;
   approvedBy: IdLabelRef | null;
   approvedOn: string | null;
 };
@@ -139,10 +181,14 @@ export type ChangeRequestSearchRequest = SearchRequestBase & {
 
 // Request type for patching a change request. The customer-portal backend takes
 // either the customer's answer (isCustomerApproved / isCustomerReviewed) or a
-// proposed window (plannedStartOn / plannedEndOn, "YYYY-MM-DD HH:MM:SS" in UTC),
-// never both in one request. An answer also names the planned window the
-// customer was looking at (expectedPlannedStartOn / expectedPlannedEndOn, as the
-// details read them): it is then recorded only while that is still the window.
+// proposed time (plannedStartOn / plannedEndOn, "YYYY-MM-DD HH:MM:SS" in UTC),
+// never both in one request. A proposed time is a new START: the planned length
+// stays, so plannedEndOn, when sent, is the proposed start plus that length (the
+// dialog sends it so the ServiceNow source, which takes a whole window, keeps
+// working; the service refuses any other end). An answer also names the planned
+// window the customer was looking at (expectedPlannedStartOn /
+// expectedPlannedEndOn, as the details read them): it is then recorded only while
+// that is still the window.
 export type PatchChangeRequestRequest = {
   plannedStartOn?: string;
   plannedEndOn?: string;
