@@ -34,7 +34,15 @@ export interface BePagination {
 }
 
 export interface BeErrorPayload {
+  /** The reason, worded for people: it can change, so never branch on it. */
   message?: string;
+  /**
+   * The stable machine-readable name of the refusal, when the backend names it
+   * (e.g. `change_request_approval_not_pending`): what a client may branch on.
+   * Absent for a refusal that has none, and for an older backend. Kept on
+   * {@link BackendApiError.payload}; today's callers key on the status.
+   */
+  errorCode?: string;
 }
 
 /** CSM list that owns a saved filter view. Isolated so views never leak across lists. */
