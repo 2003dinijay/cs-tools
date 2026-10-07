@@ -3547,7 +3547,8 @@ receipt). Postgres data source only.
   and an unticked one can still be ticked until the gate it controls has been passed --
   `customerApprovalRequired` while the state is New / Assess / Authorize,
   `customerReviewRequired` up to and including Review -- and only on a change that has
-  a Customer Project. Past the gate a tick is the old 400 (`customerApprovalRequired
+  a Customer Project **with somebody who can be asked** (below: 400 `customer approval is
+  required but nobody on this project can be asked ...`). Past the gate a tick is the old 400 (`customerApprovalRequired
   can no longer be changed: the change request has already passed the approval stage
   (current state: X)` / `customerReviewRequired can no longer be changed: the change
   request has already left the review stage (current state: X)`); resending the stored
@@ -3589,7 +3590,10 @@ requested value, whether the change has a Customer Project).
 
 (`approvalRequirementEditable` = New / Assess / Authorize, `reviewRequirementEditable` =
 everything up to and including Review: the cut-offs are the ones that existed before
-the lock. "Project stored" is the **stored** project: none can be set after New.)
+the lock. "Project stored" is the **stored** project: none can be set after New. An "ok" in
+the box off -> on column of a state after New is "ok **if somebody can be asked on that
+project**": otherwise **400 nobody to ask**, rule 4b below, which needs the database and so
+is not a column of the pure truth table.)
 The same table is `TestCustomerRequirementsLock_TruthTable` (Go, unit, row ids
 `<STATE>/<column>`, outcome codes `ok / frozen / cannot-turn-off / gate-passed /
 needs-project / return-to-new / final`); the CSM Edit dialog computes the same
@@ -3619,6 +3623,15 @@ The rules, in the order they are applied (**the first failing one wins, every re
    ...`), then, when the change has no Customer Project, `customerApprovalRequired cannot be
    turned on: this change request has no Customer Project, and one can no longer be set
    after approval was requested. Cancel and clone it with a project.`
+4b. A box turned ON after New (rule 4 let it through: its gate is ahead and the change has a
+   project) when the project has **nobody who can be asked** -> `customer approval is required
+   but nobody on this project can be asked (no registered contact other than the requester):
+   register a contact for the project first` (`customer review is ...` for the review box,
+   `customer approval and customer review are ...` when both are turned on in the one PATCH --
+   only the boxes being turned on are named). The change would otherwise reach a gate nobody can
+   answer. Only the turning-on is judged (`checkTickedBoxCanBeAsked`): a box already ticked, a
+   resend, an unticked box, and every other edit are never re-judged, whatever the project's
+   contacts have become since.
 5. Deployments / deployment products keep the until-implement window and must belong to
    the (frozen) project -- also `deploymentId` / `deployedProductId`, which used to skip
    the list rules: another project's -> 400 `deploymentId does not belong to the change
@@ -3638,6 +3651,50 @@ The rules, in the order they are applied (**the first failing one wins, every re
    the guard by disabling Request Approval with the reason "Select a Customer Project before
    requesting approval" through `TARGET_BLOCKED_REASON`; that is the CSM webapp's change, the
    server above is the authority.)
+7. **Request Approval needs somebody to ask** (the product owner's decision, "Refuse Request
+   Approval"). `{state: "assess"}` on a change still in New is refused when the effective approval
+   box or review box (the request's value, else the stored one) is set, the effective project is
+   set, and that project has **nobody who can be asked** -> `customer approval is required but
+   nobody on this project can be asked (no registered contact other than the requester): register a
+   contact for the project first` (`customer review is required but ...` for the review box,
+   `customer approval and customer review are required but ...` when both are set). It runs AFTER
+   rule 6, which keeps its own message and precedence for a change with no project. For every type
+   that goes through Request Approval (Normal waits in Assess, Standard lands in Customer Approval
+   or Scheduled); a refused request writes nothing, not even the rest of its fields. **Why:** with no
+   staff action that answers for the customer (the Bypass is gone), a change that reaches Customer
+   Approval / Customer Review with nobody to answer can only be cancelled (or rolled back from
+   Review), an invitation to cancel and clone just to get past a gate.
+   - **"Somebody who can be asked" is not a second definition: it is the one the stage
+     provisioning uses.** `customerGroupCanBeAsked` = `customerContactUserIDs(project)` -- the
+     project's `REGISTERED` portal-user contacts (`PORTAL_USER` project role) whose `"user"` row
+     exists and is active (never an `INVITED` / `RE-INVITED` / `DEACTIVATED` contact, never one
+     with only the `SECURITY_CONTACT` role, never one whose user is deactivated or missing) --
+     and `changeRequestCreatorUserIDs` (the requester never approves their own change), judged by
+     `anyContactToAsk`, which `provisionCustomerStage` and the read-only
+     `legacyStageWouldBeProvisioned` call too. The refusal therefore predicts exactly the
+     "nobody asked" outcome (`..._TheRefusalPredictsTheProvisioningOutcome` proves it, per
+     situation, against the provisioning). The stored legacy `customer_group_id` is ignored, as it
+     is by the provisioning.
+   - **Reads our boxes only.** The requirement is `customer_approval_required` /
+     `customer_review_required` (migration 0189), the very read rule 6 uses; the sync-owned
+     `is_customer_*_required` and `customer_group_id` are neither read nor written (a migrated
+     change in New -- `CHG` number, ServiceNow flags set, our columns false, an unlabeled synced stage --
+     is unaffected: `..._AMigratedShapedChangeInNewIsUnaffected`). No new column, table or
+     migration.
+   - **What is NOT judged.** Only Request Approval (New -> Assess) and the turning-on of a box
+     (rule 4b). A change already beyond New is never re-judged: a legacy row seeded in a customer
+     state keeps Cancel / Roll back and Re-schedule exactly as before
+     (`..._ALegacyDeadEndRowIsNotRejudged`). **Residual edge, documented and not built for:** every
+     registered contact deactivated AFTER Request Approval. The change then reaches the gate with
+     nobody asked, which is the dead end it always was (Cancel; Re-schedule from Customer Approval;
+     Roll back from Customer Review; a contact who registers is asked when the stored `projectId` is
+     restated) -- `..._ResidualEdgeContactsLeaveAfterRequestApproval`. Emergency changes are out of
+     scope here (their boxes are forced off by their own rule); the refusal is type-blind and simply
+     never has a box to judge on one.
+   - Tests: `change_request_nobody_to_ask_integration_test.go` (the matrix box x situation x action,
+     as the superuser, as `csm_app` and on a copy whose approval tables have the sync's enum
+     columns), `TestNobodyToAskMsg` / `TestAnyContactToAsk` / `TestBoxesTurnedOnAfterNew` (pure),
+     the service row in `change_request_service_lock_test.go`.
 
 **The Re-schedule hole, closed.** A change that reached Customer Approval necessarily has
 `customer_approval_required = true`; Re-schedule (a WSO2 user's `{state: "authorize"}` or a
@@ -3681,8 +3738,8 @@ on the lock and only then commits the first one: the edit must be refused, and t
 
 | Writer | What the lock does |
 |---|---|
-| `PATCH /change-requests/{id}` (`patchChangeRequestTx`) | the only code that updates `work_item.project_id` / the two requirement columns of an existing change: all six rules above |
-| `POST /change-requests` and `CreateChangeRequestFromServiceNow` (SN-first create) | create in New: free (a ticked box with no project is accepted; Request Approval is what refuses it). **Clone** is a create. |
+| `PATCH /change-requests/{id}` (`patchChangeRequestTx`) | the only code that updates `work_item.project_id` / the two requirement columns of an existing change: all the rules above (1-7, including 4b) |
+| `POST /change-requests` and `CreateChangeRequestFromServiceNow` (SN-first create) | create in New: free (a ticked box with no project, or on a project nobody can be asked on, is accepted; Request Approval is what refuses it). **Clone** is a create. |
 | GitHub `CreateFromIssue` | creates in New with the project the issue maps to |
 | GitHub `SetState` (`github_mutation_repo.go`) | writes `state` by SQL (it could write NEW); **no caller exists** in the repository; it refuses to move a change out of Customer Approval / Customer Review (a label or an issue event must not answer for the customer), and is otherwise not guarded and not a lock concern until a caller exists |
 | `DecideChangeRequestApproval` / `applyCustomerStageOutcome` | write the `is_customer_*_required` **outcome stamps** (true only) and the state moves; never the requirement columns or the project |
@@ -3742,8 +3799,12 @@ earlier rule were changed, not deleted: the two "editable until the gate" tests 
 is now a 400), `CloseFromReviewHonoursTheFlagInTheSamePatch` (unticking in the closing PATCH is
 refused; the way on is Customer Review), `PatchEditWindow` (the project moves in New only),
 `CustomerGroupFollowsTheProject` (rewritten: the stage follows the contacts of the frozen
-project), and every test that ticked a box on a change with no project (`createGated` now puts it
-on a project with no registered contacts: nobody to ask, and nobody who may answer for the customer).
+project), and every test that ticked a box on a change with no project (`createGated` puts it on a
+project with no registered contacts: nobody to ask, and nobody who may answer for the customer --
+and Request Approval now refuses that, so a test that needs the dead end uses
+`requestApprovalThenContactsLeave` (a stand-in contact that leaves right after Request Approval:
+the residual edge) or `legacyInCustomerState` (a row written with SQL, as an older build left it);
+the rest moved to a project with contacts, `createAnswerable`).
 
 ### Customer Group: approving / rejecting Customer Approval and Customer Review
 
@@ -3853,8 +3914,10 @@ outcome). Code: `change_request_links.go`
   answer *which* change is decided here, not there.
 * **Nobody to ask: no stage, and no way for staff to answer for the customer.** A project with no
   eligible contact (a ticked box needs a project since the lock: Request Approval is refused without
-  one; a change with no project can still be met on rows that predate the lock; a project whose only
-  contact is the creator; a legacy change with contacts but no stage yet): **no stage**.
+  one, and **refused when the project has nobody who can be asked** since "Refuse Request Approval"
+  -- rule 7 of the lock; a change with no project can still be met on rows that predate the lock; a
+  project whose only contact is the creator; a legacy change with contacts but no stage yet; every
+  contact deactivated after Request Approval, the residual edge): **no stage**.
   `customer_approval` is `[authorize, canceled]` and `customer_review`
   `[rollback, canceled]`, and a manual `{state: "scheduled"}` / `{state: "closed"}` is a **400**
   exactly as with a live stage (see "There is no "Schedule" action"): the customer's approval /
@@ -3864,9 +3927,10 @@ outcome). Code: `change_request_links.go`
   them (`TestChangeRequestLockIntegration_NoContactsReachedTheStage`,
   `TestChangeRequestNoBypassIntegration_ANobodyToAskChangeIsAskedOnceAContactRegisters`). A legacy
   change that already waits in the state with contacts but no stage gets its stage from the
-  customer's own first act ("An in-flight legacy change request" below). **Open point (the user's
-  call, not decided here): Request Approval does not refuse a change whose project has no eligible
-  contact, so such a change can reach a customer state and stay there until cancelled.** With a live
+  customer's own first act ("An in-flight legacy change request" below). **Decided: Request Approval
+  refuses a change whose project has no eligible contact (and so does turning a box on after it), so
+  a change created through the portal cannot reach this dead end except by the residual edge or as a
+  legacy row.** With a live
   stage, `legalNextStates` is `[authorize, canceled]` at `customer_approval` and `[canceled]` at
   `customer_review` (the manual `rollback` is withdrawn: `state "rollback" cannot be set manually:
   the customer's review has been requested from the customer group (the registered contacts of the
@@ -5098,7 +5162,10 @@ so that function, and the internal caller's right to stamp the flags, are gone:
   for the customer.
 - **A project with no qualifying contact** simply has nobody who can answer: the change
   request waits in the customer state (cancel, re-schedule or, for a review, roll back; a
-  contact registered later is asked when the stored `projectId` is restated).
+  contact registered later is asked when the stored `projectId` is restated). Request Approval
+  refuses to send a change there (rule 7 of the customer requirements lock, same test as the
+  provisioning), so this is a legacy row or the residual edge (every contact deactivated after
+  Request Approval).
 - **The ServiceNow-backed data source** is a different mechanism (its scripted API's
   dedicated `patchCustomerApproved` / `patchCustomerReviewed` handlers gate flipping either
   field on the change sitting in the matching state, and the "off" direction there drives a

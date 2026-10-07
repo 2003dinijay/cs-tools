@@ -5914,10 +5914,17 @@ paths:
         included, is a 400; resending the stored value is an accepted no-op) and the
         boxes are ADD-ONLY (true to false is a 400 in every state; false to true is
         accepted until the gate the box controls has been passed, and only on a change
-        request that has a project); {state: "new"} is a 400; Request Approval
-        ({state: "assess"}) is a 400 when a box is set and there is no project. The first
-        failing rule wins and a refused PATCH writes nothing. Corrections are a cancel
-        and a clone.
+        request that has a project with somebody who can be asked); {state: "new"} is a
+        400; Request Approval ({state: "assess"}) is a 400 when a box is set and there is
+        no project, and a 400 when a box is set and the project has nobody who can be
+        asked. "Somebody who can be asked" is the test the customer stage's provisioning
+        applies: a REGISTERED portal-user contact of the project whose user is active,
+        other than the requester (never an invited or deactivated contact). Only Request
+        Approval and the turning-on of a box are judged: a change request that is beyond
+        new is never re-judged for a box it does not turn on (a contact deactivated after
+        Request Approval leaves it waiting for a contact to register). The first failing
+        rule wins and a refused PATCH writes nothing. Corrections are a cancel and a
+        clone.
 
         A change request the CUSTOMER may not see (not designated to them and not legacy:
         see GET /change-requests/{id}) is a 404 whatever the request carries, checked
@@ -5972,7 +5979,12 @@ paths:
             step or a gate skipped); "state \"X\" is not a change request state";
             "approval cannot be requested: the customer's approval and/or review is required
             but no Customer Project is set, so there is nobody to ask. Select a Customer
-            Project first (or clear the requirement)."; from an internal caller, the
+            Project first (or clear the requirement)."; "customer approval is required but
+            nobody on this project can be asked (no registered contact other than the
+            requester): register a contact for the project first" (Request Approval, or a
+            box turned on after it, on a project nobody can be asked on; "customer review is
+            required but ..." for the review box and "customer approval and customer review
+            are required but ..." for both); from an internal caller, the
             customer's own answer: "state \"scheduled\" cannot be set manually from
             customer_approval: the customer's approval can only be given by the customer in
             the Customer Portal; cancel the change or re-schedule it instead" (likewise
@@ -17627,7 +17639,9 @@ components:
             The Customer Project (PostgreSQL data source only). Must exist. It is chosen
             while the change request is new and frozen by Request Approval (see PATCH);
             Request Approval is refused when customerApprovalRequired or
-            customerReviewRequired is set and no project was chosen.
+            customerReviewRequired is set and no project was chosen, and when it is set and
+            the project has nobody who can be asked (no registered portal-user contact other
+            than the requester).
         deploymentIds:
           type: array
           maxItems: 100
@@ -17683,8 +17697,8 @@ components:
             Approval on a Standard change, then moves it to customer_approval
             instead of scheduled). Defaults to false. A change request is created in
             new, where it can still be edited freely; Request Approval is refused when a
-            box is set and no projectId was chosen (see PATCH). PostgreSQL data source
-            only.
+            box is set and no projectId was chosen, or the project has nobody who can be
+            asked (see PATCH). PostgreSQL data source only.
         customerReviewRequired:
           type: boolean
           description: >-
@@ -17937,8 +17951,10 @@ components:
             true is accepted only while the state is assess or authorize (afterwards "can
             no longer be changed ...: the change request has already passed the approval
             stage") and only when the change request has a Customer Project ("cannot be
-            turned on: this change request has no Customer Project ..."). Resending the
-            stored value is always accepted. PostgreSQL data source only.
+            turned on: this change request has no Customer Project ...") with somebody who
+            can be asked ("customer approval is required but nobody on this project can be
+            asked ..."). Resending the stored value is always accepted. PostgreSQL data
+            source only.
         customerReviewRequired:
           type: boolean
           description: >-
@@ -17947,8 +17963,9 @@ components:
             ("customerReviewRequired can no longer be turned off ..."); false to true is
             accepted up to and including review (from customer_review onwards "can no
             longer be changed ...: the change request has already left the review stage")
-            and only when the change request has a Customer Project. PostgreSQL data
-            source only.
+            and only when the change request has a Customer Project with somebody who can
+            be asked ("customer review is required but nobody on this project can be asked
+            ..."). PostgreSQL data source only.
         implementationPlan:
           type: string
           nullable: true
