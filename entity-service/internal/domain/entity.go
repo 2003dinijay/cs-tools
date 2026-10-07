@@ -5320,6 +5320,10 @@ type CallRequestSort struct {
 // SearchAllCallRequestsFilters holds optional filter criteria for the
 // standalone (not case-scoped) call request search.
 type SearchAllCallRequestsFilters struct {
+	// AssignedUserIDs filters to call requests on cases assigned to one of
+	// these users (optional). On the Postgres data source a call request whose
+	// own assignee is one of them also matches, so a call handed to someone
+	// other than the case owner still reaches them.
 	AssignedUserIDs []string               `json:"assignedUserIds"`
 	States          []CallRequestStateType `json:"states"`
 	// CaseStates filters to call requests whose parent case is in one of these
@@ -5330,8 +5334,11 @@ type SearchAllCallRequestsFilters struct {
 	// any of these states (optional). Inverse of CaseStates, and the two are
 	// independent: a request may carry either, both, or neither.
 	ExcludeCaseStates []CaseState `json:"excludeCaseStates"`
-	// AssignmentTeamIDs filters to call requests whose parent case is assigned
-	// to one of these teams (optional). Same UUID convention as AssignedUserIDs.
+	// AssignmentTeamIDs filters to call requests whose parent case belongs to
+	// one of these teams (optional). Same UUID convention as AssignedUserIDs.
+	// On the Postgres data source the team is the case's account CRE team
+	// (account.cre_team_id), the same one the case search's creTeam filter
+	// takes; on ServiceNow it is the case's assignment team.
 	AssignmentTeamIDs []string `json:"assignmentTeamIds"`
 }
 
