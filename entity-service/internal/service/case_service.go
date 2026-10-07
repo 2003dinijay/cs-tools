@@ -3102,7 +3102,14 @@ func (s *caseService) ConfirmCaseAttachment(ctx context.Context, id string) (dom
 // Stopgap: under DATA_SOURCE=postgres-servicenow-dual-write (s.snMirror !=
 // nil) a "deployment" search is delegated to the mirrored data source and its
 // response or error is returned as-is, until a Postgres-native deployment
-// attachment store exists. Every other reference type is unaffected.
+// attachment store exists. Likewise a "case" search that returns zero rows
+// from Postgres at offset 0 falls back to the mirrored data source, because
+// attachments of migrated cases were synced into work_item_attachment, which
+// the case read path does not consult. A Postgres error is returned as-is
+// (no fallback), and a non-zero offset never falls back so paging past the
+// end of a non-empty Postgres list is not masked. Remove this fallback once
+// the case read path reads work_item_attachment. Every other reference type
+// is unaffected.
 //
 // Read-path status decision: the underlying repository query filters out
 // 'pending' rows entirely (see caseRepo.SearchCaseAttachments), so a case's
@@ -3150,6 +3157,11 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 	}
 	if err != nil {
 		return domain.SearchAttachmentsResponse{}, err
+	}
+	if isCase && s.snMirror != nil && total == 0 && req.Pagination.Offset == 0 {
+		// Stopgap (see doc comment): Postgres has nothing for this case in
+		// dual-write mode, so serve the list from the mirrored data source.
+		return s.snMirror.SearchCaseAttachments(ctx, req)
 	}
 
 	return domain.SearchAttachmentsResponse{
