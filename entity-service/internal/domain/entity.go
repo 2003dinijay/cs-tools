@@ -4405,9 +4405,27 @@ type PatchChangeRequestRequest struct {
 	CommunicationPlan  *string              `json:"communicationPlan,omitempty"`
 	RollbackPlan       *string              `json:"rollbackPlan,omitempty"`
 	TestPlan           *string              `json:"testPlan,omitempty"`
-	IsCustomerApproved *bool                `json:"isCustomerApproved,omitempty"`
-	IsCustomerReviewed *bool                `json:"isCustomerReviewed,omitempty"`
-	RequestApproval    *bool                `json:"requestApproval,omitempty"`
+	// IsCustomerApproved / IsCustomerReviewed are the CUSTOMER's answer, which only
+	// the customer can give (a registered contact of the change request's project,
+	// in the Customer Portal): no staff action records the customer's approval or
+	// review on their behalf, because it is the customer's decision and
+	// ServiceNow's record of it is audited. From anyone else, on the PostgreSQL
+	// data source, any value is a 400 and nothing is written. See
+	// repository.refuseStaffCustomerOutcomeFlags and entity-service's CLAUDE.md.
+	IsCustomerApproved *bool `json:"isCustomerApproved,omitempty"`
+	IsCustomerReviewed *bool `json:"isCustomerReviewed,omitempty"`
+	RequestApproval    *bool `json:"requestApproval,omitempty"`
+	// ExpectedPlannedStartOn / ExpectedPlannedEndOn go with a CUSTOMER'S answer
+	// (IsCustomerApproved / IsCustomerReviewed from an external caller) and
+	// nothing else: the planned window the customer was shown when they gave it
+	// (RFC 3339, as the change request reads). Each one sent must still equal
+	// the stored bound, under the same row lock as the answer, or the answer is
+	// refused with a 409 -- a page opened before the change was re-scheduled
+	// cannot approve a time its reader never saw. Omitted: no check (an answer
+	// sent without them is recorded as it always was). Postgres data source
+	// only; refused for any other caller or request.
+	ExpectedPlannedStartOn *string `json:"expectedPlannedStartOn,omitempty"`
+	ExpectedPlannedEndOn   *string `json:"expectedPlannedEndOn,omitempty"`
 	// OnHold/OnHoldReason gate change_request.is_on_hold/on_hold_reason
 	// (migration 0178). Combinable with every other field
 	// on this PATCH, including State -- this endpoint has no exclusive/
@@ -4764,6 +4782,29 @@ type ChangeRequest struct {
 	ApprovedBy               *EntityRef `json:"approvedBy"`
 	ApprovedOn               *string    `json:"approvedOn"`
 	LegalNextStates          []string   `json:"legalNextStates"`
+
+	// CustomerCanAnswer is the VIEWER-specific "may I answer this change
+	// request now": true when the caller is a customer (an external caller)
+	// who, at this moment, could give the customer's approval / review of it
+	// (PATCH {isCustomerApproved} in Customer Approval, {isCustomerReviewed} in
+	// Customer Review). In Customer Approval it is also the "may propose a new
+	// implementation time" signal, apart from the change being on hold (onHold),
+	// which refuses a proposal and not an answer. It is computed on the
+	// PostgreSQL data source for external callers only, from the same
+	// rules the answer itself is checked against (see
+	// repository.customerCanAnswer): the change is in Customer Approval /
+	// Customer Review, the caller is a registered PORTAL_USER contact of its
+	// project who holds a REQUESTED approval on the live customer stage of that
+	// state, and is not blocked from approving (the creator is). It is false for
+	// every other state, for the contact who has already been superseded
+	// (a sibling answered, the change moved on, the window was re-scheduled),
+	// and for any customer who was not asked.
+	//
+	// A pointer so that "not computed" stays distinct from false: absent (nil,
+	// omitted from the JSON) for staff and internal callers, for the
+	// ServiceNow data source, and when the check could not be made. A client
+	// that finds it absent falls back to what it knew before the field existed.
+	CustomerCanAnswer *bool `json:"customerCanAnswer,omitempty"`
 
 	// The fields below are change-request field-parity additions. All 20 are
 	// present on GET /change-requests/{id} and the PATCH receipt (both share

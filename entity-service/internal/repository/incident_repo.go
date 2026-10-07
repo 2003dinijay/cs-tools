@@ -410,6 +410,8 @@ func scanSearchIncidentView(row interface{ Scan(...any) error }) (domain.SearchI
 }
 
 // SearchIncidents implements IncidentRepository.
+//
+// crvis: internal callers only: /incidents routes are wrapped by internalOnly (server/routes.go); the change_request join only names the linked change request
 func (r *incidentRepo) SearchIncidents(ctx context.Context, req domain.SearchIncidentsRequest, priorities, states, serviceIDs, assignedUserIDs []string, madeSla, slaViolated *bool, createdStartDate, createdEndDate *time.Time) ([]domain.SearchIncidentView, int, error) {
 	where, args := incidentWhereClause(req.Filters, priorities, states, serviceIDs, assignedUserIDs, madeSla, slaViolated, createdStartDate, createdEndDate)
 
@@ -486,6 +488,8 @@ var incidentAggregateColumns = map[string]string{
 }
 
 // AggregateIncidents implements IncidentRepository.
+//
+// crvis: internal callers only: /incidents routes are wrapped by internalOnly (server/routes.go); the change_request join only names the linked change request
 func (r *incidentRepo) AggregateIncidents(ctx context.Context, req domain.SearchIncidentsRequest, priorities, states, serviceIDs, assignedUserIDs []string, madeSla, slaViolated *bool, createdStartDate, createdEndDate *time.Time, groupBy string, maxGroups int) (domain.AggregateResponse, error) {
 	col, ok := incidentAggregateColumns[groupBy]
 	if !ok {
@@ -541,6 +545,8 @@ func (r *incidentRepo) AggregateIncidents(ctx context.Context, req domain.Search
 }
 
 // GetIncidentByID implements IncidentRepository.
+//
+// crvis: internal callers only: /incidents routes are wrapped by internalOnly (server/routes.go); the change_request join only names the linked change request
 func (r *incidentRepo) GetIncidentByID(ctx context.Context, id string) (domain.IncidentView, error) {
 	query := `
 		SELECT wi.id, wi.number, wi.subject, inc.opened_on,

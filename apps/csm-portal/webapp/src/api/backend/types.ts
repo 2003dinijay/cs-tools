@@ -34,7 +34,15 @@ export interface BePagination {
 }
 
 export interface BeErrorPayload {
+  /** The reason, worded for people: it can change, so never branch on it. */
   message?: string;
+  /**
+   * The stable machine-readable name of the refusal, when the backend names it
+   * (e.g. `change_request_approval_not_pending`): what a client may branch on.
+   * Absent for a refusal that has none, and for an older backend. Kept on
+   * {@link BackendApiError.payload}; today's callers key on the status.
+   */
+  errorCode?: string;
 }
 
 /** CSM list that owns a saved filter view. Isolated so views never leak across lists. */
@@ -3168,9 +3176,9 @@ export interface BeConfigurationItemSearchResponse {
  * one field is required by the BE (`minProperties: 1`). `plannedStartOn` and
  * `plannedEndOn` are `YYYY-MM-DD HH:MM:SS` strings.
  *
- * `isCustomerApproved`, `isCustomerReviewed` and `requestApproval` are
- * mutually exclusive with each other — at most one of the three may be set in
- * a single patch.
+ * `isCustomerApproved` / `isCustomerReviewed` are deliberately not modeled:
+ * they ARE the customer's answer, which only the customer gives (in the
+ * Customer Portal), and the backend refuses them from staff outright.
  *
  * This is a subset of what the endpoint accepts, not the whole contract: only
  * the fields the portal actually writes are modeled here. Add a field when a
@@ -3179,8 +3187,6 @@ export interface BeConfigurationItemSearchResponse {
 export interface BePatchChangeRequestPayload {
   plannedStartOn?: string;
   plannedEndOn?: string;
-  isCustomerApproved?: boolean;
-  isCustomerReviewed?: boolean;
   assignedTeamId?: string;
   /** Individual assignee (portal user UUID). Distinct from `assignedTeamId`
    * (the assignment group) — a CR can carry both, one, or neither. */

@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net/http"
 	"sync"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
@@ -51,6 +52,15 @@ import (
 // nothing to close. It also closes the user cache's Redis client, when one
 // was built.
 func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
+	// The customer-visibility policy of change requests (CR_STRICT_VISIBILITY_FROM),
+	// shared by every repository that reads or writes a change request.
+	crVisibility := CRVisibilityFromConfig(cfg)
+	if db != nil {
+		// Nothing reads the policy without a database (the ServiceNow data source
+		// serves change requests itself), so only say which mode this process is in
+		// when it matters.
+		logCRVisibility(cfg)
+	}
 	userRepo := repository.NewUserRepository(db)
 	userSvc := service.NewUserService(userRepo)
 
@@ -635,7 +645,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		projectCaseStatsSvc = service.NewProjectCaseStatsService(
 			repository.NewProjectCaseStatsRepository(repository.NewScoped(db)), referenceDataRepo, accessSvc)
 		projectStatsSvc = service.NewProjectStatsService(
-			repository.NewProjectStatsRepository(repository.NewScoped(db)), referenceDataRepo, accessSvc,
+			repository.NewProjectStatsRepository(repository.NewScoped(db), crVisibility), referenceDataRepo, accessSvc,
 			projectMetadataSvc, projectCaseStatsSvc)
 	}
 	projectMetadataHandler := handler.NewProjectMetadataHandler(projectMetadataSvc)
@@ -745,7 +755,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		slaEngineSvc = service.NewSLAEngineService(repository.NewSLAEngineRepository(repository.NewScoped(db)))
 	}
 
-	caseRepo := repository.NewCaseRepository(repository.NewScoped(db))
+	caseRepo := repository.NewCaseRepository(repository.NewScoped(db), crVisibility)
 	var activeCaseSvc service.CaseService
 	// caseAttachmentOverrideSvc, when non-nil, is the CaseService case
 	// attachment routes (registered further below) use INSTEAD of
@@ -979,7 +989,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	escalationHandler := handler.NewEscalationHandler(activeEscalationSvc)
 	caseEscalationHandler := handler.NewCaseEscalationHandler(service.NewCaseEscalationService(activeEscalationSvc, activeCaseSvc))
 
-	changeRequestRepo := repository.NewChangeRequestRepository(repository.NewScoped(db))
+	changeRequestRepo := repository.NewChangeRequestRepository(repository.NewScoped(db), crVisibility)
 	var activeChangeRequestSvc service.ChangeRequestService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
@@ -1357,7 +1367,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		configurationItemHandler = handler.NewConfigurationItemHandler(service.NewConfigurationItemService(db))
 	}
 
-	commentRepo := repository.NewCommentRepository(repository.NewScoped(db))
+	commentRepo := repository.NewCommentRepository(repository.NewScoped(db), crVisibility)
 	var activeCommentSvc service.CommentService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
@@ -1913,4 +1923,41 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			),
 		),
 	), closePublishers
+}
+
+// CRVisibilityFromConfig builds the change request customer-visibility policy
+// from CR_STRICT_VISIBILITY_FROM (see config.Config.CRStrictVisibilityFromRaw).
+//
+// Unset means no cutover: every change request is legacy, which is what
+// customers saw before the strict rule existed (the safe default and the
+// rollback). An unparsable value is refused at startup by Config.Validate;
+// should this ever be reached with one (a caller that skipped Validate) it fails
+// CLOSED: strict for every change request, so a typo can never widen what a
+// customer sees.
+func CRVisibilityFromConfig(cfg *config.Config) repository.CRVisibility {
+	from, err := cfg.CRStrictVisibilityFrom()
+	if err != nil {
+		// Strict for every change request that can exist: a change request is
+		// strict when it was created AT OR AFTER the instant, so the instant is
+		// the earliest one a row could carry, never a far-future one (which would
+		// make every row legacy, the opposite of failing closed).
+		epoch := time.Unix(0, 0).UTC()
+		return repository.CRVisibility{StrictFrom: &epoch}
+	}
+	return repository.CRVisibility{StrictFrom: from}
+}
+
+// logCRVisibility says at startup which visibility mode this process runs in:
+// unset is also the state in which a deployment that means to be strict is
+// silently NOT strict, so it is a WARN, not a note.
+func logCRVisibility(cfg *config.Config) {
+	from, err := cfg.CRStrictVisibilityFrom()
+	switch {
+	case err != nil:
+		log.Printf("ERROR: %v -- treating EVERY change request as strict (visible to a customer only when designated to them)", err)
+	case from == nil:
+		log.Printf("WARN: CR_STRICT_VISIBILITY_FROM is not set: every change request is treated as legacy, so a customer sees every change request of their project past Authorize (and, in addition, the ones designated to them); set it to this release's instant to turn the designated-only rule on for change requests created from then on")
+	default:
+		log.Printf("change request customer visibility: strict (designated-only) for change requests created at or after %s; earlier ones are legacy", from.Format(time.RFC3339))
+	}
 }
