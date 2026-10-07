@@ -565,10 +565,10 @@ ON CONFLICT (id) DO UPDATE SET
   customer_updated_on = NULL, customer_updated_date_confirmation = NULL;
 
 INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status, checkpoint_label) VALUES
-  ('00000000-0000-0000-0000-000000001005', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000901', 'requested', 'Peer Approval'),
-  ('00000000-0000-0000-0000-000000001008', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001004', '00000000-0000-0000-0000-000000000901', 'approved', 'Peer Approval'),
-  ('00000000-0000-0000-0000-000000001305', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001303', NULL, 'requested', 'Customer Approval'),
-  ('00000000-0000-0000-0000-000000001306', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001304', NULL, 'requested', 'Customer Review');
+  ('00000000-0000-0000-0000-000000001005', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001003', '00000000-0000-0000-0000-000000000901', 'REQUESTED', 'Peer Approval'),
+  ('00000000-0000-0000-0000-000000001008', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001004', '00000000-0000-0000-0000-000000000901', 'APPROVED', 'Peer Approval'),
+  ('00000000-0000-0000-0000-000000001305', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001303', NULL, 'REQUESTED', 'Customer Approval'),
+  ('00000000-0000-0000-0000-000000001306', now(), now(), 'seed', 'seed', '00000000-0000-0000-0000-000000001304', NULL, 'REQUESTED', 'Customer Review');
 
 -- approval_stage_approver.state stores UPPER_SNAKE_CASE values after migration
 -- 0138 renamed the column from status and normalised existing rows.

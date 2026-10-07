@@ -293,7 +293,7 @@ func seedApprovalStageForDecisionTest(t *testing.T, pool *repository.Scoped, app
 		}
 	}
 	mustExec(`INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, raw_status)
-	          VALUES ($1, now(), now(), 'cr-approval-test', 'cr-approval-test', $2, 'requested')`,
+	          VALUES ($1, now(), now(), 'cr-approval-test', 'cr-approval-test', $2, 'REQUESTED')`,
 		stageID, changeRequestApprovalTestID)
 	t.Cleanup(func() {
 		_, _ = pool.Exec(ctx, `DELETE FROM approval_stage WHERE id = $1`, stageID)
@@ -549,7 +549,7 @@ func seedPriorApprovalStagesForDecisionTest(t *testing.T, pool *repository.Scope
 		id := fmt.Sprintf("36666666-0000-0000-0000-0000000040%02d", i)
 		if _, err := pool.Exec(ctx,
 			`INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, raw_status)
-			 VALUES ($1, now() - (INTERVAL '1 hour' * $2::int), now(), 'cr-approval-test', 'cr-approval-test', $3, 'requested')`,
+			 VALUES ($1, now() - (INTERVAL '1 hour' * $2::int), now(), 'cr-approval-test', 'cr-approval-test', $3, 'REQUESTED')`,
 			id, count-i, changeRequestApprovalTestID); err != nil {
 			t.Fatalf("seed prior approval_stage %d: %v", i, err)
 		}

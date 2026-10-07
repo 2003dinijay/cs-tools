@@ -807,7 +807,7 @@ func (f *crFlow) seedLooseStage(id string, label *string, ageMinutes int, rows m
 	var stageID string
 	if err := f.scoped.QueryRow(f.sys,
 		`INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, checkpoint_label, raw_status)
-		 VALUES (gen_random_uuid(), now() - make_interval(mins => $2::int), now(), 'cr-flow-test', 'cr-flow-test', $1, $3, 'requested') RETURNING id::text`,
+		 VALUES (gen_random_uuid(), now() - make_interval(mins => $2::int), now(), 'cr-flow-test', 'cr-flow-test', $1, $3, 'REQUESTED') RETURNING id::text`,
 		id, ageMinutes, label).Scan(&stageID); err != nil {
 		f.t.Fatalf("seed stage: %v", err)
 	}
