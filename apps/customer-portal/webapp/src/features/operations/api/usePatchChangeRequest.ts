@@ -25,7 +25,11 @@ import { useLogger } from "@hooks/useLogger";
 import { ApiQueryKeys } from "@constants/apiConstants";
 import type { PatchChangeRequestRequest } from "@features/operations/types/changeRequests";
 import type { PatchChangeRequestResponse } from "@features/operations/types/changeRequests";
-import { ApiError, parseApiResponseMessage } from "@utils/ApiError";
+import {
+  ApiError,
+  parseApiResponseErrorCode,
+  parseApiResponseMessage,
+} from "@utils/ApiError";
 
 /**
  * Hook to patch a change request (PATCH /change-requests/:id): the customer's
@@ -90,10 +94,14 @@ export function usePatchChangeRequest(
 
         if (!response.ok) {
           const text = await response.text();
+          // The refusal's machine-readable name rides with the message: the
+          // caller classifies by it, never by the wording.
           throw new ApiError(
             response.status,
             response.statusText,
             parseApiResponseMessage(text, response.status, response.statusText),
+            undefined,
+            parseApiResponseErrorCode(text),
           );
         }
 

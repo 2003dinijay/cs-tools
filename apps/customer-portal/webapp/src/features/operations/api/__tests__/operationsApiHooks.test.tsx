@@ -348,6 +348,50 @@ describe("operations API hooks", () => {
       expect((error as ApiError).message).toBe("this approval is no longer pending");
     });
 
+    it("keeps the refusal's machine-readable code on the ApiError, beside the message", async () => {
+      mockAuthFetch.mockResolvedValueOnce({
+        ok: false,
+        status: 409,
+        statusText: "Conflict",
+        text: async () =>
+          JSON.stringify({
+            message: "this change request is on hold, so a new implementation time cannot be proposed now",
+            errorCode: "change_request_on_hold",
+          }),
+      });
+      const { wrapper } = wrapperWithClient();
+      const { result } = renderHook(() => usePatchChangeRequest("cr-1"), { wrapper });
+
+      const error = await result.current
+        .mutateAsync({ plannedStartOn: "2026-06-11 10:00:00" })
+        .then(() => null, (e: unknown) => e);
+
+      expect(error).toBeInstanceOf(ApiError);
+      expect((error as ApiError).status).toBe(409);
+      expect((error as ApiError).code).toBe("change_request_on_hold");
+      expect((error as ApiError).message).toContain("on hold");
+    });
+
+    it("has no code when the backend names none (an older one) or a malformed one", async () => {
+      for (const body of [
+        JSON.stringify({ message: "stale" }),
+        JSON.stringify({ message: "stale", errorCode: "Not A Code" }),
+        JSON.stringify({ message: "stale", errorCode: 409 }),
+        "not json at all",
+        "",
+      ]) {
+        mockAuthFetch.mockResolvedValueOnce({ ok: false, status: 409, statusText: "Conflict", text: async () => body });
+        const { wrapper } = wrapperWithClient();
+        const { result } = renderHook(() => usePatchChangeRequest("cr-1"), { wrapper });
+        const error = await result.current
+          .mutateAsync({ isCustomerApproved: true })
+          .then(() => null, (e: unknown) => e);
+        expect(error).toBeInstanceOf(ApiError);
+        expect((error as ApiError).code, body).toBeUndefined();
+        expect((error as ApiError).status).toBe(409);
+      }
+    });
+
     it("refetches the change request after a conflict or a refusal, but not after a bad request", async () => {
       for (const [status, refetches] of [[409, true], [403, true], [400, false], [500, false]] as const) {
         mockAuthFetch.mockResolvedValueOnce({

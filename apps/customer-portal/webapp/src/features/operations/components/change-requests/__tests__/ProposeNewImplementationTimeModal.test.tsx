@@ -14,13 +14,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import ProposeNewImplementationTimeModal from "@features/operations/components/change-requests/ProposeNewImplementationTimeModal";
 import {
+  CHANGE_REQUEST_ACTION_FAILED_MESSAGE,
   CHANGE_REQUEST_ANSWER_STALE_MESSAGE,
   CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE,
   CHANGE_REQUEST_ON_HOLD_MESSAGE,
+  CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE,
+  ChangeRequestErrorCode,
 } from "@features/operations/utils/changeRequests";
 import { ApiError } from "@utils/ApiError";
 import { clearUserPreferredTimeZone, setUserPreferredTimeZone } from "@utils/dateTime";
@@ -57,7 +60,11 @@ const changeRequest = {
   endDate: "2026-06-10 06:30:00",
 } as never;
 
-function renderModal(overrides: Record<string, unknown> = {}, onClose = vi.fn(), onProposed = vi.fn()) {
+function renderModal(
+  overrides: Record<string, unknown> = {},
+  onClose = vi.fn(),
+  onProposed = vi.fn(),
+) {
   render(
     <ProposeNewImplementationTimeModal
       open
@@ -267,19 +274,24 @@ describe("ProposeNewImplementationTimeModal", () => {
     expect(mocks.mutateAsync).toHaveBeenCalledTimes(2);
   });
 
-  it("closes and says so on the page when the change request no longer waits on the customer (409)", async () => {
-    mocks.mutateAsync.mockRejectedValueOnce(new ApiError(409, "Conflict", "stale approval"));
-    const { onClose } = renderModal();
+  it.each([
+    [ChangeRequestErrorCode.APPROVAL_NOT_PENDING, CHANGE_REQUEST_ANSWER_STALE_MESSAGE],
+    [ChangeRequestErrorCode.NOT_PROPOSABLE, CHANGE_REQUEST_ANSWER_STALE_MESSAGE],
+    [ChangeRequestErrorCode.SCHEDULE_CHANGED, CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE],
+  ])("closes and says so on the page when the change request no longer waits on the customer (409 %s)", async (code, message) => {
+    mocks.mutateAsync.mockRejectedValueOnce(new ApiError(409, "Conflict", "any wording at all", undefined, code));
+    const { onClose, onProposed } = renderModal();
     setValue(startInput(), "2026-06-11T15:30");
     submit();
     await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(mocks.showError).toHaveBeenCalledWith(CHANGE_REQUEST_ANSWER_STALE_MESSAGE);
+    expect(mocks.showError).toHaveBeenCalledWith(message);
     expect(mocks.showSuccess).not.toHaveBeenCalled();
+    expect(onProposed).not.toHaveBeenCalled();
   });
 
   it("stays open and says so when WSO2 has the change on hold (409)", async () => {
     mocks.mutateAsync.mockRejectedValueOnce(
-      new ApiError(409, "Conflict", "this change request is on hold, so a new implementation time cannot be proposed now"),
+      new ApiError(409, "Conflict", "any wording at all", undefined, ChangeRequestErrorCode.ON_HOLD),
     );
     const { onClose } = renderModal();
     setValue(startInput(), "2026-06-11T15:30");
@@ -289,14 +301,31 @@ describe("ProposeNewImplementationTimeModal", () => {
     expect(mocks.showError).not.toHaveBeenCalled();
   });
 
-  it("closes and says so on the page when the customer may not answer it (403)", async () => {
-    mocks.mutateAsync.mockRejectedValueOnce(new ApiError(403, "Forbidden", "nope"));
-    const { onClose } = renderModal();
-    setValue(startInput(), "2026-06-11T15:30");
-    submit();
-    await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
-    expect(mocks.showError).toHaveBeenCalledWith(CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE);
+  it("closes, as for any 409, and claims nothing it cannot know when the 409 names nothing it knows", async () => {
+    for (const code of [undefined, "change_request_from_the_future"]) {
+      mocks.showError.mockReset();
+      mocks.mutateAsync.mockRejectedValueOnce(new ApiError(409, "Conflict", "this change request is on hold", undefined, code));
+      const { onClose } = renderModal();
+      setValue(startInput(), "2026-06-11T15:30");
+      submit();
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(mocks.showError).toHaveBeenCalledWith(CHANGE_REQUEST_ACTION_FAILED_MESSAGE);
+      expect(mocks.showError).not.toHaveBeenCalledWith(CHANGE_REQUEST_ANSWER_STALE_MESSAGE);
+      cleanup();
+    }
   });
+
+  it.each([ChangeRequestErrorCode.NOT_ASKED, ChangeRequestErrorCode.FORBIDDEN, undefined])(
+    "closes and says so on the page when the customer may not answer it (403 %s)",
+    async (code) => {
+      mocks.mutateAsync.mockRejectedValueOnce(new ApiError(403, "Forbidden", "nope", undefined, code));
+      const { onClose } = renderModal();
+      setValue(startInput(), "2026-06-11T15:30");
+      submit();
+      await waitFor(() => expect(onClose).toHaveBeenCalledTimes(1));
+      expect(mocks.showError).toHaveBeenCalledWith(CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE);
+    },
+  );
 
   it("keeps the dialog open with a plain message when the request itself failed", async () => {
     mocks.mutateAsync.mockRejectedValueOnce(new Error("Failed to fetch"));

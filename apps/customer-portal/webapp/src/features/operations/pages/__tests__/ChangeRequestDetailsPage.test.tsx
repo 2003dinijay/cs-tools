@@ -19,10 +19,12 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ChangeRequestDetailsPage from "@features/operations/pages/ChangeRequestDetailsPage";
 import {
+  CHANGE_REQUEST_ACTION_FAILED_MESSAGE,
   CHANGE_REQUEST_ANSWER_STALE_MESSAGE,
   CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE,
   CHANGE_REQUEST_NOT_FOUND_MESSAGE,
   CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE,
+  ChangeRequestErrorCode,
 } from "@features/operations/utils/changeRequests";
 import { ApiError } from "@utils/ApiError";
 
@@ -270,6 +272,8 @@ describe("ChangeRequestDetailsPage", () => {
           409,
           "Conflict",
           "the planned implementation time of this change request changed after you opened it (it is now 2026-09-15T10:00:00Z to 2026-09-15T12:00:00Z); read it again before giving your answer",
+          undefined,
+          ChangeRequestErrorCode.SCHEDULE_CHANGED,
         ),
       );
       renderPage();
@@ -290,7 +294,10 @@ describe("ChangeRequestDetailsPage", () => {
     });
 
     it.each([
-      [new ApiError(409, "Conflict", "stale"), CHANGE_REQUEST_ANSWER_STALE_MESSAGE],
+      [new ApiError(409, "Conflict", "stale", undefined, ChangeRequestErrorCode.APPROVAL_NOT_PENDING), CHANGE_REQUEST_ANSWER_STALE_MESSAGE],
+      // An older backend names nothing: the page does not claim "already answered".
+      [new ApiError(409, "Conflict", "stale"), CHANGE_REQUEST_ACTION_FAILED_MESSAGE],
+      [new ApiError(403, "Forbidden", "nope", undefined, ChangeRequestErrorCode.FORBIDDEN), CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE],
       [new ApiError(403, "Forbidden", "nope"), CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE],
       [new ApiError(500, "Internal Server Error", "Failed to update change request."), "Failed to update change request."],
       [new Error("Failed to fetch"), "Could not approve the change request. Please try again."],
@@ -344,7 +351,9 @@ describe("ChangeRequestDetailsPage", () => {
     });
 
     it("closes the dialog and shows why when the rejection is refused", async () => {
-      mocks.mutateAsync.mockRejectedValueOnce(new ApiError(409, "Conflict", "stale"));
+      mocks.mutateAsync.mockRejectedValueOnce(
+        new ApiError(409, "Conflict", "stale", undefined, ChangeRequestErrorCode.APPROVAL_NOT_PENDING),
+      );
       renderPage();
       fireEvent.click(screen.getByRole("button", { name: "Reject" }));
       fireEvent.click(screen.getByRole("button", { name: "Reject change request" }));
