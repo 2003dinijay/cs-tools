@@ -530,8 +530,9 @@ func TestSizeOf_SharedDescriptionCountedOnce(t *testing.T) {
 }
 
 type recordingFallback struct {
-	mu     sync.Mutex
-	alerts []model.Alert
+	mu         sync.Mutex
+	alerts     []model.Alert
+	recoveries int
 }
 
 func (f *recordingFallback) Notify(_, _ string, alerts []model.Alert) {
@@ -540,20 +541,27 @@ func (f *recordingFallback) Notify(_, _ string, alerts []model.Alert) {
 	f.alerts = append(f.alerts, alerts...)
 }
 
-func (f *recordingFallback) count() int {
+func (f *recordingFallback) Recovered() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return len(f.alerts)
+	f.recoveries++
+}
+
+func (f *recordingFallback) counts() (alerts, recoveries int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.alerts), f.recoveries
 }
 
 func TestFallback_GetsOnlyAlertsThatWereNotStored(t *testing.T) {
 	cases := map[string]struct {
-		setup func(*fakeStore)
-		want  int
+		setup          func(*fakeStore)
+		wantAlerts     int
+		wantRecoveries int
 	}{
-		"stored":         {func(*fakeStore) {}, 0},
-		"insert failure": {func(s *fakeStore) { s.failInserts = -1 }, 2},
-		"claim failure":  {func(s *fakeStore) { s.claimErr = errors.New("connection refused") }, 2},
+		"stored":         {func(*fakeStore) {}, 0, 1},
+		"insert failure": {func(s *fakeStore) { s.failInserts = -1 }, 2, 0},
+		"claim failure":  {func(s *fakeStore) { s.claimErr = errors.New("connection refused") }, 2, 0},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -561,10 +569,13 @@ func TestFallback_GetsOnlyAlertsThatWereNotStored(t *testing.T) {
 			tc.setup(store)
 			fb := &recordingFallback{}
 			a := New(slog.New(slog.NewTextHandler(io.Discard, nil)), store, nil, fb, testConfig())
-			t.Cleanup(func() { _ = a.Close(context.Background()) })
 			_, _ = a.Submit(context.Background(), "aws", "req", []model.Alert{alert("svc", "a"), alert("svc", "b")})
-			if got := fb.count(); got != tc.want {
-				t.Errorf("fallback got %d alerts, want %d", got, tc.want)
+			// Close waits for the writer, so the recovery signal sent after answering has landed.
+			if err := a.Close(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if alerts, recoveries := fb.counts(); alerts != tc.wantAlerts || recoveries != tc.wantRecoveries {
+				t.Errorf("fallback got %d alerts and %d recoveries, want %d and %d", alerts, recoveries, tc.wantAlerts, tc.wantRecoveries)
 			}
 		})
 	}
