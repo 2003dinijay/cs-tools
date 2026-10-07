@@ -947,6 +947,39 @@ func TestChangeRequestProposalIntegration_RepeatedCycles(t *testing.T) {
 	}
 }
 
+// A change scheduled by Accept goes on like any other: Implement, then Review (its stage is
+// provisioned although Customer Approval ran twice), then the customer's own review (the customer
+// review box is ours to keep, whatever the proposal conversation did), then Closed. The customer's
+// approval was never recorded by the conversation, and the customer's review is recorded by them.
+func TestChangeRequestProposalIntegration_AnAcceptedChangeGoesOnToItsClose(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, true)
+	f.setPlanned(id, rsStart1, rsEnd1)
+	f.driveToCustomerApproval(id)
+	f.mustPropose(id, crScopeUserA1, rsStart2)
+	if err := f.counter(id, sp(rsStart3), sp(rsEnd3)); err != nil {
+		t.Fatalf("a different time: %v", err)
+	}
+	f.mustPropose(id, crScopeUserA2, rsStartEarly)
+	f.mustAccept(id)
+	f.expect(id, "after Accept", "SCHEDULED", "implement", "canceled")
+	f.wantPlanned(id, "after Accept", rsStartEarly, endFor(rsStartEarly))
+
+	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "customer_review", "rollback", "canceled")
+	if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,Customer Approval,Review" {
+		t.Fatalf("stages in Review = %s", got)
+	}
+	f.step(id, domain.ChangeRequestStateCustomerReview, "CUSTOMER_REVIEW", "canceled")
+	if err := f.decide(id, crScopeUserA1, "approved"); err != nil {
+		t.Fatalf("the customer's review: %v", err)
+	}
+	f.expect(id, "in Closed", "CLOSED")
+	if approved, reviewed := f.customerOutcome(id); approved || !reviewed {
+		t.Fatalf("customer outcome after the close = approved %v, reviewed %v: the customer's approval was never given, their review was", approved, reviewed)
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Who may answer, and who may not
 // ---------------------------------------------------------------------------
