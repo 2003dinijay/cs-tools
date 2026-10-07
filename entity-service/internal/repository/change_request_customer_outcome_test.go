@@ -43,8 +43,8 @@ func TestIsExternalCaller(t *testing.T) {
 		{"staff who also hold an external record", ctxWith(SearchScope{ViewerEmail: "alice@example.com", HasInternalAccess: true}), false},
 		{"no identity at all", context.Background(), false},
 	} {
-		if got := isExternalCaller(tc.ctx); got != tc.want {
-			t.Errorf("%s: isExternalCaller = %v, want %v", tc.name, got, tc.want)
+		if got := IsExternalCaller(tc.ctx); got != tc.want {
+			t.Errorf("%s: IsExternalCaller = %v, want %v", tc.name, got, tc.want)
 		}
 	}
 }

@@ -76,7 +76,7 @@ import (
 // anything but the customer's own answer or a proposed window.
 const externalPatchRefusal = "customers can only record the customer's approval or review (isCustomerApproved / isCustomerReviewed, optionally with the expectedPlannedStartOn / expectedPlannedEndOn they were shown) or propose a new implementation time (plannedStartOn / plannedEndOn) on a change request; no other field can be changed"
 
-// isExternalCaller reports whether ctx carries the identity of a customer or
+// IsExternalCaller reports whether ctx carries the identity of a customer or
 // partner: an identity was resolved for the request and it is neither
 // unrestricted (internal staff, an internal client credential) nor staff who
 // also hold an external record (SearchScope.HasInternalAccess -- "external wins"
@@ -84,7 +84,13 @@ const externalPatchRefusal = "customers can only record the customer's approval 
 // no identity is not external: Scoped refuses such a context outright, and the
 // callers that legitimately have none (tests, background jobs) stamp the system
 // identity.
-func isExternalCaller(ctx context.Context) bool {
+//
+// Exported because the service layer asks the SAME question: the best-effort
+// ServiceNow mirror of a PATCH is decided from who sent it (an external caller's
+// window is a proposal and is never mirrored) and not from a read of the committed
+// row, which runs after the commit, in another transaction, and may fail
+// (changeRequestService.PatchChangeRequest, mirrorOfTheTimeConversation).
+func IsExternalCaller(ctx context.Context) bool {
 	scope, ok := CallerIdentityFromContext(ctx)
 	return ok && !scope.Unrestricted && !scope.HasInternalAccess
 }
@@ -349,7 +355,7 @@ func customerHasRequestedRow(ctx context.Context, q crQuerier, stageID, userID s
 // ServiceNow data source never reaches it, and nothing of csm-sync-service's
 // own rows is changed.
 func ensureCustomerStageForLegacy(ctx context.Context, tx pgx.Tx, id, actorEmail string) error {
-	if !isExternalCaller(ctx) {
+	if !IsExternalCaller(ctx) {
 		return nil
 	}
 	legacy, state, projectID, ok, err := crVisibilityFromContext(ctx).legacyAndState(ctx, tx, id)
@@ -504,7 +510,7 @@ func checkExpectedSchedule(ctx context.Context, tx pgx.Tx, id string, expectedSt
 // when the check itself fails: the detail read is not worth failing for it, and
 // an absent field tells the client the answer is unknown rather than "no".
 func (r *changeRequestRepo) markCustomerCanAnswer(ctx context.Context, cr *domain.ChangeRequest) {
-	if !isExternalCaller(ctx) {
+	if !IsExternalCaller(ctx) {
 		return
 	}
 	scope, _ := CallerIdentityFromContext(ctx)

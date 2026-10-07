@@ -1167,7 +1167,7 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	// (the same code the decision route runs), the proposal is a start written to
 	// customer_updated_on for WSO2 to answer (change_request_customer_proposal.go:
 	// nothing else moves), and anything else is refused.
-	if isExternalCaller(ctx) {
+	if IsExternalCaller(ctx) {
 		cp, err := classifyExternalPatch(req)
 		if err != nil {
 			return "", err
@@ -2637,7 +2637,7 @@ func (r *changeRequestRepo) GetChangeRequestApprovals(ctx context.Context, id st
 
 	result := buildChangeRequestApprovals(stages, approvers)
 	r.markCanDecide(ctx, id, stages, approvers, &result)
-	if isExternalCaller(ctx) {
+	if IsExternalCaller(ctx) {
 		redactInternalApprovalStages(stages, &result)
 	}
 	return result, nil

@@ -24,20 +24,56 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
 // The customer's proposed time (customer_updated_on) and WSO2's answer
 // (customer_updated_date_confirmation) are PostgreSQL-only: ServiceNow's change request API has
-// no field for either. What is mirrored of the three acts of that conversation is read from what
-// PostgreSQL COMMITTED, and every other PATCH mirrors exactly what it always did.
+// no field for either. What is mirrored of the acts of that conversation is decided from WHO SENT
+// the PATCH (a customer's window is a proposal and never goes) and, for the acts WSO2 performs,
+// from what PostgreSQL COMMITTED; every other PATCH mirrors exactly what it always did.
 
 func sPtr(s string) *string { return &s }
 
 func statePtr(s domain.ChangeRequestState) *domain.ChangeRequestState { return &s }
 
-// runMirror sends req through the dual-write service whose repository answers with committed, and
-// returns what the ServiceNow mirror was asked to PATCH (nil when it was not called at all).
+// The identities a PATCH can arrive under, as the server's identity middleware stamps them: the
+// customer (neither unrestricted nor staff), WSO2 staff, staff who also hold an external record
+// ("external wins" for what they may LIST, they are still staff), an internal client credential
+// (unrestricted, no viewer), and nobody (what every test of this file used before the caller
+// mattered, and what a background job without an identity would be).
+func callerCtx(t *testing.T, scope *repository.SearchScope) context.Context {
+	t.Helper()
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	if scope == nil {
+		return ctx
+	}
+	return repository.WithCallerIdentity(ctx, *scope)
+}
+
+var (
+	customerCaller          = repository.SearchScope{ViewerEmail: "jane.doe@example.com", ProjectIDs: []string{testUUID}}
+	staffCaller             = repository.SearchScope{Unrestricted: true, ViewerEmail: "jane.doe@example.com", HasInternalAccess: true}
+	staffWithExternalCaller = repository.SearchScope{ViewerEmail: "jane.doe@example.com", HasInternalAccess: true, ProjectIDs: []string{testUUID}}
+	internalClientCaller    = repository.SearchScope{Unrestricted: true}
+	everyNonCustomerCall    = map[string]*repository.SearchScope{
+		"no identity":                            nil,
+		"staff":                                  &staffCaller,
+		"staff who also hold an external record": &staffWithExternalCaller,
+		"an internal client credential":          &internalClientCaller,
+	}
+)
+
+// runMirror sends req (as nobody in particular, see callerCtx) through the dual-write service whose
+// repository answers with committed, and returns what the ServiceNow mirror was asked to PATCH (nil
+// when it was not called at all).
 func runMirror(t *testing.T, req domain.PatchChangeRequestRequest, committed domain.ChangeRequest) *domain.PatchChangeRequestRequest {
+	t.Helper()
+	return runMirrorAs(t, callerCtx(t, nil), req, committed)
+}
+
+// runMirrorAs is runMirror for the caller ctx carries.
+func runMirrorAs(t *testing.T, ctx context.Context, req domain.PatchChangeRequestRequest, committed domain.ChangeRequest) *domain.PatchChangeRequestRequest {
 	t.Helper()
 	called := make(chan domain.PatchChangeRequestRequest, 1)
 	mirror := &stubMirrorChangeRequestService{
@@ -54,7 +90,6 @@ func runMirror(t *testing.T, req domain.PatchChangeRequestRequest, committed dom
 	}
 	failures := &recordingSNWritebackFailures{}
 	svc := NewChangeRequestServiceWithSNWriteback(repo, stubUserRepo{}, mirror, NewSNWritebackDispatcher(failures))
-	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 	if _, err := svc.PatchChangeRequest(ctx, testUUID, req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -67,6 +102,13 @@ func runMirror(t *testing.T, req domain.PatchChangeRequestRequest, committed dom
 		}
 		return nil
 	}
+}
+
+// customerProposals are the shapes of a customer's proposed window, as the portal sends them.
+var customerProposals = map[string]domain.PatchChangeRequestRequest{
+	"the start alone":                   {PlannedStartOn: sPtr("2030-03-08 09:00:00")},
+	"the start and the derived end":     {PlannedStartOn: sPtr("2030-03-08 09:00:00"), PlannedEndOn: sPtr("2030-03-08 11:00:00")},
+	"the start in RFC 3339 with offset": {PlannedStartOn: sPtr("2030-03-08T14:30:00+05:30"), PlannedEndOn: sPtr("2030-03-08T16:30:00+05:30")},
 }
 
 func committedAt(state, start, end string) domain.ChangeRequest {
@@ -89,12 +131,8 @@ func TestChangeRequestService_PatchChangeRequest_TheTimeConversationMirror(t *te
 	}
 
 	t.Run("a customer's proposal mirrors nothing", func(t *testing.T) {
-		for name, req := range map[string]domain.PatchChangeRequestRequest{
-			"the start alone":                   {PlannedStartOn: sPtr("2030-03-08 09:00:00")},
-			"the start and the derived end":     {PlannedStartOn: sPtr("2030-03-08 09:00:00"), PlannedEndOn: sPtr("2030-03-08 11:00:00")},
-			"the start in RFC 3339 with offset": {PlannedStartOn: sPtr("2030-03-08T14:30:00+05:30"), PlannedEndOn: sPtr("2030-03-08T16:30:00+05:30")},
-		} {
-			got := runMirror(t, req, withProposal(committedAt("customer_approval", planStart, planEnd), "2030-03-08T09:00:00Z"))
+		for name, req := range customerProposals {
+			got := runMirrorAs(t, callerCtx(t, &customerCaller), req, withProposal(committedAt("customer_approval", planStart, planEnd), "2030-03-08T09:00:00Z"))
 			if got != nil {
 				t.Fatalf("%s: the mirror was asked to PATCH %+v: the plan did not move, the proposal has no ServiceNow field", name, *got)
 			}
@@ -157,9 +195,84 @@ func TestChangeRequestService_PatchChangeRequest_TheTimeConversationMirror(t *te
 	})
 }
 
+// A customer's proposed window never reaches ServiceNow as the plan, and WHETHER IT IS ONE is
+// decided from who sent the PATCH, not from the read model the repository builds AFTER the commit
+// (GetChangeRequestByID -> fillCustomerProposal): that read runs in another transaction, logs and
+// swallows its errors, and can see a conversation that has moved on. Whatever it comes back with,
+// the answer is the same: nothing is mirrored.
+func TestChangeRequestService_PatchChangeRequest_ACustomersWindowIsNeverMirrored(t *testing.T) {
+	const planStart, planEnd = "2030-03-01T09:00:00Z", "2030-03-01T11:00:00Z"
+	const proposed = "2030-03-08T09:00:00Z"
+	proposedAt := func(cr domain.ChangeRequest, answer, start string) domain.ChangeRequest {
+		cr.CustomerUpdatedOn = sPtr(proposed)
+		cr.CustomerProposal = &domain.ChangeRequestCustomerProposal{StartOn: start, Answer: answer}
+		return cr
+	}
+	for name, committed := range map[string]domain.ChangeRequest{
+		"the read model shows the proposal waiting": proposedAt(committedAt("customer_approval", planStart, planEnd), "pending", proposed),
+		// fillCustomerProposal failed (a lost connection, a timeout) and left the field unset: the
+		// row says a time was proposed (customerUpdatedOn) and the read model says nothing.
+		"the proposal read failed and left customerProposal unset": func() domain.ChangeRequest {
+			cr := committedAt("customer_approval", planStart, planEnd)
+			cr.CustomerUpdatedOn = sPtr(proposed)
+			return cr
+		}(),
+		// WSO2 accepted between the customer's commit and the read: the plan IS the proposed time now.
+		"WSO2 accepted it in between": proposedAt(committedAt("scheduled", proposed, "2030-03-08T11:00:00Z"), "agreed", proposed),
+		// ...or asked for another time, or the proposal was overwritten by a colleague's or by the sync's.
+		"WSO2 asked for another time in between":               proposedAt(committedAt("customer_approval", "2030-03-20T09:00:00Z", "2030-03-20T11:00:00Z"), "disagreed", proposed),
+		"a colleague proposed another time in between":         proposedAt(committedAt("customer_approval", planStart, planEnd), "pending", "2030-03-09T09:00:00Z"),
+		"the proposal is unanswered and unreadable as pending": proposedAt(committedAt("customer_approval", planStart, planEnd), "unanswered", proposed),
+		// the change request was moved out of Customer Approval by someone else in between
+		"the change was cancelled in between":     proposedAt(committedAt("canceled", planStart, planEnd), "pending", proposed),
+		"the read returned a bare change request": committedAt("", "", ""),
+	} {
+		for shape, req := range customerProposals {
+			if got := runMirrorAs(t, callerCtx(t, &customerCaller), req, committed); got != nil {
+				t.Fatalf("%s / %s: the mirror was asked to PATCH %+v: a customer's window is a proposal, ServiceNow has no field for it and must not get it as the plan", name, shape, *got)
+			}
+		}
+	}
+
+	t.Run("the customer's own answer is mirrored as before, and its window is not", func(t *testing.T) {
+		yes := true
+		withWindowShown := domain.PatchChangeRequestRequest{IsCustomerApproved: &yes, ExpectedPlannedStartOn: sPtr(planStart), ExpectedPlannedEndOn: sPtr(planEnd)}
+		want := domain.PatchChangeRequestRequest{IsCustomerApproved: &yes}
+		for name, ctx := range map[string]context.Context{"a customer": callerCtx(t, &customerCaller), "nobody in particular": callerCtx(t, nil)} {
+			got := runMirrorAs(t, ctx, withWindowShown, committedAt("scheduled", planStart, planEnd))
+			if got == nil || !reflect.DeepEqual(*got, want) {
+				t.Fatalf("%s: the answer was mirrored as %+v, want exactly %+v", name, got, want)
+			}
+		}
+	})
+
+	t.Run("a window from anybody else is mirrored, whatever the read model says about a proposal", func(t *testing.T) {
+		// The same requests under every non-customer identity are WSO2's own edits of the plan.
+		for who, scope := range everyNonCustomerCall {
+			for shape, req := range customerProposals {
+				for name, committed := range map[string]domain.ChangeRequest{
+					"no proposal": committedAt("customer_approval", "2030-03-08T09:00:00Z", "2030-03-08T11:00:00Z"),
+					"the proposal read failed": func() domain.ChangeRequest {
+						cr := committedAt("customer_approval", "2030-03-08T09:00:00Z", "2030-03-08T11:00:00Z")
+						cr.CustomerUpdatedOn = sPtr(proposed)
+						return cr
+					}(),
+					"a proposal answered in between": proposedAt(committedAt("customer_approval", "2030-03-08T09:00:00Z", "2030-03-08T11:00:00Z"), "agreed", proposed),
+				} {
+					got := runMirrorAs(t, callerCtx(t, scope), req, committed)
+					if got == nil || got.PlannedStartOn == nil || *got.PlannedStartOn != "2030-03-08 09:00:00" {
+						t.Fatalf("%s / %s / %s: mirrored %+v, want the window as ServiceNow takes it (the plan was applied)", who, shape, name, got)
+					}
+				}
+			}
+		}
+	})
+}
+
 // Every other PATCH is mirrored exactly as it was before the conversation existed: the same
-// fields, the same values, the state included -- the three acts above are the only exceptions,
-// and they are recognised by what PostgreSQL committed, never by the shape of the request alone.
+// fields, the same values, the state included -- the acts above are the only exceptions, and they
+// are recognised by who sent the request (a customer's window) and by what PostgreSQL committed
+// (what WSO2 did), never by the shape of the request alone.
 func TestChangeRequestService_PatchChangeRequest_EveryOtherPatchMirrorsAsBefore(t *testing.T) {
 	const planStart, planEnd = "2030-03-01T09:00:00Z", "2030-03-01T11:00:00Z"
 	title := "renamed"
@@ -196,12 +309,15 @@ func TestChangeRequestService_PatchChangeRequest_EveryOtherPatchMirrorsAsBefore(
 			domain.PatchChangeRequestRequest{State: statePtr(domain.ChangeRequestStateCanceled), PlannedStartOn: sPtr("2030-03-08 09:00:00")}},
 		{"a comment", domain.PatchChangeRequestRequest{Comment: sPtr("hello")}, committedAt("customer_approval", planStart, planEnd), domain.PatchChangeRequestRequest{Comment: sPtr("hello")}},
 	} {
-		got := runMirror(t, tc.req, tc.committed)
-		if got == nil {
-			t.Fatalf("%s: nothing was mirrored, want %+v", tc.name, tc.want)
-		}
-		if !reflect.DeepEqual(*got, tc.want) {
-			t.Fatalf("%s: mirrored %+v, want exactly what it always was: %+v", tc.name, *got, tc.want)
+		// ...whoever of WSO2 (or nobody) sends it: only a CUSTOMER's window is held back.
+		for who, scope := range everyNonCustomerCall {
+			got := runMirrorAs(t, callerCtx(t, scope), tc.req, tc.committed)
+			if got == nil {
+				t.Fatalf("%s as %s: nothing was mirrored, want %+v", tc.name, who, tc.want)
+			}
+			if !reflect.DeepEqual(*got, tc.want) {
+				t.Fatalf("%s as %s: mirrored %+v, want exactly what it always was: %+v", tc.name, who, *got, tc.want)
+			}
 		}
 	}
 }

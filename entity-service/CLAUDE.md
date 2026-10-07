@@ -4521,12 +4521,20 @@ read, and what comes out is a handful of derived facts, never a row. `legalNextS
 **What is mirrored / what is not** (`DATA_SOURCE=postgres-servicenow-dual-write`): ServiceNow's PATCH API has no field for
 the two columns, so **proposals and WSO2's answers are PostgreSQL-only until the sync stops, and while the sync runs it can
 rewrite `customer_updated_on`, the confirmation, `state`, `start_on` and `end_on` on its next pass** (true of every
-PostgreSQL-only write in the dual run). The mirror is built from what PostgreSQL COMMITTED, for these three acts only
-(`mirrorOfTheTimeConversation`): a customer's proposal mirrors nothing (the plan did not move); Accept mirrors
-`{state: scheduled, plannedStartOn, plannedEndOn}` from the committed result (UNVERIFIED that ServiceNow accepts a manual
-Scheduled out of Customer Approval: a refusal lands in `sn_writeback_failures`, PostgreSQL stays committed); a Re-schedule /
-counter mirrors the window and not the state (ServiceNow stays in Customer Approval like PostgreSQL). Every other PATCH
-mirrors byte for byte as before (`TestChangeRequestService_PatchChangeRequest_EveryOtherPatchMirrorsAsBefore`). The pure
+PostgreSQL-only write in the dual run). The mirror is decided for these acts only (`mirrorOfTheTimeConversation`):
+**a PATCH from an external (customer) caller never mirrors its window** (`repository.IsExternalCaller(ctx)`, the very test
+the repository used to decide what the request was: a customer's window is a proposal, the plan did not move, ServiceNow has
+no field for it). It is decided from WHO SENT the request, not from the read model the PATCH receipt carries: that read
+(`GetChangeRequestByID` -> `fillCustomerProposal`) runs after the commit in another transaction, logs and swallows its errors
+(`customerProposal` then stays unset) and can see a conversation WSO2 has already answered, so a mirror that depended on it
+could send a customer's proposed time to ServiceNow as the plan (a second guard on the read model remains, for any caller,
+and can only add to this). Accept mirrors `{state: scheduled, plannedStartOn, plannedEndOn}` from the committed result
+(UNVERIFIED that ServiceNow accepts a manual Scheduled out of Customer Approval: a refusal lands in `sn_writeback_failures`,
+PostgreSQL stays committed); a Re-schedule / counter mirrors the window and not the state (ServiceNow stays in Customer
+Approval like PostgreSQL). Every other PATCH, from any staff identity, an internal client credential or no identity, mirrors
+byte for byte as before (`TestChangeRequestService_PatchChangeRequest_EveryOtherPatchMirrorsAsBefore`, run under each
+identity; `..._ACustomersWindowIsNeverMirrored` feeds the receipt of a failed read, of an answer WSO2 gave in between and of a
+colleague's later proposal; `TestFillCustomerProposal_AFailedReadLeavesTheFieldUnset` pins that the failed read is real). The pure
 ServiceNow data source refuses `confirmCustomerUpdatedDate` / `expectedCustomerUpdatedOn` up front ("answer the customer's
 proposed date in ServiceNow") and forwards proposals and Re-schedules as ever. Notices (`CR_NOTICES_ENABLED`, off by
 default): the existing `planDateNotice` turns apply unchanged -- a proposal tells the "Devops Approval" team (a team nobody
@@ -4575,7 +4583,7 @@ Code: `change_request_customer_outcome.go` (`classifyExternalPatch`,
 
 **Who is "a customer" here: an external caller** -- a resolved identity with
 `SearchScope.Unrestricted == false` and `HasInternalAccess == false`
-(`isExternalCaller`). Internal staff (and the system identity, and staff who also
+(`IsExternalCaller`). Internal staff (and the system identity, and staff who also
 hold an external record) are NOT the customer: their PATCH keeps the whole contract
 except the customer's answer -- `isCustomerApproved` / `isCustomerReviewed` from them
 is a 400 (it used to be a bookkeeping stamp of the flag that moved nothing), and so is
@@ -5526,7 +5534,7 @@ no staff action records the customer's approval or review on the customer's beha
 so that function, and the internal caller's right to stamp the flags, are gone:
 
 - **A request that carries either flag from anyone but the customer is a 400** -- the
-  caller is not an external customer answering (`isExternalCaller`, which already
+  caller is not an external customer answering (`IsExternalCaller`, which already
   returned through `answerCustomerStageViaPatch`): internal staff, staff who also hold
   an external record, an internal client credential, a context with no identity. True
   or false, alone or with a state or other fields, whatever is stored (a no-op

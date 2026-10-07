@@ -326,10 +326,13 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 	mirrorReq.DeploymentIDs, mirrorReq.DeploymentProductIDs = nil, nil
 	// The conversation about a time the customer proposed (confirmCustomerUpdatedDate,
 	// expectedCustomerUpdatedOn) has no field in ServiceNow's change request API: it stays
-	// PostgreSQL-only, and what of it changes the change request itself is mirrored from what
-	// PostgreSQL COMMITTED (mirrorOfTheTimeConversation), never from what was asked.
+	// PostgreSQL-only. What of it changes the change request itself is mirrored from what
+	// PostgreSQL COMMITTED, and whether a window is a customer's PROPOSAL (never mirrored) is
+	// decided from the request's CALLER (mirrorOfTheTimeConversation), never from a read of the
+	// committed row alone: that read runs after the commit, in another transaction, and its
+	// failure is logged and swallowed.
 	mirrorReq.ConfirmCustomerUpdatedDate, mirrorReq.ExpectedCustomerUpdatedOn = nil, nil
-	mirrorReq = mirrorOfTheTimeConversation(req, mirrorReq, cr)
+	mirrorReq = mirrorOfTheTimeConversation(req, mirrorReq, cr, repository.IsExternalCaller(ctx))
 	// PostgreSQL has accepted the window, in either of the layouts it takes (RFC
 	// 3339, or "YYYY-MM-DD HH:MM:SS" in UTC); ServiceNow's API takes only the
 	// second, so the mirror gets it in that one (what was sent in it is unchanged).
@@ -361,9 +364,23 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 }
 
 // mirrorOfTheTimeConversation adjusts the best-effort ServiceNow mirror of a PATCH for the
-// three acts of the customer's-proposed-time conversation, and ONLY for them: every other PATCH
+// acts of the customer's-proposed-time conversation, and ONLY for them: every other PATCH
 // mirrors exactly what it always did (mirror comes back unchanged).
 //
+// externalCaller is whether the PATCH came from a customer (repository.IsExternalCaller: the
+// very test the repository used to decide what the request WAS), so what a window is, is
+// decided by who sent it and not by anything read back afterwards.
+//
+//   - A PATCH from an external caller never mirrors its window. The repository accepts exactly
+//     two things from a customer (classifyExternalPatch): their answer (isCustomerApproved /
+//     isCustomerReviewed, mirrored as before) and a proposed window (plannedStartOn /
+//     plannedEndOn), which PostgreSQL did NOT apply as the plan: it waits for WSO2 in
+//     customer_updated_on, and ServiceNow has no field for it. Everything else is refused (403)
+//     before this runs. This does not depend on the committed read model: the detail read
+//     (GetChangeRequestByID -> fillCustomerProposal) runs after the commit, in a separate
+//     transaction, logs and swallows its errors (CustomerProposal then stays nil) and can see
+//     a conversation that has moved on (WSO2 answered in between), and a customer's proposed
+//     time must never reach ServiceNow as the plan because of either.
 //   - Accept proposed time (confirmCustomerUpdatedDate): ServiceNow has no field for the answer,
 //     but the change moved to Scheduled with a new planned window, so that is what is mirrored,
 //     read from what PostgreSQL committed. UNVERIFIED that ServiceNow accepts a manual Scheduled
@@ -372,9 +389,14 @@ func (s *changeRequestService) PatchChangeRequest(ctx context.Context, id string
 //   - A Re-schedule / counter-proposal / decline names {state: "authorize"} but the change STAYS in
 //     Customer Approval: forwarding the state would put ServiceNow in Authorize while PostgreSQL is
 //     not, so the state is dropped (the window, when there is one, is mirrored as always).
-//   - A customer's proposal sends a window that PostgreSQL did NOT apply (it is waiting for WSO2 in
-//     customer_updated_on, the plan has not moved): nothing of it is mirrored.
-func mirrorOfTheTimeConversation(req, mirror domain.PatchChangeRequestRequest, committed domain.ChangeRequest) domain.PatchChangeRequestRequest {
+//   - Second guard, for any caller: a window equal to the proposal the committed row still shows as
+//     pending, that is not the committed plan, is the proposal and is not mirrored either. It can
+//     only ever ADD to what the caller rule keeps out (it needs the read model to be there).
+func mirrorOfTheTimeConversation(req, mirror domain.PatchChangeRequestRequest, committed domain.ChangeRequest, externalCaller bool) domain.PatchChangeRequestRequest {
+	if externalCaller {
+		mirror.PlannedStartOn, mirror.PlannedEndOn = nil, nil
+		return mirror
+	}
 	if req.ConfirmCustomerUpdatedDate != nil {
 		scheduled := domain.ChangeRequestStateScheduled
 		return domain.PatchChangeRequestRequest{State: &scheduled, PlannedStartOn: committed.PlannedStartOn, PlannedEndOn: committed.PlannedEndOn}

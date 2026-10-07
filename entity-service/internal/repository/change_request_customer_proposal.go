@@ -412,7 +412,7 @@ func (r *changeRequestRepo) fillCustomerProposal(ctx context.Context, cr *domain
 	}
 	recorded := who.known
 	out.ProposerRecorded = &recorded
-	if scope, ok := CallerIdentityFromContext(ctx); ok && isExternalCaller(ctx) {
+	if scope, ok := CallerIdentityFromContext(ctx); ok && IsExternalCaller(ctx) {
 		viewer := recorded && strings.EqualFold(who.email, strings.TrimSpace(scope.ViewerEmail))
 		out.ProposedByViewer = &viewer
 		cr.CustomerProposal = out
