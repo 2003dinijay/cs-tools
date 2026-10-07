@@ -1526,7 +1526,8 @@ function lcLegalNextStates(
 
 /** Where a CR lands once its internal approval is granted. */
 function lcAfterInternalApproval(): string {
-  return lc.cr.customerApprovalRequired ? "customer_approval" : "scheduled";
+  // An Emergency change ignores a stored customer box (the backend's effective gates): the CAB's approval schedules it.
+  return lc.cr.type !== "emergency" && lc.cr.customerApprovalRequired ? "customer_approval" : "scheduled";
 }
 
 /**
@@ -1904,6 +1905,7 @@ function lcSeed(
     if (
       target === "assess" &&
       from === "new" &&
+      lc.cr.type !== "emergency" && // an Emergency change ignores its stored customer boxes: nobody is asked
       (lc.cr.customerApprovalRequired || lc.cr.customerReviewRequired) &&
       lc.customerMembers.length === 0
     ) {
@@ -3384,6 +3386,44 @@ describe("CsmChangeRequestDetailPage — lifecycle: an Emergency change never re
     fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
     expect(currentStep()).toBe("Authorize");
     expect(showErrorMock).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  // An older row (or one the sync wrote) can still carry a customer box ticked. The backend ignores it for an Emergency change,
+  // so Request Approval must not be held back for want of a project or of a registered contact, nor say it is.
+  it.each([
+    ["no Customer Project", { project: undefined, customerContacts: undefined }],
+    ["a Customer Project with no registered contact", { customerContacts: [] }],
+  ])("an Emergency change in New with a stored customer box ticked and %s has Request Approval enabled, with no reason, and goes through the CAB alone", (_name, patch) => {
+    lcSeed("emergency", { approval: false, review: false }, null);
+    lc.cr = { ...lc.cr, customerApprovalRequired: true, customerReviewRequired: true, ...patch };
+    lcPublish();
+
+    let view = lcOpenAs(LC_CREATOR);
+    const button = screen.getByRole("button", { name: "Request Approval" });
+    expect(button).toBeEnabled();
+    expect(screen.queryByLabelText(/before requesting approval/i)).not.toBeInTheDocument();
+    fireEvent.click(button);
+    expect(showErrorMock).not.toHaveBeenCalled();
+    expect(currentStep()).toBe("Authorize");
+    expect(lc.approvals.map((a) => a.stage)).toEqual(["CAB Approval"]);
+
+    view = lcOpenAs(LC_CAB, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(currentStep()).toBe("Scheduled");
+    expect(lc.approvals.some((a) => lcIsCustomerStage(a.stage))).toBe(false);
+    view.unmount();
+  });
+
+  it("a NORMAL change with the same stored boxes and no project keeps its reason: Request Approval is disabled", () => {
+    lcSeed("normal", { approval: false, review: false }, null);
+    lc.cr = { ...lc.cr, customerApprovalRequired: true, project: undefined, customerContacts: undefined };
+    lcPublish();
+
+    const view = lcOpenAs(LC_CREATOR);
+    const button = screen.getByRole("button", { name: "Request Approval" });
+    expect(button).toBeDisabled();
+    expect(button.closest('[tabindex="0"]')).toHaveAttribute("aria-label", "Request Approval: Select a Customer Project before requesting approval");
     view.unmount();
   });
 

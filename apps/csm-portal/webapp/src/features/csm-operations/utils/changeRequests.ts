@@ -883,13 +883,18 @@ export const REQUEST_APPROVAL_NEEDS_PROJECT_REASON = "Select a Customer Project 
  * Project: it would reach a customer stage with nobody to ask, and the project can
  * no longer be set once it has left New. Offered up front as the reason the action
  * is disabled.
+ *
+ * Never for an Emergency change: the backend ignores its two customer boxes (it is
+ * authorized by the CAB alone and never reaches a customer state), so a stored
+ * tick on one neither needs a project nor blocks the request.
  */
 export function requestApprovalNeedsProjectReason(
-  cr: Pick<BeChangeRequestDetail, "state" | "project" | "customerApprovalRequired" | "customerReviewRequired">,
+  cr: Pick<BeChangeRequestDetail, "state" | "type" | "project" | "customerApprovalRequired" | "customerReviewRequired">,
 ): string | null {
   // Only the move out of New: a resent {state: "assess"} on a change request that
   // is already past it is the backend's idempotent no-op, not a request.
   if (!isChangeRequestCreationPhase(cr.state)) return null;
+  if (isEmergencyChangeRequestType(cr.type)) return null;
   const needsCustomer = cr.customerApprovalRequired === true || cr.customerReviewRequired === true;
   return needsCustomer && !cr.project?.id ? REQUEST_APPROVAL_NEEDS_PROJECT_REASON : null;
 }
@@ -915,14 +920,18 @@ export const REQUEST_APPROVAL_NEEDS_CONTACT_REASON = "Register a contact for the
  * any other refusal. It never claims anything while `customerContacts` is
  * `undefined` (not in the payload: another data source). With no project the
  * missing-project reason (`requestApprovalNeedsProjectReason`) applies instead.
+ *
+ * Never for an Emergency change, whose stored customer boxes the backend ignores
+ * (see `requestApprovalNeedsProjectReason`): nobody is asked, so nobody is missing.
  */
 export function requestApprovalNeedsContactReason(
   cr: Pick<
     BeChangeRequestDetail,
-    "state" | "project" | "customerApprovalRequired" | "customerReviewRequired" | "customerContacts"
+    "state" | "type" | "project" | "customerApprovalRequired" | "customerReviewRequired" | "customerContacts"
   >,
 ): string | null {
   if (!isChangeRequestCreationPhase(cr.state)) return null;
+  if (isEmergencyChangeRequestType(cr.type)) return null;
   const needsCustomer = cr.customerApprovalRequired === true || cr.customerReviewRequired === true;
   if (!needsCustomer || !cr.project?.id) return null;
   return cr.customerContacts !== undefined && cr.customerContacts !== null && cr.customerContacts.length === 0

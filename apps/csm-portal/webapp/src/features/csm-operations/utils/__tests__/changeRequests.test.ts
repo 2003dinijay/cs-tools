@@ -888,6 +888,36 @@ describe("requestApprovalNeedsProjectReason", () => {
   it("is about the move out of New only", () => {
     expect(requestApprovalNeedsProjectReason({ state: "assess", customerApprovalRequired: true })).toBeNull();
   });
+
+  describe("an Emergency change (the backend ignores its two customer boxes: nobody is asked, so no project is needed)", () => {
+    it("never blocks, whichever box is still ticked on the stored row and whether or not it has a project", () => {
+      for (const flags of [
+        { customerApprovalRequired: true },
+        { customerReviewRequired: true },
+        { customerApprovalRequired: true, customerReviewRequired: true },
+      ]) {
+        expect(requestApprovalNeedsProjectReason({ state: "new", type: "emergency", ...flags }), JSON.stringify(flags)).toBeNull();
+        expect(requestApprovalNeedsProjectReason({ state: "new", type: "emergency", project: withProject, ...flags }), JSON.stringify(flags)).toBeNull();
+      }
+    });
+
+    it("reads the type the way the rest of the page does: case and padding ignored", () => {
+      for (const type of ["Emergency", "EMERGENCY", " emergency "]) {
+        expect(requestApprovalNeedsProjectReason({ state: "new", type, customerApprovalRequired: true }), type).toBeNull();
+      }
+    });
+
+    it("still blocks every other change with a ticked box and no project: Normal, Standard, no type recorded or an unknown one", () => {
+      for (const type of ["normal", "Normal", "standard", "emergency-ish", "", null, undefined]) {
+        expect(requestApprovalNeedsProjectReason({ state: "new", type, customerApprovalRequired: true }), String(type)).toBe(
+          REQUEST_APPROVAL_NEEDS_PROJECT_REASON,
+        );
+        expect(requestApprovalNeedsProjectReason({ state: "new", type, customerReviewRequired: true }), String(type)).toBe(
+          REQUEST_APPROVAL_NEEDS_PROJECT_REASON,
+        );
+      }
+    });
+  });
 });
 
 describe("requestApprovalNeedsContactReason", () => {
@@ -934,6 +964,39 @@ describe("requestApprovalNeedsContactReason", () => {
     for (const state of ["assess", "authorize", "customer_approval", "scheduled", "review", "customer_review", "closed", "canceled", "rollback"]) {
       expect(requestApprovalNeedsContactReason({ state, customerApprovalRequired: true, project, customerContacts: [] }), state).toBeNull();
     }
+  });
+
+  describe("an Emergency change (the backend ignores its two customer boxes: nobody is asked, so nobody is missing)", () => {
+    it("never blocks for an empty contact list, whichever box is still ticked on the stored row", () => {
+      for (const flags of [
+        { customerApprovalRequired: true },
+        { customerReviewRequired: true },
+        { customerApprovalRequired: true, customerReviewRequired: true },
+      ]) {
+        expect(requestApprovalNeedsContactReason({ state: "new", type: "emergency", project, customerContacts: [], ...flags }), JSON.stringify(flags)).toBeNull();
+      }
+      // No state recorded yet is the creation phase too.
+      expect(requestApprovalNeedsContactReason({ type: "emergency", customerApprovalRequired: true, project, customerContacts: [] })).toBeNull();
+    });
+
+    it("reads the type the way the rest of the page does: case and padding ignored", () => {
+      for (const type of ["Emergency", "EMERGENCY", " emergency "]) {
+        expect(requestApprovalNeedsContactReason({ state: "new", type, customerApprovalRequired: true, project, customerContacts: [] }), type).toBeNull();
+      }
+    });
+
+    it("still blocks every other change with a ticked box and a project with no registered contact: Normal, Standard, no type recorded or an unknown one", () => {
+      for (const type of ["normal", "Normal", "standard", "emergency-ish", "", null, undefined]) {
+        expect(
+          requestApprovalNeedsContactReason({ state: "new", type, customerApprovalRequired: true, project, customerContacts: [] }),
+          String(type),
+        ).toBe(REQUEST_APPROVAL_NEEDS_CONTACT_REASON);
+        expect(
+          requestApprovalNeedsContactReason({ state: "new", type, customerReviewRequired: true, project, customerContacts: [] }),
+          String(type),
+        ).toBe(REQUEST_APPROVAL_NEEDS_CONTACT_REASON);
+      }
+    });
   });
 });
 

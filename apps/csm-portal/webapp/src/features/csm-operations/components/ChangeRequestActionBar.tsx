@@ -241,6 +241,8 @@ interface BlockedReasonContext {
  * Project (`requestApprovalNeedsProjectReason`) with at least one registered contact
  * (`requestApprovalNeedsContactReason`, only where the page knows the project has
  * none: a requester-only project is the backend's refusal, shown in the error banner).
+ * Neither applies to an Emergency change: the backend ignores its customer boxes, so a
+ * stored tick there asks nobody and blocks nothing.
  *
  * `rollback` is blocked out of Customer Review only (out of Review it is never
  * blocked): while the customer group's review is pending the backend refuses
