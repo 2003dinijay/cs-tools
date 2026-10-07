@@ -1903,9 +1903,14 @@ paths:
         isCustomerApproved (approve / reject while the change request is in
         Customer Approval), isCustomerReviewed (confirm / fail the review in
         Customer Review), or plannedStartOn and/or plannedEndOn ("propose new
-        implementation time" -- it sends the change request back through
-        approval, so the customer is asked again only once WSO2 has approved
-        the new time). An answer may carry expectedPlannedStartOn /
+        implementation time" -- a proposal is a START: the change request keeps
+        its planned length, so the portal sends the start plus the end that keeps
+        it (start + planned length) and entity-service refuses any other end; a
+        start alone is accepted too, an end alone is a 400. It moves nothing by
+        itself: the change request stays in Customer Approval, shows the
+        proposal as `customerProposal`, and WSO2 accepts it -- the change is
+        Scheduled for that time -- or proposes a different one and the customer
+        is asked again). An answer may carry expectedPlannedStartOn /
         expectedPlannedEndOn, the planned window the customer was shown: it is
         then recorded only while that is still the window (409 otherwise). Any
         other field is a 403 and nothing is forwarded; combining an answer with
@@ -8004,10 +8009,52 @@ components:
                 passed on). A held change refuses a proposed implementation time,
                 so the portal does not offer one; an answer is still accepted.
                 ABSENT when entity-service did not say, which is not "not held".
+            customerProposal:
+              $ref: '#/components/schemas/ChangeRequestCustomerProposal'
             approvedBy:
               $ref: '#/components/schemas/IdLabelRef'
             approvedOn:
               type: string
+
+    ChangeRequestCustomerProposal:
+      type: object
+      required: [startDate, answer]
+      description: >-
+        The conversation about a time a customer proposed (entity-service derives it from
+        ServiceNow's own customer_updated_on / customer_updated_date_confirmation columns);
+        present when one was. While `answer` is "pending" the change request is still in Customer
+        Approval and its planned window (startDate / endDate on the change itself) is still the one
+        WSO2 planned: a proposal changes nothing until WSO2 answers, and a customer who approves
+        approves THAT window, not the proposed one. Once WSO2 answers the window is either the
+        proposal (agreed: the change is scheduled for it) or WSO2's different time (disagreed: the
+        customer is asked again). No name or email of a proposer is ever passed on, nor anything
+        WSO2 knows about whether it can accept it.
+      properties:
+        startDate:
+          type: string
+          format: date-time
+          description: The proposed start (RFC 3339, UTC).
+        endDate:
+          type: string
+          format: date-time
+          description: >-
+            The proposed end -- the proposed start plus the planned length. Present only while
+            `answer` is "pending".
+        answer:
+          type: string
+          enum: [pending, agreed, disagreed, unanswered]
+          description: >-
+            pending: waits for WSO2. agreed: WSO2 accepted it. disagreed: WSO2 asked for a different
+            time. unanswered: history.
+        proposerRecorded:
+          type: boolean
+          description: >-
+            While pending: whether the proposer can be named at all (a registered contact wrote it).
+            False for a date a WSO2 user wrote or one left over from an older cycle -- the portal
+            must not say a colleague proposed it then.
+        proposedByViewer:
+          type: boolean
+          description: While pending: whether the proposal is the signed-in customer's own.
 
     ChangeRequestUpdateResponse:
       type: object

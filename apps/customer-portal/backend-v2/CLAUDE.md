@@ -469,6 +469,24 @@ its own whitelist for external callers, so a request that bypassed this layer st
 change request. Route wiring is `registerChangeRequestRoutes` in `cmd/server/main.go`, covered by
 `TestChangeRequestRouteGating`.
 
+**A proposed time waits for WSO2: `customerProposal` on the detail.** The customer's `PATCH {plannedStartOn,
+plannedEndOn?}` ("propose new implementation time") is a proposal of a START: the change keeps its planned length,
+the portal sends the start plus the end that keeps it (start + planned length) and entity-service refuses any other
+end (400), a start alone is accepted, an end alone is a 400; this API forwards the window it validated
+(`ValidatePlannedWindow`, still-to-come, order) and nothing else. The change request STAYS in Customer Approval --
+a proposal writes one column, ServiceNow's `customer_updated_on` -- so the detail carries
+`customerProposal {startDate, endDate?, answer, proposerRecorded?, proposedByViewer?}`
+(`dto.ChangeRequestCustomerProposal`, mapped from `entity.ChangeRequestCustomerProposal`): `answer` is `pending`
+(waits for WSO2; the change's own `startDate` / `endDate` are still WSO2's plan and a colleague's Approve approves
+that plan), `agreed` (WSO2 accepted: the change is Scheduled for the proposal), `disagreed` (WSO2 asked for another
+time: the window is its new one and the customer is asked again) or `unanswered` (history). Only the customer's part
+of it is decoded: the proposer's name and email, `proposedOn`, `canAccept` and `acceptBlockedReason` are staff facts
+the entity type has no field for, so they cannot reach the portal whatever entity-service sends
+(`TestMapChangeRequestDetails_NeverPassesOnWhoProposedOrWSO2sOwnFacts`, `TestGetChangeRequest_CarriesTheCustomerProposal`);
+`proposerRecorded` false means nobody can say who proposed it (a WSO2 user's date, an old one), and the portal must
+not claim a colleague did. A proposal is never mirrored to ServiceNow while the dual-write runs (it has no field for
+it): proposals and WSO2's answers are PostgreSQL-only until the sync stops, and the sync can rewrite the columns.
+
 **`customerCanAnswer` on the change-request detail.** `GET /change-requests/{id}` (`dto.ChangeRequestDetails`)
 passes through entity-service's per-caller `customerCanAnswer` (`entity.ChangeRequest.CustomerCanAnswer`, a
 `*bool`, `omitempty`): whether the signed-in customer may answer the change request right now -- approve or
@@ -487,7 +505,7 @@ the detail after an answer.
 
 **Which change requests a customer sees is entity-service's decision, never this API's.** A customer sees a
 change request once it was *designated* to them (it reached Customer Approval and/or Customer Review and they
-were one of the contacts asked), in every later state (Authorize after they proposed a new time, Scheduled,
+were one of the contacts asked), in every later state (Scheduled,
 Implement, Review, Closed, Rollback, Canceled), and nothing else: no change request before it first reached a
 customer stage, none that never needs the customer, none designated only to other contacts, none of another
 project. entity-service enforces that on every read and write (search, totals, stats, detail, approvals,
