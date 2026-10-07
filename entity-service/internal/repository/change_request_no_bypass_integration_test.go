@@ -737,8 +737,8 @@ func TestChangeRequestNoBypassIntegration_OtherDoorsAreClosedToo(t *testing.T) {
 		// A value that is no state is refused before it reaches the enum cast.
 		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, false)
 		var ve *apierror.ValidationError
-		if _, err := gh.SetState(f.sys, id, "closed; DROP TABLE change_request"); !errors.As(err, &ve) {
-			t.Fatalf("SetState with a hostile state = %v, want a 400", err)
+		if _, err := gh.SetState(f.sys, id, "closed; DROP TABLE change_request"); !errors.As(err, &ve) || !strings.Contains(ve.Msg, "is not a change request state") {
+			t.Fatalf("SetState with a hostile state = %v, want the 400 that it is no state", err)
 		}
 		// The two refusals the issue named: no exit from a final state, no skipped approval gate.
 		f.setState(id, "CLOSED")

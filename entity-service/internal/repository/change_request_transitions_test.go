@@ -247,6 +247,16 @@ func TestCheckGithubStateMove(t *testing.T) {
 				default:
 					if err == nil {
 						t.Errorf("review=%v %s -> %s was accepted", review, cur, target)
+						continue
+					}
+					// Scheduled is the approval flow's own (peer / CAB / the customer's approval, never an
+					// issue event): from every live state it is refused by NAME, not as a mere jump, so
+					// the set of moves the sync may make cannot quietly grow to include it.
+					if target == domain.ChangeRequestStateScheduled && !terminalChangeRequestState(current) && !strings.Contains(err.Error(), "approval flow") {
+						t.Errorf("review=%v %s -> scheduled: %q does not name the approval flow", review, cur, err.Error())
+					}
+					if terminalChangeRequestState(current) && !strings.Contains(err.Error(), "cannot be moved") {
+						t.Errorf("review=%v %s -> %s: %q is not the final-state refusal", review, cur, target, err.Error())
 					}
 				}
 			}
