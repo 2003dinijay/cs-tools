@@ -2946,12 +2946,15 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		argIdx++
 	}
 	// state notIn: a row with no state satisfies it (the inverse of state in).
+	// See caseLikeStateLookupClause's own doc comment for why this is a
+	// targeted id lookup rather than caseLikeStateColumn's COALESCE.
 	if len(req.Parsed.ExcludeStates) > 0 {
 		states := make([]string, len(req.Parsed.ExcludeStates))
 		for i, st := range req.Parsed.ExcludeStates {
 			states[i] = strings.ToUpper(string(st))
 		}
-		where += fmt.Sprintf(" AND ("+caseLikeStateColumn+" IS NULL OR "+caseLikeStateColumn+" <> ALL($%d::text[]))", argIdx)
+		placeholder := fmt.Sprintf("$%d::text[]", argIdx)
+		where += " AND " + caseLikeStateLookupClause(req.Parsed.Types, placeholder, true)
 		filterArgs = append(filterArgs, states)
 		argIdx++
 	}
