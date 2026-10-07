@@ -876,8 +876,6 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         </Box>
       </Box>
 
-      {/* Full width, under the header: eleven stages need more room than the
-          header's left block leaves beside the action bar. */}
       {staleNotice && (
         <Alert
           ref={staleNoticeRef}
@@ -891,6 +889,8 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         </Alert>
       )}
 
+      {/* Full width, under the header: eleven stages need more room than the
+          header's left block leaves beside the action bar. */}
       <ChangeRequestLifecycleStepper
         state={cr.state}
         customerApprovalRequired={cr.customerApprovalRequired}

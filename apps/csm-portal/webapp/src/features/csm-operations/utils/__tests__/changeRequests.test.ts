@@ -1342,6 +1342,8 @@ describe("a time the customer proposed (the previous system's customer_updated_o
       expect(PROPOSER_NOT_RECORDED_ACCEPT_REASON).toMatch(/so it cannot be accepted/);
       expect(PROPOSER_NOT_RECORDED_ACCEPT_REASON).toMatch(/Propose a different time/);
       expect(STORED_TIME_ADVICE).toMatch(/no proposal to accept/);
+      // The last writer is all that is on record, so a customer's own time followed by a staff edit reads the same way: the page says so.
+      expect(STORED_TIME_ADVICE).toMatch(/edited after \(only the last edit is on record\)/);
       expect(STORED_TIME_ADVICE).toMatch(/still being asked to approve the planned time/);
       // Nothing there invites the engineer to check and accept it anyway.
       for (const text of [PROPOSER_NOT_RECORDED_ACCEPT_REASON, STORED_TIME_ADVICE]) expect(text).not.toMatch(/check that|before you accept|confirm/i);

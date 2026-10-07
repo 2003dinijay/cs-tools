@@ -432,8 +432,9 @@ export const PROPOSER_NOT_RECORDED_ACCEPT_REASON =
 
 /** What the banner adds for a stored time nobody is recorded as having proposed: what it may be, and what is still true. */
 export const STORED_TIME_ADVICE =
-  "It may have been written by someone at WSO2 or be left over from an earlier cycle, so there is no proposal to accept. " +
-  'The customer is still being asked to approve the planned time; use "Propose a different time" to ask them to approve another time.';
+  "It may have been written by someone at WSO2, be left over from an earlier cycle, or be a customer's time that this change request was edited after (only the last edit is on record), " +
+  "so there is no proposal to accept. " +
+  'The customer is still being asked to approve the planned time; use "Propose a different time" to ask them to approve another time, or this one.';
 
 /**
  * The stable `errorCode`s of the refusals that mean "what this dialog showed is no longer what is

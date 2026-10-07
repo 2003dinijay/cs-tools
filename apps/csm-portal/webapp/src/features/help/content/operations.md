@@ -165,15 +165,20 @@ From the detail page a CS engineer can:
     been updated, so a refused attempt leaves no note behind.
 
   A date a WSO2 user wrote in the previous system, or one left over from an
-  earlier round, looks like a proposal too. When nobody is recorded as having
-  proposed the stored time, it is not a proposal and nothing waits for your
-  answer: the banner reads "A time is stored on this change request" ("A time is
+  earlier round, looks like a proposal too. The only thing on record about who
+  proposed a time is who last changed the change request, and only when that is
+  one of the project's registered contacts: so a customer's genuine proposal
+  also reads "nobody is recorded" once anyone at WSO2 has edited the change
+  request since (an unrelated edit too, such as a plan or the assigned
+  engineer). When nobody is recorded as having proposed the stored time, it is
+  not a proposal and nothing waits for your answer: the banner reads "A time is stored on this change request" ("A time is
   stored (...) but nobody is recorded as having proposed it."), the header stays
   at "Awaiting Customer Approval", and **Accept proposed time** is disabled with
   the reason, because no staff action stands in for the customer's own answer.
   **Propose a different time** stays available as a plain Re-schedule: there is
   no proposal to decline, so the window must change, and the customer is asked to
-  approve the time you set.
+  approve the time you set (the stored time itself will do, when it is the one
+  the customer wanted: it costs the customer one more approval).
 
   If the proposal or the planned window moves while one of these dialogs is open
   (the customer proposes again, or a colleague answers), the page does not send
