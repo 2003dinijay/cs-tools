@@ -2958,6 +2958,17 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       view.unmount();
     });
 
+    // The Agree stays on the row when the customers are asked again; the cell reads it only once the change has moved on.
+    it("an Agree left standing on a change that is back in Customer Approval does not read 'Proposed time accepted': the customers are being asked, so the cell says No", () => {
+      const view = seedProposal();
+      lc.confirmation = "agree"; // an answer the previous system wrote, or one that outlived a later Re-schedule
+      lcPublish();
+      expect(lc.cr.state).toBe("customer_approval");
+      expect(screen.queryByText("Proposed time accepted")).not.toBeInTheDocument();
+      expect(metaValue("Customer approved")).toBe("No");
+      view.unmount();
+    });
+
     it("COUNTER with a different window: the customer is asked again, no CAB, the proposal is answered Disagree and the banner is gone", async () => {
       const view = seedProposal();
       const stagesBefore = stageNames();

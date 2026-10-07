@@ -599,19 +599,28 @@ export function acceptProposedTimeBlockedReason(
   return null;
 }
 
+/** The states a change request is in once it has moved on from Customer Approval (Scheduled, then every state after it). */
+const STATES_PAST_CUSTOMER_APPROVAL: readonly string[] = ["scheduled", "implement", "review", "customer_review", "rollback", "closed", "canceled"];
+
 /**
  * What the Overview's "Customer approved" cell reads. The customer's own approval (`hasCustomerApproved`,
  * stamped when they answer in the Customer Portal) reads Yes. A change that went to Scheduled because WSO2
  * ACCEPTED the time the customer proposed was never stamped (no staff action records the customer's
  * approval: the proposal is the customer's own consent), so a plain "No" there would be misleading: it
  * reads "Proposed time accepted". Display only; nothing reads this to decide anything.
+ *
+ * It reads that only once the change has moved on from Customer Approval (Scheduled or later): the answer
+ * (`agreed` / the raw `agree`) stays on the row after it, nothing clears it when the customers are asked
+ * again, so a change that is (back) in Customer Approval with an Agree standing was NOT scheduled by it and
+ * is waiting for the customer's own answer: "Proposed time accepted" there would say there is nothing left
+ * to answer. The same gate is in the CSM microapp's model (`toChangeRequestDetail`).
  */
 export function customerApprovedDisplay(
-  cr: Pick<BeChangeRequestDetail, "hasCustomerApproved" | "customerProposal" | "confirmCustomerUpdatedDate">,
+  cr: Pick<BeChangeRequestDetail, "state" | "hasCustomerApproved" | "customerProposal" | "confirmCustomerUpdatedDate">,
 ): "Yes" | "No" | "Proposed time accepted" {
   if (cr.hasCustomerApproved) return "Yes";
   const agreed = cr.customerProposal?.answer === "agreed" || cr.confirmCustomerUpdatedDate?.trim().toLowerCase() === "agree";
-  return agreed ? "Proposed time accepted" : "No";
+  return agreed && !!cr.state && STATES_PAST_CUSTOMER_APPROVAL.includes(cr.state) ? "Proposed time accepted" : "No";
 }
 
 /** Stage-level statuses that mean the stage is actively waiting on someone. */

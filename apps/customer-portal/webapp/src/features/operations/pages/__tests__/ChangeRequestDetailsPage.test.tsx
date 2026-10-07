@@ -311,6 +311,16 @@ describe("ChangeRequestDetailsPage", () => {
         for (const name of ["Propose New Time", "Approve", "Reject"]) expect(button(name), name).not.toBeInTheDocument();
       });
 
+      // The `agreed` answer stays on the row when a later Re-schedule asks the customers again: the buttons are live, nothing is accepted.
+      it("is NOT shown once the change request is back in Customer Approval with Approve and Reject live", () => {
+        mocks.changeRequest.value = asked(proposal("agreed"));
+        renderPage();
+        expect(note("cr-window-proposal-accepted")).not.toBeInTheDocument();
+        expect(screen.queryByText("Proposed time accepted by WSO2")).not.toBeInTheDocument();
+        expect(screen.getByText("Planned Maintenance Window")).toBeInTheDocument();
+        for (const name of ["Propose New Time", "Approve", "Reject"]) expect(screen.getByRole("button", { name }), name).toBeEnabled();
+      });
+
       it("shows the Customer Approval step done, though the approval flag stays false", () => {
         renderPage();
         expect(screen.getByText("Proposed time accepted by WSO2")).toBeInTheDocument();

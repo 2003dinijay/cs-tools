@@ -1568,26 +1568,46 @@ describe("a time the customer proposed (the previous system's customer_updated_o
   });
 
   describe("customerApprovedDisplay (the Overview cell, the PDF row, the microapp row)", () => {
+    const AFTER = ["scheduled", "implement", "review", "customer_review", "rollback", "closed", "canceled"];
+    const BEFORE_OR_AT = ["new", "assess", "authorize", "customer_approval"];
+
     it("reads Yes when the customer's own approval was recorded, whatever else is on the record", () => {
       expect(customerApprovedDisplay({ hasCustomerApproved: true })).toBe("Yes");
-      expect(customerApprovedDisplay({ hasCustomerApproved: true, customerProposal: { startOn: "x", answer: "agreed" } })).toBe("Yes");
+      expect(customerApprovedDisplay({ hasCustomerApproved: true, state: "scheduled", customerProposal: { startOn: "x", answer: "agreed" } })).toBe("Yes");
+      expect(customerApprovedDisplay({ hasCustomerApproved: true, state: "customer_approval", customerProposal: { startOn: "x", answer: "agreed" } })).toBe("Yes");
     });
 
-    it("reads 'Proposed time accepted' when WSO2 accepted the customer's proposal and nothing was stamped (no staff action records the customer's approval)", () => {
-      expect(customerApprovedDisplay({ hasCustomerApproved: false, customerProposal: { startOn: "x", answer: "agreed" } })).toBe("Proposed time accepted");
-      expect(customerApprovedDisplay({ customerProposal: { startOn: "x", answer: "agreed" } })).toBe("Proposed time accepted");
+    it("reads 'Proposed time accepted' when WSO2 accepted the customer's proposal, the change has moved on, and nothing was stamped (no staff action records the customer's approval)", () => {
+      for (const state of AFTER) {
+        expect(customerApprovedDisplay({ hasCustomerApproved: false, state, customerProposal: { startOn: "x", answer: "agreed" } }), state).toBe("Proposed time accepted");
+      }
+      expect(customerApprovedDisplay({ state: "scheduled", customerProposal: { startOn: "x", answer: "agreed" } })).toBe("Proposed time accepted");
       // The raw column says the same where the derived read model is absent (another data source).
-      expect(customerApprovedDisplay({ hasCustomerApproved: false, confirmCustomerUpdatedDate: "agree" })).toBe("Proposed time accepted");
-      expect(customerApprovedDisplay({ hasCustomerApproved: false, confirmCustomerUpdatedDate: " AGREE " })).toBe("Proposed time accepted");
+      expect(customerApprovedDisplay({ hasCustomerApproved: false, state: "scheduled", confirmCustomerUpdatedDate: "agree" })).toBe("Proposed time accepted");
+      expect(customerApprovedDisplay({ hasCustomerApproved: false, state: "closed", confirmCustomerUpdatedDate: " AGREE " })).toBe("Proposed time accepted");
+    });
+
+    // The answer stays on the row when the customers are asked again (a later Re-schedule): Approve and Reject are live in Customer Approval.
+    it("reads No while the change is in Customer Approval, or before it, however the Agree is spelled: the customers are being asked", () => {
+      for (const state of BEFORE_OR_AT) {
+        expect(customerApprovedDisplay({ hasCustomerApproved: false, state, customerProposal: { startOn: "x", answer: "agreed" } }), state).toBe("No");
+        expect(customerApprovedDisplay({ hasCustomerApproved: false, state, confirmCustomerUpdatedDate: "agree" }), state).toBe("No");
+      }
+      // A state this page does not know, or none, is not "moved on" either.
+      expect(customerApprovedDisplay({ hasCustomerApproved: false, state: null, customerProposal: { startOn: "x", answer: "agreed" } })).toBe("No");
+      expect(customerApprovedDisplay({ hasCustomerApproved: false, customerProposal: { startOn: "x", answer: "agreed" } })).toBe("No");
+      expect(customerApprovedDisplay({ hasCustomerApproved: false, state: "somewhere_else" as never, confirmCustomerUpdatedDate: "agree" })).toBe("No");
     });
 
     it("reads No for everything else: no proposal, a pending one, a declined one, a history nobody answered", () => {
       expect(customerApprovedDisplay({})).toBe("No");
       expect(customerApprovedDisplay({ hasCustomerApproved: false })).toBe("No");
-      for (const answer of ["pending", "disagreed", "unanswered"]) {
-        expect(customerApprovedDisplay({ hasCustomerApproved: false, customerProposal: { startOn: "x", answer } }), answer).toBe("No");
+      for (const state of ["customer_approval", "scheduled"] as const) {
+        for (const answer of ["pending", "disagreed", "unanswered"]) {
+          expect(customerApprovedDisplay({ hasCustomerApproved: false, state, customerProposal: { startOn: "x", answer } }), `${state} ${answer}`).toBe("No");
+        }
+        expect(customerApprovedDisplay({ hasCustomerApproved: false, state, confirmCustomerUpdatedDate: "disagree" })).toBe("No");
       }
-      expect(customerApprovedDisplay({ hasCustomerApproved: false, confirmCustomerUpdatedDate: "disagree" })).toBe("No");
     });
   });
 });

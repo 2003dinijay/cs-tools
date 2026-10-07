@@ -115,6 +115,13 @@ describe("ScheduledMaintenanceWindowCard", () => {
       expect(screen.queryByText(/waiting for WSO2/)).not.toBeInTheDocument();
     });
 
+    it("does not say WSO2 accepted it when the change request is back in Customer Approval (the customers are asked again)", () => {
+      renderCard({ state: approval, customerProposal: proposal("agreed") });
+      expect(screen.getByText("Planned Maintenance Window")).toBeInTheDocument();
+      expect(screen.queryByText(/WSO2 accepted/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Proposed start:/)).not.toBeInTheDocument();
+    });
+
     it("says nothing for a proposal that was declined, never answered or is not there", () => {
       for (const customerProposal of [proposal("disagreed"), proposal("unanswered"), null, undefined]) {
         const { unmount } = renderCard({ state: approval, customerProposal });
