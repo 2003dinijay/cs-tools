@@ -67,5 +67,11 @@ export function ProgressTimeline({ id }: { id: string }) {
 
   if (isLoading || isFiltersLoading || !data || !filters) return <ProgressTimelineSkeletonView />;
 
-  return <ProgressTimelineView activeIndex={activeIndex} />;
+  // A time WSO2 accepted counts as the customer's approval here: the flag itself stays false.
+  return (
+    <ProgressTimelineView
+      hasCustomerApproved={data.hasCustomerApproved || data.isProposedTimeAccepted}
+      activeIndex={activeIndex}
+    />
+  );
 }

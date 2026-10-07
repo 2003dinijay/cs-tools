@@ -92,6 +92,7 @@ function toChangeRequest(dto: ChangeRequestDto): ChangeRequest {
     approvedBy: dto.approvedBy?.label ?? undefined,
     duration: dto.duration ?? undefined,
     hasCustomerApproved: dto.hasCustomerApproved,
+    isProposedTimeAccepted: dto.customerProposal?.answer === "agreed",
     hasCustomerReviewed: dto.hasCustomerReviewed,
     assignedTeam: dto.assignedTeam?.label,
     serviceOutage: dto.serviceOutage ?? undefined,
