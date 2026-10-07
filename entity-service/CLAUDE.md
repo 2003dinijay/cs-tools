@@ -2461,8 +2461,86 @@ changed.
   `updateCaseWatchList` (update) now persist only what the caller
   explicitly asked for — no merge, no floor, no exemption from
   `validateWatchListProjectMembership` for a submitted id (nothing exempt
-  to submit any more). `domain.WatchListUser.Locked` still exists but is
-  now purely informational, not enforced — see its own doc comment.
+  to submit any more).
+
+  **Superseded below: `fetchCaseWatchers` now also synthesizes the
+  account's named stakeholders directly into every read, not just into the
+  email audience.** The paragraph above (and `AccountDefaultWatcherEmails`)
+  is still exactly how `Recipients` is resolved for a `case.*` email — that
+  hasn't changed, `customer_success_manager_id` included: the CSM still
+  isn't unioned into a case.* email's `Recipients`. What changed, by later
+  explicit product request, is the *display* side: a case's "Watchers" list
+  in both portals previously showed only real `work_item_watcher` rows, so
+  the stakeholders being emailed by default were invisible on that list
+  entirely — a customer or engineer looking at "who's watching this case"
+  had no way to see them. `fetchCaseWatchers` (`case_repo.go`) now builds
+  its result as a `WITH` CTE rather than a single `SELECT` off
+  `work_item_watcher`:
+
+  - `persisted` reads real `work_item_watcher` rows as before, but an
+    `EXTERNAL` (customer) one is only included when they are currently a
+    live (non-`DEACTIVATED`) `project_contact` on the case's own project —
+    a customer who has since left the project stops showing up as a
+    watcher. An `INTERNAL`/`SYSTEM`/`NOT_AVAILABLE` watcher is never
+    subject to that check at all, which is also what keeps an engineer's
+    own Follow/Unfollow self-subscribe working regardless of
+    `project_contact` membership.
+  - `stakeholders` resolves **five** account roles — the same four
+    `AccountDefaultWatcherEmails` resolves, plus
+    `customer_success_manager_id` — and synthesizes one row per resolved
+    stakeholder, every time, with `locked = true`. This is a strictly
+    larger set than the email audience by deliberate product decision: the
+    CSM is a real stakeholder worth *showing* on the case, even though
+    `AccountDefaultWatcherEmails` still deliberately excludes them from the
+    default email audience (see that function's own doc comment — a
+    decision about who gets emailed, not about who the account's
+    stakeholders are). None of these five are auto-persisted into
+    `work_item_watcher` (see above) and still aren't; this is a read-time
+    join, not a write.
+  - A user who is both a real persisted watcher and one of the five
+    stakeholders appears exactly once, as the locked (stakeholder) copy —
+    `DISTINCT ON (id)` ordered `locked DESC` after `UNION ALL`-ing the two
+    CTEs together, then re-sorted by `user_name` for a stable response.
+
+  `domain.WatchListUser.Locked` therefore does carry a real enforcement
+  meaning again, just not the old "mandatory floor" one: `SetCaseWatchList`
+  has no way for a caller to submit one of these five as an explicit
+  watcher (there's no `work_item_watcher` row to add or remove), so a
+  Locked entry can only ever come or go via the account's own stakeholder
+  columns changing, never via an add/remove request. See that field's own
+  doc comment in `entity.go`.
+
+  **A case's watch list now also gains whoever comments on it, scoped to
+  that one case.** `caseService.createCaseCommentAs` (the Postgres comment
+  path — `work_item_watcher` has no ServiceNow equivalent, so this doesn't
+  apply to the pure-ServiceNow data source) calls
+  `subscribeCommenterToWatchList` right after the comment itself is
+  successfully written: it resolves the commenter's own `"user"` row via
+  `userRepo.GetUserByEmail` and, if that resolves, calls the new
+  `CaseRepository.AddCaseWatcherIfAbsent(ctx, caseID, userID)` — a single
+  `INSERT ... WHERE NOT EXISTS`, not `SetCaseWatchList`'s destructive
+  delete-and-replace, so it can run on every comment without disturbing
+  whatever else is already on the list. Best-effort and silent on failure,
+  same posture as every other comment-creation side effect in this file
+  (`completeResponseSLAOnComment`, `publishCommentAddedEvent`) — the
+  comment has already been written by the time this runs, so a lookup or
+  write failure here must never undo that. An `actorEmail` that doesn't
+  resolve to a real user (the M2M `CreateCaseCommentAs` path deliberately
+  has none — see that method's own doc comment) is skipped the same way
+  `isSupportEngineerAuthor` already treats it: can't confirm, not an error.
+  This needed no new eligibility check of its own:
+  `validateWatchListProjectMembership`/`filterActiveWatchListUsers` already
+  apply to whatever ends up in `work_item_watcher` regardless of how it got
+  there, so a commenter who later leaves the project is dropped from future
+  emails by that existing mechanism exactly like any other persisted
+  watcher.
+
+  **Duplicates across all of the above are impossible by construction, not
+  by a separate filter.** `work_item_watcher`'s own `UNIQUE (work_item_id,
+  user_id)` makes `AddCaseWatcherIfAbsent` a no-op for an existing
+  watcher; `fetchCaseWatchers`' `DISTINCT ON (id)` is what collapses a user
+  who is simultaneously a persisted watcher and a synthesized stakeholder
+  into the one locked entry described above.
 
   **A persisted (explicitly-added) watcher is re-checked for live project
   membership immediately before each `case.*` email goes out, for

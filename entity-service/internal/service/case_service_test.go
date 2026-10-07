@@ -58,6 +58,7 @@ type stubCaseRepo struct {
 	deleteCaseAttachment          func(ctx context.Context, id string) error
 	updateAttachmentName          func(ctx context.Context, id, name, updatedBy string) (time.Time, error)
 	confirmCaseAttachment         func(ctx context.Context, id string) (domain.Attachment, error)
+	addCaseWatcherIfAbsent        func(ctx context.Context, caseID, userID string) error
 	searchCaseComments            func(ctx context.Context, req domain.SearchCaseCommentsRequest) ([]domain.CaseComment, int, error)
 	updateCase                    func(ctx context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error)
 	createCaseFromServiceNow      func(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error)
@@ -236,6 +237,17 @@ func (s *stubCaseRepo) SetCaseWatchList(ctx context.Context, caseID string, user
 		return s.setCaseWatchList(ctx, caseID, userIDs, actorEmail)
 	}
 	panic("not implemented")
+}
+
+// AddCaseWatcherIfAbsent defaults to a no-op rather than panicking: every
+// comment-creation test case (from before this method existed) doesn't care
+// about the commenter-auto-subscribe side effect it backs, same reasoning as
+// AccountDefaultWatcherEmails below.
+func (s *stubCaseRepo) AddCaseWatcherIfAbsent(ctx context.Context, caseID, userID string) error {
+	if s.addCaseWatcherIfAbsent != nil {
+		return s.addCaseWatcherIfAbsent(ctx, caseID, userID)
+	}
+	return nil
 }
 
 // AccountDefaultWatcherEmails defaults to empty rather than panicking:
@@ -3550,9 +3562,14 @@ func TestCaseService_CreateCaseComment_DoesNotMirrorWithoutSNWriteback(t *testin
 // TestCaseService_CreateCaseCommentAs_UsesActorEmailDirectly covers the M2M
 // path this method exists for: no x-user-id-token is required, and --
 // mirroring addCaseTagAs -- the caller-supplied actorEmail is used directly
-// for created_by and the published event's author name, with no
-// userRepo.GetUserByEmail lookup at all (stubUserRepo{} panics if it were
-// called, since no getUserByEmail func is configured here). Also proves the
+// for created_by and the published event's author name, with no identity
+// resolution required to succeed. subscribeCommenterToWatchList does make a
+// best-effort userRepo.GetUserByEmail lookup here (same as
+// isSupportEngineerAuthor already does elsewhere in this same call), which
+// the configured getUserByEmail below answers with a NotFoundError -- an M2M
+// actorEmail is not guaranteed to be a provisioned sys_user-equivalent row,
+// so this proves that case is swallowed silently (no AddCaseWatcherIfAbsent
+// call, no error surfaced) rather than failing the comment. Also proves the
 // created comment's CreatedBy in the response is the actorEmail, not a
 // resolved user row's email.
 func TestCaseService_CreateCaseCommentAs_UsesActorEmailDirectly(t *testing.T) {
@@ -3570,9 +3587,18 @@ func TestCaseService_CreateCaseCommentAs_UsesActorEmailDirectly(t *testing.T) {
 			}, nil
 		},
 	}
-	// Deliberately no getUserByEmail configured -- CreateCaseCommentAs must
-	// never call it (unlike CreateCaseComment).
-	userRepo := stubUserRepo{}
+	// An M2M actorEmail has no guaranteed "user" row -- see
+	// subscribeCommenterToWatchList's own doc comment.
+	addWatcherCalled := false
+	repo.addCaseWatcherIfAbsent = func(context.Context, string, string) error {
+		addWatcherCalled = true
+		return nil
+	}
+	userRepo := stubUserRepo{
+		getUserByEmail: func(context.Context, string) (domain.User, error) {
+			return domain.User{}, &apierror.NotFoundError{Msg: "user not found"}
+		},
+	}
 	publisher := &mockEventPublisher{}
 	svc := NewCaseService(repo, userRepo, publisher, alwaysUnrestrictedAccess{}, nil)
 
@@ -3597,6 +3623,9 @@ func TestCaseService_CreateCaseCommentAs_UsesActorEmailDirectly(t *testing.T) {
 	}
 	if payload.Name != actorEmail {
 		t.Errorf("published author Name = %q, want %q (actorEmail, since no user row was looked up)", payload.Name, actorEmail)
+	}
+	if addWatcherCalled {
+		t.Error("AddCaseWatcherIfAbsent was called despite the actorEmail not resolving to a real user")
 	}
 }
 
