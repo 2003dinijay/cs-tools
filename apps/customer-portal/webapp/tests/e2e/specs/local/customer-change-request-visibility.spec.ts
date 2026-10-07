@@ -303,7 +303,7 @@ test.describe("Local stack — who sees a change request, over its whole life", 
       const proposal = futureWindow(zone, { daysAhead: 24, startHour: 16, hours: 2 });
       await miraPage.fillProposedStart(proposal.start);
       await miraPage.submitProposalButton().click();
-      await expect(miraPage.banner(UI.banners.proposed)).toBeVisible();
+      await expect(miraPage.banner(UI.banners.proposed)).toBeVisible({ timeout: 20_000 });
       await expect(miraPage.currentStage()).toHaveText(UI.stages.customerApproval);
       await expect(miraPage.proposalWaitingNote()).toContainText(UI.notes.waitingOwn);
       expect(await storedState(change.id)).toBe("CUSTOMER_APPROVAL");

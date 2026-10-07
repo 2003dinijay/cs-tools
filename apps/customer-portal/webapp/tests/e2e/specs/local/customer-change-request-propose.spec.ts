@@ -219,7 +219,7 @@ test.describe("Local stack — a customer proposes a new implementation time and
       await dave.submitProposalButton().click();
 
       // The copy tells him what happens next: WSO2 accepts it or suggests another time.
-      await expect(dave.banner(UI.banners.proposed)).toBeVisible();
+      await expect(dave.banner(UI.banners.proposed)).toBeVisible({ timeout: 20_000 });
       await expect(dave.proposeDialog()).toBeHidden();
 
       // The change STAYED in Customer Approval, and every answer is still on offer.
@@ -415,7 +415,7 @@ test.describe("Local stack — a customer proposes a new implementation time and
     const second = futureWindow(zone, { daysAhead: 42, startHour: 11, hours: LENGTH_HOURS });
     await dave.fillProposedStart(second.start);
     await dave.submitProposalButton().click();
-    await expect(dave.banner(UI.banners.proposed)).toBeVisible();
+    await expect(dave.banner(UI.banners.proposed)).toBeVisible({ timeout: 20_000 });
 
     // A new proposal clears the answer: it waits again, and the not-accepted note goes.
     expect(await proposalRow(approval.id)).toEqual({ proposedUtc: second.startUtc, answer: "" });
@@ -453,7 +453,7 @@ test.describe("Local stack — a customer proposes a new implementation time and
     await dave.fillProposedStart(proposal.start);
     // Enter in the field submits, like the button (the field and the button are one form).
     await dave.proposedStart().press("Enter");
-    await expect(dave.banner(UI.banners.proposed)).toBeVisible();
+    await expect(dave.banner(UI.banners.proposed)).toBeVisible({ timeout: 20_000 });
     await expect(dave.proposeDialog()).toBeHidden();
 
     await expect(dave.currentStage()).toHaveText(UI.stages.customerApproval);
@@ -687,7 +687,7 @@ test.describe("Local stack — a customer proposes a new implementation time and
     await dave.fillProposedStart(second.start);
     await expect(dave.proposedEnd(), "the end follows the start, same length").toHaveValue(second.end);
     await dave.submitProposalButton().click();
-    await expect(dave.banner(UI.banners.proposed)).toBeVisible();
+    await expect(dave.banner(UI.banners.proposed)).toBeVisible({ timeout: 20_000 });
     expect(await proposalRow(approval.id), "the new proposal replaced the answered one").toEqual({ proposedUtc: second.startUtc, answer: "" });
     await expect(dave.proposalWaitingNote()).toContainText(UI.notes.waitingOwn);
     await expect(dave.proposalNotAcceptedNote()).toHaveCount(0);

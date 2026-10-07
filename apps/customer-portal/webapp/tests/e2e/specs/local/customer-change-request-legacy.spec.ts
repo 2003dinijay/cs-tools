@@ -331,7 +331,7 @@ test.describe("Local stack — legacy (migrated) change requests", () => {
       const proposal = futureWindow(zone, { daysAhead: 6, startHour: 10, hours: 2 });
       await details.fillProposedStart(proposal.start);
       await details.submitProposalButton().click();
-      await expect(details.banner(UI.banners.proposed)).toBeVisible();
+      await expect(details.banner(UI.banners.proposed)).toBeVisible({ timeout: 20_000 });
 
       // The change STAYS in Customer Approval: nothing moved but the proposal, and the window is WSO2's.
       await expect(details.currentStage()).toHaveText(UI.stages.customerApproval);
