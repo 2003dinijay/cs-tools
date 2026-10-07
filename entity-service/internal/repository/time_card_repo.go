@@ -788,34 +788,63 @@ func (r *timeCardRepo) UpdateTimeCardFields(ctx context.Context, req domain.Upda
 func (r *timeCardRepo) TransitionTimeCardState(ctx context.Context, id string, state domain.TimeCardState, leadComment *string, actorID string) (domain.TimeCardView, error) {
 	var returnedID string
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
+		// Lock the actor's admin grant, if any, BEFORE the time_card row below
+		// -- unlike the time_card_approver check (protected for free: every
+		// approver-list edit's own UPDATE on this same time_card row, in
+		// UpdateTimeCardFields, shares and serializes against the FOR UPDATE
+		// lock taken just below), an "admin" grant lives in user_role/role,
+		// a table with no relationship to any particular time_card row at
+		// all. Without locking it here too, nothing in this transaction
+		// would stop a concurrent DELETE FROM user_role revoking this exact
+		// grant from landing in the gap between this eligibility check and
+		// the UPDATE further down -- FOR UPDATE on time_card only ever locks
+		// the time_card row, never this one. Locking it first, in its own
+		// statement, means a concurrent revocation of this specific grant
+		// blocks on this transaction committing/rolling back, the same
+		// guarantee the approver-list case already had implicitly. Every
+		// matching row is locked (user_role has no UNIQUE(user_id, role_id)
+		// -- see this repository's own package doc on duplicate grants --
+		// so more than one is possible), and zero rows (not currently an
+		// admin) locks nothing, which is correct: there is no grant to
+		// protect.
+		adminGrantRows, err := tx.Query(ctx, `
+			SELECT ur.id FROM user_role ur JOIN role r ON r.id = ur.role_id
+			WHERE ur.user_id = $1 AND r.name = 'admin' FOR UPDATE OF ur`, actorID,
+		)
+		if err != nil {
+			return fmt.Errorf("lock admin role grant: %w", err)
+		}
+		isAdmin := adminGrantRows.Next()
+		adminGrantRows.Close()
+		if err := adminGrantRows.Err(); err != nil {
+			return fmt.Errorf("lock admin role grant: %w", err)
+		}
+
 		// Lock the row and check eligibility AND current state before writing
 		// anything: only an approver on this specific card, OR a holder of the
-		// global "admin" role (approve-by-exception -- see that role's own use
-		// in recompute_user_type, migration 0011), and in both cases other than
-		// the card's own submitter, may transition it, and only while it is
-		// still "submitted" -- without that state check, an eligible approver
-		// could re-approve/reject an already approved/rejected/processed/
-		// recalled card. FOR UPDATE holds the lock across both statements in
-		// this transaction, closing the gap a plain check-then-UPDATE would
-		// leave for a concurrent approver-list edit (or a second transition
-		// attempt) to race through. Postgres applies both the SELECT and
-		// UPDATE policies to a FOR UPDATE lock -- time_card's RLS policies
-		// (migration 0144) use the same is_project_member condition for both,
-		// so a legitimate caller's own row satisfies both together.
+		// global "admin" role locked above (approve-by-exception -- see that
+		// role's own use in recompute_user_type, migration 0011), and in both
+		// cases other than the card's own submitter, may transition it, and
+		// only while it is still "submitted" -- without that state check, an
+		// eligible approver could re-approve/reject an already approved/
+		// rejected/processed/recalled card. FOR UPDATE holds the lock across
+		// both statements in this transaction, closing the gap a plain
+		// check-then-UPDATE would leave for a concurrent approver-list edit
+		// (or a second transition attempt) to race through. Postgres applies
+		// both the SELECT and UPDATE policies to a FOR UPDATE lock --
+		// time_card's RLS policies (migration 0144) use the same
+		// is_project_member condition for both, so a legitimate caller's own
+		// row satisfies both together.
 		var submitterID string
 		var currentState *string
-		var isApprover, isAdmin bool
-		err := tx.QueryRow(ctx, `
+		var isApprover bool
+		err = tx.QueryRow(ctx, `
 			SELECT tc.user_id, tc.state::TEXT,
 			       EXISTS (
 			           SELECT 1 FROM time_card_approver tca WHERE tca.time_card_id = tc.id AND tca.approver_id = $2
-			       ),
-			       EXISTS (
-			           SELECT 1 FROM user_role ur JOIN role r ON r.id = ur.role_id
-			           WHERE ur.user_id = $2 AND r.name = 'admin'
 			       )
 			FROM time_card tc WHERE tc.id = $1 FOR UPDATE`, id, actorID,
-		).Scan(&submitterID, &currentState, &isApprover, &isAdmin)
+		).Scan(&submitterID, &currentState, &isApprover)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &apierror.NotFoundError{Msg: "time card not found"}
 		}
