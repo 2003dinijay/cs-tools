@@ -3202,7 +3202,9 @@ test.describe("change request approval flow — a customer's proposed time (mock
     // The customer is asked again (a fresh request, no CAB) and NO answer was written against a date nobody proposed.
     expect(api.state()).toBe("customer_approval");
     expect(api.proposal().confirmation).toBeNull();
-    expect(api.planned()).toEqual({ start: "2030-03-08 12:00:00", end: "2030-03-08 14:00:00" });
+    // The window was typed in the signed-in user's zone and the PATCH carries UTC, so assert the day, never the hour.
+    expect(api.planned().start).toMatch(MOVED_TO_NEXT_WEEK);
+    expect(api.planned().end).toMatch(MOVED_TO_NEXT_WEEK);
     expect(api.stages().map((st) => st.stage)).toEqual([...stagesBefore, "Customer Approval"]);
   });
 
