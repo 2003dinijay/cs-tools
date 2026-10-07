@@ -6036,8 +6036,7 @@ components:
             not a registered contact of the change request's project, its own creator, or
             a field a customer may not set). The list grows, so this is deliberately not
             a closed enum.
-          examples:
-            - change_request_on_hold
+          example: change_request_on_hold
 
     Pagination:
       type: object

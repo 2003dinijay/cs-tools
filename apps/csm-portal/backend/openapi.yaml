@@ -13506,8 +13506,7 @@ components:
             (403: not asked on the customer group's stage) and `change_request_forbidden`
             (403: the change request's creator, or a user who may not decide an internal
             stage). The list grows, so this is deliberately not a closed enum.
-          examples:
-            - change_request_approval_not_pending
+          example: change_request_approval_not_pending
 
     HealthDependenciesResponse:
       type: object
