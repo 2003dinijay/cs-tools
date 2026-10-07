@@ -91,13 +91,17 @@ func escalationEnumLabels(ids []string) ([]string, error) {
 // live) is found by the old COALESCE regardless of its declared type,
 // because that approach blindly joins and checks all five tables for every
 // row. This lookup trusts wi.type and only checks that type's own table, so
-// it misses such a row when the caller narrows Types to something other
-// than the table the row's data actually lives in. Verified end-to-end
-// against a wide range of real dashboard filter combinations: this was the
-// only source of divergence found, and only for rows already affected by
-// that pre-existing issue. Deliberately not fixed by also checking the
-// other four tables regardless
-// of Types -- that would reproduce the exact cost this function exists to
+// it diverges from the COALESCE both ways for such a row: negate=false
+// (the `in` filter) misses it when the caller narrows Types to something
+// other than the table the row's data actually lives in, and negate=true
+// (the `notIn` filter) wrongly keeps it for the mirror-image reason -- its
+// declared type's own table has no row to find, so this lookup can never
+// see the state that should have excluded it. Verified end-to-end against a
+// wide range of real dashboard filter combinations: this was the only
+// source of divergence found, and only for rows already affected by that
+// pre-existing issue. Deliberately not fixed by also checking the other
+// four tables regardless of Types -- that would reproduce the exact cost
+// this function exists to
 // avoid, to compensate for a sync-side bug that belongs in the data, not in
 // every case search query from here on.
 var caseLikeStateLookupTables = map[string]string{

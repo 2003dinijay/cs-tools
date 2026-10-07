@@ -7100,15 +7100,19 @@ changed.
 **Known, accepted divergence**: a work_item row whose own `type` disagrees
 with which extension table actually holds its data (see the bullet above --
 confirmed live, and rare) is found by the old `COALESCE` regardless of its
-declared type, since that approach blindly
-checks all five tables for every row. This lookup trusts `wi.type` and only
-checks that type's own table, so it misses such a row whenever the request
-narrows `type` to something other than the table the row's data actually
-lives in. Deliberately not fixed by always checking every table regardless
-of the request's own type filter -- that would reproduce the exact cost this
-rewrite exists to avoid, to compensate for a handful of rows a separate
-sync-side data-quality issue produced, not something every case search
-should pay for indefinitely.
+declared type, since that approach blindly checks all five tables for every
+row. This lookup trusts `wi.type` and only checks that type's own table, so
+it diverges from the `COALESCE` both ways for such a row: an `in` filter
+misses it whenever the request narrows `type` to something other than the
+table the row's data actually lives in (the `COALESCE` would have matched
+it there), and a `notIn` filter wrongly keeps it for the mirror-image reason
+-- its declared type's own table has no row to find, so the lookup can never
+see the state that should have excluded it, and the row passes `NOT IN`
+when the old `COALESCE` would have excluded it. Deliberately not fixed by
+always checking every table regardless of the request's own type filter --
+that would reproduce the exact cost this rewrite exists to avoid, to
+compensate for a handful of rows a separate sync-side data-quality issue
+produced, not something every case search should pay for indefinitely.
 
 ## Announcement requests
 
