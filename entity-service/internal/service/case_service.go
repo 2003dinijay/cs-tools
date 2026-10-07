@@ -92,6 +92,27 @@ type caseService struct {
 	// WithProductCategoryEnforcement's own doc comment.
 	referenceDataRepo   repository.ReferenceDataRepository
 	deployedProductRepo repository.DeployedProductRepository
+	// srNotices runs the service-request automation and publishes the sr.*
+	// events (see SRNoticeService). nil unless wired via WithSRNotices.
+	srNotices srNotifier
+}
+
+// srNotifier is what caseService needs from SRNoticeService; an interface so
+// tests can observe the calls.
+type srNotifier interface {
+	OnCreated(ctx context.Context, caseID string)
+	OnComment(ctx context.Context, caseID, commentID string, commentType domain.CommentType, content, authorEmail, authorName string, createdOn time.Time)
+}
+
+// WithSRNotices attaches the service-request automation to an
+// already-constructed CaseService, the same post-construction wiring as
+// WithCSEngineerRole and for the same reason. A no-op if svc is not a
+// *caseService or n is nil.
+func WithSRNotices(svc CaseService, n *SRNoticeService) CaseService {
+	if cs, ok := svc.(*caseService); ok && n != nil {
+		cs.srNotices = n
+	}
+	return svc
 }
 
 // WithProductCategoryEnforcement attaches the optional project-type
@@ -637,6 +658,11 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	// createCaseSNFirst orders it this way: publishCaseCreatedEvent's own
 	// GetCaseByID re-fetch needs them already written to resolve Recipients.
 	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, req, c.ID)
+	// Plain Postgres only: under dual-write the SR is created in ServiceNow
+	// first, where its own flow still assigns, acknowledges and announces it.
+	if req.Type == "service_request" && s.srNotices != nil {
+		s.srNotices.OnCreated(ctx, c.ID)
+	}
 	state := ""
 	if c.State != nil {
 		state = string(*c.State)
@@ -1264,6 +1290,13 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 			cv.WatchList = s.filterActiveWatchListUsers(ctx, cv, cv.WatchList)
 			publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.ProjectOnboardingInfo, cv, req, c.ID, authorName, actorEmail, isSupportEngineerResponse)
 		}
+	}
+
+	// sr.comment_added, for a comment on a service request. Independent of
+	// the case.comment_added publish above, which is skipped when a case has
+	// no recipients.
+	if s.srNotices != nil {
+		s.srNotices.OnComment(ctx, req.CaseID, c.ID, req.Type, req.Content, actorEmail, authorName, c.CreatedOn)
 	}
 
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write

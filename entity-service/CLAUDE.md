@@ -212,6 +212,33 @@ just a bool, either `"true"` or not. `NewRouter` returns the constructed
 threaded through `server.New` to `cmd/api/main.go`, which calls `Close()` on
 it during shutdown, after `srv.Shutdown`.
 
+## Service request events (`sr.*`)
+
+`SRNoticeService` (`internal/service/sr_notice_service.go`) ports ServiceNow's
+"SR New Request - Acknowledge & Chat Alert" flow (discovery scripts 73/74) and
+publishes three events to the operations topic (`SRE_EVENT_HUB_TOPIC`,
+sre-events), not the case topic: SRs belong to SRE. Types and payloads are in
+`internal/events/service_request.go`; csm-notification-service turns them into
+Chat cards in the SR's SRE-team space.
+
+- `sr.created`: every SR created on the plain-Postgres path
+  (`caseService.CreateCase`). Under dual-write the SR is created in ServiceNow
+  first and its own flow still runs there, so nothing happens here.
+- `sr.acknowledged`: when the SR's account SRE team is in
+  `SR_ALERT_SRE_TEAM_IDS`, the SR is first assigned to that team, then gets
+  ServiceNow's acknowledgement comment (word for word) and is moved to OPEN --
+  a no-op for a native SR, which is created OPEN. The comment is written
+  straight to the table, so no `case.comment_added` fires: the flow saves with
+  `setWorkflow(false)`. ServiceNow acknowledges only when its card was sent;
+  here the gate is the team being listed (product decision, 2026-10-07).
+- `sr.comment_added`: every comment or work note on an SR, from
+  `createCaseCommentAs` (plain and dual-write), independent of
+  `case.comment_added`'s recipient gate. Carries the author and the SR's tags;
+  the consumer decides the devops-sm customer-comment alert.
+
+Wired in `routes.go` only when there is an SRE topic and a publisher: the
+acknowledgement must never be posted with no card announcing the SR.
+
 ## User cache (Redis)
 
 `GET /users/{id}` and `GET /users/me` are served cache-aside from Redis when
