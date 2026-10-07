@@ -72,6 +72,13 @@ const (
 // only be a check that would never run: it is refused rather than dropped.
 const errMsgStaffPatchExpected = "expectedPlannedStartOn and expectedPlannedEndOn go with a customer's own answer (isCustomerApproved or isCustomerReviewed), which staff cannot give; remove them from this request."
 
+// errCodeChangeRequestForbidden is the machine-readable name (the error body's
+// errorCode) of the refusals that mean "a customer may not do this here": the same
+// code entity-service gives its own 403s of that kind (apierror.CodeChangeRequestForbidden
+// there), so the webapp has one name for them whichever layer refused. This layer
+// raises it for a field a customer may not set.
+const errCodeChangeRequestForbidden = "change_request_forbidden"
+
 // NewChangeRequestHandler creates a ChangeRequestHandler backed by the given entity client.
 func NewChangeRequestHandler(entity entityChangeRequestClient) *ChangeRequestHandler {
 	return &ChangeRequestHandler{entity: entity, now: time.Now}
@@ -288,7 +295,7 @@ func (h *ChangeRequestHandler) patchChangeRequestAsCustomer(w http.ResponseWrite
 	if err := dec.Decode(&req); err != nil {
 		// encoding/json has no typed error for an unknown field.
 		if strings.HasPrefix(err.Error(), "json: unknown field ") {
-			writeError(w, http.StatusForbidden, errMsgCustomerPatchFields)
+			writeErrorCode(w, http.StatusForbidden, errMsgCustomerPatchFields, errCodeChangeRequestForbidden)
 			return
 		}
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)

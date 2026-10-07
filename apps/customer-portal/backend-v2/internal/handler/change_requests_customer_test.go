@@ -522,3 +522,103 @@ func (f *createRecordingClient) CreateChangeRequest(_ context.Context, _ entity.
 	f.createCalls++
 	return entity.CreateChangeRequestResponse{}, nil
 }
+
+// The whole way through, with the real entity client against a stand-in for
+// entity-service that answers as it does: the machine-readable code of each
+// refusal the portal branches on reaches the customer's browser, beside the
+// message, with the status entity-service gave it; the 403's message stays the
+// fixed one. This is the contract the webapp's classification stands on.
+func TestPatchChangeRequest_EntityRefusalCodesReachTheCustomer(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		status     int
+		upstream   string
+		wantMsg    string
+		wantCode   string
+		body       string
+		wantStatus int
+	}{
+		{"on hold", 409, `{"code":409,"message":"this change request is on hold, so a new implementation time cannot be proposed now","errorCode":"change_request_on_hold"}`,
+			"this change request is on hold, so a new implementation time cannot be proposed now", "change_request_on_hold", `{"plannedStartOn":"2026-10-10 10:00:00","plannedEndOn":"2026-10-10 12:00:00"}`, 409},
+		{"window changed", 409, `{"code":409,"message":"the planned implementation time of this change request changed after you opened it (it is now x)","errorCode":"change_request_schedule_changed"}`,
+			"the planned implementation time of this change request changed after you opened it (it is now x)", "change_request_schedule_changed", `{"isCustomerApproved":true}`, 409},
+		{"already answered", 409, `{"code":409,"message":"this approval is no longer pending","errorCode":"change_request_approval_not_pending"}`,
+			"this approval is no longer pending", "change_request_approval_not_pending", `{"isCustomerApproved":true}`, 409},
+		{"not proposable", 409, `{"code":409,"message":"not open to a new time","errorCode":"change_request_not_proposable"}`,
+			"not open to a new time", "change_request_not_proposable", `{"plannedStartOn":"2026-10-10 10:00:00"}`, 409},
+		{"not asked", 403, `{"code":403,"message":"only members of the customer group may answer","errorCode":"change_request_not_asked"}`,
+			ErrMsgForbidden, "change_request_not_asked", `{"isCustomerApproved":true}`, 403},
+		{"forbidden", 403, `{"code":403,"message":"only a registered PORTAL_USER contact may answer","errorCode":"change_request_forbidden"}`,
+			ErrMsgForbidden, "change_request_forbidden", `{"isCustomerApproved":true}`, 403},
+		{"an older entity-service names nothing", 409, `{"code":409,"message":"this approval is no longer pending"}`,
+			"this approval is no longer pending", "", `{"isCustomerApproved":true}`, 409},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mux := http.NewServeMux()
+			mux.HandleFunc("POST /token", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"access_token":"t","token_type":"Bearer","expires_in":3600}`))
+			})
+			mux.HandleFunc("PATCH /change-requests/{id}", func(w http.ResponseWriter, _ *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(tc.status)
+				_, _ = w.Write([]byte(tc.upstream))
+			})
+			srv := httptest.NewServer(mux)
+			defer srv.Close()
+			client := entity.NewClient(entity.Config{BaseURL: srv.URL, TokenURL: srv.URL + "/token", ClientID: "c", ClientSecret: "s"})
+
+			req := authedRequest(http.MethodPatch, "/change-requests/"+testChangeRequestID, tc.body)
+			req.SetPathValue("id", testChangeRequestID)
+			req = req.WithContext(middleware.WithGrantedAction(req.Context(), middleware.ActionDecide))
+			rec := httptest.NewRecorder()
+			h := NewChangeRequestHandler(client)
+			h.now = func() time.Time { return testNow }
+			h.PatchChangeRequest(rec, req)
+
+			if rec.Code != tc.wantStatus {
+				t.Fatalf("status = %d, want %d (%s)", rec.Code, tc.wantStatus, rec.Body.String())
+			}
+			var body map[string]any
+			if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+				t.Fatalf("body is not JSON: %v (%s)", err, rec.Body.String())
+			}
+			if body["message"] != tc.wantMsg {
+				t.Errorf("message = %v, want %q", body["message"], tc.wantMsg)
+			}
+			code, has := body["errorCode"]
+			if tc.wantCode == "" && has {
+				t.Errorf("errorCode = %v, want the key absent", code)
+			}
+			if tc.wantCode != "" && code != tc.wantCode {
+				t.Errorf("errorCode = %v, want %q", code, tc.wantCode)
+			}
+		})
+	}
+}
+
+// A refusal this layer raises itself carries a code too: a customer who sends a
+// field they may not set is forbidden, under the same name entity-service gives
+// its own 403s of that kind, and nothing reaches entity-service.
+func TestPatchChangeRequest_CustomerFieldRefusalCarriesTheForbiddenCode(t *testing.T) {
+	fake := &fakeEntityChangeRequestClient{}
+	rec := patchAs(t, fake, middleware.ActionDecide, `{"title":"x"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want 403", rec.Code)
+	}
+	var body map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("body is not JSON: %v", err)
+	}
+	if body["errorCode"] != "change_request_forbidden" {
+		t.Errorf("errorCode = %v, want change_request_forbidden", body["errorCode"])
+	}
+	if fake.patchCalls != 0 {
+		t.Errorf("reached entity-service")
+	}
+	// The other refusals of this layer, 400s about the shape of the request, name nothing.
+	rec = patchAs(t, &fakeEntityChangeRequestClient{}, middleware.ActionDecide, `{"isCustomerApproved":true,"isCustomerReviewed":true}`)
+	if strings.Contains(rec.Body.String(), "errorCode") {
+		t.Errorf("a 400 about the request's shape carries a code: %s", rec.Body.String())
+	}
+}
