@@ -19,6 +19,7 @@
 const THINKING_BLOCK_RE = /<thinking>[\s\S]*?<\/thinking>/gi;
 const THINKING_OPEN_RE = /<thinking>[\s\S]*$/i;
 const THINKING_PARTIAL_OPEN_RE = /<t(?:h(?:i(?:n(?:k(?:i(?:n(?:g)?)?)?)?)?)?)?$/i;
+const LEADING_THINKING_RE = /^\s*<thinking>/i;
 
 /**
  * Remove the model's `<thinking>…</thinking>` reasoning from a Novera answer.
@@ -38,5 +39,13 @@ export function stripThinkingBlocks(text: string): string {
     .replace(THINKING_BLOCK_RE, "")
     .replace(THINKING_OPEN_RE, "")
     .replace(THINKING_PARTIAL_OPEN_RE, "");
-  return stripped === text ? text : stripped.trimStart();
+  if (stripped === text) return text;
+  // Only a block at the very start leaves a gap to tidy; whitespace anywhere
+  // else is the author's (an indented code line must stay indented).
+  if (!LEADING_THINKING_RE.test(text)) return stripped;
+  // Drop the gap but keep the first real line's own indentation: when the gap
+  // spans lines, cut up to the last newline; when it is inline, cut it all.
+  const gap = /^\s*/.exec(stripped)?.[0] ?? "";
+  const lastNewline = gap.lastIndexOf("\n");
+  return stripped.slice(lastNewline === -1 ? gap.length : lastNewline + 1);
 }

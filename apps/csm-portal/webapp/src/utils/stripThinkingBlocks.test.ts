@@ -37,6 +37,18 @@ describe("stripThinkingBlocks", () => {
     expect(stripThinkingBlocks("Done. <thin")).toBe("Done. ");
   });
 
+  it("keeps the author's indentation, whichever side of a block it is on", () => {
+    expect(stripThinkingBlocks("    code\n<thinking>reason</thinking>")).toBe(
+      "    code\n",
+    );
+    expect(stripThinkingBlocks("<thinking>x</thinking>\n\n    code")).toBe(
+      "    code",
+    );
+    expect(stripThinkingBlocks("<thinking>x</thinking>   Answer")).toBe(
+      "Answer",
+    );
+  });
+
   it("returns text without a thinking tag untouched", () => {
     const plain = "Set `a < b` and use <b>bold</b> or <thead> markup.";
     expect(stripThinkingBlocks(plain)).toBe(plain);
