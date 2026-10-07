@@ -124,6 +124,9 @@ func TestClassifyExternalPatch(t *testing.T) {
 			"customerApprovalRequired": func(r *domain.PatchChangeRequestRequest) { r.CustomerApprovalRequired = &no },
 			"deploymentIds":            func(r *domain.PatchChangeRequestRequest) { r.DeploymentIDs = &[]string{} },
 			"implementationPlan":       func(r *domain.PatchChangeRequestRequest) { r.ImplementationPlan = new(*string) },
+			// WSO2's answer to a proposed time is never a customer's to send.
+			"confirmCustomerUpdatedDate": func(r *domain.PatchChangeRequestRequest) { r.ConfirmCustomerUpdatedDate = &start },
+			"expectedCustomerUpdatedOn":  func(r *domain.PatchChangeRequestRequest) { r.ExpectedCustomerUpdatedOn = &start },
 		}
 		for field, set := range extra {
 			for name, base := range map[string]domain.PatchChangeRequestRequest{
@@ -154,6 +157,7 @@ func TestClassifyExternalPatch(t *testing.T) {
 			"Title": true, "Description": true, "ProjectID": true, "State": true, "Impact": true, "AssignedTeamID": true,
 			"RequestApproval": true, "OnHold": true, "Comment": true, "WorkNote": true, "CustomerApprovalRequired": true,
 			"DeploymentIDs": true, "ImplementationPlan": true,
+			"ConfirmCustomerUpdatedDate": true, "ExpectedCustomerUpdatedOn": true,
 		}
 		typ := reflect.TypeOf(domain.PatchChangeRequestRequest{})
 		for i := 0; i < typ.NumField(); i++ {

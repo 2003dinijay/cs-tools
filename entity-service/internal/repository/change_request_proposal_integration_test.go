@@ -17,6 +17,7 @@
 package repository_test
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -1240,4 +1241,87 @@ func TestChangeRequestProposalIntegration_RacesHaveOneWinner(t *testing.T) {
 			}
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// The outbox rows the notices read
+// ---------------------------------------------------------------------------
+
+// The plan-date notices (service.crPlanDateTurnOf over event_outbox) read three things from a
+// change_request row change: a moved customer_updated_on while the snapshot is in CUSTOMER_APPROVAL
+// (the customer proposed -- read FIRST, because the 0052 trigger clears the answer in the same write),
+// else a confirmation that changed to AGREE (WSO2 accepted) or DISAGREE (WSO2 asked for another time).
+// The real outbox rows of a real proposal, Accept, different time and decline carry exactly that, so
+// the existing notices turn without a new notice kind.
+func TestChangeRequestProposalIntegration_OutboxRowsCarryTheTurnsOfTheNotices(t *testing.T) {
+	last := func(f *crFlow, id string) (changes map[string]map[string]any, snapshot map[string]any) {
+		t.Helper()
+		var rawChanges, rawSnapshot []byte
+		if err := f.scoped.QueryRow(f.sys,
+			`SELECT changes::text::bytea, snapshot::text::bytea FROM event_outbox WHERE entity_type = 'change_request' AND entity_id = $1 ORDER BY id DESC LIMIT 1`,
+			id).Scan(&rawChanges, &rawSnapshot); err != nil {
+			t.Fatalf("read the last outbox row: %v", err)
+		}
+		if err := json.Unmarshal(rawChanges, &changes); err != nil {
+			t.Fatalf("decode changes: %v", err)
+		}
+		if err := json.Unmarshal(rawSnapshot, &snapshot); err != nil {
+			t.Fatalf("decode snapshot: %v", err)
+		}
+		return changes, snapshot
+	}
+	to := func(changes map[string]map[string]any, col string) (string, bool) {
+		d, ok := changes[col]
+		if !ok {
+			return "", false
+		}
+		v, _ := d["to"].(string)
+		return v, true
+	}
+
+	f := newCustomerGroupFlow(t)
+	id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
+
+	// A customer proposes: the date moved, in Customer Approval -> "the customer proposed".
+	f.mustPropose(id, crScopeUserA1, rsStart2)
+	ch, snap := last(f, id)
+	if _, moved := to(ch, "customer_updated_on"); !moved || snap["state"] != "CUSTOMER_APPROVAL" {
+		t.Fatalf("a proposal's outbox row = %v / state %v, want customer_updated_on changed in CUSTOMER_APPROVAL", ch, snap["state"])
+	}
+	if _, answered := to(ch, "customer_updated_date_confirmation"); answered {
+		t.Fatalf("a first proposal's outbox row carries an answer: %v", ch)
+	}
+
+	// WSO2 asks for a different time: the answer changed to DISAGREE, the date did not move.
+	if err := f.counter(id, sp(rsStart3), sp(rsEnd3)); err != nil {
+		t.Fatalf("a different time: %v", err)
+	}
+	ch, _ = last(f, id)
+	if v, ok := to(ch, "customer_updated_date_confirmation"); !ok || v != "DISAGREE" {
+		t.Fatalf("a different time's outbox row = %v, want the answer changed to DISAGREE", ch)
+	}
+	if _, moved := to(ch, "customer_updated_on"); moved {
+		t.Fatalf("an answer moved the proposed date: %v", ch)
+	}
+
+	// The customer proposes again while that answer stands: ONE row whose diff holds BOTH columns
+	// (the 0052 trigger / the explicit clear), and the date is read first -> still "the customer proposed".
+	f.mustPropose(id, crScopeUserA2, rsStartEarly)
+	ch, snap = last(f, id)
+	if _, moved := to(ch, "customer_updated_on"); !moved || snap["state"] != "CUSTOMER_APPROVAL" {
+		t.Fatalf("a proposal over a standing answer: outbox row = %v / state %v", ch, snap["state"])
+	}
+	if _, cleared := ch["customer_updated_date_confirmation"]; !cleared {
+		t.Fatalf("the standing answer was not cleared in the same row: %v", ch)
+	}
+
+	// WSO2 accepts: the answer changed to AGREE, the date did not move, the state left Customer Approval.
+	f.mustAccept(id)
+	ch, snap = last(f, id)
+	if v, ok := to(ch, "customer_updated_date_confirmation"); !ok || v != "AGREE" {
+		t.Fatalf("Accept's outbox row = %v, want the answer changed to AGREE", ch)
+	}
+	if _, moved := to(ch, "customer_updated_on"); moved || snap["state"] != "SCHEDULED" {
+		t.Fatalf("Accept's outbox row moved the date or left the state at %v: %v", snap["state"], ch)
+	}
 }
