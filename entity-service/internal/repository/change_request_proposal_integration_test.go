@@ -1347,9 +1347,11 @@ func TestChangeRequestProposalIntegration_RacesHaveOneWinner(t *testing.T) {
 // The plan-date notices (service.crPlanDateTurnOf over event_outbox) read three things from a
 // change_request row change: a moved customer_updated_on while the snapshot is in CUSTOMER_APPROVAL
 // (the customer proposed -- read FIRST, because the 0052 trigger clears the answer in the same write),
-// else a confirmation that changed to AGREE (WSO2 accepted) or DISAGREE (WSO2 asked for another time).
-// The real outbox rows of a real proposal, Accept, different time and decline carry exactly that, so
-// the existing notices turn without a new notice kind.
+// else a confirmation that changed to AGREE (WSO2 accepted) or DISAGREE (WSO2 answered with another
+// time OR declined: both write DISAGREE, so both are the one notice ServiceNow's Disagree sends --
+// service.TestPlanDate_ADeclineSendsTheSameNoticeAsADifferentTime). The real outbox rows of a real
+// proposal, different time, decline and Accept carry exactly that, so the existing notices turn
+// without a new notice kind.
 func TestChangeRequestProposalIntegration_OutboxRowsCarryTheTurnsOfTheNotices(t *testing.T) {
 	last := func(f *crFlow, id string) (changes map[string]map[string]any, snapshot map[string]any) {
 		t.Helper()
@@ -1410,6 +1412,34 @@ func TestChangeRequestProposalIntegration_OutboxRowsCarryTheTurnsOfTheNotices(t 
 	}
 	if _, cleared := ch["customer_updated_date_confirmation"]; !cleared {
 		t.Fatalf("the standing answer was not cleared in the same row: %v", ch)
+	}
+
+	// WSO2 declines (keeps the plan): the SAME row as a different time as far as a notice can tell --
+	// the answer changed to DISAGREE, the proposed date did not move -- and nothing else of the change
+	// moved: no state, no planned window (the decline writes the answer and nothing more).
+	if err := f.counter(id, nil, nil); err != nil {
+		t.Fatalf("a decline: %v", err)
+	}
+	ch, snap = last(f, id)
+	if v, ok := to(ch, "customer_updated_date_confirmation"); !ok || v != "DISAGREE" {
+		t.Fatalf("a decline's outbox row = %v, want the answer changed to DISAGREE", ch)
+	}
+	if _, moved := to(ch, "customer_updated_on"); moved || snap["state"] != "CUSTOMER_APPROVAL" {
+		t.Fatalf("a decline's outbox row moved the proposed date or left the state at %v: %v", snap["state"], ch)
+	}
+	for _, col := range []string{"state", "start_on", "end_on"} {
+		if _, moved := ch[col]; moved {
+			t.Fatalf("a decline's outbox row carries a change of %s: %v (a decline keeps the plan and the state)", col, ch)
+		}
+	}
+	// The customer proposes once more over the standing DISAGREE: the date is read first, again.
+	f.mustPropose(id, crScopeUserA1, rsStart2)
+	ch, snap = last(f, id)
+	if _, moved := to(ch, "customer_updated_on"); !moved || snap["state"] != "CUSTOMER_APPROVAL" {
+		t.Fatalf("a proposal over a decline: outbox row = %v / state %v", ch, snap["state"])
+	}
+	if _, cleared := ch["customer_updated_date_confirmation"]; !cleared {
+		t.Fatalf("the declined answer was not cleared in the same row: %v", ch)
 	}
 
 	// WSO2 accepts: the answer changed to AGREE, the date did not move, the state left Customer Approval.

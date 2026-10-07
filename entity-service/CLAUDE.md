@@ -4537,10 +4537,18 @@ identity; `..._ACustomersWindowIsNeverMirrored` feeds the receipt of a failed re
 colleague's later proposal; `TestFillCustomerProposal_AFailedReadLeavesTheFieldUnset` pins that the failed read is real). The pure
 ServiceNow data source refuses `confirmCustomerUpdatedDate` / `expectedCustomerUpdatedOn` up front ("answer the customer's
 proposed date in ServiceNow") and forwards proposals and Re-schedules as ever. Notices (`CR_NOTICES_ENABLED`, off by
-default): the existing `planDateNotice` turns apply unchanged -- a proposal tells the "Devops Approval" team (a team nobody
-belongs to in this database has no recipient: the banner and the Awaiting chip are the signal), Accept tells the designated
-customers "accepted the plan start date", a different time "Reject the proposed plan start date"; a plain Re-schedule sends
-none.
+default): the existing `planDateNotice` turns apply unchanged and no notice kind or table was added -- a proposal tells
+the "Devops Approval" team (a team nobody belongs to in this database has no recipient: the banner and the Awaiting chip are
+the signal), Accept tells the designated customers "accepted the plan start date"; **a different time and a Decline are the
+same turn**: both write `customer_updated_date_confirmation = DISAGREE`, which is ServiceNow's own Disagree, so both send the
+designated customers the one Disagree notice ("Reject the proposed plan start date" / "WSO2 Team request to change the plan
+start date"). That mail carries no time of the conversation at all: the new window of a different time is NOT in it (the
+customer reads it on the change request) and a Decline's mail does not say that the plan stands (it reads as the
+original's "request to change", exactly as ServiceNow's does); the customer finds out which on the change request, where
+`customerProposal.answer` is `disagreed` and the planned window shows what it is. A plain Re-schedule (no proposal waiting,
+so no answer written) sends none. Pinned by `TestPlanDate_ADeclineSendsTheSameNoticeAsADifferentTime` (the two row changes
+send byte-identical notices, none carrying a date) and, on real outbox rows, by
+`TestChangeRequestProposalIntegration_OutboxRowsCarryTheTurnsOfTheNotices` (its decline leg).
 
 **No additional entries.** The only rows the feature writes are the ones above: `TestChangeRequestProposalIntegration_NoExtraRows`
 counts EVERY table around each act -- a proposal adds the `event_outbox` row of any change_request update, the 0053 comment under
