@@ -424,10 +424,13 @@ func ChangeRequestTypeSupported(t domain.ChangeRequestType) bool {
 //     staff action may record that answer (patchChangeRequestTx and
 //     refuseStaffExitFromCustomerState). Staff keep Cancel everywhere, Rollback
 //     out of Customer Review, and, out of Customer Approval, Authorize, which
-//     means Re-schedule: the planned time changed, so the change goes back
-//     through internal approval (patchChangeRequestTx documents the contract)
-//     and the customer is asked again. It is the one state from which a manual
-//     {state: "authorize"} is accepted.
+//     means Re-schedule / Propose a different time: the wire name of the Time
+//     Change loop, which does NOT move the state (the planned time changed, so the
+//     customer is asked again; nothing goes through internal approval again --
+//     patchChangeRequestTx documents the contract). It is the one state from which
+//     a manual {state: "authorize"} is accepted. WSO2's acceptance of a time the
+//     customer proposed is not a state either: it is its own request
+//     (confirmCustomerUpdatedDate).
 //   - Rollback is the failed-review off-ramp and is offered from exactly two
 //     states, Review (the internal review failed) and Customer Review (the
 //     customer's review failed): changeRequestRollbackFrom. It is not a
@@ -450,8 +453,10 @@ var changeRequestForwardNextStates = map[domain.ChangeRequestState][]domain.Chan
 	// Customer Approval is the customer's step: the customer's own approval (the
 	// Customer Portal) schedules the change, their rejection cancels it, and no
 	// staff action stands in for either, so "scheduled" is NOT offered here.
-	// "authorize" is Re-schedule (the process diagram's Time Change loop), not
-	// the approval path: see rescheduleChangeRequest. Cancel is added by
+	// "authorize" is Re-schedule / Propose a different time (the process diagram's
+	// Time Change loop): the wire name, not a destination -- the state does not move
+	// (planStaffTimeResponse). WSO2's acceptance of a time the customer proposed is a
+	// request of its own (confirmCustomerUpdatedDate), not a state. Cancel is added by
 	// legalChangeRequestNextStates.
 	domain.ChangeRequestStateCustomerApproval: {domain.ChangeRequestStateAuthorize},
 	domain.ChangeRequestStateScheduled:        {domain.ChangeRequestStateImplement},
@@ -1425,8 +1430,10 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	// nowhere, no step or gate is skipped -- except the targets whose refusal is
 	// one of the cases below (they say more than "not an edge"):
 	//
-	//   - {state: "authorize"|"customer_approval"} is rejected. Authorize is
-	//     reached only by peer approval (or Request Approval on an Emergency
+	//   - {state: "authorize"|"customer_approval"} is rejected, except {state:
+	//     "authorize"} out of Customer Approval, which is Re-schedule / Propose a
+	//     different time (the state does not move; planStaffTimeResponse). Authorize
+	//     is reached only by peer approval (or Request Approval on an Emergency
 	//     change); Customer Approval only by the approval flow when
 	//     customerApprovalRequired is set. Accepting them here would let any
 	//     caller skip an approval the flow requires.
