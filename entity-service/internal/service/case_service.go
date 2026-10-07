@@ -95,6 +95,10 @@ type caseService struct {
 	// srNotices runs the service-request automation and publishes the sr.*
 	// events (see SRNoticeService). nil unless wired via WithSRNotices.
 	srNotices srNotifier
+	// srCatalog derives a service request's subject and description from its
+	// catalog answers when the caller sent none (fillServiceRequestText). nil
+	// unless wired via WithServiceRequestCatalog.
+	srCatalog srCatalogReader
 }
 
 // srNotifier is what caseService needs from SRNoticeService; an interface so
@@ -607,6 +611,11 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err := s.validateDeployedProductCategoryForType(ctx, req); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
+	// Before both create paths: the dual-write path's Postgres copy
+	// (CreateCaseFromServiceNow) stores req.Subject too, and the ServiceNow
+	// payload for a service request never carries it, so ServiceNow still
+	// derives its own.
+	s.fillServiceRequestText(ctx, &req)
 
 	if s.snMirror != nil {
 		return s.createCaseSNFirst(ctx, req)

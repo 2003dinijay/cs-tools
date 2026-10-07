@@ -252,7 +252,13 @@ func TestCaseService_CreateCaseComment_NotifiesSRWithoutRecipients(t *testing.T)
 			return domain.CaseComment{ID: "comment-1", CaseID: req.CaseID, Type: req.Type, Content: req.Content}, nil
 		},
 	}
-	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+	// The comment path also subscribes the commenter to the watch list
+	// (subscribeCommenterToWatchList, #2459), which looks the author up. An
+	// unknown author is skipped there, so it stays out of this test's way.
+	users := stubUserRepo{getUserByEmail: func(context.Context, string) (domain.User, error) {
+		return domain.User{}, errors.New("no such user")
+	}}
+	svc := NewCaseService(repo, users, nil, alwaysUnrestrictedAccess{}, nil)
 	rec := &recordingSRNotifier{}
 	svc.(*caseService).srNotices = rec
 
