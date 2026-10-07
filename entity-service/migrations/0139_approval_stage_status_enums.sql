@@ -34,6 +34,7 @@ DO $$ BEGIN
         'REJECTED',
         'NOT_REQUESTED',
         'NOT_REQUIRED',
+        'NOT_ENTITLED',
         'CANCELLED',
         'NO_CONSENSUS',
         'UNKNOWN'
@@ -65,6 +66,8 @@ SET state = CASE lower(trim(state))
     WHEN 'not_requested' THEN 'NOT_REQUESTED'
     WHEN 'not required' THEN 'NOT_REQUIRED'
     WHEN 'not_required' THEN 'NOT_REQUIRED'
+    WHEN 'not entitled' THEN 'NOT_ENTITLED'
+    WHEN 'not_entitled' THEN 'NOT_ENTITLED'
     WHEN 'cancelled' THEN 'CANCELLED'
     WHEN 'no consensus' THEN 'NO_CONSENSUS'
     WHEN 'no_consensus' THEN 'NO_CONSENSUS'
