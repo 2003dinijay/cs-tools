@@ -3151,12 +3151,20 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	// Query each set the caller's identity (read from egCtx, stamped above)
 	// as their own implicit one-statement transaction, so there is no
 	// explicit tx/setCallerIdentity call needed here any more.
-	eg.Go(func() error {
-		if err := r.db.QueryRow(egCtx, countQuery, filterArgs...).Scan(&total); err != nil {
-			return fmt.Errorf("count cases: %w", err)
-		}
-		return nil
-	})
+
+	// SkipTotal: the caller does not show a total (global search shows a handful
+	// of hits), so the COUNT is not run at all -- it is as costly as the page
+	// query and holds a second pool connection while it runs.
+	if req.SkipTotal {
+		total = domain.TotalNotComputed
+	} else {
+		eg.Go(func() error {
+			if err := r.db.QueryRow(egCtx, countQuery, filterArgs...).Scan(&total); err != nil {
+				return fmt.Errorf("count cases: %w", err)
+			}
+			return nil
+		})
+	}
 
 	eg.Go(func() error {
 		rows, err := r.db.Query(egCtx, dataQuery, dataArgs...)

@@ -14564,6 +14564,15 @@ components:
       type: object
       nullable: true
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one,
+            and for a search that sets groupBy (its totals are the bucket counts).
         filters:
           $ref: '#/components/schemas/CaseSearchFilters'
         sortBy:
@@ -14594,7 +14603,8 @@ components:
             $ref: '#/components/schemas/CaseSearchView'
         total:
           type: integer
-          description: Total number of matching cases
+          description: >-
+            Total number of matching cases. -1 when the request set skipTotal: the count was not run, so there is no total (not a lower bound).
         limit:
           type: integer
         offset:
@@ -18344,6 +18354,14 @@ components:
       type: object
       nullable: true
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -18513,7 +18531,8 @@ components:
             $ref: '#/components/schemas/ChangeRequestSearchView'
         total:
           type: integer
-          description: Total number of matching change requests
+          description: >-
+            Total number of matching change requests. -1 when the request set skipTotal: the count was not run, so there is no total (not a lower bound).
         limit:
           type: integer
         offset:
@@ -19522,6 +19541,14 @@ components:
     ConversationSearchPayload:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -19607,7 +19634,8 @@ components:
             $ref: '#/components/schemas/ConversationView'
         total:
           type: integer
-          description: Total number of matching conversations
+          description: >-
+            Total number of matching conversations. -1 when the request set skipTotal: the count was not run, so there is no total (not a lower bound).
         limit:
           type: integer
         offset:
@@ -20260,6 +20288,14 @@ components:
     IncidentSearchPayload:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -20342,7 +20378,8 @@ components:
             $ref: '#/components/schemas/Incident'
         total:
           type: integer
-          description: Total number of matching incidents
+          description: >-
+            Total number of matching incidents. -1 when the request set skipTotal: the count was not run, so there is no total (not a lower bound).
         limit:
           type: integer
         offset:
@@ -21003,6 +21040,14 @@ components:
     ProblemSearchPayload:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -21073,7 +21118,8 @@ components:
             $ref: '#/components/schemas/Problem'
         total:
           type: integer
-          description: Total number of matching problems
+          description: >-
+            Total number of matching problems. -1 when the request set skipTotal: the count was not run, so there is no total (not a lower bound).
         limit:
           type: integer
         offset:

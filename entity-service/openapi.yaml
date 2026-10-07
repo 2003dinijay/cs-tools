@@ -15328,6 +15328,15 @@ components:
     SearchCasesRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one,
+            and for a search that sets groupBy (its totals are the bucket counts).
         filters:
           $ref: '#/components/schemas/SearchCasesFilters'
         sortBy:
@@ -16108,6 +16117,14 @@ components:
           description: Populated instead of cases when the request set groupBy.
         total:
           type: integer
+          description: >-
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records. Three paths ignore skipTotal and never return -1: the
+            ServiceNow data source (its own reported total), a search with groupBy
+            (the bucket counts) and POST /announcements/registry/cases (the number
+            of cases returned).
         offset:
           type: integer
         limit:
@@ -16647,6 +16664,14 @@ components:
     SearchChangeRequestsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -16839,6 +16864,12 @@ components:
             $ref: '#/components/schemas/SearchChangeRequestView'
         total:
           type: integer
+          description: >-
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:
@@ -20501,6 +20532,14 @@ components:
     SearchIncidentsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -20652,6 +20691,12 @@ components:
             $ref: '#/components/schemas/SearchIncidentView'
         total:
           type: integer
+          description: >-
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:
@@ -21452,6 +21497,14 @@ components:
     SearchProblemsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -21529,6 +21582,12 @@ components:
             $ref: '#/components/schemas/SearchProblemView'
         total:
           type: integer
+          description: >-
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:
@@ -21804,6 +21863,14 @@ components:
     SearchConversationsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -21897,6 +21964,12 @@ components:
             $ref: '#/components/schemas/SearchConversationView'
         total:
           type: integer
+          description: >-
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:
