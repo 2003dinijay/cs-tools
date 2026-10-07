@@ -103,7 +103,7 @@
 //     provisioned: nobody is asked and nobody can answer, so the change waits at
 //     the gate (Re-schedule, Roll back and Cancel are still on offer where they are
 //     for any gate). Such a change can no longer be MADE by Request Approval, which is
-//     refused (a 400 with the backend's words, `REQUEST_APPROVAL_NEEDS_CONTACT`; and
+//     refused (a 400 with the backend's words, `nobodyToAskMessage`; and
 //     `REQUEST_APPROVAL_NEEDS_PROJECT` with no project at all) while a customer box is
 //     ticked and nobody on the project can be asked, so a spec that needs the dead end
 //     that remains for OLDER changes starts at the gate (`startAtState`). Ticking
@@ -380,12 +380,14 @@ export const REQUEST_APPROVAL_NEEDS_PROJECT =
   "approval cannot be requested: the customer's approval and/or review is required but no Customer Project is set, so there is nobody to ask. Select a Customer Project first (or clear the requirement).";
 /**
  * The refusal of Request Approval (and of ticking a customer box on after New) when the Customer Project is set but nobody on
- * it can be asked: its registered contacts, leaving out the requester and anyone no longer active, are none. Such a change
- * would reach Customer Approval / Customer Review with nobody to answer, and staff never answer for the customer, so it could
- * only be cancelled. Placeholder wording until the backend's own lands (same text, character for character, then).
+ * it can be asked: its registered contacts, leaving out the requester and anyone no longer active, are none (entity-service
+ * `nobodyToAskMsg`). Such a change would reach Customer Approval / Customer Review with nobody to answer, and staff never answer
+ * for the customer, so it could only be cancelled (or rolled back from Review). It names the box (or both) the refusal is about:
+ * at Request Approval the boxes that are set (the request's value, else the stored one), after New the box(es) turned on. Same
+ * text, character for character, which the real-stack spec asserts against the real API.
  */
-export const REQUEST_APPROVAL_NEEDS_CONTACT =
-  "customer approval is required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first";
+export const nobodyToAskMessage = (approval: boolean, review: boolean): string =>
+  `${approval && review ? "customer approval and customer review are" : review ? "customer review is" : "customer approval is"} required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first`;
 
 /**
  * The 400 the backend answers a manual PATCH of `rollback` out of Customer Review
@@ -870,9 +872,13 @@ export async function installFakeChangeRequestApi(
       if (!inNew && !box.stored && body[box.field] === true) {
         if (box.gateLocked.includes(state)) return requirementGatePassedMessage(box.field, state);
         if (!scope.projectId) return requirementNeedsProjectMessage(box.field);
-        // ... and only when somebody on that project can be asked (nobody can be added to the project's group by staff here).
-        if (askableContacts(scope.projectId).length === 0) return REQUEST_APPROVAL_NEEDS_CONTACT;
       }
+    }
+    // 4b. ... and a box turned on needs somebody on that project who can be asked (the refusal names the box(es) turned on).
+    if (!inNew) {
+      const approvalOn = !flags.customerApprovalRequired && body.customerApprovalRequired === true;
+      const reviewOn = !flags.customerReviewRequired && body.customerReviewRequired === true;
+      if ((approvalOn || reviewOn) && askableContacts(scope.projectId).length === 0) return nobodyToAskMessage(approvalOn, reviewOn);
     }
     // 6. Request Approval needs somebody to ask when the customer's part is required: a Customer Project, with at least one
     // registered contact other than the requester (the same people the customer stage would ask).
@@ -881,7 +887,7 @@ export async function installFakeChangeRequestApi(
       const review = typeof body.customerReviewRequired === "boolean" ? body.customerReviewRequired : flags.customerReviewRequired;
       const project = typeof body.projectId === "string" && body.projectId ? body.projectId : scope.projectId;
       if ((approval || review) && !project) return REQUEST_APPROVAL_NEEDS_PROJECT;
-      if ((approval || review) && askableContacts(project).length === 0) return REQUEST_APPROVAL_NEEDS_CONTACT;
+      if ((approval || review) && askableContacts(project).length === 0) return nobodyToAskMessage(approval, review);
     }
     return null;
   };

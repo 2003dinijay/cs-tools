@@ -133,6 +133,10 @@ requests through the CSM portal's backend as the seed's staff (`utils/realStackA
 approve; the mock identity provider signs any email in) and drive the Edit dialog as jane. They write, so they need the
 stack under test named explicitly (the backend, the identity provider and entity-service: all three) and SKIP without it -- there is no default, the stock `:8082` could be somebody's running stack:
 
+One of them ("Request Approval is refused when a customer box is ticked and nobody on the project can be asked") needs a project whose
+contacts cannot be asked: it takes the first active project for which the backend itself reports no `customerContacts` (the generated
+projects hold no registered portal-user contact; the seeded Example Corp and Other Corp do) and skips when every project has one.
+
 | Variable | Meaning |
 |---|---|
 | `E2E_CSM_BFF_URL` | The CSM portal's backend as the host reaches it (isolated stack: `http://localhost:18082`) |

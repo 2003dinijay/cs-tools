@@ -101,7 +101,7 @@ import {
   requirementCannotBeRemovedMessage,
   requirementGatePassedMessage,
   requirementNeedsProjectMessage,
-  REQUEST_APPROVAL_NEEDS_CONTACT,
+  nobodyToAskMessage,
   REQUEST_APPROVAL_NEEDS_PROJECT,
   CANNOT_RETURN_TO_NEW,
   stateJumpMessage,
@@ -1566,10 +1566,14 @@ test.describe("change request lifecycle — project and deployments (mocked back
 // server-side (`api.customerDecides`) and assert what the CSM page then shows
 // (approve -> Scheduled / Closed, reject -> Canceled / Rollback; the contact's row
 // Approved / Rejected, the others' Cancelled). With no project, a project without
-// registered contacts, or none of them eligible, no stage exists: nobody is asked,
-// and staff never record a customer's approval or review, so the change waits at
-// the gate with what staff always have there (Re-schedule, Roll back at Customer
-// Review, Cancel change) until the customer can be asked.
+// registered contacts, or none of them eligible, Request Approval is REFUSED while a
+// customer box is ticked (see "Request Approval is refused when nobody can be asked"), so
+// a change raised here never reaches a gate with nobody to answer. What is left is an
+// OLDER change already at a gate (before that rule, its contacts gone since, or from
+// ServiceNow with no request): no stage exists, nobody is asked, and staff never record a
+// customer's approval or review, so it waits at the gate with what staff always have there
+// (Re-schedule, Roll back at Customer Review, Cancel change) until the customer can be
+// asked. Those specs start at the gate (`openOlderChangeAt`).
 //
 
 const NO_CUSTOMER_GROUP_TEXT =
@@ -1988,12 +1992,13 @@ test.describe("change request approval flow — Request Approval is refused when
   /** The disabled Request Approval's focusable wrapper, found by the reason it carries (`Request Approval: <reason>`). */
   const blocked = (page: Page): Locator => page.getByLabel(`Request Approval: ${REQUEST_APPROVAL_NEEDS_CONTACT_REASON}`);
 
-  for (const [type, boxes, flags] of [
+  const TICKED: Array<[type: "normal" | "standard" | "emergency", boxes: string, flags: { customerApprovalRequired?: boolean; customerReviewRequired?: boolean }]> = [
     ["normal", "Customer Approval", { customerApprovalRequired: true }],
     ["normal", "Customer Review", { customerReviewRequired: true }],
     ["standard", "both boxes", { customerApprovalRequired: true, customerReviewRequired: true }],
     ["emergency", "Customer Approval", { customerApprovalRequired: true }],
-  ] as const) {
+  ];
+  for (const [type, boxes, flags] of TICKED) {
     test(`${type} change, ${boxes} ticked, a project with no registered contact: Request Approval is disabled with the reason, the API refuses it in the backend's words, and nothing moves`, async ({ page }) => {
       test.setTimeout(120_000);
       const api = await installFakeChangeRequestApi(page, type, FAKE_CREATOR, flags, NO_CONTACTS);
@@ -2011,7 +2016,8 @@ test.describe("change request approval flow — Request Approval is refused when
       await detail.closeChangeStateMenu();
 
       // The backend is the authority: asked anyway it says why in words, and moves nothing.
-      expect(await patchStateFromPage(page, "assess")).toEqual({ status: 400, message: REQUEST_APPROVAL_NEEDS_CONTACT });
+      const words = nobodyToAskMessage(!!flags.customerApprovalRequired, !!flags.customerReviewRequired);
+      expect(await patchStateFromPage(page, "assess")).toEqual({ status: 400, message: words });
       expect(api.state()).toBe("new");
       expect(api.stages()).toEqual([]);
       expect(api.journal()).toEqual([]);
@@ -2088,7 +2094,7 @@ test.describe("change request approval flow — Request Approval is refused when
 
     await detail.requestApproval();
     // The backend's own words, verbatim, in the same place every other refused transition shows.
-    await expect(page.getByRole("alert").filter({ hasText: REQUEST_APPROVAL_NEEDS_CONTACT })).toBeVisible();
+    await expect(page.getByRole("alert").filter({ hasText: nobodyToAskMessage(true, false) })).toBeVisible();
     expect(api.state()).toBe("new");
     expect(api.stages()).toEqual([]);
     await expect(detail.currentStep()).toContainText("New");
@@ -2117,13 +2123,12 @@ test.describe("change request approval flow — Request Approval is refused when
     await expect(detail.editCustomerApprovalCheckbox()).toBeEnabled();
     await detail.editCustomerApprovalCheckbox().check();
     await detail.saveEdit();
-    await expect(detail.editDialog().getByRole("alert")).toContainText(REQUEST_APPROVAL_NEEDS_CONTACT);
+    await expect(detail.editDialog().getByRole("alert")).toContainText(nobodyToAskMessage(true, false));
     await expect(detail.editDialog()).toBeVisible();
     expect(api.flags()).toEqual({ customerApprovalRequired: false, customerReviewRequired: false });
-    // The refusal is the same at the API, whichever box.
-    for (const field of ["customerApprovalRequired", "customerReviewRequired"]) {
-      expect(await patchFromPage(page, { [field]: true }), field).toEqual({ status: 400, message: REQUEST_APPROVAL_NEEDS_CONTACT });
-    }
+    // The refusal is the same at the API, naming whichever box is turned on (or both).
+    expect(await patchFromPage(page, { customerReviewRequired: true })).toEqual({ status: 400, message: nobodyToAskMessage(false, true) });
+    expect(await patchFromPage(page, { customerApprovalRequired: true, customerReviewRequired: true })).toEqual({ status: 400, message: nobodyToAskMessage(true, true) });
     // Once a contact registers, the same save is accepted.
     api.setProjectContacts(GAMMA.id, [FAKE_CUST_ONE]);
     await detail.saveEdit();
@@ -3880,12 +3885,12 @@ test.describe("the customer requirements lock (real stack)", () => {
 
     // The backend is the authority: asked anyway, it says why in the words the fake mirrors, and moves nothing.
     const refused = await staff("jane").patch(cr.id, { state: "assess" });
-    expect([refused.status, message(refused)]).toEqual([400, REQUEST_APPROVAL_NEEDS_CONTACT]);
+    expect([refused.status, message(refused)]).toEqual([400, nobodyToAskMessage(true, false)]);
     expect(await stateOf(cr.id)).toBe("new");
     // The same for the review box, alone or with the other.
     const second = await raise({ subject: lockSubject("nobody to ask, review only"), projectId: nobody!.id, approval: false, review: true });
     const refusedReview = await staff("jane").patch(second.id, { state: "assess" });
-    expect([refusedReview.status, message(refusedReview)]).toEqual([400, REQUEST_APPROVAL_NEEDS_CONTACT]);
+    expect([refusedReview.status, message(refusedReview)]).toEqual([400, nobodyToAskMessage(false, true)]);
     // ...while clearing the box in the same PATCH leaves nobody to ask for, and is accepted.
     expect((await staff("jane").patch(second.id, { customerReviewRequired: false, state: "assess" })).status).toBe(200);
     expect(await stateOf(second.id)).toBe("assess");
@@ -3906,14 +3911,19 @@ test.describe("the customer requirements lock (real stack)", () => {
     await expect(detail.editCustomerReviewCheckbox()).toBeEnabled();
     await detail.editCustomerReviewCheckbox().check();
     await detail.saveEdit();
-    await expect(detail.editDialog().getByRole("alert")).toContainText(REQUEST_APPROVAL_NEEDS_CONTACT);
+    await expect(detail.editDialog().getByRole("alert")).toContainText(nobodyToAskMessage(false, true));
     await shotTo(page, "24-csm-edit-dialog-tick-on-refused-nobody-to-ask");
     await expect(detail.editDialog()).toBeVisible();
     await detail.editDialog().getByRole("button", { name: "Cancel" }).click();
-    for (const field of ["customerApprovalRequired", "customerReviewRequired"]) {
+    for (const [field, words] of [
+      ["customerApprovalRequired", nobodyToAskMessage(true, false)],
+      ["customerReviewRequired", nobodyToAskMessage(false, true)],
+    ] as const) {
       const tick = await staff("jane").patch(cr.id, { [field]: true });
-      expect([tick.status, message(tick)], field).toEqual([400, REQUEST_APPROVAL_NEEDS_CONTACT]);
+      expect([tick.status, message(tick)], field).toEqual([400, words]);
     }
+    const both = await staff("jane").patch(cr.id, { customerApprovalRequired: true, customerReviewRequired: true });
+    expect([both.status, message(both)]).toEqual([400, nobodyToAskMessage(true, true)]);
     const stored = (await staff("jane").get(cr.id)).body;
     expect([stored.state, stored.customerApprovalRequired, stored.customerReviewRequired]).toEqual(["assess", false, false]);
   });

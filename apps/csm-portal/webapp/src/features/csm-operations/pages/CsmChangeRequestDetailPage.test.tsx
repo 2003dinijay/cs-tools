@@ -1467,11 +1467,13 @@ const LC_ANSWER_REFUSAL = {
 
 /**
  * The backend's refusal of Request Approval (and of ticking a customer box on after New) when the Customer Project is set but
- * nobody on it can be asked: its registered contacts, leaving out the requester and anyone no longer active, are none.
- * Placeholder wording until the backend's own lands.
+ * nobody on it can be asked: its registered contacts, leaving out the requester and anyone no longer active, are none
+ * (entity-service `nobodyToAskMsg`). It names the box (or both) it is about, character for character as the backend words it.
  */
-const LC_REQUEST_APPROVAL_NEEDS_CONTACT =
-  "customer approval is required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first";
+function lcNobodyToAsk(approval: boolean, review: boolean): string {
+  const what = approval && review ? "customer approval and customer review are" : review ? "customer review is" : "customer approval is";
+  return `${what} required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first`;
+}
 
 function lcStage(name: string, group: string, who: { id: string; name: string }): BeChangeRequestApproval {
   return {
@@ -1649,7 +1651,7 @@ function lcSeed(
       (lc.cr.customerApprovalRequired || lc.cr.customerReviewRequired) &&
       lc.customerMembers.length === 0
     ) {
-      throw new BackendApiError(400, LC_REQUEST_APPROVAL_NEEDS_CONTACT);
+      throw new BackendApiError(400, lcNobodyToAsk(lc.cr.customerApprovalRequired === true, lc.cr.customerReviewRequired === true));
     }
     if (target === "assess") {
       if (lc.cr.type === "standard") lcSetState(lcAfterInternalApproval());
@@ -3137,7 +3139,7 @@ describe("CsmChangeRequestDetailPage — customer group: Request Approval is ref
     expect(patchMutateMock.mock.calls[0]![0]).toEqual({ id: "chg-1", patch: { state: "assess" } });
     // The backend's own words, verbatim, in the same place every other refusal of a transition shows.
     expect(showErrorMock).toHaveBeenCalledTimes(1);
-    expect(showErrorMock.mock.calls[0]![0]).toBe(LC_REQUEST_APPROVAL_NEEDS_CONTACT);
+    expect(showErrorMock.mock.calls[0]![0]).toBe(lcNobodyToAsk(true, false));
     // Nothing moved: still New, no approval stage, and the Request Approval offer is still there.
     expect(lc.cr.state).toBe("new");
     expect(lc.approvals).toEqual([]);
@@ -3146,11 +3148,24 @@ describe("CsmChangeRequestDetailPage — customer group: Request Approval is ref
     view.unmount();
   });
 
+  it.each([
+    [{ approval: false, review: true }, "customer review is"],
+    [{ approval: true, review: true }, "customer approval and customer review are"],
+  ] as const)("the refusal names the box it is about: %j reads \"%s required\"", (flags, words) => {
+    lcSeed("normal", flags, { members: [], contacts: [{ id: LC_CREATOR.id, name: LC_CREATOR.name }] });
+    const view = lcOpenAs(LC_CREATOR);
+    fireEvent.click(requestApprovalButton());
+    expect(showErrorMock.mock.calls[0]![0]).toBe(lcNobodyToAsk(flags.approval, flags.review));
+    expect(showErrorMock.mock.calls[0]![0]).toMatch(new RegExp(`^${words} required but nobody on this project can be asked`));
+    expect(lc.cr.state).toBe("new");
+    view.unmount();
+  });
+
   it("registered contacts none of whom is active: the same refusal, shown the same way", () => {
     lcSeed("standard", { approval: true, review: false }, { members: [], contacts: [{ id: "00000000-0000-0000-0000-0000000000d1", name: "Dormant Contact" }] });
     const view = lcOpenAs(LC_CREATOR);
     fireEvent.click(requestApprovalButton());
-    expect(showErrorMock.mock.calls[0]![0]).toBe(LC_REQUEST_APPROVAL_NEEDS_CONTACT);
+    expect(showErrorMock.mock.calls[0]![0]).toBe(lcNobodyToAsk(true, false));
     expect(lc.cr.state).toBe("new");
     view.unmount();
   });

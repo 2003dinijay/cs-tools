@@ -720,13 +720,14 @@ describe("EditChangeRequestDialog — Customer Approval / Customer Review checkb
   });
 
   describe("ticking a box on when nobody on the project can be asked: the backend refuses, and its words show (the dialog does not guess who can be asked)", () => {
-    const NOBODY_CAN_BE_ASKED =
-      "customer approval is required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first";
+    // The backend names the box turned on (entity-service `nobodyToAskMsg`).
+    const nobodyCanBeAsked = (what: string): string =>
+      `${what} required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first`;
 
     it.each([
-      ["authorize", "Customer Approval", { customerApprovalRequired: true }],
-      ["assess", "Customer Review", { customerReviewRequired: true }],
-    ] as const)("in %s the unticked %s box stays tickable and is sent; the refusal then shows verbatim in the dialog", (state, label, sent) => {
+      ["authorize", "Customer Approval", { customerApprovalRequired: true }, nobodyCanBeAsked("customer approval is")],
+      ["assess", "Customer Review", { customerReviewRequired: true }, nobodyCanBeAsked("customer review is")],
+    ] as const)("in %s the unticked %s box stays tickable and is sent; the refusal then shows verbatim in the dialog", (state, label, sent, refusal) => {
       const onSave = vi.fn<(patch: BePatchChangeRequestPayload) => void>();
       const cr: BeChangeRequestDetail = { ...BASE_CR, state, project: ACME };
       const { rerender } = render(<EditChangeRequestDialog cr={cr} isSaving={false} onClose={vi.fn()} onSave={onSave} />);
@@ -735,8 +736,8 @@ describe("EditChangeRequestDialog — Customer Approval / Customer Review checkb
       fireEvent.click(saveButton());
       expect(onSave).toHaveBeenCalledWith(sent);
       // The page hands the backend's 400 back as `saveError`.
-      rerender(<EditChangeRequestDialog cr={cr} isSaving={false} saveError={NOBODY_CAN_BE_ASKED} onClose={vi.fn()} onSave={onSave} />);
-      expect(screen.getByRole("alert")).toHaveTextContent(NOBODY_CAN_BE_ASKED);
+      rerender(<EditChangeRequestDialog cr={cr} isSaving={false} saveError={refusal} onClose={vi.fn()} onSave={onSave} />);
+      expect(screen.getByRole("alert")).toHaveTextContent(refusal);
       // The box is still there to untick (nothing was saved), so the dialog is not stuck.
       expect(screen.getByRole("checkbox", { name: label })).toBeChecked();
     });
