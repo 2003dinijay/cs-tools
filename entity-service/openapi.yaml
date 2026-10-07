@@ -5810,8 +5810,8 @@ paths:
         rendered from, so what the portal offers is exactly what is accepted: new ->
         assess (Request Approval; where it lands depends on the type), canceled; assess
         and authorize -> canceled only (the peer approval and the CAB / ECAB approval
-        move them on by themselves); customer_approval -> authorize (Re-schedule),
-        canceled; scheduled -> implement, canceled; implement -> review, canceled; review
+        move them on by themselves); customer_approval -> authorize (Re-schedule /
+        Propose a different time: the state does not move), canceled; scheduled -> implement, canceled; implement -> review, canceled; review
         -> closed (or customer_review when customerReviewRequired), rollback, canceled;
         customer_review -> rollback, canceled. closed, canceled and rollback are FINAL:
         every request to move one is a 400 that names both states (`state "implement"
@@ -5829,11 +5829,38 @@ paths:
         rollback outside review keep the refusals of their own described below, also when
         the change request is already in that state.)
 
-        Re-schedule re-asks the customer on every row: it writes customer_approval_required
-        = true with the new window (never the ServiceNow-owned is_customer_approval_required),
-        so that the CAB / ECAB approval that follows ends in customer_approval again also
-        for a change request whose box is false because it was created or synced before
-        that column existed. With nobody to ask the change request waits there.
+        Re-schedule ({state: "authorize"} out of customer_approval) asks the customer again
+        on every row, for every change type, and the change request STAYS in customer_approval:
+        the new window is applied, the pending customer request is cancelled (kept as a record)
+        and a fresh one is provisioned for the project's registered contacts. Nothing goes
+        through CAB / ECAB again (the change itself has not changed, only its time) and no
+        requirement flag is written (neither customer_approval_required nor the ServiceNow-owned
+        is_customer_approval_required). It is refused with the words of Request Approval's
+        refusal ("customer approval is required but nobody on this project can be asked ...")
+        when nobody can be asked.
+
+        A customer's proposed time (see the customerProposal read model). A customer proposes a
+        START in the Customer Portal: it is written to customer_updated_on (ServiceNow's own
+        column) and nothing else; the change request stays in customer_approval with its planned
+        window and the customers' request untouched, and waits for WSO2. WSO2 answers with this
+        PATCH, naming the proposal (expectedCustomerUpdatedOn) and, for Accept, the planned window
+        the page showed (expectedPlannedStartOn / expectedPlannedEndOn): ACCEPT PROPOSED TIME is
+        {confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn, expectedPlannedStartOn,
+        expectedPlannedEndOn} and nothing else -- one write that applies the proposed start to the
+        planned window (the planned length is kept), writes AGREE and moves the change request to
+        scheduled, with no CAB approval, no second ask of the customer and no customer approval
+        recorded ({state: "scheduled"} stays a 400 from every state); PROPOSE A DIFFERENT TIME is
+        {state: "authorize", plannedStartOn?, plannedEndOn?, expectedCustomerUpdatedOn, ...} -- the
+        window WSO2 proposes instead and DISAGREE, the customers asked again; with no window (or the
+        planned window restated) it is a decline: only DISAGREE is written and the customers keep
+        their request. A staff {state: "authorize"} that finds a proposal waiting must name it
+        (409 otherwise); Accept / the answer is refused with a 409 when no proposal waits, the
+        proposal or the planned window is not the one named, or the proposed start has passed or
+        the planned window has no length, and with a 400 when the change request is on hold. These
+        are PostgreSQL-only: ServiceNow's API has no field for them, so the dual-write mirror carries
+        only what PostgreSQL committed (Accept: scheduled and the window; a counter: the window, not
+        the state; a customer's proposal: nothing), the sync may rewrite the columns while it runs, and
+        the pure ServiceNow data source refuses confirmCustomerUpdatedDate / expectedCustomerUpdatedOn.
 
         Compliance rule: no staff action records the customer's approval or review on
         the customer's behalf. The customer's answer is the customer's decision and
@@ -5842,8 +5869,9 @@ paths:
         customer_approval / customer_review moves on ONLY through the customer's own
         answer (given in the Customer Portal, below); the staff exits that stay are
         Cancel (any state that is not final), Re-schedule ({state: "authorize"} with a
-        changed window, out of customer_approval: the customer is asked again) and
-        Rollback (out of customer_review, while nobody is being asked). So, from an
+        changed window, out of customer_approval: the customer is asked again, the state
+        does not move), Accept proposed time (only while the customer's own proposal
+        waits, see above) and Rollback (out of customer_review, while nobody is being asked). So, from an
         internal caller: {state: "scheduled"} is a 400 from EVERY state, out of
         customer_approval included (`state "scheduled" cannot be set manually from
         customer_approval: the customer's approval can only be given by the customer in
@@ -5892,20 +5920,22 @@ paths:
         A proposed window, from a registered contact the customer's approval has been
         asked of (the same test as customerCanAnswer: a REQUESTED approval on the live
         Customer Approval stage) while the change request is in customer_approval, is the
-        Re-schedule: the new window is applied, the pending customer request is cancelled,
-        and the change goes back through CAB / ECAB approval (a Standard change stays in
-        customer_approval and the customer is asked again). The window must be a date-time
-        still to come, must have a duration (the end after the start; a start sent alone is
-        held against the stored end), and must differ from the stored one (400 otherwise).
-        Anywhere else, with nobody asked, or while on hold, it is a 409; a registered
-        contact who was not asked is a 403.
+        a PROPOSAL: it writes the proposed START to customer_updated_on and nothing else (the
+        change request stays in customer_approval, its planned window and the customers' request
+        untouched) and waits for WSO2's answer. The planned LENGTH is kept: the portal sends the
+        start plus the end that keeps it, and any other end is a 400 ("a proposed time moves the start
+        and keeps the planned length of 2 hours: plannedEndOn must be ..., or be left out"); a start
+        alone is accepted, an end alone is a 400 ("a proposed implementation time needs a new start").
+        The start must be a date-time still to come, differ from the planned start (400 "plannedStartOn
+        is the planned start already") and from a proposal already waiting (400) or one WSO2 declined
+        (400). Anywhere else, with nobody asked, on hold, over a window with no length to keep, or while
+        an approval that is not the customer's is still being asked, it is a 409; a registered contact who
+        was not asked is a 403.
 
         plannedStartOn / plannedEndOn, from any caller, are RFC 3339 or
         "YYYY-MM-DD HH:MM:SS" (UTC), in the years 2000 to 2100: anything else
         ("infinity", "now", a date alone, a time-zone name) is a 400 that names the field.
-        A customer's proposal that names only an end keeps the stored start, which must
-        then still be to come (400 "plannedStartOn is in the past: the current planned
-        start (...) has passed; propose a new start as well").
+        A customer's proposal is a start (an end alone is a 400).
 
         Customer requirements lock. The Customer Project (projectId) and the two
         creation-form boxes (customerApprovalRequired, customerReviewRequired) are free
@@ -16798,6 +16828,61 @@ components:
         limit:
           type: integer
 
+    ChangeRequestCustomerProposal:
+      type: object
+      required: [startOn, answer]
+      description: >-
+        What the change request says about a time the customer proposed for it, derived on every
+        read from ServiceNow's own columns (customer_updated_on: the customer's proposed plan START;
+        customer_updated_date_confirmation: WSO2's answer, AGREE / DISAGREE) and the approver rows;
+        nothing extra is stored. Present on the PostgreSQL data source when customer_updated_on is
+        set. While `answer` is "pending" the planned window (plannedStartOn / plannedEndOn) is still
+        the one WSO2 planned: a proposal changes nothing until WSO2 answers.
+      properties:
+        startOn:
+          type: string
+          format: date-time
+          description: The proposed plan start (RFC 3339 UTC), to be sent back as expectedCustomerUpdatedOn.
+        endOn:
+          type: string
+          format: date-time
+          description: The proposed end, startOn plus the length of the planned window. Only while pending and the planned window has a length.
+        answer:
+          type: string
+          enum: [pending, agreed, disagreed, unanswered]
+          description: >-
+            pending: the change request is in customer_approval, the proposed start differs from the
+            planned start, WSO2 has not answered and no approval but the customer's own is still asked
+            -- the only state WSO2 can act on. agreed / disagreed: WSO2's answer. unanswered: history.
+        proposerRecorded:
+          type: boolean
+          description: >-
+            While pending: true when the last writer of the change request is a registered contact of
+            its project (then they proposed the time). False when it is not knowable -- a date a WSO2
+            user wrote in ServiceNow, one left from an older cycle, or a proposal edited over since --
+            and the page must say the proposer is not recorded.
+        proposedByName:
+          type: string
+          description: Staff readers only, while pending and proposerRecorded.
+        proposedByEmail:
+          type: string
+          description: Staff readers only, while pending and proposerRecorded.
+        proposedOn:
+          type: string
+          format: date-time
+          description: Staff readers only, while pending and proposerRecorded.
+        proposedByViewer:
+          type: boolean
+          description: External readers only, while pending - whether the proposal is the reader's own. No names reach a customer.
+        canAccept:
+          type: boolean
+          description: Staff readers only, while pending - whether Accept proposed time would be accepted right now (the server re-checks under its row lock).
+        acceptBlockedReason:
+          type: string
+          description: >-
+            Staff readers only, when canAccept is false: why, in the words of the refusal (on hold, the
+            proposed start has passed, the planned window has no length to keep).
+
     ChangeRequest:
       allOf:
         - $ref: '#/components/schemas/SearchChangeRequestView'
@@ -16876,6 +16961,8 @@ components:
                 PostgreSQL data source; ABSENT for staff and internal callers, for
                 the ServiceNow data source and when the check could not be made.
                 Absent means unknown, which is not false. Never on search rows.
+            customerProposal:
+              $ref: '#/components/schemas/ChangeRequestCustomerProposal'
             approvedBy:
               $ref: '#/components/schemas/EntityRef'
               nullable: true
@@ -17855,13 +17942,33 @@ components:
           type: string
           description: >-
             Planned end date and time, in the same formats as plannedStartOn.
+        confirmCustomerUpdatedDate:
+          type: string
+          enum: [agree]
+          description: >-
+            ACCEPT PROPOSED TIME: WSO2's acceptance of the time the customer proposed
+            (ServiceNow's u_confirm_customer_updated_date). "agree" is the only value (to
+            decline, propose a different time). Sent by staff alone, with only
+            expectedCustomerUpdatedOn, expectedPlannedStartOn and expectedPlannedEndOn (all
+            three required): applies the proposed start to the planned window (the planned
+            length is kept), writes AGREE and moves customer_approval to scheduled in one write.
+            403 for an external caller, 409 when no proposal waits or the page is stale, 400
+            when the change request is on hold. PostgreSQL data source only.
+        expectedCustomerUpdatedOn:
+          type: string
+          format: date-time
+          description: >-
+            The proposal a staff answer is about (customerProposal.startOn, RFC 3339).
+            Required with confirmCustomerUpdatedDate and, on a staff state "authorize", while a
+            proposal waits (refused with a 409 when none does). Anywhere else a 400.
         expectedPlannedStartOn:
           type: string
           description: >-
-            Goes with a CUSTOMER's isCustomerApproved / isCustomerReviewed and
-            nothing else (400 otherwise): the planned start the customer was shown
-            (RFC 3339, as the change request reads). The answer is recorded only
-            while it is still the stored planned start, else 409. Omitted: no check.
+            Goes with a CUSTOMER's isCustomerApproved / isCustomerReviewed, WSO2's
+            confirmCustomerUpdatedDate, or a staff state "authorize" and nothing else (400
+            otherwise): the planned start the caller was shown (RFC 3339, as the change
+            request reads). The answer is recorded only while it is still the stored planned
+            start, else 409. Omitted: no check (required with confirmCustomerUpdatedDate).
             PostgreSQL data source only.
         expectedPlannedEndOn:
           type: string
@@ -17884,7 +17991,8 @@ components:
             (400). "scheduled" is never accepted from an internal caller (it is reached by
             the approval flow, or by the customer's own approval out of customer_approval);
             out of customer_approval / customer_review only canceled, authorize
-            (Re-schedule, customer_approval) and rollback (customer_review) are accepted.
+            (Re-schedule / Propose a different time, customer_approval: the state does not
+            move) and rollback (customer_review) are accepted.
           enum:
             - new
             - assess

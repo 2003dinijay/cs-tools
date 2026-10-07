@@ -2820,8 +2820,9 @@ create. The type cannot be changed by PATCH once an approval stage exists.
 | Standard | New →(**Request Approval**)→ **Scheduled** (no approval stages at all) → Implement → Review → Closed |
 
 Two off-ramps/loops sit outside the table: **Roll back** (from Review / Customer
-Review, final) and **Re-schedule** (from Customer Approval back to Authorize,
-below).
+Review, final) and **Re-schedule** (a loop out of Customer Approval that asks the
+customer again: the state does not move and nothing goes through CAB again; see
+"A customer's proposed time" below).
 
 The table is the flow with both creation-form checkboxes **unticked**. With
 **Customer Approval** ticked, every "→ Scheduled" above becomes "→ **Customer
@@ -2862,7 +2863,7 @@ offered states are filtered the same way).
   | new (or NULL) | `assess` (Request Approval), `canceled` |
   | assess | `canceled` only: the **peer approval** moves it on (Assess -> Authorize is the cascade's) |
   | authorize | `canceled` only: the **CAB / ECAB approval** moves it on (to scheduled, or customer_approval) |
-  | customer_approval | `authorize` (Re-schedule), `canceled`: the **customer's answer** moves it on |
+  | customer_approval | `authorize` (Re-schedule / Propose a different time: **the state does not move**), `canceled`: the **customer's answer** moves it on -- and WSO2's **Accept proposed time** (`confirmCustomerUpdatedDate`, no state named), only while the customer's own proposal waits |
   | scheduled | `implement`, `canceled` |
   | implement | `review`, `canceled` |
   | review | `closed` (or `customer_review` when `customerReviewRequired`), `rollback`, `canceled` |
@@ -2936,7 +2937,9 @@ offered states are filtered the same way).
   `legalNextStates` per state (the single source of truth the webapp renders): new
   `[assess, canceled]`, assess `[canceled]` (the peer approval moves it on), authorize
   `[canceled]` (the CAB / ECAB approval does),
-  customer_approval `[authorize, canceled]` (`authorize` = Re-schedule), scheduled
+  customer_approval `[authorize, canceled]` (`authorize` = Re-schedule / Propose a different time;
+  the state does not move; WSO2's Accept proposed time is not a state: it is its own request,
+  `confirmCustomerUpdatedDate`, so `scheduled` is still never offered), scheduled
   `[implement, canceled]`, implement `[review, canceled]`, review
   `[closed, rollback, canceled]` -- or `[customer_review, rollback, canceled]` when
   `customerReviewRequired` --, customer_review `[rollback, canceled]`, terminal
@@ -2945,55 +2948,52 @@ offered states are filtered the same way).
   `[canceled]`**: the manual `rollback` is withdrawn and refused too (a member's
   rejection rolls the change back). `customer_approval` is `[authorize, canceled]`
   live or not (Re-schedule stays: an internal user may re-plan, which supersedes
-  the pending request).
+  the pending request -- and, with nobody to ask, is refused).
 * **Re-schedule** (the process diagram's "Time Change" loop). In
   `customer_approval`, `PATCH {state: "authorize", plannedStartOn?,
-  plannedEndOn?}` sends the change back through internal approval because the
-  planned time changed. It is the one manual way into `authorize`; from any
-  other state the PATCH is a 400 `state "authorize" cannot be set manually: it
-  is reached automatically through the approval flow (Request Approval, then
-  peer approval); it can only be set by hand to re-schedule a change from
-  customer_approval`. **"Time Change = Yes" is enforced**: the request must
-  carry a start and/or end that differs from the stored instant, else 400
-  `re-scheduling requires a changed planned start or end: ...` (a bound that is
-  not a date-time: 400 `plannedStartOn must be a valid date-time, either RFC 3339
-  ... or YYYY-MM-DD HH:MM:SS in UTC ...`, see "The planned window is parsed
-  here"; an end before the start: 400 `the planned start must not be after the
-  planned end`; an end equal to the start: 400 `... must not be the same as the
-  planned end: the window must have a duration`). The on-hold
-  gate applies; the whole PATCH is one transaction, so a re-schedule that cannot
-  be satisfied (e.g. the CAB group has nobody eligible) changes nothing.
-  Effects: the new window is applied; the customer's pending stage is cancelled
-  (it stays as a record, `provisionCustomerStage` as for any state exit); the
-  state becomes `authorize` and a **fresh internal stage** is provisioned --
-  Normal: a new "CAB Approval" stage (the peer approval stands), Emergency: a
-  new "ECAB Approval" stage -- from the same group with the creator listed
-  cancelled (`provisionReauthorizationStage`; no ordinal-position test, but
-  `provisionApprovalStage` now counts only the FIRST stage of each label, so
-  the Review checkpoint is still provisioned for a re-scheduled change). Stage
-  order after one loop: Peer, CAB, Customer Approval (cancelled), CAB (new).
-  When the new CAB / ECAB stage is approved the ordinary cascade sends the
-  change to `customer_approval` and provisions a fresh Customer Approval stage
-  for the customer group. Rejecting the new stage behaves as a CAB / ECAB
-  rejection always has (siblings cancelled, state unchanged). **Re-schedule re-asks the
-  customer on every row**: it writes our own `customer_approval_required = true` in the same
-  UPDATE as the new window (never the sync-owned `is_customer_approval_required`, ServiceNow's
-  record of the customer's answer), because the cascade that ends the loop reads that column
-  (`approvalGateTarget`) and migration 0189 defaulted it to false for every existing and synced
-  row -- including the ones already waiting in Customer Approval, where a Re-schedule used to go
-  CAB -> **Scheduled** with the customer never asked about the new plan. A row with nobody to
-  ask then waits in Customer Approval, as every such row does; a `customerApprovalRequired:
-  false` resent in the same request is not a way round (the stored false is accepted by the
-  lock, and the Re-schedule writes true).
-  (`TestChangeRequestRescheduleLegacyIntegration_*`: native and migrated-shaped rows, Normal and
-  Standard, with a project with contacts, with none and with no project, and the customer's own
-  proposal.) **Standard** has
-  no internal approval to repeat: the dates are applied, the change **stays in
-  `customer_approval`** and the customer is asked again (pending stage
-  cancelled, a fresh one provisioned when the group has an eligible member;
-  the manual `scheduled` path stays otherwise). The loop can be repeated.
-  `customerApprovalRequired` remains editable in `authorize` (existing rule),
-  so it can still be unticked there. No new notifications.
+  plannedEndOn?}` asks the customer about a new planned time. **`authorize` is the
+  wire name of the loop, not a destination: the change STAYS in `customer_approval`
+  and nothing goes through CAB / ECAB again** (the change itself has not changed, only
+  its time -- the user's rule; the old loop through CAB is deleted,
+  `provisionReauthorizationStage`). It is the one manual way to use `authorize`; from any
+  other state the PATCH is a 400 `state "authorize" cannot be set manually: it is
+  reached automatically through the approval flow (Request Approval, then peer
+  approval); it can only be set by hand to re-schedule a change from
+  customer_approval`. **"Time Change = Yes" is enforced** when no customer proposal
+  waits: the request must carry a start and/or end that differs from the stored
+  instant, else 400 `re-scheduling requires a changed planned start or end: ...` (a
+  bound that is not a date-time: 400 `plannedStartOn must be a valid date-time, either
+  RFC 3339 ... or YYYY-MM-DD HH:MM:SS in UTC ...`, see "The planned window is parsed
+  here"; an end before the start: 400 `the planned start must not be after the planned
+  end`; an end equal to the start: 400 `... must not be the same as the planned end: the
+  window must have a duration`). The on-hold gate applies; the whole PATCH is one
+  transaction, so a re-schedule that cannot be satisfied changes nothing.
+  Effects: the new window is applied; the customers' pending request is cancelled
+  (the stage stays as a record, `cancelLiveCustomerStages`) and a fresh "Customer
+  Approval" stage is provisioned for the project's registered contacts
+  (`provisionCustomerStage`), one `REQUESTED` row each, the creator listed cancelled:
+  the customer is asked again **at once**, for every type (Normal, Emergency,
+  Standard alike). The Review checkpoint is still provisioned later (only the FIRST
+  stage of each label counts for the ordinal, `provisionApprovalStage`). Stage order
+  after one loop of a Normal change: Peer, CAB, Customer Approval (cancelled),
+  Customer Approval (live). **A Re-schedule writes no flag at all**: not our own
+  `customer_approval_required` (it used to write true, because the CAB cascade that
+  ended the loop read it; the loop no longer reaches the cascade) and never the
+  sync-owned `is_customer_approval_required`. **It is refused when nobody can be asked**
+  (`requireSomebodyToAsk`, the function Request Approval's refusal uses, same text:
+  `customer approval is required but nobody on this project can be asked (no
+  registered contact other than the requester): register a contact for the project
+  first`; a change with no Customer Project at all is not judged, as there): it used to
+  be accepted and leave the change waiting. The loop can be repeated.
+  **Old-flow changes still in flight** (a Normal / Emergency change re-scheduled
+  before this loop changed: in `authorize` with a fresh CAB / ECAB stage live and the
+  customer's request cancelled) finish through the CAB as they always did, with no data
+  fix: approval cascades to `customer_approval` and asks the customers afresh
+  (`TestChangeRequestFlowIntegration_StaleApprovals_OldFlowRescheduleStillFinishesThroughTheCAB`).
+  Tests: `TestChangeRequestFlowIntegration_Reschedule*`,
+  `TestChangeRequestRescheduleLegacyIntegration_*` (native and migrated-shaped rows,
+  Normal and Standard, a project with contacts, with none -- refused -- and with no
+  project, and the customer's own proposal).
 * **Roll back** (`rollback`) is the failed-review off-ramp of the process
   diagram and is offered from exactly two states, `review` (internal review
   failed) and `customer_review` (customer review failed), whether or not
@@ -3050,9 +3050,9 @@ offered states are filtered the same way).
     row of every stage whose decidable state is not the change's *current* state --
     and **every** still-`REQUESTED` row once the change is `closed`, `canceled` or
     `rollback`. It runs after the stage the new state needs was provisioned, so
-    that stage (the fresh CAB / ECAB stage of a Re-schedule, the Review stage on
-    entering Review, a customer stage) is kept; the superseded customer stage of a
-    Re-schedule stays as a cancelled record. Examples: Review -> Customer Review /
+    that stage (the Review stage on entering Review, a customer stage, the fresh
+    CAB / ECAB stage of an old-flow Re-schedule still in flight) is kept; the
+    superseded customer stage of a Re-schedule stays as a cancelled record. Examples: Review -> Customer Review /
     Closed / Rollback / Canceled cancels the Review approvers; leaving Customer
     Approval cancels the customer's. Request Approval (New -> Assess provisions
     Peer for `assess`; an Emergency's New -> Authorize provisions ECAB for
@@ -3761,11 +3761,12 @@ The rules, in the order they are applied (**the first failing one wins, every re
      migration.
    - **What is NOT judged.** Only Request Approval (New -> Assess) and the turning-on of a box
      (rule 4b). A change already beyond New is never re-judged: a legacy row seeded in a customer
-     state keeps Cancel / Roll back and Re-schedule exactly as before
-     (`..._ALegacyDeadEndRowIsNotRejudged`). **Residual edge, documented and not built for:** every
+     state keeps Cancel / Roll back exactly as before and every edit that turns no
+     box on goes through; **Re-schedule is the one exception: it asks the customers again, so
+     with nobody to ask it is refused** (`..._ALegacyDeadEndRowIsNotRejudged`). **Residual edge, documented and not built for:** every
      registered contact deactivated AFTER Request Approval. The change then reaches the gate with
-     nobody asked, which is the dead end it always was (Cancel; Re-schedule from Customer Approval;
-     Roll back from Customer Review; a contact who registers is asked when the stored `projectId` is
+     nobody asked, which is the dead end it always was (Cancel; Roll back from Customer
+     Review; a Re-schedule is refused with nobody to ask; a contact who registers is asked when the stored `projectId` is
      restated) -- `..._ResidualEdgeContactsLeaveAfterRequestApproval`. Emergency changes are out of
      scope here (their boxes are forced off by their own rule); the refusal is type-blind and simply
      never has a box to judge on one.
@@ -3774,20 +3775,20 @@ The rules, in the order they are applied (**the first failing one wins, every re
      columns), `TestNobodyToAskMsg` / `TestAnyContactToAsk` / `TestBoxesTurnedOnAfterNew` (pure),
      the service row in `change_request_service_lock_test.go`.
 
-**The Re-schedule hole, closed.** A change that reached Customer Approval necessarily has
-`customer_approval_required = true`; Re-schedule (a WSO2 user's `{state: "authorize"}` or a
-customer's own proposal of a new time) sends a Normal / Emergency change back to Authorize
-and keeps a Standard one in Customer Approval. Before the lock the box could be unticked in
-Authorize (it was editable until the gate), so the CAB / ECAB approval that followed went
-straight to Scheduled and the customer was never asked about the new plan. Now the box
-cannot be unticked in Authorize (or anywhere after New), the project cannot be swapped,
-and the change cannot be sent back to New, so the approval that follows asks the same
-contacts again in a fresh stage (the superseded one stays as a record).
+**The Re-schedule hole, closed (and the loop no longer reaches it).** A change that reached
+Customer Approval necessarily has `customer_approval_required = true`. Re-schedule used to
+send a Normal / Emergency change back to Authorize, and before the lock the box could be
+unticked there (it was editable until the gate), so the CAB / ECAB approval that followed
+went straight to Scheduled and the customer was never asked about the new plan. The box
+cannot be unticked in any state after New, the project cannot be swapped and the change
+cannot be sent back to New, and Re-schedule no longer goes back through CAB at all (it keeps
+the change in Customer Approval and asks the same contacts again in a fresh stage, the old
+one kept as a record, writing no flag).
 `TestChangeRequestLockIntegration_RescheduleCannotReopenTheCustomersApproval` proves it for
 Normal, Emergency and Standard; `..._CustomerProposalCannotReopenTheApproval` for the
-customer's own proposal; `..._CustomerReviewCannotBeReopened` for the review (a required
-review cannot be skipped by unticking it to close from Review). Corrections after New are a
-**cancel and a clone** (Clone is a create); there is no administrator override.
+customer's own proposal and WSO2's Accept; `..._CustomerReviewCannotBeReopened` for the review
+(a required review cannot be skipped by unticking it to close from Review). Corrections after
+New are a **cancel and a clone** (Clone is a create); there is no administrator override.
 
 **Concurrency.** Request Approval and a project edit must not both read "New". The PATCH
 that carries a state, a project, a box or a deployment field first locks the `work_item`
@@ -3978,8 +3979,9 @@ outcome). Code: `change_request_links.go`
   ID token for the contact, sent to this endpoint; or `customerDecides` on the fake API) and
   assert what the CSM page then shows — the deciding contact's row Approved / Rejected, the
   others' Cancelled, the change Scheduled / Closed / Canceled / Rollback. With a live stage
-  `legalNextStates` offers `authorize` (Re-schedule, `customer_approval` only) and `canceled`
-  (the manual `scheduled` / `closed` is refused, with or without a live stage).
+  `legalNextStates` offers `authorize` (Re-schedule / Propose a different time, `customer_approval`
+  only; the state does not move) and `canceled` (the manual `scheduled` / `closed` is refused, with
+  or without a live stage).
   The ServiceNow workflow is the same shape (customer-side approvers answer in ServiceNow).
 * **The customer's two ways to answer are one decision.** The customer portal's
   backend-v2 reaches entity-service with the customer's own `x-user-id-token` through
@@ -4000,8 +4002,8 @@ outcome). Code: `change_request_links.go`
   `[rollback, canceled]`, and a manual `{state: "scheduled"}` / `{state: "closed"}` is a **400**
   exactly as with a live stage (see "There is no "Schedule" action"): the customer's approval /
   review can only be given by the customer in the Customer Portal. Such a change waits: staff can
-  Cancel it, Re-schedule it (`customer_approval`), Roll it back (`customer_review`, nobody is being
-  asked), or have a contact registered and restate the stored `projectId` in a PATCH, which asks
+  Cancel it, Roll it back (`customer_review`, nobody is being asked), or have a contact
+  registered (a Re-schedule is refused with nobody to ask) and restate the stored `projectId` in a PATCH, which asks
   them (`TestChangeRequestLockIntegration_NoContactsReachedTheStage`,
   `TestChangeRequestNoBypassIntegration_ANobodyToAskChangeIsAskedOnceAContactRegisters`). A legacy
   change that already waits in the state with contacts but no stage gets its stage from the
@@ -4069,8 +4071,9 @@ the change request's CURRENT project** AND either
    when the stage is provisioned (`provisionCustomerStage`), nothing in this codebase
    deletes an approver row (`reconcileStaleApprovers`, `cancelLiveCustomerStages`,
    migration 0193 only move `REQUESTED` to `CANCELLED`), so the change request stays
-   visible in **every** later state -- Authorize after a proposed new time, Scheduled,
-   Implement, Review, Customer Review, Closed, Rollback, Canceled -- to the contact who
+   visible in **every** later state -- Scheduled,
+   Implement, Review, Customer Review, Closed, Rollback, Canceled (and Authorize, for an old-flow
+   proposal still in flight) -- to the contact who
    answered *and* to the siblings whose row the answer Cancelled; a contact who
    registers **after** the stage was provisioned was never asked and does not see it;
    moving the change request to another project takes it from the old project's
@@ -4188,13 +4191,13 @@ move it, and leave it unset to roll back. Known failure modes, deliberately acce
 `CS-PORTAL-000026 "Demo Test 1"` on Lumen Works Platform: in Customer Approval since an
 older build) used to answer **409 "nobody asked"** to the customer's Approve. Now the
 customer's first act -- an answer (`answerCustomerStageViaPatch`), a proposed time
-(`prepareCustomerProposal`) or a decision (`DecideChangeRequestApproval`) -- calls
+(`proposeCustomerTime`) or a decision (`DecideChangeRequestApproval`) -- calls
 `ensureCustomerStageForLegacy` in **its own transaction**, which provisions the stage
 through the same `provisionCustomerStage` the normal path uses (every registered
 `PORTAL_USER` contact of the project, one `REQUESTED` row each, the creator listed
 `CANCELLED`), which also **designates** them: the change request stays visible after the
-act (the answer's `SCHEDULED`; the proposal's `AUTHORIZE`, a state a legacy change
-request is otherwise hidden in). It acts only when the caller is a customer (never
+act (the answer's `SCHEDULED`; the proposal's change stays in `CUSTOMER_APPROVAL`, WSO2's
+acceptance schedules it). It acts only when the caller is a customer (never
 staff), the change request is legacy, it is in Customer Approval / Customer Review right
 now, **no live stage** exists for that state (an existing live stage is never touched),
 and the caller is a registered `PORTAL_USER` contact of its own project;
@@ -4258,15 +4261,134 @@ the case endpoints), `TestChangeRequestVisibilityLint_*`, `TestCRVisibility*`,
 `TestConfig_CRStrictVisibilityFrom`, `TestCRVisibilityFromConfig`,
 `TestProjectChangeRequestStats_AuthorizeIsOutstandingForCustomersOnly`.
 
+### A customer's proposed time (ServiceNow's own mechanism)
+
+ServiceNow already models the conversation and the synced schema carries it -- no column, table,
+type, state or migration is added by this feature:
+
+* `change_request.customer_updated_on` (migration 0043, `u_customer_updated`) = the customer's
+  proposed plan **START**;
+* `change_request.customer_updated_date_confirmation` (`change_request_confirmation_enum`,
+  `u_confirm_customer_updated_date`) = **WSO2's answer**, `AGREE` | `DISAGREE`;
+* the existing triggers `change_request_reset_confirmation` (0052: a moved proposal clears the
+  standing answer) and `change_request_plan_date_comment` (0053: a proposal made while the change is in
+  Customer Approval writes ONE customer-visible COMMENT on the change's parent record, and, when the
+  parent has a linked GitHub issue, its queue row -- ServiceNow's own flow, accepted by the user knowingly;
+  the proposal runs its write as the system once the customer's access is proven, so the comment passes
+  row-level security whatever project the parent is in, `..._TriggerCommentUnderRLS`).
+
+Code: `change_request_customer_proposal.go`. The user's rule: *WSO2 accepts the customer's rescheduled
+time from WSO2's end; it must not go through CAB again as there is no change to the CR; accepted, the CR
+goes straight to Scheduled.*
+
+**When does a proposal "wait"?** One allowlist predicate, `pendingProposalSQL`, evaluated in SQL under the row
+lock by every act and by the detail read (one definition: they cannot drift): the change is in
+`CUSTOMER_APPROVAL`; `customer_updated_on` is set, finite and **differs from the planned start**; the
+confirmation is NULL; and **no approval but the customer's own is still being asked** -- the only
+`REQUESTED` approver rows are on a customer stage (label "Customer Approval", or the stage's group is the
+change's `customer_group_id`, ServiceNow's own record of who the customer is); ANY other `REQUESTED` row (Peer,
+CAB, ECAB, Review, a group nobody has named: about one synced stage in eight) blocks it. The whole predicate is
+`COALESCE`d, so a NULL state reads false. It never matches a change waiting on a live CAB stage (it is in
+Authorize), a closed / scheduled / cancelled one, a date equal to the plan, an answered one, a NULL state. It
+does not say WHO wrote the date (ServiceNow lets WSO2 users write `customer_updated_on` too, and an old one looks
+the same): the read model says so (below). `TestChangeRequestProposalIntegration_PredicateMatrix` pins native and
+migrated-shaped rows, history, a WSO2-written date, a stale date, every kind of blocking approval, a NULL state and
+an infinite date.
+
+**The acts** (each one transaction; lock order work_item then change_request, as every PATCH):
+
+| act | who / wire | writes |
+|---|---|---|
+| customer proposes | external `PATCH {plannedStartOn, plannedEndOn?}` | `customer_updated_on = start`, answer cleared. **Nothing else**: the change stays in Customer Approval, the planned window, the customers' request, every stage / approver row untouched. A proposal is a START: the planned LENGTH is kept; an end that rides with it must be start + length |
+| Accept proposed time | staff `PATCH {confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn, expectedPlannedStartOn, expectedPlannedEndOn}` and nothing else | ONE UPDATE: `start_on = proposal`, `end_on = proposal + planned length`, `AGREE`, state `SCHEDULED`; the customers' still-requested rows are closed by `reconcileStaleApprovers`. No CAB, no second ask. **Not written**: `is_customer_approval_required` (no staff action records the customer's approval; the proposal is the customer's own consent), `customer_approval_required`, any stage. `{state: "scheduled"}` stays refused for every staff caller: Accept is another door whose only precondition is the customer's own recorded proposal |
+| Propose a different time | staff `PATCH {state: "authorize", plannedStartOn?, plannedEndOn?, expectedCustomerUpdatedOn, expectedPlannedStartOn?, expectedPlannedEndOn?}` while a proposal waits | the window as sent, `DISAGREE`; the customers' request is replaced by a fresh one (`cancelLiveCustomerStages` + `provisionCustomerStage`); the state does not move; no CAB |
+| decline | the same with no window (or the planned window restated) | `DISAGREE` only: no state, no stage, no approver row; the customers keep their live request; nobody has to be found to ask |
+| Re-schedule | the same with no proposal waiting | the window, the same re-ask, no CAB, no flag (above) |
+
+A staff `{state: "authorize"}` that finds a proposal waiting must name it (`expectedCustomerUpdatedOn`): an old or
+racing client never answers a proposal it did not see (409). One sent when none waits is a 409 too.
+
+**The contract's refusals** (status and exact text; the first failing check wins and nothing is written):
+
+* Accept: 403 for an external caller (the field is outside the customer's four-field whitelist); 400
+  `confirmCustomerUpdatedDate must be "agree": to decline a proposal, propose a different time (state "authorize" with
+  the new planned window)`; 400 `confirmCustomerUpdatedDate cannot be combined with other fields; only
+  expectedCustomerUpdatedOn, expectedPlannedStartOn and expectedPlannedEndOn go with it`; 400
+  `expectedCustomerUpdatedOn is required with confirmCustomerUpdatedDate: it names the proposed time you are
+  accepting`; 400 `expectedPlannedStartOn and expectedPlannedEndOn are required with confirmCustomerUpdatedDate: they
+  name the planned time the proposal replaces`; 409 `a proposed time can only be accepted while the change request is in
+  Customer Approval, but it is in <State>`; 409 `no new time proposed by the customer is waiting for a response on this
+  change request`; 409 `the customer's proposed time changed after you opened this change request (it is now <RFC 3339>);
+  read it again before responding`; 409 `the planned implementation time of this change request changed after you opened
+  it (it is now <start> to <end>); read it again before responding`; 400 `change request is on hold; take it off hold
+  (onHold: false) before changing its state`; 409 `the time the customer proposed (<RFC 3339>) has already passed, so it
+  cannot be accepted: use "Propose a different time" to ask the customer to approve another time`; 409 `the planned window
+  has no length, so the customer's proposed start cannot be applied to it: use "Propose a different time"`.
+* Propose a different time / Re-schedule: the existing refusals plus 400 `customer approval is required but nobody on this
+  project can be asked (...)` (a changed window only); 409 `the customer proposed a new time (<RFC 3339>) after you opened
+  this change request; read it again to accept it or propose a different time`; 409 `the customer's proposed time is no
+  longer waiting for a response; read the change request again`; 400 `the time you are proposing is the one the customer
+  proposed: use "Accept proposed time" instead`. While a proposal waits "Time Change = Yes" becomes "differs from the
+  proposal" (the window may equal the plan: "keep our time" is a decline).
+* The customer's proposal: see "Propose new implementation time" below.
+* A staff `expectedPlannedStartOn` / `expectedPlannedEndOn` / `expectedCustomerUpdatedOn` may only accompany Accept or a
+  staff `{state: "authorize"}` (400 otherwise).
+
+**The read model** (`domain.ChangeRequestCustomerProposal`, `customerProposal` on the detail and the PATCH receipt;
+omitted when `customer_updated_on` is NULL or infinite): `startOn` (RFC 3339, with fractional
+seconds only when there are some, so it goes back as `expectedCustomerUpdatedOn` unchanged), `answer` (`pending` |
+`agreed` | `disagreed` | `unanswered`), and while pending: `endOn` (start + the planned length), `proposerRecorded`,
+and, for a staff reader, `proposedByName` / `proposedByEmail` / `proposedOn` (only when `proposerRecorded`), `canAccept`
+and `acceptBlockedReason` (on hold / the proposed start has passed / no length to keep, in the words of the refusal); for
+an external reader `proposedByViewer` and no names. **Who proposed it is knowable only while `work_item.updated_by` (the
+last writer) is a registered contact of the project**; a date a WSO2 user wrote in ServiceNow, an old one, or a proposal
+edited over since reads `proposerRecorded: false` and the pages say the proposer is not recorded (nothing is added to
+record it). The planned window of a pending proposal is still what WSO2 planned: nothing shows an unaccepted time as the
+plan. The proposal facts are read under the system identity: the caller was already shown the change by the visibility-gated
+read, and what comes out is a handful of derived facts, never a row. `legalNextStates` is unchanged for every state.
+
+**What is mirrored / what is not** (`DATA_SOURCE=postgres-servicenow-dual-write`): ServiceNow's PATCH API has no field for
+the two columns, so **proposals and WSO2's answers are PostgreSQL-only until the sync stops, and while the sync runs it can
+rewrite `customer_updated_on`, the confirmation, `state`, `start_on` and `end_on` on its next pass** (true of every
+PostgreSQL-only write in the dual run). The mirror is built from what PostgreSQL COMMITTED, for these three acts only
+(`mirrorOfTheTimeConversation`): a customer's proposal mirrors nothing (the plan did not move); Accept mirrors
+`{state: scheduled, plannedStartOn, plannedEndOn}` from the committed result (UNVERIFIED that ServiceNow accepts a manual
+Scheduled out of Customer Approval: a refusal lands in `sn_writeback_failures`, PostgreSQL stays committed); a Re-schedule /
+counter mirrors the window and not the state (ServiceNow stays in Customer Approval like PostgreSQL). Every other PATCH
+mirrors byte for byte as before (`TestChangeRequestService_PatchChangeRequest_EveryOtherPatchMirrorsAsBefore`). The pure
+ServiceNow data source refuses `confirmCustomerUpdatedDate` / `expectedCustomerUpdatedOn` up front ("answer the customer's
+proposed date in ServiceNow") and forwards proposals and Re-schedules as ever. Notices (`CR_NOTICES_ENABLED`, off by
+default): the existing `planDateNotice` turns apply unchanged -- a proposal tells the "Devops Approval" team (no recipient
+while that team has no members in the synced data: banner and Awaiting chip are the signal), Accept tells the designated
+customers "accepted the plan start date", a different time "Reject the proposed plan start date"; a plain Re-schedule sends
+none.
+
+**No additional entries.** The only rows the feature writes are the ones above: `TestChangeRequestProposalIntegration_NoExtraRows`
+counts EVERY table around each act -- a proposal adds the `event_outbox` row of any change_request update, the 0053 comment under
+a parent (and its GitHub queue row when linked); Accept the outbox row (+ the queue row when linked); a different time / a
+Re-schedule the outbox row and the one customer stage with one row per contact; a decline the outbox row; a refused act nothing.
+On a migrated change in Customer Approval whose customer stage ServiceNow wrote (unlabeled, the customer group), the customer's
+first act still gives it the one labelled stage plus one `REQUESTED` row per registered contact (the existing behaviour of
+every customer act on such a row, `change_request_synced_stages_integration_test.go`); Accept then leaves ServiceNow's
+`REQUESTED` rows alone (an unlabeled stage is of unknown kind and never cancelled by a guess).
+
+**Decisions** (the user's, recorded): the mechanism is ServiceNow's own (not Authorize); the 0053 comment per customer
+proposal is accepted; a proposal is a START with the planned length kept; Decline is offered; a plain Re-schedule sends no
+notice and keeps the wire name `authorize`; a Re-schedule or a counter-proposal is refused when nobody can be asked; the dead CAB-
+after-Re-schedule code is deleted but the cascade stays for old-flow proposals in flight; a state-less edit of the planned window
+in Customer Approval stays as it is (not refused). Tests: `change_request_proposal_integration_test.go` (matrix, Accept, counter,
+decline, repeated cycles, NoExtraRows, races, RLS comment, migrated shape, refusals), `change_request_service_proposal_test.go`.
+
 ### Customer answers through PATCH (customer portal)
 
 The customer portal was built against ServiceNow, where the customer's answer is
 `PATCH /change-requests/{id}` with `{isCustomerApproved: true|false}` in Customer
 Approval, `{isCustomerReviewed: true|false}` in Customer Review, or
-`{plannedStartOn}` to propose a new implementation time. On this data source those
+`{plannedStartOn}` to propose a new implementation time (which waits for WSO2's answer). On this data source those
 requests and the Approvals-tab decisions are **one mechanism with two doors**.
 Code: `change_request_customer_outcome.go` (`classifyExternalPatch`,
-`answerCustomerStageViaPatch`, `prepareCustomerProposal`), hooked at the top of
+`answerCustomerStageViaPatch`; the proposal is `proposeCustomerTime` in
+`change_request_customer_proposal.go`), hooked at the top of
 `patchChangeRequestTx`; the shared implementation is
 `decideChangeRequestApprovalTx` (what `DecideChangeRequestApproval` runs).
 
@@ -4368,8 +4490,9 @@ decision route on their own `REQUESTED` row, like anyone.
   keeps what it did before the field existed. Never on search rows, and nothing else
   about the approvals (approver identities, stages) is added to the customer's
   detail. It flips to false in the very PATCH receipt of the caller's answer or
-  proposal, and back to true for the contacts once a Re-schedule has asked them
-  again (a Standard change at once, Normal / Emergency after CAB / ECAB approves).
+  proposal (it only writes `customer_updated_on`: the customers' request stays live, the
+  contact can still answer the CURRENT plan), and stays true for the fresh rows a Re-schedule or
+  WSO2's different time provisions at once (every type: nothing goes through CAB).
   It does not look at `onHold`: a held change refuses a *proposal* (409), not an
   answer, so a client offers Propose New Time when `customerCanAnswer && state ==
   customer_approval && !onHold`; entity-service's detail carries `onHold`, and the
@@ -4379,7 +4502,7 @@ decision route on their own `REQUESTED` row, like anyone.
   contact told false can neither answer nor propose. Tests:
   `TestChangeRequestCustomerCanAnswerIntegration_*` (lifecycle, after any answer
   through either door, who may answer with the PATCH as the oracle, nobody asked,
-  Re-schedule flips for Normal / Standard, not on search rows),
+  Re-schedule / proposal / counter / decline flips, not on search rows),
   `TestCustomerCanAnswer_NeedsNoQueryOutsideTheCustomerStates`,
   `TestMarkCustomerCanAnswer_WhoIsToldWhat`,
   `TestChangeRequest_CustomerCanAnswerJSONContract`.
@@ -4387,38 +4510,42 @@ decision route on their own `REQUESTED` row, like anyone.
   isCustomerReviewed, expectedPlannedStartOn?, expectedPlannedEndOn?}`: each bound
   named must still equal the stored one when the answer is recorded
   (`checkExpectedSchedule`, under the change request's row lock, right after the
-  stale-state check), else 409 and nothing changes. After a Re-schedule loop the
-  change returns to Customer Approval and the contacts are asked again with fresh
-  rows, so the stale-state check alone passes for a page opened before it -- without
-  this a stale tab approved a window its reader never saw. Omitted: no check (an answer
+  stale-state check), else 409 and nothing changes. After a Re-schedule or WSO2's
+  different time the change is still in Customer Approval and the contacts are asked
+  again with fresh rows, so the stale-state check alone passes for a page opened before
+  it -- without this a stale tab approved a window its reader never saw. A pending
+  proposal does not move the plan, so an Approve given for the plan the page showed is
+  recorded for THAT plan. Omitted: no check (an answer
   sent as before is recorded as before, and so is every integrator's). The fields
-  belong to a customer's answer only: alone or beside a proposal is a 400, and from a
-  WSO2 user's PATCH too. They are compared as instants (any of the accepted layouts;
+  belong to a customer's answer only (alone or beside a proposal is a 400); from WSO2 they
+  accompany only the answer to a proposal -- Accept proposed time or a staff
+  `{state: "authorize"}` -- where they are required / checked under the same lock
+  (`expectedScheduleConflict`, 409 ending `read it again before responding`). They are compared as instants (any of the accepted layouts;
   not held to the year range, since they are never written). The customer portal sends
   the `startDate` / `endDate` it read.
-* **Propose new implementation time = Re-schedule.** `{plannedStartOn,
-  plannedEndOn?}` from a registered contact in `customer_approval` is the process
-  diagram's "Time Change" loop started by the customer: `prepareCustomerProposal`
-  checks it (registered contact, not the creator, state `customer_approval`, **asked**
-  -- a live customer stage on which the caller holds a `REQUESTED` row, else 409 when
-  nobody was asked and 403 `only members of the customer group ... who have been asked`
-  when the caller was not, as proposing cancels the asked contacts' pending approvals --
-  the window still to come, not on hold) and turns the request into the very `{state: authorize, plannedStartOn?,
-  plannedEndOn?}` a WSO2 user sends, so the existing Re-schedule applies unchanged:
-  "Time Change = Yes" enforced (`re-scheduling requires a changed planned start or
-  end`), the new window applied, the customer's pending request cancelled (kept as a
-  record), a **fresh CAB / ECAB approval** (Normal: CAB, the peer approval stands;
-  Emergency: ECAB), and when it is approved the cascade returns the change to
-  Customer Approval with a fresh customer stage. A Standard change has no internal
-  approval to repeat: dates applied, stays in Customer Approval, the customer asked
-  again. Anywhere but Customer Approval -> 409, on hold -> 409, creator /
-  non-contact -> 403. A start alone keeps the STORED end (it is not shifted for the
-  customer), so a proposed start after the stored end is a 400 `the planned start
-  must not be after the planned end`: a customer moving a change to a later date
-  proposes the whole window -- the new start and the new end, the same length -- as
-  the CSM portal's Re-schedule dialog does. A window with no length (end == start) is a
-  400 for every Re-schedule, and a customer's proposal must be still to come (400 `... is
-  in the past`; a WSO2 user's Re-schedule may re-plan a window that has gone by).
+* **Propose new implementation time = a START that waits for WSO2.** `{plannedStartOn,
+  plannedEndOn?}` from a registered contact in `customer_approval` is the customer proposing
+  a new START (`proposeCustomerTime`; the mechanism is "A customer's proposed time" below).
+  It is checked, in order, under the row lock: the window parses (nothing but a date-time in
+  range reaches SQL) and is still to come (400 `... is in the past`); the caller is a registered
+  contact of the project (403) and not the creator (403); the change is in `customer_approval`
+  (409); it has a live customer stage (409 when nobody was asked; a legacy change is given its
+  stage here, `ensureCustomerStageForLegacy`) on which the caller holds a `REQUESTED` row (403
+  `only members of the customer group ... who have been asked`); a start was sent (an end alone
+  is 400 `a proposed implementation time needs a new start: send plannedStartOn`); the change is
+  not on hold (409); no approval that is not the customer's is still being asked (409 `this change
+  request is also waiting for an approval that is not the customer's, so a new time cannot be
+  proposed for it right now`: an unactionable proposal is refused, never written); the planned
+  window has a length to keep (409 `this change request has no planned window to move, so a new
+  time cannot be proposed for it`); an end that rides with the start is exactly start + the planned
+  length (400 `a proposed time moves the start and keeps the planned length of 2 hours:
+  plannedEndOn must be <RFC 3339>, or be left out`: the portal's dialog sends the derived end so a
+  server that still takes a whole window keeps working); the start is not the planned start (400
+  `plannedStartOn is the planned start already: propose a different start`), nor the standing
+  proposal (400 `that time is already proposed and is waiting for WSO2's response`) nor one WSO2
+  already declined (400 `WSO2 asked for a different time than that one: propose another start`).
+  Then ONE write: `customer_updated_on = start`, the answer cleared. The change stays in
+  Customer Approval; the planned window, every stage and approver row and the state are untouched.
 * **The planned window is parsed here, not by Postgres** (`change_request_window.go`,
   applied at the top of `patchChangeRequestTx` for every caller, and on create). It used
   to be bound as `$n::text::timestamptz`, which accepts `infinity`, `-infinity`, `now`,
@@ -4433,10 +4560,11 @@ decision route on their own `REQUESTED` row, like anyone.
   (2030-03-01T09:00:00Z) or YYYY-MM-DD HH:MM:SS in UTC, in the years 2000 to 2100` --
   and what reaches SQL is the parsed instant re-written as RFC 3339 UTC, so the stored
   value no longer depends on the session. `changeRequestSelectColumns` also reads
-  `start_on` / `end_on` through `isfinite(...)`, so a row that holds an infinity by some
-  other door reads as having no planned time instead of failing the scan (and with it
-  the detail or the whole list). `TestChangeRequestCustomerProposalIntegration_*` pins the
-  whole-window proposal for Normal / Emergency / Standard, the messages for a bad window
+  `start_on` / `end_on` through `isfinite(...)` (and the detail read `customer_updated_on` /
+  `work_start_on` / `work_end_on`), so a row that holds an infinity by some other door reads as
+  having no planned time instead of failing the scan (and with it the detail or the whole list).
+  `TestChangeRequestCustomerProposalIntegration_*` pins the
+  proposal (start plus the end that keeps the length) for Normal / Emergency / Standard, the messages for a bad window
   (unchanged, ends before it starts, empty, in the past, not a date), the hostile values,
   UTC under a Colombo / Los Angeles session and a non-finite row that still reads.
 * **Lock order.** The answer and the proposal take the `work_item` row first (a
@@ -4457,7 +4585,7 @@ decision route on their own `REQUESTED` row, like anyone.
 * Tests: `TestChangeRequestCustomerOutcomeIntegration_*` (real Postgres,
   `CHANGE_REQUEST_TEST_DSN`: lifecycle, rejections, PATCH == decision route, out of
   state, who may answer, nobody asked, the flag lock, the whitelist, concurrency,
-  Re-schedule from a proposal), `TestChangeRequestCustomerPrivacyIntegration_*` (the
+  the proposal that waits, then Accept / a different time), `TestChangeRequestCustomerPrivacyIntegration_*` (the
   answer bound to the window seen, the approvals a customer reads),
   `TestChangeRequestIntegration_PatchCustomerFlag*`
   (the original flag authorisation, rewritten: staff can no longer send the flags),
