@@ -39,14 +39,15 @@ def db_module():
 
 
 def test_create_and_get_submission(db_module):
-    created = db_module.create_submission("Jane", "Internal", "Learned X", "jane@example.com")
+    created = db_module.create_submission("My title", "Jane", "Internal", "Learned X", "jane@example.com")
     fetched = db_module.get_submission(created["id"])
     assert fetched == created
+    assert fetched["title"] == "My title"
 
 
 def test_where_detail_round_trips(db_module):
     created = db_module.create_submission(
-        "Jane", "Customer", "Learned X", "jane@example.com", where_detail="Acme Corp"
+        "T", "Jane", "Customer", "Learned X", "jane@example.com", where_detail="Acme Corp"
     )
     assert created["whereDetail"] == "Acme Corp"
     fetched = db_module.get_submission(created["id"])
@@ -56,8 +57,8 @@ def test_where_detail_round_trips(db_module):
 
 
 def test_list_submissions_newest_first(db_module):
-    db_module.create_submission("A", "Customer", "first", "a@example.com")
-    db_module.create_submission("B", "Internal", "second", "b@example.com")
+    db_module.create_submission("T1", "A", "Customer", "first", "a@example.com")
+    db_module.create_submission("T2", "B", "Internal", "second", "b@example.com")
     page = db_module.list_submissions(limit=10)
     assert [item["who"] for item in page["items"]] == ["B", "A"]
     assert page["nextCursor"] is None
@@ -65,17 +66,74 @@ def test_list_submissions_newest_first(db_module):
 
 def test_list_submissions_respects_limit_and_sets_cursor(db_module):
     for i in range(3):
-        db_module.create_submission(f"Person {i}", "Internal", "x", f"p{i}@example.com")
+        db_module.create_submission(f"T{i}", f"Person {i}", "Internal", "x", f"p{i}@example.com")
     page = db_module.list_submissions(limit=2)
     assert len(page["items"]) == 2
     assert page["nextCursor"] is not None
 
 
 def test_delete_submission_removes_it(db_module):
-    created = db_module.create_submission("Jane", "Customer", "x", "jane@example.com")
+    created = db_module.create_submission("T", "Jane", "Customer", "x", "jane@example.com")
     assert db_module.delete_submission(created["id"]) is True
     assert db_module.get_submission(created["id"]) is None
 
 
 def test_delete_nonexistent_submission_returns_false(db_module):
     assert db_module.delete_submission("does-not-exist") is False
+
+
+def test_mine_email_filters_to_only_that_submitter(db_module):
+    db_module.create_submission("T", "Jane", "Internal", "x", "jane@example.com")
+    db_module.create_submission("T", "Sam", "Internal", "x", "sam@example.com")
+    page = db_module.list_submissions(limit=10, mine_email="jane@example.com")
+    assert [item["submittedByEmail"] for item in page["items"]] == ["jane@example.com"]
+
+
+def test_date_range_filters_by_created_at_prefix(db_module):
+    db_module.create_submission("T", "Jane", "Internal", "x", "jane@example.com")
+    # Entries created "now" always fall within today's own date range.
+    import datetime
+
+    today = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
+    page_included = db_module.list_submissions(limit=10, date_from=today, date_to=today)
+    assert len(page_included["items"]) == 1
+    page_excluded = db_module.list_submissions(limit=10, date_from="2000-01-01", date_to="2000-01-02")
+    assert len(page_excluded["items"]) == 0
+
+
+def test_fulltext_search_matches_a_real_word_in_what(db_module):
+    db_module.create_submission("T", "Jane", "Internal", "Connection pooling cut our API latency significantly", "jane@example.com")
+    db_module.create_submission("T", "Sam", "Internal", "Something unrelated entirely", "sam@example.com")
+    page = db_module.list_submissions(limit=10, q="latency", scope="what")
+    assert len(page["items"]) == 1
+    assert page["items"][0]["who"] == "Jane"
+
+
+def test_short_query_falls_back_to_like_instead_of_fulltext(db_module):
+    # Below innodb_ft_min_token_size (3) -- FULLTEXT would silently match
+    # nothing for this, so the LIKE fallback is what actually finds it.
+    db_module.create_submission("T", "Jane", "Internal", "We use Go for this service", "jane@example.com")
+    page = db_module.list_submissions(limit=10, q="Go", scope="what")
+    assert len(page["items"]) == 1
+
+
+def test_who_scope_search_uses_like_on_who_column(db_module):
+    db_module.create_submission("T", "Jane Doe", "Internal", "x", "jane@example.com")
+    db_module.create_submission("T", "Sam Smith", "Internal", "x", "sam@example.com")
+    page = db_module.list_submissions(limit=10, q="jane", scope="who")
+    assert [item["who"] for item in page["items"]] == ["Jane Doe"]
+
+
+def test_title_scope_search_uses_like_on_title_column(db_module):
+    db_module.create_submission("A great discovery", "Jane", "Internal", "x", "jane@example.com")
+    db_module.create_submission("Something else", "Sam", "Internal", "x", "sam@example.com")
+    page = db_module.list_submissions(limit=10, q="discovery", scope="title")
+    assert len(page["items"]) == 1
+    assert page["items"][0]["title"] == "A great discovery"
+
+
+def test_unknown_scope_raises():
+    import db as db_mod
+
+    with pytest.raises(ValueError):
+        db_mod.list_submissions(limit=10, q="x", scope="not-a-real-scope")

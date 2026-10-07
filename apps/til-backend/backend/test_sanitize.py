@@ -64,3 +64,21 @@ def test_what_for_chat_converts_list_items():
     assert "• First" in result
     assert "• Second" in result
     assert "<ul>" not in result and "<li>" not in result
+
+
+def test_sanitize_allows_img_with_src_and_alt():
+    result = sanitize_what_html('<p>See:</p><img src="https://example.com/x.png" alt="a screenshot">')
+    assert '<img src="https://example.com/x.png" alt="a screenshot">' in result
+
+
+def test_sanitize_drops_img_onerror_attribute():
+    result = sanitize_what_html('<img src="https://example.com/x.png" onerror="alert(1)">')
+    assert "onerror" not in result
+
+
+def test_what_for_chat_drops_images_entirely():
+    # Images are only ever shown on the entry's own page -- never in the
+    # Chat Space post or the Novera DM broadcast.
+    result = what_for_chat('<p>Look:</p><img src="https://example.com/x.png" alt="a screenshot">')
+    assert "<img" not in result
+    assert "Look" in result

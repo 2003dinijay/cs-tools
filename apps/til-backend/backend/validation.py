@@ -28,6 +28,7 @@ from sanitize import sanitize_what_html, what_plain_text
 
 TIL_WHERE_OPTIONS = ("Customer", "Partner", "Internal", "Other")
 WHERE_OPTIONS_REQUIRING_DETAIL = ("Customer", "Partner", "Other")
+TITLE_MAX_LENGTH = 50
 WHO_MAX_LENGTH = 200
 WHERE_DETAIL_MAX_LENGTH = 200
 WHAT_MAX_LENGTH = 5000
@@ -37,6 +38,12 @@ def validate_submission_payload(body: dict) -> str | None:
     """Returns an error message, or None if the payload is valid."""
     if not isinstance(body, dict):
         return "Request body must be a JSON object."
+
+    title = body.get("title")
+    if not isinstance(title, str) or not title.strip():
+        return "'title' is required."
+    if len(title.strip()) > TITLE_MAX_LENGTH:
+        return f"'title' must be {TITLE_MAX_LENGTH} characters or fewer."
 
     who = body.get("who")
     if not isinstance(who, str) or not who.strip():

@@ -18,7 +18,7 @@
 
 auth.require_auth is overridden via FastAPI's dependency_overrides rather
 than mocking the JWKS fetch -- these tests are about main.py's own request
-handling (the onBehalfOfEmail rule in particular), not about token
+handling (the webapp-only submission gate in particular), not about token
 verification, which is auth.py's job and not exercised here.
 """
 import os
@@ -34,17 +34,34 @@ from fastapi.testclient import TestClient
 
 import db
 import main
+import uploads
 from auth import require_auth
 
-HUMAN_USER = {"email": "jane@example.com", "name": "Jane", "groups": [], "is_moderator": False, "is_chat_service_account": False, "token_identities": {"one-wso2-webapp-real-client-id"}}
-OTHER_HUMAN_USER = {"email": "sam@example.com", "name": "Sam", "groups": [], "is_moderator": False, "is_chat_service_account": False, "token_identities": {"one-wso2-webapp-real-client-id"}}
-MODERATOR_USER = {"email": "mod@example.com", "name": "Mod", "groups": ["til-mods"], "is_moderator": True, "is_chat_service_account": False, "token_identities": {"one-wso2-webapp-real-client-id"}}
-CHAT_SERVICE_ACCOUNT = {"email": "til-chat-sa@example.com", "name": "TIL Chat", "groups": [], "is_moderator": False, "is_chat_service_account": True, "token_identities": {"novera-own-client-id"}}
-# A human signed in through Novera's OWN Asgardeo application, not the
-# webapp's -- same kind of token require_auth accepts (a real, valid
-# human token), different client_id, which is exactly the distinction
-# the broadcast-scoping test below exists to prove matters.
-HUMAN_USER_VIA_NOVERA = {"email": "jane@example.com", "name": "Jane", "groups": [], "is_moderator": False, "is_chat_service_account": False, "token_identities": {"novera-own-client-id"}}
+HUMAN_USER = {"email": "jane@example.com", "name": "Jane", "groups": [], "is_moderator": False, "token_identities": {"one-wso2-webapp-real-client-id"}}
+OTHER_HUMAN_USER = {"email": "sam@example.com", "name": "Sam", "groups": [], "is_moderator": False, "token_identities": {"one-wso2-webapp-real-client-id"}}
+MODERATOR_USER = {"email": "mod@example.com", "name": "Mod", "groups": ["til-mods"], "is_moderator": True, "token_identities": {"one-wso2-webapp-real-client-id"}}
+# A human signed in through some OTHER Asgardeo application (Novera's own,
+# or anything else) -- same kind of token require_auth accepts (a real,
+# valid human token), different client_id. Proves the submission gate
+# checks the TOKEN's own verified identity, not just "is this caller
+# authenticated at all."
+HUMAN_USER_VIA_OTHER_APP = {"email": "jane@example.com", "name": "Jane", "groups": [], "is_moderator": False, "token_identities": {"some-other-apps-client-id"}}
+
+
+@pytest.fixture(autouse=True)
+def mock_novera_notify():
+    # CRITICAL: without this, every test that successfully creates a
+    # submission calls the REAL notify_novera(), which makes a REAL network
+    # call to whatever NOVERA_NOTIFY_URL is set in this process's actual
+    # .env -- the real Staging Novera, broadcasting test fixture data
+    # ("Jane" / "Internal" / "x") into every connected employee's real Chat
+    # DM, once per successful test, every single pytest run. Autouse so
+    # this is true for every test in this file by default, not just the
+    # ones that happen to remember to patch it themselves -- a test
+    # forgetting to mock an outbound network call should never be possible
+    # here again.
+    with patch("main.notify_novera", new_callable=AsyncMock) as mock:
+        yield mock
 
 
 @pytest.fixture(autouse=True)
@@ -62,6 +79,18 @@ def fresh_db():
     yield
 
 
+@pytest.fixture(autouse=True)
+def webapp_client_id():
+    # Every test below posts as a user whose token_identities contains this
+    # value, matching main.py's gate -- the gate's own behavior (what
+    # happens when it DOESN'T match, or is unset) is covered explicitly by
+    # test_create_submission_rejects_non_webapp_callers and
+    # test_create_submission_rejects_everyone_when_client_id_unset below,
+    # each of which overrides this patch for its own scope.
+    with patch("main.ONE_WSO2_WEBAPP_CLIENT_ID", "one-wso2-webapp-real-client-id"):
+        yield
+
+
 def client_as(user: dict) -> TestClient:
     main.app.dependency_overrides[require_auth] = lambda: user
     return TestClient(main.app)
@@ -69,58 +98,53 @@ def client_as(user: dict) -> TestClient:
 
 def test_create_submission_uses_tokens_own_email():
     client = client_as(HUMAN_USER)
-    resp = client.post("/submissions", json={"who": "Jane Doe, CSM", "where": "Internal", "what": "Learned X."})
+    resp = client.post("/submissions", json={"title": "T", "who": "Jane Doe, CSM", "where": "Internal", "what": "Learned X."})
     assert resp.status_code == 200
     assert resp.json()["submittedByEmail"] == "jane@example.com"
 
 
-def test_novera_notified_only_for_the_one_wso2_webapps_verified_client_id():
-    # Scoped deliberately: the Chat App Dialog and Novera's own
-    # share_til_entry tool both call this same endpoint, but only a token
-    # issued to the One WSO2 webapp's OWN Asgardeo client id should trigger
-    # the Novera DM broadcast -- otherwise Novera submitting on a user's
-    # behalf would immediately notify that same user about their own entry.
-    #
-    # Checked against the token's own verified client_id (main.py reads
-    # user["token_identities"], set by auth.py from the signed JWT's aud/
-    # client_id/azp claims), NOT a request header -- any already-
+def test_create_submission_notifies_novera():
+    client = client_as(HUMAN_USER)
+    with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
+        resp = client.post("/submissions", json={"title": "T", "who": "Jane", "where": "Internal", "what": "x"})
+        assert resp.status_code == 200
+        mock_notify.assert_called_once()
+
+
+def test_create_submission_rejects_non_webapp_callers():
+    # The One WSO2 webapp is the ONLY entry point allowed to create an
+    # entry -- checked against the token's own verified client_id (main.py
+    # reads user["token_identities"], set by auth.py from the signed JWT's
+    # aud/client_id/azp claims), NOT a request header -- any already-
     # authenticated caller could set any header value, so a header proves
     # nothing about which application actually issued the token. This test
     # deliberately sends a spoofed header to prove it's ignored.
-    with patch("main.ONE_WSO2_WEBAPP_CLIENT_ID", "one-wso2-webapp-real-client-id"):
-        client = client_as(HUMAN_USER)
-        with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
-            resp = client.post("/submissions", json={"who": "Jane", "where": "Internal", "what": "x"})
-            assert resp.status_code == 200
-            mock_notify.assert_called_once()
+    client = client_as(HUMAN_USER_VIA_OTHER_APP)
+    with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
+        resp = client.post(
+            "/submissions",
+            json={"title": "T", "who": "Jane", "where": "Internal", "what": "x"},
+            headers={"X-Til-Client": "one-wso2-webapp"},
+        )
+        assert resp.status_code == 403
+        mock_notify.assert_not_called()
 
-        # Same human, but a token issued to Novera's own Asgardeo client --
-        # not broadcast, regardless of the (spoofed) header claiming otherwise.
-        client = client_as(HUMAN_USER_VIA_NOVERA)
-        with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
-            resp = client.post(
-                "/submissions",
-                json={"who": "Jane", "where": "Internal", "what": "x"},
-                headers={"X-Til-Client": "one-wso2-webapp"},
-            )
-            assert resp.status_code == 200
-            mock_notify.assert_not_called()
 
-    # ONE_WSO2_WEBAPP_CLIENT_ID unset entirely -- never broadcasts, even for
-    # the webapp's own real client id (fail closed, not "trust everyone").
+def test_create_submission_rejects_everyone_when_client_id_unset():
+    # ONE_WSO2_WEBAPP_CLIENT_ID unset entirely -- nobody can submit, even a
+    # token that would otherwise match the webapp's real client id (fail
+    # closed, not "trust everyone").
     with patch("main.ONE_WSO2_WEBAPP_CLIENT_ID", ""):
         client = client_as(HUMAN_USER)
-        with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
-            resp = client.post("/submissions", json={"who": "Jane", "where": "Internal", "what": "x"})
-            assert resp.status_code == 200
-            mock_notify.assert_not_called()
+        resp = client.post("/submissions", json={"title": "T", "who": "Jane", "where": "Internal", "what": "x"})
+        assert resp.status_code == 403
 
 
 def test_create_submission_sanitizes_what_even_if_client_skips_the_editor():
     client = client_as(HUMAN_USER)
     resp = client.post(
         "/submissions",
-        json={"who": "Jane", "where": "Internal", "what": '<p>hi</p><script>alert(1)</script>'},
+        json={"title": "T", "who": "Jane", "where": "Internal", "what": '<p>hi</p><script>alert(1)</script>'},
     )
     assert resp.status_code == 200
     assert resp.json()["what"] == "<p>hi</p>"
@@ -128,13 +152,13 @@ def test_create_submission_sanitizes_what_even_if_client_skips_the_editor():
 
 def test_create_submission_rejects_invalid_payload():
     client = client_as(HUMAN_USER)
-    resp = client.post("/submissions", json={"who": "", "where": "Internal", "what": "x"})
+    resp = client.post("/submissions", json={"title": "T", "who": "", "where": "Internal", "what": "x"})
     assert resp.status_code == 400
 
 
 def test_create_submission_requires_where_detail_for_customer():
     client = client_as(HUMAN_USER)
-    resp = client.post("/submissions", json={"who": "Jane", "where": "Customer", "what": "x"})
+    resp = client.post("/submissions", json={"title": "T", "who": "Jane", "where": "Customer", "what": "x"})
     assert resp.status_code == 400
 
 
@@ -142,55 +166,27 @@ def test_create_submission_stores_where_detail_for_customer():
     client = client_as(HUMAN_USER)
     resp = client.post(
         "/submissions",
-        json={"who": "Jane", "where": "Customer", "whereDetail": "Acme Corp", "what": "x"},
+        json={"title": "T", "who": "Jane", "where": "Customer", "whereDetail": "Acme Corp", "what": "x"},
     )
     assert resp.status_code == 200
     assert resp.json()["whereDetail"] == "Acme Corp"
 
 
-def test_on_behalf_of_rejected_from_a_regular_human():
-    client = client_as(HUMAN_USER)
-    resp = client.post(
-        "/submissions",
-        json={"who": "Someone", "where": "Internal", "what": "x", "onBehalfOfEmail": "other@example.com"},
-    )
-    assert resp.status_code == 403
-
-
-def test_on_behalf_of_accepted_from_the_chat_service_account():
-    client = client_as(CHAT_SERVICE_ACCOUNT)
-    resp = client.post(
-        "/submissions",
-        json={"who": "Someone", "where": "Internal", "what": "x", "onBehalfOfEmail": "real-submitter@example.com"},
-    )
-    assert resp.status_code == 200
-    assert resp.json()["submittedByEmail"] == "real-submitter@example.com"
-
-
-def test_on_behalf_of_still_validated_as_an_email():
-    client = client_as(CHAT_SERVICE_ACCOUNT)
-    resp = client.post(
-        "/submissions",
-        json={"who": "Someone", "where": "Internal", "what": "x", "onBehalfOfEmail": "not-an-email"},
-    )
-    assert resp.status_code == 400
-
-
 def test_non_owner_non_moderator_cannot_delete():
-    created = client_as(HUMAN_USER).post("/submissions", json={"who": "Jane", "where": "Internal", "what": "x"}).json()
+    created = client_as(HUMAN_USER).post("/submissions", json={"title": "T", "who": "Jane", "where": "Internal", "what": "x"}).json()
     resp = client_as(OTHER_HUMAN_USER).delete(f"/submissions/{created['id']}")
     assert resp.status_code == 403
 
 
 def test_submitter_can_delete_their_own_entry():
     client = client_as(HUMAN_USER)
-    created = client.post("/submissions", json={"who": "Jane", "where": "Internal", "what": "x"}).json()
+    created = client.post("/submissions", json={"title": "T", "who": "Jane", "where": "Internal", "what": "x"}).json()
     resp = client.delete(f"/submissions/{created['id']}")
     assert resp.status_code == 204
 
 
 def test_moderator_can_delete_someone_elses_entry():
-    created = client_as(HUMAN_USER).post("/submissions", json={"who": "Jane", "where": "Internal", "what": "x"}).json()
+    created = client_as(HUMAN_USER).post("/submissions", json={"title": "T", "who": "Jane", "where": "Internal", "what": "x"}).json()
     resp = client_as(MODERATOR_USER).delete(f"/submissions/{created['id']}")
     assert resp.status_code == 204
 
@@ -208,7 +204,7 @@ def test_delete_nonexistent_is_404_even_for_a_non_moderator():
 
 
 def test_get_single_submission_returns_it():
-    created = client_as(HUMAN_USER).post("/submissions", json={"who": "Jane", "where": "Internal", "what": "x"}).json()
+    created = client_as(HUMAN_USER).post("/submissions", json={"title": "T", "who": "Jane", "where": "Internal", "what": "x"}).json()
     # Any signed-in employee, not just the moderator or the submitter -- same
     # "every entry, every employee" rule as the list endpoint.
     resp = client_as(MODERATOR_USER).get(f"/submissions/{created['id']}")
@@ -219,3 +215,43 @@ def test_get_single_submission_returns_it():
 def test_get_single_submission_404_for_missing():
     resp = client_as(HUMAN_USER).get("/submissions/does-not-exist")
     assert resp.status_code == 404
+
+
+# Minimal valid PNG signature -- detect_image_type only sniffs the first 8
+# bytes, so this is sufficient without needing a structurally complete PNG.
+_PNG_HEADER = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
+
+
+@pytest.fixture(autouse=True)
+def isolated_upload_dir(tmp_path, monkeypatch):
+    # Redirects uploads.py's module-level UPLOAD_DIR to a throwaway temp
+    # directory for every test in this file -- without this, every passing
+    # upload test would leave a real file behind in the project's own
+    # uploads/ folder, same "never touch the real one" reasoning as
+    # fresh_db's til_test database.
+    monkeypatch.setattr(uploads, "UPLOAD_DIR", tmp_path)
+
+
+def test_upload_accepts_a_valid_png():
+    resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.png", _PNG_HEADER, "image/png")})
+    assert resp.status_code == 200
+    assert resp.json()["url"].endswith(".png")
+
+
+def test_upload_rejects_non_webapp_callers():
+    resp = client_as(HUMAN_USER_VIA_OTHER_APP).post("/uploads", files={"file": ("x.png", _PNG_HEADER, "image/png")})
+    assert resp.status_code == 403
+
+
+def test_upload_rejects_file_too_large():
+    oversized = b"\x89PNG\r\n\x1a\n" + b"\x00" * (uploads.MAX_UPLOAD_BYTES + 1)
+    resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.png", oversized, "image/png")})
+    assert resp.status_code == 400
+
+
+def test_upload_rejects_content_that_isnt_actually_an_image():
+    # Content-Type header claims an image, but the bytes don't match any
+    # known signature -- the backend sniffs the real bytes, never trusts
+    # a client-supplied header.
+    resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.png", b"not a real image", "image/png")})
+    assert resp.status_code == 400

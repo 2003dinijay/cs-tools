@@ -17,12 +17,11 @@
 """FastAPI backend for "Today I Learned" -- a company-wide feed of learnings
 from customers, partners, and internal sources.
 
-Two entry points call this one service: One WSO2's /me/til page, and
-(separately, once registered) the Google Chat App's "+" Dialog. Neither
-holds any logic of its own beyond collecting the three fields -- this
-service is the single place a submission is validated, stored, and
-notified, which is what guarantees the two entry points can never disagree
-about what a valid entry looks like.
+The One WSO2 /me/til page is the only entry point allowed to create an
+entry -- POST /submissions checks the caller's own verified token identity
+(aud/client_id/azp) against ONE_WSO2_WEBAPP_CLIENT_ID and rejects anything
+else outright. Reading and deleting entries stays open to every signed-in
+employee (see list_submissions / delete_submission below).
 """
 from __future__ import annotations
 
@@ -34,24 +33,39 @@ load_dotenv()
 
 from typing import Optional
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, File, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 import db
 import entity_client
+import uploads
 from auth import ONE_WSO2_WEBAPP_CLIENT_ID, require_auth
-from chat_notify import notify_new_submission
 from novera_notify import notify_novera
 from sanitize import sanitize_what_html
 from validation import TIL_WHERE_OPTIONS, WHAT_MAX_LENGTH, validate_submission_payload
 
 CORS_ALLOWED_ORIGIN = os.environ.get("CORS_ALLOWED_ORIGIN", "http://localhost:3000")
 # Base URL of the One WSO2 webapp itself (NOT this backend) -- used only to
-# build each entry's shareable link (.../knowledge-base/{id}) for the Chat
-# notification. Optional: absent just means that link is omitted, same
-# "unset key = quietly off" posture as TIL_CHAT_WEBHOOK_URL.
+# build each entry's shareable link (.../knowledge-base/{id}) for the Novera
+# broadcast card. Optional: absent just means that link is omitted, same
+# "unset key = quietly off" posture as the rest of this service.
 ONE_WSO2_BASE_URL = os.environ.get("ONE_WSO2_BASE_URL", "").rstrip("/")
+
+
+def require_webapp_caller(user: dict) -> Optional[JSONResponse]:
+    """Shared by POST /submissions and POST /uploads -- both are ways to add
+    content to an entry, so both are restricted to the same single entry
+    point. Returns a 403 response if the caller isn't the real One WSO2
+    webapp, else None. See POST /submissions for the full reasoning on why
+    this checks the verified token identity, never a request header."""
+    if not ONE_WSO2_WEBAPP_CLIENT_ID or ONE_WSO2_WEBAPP_CLIENT_ID not in user.get("token_identities", set()):
+        return JSONResponse(
+            status_code=403,
+            content={"error": "This action is only available from the One WSO2 webapp."},
+        )
+    return None
 
 
 async def lifespan(app: FastAPI):
@@ -67,6 +81,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Serves whatever POST /uploads has saved -- StaticFiles needs the directory
+# to already exist at mount time, so this runs before the mount, not lazily
+# inside the upload handler.
+uploads.ensure_upload_dir()
+app.mount("/uploads", StaticFiles(directory=uploads.UPLOAD_DIR), name="uploads")
 
 
 @app.get("/user-info")
@@ -92,14 +112,35 @@ async def search_customers(
 async def list_submissions(
     limit: int = 100,
     cursor: Optional[str] = None,
-    user: dict = Depends(require_auth),  # noqa: ARG001 -- every entry is readable by every signed-in employee
+    q: Optional[str] = None,
+    scope: str = "what",
+    dateFrom: Optional[str] = None,
+    dateTo: Optional[str] = None,
+    mine: bool = False,
+    user: dict = Depends(require_auth),
 ):
-    capped_limit = min(max(limit, 1), 200)
-    return db.list_submissions(limit=capped_limit, cursor=cursor)
+    # Raised from 200: real filters now run as a WHERE clause server-side
+    # (see db.list_submissions), so a search result set is no longer capped
+    # by how many rows happened to fit in one earlier unfiltered page.
+    capped_limit = min(max(limit, 1), 1000)
+    if scope not in {"what", *db.SEARCH_SCOPE_COLUMNS}:
+        return JSONResponse(status_code=400, content={"error": f"Invalid scope: {scope!r}"})
+    # "mine" is a boolean flag from the caller, not a caller-supplied email --
+    # it always resolves against the VERIFIED token's own email, never
+    # anything the request could set directly, same "never trust what the
+    # caller merely claims" posture as submittedByEmail on create.
+    mine_email = user["email"] if mine else None
+    return db.list_submissions(
+        limit=capped_limit, cursor=cursor, q=q, scope=scope, date_from=dateFrom, date_to=dateTo, mine_email=mine_email
+    )
 
 
 @app.post("/submissions")
 async def create_submission(request: Request, user: dict = Depends(require_auth)):
+    rejection = require_webapp_caller(user)
+    if rejection:
+        return rejection
+
     try:
         body = await request.json()
     except Exception:
@@ -108,6 +149,7 @@ async def create_submission(request: Request, user: dict = Depends(require_auth)
     if error:
         return JSONResponse(status_code=400, content={"error": error})
 
+    title = body["title"].strip()
     who = body["who"].strip()
     where = body["where"]
     where_detail = body.get("whereDetail")
@@ -116,48 +158,52 @@ async def create_submission(request: Request, user: dict = Depends(require_auth)
     # never trust that a direct API call went through it. See sanitize.py.
     what = sanitize_what_html(body["what"])
 
-    # submittedByEmail comes from the verified token by default -- this is
-    # the one guarantee that makes "no anonymous entries" actually true
-    # regardless of what the free-text "who" field says. The ONE exception:
-    # the TIL Chat App authenticates as its own service account (never the
-    # human who typed into the Dialog), so it separately asserts who the
-    # real submitter was via `onBehalfOfEmail`. That field is honored ONLY
-    # when the caller's own verified identity IS the configured Chat
-    # service account -- for every other caller it's rejected outright
-    # (never silently ignored, which could mask a misconfiguration letting
-    # someone impersonate another employee).
-    on_behalf_of = body.get("onBehalfOfEmail")
-    if on_behalf_of is not None:
-        if not user["is_chat_service_account"]:
-            return JSONResponse(
-                status_code=403,
-                content={"error": "onBehalfOfEmail is only accepted from the configured Chat service account."},
-            )
-        if not isinstance(on_behalf_of, str) or "@" not in on_behalf_of:
-            return JSONResponse(status_code=400, content={"error": "onBehalfOfEmail must be a valid email."})
-        submitted_by_email = on_behalf_of
-    else:
-        submitted_by_email = user["email"]
+    # submittedByEmail always comes from the verified token -- this is the
+    # one guarantee that makes "no anonymous entries" actually true
+    # regardless of what the free-text "who" field says.
+    submitted_by_email = user["email"]
 
     submission = db.create_submission(
-        who=who, where=where, what=what, submitted_by_email=submitted_by_email, where_detail=where_detail
+        title=title, who=who, where=where, what=what, submitted_by_email=submitted_by_email, where_detail=where_detail
     )
 
+    # The gate above already guarantees this request came from the real
+    # webapp, so Novera's DM broadcast fires unconditionally here -- no
+    # further identity check needed at this point.
     entry_url = f"{ONE_WSO2_BASE_URL}/knowledge-base/{submission['id']}" if ONE_WSO2_BASE_URL else None
-    await notify_new_submission(who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
-    # Novera's own DM broadcast is scoped to THIS entry point only -- not the
-    # Chat App Dialog, and not Novera's own share_til_entry tool (which would
-    # otherwise notify the very person who just submitted, about their own
-    # entry, as if someone else had). Checked against the TOKEN's own
-    # verified client identity, never a request header -- a header is
-    # caller-controlled (any already-authenticated caller could set any
-    # header value), so it proves nothing about which application actually
-    # issued the token. ONE_WSO2_WEBAPP_CLIENT_ID unset = never broadcasts,
-    # same fail-closed posture as every other optional check in this service.
-    if ONE_WSO2_WEBAPP_CLIENT_ID and ONE_WSO2_WEBAPP_CLIENT_ID in user.get("token_identities", set()):
-        await notify_novera(who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
+    await notify_novera(title=title, who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
 
     return submission
+
+
+@app.post("/uploads")
+async def create_upload(request: Request, file: UploadFile = File(...), user: dict = Depends(require_auth)):
+    """Backs the image button and paste-an-image support in the "What did
+    you learn?" editor. Stores the file on disk (see uploads.py) and
+    returns an absolute URL the editor inserts as an <img src>. Built from
+    `request.base_url` rather than a configured constant -- this backend is
+    reachable at different hostnames across local dev / Staging / prod, and
+    the one guaranteed-correct base is whatever the caller actually used.
+    Same webapp-only gate as POST /submissions -- adding an image to an
+    entry is just another way of adding content to it."""
+    rejection = require_webapp_caller(user)
+    if rejection:
+        return rejection
+
+    data = await uploads.read_bounded(file)
+    if data is None:
+        return JSONResponse(status_code=400, content={"error": "Image must be 5 MB or smaller."})
+
+    # Sniffed from the actual bytes, not file.content_type -- a client can
+    # set that header to anything regardless of what was actually uploaded.
+    detected = uploads.detect_image_type(data[:12])
+    if detected is None:
+        return JSONResponse(status_code=400, content={"error": "File must be a PNG, JPEG, GIF, or WEBP image."})
+    ext, _content_type = detected
+
+    filename = uploads.save_upload(data, ext)
+    url = f"{str(request.base_url).rstrip('/')}/uploads/{filename}"
+    return {"url": url}
 
 
 @app.get("/submissions/{submission_id}")

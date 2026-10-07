@@ -29,27 +29,77 @@ behavior is completely unaffected either way.
 Config (env):
     NOVERA_NOTIFY_URL     Novera's POST /internal/notifications/til-entry
                           endpoint. Absent = this module does nothing.
-    NOVERA_NOTIFY_SECRET  Shared secret sent as the x-til-notification-secret
-                          header. Novera's own route fails closed (503) if
-                          it hasn't been configured with the same value, so
-                          an empty/missing secret here just means Novera
-                          rejects the call -- logged, never raised.
+
+    CHOREO_TOKEN_URL, NOVERA_NOTIFY_CLIENT_ID, NOVERA_NOTIFY_CLIENT_SECRET
+                          Choreo API Gateway sits in front of NOVERA_NOTIFY_URL
+                          and is the ONLY auth layer now (confirmed live: with
+                          gateway subscription auth actually enforced, Novera's
+                          own route no longer needs an application-level
+                          secret on top of it). These three fetch a
+                          client_credentials access token from Choreo's token
+                          endpoint for an application subscribed to Novera's
+                          API, sent as a standard `Authorization: Bearer`
+                          header -- same client_credentials shape as
+                          entity_client.py's ENTITY_SERVICE_* vars, just a
+                          different downstream and header name (Choreo
+                          Connect's own 401 response names "Bearer" as the
+                          expected scheme). Absent = the call is sent without
+                          an Authorization header, same "unset key = quietly
+                          off" posture as the rest of this module -- Choreo
+                          will then reject it at the gateway, logged below
+                          same as any other rejection.
 """
 from __future__ import annotations
 
 import html as html_module
 import os
+import time
 
 import httpx
 
 from sanitize import what_for_chat
 
 NOVERA_NOTIFY_URL = os.environ.get("NOVERA_NOTIFY_URL", "")
-NOVERA_NOTIFY_SECRET = os.environ.get("NOVERA_NOTIFY_SECRET", "")
+CHOREO_TOKEN_URL = os.environ.get("CHOREO_TOKEN_URL", "")
+NOVERA_NOTIFY_CLIENT_ID = os.environ.get("NOVERA_NOTIFY_CLIENT_ID", "")
+NOVERA_NOTIFY_CLIENT_SECRET = os.environ.get("NOVERA_NOTIFY_CLIENT_SECRET", "")
+
+# (token, expires_at_monotonic) -- module-level, process-wide. Same shape as
+# entity_client.py's own _token_cache, re-fetched a minute before real expiry
+# rather than on every call.
+_token_cache: dict[str, float | str] = {}
+
+
+async def _get_gateway_token(client: httpx.AsyncClient) -> str | None:
+    """None when the three CHOREO/NOVERA_NOTIFY_* gateway-auth vars aren't
+    configured -- caller sends the request without an Authorization header
+    in that case, same "unset key = quietly off" posture as the rest of
+    this module."""
+    if not (CHOREO_TOKEN_URL and NOVERA_NOTIFY_CLIENT_ID and NOVERA_NOTIFY_CLIENT_SECRET):
+        return None
+
+    cached_token = _token_cache.get("token")
+    cached_expiry = _token_cache.get("expires_at")
+    if isinstance(cached_token, str) and isinstance(cached_expiry, float) and time.monotonic() < cached_expiry:
+        return cached_token
+
+    resp = await client.post(
+        CHOREO_TOKEN_URL,
+        data={"grant_type": "client_credentials"},
+        auth=(NOVERA_NOTIFY_CLIENT_ID, NOVERA_NOTIFY_CLIENT_SECRET),
+        timeout=10.0,
+    )
+    resp.raise_for_status()
+    payload = resp.json()
+    token = payload["access_token"]
+    expires_in = int(payload.get("expires_in", 3600))
+    _token_cache["token"] = token
+    _token_cache["expires_at"] = time.monotonic() + max(expires_in - 60, 30)
+    return token
 
 
 async def notify_novera(
-    who: str, where: str, what: str, where_detail: str | None = None, entry_url: str | None = None
+    title: str, who: str, where: str, what: str, where_detail: str | None = None, entry_url: str | None = None
 ) -> None:
     if not NOVERA_NOTIFY_URL:
         return
@@ -70,6 +120,9 @@ async def notify_novera(
             # broadcast code escapes it too, but this shouldn't rely on that
             # alone any more than chat_notify.py relies on the frontend editor
             # alone.
+            # Same reasoning as "who" above -- free text til-backend only
+            # .strip()s, never HTML-escapes.
+            "title": html_module.escape(title),
             "who": html_module.escape(who),
             "where": where,
             "whereDetail": where_detail,
@@ -81,10 +134,14 @@ async def notify_novera(
             "entryUrl": entry_url,
         }
         async with httpx.AsyncClient() as client:
+            headers = {}
+            gateway_token = await _get_gateway_token(client)
+            if gateway_token:
+                headers["Authorization"] = f"Bearer {gateway_token}"
             response = await client.post(
                 NOVERA_NOTIFY_URL,
                 json=payload,
-                headers={"x-til-notification-secret": NOVERA_NOTIFY_SECRET},
+                headers=headers,
                 timeout=10,
             )
         # Not raised -- best-effort, same as chat_notify.py's own webhook

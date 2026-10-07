@@ -21,7 +21,10 @@ DOMPurify on every edit and again on every read, but this backend never
 trusts that a direct API call (bypassing the editor entirely) did the same
 -- same posture as auth.py independently re-verifying a token the gateway
 already checked. Same allowlist as the frontend's SANITIZE_CONFIG: p/br/
-strong/em/u/ol/ul/li/a, with href/target on <a>, http(s)/mailto/tel only.
+strong/em/u/ol/ul/li/a/img, with href/target on <a>, src/alt on <img>,
+http(s)/mailto/tel only -- an <img src="..."> only ever points at this
+service's own POST /uploads result (see uploads.py), never arbitrary user
+HTML, so there's no new injection surface from allowing the tag itself.
 """
 from __future__ import annotations
 
@@ -29,8 +32,8 @@ import re
 
 import bleach
 
-ALLOWED_TAGS = ["p", "br", "strong", "em", "u", "ol", "ul", "li", "a"]
-ALLOWED_ATTRIBUTES = {"a": ["href", "target"]}
+ALLOWED_TAGS = ["p", "br", "strong", "em", "u", "ol", "ul", "li", "a", "img"]
+ALLOWED_ATTRIBUTES = {"a": ["href", "target"], "img": ["src", "alt"]}
 ALLOWED_PROTOCOLS = ["http", "https", "mailto", "tel"]
 
 _BLOCK_END_RE = re.compile(r"</(p|li|br)>", re.IGNORECASE)
@@ -65,6 +68,7 @@ def what_plain_text(html: str) -> str:
 _LIST_ITEM_RE = re.compile(r"<li>(.*?)</li>", re.IGNORECASE | re.DOTALL)
 _PARAGRAPH_RE = re.compile(r"<p>(.*?)</p>", re.IGNORECASE | re.DOTALL)
 _REMAINING_BLOCK_RE = re.compile(r"</?(ol|ul)>", re.IGNORECASE)
+_IMG_RE = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
 
 
 def what_for_chat(html: str) -> str:
@@ -73,8 +77,14 @@ def what_for_chat(html: str) -> str:
     those need converting rather than passed through as-is (which would
     show literal tags in the card). Already-sanitized input (sanitize_what_
     html's allowlist), so no new injection surface here, just a format
-    translation for Chat's narrower one."""
-    text = html.replace("<strong>", "<b>").replace("</strong>", "</b>")
+    translation for Chat's narrower one.
+
+    Images are dropped entirely, not converted -- by design, an entry's
+    image is only ever meant to be seen on the entry's own page, never in
+    the Chat Space post or the Novera DM broadcast, and textParagraph has
+    no image support to translate to regardless."""
+    text = _IMG_RE.sub("", html)
+    text = text.replace("<strong>", "<b>").replace("</strong>", "</b>")
     text = text.replace("<em>", "<i>").replace("</em>", "</i>")
     # <u> and <a href="..."> pass through unchanged -- both already in
     # Chat's supported subset.

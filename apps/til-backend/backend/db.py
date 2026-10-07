@@ -117,7 +117,7 @@ def init_db():
 
 
 def create_submission(
-    who: str, where: str, what: str, submitted_by_email: str, where_detail: str | None = None
+    title: str, who: str, where: str, what: str, submitted_by_email: str, where_detail: str | None = None
 ) -> dict:
     submission_id = str(uuid.uuid4())
     created_at = datetime.now(timezone.utc).isoformat()
@@ -125,12 +125,13 @@ def create_submission(
         with conn.cursor() as cur:
             cur.execute(
                 "INSERT INTO til_submissions "
-                "(id, who, where_, where_detail, what, submitted_by_email, created_at) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s)",
-                (submission_id, who, where, where_detail, what, submitted_by_email, created_at),
+                "(id, title, who, where_, where_detail, what, submitted_by_email, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+                (submission_id, title, who, where, where_detail, what, submitted_by_email, created_at),
             )
     return {
         "id": submission_id,
+        "title": title,
         "who": who,
         "where": where,
         "whereDetail": where_detail,
@@ -143,6 +144,7 @@ def create_submission(
 def _row_to_dict(row: dict) -> dict:
     return {
         "id": row["id"],
+        "title": row["title"],
         "who": row["who"],
         "where": row["where_"],
         "whereDetail": row["where_detail"],
@@ -152,28 +154,94 @@ def _row_to_dict(row: dict) -> dict:
     }
 
 
-def list_submissions(limit: int = 100, cursor: str | None = None) -> dict:
+#  "what" is searched via the FULLTEXT index (idx_til_submissions_what_
+# fulltext) in NATURAL LANGUAGE MODE, which can't be accelerated for a query
+# shorter than innodb_ft_min_token_size (3 by default -- confirmed against
+# this server) -- MySQL's own indexer never tokenizes anything shorter than
+# that, so a FULLTEXT MATCH against a 1-2 character query matches nothing
+# even when the text is right there. Short queries fall back to a LIKE scan
+# instead, which is correct for them regardless of index support.
+_FULLTEXT_MIN_QUERY_LEN = 3
+
+SEARCH_SCOPE_COLUMNS = {
+    "title": "title",
+    "who": "who",
+    "email": "submitted_by_email",
+    "whereDetail": "where_detail",
+}
+
+
+def list_submissions(
+    limit: int = 100,
+    cursor: str | None = None,
+    q: str | None = None,
+    scope: str = "what",
+    date_from: str | None = None,
+    date_to: str | None = None,
+    mine_email: str | None = None,
+) -> dict:
     # Cursor = "<created_at>|<id>" of the last row the caller already has;
     # keyset pagination, newest first. created_at ALONE used to be the whole
     # cursor, but created_at is microsecond-precision text, not a guaranteed-
     # unique key -- two rows landing in the same microsecond would tie, and
     # a strict `created_at < %s` silently drops whichever of them falls on
     # the far side of that boundary. id (the primary key) breaks the tie.
+    #
+    # Every filter here used to be a client-side JS scan over whatever page
+    # happened to already be in the browser -- correct up to exactly
+    # `limit` rows, silently wrong past it (a match sitting on page 2 simply
+    # never got fetched to search in the first place). Real WHERE clauses
+    # here mean a search is always correct regardless of how many rows exist
+    # on either side of it.
+    conditions: list[str] = []
+    params: list[object] = []
+
+    if mine_email:
+        conditions.append("submitted_by_email = %s")
+        params.append(mine_email)
+
+    # Compared against just the YYYY-MM-DD prefix of the stored ISO string
+    # (LEFT(created_at, 10)), not the full timestamp -- created_at is
+    # microsecond-precision ("...T14:32:10.123456+00:00"), so a direct
+    # string compare against a plain "2026-10-04" would exclude every row
+    # from that day except one landing at exactly midnight. Mirrors the
+    # frontend's own localDateString-based comparison this replaces.
+    if date_from:
+        conditions.append("LEFT(created_at, 10) >= %s")
+        params.append(date_from)
+    if date_to:
+        conditions.append("LEFT(created_at, 10) <= %s")
+        params.append(date_to)
+
+    query = (q or "").strip()
+    if query:
+        if scope == "what":
+            if len(query) >= _FULLTEXT_MIN_QUERY_LEN:
+                conditions.append("MATCH(what) AGAINST (%s IN NATURAL LANGUAGE MODE)")
+                params.append(query)
+            else:
+                conditions.append("what LIKE %s")
+                params.append(f"%{query}%")
+        else:
+            column = SEARCH_SCOPE_COLUMNS.get(scope)
+            if column is None:
+                raise ValueError(f"Unknown search scope: {scope!r}")
+            conditions.append(f"{column} LIKE %s")
+            params.append(f"%{query}%")
+
     with pool.get_conn() as conn:
         with conn.cursor() as cur:
             if cursor:
                 cursor_created_at, _, cursor_id = cursor.rpartition("|")
-                cur.execute(
-                    "SELECT * FROM til_submissions "
-                    "WHERE (created_at, id) < (%s, %s) "
-                    "ORDER BY created_at DESC, id DESC LIMIT %s",
-                    (cursor_created_at, cursor_id, limit + 1),
-                )
-            else:
-                cur.execute(
-                    "SELECT * FROM til_submissions ORDER BY created_at DESC, id DESC LIMIT %s",
-                    (limit + 1,),
-                )
+                conditions.append("(created_at, id) < (%s, %s)")
+                params.extend([cursor_created_at, cursor_id])
+
+            where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+            cur.execute(
+                f"SELECT * FROM til_submissions {where_clause} "
+                "ORDER BY created_at DESC, id DESC LIMIT %s",
+                (*params, limit + 1),
+            )
             rows = cur.fetchall()
 
     has_more = len(rows) > limit
