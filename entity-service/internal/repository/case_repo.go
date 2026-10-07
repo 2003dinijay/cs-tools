@@ -2702,6 +2702,14 @@ var pgSortColMap = map[domain.CaseSortField]string{
 	domain.CaseSortFieldUpdatedOn: "wi.updated_on",
 	domain.CaseSortFieldSeverity:  "c.severity",
 	domain.CaseSortFieldState:     caseLikeStateSortColumn,
+	// Reuses the exact same assignee-display-name expression the SELECT list
+	// already computes (COALESCE(ae.name, first+last)) -- ae is already
+	// joined in caseSearchJoins for the assignedUserId filter/result field,
+	// so this needs no new join. LOWER(...) matches userRepo.SearchUsers's
+	// own case-insensitive name-sort convention. An unassigned case (ae.id
+	// IS NULL) evaluates to NULL here, which the query's existing "ORDER BY
+	// ... NULLS LAST" already sends to the end regardless of asc/desc.
+	domain.CaseSortFieldAssignee: "LOWER(COALESCE(ae.name, NULLIF(TRIM(CONCAT_WS(' ', ae.first_name, ae.last_name)), '')))",
 }
 
 // onboardingStatusLabels maps a projectOnboardingStatus filter value (keyed by
