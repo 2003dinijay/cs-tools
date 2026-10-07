@@ -8054,7 +8054,7 @@ components:
             must not say a colleague proposed it then.
         proposedByViewer:
           type: boolean
-          description: While pending: whether the proposal is the signed-in customer's own.
+          description: While pending - whether the proposal is the signed-in customer's own.
 
     ChangeRequestUpdateResponse:
       type: object
