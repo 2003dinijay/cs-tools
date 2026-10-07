@@ -106,17 +106,20 @@ func (s *fakeStore) SetState(_ context.Context, caseID, clockType, state string)
 	return nil
 }
 
-func (s *fakeStore) AdvanceAlertedTier(_ context.Context, caseID, clockType string, tier int) error {
+func (s *fakeStore) AdvanceAlertedTier(_ context.Context, caseID, clockType string, tier int, incarnation time.Time) (bool, error) {
 	if s.failAdvance {
-		return errors.New("advance failed")
+		return false, errors.New("advance failed")
 	}
 	key := caseID + "|" + clockType
 	meta := s.clocks[key]
+	if !incarnation.IsZero() && !meta.StartedAt.IsZero() && !meta.StartedAt.Equal(incarnation) {
+		return false, nil
+	}
 	if tier > meta.AlertedTier {
 		meta.AlertedTier = tier
 	}
 	s.clocks[key] = meta
-	return nil
+	return true, nil
 }
 
 func (s *fakeStore) ClaimTier(_ context.Context, caseID, clockType string, tier int, startedAt time.Time) (bool, error) {
@@ -754,5 +757,74 @@ func TestEngine_Reconcile_ClientErrorPropagates(t *testing.T) {
 
 	if err := e.Reconcile(context.Background(), client); err == nil {
 		t.Fatal("Reconcile() error = nil, want the client's error propagated")
+	}
+}
+
+// raceSimulatingStore wraps fakeStore and, right after a ClaimTier call
+// succeeds for a chosen (caseID, clockType), simulates a concurrent
+// registration replacing that clock with a new incarnation -- the exact
+// race window between processDueMember's own GetClock read and its later
+// AdvanceAlertedTier/RemoveWake calls that a CodeRabbit review caught: a
+// second replica (or an overlapping Reconcile pass) landing a severity
+// revision's fresh clock in that window.
+type raceSimulatingStore struct {
+	*fakeStore
+	caseID, clockType string
+	replacement       ClockMeta
+	replacementWakeAt time.Time
+}
+
+func (r *raceSimulatingStore) ClaimTier(ctx context.Context, caseID, clockType string, tier int, startedAt time.Time) (bool, error) {
+	claimed, err := r.fakeStore.ClaimTier(ctx, caseID, clockType, tier, startedAt)
+	if claimed && err == nil && caseID == r.caseID && clockType == r.clockType {
+		r.fakeStore.clocks[caseID+"|"+clockType] = r.replacement
+		r.fakeStore.wake[wakeMember(caseID, clockType, tier)] = r.replacementWakeAt
+	}
+	return claimed, err
+}
+
+// TestEngine_ProcessDueMember_IncarnationChangedMidFlight_DoesNotClobberNewClock
+// is the direct regression test for the CodeRabbit-flagged race: a tick
+// that already won its (incarnation-scoped) claim under an OLD clock must
+// not let its own AdvanceAlertedTier/RemoveWake calls afterward corrupt a
+// DIFFERENT, NEWER incarnation that was registered for the identical
+// (caseID, clockType) in the meantime -- neither clobbering its
+// just-reset alerted-tier cursor nor deleting its own, independently
+// scheduled wake entry.
+func TestEngine_ProcessDueMember_IncarnationChangedMidFlight_DoesNotClobberNewClock(t *testing.T) {
+	base := newFakeStore()
+	oldStartedAt := time.Now().Add(-time.Hour)
+	newStartedAt := time.Now().Add(time.Minute) // a genuinely different incarnation
+	newWakeAt := time.Now().Add(time.Hour)       // the new clock's own, still-future tier-50 due time
+
+	base.clocks["case-1|response"] = ClockMeta{StartedAt: oldStartedAt, Priority: "CATASTROPHIC"}
+	base.wake[wakeMember("case-1", "response", 50)] = time.Now().Add(-time.Minute) // due now, under the OLD incarnation
+
+	raceStore := &raceSimulatingStore{
+		fakeStore:         base,
+		caseID:            "case-1",
+		clockType:         "response",
+		replacement:       ClockMeta{StartedAt: newStartedAt, Priority: "HIGH"},
+		replacementWakeAt: newWakeAt,
+	}
+	e := &Engine{store: raceStore, pub: &fakePublisher{}, chat: &fakeChat{}, links: fakeLinks{}, durations: testDurations()}
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v", err)
+	}
+
+	got := base.clocks["case-1|response"]
+	if !got.StartedAt.Equal(newStartedAt) {
+		t.Fatalf("test setup broken: clock is not the new incarnation (got StartedAt = %v)", got.StartedAt)
+	}
+	if got.AlertedTier != 0 {
+		t.Errorf("new incarnation's AlertedTier = %d, want 0 -- the stale tick must not advance a cursor that isn't its own", got.AlertedTier)
+	}
+	gotWakeAt, stillPresent := base.wake[wakeMember("case-1", "response", 50)]
+	if !stillPresent {
+		t.Fatal("new incarnation's own wake entry was removed by the stale tick -- its real future alert is now lost")
+	}
+	if !gotWakeAt.Equal(newWakeAt) {
+		t.Errorf("wake entry due time = %v, want the new incarnation's own %v (unchanged)", gotWakeAt, newWakeAt)
 	}
 }

@@ -117,7 +117,10 @@ func clockKey(caseID, clockType string) string {
 }
 
 func tierClaimKey(caseID, clockType string, tier int, startedAt time.Time) string {
-	return tierClaimKeyPrefix + caseID + "|" + clockType + "|" + strconv.Itoa(tier) + "|" + strconv.FormatInt(startedAt.Unix(), 10)
+	// UnixNano, not Unix -- see SetClock's own doc comment on why whole
+	// seconds aren't enough to tell two genuinely different incarnations
+	// apart.
+	return tierClaimKeyPrefix + caseID + "|" + clockType + "|" + strconv.Itoa(tier) + "|" + strconv.FormatInt(startedAt.UnixNano(), 10)
 }
 
 // AddWake schedules member to become due at at.
@@ -199,11 +202,22 @@ return 1
 // pair is ever seen -- see setClockScript's own doc comment for why a
 // later call (a retry/replay of the same case.created event) must never
 // reset them.
+//
+// startedAt is stored as UnixNano, not Unix (whole seconds) -- a
+// CodeRabbit-caught gap in an earlier version of the incarnation check
+// below: entity-service's ReviseCaseClocks can register a replacement
+// clock within the same wall-clock second as the one it replaces (a fast
+// severity re-revision, or simply two clock types of the same case
+// revised back-to-back), which a whole-seconds timestamp can't tell apart
+// from the original -- the incarnation check would then wrongly treat a
+// genuinely new clock as a replay, preserving a stale alertedTier/tier
+// claim exactly like the bug this check exists to prevent. tierClaimKey
+// below uses the same precision for the identical reason.
 func (s *Store) SetClock(ctx context.Context, caseID, clockType string, meta ClockMeta) error {
 	key := clockKey(caseID, clockType)
 	return setClockScript.Run(ctx, s.rdb, []string{key},
 		meta.CaseNumber, meta.WSO2CaseID, meta.CaseTitle, meta.CaseType,
-		meta.Product, meta.Team, meta.Priority, meta.StartedAt.Unix(),
+		meta.Product, meta.Team, meta.Priority, meta.StartedAt.UnixNano(),
 		meta.State, int(clockTTL.Seconds()),
 	).Err()
 }
@@ -233,7 +247,7 @@ func (s *Store) GetClock(ctx context.Context, caseID, clockType string) (meta Cl
 		Paused:     res["paused"] == "1",
 	}
 	if v, err := strconv.ParseInt(res["startedAt"], 10, 64); err == nil {
-		meta.StartedAt = time.Unix(v, 0)
+		meta.StartedAt = time.Unix(0, v)
 	}
 	if v, err := strconv.Atoi(res["alertedTier"]); err == nil {
 		meta.AlertedTier = v
@@ -273,7 +287,31 @@ func (s *Store) SetState(ctx context.Context, caseID, clockType, state string) e
 // history) for the full concurrency reasoning: two callers (a Tick claim
 // and CompleteResponseClock/ApplyStateEffects' CLOSED branch, say) must
 // never let whichever writes second silently move the cursor backward.
+//
+// ARGV[3], when non-empty, scopes this update to one clock incarnation --
+// a CodeRabbit-caught race in an earlier version of this engine's
+// reconciliation feature: a tick that read a clock's metadata (ClaimTier's
+// own incarnation-scoped claim already prevents it from double-alerting
+// under a DIFFERENT clock, but a claim is not enough on its own) can still
+// race a concurrent registration of a REPLACEMENT clock (entity-service's
+// ReviseCaseClocks on a severity change, observed via Reconcile) for the
+// same (caseID, clockType) key -- if that replacement lands between this
+// tick's claim and this call, an unscoped update here would advance the
+// NEW clock's own, just-reset cursor using the OLD tick's tier, based on
+// work done for a clock that no longer exists. Returns 0 (no update
+// applied) when ARGV[3] is given and no longer matches the hash's current
+// startedAt -- the caller must treat that as "this clock has moved on,
+// don't touch its state any further" (see processDueMember's own call
+// site). An empty ARGV[3] (CompleteResponseClock/ApplyStateEffects' CLOSED
+// branch, which have no previously-read incarnation to compare against at
+// all) always applies, exactly as before this check existed.
 var advanceAlertedTierScript = redis.NewScript(`
+if ARGV[3] ~= '' then
+	local currentStartedAt = redis.call('HGET', KEYS[1], 'startedAt')
+	if currentStartedAt and currentStartedAt ~= ARGV[3] then
+		return 0
+	end
+end
 local current = redis.call('HGET', KEYS[1], 'alertedTier')
 local candidate = tonumber(ARGV[1])
 if (not current) or (candidate > tonumber(current)) then
@@ -290,8 +328,26 @@ return 1
 // branch (passing 100 to force-complete every tier at once, matching the
 // removed pre-poll design's "mark all three tiers reached" semantics for an
 // early completion).
-func (s *Store) AdvanceAlertedTier(ctx context.Context, caseID, clockType string, tier int) error {
-	return advanceAlertedTierScript.Run(ctx, s.rdb, []string{clockKey(caseID, clockType)}, tier, int(clockTTL.Seconds())).Err()
+//
+// incarnation should be the clock's StartedAt as this caller itself last
+// observed it (from GetClock) — Tick always has one; CompleteResponseClock/
+// ApplyStateEffects pass the zero time.Time{}, meaning "apply regardless of
+// whatever incarnation currently exists" (they're reacting to a live event
+// about the case right now, not working from a possibly-stale snapshot, so
+// there's nothing to scope against). applied=false means the given
+// incarnation no longer matches — see advanceAlertedTierScript's own doc
+// comment for why a caller must not then touch this clock's wake entry.
+func (s *Store) AdvanceAlertedTier(ctx context.Context, caseID, clockType string, tier int, incarnation time.Time) (applied bool, err error) {
+	var incarnationArg string
+	if !incarnation.IsZero() {
+		incarnationArg = strconv.FormatInt(incarnation.UnixNano(), 10)
+	}
+	res, err := advanceAlertedTierScript.Run(ctx, s.rdb, []string{clockKey(caseID, clockType)}, tier, int(clockTTL.Seconds()), incarnationArg).Result()
+	if err != nil {
+		return false, err
+	}
+	n, ok := res.(int64)
+	return ok && n == 1, nil
 }
 
 // ClaimTier atomically claims (caseID, clockType, tier) under the clock's

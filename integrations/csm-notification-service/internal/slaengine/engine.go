@@ -66,7 +66,7 @@ type store interface {
 	GetClock(ctx context.Context, caseID, clockType string) (ClockMeta, bool, error)
 	SetPaused(ctx context.Context, caseID, clockType string, paused bool) error
 	SetState(ctx context.Context, caseID, clockType, state string) error
-	AdvanceAlertedTier(ctx context.Context, caseID, clockType string, tier int) error
+	AdvanceAlertedTier(ctx context.Context, caseID, clockType string, tier int, incarnation time.Time) (applied bool, err error)
 	ClaimTier(ctx context.Context, caseID, clockType string, tier int, startedAt time.Time) (claimed bool, err error)
 	ReleaseTier(ctx context.Context, caseID, clockType string, tier int, startedAt time.Time) error
 }
@@ -275,7 +275,7 @@ func (e *Engine) ApplyStateEffects(ctx context.Context, caseID, newStatus string
 		e.setPaused(ctx, caseID, ClockWorkaround, true)
 		e.setPaused(ctx, caseID, ClockResolution, true)
 	case effectClose:
-		if err := e.store.AdvanceAlertedTier(ctx, caseID, ClockResolution, 100); err != nil {
+		if _, err := e.store.AdvanceAlertedTier(ctx, caseID, ClockResolution, 100, time.Time{}); err != nil {
 			slog.ErrorContext(ctx, "slaengine: failed to complete resolution clock on case close", "caseId", caseID, "err", err)
 		}
 		e.setPaused(ctx, caseID, ClockWorkaround, true)
@@ -298,7 +298,7 @@ func (e *Engine) setPaused(ctx context.Context, caseID, clockType string, paused
 // its own). Idempotent: AdvanceAlertedTier never moves the cursor backward,
 // so a redelivered comment-added event is harmless.
 func (e *Engine) CompleteResponseClock(ctx context.Context, caseID string) {
-	if err := e.store.AdvanceAlertedTier(ctx, caseID, ClockResponse, 100); err != nil {
+	if _, err := e.store.AdvanceAlertedTier(ctx, caseID, ClockResponse, 100, time.Time{}); err != nil {
 		slog.ErrorContext(ctx, "slaengine: failed to complete response clock", "caseId", caseID, "err", err)
 	}
 }
@@ -366,15 +366,30 @@ func (e *Engine) processDueMember(ctx context.Context, member string) error {
 		}
 		return fmt.Errorf("alert tier %d for %s/%s: %w", tier, caseID, clockType, err)
 	}
-	if err := e.store.AdvanceAlertedTier(ctx, caseID, clockType, tier); err != nil {
+	applied, err := e.store.AdvanceAlertedTier(ctx, caseID, clockType, tier, meta.StartedAt)
+	if err != nil {
 		// Logged, not returned/retried: the alert (publish + Chat) has
 		// already gone out, and the tier claim above already prevents a
 		// future tick from re-alerting this exact tier regardless of
 		// whether this cursor update lands — see ClaimTier's own doc
 		// comment. Leaving the wake member in place here would only cause
 		// it to be re-examined (and immediately re-dropped by the
-		// claimed=false branch above) forever.
+		// claimed=false branch above) forever, so RemoveWake below still
+		// runs on this path.
 		slog.ErrorContext(ctx, "slaengine: failed to advance alerted-tier cursor after a successful alert", "caseId", caseID, "clockType", clockType, "tier", tier, "err", err)
+	} else if !applied {
+		// The clock has moved on to a new incarnation since this tick read
+		// meta (see advanceAlertedTierScript's own doc comment) — the alert
+		// already sent reflects the OLD incarnation's data, which can't be
+		// undone, but this tick's own work for THIS wake member ends here:
+		// the wake-index member for (caseID, clockType, tier) may already
+		// belong to the new incarnation's own, independently-scheduled
+		// entry (AddWake overwrites the same key), so removing it now would
+		// delete a still-valid future alert out from under the new clock.
+		// Its cursor was never touched either, so nothing here needs
+		// correcting on the new incarnation's behalf.
+		slog.InfoContext(ctx, "slaengine: tier alerted under a clock incarnation that has since been replaced, leaving the new incarnation's own state untouched", "caseId", caseID, "clockType", clockType, "tier", tier)
+		return nil
 	}
 	if err := e.store.RemoveWake(ctx, member); err != nil {
 		return fmt.Errorf("remove wake entry after alerting tier %d for %s/%s: %w", tier, caseID, clockType, err)
@@ -567,7 +582,12 @@ func (e *Engine) reconcileClock(ctx context.Context, c activeSLAClock, now time.
 		highestPastTier = tier
 	}
 	if highestPastTier > 0 {
-		if err := e.store.AdvanceAlertedTier(ctx, c.CaseID, c.ClockType, highestPastTier); err != nil {
+		// Scoped to the incarnation this call itself just wrote via SetClock
+		// above: a concurrent reconciliation pass (another replica, or an
+		// overlapping run) for the SAME case racing a different severity
+		// could otherwise clobber whichever one writes last, the same class
+		// of race AdvanceAlertedTier's own doc comment describes for Tick.
+		if _, err := e.store.AdvanceAlertedTier(ctx, c.CaseID, c.ClockType, highestPastTier, startedAt); err != nil {
 			slog.ErrorContext(ctx, "slaengine: reconcile: failed to pre-claim already-past tiers", "caseId", c.CaseID, "clockType", c.ClockType, "tier", highestPastTier, "err", err)
 		}
 	}
