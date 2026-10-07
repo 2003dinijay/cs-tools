@@ -1135,7 +1135,7 @@ func (c *Config) DSN() string {
 //
 // *** GITHUB_WEBHOOK_SECRET IS NO LONGER PART OF THIS, AND ITS ABSENCE HERE
 // IS NOT AN OVERSIGHT. *** The HMAC check moved to
-// operations/csm-webhooks along with the public endpoint, so this
+// operations/csm-webhooks/github along with the public endpoint, so this
 // service never sees a signature and holding the secret would only imply it
 // did. What still gates the integration is the outbound half: a token to
 // call GitHub with, and the login whose own events must be ignored as ours.

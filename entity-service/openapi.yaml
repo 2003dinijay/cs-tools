@@ -410,7 +410,7 @@ paths:
   /github/deliveries:
     post:
       summary: >-
-        Apply a GitHub delivery that operations/csm-webhooks has already
+        Apply a GitHub delivery that operations/csm-webhooks/github has already
         authenticated. That component is the public endpoint GitHub posts to;
         it verifies the X-Hub-Signature-256 HMAC over the raw body and
         forwards the result here. This service is Organization-visible and
