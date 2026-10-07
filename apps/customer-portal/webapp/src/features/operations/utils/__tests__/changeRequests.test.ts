@@ -390,6 +390,8 @@ describe("describeChangeRequestActionError", () => {
         SCHEDULE_CHANGED: "change_request_schedule_changed",
         APPROVAL_NOT_PENDING: "change_request_approval_not_pending",
         NOT_PROPOSABLE: "change_request_not_proposable",
+        PROPOSAL_NOT_NOW: "change_request_proposal_not_now",
+        NO_PLANNED_WINDOW: "change_request_no_planned_window",
         NOT_ASKED: "change_request_not_asked",
         FORBIDDEN: "change_request_forbidden",
       });

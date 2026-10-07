@@ -27,6 +27,10 @@
 //   an answer for a planned window that has moved         409     change_request_schedule_changed
 //   an answer to an approval that is no longer pending    409     change_request_approval_not_pending
 //   a proposed time where none can be proposed            409     change_request_not_proposable
+//   a proposed time with no planned window to move         409     change_request_no_planned_window
+//   (a proposed time while an approval that is not the customer's is still asked, 409
+//   change_request_proposal_not_now, is pinned against the database in entity-service's
+//   change_request_proposal_integration_test.go: it needs an internal approver row)
 //   a contact the customer's request was never sent to    403     change_request_not_asked
 //   a field a customer may not set                        403     change_request_forbidden
 //
@@ -117,6 +121,22 @@ test.describe("Local stack — a refused answer carries its machine-readable err
     expect((await changeRequestRow(approval.id)).state, "the refusal changed nothing").toBe("CUSTOMER_APPROVAL");
 
     // The hold refuses the proposal only: the customer is still being asked.
+    const answered = await customerApi("dave").patch(approval.id, { isCustomerApproved: true });
+    expect(answered.status, JSON.stringify(answered.body)).toBe(200);
+    expect((await changeRequestRow(approval.id)).state).toBe("SCHEDULED");
+  });
+
+  test(`a proposed time on ${approval.number} with no planned window to move is a 409 change_request_no_planned_window; the answer itself is still taken afterwards`, async () => {
+    await psql(`update change_request set start_on = NULL, end_on = NULL where id = '${approval.id}'`);
+
+    await expectRefusal("a proposal over a change with no planned window", "dave", approval.id, { plannedStartOn: soon.startUtc, plannedEndOn: soon.endUtc }, {
+      status: 409,
+      errorCode: "change_request_no_planned_window",
+      message: /no planned window to move/,
+    });
+    expect((await changeRequestRow(approval.id)).state, "the refusal changed nothing").toBe("CUSTOMER_APPROVAL");
+
+    // Only the proposal is refused: the customer is still being asked.
     const answered = await customerApi("dave").patch(approval.id, { isCustomerApproved: true });
     expect(answered.status, JSON.stringify(answered.body)).toBe(200);
     expect((await changeRequestRow(approval.id)).state).toBe("SCHEDULED");

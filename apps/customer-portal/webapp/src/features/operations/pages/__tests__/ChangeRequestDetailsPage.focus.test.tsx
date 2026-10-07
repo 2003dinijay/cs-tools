@@ -294,13 +294,30 @@ describe("ChangeRequestDetailsPage: where focus goes after an answer", () => {
       fireEvent.click(within(dialog).getByRole("button", { name: "Submit Proposal" }));
     };
 
-    it("moves focus to the heading once the proposal is accepted", async () => {
+    it("returns focus to Propose New Time once the proposal is made: the change stays in Customer Approval with every answer on offer", async () => {
+      // What the refetch brings back: the proposal waits for WSO2, and nothing else moved.
       mocks.mutateAsync.mockImplementationOnce(async () => {
-        mocks.changeRequest.value = makeChangeRequest({ state: { id: "-3", label: "Authorize" }, customerCanAnswer: false });
+        mocks.changeRequest.value = makeChangeRequest({
+          customerProposal: { startDate: "2099-06-11T15:30:00Z", answer: "pending", proposedByViewer: true },
+        });
       });
       render(tree());
       sendProposal(openPropose());
-      await alertText("New time proposed. We'll ask for your approval again once it's confirmed internally.");
+      await alertText("New time proposed. WSO2 will accept it or suggest a different time, and the answer will appear on this page.");
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+      // The buttons did not go (the customer's request stays live), so the heading is not the
+      // place to land: the button that opened the dialog is.
+      expect(button("Approve")).toBeEnabled();
+      await waitFor(() => expect(document.activeElement).toBe(button("Propose New Time")));
+    });
+
+    it("falls back to the heading when a proposal ends the customer's question (the change moved on behind the page)", async () => {
+      mocks.mutateAsync.mockImplementationOnce(async () => {
+        answerIsOver();
+      });
+      render(tree());
+      sendProposal(openPropose());
+      await alertText("New time proposed. WSO2 will accept it or suggest a different time, and the answer will appear on this page.");
       await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
       await waitFor(() => expect(document.activeElement).toBe(heading()));
     });

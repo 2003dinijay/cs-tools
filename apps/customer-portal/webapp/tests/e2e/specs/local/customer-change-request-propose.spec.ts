@@ -614,6 +614,7 @@ test.describe("Local stack — a customer proposes a new implementation time and
     const refused = await customerApi("dave").patch(approval.id, { plannedStartOn: start.startUtc, plannedEndOn: start.endUtc });
     expect(refused.status, JSON.stringify(refused.body)).toBe(409);
     expect(JSON.stringify(refused.body)).toMatch(/has no planned window to move, so a new time cannot be proposed for it/);
+    expect((refused.body as { errorCode?: string }).errorCode, "the refusal is named by its code, which is what the page classifies it by").toBe("change_request_no_planned_window");
     expect(await proposalRow(approval.id)).toEqual({ proposedUtc: "", answer: "" });
     expect((await customerApi("dave").get(approval.id)).body.customerCanAnswer).toBe(true);
 
