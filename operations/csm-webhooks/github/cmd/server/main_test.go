@@ -26,7 +26,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/wso2-open-operations/cs-tools/operations/csm-webhooks/internal/webhook"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-webhooks/github/internal/webhook"
 )
 
 const testSecret = "test-secret"

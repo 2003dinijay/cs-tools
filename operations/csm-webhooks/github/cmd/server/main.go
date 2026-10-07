@@ -45,8 +45,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/operations/csm-webhooks/internal/entity"
-	"github.com/wso2-open-operations/cs-tools/operations/csm-webhooks/internal/webhook"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-webhooks/github/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/operations/csm-webhooks/github/internal/webhook"
 )
 
 // maxWebhookBody caps what will be read. GitHub's own limit is 25MB; an issue
