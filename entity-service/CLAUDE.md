@@ -2338,11 +2338,22 @@ already use — no route path, request, or response shape changed.
   'submitted'`) — the ServiceNow-backed implementation instead trusts SN to
   enforce both, since it just forwards the caller's token.
   `TransitionTimeCardState` (approve/reject) similarly requires the actor to
-  be an eligible approver (a `time_card_approver` row, and not the card's
-  own submitter) AND the card to currently be `submitted` — both checked
-  under one `SELECT ... FOR UPDATE` so a concurrent approver-list edit or a
+  be an eligible approver (a `time_card_approver` row for this specific
+  card) **or** a holder of the global `admin` role (`role.name = 'admin'`,
+  the same role `recompute_user_type` — migration 0011 — already treats as
+  a distinct global grant), and in either case not the card's own submitter,
+  AND the card to currently be `submitted` — all checked under one
+  `SELECT ... FOR UPDATE` so a concurrent approver-list/role edit or a
   second transition attempt can't slip through between the check and the
-  write. That guard only fires at decide-time, though — until now nothing
+  write. The `admin` branch is a deliberate "approve by exception" escape
+  hatch, added at explicit product request: unlike every other eligibility
+  check in this file, it is not scoped to any particular card at all —
+  holding `admin` lets a caller decide *any* submitted card, regardless of
+  whether `time_card_approver` lists them for it. Self-approval is still
+  blocked unconditionally, admin included. The CSM Portal webapp's own
+  `useTimecardRole` hook mirrors this exactly (`isApprover || isAdmin`) for
+  which cards it shows Approve/Reject controls on — see that repo's own
+  `CLAUDE.md`. That guard only fires at decide-time, though — until now nothing
   stopped the same submitter/approver pairing from being written in the
   first place. `validateApproverIDsExcludeSubmitter` (`time_card_service.go`)
   closes that at create/edit time instead: `CreateTimeCard`/`UpdateTimeCard`

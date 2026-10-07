@@ -205,3 +205,64 @@ func TestTimeCardIntegration_TotalTimeIsMinutes(t *testing.T) {
 }
 
 func ptrTo(s string) *string { return &s }
+
+const (
+	timeCardTestAdminUserID = "42222222-0000-0000-0000-000000000002"
+	timeCardTestAdminRoleID = "47777777-0000-0000-0000-000000000001"
+)
+
+// TestTimeCardIntegration_TransitionAllowsAdminWithoutApproverRow is the
+// regression test for TransitionTimeCardState's "admin" approve-by-exception
+// branch: a holder of the global "admin" role (role.name = 'admin', the same
+// role recompute_user_type treats as a distinct global grant -- migration
+// 0011) may approve/reject a submitted time card even when they hold no
+// time_card_approver row for that specific card at all. Exercises the real
+// SQL (the EXISTS ... role.name = 'admin' check), not a stub -- a fake
+// TimeCardRepository can't catch a typo'd role name or join condition.
+func TestTimeCardIntegration_TransitionAllowsAdminWithoutApproverRow(t *testing.T) {
+	pool := caseStatsPool(t)
+	seedTimeCardWithNullDurations(t, pool)
+
+	ctx := repository.WithSystemIdentity(context.Background())
+	scoped := repository.NewScoped(pool)
+
+	// role.name is UNIQUE and this role is shared, real platform data (seeded
+	// by a sync process in production) -- insert it if absent, but never
+	// delete it in cleanup, only this test's own grant of it.
+	cleanup := func() {
+		_, _ = pool.Exec(ctx, `DELETE FROM user_role WHERE user_id = $1 AND role_id = $2`, timeCardTestAdminUserID, timeCardTestAdminRoleID)
+		_, _ = pool.Exec(ctx, `DELETE FROM "user" WHERE id = $1`, timeCardTestAdminUserID)
+	}
+	cleanup()
+	t.Cleanup(cleanup)
+
+	if _, err := pool.Exec(ctx, `INSERT INTO role (id, created_on, updated_on, name) VALUES ($1, now(), now(), 'admin') ON CONFLICT (name) DO NOTHING`, timeCardTestAdminRoleID); err != nil {
+		t.Fatalf("seed admin role: %v", err)
+	}
+	// The real id of an already-existing 'admin' role may differ from
+	// timeCardTestAdminRoleID (ON CONFLICT DO NOTHING leaves it untouched) --
+	// resolve it by name rather than assuming the seed above won.
+	var adminRoleID string
+	if err := pool.QueryRow(ctx, `SELECT id FROM role WHERE name = 'admin'`).Scan(&adminRoleID); err != nil {
+		t.Fatalf("resolve admin role id: %v", err)
+	}
+
+	if _, err := pool.Exec(ctx, `INSERT INTO "user" (id, created_on, updated_on, user_name, email, is_active)
+	                              VALUES ($1, now(), now(), 'time-card-admin-test@example.com', 'time-card-admin-test@example.com', true)`,
+		timeCardTestAdminUserID); err != nil {
+		t.Fatalf("seed admin user: %v", err)
+	}
+	if _, err := pool.Exec(ctx, `INSERT INTO user_role (id, created_on, updated_on, user_id, role_id) VALUES (gen_random_uuid(), now(), now(), $1, $2)`,
+		timeCardTestAdminUserID, adminRoleID); err != nil {
+		t.Fatalf("grant admin role: %v", err)
+	}
+
+	repo := repository.NewTimeCardRepository(scoped)
+	view, err := repo.TransitionTimeCardState(ctx, timeCardTestNullCardID, domain.TimeCardStateApproved, nil, timeCardTestAdminUserID)
+	if err != nil {
+		t.Fatalf("TransitionTimeCardState() by an admin with no time_card_approver row: error = %v, want success", err)
+	}
+	if view.State == nil || *view.State != string(domain.TimeCardStateApproved) {
+		t.Errorf("TransitionTimeCardState() state = %v, want %q", view.State, domain.TimeCardStateApproved)
+	}
+}
