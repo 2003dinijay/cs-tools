@@ -17,6 +17,7 @@
 import { describe, expect, it } from "vitest";
 import { navNodeById } from "@config/csmNavItems";
 import { HELP_TOPIC_CONTENT } from "@features/help/utils/helpContent";
+import { markdownToHtmlProse } from "@utils/renderMarkdown";
 
 describe("HELP_TOPIC_CONTENT", () => {
   it("has a non-empty Markdown source for every topic declared in the nav tree", () => {
@@ -39,5 +40,54 @@ describe("HELP_TOPIC_CONTENT", () => {
     for (const key of Object.keys(HELP_TOPIC_CONTENT)) {
       expect(topicIds.has(key)).toBe(true);
     }
+  });
+});
+
+/**
+ * Pins the shape of the Operations topic's "A time the customer proposed"
+ * bullet as the Help page renders it (`markdownToHtmlProse`, `breaks: false`).
+ * Markdown lazily continues a paragraph, so an indented line that follows a
+ * nested bullet without a blank line in between is rendered inside that nested
+ * bullet; the two paragraphs about a proposal the page cannot vouch for and
+ * about where proposals are kept belong to the bullet itself, after its list.
+ */
+describe("Operations help: the proposed-time bullet", () => {
+  const proposalItem = (): HTMLElement => {
+    const doc = new DOMParser().parseFromString(
+      markdownToHtmlProse(HELP_TOPIC_CONTENT.operations),
+      "text/html",
+    );
+    const matches = Array.from(doc.querySelectorAll("li")).filter((li) =>
+      li.querySelector(":scope > p > strong, :scope > strong")?.textContent?.startsWith("A time the customer proposed"),
+    );
+    expect(matches).toHaveLength(1);
+    return matches[0];
+  };
+
+  it("keeps the two answers as the only items of the nested list", () => {
+    const answers = Array.from(proposalItem().querySelectorAll(":scope > ul > li"));
+    expect(answers.map((li) => li.querySelector("strong")?.textContent)).toEqual([
+      "Accept proposed time",
+      "Propose a different time",
+    ]);
+  });
+
+  it("renders the not-recorded caveat and the PostgreSQL caveat as paragraphs of the bullet, after its list", () => {
+    const children = Array.from(proposalItem().children).map((child) => child.tagName);
+    expect(children).toEqual(["P", "UL", "P", "P"]);
+
+    const [, , notRecorded, postgresOnly] = Array.from(proposalItem().children);
+    expect(notRecorded.textContent).toContain("A date a WSO2 user wrote in the previous system");
+    expect(notRecorded.textContent).toContain("The proposer is not recorded.");
+    expect(postgresOnly.textContent).toContain("kept in PostgreSQL only");
+  });
+
+  it("keeps both caveats out of the Propose a different time answer", () => {
+    const answers = Array.from(proposalItem().querySelectorAll(":scope > ul > li"));
+    const propose = answers[1];
+    expect(propose.textContent).toContain("The loop repeats with their next proposal.");
+    expect(propose.textContent).not.toContain("not recorded");
+    expect(propose.textContent).not.toContain("PostgreSQL");
+    expect(propose.textContent).not.toContain("previous system");
   });
 });

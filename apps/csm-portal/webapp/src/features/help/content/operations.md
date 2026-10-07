@@ -160,13 +160,16 @@ From the detail page a CS engineer can:
     instead (again with no CAB). Keeping the current time **declines** the
     proposal: only the answer is recorded and the customer keeps their request
     to approve the current time. The loop repeats with their next proposal.
-  A date a WSO2 user wrote in the previous system, or one left over from an earlier round,
-  looks like a proposal too. When the page cannot say who proposed the time
-  ("The proposer is not recorded.") Accept is no longer the single main button
-  and asks you to confirm that the customer really proposed it. Proposals and
-  your answers are kept in PostgreSQL only: they are not mirrored to the previous system
-  (there is no field for them), Accept's mirror is best effort, and while the
-  sync still runs it can rewrite these columns.
+
+  A date a WSO2 user wrote in the previous system, or one left over from an
+  earlier round, looks like a proposal too. When the page cannot say who
+  proposed the time ("The proposer is not recorded.") Accept is no longer the
+  single main button and asks you to confirm that the customer really proposed
+  it.
+
+  Proposals and your answers are kept in PostgreSQL only: they are not mirrored
+  to the previous system (there is no field for them), Accept's mirror is best
+  effort, and while the sync still runs it can rewrite these columns.
 - **Approve or reject** a pending approval stage, if the engineer is listed
   as an approver on it: the Approve/Reject buttons only appear on that
   engineer's own pending approval.
