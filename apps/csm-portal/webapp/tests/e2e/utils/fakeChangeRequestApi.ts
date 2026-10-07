@@ -1648,7 +1648,7 @@ export async function installFakeChangeRequestApi(
       onHold = next;
     },
     addInternalRequestedRow: () => {
-      // An approval group nobody has a name for (about a tenth of synced stages): not one of ours, never reconciled away.
+      // An internal approval still being asked, in a group that is not the customer's: not one of ours, never reconciled away.
       stages = [
         ...stages,
         { stage: "Devops Approval", approverType: "STATIC_GROUP", approverName: "Devops Approval", assignmentGroup: null, status: "REQUESTED", approvers: [{ id: FAKE_CAB.id, name: FAKE_CAB.name, status: "REQUESTED" }] },

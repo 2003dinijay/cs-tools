@@ -4453,7 +4453,7 @@ lock by every act and by the detail read (one definition: they cannot drift): th
 confirmation is NULL; and **no approval but the customer's own is still being asked** -- the only
 `REQUESTED` approver rows are on a customer stage (label "Customer Approval", or the stage's group is the
 change's `customer_group_id`, ServiceNow's own record of who the customer is); ANY other `REQUESTED` row (Peer,
-CAB, ECAB, Review, a group nobody has named: about one synced stage in eight) blocks it. The whole predicate is
+CAB, ECAB, Review, a stage in a group this service has no name for) blocks it. The whole predicate is
 `COALESCE`d, so a NULL state reads false. It never matches a change waiting on a live CAB stage (it is in
 Authorize), a closed / scheduled / cancelled one, a date equal to the plan, an answered one, a NULL state. It
 does not say WHO wrote the date (ServiceNow lets WSO2 users write `customer_updated_on` too, and an old one looks

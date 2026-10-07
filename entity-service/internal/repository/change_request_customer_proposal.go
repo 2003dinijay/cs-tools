@@ -89,8 +89,8 @@ const (
 // group is the change's customer group (customer_group_id, ServiceNow's own record of
 // who the customer is: the stages ServiceNow asked of the customer carry no label).
 // Every other REQUESTED row blocks -- a Peer / CAB / ECAB / Review stage, and equally a
-// stage in a group this service has no name for (the synced data holds approval groups
-// nobody has named), because the allowlist cannot prove it is the customer's. COALESCE keeps the three-valued logic honest: a NULL label or a NULL
+// stage in a group this service has no name for, because the allowlist cannot prove it
+// is the customer's. COALESCE keeps the three-valued logic honest: a NULL label or a NULL
 // group is "not a customer stage", never "unknown, so not blocking".
 //
 // cr is the alias of change_request in the enclosing query.
