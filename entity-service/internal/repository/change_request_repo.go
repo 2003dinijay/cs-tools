@@ -1606,10 +1606,13 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			}
 		}
 	}
-	if req.Type != nil {
+	if req.Type != nil && !resendsStoredChangeType(gates.model, req.Type) {
 		// The approval stages already provisioned belong to the type they were
 		// provisioned for; changing the type afterwards would leave a stage
-		// structure that does not match it.
+		// structure that does not match it. (The stored type again is no change:
+		// checkChangeTypeEdit, the state rule, accepts it as a no-op, and the stage
+		// count is its second line for a real change only, so a whole-form resend of
+		// a Normal change after Request Approval is not refused for its stages.)
 		var stages int
 		if err := tx.QueryRow(ctx, `SELECT COUNT(*) FROM approval_stage WHERE work_item_id = $1`, id).Scan(&stages); err != nil {
 			return "", fmt.Errorf("patch change request: check approval stages before type change: %w", err)

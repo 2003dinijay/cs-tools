@@ -970,6 +970,29 @@ func TestChangeRequestLockIntegration_TheTypeIsFrozenAfterNew(t *testing.T) {
 			t.Fatalf("type = %v, want standard", cr.Type)
 		}
 	})
+	// A Normal change has its Peer stage the moment Request Approval is requested, and the stage count
+	// has always locked the type from then on -- but a whole-form resend of the type it already has is
+	// no change at all and is accepted, exactly as on a Standard change (the lock judges a CHANGE of the
+	// type, and the stage count is only its second line).
+	t.Run("a Normal change after Request Approval: the stored type again is no change", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, false)
+		f.requestApproval(id)
+		f.expect(id, "after Request Approval", "ASSESS", "canceled")
+		if n := len(f.stages(id)); n == 0 {
+			t.Fatal("a Normal change has no stage after Request Approval, so this row does not exercise the stage count")
+		}
+		same := domain.ChangeRequestTypeNormal
+		if _, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &same, Title: sp("the whole form, sent back")}); err != nil {
+			t.Fatalf("resending the stored type of a Normal change after Request Approval: %v", err)
+		}
+		if got := f.subjectOf(id); got != "the whole form, sent back" {
+			t.Fatalf("the rest of the resend was not written: %q", got)
+		}
+		emergency := domain.ChangeRequestTypeEmergency
+		_, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &emergency})
+		f.wantExact("re-typing a Normal change after Request Approval", err, typeMsg("ASSESS"))
+	})
 	// A type with no change_model label is not the stored one either; in New it keeps its own message.
 	t.Run("an unsupported type", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)

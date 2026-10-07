@@ -392,6 +392,36 @@ func TestCheckChangeTypeEdit(t *testing.T) {
 	}
 }
 
+// A requested type is "the stored one again" only when it names the change model the row has: the
+// one rule both the state lock (checkChangeTypeEdit) and the stage count of the PATCH read.
+func TestResendsStoredChangeType(t *testing.T) {
+	normal, standard, emergency := domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard, domain.ChangeRequestTypeEmergency
+	unsupported := domain.ChangeRequestType("model")
+	for _, tc := range []struct {
+		stored    string
+		requested *domain.ChangeRequestType
+		want      bool
+	}{
+		{"NORMAL", &normal, true},
+		{"normal", &normal, true}, // the label's case is not the type's
+		{"STANDARD", &standard, true},
+		{"EMERGENCY", &emergency, true},
+		{"NORMAL", &standard, false},
+		{"STANDARD", &emergency, false},
+		{"NORMAL", &unsupported, false}, // no change_model label: never the stored one
+		{"", &normal, false},            // a row with no stored model has no type to resend
+		{"NORMAL", nil, false},          // nothing requested resends nothing
+	} {
+		if got := resendsStoredChangeType(tc.stored, tc.requested); got != tc.want {
+			name := "nil"
+			if tc.requested != nil {
+				name = string(*tc.requested)
+			}
+			t.Errorf("resendsStoredChangeType(%q, %s) = %v, want %v", tc.stored, name, got, tc.want)
+		}
+	}
+}
+
 // Which customer gates are still ahead of (or being waited on by) a change, per state and boxes.
 func TestCustomerGatesAhead(t *testing.T) {
 	type gates struct{ approval, review bool }

@@ -54,10 +54,10 @@ import (
 //     controls is passed (approvalRequirementEditable / reviewRequirementEditable),
 //     and only on a change that has a Customer Project (none can be set any more);
 //     true -> false is a 400 in every state. A change that reached a customer stage
-//     necessarily has its box true, so add-only alone is what stops a Re-schedule
-//     (back to Authorize) from reopening anything: the box cannot be unticked in
-//     Authorize either, so the CAB / ECAB approval that follows still asks the
-//     same contacts.
+//     necessarily has its box true, so add-only alone is what stops anything from
+//     reopening it: a Re-schedule no longer leaves Customer Approval, and an old-flow
+//     one still in flight (back in Authorize) cannot have the box unticked either, so
+//     the CAB / ECAB approval that follows still asks the same contacts.
 //   - A new REQUESTER after Request Approval is never one more person to ask about a
 //     customer gate still ahead (the requester never approves their own change): a PATCH
 //     that changes requestedById is judged with the new requester in place of the stored
@@ -401,10 +401,22 @@ func checkChangeTypeEdit(snap changeRequestGateSnapshot, requested *domain.Chang
 	if requested == nil || changeRequestCreationPhase(snap.state) {
 		return nil
 	}
-	if model, ok := changeRequestTypeToChangeModel[*requested]; ok && snap.model != "" && strings.EqualFold(model, snap.model) {
+	if resendsStoredChangeType(snap.model, requested) {
 		return nil
 	}
 	return &apierror.ValidationError{Msg: changeTypeFrozenMsg(snap.state)}
+}
+
+// resendsStoredChangeType reports whether a requested type IS the stored one (storedModel is
+// change_model's upper-case label, "" when NULL): a client that sends the whole form back sends the
+// type it already has, which changes nothing. A type with no change_model label, or a change with no
+// stored model, is not the stored one.
+func resendsStoredChangeType(storedModel string, requested *domain.ChangeRequestType) bool {
+	if requested == nil || storedModel == "" {
+		return false
+	}
+	model, ok := changeRequestTypeToChangeModel[*requested]
+	return ok && strings.EqualFold(model, storedModel)
 }
 
 // lockChangeRequestForPatch is the first thing a PATCH that carries a state, a
