@@ -121,7 +121,7 @@ const CLOSED_CR_STATE_LABELS = new Set<string>([
  * was sent back to Authorize and stays on their list there, and the filter has
  * to be able to name it. The filters response itself offers only states a
  * customer's change request can be in (the API leaves out New and Assess, and on
- * the ServiceNow data source Authorize too), so what is sent is what the server
+ * the previous system's data source Authorize too), so what is sent is what the server
  * may return; the server holds the same line for a request that names or omits a
  * state differently.
  *

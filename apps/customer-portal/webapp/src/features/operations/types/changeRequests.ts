@@ -63,9 +63,9 @@ export type ChangeRequestProposalAnswer =
   | "unanswered";
 
 /**
- * The customer-proposed time of a change request (ServiceNow's
- * `customer_updated_on` / `customer_updated_date_confirmation` pair, read through
- * the backend). A proposal moves the START and keeps the planned length, so it
+ * The customer-proposed time of a change request (the proposed start and its
+ * confirmation, `customer_updated_on` / `customer_updated_date_confirmation`, read
+ * through the backend). A proposal moves the START and keeps the planned length, so it
  * carries a start and, while it waits, the end that start implies.
  */
 export type ChangeRequestCustomerProposal = {
@@ -77,7 +77,7 @@ export type ChangeRequestCustomerProposal = {
   /**
    * True when the signed-in customer made the pending proposal. False or omitted
    * for a colleague's, and for one whose proposer nobody can name (a time
-   * proposed in ServiceNow, a date a WSO2 user wrote, or edited since): the page
+   * proposed in the previous system, a date a WSO2 user wrote, or edited since): the page
    * then says "a new time was proposed" and no more.
    */
   proposedByViewer?: boolean;
@@ -185,7 +185,7 @@ export type ChangeRequestSearchRequest = SearchRequestBase & {
 // proposed time (plannedStartOn / plannedEndOn, "YYYY-MM-DD HH:MM:SS" in UTC),
 // never both in one request. A proposed time is a new START: the planned length
 // stays, so plannedEndOn, when sent, is the proposed start plus that length (the
-// dialog sends it so the ServiceNow source, which takes a whole window, keeps
+// dialog sends it so the previous system's data source, which takes a whole window, keeps
 // working; the service refuses any other end). An answer also names the planned
 // window the customer was looking at (expectedPlannedStartOn /
 // expectedPlannedEndOn, as the details read them): it is then recorded only while

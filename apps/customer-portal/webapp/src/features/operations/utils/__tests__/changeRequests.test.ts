@@ -712,7 +712,7 @@ describe("a customer's proposed time", () => {
         expect(isProposalAccepted(cr({ id: "x", label }, proposal("agreed"))), label).toBe(false);
       }
       expect(isProposalAccepted(cr({ id: "x", label: "Something Else" }, proposal("agreed")))).toBe(false);
-      expect(isProposalAccepted(cr(null, proposal("agreed")))).toBe(false);
+      expect(isProposalAccepted(cr({}, proposal("agreed")))).toBe(false);
       expect(isProposalAccepted({ customerProposal: proposal("agreed") } as never)).toBe(false);
     });
 

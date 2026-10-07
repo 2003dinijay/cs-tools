@@ -501,7 +501,7 @@ plannedEndOn?}` ("propose new implementation time") is a proposal of a START: th
 the portal sends the start plus the end that keeps it (start + planned length) and entity-service refuses any other
 end (400), a start alone is accepted, an end alone is a 400; this API forwards the window it validated
 (`ValidatePlannedWindow`, still-to-come, order) and nothing else. The change request STAYS in Customer Approval --
-a proposal writes one column, ServiceNow's `customer_updated_on` -- so the detail carries
+a proposal writes one column, the proposed start (`customer_updated_on`) -- so the detail carries
 `customerProposal {startDate, endDate?, answer, proposerRecorded?, proposedByViewer?}`
 (`dto.ChangeRequestCustomerProposal`, mapped from `entity.ChangeRequestCustomerProposal`): `answer` is `pending`
 (waits for WSO2; the change's own `startDate` / `endDate` are still WSO2's plan and a colleague's Approve approves
@@ -511,7 +511,7 @@ of it is decoded: the proposer's name and email, `proposedOn`, `canAccept` and `
 the entity type has no field for, so they cannot reach the portal whatever entity-service sends
 (`TestMapChangeRequestDetails_NeverPassesOnWhoProposedOrWSO2sOwnFacts`, `TestGetChangeRequest_CarriesTheCustomerProposal`);
 `proposerRecorded` false means nobody can say who proposed it (a WSO2 user's date, an old one), and the portal must
-not claim a colleague did. A proposal is never mirrored to ServiceNow while the dual-write runs (it has no field for
+not claim a colleague did. A proposal is never mirrored to the previous system while the dual-write runs (it has no field for
 it): proposals and WSO2's answers are PostgreSQL-only until the sync stops, and the sync can rewrite the columns.
 
 **`customerCanAnswer` on the change-request detail.** `GET /change-requests/{id}` (`dto.ChangeRequestDetails`)

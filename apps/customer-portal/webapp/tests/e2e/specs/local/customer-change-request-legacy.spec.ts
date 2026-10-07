@@ -34,11 +34,11 @@
 //     provisions the stage, once, and a plain read never writes;
 //   * a stage the sync mirrored has no label: its pending approver stays pending across state
 //     changes, is never shown to a customer by name, and a decision on it still works;
-//   * a time a customer PROPOSES waits in Customer Approval (ServiceNow's customer_updated_on /
-//     customer_updated_date_confirmation pair, which a migrated row already carries) and WSO2 answers it:
-//     on a migrated row too, whether it has no stage at all, or ServiceNow's own unlabeled customer
-//     stage (the proposal then provisions the one labelled stage a contact's act always did, and
-//     ServiceNow's own rows are left as they were). A stale proposal on a migrated change that waits on a
+//   * a time a customer PROPOSES waits in Customer Approval (the proposed start and its confirmation,
+//     customer_updated_on / customer_updated_date_confirmation, which a migrated row already carries) and WSO2
+//     answers it: on a migrated row too, whether it has no stage at all, or the previous system's own unlabeled
+//     customer stage (the proposal then provisions the one labelled stage a contact's act always did, and the
+//     previous system's own rows are left as they were). A stale proposal on a migrated change that waits on a
 //     live approval of WSO2's is never a proposal to answer.
 //
 // The rows (fixtures/legacy-change-requests.sql) are written the way the sync writes them, with
@@ -110,7 +110,7 @@ const LABEL_OF: Record<string, string> = {
   [LEGACY.canceled]: "Canceled",
   [LEGACY.customerApprovalToPropose]: "Customer Approval",
   [LEGACY.customerApprovalForErin]: "Customer Approval",
-  [LEGACY.customerApprovalAskedBySn]: "Customer Approval",
+  [LEGACY.customerApprovalAskedByPreviousSystem]: "Customer Approval",
   [LEGACY.emergencyInAuthorize]: "Authorize",
   [LEGACY.staleStageScheduled]: "Scheduled",
   [LEGACY.oneSecondBefore]: "Scheduled",
@@ -398,7 +398,7 @@ test.describe("Local stack — legacy (migrated) change requests", () => {
     const crId = id(number);
     const dave = customerApi("dave");
     const erin = customerApi("erin");
-    // This migrated row has no planned window (a proposal moves the planned start, so give it one the way ServiceNow plans one).
+    // This migrated row has no planned window (a proposal moves the planned start, so give it one the way the previous system plans one).
     await planWindow(crId, { startUtc: "2031-04-01T10:00:00Z", endUtc: "2031-04-01T12:00:00Z" });
     const proposal = futureWindow("America/New_York", { daysAhead: 8, startHour: 9, hours: 2 });
     const proposed = await erin.patch(crId, { plannedStartOn: proposal.startUtc.replace("T", " ").replace("Z", "") });
@@ -427,13 +427,13 @@ test.describe("Local stack — legacy (migrated) change requests", () => {
     for (const who of [dave, erin]) expect((await who.get(crId)).status).toBe(200);
   });
 
-  test(`a migrated change request ServiceNow itself put to its customers (an UNLABELED customer stage on the customer group): a proposal waits, the one labelled stage a contact's act always provisioned is added beside ServiceNow's own rows, and WSO2's acceptance schedules it and leaves ServiceNow's rows alone`, async () => {
-    const number = LEGACY.customerApprovalAskedBySn;
+  test(`a migrated change request the previous system itself put to its customers (an UNLABELED customer stage on the customer group): a proposal waits, the one labelled stage a contact's act always provisioned is added beside the previous system's own rows, and WSO2's acceptance schedules it and leaves those rows alone`, async () => {
+    const number = LEGACY.customerApprovalAskedByPreviousSystem;
     const crId = id(number);
     const dave = customerApi("dave");
     const erin = customerApi("erin");
-    const snRows = ["(no label)|dave.mendis@example.com|REQUESTED", "(no label)|erin.jayawardena@example.com|REQUESTED"];
-    expect(await stageRows(crId), "the shape the sync wrote").toEqual(snRows);
+    const syncedRows = ["(no label)|dave.mendis@example.com|REQUESTED", "(no label)|erin.jayawardena@example.com|REQUESTED"];
+    expect(await stageRows(crId), "the shape the sync wrote").toEqual(syncedRows);
     const planned = await changeRequestRow(crId);
 
     const proposal = futureWindow("UTC", { daysAhead: 12, startHour: 8, hours: 2 });
@@ -442,10 +442,10 @@ test.describe("Local stack — legacy (migrated) change requests", () => {
     expect(await storedState(crId)).toBe("CUSTOMER_APPROVAL");
     expect(await changeRequestRow(crId)).toMatchObject({ startUtc: planned.startUtc, endUtc: planned.endUtc });
     expect(await proposalRow(crId)).toEqual({ proposedUtc: proposal.startUtc, answer: "" });
-    // The ONE existing write on this shape: ServiceNow's stage carries no label, so the proposal needs the labelled stage a
-    // contact's first act has always provisioned (one stage, one REQUESTED row per registered contact). ServiceNow's rows stay.
-    expect(await stageRows(crId), "ServiceNow's rows, then the one labelled stage the proposal needed").toEqual([
-      ...snRows,
+    // The ONE existing write on this shape: the previous system's stage carries no label, so the proposal needs the labelled stage a
+    // contact's first act has always provisioned (one stage, one REQUESTED row per registered contact). Its rows stay.
+    expect(await stageRows(crId), "the synced rows, then the one labelled stage the proposal needed").toEqual([
+      ...syncedRows,
       "Customer Approval|dave.mendis@example.com|REQUESTED",
       "Customer Approval|erin.jayawardena@example.com|REQUESTED",
     ]);
@@ -458,17 +458,17 @@ test.describe("Local stack — legacy (migrated) change requests", () => {
     expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
     const done = await changeRequestRow(crId);
     expect([done.state, done.startUtc, done.endUtc]).toEqual(["SCHEDULED", proposal.startUtc, addHours(proposal.startUtc, 2)]);
-    expect(await stageRows(crId), "the labelled rows are closed; ServiceNow's own rows are left exactly as the sync wrote them").toEqual([
-      ...snRows,
+    expect(await stageRows(crId), "the labelled rows are closed; the previous system's own rows are left exactly as the sync wrote them").toEqual([
+      ...syncedRows,
       "Customer Approval|dave.mendis@example.com|CANCELLED",
       "Customer Approval|erin.jayawardena@example.com|CANCELLED",
     ]);
     for (const who of [dave, erin]) expect((await who.get(crId)).body.customerProposal).toMatchObject({ answer: "agreed" });
   });
 
-  test("a stale proposal on a migrated change request that waits on a live approval of WSO2's is never a proposal to answer: Authorize with ServiceNow's unlabeled stage and a customer_updated_on left over from an old cycle reads as history, and every answer is refused in words", async () => {
+  test("a stale proposal on a migrated change request that waits on a live approval of WSO2's is never a proposal to answer: Authorize with the previous system's unlabeled stage and a customer_updated_on left over from an old cycle reads as history, and every answer is refused in words", async () => {
     // CHG0039301: Emergency, Authorize, ONE synced stage with no label (alice and bob REQUESTED). A date left in
-    // customer_updated_on (a WSO2 user in ServiceNow writes it too, and an old cycle leaves one behind) must not read
+    // customer_updated_on (a WSO2 user in the previous system writes it too, and an old cycle leaves one behind) must not read
     // as "the customer proposed": the change is not in Customer Approval and an internal approval is still asked.
     const crId = id(LEGACY.emergencyInAuthorize);
     await psql(`update change_request set customer_updated_on = now() + interval '40 days', start_on = now() + interval '30 days', end_on = now() + interval '30 days 2 hours' where id = '${crId}'`);

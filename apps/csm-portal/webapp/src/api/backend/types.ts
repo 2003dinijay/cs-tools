@@ -2799,15 +2799,15 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
    */
   isPlanningVisibleToCustomers?: boolean;
   /**
-   * WSO2's answer to the customer's proposed time (the previous system's own
-   * `u_confirm_customer_updated_date`, entity-service `change_request.
-   * customer_updated_date_confirmation`): `"agree"` or `"disagree"`, absent while
+   * WSO2's answer to the customer's proposed time (the confirmation of the proposed
+   * date, entity-service `change_request.customer_updated_date_confirmation`):
+   * `"agree"` or `"disagree"`, absent while
    * nothing was answered. Read-through; the answer is given by the two actions
    * of {@link BePatchChangeRequestPayload} (`confirmCustomerUpdatedDate`, or a
    * Re-schedule that names a time), never by writing this field.
    */
   confirmCustomerUpdatedDate?: string | null;
-  /** The customer's proposed planned START (`u_customer_updated`), when there is one. */
+  /** The customer's proposed planned START (the proposed date, entity-service `change_request.customer_updated_on`), when there is one. */
   customerUpdatedOn?: string | null;
   /**
    * The conversation about a time the customer proposed, derived by the backend
@@ -2840,9 +2840,10 @@ export type BeCustomerProposalAnswer = "pending" | "agreed" | "disagreed" | "una
 
 /**
  * A time the customer proposed, as `GET /change-requests/{id}` derives it from
- * The previous system's own `customer_updated_on` / `customer_updated_date_confirmation`
- * pair (no extra table or column): the proposal waits in Customer Approval, the
- * planned window stays what WSO2 planned until WSO2 answers.
+ * the proposed date and its confirmation (`customer_updated_on` /
+ * `customer_updated_date_confirmation`, no extra table or column): the proposal
+ * waits in Customer Approval, the planned window stays what WSO2 planned until
+ * WSO2 answers.
  */
 export interface BeChangeRequestCustomerProposal {
   /** The proposed planned START, RFC 3339 (the customer proposes a start and keeps the planned length). */

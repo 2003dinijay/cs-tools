@@ -19,8 +19,8 @@
  * request's current window, working out the end a proposed start implies,
  * checking the proposed start, and building the PATCH body.
  *
- * A proposal is a new START. The planned length stays (ServiceNow's own record of
- * a customer's proposed time holds one instant, and WSO2 answers it by accepting
+ * A proposal is a new START. The planned length stays (the record of a customer's
+ * proposed time holds one instant, and WSO2 answers it by accepting
  * it or suggesting another time), so the end is derived, never typed.
  *
  * Every `datetime-local` value here is a civil time in the viewer's IANA time
@@ -249,7 +249,7 @@ export function hasProposedStartErrors(errors: ProposedStartErrors): boolean {
 /**
  * The PATCH body for a proposal: the proposed start and the end that keeps the
  * planned length, both in UTC. The service accepts the start alone or the start
- * with exactly that end; the end is sent so the ServiceNow data source, which
+ * with exactly that end; the end is sent so the previous system's data source, which
  * takes a whole window, keeps working.
  *
  * @param start - Proposed start (`datetime-local`).

@@ -234,12 +234,12 @@ describe("buildChangeRequestSearchRequest", () => {
     expect(stale.filters?.stateKeys).toEqual([5]);
   });
 
-  it("with the filters the ServiceNow data source sends (no New, Assess or Authorize) no view ever names one of the three", () => {
+  it("with the filters the previous system's data source sends (no New, Assess or Authorize) no view ever names one of the three", () => {
     // The page no longer hides New / Assess / Authorize itself: the API's filter options
     // leave them out wherever a customer is never shown them (every change request is
     // visible there except in those three states), so what the page asks for is what the
     // server may return. The server applies the same line to a request that names or
-    // omits a state differently (entity-service, "The ServiceNow data source").
+    // omits a state differently (entity-service, the section on the previous system's data source).
     const offered = allStates.filter((s) => !["New", "Assess", "Authorize"].includes(s.label));
     const hidden = [-5, -4, -3];
     const views: Array<[string, boolean, boolean, boolean]> = [

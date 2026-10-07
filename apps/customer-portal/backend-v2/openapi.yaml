@@ -8083,7 +8083,7 @@ components:
       required: [startDate, answer]
       description: >-
         The conversation about a time a customer proposed (entity-service derives it from
-        ServiceNow's own customer_updated_on / customer_updated_date_confirmation columns);
+        the proposed start and its confirmation, customer_updated_on / customer_updated_date_confirmation);
         present when one was. While `answer` is "pending" the change request is still in Customer
         Approval and its planned window (startDate / endDate on the change itself) is still the one
         WSO2 planned: a proposal changes nothing until WSO2 answers, and a customer who approves
