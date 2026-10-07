@@ -840,7 +840,7 @@ func resolveApprovalPool(ctx context.Context, q crQuerier, cp changeRequestAppro
 // stageKindOther when it is not known.
 func approverDecisionBlock(ctx context.Context, q crQuerier, userID string, creatorIDs map[string]bool, kind approvalStageKind) error {
 	if creatorIDs[strings.ToLower(userID)] {
-		return &apierror.ForbiddenError{Msg: "the creator of a change request cannot approve it"}
+		return &apierror.ForbiddenError{Code: apierror.CodeChangeRequestForbidden, Msg: "the creator of a change request cannot approve it"}
 	}
 	if stageKindNeedsInternalApprover(kind) {
 		internal, err := internalApproverIDs(ctx, q, []string{userID})
@@ -848,7 +848,7 @@ func approverDecisionBlock(ctx context.Context, q crQuerier, userID string, crea
 			return err
 		}
 		if !internal[strings.ToLower(userID)] {
-			return &apierror.ForbiddenError{Msg: fmt.Sprintf(
+			return &apierror.ForbiddenError{Code: apierror.CodeChangeRequestForbidden, Msg: fmt.Sprintf(
 				"only active internal (WSO2) users can approve or reject the %s stage of a change request; external/customer users cannot", stageKindName(kind))}
 		}
 	}
@@ -1522,7 +1522,7 @@ func changeRequestStateDisplayName(state string) string {
 // pending, and the message says where the change is and where the stage can be
 // decided. Not a 403 -- the caller is allowed to decide, just not now.
 func staleApprovalRefusal(kind approvalStageKind, currentState string) error {
-	return &apierror.ConflictError{Msg: fmt.Sprintf(
+	return &apierror.ConflictError{Code: apierror.CodeChangeRequestApprovalNotPending, Msg: fmt.Sprintf(
 		"this approval is no longer pending: the change request is in %s, but the %s stage can only be decided while it is in %s",
 		changeRequestStateDisplayName(currentState), stageKindName(kind),
 		changeRequestStateDisplayName(approvalStageDecidableState(kind)))}
@@ -1802,6 +1802,6 @@ func customerStageDecisionRefusal(ctx context.Context, tx pgx.Tx, workItemID str
 		return nil, nil
 	}
 	spec := customerStageSpecForState(strings.ToUpper(stringOrEmpty(state)))
-	return &apierror.ForbiddenError{Msg: fmt.Sprintf(
+	return &apierror.ForbiddenError{Code: apierror.CodeChangeRequestNotAsked, Msg: fmt.Sprintf(
 		"only members of the customer group (the registered contacts of this change request's project) can approve or reject the customer's %s of this change request", spec.what)}, nil
 }

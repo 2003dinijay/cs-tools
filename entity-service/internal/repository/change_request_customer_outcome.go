@@ -125,7 +125,7 @@ func classifyExternalPatch(req domain.PatchChangeRequestRequest) (customerPatch,
 	rest.IsCustomerApproved, rest.IsCustomerReviewed, rest.PlannedStartOn, rest.PlannedEndOn = nil, nil, nil, nil
 	rest.ExpectedPlannedStartOn, rest.ExpectedPlannedEndOn = nil, nil
 	if !reflect.DeepEqual(rest, domain.PatchChangeRequestRequest{}) {
-		return customerPatch{}, &apierror.ForbiddenError{Msg: externalPatchRefusal}
+		return customerPatch{}, &apierror.ForbiddenError{Msg: externalPatchRefusal, Code: apierror.CodeChangeRequestForbidden}
 	}
 	hasAnswer := req.IsCustomerApproved != nil || req.IsCustomerReviewed != nil
 	hasWindow := req.PlannedStartOn != nil || req.PlannedEndOn != nil
@@ -193,7 +193,7 @@ func requireRegisteredContact(ctx context.Context, tx pgx.Tx, projectID *string,
 		return err
 	}
 	if !ok {
-		return &apierror.ForbiddenError{Msg: "only a registered PORTAL_USER contact on this change request's own project may give the customer's answer on it"}
+		return &apierror.ForbiddenError{Msg: "only a registered PORTAL_USER contact on this change request's own project may give the customer's answer on it", Code: apierror.CodeChangeRequestForbidden}
 	}
 	return nil
 }
@@ -211,7 +211,7 @@ func customerApproverUserID(ctx context.Context, tx crQuerier, workItemID, actor
 		         u.created_on ASC
 		LIMIT 1`, workItemID, actorEmail).Scan(&userID)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return "", &apierror.ForbiddenError{Msg: "no user record was found for the caller"}
+		return "", &apierror.ForbiddenError{Msg: "no user record was found for the caller", Code: apierror.CodeChangeRequestForbidden}
 	}
 	if err != nil {
 		return "", fmt.Errorf("answer change request: resolve caller: %w", err)
@@ -509,7 +509,7 @@ func checkExpectedSchedule(ctx context.Context, tx pgx.Tx, id string, expectedSt
 	if start != nil || end != nil {
 		now = fmt.Sprintf("%s to %s", show(start), show(end))
 	}
-	return &apierror.ConflictError{Msg: fmt.Sprintf(
+	return &apierror.ConflictError{Code: apierror.CodeChangeRequestScheduleChanged, Msg: fmt.Sprintf(
 		"the planned implementation time of this change request changed after you opened it (it is now %s); read it again before giving your answer", now)}
 }
 
@@ -624,7 +624,7 @@ func answerCustomerStageViaPatch(ctx context.Context, tx pgx.Tx, id string, p cu
 		return "", fmt.Errorf("answer change request: %w", err)
 	}
 	if live == nil {
-		return "", &apierror.ConflictError{Msg: fmt.Sprintf(
+		return "", &apierror.ConflictError{Code: apierror.CodeChangeRequestApprovalNotPending, Msg: fmt.Sprintf(
 			"no customer %s is pending on this change request: it has not been requested from the project's registered contacts, so there is nothing to answer here", spec.what)}
 	}
 
@@ -671,7 +671,7 @@ func prepareCustomerProposal(ctx context.Context, tx pgx.Tx, id string, req doma
 		return req, err
 	}
 	if gates.state != crStateCustomerApproval {
-		return req, &apierror.ConflictError{Msg: fmt.Sprintf(
+		return req, &apierror.ConflictError{Code: apierror.CodeChangeRequestNotProposable, Msg: fmt.Sprintf(
 			"a new implementation time can only be proposed while the change request is in Customer Approval, but it is in %s",
 			changeRequestStateDisplayName(stateForMessage(gates.state)))}
 	}
@@ -701,14 +701,14 @@ func prepareCustomerProposal(ctx context.Context, tx pgx.Tx, id string, req doma
 		return req, fmt.Errorf("propose implementation time: %w", err)
 	}
 	if live == nil {
-		return req, &apierror.ConflictError{Msg: "no customer approval is pending on this change request: it has not been requested from the project's registered contacts, so there is nobody for a new implementation time to be proposed to here"}
+		return req, &apierror.ConflictError{Code: apierror.CodeChangeRequestNotProposable, Msg: "no customer approval is pending on this change request: it has not been requested from the project's registered contacts, so there is nobody for a new implementation time to be proposed to here"}
 	}
 	asked, err := customerHasRequestedRow(ctx, tx, live.stageID, userID)
 	if err != nil {
 		return req, fmt.Errorf("propose implementation time: %w", err)
 	}
 	if !asked {
-		return req, &apierror.ForbiddenError{Msg: "only members of the customer group (the registered contacts of this change request's project) who have been asked for the customer's approval of this change request can propose a new implementation time for it"}
+		return req, &apierror.ForbiddenError{Code: apierror.CodeChangeRequestNotAsked, Msg: "only members of the customer group (the registered contacts of this change request's project) who have been asked for the customer's approval of this change request can propose a new implementation time for it"}
 	}
 	now := time.Now()
 	if err := requireFutureWindow(now, req.PlannedStartOn, req.PlannedEndOn); err != nil {
@@ -725,7 +725,7 @@ func prepareCustomerProposal(ctx context.Context, tx pgx.Tx, id string, req doma
 		return req, fmt.Errorf("propose implementation time: read on-hold state: %w", err)
 	}
 	if onHold != nil && *onHold {
-		return req, &apierror.ConflictError{Msg: "this change request is on hold, so a new implementation time cannot be proposed now"}
+		return req, &apierror.ConflictError{Code: apierror.CodeChangeRequestOnHold, Msg: "this change request is on hold, so a new implementation time cannot be proposed now"}
 	}
 
 	reschedule := domain.ChangeRequestStateAuthorize
