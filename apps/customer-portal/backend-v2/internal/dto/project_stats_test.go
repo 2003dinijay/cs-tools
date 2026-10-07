@@ -17,6 +17,7 @@
 package dto
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 
@@ -150,20 +151,37 @@ func TestMapProjectFilterOptions_ConversationStateUnrecognisedIDPassesThrough(t 
 	}
 }
 
-// The exclusion must catch New and Assess under either data source's own shape:
-// ServiceNow's real numeric ids ("-5", "-4") with a display-cased label, and
-// Postgres's raw UPPER_SNAKE label with no matching id. Missing either would let
-// that one data source's state leak into the customer-facing filter panel. And
-// Authorize survives under both shapes ("-3" and "AUTHORIZE").
-func TestMapProjectFilterOptions_ExcludesNewAndAssessByIDOrLabelAndKeepsAuthorize(t *testing.T) {
+// The ServiceNow data source's own vocabulary carries all eleven states under real
+// numeric ids with display-cased labels. A customer there has no designated change
+// requests (nothing is asked of them through entity-service) so the legacy rule
+// applies: every state except New, Assess and Authorize. Offering "-3" would have
+// the webapp ask for Authorize, and ServiceNow would answer with the project's
+// internal pre-approval change requests.
+func TestMapProjectFilterOptions_ServiceNowOffersNeitherNewNorAssessNorAuthorize(t *testing.T) {
+	resp := entity.ProjectMetadataResponse{ChangeRequestStates: serviceNowChangeRequestStates()}
+
+	got := MapProjectFilterOptions(resp)
+
+	var ids []string
+	for _, s := range got.ChangeRequestStates {
+		ids = append(ids, s.ID+"="+s.Label)
+	}
+	want := "5=Customer Approval,-2=Scheduled,-1=Implement,0=Review,1=Customer Review,2=Rollback,3=Closed,4=Canceled"
+	if strings.Join(ids, ",") != want {
+		t.Fatalf("ChangeRequestStates = %v, want exactly the eight states past Authorize: %s", ids, want)
+	}
+}
+
+// The Postgres data source names the same states by raw enum label (never a
+// numeric id), and there Authorize IS offered: a change request designated to the
+// customer waits in it after the customer proposed a new time, and stays on their
+// list. New and Assess are left out under their raw labels.
+func TestMapProjectFilterOptions_PostgresKeepsAuthorizeAndDropsNewAndAssess(t *testing.T) {
 	resp := entity.ProjectMetadataResponse{
 		ChangeRequestStates: []entity.ChoiceListItem{
-			{ID: "-5", Label: "New"},              // ServiceNow: real numeric id, display-cased label
-			{ID: "-4", Label: "Assess"},           // ServiceNow
-			{ID: "-3", Label: "Authorize"},        // ServiceNow: kept
-			{ID: "NEW", Label: "NEW"},             // Postgres: no id, UPPER_SNAKE label
-			{ID: "ASSESS", Label: "ASSESS"},       // Postgres
-			{ID: "AUTHORIZE", Label: "AUTHORIZE"}, // Postgres: kept
+			{ID: "NEW", Label: "NEW"},
+			{ID: "ASSESS", Label: "ASSESS"},
+			{ID: "AUTHORIZE", Label: "AUTHORIZE"},
 			{ID: "CLOSED", Label: "CLOSED"},
 		},
 	}
@@ -172,10 +190,56 @@ func TestMapProjectFilterOptions_ExcludesNewAndAssessByIDOrLabelAndKeepsAuthoriz
 
 	var labels []string
 	for _, s := range got.ChangeRequestStates {
-		labels = append(labels, s.Label)
+		labels = append(labels, s.ID+"="+s.Label)
 	}
-	if strings.Join(labels, ",") != "Authorize,Authorize,Closed" {
-		t.Fatalf("ChangeRequestStates labels = %v, want [Authorize Authorize Closed] (one Authorize per data source's shape)", labels)
+	if strings.Join(labels, ",") != "-3=Authorize,3=Closed" {
+		t.Fatalf("ChangeRequestStates = %v, want [-3=Authorize 3=Closed]", labels)
+	}
+}
+
+// What the webapp sends is exactly the ids the filters offered it (it asks for
+// every offered state when no filter is chosen). From a ServiceNow-sourced
+// vocabulary that must never name New, Assess or Authorize, which is the
+// request the customer portal used to build itself and now builds from this.
+func TestChangeRequestSearch_AWebappThatAsksForEveryOfferedStateNeverNamesAHiddenOneOnServiceNow(t *testing.T) {
+	offered := MapProjectFilterOptions(entity.ProjectMetadataResponse{ChangeRequestStates: serviceNowChangeRequestStates()}).ChangeRequestStates
+
+	var keys []int
+	for _, s := range offered {
+		n, err := strconv.Atoi(s.ID)
+		if err != nil {
+			t.Fatalf("an offered state id %q is not a number", s.ID)
+		}
+		keys = append(keys, n)
+	}
+	got := BuildEntitySearchChangeRequestsRequest("proj-9", ChangeRequestSearchRequest{Filters: ChangeRequestSearchFilters{StateKeys: keys}})
+
+	for _, st := range got.Filters.States {
+		switch st {
+		case "new", "assess", "authorize":
+			t.Fatalf("the search names %q, a state a customer on the ServiceNow data source is never shown (states = %v)", st, got.Filters.States)
+		}
+	}
+	if len(got.Filters.States) != 8 {
+		t.Fatalf("states = %v, want the eight offered", got.Filters.States)
+	}
+}
+
+// serviceNowChangeRequestStates is ServiceNow's own change request state
+// vocabulary, as GET /projects/{id}/metadata carries it: numeric ids, display labels.
+func serviceNowChangeRequestStates() []entity.ChoiceListItem {
+	return []entity.ChoiceListItem{
+		{ID: "-5", Label: "New"},
+		{ID: "-4", Label: "Assess"},
+		{ID: "-3", Label: "Authorize"},
+		{ID: "5", Label: "Customer Approval"},
+		{ID: "-2", Label: "Scheduled"},
+		{ID: "-1", Label: "Implement"},
+		{ID: "0", Label: "Review"},
+		{ID: "1", Label: "Customer Review"},
+		{ID: "2", Label: "Rollback"},
+		{ID: "3", Label: "Closed"},
+		{ID: "4", Label: "Canceled"},
 	}
 }
 
@@ -238,12 +302,12 @@ func TestMapProjectChangeRequestStats_NormalizesStateCountLabels(t *testing.T) {
 	}
 }
 
-// A change request the customer proposed a new time for waits in Authorize, so the
-// stats must be able to count it under a state the webapp recognises:
-// {id: "-3", label: "Authorize"} (the webapp files that id under "Ongoing"). New
-// and Assess are two rows of 0 under raw ids no screen names -- no change request a
-// customer can see is ever in either -- so they are not sent. The totals pass
-// through as entity-service computed them.
+// On the Postgres data source a change request the customer proposed a new time for
+// waits in Authorize, so the stats must be able to count it under a state the webapp
+// recognises: {id: "-3", label: "Authorize"} (the webapp files that id under
+// "Ongoing"). New and Assess are two rows of 0 under raw ids no screen names -- no
+// change request a customer can see is ever in either -- so they are not sent. The
+// totals pass through as entity-service computed them.
 func TestMapProjectChangeRequestStats_CountsAuthorizeAndDropsNewAndAssess(t *testing.T) {
 	one, zero := 1, 0
 	resp := entity.ProjectChangeRequestStatsResponse{
@@ -272,5 +336,31 @@ func TestMapProjectChangeRequestStats_CountsAuthorizeAndDropsNewAndAssess(t *tes
 	}
 	if got.TotalCount != 3 || got.OutstandingCount != 2 {
 		t.Errorf("totals = %d / %d, want them passed through (3 / 2)", got.TotalCount, got.OutstandingCount)
+	}
+}
+
+// On the ServiceNow data source the three counts of states a customer is never shown
+// (New, Assess, Authorize) are not sent either: a state row of "Authorize" would be
+// filed under the webapp's "Ongoing" card and tell the customer how many internal
+// pre-approval change requests their project has. The totals are ServiceNow's own and
+// pass through.
+func TestMapProjectChangeRequestStats_ServiceNowDropsNewAssessAndAuthorizeCounts(t *testing.T) {
+	two := 2
+	var counts []entity.ChoiceListItem
+	for _, s := range serviceNowChangeRequestStates() {
+		counts = append(counts, entity.ChoiceListItem{ID: s.ID, Label: s.Label, Count: &two})
+	}
+	got := MapProjectChangeRequestStats(entity.ProjectChangeRequestStatsResponse{TotalCount: 22, StateCount: counts})
+
+	var rows []string
+	for _, s := range got.StateCount {
+		rows = append(rows, s.ID+"="+s.Label)
+	}
+	want := "5=Customer Approval,-2=Scheduled,-1=Implement,0=Review,1=Customer Review,2=Rollback,3=Closed,4=Canceled"
+	if strings.Join(rows, ",") != want {
+		t.Fatalf("StateCount rows = %v, want the eight states past Authorize: %s", rows, want)
+	}
+	if got.TotalCount != 22 {
+		t.Errorf("TotalCount = %d, want ServiceNow's own figure passed through (22)", got.TotalCount)
 	}
 }

@@ -28,6 +28,7 @@ function renderDialog(
     <ChangeRequestRejectConfirmDialog
       open
       mode={ChangeRequestDecisionMode.CUSTOMER_APPROVAL}
+      proposeNewTime="available"
       isPending={false}
       onClose={onClose}
       onConfirm={onConfirm}
@@ -38,12 +39,38 @@ function renderDialog(
 }
 
 describe("ChangeRequestRejectConfirmDialog", () => {
-  it("says rejecting cancels the change request, and points to Propose New Time", () => {
+  it("says rejecting cancels the change request, and points to Propose New Time while it is on", () => {
     renderDialog();
     expect(screen.getByRole("dialog", { name: "Reject this change request?" })).toBeInTheDocument();
     expect(screen.getByText("Rejecting cancels this change request.")).toBeInTheDocument();
     expect(screen.getByText(/use Propose New Time instead/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Reject change request" })).toBeInTheDocument();
+  });
+
+  it("does not point at Propose New Time while WSO2 has the change on hold: it says why instead", () => {
+    renderDialog({ proposeNewTime: "on_hold" });
+    expect(screen.getByText("Rejecting cancels this change request.")).toBeInTheDocument();
+    expect(screen.queryByText(/use Propose New Time instead/)).not.toBeInTheDocument();
+    expect(
+      screen.getByText("A new time cannot be proposed right now because WSO2 has this change request on hold."),
+    ).toBeInTheDocument();
+    // The answer itself is not held back: it can still be confirmed.
+    expect(screen.getByRole("button", { name: "Reject change request" })).toBeEnabled();
+  });
+
+  it("says nothing about a different time where Propose New Time is not offered", () => {
+    renderDialog({ proposeNewTime: "unavailable" });
+    expect(screen.getByText("Rejecting cancels this change request.")).toBeInTheDocument();
+    expect(screen.queryByText(/Propose New Time/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/on hold/)).not.toBeInTheDocument();
+  });
+
+  it("describes the dialog by its message and its hint, whichever hint it has", () => {
+    renderDialog({ proposeNewTime: "on_hold" });
+    const description = document.getElementById("cr-reject-confirm-description");
+    expect(description).toHaveTextContent("Rejecting cancels this change request.");
+    expect(description).toHaveTextContent("WSO2 has this change request on hold");
+    expect(screen.getByRole("dialog")).toHaveAttribute("aria-describedby", "cr-reject-confirm-description");
   });
 
   it("says marking a review unsuccessful sends the change into rollback", () => {

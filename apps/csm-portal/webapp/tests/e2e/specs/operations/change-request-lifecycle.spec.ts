@@ -1584,8 +1584,8 @@ test.describe("change request lifecycle — project and deployments (mocked back
 // registered contacts, or none of them eligible, Request Approval is REFUSED while a
 // customer box is ticked (see "Request Approval is refused when nobody can be asked"), so
 // a change raised here never reaches a gate with nobody to answer. What is left is an
-// OLDER change already at a gate (before that rule, its contacts gone since, or from
-// ServiceNow with no request): no stage exists, nobody is asked, and staff never record a
+// OLDER change already at a gate (before that rule, its contacts gone since, or migrated
+// from the previous system with no request): no stage exists, nobody is asked, and staff never record a
 // customer's approval or review, so it waits at the gate with what staff always have there
 // (Re-schedule, Roll back at Customer Review, Cancel change) until the customer can be
 // asked. Those specs start at the gate (`openOlderChangeAt`).
@@ -1608,7 +1608,7 @@ const ON_ACME = { projectId: ACME.id };
  * A change request on a project with NO registered contacts (Gamma). Request Approval is REFUSED for it while a customer box
  * is ticked (see "Request Approval is refused when nobody can be asked"), so no flow through the page puts a customer step
  * there with nobody to ask; what is left is an OLDER change that reached a gate before that rule, one whose contacts left
- * the project afterwards, or one that came over from ServiceNow with no request. Such a change starts at its gate
+ * the project afterwards, or one migrated from the previous system with no request. Such a change starts at its gate
  * (`openOlderChangeAt`), and nobody can answer for the customer there either: there is no manual path.
  */
 const NO_CONTACTS = { projectId: GAMMA.id };
@@ -4609,7 +4609,7 @@ test.describe("the customer requirements lock (real stack)", () => {
 // (customer-change-request-legacy.spec.ts) proves what CUSTOMERS see of them; this is the staff's side: the rows the
 // sync writes -- no customer-stage rows, customer flags false, an approval stage with no label -- must not lock WSO2 out
 // of their own change requests. The rows are the customer portal e2e's fixture (fixtures/legacy-change-requests.sql, ids
-// and numbers like ServiceNow's, created in 1999), written and removed here through the stack's Postgres.
+// and numbers in the migrated shape, created in 1999), written and removed here through the stack's Postgres.
 // ---------------------------------------------------------------------------
 
 const LEGACY_SQL = path.resolve(process.cwd(), "../../customer-portal/webapp/tests/e2e/fixtures/legacy-change-requests.sql");
@@ -4658,7 +4658,7 @@ test.describe("migrated (legacy) change requests in the CSM portal (real stack)"
     await detail.goto(id);
     await expect(detail.currentStep()).toContainText("Customer Approval");
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
-    // The project has registered contacts, but no request was ever made of them (a change that came over from ServiceNow
+    // The project has registered contacts, but no request was ever made of them (a change migrated from the previous system
     // sitting at the gate): the note says nobody is asked, not that no contacts are registered, and that Cancel change is the
     // only way out of Customer Approval.
     await expect(page.getByText(NOBODY_ASKED_TEXT)).toBeVisible();

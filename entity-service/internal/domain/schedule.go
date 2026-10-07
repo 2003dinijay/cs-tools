@@ -101,6 +101,20 @@ type ScheduleAbsenceKind struct {
 	// Retired is true for a kind no longer offered. It is still served so the
 	// days already marked with it keep their label, but nothing should offer it.
 	Retired bool `json:"retired,omitempty"`
+	// MovesToTeamKey is the team a span of this kind is spent working for --
+	// the Brazil rotation moves someone to the Americas team, Migration to
+	// the Migration team. Such a span is filed under that team for its dates,
+	// so the roster shows the person there and that team's lead may roster
+	// them; their own team membership is unchanged.
+	MovesToTeamKey *string `json:"movesToTeamKey,omitempty"`
+	// WorksRotaThere is true when that stint is rota work on the other team
+	// (the Brazil rotation works the Americas rota), so the person is not
+	// listed as off the rota on those days.
+	WorksRotaThere bool `json:"worksRotaThere,omitempty"`
+	// ShowsAsShiftCode is the standing window a span of this kind is drawn as
+	// on the roster -- on the team it moves someone to, they work its normal
+	// hours. The span is still what the day holds.
+	ShowsAsShiftCode *string `json:"showsAsShiftCode,omitempty"`
 }
 
 // ScheduleCatalogue is everything the UI needs before it can draw a rota:
@@ -131,6 +145,22 @@ type ScheduleTeam struct {
 	// RotaCode is the rota this team's type belongs to; absent for a team on
 	// no named rota (CRE's, and Americas).
 	RotaCode *string `json:"rotaCode,omitempty"`
+	// Members are everyone on the team, with their role, so a roster shows
+	// each of them on a month they hold no window -- a lead is rarely on the
+	// rota, and somebody whose only entry was an allocation vanished from a
+	// grid built from entries the moment it was cleared, taking with them the
+	// row a lead marks their leave on.
+	Members []ScheduleTeamMember `json:"members"`
+	// DefaultShiftCode is the standing window a member's ordinary weekday is:
+	// Americas cover for the Americas team. Absent means Regular hours.
+	DefaultShiftCode *string `json:"defaultShiftCode,omitempty"`
+}
+
+// ScheduleTeamMember is one member of a rota team. Role is the team_member
+// role as stored: engineer (or member), lead, americas_team_lead, and so on.
+type ScheduleTeamMember struct {
+	ScheduleEngineer
+	Role string `json:"role"`
 }
 
 // ScheduleEngineer is who is working, flattened onto the assignment so a day
@@ -226,6 +256,12 @@ type ApplyScheduleAbsenceRequest struct {
 	// team for RnD. Kept only when KindCode is an ALLOCATION kind -- leave is
 	// not "for" anybody -- and dropped when blank.
 	AllocatedTo *string `json:"allocatedTo,omitempty"`
+
+	// HomeTeamKey is the team the person belongs to, set by the service --
+	// never read from the request body. A kind that moves people to another
+	// team files the span under that team and keeps this beside it, so the
+	// home team's lead still owns the span.
+	HomeTeamKey string `json:"-"`
 }
 
 // CreateScheduleAbsenceKindRequest is a lead adding a kind of time away the
@@ -326,6 +362,9 @@ type ScheduleAbsence struct {
 	// allocation; the product team, for RnD. The kind says what sort of time it
 	// is, this says for whom -- so a new customer is a value, not a new kind.
 	AllocatedTo *string `json:"allocatedTo,omitempty"`
+	// HomeTeamKey is the person's own team, on a span filed under the team a
+	// kind moved them to (TeamKey); absent on every other span.
+	HomeTeamKey *string `json:"homeTeamKey,omitempty"`
 }
 
 // SearchScheduleAssignmentsRequest bounds a rota read by date and, optionally,

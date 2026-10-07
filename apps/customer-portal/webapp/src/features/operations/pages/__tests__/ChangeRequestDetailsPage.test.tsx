@@ -19,10 +19,12 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import ChangeRequestDetailsPage from "@features/operations/pages/ChangeRequestDetailsPage";
 import {
+  CHANGE_REQUEST_ACTION_FAILED_MESSAGE,
   CHANGE_REQUEST_ANSWER_STALE_MESSAGE,
   CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE,
   CHANGE_REQUEST_NOT_FOUND_MESSAGE,
   CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE,
+  ChangeRequestErrorCode,
 } from "@features/operations/utils/changeRequests";
 import { ApiError } from "@utils/ApiError";
 
@@ -449,6 +451,8 @@ describe("ChangeRequestDetailsPage", () => {
           409,
           "Conflict",
           "the planned implementation time of this change request changed after you opened it (it is now 2026-09-15T10:00:00Z to 2026-09-15T12:00:00Z); read it again before giving your answer",
+          undefined,
+          ChangeRequestErrorCode.SCHEDULE_CHANGED,
         ),
       );
       renderPage();
@@ -469,7 +473,10 @@ describe("ChangeRequestDetailsPage", () => {
     });
 
     it.each([
-      [new ApiError(409, "Conflict", "stale"), CHANGE_REQUEST_ANSWER_STALE_MESSAGE],
+      [new ApiError(409, "Conflict", "stale", undefined, ChangeRequestErrorCode.APPROVAL_NOT_PENDING), CHANGE_REQUEST_ANSWER_STALE_MESSAGE],
+      // An older backend names nothing: the page does not claim "already answered".
+      [new ApiError(409, "Conflict", "stale"), CHANGE_REQUEST_ACTION_FAILED_MESSAGE],
+      [new ApiError(403, "Forbidden", "nope", undefined, ChangeRequestErrorCode.FORBIDDEN), CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE],
       [new ApiError(403, "Forbidden", "nope"), CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE],
       [new ApiError(500, "Internal Server Error", "Failed to update change request."), "Failed to update change request."],
       [new Error("Failed to fetch"), "Could not approve the change request. Please try again."],
@@ -493,6 +500,58 @@ describe("ChangeRequestDetailsPage", () => {
       const dialog = screen.getByRole("dialog", { name: "Reject this change request?" });
       expect(within(dialog).getByText("Rejecting cancels this change request.")).toBeInTheDocument();
       expect(mocks.mutateAsync).not.toHaveBeenCalled();
+    });
+
+    it("points at Propose New Time as the alternative while it is on", () => {
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+      const dialog = screen.getByRole("dialog", { name: "Reject this change request?" });
+      expect(within(dialog).getByText(/use Propose New Time instead/)).toBeInTheDocument();
+    });
+
+    it("does not point at Propose New Time while WSO2 has the change on hold, and says why instead", () => {
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.approval, customerCanAnswer: true, isOnHold: true });
+      renderPage();
+      // The button the dialog would point at is switched off...
+      expect(screen.getByRole("button", { name: "Propose New Time" })).toBeDisabled();
+      fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+      const dialog = screen.getByRole("dialog", { name: "Reject this change request?" });
+      // ...so the dialog says what is true, and rejecting is still possible.
+      expect(within(dialog).queryByText(/use Propose New Time instead/)).not.toBeInTheDocument();
+      expect(
+        within(dialog).getByText("A new time cannot be proposed right now because WSO2 has this change request on hold."),
+      ).toBeInTheDocument();
+      expect(within(dialog).getByRole("button", { name: "Reject change request" })).toBeEnabled();
+    });
+
+    it("follows the hold if it arrives while the dialog is open", () => {
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.approval, customerCanAnswer: true });
+      const view = renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Reject" }));
+      expect(screen.getByText(/use Propose New Time instead/)).toBeInTheDocument();
+
+      // What the refetch brings back once WSO2 has put the change on hold.
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.approval, customerCanAnswer: true, isOnHold: true });
+      view.rerender(
+        <MemoryRouter initialEntries={["/projects/p1/operations/change-requests/cr-1"]}>
+          <Routes>
+            <Route
+              path="/projects/:projectId/operations/change-requests/:changeRequestId"
+              element={<ChangeRequestDetailsPage />}
+            />
+          </Routes>
+        </MemoryRouter>,
+      );
+      expect(screen.queryByText(/use Propose New Time instead/)).not.toBeInTheDocument();
+      expect(screen.getByText(/WSO2 has this change request on hold/, { selector: "p" })).toBeInTheDocument();
+    });
+
+    it("never offers the Propose New Time hint to a review", () => {
+      mocks.changeRequest.value = makeChangeRequest({ state: STATES.review });
+      renderPage();
+      fireEvent.click(screen.getByRole("button", { name: "Unsuccessful" }));
+      expect(screen.queryByText(/Propose New Time/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/on hold/)).not.toBeInTheDocument();
     });
 
     it("sends nothing when the customer goes back", async () => {
@@ -523,7 +582,9 @@ describe("ChangeRequestDetailsPage", () => {
     });
 
     it("closes the dialog and shows why when the rejection is refused", async () => {
-      mocks.mutateAsync.mockRejectedValueOnce(new ApiError(409, "Conflict", "stale"));
+      mocks.mutateAsync.mockRejectedValueOnce(
+        new ApiError(409, "Conflict", "stale", undefined, ChangeRequestErrorCode.APPROVAL_NOT_PENDING),
+      );
       renderPage();
       fireEvent.click(screen.getByRole("button", { name: "Reject" }));
       fireEvent.click(screen.getByRole("button", { name: "Reject change request" }));

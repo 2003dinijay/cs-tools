@@ -553,9 +553,12 @@ test.describe("Local stack — a customer proposes a new implementation time and
     await psql(`update change_request set is_on_hold = true, on_hold_reason = 'E2E hold' where id = '${approval.id}'`);
     await dave.submitProposalButton().click();
 
-    // The dialog stays open, so the customer can read why; nothing changed.
+    // The dialog stays open, so the customer can read why; nothing changed. The refusal
+    // is the backend's machine-readable code (change_request_on_hold), not its wording.
     await expect(dave.proposeDialog().getByRole("alert").filter({ hasText: UI.propose.errors.onHold })).toBeVisible();
     await expect(dave.proposeDialog()).toBeVisible();
+    // Focus stays in the dialog, on the button that was pressed, so the customer can go on.
+    await expect(dave.submitProposalButton()).toBeFocused();
     expect(await changeRequestRow(approval.id)).toMatchObject({ state: "CUSTOMER_APPROVAL", startUtc: planned.startUtc, endUtc: planned.endUtc });
     expect(await proposalRow(approval.id)).toEqual({ proposedUtc: "", answer: "" });
     expect((await customerApi("dave").get(approval.id)).body.customerCanAnswer).toBe(true);
@@ -574,6 +577,16 @@ test.describe("Local stack — a customer proposes a new implementation time and
     await expect(propose).toHaveAccessibleDescription(UI.notes.onHold);
     await propose.click({ force: true });
     await expect(dave.proposeDialog()).toBeHidden();
+
+    // The reject confirmation does not point at the switched-off button: it says why instead.
+    await dave.button(UI.buttons.reject).click();
+    const rejectDialog = dave.rejectDialog(UI.rejectConfirm.approvalTitle);
+    await expect(rejectDialog).toContainText(UI.rejectConfirm.approvalMessage);
+    await expect(rejectDialog).toContainText(UI.rejectConfirm.approvalHintOnHold);
+    await expect(rejectDialog).not.toContainText(UI.rejectConfirm.approvalHint);
+    await rejectDialog.getByRole("button", { name: UI.rejectConfirm.goBack, exact: true }).click();
+    await expect(rejectDialog).toBeHidden();
+    await expect(dave.button(UI.buttons.reject), "focus returns to the button that opened it").toBeFocused();
 
     // Approve and Reject are still there, and Approve is still taken while the change is on hold.
     await expect(dave.button(UI.buttons.reject)).toBeEnabled();
@@ -647,6 +660,8 @@ test.describe("Local stack — a customer proposes a new implementation time and
       // The stale page's Approve is for the window it showed: refused, with the reason.
       await dave.button(UI.buttons.approve).click();
       await expect(dave.banner(UI.banners.scheduleChanged)).toBeVisible();
+      // A refused answer does not leave focus on a control that is about to be redrawn: it is on the heading.
+      await expect(dave.heading()).toBeFocused();
       expect(await changeRequestRow(approval.id), "nothing was approved").toMatchObject({
         state: "CUSTOMER_APPROVAL",
         startUtc: second.startUtc,

@@ -19,7 +19,7 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleAssignment, ScheduleShift } from "../types";
 import { MOE_DAY, MOE_NIGHT, TZ1, TZ1_L1, TZ1_WE, TZ2, TZ2_WE, TZ3, REGULAR } from "../test/fixtures";
-import { escalationGrid, kindsOfferedOn, monthPieces, readerFamily, rosterRange, rotaZoneName, zoneColumnOf, zoneDisplayName, zoneLabelOn } from "./rota";
+import { escalationGrid, kindsOfferedOn, monthPieces, moveKindFor, movesOfferedOn, readerFamily, rosterRange, rotaZoneName, zoneColumnOf, zoneDisplayName, zoneLabelOn } from "./rota";
 import {
   dayLabel,
   zoneAbbreviation,
@@ -406,5 +406,33 @@ describe("rotaZoneName and zoneColumnOf", () => {
     expect(zoneColumnOf("ASG_D")).toBe(zoneColumnOf("MOE_D"));
     expect(zoneColumnOf("IAAS_N")).toBe("Night");
     expect(zoneColumnOf("TZ2")).toBe("TZ2");
+  });
+});
+
+
+describe("a tag worked as another team's normal hours", () => {
+  const BR = {
+    id: "k-br", code: "ALLO_BR", shortCode: "BR", label: "Brazil rotation", bucket: "ALLOCATION" as const,
+    colourToken: "BR", sortOrder: 70, movesToTeamKey: "americas", worksRotaThere: true, showsAsShiftCode: "CRE_AMERICAS",
+  };
+  const MIG = {
+    id: "k-mig", code: "MIGRATION", shortCode: "Mig", label: "Migration", bucket: "ALLOCATION" as const,
+    colourToken: "MIG", sortOrder: 90, movesToTeamKey: "migration", showsAsShiftCode: "CRE_REGULAR",
+  };
+
+  it("is not offered as time away; a plain move is offered as a move, a worked one as its shift", () => {
+    expect(kindsOfferedOn([BR, MIG], "CRE").map((k) => k.code)).toEqual([]);
+    expect(movesOfferedOn([BR, MIG], "CRE").map((k) => k.code)).toEqual(["MIGRATION"]);
+  });
+
+  it("is what picking that shift means for somebody on another team", () => {
+    expect(moveKindFor([BR, MIG], "CRE_AMERICAS", "vega")?.code).toBe("ALLO_BR");
+  });
+
+  it("is not involved for somebody already on that team, nor for any other shift", () => {
+    expect(moveKindFor([BR, MIG], "CRE_AMERICAS", "Americas")).toBeUndefined();
+    // Regular hours is everybody's: Migration, which is not rota work there,
+    // is never picked by choosing it.
+    expect(moveKindFor([BR, MIG], "CRE_REGULAR", "vega")).toBeUndefined();
   });
 });

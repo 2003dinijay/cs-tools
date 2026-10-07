@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -679,6 +680,124 @@ func TestCustomerGroupApprovalMessages(t *testing.T) {
 }
 
 func jsonQuote(s string) string { b, _ := json.Marshal(s); return string(b) }
+
+// assertErrorBodyKeys decodes the error body as the raw JSON object it is, so a
+// test can tell a key that is absent from one that is empty.
+func assertErrorBodyKeys(t *testing.T, w *httptest.ResponseRecorder) map[string]any {
+	t.Helper()
+	var body map[string]any
+	if err := json.Unmarshal(w.Body.Bytes(), &body); err != nil {
+		t.Fatalf("decode error body: %v; raw: %s", err, w.Body.String())
+	}
+	return body
+}
+
+// The machine-readable name entity-service gave a refusal (errorCode in its error
+// body) goes on to the CSM portal beside the message, on the PATCH and on the
+// approval decision route, with the status and the message exactly as they were;
+// a refusal that has none, or an unusable one, adds no key at all.
+func TestUpstreamErrorCodesPassThrough(t *testing.T) {
+	const onHold = "this change request is on hold, so a new implementation time cannot be proposed now"
+	envelope := func(status int, msg, code string) string {
+		out := `{"code":` + strconv.Itoa(status) + `,"message":` + jsonQuote(msg)
+		if code != "" {
+			out += `,"errorCode":` + code
+		}
+		return out + `}`
+	}
+	patch := func(upstream *apierror.Error) *httptest.ResponseRecorder {
+		client := &mockEntityChangeRequestClient{
+			patchChangeRequestFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) { return nil, upstream },
+		}
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(`{"onHold":false}`)))
+		r.SetPathValue("id", testCRID)
+		w := httptest.NewRecorder()
+		NewChangeRequestHandler(client).PatchChangeRequest(w, r)
+		return w
+	}
+	decide := func(upstream *apierror.Error) *httptest.ResponseRecorder {
+		client := &mockEntityChangeRequestClient{
+			decideChangeRequestApprovalFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) { return nil, upstream },
+		}
+		r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests/"+testCRID+"/approvals/decision", strings.NewReader(`{"decision":"approved"}`)))
+		r.SetPathValue("id", testCRID)
+		w := httptest.NewRecorder()
+		NewChangeRequestHandler(client).DecideChangeRequestApproval(w, r)
+		return w
+	}
+
+	t.Run("PATCH: a 409 keeps its message and its code", func(t *testing.T) {
+		w := patch(&apierror.Error{StatusCode: http.StatusConflict, Body: envelope(409, onHold, `"change_request_on_hold"`)})
+		assertStatus(t, w, http.StatusConflict)
+		body := assertErrorBodyKeys(t, w)
+		if body["message"] != onHold || body["errorCode"] != "change_request_on_hold" {
+			t.Errorf("body = %v", body)
+		}
+	})
+	t.Run("PATCH: a 403 keeps the fixed message and the code", func(t *testing.T) {
+		w := patch(&apierror.Error{StatusCode: http.StatusForbidden, Body: envelope(403, "only members asked may answer", `"change_request_not_asked"`)})
+		assertStatus(t, w, http.StatusForbidden)
+		body := assertErrorBodyKeys(t, w)
+		if body["message"] != ErrMsgForbidden || body["errorCode"] != "change_request_not_asked" {
+			t.Errorf("body = %v", body)
+		}
+	})
+	t.Run("PATCH: a 400 keeps its message and its code", func(t *testing.T) {
+		w := patch(&apierror.Error{StatusCode: http.StatusBadRequest, Body: envelope(400, "bad", `"change_request_forbidden"`)})
+		assertStatus(t, w, http.StatusBadRequest)
+		body := assertErrorBodyKeys(t, w)
+		if body["message"] != "bad" || body["errorCode"] != "change_request_forbidden" {
+			t.Errorf("body = %v", body)
+		}
+	})
+	t.Run("decision: a 409 and a 403 keep their message and their code", func(t *testing.T) {
+		const stale = "this approval is no longer pending: the change request is in Closed, but the Review stage can only be decided while it is in Review"
+		w := decide(&apierror.Error{StatusCode: http.StatusConflict, Body: envelope(409, stale, `"change_request_approval_not_pending"`)})
+		assertStatus(t, w, http.StatusConflict)
+		if body := assertErrorBodyKeys(t, w); body["message"] != stale || body["errorCode"] != "change_request_approval_not_pending" {
+			t.Errorf("409 body = %v", body)
+		}
+		const creator = "the creator of a change request cannot approve it"
+		w = decide(&apierror.Error{StatusCode: http.StatusForbidden, Body: envelope(403, creator, `"change_request_forbidden"`)})
+		assertStatus(t, w, http.StatusForbidden)
+		if body := assertErrorBodyKeys(t, w); body["message"] != creator || body["errorCode"] != "change_request_forbidden" {
+			t.Errorf("403 body = %v", body)
+		}
+	})
+	t.Run("an upstream that names no code adds no key", func(t *testing.T) {
+		for name, w := range map[string]*httptest.ResponseRecorder{
+			"PATCH 409":    patch(&apierror.Error{StatusCode: http.StatusConflict, Body: envelope(409, "stale", "")}),
+			"PATCH 403":    patch(&apierror.Error{StatusCode: http.StatusForbidden, Body: envelope(403, "no", "")}),
+			"decision 409": decide(&apierror.Error{StatusCode: http.StatusConflict, Body: envelope(409, "stale", "")}),
+			"decision 403": decide(&apierror.Error{StatusCode: http.StatusForbidden, Body: envelope(403, "no", "")}),
+		} {
+			if _, has := assertErrorBodyKeys(t, w)["errorCode"]; has {
+				t.Errorf("%s: body %s carries an errorCode", name, w.Body.String())
+			}
+		}
+	})
+	t.Run("a code that is not a plain lower-case name is not passed on", func(t *testing.T) {
+		for _, code := range []string{`"Change_Request_On_Hold"`, `"on hold"`, `"<script>"`, `7`, `null`, `""`, `"` + strings.Repeat("a", 65) + `"`} {
+			w := patch(&apierror.Error{StatusCode: http.StatusConflict, Body: envelope(409, onHold, code)})
+			assertStatus(t, w, http.StatusConflict)
+			body := assertErrorBodyKeys(t, w)
+			if _, has := body["errorCode"]; has {
+				t.Errorf("code %s: passed on as %v", code, body["errorCode"])
+			}
+			if body["message"] != onHold {
+				t.Errorf("code %s: message = %v, want it kept", code, body["message"])
+			}
+		}
+	})
+	t.Run("the other statuses carry no code", func(t *testing.T) {
+		for _, status := range []int{http.StatusUnauthorized, http.StatusNotFound, http.StatusInternalServerError, http.StatusServiceUnavailable} {
+			w := patch(&apierror.Error{StatusCode: status, Body: envelope(status, "x", `"change_request_on_hold"`)})
+			if _, has := assertErrorBodyKeys(t, w)["errorCode"]; has {
+				t.Errorf("status %d: body %s carries an errorCode", status, w.Body.String())
+			}
+		}
+	})
+}
 
 // The customer's answer is the customer's: the BFF refuses isCustomerApproved /
 // isCustomerReviewed from its (staff) callers before any upstream call, true or

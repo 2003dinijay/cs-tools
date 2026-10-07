@@ -39,12 +39,14 @@ import {
   sumChangeRequestStateCount,
   AWAITING_YOUR_ACTION_STATE_IDS,
   AWAITING_LABELS,
+  CHANGE_REQUEST_ACTION_FAILED_MESSAGE,
   CHANGE_REQUEST_ANSWER_STALE_MESSAGE,
   CHANGE_REQUEST_NO_WINDOW_MESSAGE,
   CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE,
   CHANGE_REQUEST_PROPOSAL_NOT_NOW_MESSAGE,
   CHANGE_REQUEST_ON_HOLD_MESSAGE,
   CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE,
+  ChangeRequestErrorCode,
 } from "@features/operations/utils/changeRequests";
 import { ChangeRequestDecisionMode } from "@features/operations/types/changeRequests";
 import { ApiError } from "@utils/ApiError";
@@ -215,6 +217,43 @@ describe("customer decision copy", () => {
     );
   });
 
+  describe("the hint about a different time follows what Propose New Time can do", () => {
+    const approval = ChangeRequestDecisionMode.CUSTOMER_APPROVAL;
+
+    it("points at Propose New Time only while it is on", () => {
+      expect(getCustomerRejectConfirmCopy(approval, "available").hint).toBe(
+        "If you only need a different time, go back and use Propose New Time instead.",
+      );
+    });
+
+    it("says what is true instead while WSO2 has the change on hold, and does not point at the switched-off action", () => {
+      const { hint } = getCustomerRejectConfirmCopy(approval, "on_hold");
+      expect(hint).toBe("A new time cannot be proposed right now because WSO2 has this change request on hold.");
+      expect(hint).not.toMatch(/use Propose New Time/);
+    });
+
+    it("says nothing about it where it is not offered, and by default", () => {
+      expect(getCustomerRejectConfirmCopy(approval, "unavailable").hint).toBeUndefined();
+      expect(getCustomerRejectConfirmCopy(approval).hint).toBeUndefined();
+    });
+
+    it("keeps the consequence the same whatever the hint says", () => {
+      for (const availability of ["available", "on_hold", "unavailable"] as const) {
+        expect(getCustomerRejectConfirmCopy(approval, availability).message).toBe(
+          "Rejecting cancels this change request.",
+        );
+      }
+    });
+
+    it("has no hint for a review, whatever Propose New Time can do", () => {
+      for (const availability of ["available", "on_hold", "unavailable"] as const) {
+        expect(
+          getCustomerRejectConfirmCopy(ChangeRequestDecisionMode.CUSTOMER_REVIEW, availability).hint,
+        ).toBeUndefined();
+      }
+    });
+  });
+
   it("says what happened to the change request after an answer", () => {
     const approval = ChangeRequestDecisionMode.CUSTOMER_APPROVAL;
     const review = ChangeRequestDecisionMode.CUSTOMER_REVIEW;
@@ -236,36 +275,132 @@ describe("customer decision copy", () => {
 describe("describeChangeRequestActionError", () => {
   const fallback = "Could not do it. Please try again.";
 
-  it("explains a conflict as an answer that is no longer wanted", () => {
-    expect(
-      describeChangeRequestActionError(new ApiError(409, "Conflict", "stale approval: whatever"), fallback),
-    ).toEqual({ message: CHANGE_REQUEST_ANSWER_STALE_MESSAGE, terminal: true });
-    expect(CHANGE_REQUEST_ANSWER_STALE_MESSAGE).toBe(
-      "This request was already answered or is no longer waiting for your answer.",
-    );
-  });
+  // A refusal is classified by its machine-readable code, never by the wording of
+  // its message: every case below gives the SAME message under a different wording
+  // (and an empty one) and the same answer comes back.
+  describe("by the refusal's code", () => {
+    const wordings = [
+      "stale approval: whatever",
+      "some entirely different sentence",
+      "this change request is on hold",
+      "the planned implementation time of this change request changed after you opened it",
+      "HTTP 409",
+      "",
+    ];
 
-  it("says so when a proposal is refused because the change is on hold, and keeps the customer where they are", () => {
-    expect(
-      describeChangeRequestActionError(
-        new ApiError(409, "Conflict", "this change request is on hold, so a new implementation time cannot be proposed now"),
-        fallback,
-      ),
-    ).toEqual({ message: CHANGE_REQUEST_ON_HOLD_MESSAGE, terminal: false });
-  });
+    it.each([
+      [ChangeRequestErrorCode.APPROVAL_NOT_PENDING, { message: CHANGE_REQUEST_ANSWER_STALE_MESSAGE, terminal: true }],
+      [ChangeRequestErrorCode.NOT_PROPOSABLE, { message: CHANGE_REQUEST_ANSWER_STALE_MESSAGE, terminal: true }],
+      [ChangeRequestErrorCode.SCHEDULE_CHANGED, { message: CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE, terminal: true }],
+      // A hold keeps the customer where they are: the answer is still possible.
+      [ChangeRequestErrorCode.ON_HOLD, { message: CHANGE_REQUEST_ON_HOLD_MESSAGE, terminal: false }],
+    ])("a 409 named %s", (code, expected) => {
+      for (const wording of wordings) {
+        expect(
+          describeChangeRequestActionError(new ApiError(409, "Conflict", wording, undefined, code), fallback),
+          `wording ${JSON.stringify(wording)}`,
+        ).toEqual(expected);
+      }
+    });
 
-  it("says the schedule moved, not that the answer was already given, when an answer named another window", () => {
-    expect(
-      describeChangeRequestActionError(
-        new ApiError(
-          409,
-          "Conflict",
-          "the planned implementation time of this change request changed after you opened it (it is now 2026-09-15T10:00:00Z to 2026-09-15T12:00:00Z); read it again before giving your answer",
+    it.each([ChangeRequestErrorCode.NOT_ASKED, ChangeRequestErrorCode.FORBIDDEN])("a 403 named %s", (code) => {
+      for (const wording of wordings) {
+        expect(
+          describeChangeRequestActionError(new ApiError(403, "Forbidden", wording, undefined, code), fallback),
+        ).toEqual({ message: CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE, terminal: true });
+      }
+    });
+
+    it("never takes a hold, a moved schedule or an answered request from the words alone", () => {
+      // The old classification matched the English wording of the message: it must
+      // not any more. These are the very sentences it matched, with a code that
+      // says something else, and with none.
+      const onHoldWords = "this change request is on hold, so a new implementation time cannot be proposed now";
+      const movedWords =
+        "the planned implementation time of this change request changed after you opened it (it is now 2026-09-15T10:00:00Z to 2026-09-15T12:00:00Z); read it again before giving your answer";
+      expect(
+        describeChangeRequestActionError(
+          new ApiError(409, "Conflict", onHoldWords, undefined, ChangeRequestErrorCode.APPROVAL_NOT_PENDING),
+          fallback,
+        ).message,
+      ).toBe(CHANGE_REQUEST_ANSWER_STALE_MESSAGE);
+      expect(
+        describeChangeRequestActionError(
+          new ApiError(409, "Conflict", movedWords, undefined, ChangeRequestErrorCode.ON_HOLD),
+          fallback,
+        ).message,
+      ).toBe(CHANGE_REQUEST_ON_HOLD_MESSAGE);
+      for (const words of [onHoldWords, movedWords]) {
+        expect(describeChangeRequestActionError(new ApiError(409, "Conflict", words), fallback).message).toBe(
+          CHANGE_REQUEST_ACTION_FAILED_MESSAGE,
+        );
+      }
+    });
+
+    it("says only that something went wrong, and to refresh, for a code it does not know", () => {
+      expect(
+        describeChangeRequestActionError(
+          new ApiError(409, "Conflict", "this approval is no longer pending", undefined, "change_request_from_the_future"),
+          fallback,
         ),
+      ).toEqual({ message: CHANGE_REQUEST_ACTION_FAILED_MESSAGE, terminal: true });
+      expect(CHANGE_REQUEST_ACTION_FAILED_MESSAGE).toBe(
+        "Something went wrong with this change request. Refresh the page to see where it stands, then try again.",
+      );
+    });
+
+    it("keeps an older backend working: a 409 with no code is not called an answered request", () => {
+      const result = describeChangeRequestActionError(
+        new ApiError(409, "Conflict", "this approval is no longer pending: the change request is in Scheduled"),
         fallback,
-      ),
-    ).toEqual({ message: CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE, terminal: true });
-    expect(CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE).toMatch(/schedule .* changed after you opened it/);
+      );
+      expect(result).toEqual({ message: CHANGE_REQUEST_ACTION_FAILED_MESSAGE, terminal: true });
+      expect(result.message).not.toBe(CHANGE_REQUEST_ANSWER_STALE_MESSAGE);
+    });
+
+    it("keeps an older backend working: a 403 with no code, or an unknown one, is still not a contact who can answer", () => {
+      for (const code of [undefined, "change_request_from_the_future"]) {
+        expect(
+          describeChangeRequestActionError(new ApiError(403, "Forbidden", "You do not have permission.", undefined, code), fallback),
+        ).toEqual({ message: CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE, terminal: true });
+      }
+      expect(CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE).toBe(
+        "You are not one of the contacts who can answer this change request.",
+      );
+    });
+
+    it("leaves a failure that is no refusal of the state to its status, whatever code rides on it", () => {
+      expect(
+        describeChangeRequestActionError(
+          new ApiError(500, "Internal Server Error", "Failed to update change request.", undefined, ChangeRequestErrorCode.ON_HOLD),
+          fallback,
+        ),
+      ).toEqual({ message: "Failed to update change request.", terminal: false });
+      expect(
+        describeChangeRequestActionError(
+          new ApiError(400, "Bad Request", "plannedStartOn is in the past", undefined, ChangeRequestErrorCode.APPROVAL_NOT_PENDING),
+          fallback,
+        ),
+      ).toEqual({ message: "The proposed time must be in the future.", terminal: false });
+    });
+
+    it("keeps the wire names the backends send", () => {
+      expect(ChangeRequestErrorCode).toEqual({
+        ON_HOLD: "change_request_on_hold",
+        SCHEDULE_CHANGED: "change_request_schedule_changed",
+        APPROVAL_NOT_PENDING: "change_request_approval_not_pending",
+        NOT_PROPOSABLE: "change_request_not_proposable",
+        NOT_ASKED: "change_request_not_asked",
+        FORBIDDEN: "change_request_forbidden",
+      });
+    });
+
+    it("the stale-answer text is unchanged", () => {
+      expect(CHANGE_REQUEST_ANSWER_STALE_MESSAGE).toBe(
+        "This request was already answered or is no longer waiting for your answer.",
+      );
+      expect(CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE).toMatch(/schedule .* changed after you opened it/);
+    });
   });
 
   it("keeps the customer where they are when a proposal is refused because there is no window to move", () => {
@@ -274,7 +409,9 @@ describe("describeChangeRequestActionError", () => {
         new ApiError(
           409,
           "Conflict",
-          "this change request has no planned window to move, so a new time cannot be proposed for it",
+          "any wording at all",
+          undefined,
+          ChangeRequestErrorCode.NO_PLANNED_WINDOW,
         ),
         fallback,
       ),
@@ -289,12 +426,27 @@ describe("describeChangeRequestActionError", () => {
       new ApiError(
         409,
         "Conflict",
-        "this change request is also waiting for an approval that is not the customer's, so a new time cannot be proposed for it right now",
+        "any wording at all",
+        undefined,
+        ChangeRequestErrorCode.PROPOSAL_NOT_NOW,
       ),
       fallback,
     );
     expect(result).toEqual({ message: CHANGE_REQUEST_PROPOSAL_NOT_NOW_MESSAGE, terminal: false });
     expect(result.message).not.toMatch(/approval|CAB|internal/i);
+  });
+
+  it("never reads the wording of a proposal refusal: the same words with no code, or an unknown one, are the safe default", () => {
+    for (const code of [undefined, "change_request_from_the_future"]) {
+      for (const words of [
+        "this change request has no planned window to move, so a new time cannot be proposed for it",
+        "this change request is also waiting for an approval that is not the customer's, so a new time cannot be proposed for it right now",
+      ]) {
+        expect(
+          describeChangeRequestActionError(new ApiError(409, "Conflict", words, undefined, code), fallback),
+        ).toEqual({ message: CHANGE_REQUEST_ACTION_FAILED_MESSAGE, terminal: true });
+      }
+    }
   });
 
   it("puts the refusals of a start-only proposal in the customer's words", () => {
@@ -335,15 +487,6 @@ describe("describeChangeRequestActionError", () => {
     expect(
       say("plannedEndOn must be a valid date-time, either RFC 3339 (2030-03-01T09:00:00Z) or YYYY-MM-DD HH:MM:SS in UTC, in the years 2000 to 2100").message,
     ).toBe("Enter a valid start and end date and time.");
-  });
-
-  it("explains a refusal as not being a contact who can answer", () => {
-    expect(
-      describeChangeRequestActionError(new ApiError(403, "Forbidden", "You do not have permission."), fallback),
-    ).toEqual({ message: CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE, terminal: true });
-    expect(CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE).toBe(
-      "You are not one of the contacts who can answer this change request.",
-    );
   });
 
   it("shows the backend's message for a bad request, in plainer words for the window ones", () => {

@@ -27,6 +27,7 @@ import type {
   ChangeRequestDetails,
   ChangeRequestStats,
   ChangeRequestStatsResponse,
+  ProposeNewTimeAvailability,
 } from "@features/operations/types/changeRequests";
 import type { CaseComment } from "@features/support/types/cases";
 import { ChangeRequestDecisionMode } from "@features/operations/types/changeRequests";
@@ -468,11 +469,29 @@ export function getCustomerDecisionLabels(mode: ChangeRequestDecisionMode): {
     : { approve: "Approve", reject: "Reject" };
 }
 
+/** What the reject confirmation says about proposing a different time, by what the page allows. */
+const REJECT_HINTS: Record<ProposeNewTimeAvailability, string | undefined> = {
+  available:
+    "If you only need a different time, go back and use Propose New Time instead.",
+  on_hold:
+    "A new time cannot be proposed right now because WSO2 has this change request on hold.",
+  unavailable: undefined,
+};
+
 /**
  * Copy for the confirmation shown before the answer that cannot be taken back:
  * a rejected change is canceled, an unsuccessful one goes into rollback.
+ *
+ * When rejecting, the hint is about the alternative, a different time, and says
+ * only what is true of Propose New Time right now (`proposeNewTime`, as the page
+ * decides it): that it can be used, or that it cannot because WSO2 has the
+ * change on hold, and nothing at all where it is not offered. It never points at
+ * an action that is switched off.
  */
-export function getCustomerRejectConfirmCopy(mode: ChangeRequestDecisionMode): {
+export function getCustomerRejectConfirmCopy(
+  mode: ChangeRequestDecisionMode,
+  proposeNewTime: ProposeNewTimeAvailability = "unavailable",
+): {
   title: string;
   message: string;
   hint?: string;
@@ -488,7 +507,7 @@ export function getCustomerRejectConfirmCopy(mode: ChangeRequestDecisionMode): {
   return {
     title: "Reject this change request?",
     message: "Rejecting cancels this change request.",
-    hint: "If you only need a different time, go back and use Propose New Time instead.",
+    hint: REJECT_HINTS[proposeNewTime],
     confirmLabel: "Reject change request",
   };
 }
@@ -528,6 +547,38 @@ export function getCustomerDecisionMessages(
 export const CHANGE_REQUEST_NOT_FOUND_MESSAGE =
   "This change request was not found. It may not have been shared with you.";
 
+/**
+ * The machine-readable names of the refusals of a customer's answer or proposed
+ * time (the error body's `errorCode`, see `ApiError.code`). The backend names them
+ * and the webapp classifies by them, never by the wording of the message. The list
+ * only ever grows: a code this webapp does not know is a newer backend's, and is
+ * handled as the safe default (`CHANGE_REQUEST_ACTION_FAILED_MESSAGE`).
+ */
+export const ChangeRequestErrorCode = {
+  /** 409: a proposed time while WSO2 has the change on hold. Answering still works. */
+  ON_HOLD: "change_request_on_hold",
+  /** 409: an answer for a planned window that has since changed. Nothing recorded. */
+  SCHEDULE_CHANGED: "change_request_schedule_changed",
+  /** 409: already answered (by this contact or a sibling), or nothing waits for it. */
+  APPROVAL_NOT_PENDING: "change_request_approval_not_pending",
+  /** 409: a proposed time where none can be proposed (not in Customer Approval, nobody asked). */
+  NOT_PROPOSABLE: "change_request_not_proposable",
+  /**
+   * 409: a proposed time while an approval that is not the customer's is also
+   * being asked. Answering still works.
+   */
+  PROPOSAL_NOT_NOW: "change_request_proposal_not_now",
+  /**
+   * 409: a proposed time on a change request with no planned window to move.
+   * Answering still works.
+   */
+  NO_PLANNED_WINDOW: "change_request_no_planned_window",
+  /** 403: a contact of the project whom the customer's request was never sent to. */
+  NOT_ASKED: "change_request_not_asked",
+  /** 403: not a registered contact of the project, its creator, or a field a customer may not set. */
+  FORBIDDEN: "change_request_forbidden",
+} as const;
+
 /** A conflict (409): the answer was already given, or is no longer asked for. */
 export const CHANGE_REQUEST_ANSWER_STALE_MESSAGE =
   "This request was already answered or is no longer waiting for your answer.";
@@ -559,6 +610,16 @@ export const CHANGE_REQUEST_ON_HOLD_MESSAGE =
  */
 export const CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE =
   "The schedule of this change request changed after you opened it. Review the updated schedule, then answer again.";
+
+/**
+ * A conflict (409) that names nothing this webapp knows: the backend sent no
+ * `errorCode` (an older one) or a code from a newer one. It could be a hold, a
+ * moved schedule or an answer that was already given, so it claims none of them:
+ * it says something went wrong and sends the customer to the refreshed page,
+ * which the failed request has already asked for.
+ */
+export const CHANGE_REQUEST_ACTION_FAILED_MESSAGE =
+  "Something went wrong with this change request. Refresh the page to see where it stands, then try again.";
 
 /** Backend 400 messages the customer can act on, in the customer's words. */
 const BAD_REQUEST_MESSAGES: ReadonlyArray<readonly [needle: string, message: string]> = [
@@ -620,9 +681,28 @@ const BAD_REQUEST_MESSAGES: ReadonlyArray<readonly [needle: string, message: str
  * Turns the error of a customer's PATCH (answer or proposed time) into text a
  * customer can act on.
  *
+ * A refusal is classified by its machine-readable `ApiError.code`, never by the
+ * wording of the backend's message (which is for people and can change). The
+ * message of a 400 is shown (in the customer's words where
+ * `BAD_REQUEST_MESSAGES` knows it) because it is the display text of a mistake in
+ * what was typed, and decides nothing.
+ *
+ *   - a 409 with a known code says what it is: a hold, another approval being
+ *     asked, no planned window to move, a moved schedule, an answer already
+ *     given (or a proposal where none can be made);
+ *   - a 409 with no code (an older backend) or one this webapp does not know
+ *     (a newer backend) is `CHANGE_REQUEST_ACTION_FAILED_MESSAGE`: never claimed
+ *     to be "already answered", which could be wrong;
+ *   - a 403 is "not one of the contacts who can answer" whatever its code
+ *     (a code only tells apart why).
+ *
  * `terminal` is true when retrying or editing cannot help because the change
- * request no longer waits on this customer (409 / 403): the caller should
- * refresh it rather than leave the customer in a form that cannot succeed.
+ * request no longer waits on this customer: the caller should close the form
+ * and move on to the refreshed page rather than leave the customer in a form
+ * that cannot succeed. A hold (and the other two refusals that are only about the
+ * proposal: another approval being asked, no planned window) is not terminal (the
+ * proposal can be tried again later, and the customer can still answer), and neither is
+ * a failure that is no refusal of the change request's state (a 400, a 500).
  *
  * @param error - What the mutation rejected with.
  * @param fallback - Text for failures with nothing better to say.
@@ -634,27 +714,38 @@ export function describeChangeRequestActionError(
 ): { message: string; terminal: boolean } {
   if (error instanceof ApiError) {
     if (error.status === 409) {
-      // A hold is the one conflict that is about neither the answer nor the
-      // state: the customer is still being asked, a proposal just cannot go in.
-      if (/\bon hold\b/i.test(error.message)) {
-        return { message: CHANGE_REQUEST_ON_HOLD_MESSAGE, terminal: false };
+      switch (error.code) {
+        case ChangeRequestErrorCode.ON_HOLD:
+          // A hold is the one conflict that is about neither the answer nor the
+          // state: the customer is still being asked, a proposal just cannot go in.
+          return { message: CHANGE_REQUEST_ON_HOLD_MESSAGE, terminal: false };
+        case ChangeRequestErrorCode.PROPOSAL_NOT_NOW:
+          // Another approval is being asked too: only the proposal is refused, the
+          // customer is still being asked and can answer. Not terminal, like a hold.
+          return { message: CHANGE_REQUEST_PROPOSAL_NOT_NOW_MESSAGE, terminal: false };
+        case ChangeRequestErrorCode.NO_PLANNED_WINDOW:
+          // Nothing to move: only a proposed time is refused, the customer is
+          // still being asked.
+          return { message: CHANGE_REQUEST_NO_WINDOW_MESSAGE, terminal: false };
+        case ChangeRequestErrorCode.SCHEDULE_CHANGED:
+          // The schedule moved: the answer was given for a time its reader never saw.
+          return { message: CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE, terminal: true };
+        case ChangeRequestErrorCode.APPROVAL_NOT_PENDING:
+        case ChangeRequestErrorCode.NOT_PROPOSABLE:
+          return { message: CHANGE_REQUEST_ANSWER_STALE_MESSAGE, terminal: true };
+        default:
+          // Terminal all the same: a 409 is a conflict with the state, and the
+          // request has already asked for the page to be re-read (the patch hook
+          // refreshes on every 409), so the form is closed for the refreshed page
+          // to take over rather than left open on a state it no longer matches.
+          return { message: CHANGE_REQUEST_ACTION_FAILED_MESSAGE, terminal: true };
       }
-      // Another conflict about the proposal itself, and again not the customer's to act on.
-      if (/not the customer's, so a new time cannot be proposed/i.test(error.message)) {
-        return { message: CHANGE_REQUEST_PROPOSAL_NOT_NOW_MESSAGE, terminal: false };
-      }
-      // A conflict about the proposal itself: nothing to move. The customer is still
-      // being asked; only a proposed time is refused.
-      if (/no planned window to move/i.test(error.message)) {
-        return { message: CHANGE_REQUEST_NO_WINDOW_MESSAGE, terminal: false };
-      }
-      // The other conflict that is not "already answered": the schedule moved.
-      if (/planned implementation time .* changed after you opened/i.test(error.message)) {
-        return { message: CHANGE_REQUEST_SCHEDULE_CHANGED_MESSAGE, terminal: true };
-      }
-      return { message: CHANGE_REQUEST_ANSWER_STALE_MESSAGE, terminal: true };
     }
     if (error.status === 403) {
+      // Who may act is not the customer's to fix: however it is refused (never
+      // asked, not a contact of the project, the creator, a field that may not be
+      // set: ChangeRequestErrorCode.NOT_ASKED / FORBIDDEN say why) the answer is
+      // the same and final, so a 403 with another code, or none, reads the same.
       return { message: CHANGE_REQUEST_NOT_A_CONTACT_MESSAGE, terminal: true };
     }
     const backendMessage = error.message?.trim();

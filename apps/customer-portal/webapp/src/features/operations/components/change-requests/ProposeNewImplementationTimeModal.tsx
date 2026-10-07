@@ -30,7 +30,7 @@ import {
   colors,
 } from "@wso2/oxygen-ui";
 import { X } from "@wso2/oxygen-ui-icons-react";
-import { useRef, useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import { usePatchChangeRequest } from "@features/operations/api/usePatchChangeRequest";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
@@ -74,6 +74,7 @@ type ProposeNewImplementationTimeModalBodyProps = {
   changeRequest: ChangeRequestDetails;
   onClose: () => void;
   onProposed?: () => void;
+  onRefused?: () => void;
 };
 
 /**
@@ -88,6 +89,7 @@ function ProposeNewImplementationTimeModalBody({
   changeRequest,
   onClose,
   onProposed,
+  onRefused,
 }: ProposeNewImplementationTimeModalBodyProps): JSX.Element {
   const { showError } = useErrorBanner();
   const { showSuccess } = useSuccessBanner();
@@ -113,9 +115,20 @@ function ProposeNewImplementationTimeModalBody({
   const [attempted, setAttempted] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const startInputRef = useRef<HTMLInputElement | null>(null);
+  const submitButtonRef = useRef<HTMLButtonElement | null>(null);
   const inFlightRef = useRef(false);
+  // Set when a failure keeps the dialog open: the submit button the customer
+  // pressed is switched off while the request is in flight, and with it focus
+  // leaves the dialog's controls. It is put back once the button is on again.
+  const restoreSubmitFocusRef = useRef(false);
 
   const isModalBusy = patchMutation.isPending;
+
+  useEffect(() => {
+    if (!restoreSubmitFocusRef.current || isModalBusy) return;
+    restoreSubmitFocusRef.current = false;
+    submitButtonRef.current?.focus();
+  });
   const minDatetime = computeMinScheduleDatetimeLocalForTimeZone(0, userTimeZone);
 
   const errors = validateProposedStart({
@@ -174,10 +187,16 @@ function ProposeNewImplementationTimeModalBody({
       if (terminal) {
         // The change request no longer waits on this customer: nothing left to
         // edit here, so say so on the page and let the refreshed page take over.
+        // The page is told first so that it can move focus off the controls that
+        // are about to go.
         showError(message);
+        onRefused?.();
         onClose();
       } else {
+        // The dialog stays: the message is in its alert (announced), and focus
+        // goes back to the button that was pressed so the customer can go on.
         setSubmitError(message);
+        restoreSubmitFocusRef.current = true;
       }
     } finally {
       inFlightRef.current = false;
@@ -421,6 +440,7 @@ function ProposeNewImplementationTimeModalBody({
           type="submit"
           variant="contained"
           color="primary"
+          ref={submitButtonRef}
           disabled={isModalBusy || durationMs == null}
           startIcon={
             isModalBusy ? <CircularProgress size={16} color="inherit" /> : undefined
@@ -445,6 +465,7 @@ export default function ProposeNewImplementationTimeModal({
   open,
   onClose,
   onProposed,
+  onRefused,
   changeRequest,
 }: ProposeNewImplementationTimeModalProps): JSX.Element | null {
   if (!changeRequest) return null;
@@ -455,6 +476,7 @@ export default function ProposeNewImplementationTimeModal({
       changeRequest={changeRequest}
       onClose={onClose}
       onProposed={onProposed}
+      onRefused={onRefused}
     />
   ) : null;
 }

@@ -293,7 +293,7 @@ to the entity service as-is (no field allow-list), with two checks on top:
   (`validateChangeRequestCustomerOutcomeFlags`): `isCustomerApproved cannot be set on the
   customer's behalf: the customer's approval can only be given by the customer in the Customer
   Portal` (likewise `isCustomerReviewed` / "review"). The customer gives it in the Customer
-  Portal (`apps/customer-portal`); the answer is the customer's decision and ServiceNow's record
+  Portal (`apps/customer-portal`); the answer is the customer's decision and the change request's record
   of it is audited. The state half -- no manual `{state: "scheduled"}` out of Customer Approval,
   no `{state: "closed"}` out of Customer Review -- needs the change request's state, so it is the
   entity service's refusal, echoed verbatim (below). There is no "Bypass customer approval" /
@@ -395,6 +395,20 @@ to the entity service as-is (no field allow-list), with two checks on top:
   `TestDecideChangeRequestApproval` pins both ("a 409 carrying the entity service's
   reason shows it", "... without a readable reason stays generic"). `canDecide` is
   `false` on such a row, so the portal does not offer the buttons in the first place.
+
+**The refusals' machine-readable `errorCode`.** entity-service names the refusals a client has
+to tell apart with a stable `errorCode` string in its error body (`change_request_approval_not_pending`
+for the 409 above, `change_request_not_asked` / `change_request_forbidden` for its 403s,
+`change_request_on_hold`, `change_request_schedule_changed`, `change_request_not_proposable`; the table is in
+its CLAUDE.md, "Error types"). The BFF passes it through, beside the message, with the status it
+gives it: `mapUpstreamError` (the PATCH handlers) on the 400, 403, 409 and 422, and
+`mapApprovalDecisionError` on the decision route's 403 and 409 (`errorBody.ErrorCode`, `writeErrorCode`,
+`upstreamErrorCode`). The code is read from the upstream envelope (`apierror.Error.Body` holds it whole,
+`maxEntityErrBody`) and kept only when it is a plain lower-case snake_case name of at most 64
+characters, so nothing else reaches a client through it; a refusal with none (an older entity
+service) adds no key, and `mapUpstreamErrorGeneric` (every other endpoint) never echoes it, as it never
+echoes the message. The CSM webapp does not branch on it today (it keys on the 409 status); it is
+there for the next client that has to. Pinned by `TestUpstreamErrorCodesPassThrough`.
 
 ## Opening an approval stage's assignment group (`GET /groups/{id}`)
 

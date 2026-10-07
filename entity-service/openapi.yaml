@@ -410,7 +410,7 @@ paths:
   /github/deliveries:
     post:
       summary: >-
-        Apply a GitHub delivery that operations/csm-webhooks has already
+        Apply a GitHub delivery that operations/csm-webhooks/github has already
         authenticated. That component is the public endpoint GitHub posts to;
         it verifies the X-Hub-Signature-256 HMAC over the raw body and
         forwards the result here. This service is Organization-visible and
@@ -600,6 +600,16 @@ paths:
           in: query
           schema:
             type: integer
+        - name: source
+          in: query
+          description: >-
+            Optional. "csm" restricts the result to clocks tracked natively
+            by this platform (used by integrations/csm-notification-service
+            to rebuild its own tracking state); "servicenow" restricts to
+            the synced ones. Omitted returns both.
+          schema:
+            type: string
+            enum: [csm, servicenow]
       responses:
         "200":
           description: Every currently-active SLA clock, paginated.
@@ -3470,6 +3480,11 @@ paths:
       description: >
         Postgres: choice lists are read live from the database enums; severityBasedAllocationTime
         and the feature access flags have no Postgres source yet and come back empty/false.
+
+        ServiceNow: for a CUSTOMER (every caller whose scope is not unrestricted) the
+        `changeRequestStates` choice list leaves out New, Assess and Authorize, the three
+        states a customer's change requests are never shown in there (see POST
+        /change-requests/search), so a state filter built from this list cannot name them.
       operationId: getProjectMetadata
       parameters:
         - name: id
@@ -3775,6 +3790,12 @@ paths:
         Available on both data sources. On Postgres, stateCount ids are the raw
         change_request_state_enum labels, whose vocabulary matches ServiceNow's
         own change-request states one for one.
+
+        ServiceNow: for a CUSTOMER (every caller whose scope is not unrestricted) the
+        stateCount rows of New, Assess and Authorize are left out (see POST
+        /change-requests/search). The totals (totalCount, activeCount,
+        outstandingCount, actionRequiredCount) are ServiceNow's own, over every state,
+        and are passed through.
       operationId: getProjectChangeRequestStats
       parameters:
         - name: id
@@ -5666,8 +5687,11 @@ paths:
     post:
       summary: Search call requests across all cases, filtered by assignee/state.
       description: >
-        Returns a paginated list of call requests. filters.assignmentTeamIds is supported by
-        the ServiceNow data source only (400 on Postgres). Call
+        Returns a paginated list of call requests. filters.assignedUserIds matches the parent
+        case's assignee (on Postgres also the call request's own assignee, so a call handed to
+        someone other than the case owner still reaches them). filters.assignmentTeamIds matches
+        the parent case's account CRE team (account.cre_team_id on Postgres), the same team the
+        case search's creTeam filter takes. Call
         requests are inherently case-related; this endpoint provides independent search
         and filtering capabilities across cases, distinct from /call-requests/search
         which is scoped to a single case.
@@ -5933,9 +5957,15 @@ paths:
         an approval that is not the customer's is still being asked, it is a 409; a registered contact who
         was not asked is a 403.
 
-        plannedStartOn / plannedEndOn, from any caller, are RFC 3339 or
-        "YYYY-MM-DD HH:MM:SS" (UTC), in the years 2000 to 2100: anything else
+        plannedStartOn / plannedEndOn, from any caller, are RFC 3339 with a zone designator
+        or "YYYY-MM-DD HH:MM:SS" (UTC), in the years 2000 to 2100: anything else
         ("infinity", "now", a date alone, a time-zone name) is a 400 that names the field.
+        Both layouts are accepted on every data source. The pure ServiceNow data source
+        takes ServiceNow's own layout, "YYYY-MM-DD HH:MM:SS" in UTC, and converts an RFC
+        3339 value to it before forwarding (the dual-write mirror does the same); there the
+        years 2000 to 2100 bound applies to an RFC 3339 value only (a "YYYY-MM-DD HH:MM:SS"
+        value is forwarded as sent) and a refusal reads "plannedStartOn must follow the
+        format: YYYY-MM-DD HH:mm:ss".
         A customer's proposal is a start (an end alone is a 400).
 
         Customer requirements lock. The Customer Project (projectId) and the two
@@ -6043,6 +6073,8 @@ paths:
             window, or is not a registered PORTAL_USER contact of the change
             request's own project, or is its creator, or was not asked (a contact
             holding no REQUESTED customer approval can neither answer nor propose).
+            The body's `errorCode` tells the two kinds apart: `change_request_not_asked`
+            for a contact who was not asked, `change_request_forbidden` for the rest.
           content:
             application/json:
               schema:
@@ -6061,7 +6093,16 @@ paths:
             expectedPlannedEndOn): for example "this approval is no longer
             pending: the change request is in Scheduled, but the Customer Approval
             stage can only be decided while it is in Customer Approval". Nothing was
-            changed.
+            changed. The body's `errorCode` says which: `change_request_approval_not_pending`
+            (already answered, or nothing waits for an answer), `change_request_schedule_changed`
+            (the window the answer names is no longer the change request's),
+            `change_request_not_proposable` (a proposed time where none can be proposed),
+            `change_request_on_hold` (a proposed time while WSO2 has the change on hold),
+            `change_request_proposal_not_now` (a proposed time while an approval that is not
+            the customer's is also being asked) or `change_request_no_planned_window` (a
+            proposed time on a change request with no planned window to move). The schedule
+            code also names a WSO2 response (Accept proposed time, propose a different time)
+            whose expected planned window is no longer the change request's.
           content:
             application/json:
               schema:
@@ -6250,7 +6291,9 @@ paths:
             is not an active internal user on an internal stage (peer, CAB,
             ECAB, review), or -- while the change waits on its customer group's
             Customer Approval / Customer Review -- anyone not in that group.
-            The message says which.
+            The message says which; the body's `errorCode` is `change_request_not_asked`
+            for a caller who is not (or no longer) asked on the customer group's stage and
+            `change_request_forbidden` for the rest.
           content:
             application/json:
               schema:
@@ -6267,7 +6310,7 @@ paths:
             than the one the caller's stage can be decided in (for example "this
             approval is no longer pending: the change request is in Closed, but the
             Review stage can only be decided while it is in Review"). Nothing was
-            changed.
+            changed. The body's `errorCode` is `change_request_approval_not_pending`.
           content:
             application/json:
               schema:
@@ -7698,6 +7741,14 @@ paths:
         project's registered contacts past Authorize, as it always was. Any other change
         request is absent from the list and its counts and is a 404 by id, for every read
         and write.
+
+        ServiceNow data source: nothing is designated there, so every change request is
+        legacy and a CUSTOMER (every caller whose scope is not unrestricted, so not WSO2
+        staff) is sent only the states past Authorize. `filters.states` can only narrow that set: none
+        named means every state past Authorize (never "no state filter"), and naming only
+        `new`, `assess` and/or `authorize` is answered with an empty list without asking
+        ServiceNow. A change request ServiceNow returns in any other state is dropped.
+        The same applies to the aggregate by state.
       operationId: searchChangeRequests
       requestBody:
         required: true
@@ -15313,6 +15364,15 @@ components:
     SearchCasesRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one,
+            and for a search that sets groupBy (its totals are the bucket counts).
         filters:
           $ref: '#/components/schemas/SearchCasesFilters'
         sortBy:
@@ -16093,6 +16153,14 @@ components:
           description: Populated instead of cases when the request set groupBy.
         total:
           type: integer
+          description: >-
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records. Three paths ignore skipTotal and never return -1: the
+            ServiceNow data source (its own reported total), a search with groupBy
+            (the bucket counts) and POST /announcements/registry/cases (the number
+            of cases returned).
         offset:
           type: integer
         limit:
@@ -16632,6 +16700,14 @@ components:
     SearchChangeRequestsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -16824,6 +16900,12 @@ components:
             $ref: '#/components/schemas/SearchChangeRequestView'
         total:
           type: integer
+          description: >-
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:
@@ -17687,16 +17769,16 @@ components:
         plannedStartDate:
           type: string
           description: >-
-            Planned start date and time (format YYYY-MM-DD HH:MM:SS, UTC; the PostgreSQL
-            data source also takes RFC 3339 with a zone designator). Years 2000 to 2100
-            only; anything else ("infinity", "now", a date alone, a zone name) is a 400
-            that names the field, on both create paths (the ServiceNow-first one before
-            ServiceNow is called).
-          pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
+            Planned start date and time (format YYYY-MM-DD HH:MM:SS, UTC, or RFC 3339 with
+            a zone designator, on every data source: the ServiceNow service converts an RFC
+            3339 value to the layout ServiceNow takes before it forwards it). Years 2000
+            to 2100 only (on the ServiceNow data source for RFC 3339 values); anything
+            else ("infinity", "now", a date alone, a zone name) is a 400 that names the
+            field, on both create paths (the ServiceNow-first one before ServiceNow is
+            called).
         plannedEndDate:
           type: string
           description: Planned end date and time, as plannedStartDate.
-          pattern: '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$'
         comment:
           type: string
           description: >-
@@ -17939,10 +18021,12 @@ components:
         plannedStartOn:
           type: string
           description: >-
-            Planned start date and time: "YYYY-MM-DD HH:MM:SS" (UTC), or on the
-            PostgreSQL data source also RFC 3339 with a zone designator
-            ("2030-03-01T09:00:00Z"). Years 2000 to 2100 only; any other text
-            (Postgres' "infinity", "now", a date alone, a zone name) is a 400.
+            Planned start date and time: "YYYY-MM-DD HH:MM:SS" (UTC), or RFC 3339
+            with a zone designator ("2030-03-01T09:00:00Z"), on every data source (the
+            ServiceNow one converts RFC 3339 to UTC "YYYY-MM-DD HH:MM:SS" before it
+            forwards the value). Years 2000 to 2100 only (on the ServiceNow data source
+            for RFC 3339 values; a "YYYY-MM-DD HH:MM:SS" value is forwarded as sent); any
+            other text (Postgres' "infinity", "now", a date alone, a zone name) is a 400.
         plannedEndOn:
           type: string
           description: >-
@@ -17974,7 +18058,8 @@ components:
             otherwise): the planned start the caller was shown (RFC 3339, as the change
             request reads). The answer is recorded only while it is still the stored planned
             start, else 409. Omitted: no check (required with confirmCustomerUpdatedDate).
-            PostgreSQL data source only.
+            PostgreSQL data source only; the ServiceNow data source makes no such check and
+            ignores the field.
         expectedPlannedEndOn:
           type: string
           description: >-
@@ -18856,7 +18941,9 @@ components:
           items:
             type: string
             format: uuid
-          description: Filter by the parent case's assigned user(s).
+          description: >-
+            Filter by the parent case's assigned user(s). On the Postgres data source a call
+            request whose own assignee is one of them also matches.
         states:
           type: array
           items:
@@ -18891,7 +18978,9 @@ components:
           items:
             type: string
             format: uuid
-          description: Filter by the parent case's assigned team(s).
+          description: >-
+            Filter by the parent case's team. On the Postgres data source this is the case's
+            account CRE team (account.cre_team_id); on ServiceNow it is the case's assignment team.
 
     SearchAllCallRequestsRequest:
       type: object
@@ -20008,11 +20097,46 @@ components:
           format: date-time
     ErrorResponse:
       type: object
+      description: >-
+        The body of every error response. `code` is the HTTP status and `message` the
+        reason, worded for people: it can change, so a client must never branch on it.
+        `errorCode` names the few refusals a client has to tell apart from the others of
+        the same status (listed there). It is omitted when a refusal has no name, which
+        is the body this API has always returned: a client treats its absence, and a
+        value it does not know, as "no more specific than the status". The status and the
+        message of a refusal are the same with or without it, and a code is only ever
+        added to, never renamed or reused.
       properties:
         code:
           type: integer
         message:
           type: string
+        errorCode:
+          type: string
+          description: >-
+            Stable machine-readable name of the refusal. Only the refusals of a customer's
+            answer or proposed implementation time, and of the approvals decision route
+            they share rules with, are named so far (PATCH /change-requests/{id},
+            POST /change-requests/{id}/approvals/decision): `change_request_on_hold` (409:
+            a proposed implementation time on a change request WSO2 has on hold; the
+            answer itself is still possible), `change_request_schedule_changed` (409: an
+            answer that names the planned window the customer was shown, which has since
+            changed; nothing recorded), `change_request_approval_not_pending` (409: the
+            answer was already given, by the caller or a sibling contact, or the change
+            request has left the state the answer belongs to, or no request for it is open),
+            `change_request_not_proposable` (409: a proposed time on a change request that
+            is not in Customer Approval or that nobody has been asked to approve),
+            `change_request_proposal_not_now` (409: a proposed time while an approval that is
+            not the customer's is also being asked; the customer's own answer is still
+            possible), `change_request_no_planned_window` (409: a proposed time on a change
+            request with no planned window to move; the customer's answer is still possible),
+            `change_request_not_asked` (403: a contact of the project whom the customer's
+            request was never sent to, or whose request was withdrawn), and
+            `change_request_forbidden` (403: not a registered contact of the change
+            request's project, its own creator, a user who may not decide an internal
+            stage, or a field a customer may not set). The list grows, so this is
+            deliberately not a closed enum: a value not listed here is a newer server's.
+          example: change_request_on_hold
 
     SearchTaskSlasRequest:
       type: object
@@ -20530,6 +20654,14 @@ components:
     SearchIncidentsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -20681,6 +20813,12 @@ components:
             $ref: '#/components/schemas/SearchIncidentView'
         total:
           type: integer
+          description: >-
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:
@@ -21481,6 +21619,14 @@ components:
     SearchProblemsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -21558,6 +21704,12 @@ components:
             $ref: '#/components/schemas/SearchProblemView'
         total:
           type: integer
+          description: >-
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:
@@ -21833,6 +21985,14 @@ components:
     SearchConversationsRequest:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -21926,6 +22086,12 @@ components:
             $ref: '#/components/schemas/SearchConversationView'
         total:
           type: integer
+          description: >-
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:

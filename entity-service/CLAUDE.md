@@ -213,6 +213,33 @@ just a bool, either `"true"` or not. `NewRouter` returns the constructed
 threaded through `server.New` to `cmd/api/main.go`, which calls `Close()` on
 it during shutdown, after `srv.Shutdown`.
 
+## Service request events (`sr.*`)
+
+`SRNoticeService` (`internal/service/sr_notice_service.go`) ports ServiceNow's
+"SR New Request - Acknowledge & Chat Alert" flow (discovery scripts 73/74) and
+publishes three events to the operations topic (`SRE_EVENT_HUB_TOPIC`,
+sre-events), not the case topic: SRs belong to SRE. Types and payloads are in
+`internal/events/service_request.go`; csm-notification-service turns them into
+Chat cards in the SR's SRE-team space.
+
+- `sr.created`: every SR created on the plain-Postgres path
+  (`caseService.CreateCase`). Under dual-write the SR is created in ServiceNow
+  first and its own flow still runs there, so nothing happens here.
+- `sr.acknowledged`: when the SR's account SRE team is in
+  `SR_ALERT_SRE_TEAM_IDS`, the SR is first assigned to that team, then gets
+  ServiceNow's acknowledgement comment (word for word) and is moved to OPEN --
+  a no-op for a native SR, which is created OPEN. The comment is written
+  straight to the table, so no `case.comment_added` fires: the flow saves with
+  `setWorkflow(false)`. ServiceNow acknowledges only when its card was sent;
+  here the gate is the team being listed (product decision, 2026-10-07).
+- `sr.comment_added`: every comment or work note on an SR, from
+  `createCaseCommentAs` (plain and dual-write), independent of
+  `case.comment_added`'s recipient gate. Carries the author and the SR's tags;
+  the consumer decides the devops-sm customer-comment alert.
+
+Wired in `routes.go` only when there is an SRE topic and a publisher: the
+acknowledgement must never be posted with no card announcing the SR.
+
 ## User cache (Redis)
 
 `GET /users/{id}` and `GET /users/me` are served cache-aside from Redis when
@@ -1836,18 +1863,31 @@ second, unrelated `Publish` call folded into `CreateCase`'s response path.
 case-like work item in one paginated list** (`sla.is_active = TRUE`,
 joined through `sla_policy.target` for `clockType` — `response`/
 `workaround`/`resolution`, lower-cased from `RESPONSE`/`WORKAROUND`/
-`RESOLUTION`), not one clock for one case — `integrations/csm-notification-service`
-polls this periodically and diffs `businessElapsedPercent` against what it
-already alerted on itself (see that repo's own `internal/slaengine`), rather
-than this service pushing individual tier-crossing notifications the way the
-old design's Redis wake index did. This is a genuinely different shape from
-every other paginated endpoint in this file: its one real caller is a
-periodic bulk poll (~5,500 rows checked live), not a UI list a human scrolls
-through, so it has its own pagination cap
-(`normalizeSLAStatusPagination` — default `500`, max `2000`) well above the
-generic `20`/`50` `normalizePagination` uses everywhere else; a low cap here
-would only turn one intended round trip into over a hundred for no one's
-benefit.
+`RESOLUTION`), not one clock for one case. **Historical note: an earlier
+design had `integrations/csm-notification-service` poll this endpoint
+continuously and diff `businessElapsedPercent` against what it already
+alerted on itself — that poll was abandoned** (that repo's own
+`internal/slaengine/client.go` doc comment: a single page measured
+6-34+ seconds against real production data, reliably tripping the gateway
+timeout) **in favor of a Redis-based engine that tracks and alerts entirely
+on its own**, reacting to `case.*` events rather than polling this endpoint
+at all. This is a genuinely different shape from every other paginated
+endpoint in this file regardless: it returns every active case's SLA data
+in one bulk list with no per-project/per-case filtering, so it has its own
+pagination cap (`normalizeSLAStatusPagination` — default `500`, max `2000`)
+well above the generic `20`/`50` `normalizePagination` uses everywhere else.
+
+**`source` (query param, `csm`/`servicenow`) narrows the result to one
+`sla.source` value** — added so `csm-notification-service`'s Redis engine
+could call this endpoint again for exactly one purpose: rebuilding its own
+tracking state from Postgres if its Redis instance is ever wiped (a
+one-shot reconciliation pass at process startup, not a recurring poll — see
+that repo's own `CLAUDE.md`). `source=csm` scopes the query to just this
+engine's own, much smaller row set (`WHERE s.source = 'CSM'`, injected into
+`activeSLAStatusCTE`), so that reconciliation read never pays the cost of
+scanning the full ServiceNow-synced table the old, abandoned poll design
+choked on. Omitted (the default, and every other caller's behavior)
+means no filter, identical to this endpoint's original, unscoped shape.
 
 **`GET /sla-status` is internal-caller-only** (`slaStatusService.
 requireInternalCaller`, mirroring `onboarding_step_service.go`'s own helper
@@ -1970,29 +2010,57 @@ ServiceNow-synced `sla` row of its own to read `GET /sla-status` from, so
 without this engine it would simply never get SLA tracking at all,
 regardless of severity.
 
-- **Durations come from the real, ServiceNow-synced `sla_policy` table**
-  (`internal/service/sla_policy_resolver.go`), not a hardcoded map — the
-  now-deleted `sla_clocks` design's old approach (see "SLA status" above for
-  that history). `resolve` looks up `"<P0-P3|Query> - <Response|Workaround|
-  Resolution> (<Managed Services|Open Source>)"` by exact name, falling back
-  to the other plan label, then a loose pattern match — see its own doc
-  comment for why (in short: `resolveCasePlan`'s plan guess is a weak
-  heuristic with no reliable underlying signal, and P0 policies only exist
-  under "Managed Services" in ServiceNow's own real data, so a P0 case whose
-  plan guesses "Open Source" must still find them). **P0 (Catastrophic) had
-  no ServiceNow-synced policy at all** — migration `0136_csm_p0_sla_policies.sql`
-  seeds it directly, `source='CSM'`, durations mirroring the old deleted
-  `sla_clocks` map's own P0 entries and WSO2's published [support
-  policy](https://wso2.com/licenses/support-policy/6.0): Response 15m,
-  Workaround 4h, Resolution 48h.
-- **`internal/repository/sla_engine_repo.go`'s `RecomputeActive`** is what
-  actually advances `business_elapsed_percentage` for these rows over time —
-  flat wall-clock time since `start_on` (`(NOW() - start_on) / duration *
-  100`), no business-hours calendar, same crudeness the old deleted design
-  had. Run by `SLAEngineRecomputeWorker` (`sla_engine_recompute_worker.go`)
-  on its own ticker, default 45s — frequent enough that a 50/75/100%
-  crossing is visible well within `csm-notification-service`'s own
-  `SLA_TICK_INTERVAL` poll cadence.
+- **Durations come from deterministic, severity-keyed `sla_policy` rows this
+  engine seeds itself** (`internal/service/sla_policy_resolver.go`,
+  migration `0203_csm_sla_policy_by_severity.sql`) — not the real,
+  ServiceNow-synced `sla_policy` rows, and not a hardcoded map (the
+  now-deleted `sla_clocks` design's old approach — see "SLA status" above for
+  that history). An earlier version of this resolver looked up the real
+  synced rows by a guessed exact name (`"<P0-P3|Query> - <Response|
+  Workaround|Resolution> (<Managed Services|Open Source>)"`, with the "plan"
+  half itself guessed from a case's project subscription type), falling
+  back to a loose pattern match when that guess missed — **confirmed, against
+  real staging data, to silently find nothing for every LOW-severity case**:
+  the real synced rows for "Query" (LOW) are named things like `QuerySLA` and
+  `Onboarding Case Customer Query Response`, which never matched that assumed
+  naming convention under either plan label or the pattern fallback, so
+  `RegisterCaseClocks` registered nothing at all for any LOW-severity case —
+  this is why a real SLA breach alert (fired correctly by
+  `csm-notification-service`'s own Redis engine) never showed up in the CSM
+  Portal UI (`GET /sla-status` reads this table) for a LOW/S4 case. Migration
+  0203 seeds one `source='CSM'` row per `(severity, clock_type)` pair
+  `sla_duration_policy` (migration 0192) already defines, named
+  deterministically (`"<severity> - <target> (CSM)"`, e.g.
+  `"S4 - RESPONSE (CSM)"`) and with durations copied straight from that same
+  table — `resolve` now does a single exact-name lookup keyed on severity
+  alone, which can never miss, and the two SLA engines (this one, and
+  `csm-notification-service`'s own Redis-based tracker, which has always read
+  `sla_duration_policy` directly) can never disagree on a duration. This
+  supersedes migration `0136_csm_p0_sla_policies.sql`'s narrower precedent
+  (CSM rows for P0/Catastrophic only, under the old naming convention) —
+  0136's own rows are left in place (harmless, unreferenced) rather than
+  dropped.
+- **`internal/repository/sla_engine_repo.go`'s `RecomputeActive`** computes
+  the same flat wall-clock formula it always has (`(NOW() - start_on) /
+  duration * 100`, no business-hours calendar, same crudeness the old
+  deleted design had) — but it is no longer run by a periodic background
+  worker. `SLAEngineRecomputeWorker` (which used to call it every 45s over
+  every active `source='CSM'` row — a continuous Postgres write with no
+  bearing on alerting, since `csm-notification-service`'s Redis engine fires
+  breach alerts independently of this table) has been deleted. The `sla_live`
+  view (migration `0204_sla_live_view.sql`) reproduces the identical formula
+  live, at read time, instead: every reader of
+  `business_elapsed_percentage`/`has_breached`/`business_duration`/
+  `remaining_business_duration`/`stage` (`GET /sla-status`,
+  `POST /task-slas/search`, `GET /task-slas/{id}`, the case/incident
+  SLA-breach search filters) now reads `sla_live`'s `live_*` columns instead
+  of `sla`'s own stored ones for an `IN_PROGRESS`/`BREACHED` row; a
+  `PAUSED`/`COMPLETED`/`ACHIEVED`/`CANCELLED` row is already frozen at
+  whatever `SetPaused`/`CompleteClock` last wrote and the view simply passes
+  those columns through unchanged. `RecomputeActive` itself is untouched and
+  still exported on `SLAEngineRepository` — currently unreferenced by any
+  production code path, kept rather than deleted in case a future admin
+  "force recompute" tool ever wants it.
 - **A BREACHED clock is not terminal — it keeps being recomputed, and stays
   completable, until its own genuine finishing event.** A real, reported bug
   had `RecomputeActive` stop touching a row the instant it first flipped to
@@ -2339,11 +2407,22 @@ already use — no route path, request, or response shape changed.
   'submitted'`) — the ServiceNow-backed implementation instead trusts SN to
   enforce both, since it just forwards the caller's token.
   `TransitionTimeCardState` (approve/reject) similarly requires the actor to
-  be an eligible approver (a `time_card_approver` row, and not the card's
-  own submitter) AND the card to currently be `submitted` — both checked
-  under one `SELECT ... FOR UPDATE` so a concurrent approver-list edit or a
+  be an eligible approver (a `time_card_approver` row for this specific
+  card) **or** a holder of the global `admin` role (`role.name = 'admin'`,
+  the same role `recompute_user_type` — migration 0011 — already treats as
+  a distinct global grant), and in either case not the card's own submitter,
+  AND the card to currently be `submitted` — all checked under one
+  `SELECT ... FOR UPDATE` so a concurrent approver-list/role edit or a
   second transition attempt can't slip through between the check and the
-  write. That guard only fires at decide-time, though — until now nothing
+  write. The `admin` branch is a deliberate "approve by exception" escape
+  hatch, added at explicit product request: unlike every other eligibility
+  check in this file, it is not scoped to any particular card at all —
+  holding `admin` lets a caller decide *any* submitted card, regardless of
+  whether `time_card_approver` lists them for it. Self-approval is still
+  blocked unconditionally, admin included. The CSM Portal webapp's own
+  `useTimecardRole` hook mirrors this exactly (`isApprover || isAdmin`) for
+  which cards it shows Approve/Reject controls on — see that repo's own
+  `CLAUDE.md`. That guard only fires at decide-time, though — until now nothing
   stopped the same submitter/approver pairing from being written in the
   first place. `validateApproverIDsExcludeSubmitter` (`time_card_service.go`)
   closes that at create/edit time instead: `CreateTimeCard`/`UpdateTimeCard`
@@ -3508,7 +3587,7 @@ LEVEL SECURITY` (project membership through `work_item.project_id`, like
 also csm-sync-service's own junction (its migration 0136, the surrogate-id shape),
 and the sync writes it with `INSERT … ON CONFLICT … DO UPDATE`, whose conflict
 branch an RLS table with no UPDATE policy refuses for everyone. Migration
-**0202** adds the internal-only UPDATE policy on it (the 0190 shape: no
+**0205** adds the internal-only UPDATE policy on it (the 0190 shape: no
 project-member branch, so a customer session is refused as before; no column,
 table or type changes). `change_request_deployed_product` is ours alone and stays
 without one: `rlsCommandsDeniedOnPurpose` records why. The first deployment (name order)
@@ -3860,13 +3939,25 @@ path).
   `projectId` is forwarded as before; it can only arrive as a resend after New. The mirror now
   also gets `plannedStartOn` / `plannedEndOn` in ServiceNow's `YYYY-MM-DD HH:MM:SS` (UTC) layout
   (`repository.PlannedTimestampForServiceNow`): PostgreSQL accepts RFC 3339 too, which
-  ServiceNow's service refuses, so an RFC 3339 PATCH used to commit and then fail every mirror write.
+  ServiceNow's service refused, so an RFC 3339 PATCH used to commit and then fail every mirror write.
+  **The ServiceNow service takes RFC 3339 itself now** (`snPlannedTimestamp`, which calls that same
+  function): on a PATCH (`plannedStartOn` / `plannedEndOn`) and on a create (`plannedStartDate` /
+  `plannedEndDate`, and the `durationInput` cross-check) a value with a zone designator is converted to
+  the zoneless UTC layout before it is forwarded, a `YYYY-MM-DD HH:MM:SS` value is forwarded as sent
+  (whatever its year: that service never bounded it), and everything else (`infinity`, `now`,
+  `tomorrow`, a date alone, a zone name, an RFC 3339 value outside the years 2000 to 2100) is the same
+  400 as before (`<field> must follow the format: YYYY-MM-DD HH:mm:ss`) with no downstream call. So the
+  pure ServiceNow data source and the ServiceNow-first create (which hands ServiceNow the text the
+  caller sent, validated, not converted) accept both layouts, as the PostgreSQL data source does
+  (`TestSNPlannedTimestamp`, `TestSNChangeRequestService_PatchChangeRequest_PlannedWindowLayouts`,
+  `TestSNChangeRequestService_CreateChangeRequest_PlannedWindowLayouts`). The expected window of a
+  customer's answer is still PostgreSQL's alone: the ServiceNow service ignores the two fields.
 * *Create is ServiceNow-first* (`createChangeRequestSNFirst`): type, scope and (new) the planned
   window are validated before ServiceNow is called; ServiceNow gets no project / deployments / boxes;
   the PostgreSQL insert (`CreateChangeRequestFromServiceNow`, now normalising the window like the
   portal create) is in New, where nothing is locked.
 * *csm-sync-service is a separate service* (its repository is not in this checkout; what is known
-  is from the 0190 / 0202 migration headers and entity-service's own notes): it writes its tables
+  is from the 0190 / 0205 migration headers and entity-service's own notes): it writes its tables
   with plain SQL as an internal caller (`app.is_internal = true`) and **never goes through
   `PatchChangeRequest`, `validateCustomerGateEdits` or any validator here**, so none of the
   refusals can break it. It can move `project_id` or `state` of a change after New (an edit made
@@ -4101,10 +4192,12 @@ the calendar, the exports -- and **404 `change request not found`** on every by-
 read and write (detail, approvals, decision, PATCH of any field, comments, attachments),
 the same answer for a change request that does not exist, so an id cannot be probed.
 This supersedes the earlier interim state narrowing (backend-v2's
-`restrictToCustomerVisibleStates`, the webapp's `EXCLUDED_ALLOWED`), which must be
-removed with it -- left in, it would keep hiding a designated change request in
-Authorize: with this rule a designated change request in Authorize is shown and a
-non-designated one in Customer Approval is not.
+`restrictToCustomerVisibleStates`, the webapp's `EXCLUDED_ALLOWED`) **on the Postgres
+data source**, where it must be removed with it -- left in, it would keep hiding a
+designated change request in Authorize: with this rule a designated change request in
+Authorize is shown and a non-designated one in Customer Approval is not. The ServiceNow
+data source has no designation, so the state list stays there, applied by this service
+(see "The ServiceNow data source" below), not by a BFF or a webapp.
 
 **Where it is enforced: Go SQL, not a row-level-security policy.** The legacy test needs
 the state, the creation time and a configured instant; a policy would need a new session
@@ -4165,6 +4258,55 @@ bypass lint) fails the build when an exported repository function touching a cha
 request or its approvals neither applies the fragment / guard nor carries a
 `// crvis:<reason>` comment, and when a method of the customer-facing interfaces is
 unclassified.
+
+**The ServiceNow data source (`DATA_SOURCE=servicenow`, the pure one).** Nothing is
+designated to a customer there (ServiceNow runs the approvals; this service asks nobody),
+so every change request is legacy by definition and the rule is only its state list:
+everything past Authorize, **never New / Assess / Authorize**. ServiceNow's own search
+does not apply that list: it returns every state a caller names and, for a caller that
+names none, every state there is. The customer portals used to hide the three by never
+asking for them (the webapp's allowed-state list), which no caller that asks differently
+(the microapp's "all" tab sends no state at all, a direct API call) was held to, so
+`sn_change_request_customer_view.go` applies the rule here, for every caller that is not
+staff:
+
+* a search or aggregate is sent only the visible states (`customerChangeRequestStates`):
+  the requested ones that are visible, **every visible state when none is named** (never
+  "no state filter"), and a request that names only hidden states is answered with an
+  empty page without a request to ServiceNow; validation (a malformed state is still a
+  400) runs first;
+* what ServiceNow answers is checked again: a change request in a state that is not in the
+  visible list (also one this service has no word for) is dropped and not counted, and the
+  number dropped is logged (`dropHiddenChangeRequests`; nothing is expected to be dropped);
+* `GET /projects/{id}/metadata` leaves New, Assess and Authorize out of
+  `changeRequestStates` (by ServiceNow key or by label), so the state filter a BFF builds
+  from it cannot name them, and `GET /projects/{id}/change-requests/stats` leaves their
+  rows out of `stateCount`.
+
+"Staff" is a request whose scope is `Unrestricted`: `callerIdentityMiddleware` already
+resolves every request once (`AccessService.ResolveScope`: the CSM portal's backend for a
+user of `CSM_PORTAL_USER_DOMAIN`, the `M2M_CLIENT_IDS` clients, an INTERNAL user where a
+database is there to look them up) and attaches the scope to the context, and
+`customerViewApplies` reads it. **Every other request, including one for which no scope
+could be resolved (no identity, an unknown client, the customer portal's client with no
+database to look the user up in), gets the customer view: fail closed**; the customer
+portal's own client is never unrestricted, even if it is also listed as machine-to-machine
+(`ResolveScope` checks it first). This is the line the Postgres rule draws (`crViewer`), so
+a ServiceNow deployment shows its staff New / Assess / Authorize exactly when they resolve
+as unrestricted for every other scoped endpoint; `TestServiceNowRouter_*` drive the real
+router and fail if that stops being true.
+
+Not changed on this data source, by design or for want of a source: the by-id reads and
+writes (detail, approvals, decision, PATCH, comments) stay ServiceNow's own decision (a
+customer needs the id, which only a list gives them; ids are not guessable); the counters
+of the change request stats (`totalCount`, `outstandingCount`, `activeCount`,
+`actionRequiredCount`) are computed by ServiceNow over every state and are passed through
+(backend-v2 leaves the same three *rows* of `stateCount` out too, by ServiceNow key, as a
+second line). Tests:
+`sn_change_request_customer_view_test.go` and `server/sn_change_request_customer_view_route_test.go`
+(a fake ServiceNow that answers every state whatever it was asked; the second drives the
+real router), and `TestChangeRequestVisibilityIntegration_NamingAStateNeverWidens*` for the
+Postgres data source (naming a state only narrows).
 
 **Legacy and `CR_STRICT_VISIBILITY_FROM`.** Change requests migrated or synced from
 ServiceNow, and the ones raised before this rule, were never asked through our flow:
@@ -4254,7 +4396,7 @@ scans it once per request; 432 buffers at 25,000 contacts): there is no index on
 
 **Deliberately not done / follow-ups.** No column, table, type or policy was added; if
 database-level enforcement is wanted later it needs a policy-only migration numbered after
-`git pull` (0203 or later; upstream and this branch use up to 0202), a new session setting
+`git pull` (0206 or later; upstream and this branch use up to 0205), a new session setting
 `app.cr_strict_from` on every statement, and the same predicate as a function. The detail
 still returns `createdBy` (a staff email) to a customer. Mixed-identity staff on the
 customer portal see designated change requests only. The unlabeled-stage classification
@@ -6215,6 +6357,20 @@ that policy's work_item lookup cannot see a sibling CTE's insert. Without
 this, every Novera chat on Postgres failed at create and nothing was
 persisted.
 
+**`SearchConversations` picks the page first, and its COUNT carries no display joins.**
+`conversationSearchQueries` (`conversation_repo.go`) counts over `work_item`/`conversation`
+only (every filter reads just those two), and selects the page's `wi.id`s in an inner query
+(WHERE, the caller's sort with the `wi.id` tie-break, LIMIT/OFFSET) before joining the
+project, linked case and creator onto those rows, as `SearchCases` does. The creator is a
+`LEFT JOIN LATERAL ... ORDER BY id LIMIT 1` on `LOWER(email)`, not a plain join: `"user".email`
+is not unique (111 duplicated addresses on staging), so the plain join fanned a conversation out
+into one row per user while the COUNT disagreed, and for some free-text terms the planner chose a
+nested loop that rescanned `"user"` once per matching conversation (hundreds of milliseconds of
+database time per query, two queries per request). Do not put the display joins back into the
+COUNT or the inner page query. `conversation_repo_search_integration_test.go` replays the
+previous SQL as an oracle against a real RLS-forced database (internal caller, project member and
+stranger, every filter, both sorts, page by page) and `TestConversationSearchQueries` pins the shape.
+
 **`CreateProblem`/`CreateIncident` are now implemented on the plain-Postgres
 data source too**, via `next_portal_work_item_number()` (migration 0140 --
 see "CreateCase and case numbers" above): `ProblemRepository.CreateProblem`/
@@ -6835,14 +6991,16 @@ requirement. TODO: make unit strict again once `product.unit` is populated.
 
 ### Call requests (`customer_call`) -- `call_request_repo.go`/`call_request_service.go`
 
-**Per-caller scoping is not enforced here yet.** Every route's tokens are now
-validated (see "Token validation and caller-scoped access" above), but call
-requests aren't one of the operations `AccessService` is wired into (see that
-section's "Not yet wired" list) -- a validated caller can read/write any
-call request regardless of project access. The `x-user-id-token` is read
-only to attribute writes (`created_by`/`updated_by`, `opened_by_id`), not to
-authorize them. Extending `AccessService` here is the same follow-up work
-called out there, not done in this pass.
+**Per-caller scoping is enforced by Postgres row-level security, not by Go.**
+Migration 0143 puts `FORCE ROW LEVEL SECURITY` on `customer_call`: a row is
+visible to an internal caller, or to a caller who is a registered member of its
+parent case's project (`is_project_member(work_item.project_id)`), so a call with
+no parent case is visible to internal callers only. Both searches therefore apply
+no project filter of their own, and any filter below is ANDed on top of what RLS
+allows -- a filter can narrow a caller's view, never widen it. Call requests are
+still not one of the operations `AccessService` is wired into (see that
+section's "Not yet wired" list), and the `x-user-id-token` is read only to
+attribute writes (`created_by`/`updated_by`, `opened_by_id`).
 
 All four `CallRequestService` methods are implemented. `state` maps to
 `customer_call_state_enum` by upper/lower-casing (all eight labels match
@@ -6877,10 +7035,25 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   accept -- unlike the other metadata choice lists, which still use the raw
   UPPER_SNAKE enum labels (see the metadata section above; not yet aligned
   with each list's own API vocabulary).
-- Search-all's `assignmentTeamIds` is rejected with a 400 rather than
-  ignored: nothing on this schema holds a case's assignment team
-  (`customer_call.assignment_group` was deliberately skipped in the
-  migration), and a silently-ignored filter would widen the result set.
+- Search-all's `assignedUserIds` and `assignmentTeamIds` both describe the
+  **parent case**, as the csm-portal contract says, and the dashboards'
+  "My Call Requests" / "Calls To Attend" widgets depend on that:
+  `assignedUserIds` matches `work_item.assigned_to_id` (OR'd with the call's
+  own `customer_call.assigned_to_id`, which is only set once an engineer
+  schedules the call -- matching only that column left every
+  `pending_on_wso2` call out of "My Call Requests", digiops-cs#3314);
+  `assignmentTeamIds` matches the case's account CRE team
+  (`account.cre_team_id`, the same path the case search's `creTeam` filter and
+  `BeTeam.creGroupId` use). It used to be rejected with a 400 on the belief
+  that nothing held a case's team, which made "Calls To Attend" fail to load
+  on every dashboard. `work_item.assignment_group_id` is deliberately not
+  used: it is unpopulated on synced cases (`assignedTeam` reads back null). A
+  call with no parent case, or whose account has no CRE team, never matches a
+  team filter.
+  `call_request_search_all_integration_test.go` (real Postgres, skipped without
+  `CALL_REQUEST_TEST_DSN`; needs a non-superuser, non-BYPASSRLS login, which it
+  checks) pins both filters for an internal caller and for a customer
+  registered on one project.
   `caseStates`/`excludeCaseStates` reuse `caseLikeStateColumn`/`caseLikeJoins`
   so they work for every case-like type.
 - **Not done, deliberately (same "don't guess" rule as `CreateCase`)**:
@@ -7401,13 +7574,41 @@ An article whose `state` is NULL reads as `state: ""`. The service's
 a 500 — it is listed and viewable, but needs its state set before it can move
 through review.
 
-Not covered here: `knowledge_article_history` (legacy migration
-`000030_knowledge_article_history.up.sql`) is absent from the staging database.
-Two paths use it — `ListKBArticleHistory`, and the history insert inside
+### `knowledge_article_history` has its own migration (0203) and creates the table only if it is missing
+
+Two paths use the table — `ListKBArticleHistory`, and the history insert inside
 `UpdateKBArticleState`'s transaction (so a state transition rolls back entirely
-there) — and both still fail until the table exists. `UpdateKBArticleContent` does
-not touch it. That is a schema gap, separate from the NULL scan above, and does not
-affect search.
+where the table is absent). `UpdateKBArticleContent` does not touch it, and search
+never does. The table used to be defined only by the old-style pair
+`000030_knowledge_article_history.up.sql` / `.down.sql`, which this change removes.
+It was never part of the numbered series, so a database built from `migrations/`
+got no table, and staging had it only because someone created it by hand (before
+22:26 IST on 6 October 2026; the seven rows in it are test transitions).
+
+**`0203_knowledge_article_history.sql` is `CREATE TABLE IF NOT EXISTS` plus
+`CREATE INDEX IF NOT EXISTS`, and nothing else.** It never drops, truncates,
+alters or rewrites, so it is safe on a database that already has the table (hand
+made, or from an earlier run), safe to re-run, and safe on a database that is
+refilled from ServiceNow: an existing table and its rows are left exactly as they
+are. Keep it that way. If the table ever needs another column, add a new numbered
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration; do not edit 0203 into a
+drop-and-recreate.
+
+**Why the legacy pair had to go, not just be joined by a new file.** `make migrate`
+globs `migrations/*.sql` and runs every file not yet recorded in
+`csm_migration_applied_migration`, `.down.sql` files included, in name order. The
+`000030` pair was never recorded on staging, and `.down.sql` sorts before `.up.sql`,
+so the next `make migrate` against it would have run the `.down.sql` first
+(`DROP TABLE knowledge_article_history`, rows gone) and then the `.up.sql`
+(`CREATE TABLE IF NOT EXISTS`, an empty table again). That is the repo-wide trap
+described in the top-level `CLAUDE.md` ("Only `NNNN_*.sql` belongs in that
+folder"), and here it would have silently emptied the history.
+`kb_article_repo_integration_test.go` runs 0203 repeatedly over a table that holds
+rows and asserts they survive.
+
+The other old-style KB pairs (`000020`–`000027`) are the same trap and are **not**
+touched here; `000027_replace_kb_tables_with_real_schema.down.sql` drops
+`knowledge_article` and `knowledge_base`. They need their own change.
 
 ## Case feedback silently 404'd on the Postgres data source instead of a documented 503
 
@@ -7703,6 +7904,7 @@ func (h *WidgetHandler) CreateWidget(w http.ResponseWriter, r *http.Request) {
 - Wrap unexpected errors with `fmt.Errorf("operation name: %w", err)` for traceability
 - PostgreSQL enum casts are required for enum columns (e.g. `$1::case_state_enum`)
 - For queries that need both a COUNT and a SELECT, run them concurrently with `errgroup` (see `SearchCases` and `SearchCaseComments` in `case_repo.go`)
+- A search whose caller never shows a total sets `skipTotal` on its request (`domain.SearchCasesRequest`, `SearchIncidentsRequest`, `SearchChangeRequestsRequest`, `SearchProblemsRequest`, `SearchConversationsRequest`): the repository then skips the COUNT entirely and the response's `total` is `domain.TotalNotComputed` (-1), not a lower bound. Three paths ignore the flag and keep reporting a total: the ServiceNow data source, a case search with `groupBy` (bucket counts) and `POST /announcements/registry/cases` (the number returned), so a consumer treats -1 as "no total" and must not assume the reverse. Global search (the CSM portal's quick-nav palette) sends it; the COUNT costs as much as the page query and holds a second pool connection. The default is unchanged. Request bodies are decoded with `DisallowUnknownFields`, so a caller must not send `skipTotal` to a build that predates it (the portal webapp falls back to the plain search on a 400). `search_skip_total_integration_test.go` records the statements each repository sends to prove the COUNT is not run and the page is identical.
 
 ## Domain types
 
@@ -7726,6 +7928,21 @@ All shared types live in `internal/domain/entity.go`. Conventions:
 | `*ServiceUnavailableError` | 503      | Downstream dependency temporarily down   |
 
 `apierror.WriteJSON(w, status, msg)` writes `{"code": <status>, "message": "<msg>"}`.
+
+**Machine-readable `errorCode`.** The `message` is wording for people and changes as it is improved, so a client must never branch on it. A refusal a client has to tell apart from the others of its status carries a stable `errorCode` string beside the message: `{"code": 409, "message": "...", "errorCode": "change_request_on_hold"}` (`apierror.ErrorResponse.ErrorCode`, written by `apierror.WriteJSONWithCode`; omitted when there is none, so an unnamed refusal's body is exactly what it always was). Only `*ConflictError` and `*ForbiddenError` have a `Code` field today (set where the refusal is raised, `Code: apierror.CodeChangeRequestOnHold`; `writeServiceError` writes it). Rules: **no database change** (it is attached in code, nothing is stored); the status and the message of the refusal are untouched by naming it; the constants live in `internal/apierror/codes.go`, are lower `snake_case`, are **only ever added to, never renamed or reused for another meaning** (`TestCodes_AreStableLowerSnakeCase` pins them), and the OpenAPI `ErrorResponse.errorCode` description lists them (deliberately not a closed enum, so a client treats a value it does not know as "no more specific than the status"). The customer portal's PATCH `/change-requests/{id}` (a customer's answer or proposed implementation time) and the approvals decision route name these:
+
+| Refusal | `errorCode` | Status |
+|---|---|---|
+| A proposed implementation time on a change request WSO2 has on hold (the answer itself is still possible) | `change_request_on_hold` | 409 |
+| An answer that names the planned window the customer was shown (`expectedPlannedStartOn` / `expectedPlannedEndOn`, or a WSO2 response's expected window) when it is no longer the change request's window; nothing recorded | `change_request_schedule_changed` | 409 |
+| An answer to an approval that is no longer pending: already answered (by the caller or a sibling contact), the change request has left the state the answer belongs to (`staleApprovalRefusal`), or no request for it is open | `change_request_approval_not_pending` | 409 |
+| A proposed time on a change request that is not in Customer Approval, or that nobody has been asked to approve | `change_request_not_proposable` | 409 |
+| A proposed time while an approval that is not the customer's is also being asked (the customer's own answer is still possible; only the proposal is refused) | `change_request_proposal_not_now` | 409 |
+| A proposed time on a change request with no planned window to move (a proposal is a new start, the planned length is kept; the customer's answer is still possible) | `change_request_no_planned_window` | 409 |
+| A registered contact the customer's request was never sent to (or whose request a sibling's answer or a re-schedule withdrew): proposing, or answering on a live customer stage | `change_request_not_asked` | 403 |
+| Not a registered PORTAL_USER contact of the change request's project, the change request's own creator, a user who may not decide an internal stage, a field a customer may not set, a caller with no user record | `change_request_forbidden` | 403 |
+
+`TestWriteServiceError_CarriesTheMachineReadableCode` (handler) and `TestChangeRequestErrorCodesIntegration_*` (repository, against a real database) pin each code to its refusal. customer-portal `backend-v2` and the CSM portal BFF pass the code through with the status they give it; the customer webapp classifies a refusal by it (`describeChangeRequestActionError`), and a 409 with a code it does not know, or none (an older entity-service), is "something went wrong, refresh", never "already answered".
 
 **Never put `pgErr.Detail` verbatim in a `ValidationError.Msg`.** `writeServiceError`'s own comment states a `ValidationError`'s message is always safe to return to the caller as-is, but a Postgres foreign-key violation's `Detail` field quotes the real table and column name (e.g. `` Key (assigned_to_id)=(...) is not present in table "user". ``) — handing an API caller schema internals. When a `23503` can be attributed to a specific request field (e.g. via `pgErr.ConstraintName`, since none of this schema's inline `REFERENCES` get an explicit `CONSTRAINT` name, so Postgres's default `<table>_<column>_fkey` naming applies), name that field instead. See `change_request_repo.go`'s `changeRequestPatchFKField` map for the pattern. Several older `23503` handlers elsewhere in `internal/repository/` (`case_repo.go`, `time_card_repo.go`) still return `pgErr.Detail` this way — a known pre-existing gap, not newly introduced, and not yet fixed.
 

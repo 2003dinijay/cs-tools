@@ -59,6 +59,8 @@ import {
   addDays,
   isRotationShift,
   kindsOfferedOn,
+  moveKindFor,
+  movesOfferedOn,
   monthPieces,
   readerFamily,
   rosterRange,
@@ -73,6 +75,17 @@ import {
 import { zoneColour } from "../utils/rotaHues";
 import { SCHEDULE_THEME_VARS } from "../utils/useScheduleTheme";
 import "../teamSchedule.css";
+import { teamDisplayName } from "../utils/teamDisplayName";
+/** What the banner says when an edit is refused: the server's own reason where
+ *  it gave one a lead can act on -- the person is not on that team, or already
+ *  holds an overlapping window -- and that nothing moved either way. */
+function notSaved(what: string, err: unknown): string {
+  const reason =
+    err instanceof BackendApiError && (err.status === 403 || err.status === 409) && err.message
+      ? ` ${err.message.charAt(0).toUpperCase()}${err.message.slice(1)}.`
+      : "";
+  return `${what}${reason} Nothing has moved.`;
+}
 
 type ViewTab = "mine" | "today" | "week" | "roster";
 type Family = RotaFamily;
@@ -391,12 +404,13 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const to = dayView ? toIsoDate(anchor) : toIsoDate(addDays(weekStart, 6));
   // A family running more than one rota reads only the rota on screen's
   // teams; otherwise the family alone, as before.
-  /** The rota the data on screen is narrowed to. Today draws a lane per zone,
-   *  so it shows one rota at a time. My week is the reader's own rota. The
-   *  week and the roster show "All teams" as it reads -- every rota of the
-   *  family, each in its own rows -- unless a team is picked. */
-  const scopeRota: string | undefined =
-    view === "mine" ? myRota : view === "today" || shownTeamKey ? rota : undefined;
+  /** The rota the data on screen is narrowed to: one at a time, on every
+   *  view. Rotas do not share their zones -- SRE SaaS runs TZ1, TZ2 and TZ3,
+   *  IaaS a Day and a Night -- and a grid drawn for both gave SaaS's people
+   *  Day and Night columns they never work. The rota picker switches; My week
+   *  is the reader's own rota, or the family's first for a reader with none
+   *  (a rota admin), who otherwise saw IaaS's lanes on their own week. */
+  const scopeRota: string | undefined = view === "mine" ? (myRota ?? rota) : rota;
   // A family running more than one rota reads only the scoped rota's teams;
   // otherwise the family alone, as before.
   const teamKeys = shownTeamKey ? [shownTeamKey] : rotaScoped && scopeRota ? teamsOf(family, scopeRota) : undefined;
@@ -583,6 +597,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     [catalogue.data?.absenceKinds, family],
   );
 
+  /** Moves to another team a lead can make from a cell (Move to Migration). */
+  const moveKinds = useMemo(
+    () => movesOfferedOn(catalogue.data?.absenceKinds ?? [], family),
+    [catalogue.data?.absenceKinds, family],
+  );
+
   /** The windows the picker offers for the cell that is open: every window
    *  the group works, in every zone. The zone column a lead clicked is marked
    *  in the picker rather than used to hide the others -- rostering L3 for
@@ -609,6 +629,14 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const applyToCell = (shiftCode: string, from: string, to: string, tier?: ScheduleTier): void => {
     if (!picker) return;
     const label = shifts.get(shiftCode)?.label ?? shiftCode;
+    // Americas cover for somebody not on the Americas team is the Brazil
+    // rotation: it moves them there for these days, and the server writes the
+    // shifts. Marked as that span, so their own team's lead still owns it.
+    const move = moveKindFor(catalogue.data?.absenceKinds ?? [], shiftCode, picker.teamKey);
+    if (move) {
+      markAway(move.code, from, to);
+      return;
+    }
     applyRange.mutate(
       {
         userId: picker.userId,
@@ -622,7 +650,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
       {
         onSuccess: () => recordChange(picker, from, to, tier ? `${tier} · ${label}` : label),
         onError: (err) =>
-          showError("That change to the rota was not saved. Nothing has moved.", err),
+          showError(notSaved("That change to the rota was not saved.", err), err),
         onSettled: () => setPicker(null),
       },
     );
@@ -630,6 +658,14 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
   const recordChange = (target: CellPickerTarget, from: string, to: string, what: string): void =>
     setChanges((cs) => [...cs, { userId: target.userId, name: target.name, from, to, what }]);
+
+  /** A tag as the change log names it: a move worked as another team's
+   *  normal hours by those hours (Americas cover), anything else by its label. */
+  const kindLabel = (kindCode: string): string => {
+    const kind = (catalogue.data?.absenceKinds ?? []).find((k) => k.code === kindCode);
+    const shownAs = kind?.worksRotaThere && kind.showsAsShiftCode ? shifts.get(kind.showsAsShiftCode) : undefined;
+    return shownAs?.label ?? kind?.label ?? kindCode;
+  };
 
   const markAway = (kindCode: string, from: string, to: string, allocatedTo?: string): void => {
     if (!picker) return;
@@ -650,13 +686,13 @@ export default function CsmTeamSchedulePage(): JSX.Element {
             from,
             to,
             kindCode
-              ? `${awayKinds.find((k) => k.code === kindCode)?.label ?? kindCode}${
+              ? `${kindLabel(kindCode)}${
                   allocatedTo ? ` (${allocatedTo})` : ""
                 }`
               : "back on the rota",
           ),
         onError: (err) =>
-          showError("That change to who is away was not saved. Nothing has moved.", err),
+          showError(notSaved("That change to who is away was not saved.", err), err),
         onSettled: () => setPicker(null),
       },
     );
@@ -743,7 +779,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         {
           onSuccess: () =>
             recordChange(picker, from, to, `off ${picker.zoneCode}${picker.tier ? ` ${picker.tier}` : ""}`),
-          onError: (err) => showError("That change to the rota was not saved. Nothing has moved.", err),
+          onError: (err) => showError(notSaved("That change to the rota was not saved.", err), err),
           onSettled: () => setPicker(null),
         },
       );
@@ -803,6 +839,40 @@ export default function CsmTeamSchedulePage(): JSX.Element {
       };
     });
   }, [anchor, family, rows, shifts, zonesOnDay]);
+
+  /** The teams the edit bar says this reader can change, by name and in the
+   *  catalogue's order. A rota admin can change every team of the group, and
+   *  a list of all of them says less than "every team" does. */
+  const editableTeamsLabel = useMemo(() => {
+    const all = catalogue.data?.teams ?? [];
+    const mine = new Set((leadTeams.data ?? []).map((k) => k.toLowerCase()));
+    const ofGroup = all.filter((t) => t.family === family);
+    if (ofGroup.length > 0 && ofGroup.every((t) => mine.has(t.key.toLowerCase()))) {
+      return `Every ${family} team`;
+    }
+    const known = new Map(all.map((t) => [t.key.toLowerCase(), t]));
+    return [...mine]
+      .map((k) => known.get(k))
+      .filter((t): t is NonNullable<typeof t> => t !== undefined)
+      .sort((a, b) => a.sortOrder - b.sortOrder)
+      .map((t) => teamDisplayName(t.name))
+      .join(", ");
+  }, [catalogue.data?.teams, leadTeams.data, family]);
+
+  /** Each team's ordinary-weekday window, where it is not Regular hours. */
+  const teamDefaultShift = useMemo(
+    () =>
+      Object.fromEntries(
+        (catalogue.data?.teams ?? []).flatMap((t) => (t.defaultShiftCode ? [[t.key, t.defaultShiftCode]] : [])),
+      ),
+    [catalogue.data?.teams],
+  );
+
+  /** Each team's members, by key, so the roster shows every one of them. */
+  const teamMembers = useMemo(
+    () => Object.fromEntries((catalogue.data?.teams ?? []).map((t) => [t.key, t.members ?? []])),
+    [catalogue.data?.teams],
+  );
 
   if (catalogue.isError) {
     return <QueryErrorState message="Could not load the schedule catalogue." error={catalogue.error} />;
@@ -995,11 +1065,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         {canEditRota && editing && view === "roster" ? (
           <div className="editbar">
             <span className="pill">Editing</span>
-            <span>
-              {(leadTeams.data ?? [])
-                .map((t) => t.charAt(0).toUpperCase() + t.slice(1))
-                .join(", ")}
-            </span>
+            <span>{editableTeamsLabel}</span>
             {changes.length === 0 ? (
               <span className="hintx">
                 click a cell in your own team&rsquo;s rows to change that day
@@ -1099,6 +1165,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               focusRequest={focusRequest}
               meEmail={user?.email}
               leadTeams={leadTeams.data ?? []}
+              teamMembers={teamMembers}
+              teamDefaultShift={teamDefaultShift}
               editedCells={editedCells}
               editing={editing}
               onEditCell={editCell}
@@ -1154,6 +1222,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           }
           awayKinds={awayKinds}
           allKinds={catalogue.data?.absenceKinds}
+          moveKinds={moveKinds}
           onApply={applyToCell}
           onMarkAway={markAway}
           onRemoveAbsence={removeAbsence}

@@ -16,7 +16,7 @@
 
 import { useNavigate, useLocation } from "react-router";
 import useNormalizedIdParam from "@hooks/useNormalizedIdParam";
-import { type JSX, useEffect, useMemo, useRef, useState } from "react";
+import { type JSX, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import DOMPurify from "dompurify";
 import { DESCRIPTION_PURIFY_CONFIG } from "@utils/common";
 import { useDarkMode } from "@utils/useDarkMode";
@@ -77,7 +77,17 @@ import {
   formatImpactLabel,
   getChangeRequestImpactColorShades,
 } from "@features/operations/utils/changeRequestUi";
-import { ChangeRequestDecisionMode } from "@features/operations/types/changeRequests";
+import {
+  ChangeRequestDecisionMode,
+  type ProposeNewTimeAvailability,
+} from "@features/operations/types/changeRequests";
+
+/**
+ * Where focus goes once the customer is done with an answer dialog or an answer
+ * attempt has ended (see `requestFocus`): the page heading, which is always there,
+ * or the answer button that was used, while it can still be used.
+ */
+type FocusAfterAnswer = "heading" | "trigger";
 
 /**
  * ChangeRequestDetailsPage component to display detailed information about a change request.
@@ -99,13 +109,24 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
   const [proposeTimeOpen, setProposeTimeOpen] = useState(false);
   const [rejectConfirmOpen, setRejectConfirmOpen] = useState(false);
   const answerInFlightRef = useRef(false);
-  // Where focus goes once an answer has been given: the buttons that had it are
-  // gone by then, and a keyboard or screen reader user would otherwise start again
-  // from the top of the document. (A proposal keeps the change in Customer
-  // Approval with its buttons, so closing the dialog hands focus back to the one
-  // that opened it.)
+  // Where focus goes whenever an answer attempt or one of the two dialogs ends,
+  // by whatever route -- given, refused for good, failed, or just closed. The
+  // buttons that had focus are gone, switched off or about to go by then (a
+  // refused answer re-reads the change request, and an answered one no longer
+  // offers any), so a keyboard or screen reader user would otherwise land on the
+  // document body and start again from the top. The page heading is always
+  // there; the answer button used last is where a customer who can still answer
+  // belongs (after a proposal that is the Propose New Time button: the change
+  // request stays in Customer Approval with its buttons). The outcome itself is
+  // announced by the banner (an alert).
   const headingRef = useRef<HTMLElement | null>(null);
-  const [focusHeadingPending, setFocusHeadingPending] = useState(false);
+  const answerTriggerRef = useRef<HTMLElement | null>(null);
+  const [pendingFocus, setPendingFocus] = useState<FocusAfterAnswer | null>(null);
+  const requestFocus = useCallback((target: FocusAfterAnswer) => {
+    // The heading is the stronger claim: an answer that is over leaves no button
+    // to return to, whatever else closed at the same time.
+    setPendingFocus((current) => (current === "heading" ? current : target));
+  }, []);
   // The app's own dark-mode signal (<html data-color-scheme>), which theme.palette.mode does not follow.
   const isDark = useDarkMode();
 
@@ -141,6 +162,19 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
     : proposeBlockedByNoWindow
       ? "cr-propose-nowindow-note"
       : undefined;
+  // What the reject confirmation may say about proposing a different time: only
+  // what is true of the button beside it. A button that is switched off for want
+  // of a window to move is not pointed at, and the hold is the one reason that is
+  // worth saying (it passes).
+  const proposeNewTime: ProposeNewTimeAvailability = !canShowProposeNewTime
+    ? "unavailable"
+    : proposeBlockedByHold
+      ? "on_hold"
+      : proposeBlockedByNoWindow
+        ? "unavailable"
+        : "available";
+  const proposeDialogOpen = proposeTimeOpen && canShowProposeNewTime;
+  const rejectDialogOpen = rejectConfirmOpen && canShowApprovalActions;
   // What the customer is told about a proposed time that waits for WSO2 or was not accepted.
   const proposalNote = getProposalNote(changeRequest, canShowApprovalActions);
   const { approve: approveLabel, reject: rejectLabel } =
@@ -158,11 +192,26 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
     },
   });
 
+  // Runs once the dialogs have closed (so it is the last to move focus, after the
+  // dialog's own return of focus) and no answer is in flight (the answer buttons
+  // are switched off while one is, and cannot take focus).
   useEffect(() => {
-    if (!focusHeadingPending || proposeTimeOpen || rejectConfirmOpen) return;
-    setFocusHeadingPending(false);
-    headingRef.current?.focus();
-  }, [focusHeadingPending, proposeTimeOpen, rejectConfirmOpen]);
+    if (
+      !pendingFocus ||
+      proposeDialogOpen ||
+      rejectDialogOpen ||
+      patchChangeRequest.isPending
+    ) {
+      return;
+    }
+    setPendingFocus(null);
+    const trigger = answerTriggerRef.current;
+    const triggerUsable =
+      pendingFocus === "trigger" &&
+      trigger?.isConnected === true &&
+      !(trigger as HTMLButtonElement).disabled;
+    (triggerUsable ? trigger : headingRef.current)?.focus();
+  }, [pendingFocus, proposeDialogOpen, rejectDialogOpen, patchChangeRequest.isPending]);
 
   const impactColor = getChangeRequestImpactColorShades(
     changeRequest?.impact?.label,
@@ -192,9 +241,14 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
           : { isCustomerApproved: approved, ...shown },
       );
       showSuccess(messages.success);
-      setFocusHeadingPending(true);
+      requestFocus("heading");
     } catch (err) {
-      showError(describeChangeRequestActionError(err, messages.failure).message);
+      const { message, terminal } = describeChangeRequestActionError(err, messages.failure);
+      showError(message);
+      // A refusal that ends the question (answered already, moved on, not yours to
+      // answer) leaves no answer to give: the heading. Any other failure leaves
+      // the buttons as they were: back to the one that was used.
+      requestFocus(terminal ? "heading" : "trigger");
     } finally {
       answerInFlightRef.current = false;
       setRejectConfirmOpen(false);
@@ -502,7 +556,10 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
                           size="small"
                           variant="outlined"
                           startIcon={<CalendarClock size={14} aria-hidden />}
-                          onClick={() => setProposeTimeOpen(true)}
+                          onClick={(event) => {
+                            answerTriggerRef.current = event.currentTarget;
+                            setProposeTimeOpen(true);
+                          }}
                           disabled={
                             patchChangeRequest.isPending ||
                             proposeBlockedByHold ||
@@ -518,7 +575,10 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
                         size="small"
                         variant="outlined"
                         startIcon={<FileCheck size={14} aria-hidden />}
-                        onClick={() => void submitAnswer(true)}
+                        onClick={(event) => {
+                          answerTriggerRef.current = event.currentTarget;
+                          void submitAnswer(true);
+                        }}
                         disabled={patchChangeRequest.isPending}
                         sx={answerButtonSx("green")}
                       >
@@ -528,7 +588,10 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
                         size="small"
                         variant="outlined"
                         startIcon={<X size={14} aria-hidden />}
-                        onClick={() => setRejectConfirmOpen(true)}
+                        onClick={(event) => {
+                          answerTriggerRef.current = event.currentTarget;
+                          setRejectConfirmOpen(true);
+                        }}
                         disabled={patchChangeRequest.isPending}
                         sx={answerButtonSx("red")}
                       >
@@ -1019,15 +1082,27 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
       </Box>
 
       <ProposeNewImplementationTimeModal
-        open={proposeTimeOpen && canShowProposeNewTime}
-        onClose={() => setProposeTimeOpen(false)}
+        open={proposeDialogOpen}
+        onClose={() => {
+          setProposeTimeOpen(false);
+          requestFocus("trigger");
+        }}
+        // A proposal leaves the change request in Customer Approval with its
+        // buttons, so focus goes back to the one that opened the dialog (the
+        // heading only when that button is gone: see the focus effect).
+        onProposed={() => requestFocus("trigger")}
+        onRefused={() => requestFocus("heading")}
         changeRequest={changeRequest}
       />
       <ChangeRequestRejectConfirmDialog
-        open={rejectConfirmOpen && canShowApprovalActions}
+        open={rejectDialogOpen}
         mode={decisionMode}
+        proposeNewTime={proposeNewTime}
         isPending={patchChangeRequest.isPending}
-        onClose={() => setRejectConfirmOpen(false)}
+        onClose={() => {
+          setRejectConfirmOpen(false);
+          requestFocus("trigger");
+        }}
         onConfirm={() => void submitAnswer(false)}
       />
     </Box>

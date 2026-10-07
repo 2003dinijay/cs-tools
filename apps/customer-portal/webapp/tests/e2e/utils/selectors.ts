@@ -852,6 +852,9 @@ export const CHANGE_REQUEST_DETAILS = {
     approvalMessage: "Rejecting cancels this change request.",
     approvalHint:
       "If you only need a different time, go back and use Propose New Time instead.",
+    /** What the hint says instead while WSO2 has the change on hold (Propose New Time is off). */
+    approvalHintOnHold:
+      "A new time cannot be proposed right now because WSO2 has this change request on hold.",
     approvalConfirm: "Reject change request",
     reviewTitle: "Mark this change as unsuccessful?",
     reviewMessage: "Marking it unsuccessful sends the change into rollback.",

@@ -493,7 +493,7 @@ func proposeCustomerTime(ctx context.Context, tx pgx.Tx, id string, req domain.P
 		return "", err
 	}
 	if gates.state != crStateCustomerApproval {
-		return "", &apierror.ConflictError{Msg: fmt.Sprintf(
+		return "", &apierror.ConflictError{Code: apierror.CodeChangeRequestNotProposable, Msg: fmt.Sprintf(
 			"a new implementation time can only be proposed while the change request is in Customer Approval, but it is in %s",
 			changeRequestStateDisplayName(stateForMessage(gates.state)))}
 	}
@@ -521,14 +521,14 @@ func proposeCustomerTime(ctx context.Context, tx pgx.Tx, id string, req domain.P
 		return "", fmt.Errorf("propose implementation time: %w", err)
 	}
 	if live == nil {
-		return "", &apierror.ConflictError{Msg: "no customer approval is pending on this change request: it has not been requested from the project's registered contacts, so there is nobody for a new implementation time to be proposed to here"}
+		return "", &apierror.ConflictError{Code: apierror.CodeChangeRequestNotProposable, Msg: "no customer approval is pending on this change request: it has not been requested from the project's registered contacts, so there is nobody for a new implementation time to be proposed to here"}
 	}
 	asked, err := customerHasRequestedRow(ctx, tx, live.stageID, userID)
 	if err != nil {
 		return "", fmt.Errorf("propose implementation time: %w", err)
 	}
 	if !asked {
-		return "", &apierror.ForbiddenError{Msg: "only members of the customer group (the registered contacts of this change request's project) who have been asked for the customer's approval of this change request can propose a new implementation time for it"}
+		return "", &apierror.ForbiddenError{Code: apierror.CodeChangeRequestNotAsked, Msg: "only members of the customer group (the registered contacts of this change request's project) who have been asked for the customer's approval of this change request can propose a new implementation time for it"}
 	}
 
 	if err := requireFutureWindow(time.Now(), start, end); err != nil {
@@ -551,14 +551,14 @@ func proposeCustomerTime(ctx context.Context, tx pgx.Tx, id string, req domain.P
 		return "", err
 	}
 	if f.onHold {
-		return "", &apierror.ConflictError{Msg: msgProposalOnHold}
+		return "", &apierror.ConflictError{Code: apierror.CodeChangeRequestOnHold, Msg: msgProposalOnHold}
 	}
 	if f.otherAsked {
-		return "", &apierror.ConflictError{Msg: msgProposalOtherApprovalAsked}
+		return "", &apierror.ConflictError{Code: apierror.CodeChangeRequestProposalNotNow, Msg: msgProposalOtherApprovalAsked}
 	}
 	length, ok := f.plannedLength()
 	if !ok {
-		return "", &apierror.ConflictError{Msg: msgProposalNoWindow}
+		return "", &apierror.ConflictError{Code: apierror.CodeChangeRequestNoPlannedWindow, Msg: msgProposalNoWindow}
 	}
 	startAt, err := time.Parse(time.RFC3339Nano, *start)
 	if err != nil {
@@ -600,7 +600,7 @@ func proposeCustomerTime(ctx context.Context, tx pgx.Tx, id string, req domain.P
 		return "", fmt.Errorf("propose implementation time: write the proposed start: %w", err)
 	}
 	if ct.RowsAffected() == 0 {
-		return "", &apierror.ConflictError{Msg: msgAcceptNotInCustomerApproval(gates.state)}
+		return "", &apierror.ConflictError{Code: apierror.CodeChangeRequestNotProposable, Msg: msgAcceptNotInCustomerApproval(gates.state)}
 	}
 	return id, nil
 }
@@ -928,6 +928,6 @@ func expectedScheduleConflict(start, end, expectedStart, expectedEnd *time.Time,
 	if start != nil || end != nil {
 		now = fmt.Sprintf("%s to %s", show(start), show(end))
 	}
-	return &apierror.ConflictError{Msg: fmt.Sprintf(
+	return &apierror.ConflictError{Code: apierror.CodeChangeRequestScheduleChanged, Msg: fmt.Sprintf(
 		"the planned implementation time of this change request changed after you opened it (it is now %s); %s", now, read)}
 }

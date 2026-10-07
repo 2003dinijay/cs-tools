@@ -92,6 +92,31 @@ type caseService struct {
 	// WithProductCategoryEnforcement's own doc comment.
 	referenceDataRepo   repository.ReferenceDataRepository
 	deployedProductRepo repository.DeployedProductRepository
+	// srNotices runs the service-request automation and publishes the sr.*
+	// events (see SRNoticeService). nil unless wired via WithSRNotices.
+	srNotices srNotifier
+	// srCatalog derives a service request's subject and description from its
+	// catalog answers when the caller sent none (fillServiceRequestText). nil
+	// unless wired via WithServiceRequestCatalog.
+	srCatalog srCatalogReader
+}
+
+// srNotifier is what caseService needs from SRNoticeService; an interface so
+// tests can observe the calls.
+type srNotifier interface {
+	OnCreated(ctx context.Context, caseID string)
+	OnComment(ctx context.Context, caseID, commentID string, commentType domain.CommentType, content, authorEmail, authorName string, createdOn time.Time)
+}
+
+// WithSRNotices attaches the service-request automation to an
+// already-constructed CaseService, the same post-construction wiring as
+// WithCSEngineerRole and for the same reason. A no-op if svc is not a
+// *caseService or n is nil.
+func WithSRNotices(svc CaseService, n *SRNoticeService) CaseService {
+	if cs, ok := svc.(*caseService); ok && n != nil {
+		cs.srNotices = n
+	}
+	return svc
 }
 
 // WithProductCategoryEnforcement attaches the optional project-type
@@ -237,6 +262,7 @@ var validCaseSortField = map[domain.CaseSortField]bool{
 	domain.CaseSortFieldUpdatedOn: true,
 	domain.CaseSortFieldSeverity:  true,
 	domain.CaseSortFieldState:     true,
+	domain.CaseSortFieldAssignee:  true,
 }
 
 var validCaseType = map[string]bool{
@@ -586,6 +612,11 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err := s.validateDeployedProductCategoryForType(ctx, req); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
+	// Before both create paths: the dual-write path's Postgres copy
+	// (CreateCaseFromServiceNow) stores req.Subject too, and the ServiceNow
+	// payload for a service request never carries it, so ServiceNow still
+	// derives its own.
+	s.fillServiceRequestText(ctx, &req)
 
 	if s.snMirror != nil {
 		return s.createCaseSNFirst(ctx, req)
@@ -637,6 +668,11 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	// createCaseSNFirst orders it this way: publishCaseCreatedEvent's own
 	// GetCaseByID re-fetch needs them already written to resolve Recipients.
 	publishCaseCreatedEvent(ctx, s.publisher, s.GetCaseByID, s.ProjectContactEmailsByRole, s.AccountDefaultWatcherEmails, req, c.ID)
+	// Plain Postgres only: under dual-write the SR is created in ServiceNow
+	// first, where its own flow still assigns, acknowledges and announces it.
+	if req.Type == "service_request" && s.srNotices != nil {
+		s.srNotices.OnCreated(ctx, c.ID)
+	}
 	state := ""
 	if c.State != nil {
 		state = string(*c.State)
@@ -1264,6 +1300,13 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 			cv.WatchList = s.filterActiveWatchListUsers(ctx, cv, cv.WatchList)
 			publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.ProjectOnboardingInfo, cv, req, c.ID, authorName, actorEmail, isSupportEngineerResponse)
 		}
+	}
+
+	// sr.comment_added, for a comment on a service request. Independent of
+	// the case.comment_added publish above, which is skipped when a case has
+	// no recipients.
+	if s.srNotices != nil {
+		s.srNotices.OnComment(ctx, req.CaseID, c.ID, req.Type, req.Content, actorEmail, authorName, c.CreatedOn)
 	}
 
 	// Best-effort ServiceNow mirror write, DATA_SOURCE=postgres-servicenow-dual-write
@@ -2755,7 +2798,7 @@ func prepareCaseSearchFilters(ctx context.Context, req domain.SearchCasesRequest
 	if req.SortBy.Field == "" {
 		req.SortBy.Field = domain.CaseSortFieldCreatedOn
 	} else if !validCaseSortField[req.SortBy.Field] {
-		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: "sortBy.field must be one of: createdOn, updatedOn, severity, state"}
+		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: "sortBy.field must be one of: createdOn, updatedOn, severity, state, assignee"}
 	}
 	if req.SortBy.Order == "" {
 		req.SortBy.Order = domain.CaseSortOrderDesc
@@ -3069,7 +3112,14 @@ func (s *caseService) ConfirmCaseAttachment(ctx context.Context, id string) (dom
 // Stopgap: under DATA_SOURCE=postgres-servicenow-dual-write (s.snMirror !=
 // nil) a "deployment" search is delegated to the mirrored data source and its
 // response or error is returned as-is, until a Postgres-native deployment
-// attachment store exists. Every other reference type is unaffected.
+// attachment store exists. Likewise a "case" search that returns zero rows
+// from Postgres at offset 0 falls back to the mirrored data source, because
+// attachments of migrated cases were synced into work_item_attachment, which
+// the case read path does not consult. A Postgres error is returned as-is
+// (no fallback), and a non-zero offset never falls back so paging past the
+// end of a non-empty Postgres list is not masked. Remove this fallback once
+// the case read path reads work_item_attachment. Every other reference type
+// is unaffected.
 //
 // Read-path status decision: the underlying repository query filters out
 // 'pending' rows entirely (see caseRepo.SearchCaseAttachments), so a case's
@@ -3117,6 +3167,11 @@ func (s *caseService) SearchCaseAttachments(ctx context.Context, req domain.Sear
 	}
 	if err != nil {
 		return domain.SearchAttachmentsResponse{}, err
+	}
+	if isCase && s.snMirror != nil && total == 0 && req.Pagination.Offset == 0 {
+		// Stopgap (see doc comment): Postgres has nothing for this case in
+		// dual-write mode, so serve the list from the mirrored data source.
+		return s.snMirror.SearchCaseAttachments(ctx, req)
 	}
 
 	return domain.SearchAttachmentsResponse{

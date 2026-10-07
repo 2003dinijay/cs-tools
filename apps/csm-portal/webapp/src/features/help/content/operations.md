@@ -130,8 +130,8 @@ From the detail page a CS engineer can:
   requested, which is why the contact has to be there first.
   Only an older change can still be left waiting at a gate with nobody to answer:
   one that reached Customer Approval or Customer Review before this was refused,
-  one whose contacts left the project since, or one that came over from ServiceNow
-  without a request. The Approval tab says so in a note, and since staff never
+  one whose contacts left the project since, or one migrated from the previous
+  system without a request. The Approval tab says so in a note, and since staff never
   answer for the customer the exits are the ones staff always have there. When
   nobody can be asked, **Cancel change** is the only way out of Customer
   Approval: **Re-schedule** asks the project's registered contacts again at

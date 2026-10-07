@@ -78,3 +78,11 @@ describe("zoneColour", () => {
     expect(zoneColour("SOMETHING")).toBe("#6b7280");
   });
 });
+
+describe("teamColour past the palette", () => {
+  it("never repeats a colour for the next teams", () => {
+    const n = TEAM_PALETTE.length + 10;
+    const seen = Array.from({ length: n }, (_, i) => teamColour(i));
+    expect(new Set(seen).size).toBe(n);
+  });
+});

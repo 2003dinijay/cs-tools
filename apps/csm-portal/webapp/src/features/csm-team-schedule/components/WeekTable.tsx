@@ -394,7 +394,7 @@ export default function WeekTable({
           <option value="">All teams</option>
           {teams.map((t) => (
             <option key={t} value={t}>
-              {t.charAt(0).toUpperCase() + t.slice(1)}
+              {teamNameOf(t)}
             </option>
           ))}
         </select>

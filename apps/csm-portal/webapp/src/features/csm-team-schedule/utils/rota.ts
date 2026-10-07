@@ -461,7 +461,53 @@ export function kindsOfferedOn(
     (k) =>
       (k.bucket === "LEAVE" || k.bucket === "ALLOCATION") &&
       !k.retired &&
-      (!k.family || k.family === family),
+      (!k.family || k.family === family) &&
+      // A tag that moves somebody to another team is not time away: it is
+      // offered as the move it is -- see movesOfferedOn -- or, where it is
+      // worked as that team's normal hours, as those hours (moveKindFor).
+      !k.movesToTeamKey,
+  );
+}
+
+/**
+ * The moves a lead can make from a cell: tags that move somebody to another
+ * team for a span ("Move to Migration"), on this rota. A move worked as that
+ * team's normal hours is offered as those hours instead -- Americas cover, not
+ * "Move to Americas" -- since that is how a lead thinks of it.
+ */
+export function movesOfferedOn(
+  kinds: readonly ScheduleAbsenceKind[],
+  family: RotaFamily,
+): ScheduleAbsenceKind[] {
+  return kinds.filter(
+    (k) =>
+      Boolean(k.movesToTeamKey) &&
+      !k.retired &&
+      (!k.family || k.family === family) &&
+      !(k.worksRotaThere && k.showsAsShiftCode),
+  );
+}
+
+/**
+ * The tag picking `shiftCode` for somebody on `teamKey` stands for, where it
+ * stands for one: a window that is another team's normal hours -- Americas
+ * cover, the Americas team's -- picked for somebody who is not on that team
+ * moves them there for the days picked (the Brazil rotation). The server then
+ * writes the window as real shifts on that team for each of those days.
+ * Undefined for everyone already on that team, and for every other window.
+ */
+export function moveKindFor(
+  kinds: readonly ScheduleAbsenceKind[],
+  shiftCode: string,
+  teamKey: string,
+): ScheduleAbsenceKind | undefined {
+  return kinds.find(
+    (k) =>
+      k.worksRotaThere &&
+      !k.retired &&
+      k.showsAsShiftCode === shiftCode &&
+      Boolean(k.movesToTeamKey) &&
+      k.movesToTeamKey?.toLowerCase() !== teamKey.toLowerCase(),
   );
 }
 

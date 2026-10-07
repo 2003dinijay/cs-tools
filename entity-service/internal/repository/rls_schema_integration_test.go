@@ -176,7 +176,7 @@ var rlsCommandsDeniedOnPurpose = map[string]map[string]string{
 	// (the sync's change_request_product / change_request_product_version are
 	// different tables), and entity-service only ever deletes and re-inserts
 	// the whole list, so it never issues an UPDATE. change_request_deployment,
-	// the sync's own junction, does have the UPDATE policy (migration 0202).
+	// the sync's own junction, does have the UPDATE policy (migration 0205).
 	"change_request_deployed_product": {
 		"UPDATE": "entity-service deletes and re-inserts the snapshot; the sync never writes this table",
 	},

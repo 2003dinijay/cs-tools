@@ -213,6 +213,17 @@ export default function DayLadder({
   rotaCode,
   onRotaChange,
 }: DayLadderProps): JSX.Element {
+  const teamNameOf = useTeamName();
+  // Who is off the rota. Two kinds of span are left out:
+  //  - a stint that is rota work on another team -- the Brazil rotation,
+  //    worked on the Americas rota -- which is not time off it;
+  //  - a retired tag, such as Onboarding: no longer a reason anybody is away
+  //    today. Its old days keep their label on the month roster, which is
+  //    the record; this column answers who to plan around now.
+  const offRota = useMemo(() => {
+    const leaveOut = new Set(absenceKinds.filter((k) => k.worksRotaThere || k.retired).map((k) => k.code));
+    return absences.filter((a) => !leaveOut.has(a.kindCode));
+  }, [absences, absenceKinds]);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const touched = useRef(false);
 
@@ -495,7 +506,7 @@ export default function DayLadder({
             <option value="">All teams</option>
             {teams.map((t) => (
               <option key={t} value={t}>
-                {t.charAt(0).toUpperCase() + t.slice(1)}
+                {teamNameOf(t)}
               </option>
             ))}
           </select>
@@ -535,7 +546,7 @@ export default function DayLadder({
         ))}
         <div className="lnh offhd" style={{ ["--zc" as string]: "var(--muted)" }}>
           <span className="zchip off">Off rota</span>
-          <span className="lnt">{absences.length} not available</span>
+          <span className="lnt">{offRota.length} not available</span>
         </div>
       </div>
 
@@ -599,10 +610,10 @@ export default function DayLadder({
                 // one does not list its holder as away on the Saturday.
                 absences={
                   day.getDay() === 0 || day.getDay() === 6
-                    ? absences.filter(
+                    ? offRota.filter(
                         (a) => absenceKinds.find((k) => k.code === a.kindCode)?.bucket !== "LEAVE",
                       )
-                    : absences
+                    : offRota
                 }
                 kinds={absenceKinds}
               />

@@ -5378,13 +5378,25 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden.
+          description: >-
+            Forbidden. The message is a fixed text; the body's `errorCode`, when
+            entity-service names the refusal, says which.
           content:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
           description: Change request not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: >-
+            The request conflicts with the change request's state; the entity service's
+            reason is echoed and nothing was changed. The body's `errorCode`, when
+            entity-service names the refusal, says which (a client never branches on the
+            message).
           content:
             application/json:
               schema:
@@ -5563,7 +5575,8 @@ paths:
             The approval is no longer pending: the change request has moved to a
             state the caller's stage cannot be decided in (e.g. a Review approver
             once the change is Customer Review or Closed). The message says where
-            the change is; nothing was changed.
+            the change is; nothing was changed. The body's `errorCode` is
+            `change_request_approval_not_pending`.
           content:
             application/json:
               schema:
@@ -13489,9 +13502,30 @@ components:
   schemas:
     ErrorPayload:
       type: object
+      description: >-
+        The body of an error response. `message` is the reason, worded for people: it
+        can change, so a client must never branch on it. `errorCode` is the stable
+        machine-readable name entity-service gave a refusal, passed through unchanged
+        on the 400, 403, 409 and 422 of PATCH /change-requests/{id} and on the 403 and
+        409 of POST /change-requests/{id}/approvals/decision; it is omitted when the
+        refusal has none, which is the body this API has always returned, so a client
+        treats its absence, and a value it does not know, as "no more specific than the
+        status". The status and the message are the same with or without it.
       properties:
         message:
           type: string
+        errorCode:
+          type: string
+          description: >-
+            Stable machine-readable name of the refusal. Named so far, the refusals of a
+            customer's answer to a change request and of the approvals decision route:
+            `change_request_on_hold` (409), `change_request_schedule_changed` (409),
+            `change_request_approval_not_pending` (409: the approval is no longer
+            pending), `change_request_not_proposable` (409), `change_request_not_asked`
+            (403: not asked on the customer group's stage) and `change_request_forbidden`
+            (403: the change request's creator, or a user who may not decide an internal
+            stage). The list grows, so this is deliberately not a closed enum.
+          example: change_request_approval_not_pending
 
     HealthDependenciesResponse:
       type: object
@@ -13525,8 +13559,10 @@ components:
       additionalProperties: false
       description: >
         Any combination of fields may be supplied; at least one is required.
-        Omitted fields are left unchanged. isCustomerApproved, isCustomerReviewed,
-        and requestApproval are mutually exclusive: at most one may be set.
+        Omitted fields are left unchanged. isCustomerApproved and isCustomerReviewed
+        are the customer's own answer, not an edit: any value but null is refused (a
+        400, no upstream call), see each. The schema still declares that at most one of
+        isCustomerApproved, isCustomerReviewed and requestApproval may be set.
       allOf:
         - not:
             required: [isCustomerApproved, isCustomerReviewed]
@@ -13683,7 +13719,7 @@ components:
             NOT ACCEPTED from the portal (any value but null is a 400, no upstream
             call): the customer's approval is the customer's own decision, given in the
             Customer Portal, and no staff action records it on their behalf (a
-            compliance rule: ServiceNow's record of it is audited). Message:
+            compliance rule: the change request's record of it is audited). Message:
             `isCustomerApproved cannot be set on the customer's behalf: the customer's
             approval can only be given by the customer in the Customer Portal`.
         isCustomerReviewed:
@@ -13698,8 +13734,8 @@ components:
           type: boolean
           description: >-
             Transitions the change request from New to Assess and requests
-            approval. Mutually exclusive with isCustomerApproved and
-            isCustomerReviewed.
+            approval. Not combinable with isCustomerApproved or isCustomerReviewed
+            (the customer's own answer, refused for every caller of this API).
         confirmCustomerUpdatedDate:
           type: string
           enum: [agree]
@@ -14579,6 +14615,15 @@ components:
       type: object
       nullable: true
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one,
+            and for a search that sets groupBy (its totals are the bucket counts).
         filters:
           $ref: '#/components/schemas/CaseSearchFilters'
         sortBy:
@@ -14609,7 +14654,8 @@ components:
             $ref: '#/components/schemas/CaseSearchView'
         total:
           type: integer
-          description: Total number of matching cases
+          description: >-
+            Total number of matching cases. -1 when the request set skipTotal: the count was not run, so there is no total (not a lower bound).
         limit:
           type: integer
         offset:
@@ -18359,6 +18405,14 @@ components:
       type: object
       nullable: true
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -18528,7 +18582,8 @@ components:
             $ref: '#/components/schemas/ChangeRequestSearchView'
         total:
           type: integer
-          description: Total number of matching change requests
+          description: >-
+            Total number of matching change requests. -1 when the request set skipTotal: the count was not run, so there is no total (not a lower bound).
         limit:
           type: integer
         offset:
@@ -19590,6 +19645,14 @@ components:
     ConversationSearchPayload:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -19675,7 +19738,8 @@ components:
             $ref: '#/components/schemas/ConversationView'
         total:
           type: integer
-          description: Total number of matching conversations
+          description: >-
+            Total number of matching conversations. -1 when the request set skipTotal: the count was not run, so there is no total (not a lower bound).
         limit:
           type: integer
         offset:
@@ -20328,6 +20392,14 @@ components:
     IncidentSearchPayload:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -20410,7 +20482,8 @@ components:
             $ref: '#/components/schemas/Incident'
         total:
           type: integer
-          description: Total number of matching incidents
+          description: >-
+            Total number of matching incidents. -1 when the request set skipTotal: the count was not run, so there is no total (not a lower bound).
         limit:
           type: integer
         offset:
@@ -21071,6 +21144,14 @@ components:
     ProblemSearchPayload:
       type: object
       properties:
+        skipTotal:
+          type: boolean
+          description: >-
+            When true, the search does not count every matching record: the
+            response's `total` is -1 and only the requested page is read. For
+            callers that never show a total (global search shows a handful of
+            hits). Defaults to false, which returns the exact total as before.
+            Ignored on the ServiceNow data source, which always reports one.
         filters:
           type: object
           properties:
@@ -21141,7 +21222,8 @@ components:
             $ref: '#/components/schemas/Problem'
         total:
           type: integer
-          description: Total number of matching problems
+          description: >-
+            Total number of matching problems. -1 when the request set skipTotal: the count was not run, so there is no total (not a lower bound).
         limit:
           type: integer
         offset:

@@ -219,7 +219,7 @@ func validateChangeRequestCustomerGateFlags(body []byte) string {
 
 // The customer's own answer is the customer's: nobody in the CSM portal (WSO2
 // staff, every caller of this BFF) records the customer's approval or review on
-// the customer's behalf -- the answer is the customer's decision and ServiceNow's
+// the customer's behalf -- the answer is the customer's decision and the change request's
 // record of it is audited. isCustomerApproved / isCustomerReviewed are that answer,
 // which the customer gives in the Customer Portal, so a PATCH that carries either
 // (true or false, alone or with a state) is refused here with the entity service's
@@ -446,12 +446,13 @@ func (h *ChangeRequestHandler) GetChangeRequestLinkOptions(w http.ResponseWriter
 // stage ...", or -- a 409 -- "this approval is no longer pending: the change
 // request is in Closed, but the Review stage can only be decided while it is in
 // Review") is only useful if the approver can read why; every other failure
-// keeps the generic mapping.
+// keeps the generic mapping. The refusal's machine-readable errorCode, when
+// entity-service names one (upstreamErrorCode), goes on with it.
 func mapApprovalDecisionError(w http.ResponseWriter, err error, fallbackMsg string) {
 	var apiErr *apierror.Error
 	if errors.As(err, &apiErr) && (apiErr.StatusCode == http.StatusForbidden || apiErr.StatusCode == http.StatusConflict) {
 		if msg := upstreamErrorMessageStrict(apiErr.Body, ""); msg != "" {
-			writeError(w, apiErr.StatusCode, msg)
+			writeErrorCode(w, apiErr.StatusCode, msg, upstreamErrorCode(apiErr.Body))
 			return
 		}
 	}

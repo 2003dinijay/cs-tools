@@ -61,17 +61,28 @@ func mapReferenceTableItems(items []entity.ReferenceTableItem) []ReferenceItem {
 }
 
 // restrictedChangeRequestStateIDs are excluded from ProjectFilterOptions'
-// changeRequestStates — ServiceNow's own numeric ids for the two pre-approval
-// workflow states a customer is never shown (New, Assess).
+// changeRequestStates and the change-request stats' state counts: ServiceNow's own
+// numeric ids for the three pre-approval workflow states a customer is never shown
+// on that data source (New, Assess, Authorize).
 //
-// Authorize ("-3") is NOT one of them any more. A customer sees a change request
-// only once it was designated to them (it reached Customer Approval or Customer
-// Review and they were asked), and such a change request can be back in Authorize
-// (a time proposed or a Re-schedule of the older flow, which went through the CAB
-// again); it stays visible there, so the state filter has to offer it. New and
-// Assess cannot hold a visible change request: a change leaves New when approval
-// is requested and a designated one never returns to Assess.
-var restrictedChangeRequestStateIDs = map[string]bool{"-5": true, "-4": true}
+// A ServiceNow-sourced id is the one thing that tells the two data sources apart
+// here, and it decides what Authorize ("-3") means:
+//
+//   - On the ServiceNow data source nothing is designated to a customer: every
+//     change request is "legacy" and is visible in every state except these
+//     three, and ServiceNow's own search does not hide them (entity-service
+//     narrows a customer's search to the visible states and leaves these out of
+//     the vocabulary it serves, and this list is the second line). So "-3" is
+//     dropped, exactly like "-5" and "-4".
+//   - On the Postgres data source a change request is visible once it was
+//     designated to the customer, in whatever state it is in. A customer's
+//     proposed time and a Re-schedule keep the change in Customer Approval, but
+//     one that an older build sent back to Authorize (through the CAB again)
+//     waits there and stays on their list, so the state filter has to offer it.
+//     Its id there is the raw enum label ("AUTHORIZE", see
+//     restrictedChangeRequestStateLabels), never "-3", so it passes this check
+//     and is kept.
+var restrictedChangeRequestStateIDs = map[string]bool{"-5": true, "-4": true, "-3": true}
 
 // restrictedChangeRequestStateLabels is the Postgres-mode equivalent: on
 // that data source ReferenceDataRepository.EnumLabels (entity-service)
@@ -79,9 +90,14 @@ var restrictedChangeRequestStateIDs = map[string]bool{"-5": true, "-4": true}
 // number, so the id check above never matches there and these two would
 // leak into the response unfiltered without this. crStateIDs (see
 // change_request_enum_mapping.go) also has no entries for them, by the same
-// "no visible change request is ever in them" design, so they pass
-// normalizeChoices unchanged and keep their raw label -- matched here before
-// that happens.
+// "no visible change request is ever in them" design (a designated change
+// request left New when approval was requested and never returns to Assess), so
+// they pass normalizeChoices unchanged and keep their raw label -- matched here
+// before that happens.
+//
+// Authorize is not in this list: on the Postgres data source it is a state a
+// designated customer's change request waits in. Its ServiceNow-sourced id is
+// dropped by the id check above.
 //
 // Checked case-insensitively and kept alongside the id check above, not in
 // place of it: a Postgres-mode label is reliably UPPER_SNAKE, but this
@@ -462,8 +478,11 @@ type ProjectChangeRequestStats struct {
 // options: entity-service lists every state with a count, but a customer is only
 // counted the change requests designated to them and none of those is ever in
 // either, so they would be two rows of 0 under raw ids ("NEW", "ASSESS") no
-// screen has a name for. Authorize is kept, as {id: "-3", label: "Authorize"}:
-// a change request the customer proposed a new time for waits there.
+// screen has a name for. Authorize is kept on the Postgres data source, as
+// {id: "-3", label: "Authorize"}: a change request the customer proposed a new
+// time for waits there. On the ServiceNow data source (ids "-5", "-4", "-3") all
+// three are left out, as they are of the filter options: see
+// restrictedChangeRequestStateIDs.
 func MapProjectChangeRequestStats(r entity.ProjectChangeRequestStatsResponse) ProjectChangeRequestStats {
 	stateCount := make([]ReferenceItem, 0, len(r.StateCount))
 	for _, s := range mapChoiceListItems(r.StateCount) {

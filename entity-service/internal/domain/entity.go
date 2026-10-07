@@ -2867,6 +2867,12 @@ type SearchCasesRequest struct {
 	// caseGroupByFieldValues for the supported set. Requires ServiceNow data
 	// source.
 	GroupBy string `json:"groupBy,omitempty"`
+	// SkipTotal asks the search not to count every matching record. The response's
+	// total is then TotalNotComputed (-1) and only the requested page is read.
+	// For callers that never show a total, such as global search. Ignored by the
+	// ServiceNow-backed service, which always reports one, and when GroupBy is
+	// set (the totals are the bucket counts).
+	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
 // AggregateCasesRequest is the input for the dedicated case aggregate
@@ -4138,6 +4144,11 @@ type SearchChangeRequestsRequest struct {
 	Filters    SearchChangeRequestsFilters `json:"filters"`
 	SortBy     ChangeRequestSort           `json:"sortBy"`
 	Pagination Pagination                  `json:"pagination"`
+	// SkipTotal asks the search not to count every matching record. The response's
+	// total is then TotalNotComputed (-1) and only the requested page is read.
+	// For callers that never show a total, such as global search. Ignored by the
+	// ServiceNow-backed service, which always reports one.
+	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
 // AggregateChangeRequestsRequest is the input for the dedicated change request
@@ -5404,6 +5415,10 @@ type CallRequestSort struct {
 // SearchAllCallRequestsFilters holds optional filter criteria for the
 // standalone (not case-scoped) call request search.
 type SearchAllCallRequestsFilters struct {
+	// AssignedUserIDs filters to call requests on cases assigned to one of
+	// these users (optional). On the Postgres data source a call request whose
+	// own assignee is one of them also matches, so a call handed to someone
+	// other than the case owner still reaches them.
 	AssignedUserIDs []string               `json:"assignedUserIds"`
 	States          []CallRequestStateType `json:"states"`
 	// CaseStates filters to call requests whose parent case is in one of these
@@ -5414,8 +5429,11 @@ type SearchAllCallRequestsFilters struct {
 	// any of these states (optional). Inverse of CaseStates, and the two are
 	// independent: a request may carry either, both, or neither.
 	ExcludeCaseStates []CaseState `json:"excludeCaseStates"`
-	// AssignmentTeamIDs filters to call requests whose parent case is assigned
-	// to one of these teams (optional). Same UUID convention as AssignedUserIDs.
+	// AssignmentTeamIDs filters to call requests whose parent case belongs to
+	// one of these teams (optional). Same UUID convention as AssignedUserIDs.
+	// On the Postgres data source the team is the case's account CRE team
+	// (account.cre_team_id), the same one the case search's creTeam filter
+	// takes; on ServiceNow it is the case's assignment team.
 	AssignmentTeamIDs []string `json:"assignmentTeamIds"`
 }
 
@@ -5794,6 +5812,11 @@ type SearchIncidentsRequest struct {
 	Filters    SearchIncidentsFilters `json:"filters"`
 	SortBy     IncidentSort           `json:"sortBy"`
 	Pagination Pagination             `json:"pagination"`
+	// SkipTotal asks the search not to count every matching record. The response's
+	// total is then TotalNotComputed (-1) and only the requested page is read.
+	// For callers that never show a total, such as global search. Ignored by the
+	// ServiceNow-backed service, which always reports one.
+	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
 // AggregateIncidentsRequest is the input for the dedicated incident aggregate
@@ -6266,6 +6289,11 @@ type SearchProblemsFilters struct {
 type SearchProblemsRequest struct {
 	Filters    SearchProblemsFilters `json:"filters"`
 	Pagination Pagination            `json:"pagination"`
+	// SkipTotal asks the search not to count every matching record. The response's
+	// total is then TotalNotComputed (-1) and only the requested page is read.
+	// For callers that never show a total, such as global search. Ignored by the
+	// ServiceNow-backed service, which always reports one.
+	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
 // AggregateProblemsRequest is the input for the dedicated problem aggregate
@@ -6565,11 +6593,24 @@ type SearchConversationsFilters struct {
 	CreatedBy []string `json:"createdBy,omitempty"`
 }
 
+// TotalNotComputed is the total a search response reports when the request set
+// SkipTotal and the count was skipped: there is no total to report. It is not a
+// lower bound; callers that asked to skip it must not display it. Not every
+// search honours SkipTotal (the ServiceNow data source, a grouped case search and
+// the announcement registry report a total regardless), so a response only
+// carries it where the Postgres repository skipped the count.
+const TotalNotComputed = -1
+
 // SearchConversationsRequest is the input for POST /conversations/search.
 type SearchConversationsRequest struct {
 	Filters    SearchConversationsFilters `json:"filters"`
 	SortBy     ConversationSort           `json:"sortBy"`
 	Pagination Pagination                 `json:"pagination"`
+	// SkipTotal asks the search not to count every matching record. The response's
+	// total is then TotalNotComputed (-1) and only the requested page is read.
+	// For callers that never show a total, such as global search. Ignored by the
+	// ServiceNow-backed service, which always reports one.
+	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
 // SearchConversationView is the conversation representation returned in search results.
@@ -7837,13 +7878,21 @@ type SLAStatus struct {
 
 // SearchSLAStatusResponse is the response for GET /sla-status — every
 // currently-active (sla.is_active = true) clock across every case-like work
-// item, paginated. integrations/csm-notification-service polls this
-// periodically and diffs BusinessElapsedPercent against what it already
-// alerted on (see that repo's internal/slaengine) rather than this service
-// pushing individual tier-crossing notifications — this service has no
-// scheduling of its own now that there's nothing to schedule: the "sla" row
-// this reads already reflects ServiceNow's own SLA computation, pauses
-// included, with no separate due-date arithmetic to get out of sync.
+// item, paginated. An earlier design had integrations/csm-notification-service
+// poll this continuously and diff BusinessElapsedPercent against what it
+// already alerted on — abandoned (see that repo's own internal/slaengine/
+// client.go doc comment: a single page measured 6-34+ seconds against real
+// data, reliably tripping the gateway timeout) in favor of a Redis-based
+// engine that tracks and alerts on its own, reacting to case.* events
+// instead of polling this endpoint at all. That engine does still call this
+// endpoint once, at process startup, with ?source=csm — a reconciliation
+// pass that rebuilds its own Redis state from this durable record if Redis
+// was ever wiped (see this field's own `source` query param doc comment).
+// This service still has no scheduling of its own: the "sla" row this reads
+// already reflects ServiceNow's own SLA computation for a source=SERVICENOW
+// row, pauses included, with no separate due-date arithmetic of its own to
+// get out of sync; a source=CSM row is this service's own CSM-native engine
+// writing the same shape (see that engine's own CLAUDE.md section).
 type SearchSLAStatusResponse struct {
 	Statuses []SLAStatus `json:"statuses"`
 	Total    int         `json:"total"`
