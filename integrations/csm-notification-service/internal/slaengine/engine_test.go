@@ -68,13 +68,18 @@ func (s *fakeStore) DueMembers(_ context.Context, now time.Time) ([]string, erro
 // SetClock mirrors the real Store's own setClockScript semantics: display
 // fields always overwrite, but state/paused/alertedTier only initialize on
 // the first call for this key -- a later call (simulating a case.created
-// retry/replay) must never reset them. See redis.go's own doc comment.
+// retry/replay) must never reset them -- UNLESS StartedAt genuinely
+// changed (a new incarnation, e.g. a severity revision's fresh clock seen
+// via Reconcile), in which case alertedTier resets to 0 same as the real
+// setClockScript. See redis.go's own doc comment on both.
 func (s *fakeStore) SetClock(_ context.Context, caseID, clockType string, meta ClockMeta) error {
 	key := caseID + "|" + clockType
 	if existing, ok := s.clocks[key]; ok {
 		meta.State = existing.State
 		meta.Paused = existing.Paused
-		meta.AlertedTier = existing.AlertedTier
+		if existing.StartedAt.Equal(meta.StartedAt) {
+			meta.AlertedTier = existing.AlertedTier
+		}
 	}
 	s.clocks[key] = meta
 	return nil
@@ -114,11 +119,11 @@ func (s *fakeStore) AdvanceAlertedTier(_ context.Context, caseID, clockType stri
 	return nil
 }
 
-func (s *fakeStore) ClaimTier(_ context.Context, caseID, clockType string, tier int) (bool, error) {
+func (s *fakeStore) ClaimTier(_ context.Context, caseID, clockType string, tier int, startedAt time.Time) (bool, error) {
 	if s.failClaim {
 		return false, errors.New("claim failed")
 	}
-	key := tierClaimKey(caseID, clockType, tier)
+	key := tierClaimKey(caseID, clockType, tier, startedAt)
 	if s.claims[key] {
 		return false, nil
 	}
@@ -126,8 +131,8 @@ func (s *fakeStore) ClaimTier(_ context.Context, caseID, clockType string, tier 
 	return true, nil
 }
 
-func (s *fakeStore) ReleaseTier(_ context.Context, caseID, clockType string, tier int) error {
-	delete(s.claims, tierClaimKey(caseID, clockType, tier))
+func (s *fakeStore) ReleaseTier(_ context.Context, caseID, clockType string, tier int, startedAt time.Time) error {
+	delete(s.claims, tierClaimKey(caseID, clockType, tier, startedAt))
 	return nil
 }
 
@@ -468,7 +473,7 @@ func TestTick_PublishFailure_LeavesWakeEntryForRetry(t *testing.T) {
 	if _, stillWaiting := st.wake[wakeMember("case-1", "response", 50)]; !stillWaiting {
 		t.Error("wake entry removed despite a publish failure -- it should be retried")
 	}
-	if st.claims[tierClaimKey("case-1", "response", 50)] {
+	if st.claims[tierClaimKey("case-1", "response", 50, time.Time{})] {
 		t.Error("tier claim not released after a publish failure")
 	}
 }
@@ -509,7 +514,7 @@ func TestTick_ClaimLost_DropsWakeEntryWithoutAlerting(t *testing.T) {
 	st.wake[wakeMember("case-1", "response", 50)] = past
 	// Simulate a concurrent replica (or an earlier attempt) already holding
 	// the claim.
-	st.claims[tierClaimKey("case-1", "response", 50)] = true
+	st.claims[tierClaimKey("case-1", "response", 50, time.Time{})] = true
 
 	if err := e.Tick(context.Background(), time.Now()); err != nil {
 		t.Fatalf("Tick() error = %v, want nil", err)

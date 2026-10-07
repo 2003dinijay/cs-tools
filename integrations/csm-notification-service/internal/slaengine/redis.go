@@ -52,13 +52,21 @@ const clockKeyPrefix = "sla:clock:"
 // poll design's own tierTTL gave for its cursor keys.
 const clockTTL = 90 * 24 * time.Hour
 
-// tierClaimKeyPrefix namespaces one key per (caseID, clockType, tier) —
-// claimed via ClaimTier's Redis SETNX before Engine.alertTier ever runs, so
-// that if this service is ever deployed with more than one replica, only
-// the replica that wins the SETNX race sends that tier's alert. Ported
-// unchanged from the removed poll design's own TierStore — the reasoning
-// is identical: two replicas racing on the same due wake member must not
-// both alert.
+// tierClaimKeyPrefix namespaces one key per (caseID, clockType, tier,
+// startedAt) — claimed via ClaimTier's Redis SETNX before Engine.alertTier
+// ever runs, so that if this service is ever deployed with more than one
+// replica, only the replica that wins the SETNX race sends that tier's
+// alert. Ported from the removed poll design's own TierStore (same
+// reasoning: two replicas racing on the same due wake member must not both
+// alert), with one addition: startedAt is part of the key specifically so a
+// claim made under an OLD incarnation of this (caseID, clockType) pair (see
+// setClockScript's own doc comment on what "incarnation" means here) can
+// never suppress the alert for a genuinely new incarnation's own tier --
+// without it, a stale, unexpired claim key from before a severity revision
+// would make ClaimTier report claimed=false for the new clock's first real
+// crossing, and processDueMember would then silently drop that wake entry
+// forever, same as the matching alertedTier bug this change's sibling fix
+// addresses.
 const tierClaimKeyPrefix = "sla:tier-claimed:"
 
 // ClockMeta is one (caseID, clockType) clock's full Redis-held state —
@@ -108,8 +116,8 @@ func clockKey(caseID, clockType string) string {
 	return clockKeyPrefix + caseID + "|" + clockType
 }
 
-func tierClaimKey(caseID, clockType string, tier int) string {
-	return tierClaimKeyPrefix + caseID + "|" + clockType + "|" + strconv.Itoa(tier)
+func tierClaimKey(caseID, clockType string, tier int, startedAt time.Time) string {
+	return tierClaimKeyPrefix + caseID + "|" + clockType + "|" + strconv.Itoa(tier) + "|" + strconv.FormatInt(startedAt.Unix(), 10)
 }
 
 // AddWake schedules member to become due at at.
@@ -154,7 +162,27 @@ func (s *Store) DueMembers(ctx context.Context, now time.Time) ([]string, error)
 // and paused back to false -- re-arming wake entries for a clock that was
 // already genuinely finished, and firing a false breach alert the next
 // time Tick finds one of them due.
+//
+// The one exception: a genuinely NEW incarnation of the same (caseID,
+// clockType) pair -- entity-service's own ReviseCaseClocks cancels a case's
+// existing clocks and registers entirely fresh ones (a new start_on, no
+// relation to the old elapsed time) on a severity change, and
+// Engine.Reconcile reads whichever row is currently active, so it can see a
+// case's clock jump to a new startedAt with no event in between telling
+// this engine so. Detected here by comparing the hash's current startedAt
+// to the incoming one: a genuine change resets alertedTier to 0 (a
+// replay of the SAME incarnation leaves it alone, via the HSETNX below,
+// same as always) -- without this, a tier already alerted under the OLD
+// incarnation would permanently block Tick from ever alerting the NEW
+// incarnation's own tiers (processDueMember's own "AlertedTier >= tier"
+// check has no notion of "that was a different clock"). See ClaimTier's
+// own doc comment for the matching half of this fix -- a stale tier claim
+// from the old incarnation needs the same treatment.
 var setClockScript = redis.NewScript(`
+local previousStartedAt = redis.call('HGET', KEYS[1], 'startedAt')
+if previousStartedAt and previousStartedAt ~= ARGV[8] then
+	redis.call('HSET', KEYS[1], 'alertedTier', '0')
+end
 redis.call('HSET', KEYS[1],
 	'caseNumber', ARGV[1], 'wso2CaseId', ARGV[2], 'caseTitle', ARGV[3],
 	'caseType', ARGV[4], 'product', ARGV[5], 'team', ARGV[6], 'priority', ARGV[7],
@@ -266,21 +294,27 @@ func (s *Store) AdvanceAlertedTier(ctx context.Context, caseID, clockType string
 	return advanceAlertedTierScript.Run(ctx, s.rdb, []string{clockKey(caseID, clockType)}, tier, int(clockTTL.Seconds())).Err()
 }
 
-// ClaimTier atomically claims (caseID, clockType, tier) via Redis SETNX —
-// claimed=true means this call is the one that just claimed it and should
-// go on to alert; claimed=false means some other call (a concurrent
-// replica, or an earlier attempt) already holds the claim.
-func (s *Store) ClaimTier(ctx context.Context, caseID, clockType string, tier int) (claimed bool, err error) {
-	return s.rdb.SetNX(ctx, tierClaimKey(caseID, clockType, tier), 1, clockTTL).Result()
+// ClaimTier atomically claims (caseID, clockType, tier) under the clock's
+// current incarnation (startedAt — see tierClaimKeyPrefix's own doc comment
+// for why this is part of the key) via Redis SETNX — claimed=true means
+// this call is the one that just claimed it and should go on to alert;
+// claimed=false means some other call (a concurrent replica, an earlier
+// attempt, or a stale claim from the SAME incarnation already handled)
+// already holds the claim. Callers pass the clock's own meta.StartedAt
+// (from GetClock), not a value they compute themselves, so a claim is
+// always scoped to whichever incarnation that caller actually observed.
+func (s *Store) ClaimTier(ctx context.Context, caseID, clockType string, tier int, startedAt time.Time) (claimed bool, err error) {
+	return s.rdb.SetNX(ctx, tierClaimKey(caseID, clockType, tier, startedAt), 1, clockTTL).Result()
 }
 
 // ReleaseTier gives back a claim made by ClaimTier — called when a claimed
 // tier's alert fails to send (the Kafka publish specifically — see
 // Engine.alertTier's own doc comment for why a Chat-send failure doesn't
 // trigger this), so a later tick can retry it instead of losing it for
-// good.
-func (s *Store) ReleaseTier(ctx context.Context, caseID, clockType string, tier int) error {
-	return s.rdb.Del(ctx, tierClaimKey(caseID, clockType, tier)).Err()
+// good. startedAt must be the same incarnation value the matching ClaimTier
+// call used, or this deletes nothing (a different key).
+func (s *Store) ReleaseTier(ctx context.Context, caseID, clockType string, tier int, startedAt time.Time) error {
+	return s.rdb.Del(ctx, tierClaimKey(caseID, clockType, tier, startedAt)).Err()
 }
 
 func boolString(b bool) string {

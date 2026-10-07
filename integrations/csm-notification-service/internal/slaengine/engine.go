@@ -67,8 +67,8 @@ type store interface {
 	SetPaused(ctx context.Context, caseID, clockType string, paused bool) error
 	SetState(ctx context.Context, caseID, clockType, state string) error
 	AdvanceAlertedTier(ctx context.Context, caseID, clockType string, tier int) error
-	ClaimTier(ctx context.Context, caseID, clockType string, tier int) (claimed bool, err error)
-	ReleaseTier(ctx context.Context, caseID, clockType string, tier int) error
+	ClaimTier(ctx context.Context, caseID, clockType string, tier int, startedAt time.Time) (claimed bool, err error)
+	ReleaseTier(ctx context.Context, caseID, clockType string, tier int, startedAt time.Time) error
 }
 
 // eventPublisher abstracts eventbus.Producer for testability.
@@ -352,7 +352,7 @@ func (e *Engine) processDueMember(ctx context.Context, member string) error {
 		return e.store.RemoveWake(ctx, member)
 	}
 
-	claimed, err := e.store.ClaimTier(ctx, caseID, clockType, tier)
+	claimed, err := e.store.ClaimTier(ctx, caseID, clockType, tier, meta.StartedAt)
 	if err != nil {
 		return fmt.Errorf("claim tier %d for %s/%s: %w", tier, caseID, clockType, err)
 	}
@@ -361,7 +361,7 @@ func (e *Engine) processDueMember(ctx context.Context, member string) error {
 	}
 
 	if err := e.alertTier(ctx, meta, caseID, clockType, tier); err != nil {
-		if releaseErr := e.store.ReleaseTier(ctx, caseID, clockType, tier); releaseErr != nil {
+		if releaseErr := e.store.ReleaseTier(ctx, caseID, clockType, tier, meta.StartedAt); releaseErr != nil {
 			slog.ErrorContext(ctx, "slaengine: failed to release tier claim after a failed publish, tier may be stuck until it expires", "caseId", caseID, "clockType", clockType, "tier", tier, "err", releaseErr)
 		}
 		return fmt.Errorf("alert tier %d for %s/%s: %w", tier, caseID, clockType, err)
@@ -571,9 +571,14 @@ func (e *Engine) reconcileClock(ctx context.Context, c activeSLAClock, now time.
 			slog.ErrorContext(ctx, "slaengine: reconcile: failed to pre-claim already-past tiers", "caseId", c.CaseID, "clockType", c.ClockType, "tier", highestPastTier, "err", err)
 		}
 	}
-	if c.IsPaused {
-		e.setPaused(ctx, c.CaseID, c.ClockType, true)
-	}
+	// Always applied, not just when true: the durable row is the source of
+	// truth for this flag during reconciliation, and Redis may currently
+	// hold the opposite value (e.g. paused while Redis was down, then
+	// resumed before this reconciliation pass runs) -- only ever setting
+	// true here would leave a stale paused=true in Redis forever, which
+	// Tick's own "drop if paused" check (processDueMember) would then
+	// silently swallow every future tier crossing for, never alerting.
+	e.setPaused(ctx, c.CaseID, c.ClockType, c.IsPaused)
 }
 
 // RunTicker calls Tick every interval until ctx is done. Run from its own
