@@ -190,7 +190,9 @@ func TestSNChangeRequestService_SearchChangeRequests_NumberFilterPassedThrough(t
 // verifies the New/Assess/Authorize states -- already fully wired end-to-end
 // (domain enum, SN key mapping) except for validChangeRequestState -- no longer
 // fail search validation and reach the outgoing payload with the correct SN
-// numeric state keys (-5/-4/-3).
+// numeric state keys (-5/-4/-3). The caller is staff (an unrestricted scope):
+// a customer is never sent these three states, see
+// sn_change_request_customer_view_test.go.
 func TestSNChangeRequestService_SearchChangeRequests_NewAssessAuthorizeStatesAccepted(t *testing.T) {
 	var gotBody map[string]any
 	mux := http.NewServeMux()
@@ -214,7 +216,7 @@ func TestSNChangeRequestService_SearchChangeRequests_NewAssessAuthorizeStatesAcc
 			},
 		},
 	}
-	if _, err := svc.SearchChangeRequests(contextWithUserIDToken("token"), req); err != nil {
+	if _, err := svc.SearchChangeRequests(snStaffCtx(), req); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
@@ -908,7 +910,9 @@ func TestSNChangeRequestService_GetChangeRequest_MapsFieldParityKeys(t *testing.
 // returns the raw internal state value as the bucket key (e.g. "-5" for
 // "New") and the human-readable label separately. The platform's own
 // ChangeRequestState enum strings must come back as the key so the frontend
-// can round-trip it into a states filter. This test pins that remap.
+// can round-trip it into a states filter. This test pins that remap, for staff
+// (a customer is not handed the New / Assess buckets at all: see
+// sn_change_request_customer_view_test.go).
 func TestSNChangeRequestService_AggregateChangeRequests_StateGroupByRemapsKeyToDomainEnum(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/change-requests/aggregate", func(w http.ResponseWriter, r *http.Request) {
@@ -926,7 +930,7 @@ func TestSNChangeRequestService_AggregateChangeRequests_StateGroupByRemapsKeyToD
 	client := newTestSNClient(t, mux)
 	svc := NewServiceNowChangeRequestService(client)
 
-	resp, err := svc.AggregateChangeRequests(contextWithUserIDToken("token"), domain.AggregateChangeRequestsRequest{
+	resp, err := svc.AggregateChangeRequests(snStaffCtx(), domain.AggregateChangeRequestsRequest{
 		GroupBy: "state",
 	})
 	if err != nil {

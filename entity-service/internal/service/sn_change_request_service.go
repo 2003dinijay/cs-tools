@@ -309,6 +309,23 @@ func (s *snChangeRequestService) SearchChangeRequests(ctx context.Context, req d
 
 	token := middleware.UserIDTokenFromContext(ctx)
 
+	// A customer is only ever sent the states a customer may see, whatever they
+	// asked for (see sn_change_request_customer_view.go); staff are sent what they
+	// asked for.
+	states := req.Filters.States
+	customerView := customerViewApplies(ctx)
+	if customerView {
+		var none bool
+		if states, none = customerChangeRequestStates(states); none {
+			return domain.SearchChangeRequestsResponse{
+				ChangeRequests: []domain.SearchChangeRequestView{},
+				Total:          0,
+				Limit:          req.Pagination.Limit,
+				Offset:         req.Pagination.Offset,
+			}, nil
+		}
+	}
+
 	var snSortBy *snCRSort
 	if req.SortBy.Field != "" {
 		snField := snCRSortFieldMap[req.SortBy.Field]
@@ -323,7 +340,7 @@ func (s *snChangeRequestService) SearchChangeRequests(ctx context.Context, req d
 		Filters: snChangeRequestFilters{
 			ProjectIDs:         uuidsToSysids(req.Filters.ProjectIDs),
 			SearchQuery:        req.Filters.SearchQuery,
-			StateKeys:          domainCRStatesToSNIDs(req.Filters.States),
+			StateKeys:          domainCRStatesToSNIDs(states),
 			ImpactKeys:         domainCRImpactsToSNIDs(req.Filters.Impacts),
 			ClosedStartDate:    formatSNDateTimeUTC(req.Filters.ClosedStartDate),
 			ClosedEndDate:      formatSNDateTimeUTC(req.Filters.ClosedEndDate),
@@ -394,9 +411,19 @@ func (s *snChangeRequestService) SearchChangeRequests(ctx context.Context, req d
 		views = append(views, view)
 	}
 
+	total := snResp.TotalRecords
+	if customerView {
+		// ServiceNow was asked for the visible states only, so nothing should be
+		// dropped; a change request it returned anyway is not shown (and not counted).
+		var dropped int
+		if views, dropped = dropHiddenChangeRequests(ctx, views); dropped > 0 {
+			total = max(total-dropped, len(views))
+		}
+	}
+
 	return domain.SearchChangeRequestsResponse{
 		ChangeRequests: views,
-		Total:          snResp.TotalRecords,
+		Total:          total,
 		Limit:          req.Pagination.Limit,
 		Offset:         req.Pagination.Offset,
 	}, nil
@@ -465,11 +492,21 @@ func (s *snChangeRequestService) AggregateChangeRequests(ctx context.Context, re
 
 	token := middleware.UserIDTokenFromContext(ctx)
 
+	// The same customer view as SearchChangeRequests.
+	states := req.Filters.States
+	customerView := customerViewApplies(ctx)
+	if customerView {
+		var none bool
+		if states, none = customerChangeRequestStates(states); none {
+			return domain.AggregateResponse{Groups: []domain.AggregateBucket{}}, nil
+		}
+	}
+
 	payload := snChangeRequestAggregatePayload{
 		Filters: snChangeRequestFilters{
 			ProjectIDs:         uuidsToSysids(req.Filters.ProjectIDs),
 			SearchQuery:        req.Filters.SearchQuery,
-			StateKeys:          domainCRStatesToSNIDs(req.Filters.States),
+			StateKeys:          domainCRStatesToSNIDs(states),
 			ImpactKeys:         domainCRImpactsToSNIDs(req.Filters.Impacts),
 			ClosedStartDate:    formatSNDateTimeUTC(req.Filters.ClosedStartDate),
 			ClosedEndDate:      formatSNDateTimeUTC(req.Filters.ClosedEndDate),
@@ -514,6 +551,9 @@ func (s *snChangeRequestService) AggregateChangeRequests(ctx context.Context, re
 			}
 			// else: leave the key as-is, mirroring snCRStateLabelToString's
 			// own defensive fallback for an unrecognized label.
+		}
+		if customerView {
+			resp = dropHiddenStateBuckets(ctx, resp)
 		}
 	}
 	return resp, nil

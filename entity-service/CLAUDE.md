@@ -4098,10 +4098,12 @@ the calendar, the exports -- and **404 `change request not found`** on every by-
 read and write (detail, approvals, decision, PATCH of any field, comments, attachments),
 the same answer for a change request that does not exist, so an id cannot be probed.
 This supersedes the earlier interim state narrowing (backend-v2's
-`restrictToCustomerVisibleStates`, the webapp's `EXCLUDED_ALLOWED`), which must be
-removed with it -- left in, it would keep hiding a designated change request in
-Authorize: with this rule a designated change request in Authorize is shown and a
-non-designated one in Customer Approval is not.
+`restrictToCustomerVisibleStates`, the webapp's `EXCLUDED_ALLOWED`) **on the Postgres
+data source**, where it must be removed with it -- left in, it would keep hiding a
+designated change request in Authorize: with this rule a designated change request in
+Authorize is shown and a non-designated one in Customer Approval is not. The ServiceNow
+data source has no designation, so the state list stays there, applied by this service
+(see "The ServiceNow data source" below), not by a BFF or a webapp.
 
 **Where it is enforced: Go SQL, not a row-level-security policy.** The legacy test needs
 the state, the creation time and a configured instant; a policy would need a new session
@@ -4162,6 +4164,53 @@ bypass lint) fails the build when an exported repository function touching a cha
 request or its approvals neither applies the fragment / guard nor carries a
 `// crvis:<reason>` comment, and when a method of the customer-facing interfaces is
 unclassified.
+
+**The ServiceNow data source (`DATA_SOURCE=servicenow`, the pure one).** Nothing is
+designated to a customer there (ServiceNow runs the approvals; this service asks nobody),
+so every change request is legacy by definition and the rule is only its state list:
+everything past Authorize, **never New / Assess / Authorize**. ServiceNow's own search
+does not apply that list: it returns every state a caller names and, for a caller that
+names none, every state there is. The customer portals used to hide the three by never
+asking for them (the webapp's allowed-state list), which no caller that asks differently
+(the microapp's "all" tab sends no state at all, a direct API call) was held to, so
+`sn_change_request_customer_view.go` applies the rule here, for every caller that is not
+staff:
+
+* a search or aggregate is sent only the visible states (`customerChangeRequestStates`):
+  the requested ones that are visible, **every visible state when none is named** (never
+  "no state filter"), and a request that names only hidden states is answered with an
+  empty page without a request to ServiceNow; validation (a malformed state is still a
+  400) runs first;
+* what ServiceNow answers is checked again: a change request in a state that is not in the
+  visible list (also one this service has no word for) is dropped and not counted, and the
+  number dropped is logged (`dropHiddenChangeRequests`; nothing is expected to be dropped);
+* `GET /projects/{id}/metadata` leaves New, Assess and Authorize out of
+  `changeRequestStates` (by ServiceNow key or by label), so the state filter a BFF builds
+  from it cannot name them.
+
+"Staff" is a request whose scope is `Unrestricted`: `callerIdentityMiddleware` already
+resolves every request once (`AccessService.ResolveScope`: the CSM portal's backend for a
+user of `CSM_PORTAL_USER_DOMAIN`, the `M2M_CLIENT_IDS` clients, an INTERNAL user where a
+database is there to look them up) and attaches the scope to the context, and
+`customerViewApplies` reads it. **Every other request, including one for which no scope
+could be resolved (no identity, an unknown client, the customer portal's client with no
+database to look the user up in), gets the customer view: fail closed**; the customer
+portal's own client is never unrestricted, even if it is also listed as machine-to-machine
+(`ResolveScope` checks it first). This is the line the Postgres rule draws (`crViewer`), so
+a ServiceNow deployment shows its staff New / Assess / Authorize exactly when they resolve
+as unrestricted for every other scoped endpoint; `TestServiceNowRouter_*` drive the real
+router and fail if that stops being true.
+
+Not changed on this data source, by design or for want of a source: the by-id reads and
+writes (detail, approvals, decision, PATCH, comments) stay ServiceNow's own decision (a
+customer needs the id, which only a list gives them; ids are not guessable); the counters
+of the change request stats (`totalCount`, `outstandingCount`, `activeCount`) are
+computed by ServiceNow over every state (backend-v2 leaves the New / Assess / Authorize
+*rows* of `stateCount` out, by ServiceNow key). Tests:
+`sn_change_request_customer_view_test.go` and `server/sn_change_request_customer_view_route_test.go`
+(a fake ServiceNow that answers every state whatever it was asked; the second drives the
+real router), and `TestChangeRequestVisibilityIntegration_NamingAStateNeverWidens*` for the
+Postgres data source (naming a state only narrows).
 
 **Legacy and `CR_STRICT_VISIBILITY_FROM`.** Change requests migrated or synced from
 ServiceNow, and the ones raised before this rule, were never asked through our flow:

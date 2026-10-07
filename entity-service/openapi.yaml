@@ -3470,6 +3470,11 @@ paths:
       description: >
         Postgres: choice lists are read live from the database enums; severityBasedAllocationTime
         and the feature access flags have no Postgres source yet and come back empty/false.
+
+        ServiceNow: for a CUSTOMER (every caller whose scope is not unrestricted) the
+        `changeRequestStates` choice list leaves out New, Assess and Authorize, the three
+        states a customer's change requests are never shown in there (see POST
+        /change-requests/search), so a state filter built from this list cannot name them.
       operationId: getProjectMetadata
       parameters:
         - name: id
@@ -7681,6 +7686,14 @@ paths:
         project's registered contacts past Authorize, as it always was. Any other change
         request is absent from the list and its counts and is a 404 by id, for every read
         and write.
+
+        ServiceNow data source: nothing is designated there, so every change request is
+        legacy and a CUSTOMER (every caller whose scope is not unrestricted, so not WSO2
+        staff) is sent only the states past Authorize. `filters.states` can only narrow that set: none
+        named means every state past Authorize (never "no state filter"), and naming only
+        `new`, `assess` and/or `authorize` is answered with an empty list without asking
+        ServiceNow. A change request ServiceNow returns in any other state is dropped.
+        The same applies to the aggregate by state.
       operationId: searchChangeRequests
       requestBody:
         required: true
