@@ -93,6 +93,16 @@ export interface ScheduleAbsenceKind {
   /** No longer offered. Still served so the days already marked with it keep
    *  their label, but a picker must not offer it. */
   retired?: boolean;
+  /** The team a span of this kind is spent working for -- the Brazil
+   *  rotation moves someone to the Americas team. Such a span is filed under
+   *  that team, so the roster shows the person there for its dates. */
+  movesToTeamKey?: string;
+  /** That stint is rota work on the other team, so the person is not listed
+   *  as off the rota on its days. */
+  worksRotaThere?: boolean;
+  /** The standing window a span of this kind is drawn as on the roster: on
+   *  the team it moves someone to, they work its normal hours (NLK, LK). */
+  showsAsShiftCode?: string;
 }
 
 /** One team the rota is run for, served so no client holds the list. */
@@ -105,6 +115,17 @@ export interface ScheduleTeam {
   /** The rota this team's type belongs to; absent for a team on no named
    *  rota (CRE's teams, Americas). */
   rotaCode?: string;
+  /** Everyone on the team, with their role. Older servers do not send it. */
+  members?: ScheduleTeamMember[];
+  /** The standing window a member's ordinary weekday is (Americas cover for
+   *  the Americas team). Absent means Regular hours. */
+  defaultShiftCode?: string;
+}
+
+/** One member of a rota team. role is as stored: engineer (or member), lead,
+ *  americas_team_lead, ... */
+export interface ScheduleTeamMember extends ScheduleEngineer {
+  role: string;
 }
 
 export interface ScheduleCatalogue {
@@ -158,6 +179,9 @@ export interface ScheduleAbsence {
   /** Who an allocation is for -- the customer, or the product team for RnD.
    *  The kind says what sort of time it is; this says for whom. */
   allocatedTo?: string;
+  /** The person's own team, on a span filed under the team a kind moved them
+   *  to (teamKey). Its lead still owns the span. */
+  homeTeamKey?: string;
 }
 
 /** One leave or allocation span as a roster cell hands it to the picker, so
@@ -169,6 +193,8 @@ export interface CellAbsence {
   /** Absent for a span that runs until further notice. */
   endsOn?: string;
   allocatedTo?: string;
+  /** The person's own team, on a span that moved them to another one. */
+  homeTeamKey?: string;
 }
 
 export interface SearchScheduleAssignmentsPayload {
