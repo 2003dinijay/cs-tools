@@ -742,7 +742,7 @@ describe("a customer's proposed time", () => {
       expect(note?.text).toMatch(/Approving now approves the current schedule \(.*February 20, 2030.*\), not the proposed time\./);
     });
 
-    it("says a colleague's proposal, or one whose proposer is not recorded, neutrally", () => {
+    it("says a colleague's proposal neutrally (and so a pending one an older backend sends with nothing about who proposed it)", () => {
       for (const extra of [{ proposedByViewer: false }, {}]) {
         const note = getProposalNote(cr(approval, proposal("pending", extra)), true);
         expect(note?.kind).toBe("waiting");

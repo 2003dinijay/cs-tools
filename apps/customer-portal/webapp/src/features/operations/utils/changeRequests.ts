@@ -430,8 +430,9 @@ export type ProposalNote = {
 /**
  * The note the details page keeps on screen while a proposed time is in play.
  *
- * - Waiting: the proposed time waits for WSO2 (the viewer's own, or a colleague's
- *   or one whose proposer is not recorded, which is said neutrally). When the
+ * - Waiting: the proposed time waits for WSO2 (the viewer's own, or a colleague's,
+ *   which is said neutrally; a stored time nobody is recorded as having proposed
+ *   is never sent to a customer as waiting: the backend reads it `unanswered`). When the
  *   viewer can still answer, it also says that Approve approves the CURRENT
  *   schedule, not the proposed time: the customer must not approve the wrong one.
  * - Not accepted: WSO2 did not accept it. The current window shown on the page is

@@ -76,9 +76,11 @@ export type ChangeRequestCustomerProposal = {
   answer: ChangeRequestProposalAnswer;
   /**
    * True when the signed-in customer made the pending proposal. False or omitted
-   * for a colleague's, and for one whose proposer nobody can name (a time
-   * proposed in the previous system, a date a WSO2 user wrote, or edited since): the page
-   * then says "a new time was proposed" and no more.
+   * for a colleague's: the page then says "a new time was proposed" and no more.
+   * A stored time nobody is recorded as having proposed (a date a WSO2 user wrote
+   * in the previous system, an old one) is never sent as pending to a customer:
+   * the backend reads it `unanswered`, history, so nothing tells a customer a time
+   * of theirs waits for WSO2.
    */
   proposedByViewer?: boolean;
 };

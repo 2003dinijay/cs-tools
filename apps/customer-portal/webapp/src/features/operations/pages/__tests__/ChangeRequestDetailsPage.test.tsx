@@ -188,7 +188,7 @@ describe("ChangeRequestDetailsPage", () => {
         expect(screen.queryByText(/reviewing this change request internally/)).not.toBeInTheDocument();
       });
 
-      it("says it neutrally for a colleague's proposal, or one whose proposer is not recorded", () => {
+      it("says it neutrally for a colleague's proposal (and for a pending one an older backend sends with nothing about who proposed it)", () => {
         for (const extra of [{ proposedByViewer: false }, {}]) {
           mocks.changeRequest.value = asked(proposal("pending", extra));
           const view = renderPage();
