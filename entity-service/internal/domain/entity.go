@@ -6462,8 +6462,11 @@ type SearchConversationsFilters struct {
 }
 
 // TotalNotComputed is the total a search response reports when the request set
-// SkipTotal: the count was not run, so there is no total to report. It is not a
-// lower bound; callers that asked to skip it must not display it.
+// SkipTotal and the count was skipped: there is no total to report. It is not a
+// lower bound; callers that asked to skip it must not display it. Not every
+// search honours SkipTotal (the ServiceNow data source, a grouped case search and
+// the announcement registry report a total regardless), so a response only
+// carries it where the Postgres repository skipped the count.
 const TotalNotComputed = -1
 
 // SearchConversationsRequest is the input for POST /conversations/search.

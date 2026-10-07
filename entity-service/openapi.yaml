@@ -15829,9 +15829,13 @@ components:
         total:
           type: integer
           description: >-
-            -1 when the request set skipTotal: the count was not run, so there is no
-            total (it is not a lower bound). Otherwise the exact number of
-            matching records.
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records. Three paths ignore skipTotal and never return -1: the
+            ServiceNow data source (its own reported total), a search with groupBy
+            (the bucket counts) and POST /announcements/registry/cases (the number
+            of cases returned).
         offset:
           type: integer
         limit:
@@ -16572,9 +16576,11 @@ components:
         total:
           type: integer
           description: >-
-            -1 when the request set skipTotal: the count was not run, so there is no
-            total (it is not a lower bound). Otherwise the exact number of
-            matching records.
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:
@@ -20257,9 +20263,11 @@ components:
         total:
           type: integer
           description: >-
-            -1 when the request set skipTotal: the count was not run, so there is no
-            total (it is not a lower bound). Otherwise the exact number of
-            matching records.
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:
@@ -21146,9 +21154,11 @@ components:
         total:
           type: integer
           description: >-
-            -1 when the request set skipTotal: the count was not run, so there is no
-            total (it is not a lower bound). Otherwise the exact number of
-            matching records.
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:
@@ -21526,9 +21536,11 @@ components:
         total:
           type: integer
           description: >-
-            -1 when the request set skipTotal: the count was not run, so there is no
-            total (it is not a lower bound). Otherwise the exact number of
-            matching records.
+            -1 only when the request set skipTotal and the count was skipped: there
+            is then no total (it is not a lower bound). Otherwise the total the
+            data source reports. On the Postgres data source that is the number of
+            matching records; the ServiceNow data source ignores skipTotal and
+            reports its own total.
         offset:
           type: integer
         limit:

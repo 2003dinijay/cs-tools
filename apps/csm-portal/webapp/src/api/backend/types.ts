@@ -66,8 +66,10 @@ export interface BeReorderSavedFilterViewPayload {
 }
 
 export interface BeSearchResponseBase {
-  /** Matching records, or -1 when the request set `skipTotal` (not counted, not
-   * a lower bound: never display it). */
+  /** Matching records, or -1 when the request set `skipTotal` and the count was
+   * skipped (not counted, not a lower bound: never display it). The ServiceNow
+   * data source and a grouped case search ignore `skipTotal` and report their own
+   * total, so only treat -1 as "no total", never the reverse. */
   total: number;
   limit: number;
   offset: number;
