@@ -75,9 +75,10 @@ export type ChangeRequestCustomerProposal = {
   endDate?: string | null;
   answer: ChangeRequestProposalAnswer;
   /**
-   * True when the signed-in customer made the pending proposal. Omitted when the
-   * backend cannot say who proposed it (a time proposed in ServiceNow, or
-   * edited since): the page then says "a new time was proposed" and no more.
+   * True when the signed-in customer made the pending proposal. False or omitted
+   * for a colleague's, and for one whose proposer nobody can name (a time
+   * proposed in ServiceNow, a date a WSO2 user wrote, or edited since): the page
+   * then says "a new time was proposed" and no more.
    */
   proposedByViewer?: boolean;
 };
