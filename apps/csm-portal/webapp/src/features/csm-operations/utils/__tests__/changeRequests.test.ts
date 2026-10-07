@@ -1268,7 +1268,7 @@ describe("anyApproverBeingAsked", () => {
   });
 });
 
-describe("a time the customer proposed (ServiceNow's customer_updated_on / confirmation pair)", () => {
+describe("a time the customer proposed (the previous system's customer_updated_on / confirmation pair)", () => {
   const PROPOSAL = { startOn: "2030-03-08T09:00:00Z", endOn: "2030-03-08T11:00:00Z", answer: "pending" };
   const PLANNED = { plannedStartOn: "2030-03-01 09:00:00", plannedEndOn: "2030-03-01 11:00:00" };
 

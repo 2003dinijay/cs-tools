@@ -316,7 +316,7 @@ export function isChangeRequestCreator(
 // ---------------------------------------------------------------------------
 // A time the customer proposed, and WSO2's answer to it
 //
-// ServiceNow's own mechanism, which our schema already carries: the customer's
+// The previous system's own mechanism, which our schema already carries: the customer's
 // proposal is written to `customer_updated_on` (a planned START) and the change
 // STAYS in Customer Approval, with the planned window untouched; WSO2 answers it
 // with "Agree" (Accept proposed time: the change goes straight to Scheduled, no
@@ -353,7 +353,7 @@ export interface CustomerProposalProposer {
  * The proposer of a pending proposal, or `null` when it is not recorded. The backend
  * names one only while the change request's last writer is still a registered contact
  * of the project (then that writer is the proposer; `proposerRecorded` says so); after any
- * later edit, a ServiceNow user writing the date (WSO2 users do too) or a sync rewrite there
+ * later edit, a user of the previous system writing the date (WSO2 users do too) or a sync rewrite there
  * is nobody to name, and the page must not guess: it says the proposer is not recorded.
  */
 export function customerProposalProposer(
@@ -377,7 +377,7 @@ export function customerProposalProposerLabel(proposer: CustomerProposalProposer
 export const PROPOSER_NOT_RECORDED = "The proposer is not recorded.";
 
 /**
- * What to do about it: ServiceNow lets WSO2 users write the proposed date too, and a date
+ * What to do about it: the previous system lets WSO2 users write the proposed date too, and a date
  * left over from an earlier round reads the same, so accepting it is the engineer's
  * explicit decision rather than the page's default.
  */

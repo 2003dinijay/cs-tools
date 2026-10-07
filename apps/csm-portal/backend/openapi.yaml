@@ -13741,7 +13741,7 @@ components:
           enum: [agree]
           description: >-
             ACCEPT PROPOSED TIME: WSO2's acceptance of the time the customer proposed
-            (ServiceNow's u_confirm_customer_updated_date). "agree" is the only value
+            (the previous system's u_confirm_customer_updated_date). "agree" is the only value
             (to decline, propose a different time). Sent alone, with only
             expectedCustomerUpdatedOn, expectedPlannedStartOn and expectedPlannedEndOn,
             all three required: the proposed start becomes the planned start (the planned
@@ -18710,7 +18710,7 @@ components:
       type: object
       required: [startOn, answer]
       description: >-
-        The conversation about a time the customer proposed, derived from ServiceNow's own
+        The conversation about a time the customer proposed, derived from the previous system's own
         columns (customer_updated_on, the customer's proposed plan START, and
         customer_updated_date_confirmation, WSO2's answer); present when customer_updated_on is
         set. Pass-through of the entity service's detail. While `answer` is "pending" the
@@ -18737,7 +18737,7 @@ components:
           description: >-
             While pending: true when the last writer of the change request is a registered contact
             of its project (then they proposed the time). False when it is not knowable -- a date
-            a WSO2 user wrote in ServiceNow, one left from an older cycle, or a proposal edited
+            a WSO2 user wrote in the previous system, one left from an older cycle, or a proposal edited
             over since -- and the page must say the proposer is not recorded.
         proposedByName:
           type: string

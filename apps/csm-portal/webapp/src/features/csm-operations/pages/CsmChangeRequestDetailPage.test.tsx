@@ -1397,7 +1397,7 @@ interface LcFake {
   /** Approvers the backend would provision from the CR's project contacts (empty = no eligible contact). */
   customerMembers: Array<{ id: string; name: string }>;
   /**
-   * ServiceNow's own proposal pair, as the backend holds it (`customer_updated_on` as an RFC 3339 instant, and WSO2's
+   * The previous system's own proposal pair, as the backend holds it (`customer_updated_on` as an RFC 3339 instant, and WSO2's
    * answer): the customer's proposed START and the Agree / Disagree. `proposer` is who the backend could still name
    * (the change's last writer, a registered contact); null = not recorded.
    */
@@ -1425,7 +1425,7 @@ function lcRfc3339(ms: number): string {
 }
 /**
  * The refusal of an Accept whose window would end after the last year every planned window is held to (entity-service
- * `msgAcceptTooFarAhead`: `customer_updated_on` is a column ServiceNow writes too, so a date left far ahead can sit there).
+ * `msgAcceptTooFarAhead`: `customer_updated_on` is a column the previous system writes too, so a date left far ahead can sit there).
  */
 function lcTooFarAheadMessage(proposedMs: number, endMs: number): string {
   return `the time the customer proposed (${lcRfc3339(proposedMs)}) is too far ahead to be accepted: the window would end after the year 2100 (${lcRfc3339(endMs)}), so use "Propose a different time" to ask the customer to approve another time`;
@@ -1871,7 +1871,7 @@ function lcSeed(
   const applyPatch = (input: { patch: { state?: string } }): void => {
     const target = input.patch.state;
     const from = lc.cr.state ?? "new";
-    // ACCEPT the customer's proposed time (ServiceNow's "Agree"): the backend's `acceptCustomerProposal`, in its order. One step:
+    // ACCEPT the customer's proposed time (the previous system's "Agree"): the backend's `acceptCustomerProposal`, in its order. One step:
     // the proposal becomes the planned window (the planned length kept), the answer is Agree and the change is Scheduled. No CAB,
     // no new customer request; the customer's own request is closed as any state change closes it; the customer's approval
     // outcome is NOT stamped (no staff action records it).
@@ -2590,7 +2590,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Roll back", () => {
 });
 
 /**
- * Re-schedule and the customer's proposed time: the Time Change loop, ServiceNow's own mechanism. The wire name is
+ * Re-schedule and the customer's proposed time: the Time Change loop, the previous system's own mechanism. The wire name is
  * `{state: "authorize"}` but the change NEVER leaves Customer Approval and never goes back through CAB: the change itself has not
  * changed. A Re-schedule asks the customer to approve the new time. A customer's PROPOSED time waits in Customer Approval (the
  * planned window untouched) until WSO2 answers it: "Accept proposed time" (the proposal becomes the planned window and the change
@@ -2794,7 +2794,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
   });
 
   /**
-   * The customer proposes a time. ServiceNow's own mechanism: the proposal waits in Customer Approval (the planned window is
+   * The customer proposes a time. The previous system's own mechanism: the proposal waits in Customer Approval (the planned window is
    * untouched, nothing else is written) until WSO2 answers it.
    */
   describe("the customer proposes a time", () => {
@@ -2992,7 +2992,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       view.unmount();
     });
 
-    // customer_updated_on is a column ServiceNow writes too: a date left far ahead must not become the planned window of a change.
+    // customer_updated_on is a column the previous system writes too: a date left far ahead must not become the planned window of a change.
     it("a proposed date whose window would end after the year 2100 holds Accept back in the backend's own words; proposing a different time stays open", () => {
       const view = seedProposal();
       lc.customerUpdatedOn = "2100-12-31T22:30:00Z"; // + the 2-hour planned length = 2101-01-01T00:30:00Z

@@ -177,7 +177,7 @@ function MetaCell({ label, children }: { label: string; children: ReactNode }): 
   );
 }
 
-/** WSO2's answer to a time the customer proposed (ServiceNow's Agree / Disagree), "—" while unanswered. */
+/** WSO2's answer to a time the customer proposed (the previous system's Agree / Disagree), "—" while unanswered. */
 function wso2AnswerLabel(raw?: string | null): string {
   const answer = raw?.trim().toLowerCase();
   return answer === "agree" ? "Agree" : answer === "disagree" ? "Disagree" : "—";
@@ -678,7 +678,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   };
 
   /**
-   * Accept the customer's proposed time (ServiceNow's "Agree"): the backend applies the proposal to
+   * Accept the customer's proposed time (the previous system's "Agree"): the backend applies the proposal to
    * the planned window and moves the change straight to Scheduled in one step. What is sent is the
    * proposal and the planned window the dialog showed, so a proposal or window that moved behind it
    * is refused in words (shown in the dialog) instead of accepting a time its reader never saw.

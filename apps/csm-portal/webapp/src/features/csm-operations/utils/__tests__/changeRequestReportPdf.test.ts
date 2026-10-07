@@ -67,7 +67,7 @@ describe("generateChangeRequestReportPdf — the Customer approved row", () => {
     expect(
       customerApprovedRow({ hasCustomerApproved: false, customerProposal: { startOn: "2030-03-08T09:00:00Z", answer: "agreed" } }),
     ).toBe("Proposed time accepted");
-    // The raw ServiceNow column says the same where the derived read model is absent.
+    // The raw column of the previous system says the same where the derived read model is absent.
     expect(customerApprovedRow({ hasCustomerApproved: false, confirmCustomerUpdatedDate: "agree" })).toBe("Proposed time accepted");
   });
 

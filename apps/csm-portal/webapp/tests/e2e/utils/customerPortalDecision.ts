@@ -96,7 +96,7 @@ export async function decideAsCustomer(
 /**
  * The customer `email` PROPOSES a new implementation time for change request `crId`, as the customer portal would
  * send it: `PATCH {plannedStartOn, plannedEndOn?}` to entity-service with the customer's own ID token. A proposal is a START
- * (ServiceNow's own `customer_updated_on`): the change STAYS in Customer Approval and the planned window is untouched until
+ * (the previous system's own `customer_updated_on`): the change STAYS in Customer Approval and the planned window is untouched until
  * WSO2 answers; `plannedEndOn`, when sent, must be the start plus the planned length. Resolves with the status and body
  * entity-service answered; the caller then reloads the CSM page to see the banner.
  */

@@ -2797,7 +2797,7 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
    */
   isPlanningVisibleToCustomers?: boolean;
   /**
-   * WSO2's answer to the customer's proposed time (ServiceNow's own
+   * WSO2's answer to the customer's proposed time (the previous system's own
    * `u_confirm_customer_updated_date`, entity-service `change_request.
    * customer_updated_date_confirmation`): `"agree"` or `"disagree"`, absent while
    * nothing was answered. Read-through; the answer is given by the two actions
@@ -2832,13 +2832,13 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
  * answer is outstanding too: the change stays in Customer Approval) and nobody
  * at WSO2 has answered it. `agreed` / `disagreed` are WSO2's answers; `unanswered`
  * is a proposal the change moved on without (the customer approved the planned
- * time anyway, or a ServiceNow user changed the date): history, no action.
+ * time anyway, or a user of the previous system changed the date): history, no action.
  */
 export type BeCustomerProposalAnswer = "pending" | "agreed" | "disagreed" | "unanswered";
 
 /**
  * A time the customer proposed, as `GET /change-requests/{id}` derives it from
- * ServiceNow's own `customer_updated_on` / `customer_updated_date_confirmation`
+ * The previous system's own `customer_updated_on` / `customer_updated_date_confirmation`
  * pair (no extra table or column): the proposal waits in Customer Approval, the
  * planned window stays what WSO2 planned until WSO2 answers.
  */
@@ -2851,7 +2851,7 @@ export interface BeChangeRequestCustomerProposal {
   /**
    * Whether the backend can name the proposer (present only while `answer` is `pending`): `true` while
    * the change request's last writer is still a registered contact of its project (then that writer is
-   * the proposer); `false` when it is not knowable -- a date a WSO2 user wrote in ServiceNow, one left
+   * the proposer); `false` when it is not knowable -- a date a WSO2 user wrote in the previous system, one left
    * over from an older cycle, a proposal edited over since, or a sync rewrite. The page must then say
    * the proposer is not recorded rather than guess. Absent on a backend that predates it: the page
    * falls back to whether a name or an email came with it.
@@ -3338,11 +3338,11 @@ export interface BePatchChangeRequestPayload {
    * has reached `customer_review`, `closed`, `rollback` or `canceled`. */
   customerReviewRequired?: boolean;
   /**
-   * ACCEPT the customer's proposed time (WSO2's answer, ServiceNow's "Agree"):
+   * ACCEPT the customer's proposed time (WSO2's answer, the previous system's "Agree"):
    * the proposal is applied to the planned window (the planned length kept) and the
    * change goes straight to Scheduled in one step. No CAB approval, no new customer
    * request: the change itself has not changed. Only `"agree"` exists (to decline a
-   * proposal, Re-schedule with `state: "authorize"`: ServiceNow's "Disagree"), and it
+   * proposal, Re-schedule with `state: "authorize"`: the previous system's "Disagree"), and it
    * cannot be combined with any field but the three `expected*` ones below, which
    * are REQUIRED here (`expectedCustomerUpdatedOn`) or expected (the planned
    * window: stale = 409). Staff only; never a state, so the no-Bypass rule is untouched.

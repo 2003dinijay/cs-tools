@@ -2725,7 +2725,7 @@ test.describe("change request approval flow — a Review approver's controls fol
 });
 
 // ---------------------------------------------------------------------------
-// Re-schedule and the customer's proposed time -- the diagram's Time Change loop, in ServiceNow's own
+// Re-schedule and the customer's proposed time -- the diagram's Time Change loop, in the previous system's own
 // mechanism. "authorize" is the wire name of the loop, but the change NEVER leaves Customer Approval and never goes
 // back through CAB / ECAB: the change itself has not changed.
 //
@@ -2955,7 +2955,7 @@ test.describe("change request approval flow — Re-schedule", () => {
   });
 });
 
-// A time the customer proposed: ServiceNow's own `customer_updated_on` / confirmation pair. The proposal is made in the customer
+// A time the customer proposed: the previous system's own `customer_updated_on` / confirmation pair. The proposal is made in the customer
 // portal (`api.customerProposes`); the CSM page shows it and WSO2 answers it.
 const PROPOSED_START = "2030-03-08T09:00:00Z"; // the planned window is 2030-03-01 09:00 - 11:00 (2 hours)
 /** The planned window a page opened on the original plan shows (what an Accept names as the plan it replaces). */
@@ -3237,7 +3237,7 @@ test.describe("change request approval flow — a customer's proposed time (mock
     expect(api.state()).toBe("customer_approval");
     expect(api.proposal().confirmation).toBeNull();
 
-    // A date left far ahead (ServiceNow writes the column too; the customer portal refuses to make one): the planned 2-hour
+    // A date left far ahead (the previous system writes the column too; the customer portal refuses to make one): the planned 2-hour
     // length from it would end after the year 2100, a window no other path may write. Held back in the backend's words, and the
     // last window that fits is accepted.
     api.seedProposal({ startOn: "2100-12-31T22:30:00Z", proposerKnown: true });
@@ -4742,7 +4742,7 @@ test.describe("migrated (legacy) change requests in the CSM portal (real stack)"
 
 // ---------------------------------------------------------------------------
 // A customer's PROPOSED TIME, on the REAL stack (the CSM webapp, the CSM backend, entity-service as csm_app with row-level
-// security, the database). ServiceNow's own mechanism: the customer's proposal is written to customer_updated_on (a planned
+// security, the database). The previous system's own mechanism: the customer's proposal is written to customer_updated_on (a planned
 // START) and nothing else, the change STAYS in Customer Approval with the planned window untouched, and WSO2 answers it from the
 // change request: Accept proposed time (Scheduled in one step, no CAB, no new customer request) or Propose a different time
 // (the customer is asked again; keeping the window declines). The customer proposes the way the customer portal does (a PATCH
@@ -4819,7 +4819,7 @@ test.describe("a customer's proposed time (real stack)", () => {
 
     const proposal = await proposeAsCustomer(cr.id, "dave.mendis@example.com", { plannedStartOn: utcIso(proposedStart) });
     expect(proposal.status, proposal.body).toBe(200);
-    // ServiceNow's own columns hold it; the plan, the state and every stage and approver row are what they were.
+    // The previous system's own columns hold it; the plan, the state and every stage and approver row are what they were.
     const waiting = await proposalRow(cr.id);
     expect(waiting).toMatchObject({ state: "CUSTOMER_APPROVAL", start: utcIso(planned.start), end: utcIso(planned.end), proposed: utcIso(proposedStart), answer: "" });
     const afterProposal = await writtenRows(cr.id);
@@ -4985,7 +4985,7 @@ test.describe("a customer's proposed time (real stack)", () => {
       await psql(`update change_request set customer_updated_on = start_on, customer_updated_date_confirmation = NULL where id = '${applied}'`);
       expect(await answerOf(applied)).toBe("unanswered");
 
-      // ... and with a standing answer (a ServiceNow Disagree): history, not a proposal.
+      // ... and with a standing answer (a Disagree written in the previous system): history, not a proposal.
       await psql(`update change_request set customer_updated_on = '2031-03-08 10:00:00+00', customer_updated_date_confirmation = 'DISAGREE' where id = '${applied}'`);
       expect(await answerOf(applied)).toBe("disagreed");
       const again = await staff("alice").patch(applied, {

@@ -86,7 +86,7 @@ interface ChangeRequestRescheduleDialogProps {
  *    current values, at least one must change -- and an optional reason. Only the changed
  *    dates are sent; the backend repeats the check ("re-scheduling requires a changed planned
  *    start or end") and its refusal is shown as returned.
- *  - COUNTER (a customer's proposal waiting): "Propose a different time" -- ServiceNow's
+ *  - COUNTER (a customer's proposal waiting): "Propose a different time" -- the previous system's
  *    "Disagree". Prefilled with the PLANNED window; any window but the very one the customer
  *    proposed can be sent (that one is "Accept proposed time", in the banner). Leaving the
  *    window as it is declines the proposal: the customer keeps their request to approve the

@@ -57,7 +57,7 @@ interface ChangeRequestAcceptProposedTimeDialogProps {
  * engineer, and says what follows: the change goes straight to Scheduled, the customer is not asked
  * again, no CAB approval.
  *
- * When the proposer is not recorded (the date is also written by WSO2 users in ServiceNow, or can be
+ * When the proposer is not recorded (the date is also written by WSO2 users in the previous system, or can be
  * left over from an earlier round), it says so and Accept needs an explicit confirmation that the
  * time really came from the customer: accepting it is the engineer's decision, never a default.
  */

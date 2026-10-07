@@ -59,7 +59,7 @@
 //     like the backend) and a fresh customer stage is provisioned. It never writes the
 //     stored `customerApprovalRequired` (a migrated row defaults to false and is asked
 //     again all the same: the customer was being asked);
-//   - a CUSTOMER'S PROPOSED TIME is ServiceNow's own `customer_updated_on` (the proposed
+//   - a CUSTOMER'S PROPOSED TIME is the previous system's own `customer_updated_on` (the proposed
 //     START) with WSO2's answer in `customer_updated_date_confirmation` (agree / disagree),
 //     and nothing else: `customerProposes` writes the proposed start and clears the answer;
 //     the change STAYS in Customer Approval, the planned window stays what WSO2 planned, no
@@ -431,7 +431,7 @@ export const proposalPassedMessage = (proposed: string): string =>
   `the time the customer proposed (${proposed}) has already passed, so it cannot be accepted: use "Propose a different time" to ask the customer to approve another time`;
 /**
  * An Accept whose window (the proposed start plus the planned length) would end after the year 2100, the last year every planned window is held
- * to: `customer_updated_on` is a column ServiceNow writes too, so a date left far ahead can sit there. A customer's own proposal never gets that
+ * to: `customer_updated_on` is a column the previous system writes too, so a date left far ahead can sit there. A customer's own proposal never gets that
  * far (it is refused at the proposal). Entity-service `msgAcceptTooFarAhead`, character for character.
  */
 export const acceptTooFarAheadMessage = (proposed: string, end: string): string =>
@@ -582,12 +582,12 @@ export interface FakeChangeRequestApi {
    */
   customerProposes(contact: FakeUser, startOn: string): void;
   /**
-   * A proposed date WSO2 cannot attribute: ServiceNow lets WSO2 users write `customer_updated_on` too, and one left over from an old
+   * A proposed date WSO2 cannot attribute: the previous system lets WSO2 users write `customer_updated_on` too, and one left over from an old
    * cycle reads the same. Sets the proposal as it stands in the data, with no proposer on record (`proposerKnown: false`, the
    * default) or with one. `confirmation` seeds a standing answer (agree / disagree); none = unanswered.
    */
   seedProposal(proposal: { startOn: string; proposerKnown?: boolean; confirmation?: "agree" | "disagree" | null }): void;
-  /** The pair as the fake holds it: ServiceNow's `customer_updated_on` (RFC 3339) and WSO2's answer. */
+  /** The pair as the fake holds it: the previous system's `customer_updated_on` (RFC 3339) and WSO2's answer. */
   proposal(): { customerUpdatedOn: string | null; confirmation: "agree" | "disagree" | null };
   /** Puts the change on / takes it off hold (a state change is then refused). */
   setOnHold(onHold: boolean): void;
@@ -725,7 +725,7 @@ export async function installFakeChangeRequestApi(
   let groupFailure: number | null = null;
   let plannedStartOn = "2030-03-01 09:00:00";
   let plannedEndOn = "2030-03-01 11:00:00";
-  // ServiceNow's own proposal pair (`customer_updated_on`, as an RFC 3339 instant, and WSO2's answer), and whether the change's last
+  // The previous system's own proposal pair (`customer_updated_on`, as an RFC 3339 instant, and WSO2's answer), and whether the change's last
   // writer is still a registered contact of the project (then the backend can name the proposer).
   let customerUpdatedOn: string | null = null;
   let confirmation: "agree" | "disagree" | null = null;
@@ -1493,7 +1493,7 @@ export async function installFakeChangeRequestApi(
           if (!ALL_STATES.includes(asked)) return json(route, { message: notAStateMessage(String(body.state)) }, 400);
           body.state = asked;
         }
-        // WSO2's ACCEPT of the customer's proposed time (ServiceNow's "Agree"): a PATCH of its own, never a `state`. One step: the
+        // WSO2's ACCEPT of the customer's proposed time (the previous system's "Agree"): a PATCH of its own, never a `state`. One step: the
         // proposal becomes the planned window (the planned length kept), the answer is agree and the change is Scheduled. No CAB, no new
         // customer request (the customer's own request is closed like any state change closes it), and the customer's outcome
         // (`hasCustomerApproved`) is NOT stamped: no staff action records the customer's approval.

@@ -67,11 +67,11 @@ function WindowBlock({ label, window, note }: { label: string; window: string; n
  * "The customer proposed a new time": shown under the lifecycle stepper while a proposal waits for
  * WSO2's answer (the change stays in Customer Approval, the planned window untouched).
  *
- * The two answers are ServiceNow's own: "Accept proposed time" (Agree: the proposal becomes the
+ * The two answers are the previous system's own: "Accept proposed time" (Agree: the proposal becomes the
  * planned window and the change goes straight to Scheduled, no CAB, no new customer request) and
  * "Propose a different time" (Disagree: the customer is asked again; it is also how a proposal is
  * declined, keeping the current time). Accept is the one primary action -- unless the page cannot
- * say who proposed the time: the date is also written by WSO2 users in ServiceNow, and one left
+ * say who proposed the time: the date is also written by WSO2 users in the previous system, and one left
  * over from an earlier round reads the same, so with no proposer on record neither answer is the
  * recommended one (both outlined, equally prominent) and Accept asks for an explicit confirmation
  * in its dialog.
