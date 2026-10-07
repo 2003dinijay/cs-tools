@@ -872,11 +872,21 @@ export async function installFakeChangeRequestApi(
     const start = instantOf(customerUpdatedOn)!;
     const ps = instantOf(plannedStartOn);
     const pe = instantOf(plannedEndOn);
+    // What the backend says of Accept while the proposal waits: the words of the refusal the PATCH would give.
+    const blocked = onHold
+      ? ON_HOLD_MESSAGE
+      : start <= Date.now()
+        ? proposalPassedMessage(customerUpdatedOn)
+        : ps === null || pe === null || pe <= ps
+          ? ACCEPT_WINDOW_HAS_NO_LENGTH
+          : "";
     return {
       startOn: customerUpdatedOn,
       ...(pending && ps !== null && pe !== null && pe > ps ? { endOn: rfc3339Of(start + (pe - ps)) } : {}),
       answer,
+      ...(pending ? { proposerRecorded: !!proposer } : {}),
       ...(pending && proposer ? { proposedByName: proposer.name, proposedByEmail: proposer.email, proposedOn: "2030-02-01T10:00:00Z" } : {}),
+      ...(pending ? { canAccept: blocked === "", ...(blocked ? { acceptBlockedReason: blocked } : {}) } : {}),
     };
   };
   /** The customer is asked again: the live request is superseded (rows cancelled, the stage kept as a record) and a fresh one provisioned. */
@@ -1167,19 +1177,24 @@ export async function installFakeChangeRequestApi(
     const newEnd = typeof body.plannedEndOn === "string" ? body.plannedEndOn : undefined;
     const changed =
       (newStart !== undefined && instantOf(newStart) !== instantOf(plannedStartOn)) || (newEnd !== undefined && instantOf(newEnd) !== instantOf(plannedEndOn));
-    if (pending) {
-      const proposedEnd = instantOf(proposalView()?.endOn as string | undefined);
-      if (instantOf(newStart ?? plannedStartOn) === instantOf(customerUpdatedOn) && (proposedEnd === null || instantOf(newEnd ?? plannedEndOn) === proposedEnd)) {
-        return { status: 400, message: COUNTER_IS_THE_PROPOSAL };
-      }
-    } else if (!changed) {
+    const effStart = instantOf(newStart ?? plannedStartOn) ?? 0;
+    const effEnd = instantOf(newEnd ?? plannedEndOn) ?? 0;
+    if (!pending && !changed) {
       return {
         status: 400,
         message: "re-scheduling requires a changed planned start or end: send plannedStartOn and/or plannedEndOn with a value different from the stored one",
       };
     }
-    if ((instantOf(newStart ?? plannedStartOn) ?? 0) > (instantOf(newEnd ?? plannedEndOn) ?? 0)) {
-      return { status: 400, message: "the planned start must not be after the planned end" };
+    // Pending with no window at all is a decline (nothing to judge); a window is judged whole: usable first, then not the customer's own.
+    if (!pending || newStart !== undefined || newEnd !== undefined) {
+      if (effStart > effEnd) return { status: 400, message: "the planned start must not be after the planned end" };
+      if (effStart === effEnd) return { status: 400, message: "the planned start must not be the same as the planned end: the window must have a duration" };
+    }
+    if (pending && (newStart !== undefined || newEnd !== undefined)) {
+      const proposedEnd = instantOf(proposalView()?.endOn as string | undefined);
+      if (effStart === instantOf(customerUpdatedOn) && (proposedEnd === null || effEnd === proposedEnd)) {
+        return { status: 400, message: COUNTER_IS_THE_PROPOSAL };
+      }
     }
     if ((changed || !pending) && askableContacts(scope.projectId).length === 0) return { status: 400, message: nobodyToAskMessage(true, false) };
     return null;

@@ -70,8 +70,8 @@ import type { Browser, Locator, Page } from "@playwright/test";
 import { test, expect, withRole, hasSession, openContextAs, type TimecardRole } from "../../fixtures/test";
 import { ChangeRequestCreatePage } from "../../pages/ChangeRequestCreatePage";
 import { ChangeRequestDetailPage } from "../../pages/ChangeRequestDetailPage";
-import { decideAsCustomer } from "../../utils/customerPortalDecision";
-import { EXAMPLE_CORP, OTHER_CORP, ok, raise, realStackNamed, stateOf, staff, walkTo, type ApiResult, type Raised, type WalkTarget } from "../../utils/realStackApi";
+import { decideAsCustomer, proposeAsCustomer } from "../../utils/customerPortalDecision";
+import { EXAMPLE_CORP, OTHER_CORP, ok, plan, raise, realStackNamed, stateOf, staff, walkTo, type ApiResult, type Raised, type WalkTarget } from "../../utils/realStackApi";
 import {
   FAKE_CAB,
   FAKE_CAB_COLLEAGUE,
@@ -4425,7 +4425,7 @@ test.describe("the customer requirements lock (real stack)", () => {
     await shotTo(page, "23-csm-edit-dialog-assess-no-project-boxes-disabled");
   });
 
-  test("a Re-schedule back to Authorize cannot reopen anything: the customer box stays ticked, the project cannot be swapped, and the CAB's approval of the new plan asks the same contacts again in a fresh stage", async ({ page }) => {
+  test("a Re-schedule asks the customer again and the change stays in Customer Approval: no Authorize, no CAB; the box stays ticked and the project cannot be swapped, and the customer's own answer then schedules it", async ({ page }) => {
     await pictureWindow(page);
     const cr = await raise({ subject: lockSubject("re-schedule"), projectId: EXAMPLE_CORP.id, approval: true, review: false });
     const jane = staff("jane");
@@ -4441,36 +4441,39 @@ test.describe("the customer requirements lock (real stack)", () => {
       ))
         .split("\n")
         .filter(Boolean);
+    const stageCount = async () => Number(await psqlOutput(`select count(*) from approval_stage where work_item_id = '${cr.id}'`));
     expect(await customerRows()).toEqual(["REQUESTED", "REQUESTED"]);
+    const stagesBefore = await stageCount();
 
-    // Re-schedule (a new window, back to Authorize), the way the Re-schedule dialog sends it.
+    // Re-schedule (a new window), the way the Re-schedule dialog sends it.
     const start = new Date(Date.now() + 9 * 86_400_000);
     start.setUTCHours(10, 0, 0, 0);
     const iso = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
     const end = new Date(start.getTime() + 2 * 3_600_000);
     await ok("Re-schedule", await staff("alice").patch(cr.id, { state: "authorize", plannedStartOn: iso(start), plannedEndOn: iso(end) }));
-    expect(await stateOf(cr.id)).toBe("authorize");
-    expect(await customerRows(), "the customers' request is cancelled, not deleted").toEqual(["CANCELLED", "CANCELLED"]);
+    // The state does not move and no CAB stage is opened: the change itself has not changed.
+    expect(await stateOf(cr.id)).toBe("customer_approval");
+    expect(await customerRows(), "the customers' request is cancelled, not deleted, and asked again in a fresh stage").toEqual(["CANCELLED", "CANCELLED", "REQUESTED", "REQUESTED"]);
+    expect(await stageCount(), "one new stage: the customers'").toBe(stagesBefore + 1);
 
-    // The hole: in Authorize the box used to be unticked, so the CAB's next approval went straight to Scheduled.
+    // A ticked box can never be unticked, and the project is frozen: nothing customer-related is open to a Re-schedule either.
     const untick = await jane.patch(cr.id, { customerApprovalRequired: false });
-    expect([untick.status, message(untick)]).toEqual([400, requirementCannotBeRemovedMessage("customerApprovalRequired", "authorize")]);
+    expect([untick.status, message(untick)]).toEqual([400, requirementCannotBeRemovedMessage("customerApprovalRequired", "customer_approval")]);
     const swap = await jane.patch(cr.id, { projectId: OTHER_CORP.id });
-    expect([swap.status, message(swap)]).toEqual([400, projectFrozenMessage("authorize")]);
+    expect([swap.status, message(swap)]).toEqual([400, projectFrozenMessage("customer_approval")]);
     const detail = new ChangeRequestDetailPage(page);
     await detail.goto(cr.id);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(detail.proposalBanner()).toHaveCount(0);
     await detail.openEditDialog();
     await expect(detail.editProjectField()).toBeDisabled();
     await expect(detail.editCustomerApprovalCheckbox()).toBeChecked();
     await expect(detail.editCustomerApprovalCheckbox()).toBeDisabled();
-    await shotTo(page, "24-csm-edit-dialog-authorize-after-reschedule-nothing-customer-related-editable");
+    await shotTo(page, "24-csm-edit-dialog-customer-approval-after-reschedule-nothing-customer-related-editable");
     await detail.editDialog().getByRole("button", { name: "Cancel" }).click();
 
-    // The CAB approves the new plan (bob): Customer Approval again, a fresh stage for the same two contacts.
-    await ok("CAB approval of the new plan", await staff("bob").decide(cr.id, "approved"));
-    expect(await stateOf(cr.id), "the CAB's approval went to the customer, not past them").toBe("customer_approval");
-    expect(await customerRows()).toEqual(["CANCELLED", "CANCELLED", "REQUESTED", "REQUESTED"]);
-    // ... and the customer's answer (applied as the customer portal does) schedules it.
+    // The customer's answer (applied as the customer portal does) schedules it: nobody at WSO2 had anything to approve.
     const answered = await decideAsCustomer(cr.id, "dave.mendis@example.com", "approved");
     expect(answered.status, answered.body).toBe(200);
     expect(await stateOf(cr.id)).toBe("scheduled");
@@ -4646,21 +4649,25 @@ test.describe("migrated (legacy) change requests in the CSM portal (real stack)"
     expect(await stateOf(id)).toBe("customer_review");
   });
 
-  test("Re-schedule on a legacy change in Customer Approval whose requirement box is false (migration 0189 defaulted it) asks the customer again: the CAB's approval of the new plan goes back to Customer Approval, never to Scheduled, and only the customer's own answer schedules it", async () => {
+  test("Re-schedule on a legacy change in Customer Approval whose requirement box is false (migration 0189 defaulted it) asks the customer again and the change stays in Customer Approval: no CAB, the box is not written, and only the customer's own answer schedules it", async () => {
     const id = legacyId("CHG0039104");
     const alice = staff("alice");
     expect((await staff("jane").get(id)).body.customerApprovalRequired, "a migrated row's own requirement column is false").toBeFalsy();
+    const stageCount = async () => Number(await psqlOutput(`select count(*) from approval_stage where work_item_id = '${id}'`));
+    expect(await stageCount(), "a migrated row nobody was asked about has no stage").toBe(0);
 
     const start = new Date(Date.now() + 9 * 86_400_000);
     start.setUTCHours(10, 0, 0, 0);
     const iso = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
     await ok("Re-schedule", await alice.patch(id, { state: "authorize", plannedStartOn: iso(start), plannedEndOn: iso(new Date(start.getTime() + 2 * 3_600_000)) }));
-    expect(await stateOf(id)).toBe("authorize");
-    // Our own requirement column now says the customer is to be asked (never the sync-owned outcome flag).
-    expect((await staff("jane").get(id)).body.customerApprovalRequired).toBe(true);
+    expect(await stateOf(id), "no CAB loop: the change itself has not changed").toBe("customer_approval");
+    // Our own requirement column is a sync-owned shape a Re-schedule must not touch; the customer is asked all the same (a fresh stage).
+    expect((await staff("jane").get(id)).body.customerApprovalRequired).toBeFalsy();
+    expect(await stageCount(), "the contacts are asked in one fresh customer stage, and no CAB stage").toBe(1);
+    expect(
+      await psqlOutput(`select s.checkpoint_label || ':' || a.state from approval_stage s join approval_stage_approver a on a.stage_id = s.id where s.work_item_id = '${id}' order by a.id`),
+    ).toBe("Customer Approval:REQUESTED\nCustomer Approval:REQUESTED");
 
-    await ok("CAB approval of the new plan", await alice.decide(id, "approved"));
-    expect(await stateOf(id), "the CAB's approval went to the customer, not past them").toBe("customer_approval");
     const answered = await decideAsCustomer(id, "dave.mendis@example.com", "approved");
     expect(answered.status, answered.body).toBe(200);
     expect(await stateOf(id)).toBe("scheduled");
@@ -4686,6 +4693,268 @@ test.describe("migrated (legacy) change requests in the CSM portal (real stack)"
     // ...and then it stays: add-only holds for a migrated row exactly as for a native one.
     const untick = await staff("jane").patch(legacyId("CHG0039105"), { customerReviewRequired: false });
     expect(untick.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A customer's PROPOSED TIME, on the REAL stack (the CSM webapp, the CSM backend, entity-service as csm_app with row-level
+// security, the database). ServiceNow's own mechanism: the customer's proposal is written to customer_updated_on (a planned
+// START) and nothing else, the change STAYS in Customer Approval with the planned window untouched, and WSO2 answers it from the
+// change request: Accept proposed time (Scheduled in one step, no CAB, no new customer request) or Propose a different time
+// (the customer is asked again; keeping the window declines). The customer proposes the way the customer portal does (a PATCH
+// to entity-service with their own token, utils/customerPortalDecision.ts); every database assertion is on the rows the
+// backend wrote, so "nothing else was written" is checked where it matters.
+// ---------------------------------------------------------------------------
+
+const PROPOSAL_PREFIX = "E2E proposal: ";
+const proposalSubject = (title: string): string => `${PROPOSAL_PREFIX}${title}`;
+async function deleteProposalChanges(): Promise<void> {
+  await psql(`delete from work_item where type = 'CHANGE_REQUEST' and subject like '${PROPOSAL_PREFIX}%'`);
+}
+
+/** The columns a proposal reads and writes, as the database holds them (UTC, "YYYY-MM-DD HH:MM:SS"). */
+async function proposalRow(id: string): Promise<{ state: string; start: string; end: string; proposed: string; answer: string; stamped: string }> {
+  const utc = (col: string): string => `coalesce(to_char(${col} at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'), '')`;
+  const out = await psqlOutput(
+    `select state::text, ${utc("start_on")}, ${utc("end_on")}, ${utc("customer_updated_on")}, ` +
+      `coalesce(customer_updated_date_confirmation::text, ''), coalesce(is_customer_approval_required::text, '') from change_request where id = '${id}'`,
+  );
+  const [state, start, end, proposed, answer, stamped] = out.split("|");
+  return { state: state!, start: start!, end: end!, proposed: proposed!, answer: answer!, stamped: stamped! };
+}
+
+/** Row counts of the tables a proposal must not grow, for a change request. */
+async function writtenRows(id: string): Promise<{ stages: number; approvers: number; comments: number }> {
+  const count = async (sql: string): Promise<number> => Number(await psqlOutput(sql));
+  return {
+    stages: await count(`select count(*) from approval_stage where work_item_id = '${id}'`),
+    approvers: await count(`select count(*) from approval_stage_approver where work_item_id = '${id}'`),
+    comments: await count(`select count(*) from comment where work_item_id = '${id}'`),
+  };
+}
+
+const utcIso = (d: Date): string => d.toISOString().slice(0, 19).replace("T", " ");
+/** A start `days` days ahead at `hour`:00 UTC. */
+function startIn(days: number, hour = 10): Date {
+  const d = new Date(Date.now() + days * 86_400_000);
+  d.setUTCHours(hour, 0, 0, 0);
+  return d;
+}
+
+test.describe("a customer's proposed time (real stack)", () => {
+  test.describe.configure({ timeout: 240_000 });
+  test.beforeEach(async () => {
+    test.skip(
+      !realStackNamed(),
+      "name the stack under test: E2E_CSM_BFF_URL, E2E_OIDC_URL, E2E_ENTITY_SERVICE_URL, E2E_POSTGRES_CONTAINER (see auth/README.md)",
+    );
+    await deleteProposalChanges();
+  });
+  test.afterAll(async () => {
+    if (realStackNamed()) await deleteProposalChanges();
+  });
+
+  /** A Normal change on Example Corp (dave and erin are asked), planned two weeks out for two hours, brought to Customer Approval. */
+  async function atCustomerApproval(title: string): Promise<{ cr: Raised; planned: { start: Date; end: Date } }> {
+    const cr = await raise({ subject: proposalSubject(title), projectId: EXAMPLE_CORP.id, approval: true, review: false });
+    const start = startIn(14);
+    const planned = { start, end: new Date(start.getTime() + 2 * 3_600_000) };
+    await plan(cr, { start: utcIso(planned.start), end: utcIso(planned.end) });
+    await ok("Request Approval", await staff("jane").patch(cr.id, { state: "assess" }));
+    await ok("Peer approval", await staff("alice").decide(cr.id, "approved"));
+    await ok("CAB approval", await staff("alice").decide(cr.id, "approved"));
+    expect(await stateOf(cr.id)).toBe("customer_approval");
+    return { cr, planned };
+  }
+
+  test("Dave proposes a start: the change waits in Customer Approval with its window untouched and nothing else written; the banner names him, and Accept proposed time schedules it by the proposal, with no CAB, no new request and nothing stamped as the customer's approval", async ({ page }) => {
+    await pictureWindow(page);
+    const { cr, planned } = await atCustomerApproval("accept");
+    const before = await writtenRows(cr.id);
+    const proposedStart = new Date(planned.start.getTime() + 7 * 86_400_000);
+
+    const proposal = await proposeAsCustomer(cr.id, "dave.mendis@example.com", { plannedStartOn: utcIso(proposedStart) });
+    expect(proposal.status, proposal.body).toBe(200);
+    // ServiceNow's own columns hold it; the plan, the state and every stage and approver row are what they were.
+    const waiting = await proposalRow(cr.id);
+    expect(waiting).toMatchObject({ state: "CUSTOMER_APPROVAL", start: utcIso(planned.start), end: utcIso(planned.end), proposed: utcIso(proposedStart), answer: "" });
+    const afterProposal = await writtenRows(cr.id);
+    expect({ stages: afterProposal.stages, approvers: afterProposal.approvers }, "a proposal writes no stage and no approver row").toEqual({ stages: before.stages, approvers: before.approvers });
+
+    // What WSO2 reads: the backend's own verdict, Dave named as the proposer, Accept on offer.
+    const read = (await staff("jane").get(cr.id)).body as unknown as { customerProposal?: Record<string, unknown>; hasCustomerApproved?: boolean };
+    expect(read.customerProposal).toMatchObject({ answer: "pending", proposerRecorded: true, proposedByEmail: "dave.mendis@example.com", canAccept: true });
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(cr.id);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.proposalBanner()).toBeVisible();
+    await expect(detail.proposalBanner()).toContainText("Proposed by Dave Mendis (dave.mendis@example.com)");
+    await expect(detail.proposalBanner()).toContainText("Same length as the planned window (2 hours)");
+    await expect(detail.proposalWaitingReason()).toBeVisible();
+    await expect(detail.acceptProposedTimeButton()).toBeEnabled();
+    await shotTo(page, "40-csm-proposal-banner-real-stack");
+
+    // Accept, from the page.
+    await detail.acceptProposedTimeButton().click();
+    await expect(detail.acceptDialog()).toBeVisible();
+    await shotTo(page, "41-csm-accept-proposed-time-dialog-real-stack");
+    await detail.acceptDialogConfirm().click();
+    await expect(detail.acceptDialog()).toHaveCount(0);
+    await expect(detail.currentStep()).toContainText("Scheduled");
+
+    const accepted = await proposalRow(cr.id);
+    expect(accepted, "the proposal is the plan, its length kept, the answer is AGREE, the change is Scheduled").toMatchObject({
+      state: "SCHEDULED",
+      start: utcIso(proposedStart),
+      end: utcIso(new Date(proposedStart.getTime() + 2 * 3_600_000)),
+      answer: "AGREE",
+    });
+    expect(accepted.stamped, "no staff action records the customer's approval").not.toBe("true");
+    const after = await writtenRows(cr.id);
+    expect({ stages: after.stages, approvers: after.approvers }, "no CAB stage, no second request").toEqual({ stages: before.stages, approvers: before.approvers });
+    expect(
+      (await psqlOutput(`select count(*) from approval_stage_approver where work_item_id = '${cr.id}' and state = 'REQUESTED'`)),
+      "the customers' own request is closed like any state change closes it",
+    ).toBe("0");
+    const scheduled = (await staff("jane").get(cr.id)).body as unknown as { hasCustomerApproved?: boolean; customerProposal?: { answer?: string } };
+    expect(scheduled.hasCustomerApproved).toBeFalsy();
+    expect(scheduled.customerProposal?.answer).toBe("agreed");
+    await expect(detail.proposalBanner()).toHaveCount(0);
+    await detail.page.getByRole("tab", { name: "Approval" }).click();
+    await expect(detail.overviewCell("Customer approved")).toContainText("Proposed time accepted");
+    await shotTo(page, "42-csm-after-accept-real-stack");
+    // Accept is another door whose only precondition is the customer's own proposal: a manual scheduled stays refused.
+    const refused = await staff("alice").patch(cr.id, { state: "scheduled" });
+    expect(refused.status).toBe(400);
+  });
+
+  test("Propose a different time asks the customer again (no CAB) and answers the proposal DISAGREE; a decline keeps the window and the customers' live request; the customer's next proposal brings the banner back", async ({ page }) => {
+    await pictureWindow(page);
+    const { cr, planned } = await atCustomerApproval("counter and decline");
+    const before = await writtenRows(cr.id);
+    const first = new Date(planned.start.getTime() + 7 * 86_400_000);
+    expect((await proposeAsCustomer(cr.id, "dave.mendis@example.com", { plannedStartOn: utcIso(first) })).status).toBe(200);
+    const pendingVersion = ((await staff("jane").get(cr.id)).body as unknown as { customerProposal?: { startOn?: string } }).customerProposal?.startOn;
+    expect(pendingVersion).toBeTruthy();
+
+    // A Re-schedule that names no proposal while one waits is refused: an old client never answers a time it did not see.
+    const blind = await staff("alice").patch(cr.id, { state: "authorize", plannedEndOn: utcIso(new Date(planned.end.getTime() + 3_600_000)) });
+    expect(blind.status).toBe(409);
+    expect((blind.body as { message?: string }).message).toBe(customerProposedWhileOpenMessage(pendingVersion!));
+
+    // The counter: WSO2's own window, with the proposal and the plan it was shown.
+    const counterStart = new Date(planned.start.getTime() + 3 * 86_400_000);
+    const counter = await staff("alice").patch(cr.id, {
+      state: "authorize",
+      plannedStartOn: utcIso(counterStart),
+      plannedEndOn: utcIso(new Date(counterStart.getTime() + 2 * 3_600_000)),
+      expectedCustomerUpdatedOn: pendingVersion,
+      expectedPlannedStartOn: planned.start.toISOString(),
+      expectedPlannedEndOn: planned.end.toISOString(),
+    });
+    expect(counter.status, JSON.stringify(counter.body)).toBe(200);
+    expect(await proposalRow(cr.id)).toMatchObject({ state: "CUSTOMER_APPROVAL", start: utcIso(counterStart), proposed: utcIso(first), answer: "DISAGREE" });
+    const afterCounter = await writtenRows(cr.id);
+    expect(afterCounter.stages, "one new stage, the customers' fresh request: no CAB").toBe(before.stages + 1);
+    expect(
+      await psqlOutput(`select count(*) from approval_stage_approver a join approval_stage s on s.id = a.stage_id where s.work_item_id = '${cr.id}' and s.checkpoint_label = 'Customer Approval' and a.state = 'REQUESTED'`),
+    ).toBe("2");
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(cr.id);
+    await expect(detail.proposalBanner()).toHaveCount(0);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+
+    // The customer proposes again (their next proposal clears the answer): the banner is back, and WSO2 declines it, keeping the window.
+    const second = new Date(counterStart.getTime() + 5 * 86_400_000);
+    expect((await proposeAsCustomer(cr.id, "erin.jayawardena@example.com", { plannedStartOn: utcIso(second) })).status).toBe(200);
+    await page.reload();
+    await expect(detail.proposalBanner()).toBeVisible();
+    await expect(detail.proposalBanner()).toContainText("Proposed by Erin Jayawardena (erin.jayawardena@example.com)");
+    const live = await writtenRows(cr.id);
+    await detail.proposeDifferentTimeButton().click();
+    await expect(detail.counterDialog()).toBeVisible();
+    await expect(detail.counterSubmit("Decline proposed time")).toBeEnabled();
+    await detail.counterSubmit("Decline proposed time").click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+    expect(await proposalRow(cr.id)).toMatchObject({ state: "CUSTOMER_APPROVAL", start: utcIso(counterStart), proposed: utcIso(second), answer: "DISAGREE" });
+    expect(await writtenRows(cr.id), "a decline writes the answer and nothing else").toEqual(live);
+    await expect(detail.proposalBanner()).toHaveCount(0);
+  });
+
+  test("on the rows the sync writes: a migrated change in Customer Approval with a customer date and no answer reads as a proposal whose proposer is not recorded, and is accepted after an explicit confirmation", async ({ page }) => {
+    test.skip(!fs.existsSync(LEGACY_SQL), `the customer portal e2e fixture ${LEGACY_SQL} is not there (run from apps/csm-portal/webapp)`);
+    await psql(fs.readFileSync(LEGACY_SQL, "utf8"));
+    try {
+      const detail = new ChangeRequestDetailPage(page);
+      // CHG0039112: Customer Approval, a window planned (2031-03-01 10:00 - 12:00), nobody asked (no stage). The sync wrote a customer date, no answer.
+      const id = legacyId("CHG0039112");
+      await psql(`update change_request set customer_updated_on = '2031-03-08 10:00:00+00', customer_updated_date_confirmation = NULL where id = '${id}'`);
+      const read = (await staff("jane").get(id)).body as unknown as { customerProposal?: Record<string, unknown> };
+      expect(read.customerProposal).toMatchObject({ answer: "pending", startOn: "2031-03-08T10:00:00Z", endOn: "2031-03-08T12:00:00Z", canAccept: true });
+      // The last writer is the sync, not a registered contact: nobody is named, and the page says so.
+      expect(read.customerProposal?.proposerRecorded).toBe(false);
+      expect(read.customerProposal?.proposedByEmail).toBeUndefined();
+
+      await detail.goto(id);
+      await expect(detail.proposalBanner()).toBeVisible();
+      await expect(detail.proposalBanner()).toContainText("The proposer is not recorded.");
+      await expect(detail.acceptProposedTimeButton()).toHaveClass(/MuiButton-outlined/);
+      await expect(detail.proposeDifferentTimeButton()).toHaveClass(/MuiButton-outlined/);
+      await shotTo(page, "43-csm-proposal-banner-proposer-not-recorded-migrated-row");
+
+      await detail.acceptProposedTimeButton().click();
+      await expect(detail.acceptDialogConfirm()).toBeDisabled();
+      await detail.acceptDialog().getByRole("checkbox", { name: "I have checked that the customer proposed this time." }).check();
+      await detail.acceptDialogConfirm().click();
+      await expect(detail.currentStep()).toContainText("Scheduled");
+      expect(await proposalRow(id)).toMatchObject({ state: "SCHEDULED", start: "2031-03-08 10:00:00", end: "2031-03-08 12:00:00", answer: "AGREE" });
+      // Nobody was asked on this row, so there is nothing to close and nothing was added.
+      expect(await writtenRows(id)).toMatchObject({ stages: 0, approvers: 0 });
+    } finally {
+      await deleteLegacy();
+    }
+  });
+
+  test("a date on a migrated change that is NOT a proposal waiting for WSO2 is never read as one: one waiting on an unlabeled approval in Authorize, one whose date is the planned start, one with an answer", async () => {
+    test.skip(!fs.existsSync(LEGACY_SQL), `the customer portal e2e fixture ${LEGACY_SQL} is not there (run from apps/csm-portal/webapp)`);
+    await psql(fs.readFileSync(LEGACY_SQL, "utf8"));
+    try {
+      const message = (r: ApiResult) => (r.body as { message?: string }).message;
+      const answerOf = async (id: string): Promise<string | undefined> =>
+        ((await staff("jane").get(id)).body as unknown as { customerProposal?: { answer?: string } }).customerProposal?.answer;
+
+      // CHG0039301: an Emergency change in Authorize, its one synced stage unlabeled and REQUESTED (alice, bob). A stale customer date on it.
+      const authorize = legacyId("CHG0039301");
+      await psql(`update change_request set customer_updated_on = '2031-03-08 10:00:00+00' where id = '${authorize}'`);
+      expect(await answerOf(authorize)).toBe("unanswered");
+      const accept = await staff("alice").patch(authorize, {
+        confirmCustomerUpdatedDate: "agree",
+        expectedCustomerUpdatedOn: "2031-03-08T10:00:00Z",
+        expectedPlannedStartOn: "2031-03-01T10:00:00Z",
+        expectedPlannedEndOn: "2031-03-01T12:00:00Z",
+      });
+      expect([accept.status, message(accept)]).toEqual([409, acceptNotInCustomerApproval("authorize")]);
+      expect(await stateOf(authorize)).toBe("authorize");
+
+      // CHG0039112 with the date equal to the planned start (applied already): nothing to answer.
+      const applied = legacyId("CHG0039112");
+      await psql(`update change_request set customer_updated_on = start_on, customer_updated_date_confirmation = NULL where id = '${applied}'`);
+      expect(await answerOf(applied)).toBe("unanswered");
+
+      // ... and with a standing answer (a ServiceNow Disagree): history, not a proposal.
+      await psql(`update change_request set customer_updated_on = '2031-03-08 10:00:00+00', customer_updated_date_confirmation = 'DISAGREE' where id = '${applied}'`);
+      expect(await answerOf(applied)).toBe("disagreed");
+      const again = await staff("alice").patch(applied, {
+        confirmCustomerUpdatedDate: "agree",
+        expectedCustomerUpdatedOn: "2031-03-08T10:00:00Z",
+        expectedPlannedStartOn: "2031-03-01T10:00:00Z",
+        expectedPlannedEndOn: "2031-03-01T12:00:00Z",
+      });
+      expect([again.status, message(again)]).toEqual([409, NO_PROPOSAL_WAITING]);
+      expect(await stateOf(applied)).toBe("customer_approval");
+    } finally {
+      await deleteLegacy();
+    }
   });
 });
 
