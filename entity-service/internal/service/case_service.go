@@ -262,6 +262,7 @@ var validCaseSortField = map[domain.CaseSortField]bool{
 	domain.CaseSortFieldUpdatedOn: true,
 	domain.CaseSortFieldSeverity:  true,
 	domain.CaseSortFieldState:     true,
+	domain.CaseSortFieldAssignee:  true,
 }
 
 var validCaseType = map[string]bool{
@@ -2797,7 +2798,7 @@ func prepareCaseSearchFilters(ctx context.Context, req domain.SearchCasesRequest
 	if req.SortBy.Field == "" {
 		req.SortBy.Field = domain.CaseSortFieldCreatedOn
 	} else if !validCaseSortField[req.SortBy.Field] {
-		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: "sortBy.field must be one of: createdOn, updatedOn, severity, state"}
+		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: "sortBy.field must be one of: createdOn, updatedOn, severity, state, assignee"}
 	}
 	if req.SortBy.Order == "" {
 		req.SortBy.Order = domain.CaseSortOrderDesc
