@@ -69,6 +69,20 @@ function renderBanner(
   return { onAccept, onProposeDifferent };
 }
 
+/** The banner for a given proposal (the rest as `renderBanner` has it); returns `unmount` for a loop over proposals. */
+function renderBannerWith(proposal: BeChangeRequestCustomerProposal): ReturnType<typeof render> {
+  return render(
+    <ChangeRequestProposedTimeBanner
+      cr={CR}
+      proposal={proposal}
+      isPending={false}
+      nowMs={NOW}
+      onAccept={vi.fn()}
+      onProposeDifferent={vi.fn()}
+    />,
+  );
+}
+
 const acceptButton = (): HTMLElement => screen.getByRole("button", { name: "Accept proposed time" });
 const counterButton = (): HTMLElement => screen.getByRole("button", { name: "Propose a different time" });
 
@@ -77,10 +91,12 @@ describe("ChangeRequestProposedTimeBanner", () => {
   afterEach(() => vi.restoreAllMocks());
   afterEach(() => clearUserPreferredTimeZone());
 
-  it("is a named region that says the customer proposed a new time", () => {
+  it("is a named region that says the customer proposed a new time (the proposer is recorded)", () => {
     renderBanner();
     const region = screen.getByRole("region", { name: "The customer proposed a new time" });
     expect(region).toBeInTheDocument();
+    expect(screen.queryByRole("region", { name: "A new time is waiting for your answer" })).not.toBeInTheDocument();
+    expect(within(region).queryByText("Proposed time")).not.toBeInTheDocument();
     expect(region).toHaveTextContent(/The planned time stays as it is until you answer\./);
   });
 
@@ -150,6 +166,29 @@ describe("ChangeRequestProposedTimeBanner", () => {
       // Both still work: the confirmation lives in the Accept dialog.
       expect(acceptButton()).toBeEnabled();
       expect(counterButton()).toBeEnabled();
+    });
+
+    it("does not say the customer proposed it: a neutral title and window label, whichever way 'not recorded' arrives", () => {
+      for (const proposal of [
+        UNKNOWN,
+        // The backend's own verdict wins over a name that came with it.
+        { ...UNKNOWN, proposerRecorded: false, proposedByName: "Mia Member", proposedByEmail: "mia.member@example.com" },
+        { ...UNKNOWN, proposerRecorded: true },
+        { ...UNKNOWN, proposedByName: "  ", proposedByEmail: "" },
+      ]) {
+        const { unmount } = renderBannerWith(proposal);
+        const region = screen.getByRole("region", { name: "A new time is waiting for your answer" });
+        expect(screen.queryByRole("region", { name: "The customer proposed a new time" })).not.toBeInTheDocument();
+        expect(within(region).getByText("Proposed time")).toBeInTheDocument();
+        expect(within(region).queryByText("Proposed by the customer")).not.toBeInTheDocument();
+        // The only mention of the customer is the advice to check that the time came from them.
+        expect(region).not.toHaveTextContent(/The customer proposed/);
+        expect(region).not.toHaveTextContent(/Proposed by/);
+        expect(region).toHaveTextContent(/Check that this time really came from the customer before you accept it/);
+        // The windows are still there.
+        expect(within(region).getByText("Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM")).toBeInTheDocument();
+        unmount();
+      }
     });
 
     it("an email alone, or a name alone, is still a proposer on record", () => {

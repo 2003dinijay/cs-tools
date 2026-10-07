@@ -163,9 +163,11 @@ From the detail page a CS engineer can:
 
   A date a WSO2 user wrote in the previous system, or one left over from an
   earlier round, looks like a proposal too. When the page cannot say who
-  proposed the time ("The proposer is not recorded.") Accept is no longer the
-  single main button and asks you to confirm that the customer really proposed
-  it.
+  proposed the time ("The proposer is not recorded.") it does not say the
+  customer proposed it: the banner reads "A new time is waiting for your
+  answer" and the header "Waiting for WSO2 to respond to the proposed time".
+  Accept is no longer the single main button and asks you to confirm that the
+  customer really proposed it.
 
   Proposals and your answers are kept in PostgreSQL only: they are not mirrored
   to the previous system (there is no field for them), Accept's mirror is best

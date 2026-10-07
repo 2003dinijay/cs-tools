@@ -150,7 +150,17 @@ describe("ChangeRequestRescheduleDialog", () => {
   });
 
   describe("the customer proposed a time (counter mode)", () => {
-    const PROPOSAL = { startOn: "2030-03-08T09:00:00Z", endOn: "2030-03-08T11:00:00Z", answer: "pending" };
+    // A proposer on record: the dialog then says the customer proposed it. `UNATTRIBUTED` is the same time with nobody on record.
+    const PROPOSAL = {
+      startOn: "2030-03-08T09:00:00Z",
+      endOn: "2030-03-08T11:00:00Z",
+      answer: "pending",
+      proposerRecorded: true,
+      proposedByName: "Mia Member",
+      proposedByEmail: "mia.member@example.com",
+      proposedOn: "2030-02-01T10:00:00Z",
+    };
+    const UNATTRIBUTED = { startOn: PROPOSAL.startOn, endOn: PROPOSAL.endOn, answer: "pending" };
     // The window the page showed, as received: the answer's precondition.
     const SHOWN = { expectedPlannedStartOn: "2030-03-01 09:00:00", expectedPlannedEndOn: "2030-03-01 11:00:00" };
 
@@ -209,6 +219,39 @@ describe("ChangeRequestRescheduleDialog", () => {
       expect(screen.getByRole("status")).toHaveTextContent("That is the time the customer proposed. Close this and use Accept proposed time instead.");
       fireEvent.click(dialogButton("Propose this time"));
       expect(onSubmit).not.toHaveBeenCalled();
+    });
+
+    describe("the proposer is not recorded (a date WSO2 users write too, or one left over from an earlier round)", () => {
+      it("says a time was proposed, not that the customer proposed it, and keeps the rest of the lead", () => {
+        for (const proposal of [UNATTRIBUTED, { ...UNATTRIBUTED, proposerRecorded: false, proposedByName: "Mia Member" }]) {
+          cleanup();
+          renderDialog({ proposal });
+          expect(screen.getByRole("heading", { name: "Propose a different time" })).toBeInTheDocument();
+          expect(screen.getByText(/A time was proposed: Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM\./)).toBeInTheDocument();
+          expect(screen.getByText(/Set the time WSO2 proposes instead and the customer is asked to approve it\./)).toBeInTheDocument();
+          expect(screen.getByText(/Keep the current time to decline the proposal\. No CAB approval is needed\./)).toBeInTheDocument();
+          expect(screen.queryByText(/The customer proposed/)).not.toBeInTheDocument();
+        }
+      });
+
+      it("the very time proposed is still Accept's, in neutral words", () => {
+        const { onSubmit } = renderDialog({ proposal: UNATTRIBUTED });
+        fireEvent.change(pickerInput("Planned start"), { target: { value: "03/08/2030 09:00 AM" } });
+        fireEvent.change(pickerInput("Planned end"), { target: { value: "03/08/2030 11:00 AM" } });
+        expect(dialogButton("Propose this time")).toBeDisabled();
+        expect(screen.getByRole("status")).toHaveTextContent("That is the time that was proposed. Close this and use Accept proposed time instead.");
+        fireEvent.click(dialogButton("Propose this time"));
+        expect(onSubmit).not.toHaveBeenCalled();
+      });
+
+      it("answers exactly as it does with a proposer on record: the wording is the only difference", () => {
+        const { onSubmit } = renderDialog({ proposal: UNATTRIBUTED });
+        fireEvent.click(dialogButton("Decline proposed time"));
+        expect(onSubmit).toHaveBeenCalledWith(
+          { state: "authorize", expectedCustomerUpdatedOn: "2030-03-08T09:00:00Z", ...SHOWN },
+          "",
+        );
+      });
     });
 
     it("the same start with another end is a different window, so it can be proposed", () => {

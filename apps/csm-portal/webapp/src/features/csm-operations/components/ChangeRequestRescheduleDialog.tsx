@@ -34,7 +34,12 @@ import type {
   BeChangeRequestDetail,
   BePatchChangeRequestPayload,
 } from "@api/backend/types";
-import { formatCrWindow, proposedWindowMs } from "@features/csm-operations/utils/changeRequests";
+import {
+  customerProposalProposer,
+  customerProposalWording,
+  formatCrWindow,
+  proposedWindowMs,
+} from "@features/csm-operations/utils/changeRequests";
 import {
   backendUtcToZonedInput,
   formatDateTimeLocal,
@@ -124,6 +129,8 @@ export default function ChangeRequestRescheduleDialog({
   // Counter mode: the window WSO2 would send (what is changed, else what is planned) against the one
   // the customer proposed. The very same window is the Accept action's, not a counter.
   const proposed = proposal ? proposedWindowMs(cr, proposal) : null;
+  // "The customer proposed ..." only when the proposer is on record; otherwise the dialog just says a time was proposed.
+  const wording = customerProposalWording(proposal ? customerProposalProposer(proposal) : null);
   const instantOf = (utc: string | null, planned: string | null | undefined): number | null =>
     (utc ? parseBackendTimestamp(utc) : parseBackendTimestamp(planned))?.getTime() ?? null;
   const effectiveStartMs = instantOf(changedStartUtc, cr.plannedStartOn);
@@ -166,7 +173,7 @@ export default function ChangeRequestRescheduleDialog({
           )}
           {counter && proposal ? (
             <Typography variant="body2" color="text.secondary">
-              {`The customer proposed ${formatCrWindow(proposal.startOn, proposed?.endMs ?? null)}. ` +
+              {`${wording.counterLead(formatCrWindow(proposal.startOn, proposed?.endMs ?? null))} ` +
                 "Set the time WSO2 proposes instead and the customer is asked to approve it. " +
                 "Keep the current time to decline the proposal. No CAB approval is needed."}
             </Typography>
@@ -206,7 +213,7 @@ export default function ChangeRequestRescheduleDialog({
           )}
           {isTheCustomersTime && (
             <Typography variant="caption" color="warning.main" role="status">
-              That is the time the customer proposed. Close this and use Accept proposed time instead.
+              {wording.isTheProposedTimeNote}
             </Typography>
           )}
           {keepsCurrentTime && !isTheCustomersTime && (

@@ -34,9 +34,11 @@ import {
   customerGateWithheldTargets,
   customerProposalProposer,
   customerProposalProposerLabel,
+  customerProposalWording,
   formatWindowLength,
   pendingCustomerProposal,
   plannedWindowMs,
+  PROPOSAL_WAITING_REASON,
   PROPOSER_NOT_RECORDED,
   PROPOSER_NOT_RECORDED_ADVICE,
   proposedWindowMs,
@@ -1411,15 +1413,63 @@ describe("a time the customer proposed (the previous system's customer_updated_o
   });
 
   describe("changeRequestBlockingReason with a proposal waiting", () => {
+    const RECORDED = { ...PROPOSAL, proposerRecorded: true, proposedByName: "Mia Member", proposedByEmail: "mia@example.com" };
+    const NOT_RECORDED = { ...PROPOSAL, proposerRecorded: false };
+
     it("reads that the change is waiting for WSO2, not for the customer, at Customer Approval only", () => {
       expect(CUSTOMER_PROPOSAL_WAITING_REASON).toBe("Waiting for WSO2 to respond to the customer's proposed time");
-      expect(changeRequestBlockingReason([], "customer_approval", true)).toBe(CUSTOMER_PROPOSAL_WAITING_REASON);
-      expect(changeRequestBlockingReason([], "customer_approval", false)).toBe("Awaiting Customer Approval");
+      expect(changeRequestBlockingReason([], "customer_approval", RECORDED)).toBe(CUSTOMER_PROPOSAL_WAITING_REASON);
+      expect(changeRequestBlockingReason([], "customer_approval", null)).toBe("Awaiting Customer Approval");
       expect(changeRequestBlockingReason([], "customer_approval")).toBe("Awaiting Customer Approval");
-      // The flag is the page's `pendingCustomerProposal`, which is only ever true in Customer Approval; the other
+      // The proposal is the page's `pendingCustomerProposal`, which is only ever set in Customer Approval; the other
       // customer gate and every approval stage keep their own words.
-      expect(changeRequestBlockingReason([], "customer_review", true)).toBe("Awaiting Customer Review");
-      expect(changeRequestBlockingReason([{ stage: "CAB Approval", approverType: "STATIC_GROUP", approverName: null, status: "REQUESTED", approvers: [] }], "authorize", true)).toBe("Awaiting CAB Approval");
+      expect(changeRequestBlockingReason([], "customer_review", RECORDED)).toBe("Awaiting Customer Review");
+      expect(changeRequestBlockingReason([{ stage: "CAB Approval", approverType: "STATIC_GROUP", approverName: null, status: "REQUESTED", approvers: [] }], "authorize", RECORDED)).toBe("Awaiting CAB Approval");
+    });
+
+    it("does not say the customer proposed the time when the proposer is not recorded", () => {
+      expect(PROPOSAL_WAITING_REASON).toBe("Waiting for WSO2 to respond to the proposed time");
+      // Nothing recorded at all, the backend's own "not recorded" (whatever name came with it), or a name that is blank.
+      expect(changeRequestBlockingReason([], "customer_approval", PROPOSAL)).toBe(PROPOSAL_WAITING_REASON);
+      expect(changeRequestBlockingReason([], "customer_approval", NOT_RECORDED)).toBe(PROPOSAL_WAITING_REASON);
+      expect(changeRequestBlockingReason([], "customer_approval", { ...NOT_RECORDED, proposedByName: "Mia Member", proposedByEmail: "mia@example.com" })).toBe(PROPOSAL_WAITING_REASON);
+      expect(changeRequestBlockingReason([], "customer_approval", { ...PROPOSAL, proposedByName: "  ", proposedByEmail: null })).toBe(PROPOSAL_WAITING_REASON);
+      expect(PROPOSAL_WAITING_REASON).not.toMatch(/customer/i);
+      // The other states are untouched.
+      expect(changeRequestBlockingReason([], "customer_review", NOT_RECORDED)).toBe("Awaiting Customer Review");
+    });
+
+    it("names the proposer when a name or an email is recorded, without proposerRecorded", () => {
+      expect(changeRequestBlockingReason([], "customer_approval", { ...PROPOSAL, proposedByName: "Mia Member" })).toBe(CUSTOMER_PROPOSAL_WAITING_REASON);
+      expect(changeRequestBlockingReason([], "customer_approval", { ...PROPOSAL, proposedByEmail: "mia@example.com" })).toBe(CUSTOMER_PROPOSAL_WAITING_REASON);
+    });
+  });
+
+  describe("customerProposalWording", () => {
+    it("says 'the customer' only when the proposer is on record", () => {
+      const named = customerProposalWording({ name: "Mia Member" });
+      expect(named.bannerTitle).toBe("The customer proposed a new time");
+      expect(named.windowLabel).toBe("Proposed by the customer");
+      expect(named.counterLead("Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM")).toBe("The customer proposed Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM.");
+      expect(named.isTheProposedTimeNote).toBe("That is the time the customer proposed. Close this and use Accept proposed time instead.");
+    });
+
+    it("is neutral when nobody is on record", () => {
+      const neutral = customerProposalWording(null);
+      expect(neutral.bannerTitle).toBe("A new time is waiting for your answer");
+      expect(neutral.windowLabel).toBe("Proposed time");
+      expect(neutral.counterLead("Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM")).toBe("A time was proposed: Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM.");
+      expect(neutral.isTheProposedTimeNote).toBe("That is the time that was proposed. Close this and use Accept proposed time instead.");
+      for (const text of [neutral.bannerTitle, neutral.windowLabel, neutral.counterLead("x"), neutral.isTheProposedTimeNote]) {
+        expect(text).not.toMatch(/customer/i);
+      }
+    });
+
+    it("follows customerProposalProposer: recorded -> customer wording, not recorded -> neutral", () => {
+      const recorded = customerProposalProposer({ proposerRecorded: true, proposedByName: "Mia Member" });
+      expect(customerProposalWording(recorded).bannerTitle).toBe("The customer proposed a new time");
+      const notRecorded = customerProposalProposer({ proposerRecorded: false, proposedByName: "Mia Member" });
+      expect(customerProposalWording(notRecorded).bannerTitle).toBe("A new time is waiting for your answer");
     });
   });
 

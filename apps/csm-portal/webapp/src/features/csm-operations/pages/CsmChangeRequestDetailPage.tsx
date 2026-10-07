@@ -510,7 +510,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   const blockingReason =
     cr.state === "closed" || cr.state === "canceled" || cr.state === "rollback"
       ? null
-      : changeRequestBlockingReason(approvalsData?.approvals, cr.state, !!proposal);
+      : changeRequestBlockingReason(approvalsData?.approvals, cr.state, proposal);
   // At a customer gate nobody is being asked to answer when the project has no
   // registered contacts (the backend had no one to assign the stage to), and
   // also when it has some but none has a request waiting: only the requester,
@@ -670,7 +670,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
         backendErrorMessage(
           err,
           reschedule?.proposal
-            ? "Could not answer the customer's proposed time."
+            ? "Could not answer the proposed time."
             : "Could not re-schedule this change request.",
         ),
       );

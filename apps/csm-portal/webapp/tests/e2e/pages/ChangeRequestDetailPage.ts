@@ -209,17 +209,42 @@ export class ChangeRequestDetailPage {
   }
 
   /**
-   * Header note while a customer's proposed time waits for WSO2's answer ("Waiting for WSO2 to respond to the
-   * customer's proposed time"): the change is waiting for WSO2, so the "Awaiting ..." note of `blockingReason()`
-   * is not shown.
+   * Header note while a proposed time waits for WSO2's answer: the change is waiting for WSO2, so the "Awaiting ..."
+   * note of `blockingReason()` is not shown. The note says the customer proposed the time only when the proposer is
+   * recorded ("Waiting for WSO2 to respond to the customer's proposed time"); otherwise it reads "Waiting for WSO2 to
+   * respond to the proposed time". This locator matches either; `customerProposalWaitingReason()` and
+   * `neutralProposalWaitingReason()` pin which one.
    */
   proposalWaitingReason(): Locator {
+    return this.page.getByText(/^Waiting for WSO2 to respond to the (customer's )?proposed time$/);
+  }
+
+  /** The header note when the proposer is recorded. */
+  customerProposalWaitingReason(): Locator {
     return this.page.getByText(/^Waiting for WSO2 to respond to the customer's proposed time$/);
   }
 
-  /** The banner under the stepper: "The customer proposed a new time" (a named region). */
+  /** The header note when the proposer is not recorded: it does not say the customer proposed the time. */
+  neutralProposalWaitingReason(): Locator {
+    return this.page.getByText(/^Waiting for WSO2 to respond to the proposed time$/);
+  }
+
+  /**
+   * The banner under the stepper (a named region): "The customer proposed a new time" when the proposer is recorded,
+   * "A new time is waiting for your answer" when it is not. This locator matches either.
+   */
   proposalBanner(): Locator {
-    return this.page.getByRole("region", { name: "The customer proposed a new time" });
+    return this.page.getByRole("region", { name: /^(The customer proposed a new time|A new time is waiting for your answer)$/ });
+  }
+
+  /** The banner when the proposer is recorded. */
+  customerProposalBanner(): Locator {
+    return this.page.getByRole("region", { name: "The customer proposed a new time", exact: true });
+  }
+
+  /** The banner when the proposer is not recorded: neutral title, the window labelled "Proposed time". */
+  neutralProposalBanner(): Locator {
+    return this.page.getByRole("region", { name: "A new time is waiting for your answer", exact: true });
   }
 
   /** The banner's primary answer (never the bar's: Accept lives only in the banner). */

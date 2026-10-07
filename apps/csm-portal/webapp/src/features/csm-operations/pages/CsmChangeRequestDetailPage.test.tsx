@@ -2799,8 +2799,14 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
    */
   describe("the customer proposes a time", () => {
     const PROPOSED_START = "2030-03-08T09:00:00Z"; // the planned window is 2030-03-01 09:00 - 11:00 (2 hours)
-    const banner = (): HTMLElement => screen.getByRole("region", { name: "The customer proposed a new time" });
-    const queryBanner = (): HTMLElement | null => screen.queryByRole("region", { name: "The customer proposed a new time" });
+    // The banner says the customer proposed the time only when the proposer is on record; otherwise it is neutral.
+    const CUSTOMER_TITLE = "The customer proposed a new time";
+    const NEUTRAL_TITLE = "A new time is waiting for your answer";
+    const EITHER_TITLE = new RegExp(`^(${CUSTOMER_TITLE}|${NEUTRAL_TITLE})$`);
+    const CUSTOMER_REASON = "Waiting for WSO2 to respond to the customer's proposed time";
+    const NEUTRAL_REASON = "Waiting for WSO2 to respond to the proposed time";
+    const banner = (): HTMLElement => screen.getByRole("region", { name: EITHER_TITLE });
+    const queryBanner = (): HTMLElement | null => screen.queryByRole("region", { name: EITHER_TITLE });
     const accept = (): HTMLElement => within(banner()).getByRole("button", { name: "Accept proposed time" });
     const counter = (): HTMLElement => within(banner()).getByRole("button", { name: "Propose a different time" });
     const dialogButton = (name: string): HTMLElement => within(screen.getByRole("dialog")).getByRole("button", { name });
@@ -2823,9 +2829,12 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       expect(lc.cr.state).toBe("customer_approval");
       expect(lc.cr.plannedStartOn).toBe("2030-03-01 09:00:00");
       expect(currentStep()).toBe("Customer Approval");
-      expect(screen.getByText("Waiting for WSO2 to respond to the customer's proposed time")).toBeInTheDocument();
+      expect(screen.getByText(CUSTOMER_REASON)).toBeInTheDocument();
+      expect(screen.queryByText(NEUTRAL_REASON)).not.toBeInTheDocument();
       expect(screen.queryByText("Awaiting Customer Approval")).not.toBeInTheDocument();
-      // The banner: both windows, who proposed it, Accept the one primary action.
+      // The banner: both windows, who proposed it, Accept the one primary action. The proposer is recorded, so it says the customer proposed it.
+      expect(screen.getByRole("region", { name: CUSTOMER_TITLE })).toBe(banner());
+      expect(within(banner()).getByText("Proposed by the customer")).toBeInTheDocument();
       expect(within(banner()).getByText("Mar 1, 2030, 9:00 AM to Mar 1, 2030, 11:00 AM")).toBeInTheDocument();
       expect(within(banner()).getByText("Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM")).toBeInTheDocument();
       expect(within(banner()).getByText("Same length as the planned window (2 hours)")).toBeInTheDocument();
@@ -2979,6 +2988,49 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       view.unmount();
     });
 
+    // The page does not say the customer proposed a time it cannot attribute to them, next to a note that it may have been written at WSO2.
+    it("the proposer is NOT recorded: the banner, the header, the Accept dialog and the counter dialog do not say the customer proposed it", async () => {
+      const view = seedProposal(false);
+      // Header: the neutral reason, never the customer-attributed one (nor the plain "Awaiting").
+      expect(screen.getByText(NEUTRAL_REASON)).toBeInTheDocument();
+      expect(screen.queryByText(CUSTOMER_REASON)).not.toBeInTheDocument();
+      expect(screen.queryByText("Awaiting Customer Approval")).not.toBeInTheDocument();
+      // Banner: a neutral title and window label; both windows are still there.
+      expect(screen.getByRole("region", { name: NEUTRAL_TITLE })).toBe(banner());
+      expect(screen.queryByRole("region", { name: CUSTOMER_TITLE })).not.toBeInTheDocument();
+      expect(within(banner()).getByText("Proposed time")).toBeInTheDocument();
+      expect(within(banner()).queryByText("Proposed by the customer")).not.toBeInTheDocument();
+      expect(within(banner()).getByText("Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM")).toBeInTheDocument();
+      expect(banner()).not.toHaveTextContent(/The customer proposed/);
+      expect(banner()).toHaveTextContent("The proposer is not recorded.");
+
+      // Accept dialog: the same neutral label.
+      fireEvent.click(accept());
+      let dialog = screen.getByRole("dialog");
+      expect(within(dialog).getByRole("heading", { name: "Accept the proposed time?" })).toBeInTheDocument();
+      expect(within(dialog).getByText("Proposed time")).toBeInTheDocument();
+      expect(within(dialog).queryByText("Proposed by the customer")).not.toBeInTheDocument();
+      fireEvent.click(within(dialog).getByRole("button", { name: "Close" }));
+      await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+      // Counter dialog: "A time was proposed: ...".
+      fireEvent.click(counter());
+      dialog = screen.getByRole("dialog");
+      expect(within(dialog).getByRole("heading", { name: "Propose a different time" })).toBeInTheDocument();
+      expect(within(dialog).getByText(/A time was proposed: Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM\./)).toBeInTheDocument();
+      expect(within(dialog).queryByText(/The customer proposed/)).not.toBeInTheDocument();
+      view.unmount();
+    });
+
+    it("the proposer is recorded: the counter dialog says the customer proposed it", () => {
+      const view = seedProposal();
+      fireEvent.click(counter());
+      const dialog = screen.getByRole("dialog");
+      expect(within(dialog).getByText(/The customer proposed Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM\./)).toBeInTheDocument();
+      expect(within(dialog).queryByText(/A time was proposed/)).not.toBeInTheDocument();
+      view.unmount();
+    });
+
     it("Accept is disabled with the reason when the change is on hold or the proposed time has passed, and the backend's refusal is the authority", async () => {
       const view = seedProposal();
       lc.onHold = true;
@@ -3070,7 +3122,8 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       setup();
       lcPublish();
       expect(queryBanner()).not.toBeInTheDocument();
-      expect(screen.queryByText("Waiting for WSO2 to respond to the customer's proposed time")).not.toBeInTheDocument();
+      expect(screen.queryByText(CUSTOMER_REASON)).not.toBeInTheDocument();
+      expect(screen.queryByText(NEUTRAL_REASON)).not.toBeInTheDocument();
       view.unmount();
     });
 

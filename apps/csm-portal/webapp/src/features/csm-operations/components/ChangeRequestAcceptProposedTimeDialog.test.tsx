@@ -82,6 +82,7 @@ describe("ChangeRequestAcceptProposedTimeDialog", () => {
     expect(within(dialog).getByText("Planned now")).toBeInTheDocument();
     expect(within(dialog).getByText("Mar 1, 2030, 9:00 AM to Mar 1, 2030, 11:00 AM")).toBeInTheDocument();
     expect(within(dialog).getByText("Proposed by the customer")).toBeInTheDocument();
+    expect(within(dialog).queryByText("Proposed time")).not.toBeInTheDocument();
     // The window appears once as the sentence's own and once as the proposed block.
     expect(within(dialog).getAllByText(/Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM/)).toHaveLength(2);
   });
@@ -99,6 +100,25 @@ describe("ChangeRequestAcceptProposedTimeDialog", () => {
   });
 
   describe("the proposer is NOT recorded", () => {
+    it("labels the window 'Proposed time', not 'Proposed by the customer', however the backend says it", () => {
+      for (const proposal of [
+        UNKNOWN,
+        { ...UNKNOWN, proposerRecorded: false, proposedByName: "Mia Member", proposedByEmail: "mia.member@example.com" },
+      ]) {
+        const { unmount } = render(
+          <ChangeRequestAcceptProposedTimeDialog cr={CR} proposal={proposal} isSubmitting={false} onClose={vi.fn()} onConfirm={vi.fn()} />,
+        );
+        const dialog = screen.getByRole("dialog");
+        expect(within(dialog).getByText("Proposed time")).toBeInTheDocument();
+        expect(within(dialog).queryByText("Proposed by the customer")).not.toBeInTheDocument();
+        expect(dialog).not.toHaveTextContent(/Proposed by /);
+        // What follows from accepting is unchanged, and so is the caveat and the explicit confirmation.
+        expect(dialog).toHaveTextContent("The proposer is not recorded.");
+        expect(within(dialog).getByRole("checkbox", { name: "I have checked that the customer proposed this time." })).toBeInTheDocument();
+        unmount();
+      }
+    });
+
     it("says so and holds Accept back until the engineer confirms the customer proposed this time", () => {
       const { onConfirm } = renderDialog({ proposal: UNKNOWN });
       const dialog = screen.getByRole("dialog");

@@ -31,6 +31,7 @@ import type { BeChangeRequestCustomerProposal, BeChangeRequestDetail } from "@ap
 import {
   customerProposalProposer,
   customerProposalProposerLabel,
+  customerProposalWording,
   formatCrDateTime,
   formatCrWindow,
   PROPOSER_NOT_RECORDED,
@@ -58,8 +59,9 @@ interface ChangeRequestAcceptProposedTimeDialogProps {
  * again, no CAB approval.
  *
  * When the proposer is not recorded (the date is also written by WSO2 users in the previous system, or can be
- * left over from an earlier round), it says so and Accept needs an explicit confirmation that the
- * time really came from the customer: accepting it is the engineer's decision, never a default.
+ * left over from an earlier round), it says so, labels the window "Proposed time" instead of "Proposed by
+ * the customer", and Accept needs an explicit confirmation that the time really came from the customer:
+ * accepting it is the engineer's decision, never a default.
  */
 export default function ChangeRequestAcceptProposedTimeDialog({
   cr,
@@ -70,6 +72,7 @@ export default function ChangeRequestAcceptProposedTimeDialog({
   onConfirm,
 }: ChangeRequestAcceptProposedTimeDialogProps): JSX.Element {
   const proposer = customerProposalProposer(proposal);
+  const wording = customerProposalWording(proposer);
   const proposed = proposedWindowMs(cr, proposal);
   const [checked, setChecked] = useState(false);
   const needsConfirmation = !proposer;
@@ -97,7 +100,7 @@ export default function ChangeRequestAcceptProposedTimeDialog({
           </Box>
           <Box sx={{ display: "flex", flexDirection: "column", gap: 0.25 }}>
             <Typography variant="caption" color="text.secondary" sx={{ textTransform: "uppercase", letterSpacing: 0.4 }}>
-              Proposed by the customer
+              {wording.windowLabel}
             </Typography>
             <Typography variant="body2" sx={{ fontWeight: 600 }}>
               {formatCrWindow(proposal.startOn, proposed?.endMs ?? null)}

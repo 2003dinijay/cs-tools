@@ -3006,6 +3006,10 @@ test.describe("change request approval flow — a customer's proposed time (mock
     expect(api.proposal()).toEqual({ customerUpdatedOn: PROPOSED_START, confirmation: null });
     // The header waits for WSO2, not for the customer.
     await expect(detail.proposalWaitingReason()).toHaveText("Waiting for WSO2 to respond to the customer's proposed time");
+    await expect(detail.customerProposalWaitingReason()).toBeVisible();
+    await expect(detail.neutralProposalWaitingReason()).toHaveCount(0);
+    await expect(detail.customerProposalBanner()).toBeVisible(); // the proposer is on record, so the banner says the customer proposed it
+    await expect(detail.neutralProposalBanner()).toHaveCount(0);
     await expect(detail.blockingReason()).toHaveCount(0);
     // The banner: planned beside proposed, the proposer, Accept the one primary action.
     const banner = detail.proposalBanner();
@@ -3155,12 +3159,29 @@ test.describe("change request approval flow — a customer's proposed time (mock
     await proposalWaiting(page, api, detail, false);
     await expect(detail.proposalBanner()).toContainText("The proposer is not recorded.");
     await expect(detail.proposalBanner()).not.toContainText("Proposed by Mia");
+    // Nobody is on record, so nothing says the customer proposed it: neutral title, window label and header note.
+    await expect(detail.neutralProposalBanner()).toBeVisible();
+    await expect(detail.customerProposalBanner()).toHaveCount(0);
+    await expect(detail.neutralProposalBanner()).toContainText("Proposed time");
+    await expect(detail.neutralProposalBanner()).not.toContainText("Proposed by the customer");
+    await expect(detail.neutralProposalBanner()).not.toContainText("The customer proposed");
+    await expect(detail.neutralProposalWaitingReason()).toBeVisible();
+    await expect(detail.customerProposalWaitingReason()).toHaveCount(0);
     await proposalPicture(page, "04-banner-proposer-not-recorded");
     await expect(detail.acceptProposedTimeButton()).toHaveClass(/MuiButton-outlined/);
     await expect(detail.proposeDifferentTimeButton()).toHaveClass(/MuiButton-outlined/);
 
+    // The counter dialog leads with "A time was proposed: ...", not "The customer proposed ...".
+    await detail.proposeDifferentTimeButton().click();
+    await expect(detail.counterDialog()).toContainText("A time was proposed:");
+    await expect(detail.counterDialog()).not.toContainText("The customer proposed");
+    await detail.counterDialog().getByRole("button", { name: "Close", exact: true }).click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+
     await detail.acceptProposedTimeButton().click();
     await expect(detail.acceptDialog()).toContainText("The proposer is not recorded.");
+    await expect(detail.acceptDialog()).toContainText("Proposed time");
+    await expect(detail.acceptDialog()).not.toContainText("Proposed by the customer");
     await expect(detail.acceptDialogConfirm()).toBeDisabled();
     await proposalPicture(page, "05-accept-dialog-proposer-not-recorded");
     await detail.acceptDialog().getByRole("checkbox", { name: "I have checked that the customer proposed this time." }).check();
@@ -4832,6 +4853,7 @@ test.describe("a customer's proposed time (real stack)", () => {
     await detail.goto(cr.id);
     await expect(detail.currentStep()).toContainText("Customer Approval");
     await expect(detail.proposalBanner()).toBeVisible();
+    await expect(detail.customerProposalBanner()).toBeVisible(); // the proposer is on record
     await expect(detail.proposalBanner()).toContainText("Proposed by Dave Mendis (dave.mendis@example.com)");
     await expect(detail.proposalBanner()).toContainText("Same length as the planned window (2 hours)");
     await expect(detail.proposalWaitingReason()).toBeVisible();
@@ -4941,6 +4963,8 @@ test.describe("a customer's proposed time (real stack)", () => {
 
       await detail.goto(id);
       await expect(detail.proposalBanner()).toBeVisible();
+      await expect(detail.neutralProposalBanner()).toBeVisible(); // nobody on record: the banner does not say the customer proposed it
+      await expect(detail.neutralProposalWaitingReason()).toBeVisible();
       await expect(detail.proposalBanner()).toContainText("The proposer is not recorded.");
       await expect(detail.acceptProposedTimeButton()).toHaveClass(/MuiButton-outlined/);
       await expect(detail.proposeDifferentTimeButton()).toHaveClass(/MuiButton-outlined/);

@@ -22,6 +22,7 @@ import {
   acceptProposedTimeBlockedReason,
   customerProposalProposer,
   customerProposalProposerLabel,
+  customerProposalWording,
   formatCrDateTime,
   formatCrWindow,
   formatWindowLength,
@@ -65,7 +66,9 @@ function WindowBlock({ label, window, note }: { label: string; window: string; n
 
 /**
  * "The customer proposed a new time": shown under the lifecycle stepper while a proposal waits for
- * WSO2's answer (the change stays in Customer Approval, the planned window untouched).
+ * WSO2's answer (the change stays in Customer Approval, the planned window untouched). With no
+ * proposer on record it does not say the customer proposed it ("A new time is waiting for your
+ * answer", the window labelled "Proposed time"), beside the note that the proposer is not recorded.
  *
  * The two answers are the previous system's own: "Accept proposed time" (Agree: the proposal becomes the
  * planned window and the change goes straight to Scheduled, no CAB, no new customer request) and
@@ -90,6 +93,7 @@ export default function ChangeRequestProposedTimeBanner({
 }: ChangeRequestProposedTimeBannerProps): JSX.Element {
   const titleId = useId();
   const proposer = customerProposalProposer(proposal);
+  const wording = customerProposalWording(proposer);
   const planned = plannedWindowMs(cr);
   const proposed = proposedWindowMs(cr, proposal);
   const length = planned ? formatWindowLength(planned.endMs - planned.startMs) : "";
@@ -119,7 +123,7 @@ export default function ChangeRequestProposedTimeBanner({
       icon={<CalendarClock size={20} />}
       sx={{ alignItems: "flex-start", "& .MuiAlert-message": { width: "100%" } }}
     >
-      <AlertTitle id={titleId}>The customer proposed a new time</AlertTitle>
+      <AlertTitle id={titleId}>{wording.bannerTitle}</AlertTitle>
       <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
         <Typography variant="body2">
           The planned time stays as it is until you answer. Accepting schedules the change for the proposed time with no
@@ -128,7 +132,7 @@ export default function ChangeRequestProposedTimeBanner({
         <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
           <WindowBlock label="Planned now" window={formatCrWindow(cr.plannedStartOn, cr.plannedEndOn)} />
           <WindowBlock
-            label="Proposed by the customer"
+            label={wording.windowLabel}
             window={formatCrWindow(proposal.startOn, proposed?.endMs ?? null)}
             note={length && proposed?.endMs != null ? `Same length as the planned window (${length})` : undefined}
           />

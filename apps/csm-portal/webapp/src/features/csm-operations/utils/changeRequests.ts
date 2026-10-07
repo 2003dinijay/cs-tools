@@ -329,6 +329,9 @@ export function isChangeRequestCreator(
 /** What the header says while a proposed time waits for WSO2: the change is waiting for WSO2, not for the customer. */
 export const CUSTOMER_PROPOSAL_WAITING_REASON = "Waiting for WSO2 to respond to the customer's proposed time";
 
+/** The same note when the proposer is not recorded: it does not say the customer proposed the time. */
+export const PROPOSAL_WAITING_REASON = "Waiting for WSO2 to respond to the proposed time";
+
 /**
  * The customer's proposed time while it waits for WSO2's answer, or `null`. Only the
  * backend's own verdict counts (`answer: "pending"`: the allowlist that keeps a
@@ -371,6 +374,42 @@ export function customerProposalProposer(
 export function customerProposalProposerLabel(proposer: CustomerProposalProposer): string {
   if (proposer.name && proposer.email) return `${proposer.name} (${proposer.email})`;
   return proposer.name ?? proposer.email ?? "";
+}
+
+/**
+ * The words the page uses for a pending proposal. They say "the customer" only when the proposer is on
+ * record ({@link customerProposalProposer}): the previous system lets WSO2 users write the proposed
+ * date too, and one left over from an earlier round reads the same, so with nobody on record the page
+ * must not claim the customer proposed it, next to a note that says it may not have been.
+ */
+export interface CustomerProposalWording {
+  /** The banner's title (its region name). */
+  bannerTitle: string;
+  /** The label of the proposed window in the banner and the Accept dialog. */
+  windowLabel: string;
+  /** The Re-schedule dialog's counter-mode lead for the proposed window: "<lead>." with the window formatted by the caller. */
+  counterLead: (window: string) => string;
+  /** The counter dialog's note when the window typed in is the very one proposed. */
+  isTheProposedTimeNote: string;
+}
+
+const CUSTOMER_PROPOSED_WORDING: CustomerProposalWording = {
+  bannerTitle: "The customer proposed a new time",
+  windowLabel: "Proposed by the customer",
+  counterLead: (window) => `The customer proposed ${window}.`,
+  isTheProposedTimeNote: "That is the time the customer proposed. Close this and use Accept proposed time instead.",
+};
+
+const PROPOSED_WORDING: CustomerProposalWording = {
+  bannerTitle: "A new time is waiting for your answer",
+  windowLabel: "Proposed time",
+  counterLead: (window) => `A time was proposed: ${window}.`,
+  isTheProposedTimeNote: "That is the time that was proposed. Close this and use Accept proposed time instead.",
+};
+
+/** The page's words for a pending proposal: the customer-attributed ones only when `proposer` is on record. */
+export function customerProposalWording(proposer: CustomerProposalProposer | null): CustomerProposalWording {
+  return proposer ? CUSTOMER_PROPOSED_WORDING : PROPOSED_WORDING;
 }
 
 /** Said when the proposer cannot be named (the banner and the Accept dialog). */
@@ -501,14 +540,15 @@ const NO_LONGER_ASKED_APPROVER_STATUSES = new Set(["CANCELLED", "CANCELED", "NOT
  * blocking on approval — no waiting stage, or the approvals haven't loaded
  * yet — so callers should treat `null` as "no reason to show", not an error.
  *
- * `customerProposalPending` (see {@link pendingCustomerProposal}) says the customer
- * proposed a time that nobody at WSO2 has answered: at Customer Approval the change
- * is then waiting for WSO2, not for the customer ({@link CUSTOMER_PROPOSAL_WAITING_REASON}).
+ * `pendingProposal` (see {@link pendingCustomerProposal}) is a proposed time that nobody
+ * at WSO2 has answered: at Customer Approval the change is then waiting for WSO2, not for
+ * the customer ({@link CUSTOMER_PROPOSAL_WAITING_REASON}, or {@link PROPOSAL_WAITING_REASON}
+ * when the proposer is not recorded, which does not say the customer proposed it).
  */
 export function changeRequestBlockingReason(
   approvals: BeChangeRequestApproval[] | undefined,
   state?: string | null,
-  customerProposalPending = false,
+  pendingProposal?: BeChangeRequestCustomerProposal | null,
 ): string | null {
   // The customer gates are named from the state: the CR is waiting on the
   // customer's own answer (given in the Customer Portal) whether or not the
@@ -517,7 +557,8 @@ export function changeRequestBlockingReason(
   // The one exception is a proposed time nobody at WSO2 has answered: the change
   // stays in Customer Approval, but what it is waiting for is WSO2.
   if (state === "customer_approval") {
-    return customerProposalPending ? CUSTOMER_PROPOSAL_WAITING_REASON : "Awaiting Customer Approval";
+    if (!pendingProposal) return "Awaiting Customer Approval";
+    return customerProposalProposer(pendingProposal) ? CUSTOMER_PROPOSAL_WAITING_REASON : PROPOSAL_WAITING_REASON;
   }
   if (state === "customer_review") return "Awaiting Customer Review";
   // A stage whose every approver was cancelled or marked not required (a
