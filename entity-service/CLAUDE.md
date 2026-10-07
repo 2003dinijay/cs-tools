@@ -4279,7 +4279,11 @@ portal's own client is never unrestricted, even if it is also listed as machine-
 (`ResolveScope` checks it first). This is the line the Postgres rule draws (`crViewer`), so
 a ServiceNow deployment shows its staff New / Assess / Authorize exactly when they resolve
 as unrestricted for every other scoped endpoint; `TestServiceNowRouter_*` drive the real
-router and fail if that stops being true.
+router and fail if that stops being true. They run without a database, where a customer's
+scope is never resolved at all, so the case of a customer whose scope *is* resolved (a
+ServiceNow deployment that also has a database to look the user up in) is pinned
+separately: `TestCallerIdentityMiddleware_*` (`identity_middleware_test.go`) fail if the
+middleware hands such a scope on as anything but restricted.
 
 Not changed on this data source, by design or for want of a source: the by-id reads and
 writes (detail, approvals, decision, PATCH, comments) stay ServiceNow's own decision (a
