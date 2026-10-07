@@ -116,19 +116,28 @@ From the detail page a CS engineer can:
   failed review is the customer's to give in the Customer Portal.
 - **When nobody can be asked.** The customer's request goes to the Customer
   Project's registered contacts, leaving out whoever raised the change and anyone
-  no longer active. If none of them has a request waiting, the change waits at
-  the gate with nobody to answer, and the Approval tab says so in a note. That
-  happens when the project has no registered contacts, when its only contact is
-  the person who raised the change or its contacts are no longer active, and for
-  an older change that reached the gate with no request at all. Staff never
-  answer for the customer, so the exits are the ones staff always have there.
-  When nobody can be asked, **Cancel change** is the only way out of Customer
+  no longer active. A change with Customer Approval and/or Customer Review ticked
+  is therefore **not sent for approval while nobody can be asked**: **Request
+  Approval** is refused, with a message that says so. Where the project has no
+  registered contact at all the button is greyed out with the reason ("Register a
+  contact for the Customer Project before requesting approval"); where it has
+  contacts but none can be asked (its only contact is the person who raised the
+  change, or its contacts are no longer active) the request goes out and the
+  refusal appears as an error. Register a contact for the project, then request
+  approval. Ticking a customer box on after approval was requested is refused the
+  same way. The Customer Project cannot be changed once approval has been
+  requested, which is why the contact has to be there first.
+  Only an older change can still be left waiting at a gate with nobody to answer:
+  one that reached Customer Approval or Customer Review before this was refused,
+  one whose contacts left the project since, or one that came over from ServiceNow
+  without a request. The Approval tab says so in a note, and since staff never
+  answer for the customer the exits are the ones staff always have there. When
+  nobody can be asked, **Cancel change** is the only way out of Customer
   Approval: **Re-schedule** sends the change back through approval and then asks
   the project's registered contacts again, so it helps only if somebody can be
   asked this time (an older change with no request, on a project that has
   eligible contacts, is the case where it does). **Roll back** or **Cancel
-  change** are the ways out of Customer Review. The Customer Project cannot be
-  changed to route the step once approval has been requested.
+  change** are the ways out of Customer Review.
 - **Approve or reject** a pending approval stage, if the engineer is listed
   as an approver on it: the Approve/Reject buttons only appear on that
   engineer's own pending approval.
