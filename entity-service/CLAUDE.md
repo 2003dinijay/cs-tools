@@ -5079,6 +5079,20 @@ that policy's work_item lookup cannot see a sibling CTE's insert. Without
 this, every Novera chat on Postgres failed at create and nothing was
 persisted.
 
+**`SearchConversations` picks the page first, and its COUNT carries no display joins.**
+`conversationSearchQueries` (`conversation_repo.go`) counts over `work_item`/`conversation`
+only (every filter reads just those two), and selects the page's `wi.id`s in an inner query
+(WHERE, the caller's sort with the `wi.id` tie-break, LIMIT/OFFSET) before joining the
+project, linked case and creator onto those rows, as `SearchCases` does. The creator is a
+`LEFT JOIN LATERAL ... ORDER BY id LIMIT 1` on `LOWER(email)`, not a plain join: `"user".email`
+is not unique (111 duplicated addresses on staging), so the plain join fanned a conversation out
+into one row per user while the COUNT disagreed, and for some free-text terms the planner chose a
+nested loop that rescanned `"user"` once per matching conversation (hundreds of milliseconds of
+database time per query, two queries per request). Do not put the display joins back into the
+COUNT or the inner page query. `conversation_repo_search_integration_test.go` replays the
+previous SQL as an oracle against a real RLS-forced database (internal caller, project member and
+stranger, every filter, both sorts, page by page) and `TestConversationSearchQueries` pins the shape.
+
 **`CreateProblem`/`CreateIncident` are now implemented on the plain-Postgres
 data source too**, via `next_portal_work_item_number()` (migration 0140 --
 see "CreateCase and case numbers" above): `ProblemRepository.CreateProblem`/
