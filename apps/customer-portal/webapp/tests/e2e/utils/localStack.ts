@@ -64,7 +64,7 @@ export const FIXTURES = {
 
 export type FixtureChange = { id: string; number: string };
 
-/** The staff persona that decides internal stages (a CAB / ECAB / peer approver). */
+/** The staff persona that decides internal stages (a CAB / peer approver). */
 export const STAFF_APPROVERS = {
   alice: "alice.perera@example.com",
   bob: "bob.fernando@example.com",

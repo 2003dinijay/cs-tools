@@ -45,7 +45,8 @@
 //      Implement, Review, Customer Review (noel answers), Closed: visible all the way. dave
 //      (project 401) never sees it, by API or by the address he would type.
 //   2. A change request that never needs the customer is never visible, in any state through
-//      Closed (Normal and Standard); one that needs only the customer's REVIEW is invisible
+//      Closed (Normal and Standard; an Emergency change never asks the customer at all, and a
+//      customer box cannot even be ticked on it); one that needs only the customer's REVIEW is invisible
 //      until Customer Review and visible from there on.
 //   3. A contact registered AFTER the stage was provisioned was never asked: they see nothing,
 //      in any state of that change request, though they are a registered contact of the project.
@@ -61,8 +62,10 @@ import { LOCAL_PERSONAS, openLocalContext, withLocalSession } from "../../auth/l
 import { ChangeRequestDetailsPage } from "../../pages/ChangeRequestDetailsPage";
 import { ChangeRequestsPage } from "../../pages/ChangeRequestsPage";
 import {
+  EXAMPLE_CORP_ABT_GROUP_ID,
   FIXTURES,
   LATE_CONTACT,
+  RAISED_PREFIX,
   approverRows,
   customerApi,
   countsWith,
@@ -463,7 +466,7 @@ test.describe("Local stack — who sees a change request, over its whole life", 
     expect(await customerApi("dave").listedNumbers(FIXTURES.projectId)).not.toContain(noProject.number);
   });
 
-  test("a Standard change with Customer Approval ticked goes straight to Customer Approval at Request Approval, where both contacts see it (and a proposal keeps it there, as it does every change); an Emergency one is invisible through its ECAB approval", async () => {
+  test("a Standard change with Customer Approval ticked goes straight to Customer Approval at Request Approval, where both contacts see it (and a proposal keeps it there, as it does every change); an Emergency change never asks the customer: a ticked box is refused at create, and one raised without is invisible through its CAB approval", async () => {
     const lumen = await lumenProjectId();
     const bases = { mira: (await customerCounts(LOCAL_PERSONAS.mira.email, lumen))!, noel: (await customerCounts(LOCAL_PERSONAS.noel.email, lumen))! };
 
@@ -486,18 +489,30 @@ test.describe("Local stack — who sees a change request, over its whole life", 
     expect(await storedState(standard.id)).toBe("SCHEDULED");
     await expectSeenBy(standard, lumen, ["mira", "noel"], "Scheduled", bases, "Standard, Scheduled");
 
-    const emergency = await raiseChange({ title: "Lumen, Emergency with approval", projectId: lumen, approval: true, review: false, type: "emergency" });
-    expect((await requestApproval(emergency.id)).status).toBe(200);
-    expect(await storedState(emergency.id), "an Emergency change goes straight to its ECAB").toBe("AUTHORIZE");
+    // An Emergency change acts without the customer's consent: neither box can be ticked on it (the backend refuses the create),
+    // so nobody is ever designated and it is invisible to the project's contacts in every state.
+    const refused = await staffApi("jane").create({
+      subject: `${RAISED_PREFIX}Lumen, Emergency with approval`,
+      type: "emergency",
+      groupId: EXAMPLE_CORP_ABT_GROUP_ID,
+      projectId: lumen,
+      customerApprovalRequired: true,
+      customerReviewRequired: false,
+    });
+    expect(refused.status, JSON.stringify(refused.body)).toBe(400);
+    expect(JSON.stringify(refused.body)).toContain("Emergency changes proceed without customer consent");
     // (bases already hold the Standard one: its two states are what the counts now carry)
     const basesWithStandard = {
       mira: countsWith(bases.mira, "Scheduled"),
       noel: countsWith(bases.noel, "Scheduled"),
     };
-    await expectSeenBy(emergency, lumen, [], null, basesWithStandard, "Emergency, Authorize (ECAB asked)");
+    const emergency = await raiseChange({ title: "Lumen, Emergency", projectId: lumen, approval: false, review: false, type: "emergency" });
+    expect((await requestApproval(emergency.id)).status).toBe(200);
+    expect(await storedState(emergency.id), "an Emergency change goes straight to the CAB (there is no ECAB)").toBe("AUTHORIZE");
+    await expectSeenBy(emergency, lumen, [], null, basesWithStandard, "Emergency, Authorize (the CAB asked)");
     await staffDecides("bob", emergency.id);
-    expect(await storedState(emergency.id)).toBe("CUSTOMER_APPROVAL");
-    await expectSeenBy(emergency, lumen, ["mira", "noel"], "Customer Approval", basesWithStandard, "Emergency, Customer Approval");
+    expect(await storedState(emergency.id), "the CAB's approval schedules it: the customer is never asked").toBe("SCHEDULED");
+    await expectSeenBy(emergency, lumen, [], null, basesWithStandard, "Emergency, Scheduled: nobody was ever asked");
   });
 
   test("only the customer's REVIEW ticked: invisible through Scheduled, Implement and Review (the box alone shows nothing), visible to both contacts from Customer Review on, and kept after Closed", async () => {

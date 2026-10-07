@@ -115,7 +115,7 @@ FROM legacy_cr l
 WHERE EXISTS (SELECT 1 FROM work_item w WHERE w.id = md5('legacy-' || l.number)::uuid);
 
 -- The synced stages: NO checkpoint_label, no assignment group (an unsynced ServiceNow group also yields NULL).
--- CHG0039301: the single stage of an Emergency change in Authorize (the ECAB's, read from state and type).
+-- CHG0039301: the single stage of an Emergency change in Authorize (the CAB's: ServiceNow has no ECAB; read from state and type).
 -- CHG0039302: a stale stage of a Normal change that has moved on to Scheduled.
 INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status, checkpoint_label)
 SELECT md5('legacy-stage-' || n)::uuid, '1999-12-20 09:30:00+00', '1999-12-20 09:30:00+00', 'sn-sync', 'sn-sync',
