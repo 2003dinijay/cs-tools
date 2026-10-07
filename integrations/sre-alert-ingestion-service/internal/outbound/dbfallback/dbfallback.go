@@ -42,8 +42,11 @@ const (
 	maxPending = 500
 	// maxListed caps alerts rendered in one card; the rest are summarised as a count.
 	maxListed = 20
-	// maxDescription truncates each alert's description, in runes.
+	// maxDescription and maxField truncate what is kept of each alert, in runes, so the queue stays small however large the alerts are.
 	maxDescription = 300
+	maxField       = 200
+	// maxCardBytes keeps a card's alert widgets under Chat's 32 KB card limit, leaving room for the header.
+	maxCardBytes = 28 << 10
 	// sendGap spaces messages so an outage coalesces into one card per gap instead of tripping Chat's per-space rate limit.
 	sendGap = 10 * time.Second
 	// sendAttempts and retryBaseDelay retry 429 and 5xx answers; other 4xx answers are not retried.
@@ -51,10 +54,25 @@ const (
 	retryBaseDelay = 500 * time.Millisecond
 )
 
+// entry is a bounded summary of one alert, never its full text.
 type entry struct {
-	source    string
-	requestID string
-	alert     model.Alert
+	source, requestID                                    string
+	severity, service, metric, environment, category, id string
+	description                                          string
+}
+
+func newEntry(source, requestID string, a model.Alert) entry {
+	return entry{
+		source:      truncate(source, maxField),
+		requestID:   truncate(requestID, maxField),
+		severity:    truncate(a.Severity, maxField),
+		service:     truncate(a.Service, maxField),
+		metric:      truncate(a.MetricName, maxField),
+		environment: truncate(a.Environment, maxField),
+		category:    truncate(a.Category, maxField),
+		id:          truncate(a.UniqueIdentifier, maxField),
+		description: truncate(a.Description, maxDescription),
+	}
 }
 
 // Client sends at most one message at a time, merging alerts reported while one is in flight or during sendGap into the next.
@@ -110,7 +128,7 @@ func (c *Client) Notify(source, requestID string, alerts []model.Alert) {
 			c.dropped++
 			continue
 		}
-		c.pending = append(c.pending, entry{source: source, requestID: requestID, alert: a})
+		c.pending = append(c.pending, newEntry(source, requestID, a))
 	}
 	if !c.running {
 		c.running = true
@@ -219,18 +237,27 @@ func spaceID(webhookURL string) string {
 	return "unknown"
 }
 
-// card renders up to maxListed alerts; every alert field is escaped since it comes from the webhook sender.
+// card renders up to maxListed alerts within maxCardBytes; every alert field is escaped since it comes from the webhook sender.
 func card(batch []entry, dropped int) map[string]any {
 	total := len(batch) + dropped
 	widgets := []map[string]any{paragraph(fmt.Sprintf(
 		"%d alert(s) could not be written to the database, so no incidents will be created for them. Senders were answered 503 and may resend.", total))}
-	for i, e := range batch {
-		if i == maxListed {
+	listed, used := 0, 0
+	for _, e := range batch {
+		if listed == maxListed {
 			break
 		}
-		widgets = append(widgets, paragraph(alertText(e)))
+		w := paragraph(alertText(e))
+		size := jsonSize(w)
+		// The first alert always fits, since newEntry bounds it well under maxCardBytes.
+		if listed > 0 && used+size > maxCardBytes {
+			break
+		}
+		widgets = append(widgets, w)
+		used += size
+		listed++
 	}
-	if more := total - min(len(batch), maxListed); more > 0 {
+	if more := total - listed; more > 0 {
 		widgets = append(widgets, paragraph(fmt.Sprintf("<i>%d more not shown.</i>", more)))
 	}
 	return map[string]any{
@@ -251,17 +278,22 @@ func paragraph(text string) map[string]any {
 	return map[string]any{"textParagraph": map[string]any{"text": text}}
 }
 
+// jsonSize is v's encoded size, which is what counts against Chat's card limit.
+func jsonSize(v any) int {
+	b, _ := json.Marshal(v)
+	return len(b)
+}
+
 func alertText(e entry) string {
-	a := e.alert
 	var b strings.Builder
-	b.WriteString("<b>" + html.EscapeString(orDash(a.Severity)) + " | " + html.EscapeString(orDash(a.Service)) + "</b>")
+	b.WriteString("<b>" + html.EscapeString(orDash(e.severity)) + " | " + html.EscapeString(orDash(e.service)) + "</b>")
 	for _, f := range []struct{ name, value string }{
-		{"Metric", a.MetricName},
-		{"Environment", a.Environment},
-		{"Category", a.Category},
+		{"Metric", e.metric},
+		{"Environment", e.environment},
+		{"Category", e.category},
 		{"Source", e.source},
-		{"Unique ID", a.UniqueIdentifier},
-		{"Description", truncate(a.Description, maxDescription)},
+		{"Unique ID", e.id},
+		{"Description", e.description},
 		{"Request ID", e.requestID},
 	} {
 		if f.value != "" {

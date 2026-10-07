@@ -335,10 +335,11 @@ func (a *Allocator) writeBatch(batch []*submission, n int) {
 	cancel()
 	if err != nil {
 		a.logger.Error("claim failed; batch rejected, no rows written", "alerts", n, "submissions", len(batch), "error", err)
+		// Queued before answering so the fallback holds the alerts by the time Submit returns.
+		a.notifyFallback(batch)
 		for _, sub := range batch {
 			a.finish(sub, Result{Err: ErrClaimFailed})
 		}
-		a.notifyFallback(batch)
 		return
 	}
 
@@ -370,10 +371,11 @@ func (a *Allocator) writeBatch(batch []*submission, n int) {
 	if err != nil {
 		a.logger.Error("batch NOT stored; senders get 503 and should retry", "alerts", n, "submissions", len(batch),
 			"first_id", rows[0].ID, "attempts", attempts, "error", err)
+		// Queued before answering so the fallback holds the alerts by the time Submit returns.
+		a.notifyFallback(batch)
 		for _, sub := range batch {
 			a.finish(sub, Result{Err: ErrStoreFailed})
 		}
-		a.notifyFallback(batch)
 		return
 	}
 	a.logger.Info("batch written", "alerts", n, "submissions", len(batch), "first_id", rows[0].ID,

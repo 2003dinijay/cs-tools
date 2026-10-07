@@ -18,6 +18,7 @@ package dbfallback
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
@@ -194,5 +195,42 @@ func TestSpaceID(t *testing.T) {
 	}
 	if got := spaceID("https://example.com/hook"); got != "unknown" {
 		t.Errorf("spaceID = %q, want unknown", got)
+	}
+}
+
+func TestNotify_KeepsOnlyBoundedSummary(t *testing.T) {
+	cs := newChatServer(t, ok)
+	c := newTestClient(t, cs, time.Hour)
+	big := strings.Repeat("x", 1<<20)
+	c.mu.Lock()
+	c.running = true // hold the loop so the entry stays queued
+	c.mu.Unlock()
+	c.Notify(big, big, []model.Alert{{Service: big, MetricName: big, Severity: big, Category: big, Environment: big, UniqueIdentifier: big, Description: big}})
+	c.mu.Lock()
+	e := c.pending[0]
+	c.running = false
+	c.mu.Unlock()
+	size := len(e.source) + len(e.requestID) + len(e.severity) + len(e.service) + len(e.metric) + len(e.environment) + len(e.category) + len(e.id) + len(e.description)
+	if limit := 8*(maxField+3) + maxDescription + 3; size > limit {
+		t.Errorf("queued entry holds %d bytes, want at most %d", size, limit)
+	}
+}
+
+func TestCard_StaysUnderChatLimit(t *testing.T) {
+	worst := strings.Repeat("&", 1<<20)
+	a := model.Alert{Service: worst, MetricName: worst, Severity: worst, Category: worst, Environment: worst, UniqueIdentifier: worst, Description: worst}
+	batch := make([]entry, maxListed)
+	for i := range batch {
+		batch[i] = newEntry(worst, worst, a)
+	}
+	body, err := json.Marshal(card(batch, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) > 32<<10 {
+		t.Errorf("card is %d bytes, over Chat's 32 KB limit", len(body))
+	}
+	if !strings.Contains(string(body), "more not shown") {
+		t.Error("card should say how many alerts it left out")
 	}
 }
