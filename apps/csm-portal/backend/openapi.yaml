@@ -5314,6 +5314,25 @@ paths:
         contact for the project first" ("customer review is ..." for the review box,
         "customer approval and customer review are ..." for both). Without a Customer
         Project at all Request Approval keeps its own message.
+
+        A customer's proposed time (the entity service's own rules, echoed verbatim). A
+        customer proposes a start in the Customer Portal; the change request stays in
+        customer_approval and the detail's `customerProposal` shows it (`answer: "pending"`).
+        WSO2 answers it with this PATCH, two ways, each naming the proposal it answers
+        (`expectedCustomerUpdatedOn`) and the planned window the page showed
+        (`expectedPlannedStartOn` / `expectedPlannedEndOn`): ACCEPT PROPOSED TIME is
+        `{confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn, expectedPlannedStartOn,
+        expectedPlannedEndOn}` with nothing else -- it applies the proposed start to the planned
+        window (the planned length is kept) and moves the change request to `scheduled`; PROPOSE A
+        DIFFERENT TIME is `{state: "authorize", plannedStartOn?, plannedEndOn?, expectedCustomerUpdatedOn,
+        ...}` -- the window WSO2 proposes instead, the customers asked again, no CAB approval; with
+        no window (or the planned window restated) it declines the proposal and leaves the
+        customers' request alone. `authorize` out of customer_approval never moves the state. A
+        stale proposal or window is a 409, an unusable one a 400 (`the time the customer proposed
+        (...) has already passed, so it cannot be accepted: use "Propose a different time" ...`,
+        `change request is on hold; ...`, `the customer proposed a new time (...) after you opened
+        this change request; read it again ...`). The BFF checks only that these four fields are
+        strings. A manual `{state: "scheduled"}` stays a 400 whatever is pending.
       operationId: patchChangeRequest
       security:
         - bearerAuth: []
@@ -13561,10 +13580,11 @@ components:
             is never accepted (a 400, from every state): it is reached by the approval
             flow or, out of customer_approval, by the customer's own approval in the
             Customer Portal. Out of customer_approval / customer_review only canceled,
-            authorize (Re-schedule, customer_approval) and rollback (customer_review)
-            are accepted; anything else, "closed" included, is a 400 saying that the
-            customer's approval / review can only be given by the customer in the
-            Customer Portal and what to do instead.
+            authorize (Re-schedule / Propose a different time, customer_approval: the
+            state does not move, the customers are asked again, nothing goes through CAB
+            again) and rollback (customer_review) are accepted; anything else, "closed"
+            included, is a 400 saying that the customer's approval / review can only be
+            given by the customer in the Customer Portal and what to do instead.
           enum: [new, assess, authorize, customer_approval, scheduled, implement, review, customer_review, rollback, closed, canceled]
         type:
           type: string
@@ -13680,6 +13700,37 @@ components:
             Transitions the change request from New to Assess and requests
             approval. Mutually exclusive with isCustomerApproved and
             isCustomerReviewed.
+        confirmCustomerUpdatedDate:
+          type: string
+          enum: [agree]
+          description: >-
+            ACCEPT PROPOSED TIME: WSO2's acceptance of the time the customer proposed
+            (ServiceNow's u_confirm_customer_updated_date). "agree" is the only value
+            (to decline, propose a different time). Sent alone, with only
+            expectedCustomerUpdatedOn, expectedPlannedStartOn and expectedPlannedEndOn,
+            all three required: the proposed start becomes the planned start (the planned
+            length is kept) and the change request moves from customer_approval to
+            scheduled in one write, with no CAB approval and no second ask of the customer.
+            409 when no proposal waits or the page is stale; 400 when the change request is
+            on hold. Never records the customer's approval.
+        expectedCustomerUpdatedOn:
+          type: string
+          format: date-time
+          description: >-
+            The proposal being answered (`customerProposal.startOn`, RFC 3339). Required with
+            confirmCustomerUpdatedDate and while a proposal waits on a `state: "authorize"`
+            request; refused when none waits. A page opened before the customer proposed another
+            time can never answer the new one (409).
+        expectedPlannedStartOn:
+          type: string
+          format: date-time
+          description: >-
+            The planned start the page showed; with confirmCustomerUpdatedDate it is required and
+            must still be the stored start (409), as must expectedPlannedEndOn.
+        expectedPlannedEndOn:
+          type: string
+          format: date-time
+          description: The planned end the page showed (see expectedPlannedStartOn).
 
     PatchChangeRequestResponse:
       type: object
@@ -18546,6 +18597,8 @@ components:
               description: >-
                 The "Customer Review" checkbox: the change needs the
                 customer's review before it is closed.
+            customerProposal:
+              $ref: '#/components/schemas/ChangeRequestCustomerProposal'
             deployments:
               type: array
               items:
@@ -18589,13 +18642,64 @@ components:
                 scheduled, or to customer_approval when customerApprovalRequired). customer_approval: [authorize,
                 canceled] -- never "scheduled": only the CUSTOMER's own approval
                 (Customer Portal) schedules the change, and no staff action
-                records it for them; "authorize" here is Re-schedule. scheduled:
+                records it for them; "authorize" here is Re-schedule / Propose a
+                different time (the state does not move). scheduled:
                 [implement, canceled]. implement: [review, canceled]. review:
                 [customer_review, rollback, canceled] when customerReviewRequired,
                 else [closed, rollback, canceled]. customer_review: [rollback,
                 canceled] -- never "closed": only the CUSTOMER's own review closes
                 the change -- or [canceled] while the customer group's review
                 request is pending. Terminal states: none.
+
+    ChangeRequestCustomerProposal:
+      type: object
+      required: [startOn, answer]
+      description: >-
+        The conversation about a time the customer proposed, derived from ServiceNow's own
+        columns (customer_updated_on, the customer's proposed plan START, and
+        customer_updated_date_confirmation, WSO2's answer); present when customer_updated_on is
+        set. Pass-through of the entity service's detail. While `answer` is "pending" the
+        planned window is still the one WSO2 planned: a proposal changes nothing until WSO2
+        answers (Accept proposed time / Propose a different time, PATCH above).
+      properties:
+        startOn:
+          type: string
+          format: date-time
+          description: The proposed plan start (RFC 3339, UTC). Send it back as expectedCustomerUpdatedOn.
+        endOn:
+          type: string
+          format: date-time
+          description: The proposed end -- startOn plus the planned length. Only while pending.
+        answer:
+          type: string
+          enum: [pending, agreed, disagreed, unanswered]
+          description: >-
+            pending: in customer_approval, the proposed start differs from the plan, WSO2 has not
+            answered and no approval but the customer's own is still asked -- the only state WSO2
+            can act on. agreed / disagreed: WSO2's answer. unanswered: history.
+        proposerRecorded:
+          type: boolean
+          description: >-
+            While pending: true when the last writer of the change request is a registered contact
+            of its project (then they proposed the time). False when it is not knowable -- a date
+            a WSO2 user wrote in ServiceNow, one left from an older cycle, or a proposal edited
+            over since -- and the page must say the proposer is not recorded.
+        proposedByName:
+          type: string
+          description: The proposer, only while pending and proposerRecorded.
+        proposedByEmail:
+          type: string
+        proposedOn:
+          type: string
+          format: date-time
+        canAccept:
+          type: boolean
+          description: >-
+            While pending: whether Accept proposed time would be accepted right now. The server
+            re-checks under its row lock.
+        acceptBlockedReason:
+          type: string
+          description: Why it would not be, in the words of the refusal (on hold, the proposed start has passed, the planned window has no length to keep).
 
     TaskSummary:
       type: object
