@@ -350,3 +350,49 @@ func (f *crFlow) wantRefusedSame(what, id, before string, err error) {
 		f.t.Fatalf("%s: a refused act changed the change request:\n  before: %s\n  after:  %s", what, before, after)
 	}
 }
+
+// giveParent hangs the change request under a parent record of project A (the service request
+// a change is raised under in ServiceNow), optionally linked to a GitHub issue of an active
+// repository of the account -- the two things the existing ServiceNow-parity triggers write
+// beside the change itself (the plan-start-date comment on the parent, the GitHub outbound
+// queue). It returns the parent's id; everything it inserts is removed with the test.
+func (f *crFlow) giveParent(id string, project string, linked bool) string {
+	f.t.Helper()
+	const parent = "3aaaaaaa-0000-0000-0000-0000000000c1"
+	var issue any
+	if linked {
+		issue = 4242
+	}
+	f.execSQL(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, subject, type, wso2_id, project_id, account_id, github_issue_number)
+	           VALUES ($1::uuid, now(), now(), 'cr-flow-test', 'cr-flow-test', 'CRFLOWPARENT1', $4, 'SERVICE_REQUEST', 'cr-flow-parent', $2::uuid, $3::uuid, $5)`,
+		parent, project, crScopeAccountID, crFlowSubject, issue)
+	f.execSQL(`UPDATE work_item SET parent_id = $2::uuid WHERE id = $1`, id, parent)
+	if linked {
+		f.execSQL(`INSERT INTO account_github_repo (id, created_on, updated_on, created_by, updated_by, account_id, owner, repository, is_active)
+		           VALUES (gen_random_uuid(), now(), now(), 'cr-flow-test', 'cr-flow-test', $1::uuid, 'example-org', 'example-repo', true)`, crScopeAccountID)
+		f.t.Cleanup(func() {
+			_, _ = f.scoped.Exec(f.sys, `DELETE FROM account_github_repo WHERE owner = 'example-org' AND repository = 'example-repo'`)
+			_, _ = f.scoped.Exec(f.sys, `DELETE FROM github_outbound_queue WHERE owner = 'example-org'`)
+		})
+	}
+	return parent
+}
+
+// commentsOn lists the content of the comments on the work item, oldest first.
+func (f *crFlow) commentsOn(id string) []string {
+	f.t.Helper()
+	rows, err := f.scoped.Query(f.sys, `SELECT created_by || ': ' || content FROM comment WHERE work_item_id = $1 ORDER BY created_on, id`, id)
+	if err != nil {
+		f.t.Fatalf("list comments: %v", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var c string
+		if err := rows.Scan(&c); err != nil {
+			f.t.Fatalf("scan comment: %v", err)
+		}
+		out = append(out, c)
+	}
+	return out
+}

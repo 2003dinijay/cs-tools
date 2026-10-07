@@ -722,6 +722,11 @@ type timeResponse struct {
 	asksAgain bool
 }
 
+// declineOnly: WSO2 answered a proposal with Disagree and kept the plan -- the answer is the
+// only write (no state, no stage, no approver row: the customers' request stands, and nobody
+// has to be found to ask).
+func (t timeResponse) declineOnly() bool { return t.disagree && !t.asksAgain }
+
 // planStaffTimeResponse judges a staff {state: "authorize"} against the change as it is
 // now, under the row lock, and says what it will do. A proposal that waits is answered
 // (the request must name it, expectedCustomerUpdatedOn, so a client that never saw a

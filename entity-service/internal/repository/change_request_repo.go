@@ -1505,8 +1505,14 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 				return "", err
 			}
 			timeResp = resp
-			stay := domain.ChangeRequestStateCustomerApproval
-			effectiveState = &stay
+			if resp.declineOnly() {
+				// A decline that keeps the window writes the answer and nothing else: no
+				// state, no stage, no approver row (the customers' live request stands).
+				effectiveState = nil
+			} else {
+				stay := domain.ChangeRequestStateCustomerApproval
+				effectiveState = &stay
+			}
 		case "customer_approval":
 			return "", &apierror.ValidationError{Msg: fmt.Sprintf(
 				"state %q cannot be set manually: it is reached automatically through the approval flow when customerApprovalRequired is set", *req.State)}
@@ -1924,7 +1930,7 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 	// re-derives the contacts, which is the way a change in a customer state
 	// learns of a contact who registered after it was asked (the Customer Group
 	// is derived live and nothing else notices).
-	if req.State != nil || req.ProjectID != nil {
+	if (req.State != nil && !timeResp.declineOnly()) || req.ProjectID != nil {
 		if _, err := provisionCustomerStage(ctx, tx, id, actorEmail); err != nil {
 			return "", err
 		}
