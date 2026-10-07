@@ -1,4 +1,7 @@
-# CSM Webhooks — working notes
+# CSM GitHub Webhook — working notes
+
+Lives in `operations/csm-webhooks/github/`: one folder per webhook source under
+`operations/csm-webhooks/` (see that folder's README). This one is GitHub's.
 
 The public endpoint GitHub posts issue and issue-comment webhooks to. It
 verifies the HMAC signature and forwards the delivery to entity-service.
@@ -53,7 +56,7 @@ data stays there.
 | `ENTITY_TOKEN_URL` / `ENTITY_CLIENT_ID` / `ENTITY_CLIENT_SECRET` / `ENTITY_SCOPES` | the OAuth2 client-credentials identity it forwards as |
 | `PORT` | defaults to 8080 |
 
-**`ENTITY_CLIENT_ID` must appear in entity-service's `AUTH_INTERNAL_CLIENT_IDS`**,
+**`ENTITY_CLIENT_ID` must appear in entity-service's `M2M_CLIENT_IDS`**,
 or every forward is refused 401 and no delivery is ever applied.
 
 ## The one deployment detail that will bite

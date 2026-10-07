@@ -282,7 +282,7 @@ services:
       # reaches, machine to machine, with no user to carry a token. Both
       # of those reads are internal-staff-only, so without this every
       # rung resolves to nobody and the ladder silently reaches no one.
-      AUTH_INTERNAL_CLIENT_IDS: csm-portal-backend-dev-client,csm-integration-service-dev-client,csm-notification-service-dev-client
+      M2M_CLIENT_IDS: csm-portal-backend-dev-client,csm-integration-service-dev-client,csm-notification-service-dev-client
     volumes:
       - csm-dev-certs:/certs:ro
     ports:
