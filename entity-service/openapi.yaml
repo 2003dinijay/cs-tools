@@ -5666,8 +5666,11 @@ paths:
     post:
       summary: Search call requests across all cases, filtered by assignee/state.
       description: >
-        Returns a paginated list of call requests. filters.assignmentTeamIds is supported by
-        the ServiceNow data source only (400 on Postgres). Call
+        Returns a paginated list of call requests. filters.assignedUserIds matches the parent
+        case's assignee (on Postgres also the call request's own assignee, so a call handed to
+        someone other than the case owner still reaches them). filters.assignmentTeamIds matches
+        the parent case's account CRE team (account.cre_team_id on Postgres), the same team the
+        case search's creTeam filter takes. Call
         requests are inherently case-related; this endpoint provides independent search
         and filtering capabilities across cases, distinct from /call-requests/search
         which is scoped to a single case.

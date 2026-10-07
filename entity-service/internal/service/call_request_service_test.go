@@ -221,10 +221,12 @@ func TestCallRequestService_SearchValidation(t *testing.T) {
 	})
 	requireErrKind(t, "search invalid state", err, &apierror.ValidationError{})
 
+	// assignmentTeamIds is supported (the case's account CRE team), so only a
+	// malformed id is refused here -- a well-formed one goes on to the repository.
 	_, err = svc.SearchAllCallRequests(ctx, domain.SearchAllCallRequestsRequest{
-		Filters: domain.SearchAllCallRequestsFilters{AssignmentTeamIDs: []string{testUUID}},
+		Filters: domain.SearchAllCallRequestsFilters{AssignmentTeamIDs: []string{"not-a-uuid"}},
 	})
-	requireErrKind(t, "search-all assignmentTeamIds is unsupported, not silently ignored", err, &apierror.ValidationError{})
+	requireErrKind(t, "search-all malformed assignmentTeamIds", err, &apierror.ValidationError{})
 
 	_, err = svc.SearchAllCallRequests(ctx, domain.SearchAllCallRequestsRequest{
 		Filters: domain.SearchAllCallRequestsFilters{CaseStates: []domain.CaseState{"bogus"}},

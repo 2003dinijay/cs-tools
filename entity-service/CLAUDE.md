@@ -5777,10 +5777,19 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   accept -- unlike the other metadata choice lists, which still use the raw
   UPPER_SNAKE enum labels (see the metadata section above; not yet aligned
   with each list's own API vocabulary).
-- Search-all's `assignmentTeamIds` is rejected with a 400 rather than
-  ignored: nothing on this schema holds a case's assignment team
-  (`customer_call.assignment_group` was deliberately skipped in the
-  migration), and a silently-ignored filter would widen the result set.
+- Search-all's `assignedUserIds` and `assignmentTeamIds` both describe the
+  **parent case**, as the csm-portal contract says, and the dashboards'
+  "My Call Requests" / "Calls To Attend" widgets depend on that:
+  `assignedUserIds` matches `work_item.assigned_to_id` (OR'd with the call's
+  own `customer_call.assigned_to_id`, which is only set once an engineer
+  schedules the call -- matching only that column left every
+  `pending_on_wso2` call out of "My Call Requests", #3314);
+  `assignmentTeamIds` matches the case's account CRE team
+  (`account.cre_team_id`, the same path the case search's `creTeam` filter and
+  `BeTeam.creGroupId` use). It used to be rejected with a 400 on the belief
+  that nothing held a case's team, which made "Calls To Attend" fail to load
+  on every dashboard. `work_item.assignment_group_id` is deliberately not
+  used: it is unpopulated on synced cases (`assignedTeam` reads back null).
   `caseStates`/`excludeCaseStates` reuse `caseLikeStateColumn`/`caseLikeJoins`
   so they work for every case-like type.
 - **Not done, deliberately (same "don't guess" rule as `CreateCase`)**:
