@@ -1662,14 +1662,21 @@ function lcAcceptProposal(patch: Record<string, unknown>): void {
       'confirmCustomerUpdatedDate must be "agree": to decline a proposal, propose a different time (state "authorize" with the new planned window)',
     );
   }
-  if (typeof patch.expectedCustomerUpdatedOn !== "string") {
-    throw new BackendApiError(400, "expectedCustomerUpdatedOn is required with confirmCustomerUpdatedDate: it names the proposed time you are accepting");
-  }
   const allowed = ["confirmCustomerUpdatedDate", "expectedCustomerUpdatedOn", "expectedPlannedStartOn", "expectedPlannedEndOn"];
   if (Object.keys(patch).some((k) => !allowed.includes(k))) {
     throw new BackendApiError(
       400,
       "confirmCustomerUpdatedDate cannot be combined with other fields; only expectedCustomerUpdatedOn, expectedPlannedStartOn and expectedPlannedEndOn go with it",
+    );
+  }
+  if (typeof patch.expectedCustomerUpdatedOn !== "string") {
+    throw new BackendApiError(400, "expectedCustomerUpdatedOn is required with confirmCustomerUpdatedDate: it names the proposed time you are accepting");
+  }
+  // The planned window the page showed is REQUIRED (the CSM page always has it): a stale one is a 409, never a blind accept.
+  if (typeof patch.expectedPlannedStartOn !== "string" || typeof patch.expectedPlannedEndOn !== "string") {
+    throw new BackendApiError(
+      400,
+      "expectedPlannedStartOn and expectedPlannedEndOn are required with confirmCustomerUpdatedDate: they name the planned time the proposal replaces",
     );
   }
   if (lc.cr.state !== "customer_approval") {
@@ -1689,7 +1696,7 @@ function lcAcceptProposal(patch: Record<string, unknown>): void {
   if ((expectedStart !== null && expectedStart !== lcMs(lc.cr.plannedStartOn)) || (expectedEnd !== null && expectedEnd !== lcMs(lc.cr.plannedEndOn))) {
     throw new BackendApiError(
       409,
-      `the planned implementation time of this change request changed after you opened it (it is now ${lc.cr.plannedStartOn} to ${lc.cr.plannedEndOn}); read it again before responding`,
+      `the planned implementation time of this change request changed after you opened it (it is now ${lcRfc3339(lcMs(lc.cr.plannedStartOn)!)} to ${lcRfc3339(lcMs(lc.cr.plannedEndOn)!)}); read it again before responding`,
     );
   }
   if (lc.onHold) {

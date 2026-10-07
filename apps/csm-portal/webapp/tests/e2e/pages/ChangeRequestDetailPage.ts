@@ -208,12 +208,55 @@ export class ChangeRequestDetailPage {
     return this.page.getByRole("dialog");
   }
 
+  /**
+   * Header note while a customer's proposed time waits for WSO2's answer ("Waiting for WSO2 to respond to the
+   * customer's proposed time"): the change is waiting for WSO2, so the "Awaiting ..." note of `blockingReason()`
+   * is not shown.
+   */
+  proposalWaitingReason(): Locator {
+    return this.page.getByText(/^Waiting for WSO2 to respond to the customer's proposed time$/);
+  }
+
+  /** The banner under the stepper: "The customer proposed a new time" (a named region). */
+  proposalBanner(): Locator {
+    return this.page.getByRole("region", { name: "The customer proposed a new time" });
+  }
+
+  /** The banner's primary answer (never the bar's: Accept lives only in the banner). */
+  acceptProposedTimeButton(): Locator {
+    return this.proposalBanner().getByRole("button", { name: "Accept proposed time" });
+  }
+
+  /** The banner's other answer; the action bar carries a button of the same name (the outlined `authorize`). */
+  proposeDifferentTimeButton(): Locator {
+    return this.proposalBanner().getByRole("button", { name: "Propose a different time" });
+  }
+
+  /** The confirmation behind Accept ("Accept the proposed time?"). */
+  acceptDialog(): Locator {
+    return this.page.getByRole("dialog").filter({ has: this.page.getByRole("heading", { name: "Accept the proposed time?" }) });
+  }
+
+  acceptDialogConfirm(): Locator {
+    return this.acceptDialog().getByRole("button", { name: "Accept proposed time", exact: true });
+  }
+
+  /** The Re-schedule dialog in counter mode (its heading is "Propose a different time"). */
+  counterDialog(): Locator {
+    return this.page.getByRole("dialog").filter({ has: this.page.getByRole("heading", { name: "Propose a different time" }) });
+  }
+
+  /** The counter dialog's submit: "Propose this time" (a different window) or "Decline proposed time" (the current time kept). */
+  counterSubmit(label: "Propose this time" | "Decline proposed time"): Locator {
+    return this.counterDialog().getByRole("button", { name: label, exact: true });
+  }
+
   /** "Re-schedule" -- the outlined button beside the primary action in Customer Approval. */
   rescheduleButton(): Locator {
     return this.page.getByRole("button", { name: "Re-schedule", exact: true });
   }
 
-  /** The Re-schedule dialog (its heading is "Re-schedule this change?"). */
+  /** The Re-schedule dialog (its heading is "Re-schedule this change?"; with a customer's proposal waiting it is `counterDialog()`). */
   rescheduleDialog(): Locator {
     return this.page.getByRole("dialog").filter({ has: this.page.getByRole("heading", { name: "Re-schedule this change?" }) });
   }
@@ -228,9 +271,13 @@ export class ChangeRequestDetailPage {
    * shows it) into one of the Re-schedule dialog's MUI date-time pickers
    * ("Planned start" | "Planned end"): focuses the Month section, then types `MMDDYYYYhhmm` + AM/PM, which the field auto-advances through.
    */
-  async fillRescheduleWindow(label: "Planned start" | "Planned end", value: { month: number; day: number; year: number; hour12: number; minute: number; pm: boolean }): Promise<void> {
+  async fillRescheduleWindow(
+    label: "Planned start" | "Planned end",
+    value: { month: number; day: number; year: number; hour12: number; minute: number; pm: boolean },
+    dialog: Locator = this.rescheduleDialog(),
+  ): Promise<void> {
     const two = (n: number): string => String(n).padStart(2, "0");
-    const group = this.rescheduleDialog().getByRole("group", { name: new RegExp(`^${label}`) });
+    const group = dialog.getByRole("group", { name: new RegExp(`^${label}`) });
     // Focus the first section (Month) explicitly: a click on the group's centre
     // would land on the Year section and shift every typed digit.
     await group.getByRole("spinbutton", { name: "Month" }).click();

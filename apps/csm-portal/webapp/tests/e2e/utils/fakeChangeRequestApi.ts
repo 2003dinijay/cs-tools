@@ -48,17 +48,35 @@
 //   - "the post-approval state" is `customer_approval` when the CR has
 //     `customerApprovalRequired`, else `scheduled`;
 //   - from `customer_approval` legalNextStates = [authorize, canceled], live customer
-//     stage or not; "authorize" there is Re-schedule: PATCH {state:"authorize", plannedStartOn?,
-//     plannedEndOn?} is accepted ONLY from `customer_approval` and only when the
-//     window changes (else a 400 with the backend's wording); it cancels the
-//     customer's pending stage (kept as a record, reported PENDING with every
-//     approver CANCELLED, like the backend), moves a Normal / Emergency CR to
-//     `authorize` with a fresh "CAB Approval" / "ECAB Approval" stage, and keeps
-//     a Standard CR in `customer_approval` with a fresh customer stage; the new
-//     CAB / ECAB approval sends the CR to `customer_approval` again -- ALWAYS, even
-//     when the stored `customerApprovalRequired` is false (a migrated row defaults
-//     to false): the customer was being asked, so Re-schedule re-asks them rather
-//     than falling through to `scheduled` with nobody asked;
+//     stage or not; "authorize" there is the wire name of the Time Change loop and the
+//     state NEVER moves, whatever the type, and no CAB / ECAB stage is ever opened (the
+//     change itself has not changed): PATCH {state:"authorize", plannedStartOn?,
+//     plannedEndOn?} is accepted ONLY from `customer_approval`. With NO customer proposal
+//     waiting it is a plain Re-schedule: only when the window changes (else a 400 with the
+//     backend's wording), refused (a 400, the words of Request Approval, nothing written)
+//     when nobody can be asked, and it asks the customer again -- the customer's pending
+//     stage is cancelled (kept as a record, reported PENDING with every approver CANCELLED,
+//     like the backend) and a fresh customer stage is provisioned. It never writes the
+//     stored `customerApprovalRequired` (a migrated row defaults to false and is asked
+//     again all the same: the customer was being asked);
+//   - a CUSTOMER'S PROPOSED TIME is ServiceNow's own `customer_updated_on` (the proposed
+//     START) with WSO2's answer in `customer_updated_date_confirmation` (agree / disagree),
+//     and nothing else: `customerProposes` writes the proposed start and clears the answer;
+//     the change STAYS in Customer Approval, the planned window stays what WSO2 planned, no
+//     stage or approver row is touched. The detail's `customerProposal` is the backend's
+//     allowlist verdict: `answer: "pending"` only in Customer Approval, with a proposed
+//     start that differs from the planned start, no answer, and no REQUESTED approver row
+//     on anything but a customer stage (an unknown group blocks it too); `proposedBy*` only
+//     while the last writer is a registered contact (`proposerKnown`). WSO2 answers it with
+//     (1) ACCEPT: PATCH {confirmCustomerUpdatedDate:"agree", expectedCustomerUpdatedOn,
+//     expectedPlannedStartOn, expectedPlannedEndOn} (all three required) -- the proposal becomes the planned
+//     window (the planned length kept), the answer is agree and the change is `scheduled`
+//     in one step: no CAB, no new customer request, `hasCustomerApproved` NOT stamped (no
+//     staff action records the customer's approval); or (2) a COUNTER / DECLINE: a
+//     Re-schedule that carries `expectedCustomerUpdatedOn` -- a different window asks the
+//     customer again (answer disagree), the window as it is declines (answer disagree,
+//     the customer keeps their live request, nothing else is written). Every staff answer
+//     is a version check: a proposal or window that moved is a 409 in words;
 //   - Review offers [customer_review, rollback, canceled] when
 //     `customerReviewRequired`, else [closed, rollback, canceled];
 //     `customer_review` -> [rollback, canceled] ([canceled] while a customer-group
@@ -390,6 +408,36 @@ export const nobodyToAskMessage = (approval: boolean, review: boolean): string =
   `${approval && review ? "customer approval and customer review are" : review ? "customer review is" : "customer approval is"} required but nobody on this project can be asked (no registered contact other than the requester): register a contact for the project first`;
 
 /**
+ * The refusals of the two staff answers to a customer's proposed time (entity-service `acceptCustomerProposal`, and the
+ * `authorize` branch of `patchChangeRequestTx`), character for character, so a spec and the real-stack describe assert the very
+ * strings the backend answers.
+ */
+export const ACCEPT_ONLY_AGREE =
+  'confirmCustomerUpdatedDate must be "agree": to decline a proposal, propose a different time (state "authorize" with the new planned window)';
+export const ACCEPT_NEEDS_EXPECTED =
+  "expectedCustomerUpdatedOn is required with confirmCustomerUpdatedDate: it names the proposed time you are accepting";
+export const ACCEPT_NEEDS_EXPECTED_WINDOW =
+  "expectedPlannedStartOn and expectedPlannedEndOn are required with confirmCustomerUpdatedDate: they name the planned time the proposal replaces";
+export const ACCEPT_CANNOT_COMBINE =
+  "confirmCustomerUpdatedDate cannot be combined with other fields; only expectedCustomerUpdatedOn, expectedPlannedStartOn and expectedPlannedEndOn go with it";
+export const acceptNotInCustomerApproval = (state: string): string =>
+  `a proposed time can only be accepted while the change request is in Customer Approval, but it is in ${stateName(state)}`;
+export const NO_PROPOSAL_WAITING = "no new time proposed by the customer is waiting for a response on this change request";
+export const proposalChangedMessage = (now: string): string =>
+  `the customer's proposed time changed after you opened this change request (it is now ${now}); read it again before responding`;
+export const windowChangedMessage = (now: string): string =>
+  `the planned implementation time of this change request changed after you opened it (it is now ${now}); read it again before responding`;
+export const proposalPassedMessage = (proposed: string): string =>
+  `the time the customer proposed (${proposed}) has already passed, so it cannot be accepted: use "Propose a different time" to ask the customer to approve another time`;
+export const ACCEPT_WINDOW_HAS_NO_LENGTH =
+  'the planned window has no length, so the customer\'s proposed start cannot be applied to it: use "Propose a different time"';
+export const ON_HOLD_MESSAGE = "change request is on hold; take it off hold (onHold: false) before changing its state";
+export const customerProposedWhileOpenMessage = (proposed: string): string =>
+  `the customer proposed a new time (${proposed}) after you opened this change request; read it again to accept it or propose a different time`;
+export const PROPOSAL_NO_LONGER_WAITING = "the customer's proposed time is no longer waiting for a response; read the change request again";
+export const COUNTER_IS_THE_PROPOSAL = 'the time you are proposing is the one the customer proposed: use "Accept proposed time" instead';
+
+/**
  * The 400 the backend answers a manual PATCH of `rollback` out of Customer Review
  * with while the customer group's review request is live (entity-service
  * `customerStageManualRefusal`, a ValidationError the BFF passes through): a failed
@@ -517,6 +565,33 @@ export interface FakeChangeRequestApi {
    * available while the backend would now refuse it. The open page is not refreshed.
    */
   syncCustomers(): void;
+  /**
+   * The CUSTOMER'S PROPOSAL, applied server-side (the customer proposes in the customer portal, never in the CSM page): the
+   * backend's `proposeCustomerTime`. `contact` must have a pending row on the live Customer Approval stage (else a 403/409 like the
+   * backend's), `startOn` (RFC 3339 or "YYYY-MM-DD HH:MM:SS", UTC) must be a future start that is not the planned one. It writes the
+   * proposed START to `customer_updated_on` and clears the standing answer -- and NOTHING else: the change stays in Customer
+   * Approval, the planned window stays what WSO2 planned, no stage and no approver row is touched. `contact` is on record as the
+   * proposer (the change's last writer is a registered contact). The open page is not refreshed: reload it.
+   */
+  customerProposes(contact: FakeUser, startOn: string): void;
+  /**
+   * A proposed date WSO2 cannot attribute: ServiceNow lets WSO2 users write `customer_updated_on` too, and one left over from an old
+   * cycle reads the same. Sets the proposal as it stands in the data, with no proposer on record (`proposerKnown: false`, the
+   * default) or with one. `confirmation` seeds a standing answer (agree / disagree); none = unanswered.
+   */
+  seedProposal(proposal: { startOn: string; proposerKnown?: boolean; confirmation?: "agree" | "disagree" | null }): void;
+  /** The pair as the fake holds it: ServiceNow's `customer_updated_on` (RFC 3339) and WSO2's answer. */
+  proposal(): { customerUpdatedOn: string | null; confirmation: "agree" | "disagree" | null };
+  /** Puts the change on / takes it off hold (a state change is then refused). */
+  setOnHold(onHold: boolean): void;
+  /**
+   * An internal approval that is still being asked while the change sits in Customer Approval (an inconsistent row, or an unknown
+   * approval group): a REQUESTED approver row on a non-customer stage. The backend's pending allowlist reads it as "not a proposal
+   * waiting for WSO2". The open page is not refreshed.
+   */
+  addInternalRequestedRow(): void;
+  /** The customer's approval outcome stamp (`hasCustomerApproved`), as the fake holds it. */
+  customerApproved(): boolean;
 }
 
 const CUSTOMER_STAGES = ["Customer Approval", "Customer Review"];
@@ -643,6 +718,22 @@ export async function installFakeChangeRequestApi(
   let groupFailure: number | null = null;
   let plannedStartOn = "2030-03-01 09:00:00";
   let plannedEndOn = "2030-03-01 11:00:00";
+  // ServiceNow's own proposal pair (`customer_updated_on`, as an RFC 3339 instant, and WSO2's answer), and whether the change's last
+  // writer is still a registered contact of the project (then the backend can name the proposer).
+  let customerUpdatedOn: string | null = null;
+  let confirmation: "agree" | "disagree" | null = null;
+  let proposer: FakeUser | null = null;
+  let onHold = false;
+  /** "2030-03-01 09:00:00" (UTC, as the planned window is held and sent) or an RFC 3339 instant, as epoch ms. */
+  const instantOf = (value: string | null | undefined): number | null => {
+    if (!value) return null;
+    const ms = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(value) ? value : `${value.replace(" ", "T")}Z`);
+    return Number.isNaN(ms) ? null : ms;
+  };
+  /** An instant as the planned window is held and sent. */
+  const plannedOf = (ms: number): string => new Date(ms).toISOString().slice(0, 19).replace("T", " ");
+  /** An instant as the backend sends the proposal (RFC 3339). */
+  const rfc3339Of = (ms: number): string => new Date(ms).toISOString().replace(".000Z", "Z");
   const log: string[] = [];
   const hasLiveCustomerStage = (): boolean =>
     stages.some((s) => CUSTOMER_STAGES.includes(s.stage) && s.status === "REQUESTED");
@@ -762,6 +853,43 @@ export async function installFakeChangeRequestApi(
     reconcile();
   }
 
+  /**
+   * The backend's allowlist for "a customer proposal is waiting for WSO2": in Customer Approval, a proposed start that differs from the
+   * planned one, no answer yet, and the ONLY approver rows still REQUESTED are on a customer stage (any other REQUESTED row, an unknown
+   * group included, blocks it). A change in Authorize with a live CAB stage, a closed or a scheduled one, or a date WSO2 itself wrote
+   * the plan from never matches.
+   */
+  const proposalPending = (): boolean => {
+    if (state !== "customer_approval" || !customerUpdatedOn || confirmation) return false;
+    if (instantOf(customerUpdatedOn) === instantOf(plannedStartOn)) return false;
+    return !stages.some((st) => !CUSTOMER_STAGES.includes(st.stage) && st.approvers.some((a) => a.status === "REQUESTED"));
+  };
+  /** The detail's `customerProposal` read model (omitted when nobody proposed anything). */
+  const proposalView = (): Record<string, unknown> | undefined => {
+    if (!customerUpdatedOn) return undefined;
+    const pending = proposalPending();
+    const answer = pending ? "pending" : confirmation === "agree" ? "agreed" : confirmation === "disagree" ? "disagreed" : "unanswered";
+    const start = instantOf(customerUpdatedOn)!;
+    const ps = instantOf(plannedStartOn);
+    const pe = instantOf(plannedEndOn);
+    return {
+      startOn: customerUpdatedOn,
+      ...(pending && ps !== null && pe !== null && pe > ps ? { endOn: rfc3339Of(start + (pe - ps)) } : {}),
+      answer,
+      ...(pending && proposer ? { proposedByName: proposer.name, proposedByEmail: proposer.email, proposedOn: "2030-02-01T10:00:00Z" } : {}),
+    };
+  };
+  /** The customer is asked again: the live request is superseded (rows cancelled, the stage kept as a record) and a fresh one provisioned. */
+  const askCustomersAgain = (): void => {
+    for (const st of stages) {
+      if (CUSTOMER_STAGES.includes(st.stage) && st.status === "REQUESTED") {
+        for (const a of st.approvers) if (a.status === "REQUESTED") a.status = "CANCELLED";
+        st.status = "PENDING";
+      }
+    }
+    syncCustomerStage();
+  };
+
   const detail = (): Record<string, unknown> => ({
     id: FAKE_CR_ID,
     number: "CHG0099001",
@@ -779,6 +907,10 @@ export async function installFakeChangeRequestApi(
     legalNextStates: legal(),
     plannedStartOn,
     plannedEndOn,
+    customerUpdatedOn,
+    confirmCustomerUpdatedDate: confirmation,
+    ...(customerUpdatedOn ? { customerProposal: proposalView() } : {}),
+    onHold,
     project: FAKE_PROJECTS.find((p) => p.id === scope.projectId),
     deployments: FAKE_DEPLOYMENTS.filter((d) => scope.deploymentIds.includes(d.id)).map(({ id, name }) => ({ id, name })),
     deploymentProducts: FAKE_DEPLOYMENT_PRODUCTS.filter((p) => scope.deploymentProductIds.includes(p.id)).map(({ id, name }) => ({ id, name })),
@@ -930,15 +1062,11 @@ export async function installFakeChangeRequestApi(
         break;
       }
       case "authorize": {
+        // Out of Customer Approval only: the wire name of the Time Change loop (the state never moves). What it asks is judged by
+        // `timeChangeRefusal`, which says more than "not an edge" (the proposal's version, the window, who can be asked).
         if (state !== "customer_approval") {
           return 'state "authorize" cannot be set manually: it is reached automatically through the approval flow (Request Approval, then peer approval); it can only be set by hand to re-schedule a change from customer_approval';
         }
-        const newStart = typeof body.plannedStartOn === "string" ? body.plannedStartOn : undefined;
-        const newEnd = typeof body.plannedEndOn === "string" ? body.plannedEndOn : undefined;
-        if ((!newStart || newStart === plannedStartOn) && (!newEnd || newEnd === plannedEndOn)) {
-          return "re-scheduling requires a changed planned start or end: send plannedStartOn and/or plannedEndOn with a value different from the stored one";
-        }
-        if ((newStart ?? plannedStartOn) > (newEnd ?? plannedEndOn)) return "the planned start must not be after the planned end";
         break;
       }
       case "customer_approval":
@@ -967,6 +1095,93 @@ export async function installFakeChangeRequestApi(
       const exit = state === "customer_approval" ? "authorize" : "rollback";
       if (target !== exit) return customerAnswerRefusal(target, hasLiveCustomerStage(), state);
     }
+    return null;
+  };
+
+  /** A refusal with its HTTP status (the answers to a customer's proposed time are 400s and 409s). */
+  interface Refusal {
+    status: 400 | 409;
+    message: string;
+  }
+  /** The planned window as the backend words it in a stale-window refusal (RFC 3339 bounds). */
+  const plannedNow = (): string => {
+    const s = instantOf(plannedStartOn);
+    const e = instantOf(plannedEndOn);
+    return s === null && e === null ? "no planned time is set" : `${s === null ? "not set" : rfc3339Of(s)} to ${e === null ? "not set" : rfc3339Of(e)}`;
+  };
+  /** The window the staff request says it was shown must still be the planned one (checkExpectedSchedule). */
+  const staleWindow = (body: Record<string, unknown>): Refusal | null => {
+    const es = typeof body.expectedPlannedStartOn === "string" ? instantOf(body.expectedPlannedStartOn) : null;
+    const ee = typeof body.expectedPlannedEndOn === "string" ? instantOf(body.expectedPlannedEndOn) : null;
+    if ((es !== null && es !== instantOf(plannedStartOn)) || (ee !== null && ee !== instantOf(plannedEndOn))) {
+      return { status: 409, message: windowChangedMessage(plannedNow()) };
+    }
+    return null;
+  };
+  /**
+   * WSO2's ACCEPT (`PATCH {confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn, expectedPlannedStartOn,
+   * expectedPlannedEndOn}`: all three expectations required), refusals in the backend's order: the shape, the state, the allowlisted pending proposal, the version of the proposal, the window it was shown, on hold, a proposed
+   * time that has passed, a planned window with no length.
+   */
+  const acceptRefusal = (body: Record<string, unknown>): Refusal | null => {
+    if (body.confirmCustomerUpdatedDate !== "agree") return { status: 400, message: ACCEPT_ONLY_AGREE };
+    const allowed = ["confirmCustomerUpdatedDate", "expectedCustomerUpdatedOn", "expectedPlannedStartOn", "expectedPlannedEndOn"];
+    if (Object.keys(body).some((k) => !allowed.includes(k))) return { status: 400, message: ACCEPT_CANNOT_COMBINE };
+    if (typeof body.expectedCustomerUpdatedOn !== "string") return { status: 400, message: ACCEPT_NEEDS_EXPECTED };
+    // The planned window the page showed is REQUIRED (the CSM page always has it): a stale one is a 409, never a blind accept.
+    if (typeof body.expectedPlannedStartOn !== "string" || typeof body.expectedPlannedEndOn !== "string") {
+      return { status: 400, message: ACCEPT_NEEDS_EXPECTED_WINDOW };
+    }
+    if (state !== "customer_approval") return { status: 409, message: acceptNotInCustomerApproval(state) };
+    if (!proposalPending()) return { status: 409, message: NO_PROPOSAL_WAITING };
+    if (instantOf(body.expectedCustomerUpdatedOn) !== instantOf(customerUpdatedOn)) {
+      return { status: 409, message: proposalChangedMessage(customerUpdatedOn!) };
+    }
+    const stale = staleWindow(body);
+    if (stale) return stale;
+    if (onHold) return { status: 400, message: ON_HOLD_MESSAGE };
+    const start = instantOf(customerUpdatedOn)!;
+    if (start <= Date.now()) return { status: 409, message: proposalPassedMessage(customerUpdatedOn!) };
+    const ps = instantOf(plannedStartOn);
+    const pe = instantOf(plannedEndOn);
+    if (ps === null || pe === null || pe <= ps) return { status: 409, message: ACCEPT_WINDOW_HAS_NO_LENGTH };
+    return null;
+  };
+  /**
+   * `{state: "authorize"}` out of Customer Approval, after the graph accepted it: a plain Re-schedule when no proposal waits (the
+   * window must change), WSO2's COUNTER or DECLINE when one does (it must carry the proposal it answers; the window may equal the
+   * plan, which declines, but never the customer's own time, which is Accept). Nobody to ask is refused before anything is written,
+   * with the words of Request Approval -- except a decline, which touches no request.
+   */
+  const timeChangeRefusal = (body: Record<string, unknown>): Refusal | null => {
+    const pending = proposalPending();
+    const expected = typeof body.expectedCustomerUpdatedOn === "string" ? body.expectedCustomerUpdatedOn : null;
+    if (pending && expected === null) return { status: 409, message: customerProposedWhileOpenMessage(customerUpdatedOn!) };
+    if (expected !== null && !pending) return { status: 409, message: PROPOSAL_NO_LONGER_WAITING };
+    if (expected !== null && instantOf(expected) !== instantOf(customerUpdatedOn)) {
+      return { status: 409, message: proposalChangedMessage(customerUpdatedOn!) };
+    }
+    const stale = staleWindow(body);
+    if (stale) return stale;
+    const newStart = typeof body.plannedStartOn === "string" ? body.plannedStartOn : undefined;
+    const newEnd = typeof body.plannedEndOn === "string" ? body.plannedEndOn : undefined;
+    const changed =
+      (newStart !== undefined && instantOf(newStart) !== instantOf(plannedStartOn)) || (newEnd !== undefined && instantOf(newEnd) !== instantOf(plannedEndOn));
+    if (pending) {
+      const proposedEnd = instantOf(proposalView()?.endOn as string | undefined);
+      if (instantOf(newStart ?? plannedStartOn) === instantOf(customerUpdatedOn) && (proposedEnd === null || instantOf(newEnd ?? plannedEndOn) === proposedEnd)) {
+        return { status: 400, message: COUNTER_IS_THE_PROPOSAL };
+      }
+    } else if (!changed) {
+      return {
+        status: 400,
+        message: "re-scheduling requires a changed planned start or end: send plannedStartOn and/or plannedEndOn with a value different from the stored one",
+      };
+    }
+    if ((instantOf(newStart ?? plannedStartOn) ?? 0) > (instantOf(newEnd ?? plannedEndOn) ?? 0)) {
+      return { status: 400, message: "the planned start must not be after the planned end" };
+    }
+    if ((changed || !pending) && askableContacts(scope.projectId).length === 0) return { status: 400, message: nobodyToAskMessage(true, false) };
     return null;
   };
 
@@ -1251,6 +1466,25 @@ export async function installFakeChangeRequestApi(
           if (!ALL_STATES.includes(asked)) return json(route, { message: notAStateMessage(String(body.state)) }, 400);
           body.state = asked;
         }
+        // WSO2's ACCEPT of the customer's proposed time (ServiceNow's "Agree"): a PATCH of its own, never a `state`. One step: the
+        // proposal becomes the planned window (the planned length kept), the answer is agree and the change is Scheduled. No CAB, no new
+        // customer request (the customer's own request is closed like any state change closes it), and the customer's outcome
+        // (`hasCustomerApproved`) is NOT stamped: no staff action records the customer's approval.
+        if (body.confirmCustomerUpdatedDate !== undefined) {
+          const refused = acceptRefusal(body);
+          if (refused) return json(route, { message: refused.message }, refused.status);
+          const start = instantOf(customerUpdatedOn)!;
+          const length = instantOf(plannedEndOn)! - instantOf(plannedStartOn)!;
+          plannedStartOn = plannedOf(start);
+          plannedEndOn = plannedOf(start + length);
+          confirmation = "agree";
+          state = "scheduled"; // not `enter`: that would stamp the customer's approval
+          reconcile();
+          return json(route, { id: FAKE_CR_ID, state, message: "Change request updated.", changeRequest: detail() });
+        }
+        // The on-hold gate: a state change is refused while the change is on hold (unless the same request takes it off hold).
+        if (typeof body.state === "string" && onHold && body.onHold !== false) return json(route, { message: ON_HOLD_MESSAGE }, 400);
+        if (typeof body.onHold === "boolean") onHold = body.onHold;
         // The creation-phase gate: nothing below is written when it refuses.
         const gateProblem = creationPhaseProblem(body);
         if (gateProblem) return json(route, { message: gateProblem }, 400);
@@ -1258,6 +1492,11 @@ export async function installFakeChangeRequestApi(
         // a tick box): the backend refuses inside the one transaction.
         const refusal = typeof body.state === "string" ? manualStateRefusal(body.state, body) : null;
         if (refusal) return json(route, { message: refusal }, 400);
+        // The Time Change loop out of Customer Approval (a Re-schedule, or WSO2's counter / decline of a proposal).
+        if (body.state === "authorize" && state === "customer_approval") {
+          const refused = timeChangeRefusal(body);
+          if (refused) return json(route, { message: refused.message }, refused.status);
+        }
         // Customer scope / category (and the removed customerGroupId / environmentIds,
         // which are refused), validated like the backend.
         const touchesScopeFields = ["projectId", "deploymentIds", "environmentIds", "deploymentProductIds", "customerGroupId", "category"].some(
@@ -1291,28 +1530,22 @@ export async function installFakeChangeRequestApi(
           // Rolling back cancels every still-requested approver row (the closing reconcile).
           state = "rollback";
         } else if (target === "authorize") {
-          // Re-schedule (the one manual way into Authorize, from Customer Approval only, with a changed window: all
-          // checked above). The customer's pending request is superseded: rows cancelled, the stage stays as a record
-          // and is reported PENDING (nothing was approved or rejected on it).
-          plannedStartOn = typeof body.plannedStartOn === "string" ? body.plannedStartOn : plannedStartOn;
-          plannedEndOn = typeof body.plannedEndOn === "string" ? body.plannedEndOn : plannedEndOn;
-          for (const st of stages) {
-            if (CUSTOMER_STAGES.includes(st.stage) && st.status === "REQUESTED") {
-              for (const a of st.approvers) if (a.status === "REQUESTED") a.status = "CANCELLED";
-              st.status = "PENDING";
-            }
+          // The Time Change loop out of Customer Approval (all refusals are above): the state NEVER moves and no CAB / ECAB stage is
+          // opened, whatever the type -- the change itself has not changed. A changed window asks the customer again (their pending
+          // request is superseded: rows cancelled, the stage kept as a record and reported PENDING, and a fresh stage provisioned). A
+          // proposal that was waiting is answered Disagree; with the window as it is, that is all that is written (a decline: the
+          // customer keeps their live request). Never the stored `customerApprovalRequired`.
+          const answeringProposal = proposalPending();
+          const newStart = typeof body.plannedStartOn === "string" ? body.plannedStartOn : undefined;
+          const newEnd = typeof body.plannedEndOn === "string" ? body.plannedEndOn : undefined;
+          const changed =
+            (newStart !== undefined && instantOf(newStart) !== instantOf(plannedStartOn)) || (newEnd !== undefined && instantOf(newEnd) !== instantOf(plannedEndOn));
+          if (changed) {
+            plannedStartOn = newStart ?? plannedStartOn;
+            plannedEndOn = newEnd ?? plannedEndOn;
+            askCustomersAgain();
           }
-          // The customer WAS being asked, so the new approval asks them again whatever the stored requirement says: the
-          // Re-schedule writes the (our own) requirement column true with the new window, so a row that never had its box
-          // ticked (a migrated one, defaulted to false by migration 0189) does not fall through to Scheduled with nobody
-          // asked. Never the sync-owned outcome flag.
-          flags.customerApprovalRequired = true;
-          if (type === "standard") {
-            syncCustomerStage(); // nothing internal to repeat: the customer is asked again
-          } else {
-            state = "authorize";
-            stages = [...stages, type === "emergency" ? nextStage("ECAB Approval", FAKE_ECAB_GROUP, FAKE_ECAB) : nextStage("CAB Approval", FAKE_CAB_GROUP, FAKE_CAB)];
-          }
+          if (answeringProposal) confirmation = "disagree";
         } else if (target === "assess") {
           if (type === "standard") enter(afterInternalApproval());
           else if (type === "emergency") {
@@ -1359,6 +1592,42 @@ export async function installFakeChangeRequestApi(
       groupFailure = status;
     },
     customerDecides: (contact, decision) => settleCustomerStage(contact, decision),
+    customerProposes: (contact, startOn) => {
+      const live = stages.find(
+        (st) =>
+          CUSTOMER_STAGES.includes(st.stage) &&
+          st.status === "REQUESTED" &&
+          !stageOutOfState(st) &&
+          st.approvers.some((a) => a.id === contact.id && a.status === "REQUESTED"),
+      );
+      if (state !== "customer_approval") throw new Error(`${contact.name} cannot propose: the change request is no longer in Customer Approval`);
+      if (!live) throw new Error(`${contact.name} has no pending customer approval on this change request`);
+      const start = instantOf(startOn);
+      if (start === null || start <= Date.now()) throw new Error("a proposed time must be a start in the future");
+      if (start === instantOf(plannedStartOn)) throw new Error("plannedStartOn is the planned start already: propose a different start");
+      customerUpdatedOn = rfc3339Of(start);
+      confirmation = null;
+      proposer = contact;
+    },
+    seedProposal: ({ startOn, proposerKnown = false, confirmation: answer = null }) => {
+      const start = instantOf(startOn);
+      if (start === null) throw new Error(`not a time: ${startOn}`);
+      customerUpdatedOn = rfc3339Of(start);
+      confirmation = answer;
+      proposer = proposerKnown ? FAKE_CUST_ONE : null;
+    },
+    proposal: () => ({ customerUpdatedOn, confirmation }),
+    setOnHold: (next) => {
+      onHold = next;
+    },
+    addInternalRequestedRow: () => {
+      // An approval group nobody has a name for (about a tenth of synced stages): not one of ours, never reconciled away.
+      stages = [
+        ...stages,
+        { stage: "Devops Approval", approverType: "STATIC_GROUP", approverName: "Devops Approval", assignmentGroup: null, status: "REQUESTED", approvers: [{ id: FAKE_CAB.id, name: FAKE_CAB.name, status: "REQUESTED" }] },
+      ];
+    },
+    customerApproved: () => customerApproved,
     syncCustomers: () => {
       syncCustomerStage();
       reconcile();
