@@ -18,6 +18,7 @@ import { describe, expect, it } from "vitest";
 import {
   displayTextFromConversationContent,
   getFinalMessageFromPayload,
+  isTokenLimitNoticeText,
   sanitizeStreamToken,
   splitTokenForTyping,
   stripThinkingBlocks,
@@ -70,8 +71,8 @@ describe("stripThinkingBlocks", () => {
 
   it("shows only the answer, never reasoning, as a block is typed out", () => {
     const full = "<thinking>reason</thinking>Answer";
-    // Starts at 2: a lone trailing "<" is deliberately kept (it can be real
-    // text) and is on screen for a single 20ms typing tick at most.
+    // Starts at 2: a lone trailing "<" is deliberately kept because it can be
+    // real text, so it shows for one character until the next token arrives.
     for (let i = 2; i <= full.length; i += 1) {
       const shown = stripThinkingBlocks(full.slice(0, i));
       expect(shown === "" || "Answer".startsWith(shown)).toBe(true);
@@ -92,6 +93,18 @@ describe("stripThinkingBlocks", () => {
     );
   });
 
+  it("stays linear however many openers there are", () => {
+    const manyOpeners = "<thinking>x".repeat(50_000);
+    const started = performance.now();
+    expect(stripThinkingBlocks(manyOpeners)).toBe("");
+    // A rescan per unclosed opener takes several seconds here; a linear scan well
+    // under a millisecond. The bound is ~1000x the real cost so load can't flake it.
+    expect(performance.now() - started).toBeLessThan(1000);
+    expect(stripThinkingBlocks("keep <thinking>x</thinking>".repeat(2_000))).toBe(
+      "keep ".repeat(2_000),
+    );
+  });
+
   it("returns text without a thinking tag untouched", () => {
     const plain = "Set `a < b` and use <b>bold</b> or <thead> markup.";
     expect(stripThinkingBlocks(plain)).toBe(plain);
@@ -107,6 +120,21 @@ describe("displayTextFromConversationContent", () => {
 
   it("returns raw text for invalid JSON payloads", () => {
     expect(displayTextFromConversationContent("{bad-json", true)).toBe("{bad-json");
+  });
+});
+
+describe("isTokenLimitNoticeText", () => {
+  it("matches a limit notice the customer can see", () => {
+    expect(isTokenLimitNoticeText("You have hit the usage limit.")).toBe(true);
+  });
+
+  it("ignores a limit mentioned only inside hidden reasoning", () => {
+    expect(
+      isTokenLimitNoticeText(
+        "<thinking>They may be hitting a rate limit.</thinking>Which gateway is this?",
+      ),
+    ).toBe(false);
+    expect(isTokenLimitNoticeText("")).toBe(false);
   });
 });
 
