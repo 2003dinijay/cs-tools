@@ -901,3 +901,32 @@ func TestLogNotifier_NamesTheRungByItsLadder(t *testing.T) {
 		t.Fatalf("log line = %s; want role=\"L2 support\"", buf.String())
 	}
 }
+
+// A severity change refused only by a team or shift setting keeps the running
+// chain: those settings decide whether a chain may start, not whether one
+// should stop. A severity the ladder does not page still stops it.
+func TestEngine_SeverityChangeRefusedByShiftKeepsTheChain(t *testing.T) {
+	ctx := context.Background()
+	store := newMemStore()
+	cre := ladderEngine(LadderCRE, &fakeChat{}, store)
+	cre.cfg.Ladder.Start.Priorities = []string{"S0", "S1", "S2", "S3"}
+	if err := cre.Handle(ctx, caseCreated(t, "Atlas", "MEDIUM")); err != nil {
+		t.Fatal(err)
+	}
+	// testClock is the LK shift; from now on only the Americas night may start
+	// a chain.
+	cre.cfg.Ladder.Start.Shifts = []string{"USA"}
+	if err := cre.Handle(ctx, severityChanged(t, "MEDIUM", "CRITICAL")); err != nil {
+		t.Fatal(err)
+	}
+	st, found, _ := store.Get(ctx, testIncidentID)
+	if !found || NormalisePriority(st.Plan.Trigger.Priority) != "P3" {
+		t.Fatalf("S3 -> S1 refused by the shift setting: chain found=%v at %s; want the S3 chain still running", found, st.Plan.Trigger.Priority)
+	}
+	if err := cre.Handle(ctx, severityChanged(t, "CRITICAL", "LOW")); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := store.Get(ctx, testIncidentID); found {
+		t.Fatal("lowered to S4 (not paged) and the chain is still running")
+	}
+}

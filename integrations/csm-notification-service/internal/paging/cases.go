@@ -94,6 +94,15 @@ func (e *Engine) handleCase(ctx context.Context, env events.Envelope) error {
 			// A new chain for the new severity, replacing whatever runs.
 			return e.schedule(ctx, t, true)
 		}
+		if e.pagesSeverity(ctx, t) {
+			// Refused for a reason that is not the severity -- a team or
+			// shift setting in trigger -- which decides whether a chain may
+			// START, not whether a running one should stop. Silencing a case
+			// raised outside an allowed shift would be the worst outcome.
+			slog.InfoContext(ctx, "escalation: severity change refused by a team or shift setting; the running chain carries on",
+				"incidentId", caseID, "ladder", ladderName(e.cfg.Kind), "priority", t.Priority)
+			return nil
+		}
 		// This ladder does not page the new severity: S4 while it is off, or
 		// the SRE ladder below S0. Whatever it was running stops.
 		return e.stopRunning(ctx, caseID, cancelReason("Severity changed to "+strings.ToUpper(strings.TrimSpace(p.NewSeverity))))
@@ -212,6 +221,19 @@ func (e *Engine) caseGesture(ctx context.Context, caseID string, g caseGesture, 
 		"incidentId", caseID, "ladder", ladderName(e.cfg.Kind), "stillNeeds", missing,
 		"reachedLevel", st.ReachedLevel())
 	return nil
+}
+
+// pagesSeverity reports whether this ladder pages t's severity at all: routing
+// takes it (for the SRE ladder, only S0), it has a clock, and it is in
+// trigger.priorities. Unlike admit it ignores the team and shift settings.
+func (e *Engine) pagesSeverity(ctx context.Context, t Trigger) bool {
+	if !e.claims(ctx, &t) {
+		return false
+	}
+	if _, ok := PolicyFor(e.policies, t); !ok {
+		return false
+	}
+	return matchesPriority(e.cfg.Ladder.Start.Priorities, t.Priority)
 }
 
 // stopRunning stops whatever chain this ladder runs for the case, if any.
