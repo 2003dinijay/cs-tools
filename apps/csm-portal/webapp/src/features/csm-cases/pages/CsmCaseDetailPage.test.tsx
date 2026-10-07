@@ -1159,7 +1159,9 @@ describe("CsmCaseDetailPage — auto-closure hold chip", () => {
   it("shows the hold chip with its date for a case that is on hold", () => {
     renderWithAutoclosure("ON_HOLD", "2099-06-15T00:00:00.000Z");
 
-    expect(screen.getByText(/^On hold until /)).toBeInTheDocument();
+    // The held calendar day, not a date-time shifted into the viewer's
+    // timezone (which reads as the previous evening west of UTC).
+    expect(screen.getByText("On hold until Jun 15, 2099")).toBeInTheDocument();
   });
 
   it("shows no hold chip while the case is only counting down to auto-closure", () => {

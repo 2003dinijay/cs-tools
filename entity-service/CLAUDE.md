@@ -2859,8 +2859,16 @@ has neither column, so a hold on one is a 400, never a silent no-op.
   `autoclosure_state_on` = the UTC calendar day at midnight, on whichever
   extension table owns the row. The hold has day granularity, and midnight UTC is
   what the ServiceNow mirror sends (`formatSNDateOnly`) and what the sync reads
-  back, so the two stores never disagree about the day. The portal sends the end
-  of the picked local day as a UTC instant, so only the date part is kept.
+  back, so the two stores never disagree about the day.
+- **The date contract: the day is the UTC date of `autocloseHoldUntil`, so a
+  client sends the chosen day at 00:00 UTC.** The CSM portal used to send the end
+  of the picked local day converted to UTC, which is the *next* UTC day for anyone
+  west of UTC: 23:59 on 22 Oct in New York is 03:59 on 23 Oct UTC, so the hold
+  landed on 23 Oct (a day late), on the ServiceNow data source too, since July.
+  East of UTC it was harmless (23:59 on 22 Oct in Colombo is 18:29 on 22 Oct UTC).
+  The portal now sends `2026-10-22T00:00:00.000Z`, and reads the stored day back
+  with the UTC date. This service keeps taking the UTC date, so a deployed older
+  portal behaves exactly as before: nothing here changes with deploy order.
 - **It is a plain combinable field**, counted in `combinableCount`, so it obeys
   the same "never with an exclusive field" rule as `subject`.
 - **Mirror (dual-write)**: `patchCaseFieldsBundle` forwards it as

@@ -176,7 +176,7 @@ import { useReportCaseTabDraft } from "@features/case-tabs/hooks/useReportCaseTa
 import { useReportCaseTabMeta } from "@features/case-tabs/hooks/useReportCaseTabMeta";
 import { useCaseRouteOverride } from "@context/case-tabs/CaseRouteOverrideContext";
 import { replaceUuids } from "@utils/redactIds";
-import { formatAbsoluteForUser } from "@utils/dateTime";
+import { formatUtcDateForDisplay } from "@utils/dateTime";
 import {
   isBlankHtml,
   isDescriptionEchoedInComment,
@@ -2407,7 +2407,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   icon={<PauseCircle size={14} />}
                   label={
                     c.autoclosureStateTime
-                      ? `On hold until ${formatAbsoluteForUser(c.autoclosureStateTime) ?? "—"}`
+                      ? `On hold until ${formatUtcDateForDisplay(c.autoclosureStateTime) ?? "—"}`
                       : "On auto-closure hold"
                   }
                   sx={{ fontWeight: 600 }}

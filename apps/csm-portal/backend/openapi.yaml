@@ -14098,9 +14098,12 @@ components:
             Places the case on hold in the backing data source's staged auto-closure sequence
             until this date, mirroring the real ServiceNow UX (an engineer picks a hold-until
             date). This is the only supported write against that sequence — the raw
-            `autoclosureStep` state is not directly settable. Supported on every data source;
-            under dual-write the hold is also forwarded to ServiceNow, whose own flow does the
-            closing.
+            `autoclosureStep` state is not directly settable. Supported on every data source
+            except for announcements, which have no auto-closure sequence (400); under
+            dual-write the hold is also forwarded to ServiceNow, whose own flow does the
+            closing. The hold is a calendar day, and the day is the UTC date of the value: send
+            the chosen day at 00:00 UTC (`2026-10-22T00:00:00Z` holds until 22 Oct). The end of
+            the chosen day in a timezone west of UTC is already the next UTC day.
         bestCaseFixEta:
           type: string
           format: date

@@ -92,40 +92,52 @@ func TestAutocloseHoldIntegration_HoldRoundTripsOnEveryHoldableType(t *testing.T
 	repo := repository.NewCaseRepository(repository.NewScoped(pool))
 	ctx := repository.WithSystemIdentity(context.Background())
 
-	// What the CSM webapp sends for a hold picked as 22 Oct 2026 in Sri Lanka:
-	// end of that local day, as a UTC instant.
-	holdUntil := time.Date(2026, 10, 22, 18, 29, 0, 0, time.UTC)
 	wantDay := time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC)
 
-	for name, id := range map[string]string{
-		"case":            ahCaseID,
-		"engagement":      ahEngagementID,
-		"service request": ahServiceReqID,
-	} {
-		t.Run(name, func(t *testing.T) {
-			before, err := repo.GetCaseByID(ctx, id, repository.SearchScope{Unrestricted: true})
-			if err != nil {
-				t.Fatalf("GetCaseByID before: %v", err)
-			}
-			if before.AutoclosureStep != nil || before.AutoclosureStateTime != nil {
-				t.Fatalf("fresh case already has a hold: step=%v time=%v", before.AutoclosureStep, before.AutoclosureStateTime)
-			}
+	// The day is the UTC date of the instant (see UpdateCaseRequest.AutocloseHoldUntil).
+	instants := map[string]time.Time{
+		// What the portal sends now: the chosen day at 00:00 UTC.
+		"midnight UTC, as the portal sends it": time.Date(2026, 10, 22, 0, 0, 0, 0, time.UTC),
+		// What an older portal sent for 22 Oct in Sri Lanka (end of that local
+		// day as a UTC instant): still the 22nd in UTC, so a deploy that
+		// reaches this service first changes nothing for it.
+		"end of the day east of UTC, as an older portal sends it": time.Date(2026, 10, 22, 18, 29, 0, 0, time.UTC),
+	}
 
-			if _, err := repo.UpdateCaseFields(ctx, domain.UpdateCaseRequest{ID: id, AutocloseHoldUntil: &holdUntil}, "", "jane.doe@example.com"); err != nil {
-				t.Fatalf("UpdateCaseFields: %v", err)
-			}
+	for instantName, holdUntil := range instants {
+		for name, id := range map[string]string{
+			"case":            ahCaseID,
+			"engagement":      ahEngagementID,
+			"service request": ahServiceReqID,
+		} {
+			t.Run(instantName+"/"+name, func(t *testing.T) {
+				// A fresh row per run, so "no hold yet" is true each time.
+				seedAutocloseHoldFixture(t, pool)
+				before, err := repo.GetCaseByID(ctx, id, repository.SearchScope{Unrestricted: true})
+				if err != nil {
+					t.Fatalf("GetCaseByID before: %v", err)
+				}
+				if before.AutoclosureStep != nil || before.AutoclosureStateTime != nil {
+					t.Fatalf("fresh case already has a hold: step=%v time=%v", before.AutoclosureStep, before.AutoclosureStateTime)
+				}
 
-			cv, err := repo.GetCaseByID(ctx, id, repository.SearchScope{Unrestricted: true})
-			if err != nil {
-				t.Fatalf("GetCaseByID after: %v", err)
-			}
-			if cv.AutoclosureStep == nil || *cv.AutoclosureStep != "ON_HOLD" {
-				t.Errorf("AutoclosureStep = %v, want ON_HOLD", cv.AutoclosureStep)
-			}
-			if cv.AutoclosureStateTime == nil || !cv.AutoclosureStateTime.Equal(wantDay) {
-				t.Errorf("AutoclosureStateTime = %v, want %v", cv.AutoclosureStateTime, wantDay)
-			}
-		})
+				holdUntil := holdUntil
+				if _, err := repo.UpdateCaseFields(ctx, domain.UpdateCaseRequest{ID: id, AutocloseHoldUntil: &holdUntil}, "", "jane.doe@example.com"); err != nil {
+					t.Fatalf("UpdateCaseFields: %v", err)
+				}
+
+				cv, err := repo.GetCaseByID(ctx, id, repository.SearchScope{Unrestricted: true})
+				if err != nil {
+					t.Fatalf("GetCaseByID after: %v", err)
+				}
+				if cv.AutoclosureStep == nil || *cv.AutoclosureStep != "ON_HOLD" {
+					t.Errorf("AutoclosureStep = %v, want ON_HOLD", cv.AutoclosureStep)
+				}
+				if cv.AutoclosureStateTime == nil || !cv.AutoclosureStateTime.Equal(wantDay) {
+					t.Errorf("AutoclosureStateTime = %v, want %v", cv.AutoclosureStateTime, wantDay)
+				}
+			})
+		}
 	}
 }
 

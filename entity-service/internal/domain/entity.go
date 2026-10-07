@@ -3016,9 +3016,10 @@ type SearchCasesResponse struct {
 // each other and of every other field in this request. RelatedCaseID, AutocloseHoldUntil,
 // Subject, Description, DeploymentID, DeployedProductID, BestCaseFixEta, MostLikelyFixEta, and
 // WorstCaseFixEta may be combined with each other in any subset within a single request.
-// WatchList, AssigneeEmail, ParentID, RelatedCaseID, AutocloseHoldUntil, Subject, Description,
+// WatchList, AssigneeEmail, ParentID, RelatedCaseID, Subject, Description,
 // DeploymentID, DeployedProductID, BestCaseFixEta, MostLikelyFixEta, and WorstCaseFixEta
-// are only supported for the ServiceNow data source.
+// are only supported for the ServiceNow data source. (AutocloseHoldUntil is supported on every
+// data source, except for announcements, which have no auto-closure sequence.)
 // An explicitly empty WatchList clears the case's watch list and counts as a provided field.
 // ResolutionCode, Cause, and CloseNotes are optional resolution fields only allowed when
 // State is closed or solution_proposed.
@@ -3076,9 +3077,16 @@ type UpdateCaseRequest struct {
 	// sequence: internally sets u_autoclosure_step = ON_HOLD and u_autoclosure_state_time
 	// to this date together, mirroring the real UX (an engineer picks a hold-until date).
 	// This is the only supported write against the auto-closure sequence — the raw step
-	// enum is not freely settable. Every data source supports it: the Postgres ones store
-	// it in the extension table's autoclosure_step/autoclosure_state_on (UTC day) and, under
-	// dual-write, mirror it to ServiceNow, whose own flow does the closing.
+	// enum is not freely settable. Every data source supports it except for announcements
+	// (a 400: they have no auto-closure sequence). The Postgres ones store it in the extension
+	// table's autoclosure_step/autoclosure_state_on and, under dual-write, mirror it to
+	// ServiceNow, whose own flow does the closing.
+	//
+	// The hold is a calendar day, and the day is the UTC date of this instant: send the chosen
+	// day at 00:00 UTC (2026-10-22T00:00:00Z holds until 22 Oct). An instant at the end of the
+	// chosen day in a timezone west of UTC is already the next UTC day (23:59 on 22 Oct in
+	// New York is 03:59 on 23 Oct UTC) and would hold a day late, so a client must not derive
+	// the instant from local end-of-day.
 	AutocloseHoldUntil *time.Time `json:"autocloseHoldUntil"`
 	// Subject updates the case's short description/title (ServiceNow data source only).
 	Subject *string `json:"subject"`
