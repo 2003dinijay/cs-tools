@@ -115,7 +115,7 @@ export default function ChangeRequestAcceptProposedTimeDialog({
           )}
           {needsConfirmation && (
             <FormControlLabel
-              sx={{ alignItems: "flex-start", m: 0 }}
+              sx={{ alignItems: "center", m: 0 }}
               disabled={isSubmitting}
               control={
                 <Checkbox size="small" checked={checked} onChange={(e) => setChecked(e.target.checked)} />
