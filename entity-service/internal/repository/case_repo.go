@@ -3344,12 +3344,22 @@ func (r *caseRepo) SetCaseWatchList(ctx context.Context, caseID string, userIDs 
 
 // AddCaseWatcherIfAbsent implements CaseRepository.
 func (r *caseRepo) AddCaseWatcherIfAbsent(ctx context.Context, caseID, userID string) error {
+	// ON CONFLICT DO NOTHING against work_item_watcher's own UNIQUE
+	// (work_item_id, user_id) constraint, not a WHERE NOT EXISTS check --
+	// the latter is a read-then-write race: two concurrent comments from the
+	// same not-yet-a-watcher user on the same case could both pass the
+	// EXISTS check before either commits, and the loser would then fail the
+	// INSERT on the unique constraint, surfacing as a confusing error from a
+	// call site (subscribeCommenterToWatchList) that only expects "add if
+	// absent" to ever fail on something genuinely wrong. ON CONFLICT
+	// resolves that atomically at the index level instead of racing two
+	// separate statements against it.
 	_, err := r.db.Exec(ctx, `
 		INSERT INTO work_item_watcher (id, work_item_id, user_id)
-		SELECT gen_random_uuid(), $1, $2
-		WHERE NOT EXISTS (
-			SELECT 1 FROM work_item_watcher WHERE work_item_id = $1 AND user_id = $2
-		)`, caseID, userID)
+		SELECT gen_random_uuid(), wi.id, $2
+		FROM work_item wi
+		WHERE wi.id = $1
+		ON CONFLICT (work_item_id, user_id) DO NOTHING`, caseID, userID)
 	if err != nil {
 		return fmt.Errorf("add case watcher if absent: %w", err)
 	}
