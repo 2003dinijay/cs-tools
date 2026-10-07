@@ -6307,6 +6307,18 @@ change-request GitHub sync. No token: the handoff still succeeds and reports
 issue. `IncidentView.SpecialistHandoff` is derived at
 read time from those notes and the task, as SN's `getHandoffSummary` does.
 
+**`incident.special_ops_alert`** (on `SRE_EVENT_HUB_TOPIC`, for csm-notification-service's port of
+ServiceNow's "Incident Special Ops Escalation Notification Flow"): published whenever an incident's
+assignment group **changes to** a Special Ops group -- every team's `groupId` in
+`SPECIALIST_HANDOFF_CONFIG` -- however it changed, as ServiceNow's flow triggers. Migration 0207's
+`work_item` trigger records an incident's group change as an `'incident'` `event_outbox` row
+(`changes.assignment_group_id`, `snapshot.updated_by/updated_on`); the incident report drainer,
+which already claims those rows, publishes the alert (`WithSpecialOpsAlerts`, main.go) and
+acknowledges any other group as a no-op. A failed publish is retried and parked like the report
+flows. Payload: `events.IncidentSpecialOpsAlertPayload` (incident, service, product/team, both
+groups, who and when), keyed by the incident id. Off without the topic; unknown to the consumer
+until it adds the type (`HandleShared` skips unknown types on sre-events).
+
 **`UpdateProblem`/`UpdateIncident` are also not
 implemented**: `UpdateProblem.Transition` is validated
 server-side by ServiceNow's own workflow engine with no fixed, confirmed
