@@ -361,9 +361,12 @@ responses are fanned out into eight differently-shaped, purpose-built views rath
   passthrough endpoint in this backend at all; the metadata response is only ever exposed split into
   these two narrower views. `ChoiceListItem`/`ReferenceTableItem` (entity-service's two "list of
   valid options" shapes) both collapse into one `dto.ReferenceItem{id, label, count?}` for the
-  frontend. `/filters`' `changeRequestStates` additionally drops three internal ServiceNow workflow
-  state IDs (`dto.restrictedChangeRequestStateIDs`) that were never meant to be a customer-facing
-  filter option.
+  frontend. `/filters`' `changeRequestStates` additionally drops the three internal ServiceNow workflow
+  state IDs (`dto.restrictedChangeRequestStateIDs`: New `-5`, Assess `-4`, Authorize `-3`) that
+  were never meant to be a customer-facing filter option -- by their ServiceNow numeric id, so
+  only where the data source is ServiceNow. On Postgres the same states arrive as raw enum
+  labels, where only New and Assess are dropped and Authorize is kept (a designated change
+  request waits there after the customer proposed a new time).
 - **`/stats` and `/stats/support` are composite, graceful-degradation endpoints** — each combines
   multiple independent entity-service calls (`/stats` combines case/conversation/deployment/activity
   stats; `/stats/support` combines case/conversation stats) and returns `200` even if every one of
@@ -510,6 +513,16 @@ same reason; New and Assess have no response id or label (nothing visible is eve
 `GET /projects/{id}/filters` and the change-request stats leave them out (`isRestrictedChangeRequestState`), but a
 search that NAMES them (`-5`, `-4`, `crStateFilterOnlyIDs`) is forwarded as asked and answers "none" instead of
 silently becoming "no filter".
+
+**Authorize is Postgres-only here.** That paragraph is the Postgres data source's rule (designation). On the
+ServiceNow data source nothing is designated: a customer sees every state except New, Assess and **Authorize**, and
+ServiceNow's own search does not enforce that. entity-service applies it (a customer's search is narrowed to the
+visible states, and the project's metadata leaves the three out: `entity-service/CLAUDE.md`, "The ServiceNow data
+source"), and this API keeps the three ServiceNow ids (`-5`, `-4`, `-3`) out of the filter options and the stat counts
+as the second line, because the webapp builds every state it asks for from those options: offering `-3` there made
+the webapp ask ServiceNow for Authorize. The id is what tells the data sources apart (a Postgres id is a raw label),
+so Authorize survives under `AUTHORIZE` and not under `-3`. This API cannot tell the data sources apart on a search,
+so it does not narrow one.
 
 **A planned time is checked here first and again upstream.** `dto.ValidatePlannedWindow` (`planned_window.go`)
 refuses, with a readable 400 and before anything is sent, a `plannedStartOn` / `plannedEndOn` (PATCH) or
