@@ -249,6 +249,13 @@ const caseLikeClosedByUserIDColumn = `COALESCE(c.closed_by_user_id, eng.closed_b
 const caseLikeWorkStateColumn = `COALESCE(c.work_state::TEXT, eng.work_state::TEXT, sr.work_state::TEXT, sra.work_state::TEXT)`
 const caseLikeResolutionCodeColumn = `COALESCE(c.resolution_code::TEXT, eng.resolution_code::TEXT, sr.resolution_code::TEXT, sra.resolution_code::TEXT)`
 
+// caseLikeAutoclosureStepColumn/caseLikeAutoclosureStateOnColumn cover the four
+// case-like tables that carry the auto-closure sequence columns (migrations
+// 0023/0024; csm-sync-service fills them from u_autoclosure_step and
+// u_autoclosure_state_time). announcement has neither.
+const caseLikeAutoclosureStepColumn = `COALESCE(c.autoclosure_step, eng.autoclosure_step, sr.autoclosure_step, sra.autoclosure_step)`
+const caseLikeAutoclosureStateOnColumn = `COALESCE(c.autoclosure_state_on, eng.autoclosure_state_on, sr.autoclosure_state_on, sra.autoclosure_state_on)`
+
 // workStateWorkItemTypes are the case-like work_item types that carry a work
 // state and resolution code: all of caseLikeWorkItemTypes except ANNOUNCEMENT.
 const workStateWorkItemTypes = `'{CASE,ENGAGEMENT,SERVICE_REQUEST,SECURITY_REPORT_ANALYSIS}'::work_item_type_enum[]`
@@ -1419,6 +1426,8 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		creatorID, creatorName                   *string
 		bestCaseEta, mostLikelyEta, worstCaseEta *time.Time
 		etaSharedOn                              *time.Time
+		autoclosureStep                          *string
+		autoclosureStateOn                       *time.Time
 	)
 	// A scoped caller asking for a case outside their access still gets
 	// pgx.ErrNoRows -> NotFoundError below, the same as a genuinely
@@ -1438,6 +1447,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		        wi.created_on, wi.updated_on, `+caseLikeClosedOnColumn+`, `+caseLikeResolvedOnColumn+`,
 		        wi.subject,
 		        wi.best_case_eta, wi.most_likely_eta, wi.worst_case_eta, wi.eta_shared_on,
+		        `+caseLikeAutoclosureStepColumn+`, `+caseLikeAutoclosureStateOnColumn+`,
 		        wi.created_by, creator.id, COALESCE(creator.name, NULLIF(TRIM(CONCAT_WS(' ', creator.first_name, creator.last_name)), '')),
 		        p.id, p.name,
 		        d.id, d.name,
@@ -1478,6 +1488,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		&cv.CreatedOn, &cv.UpdatedOn, &cv.ClosedOn, &resolvedOn,
 		&cv.Subject,
 		&bestCaseEta, &mostLikelyEta, &worstCaseEta, &etaSharedOn,
+		&autoclosureStep, &autoclosureStateOn,
 		&creatorEmail, &creatorID, &creatorName,
 		&projID, &projName,
 		&depID, &depName,
@@ -1528,6 +1539,15 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		cv.WorstCaseFixEta = &s
 	}
 	cv.EtaSharedOn = etaSharedOn
+	// autoclosure_step is csm-sync-service's copy of u_autoclosure_step
+	// (DEFAULT/FIRST_COMMENT/ON_HOLD/SECOND_COMMENT) and autoclosure_state_on of
+	// u_autoclosure_state_time, passed through as the ServiceNow data source
+	// does. An empty step is no step (NULL), so a case never in the sequence
+	// omits both fields.
+	if autoclosureStep != nil && *autoclosureStep != "" {
+		cv.AutoclosureStep = autoclosureStep
+		cv.AutoclosureStateTime = autoclosureStateOn
+	}
 	// case_state_enum/case_issue_type_enum are UPPER_SNAKE_CASE while the
 	// domain values are lowercase; case_severity_enum's 'S0'..'S4' labels
 	// have no case-only relationship to the domain value at all -- see
@@ -3835,6 +3855,12 @@ func updateCaseFieldsTx(ctx context.Context, tx pgx.Tx, req domain.UpdateCaseReq
 		}
 	}
 
+	if req.AutocloseHoldUntil != nil {
+		if err := setAutocloseHoldTx(ctx, tx, req.ID, *req.AutocloseHoldUntil); err != nil {
+			return time.Time{}, err
+		}
+	}
+
 	// work_item.updated_on/updated_by are bumped unconditionally, matching
 	// every sibling UpdateCase branch, even when only "case" columns above
 	// changed.
@@ -3902,6 +3928,55 @@ func updateCaseFieldsTx(ctx context.Context, tx pgx.Tx, req domain.UpdateCaseReq
 	}
 
 	return updatedOn, nil
+}
+
+// autocloseHoldTables maps a case-like work_item type to the extension table
+// that carries its autoclosure_step/autoclosure_state_on columns (migrations
+// 0023/0024). ANNOUNCEMENT is absent on purpose: it has neither column, and
+// ServiceNow's auto-closure sequence never runs on one.
+var autocloseHoldTables = map[string]string{
+	"CASE":                     `"case"`,
+	"SERVICE_REQUEST":          "service_request",
+	"ENGAGEMENT":               "engagement",
+	"SECURITY_REPORT_ANALYSIS": "security_report_analysis",
+}
+
+// autoclosureStepOnHold is ServiceNow's u_autoclosure_step value for a held
+// case, the same literal csm-sync-service writes into autoclosure_step.
+const autoclosureStepOnHold = "ON_HOLD"
+
+// setAutocloseHoldTx places the case on auto-closure hold until holdUntil, the
+// Postgres equivalent of ServiceNow setting u_autoclosure_step = ON_HOLD and
+// u_autoclosure_state_time together. The date is stored as the UTC calendar day
+// at midnight: the hold has day granularity, and that is exactly what the
+// ServiceNow mirror sends (formatSNDateOnly) and what the sync reads back, so
+// the two stores never disagree about the day.
+//
+// Returns a NotFoundError for an unknown id and a ValidationError for a type
+// with no auto-closure columns (announcements).
+func setAutocloseHoldTx(ctx context.Context, tx pgx.Tx, caseID string, holdUntil time.Time) error {
+	var workItemType string
+	err := tx.QueryRow(ctx, `SELECT type::TEXT FROM work_item WHERE id = $1 AND type = ANY(`+caseLikeWorkItemTypes+`)`, caseID).Scan(&workItemType)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return &apierror.NotFoundError{Msg: "case not found"}
+	}
+	if err != nil {
+		return fmt.Errorf("set autoclose hold: read type: %w", err)
+	}
+	table, ok := autocloseHoldTables[workItemType]
+	if !ok {
+		return &apierror.ValidationError{Msg: "autocloseHoldUntil is not supported for announcements"}
+	}
+	u := holdUntil.UTC()
+	day := time.Date(u.Year(), u.Month(), u.Day(), 0, 0, 0, 0, time.UTC)
+	tag, err := tx.Exec(ctx, `UPDATE `+table+` SET autoclosure_step = $2, autoclosure_state_on = $3 WHERE id = $1`, caseID, autoclosureStepOnHold, day)
+	if err != nil {
+		return fmt.Errorf("set autoclose hold: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return &apierror.NotFoundError{Msg: "case not found"}
+	}
+	return nil
 }
 
 // scanTag scans a single (id, name) row into a domain.Tag. tag has no

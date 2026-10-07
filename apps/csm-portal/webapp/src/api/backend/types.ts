@@ -190,8 +190,9 @@ export type BeCaseSortField =
 /**
  * Where a case sits in the backing data source's staged auto-closure sequence
  * (DEFAULT -> FIRST_COMMENT -> ON_HOLD -> SECOND_COMMENT). Read-only — the
- * only supported write is `autocloseHoldUntil` on `PATCH /cases/{id}`
- * (ServiceNow only).
+ * only supported write is `autocloseHoldUntil` on `PATCH /cases/{id}`. Only
+ * `ON_HOLD` is a hold; the `*_COMMENT` steps are later stages of the countdown
+ * to closure.
  */
 export type BeCaseAutoclosureStep =
   | "DEFAULT"
@@ -456,7 +457,7 @@ export interface BeCaseView {
   autoclosureStep?: BeCaseAutoclosureStep | null;
   /**
    * When the auto-closure sequence next advances — e.g. the "eligible again
-   * after" date for a held case (ServiceNow only). Read-only.
+   * after" date for a held case. Read-only.
    */
   autoclosureStateTime?: string | null;
   /**

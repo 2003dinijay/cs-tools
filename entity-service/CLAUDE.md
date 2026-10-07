@@ -2745,7 +2745,7 @@ the variable names (`exclusiveCount`/`combinableCount` in both files' own
 - **Combinable** (any subset, freely combined with each other, never with
   the exclusive group): `subject`, `description`, `deploymentId`,
   `deployedProductId`, `bestCaseFixEta`/`mostLikelyFixEta`/`worstCaseFixEta`,
-  `relatedCaseId`, `workaroundProvided` -- all newly wired up via
+  `relatedCaseId`, `autocloseHoldUntil`, `workaroundProvided` -- all newly wired up via
   `updateCaseFields`/`CaseRepository.UpdateCaseFields`, one dynamic
   `UPDATE ... SET` per table (`work_item` for most of these,
   `"case"` for `relatedCaseId` alone) built from exactly the non-nil pointers
@@ -2775,9 +2775,10 @@ the variable names (`exclusiveCount`/`combinableCount` in both files' own
   `service_request`/etc, each a physically separate extension table --
   genuinely larger, separate work, not attempted here), so none of its five
   companions have anywhere to go either. `addPublicComment`/`product`/
-  `publicTicket` (the "Share Fix ETA" comment-posting side effect) and
-  `autocloseHoldUntil` (no backing column anywhere in this schema) remain
-  rejected too.
+  `publicTicket` (the "Share Fix ETA" comment-posting side effect) remain
+  rejected too. `autocloseHoldUntil` is **not** in this list: it was, on the
+  belief that no column backed it, but every case-like extension table has
+  `autoclosure_step`/`autoclosure_state_on` -- see "Auto-closure hold" below.
 
 **A real pre-existing read-side bug found while building the write side**:
 `GetCaseByID` cast `"case".resolution_code` straight into
@@ -2838,6 +2839,61 @@ resolution fields silently ignored -- never validated, never written. The
 check now runs immediately after the `exclusiveCount`/`combinableCount`
 validation and before any branch (`WatchList`/`AssigneeEmail`/`ParentID`/
 `Acknowledge`/the combinable bundle) gets a chance to return early.
+
+## Auto-closure hold (`autocloseHoldUntil`) on the Postgres data sources
+
+`PATCH /cases/{id} {autocloseHoldUntil}` is the CSM portal's "Hold auto-closure"
+action. It used to 400 on `postgres` and `postgres-servicenow-dual-write` ("only
+supported for the ServiceNow data source", the portal showing only "Could not
+hold auto-closure."), because the Postgres service listed it among fields with
+"no backing column". That was wrong: `"case"`, `service_request`, `engagement`
+and `security_report_analysis` all carry `autoclosure_step VARCHAR(50)` and
+`autoclosure_state_on TIMESTAMPTZ` (migrations 0023/0024), the very columns
+csm-sync-service fills from ServiceNow's `u_autoclosure_step` /
+`u_autoclosure_state_time` (staging holds `DEFAULT`, `FIRST_COMMENT`, `ON_HOLD`,
+`SECOND_COMMENT`; the `ON_HOLD` rows carry midnight-UTC dates). `announcement`
+has neither column, so a hold on one is a 400, never a silent no-op.
+
+- **Write** (`setAutocloseHoldTx`, called from `updateCaseFieldsTx`, same
+  transaction as the other plain fields): `autoclosure_step = 'ON_HOLD'` and
+  `autoclosure_state_on` = the UTC calendar day at midnight, on whichever
+  extension table owns the row. The hold has day granularity, and midnight UTC is
+  what the ServiceNow mirror sends (`formatSNDateOnly`) and what the sync reads
+  back, so the two stores never disagree about the day.
+- **The date contract: the day is the UTC date of `autocloseHoldUntil`, so a
+  client sends the chosen day at 00:00 UTC.** The CSM portal used to send the end
+  of the picked local day converted to UTC, which is the *next* UTC day for anyone
+  west of UTC: 23:59 on 22 Oct in New York is 03:59 on 23 Oct UTC, so the hold
+  landed on 23 Oct (a day late), on the ServiceNow data source too, since July.
+  East of UTC it was harmless (23:59 on 22 Oct in Colombo is 18:29 on 22 Oct UTC).
+  The portal now sends `2026-10-22T00:00:00.000Z`, and reads the stored day back
+  with the UTC date. This service keeps taking the UTC date, so a deployed older
+  portal behaves exactly as before: nothing here changes with deploy order.
+- **It is a plain combinable field**, counted in `combinableCount`, so it obeys
+  the same "never with an exclusive field" rule as `subject`.
+- **Mirror (dual-write)**: `patchCaseFieldsBundle` forwards it as
+  `autocloseHoldUntil` (date only) and the `sn_writeback_failures` replay payload
+  records it. This is the write that decides anything: ServiceNow's own flow is
+  what closes -- or doesn't close -- the case, so a hold stored only in Postgres
+  would stop nothing. The next sync brings ServiceNow's own step/time back.
+- **Read**: `GetCaseByID` returns `autoclosureStep` / `autoclosureStateTime` from
+  `caseLikeAutoclosureStepColumn` / `caseLikeAutoclosureStateOnColumn`, as the
+  ServiceNow data source always did. A case with no step omits both. **This puts
+  `FIRST_COMMENT` / `SECOND_COMMENT` on about 5,800 staging cases that showed
+  nothing before**; only `ON_HOLD` is a hold, and the CSM webapp's chip and dialog
+  prefill key on `ON_HOLD` for that reason.
+- Not done: the case *search* views carry no auto-closure fields on any data
+  source, and nothing here releases a hold early or moves a case between the
+  other steps (the raw step stays unsettable by design).
+- Tests: `case_repo_autoclose_hold_integration_test.go` (real Postgres, run as a
+  non-superuser so row-level security is in force; `CASE_STATS_TEST_DSN`),
+  `TestCaseService_UpdateCase_AcceptsAutocloseHold` / `_AutocloseHoldIsMirroredToServiceNow`,
+  `TestSNCaseService_PatchCaseFieldsBundle_*`, and
+  `TestCaseService_UpdateCase_AutocloseHoldReachesServiceNowOverHTTP`, which runs
+  the real production chain (case service, writeback dispatcher, a real
+  `snCaseService` mirror) against a fake ServiceNow server and asserts the PATCH
+  it receives: the case's sysid, only `autocloseHoldUntil` as a date, the caller's
+  token forwarded.
 
 ## Change requests
 

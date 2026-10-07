@@ -182,8 +182,8 @@ paths:
         `workState`, `watchList`, `assigneeEmail`, `parentId`, `acknowledge`, `subject`,
         `description`, `deploymentId`, `deployedProductId`, `relatedCaseId`,
         `autocloseHoldUntil`, `bestCaseFixEta`, `mostLikelyFixEta`, or `worstCaseFixEta`.
-        `watchList`, `assigneeEmail`, `parentId`, and `autocloseHoldUntil` are supported only when
-        the ServiceNow data source is active.
+        `watchList`, `assigneeEmail`, and `parentId` are supported only when the ServiceNow data
+        source is active.
       operationId: patchCasesId
       parameters:
         - name: id
@@ -13949,7 +13949,7 @@ components:
         Exactly one of `state`, `severity`, `workState`, `watchList`, `assigneeEmail`, `parentId`,
         `acknowledge`, `type`, `subject`, `description`, `deploymentId`, `deployedProductId`,
         `relatedCaseId`, `autocloseHoldUntil`, `bestCaseFixEta`, `mostLikelyFixEta`, or
-        `worstCaseFixEta` must be provided. `watchList`, `assigneeEmail`, `parentId`, and `autocloseHoldUntil` are
+        `worstCaseFixEta` must be provided. `watchList`, `assigneeEmail`, and `parentId` are
         supported only for the ServiceNow data source.
         `resolutionCode`, `cause`, and `closeNotes` are optional resolution fields that may only be
         provided alongside `state: closed` or `state: solution_proposed`.
@@ -14098,7 +14098,12 @@ components:
             Places the case on hold in the backing data source's staged auto-closure sequence
             until this date, mirroring the real ServiceNow UX (an engineer picks a hold-until
             date). This is the only supported write against that sequence — the raw
-            `autoclosureStep` state is not directly settable (ServiceNow only).
+            `autoclosureStep` state is not directly settable. Supported on every data source
+            except for announcements, which have no auto-closure sequence (400); under
+            dual-write the hold is also forwarded to ServiceNow, whose own flow does the
+            closing. The hold is a calendar day, and the day is the UTC date of the value: send
+            the chosen day at 00:00 UTC (`2026-10-22T00:00:00Z` holds until 22 Oct). The end of
+            the chosen day in a timezone west of UTC is already the next UTC day.
         bestCaseFixEta:
           type: string
           format: date
@@ -15571,7 +15576,8 @@ components:
             Where the case sits in the backing data source's staged auto-closure sequence
             (DEFAULT -> FIRST_COMMENT -> ON_HOLD -> SECOND_COMMENT). Informational only — the
             sequence itself is fully owned by the backing data source's own flows; the only
-            supported write is `autocloseHoldUntil` on the PATCH request (ServiceNow only).
+            supported write is `autocloseHoldUntil` on the PATCH request. Only `ON_HOLD` is a
+            hold; the two `*_COMMENT` steps are later stages of the countdown to closure.
         autoclosureStateTime:
           type: string
           format: date-time
@@ -15579,7 +15585,7 @@ components:
           nullable: true
           description: >-
             When the auto-closure sequence next advances — e.g. the "eligible again after" date
-            for a held case (ServiceNow only).
+            for a held case.
         nextStates:
           type: array
           readOnly: true

@@ -1478,13 +1478,15 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// catalogId/catalogItemId/variables are rejected there too whenever
 	// req.Type is nil ("... are only allowed when type is also provided").
 	// addPublicComment/product/publicTicket (the "Share Fix ETA" comment
-	// side effect) and autocloseHoldUntil (no backing column anywhere in
-	// this schema) have no Postgres equivalent either.
+	// side effect) have no Postgres equivalent either. autocloseHoldUntil
+	// is NOT in this list: every case-like extension table carries
+	// autoclosure_step/autoclosure_state_on (migrations 0023/0024, the same
+	// columns csm-sync-service fills from ServiceNow's u_autoclosure_step/
+	// u_autoclosure_state_time), so it is a plain combinable field below.
 	if req.Type != nil || req.EngagementType != nil || req.EngagementPaymentType != nil || req.IssueType != nil ||
 		req.CatalogID != nil || req.CatalogItemID != nil || len(req.Variables) > 0 ||
-		req.AddPublicComment != nil || req.Product != nil || req.PublicTicket != nil ||
-		req.AutocloseHoldUntil != nil {
-		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "type, engagementType, engagementPaymentType, issueType, catalogId, catalogItemId, variables, addPublicComment, product, publicTicket, and autocloseHoldUntil are only supported for the ServiceNow data source"}
+		req.AddPublicComment != nil || req.Product != nil || req.PublicTicket != nil {
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "type, engagementType, engagementPaymentType, issueType, catalogId, catalogItemId, variables, addPublicComment, product, and publicTicket are only supported for the ServiceNow data source"}
 	}
 
 	// The exclusive/combinable split below mirrors sn_case_service.go's own
@@ -1540,12 +1542,15 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	if req.RelatedCaseID != nil {
 		combinableCount++
 	}
+	if req.AutocloseHoldUntil != nil {
+		combinableCount++
+	}
 	if req.WorkaroundProvided != nil {
 		combinableCount++
 	}
 	const fieldList = "state, severity, workState, watchList, assigneeEmail, parentId, acknowledge, markFixIssued, " +
 		"subject, description, deploymentId, deployedProductId, bestCaseFixEta, mostLikelyFixEta, " +
-		"worstCaseFixEta, relatedCaseId, or workaroundProvided"
+		"worstCaseFixEta, relatedCaseId, autocloseHoldUntil, or workaroundProvided"
 	if exclusiveCount == 0 && combinableCount == 0 {
 		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "at least one of " + fieldList + " must be provided"}
 	}
@@ -2609,6 +2614,9 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 			}
 			if req.RelatedCaseID != nil {
 				writebackPayload["relatedCaseId"] = *req.RelatedCaseID
+			}
+			if req.AutocloseHoldUntil != nil {
+				writebackPayload["autocloseHoldUntil"] = formatSNDateOnly(req.AutocloseHoldUntil)
 			}
 			if req.BestCaseFixEta != nil {
 				writebackPayload["bestCaseFixEta"] = *req.BestCaseFixEta
