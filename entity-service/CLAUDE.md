@@ -6260,13 +6260,41 @@ An article whose `state` is NULL reads as `state: ""`. The service's
 a 500 — it is listed and viewable, but needs its state set before it can move
 through review.
 
-Not covered here: `knowledge_article_history` (legacy migration
-`000030_knowledge_article_history.up.sql`) is absent from the staging database.
-Two paths use it — `ListKBArticleHistory`, and the history insert inside
+### `knowledge_article_history` has its own migration (0203) and creates the table only if it is missing
+
+Two paths use the table — `ListKBArticleHistory`, and the history insert inside
 `UpdateKBArticleState`'s transaction (so a state transition rolls back entirely
-there) — and both still fail until the table exists. `UpdateKBArticleContent` does
-not touch it. That is a schema gap, separate from the NULL scan above, and does not
-affect search.
+where the table is absent). `UpdateKBArticleContent` does not touch it, and search
+never does. The table used to be defined only by the old-style pair
+`000030_knowledge_article_history.up.sql` / `.down.sql`, which this change removes.
+It was never part of the numbered series, so a database built from `migrations/`
+got no table, and staging had it only because someone created it by hand (before
+22:26 IST on 6 October 2026; the seven rows in it are test transitions).
+
+**`0203_knowledge_article_history.sql` is `CREATE TABLE IF NOT EXISTS` plus
+`CREATE INDEX IF NOT EXISTS`, and nothing else.** It never drops, truncates,
+alters or rewrites, so it is safe on a database that already has the table (hand
+made, or from an earlier run), safe to re-run, and safe on a database that is
+refilled from ServiceNow: an existing table and its rows are left exactly as they
+are. Keep it that way. If the table ever needs another column, add a new numbered
+`ALTER TABLE ... ADD COLUMN IF NOT EXISTS` migration; do not edit 0203 into a
+drop-and-recreate.
+
+**Why the legacy pair had to go, not just be joined by a new file.** `make migrate`
+globs `migrations/*.sql` and runs every file not yet recorded in
+`csm_migration_applied_migration`, `.down.sql` files included, in name order. The
+`000030` pair was never recorded on staging, and `.down.sql` sorts before `.up.sql`,
+so the next `make migrate` against it would have run the `.down.sql` first
+(`DROP TABLE knowledge_article_history`, rows gone) and then the `.up.sql`
+(`CREATE TABLE IF NOT EXISTS`, an empty table again). That is the repo-wide trap
+described in the top-level `CLAUDE.md` ("Only `NNNN_*.sql` belongs in that
+folder"), and here it would have silently emptied the history.
+`kb_article_repo_integration_test.go` runs 0203 repeatedly over a table that holds
+rows and asserts they survive.
+
+The other old-style KB pairs (`000020`–`000027`) are the same trap and are **not**
+touched here; `000027_replace_kb_tables_with_real_schema.down.sql` drops
+`knowledge_article` and `knowledge_base`. They need their own change.
 
 ## Case feedback silently 404'd on the Postgres data source instead of a documented 503
 
