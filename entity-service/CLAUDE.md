@@ -3973,7 +3973,7 @@ The rules, in the order they are applied (**the first failing one wins, every re
 **The Re-schedule hole, closed (and the loop no longer reaches it).** A change that reached
 Customer Approval necessarily has `customer_approval_required = true`. Re-schedule used to
 send a Normal / Emergency change back to Authorize, and before the lock the box could be
-unticked there (it was editable until the gate), so the CAB (or ECAB) approval that followed
+unticked there (it was editable until the gate), so the CAB approval that followed
 went straight to Scheduled and the customer was never asked about the new plan. The box
 cannot be unticked in any state after New, the project cannot be swapped and the change
 cannot be sent back to New, and Re-schedule no longer goes back through CAB at all (it keeps

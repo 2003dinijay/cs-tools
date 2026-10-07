@@ -4727,7 +4727,7 @@ func TestChangeRequestFlowIntegration_CreateRequiresCreatableType(t *testing.T) 
 // Customer Approval / Customer Review checkboxes
 // (change_request.customer_approval_required / customer_review_required,
 // migration 0189). They add an optional customer step on each side of the
-// implementation: CAB / ECAB approval (or Request Approval on a Standard
+// implementation: CAB approval (or Request Approval on a Standard
 // change) moves the change to Customer Approval instead of Scheduled, where a
 // human records the customer's approval; Review offers Customer Review (then
 // Closed) instead of Closed.
@@ -7044,7 +7044,7 @@ func TestChangeRequestScopeIntegration_LegacyStoredGroupIsIgnored(t *testing.T) 
 // PATCH {state: "authorize", plannedStartOn/plannedEndOn} with a changed window
 // supersedes the customer's pending request and asks the customer again, for every
 // change type: "authorize" is the wire name, the state does not move and NOTHING goes
-// through CAB / ECAB again -- the change itself has not changed, only its time. It is
+// through CAB again -- the change itself has not changed, only its time. It is
 // refused when nobody can be asked, as Request Approval is. The customer's own proposed
 // time waits for WSO2 (customer_updated_on) and is answered with Accept proposed time or
 // a different time through the same wire name (change_request_proposal_*_test.go).

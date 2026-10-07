@@ -60,7 +60,7 @@ func sortedCopy(in []string) []string {
 }
 
 // stageKey names a stage in assertions: its label, and "#2", "#3" ... for a
-// label that repeats (a re-scheduled CAB / ECAB / customer stage).
+// label that repeats (a re-scheduled CAB / customer stage).
 func stageKey(seen map[string]int, label string) string {
 	seen[label]++
 	if seen[label] == 1 {
