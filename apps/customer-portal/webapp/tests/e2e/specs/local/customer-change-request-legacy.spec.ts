@@ -348,23 +348,37 @@ test.describe("Local stack — legacy (migrated) change requests", () => {
       expect(stats.byState.Authorize, "the Authorize card counts the one they proposed on").toBe(1);
 
       // WSO2's CAB approves the new time. A migrated change request has customer_approval_required = false (that column
-      // is ours, and the sync never set it), so nothing asks the customers a second time: it is Scheduled for the window
-      // dave proposed, and a legacy Scheduled is a state customers see. (WSO2 can ask again: next test.)
+      // is ours, and the sync never set it), but a proposal IS a Re-schedule and a Re-schedule writes the requirement
+      // (true) with the new window: the new plan goes back to the customers, as it does for a native change request.
+      // It used to end in Scheduled with nobody asked about the window, a gap of migration 0189's default, not a rule.
       await staffDecides("alice", crId);
-      expect(await storedState(crId)).toBe("SCHEDULED");
-      expect((await stageRows(crId)).filter((r) => r.startsWith("Customer Approval")), "nobody was asked a second time").toEqual([
+      expect(await storedState(crId)).toBe("CUSTOMER_APPROVAL");
+      expect((await stageRows(crId)).filter((r) => r.startsWith("Customer Approval")), "both contacts are asked a second time").toEqual([
         "Customer Approval|dave.mendis@example.com|CANCELLED",
         "Customer Approval|erin.jayawardena@example.com|CANCELLED",
+        "Customer Approval|dave.mendis@example.com|REQUESTED",
+        "Customer Approval|erin.jayawardena@example.com|REQUESTED",
       ]);
+      for (const who of [dave, erin]) {
+        expect((await who.listed(projectId)).find((c) => c.number === number)?.state?.label).toBe("Customer Approval");
+        const seen = await who.get(crId);
+        expect(seen.status).toBe(200);
+        expect(seen.body.customerCanAnswer, "asked afresh").toBe(true);
+      }
+      await erinDetails.open(projectId, crId, number);
+      await expect(erinDetails.currentStage()).toHaveText(UI.stages.customerApproval);
+      await expect(erinDetails.approvalButtons().first()).toBeVisible();
+      await shot(erinPage, "15-legacy-erin-detail-customer-approval-after-proposal");
+      const done = await psql(`select to_char(start_on at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') from change_request where id = '${crId}'`);
+      expect(done.trim(), "the window dave proposed is the one put to them").toBe(window.startUtc);
+      // erin approves the new window: Scheduled for it, and a legacy Scheduled is a state customers see.
+      const approved = await erin.patch(crId, { isCustomerApproved: true });
+      expect(approved.status, JSON.stringify(approved.body)).toBe(200);
+      expect(await storedState(crId)).toBe("SCHEDULED");
       for (const who of [dave, erin]) {
         expect((await who.listed(projectId)).find((c) => c.number === number)?.state?.label).toBe("Scheduled");
         expect((await who.get(crId)).status).toBe(200);
       }
-      await erinDetails.open(projectId, crId, number);
-      await expect(erinDetails.currentStage()).toHaveText(UI.stages.scheduled);
-      await shot(erinPage, "15-legacy-erin-detail-scheduled-after-proposal");
-      const done = await psql(`select to_char(start_on at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS"Z"') from change_request where id = '${crId}'`);
-      expect(done.trim(), "the window dave proposed is the one scheduled").toBe(window.startUtc);
     } finally {
       await erinContext.close();
     }
