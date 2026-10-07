@@ -173,8 +173,9 @@ function customerRejectedApproval(approvals?: readonly StageEvidence[]): boolean
  * proves only that it was reached, a change with no stage rows at all
  * (a Standard change, a project without registered customer contacts, a change
  * canceled at New) proves nothing, and the absence of a row proves nothing
- * either. A re-scheduled change that is canceled back at Authorize still
- * counts its first pass through Customer Approval as passed -- it was.
+ * either. A change that an older Re-schedule sent back to Authorize (a Re-schedule
+ * no longer leaves Customer Approval) and that is canceled there still counts its
+ * first pass through Customer Approval as passed -- it was.
  */
 function provenPassedIndex(approvals: readonly StageEvidence[] | undefined, customerApproved?: boolean): number {
   let passed = customerApproved ? HAPPY_PATH.indexOf("customer_approval") : -1;
