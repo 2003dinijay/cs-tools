@@ -985,6 +985,17 @@ func TestChangeRequestProposalIntegration_CustomerRefusals(t *testing.T) {
 			})
 		}
 	})
+	t.Run("the proposed window would end beyond the year 2100", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
+		// A stored plan 90 years long (a hand edit or a sync can leave one): the end it would give
+		// a proposal is held to the range every window is.
+		f.execSQL(`UPDATE change_request SET end_on = start_on + interval '90 years' WHERE id = $1`, id)
+		before := f.snap(id)
+		_, err := f.proposeAs(id, crScopeUserA1, rsStart2)
+		f.wantValidationError("a proposal whose end would pass 2100", err, "is too far ahead")
+		f.wantRefusedSame("a proposal whose end would pass 2100", id, before, err)
+	})
 	t.Run("the same time twice", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)

@@ -566,6 +566,13 @@ func proposeCustomerTime(ctx context.Context, tx pgx.Tx, id string, req domain.P
 	if startAt.Equal(*f.start) {
 		return "", &apierror.ValidationError{Msg: msgProposalIsPlannedStart}
 	}
+	// The end this proposal would give the window (start + the planned length) is held to the
+	// same range every written window is, so a pathological stored length cannot make a later
+	// Accept write a year no date-time of ours has.
+	if y := startAt.Add(length).UTC().Year(); y > plannedYearMax {
+		return "", &apierror.ValidationError{Msg: fmt.Sprintf(
+			"plannedStartOn is too far ahead: with the planned length of %s the proposed window would end after the year %d", fmtPlannedLength(length), plannedYearMax)}
+	}
 	if f.proposed != nil && startAt.Equal(*f.proposed) {
 		if f.confirmation == crConfirmationDisagree {
 			return "", &apierror.ValidationError{Msg: msgProposalWSO2AskedOther}
