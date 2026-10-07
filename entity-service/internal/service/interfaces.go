@@ -1159,6 +1159,11 @@ type IncidentService interface {
 	// ConflictError if the incident is not eligible (wrong business service, not in
 	// progress, or already with the specialist group for this service).
 	HandOffIncidentToSpecialist(ctx context.Context, req domain.HandOffIncidentToSpecialistRequest) (domain.HandOffIncidentToSpecialistResponse, error)
+	// ListSpecialistHandoffTeams returns the sub-teams a handoff of an
+	// incident on serviceID can name, for the handoff dialog's team select:
+	// empty when the service has only one specialist team, so the dialog
+	// offers no choice. An empty serviceID lists every sub-team.
+	ListSpecialistHandoffTeams(ctx context.Context, serviceID string) (domain.SpecialistHandoffTeamsResponse, error)
 }
 
 // ProblemService defines the operations available on the problems entity.

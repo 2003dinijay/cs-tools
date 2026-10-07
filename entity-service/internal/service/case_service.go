@@ -1191,12 +1191,12 @@ func (s *caseService) CreateInternalCaseComment(ctx context.Context, req domain.
 // CreateCaseCommentAs implements CaseService for a caller that already knows
 // the acting email and has no x-user-id-token to resolve one from -- see the
 // CaseService interface's own doc comment on this method. Mirrors
-// AddCaseTagAs/addCaseTagAs: no GetUserByEmail lookup happens here, since
-// the configured M2M service-account email (config.Config.
-// M2MTrustedActorEmails) is not guaranteed to be a provisioned sys_user-
-// equivalent row -- actorEmail is used directly for both created_by and the
-// published event's author name rather than risking a hard failure over a
-// service account that was never expected to exist as a real user.
+// AddCaseTagAs/addCaseTagAs: no GetUserByEmail lookup happens here, since the
+// actorEmail an M2M caller trusted via config.Config.M2MClientIDs claims is
+// not guaranteed to be a provisioned sys_user-equivalent row -- actorEmail is
+// used directly for both created_by and the published event's author name
+// rather than risking a hard failure over a service account that was never
+// expected to exist as a real user.
 func (s *caseService) CreateCaseCommentAs(ctx context.Context, req domain.CreateCaseCommentRequest, actorEmail string) (domain.CreateCaseCommentResponse, error) {
 	return s.createCaseCommentAs(ctx, req, actorEmail, actorEmail, false)
 }
@@ -1228,6 +1228,8 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 	if err != nil {
 		return domain.CreateCaseCommentResponse{}, err
 	}
+
+	s.subscribeCommenterToWatchList(ctx, req.CaseID, actorEmail)
 
 	// Computed once, used by both the SLA-engine hook and the published
 	// event's own IsSupportEngineerResponse flag below -- see
@@ -1336,6 +1338,34 @@ func (s *caseService) completeResponseSLAOnComment(ctx context.Context, caseID s
 		return
 	}
 	s.slaEngine.CompleteResponseClock(ctx, caseID)
+}
+
+// subscribeCommenterToWatchList adds actorEmail's resolved user as a watcher
+// of caseID whenever they aren't one already -- by explicit product
+// decision, a case's watch list is no longer just who was explicitly added
+// to it, it's also whoever has actually commented on it (see
+// fetchCaseWatchers' own doc comment for the other half of that same
+// decision, the synthesized account-stakeholder entries). Scoped to this one
+// case: CaseRepository.AddCaseWatcherIfAbsent only ever touches
+// work_item_watcher rows keyed by this caseID, so commenting on one case
+// never subscribes anyone to any other.
+//
+// Best-effort and silent on failure, same posture as every other
+// comment-creation side effect in this file (completeResponseSLAOnComment,
+// publishCommentAddedEvent): the comment itself has already been written by
+// the time this runs, so a lookup or write failure here must never undo
+// that or fail the request. An actorEmail that doesn't resolve to a real
+// user row (the M2M CreateCaseCommentAs path deliberately has none -- see
+// that method's own doc comment) is skipped the same way
+// isSupportEngineerAuthor already treats it: can't confirm, not an error.
+func (s *caseService) subscribeCommenterToWatchList(ctx context.Context, caseID, actorEmail string) {
+	user, err := s.userRepo.GetUserByEmail(ctx, actorEmail)
+	if err != nil {
+		return
+	}
+	if err := s.repo.AddCaseWatcherIfAbsent(ctx, caseID, user.ID); err != nil {
+		slog.ErrorContext(ctx, "create comment: subscribe commenter to watch list failed", "caseId", caseID)
+	}
 }
 
 // isSupportEngineerAuthor resolves whether actorEmail belongs to a user
@@ -1647,16 +1677,23 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 		}
 	}
 
-	// actorEmail is used only for this update's own activity-feed entry
-	// below -- resolved best-effort, not required, since this branch has
-	// never required an authenticated caller before now (no permission
-	// model exists for Postgres-side case mutations yet -- see
+	// actorEmail/actorID are resolved best-effort, not required, since this
+	// branch has never required an authenticated caller before now (no
+	// permission model exists for Postgres-side case mutations yet -- see
 	// updateCaseAssignee's own doc comment) and must not start rejecting a
 	// caller who omits x-user-id-token just because this data source can
-	// now also log field changes to work_item_activity.
+	// now also log field changes to work_item_activity and stamp who closed
+	// a case. actorID is who the repository stamps onto closed_by_user_id
+	// when this update's own state transitions to closed -- resolved here,
+	// from the caller's token, never taken from the request body (see
+	// CaseRepository.UpdateCase's own interface doc comment).
 	var actorEmail string
+	var actorID *string
 	if actor, err := s.resolveActor(ctx); err == nil {
 		actorEmail = actor.Email
+		if actor.ID != "" {
+			actorID = &actor.ID
+		}
 	}
 
 	// oldSeverity is the case's severity immediately before this update —
@@ -1670,7 +1707,7 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// same row lock as the write that triggers it -- see
 	// recomputeTimeCardsBillable's own doc comment for why. Nothing to call
 	// from here anymore.
-	c, oldSeverity, err := s.repo.UpdateCase(ctx, req)
+	c, oldSeverity, err := s.repo.UpdateCase(ctx, req, actorID)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
@@ -3141,6 +3178,18 @@ func (s *caseService) DeleteCaseAttachment(ctx context.Context, req domain.Delet
 		return domain.DeleteAttachmentResponse{}, err
 	}
 	if err := s.repo.DeleteCaseAttachment(ctx, req.AttachmentID); err != nil {
+		// No Postgres case_attachment row for this id -- same "no Postgres
+		// deployment attachment table yet" gap SearchCaseAttachments already
+		// falls back to ServiceNow for (see that method's own doc comment):
+		// a deployment-referenced attachment has no case_attachment row at
+		// all in dual-write mode (its id never satisfies case_attachment's
+		// hard FK into "case"), so a bare NotFoundError here is just as
+		// likely "this is a deployment attachment, not a missing one" as a
+		// genuinely absent attachment. Try ServiceNow before giving up.
+		var notFound *apierror.NotFoundError
+		if s.snMirror != nil && errors.As(err, &notFound) {
+			return s.snMirror.DeleteCaseAttachment(ctx, req)
+		}
 		return domain.DeleteAttachmentResponse{}, err
 	}
 	return domain.DeleteAttachmentResponse{Message: "Attachment deleted successfully"}, nil
@@ -3337,12 +3386,103 @@ func (s *caseService) SearchTags(ctx context.Context, req domain.SearchTagsReque
 	return s.repo.SearchTags(ctx, req.Filters.SearchQuery, actor.Email, limit)
 }
 
-func (s *caseService) GetCaseFeedback(_ context.Context, _ string) (domain.CaseEmojiFeedback, error) {
-	return domain.CaseEmojiFeedback{}, &apierror.ServiceUnavailableError{Msg: "case feedback is only supported for the ServiceNow data source"}
+// requireInternalCaller rejects anyone whose AccessScope is not Unrestricted
+// -- delegates to the shared RequireInternalCaller (require_internal.go).
+// Backs GetCaseFeedback: a case's submitted feedback (the customer's own
+// satisfaction rating/comment, meant as a one-way signal to WSO2 staff) is
+// never shown back to an external/customer caller, by explicit product
+// decision -- not even to the customer who submitted it, and not even for a
+// case they are themselves a registered contact on. This is the identical
+// "no scope short of internal is safe to hand this out under" reasoning
+// slaStatusService's own requireInternalCaller already documents.
+func (s *caseService) requireInternalCaller(ctx context.Context) error {
+	return RequireInternalCaller(ctx, s.access, "case feedback can only be viewed by internal users")
 }
 
-func (s *caseService) SubmitCaseFeedback(_ context.Context, _ string, _ domain.SubmitCaseFeedbackRequest) (domain.SubmitCaseFeedbackResponse, error) {
-	return domain.SubmitCaseFeedbackResponse{}, &apierror.ServiceUnavailableError{Msg: "case feedback is only supported for the ServiceNow data source"}
+// GetCaseFeedback implements CaseService.
+func (s *caseService) GetCaseFeedback(ctx context.Context, id string) (domain.CaseEmojiFeedback, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.CaseEmojiFeedback{}, err
+	}
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.CaseEmojiFeedback{}, err
+	}
+
+	row, found, err := s.repo.GetCaseFeedback(ctx, id)
+	if err != nil {
+		return domain.CaseEmojiFeedback{}, err
+	}
+	if !found {
+		return domain.CaseEmojiFeedback{}, &apierror.NotFoundError{Msg: "no feedback has been submitted for this case"}
+	}
+
+	// AssessmentID is left at its zero value: this data source has no
+	// assessment-instance concept to populate it from, unlike the
+	// ServiceNow-backed path's own sys_id.
+	return domain.CaseEmojiFeedback{
+		ID: row.ID,
+		Emoji: domain.CaseFeedbackEmojiRef{
+			ID:            row.EmojiID,
+			Name:          row.EmojiName,
+			SelectedImage: row.EmojiSelectedImage,
+		},
+		ChipIDs:           row.ChipIDs,
+		CreatedBy:         row.CreatedBy,
+		CreatedOn:         row.CreatedOn,
+		AdditionalComment: row.AdditionalComment,
+	}, nil
+}
+
+// SubmitCaseFeedback implements CaseService.
+func (s *caseService) SubmitCaseFeedback(ctx context.Context, id string, req domain.SubmitCaseFeedbackRequest) (domain.SubmitCaseFeedbackResponse, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+	if err := validateUUIDs("emojiId", []string{req.EmojiID}); err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+	if err := validateUUIDs("chipIds", req.ChipIDs); err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+
+	// A caller may only submit feedback for a case they actually have access
+	// to -- enforced by CreateCaseFeedback's own existence/state check
+	// (case_feedback_repo.go), which runs under this same request's
+	// identity (stamped onto ctx once, by callerIdentityMiddleware, before
+	// this handler ever ran): work_item's own RLS policy already makes a
+	// case outside the caller's scope invisible to that query, the same
+	// "exists, just not yours -> NotFoundError" posture every by-id case
+	// read already has. Deliberately NOT re-checked here via a second,
+	// separate GetCaseByID call (an earlier revision did this) -- that
+	// would have been a second, much heavier query (GetCaseByID's own
+	// ~15-join case-detail hydration, plus its tags/watchers round trips)
+	// re-proving something RLS already guarantees for free on the one
+	// lightweight query CreateCaseFeedback already runs.
+	actor, err := s.resolveActor(ctx)
+	if err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+
+	created, err := s.repo.CreateCaseFeedback(ctx, id, repository.CreateCaseFeedbackParams{
+		EmojiID:           req.EmojiID,
+		ChipIDs:           req.ChipIDs,
+		AdditionalComment: req.AdditionalComment,
+		SubmittedByUserID: actor.ID,
+		ActorEmail:        actor.Email,
+	})
+	if err != nil {
+		return domain.SubmitCaseFeedbackResponse{}, err
+	}
+
+	return domain.SubmitCaseFeedbackResponse{
+		Message: "Feedback submitted successfully.",
+		Feedback: domain.CaseFeedbackResult{
+			ID:        created.ID,
+			CaseID:    id,
+			CreatedBy: actor.Email,
+			CreatedOn: created.CreatedOn,
+		},
+	}, nil
 }
 
 // GetAttachmentByID implements CaseService for the CSM-native (Postgres) data
@@ -3350,6 +3490,16 @@ func (s *caseService) SubmitCaseFeedback(_ context.Context, _ string, _ domain.S
 // Postgres-sourced attachment, only its storage_key -- see
 // GetCaseAttachmentContent's doc comment for why content must be resolved
 // externally via StorageKey instead.
+//
+// Falls back to ServiceNow on a Postgres NotFoundError when s.snMirror != nil
+// (DATA_SOURCE=postgres-servicenow-dual-write) -- the same "no Postgres
+// deployment attachment table yet" gap SearchCaseAttachments already handles
+// by checking req.ReferenceType up front. This method takes only a bare id,
+// with no reference type to branch on ahead of time, so the Postgres lookup
+// is tried first regardless, and a miss there is resolved against ServiceNow
+// instead of reported as a genuine 404 -- it's at least as likely to be a
+// deployment-referenced attachment (which can only ever live in ServiceNow
+// under this data source) as an actually-missing one.
 func (s *caseService) GetAttachmentByID(ctx context.Context, id string) (domain.AttachmentDetails, error) {
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.AttachmentDetails{}, err
@@ -3357,6 +3507,10 @@ func (s *caseService) GetAttachmentByID(ctx context.Context, id string) (domain.
 
 	a, err := s.repo.GetCaseAttachmentByID(ctx, id)
 	if err != nil {
+		var notFound *apierror.NotFoundError
+		if s.snMirror != nil && errors.As(err, &notFound) {
+			return s.snMirror.GetAttachmentByID(ctx, id)
+		}
 		return domain.AttachmentDetails{}, err
 	}
 

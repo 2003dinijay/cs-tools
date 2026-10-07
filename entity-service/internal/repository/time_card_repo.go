@@ -171,16 +171,26 @@ func scanTimeCardView(row interface{ Scan(...any) error }) (domain.TimeCardView,
 	if err != nil {
 		return domain.TimeCardView{}, err
 	}
-	// time_card_state_enum/time_card_issue_complexity_enum are UPPER_SNAKE_CASE
-	// (migration 0041's most recent revision); domain.TimeCardState's own
-	// values, and every caller-supplied issueComplexity string, are lowercase.
+	// time_card_state_enum is UPPER_SNAKE_CASE (migration 0041's most recent
+	// revision); domain.TimeCardState's own values are lowercase.
 	if state != nil {
 		lower := strings.ToLower(*state)
 		v.State = &lower
 	}
+	// issue_complexity does NOT follow that same lowercase convention on the
+	// wire -- the portal webapp's own IssueComplexity type is ServiceNow's
+	// real "Issue Complexity" choice-list vocabulary ("N/A"/"Low"/"Medium"/
+	// "High", exact case), matched with a strict-case allow-list on read
+	// (KNOWN_ISSUE_COMPLEXITIES in that webapp's useTimeSheets.ts) that maps
+	// anything else to unset rather than guessing. A plain strings.ToLower
+	// here produced "not_applicable"/"low"/"medium"/"high", none of which
+	// ever matched that allow-list -- every Postgres-sourced card's issue
+	// complexity silently read back as unset, confirmed by tracing the
+	// webapp's own read path. issueComplexityFromEnum reverses
+	// normalizeIssueComplexity's own write-side mapping.
 	if issueComplexity != nil {
-		lower := strings.ToLower(*issueComplexity)
-		v.IssueComplexity = &lower
+		mapped := issueComplexityFromEnum(*issueComplexity)
+		v.IssueComplexity = &mapped
 	}
 
 	v.TimeAnalyzing = analyzing
@@ -188,7 +198,7 @@ func scanTimeCardView(row interface{ Scan(...any) error }) (domain.TimeCardView,
 	v.TimeReproducingDebugging = reproducing
 	v.TimeProvidingSolution = providing
 	v.TimePatching = patching
-	v.TotalTime = float64(analyzing+settingUp+reproducing+providing+patching) / 60.0
+	v.TotalTime = float64(analyzing + settingUp + reproducing + providing + patching)
 	if isBillable != nil {
 		v.HasBillable = *isBillable
 	}
@@ -486,10 +496,10 @@ func (r *timeCardRepo) SearchCaseTimeCards(ctx context.Context, req domain.Searc
 					CreatedBy: &createdBy,
 					UpdatedBy: &updatedBy,
 				},
-				TotalTime:   float64(totalMinutes) / 60.0,
+				TotalTime:   float64(totalMinutes),
 				TotalCount:  totalCount,
-				Billable:    domain.CaseTimeCardBillingInfo{TotalTime: float64(billableMinutes) / 60.0, Count: billableCount},
-				NonBillable: domain.CaseTimeCardBillingInfo{TotalTime: float64(nonBillableMinutes) / 60.0, Count: nonBillableCount},
+				Billable:    domain.CaseTimeCardBillingInfo{TotalTime: float64(billableMinutes), Count: billableCount},
+				NonBillable: domain.CaseTimeCardBillingInfo{TotalTime: float64(nonBillableMinutes), Count: nonBillableCount},
 			}
 			if projectID != nil {
 				name := ""
@@ -512,6 +522,51 @@ func (r *timeCardRepo) SearchCaseTimeCards(ctx context.Context, req domain.Searc
 	}
 
 	return summaries, total, nil
+}
+
+// normalizeIssueComplexity upper-cases a caller-supplied issue-complexity
+// value, the same as every other write here already did, but first maps
+// ServiceNow's own real "Issue Complexity" choice-list label "N/A" to
+// time_card_issue_complexity_enum's real label "NOT_APPLICABLE" -- the two
+// spellings have never agreed. The portal webapp's IssueComplexity type is
+// deliberately "N/A"/"Low"/"Medium"/"High" (ServiceNow's own vocabulary,
+// shared by both data sources on one contract), and the ServiceNow-backed
+// write path forwards that string unchanged -- only Postgres has ever had an
+// enum of its own to disagree with it. Confirmed live: every time card
+// logged through the portal with the default "N/A" complexity against this
+// data source failed the INSERT outright with "invalid input value for enum
+// time_card_issue_complexity_enum" (SQLSTATE 22P02), since "N/A" ignored a
+// Latin cast -- not a casing problem strings.ToUpper could ever fix on its
+// own. "Low"/"Medium"/"High" already match the enum's own labels once
+// upper-cased and pass through this helper unchanged.
+func normalizeIssueComplexity(raw string) string {
+	if strings.EqualFold(raw, "N/A") {
+		return "NOT_APPLICABLE"
+	}
+	return strings.ToUpper(raw)
+}
+
+// issueComplexityFromEnum reverses normalizeIssueComplexity: maps a stored
+// time_card_issue_complexity_enum label back to the exact casing the portal
+// webapp's own IssueComplexity type expects. Falls back to the raw stored
+// value, unmapped, for anything unrecognized (a future enum label added here
+// without a matching case) -- the webapp's own strict-case allow-list
+// (KNOWN_ISSUE_COMPLEXITIES in useTimeSheets.ts) already treats an unmapped
+// value as unset rather than guessing, so there's nothing better to do with
+// it here than pass it through unchanged.
+func issueComplexityFromEnum(stored string) string {
+	switch strings.ToUpper(stored) {
+	case "NOT_APPLICABLE":
+		return "N/A"
+	case "LOW":
+		return "Low"
+	case "MEDIUM":
+		return "Medium"
+	case "HIGH":
+		return "High"
+	default:
+		return stored
+	}
 }
 
 // CreateTimeCard implements TimeCardRepository.
@@ -592,8 +647,8 @@ func createTimeCardTx(ctx context.Context, tx pgx.Tx, req domain.CreateTimeCardR
 
 	var issueComplexity *string
 	if req.IssueComplexity != nil {
-		upper := strings.ToUpper(*req.IssueComplexity)
-		issueComplexity = &upper
+		normalized := normalizeIssueComplexity(*req.IssueComplexity)
+		issueComplexity = &normalized
 	}
 
 	var id string
@@ -658,7 +713,7 @@ func (r *timeCardRepo) UpdateTimeCardFields(ctx context.Context, req domain.Upda
 		add("is_billable = $%d", *req.IsBillable)
 	}
 	if req.IssueComplexity != nil {
-		add("issue_complexity = $%d::text::time_card_issue_complexity_enum", strings.ToUpper(*req.IssueComplexity))
+		add("issue_complexity = $%d::text::time_card_issue_complexity_enum", normalizeIssueComplexity(*req.IssueComplexity))
 	}
 	if req.WorkLogComment != nil {
 		add("work_log_comment = $%d", *req.WorkLogComment)

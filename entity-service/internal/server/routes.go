@@ -19,9 +19,9 @@ package server
 import (
 	"context"
 	"log"
+	"log/slog"
 	"net/http"
 	"sync"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
@@ -505,7 +505,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			ClientID:     cfg.ServiceNowIntegrationServiceClientID,
 			ClientSecret: cfg.ServiceNowIntegrationServiceClientSecret,
 			Scopes:       cfg.ServiceNowIntegrationServiceScopes,
-		})
+		}, cfg.UpstreamClientTimeout)
 	}
 
 	var snAccountHandler *handler.SNAccountHandler
@@ -870,7 +870,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// NewCaseService has no such parameter, hence this separate step.
 		activeCaseSvc = service.WithCSEngineerRole(activeCaseSvc, cfg.CSEngineerRole)
 	}
-	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MTrustedActorEmails)
+	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MClientIDs)
 	if db != nil {
 		announcementRequestHandler = handler.NewAnnouncementRequestHandler(
 			service.NewAnnouncementRequestService(repository.NewAnnouncementRequestRepository(db), activeCaseSvc, accessSvc),
@@ -891,7 +891,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if caseAttachmentOverrideSvc != nil {
 		activeAttachmentSvc = caseAttachmentOverrideSvc
 	}
-	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc, cfg.M2MTrustedActorEmails)
+	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc, cfg.M2MClientIDs)
 
 	// customer_call (migration 0073) backs call requests on the Postgres
 	// data source, so these routes are registered for both data sources.
@@ -1094,6 +1094,31 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// (what the call-escalation ladders start from) and takes work notes, with no ServiceNow behind it.
 		activeIncidentSvc = service.NewIncidentServiceWithPublisher(incidentRepo, userRepo, eventPublisher)
 	}
+	// Which Special Ops team a handoff goes to, and which GitHub repository
+	// its internal issue goes to, is configuration. A value that does not
+	// parse would silently offer no handoff anywhere; refuse to start instead.
+	handoffConfig, handoffErr := service.ParseSpecialistHandoffConfig(cfg.SpecialistHandoffConfig)
+	if handoffErr != nil {
+		log.Fatalf("invalid specialist handoff configuration: %v", handoffErr)
+	}
+	activeIncidentSvc = service.WithSpecialistHandoffConfig(activeIncidentSvc, handoffConfig)
+	// One GitHub client per credential the products name, independent of the
+	// change-request sync. A credential with no token is logged, not fatal:
+	// its handoffs still go through and report that no issue was filed.
+	handoffToken, tokenErr := service.ParseSpecialistHandoffGithubTokens(cfg.SpecialistHandoffGithubTokens, cfg.GithubToken)
+	if tokenErr != nil {
+		log.Fatalf("invalid specialist handoff GitHub tokens: %v", tokenErr)
+	}
+	handoffIssueClients := service.SpecialistHandoffIssueClients{}
+	for _, credential := range handoffConfig.Credentials() {
+		token := handoffToken(credential)
+		if token == "" {
+			slog.Warn("specialist handoff: no GitHub token for credential; its handoffs will file no issue", "credential", credential)
+			continue
+		}
+		handoffIssueClients[credential] = github.NewClient(github.Config{BaseURL: cfg.GithubBaseURL, Token: token})
+	}
+	activeIncidentSvc = service.WithHandoffIssueCreators(activeIncidentSvc, handoffIssueClients)
 	incidentHandler := handler.NewIncidentHandler(activeIncidentSvc)
 
 	problemRepo := repository.NewProblemRepository(repository.NewScoped(db))
@@ -1115,6 +1140,13 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// mirror, same as incident's own dual-write branch above.
 		snProblemMirrorSvc := service.NewServiceNowProblemService(serviceNowIntegrationServiceClient)
 		activeProblemSvc = service.NewProblemServiceWithSNMirror(problemRepo, snProblemMirrorSvc, snWritebackDispatcher)
+		// Resolving an incident as Solved (Workaround) creates its problem in
+		// both stores, in the resolve request (workaround_problem.go); the
+		// background post-resolution flow skips it in this mode (main.go).
+		// Set in place, so incidentHandler above already has it.
+		if creator, ok := activeProblemSvc.(service.WorkaroundProblemCreator); ok {
+			activeIncidentSvc = service.WithWorkaroundProblemCreator(activeIncidentSvc, creator)
+		}
 	default:
 		activeProblemSvc = service.NewProblemService(problemRepo)
 	}
@@ -1698,6 +1730,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /incidents/aggregate", internalOnly(accessSvc, incidentHandler.AggregateIncidents))
 	mux.HandleFunc("POST /incidents/{id}/activities/search", internalOnly(accessSvc, incidentHandler.SearchIncidentActivities))
 	mux.HandleFunc("POST /incidents/{id}/specialist-handoffs", internalOnly(accessSvc, incidentHandler.HandOffIncidentToSpecialist))
+	mux.HandleFunc("GET /specialist-handoff-teams", internalOnly(accessSvc, incidentHandler.ListSpecialistHandoffTeams))
 
 	// Postgres-backed, and deliberately separate from outageHandler above:
 	// that one is the ServiceNow-backed outage entity API, this is only the
@@ -1845,8 +1878,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 						// Timeout wraps the identity lookup too: for an external caller
 						// with no cached identity, ResolveScope runs two database
 						// queries on the request context, and they must share the
-						// same 30s deadline as the handler instead of running unbounded.
-						middleware.Timeout(30 * time.Second)(
+						// same deadline as the handler instead of running unbounded.
+						middleware.Timeout(cfg.RequestTimeout)(
 							callerIdentityMiddleware(accessSvc)(mux),
 						),
 					),

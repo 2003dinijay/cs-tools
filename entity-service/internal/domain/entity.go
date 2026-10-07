@@ -1875,12 +1875,18 @@ type DeploymentView struct {
 // SearchDeploymentsRequest is the input for a deployment search operation.
 // All filter fields are optional. ProjectIDs scopes results to specific projects;
 // DeploymentTypes filters by deployment type; SearchQuery is matched
-// case-insensitively against name.
+// case-insensitively against name. IDs matches the deployment's own id
+// directly -- added so a caller holding only a deployment id (no project
+// context) can still resolve it, e.g. backend-v2's attachment authorization
+// check for a deployment-referenced attachment. Only applied on the
+// Postgres data source today (deploymentRepo.SearchDeployments); the
+// ServiceNow-backed search (snDeploymentService) does not support it.
 type SearchDeploymentsRequest struct {
 	Pagination      Pagination       `json:"pagination"`
 	SearchQuery     string           `json:"searchQuery"`
 	ProjectIDs      []string         `json:"projectIds"`
 	DeploymentTypes []DeploymentType `json:"deploymentTypes"`
+	IDs             []string         `json:"ids"`
 }
 
 // SearchDeploymentsResponse is the paginated result of a deployment search.
@@ -3213,20 +3219,26 @@ type WatchListUser struct {
 	UserName string `json:"userName"`
 	Name     string `json:"name,omitempty"`
 	Email    string `json:"email,omitempty"`
-	// Locked is true when this persisted watcher also happens to currently
-	// hold one of the case's project's account's four named stakeholder
-	// roles (technical owner, secondary technical owner, account manager,
-	// renewal account manager -- CaseRepository.AccountDefaultWatcherIDs).
-	// These four are no longer auto-added to the watch list at all (see
-	// addRequestedWatchers' own doc comment) -- they're resolved fresh from
-	// the account row and emailed directly, independent of work_item_watcher
-	// -- so Locked now only ever fires for someone who was ALSO explicitly
-	// added as a watcher for an unrelated reason and happens to hold one of
-	// these roles too; it carries no "cannot be removed" guarantee any more
-	// (updateCaseWatchList applies no floor at all). Kept purely as display
-	// information, not as an enforcement signal. Postgres-data-source only --
-	// this concept has no ServiceNow-side equivalent, so a ServiceNow-backed
-	// watcher is always Locked: false.
+	// Locked is true for an entry fetchCaseWatchers synthesized rather than
+	// read from a real work_item_watcher row: one of the case's project's
+	// account's five named stakeholders (technical owner, secondary
+	// technical owner, account manager, renewal account manager, and
+	// customer success manager -- a strictly larger set than
+	// AccountDefaultWatcherEmails' own four, which deliberately excludes the
+	// CSM from the default email audience; that is a decision about who
+	// gets emailed, not about who the account's stakeholders are). These
+	// five are never auto-persisted into work_item_watcher (see
+	// addRequestedWatchers' own doc comment) -- fetchCaseWatchers now adds
+	// them to every read, always, specifically so a caller can see every
+	// stakeholder associated with the case -- and this IS an enforcement
+	// signal: CaseRepository.SetCaseWatchList has no way to submit one of
+	// these five as an explicit watcher, so a Locked entry can never be
+	// removed by an add/remove request, only by the account's own
+	// stakeholder reassignment changing who resolves into this slot. A user
+	// who is both a real persisted watcher and one of the five stakeholders
+	// appears once, as the Locked copy. Postgres-data-source only -- this concept has no
+	// ServiceNow-side equivalent, so a ServiceNow-backed watcher is always
+	// Locked: false.
 	Locked bool `json:"locked"`
 	// User is the canonical user reference for this watcher, a sibling of the
 	// flat id/userName/name/email fields. Its id is always null: a watch-list
@@ -3354,8 +3366,8 @@ type CreateCaseCommentRequest struct {
 	Content   string      `json:"content"`
 	// ActorEmail is set only by an M2M caller that has no x-user-id-token to
 	// resolve an acting user from (e.g. UMT via csm-integration-service).
-	// The handler checks it against a configured allowlist of trusted
-	// service-account emails (config.Config.M2MTrustedActorEmails) before
+	// The handler checks the caller's own x-jwt-assertion client id against
+	// the trusted M2M client set (config.Config.M2MClientIDs) before
 	// honoring it -- an arbitrary caller-supplied value is never trusted
 	// as-is, since that would let any caller claim to be any user. Mutually
 	// exclusive with a real x-user-id-token on the same request.
@@ -3370,8 +3382,8 @@ type AddCaseTagRequest struct {
 	Label  string `json:"label"`
 	// ActorEmail is set only by an M2M caller that has no x-user-id-token to
 	// resolve an acting user from (e.g. UMT via csm-integration-service).
-	// The handler checks it against a configured allowlist of trusted
-	// service-account emails (config.Config.M2MTrustedActorEmails) before
+	// The handler checks the caller's own x-jwt-assertion client id against
+	// the trusted M2M client set (config.Config.M2MClientIDs) before
 	// honoring it -- an arbitrary caller-supplied value is never trusted
 	// as-is, since that would let any caller claim to be any user. Mutually
 	// exclusive with a real x-user-id-token on the same request.
@@ -5979,6 +5991,13 @@ type IncidentView struct {
 	// source recomputes it at read time, so a handoff performed through its own native UI
 	// reads identically to one performed through HandOffIncidentToSpecialist.
 	SpecialistHandoff *IncidentSpecialistHandoffSummary `json:"specialistHandoff"`
+	// CanHandOffToSpecialist is whether the "Escalate to specialist team"
+	// action applies right now -- ServiceNow's canEscalateToSpecialOps, which
+	// decides when the form loads whether to show the button: the incident
+	// is In Progress, its service has a default specialist route, and it is
+	// not already with that route's group. Nil when the data source does not
+	// say (ServiceNow), so a caller keeps offering the action.
+	CanHandOffToSpecialist *bool `json:"canHandOffToSpecialist,omitempty"`
 }
 
 // IncidentSpecialistHandoffReasonCode is why an incident could not be resolved through the
@@ -6013,6 +6032,18 @@ type HandOffIncidentToSpecialistRequest struct {
 	// CreateGithubIssue defaults to true upstream when omitted; set false to suppress the
 	// internal issue, e.g. on a re-handoff or when one already exists.
 	CreateGithubIssue *bool `json:"createGithubIssue,omitempty"`
+}
+
+// SpecialistHandoffTeam is a sub-team a specialist handoff can name: Key is
+// sent as HandOffIncidentToSpecialistRequest.EscalationTeam, Label is shown.
+type SpecialistHandoffTeam struct {
+	Key   string `json:"key"`
+	Label string `json:"label"`
+}
+
+// SpecialistHandoffTeamsResponse is the response for GET /specialist-handoff-teams.
+type SpecialistHandoffTeamsResponse struct {
+	Teams []SpecialistHandoffTeam `json:"teams"`
 }
 
 // IncidentSpecialistHandoffTask is the runbook-gap task opened for the specialist team as
@@ -6165,6 +6196,7 @@ type ProblemDetail struct {
 	LinkedIncidents     []CaseNumberRef `json:"linkedIncidents"`
 	LinkedChangeRequest *CaseNumberRef  `json:"linkedChangeRequest"`
 	AssignedTo          *EntityRef      `json:"assignedTo"`
+	AssignmentGroup     *EntityRef      `json:"assignmentGroup"`
 	ResolutionCode      *string         `json:"resolutionCode"`
 	CauseNotes          *string         `json:"causeNotes"`
 	FixNotes            *string         `json:"fixNotes"`

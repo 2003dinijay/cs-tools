@@ -36,8 +36,18 @@ type stubProblemRepo struct {
 	createProblem               func(ctx context.Context, req domain.CreateProblemRequest, createdBy string) (domain.ProblemDetail, error)
 	createProblemFromServiceNow func(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string) (domain.ProblemDetail, error)
 	getProblem                  func(ctx context.Context, id string) (domain.ProblemDetail, error)
-	updateProblemFields         func(ctx context.Context, req domain.UpdateProblemRequest, actorEmail string) (time.Time, error)
-	applyProblemTransition      func(ctx context.Context, req domain.UpdateProblemRequest, t repository.ProblemTransition, enforceFrom bool, actorEmail string) (time.Time, error)
+	// lastCreatePriority is what CreateProblemFromServiceNow was given.
+	lastCreatePriority     string
+	updateProblemFields    func(ctx context.Context, req domain.UpdateProblemRequest, actorEmail string) (time.Time, error)
+	applyProblemTransition func(ctx context.Context, req domain.UpdateProblemRequest, t repository.ProblemTransition, enforceFrom bool, actorEmail string) (time.Time, error)
+	linkWorkaroundProblem  func(ctx context.Context, problemID, incidentID string, groupID *string, actorEmail string) (*string, error)
+}
+
+func (s *stubProblemRepo) LinkWorkaroundProblem(ctx context.Context, problemID, incidentID string, groupID *string, actorEmail string) (*string, error) {
+	if s.linkWorkaroundProblem != nil {
+		return s.linkWorkaroundProblem(ctx, problemID, incidentID, groupID, actorEmail)
+	}
+	panic("LinkWorkaroundProblem called unexpectedly")
 }
 
 func (s *stubProblemRepo) ApplyProblemTransition(ctx context.Context, req domain.UpdateProblemRequest, t repository.ProblemTransition, enforceFrom bool, actorEmail string) (time.Time, error) {
@@ -47,10 +57,10 @@ func (s *stubProblemRepo) ApplyProblemTransition(ctx context.Context, req domain
 	panic("ApplyProblemTransition called unexpectedly")
 }
 
-func (s *stubProblemRepo) SearchProblems(context.Context, domain.SearchProblemsRequest, []string, []string) ([]domain.SearchProblemView, int, error) {
+func (s *stubProblemRepo) SearchProblems(context.Context, domain.SearchProblemsRequest, []string, []string, []string) ([]domain.SearchProblemView, int, error) {
 	panic("not implemented")
 }
-func (s *stubProblemRepo) AggregateProblems(context.Context, domain.SearchProblemsRequest, []string, []string, string, int) (domain.AggregateResponse, error) {
+func (s *stubProblemRepo) AggregateProblems(context.Context, domain.SearchProblemsRequest, []string, []string, []string, string, int) (domain.AggregateResponse, error) {
 	panic("not implemented")
 }
 func (s *stubProblemRepo) GetProblem(ctx context.Context, id string) (domain.ProblemDetail, error) {
@@ -59,13 +69,14 @@ func (s *stubProblemRepo) GetProblem(ctx context.Context, id string) (domain.Pro
 	}
 	panic("not implemented")
 }
-func (s *stubProblemRepo) CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string) (domain.ProblemDetail, error) {
+func (s *stubProblemRepo) CreateProblemFromServiceNow(ctx context.Context, req domain.CreateProblemRequest, id, number, createdBy string, state *string, priority string) (domain.ProblemDetail, error) {
+	s.lastCreatePriority = priority
 	if s.createProblemFromServiceNow != nil {
 		return s.createProblemFromServiceNow(ctx, req, id, number, createdBy, state)
 	}
 	panic("CreateProblemFromServiceNow called unexpectedly: Postgres must stay untouched when ServiceNow never accepts the problem")
 }
-func (s *stubProblemRepo) CreateProblem(ctx context.Context, req domain.CreateProblemRequest, createdBy string) (domain.ProblemDetail, error) {
+func (s *stubProblemRepo) CreateProblem(ctx context.Context, req domain.CreateProblemRequest, createdBy string, _ repository.ProblemPriorityFields) (domain.ProblemDetail, error) {
 	if s.createProblem != nil {
 		return s.createProblem(ctx, req, createdBy)
 	}
