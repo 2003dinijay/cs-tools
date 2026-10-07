@@ -323,7 +323,7 @@ func TestNobodyToAskNeedsNoQueryWhenThereIsNothingToJudge(t *testing.T) {
 	if err := requireSomebodyToAsk(context.Background(), nil, "id", &blank, true, false); err != nil {
 		t.Errorf("a blank project: %v", err)
 	}
-	if err := checkRequestApprovalCanAsk(context.Background(), nil, "id", "ASSESS", true, true, &proj); err != nil {
+	if err := checkRequestApprovalCanAsk(context.Background(), nil, "id", "ASSESS", true, true, &proj, nil); err != nil {
 		t.Errorf("a resent Request Approval beyond New: %v", err)
 	}
 	if err := checkTickedBoxCanBeAsked(context.Background(), nil, "id", changeRequestGateSnapshot{state: "ASSESS", approvalRequired: true, projectID: &proj}, boolPtr(true), nil); err != nil {
@@ -334,8 +334,13 @@ func TestNobodyToAskNeedsNoQueryWhenThereIsNothingToJudge(t *testing.T) {
 func TestChangeRequestPatchNeedsGate(t *testing.T) {
 	s, b, l := "x", true, []string{}
 	state := domain.ChangeRequestStateAssess
+	typ := domain.ChangeRequestTypeNormal
+	rb := "u"
+	rbp := &rb
+	requestedBy := rbp
 	for name, req := range map[string]domain.PatchChangeRequestRequest{
 		"state": {State: &state}, "projectId": {ProjectID: &s}, "approval box": {CustomerApprovalRequired: &b}, "review box": {CustomerReviewRequired: &b},
+		"type": {Type: &typ}, "requestedById": {RequestedByID: &requestedBy},
 		"deploymentIds": {DeploymentIDs: &l}, "deploymentProductIds": {DeploymentProductIDs: &l}, "deploymentId": {DeploymentID: &s}, "deployedProductId": {DeployedProductID: &s},
 	} {
 		if !changeRequestPatchNeedsGate(req) {
@@ -347,6 +352,75 @@ func TestChangeRequestPatchNeedsGate(t *testing.T) {
 	} {
 		if changeRequestPatchNeedsGate(req) {
 			t.Errorf("a PATCH carrying only %s takes the work_item lock for nothing", name)
+		}
+	}
+}
+
+// The change TYPE is locked by state like the project: free in New (and for a NULL state), a different
+// type is a 400 in every state after it, the stored one again is a no-op, and a type with no change_model
+// label is never the stored one.
+func TestCheckChangeTypeEdit(t *testing.T) {
+	normal, standard, emergency := domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard, domain.ChangeRequestTypeEmergency
+	unsupported := domain.ChangeRequestType("model")
+	for _, state := range []string{"", "NEW", "ASSESS", "AUTHORIZE", "CUSTOMER_APPROVAL", "SCHEDULED", "IMPLEMENT", "REVIEW", "CUSTOMER_REVIEW", "CLOSED", "CANCELED", "ROLLBACK"} {
+		snap := changeRequestGateSnapshot{state: state, model: "NORMAL"}
+		creation := state == "" || state == "NEW"
+		// Nothing asked for: never judged.
+		if err := checkChangeTypeEdit(snap, nil); err != nil {
+			t.Errorf("%q: no type in the request: %v", state, err)
+		}
+		// The stored type again: always accepted.
+		if err := checkChangeTypeEdit(snap, &normal); err != nil {
+			t.Errorf("%q: the stored type again: %v", state, err)
+		}
+		for _, other := range []*domain.ChangeRequestType{&standard, &emergency, &unsupported} {
+			err := checkChangeTypeEdit(snap, other)
+			if creation && err != nil {
+				t.Errorf("%q: another type in the creation phase: %v", state, err)
+			}
+			if !creation && err == nil {
+				t.Errorf("%q: %s was accepted after Request Approval", state, *other)
+			}
+			if !creation && err != nil && err.Error() != changeTypeFrozenMsg(state) {
+				t.Errorf("%q: message %q, want %q", state, err.Error(), changeTypeFrozenMsg(state))
+			}
+		}
+	}
+	// A stored model that is not known (a synced legacy label) is never the requested type.
+	if err := checkChangeTypeEdit(changeRequestGateSnapshot{state: "SCHEDULED", model: ""}, &normal); err == nil {
+		t.Error("a change with no stored model accepted a type after Request Approval")
+	}
+}
+
+// Which customer gates are still ahead of (or being waited on by) a change, per state and boxes.
+func TestCustomerGatesAhead(t *testing.T) {
+	type gates struct{ approval, review bool }
+	for state, want := range map[string]gates{
+		"":                  {true, true},
+		"NEW":               {true, true},
+		"ASSESS":            {true, true},
+		"AUTHORIZE":         {true, true},
+		"CUSTOMER_APPROVAL": {true, true}, // the approval is being asked now
+		"SCHEDULED":         {false, true},
+		"IMPLEMENT":         {false, true},
+		"REVIEW":            {false, true},
+		"CUSTOMER_REVIEW":   {false, true}, // the review is being asked now
+		"CLOSED":            {false, false},
+		"CANCELED":          {false, false},
+		"ROLLBACK":          {false, false},
+	} {
+		if a, r := customerGatesAhead(state, true, true); a != want.approval || r != want.review {
+			t.Errorf("%q with both boxes: approval %v review %v, want %v / %v", state, a, r, want.approval, want.review)
+		}
+		// A box that is not ticked is never a gate.
+		if a, r := customerGatesAhead(state, false, false); a || r {
+			t.Errorf("%q with no box: approval %v review %v, want none", state, a, r)
+		}
+		if a, _ := customerGatesAhead(state, false, true); a {
+			t.Errorf("%q: the approval gate with only the review box ticked", state)
+		}
+		if _, r := customerGatesAhead(state, true, false); r {
+			t.Errorf("%q: the review gate with only the approval box ticked", state)
 		}
 	}
 }

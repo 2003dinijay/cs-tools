@@ -350,6 +350,16 @@ func approvalStageInfo(ctx context.Context, q crQuerier, workItemID, stageID str
 // who raised the change here. An unreadable/missing change request yields an
 // empty set, not an error.
 func changeRequestCreatorUserIDs(ctx context.Context, q crQuerier, workItemID string) (map[string]bool, error) {
+	return changeRequestCreatorUserIDsWith(ctx, q, workItemID, nil)
+}
+
+// changeRequestCreatorUserIDsWith is changeRequestCreatorUserIDs judged AS IF a
+// PATCH's own requestedById had already been written: a non-nil requestedBy (the
+// request's field, a pointer to pointer exactly like domain.PatchChangeRequestRequest's)
+// replaces the stored requested_by_user_id -- with nobody when it clears the field --
+// while the creator named by work_item.created_by stays. It is how the nobody-to-ask
+// refusal judges a request that changes the requester in the same PATCH.
+func changeRequestCreatorUserIDsWith(ctx context.Context, q crQuerier, workItemID string, requestedByOverride **string) (map[string]bool, error) {
 	ids := map[string]bool{}
 	var requestedBy, createdBy *string
 	err := q.QueryRow(ctx, `
@@ -362,6 +372,9 @@ func changeRequestCreatorUserIDs(ctx context.Context, q crQuerier, workItemID st
 			return ids, nil
 		}
 		return nil, fmt.Errorf("read change request creator: %w", err)
+	}
+	if requestedByOverride != nil {
+		requestedBy = *requestedByOverride
 	}
 	if requestedBy != nil && *requestedBy != "" {
 		ids[strings.ToLower(*requestedBy)] = true
@@ -1093,6 +1106,14 @@ func anyContactToAsk(members []string, creatorIDs map[string]bool) bool {
 // what provisionCustomerStage reads. Nothing is written. A blank project has
 // nobody (the caller says that in its own words).
 func customerGroupCanBeAsked(ctx context.Context, q crQuerier, workItemID, projectID string) (bool, error) {
+	return customerGroupCanBeAskedWith(ctx, q, workItemID, projectID, nil)
+}
+
+// customerGroupCanBeAskedWith is customerGroupCanBeAsked with the creators judged as
+// if a PATCH's own requestedById were already written (changeRequestCreatorUserIDsWith):
+// the refusal of a request that changes the requester must predict the provisioning
+// that follows the write, not the one before it.
+func customerGroupCanBeAskedWith(ctx context.Context, q crQuerier, workItemID, projectID string, requestedBy **string) (bool, error) {
 	if strings.TrimSpace(projectID) == "" {
 		return false, nil
 	}
@@ -1103,7 +1124,7 @@ func customerGroupCanBeAsked(ctx context.Context, q crQuerier, workItemID, proje
 	if len(members) == 0 {
 		return false, nil
 	}
-	creatorIDs, err := changeRequestCreatorUserIDs(ctx, q, workItemID)
+	creatorIDs, err := changeRequestCreatorUserIDsWith(ctx, q, workItemID, requestedBy)
 	if err != nil {
 		return false, err
 	}

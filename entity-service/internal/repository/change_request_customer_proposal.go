@@ -770,7 +770,7 @@ func planStaffTimeResponse(ctx context.Context, tx pgx.Tx, id string, req domain
 		if err := checkRescheduleWindow(ctx, tx, id, req.PlannedStartOn, req.PlannedEndOn); err != nil {
 			return timeResponse{}, err
 		}
-		if err := requireSomebodyToAskForWindow(ctx, tx, id, snap); err != nil {
+		if err := requireSomebodyToAskForWindow(ctx, tx, id, snap, req.RequestedByID); err != nil {
 			return timeResponse{}, err
 		}
 		return timeResponse{asksAgain: true}, nil
@@ -802,7 +802,7 @@ func planStaffTimeResponse(ctx context.Context, tx pgx.Tx, id string, req domain
 		// Re-stating the planned window is "keep our time": the same decline.
 		return timeResponse{disagree: true}, nil
 	}
-	if err := requireSomebodyToAskForWindow(ctx, tx, id, snap); err != nil {
+	if err := requireSomebodyToAskForWindow(ctx, tx, id, snap, req.RequestedByID); err != nil {
 		return timeResponse{}, err
 	}
 	return timeResponse{disagree: true, asksAgain: true}, nil
@@ -813,8 +813,8 @@ func planStaffTimeResponse(ctx context.Context, tx pgx.Tx, id string, req domain
 // applies (requireSomebodyToAsk, customerGroupCanBeAsked), for the customer approval.
 // A change in Customer Approval always needs the customer's approval, whatever an older
 // row's box says.
-func requireSomebodyToAskForWindow(ctx context.Context, q crQuerier, id string, snap changeRequestGateSnapshot) error {
-	return requireSomebodyToAsk(ctx, q, id, snap.projectID, true, false)
+func requireSomebodyToAskForWindow(ctx context.Context, q crQuerier, id string, snap changeRequestGateSnapshot, requestedBy **string) error {
+	return requireSomebodyToAskWith(ctx, q, id, snap.projectID, true, false, requestedBy)
 }
 
 // windowFacts is a staff window judged against the stored one (judgeStaffWindow).

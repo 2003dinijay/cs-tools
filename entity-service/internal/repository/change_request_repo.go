@@ -1294,6 +1294,12 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		if err := checkTickedBoxCanBeAsked(ctx, tx, id, gates, req.CustomerApprovalRequired, req.CustomerReviewRequired); err != nil {
 			return "", err
 		}
+		// A new requester after Request Approval is never one more person to ask
+		// about a customer gate still ahead: judged with the request's own
+		// requestedById in place of the stored one (rule 4c).
+		if err := checkRequestedByLeavesSomebodyToAsk(ctx, tx, id, gates, req); err != nil {
+			return "", err
+		}
 	}
 	linkPlan, err := planChangeRequestLinks(ctx, tx, id, req, gates)
 	if err != nil {
@@ -1585,7 +1591,7 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 			// registered contacts the customer stage would ask (the same test
 			// provisionCustomerStage applies), else the change would reach Customer
 			// Approval / Customer Review with nobody to answer.
-			if err := checkRequestApprovalCanAsk(ctx, tx, id, gates.state, approvalRequired, reviewRequired, effectiveProject); err != nil {
+			if err := checkRequestApprovalCanAsk(ctx, tx, id, gates.state, approvalRequired, reviewRequired, effectiveProject, req.RequestedByID); err != nil {
 				return "", err
 			}
 			effectiveState = &dest
