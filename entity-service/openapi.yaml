@@ -18401,7 +18401,9 @@ components:
           items:
             type: string
             format: uuid
-          description: Filter by the parent case's assigned user(s).
+          description: >-
+            Filter by the parent case's assigned user(s). On the Postgres data source a call
+            request whose own assignee is one of them also matches.
         states:
           type: array
           items:
@@ -18436,7 +18438,9 @@ components:
           items:
             type: string
             format: uuid
-          description: Filter by the parent case's assigned team(s).
+          description: >-
+            Filter by the parent case's team. On the Postgres data source this is the case's
+            account CRE team (account.cre_team_id); on ServiceNow it is the case's assignment team.
 
     SearchAllCallRequestsRequest:
       type: object

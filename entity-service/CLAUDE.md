@@ -5735,14 +5735,16 @@ requirement. TODO: make unit strict again once `product.unit` is populated.
 
 ### Call requests (`customer_call`) -- `call_request_repo.go`/`call_request_service.go`
 
-**Per-caller scoping is not enforced here yet.** Every route's tokens are now
-validated (see "Token validation and caller-scoped access" above), but call
-requests aren't one of the operations `AccessService` is wired into (see that
-section's "Not yet wired" list) -- a validated caller can read/write any
-call request regardless of project access. The `x-user-id-token` is read
-only to attribute writes (`created_by`/`updated_by`, `opened_by_id`), not to
-authorize them. Extending `AccessService` here is the same follow-up work
-called out there, not done in this pass.
+**Per-caller scoping is enforced by Postgres row-level security, not by Go.**
+Migration 0143 puts `FORCE ROW LEVEL SECURITY` on `customer_call`: a row is
+visible to an internal caller, or to a caller who is a registered member of its
+parent case's project (`is_project_member(work_item.project_id)`), so a call with
+no parent case is visible to internal callers only. Both searches therefore apply
+no project filter of their own, and any filter below is ANDed on top of what RLS
+allows -- a filter can narrow a caller's view, never widen it. Call requests are
+still not one of the operations `AccessService` is wired into (see that
+section's "Not yet wired" list), and the `x-user-id-token` is read only to
+attribute writes (`created_by`/`updated_by`, `opened_by_id`).
 
 All four `CallRequestService` methods are implemented. `state` maps to
 `customer_call_state_enum` by upper/lower-casing (all eight labels match
@@ -5783,13 +5785,19 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   `assignedUserIds` matches `work_item.assigned_to_id` (OR'd with the call's
   own `customer_call.assigned_to_id`, which is only set once an engineer
   schedules the call -- matching only that column left every
-  `pending_on_wso2` call out of "My Call Requests", #3314);
+  `pending_on_wso2` call out of "My Call Requests", digiops-cs#3314);
   `assignmentTeamIds` matches the case's account CRE team
   (`account.cre_team_id`, the same path the case search's `creTeam` filter and
   `BeTeam.creGroupId` use). It used to be rejected with a 400 on the belief
   that nothing held a case's team, which made "Calls To Attend" fail to load
   on every dashboard. `work_item.assignment_group_id` is deliberately not
-  used: it is unpopulated on synced cases (`assignedTeam` reads back null).
+  used: it is unpopulated on synced cases (`assignedTeam` reads back null). A
+  call with no parent case, or whose account has no CRE team, never matches a
+  team filter.
+  `call_request_search_all_integration_test.go` (real Postgres, skipped without
+  `CALL_REQUEST_TEST_DSN`; needs a non-superuser, non-BYPASSRLS login, which it
+  checks) pins both filters for an internal caller and for a customer
+  registered on one project.
   `caseStates`/`excludeCaseStates` reuse `caseLikeStateColumn`/`caseLikeJoins`
   so they work for every case-like type.
 - **Not done, deliberately (same "don't guess" rule as `CreateCase`)**:
