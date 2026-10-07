@@ -4186,7 +4186,8 @@ staff:
   number dropped is logged (`dropHiddenChangeRequests`; nothing is expected to be dropped);
 * `GET /projects/{id}/metadata` leaves New, Assess and Authorize out of
   `changeRequestStates` (by ServiceNow key or by label), so the state filter a BFF builds
-  from it cannot name them.
+  from it cannot name them, and `GET /projects/{id}/change-requests/stats` leaves their
+  rows out of `stateCount`.
 
 "Staff" is a request whose scope is `Unrestricted`: `callerIdentityMiddleware` already
 resolves every request once (`AccessService.ResolveScope`: the CSM portal's backend for a
@@ -4204,9 +4205,10 @@ router and fail if that stops being true.
 Not changed on this data source, by design or for want of a source: the by-id reads and
 writes (detail, approvals, decision, PATCH, comments) stay ServiceNow's own decision (a
 customer needs the id, which only a list gives them; ids are not guessable); the counters
-of the change request stats (`totalCount`, `outstandingCount`, `activeCount`) are
-computed by ServiceNow over every state (backend-v2 leaves the New / Assess / Authorize
-*rows* of `stateCount` out, by ServiceNow key). Tests:
+of the change request stats (`totalCount`, `outstandingCount`, `activeCount`,
+`actionRequiredCount`) are computed by ServiceNow over every state and are passed through
+(backend-v2 leaves the same three *rows* of `stateCount` out too, by ServiceNow key, as a
+second line). Tests:
 `sn_change_request_customer_view_test.go` and `server/sn_change_request_customer_view_route_test.go`
 (a fake ServiceNow that answers every state whatever it was asked; the second drives the
 real router), and `TestChangeRequestVisibilityIntegration_NamingAStateNeverWidens*` for the

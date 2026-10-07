@@ -535,12 +535,26 @@ func (s *snProjectStatsService) GetProjectChangeRequestStats(ctx context.Context
 		return domain.ProjectChangeRequestStatsResponse{}, fmt.Errorf("sn project change request stats: parse response: %w", err)
 	}
 
+	// A customer is not told how many change requests the project has in the states
+	// they are never shown (see sn_change_request_customer_view.go). The totals are
+	// ServiceNow's own, over every state, and are passed through as they are.
+	stateCount := toDomainChoiceListItems(snResp.StateCount)
+	if customerViewApplies(ctx) {
+		visible := make([]domain.ChoiceListItem, 0, len(stateCount))
+		for _, st := range stateCount {
+			if !isCustomerHiddenChangeRequestStateItem(st) {
+				visible = append(visible, st)
+			}
+		}
+		stateCount = visible
+	}
+
 	return domain.ProjectChangeRequestStatsResponse{
 		TotalCount:          snResp.TotalCount,
 		ActiveCount:         snResp.ActiveCount,
 		OutstandingCount:    snResp.OutstandingCount,
 		ActionRequiredCount: snResp.ActionRequiredCount,
-		StateCount:          toDomainChoiceListItems(snResp.StateCount),
+		StateCount:          stateCount,
 		ResolvedCount:       snResp.ResolvedCount.toDomain(),
 	}, nil
 }

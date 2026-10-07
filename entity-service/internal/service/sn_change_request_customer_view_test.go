@@ -427,3 +427,45 @@ func TestSNProjectMetadata_CustomerIsNotOfferedNewAssessOrAuthorize(t *testing.T
 		}
 	}
 }
+
+// The change request stats carry a count per state. A customer is not told how many
+// change requests the project has in New, Assess or Authorize; the totals are
+// ServiceNow's own (over every state) and pass through.
+func TestSNProjectChangeRequestStats_CustomerIsNotToldTheCountsOfHiddenStates(t *testing.T) {
+	counts := make([]map[string]any, 0, len(snViewStates))
+	for _, st := range snViewStates {
+		counts = append(counts, map[string]any{"id": st.key, "label": st.label, "count": 1})
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/projects/", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"totalCount": len(snViewStates), "activeCount": 8, "outstandingCount": 8, "actionRequiredCount": 2,
+			"stateCount": counts, "resolvedCount": map[string]any{"total": 1, "currentMonth": 0, "pastThirtyDays": 0},
+		})
+	})
+	svc := NewServiceNowProjectStatsService(newTestSNClient(t, mux))
+
+	customer, err := svc.GetProjectChangeRequestStats(snCustomerCtx(), snViewProject)
+	if err != nil {
+		t.Fatalf("GetProjectChangeRequestStats: %v", err)
+	}
+	var keys []string
+	for _, c := range customer.StateCount {
+		keys = append(keys, c.ID)
+	}
+	if want := []string{"5", "-2", "-1", "0", "1", "2", "3", "4"}; !slices.Equal(keys, want) {
+		t.Fatalf("a customer is told the counts of %v, want %v", keys, want)
+	}
+	if customer.TotalCount != len(snViewStates) || customer.OutstandingCount != 8 {
+		t.Fatalf("totals = %d / %d, want ServiceNow's own (%d / 8) passed through", customer.TotalCount, customer.OutstandingCount, len(snViewStates))
+	}
+
+	staff, err := svc.GetProjectChangeRequestStats(snStaffCtx(), snViewProject)
+	if err != nil {
+		t.Fatalf("GetProjectChangeRequestStats: %v", err)
+	}
+	if len(staff.StateCount) != len(snViewStates) {
+		t.Fatalf("staff are told %d state counts, want all %d", len(staff.StateCount), len(snViewStates))
+	}
+}

@@ -109,10 +109,21 @@ func newSNRouteEnv(t *testing.T) *snRouteEnv {
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"changeRequests": rows, "totalRecords": len(rows), "offset": 0, "limit": 50})
 	})
-	sn.HandleFunc("/projects/", func(w http.ResponseWriter, _ *http.Request) {
+	sn.HandleFunc("/projects/", func(w http.ResponseWriter, r *http.Request) {
 		choices := make([]map[string]any, 0, len(snRouteStates))
 		for _, st := range snRouteStates {
 			choices = append(choices, map[string]any{"id": st.key, "label": st.label})
+		}
+		if strings.HasSuffix(r.URL.Path, "/change-requests/stats") {
+			counts := make([]map[string]any, 0, len(snRouteStates))
+			for _, st := range snRouteStates {
+				counts = append(counts, map[string]any{"id": st.key, "label": st.label, "count": 1})
+			}
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"totalCount": len(snRouteStates), "activeCount": 8, "outstandingCount": 8, "actionRequiredCount": 2,
+				"stateCount": counts, "resolvedCount": map[string]any{"total": 1, "currentMonth": 0, "pastThirtyDays": 0},
+			})
+			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"changeRequestStates": choices})
 	})
@@ -317,5 +328,49 @@ func TestServiceNowRouter_ACustomerIsNotOfferedAHiddenStateToFilterBy(t *testing
 	staff := idsOf(e.do(t, http.MethodGet, "/projects/"+snRouteProject+"/metadata", "", snRouteM2MClient, ""))
 	if len(staff) != len(snRouteStates) {
 		t.Fatalf("staff are offered %v, want all %d states", staff, len(snRouteStates))
+	}
+}
+
+// The per-state counts of the change request stats: the same vocabulary.
+func TestServiceNowRouter_ACustomerIsNotToldTheCountsOfHiddenStates(t *testing.T) {
+	e := newSNRouteEnv(t)
+	countsOf := func(rec *httptest.ResponseRecorder) (ids []int, total int) {
+		t.Helper()
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, body = %s", rec.Code, rec.Body.String())
+		}
+		var resp struct {
+			TotalCount int `json:"totalCount"`
+			StateCount []struct {
+				ID any `json:"id"`
+			} `json:"stateCount"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		for _, s := range resp.StateCount {
+			switch v := s.ID.(type) {
+			case float64:
+				ids = append(ids, int(v))
+			case string:
+				var n int
+				_, _ = fmt.Sscan(v, &n)
+				ids = append(ids, n)
+			}
+		}
+		return ids, resp.TotalCount
+	}
+	path := "/projects/" + snRouteProject + "/change-requests/stats"
+
+	customer, total := countsOf(e.do(t, http.MethodGet, path, "", snRouteCustomerClient, "dana@customer.example"))
+	if want := []int{5, -2, -1, 0, 1, 2, 3, 4}; !slices.Equal(customer, want) {
+		t.Fatalf("a customer is told the counts of states %v, want %v", customer, want)
+	}
+	if total != len(snRouteStates) {
+		t.Fatalf("totalCount = %d, want ServiceNow's own figure passed through (%d)", total, len(snRouteStates))
+	}
+	staff, _ := countsOf(e.do(t, http.MethodGet, path, "", snRouteM2MClient, ""))
+	if len(staff) != len(snRouteStates) {
+		t.Fatalf("staff are told the counts of %v, want all %d states", staff, len(snRouteStates))
 	}
 }

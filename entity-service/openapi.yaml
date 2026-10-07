@@ -3780,6 +3780,12 @@ paths:
         Available on both data sources. On Postgres, stateCount ids are the raw
         change_request_state_enum labels, whose vocabulary matches ServiceNow's
         own change-request states one for one.
+
+        ServiceNow: for a CUSTOMER (every caller whose scope is not unrestricted) the
+        stateCount rows of New, Assess and Authorize are left out (see POST
+        /change-requests/search). The totals (totalCount, activeCount,
+        outstandingCount, actionRequiredCount) are ServiceNow's own, over every state,
+        and are passed through.
       operationId: getProjectChangeRequestStats
       parameters:
         - name: id
