@@ -400,8 +400,9 @@ to the entity service as-is (no field allow-list), with two checks on top:
 to tell apart with a stable `errorCode` string in its error body (`change_request_approval_not_pending`
 for the 409 above, `change_request_not_asked` / `change_request_forbidden` for its 403s,
 `change_request_on_hold`, `change_request_schedule_changed`, `change_request_not_proposable`,
-`change_request_proposal_not_now`, `change_request_no_planned_window`; the table is in
-its CLAUDE.md, "Error types"). The BFF passes it through, beside the message, with the status it
+`change_request_proposal_not_now`, `change_request_no_planned_window`, and for staff
+`change_request_proposer_not_recorded` (Accept proposed time on a stored time nobody is recorded as having
+proposed); the table is in its CLAUDE.md, "Error types"). The BFF passes it through, beside the message, with the status it
 gives it: `mapUpstreamError` (the PATCH handlers) on the 400, 403, 409 and 422, and
 `mapApprovalDecisionError` on the decision route's 403 and 409 (`errorBody.ErrorCode`, `writeErrorCode`,
 `upstreamErrorCode`). The code is read from the upstream envelope (`apierror.Error.Body` holds it whole,

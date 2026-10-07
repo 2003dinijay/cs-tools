@@ -5331,8 +5331,13 @@ paths:
         stale proposal or window is a 409, an unusable one a 400 (`the time the customer proposed
         (...) has already passed, so it cannot be accepted: use "Propose a different time" ...`,
         `change request is on hold; ...`, `the customer proposed a new time (...) after you opened
-        this change request; read it again ...`). The BFF checks only that these four fields are
-        strings. A manual `{state: "scheduled"}` stays a 400 whatever is pending.
+        this change request; read it again ...`). Only a time that a registered contact of the
+        project is recorded as having proposed (`customerProposal.proposerRecorded`) can be accepted:
+        for a stored time nobody proposed (a WSO2 user's, one left over from an earlier cycle) Accept
+        is a 409 with `errorCode: change_request_proposer_not_recorded` and `Propose a different time`
+        is a plain re-schedule that writes no answer (a request with no window is a 400). The BFF
+        checks only that these four fields are strings. A manual `{state: "scheduled"}` stays a 400
+        whatever is pending.
       operationId: patchChangeRequest
       security:
         - bearerAuth: []
@@ -13522,7 +13527,9 @@ components:
             `change_request_on_hold` (409), `change_request_schedule_changed` (409),
             `change_request_approval_not_pending` (409: the approval is no longer
             pending), `change_request_not_proposable` (409), `change_request_proposal_not_now`
-            (409), `change_request_no_planned_window` (409), `change_request_not_asked`
+            (409), `change_request_no_planned_window` (409), `change_request_proposer_not_recorded`
+            (409: Accept proposed time on a stored time that no registered contact of the project
+            is recorded as having proposed), `change_request_not_asked`
             (403: not asked on the customer group's stage) and `change_request_forbidden`
             (403: the change request's creator, or a user who may not decide an internal
             stage). The list grows, so this is deliberately not a closed enum.
@@ -13748,15 +13755,17 @@ components:
             all three required: the proposed start becomes the planned start (the planned
             length is kept) and the change request moves from customer_approval to
             scheduled in one write, with no CAB approval and no second ask of the customer.
-            409 when no proposal waits or the page is stale; 400 when the change request is
-            on hold. Never records the customer's approval.
+            409 when no proposal waits, the page is stale, or no registered contact of the project is
+            recorded as having proposed the time (`errorCode: change_request_proposer_not_recorded`);
+            400 when the change request is on hold. Never records the customer's approval.
         expectedCustomerUpdatedOn:
           type: string
           format: date-time
           description: >-
             The proposal being answered (`customerProposal.startOn`, RFC 3339). Required with
             confirmCustomerUpdatedDate and while a proposal waits on a `state: "authorize"`
-            request; refused when none waits. A page opened before the customer proposed another
+            request; refused when none waits (a stored time nobody is recorded as having proposed
+            is not a proposal waiting: it is optional there, and must be the stored time when sent). A page opened before the customer proposed another
             time can never answer the new one (409).
         expectedPlannedStartOn:
           type: string
@@ -18711,8 +18720,8 @@ components:
       type: object
       required: [startOn, answer]
       description: >-
-        The conversation about a time the customer proposed, derived from the previous system's own
-        columns (customer_updated_on, the customer's proposed plan START, and
+        The conversation about a time the customer proposed, derived from two columns of the change
+        request (customer_updated_on, the customer's proposed plan START, and
         customer_updated_date_confirmation, WSO2's answer); present when customer_updated_on is
         set. Pass-through of the entity service's detail. While `answer` is "pending" the
         planned window is still the one WSO2 planned: a proposal changes nothing until WSO2
@@ -18736,10 +18745,15 @@ components:
         proposerRecorded:
           type: boolean
           description: >-
-            While pending: true when the last writer of the change request is a registered contact
-            of its project (then they proposed the time). False when it is not knowable -- a date
-            a WSO2 user wrote in the previous system, one left from an older cycle, or a proposal edited
-            over since -- and the page must say the proposer is not recorded.
+            While pending: true when the last writer of the change request (work_item.updated_by)
+            is a registered contact of its project, who is then recorded as having proposed the time.
+            Nothing else names a proposer: no comment, audit or other log is read, and nothing is added
+            to record one. False when nobody is recorded -- a date a WSO2 user wrote in the previous
+            system, one left from an older cycle, or a genuine proposal that a later write to the change
+            request replaced as last writer -- and the page must say the proposer is not recorded. Then
+            canAccept is false: Accept proposed time is refused with a 409
+            (change_request_proposer_not_recorded) and Propose a different time is a plain
+            re-schedule that writes no answer, which the customers then approve.
         proposedByName:
           type: string
           description: The proposer, only while pending and proposerRecorded.
@@ -18755,7 +18769,7 @@ components:
             re-checks under its row lock.
         acceptBlockedReason:
           type: string
-          description: Why it would not be, in the words of the refusal (on hold, the proposed start has passed, the planned window has no length to keep).
+          description: Why it would not be, in the words of the refusal (nobody is recorded as having proposed the time, on hold, the proposed start has passed, the planned window has no length to keep).
 
     TaskSummary:
       type: object

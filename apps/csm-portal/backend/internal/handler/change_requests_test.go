@@ -734,6 +734,24 @@ func TestUpstreamErrorCodesPassThrough(t *testing.T) {
 			t.Errorf("body = %v", body)
 		}
 	})
+	t.Run("PATCH: Accept of a time nobody is recorded as having proposed keeps its words and its own code", func(t *testing.T) {
+		const refusal = `nobody is recorded as having proposed this time (it may have been written by someone at WSO2 or left over from an earlier cycle), so it cannot be accepted: use "Propose a different time" to ask the customer to approve a time`
+		client := &mockEntityChangeRequestClient{
+			patchChangeRequestFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+				return nil, &apierror.Error{StatusCode: http.StatusConflict, Body: envelope(409, refusal, `"change_request_proposer_not_recorded"`)}
+			},
+		}
+		accept := `{"confirmCustomerUpdatedDate":"agree","expectedCustomerUpdatedOn":"2030-03-08T09:00:00Z","expectedPlannedStartOn":"2030-03-01T09:00:00Z","expectedPlannedEndOn":"2030-03-01T11:00:00Z"}`
+		r := withUser(httptest.NewRequest(http.MethodPatch, "/change-requests/"+testCRID, strings.NewReader(accept)))
+		r.SetPathValue("id", testCRID)
+		w := httptest.NewRecorder()
+		NewChangeRequestHandler(client).PatchChangeRequest(w, r)
+		assertStatus(t, w, http.StatusConflict)
+		body := assertErrorBodyKeys(t, w)
+		if body["message"] != refusal || body["errorCode"] != "change_request_proposer_not_recorded" {
+			t.Errorf("body = %v", body)
+		}
+	})
 	t.Run("PATCH: a 403 keeps the fixed message and the code", func(t *testing.T) {
 		w := patch(&apierror.Error{StatusCode: http.StatusForbidden, Body: envelope(403, "only members asked may answer", `"change_request_not_asked"`)})
 		assertStatus(t, w, http.StatusForbidden)

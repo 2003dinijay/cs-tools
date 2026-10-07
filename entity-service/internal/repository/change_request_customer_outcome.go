@@ -175,17 +175,71 @@ func answerPatch(spec *customerStageSpec, approved bool, flag string, req domain
 // security a caller who is not a member of the project updates no row, which is
 // reported as not found, exactly as the ordinary PATCH reports it.
 func lockCustomerAnswerRow(ctx context.Context, tx pgx.Tx, id, actorEmail string) (*string, error) {
-	var projectID *string
+	locked, err := lockWorkItemKeepingWriter(ctx, tx, id, actorEmail)
+	if err != nil {
+		return nil, err
+	}
+	return locked.projectID, nil
+}
+
+// lastWriter is work_item.updated_by of a change request as an act found it, before its own
+// write replaced it with the caller. read says the column was read at all: a NULL or blank
+// column is a writer who is nobody (email ""), which must never be mistaken for "not looked"
+// (a migrated row may carry no updated_by).
+type lastWriter struct {
+	email string
+	read  bool
+}
+
+// newLastWriter is a writer that was read (a NULL column reads as nobody).
+func newLastWriter(updatedBy *string) lastWriter {
+	return lastWriter{email: strings.TrimSpace(stringOrEmpty(updatedBy)), read: true}
+}
+
+// lockedWorkItem is what lockWorkItemKeepingWriter hands back.
+type lockedWorkItem struct {
+	// projectID is the change request's project (work_item.project_id), nil when it has none.
+	projectID *string
+	// priorWriter is work_item.updated_by as it stood BEFORE this transaction's own
+	// write, i.e. the last writer the caller found. The write below replaces it with the
+	// caller, so a reader that needs "who wrote the change before me" has to take it from
+	// here: after the call the column only ever says the caller (see resolveProposer).
+	priorWriter lastWriter
+}
+
+// lockWorkItemKeepingWriter is lockCustomerAnswerRow that also returns the writer it
+// found: it locks the work_item row (FOR NO KEY UPDATE, the strength every PATCH's own
+// UPDATE takes), reads who wrote it last, then bumps updated_on / updated_by as the
+// caller. The read and the bump are two statements on purpose: a statement that both
+// locks and rewrites the row cannot hand back the value it replaced on every supported
+// server version, and the lock makes the pair atomic against every other writer.
+// Under row-level security a caller who may not update the row locks none, which is
+// reported as not found like everywhere else.
+func lockWorkItemKeepingWriter(ctx context.Context, tx pgx.Tx, id, actorEmail string) (lockedWorkItem, error) {
+	var locked lockedWorkItem
+	var updatedBy *string
 	err := tx.QueryRow(ctx,
-		`UPDATE work_item SET updated_on = NOW(), updated_by = $2
-		 WHERE id = $1 AND type = 'CHANGE_REQUEST' RETURNING project_id::text`, id, actorEmail).Scan(&projectID)
+		`SELECT project_id::text, updated_by FROM work_item
+		 WHERE id = $1 AND type = 'CHANGE_REQUEST' FOR NO KEY UPDATE`, id).Scan(&locked.projectID, &updatedBy)
 	if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {
-		return nil, &apierror.NotFoundError{Msg: "change request not found"}
+		return lockedWorkItem{}, &apierror.NotFoundError{Msg: "change request not found"}
 	}
 	if err != nil {
-		return nil, fmt.Errorf("answer change request: lock work item: %w", err)
+		return lockedWorkItem{}, fmt.Errorf("answer change request: lock work item: %w", err)
 	}
-	return projectID, nil
+	locked.priorWriter = newLastWriter(updatedBy)
+	// The write is the proof of access the callers rely on: a row the caller may read
+	// but not update (row-level security) updates nothing here.
+	err = tx.QueryRow(ctx,
+		`UPDATE work_item SET updated_on = NOW(), updated_by = $2
+		 WHERE id = $1 AND type = 'CHANGE_REQUEST' RETURNING project_id::text`, id, actorEmail).Scan(&locked.projectID)
+	if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {
+		return lockedWorkItem{}, &apierror.NotFoundError{Msg: "change request not found"}
+	}
+	if err != nil {
+		return lockedWorkItem{}, fmt.Errorf("answer change request: lock work item: %w", err)
+	}
+	return locked, nil
 }
 
 // requireRegisteredContact refuses (403) a caller who is not a REGISTERED

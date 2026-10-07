@@ -547,10 +547,20 @@ func TestChangeRequestFlowIntegration_StaleApprovals_OldFlowRescheduleStillFinis
 	f.wantAnswer(id, "back in Customer Approval with the stale date", "pending")
 	p := f.proposalOf(id)
 	if p == nil || p.ProposerRecorded == nil || *p.ProposerRecorded {
-		t.Fatalf("customerProposal on re-entry = %+v, want a pending proposal whose proposer is not recorded", p)
+		t.Fatalf("customerProposal on re-entry = %+v, want a pending time whose proposer is not recorded", p)
 	}
 	if p.ProposedByName != nil || p.ProposedByEmail != nil || p.ProposedOn != nil {
 		t.Fatalf("a stale date on re-entry was attributed to somebody: %+v", p)
+	}
+	if p.CanAccept == nil || *p.CanAccept || p.AcceptBlockedReason == nil || !strings.HasPrefix(*p.AcceptBlockedReason, msgAcceptNobodyRecorded) {
+		t.Fatalf("a stale date on re-entry can be accepted: %+v", p)
+	}
+	before := f.snap(id)
+	_, err = f.accept(id)
+	wantRefusalCode(t, "Accept of a stale date on re-entry", err, 409, apierror.CodeChangeRequestProposerNotRecorded)
+	f.wantRefusedSame("Accept of a stale date on re-entry", id, before, err)
+	if seen, err := f.getAsContact(id, crScopeUserA1); err != nil || seen.CustomerProposal == nil || seen.CustomerProposal.Answer != "unanswered" {
+		t.Fatalf("a customer's view of a stale date on re-entry = %+v (%v), want it as history", seen.CustomerProposal, err)
 	}
 	if _, err := f.approveAs(id, crScopeUserA1, true); err != nil {
 		t.Fatalf("the customer's approval after the old-flow re-schedule: %v", err)

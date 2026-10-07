@@ -4449,7 +4449,9 @@ type PatchChangeRequestRequest struct {
 	// customer. To decline a proposal, staff propose a different time (state
 	// "authorize" with the window they want, which writes "disagree"). It goes
 	// alone: with nothing but the three expected* fields. Refused for an external
-	// caller (403) and while no proposal is waiting (409). PostgreSQL data source
+	// caller (403), while no proposal is waiting and for a time that no registered
+	// contact of the project is recorded as having proposed (409, errorCode
+	// change_request_proposer_not_recorded). PostgreSQL data source
 	// only. See repository.acceptCustomerProposal and entity-service's CLAUDE.md,
 	// "A customer's proposed time".
 	ConfirmCustomerUpdatedDate *string `json:"confirmCustomerUpdatedDate,omitempty"`
@@ -4459,7 +4461,9 @@ type PatchChangeRequestRequest struct {
 	// -- a page opened before the customer proposed another time can never answer
 	// the new one. Required with ConfirmCustomerUpdatedDate; on a staff state
 	// "authorize" it is required while a proposal is waiting and refused (409) when
-	// none is. Postgres data source only.
+	// none is. Over a stored time that nobody is recorded as having proposed it is
+	// optional on "authorize" (no proposal waits) and must be the stored time when sent.
+	// Postgres data source only.
 	ExpectedCustomerUpdatedOn *string `json:"expectedCustomerUpdatedOn,omitempty"`
 	// OnHold/OnHoldReason gate change_request.is_on_hold/on_hold_reason
 	// (migration 0178). Combinable with every other field
@@ -4909,7 +4913,9 @@ type ChangeRequest struct {
 //     the planned start, WSO2 has not answered, and no approval but the customer's own is
 //     still asked -- the only state WSO2 can act on (Accept proposed time / Propose a
 //     different time). The planned window (PlannedStartOn / PlannedEndOn) is still the
-//     one WSO2 planned: a proposal changes nothing until WSO2 answers.
+//     one WSO2 planned: a proposal changes nothing until WSO2 answers. A stored time that
+//     nobody is recorded as having proposed is pending for a staff reader (ProposerRecorded
+//     false, nothing to accept) and "unanswered" for a customer.
 //   - "agreed":      WSO2 accepted it (AGREE).
 //   - "disagreed":   WSO2 asked for a different time (DISAGREE).
 //   - "unanswered":  history -- the change moved on, or the proposal is the planned start
@@ -4922,13 +4928,18 @@ type ChangeRequestCustomerProposal struct {
 	// is "pending" and the planned window has a length.
 	EndOn  *string `json:"endOn,omitempty"`
 	Answer string  `json:"answer"`
-	// ProposerRecorded says whether the proposer can be named: while the answer is
-	// "pending", true when work_item.updated_by (the last writer of the change) is a
-	// registered contact of the change's project, which is then the person who proposed
-	// the time. False when it is not knowable -- a date a WSO2 user wrote in
-	// ServiceNow, one left over from an older cycle, or a proposal edited over since
-	// (nothing is added to record who proposed it): the banner then says the proposer
-	// is not recorded. Absent unless pending.
+	// ProposerRecorded says whether a registered contact of the change's project is
+	// recorded as having proposed the time: while the answer is "pending", true when the
+	// change's last writer (work_item.updated_by) is one, who is then the person who
+	// proposed it. Nothing else names a proposer (no comment, audit or other log is read)
+	// and nothing is added to record one. False when nobody is recorded -- a date a WSO2
+	// user wrote in the previous system, one left over from an older cycle, or a genuine
+	// proposal that a later write to the change replaced as last writer. A time nobody is
+	// recorded as having proposed is not a proposal WSO2 can accept (CanAccept is false,
+	// Accept is refused) and the banner says the proposer is not recorded; proposing a
+	// different time is the way on, and the customer then approves it. Absent unless
+	// pending. A customer is only ever shown a pending time that somebody is recorded as
+	// having proposed (otherwise they read "unanswered").
 	ProposerRecorded *bool `json:"proposerRecorded,omitempty"`
 	// ProposedByName / ProposedByEmail / ProposedOn: the proposer and the time, only
 	// for a staff reader, only while pending and ProposerRecorded is true.
@@ -4941,9 +4952,10 @@ type ChangeRequestCustomerProposal struct {
 	ProposedByViewer *bool `json:"proposedByViewer,omitempty"`
 	// CanAccept (a staff reader, while "pending"): whether "Accept proposed time"
 	// would be accepted right now; when it would not, AcceptBlockedReason says why in
-	// the words of the refusal the PATCH would give (the proposed start has passed, the
-	// change is on hold, the planned window has no length to keep). The server stays
-	// the authority: every act re-checks under the row lock.
+	// the words of the refusal the PATCH would give (nobody is recorded as having
+	// proposed the time, the proposed start has passed, the change is on hold, the
+	// planned window has no length to keep). The server stays the authority: every act
+	// re-checks under the row lock.
 	CanAccept           *bool   `json:"canAccept,omitempty"`
 	AcceptBlockedReason *string `json:"acceptBlockedReason,omitempty"`
 }

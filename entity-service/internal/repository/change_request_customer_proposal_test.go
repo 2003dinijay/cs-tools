@@ -96,47 +96,66 @@ func TestCustomerProposalAnswer(t *testing.T) {
 
 func TestAcceptBlock(t *testing.T) {
 	now := *tm("2030-03-05T00:00:00Z")
+	// A registered contact of the project is recorded as the proposer.
+	recorded := proposer{known: true, email: "dave.mendis@example.com"}
 	whole := customerProposalFacts{start: tm("2030-03-01T09:00:00Z"), end: tm("2030-03-01T11:00:00Z"), proposed: tm("2030-03-08T09:00:00Z"), pending: true}
-	if got := acceptBlock(whole, now); got != "" {
+	if got := acceptBlock(whole, recorded, now); got != "" {
 		t.Fatalf("a waiting proposal over a whole window is blocked: %q", got)
 	}
 	held := whole
 	held.onHold = true
-	if got := acceptBlock(held, now); got != msgAcceptOnHold {
+	if got := acceptBlock(held, recorded, now); got != msgAcceptOnHold {
 		t.Errorf("on hold: %q", got)
 	}
 	passed := whole
 	passed.proposed = tm("2030-03-02T09:00:00Z")
-	if got := acceptBlock(passed, now); !strings.Contains(got, "has already passed") || !strings.Contains(got, "2030-03-02T09:00:00Z") {
+	if got := acceptBlock(passed, recorded, now); !strings.Contains(got, "has already passed") || !strings.Contains(got, "2030-03-02T09:00:00Z") {
 		t.Errorf("a passed proposal: %q", got)
 	}
 	empty := whole
 	empty.end = nil
-	if got := acceptBlock(empty, now); got != msgAcceptNoLength {
+	if got := acceptBlock(empty, recorded, now); got != msgAcceptNoLength {
 		t.Errorf("no length: %q", got)
 	}
 	// customer_updated_on is a column ServiceNow writes too: a window the proposal would push past the
 	// range every planned window is held to is blocked, at the edge and beyond it, and not before.
 	edge := whole
 	edge.proposed, edge.start, edge.end = tm("2100-12-31T20:00:00Z"), tm("2030-03-01T09:00:00Z"), tm("2030-03-01T11:00:00Z")
-	if got := acceptBlock(edge, now); got != "" {
+	if got := acceptBlock(edge, recorded, now); got != "" {
 		t.Errorf("a proposal whose window ends inside the last year of the range is blocked: %q", got)
 	}
 	over := edge
 	over.proposed = tm("2100-12-31T23:00:00Z")
-	if got := acceptBlock(over, now); got != msgAcceptTooFarAhead(*over.proposed, *tm("2101-01-01T01:00:00Z")) || !strings.Contains(got, "too far ahead") {
+	if got := acceptBlock(over, recorded, now); got != msgAcceptTooFarAhead(*over.proposed, *tm("2101-01-01T01:00:00Z")) || !strings.Contains(got, "too far ahead") {
 		t.Errorf("a window that ends after the range: %q", got)
 	}
 	far := edge
 	far.proposed = tm("9999-12-31T23:30:00Z")
-	if got := acceptBlock(far, now); !strings.Contains(got, "too far ahead") || !strings.Contains(got, "10000-01-01T01:30:00Z") {
+	if got := acceptBlock(far, recorded, now); !strings.Contains(got, "too far ahead") || !strings.Contains(got, "10000-01-01T01:30:00Z") {
 		t.Errorf("a proposal in year 9999: %q", got)
 	}
 	// the hold is named before the passed time, as the refusals are ordered
 	both := passed
 	both.onHold = true
-	if got := acceptBlock(both, now); got != msgAcceptOnHold {
+	if got := acceptBlock(both, recorded, now); got != msgAcceptOnHold {
 		t.Errorf("on hold and passed: %q, want the hold first", got)
+	}
+	// A time nobody is recorded as having proposed is never accepted, and that is named before
+	// everything else that could be wrong with it (nothing else is worth fixing about it).
+	nobody := proposer{}
+	if got := acceptBlock(whole, nobody, now); got != msgAcceptProposerNotRecorded {
+		t.Errorf("no proposer recorded: %q, want %q", got, msgAcceptProposerNotRecorded)
+	}
+	for name, f := range map[string]customerProposalFacts{"on hold": held, "passed": passed, "no length": empty, "too far ahead": over, "everything": both} {
+		if got := acceptBlock(f, nobody, now); got != msgAcceptProposerNotRecorded {
+			t.Errorf("no proposer recorded and %s: %q, want the proposer first", name, got)
+		}
+	}
+	// Words the pages and the contract show, so a reworded refusal is a deliberate act.
+	for _, want := range []string{"nobody is recorded as having proposed this time", "written by someone at WSO2", "left over from an earlier cycle", `"Propose a different time"`} {
+		if !strings.Contains(msgAcceptProposerNotRecorded, want) {
+			t.Errorf("the refusal for an unrecorded proposer lacks %q: %s", want, msgAcceptProposerNotRecorded)
+		}
 	}
 }
 

@@ -133,6 +133,64 @@ func (f *crFlow) syncWritesConversation(id string, on *string, confirmation stri
 	           WHERE id = $1`, id, on, confirmation)
 }
 
+// crSyncStamp is what the sync loader writes as work_item.updated_by (and created_by) on the rows
+// it mirrors: the last writer of a migrated change request that nobody at WSO2 or at a customer touched.
+const crSyncStamp = "sn-sync"
+
+// syncWritesConversationAs is syncWritesConversation by the named writer (a WSO2 user in the
+// previous system, mirrored by the sync): the work_item is stamped with them first, as the sync
+// stamps it, so they are the change's last writer -- the only thing that names a proposer.
+func (f *crFlow) syncWritesConversationAs(id, writer string, on *string, confirmation string) {
+	f.t.Helper()
+	f.execSQL(`UPDATE work_item SET updated_by = $2 WHERE id = $1`, id, writer)
+	f.syncWritesConversation(id, on, confirmation)
+}
+
+// customerWroteProposal leaves the change request as the proposal of the start on by the
+// registered contact userID would -- for a date the API itself refuses (in the past, out of
+// range), which the tests need on a change whose proposer is recorded: the contact is the last
+// writer, as the API leaves it after a proposal, and the date is written afterwards.
+func (f *crFlow) customerWroteProposal(id, userID, on string) {
+	f.t.Helper()
+	f.execSQL(`UPDATE work_item SET updated_by = $2 WHERE id = $1`, id, crFlowEmail(userID))
+	f.syncWritesConversation(id, sp(on), "")
+}
+
+// onlyTheProposerIsLeft makes the change one nobody can be asked about, while the registered
+// contact proposerID -- who proposed the time that waits -- stays registered (an answer is about a
+// RECORDED proposer, and a contact who left is no longer one): every other registered contact of
+// project A is deactivated, and the proposer is made the requester (who is never asked about their
+// own change). The returned function puts both back.
+func (f *crFlow) onlyTheProposerIsLeft(id, proposerID string) (restore func()) {
+	f.t.Helper()
+	rows, err := f.scoped.Query(f.sys, `SELECT id::text FROM project_contact
+	                                      WHERE project_id = $1 AND state = 'REGISTERED' AND LOWER(email) <> LOWER($2)`, crScopeProjectA, crFlowEmail(proposerID))
+	if err != nil {
+		f.t.Fatalf("list the other contacts: %v", err)
+	}
+	var others []string
+	for rows.Next() {
+		var cid string
+		if err := rows.Scan(&cid); err != nil {
+			rows.Close()
+			f.t.Fatalf("scan: %v", err)
+		}
+		others = append(others, cid)
+	}
+	rows.Close()
+	var requester *string
+	if err := f.scoped.QueryRow(f.sys, `SELECT requested_by_user_id::text FROM change_request WHERE id = $1`, id).Scan(&requester); err != nil {
+		f.t.Fatalf("read the requester: %v", err)
+	}
+	f.execSQL(`UPDATE project_contact SET state = 'DEACTIVATED'::project_contact_state_enum WHERE id = ANY($1::uuid[])`, others)
+	f.execSQL(`UPDATE change_request SET requested_by_user_id = $2::uuid WHERE id = $1`, id, proposerID)
+	return func() {
+		f.t.Helper()
+		f.execSQL(`UPDATE project_contact SET state = 'REGISTERED'::project_contact_state_enum WHERE id = ANY($1::uuid[])`, others)
+		f.execSQL(`UPDATE change_request SET requested_by_user_id = $2::uuid WHERE id = $1`, id, requester)
+	}
+}
+
 // staffPatch is a PATCH by the staff member userID (an internal identity).
 func (f *crFlow) staffPatch(id, userID string, req domain.PatchChangeRequestRequest) (domain.ChangeRequest, error) {
 	return f.repo.PatchChangeRequest(f.sys, id, req, crFlowEmail(userID))

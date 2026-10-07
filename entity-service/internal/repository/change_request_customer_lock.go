@@ -430,6 +430,7 @@ func resendsStoredChangeType(storedModel string, requested *domain.ChangeRequest
 // PATCH takes.
 func lockChangeRequestForPatch(ctx context.Context, tx pgx.Tx, id string) (changeRequestGateSnapshot, error) {
 	var locked string
+	var updatedBy *string
 	// FOR NO KEY UPDATE, the strength the PATCH's own UPDATE of work_item takes, not
 	// FOR UPDATE: a decision (DecideChangeRequestApproval) locks change_request first
 	// and then INSERTs approval_stage / approval_stage_approver rows, whose foreign
@@ -437,15 +438,25 @@ func lockChangeRequestForPatch(ctx context.Context, tx pgx.Tx, id string) (chang
 	// refuse -- a deadlock with a PATCH that holds this lock and waits for the
 	// change_request one. Two PATCHes still exclude each other (NO KEY UPDATE
 	// conflicts with itself), which is all this lock is for.
+	//
+	// updated_by comes back with the lock: it is the last writer BEFORE this PATCH's own
+	// UPDATE of the row (which always stamps the caller). A staff answer to a time the
+	// customer proposed has to know who proposed it, and the only place that is still
+	// intact is here (changeRequestGateSnapshot.priorWriter).
 	err := tx.QueryRow(ctx,
-		`SELECT id::text FROM work_item WHERE id = $1::uuid AND type = 'CHANGE_REQUEST' FOR NO KEY UPDATE`, id).Scan(&locked)
+		`SELECT id::text, updated_by FROM work_item WHERE id = $1::uuid AND type = 'CHANGE_REQUEST' FOR NO KEY UPDATE`, id).Scan(&locked, &updatedBy)
 	if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {
 		return changeRequestGateSnapshot{}, &apierror.NotFoundError{Msg: "change request not found"}
 	}
 	if err != nil {
 		return changeRequestGateSnapshot{}, fmt.Errorf("patch change request: lock work item: %w", err)
 	}
-	return lockChangeRequestGateSnapshot(ctx, tx, id)
+	snap, err := lockChangeRequestGateSnapshot(ctx, tx, id)
+	if err != nil {
+		return changeRequestGateSnapshot{}, err
+	}
+	snap.priorWriter = newLastWriter(updatedBy)
+	return snap, nil
 }
 
 // checkSingularDeploymentFields is rule 5 for the single-valued PATCH fields

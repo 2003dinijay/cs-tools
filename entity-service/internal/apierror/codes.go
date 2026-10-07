@@ -73,6 +73,14 @@ const (
 	// being asked; only the proposal is refused, as with CodeChangeRequestOnHold.
 	CodeChangeRequestNoPlannedWindow = "change_request_no_planned_window"
 
+	// CodeChangeRequestProposerNotRecorded is the 409 for WSO2's acceptance of a
+	// stored time that nobody is recorded as having proposed: the date may have been
+	// written by someone at WSO2 or left over from an earlier cycle, and accepting it
+	// would schedule the change for a time no customer ever consented to. No staff
+	// action stands in for the customer's own answer, so the acceptance is refused;
+	// proposing a different time (which asks the customers to approve it) still works.
+	CodeChangeRequestProposerNotRecorded = "change_request_proposer_not_recorded"
+
 	// CodeChangeRequestNotAsked is the 403 for a contact of the project who holds
 	// no REQUESTED row on the customer stage that is LIVE (the customer is being
 	// asked, and this contact is not among those asked): registered after the

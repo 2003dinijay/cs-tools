@@ -5881,8 +5881,12 @@ paths:
         (409 otherwise); Accept / the answer is refused with a 409 when no proposal waits, the
         proposal or the planned window is not the one named, or the proposed start has passed, is
         too far ahead (the window it gives would end after the year 2100) or the planned window has
-        no length, and with a 400 when the change request is on hold. These
-        are PostgreSQL-only: ServiceNow's API has no field for them, so the dual-write mirror carries
+        no length, and with a 400 when the change request is on hold. A proposal is a CUSTOMER's
+        only when a registered contact of the project is recorded as having proposed it (see
+        customerProposal.proposerRecorded): Accept of any other stored time is refused with a 409
+        (errorCode change_request_proposer_not_recorded), and a staff {state: "authorize"} over it
+        is a plain re-schedule that writes no answer and is a 400 when it carries no window. These
+        are PostgreSQL-only: the previous system's API has no field for them, so the dual-write mirror carries
         only what PostgreSQL committed (Accept: scheduled and the window; a counter: the window, not
         the state; a customer's proposal: nothing), the sync may rewrite the columns while it runs, and
         the pure ServiceNow data source refuses confirmCustomerUpdatedDate / expectedCustomerUpdatedOn.
@@ -6101,10 +6105,14 @@ paths:
             `change_request_not_proposable` (a proposed time where none can be proposed),
             `change_request_on_hold` (a proposed time while WSO2 has the change on hold),
             `change_request_proposal_not_now` (a proposed time while an approval that is not
-            the customer's is also being asked) or `change_request_no_planned_window` (a
-            proposed time on a change request with no planned window to move). The schedule
-            code also names a WSO2 response (Accept proposed time, propose a different time)
-            whose expected planned window is no longer the change request's.
+            the customer's is also being asked), `change_request_no_planned_window` (a
+            proposed time on a change request with no planned window to move) or
+            `change_request_proposer_not_recorded` (WSO2's acceptance of a stored time that no
+            registered contact of the project is recorded as having proposed: no staff action
+            stands in for the customer's consent, so it is never accepted; proposing a different
+            time still works). The schedule code also names a WSO2 response (Accept proposed
+            time, propose a different time) whose expected planned window is no longer the
+            change request's.
           content:
             application/json:
               schema:
@@ -16939,13 +16947,22 @@ components:
             pending: the change request is in customer_approval, the proposed start differs from the
             planned start, WSO2 has not answered and no approval but the customer's own is still asked
             -- the only state WSO2 can act on. agreed / disagreed: WSO2's answer. unanswered: history.
+            For an external reader (a customer) a stored time that nobody is recorded as having
+            proposed is also "unanswered": nothing waits for WSO2 on their account, and no
+            pending-only field is present.
         proposerRecorded:
           type: boolean
           description: >-
-            While pending: true when the last writer of the change request is a registered contact of
-            its project (then they proposed the time). False when it is not knowable -- a date a WSO2
-            user wrote in ServiceNow, one left from an older cycle, or a proposal edited over since --
-            and the page must say the proposer is not recorded.
+            While pending: true when the last writer of the change request (work_item.updated_by) is
+            a registered contact of the change request's project, who is then recorded as having
+            proposed the time. Nothing else names a proposer: no comment, audit or other log is read,
+            and nothing is added to record one. False when nobody is recorded -- a date a WSO2 user
+            wrote in the previous system, one left from an older cycle, or a genuine proposal that a
+            later write to the change request replaced as last writer -- and the page must say the
+            proposer is not recorded. Then canAccept is false: Accept proposed time is refused (409
+            change_request_proposer_not_recorded) and proposing a different time is a plain
+            re-schedule that writes no answer, which the customers then approve. Present only for a
+            staff reader or for a customer reading a recorded proposal.
         proposedByName:
           type: string
           description: Staff readers only, while pending and proposerRecorded.
@@ -16965,9 +16982,9 @@ components:
         acceptBlockedReason:
           type: string
           description: >-
-            Staff readers only, when canAccept is false: why, in the words of the refusal (on hold, the
-            proposed start has passed or would end beyond the year 2100, the planned window has no
-            length to keep).
+            Staff readers only, when canAccept is false: why, in the words of the refusal (nobody is
+            recorded as having proposed the time, on hold, the proposed start has passed or would end
+            beyond the year 2100, the planned window has no length to keep).
 
     ChangeRequest:
       allOf:
@@ -18044,15 +18061,19 @@ components:
             expectedCustomerUpdatedOn, expectedPlannedStartOn and expectedPlannedEndOn (all
             three required): applies the proposed start to the planned window (the planned
             length is kept), writes AGREE and moves customer_approval to scheduled in one write.
-            403 for an external caller, 409 when no proposal waits or the page is stale, 400
-            when the change request is on hold. PostgreSQL data source only.
+            403 for an external caller, 409 when no proposal waits, the page is stale or no
+            registered contact of the project is recorded as having proposed the time
+            (errorCode change_request_proposer_not_recorded), 400 when the change request is
+            on hold. PostgreSQL data source only.
         expectedCustomerUpdatedOn:
           type: string
           format: date-time
           description: >-
             The proposal a staff answer is about (customerProposal.startOn, RFC 3339).
             Required with confirmCustomerUpdatedDate and, on a staff state "authorize", while a
-            proposal waits (refused with a 409 when none does). Anywhere else a 400.
+            proposal waits (refused with a 409 when none does). Over a stored time that nobody is
+            recorded as having proposed it is optional on "authorize" (no proposal waits), and
+            must be the stored time when sent (409 otherwise). Anywhere else a 400.
         expectedPlannedStartOn:
           type: string
           description: >-
@@ -20133,9 +20154,12 @@ components:
             not the customer's is also being asked; the customer's own answer is still
             possible), `change_request_no_planned_window` (409: a proposed time on a change
             request with no planned window to move; the customer's answer is still possible),
-            `change_request_not_asked` (403: a contact of the project who holds no REQUESTED row
-            on the live customer stage: registered after the request went out, or a row of
-            theirs cancelled directly; a withdrawn request is a 409), and
+            `change_request_proposer_not_recorded` (409: WSO2's acceptance of a stored time that
+            no registered contact of the project is recorded as having proposed; it is never
+            accepted on the customer's behalf), `change_request_not_asked` (403: a contact of the
+            project who holds no REQUESTED row on the live customer stage: registered after the
+            request went out, or a row of theirs cancelled directly; a withdrawn request is a
+            409), and
             `change_request_forbidden` (403: not a registered contact of the change
             request's project, its own creator, a user who may not decide an internal
             stage, or a field a customer may not set). The list grows, so this is

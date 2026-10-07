@@ -510,8 +510,10 @@ time: the window is its new one and the customer is asked again) or `unanswered`
 of it is decoded: the proposer's name and email, `proposedOn`, `canAccept` and `acceptBlockedReason` are staff facts
 the entity type has no field for, so they cannot reach the portal whatever entity-service sends
 (`TestMapChangeRequestDetails_NeverPassesOnWhoProposedOrWSO2sOwnFacts`, `TestGetChangeRequest_CarriesTheCustomerProposal`);
-`proposerRecorded` false means nobody can say who proposed it (a WSO2 user's date, an old one), and the portal must
-not claim a colleague did. A proposal is never mirrored to the previous system while the dual-write runs (it has no field for
+`proposerRecorded` is true whenever it is present for a customer: entity-service tells a customer a time is
+`pending` (waiting for WSO2) only when a registered contact is recorded as having proposed it, and reads a stored time
+nobody is recorded as having proposed (a WSO2 user's date, an old one) as `unanswered` (history), with neither field --
+so no page says WSO2 is deciding on a time the customer never proposed, and none can claim a colleague proposed it. A proposal is never mirrored to the previous system while the dual-write runs (it has no field for
 it): proposals and WSO2's answers are PostgreSQL-only until the sync stops, and the sync can rewrite the columns.
 
 **`customerCanAnswer` on the change-request detail.** `GET /change-requests/{id}` (`dto.ChangeRequestDetails`)
