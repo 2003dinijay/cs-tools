@@ -903,12 +903,12 @@ func main() {
 				// case S0 pages SRE. Reading both through a switch-over is
 				// harmless: a redelivered trigger is a no-op (create-if-absent).
 				if topic, group, ok := sreIncidentConsumer(l.kind, eventBusCfg.Topic,
-					os.Getenv("INCIDENT_EVENT_HUB_TOPIC"), os.Getenv("INCIDENT_ESCALATION_SRE_INCIDENT_CONSUMER_GROUP"), l.group); ok {
+					os.Getenv("INCIDENT_EVENT_HUB_TOPIC"), os.Getenv("PAGING_SRE_INCIDENT_CONSUMER_GROUP")); ok {
 					incidentCfg := eventBusCfg
 					incidentCfg.Topic = topic
 					escalationConsumers = append(escalationConsumers,
-						startConsumers(ctx, l.name+"-incidents", incidentCfg, group, escalationCount, escalationEngine.Handle, escalationToDeadLetter)...)
-					slog.Info("incident escalation: the SRE ladder reads incidents from their own topic", "topic", topic, "group", group)
+						startConsumers(ctx, "paging-sre-incidents", incidentCfg, group, escalationCount, escalationEngine.Handle, escalationToDeadLetter)...)
+					slog.Info("case paging: the SRE chain reads incidents from their own topic", "topic", topic, "group", group)
 				}
 
 				// And a consumer for that DLQ running THIS ladder's handler, so
@@ -1078,18 +1078,23 @@ func loadOnboardingConfig(steps *entity.CustomerEntityClient, emailClient *notif
 	}
 }
 
+// defaultPagingSREIncidentConsumerGroup is the SRE chain's group on the
+// incident topic. A new group, so it takes the Case Paging name; the ladders'
+// existing groups keep their names, since renaming a group drops its offsets.
+const defaultPagingSREIncidentConsumerGroup = "csm-notification-service-paging-sre-incidents"
+
 // sreIncidentConsumer decides whether a ladder also reads a separate incident
 // topic, and under which consumer group. Only the SRE ladder does: incidents
 // are SRE work, and the CRE ladder pages from customer cases on the shared
 // topic. An unset topic, or one equal to the shared topic, adds nothing.
-func sreIncidentConsumer(kind paging.Ladder, mainTopic, incidentTopic, groupOverride, ladderGroup string) (topic, group string, ok bool) {
+func sreIncidentConsumer(kind paging.Ladder, mainTopic, incidentTopic, groupOverride string) (topic, group string, ok bool) {
 	topic = strings.TrimSpace(incidentTopic)
 	if kind != paging.LadderSRE || topic == "" || topic == mainTopic {
 		return "", "", false
 	}
 	group = strings.TrimSpace(groupOverride)
 	if group == "" {
-		group = ladderGroup + "-incidents"
+		group = defaultPagingSREIncidentConsumerGroup
 	}
 	return topic, group, true
 }

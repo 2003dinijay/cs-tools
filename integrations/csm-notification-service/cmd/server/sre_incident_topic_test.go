@@ -23,7 +23,6 @@ import (
 )
 
 func TestSREIncidentConsumer(t *testing.T) {
-	const sreGroup = "csm-notification-service-escalation-sre"
 	for name, tc := range map[string]struct {
 		kind                    paging.Ladder
 		incidentTopic, override string
@@ -32,11 +31,11 @@ func TestSREIncidentConsumer(t *testing.T) {
 	}{
 		"unset: nothing extra":             {paging.LadderSRE, "", "", "", "", false},
 		"same as the shared topic":         {paging.LadderSRE, "case-events", "", "", "", false},
-		"SRE ladder reads sre-events":      {paging.LadderSRE, " sre-events ", "", "sre-events", sreGroup + "-incidents", true},
+		"SRE ladder reads sre-events":      {paging.LadderSRE, " sre-events ", "", "sre-events", "csm-notification-service-paging-sre-incidents", true},
 		"group override":                   {paging.LadderSRE, "sre-events", " my-group ", "sre-events", "my-group", true},
 		"CRE ladder never reads incidents": {paging.LadderCRE, "sre-events", "", "", "", false},
 	} {
-		topic, group, ok := sreIncidentConsumer(tc.kind, "case-events", tc.incidentTopic, tc.override, sreGroup)
+		topic, group, ok := sreIncidentConsumer(tc.kind, "case-events", tc.incidentTopic, tc.override)
 		if ok != tc.wantOK || topic != tc.wantTopic || group != tc.wantGroup {
 			t.Errorf("%s: (%q, %q, %v), want (%q, %q, %v)", name, topic, group, ok, tc.wantTopic, tc.wantGroup, tc.wantOK)
 		}
