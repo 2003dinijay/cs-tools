@@ -1023,6 +1023,10 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		activeCatalogSvc = service.NewCatalogService(catalogRepo)
 	}
 	catalogHandler := handler.NewCatalogHandler(activeCatalogSvc)
+	// After the switch above: a service request raised from the catalog form
+	// takes its subject and description from its answers. activeCaseSvc is the
+	// same *caseService the case handler already holds, so this reaches it.
+	activeCaseSvc = service.WithServiceRequestCatalog(activeCaseSvc, activeCatalogSvc)
 
 	// Case feedback (CSAT submissions): the ServiceNow data source reads it
 	// from the backing system; both Postgres data sources read

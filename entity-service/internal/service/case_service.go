@@ -92,6 +92,10 @@ type caseService struct {
 	// WithProductCategoryEnforcement's own doc comment.
 	referenceDataRepo   repository.ReferenceDataRepository
 	deployedProductRepo repository.DeployedProductRepository
+	// srCatalog derives a service request's subject and description from its
+	// catalog answers when the caller sent none (fillServiceRequestText). nil
+	// unless wired via WithServiceRequestCatalog.
+	srCatalog srCatalogReader
 }
 
 // WithProductCategoryEnforcement attaches the optional project-type
@@ -586,6 +590,11 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err := s.validateDeployedProductCategoryForType(ctx, req); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
+	// Before both create paths: the dual-write path's Postgres copy
+	// (CreateCaseFromServiceNow) stores req.Subject too, and the ServiceNow
+	// payload for a service request never carries it, so ServiceNow still
+	// derives its own.
+	s.fillServiceRequestText(ctx, &req)
 
 	if s.snMirror != nil {
 		return s.createCaseSNFirst(ctx, req)
