@@ -213,6 +213,21 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
     (triggerUsable ? trigger : headingRef.current)?.focus();
   }, [pendingFocus, proposeDialogOpen, rejectDialogOpen, patchChangeRequest.isPending]);
 
+  // The error state replaces the whole page. A refused answer re-reads the change
+  // request, and that read can fail (the contact was deregistered meanwhile, the
+  // change request is gone: a 404): the heading or the button that had focus is then
+  // unmounted and focus would drop to the document body. So the error state takes it,
+  // but only when focus has nowhere else to be -- never from a control the customer
+  // has moved to since.
+  const errorStateShown = !!error && !isLoading && !isFetching;
+  const errorStateRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (!errorStateShown) return;
+    const active = document.activeElement;
+    if (active && active !== document.body && active.isConnected) return;
+    errorStateRef.current?.focus();
+  }, [errorStateShown]);
+
   const impactColor = getChangeRequestImpactColorShades(
     changeRequest?.impact?.label,
   );
@@ -277,7 +292,10 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
   }
 
   // Error state - only show error if we have an actual error and not loading
-  if (error && !isLoading && !isFetching) {
+  if (errorStateShown) {
+    const errorMessage = isNotFoundError(error)
+      ? CHANGE_REQUEST_NOT_FOUND_MESSAGE
+      : "Could not load change request details.";
     return (
       <Stack spacing={3}>
         <Button
@@ -292,14 +310,16 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
         >
           Back to Change Requests
         </Button>
-        <ApiErrorState
-          error={error}
-          fallbackMessage={
-            isNotFoundError(error)
-              ? CHANGE_REQUEST_NOT_FOUND_MESSAGE
-              : "Could not load change request details."
-          }
-        />
+        {/* The focus target of the error state (see `errorStateShown`): named after the message so a screen reader says what happened. */}
+        <Box
+          ref={errorStateRef}
+          tabIndex={-1}
+          role="group"
+          aria-label={errorMessage}
+          sx={{ outline: "none" }}
+        >
+          <ApiErrorState error={error} fallbackMessage={errorMessage} />
+        </Box>
       </Stack>
     );
   }
