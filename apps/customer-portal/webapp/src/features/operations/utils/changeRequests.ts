@@ -596,6 +596,12 @@ const BAD_REQUEST_MESSAGES: ReadonlyArray<readonly [needle: string, message: str
     "WSO2 asked for a different time than that one",
     "WSO2 asked for a different time than that one. Choose another start.",
   ],
+  // The end the proposal implies (start + the planned length) would pass the last
+  // year the service accepts: a start that far ahead is not a real proposal.
+  [
+    "is too far ahead",
+    "That start is too far ahead. Choose an earlier start.",
+  ],
   [
     "is in the past",
     "The proposed time must be in the future.",

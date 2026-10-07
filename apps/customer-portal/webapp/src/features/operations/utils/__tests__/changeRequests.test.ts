@@ -316,6 +316,10 @@ describe("describeChangeRequestActionError", () => {
     expect(
       say("WSO2 asked for a different time than that one: propose another start").message,
     ).toBe("WSO2 asked for a different time than that one. Choose another start.");
+    // The end the start implies would pass the last year the service accepts.
+    expect(
+      say("plannedStartOn is too far ahead: with the planned length of 2h0m0s the proposed window would end after the year 2100").message,
+    ).toBe("That start is too far ahead. Choose an earlier start.");
   });
 
   it("puts the newer window refusals in the customer's words", () => {
