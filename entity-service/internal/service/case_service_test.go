@@ -507,6 +507,46 @@ func TestCaseService_SearchCases_SupportedFieldsStillReachRepository(t *testing.
 	}
 }
 
+// TestCaseService_SearchCases_SortByAssignee is the regression guard for
+// digiops-cs#2998: domain.CaseSortFieldAssignee existed but validCaseSortField
+// didn't include it, so the webapp's already-built "sort by assignee" column
+// header 400'd. A real, unsupported sort field must still be rejected --
+// this isn't a permissive change.
+func TestCaseService_SearchCases_SortByAssignee(t *testing.T) {
+	called := false
+	repo := &stubCaseRepo{
+		searchCases: func(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error) {
+			called = true
+			if req.SortBy.Field != domain.CaseSortFieldAssignee {
+				t.Errorf("repo received SortBy.Field = %q, want %q", req.SortBy.Field, domain.CaseSortFieldAssignee)
+			}
+			return nil, 0, nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	req := domain.SearchCasesRequest{SortBy: domain.CaseSort{Field: domain.CaseSortFieldAssignee, Order: domain.CaseSortOrderAsc}}
+	if _, err := svc.SearchCases(ctx, req); err != nil {
+		t.Fatalf("unexpected error sorting by assignee: %v", err)
+	}
+	if !called {
+		t.Fatal("expected repo.SearchCases to be called for sortBy.field = assignee")
+	}
+}
+
+func TestCaseService_SearchCases_RejectsUnknownSortField(t *testing.T) {
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	req := domain.SearchCasesRequest{SortBy: domain.CaseSort{Field: "notARealField", Order: domain.CaseSortOrderAsc}}
+	_, err := svc.SearchCases(ctx, req)
+	var ve *apierror.ValidationError
+	if !asValidationError(err, &ve) {
+		t.Fatalf("expected *apierror.ValidationError for an unknown sort field, got %T: %v", err, err)
+	}
+}
+
 // TestCaseService_SearchCases_ProductAndTeamFiltersReachRepository is the
 // regression guard for the same "rejected outright despite a real backing
 // column" bug as the other filters above: product, creTeam and sreTeam used
