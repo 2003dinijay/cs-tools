@@ -111,7 +111,7 @@ export function isChangeRequestLifecycleState(state?: string | null): state is B
  * The state each approval stage belongs to -- the one it is provisioned on
  * entering and can be decided in (the entity service's
  * `approvalStageDecidableState`). Keyed by {@link approvalStageLabel}, so the
- * legacy ServiceNow-style names ("Assess", "Authorize") read the same.
+ * names migrated from the previous system ("Assess", "Authorize") read the same.
  */
 const APPROVAL_STAGE_STATE: Record<string, BeChangeRequestState> = {
   "Peer Approval": "assess",

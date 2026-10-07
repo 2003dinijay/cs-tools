@@ -293,7 +293,7 @@ to the entity service as-is (no field allow-list), with two checks on top:
   (`validateChangeRequestCustomerOutcomeFlags`): `isCustomerApproved cannot be set on the
   customer's behalf: the customer's approval can only be given by the customer in the Customer
   Portal` (likewise `isCustomerReviewed` / "review"). The customer gives it in the Customer
-  Portal (`apps/customer-portal`); the answer is the customer's decision and ServiceNow's record
+  Portal (`apps/customer-portal`); the answer is the customer's decision and the change request's record
   of it is audited. The state half -- no manual `{state: "scheduled"}` out of Customer Approval,
   no `{state: "closed"}` out of Customer Review -- needs the change request's state, so it is the
   entity service's refusal, echoed verbatim (below). There is no "Bypass customer approval" /

@@ -1788,7 +1788,7 @@ function lcSeed(
 /**
  * A change request that is ALREADY at a customer gate with nobody asked (no customer stage, nobody to answer): what an older
  * change looks like when it reached the gate before Request Approval was refused for want of anybody to ask (or when its
- * contacts left the project afterwards), and what a migrated one looks like when ServiceNow never put the question. Request
+ * contacts left the project afterwards), and what a migrated one looks like when the previous system never put the question. Request
  * Approval can no longer produce it, so the fake starts there: the internal approvals settled the way the flow leaves them,
  * the gate's own exits only (Cancel, Re-schedule at Customer Approval, Roll back at Customer Review). `customerGroup` is the
  * project's registered contacts, none of whom can be asked: `null` (none registered) or `{ members: [], contacts }`.
@@ -3264,7 +3264,7 @@ describe("CsmChangeRequestDetailPage — customer group: an older change already
     });
     renderPage();
     expect(screen.getByText(/^Nobody is being asked to answer at this step\./)).toBeInTheDocument();
-    expect(screen.getByText(/came over from ServiceNow may also have no request at all/)).toBeInTheDocument();
+    expect(screen.getByText(/migrated from the previous system may also have no request at all/)).toBeInTheDocument();
     expect(screen.getByText(/Cancel change is the only way out/)).toBeInTheDocument();
   });
 

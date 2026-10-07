@@ -13663,7 +13663,7 @@ components:
             NOT ACCEPTED from the portal (any value but null is a 400, no upstream
             call): the customer's approval is the customer's own decision, given in the
             Customer Portal, and no staff action records it on their behalf (a
-            compliance rule: ServiceNow's record of it is audited). Message:
+            compliance rule: the change request's record of it is audited). Message:
             `isCustomerApproved cannot be set on the customer's behalf: the customer's
             approval can only be given by the customer in the Customer Portal`.
         isCustomerReviewed:

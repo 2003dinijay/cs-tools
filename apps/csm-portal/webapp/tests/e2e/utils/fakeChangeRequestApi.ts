@@ -502,7 +502,7 @@ export interface FakeChangeRequestApi {
    * the flow leaves them, the change in `state`, and NO customer stage and nobody to answer. Request Approval can no longer
    * produce this change when a customer box is ticked (it is refused for a project nobody on which can be asked), so a spec that
    * needs the dead end that remains for changes that reached a customer gate before that rule -- or whose contacts left the
-   * project afterwards, or that came over from ServiceNow without a request -- starts here: at `customer_approval` or
+   * project afterwards, or that was migrated from the previous system without a request -- starts here: at `customer_approval` or
    * `customer_review` (the Review stage of a Normal change settled too), or at `review` for a change that is still to go to the
    * customer's review. Nothing is provisioned (like a legacy row: the customer stage appears only on the next write that
    * touches the state or the project, `syncCustomers`); the open page is not refreshed. A Standard change has no internal stage.

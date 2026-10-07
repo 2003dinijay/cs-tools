@@ -219,7 +219,7 @@ func validateChangeRequestCustomerGateFlags(body []byte) string {
 
 // The customer's own answer is the customer's: nobody in the CSM portal (WSO2
 // staff, every caller of this BFF) records the customer's approval or review on
-// the customer's behalf -- the answer is the customer's decision and ServiceNow's
+// the customer's behalf -- the answer is the customer's decision and the change request's
 // record of it is audited. isCustomerApproved / isCustomerReviewed are that answer,
 // which the customer gives in the Customer Portal, so a PATCH that carries either
 // (true or false, alone or with a state) is refused here with the entity service's

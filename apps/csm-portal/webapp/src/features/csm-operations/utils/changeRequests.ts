@@ -375,13 +375,13 @@ export const NO_CUSTOMER_CONTACTS_HELPER =
  * applies, so it names them rather than one: the request goes to the project's
  * registered contacts leaving out whoever raised the change and anyone no longer
  * active (so a project whose only contact is the requester, or whose contacts
- * were all deactivated, asks nobody), and a change that came over from ServiceNow
+ * were all deactivated, asks nobody), and a change migrated from the previous system
  * sitting at the step can have had no request at all.
  */
 export const NOBODY_ASKED_HELPER =
   "Nobody is being asked to answer at this step. The request goes to the Customer Project's registered contacts, " +
   "leaving out whoever raised the change and anyone no longer active, and none of them has one waiting; " +
-  "a change that came over from ServiceNow may also have no request at all.";
+  "a change migrated from the previous system may also have no request at all.";
 
 /**
  * What staff are left with, per customer gate, when nobody is being asked.
