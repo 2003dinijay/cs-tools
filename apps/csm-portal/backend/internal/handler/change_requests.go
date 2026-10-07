@@ -287,9 +287,7 @@ func validateChangeRequestTimeAnswerFields(body []byte) string {
 	}
 	for _, field := range changeRequestTimeAnswerFields {
 		for _, raw := range payloadValues(payload, field) {
-			if string(bytes.TrimSpace(raw)) == "null" {
-				continue
-			}
+			// A JSON null decodes into a string without error: it is "absent", as to the entity service.
 			var v string
 			if err := json.Unmarshal(raw, &v); err != nil {
 				return field + " must be a string"

@@ -775,6 +775,9 @@ func TestPatchChangeRequest_TimeAnswerFields(t *testing.T) {
 		"Propose a different time": counter,
 		"a decline":                `{"state":"authorize","expectedCustomerUpdatedOn":"2030-03-08T09:00:00Z"}`,
 		"nulls are absent":         `{"title":"x","confirmCustomerUpdatedDate":null,"EXPECTEDCUSTOMERUPDATEDON":null}`,
+		// Not an object: the entity service's to refuse, in its own words.
+		"a body that is no object": `[1]`,
+		"an empty body":            ``,
 	} {
 		t.Run("forwards "+name, func(t *testing.T) {
 			var got []byte
