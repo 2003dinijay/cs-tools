@@ -7109,18 +7109,20 @@ always non-`NULL` (each branch selects a primary key), so `<> ALL` is an
 exact negation of `= ANY` here, with no three-valued-logic subtlety to
 account for.
 
-**`projectOnboardingStatus`/its `notIn` sibling get the identical treatment**
-(`buildCaseSearchWhere`, same file): matched via
-`wi.project_id = ANY(ARRAY(SELECT id FROM project WHERE onboarding_status =
-ANY(...)))` instead of through the `LEFT JOIN` to `p` -- confirmed this lets
-the planner drop the join to `project` from the `COUNT` query entirely
-(nothing else in a `COUNT` references `p`), where filtering through the join
-forces it to be evaluated for every candidate row regardless of how small
-`project` itself is. The `notIn` form preserves the exact same `NULL`
-handling as before (a case with no project, or whose project has no status
-set, satisfies `notIn` but never `in`): `(wi.project_id IS NULL OR
-wi.project_id = ANY(ARRAY(SELECT id FROM project WHERE onboarding_status IS
-NULL OR onboarding_status <> ALL(...))))`.
+**`projectOnboardingStatus`/its `notIn` sibling deliberately keep filtering
+through the `LEFT JOIN` to `p`, despite the superficial similarity to the
+state-filter rewrite above.** The same "match against the table directly via
+an `ARRAY`-wrapped id lookup instead of filtering through a join" technique
+was tried here too and measured, directly against production-volume data, to
+bring no benefit and in some cases be slower. The state lookup wins because a
+case search's state filter is typically highly selective (e.g. "open" is a
+small fraction of all cases); `projectOnboardingStatus` filters in practice
+tend to be the opposite -- a widget excluding only a couple of terminal
+statuses matches nearly every project -- so building an array of almost
+every project id and checking per-row membership against it costs more than
+the indexed nested-loop join this already was. Revisit only with a
+measurement showing otherwise for a specific, genuinely selective
+onboarding-status filter shape.
 
 **Known, accepted divergence**: a work_item row whose own `type` disagrees
 with which extension table actually holds its data (see the bullet above --
