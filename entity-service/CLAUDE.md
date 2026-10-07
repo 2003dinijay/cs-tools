@@ -3940,17 +3940,28 @@ path).
   also gets `plannedStartOn` / `plannedEndOn` in ServiceNow's `YYYY-MM-DD HH:MM:SS` (UTC) layout
   (`repository.PlannedTimestampForServiceNow`): PostgreSQL accepts RFC 3339 too, which
   ServiceNow's service refused, so an RFC 3339 PATCH used to commit and then fail every mirror write.
-  **The ServiceNow service takes RFC 3339 itself now** (`snPlannedTimestamp`, which calls that same
-  function): on a PATCH (`plannedStartOn` / `plannedEndOn`) and on a create (`plannedStartDate` /
+  **The ServiceNow service takes RFC 3339 itself now** (`snPlannedTimestamp`, which calls
+  `repository.ServiceNowPlannedTimestamp`, the strict sibling of that function for a value nobody has
+  judged): on a PATCH (`plannedStartOn` / `plannedEndOn`) and on a create (`plannedStartDate` /
   `plannedEndDate`, and the `durationInput` cross-check) a value with a zone designator is converted to
-  the zoneless UTC layout before it is forwarded, a `YYYY-MM-DD HH:MM:SS` value is forwarded as sent
-  (whatever its year: that service never bounded it), and everything else (`infinity`, `now`,
-  `tomorrow`, a date alone, a zone name, an RFC 3339 value outside the years 2000 to 2100) is the same
-  400 as before (`<field> must follow the format: YYYY-MM-DD HH:mm:ss`) with no downstream call. So the
-  pure ServiceNow data source and the ServiceNow-first create (which hands ServiceNow the text the
-  caller sent, validated, not converted) accept both layouts, as the PostgreSQL data source does
-  (`TestSNPlannedTimestamp`, `TestSNChangeRequestService_PatchChangeRequest_PlannedWindowLayouts`,
-  `TestSNChangeRequestService_CreateChangeRequest_PlannedWindowLayouts`). The expected window of a
+  the zoneless UTC layout before it is forwarded (whole seconds), a `YYYY-MM-DD HH:MM:SS` value is
+  forwarded as sent, and everything else is a 400 with no downstream call: `infinity`, `now`,
+  `tomorrow`, a date alone, a zone name (`<field> must follow the format: YYYY-MM-DD HH:mm:ss`); a year
+  outside 2000 to 2100 in EITHER layout, the range PostgreSQL holds every planned window to (`... (the
+  year must be in 2000 to 2100)`; a zoneless year used to be forwarded as typed); and a ZONELESS value
+  with a fractional second (`... (whole seconds only, no fractional second)`: Go's parser takes one
+  although the layout has none, so `1999-01-01 00:00:00.5` used to travel as typed and fail downstream
+  with an opaque pattern error; an RFC 3339 value with a fraction is an instant and is still converted
+  to whole seconds). The mirror's `PlannedTimestampForServiceNow` is unchanged (it hands back what it
+  cannot read, right for a window PostgreSQL already judged). The ServiceNow-first create hands
+  ServiceNow the window converted the same way the PATCH mirror does (what PostgreSQL accepted,
+  including a zoneless fraction, reaches ServiceNow as whole seconds, never refused there) and
+  PostgreSQL the request as sent. So the pure ServiceNow data source and the ServiceNow-first create
+  accept both layouts, as the PostgreSQL data source does
+  (`TestSNPlannedTimestamp`, `TestServiceNowPlannedTimestamp`,
+  `TestSNChangeRequestService_PatchChangeRequest_PlannedWindowLayouts`,
+  `TestSNChangeRequestService_CreateChangeRequest_PlannedWindowLayouts`,
+  `TestChangeRequestService_CreateChangeRequest_SNFirstValidatesTheWindowBeforeServiceNow`). The expected window of a
   customer's answer is still PostgreSQL's alone: the ServiceNow service ignores the two fields.
 * *Create is ServiceNow-first* (`createChangeRequestSNFirst`): type, scope and (new) the planned
   window are validated before ServiceNow is called; ServiceNow gets no project / deployments / boxes;

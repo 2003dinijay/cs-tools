@@ -514,9 +514,14 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	// The planned window is validated BEFORE ServiceNow is called, exactly as the
 	// plain-Postgres create does it (repository.NormalizeCreatePlannedWindow): the
 	// raw text used to reach both ServiceNow and PostgreSQL's own date parser
-	// ('tomorrow', 'infinity', a year in the thousands). ServiceNow is given the
-	// original, validated text -- the layout it takes -- and PostgreSQL the parsed
-	// instant, which CreateChangeRequestFromServiceNow normalises again.
+	// ('tomorrow', 'infinity', a year in the thousands). PostgreSQL then gets the
+	// request as sent (CreateChangeRequestFromServiceNow normalises the window
+	// again, to an instant) and ServiceNow the window in the layout ITS service
+	// takes, as the PATCH mirror does it (repository.PlannedTimestampForServiceNow:
+	// RFC 3339 becomes "YYYY-MM-DD HH:MM:SS" in UTC, whole seconds). The ServiceNow
+	// service converts RFC 3339 itself too (snPlannedTimestamp), but it refuses a
+	// zoneless value with a fractional second, which PostgreSQL accepts, so what
+	// PostgreSQL accepted is converted here and never reaches it as typed.
 	if _, err := repository.NormalizeCreatePlannedWindow(req); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
@@ -537,6 +542,14 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	// the project's registered contacts).
 	mirrorReq := req
 	mirrorReq.ProjectID, mirrorReq.DeploymentIDs, mirrorReq.DeploymentProductIDs = nil, nil, nil
+	if mirrorReq.PlannedStartDate != nil {
+		v := repository.PlannedTimestampForServiceNow(*mirrorReq.PlannedStartDate)
+		mirrorReq.PlannedStartDate = &v
+	}
+	if mirrorReq.PlannedEndDate != nil {
+		v := repository.PlannedTimestampForServiceNow(*mirrorReq.PlannedEndDate)
+		mirrorReq.PlannedEndDate = &v
+	}
 	snResp, err := s.snMirror.CreateChangeRequest(ctx, mirrorReq)
 	if err != nil {
 		// ServiceNow never accepted the change request -- nothing is

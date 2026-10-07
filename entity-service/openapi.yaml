@@ -5963,9 +5963,10 @@ paths:
         Both layouts are accepted on every data source. The pure ServiceNow data source
         takes ServiceNow's own layout, "YYYY-MM-DD HH:MM:SS" in UTC, and converts an RFC
         3339 value to it before forwarding (the dual-write mirror does the same); there the
-        years 2000 to 2100 bound applies to an RFC 3339 value only (a "YYYY-MM-DD HH:MM:SS"
-        value is forwarded as sent) and a refusal reads "plannedStartOn must follow the
-        format: YYYY-MM-DD HH:mm:ss".
+        years 2000 to 2100 bound applies to both layouts, a "YYYY-MM-DD HH:MM:SS" value with a
+        fractional second is refused (whole seconds only), and a refusal reads "plannedStartOn
+        must follow the format: YYYY-MM-DD HH:mm:ss", followed by "(the year must be in 2000 to
+        2100)" or "(whole seconds only, no fractional second)" for those two.
         A customer's proposal is a start (an end alone is a 400).
 
         Customer requirements lock. The Customer Project (projectId) and the two
@@ -17773,10 +17774,10 @@ components:
             Planned start date and time (format YYYY-MM-DD HH:MM:SS, UTC, or RFC 3339 with
             a zone designator, on every data source: the ServiceNow service converts an RFC
             3339 value to the layout ServiceNow takes before it forwards it). Years 2000
-            to 2100 only (on the ServiceNow data source for RFC 3339 values); anything
-            else ("infinity", "now", a date alone, a zone name) is a 400 that names the
-            field, on both create paths (the ServiceNow-first one before ServiceNow is
-            called).
+            to 2100 only (on every data source); anything else ("infinity", "now", a date
+            alone, a zone name) is a 400 that names the field, on both create paths (the
+            ServiceNow-first one before ServiceNow is called), and on the ServiceNow data
+            source so is a "YYYY-MM-DD HH:MM:SS" value with a fractional second.
         plannedEndDate:
           type: string
           description: Planned end date and time, as plannedStartDate.
@@ -18025,9 +18026,10 @@ components:
             Planned start date and time: "YYYY-MM-DD HH:MM:SS" (UTC), or RFC 3339
             with a zone designator ("2030-03-01T09:00:00Z"), on every data source (the
             ServiceNow one converts RFC 3339 to UTC "YYYY-MM-DD HH:MM:SS" before it
-            forwards the value). Years 2000 to 2100 only (on the ServiceNow data source
-            for RFC 3339 values; a "YYYY-MM-DD HH:MM:SS" value is forwarded as sent); any
-            other text (Postgres' "infinity", "now", a date alone, a zone name) is a 400.
+            forwards the value). Years 2000 to 2100 only (on every data source); any
+            other text (Postgres' "infinity", "now", a date alone, a zone name) is a 400,
+            and on the ServiceNow data source so is a "YYYY-MM-DD HH:MM:SS" value with a
+            fractional second.
         plannedEndOn:
           type: string
           description: >-
