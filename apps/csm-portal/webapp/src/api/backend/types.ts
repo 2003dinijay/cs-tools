@@ -66,6 +66,8 @@ export interface BeReorderSavedFilterViewPayload {
 }
 
 export interface BeSearchResponseBase {
+  /** Matching records, or -1 when the request set `skipTotal` (not counted, not
+   * a lower bound: never display it). */
   total: number;
   limit: number;
   offset: number;

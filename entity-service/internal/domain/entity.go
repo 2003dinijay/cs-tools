@@ -2869,7 +2869,9 @@ type SearchCasesRequest struct {
 	GroupBy string `json:"groupBy,omitempty"`
 	// SkipTotal asks the search not to count every matching record. The response's
 	// total is then TotalNotComputed (-1) and only the requested page is read.
-	// For callers that never show a total, such as global search.
+	// For callers that never show a total, such as global search. Ignored by the
+	// ServiceNow-backed service, which always reports one, and when GroupBy is
+	// set (the totals are the bucket counts).
 	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
@@ -4144,7 +4146,8 @@ type SearchChangeRequestsRequest struct {
 	Pagination Pagination                  `json:"pagination"`
 	// SkipTotal asks the search not to count every matching record. The response's
 	// total is then TotalNotComputed (-1) and only the requested page is read.
-	// For callers that never show a total, such as global search.
+	// For callers that never show a total, such as global search. Ignored by the
+	// ServiceNow-backed service, which always reports one.
 	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
@@ -5679,7 +5682,8 @@ type SearchIncidentsRequest struct {
 	Pagination Pagination             `json:"pagination"`
 	// SkipTotal asks the search not to count every matching record. The response's
 	// total is then TotalNotComputed (-1) and only the requested page is read.
-	// For callers that never show a total, such as global search.
+	// For callers that never show a total, such as global search. Ignored by the
+	// ServiceNow-backed service, which always reports one.
 	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
@@ -6155,7 +6159,8 @@ type SearchProblemsRequest struct {
 	Pagination Pagination            `json:"pagination"`
 	// SkipTotal asks the search not to count every matching record. The response's
 	// total is then TotalNotComputed (-1) and only the requested page is read.
-	// For callers that never show a total, such as global search.
+	// For callers that never show a total, such as global search. Ignored by the
+	// ServiceNow-backed service, which always reports one.
 	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 
@@ -6468,7 +6473,8 @@ type SearchConversationsRequest struct {
 	Pagination Pagination                 `json:"pagination"`
 	// SkipTotal asks the search not to count every matching record. The response's
 	// total is then TotalNotComputed (-1) and only the requested page is read.
-	// For callers that never show a total, such as global search.
+	// For callers that never show a total, such as global search. Ignored by the
+	// ServiceNow-backed service, which always reports one.
 	SkipTotal bool `json:"skipTotal,omitempty"`
 }
 

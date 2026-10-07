@@ -15046,7 +15046,8 @@ components:
             response's `total` is -1 and only the requested page is read. For
             callers that never show a total (global search shows a handful of
             hits). Defaults to false, which returns the exact total as before.
-            Ignored on the ServiceNow data source, which always reports one.
+            Ignored on the ServiceNow data source, which always reports one,
+            and for a search that sets groupBy (its totals are the bucket counts).
         filters:
           $ref: '#/components/schemas/SearchCasesFilters'
         sortBy:
@@ -15827,6 +15828,10 @@ components:
           description: Populated instead of cases when the request set groupBy.
         total:
           type: integer
+          description: >-
+            -1 when the request set skipTotal: the count was not run, so there is no
+            total (it is not a lower bound). Otherwise the exact number of
+            matching records.
         offset:
           type: integer
         limit:
@@ -16566,6 +16571,10 @@ components:
             $ref: '#/components/schemas/SearchChangeRequestView'
         total:
           type: integer
+          description: >-
+            -1 when the request set skipTotal: the count was not run, so there is no
+            total (it is not a lower bound). Otherwise the exact number of
+            matching records.
         offset:
           type: integer
         limit:
@@ -20247,6 +20256,10 @@ components:
             $ref: '#/components/schemas/SearchIncidentView'
         total:
           type: integer
+          description: >-
+            -1 when the request set skipTotal: the count was not run, so there is no
+            total (it is not a lower bound). Otherwise the exact number of
+            matching records.
         offset:
           type: integer
         limit:
@@ -21132,6 +21145,10 @@ components:
             $ref: '#/components/schemas/SearchProblemView'
         total:
           type: integer
+          description: >-
+            -1 when the request set skipTotal: the count was not run, so there is no
+            total (it is not a lower bound). Otherwise the exact number of
+            matching records.
         offset:
           type: integer
         limit:
@@ -21508,6 +21525,10 @@ components:
             $ref: '#/components/schemas/SearchConversationView'
         total:
           type: integer
+          description: >-
+            -1 when the request set skipTotal: the count was not run, so there is no
+            total (it is not a lower bound). Otherwise the exact number of
+            matching records.
         offset:
           type: integer
         limit:

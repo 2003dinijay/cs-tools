@@ -3117,6 +3117,7 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 	// Query each set the caller's identity (read from egCtx, stamped above)
 	// as their own implicit one-statement transaction, so there is no
 	// explicit tx/setCallerIdentity call needed here any more.
+
 	// SkipTotal: the caller does not show a total (global search shows a handful
 	// of hits), so the COUNT is not run at all -- it is as costly as the page
 	// query and holds a second pool connection while it runs.

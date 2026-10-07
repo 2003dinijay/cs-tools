@@ -106,79 +106,121 @@ func tracedPool(t *testing.T) (*pgxpool.Pool, *statementRecorder) {
 	return pool, rec
 }
 
-func TestSearchSkipTotalIntegration(t *testing.T) {
-	pool, rec := tracedPool(t)
-	scoped := repository.NewScoped(pool)
-	scope := repository.SearchScope{Unrestricted: true, ViewerEmail: "skip-total-test@wso2.com"}
-	ctx := repository.WithCallerIdentity(context.Background(), scope)
+// skipTotalSearches runs each of the five searches under the given identity.
+// The request is the same for the two modes; only SkipTotal differs.
+func skipTotalSearches(scoped *repository.Scoped) []struct {
+	name string
+	run  func(scope repository.SearchScope, skip bool) (page any, total int, err error)
+} {
 	page := domain.Pagination{Limit: 5}
-
 	cases := repository.NewCaseRepository(scoped)
 	incidents := repository.NewIncidentRepository(scoped)
 	changeRequests := repository.NewChangeRequestRepository(scoped)
 	problems := repository.NewProblemRepository(scoped)
 	conversations := repository.NewConversationRepository(scoped)
+	as := func(scope repository.SearchScope) context.Context {
+		return repository.WithCallerIdentity(context.Background(), scope)
+	}
 
-	searches := []struct {
+	return []struct {
 		name string
-		run  func(skip bool) (page any, total int, err error)
+		run  func(scope repository.SearchScope, skip bool) (any, int, error)
 	}{
-		{"cases", func(skip bool) (any, int, error) {
-			return cases.SearchCases(ctx, domain.SearchCasesRequest{
+		{"cases", func(scope repository.SearchScope, skip bool) (any, int, error) {
+			return cases.SearchCases(as(scope), domain.SearchCasesRequest{
 				SortBy:     domain.CaseSort{Field: domain.CaseSortFieldCreatedOn, Order: domain.CaseSortOrderDesc},
 				Pagination: page, SkipTotal: skip,
 			}, scope)
 		}},
-		{"incidents", func(skip bool) (any, int, error) {
-			return incidents.SearchIncidents(ctx, domain.SearchIncidentsRequest{
+		{"incidents", func(scope repository.SearchScope, skip bool) (any, int, error) {
+			return incidents.SearchIncidents(as(scope), domain.SearchIncidentsRequest{
 				SortBy:     domain.IncidentSort{Field: domain.IncidentSortFieldUpdatedOn, Order: domain.IncidentSortOrderDesc},
 				Pagination: page, SkipTotal: skip,
 			}, nil, nil, nil, nil, nil, nil, nil, nil)
 		}},
-		{"change requests", func(skip bool) (any, int, error) {
-			return changeRequests.SearchChangeRequests(ctx, domain.SearchChangeRequestsRequest{
+		{"change requests", func(scope repository.SearchScope, skip bool) (any, int, error) {
+			return changeRequests.SearchChangeRequests(as(scope), domain.SearchChangeRequestsRequest{
 				SortBy:     domain.ChangeRequestSort{Field: domain.ChangeRequestSortFieldUpdatedOn, Order: domain.ChangeRequestSortOrderDesc},
 				Pagination: page, SkipTotal: skip,
 			}, nil, nil, nil, nil)
 		}},
-		{"problems", func(skip bool) (any, int, error) {
-			return problems.SearchProblems(ctx, domain.SearchProblemsRequest{Pagination: page, SkipTotal: skip}, nil, nil, nil)
+		{"problems", func(scope repository.SearchScope, skip bool) (any, int, error) {
+			return problems.SearchProblems(as(scope), domain.SearchProblemsRequest{Pagination: page, SkipTotal: skip}, nil, nil, nil)
 		}},
-		{"conversations", func(skip bool) (any, int, error) {
-			return conversations.SearchConversations(ctx, domain.SearchConversationsRequest{
+		{"conversations", func(scope repository.SearchScope, skip bool) (any, int, error) {
+			return conversations.SearchConversations(as(scope), domain.SearchConversationsRequest{
 				SortBy:     domain.ConversationSort{Field: domain.ConversationSortFieldCreatedOn, Order: domain.ConversationSortOrderDesc},
 				Pagination: page, SkipTotal: skip,
 			}, "")
 		}},
 	}
+}
 
-	for _, s := range searches {
-		t.Run(s.name, func(t *testing.T) {
-			rec.reset()
-			withTotal, total, err := s.run(false)
+// The statements a search sends, for an internal caller and for an external
+// one with no projects (the same row-level-security path a customer takes): a
+// normal search sends exactly one COUNT, a SkipTotal search sends none and
+// reports TotalNotComputed. True on any database, empty or not.
+func TestSearchSkipTotalIntegration_StatementsSent(t *testing.T) {
+	pool, rec := tracedPool(t)
+	identities := []struct {
+		name  string
+		scope repository.SearchScope
+	}{
+		{"internal", repository.SearchScope{Unrestricted: true, ViewerEmail: "skip-total-test@wso2.com"}},
+		{"external with no projects", repository.SearchScope{ViewerEmail: "skip-total-stranger@test.local"}},
+	}
+
+	for _, search := range skipTotalSearches(repository.NewScoped(pool)) {
+		for _, id := range identities {
+			t.Run(search.name+"/"+id.name, func(t *testing.T) {
+				rec.reset()
+				if _, total, err := search.run(id.scope, false); err != nil {
+					t.Fatalf("search with the count: %v", err)
+				} else if total < 0 {
+					t.Errorf("a normal search reported total %d", total)
+				}
+				if n := rec.counts(); n != 1 {
+					t.Errorf("a normal search sent %d COUNT statements, want 1", n)
+				}
+
+				rec.reset()
+				_, total, err := search.run(id.scope, true)
+				if err != nil {
+					t.Fatalf("search without the count: %v", err)
+				}
+				if n := rec.counts(); n != 0 {
+					t.Errorf("a SkipTotal search sent %d COUNT statements, want 0", n)
+				}
+				if total != domain.TotalNotComputed {
+					t.Errorf("a SkipTotal search reported total %d, want %d", total, domain.TotalNotComputed)
+				}
+			})
+		}
+	}
+}
+
+// The page is the page: with the flag the rows are exactly those of the same
+// search without it. Only meaningful where the database has rows to compare, so
+// a resource with none is skipped (reported as skipped, not as proof) instead of
+// passing on two empty lists.
+func TestSearchSkipTotalIntegration_SamePage(t *testing.T) {
+	pool, _ := tracedPool(t)
+	internal := repository.SearchScope{Unrestricted: true, ViewerEmail: "skip-total-test@wso2.com"}
+
+	for _, search := range skipTotalSearches(repository.NewScoped(pool)) {
+		t.Run(search.name, func(t *testing.T) {
+			withTotal, _, err := search.run(internal, false)
 			if err != nil {
 				t.Fatalf("search with the count: %v", err)
 			}
-			if n := rec.counts(); n != 1 {
-				t.Errorf("a normal search sent %d COUNT statements, want 1", n)
+			a, _ := json.Marshal(withTotal)
+			if string(a) == "[]" || string(a) == "null" {
+				t.Skipf("no %s in this database, so comparing two empty pages would prove nothing", search.name)
 			}
-			if total < 0 {
-				t.Errorf("a normal search reported total %d", total)
-			}
-
-			rec.reset()
-			skipped, skippedTotal, err := s.run(true)
+			skipped, _, err := search.run(internal, true)
 			if err != nil {
 				t.Fatalf("search without the count: %v", err)
 			}
-			if n := rec.counts(); n != 0 {
-				t.Errorf("a SkipTotal search sent %d COUNT statements, want 0", n)
-			}
-			if skippedTotal != domain.TotalNotComputed {
-				t.Errorf("a SkipTotal search reported total %d, want %d", skippedTotal, domain.TotalNotComputed)
-			}
-
-			a, _ := json.Marshal(withTotal)
 			b, _ := json.Marshal(skipped)
 			if string(a) != string(b) {
 				t.Errorf("the page differs with SkipTotal:\n  with count:    %s\n  without count: %s", a, b)
