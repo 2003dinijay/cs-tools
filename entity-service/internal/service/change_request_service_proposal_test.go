@@ -64,6 +64,10 @@ var (
 	}
 )
 
+// mirrorQuietPeriod is how long runMirrorAs waits for a mirror write before it says there was none:
+// a write is handed to the dispatcher's worker at once, so this only has to outlast a goroutine.
+const mirrorQuietPeriod = 150 * time.Millisecond
+
 // runMirror sends req (as nobody in particular, see callerCtx) through the dual-write service whose
 // repository answers with committed, and returns what the ServiceNow mirror was asked to PATCH (nil
 // when it was not called at all).
@@ -96,7 +100,7 @@ func runMirrorAs(t *testing.T, ctx context.Context, req domain.PatchChangeReques
 	select {
 	case got := <-called:
 		return &got
-	case <-time.After(400 * time.Millisecond):
+	case <-time.After(mirrorQuietPeriod):
 		if n := failures.count(); n != 0 {
 			t.Fatalf("nothing was dispatched but %d sn_writeback_failures were recorded", n)
 		}
