@@ -560,72 +560,50 @@ func TestChangeRequestFlowIntegration_StaleApprovals_OldFlowRescheduleStillFinis
 	f.wantAnswer(id, "in Scheduled with the stale date", "unanswered")
 }
 
-// (e, continued) Re-schedule on an Emergency change and a Standard one: the same --
-// the customer is asked again, in the same state, with no approval repeated.
-func TestChangeRequestFlowIntegration_StaleApprovals_RescheduleEmergencyAndStandard(t *testing.T) {
+// (e, continued) Re-schedule on a Standard change: the same -- the customer is asked again,
+// in the same state, with no approval repeated. (The Emergency subtest is retired: an Emergency
+// change never reaches Customer Approval; what a Re-schedule does to a legacy one that is there
+// is TestChangeRequestFlowIntegration_RescheduleLegacyEmergencyInCustomerApproval.)
+func TestChangeRequestFlowIntegration_StaleApprovals_RescheduleStandard(t *testing.T) {
 	cust := []string{crScopeUserA1, crScopeUserA2}
-	t.Run("emergency", func(t *testing.T) {
-		f := newCustomerGroupFlow(t)
-		seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
-		id := f.createWithProject(domain.ChangeRequestTypeEmergency, sp(crScopeProjectA), true, false)
-		f.setPlanned(id, rsStart1, rsEnd1)
-		f.requestApproval(id)
-		f.wantLive(id, "in Authorize", map[string][]string{"ECAB Approval": {crECABMemberUserID}})
-		f.wantCanDecide(id, "in Authorize", everyone([]string{crECABMemberUserID}, "ECAB Approval"))
-		if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
-			t.Fatalf("ECAB approval: %v", err)
-		}
-		f.wantLive(id, "in Customer Approval", map[string][]string{"Customer Approval": cust})
-		if err := f.reschedule(id, nil, sp(rsEnd2)); err != nil {
-			t.Fatalf("re-schedule: %v", err)
-		}
-		f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
-		f.wantLive(id, "after Re-schedule", map[string][]string{"Customer Approval#2": cust})
-		f.wantCanDecide(id, "after Re-schedule", everyone(cust, "Customer Approval#2"))
-		if got := f.stageLabels(id); got != "ECAB Approval,Customer Approval,Customer Approval" {
-			t.Fatalf("emergency stages after Re-schedule = %s (no ECAB again)", got)
-		}
-	})
-	t.Run("standard", func(t *testing.T) {
-		f := newCustomerGroupFlow(t)
-		id := f.createWithProject(domain.ChangeRequestTypeStandard, sp(crScopeProjectA), true, false)
-		f.setPlanned(id, rsStart1, rsEnd1)
-		f.requestApproval(id)
-		f.expect(id, "in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
-		f.wantLive(id, "in Customer Approval", map[string][]string{"Customer Approval": cust})
-		if err := f.reschedule(id, nil, sp(rsEnd2)); err != nil {
-			t.Fatalf("re-schedule: %v", err)
-		}
-		f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
-		f.wantLive(id, "after Re-schedule", map[string][]string{"Customer Approval#2": cust})
-		f.wantCanDecide(id, "after Re-schedule", everyone(cust, "Customer Approval#2"))
-		f.wantStatuses(id, "after Re-schedule", "Customer Approval", map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
-	})
+	f := newCustomerGroupFlow(t)
+	id := f.createWithProject(domain.ChangeRequestTypeStandard, sp(crScopeProjectA), true, false)
+	f.setPlanned(id, rsStart1, rsEnd1)
+	f.requestApproval(id)
+	f.expect(id, "in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.wantLive(id, "in Customer Approval", map[string][]string{"Customer Approval": cust})
+	if err := f.reschedule(id, nil, sp(rsEnd2)); err != nil {
+		t.Fatalf("re-schedule: %v", err)
+	}
+	f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
+	f.wantLive(id, "after Re-schedule", map[string][]string{"Customer Approval#2": cust})
+	f.wantCanDecide(id, "after Re-schedule", everyone(cust, "Customer Approval#2"))
+	f.wantStatuses(id, "after Re-schedule", "Customer Approval", map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
 }
 
-// (f) The Emergency and Standard paths are unaffected: ECAB is decidable in
-// Authorize and nothing else is ever requested; Standard has no internal stage
+// (f) The Emergency and Standard paths are unaffected: the Emergency change's one CAB stage is
+// decidable in Authorize and nothing else is ever requested; Standard has no internal stage
 // at all and a customer stage only when Customer Approval / Review is ticked.
 func TestChangeRequestFlowIntegration_StaleApprovals_EmergencyAndStandardUnaffected(t *testing.T) {
 	cust := []string{crScopeUserA1, crScopeUserA2}
 	t.Run("emergency", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
-		seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
 		id := f.createWithProject(domain.ChangeRequestTypeEmergency, sp(crScopeProjectA), false, false)
 		f.requestApproval(id)
 		f.expect(id, "in Authorize", "AUTHORIZE", "canceled")
-		f.wantLive(id, "in Authorize", map[string][]string{"ECAB Approval": {crECABMemberUserID}})
-		f.wantCanDecide(id, "in Authorize", everyone([]string{crECABMemberUserID}, "ECAB Approval"))
-		if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
-			t.Fatalf("ECAB approval: %v", err)
+		cab := []string{crCABMemberUserID1, crCABMemberUserID2}
+		f.wantLive(id, "in Authorize", map[string][]string{"CAB Approval": cab})
+		f.wantCanDecide(id, "in Authorize", everyone(cab, "CAB Approval"))
+		if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
+			t.Fatalf("CAB approval: %v", err)
 		}
 		f.expect(id, "in Scheduled", "SCHEDULED", "implement", "canceled")
 		f.wantLive(id, "in Scheduled", nil)
 		f.wantCanDecide(id, "in Scheduled", nil)
 		f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
 		f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
-		if got := f.stageLabels(id); got != "ECAB Approval" {
-			t.Fatalf("emergency stages in Review = %s, want only the ECAB stage", got)
+		if got := f.stageLabels(id); got != "CAB Approval" {
+			t.Fatalf("emergency stages in Review = %s, want only the CAB stage", got)
 		}
 		f.wantLive(id, "in Review", nil)
 		f.step(id, domain.ChangeRequestStateClosed, "CLOSED")

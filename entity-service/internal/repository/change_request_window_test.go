@@ -218,7 +218,7 @@ func TestRedactInternalApprovalStages(t *testing.T) {
 	stages := []changeRequestApprovalStageRow{
 		{checkpointLabel: label(approvalStageLabelPeer)},
 		{checkpointLabel: label(approvalStageLabelCAB)},
-		{checkpointLabel: label(approvalStageLabelECAB)},
+		{checkpointLabel: label(approvalStageLabelHistoricECAB)}, // no longer written; still shown to a customer as an internal stage
 		{checkpointLabel: label(approvalStageLabelReview)},
 		{checkpointLabel: label(approvalStageLabelCustomerApproval)},
 		{checkpointLabel: label(approvalStageLabelCustomerReview)},

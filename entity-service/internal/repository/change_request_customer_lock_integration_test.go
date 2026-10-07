@@ -86,10 +86,12 @@ func (f *crFlow) subjectOf(id string) string {
 
 // In New everything is editable, in both directions, with or without a project:
 // the Customer Project is chosen, moved and moved back, and the Customer Group
-// that follows it is read back; both boxes are ticked and unticked.
+// that follows it is read back; both boxes are ticked and unticked. (Normal and
+// Standard: an Emergency change takes no customer step, so the boxes are refused on
+// it -- TestChangeRequestEmergencyIntegration_BoxesAreRefusedInEveryState.)
 func TestChangeRequestLockIntegration_NewIsFullyEditable(t *testing.T) {
 	f := newCustomerGroupFlow(t)
-	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard, domain.ChangeRequestTypeEmergency} {
+	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard} {
 		id := f.createWithProject(typ, nil, false, false)
 		f.expect(id, "after create", "NEW", "assess", "canceled")
 
@@ -180,13 +182,13 @@ func TestChangeRequestLockIntegration_ProjectIsFrozenAfterRequestApproval(t *tes
 
 // The same through the real transition: Request Approval is what freezes it, for
 // every type, and the project cannot be moved while the customer is being asked.
+// (An Emergency change has no customer box to tick; its project freezes all the same.)
 func TestChangeRequestLockIntegration_RequestApprovalFreezesTheProject(t *testing.T) {
 	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard, domain.ChangeRequestTypeEmergency} {
 		typ := typ
 		t.Run(string(typ), func(t *testing.T) {
 			f := newCustomerGroupFlow(t)
-			seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
-			id := f.createWithProject(typ, sp(crScopeProjectA), true, false)
+			id := f.createWithProject(typ, sp(crScopeProjectA), typ != domain.ChangeRequestTypeEmergency, false)
 			f.setProject(id, crScopeProjectB) // free in New
 			f.setProject(id, crScopeProjectA)
 			f.requestApproval(id)
@@ -271,11 +273,12 @@ func TestChangeRequestLockIntegration_BoxesAreAddOnlyAfterNew(t *testing.T) {
 }
 
 // Request Approval is refused, in the same transaction and with nothing written,
-// when a box is ticked and there is no Customer Project to ask: for every type
-// (Standard included: it would otherwise land in Customer Approval with nobody).
-// Clearing the box, or choosing the project, in the same PATCH lets it through.
+// when a box is ticked and there is no Customer Project to ask: for every type that can
+// have a box (Standard included: it would otherwise land in Customer Approval with nobody;
+// an Emergency change cannot have one). Clearing the box, or choosing the project, in the
+// same PATCH lets it through.
 func TestChangeRequestLockIntegration_RequestApprovalNeedsAProject(t *testing.T) {
-	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard, domain.ChangeRequestTypeEmergency} {
+	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard} {
 		for _, boxes := range []struct {
 			name             string
 			approval, review bool
@@ -283,7 +286,6 @@ func TestChangeRequestLockIntegration_RequestApprovalNeedsAProject(t *testing.T)
 			typ, boxes := typ, boxes
 			t.Run(string(typ)+"/"+boxes.name, func(t *testing.T) {
 				f := newCustomerGroupFlow(t)
-				seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
 				id := f.createWithProject(typ, nil, boxes.approval, boxes.review)
 
 				// Request Approval alone, then with an unrelated field riding along.
@@ -335,7 +337,6 @@ func TestChangeRequestLockIntegration_RequestApprovalNeedsAProject(t *testing.T)
 // box and has no project (created before the lock, or by ServiceNow).
 func TestChangeRequestLockIntegration_RequestApprovalWithoutRequirementsAndResends(t *testing.T) {
 	f := newCustomerGroupFlow(t)
-	seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
 	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard, domain.ChangeRequestTypeEmergency} {
 		id := f.createWithProject(typ, nil, false, false)
 		f.requestApproval(id)
@@ -387,13 +388,14 @@ func TestChangeRequestLockIntegration_ReturnToNewIsRefused(t *testing.T) {
 }
 
 // A change that has reached a customer stage can never get back to a point where
-// the customer is no longer asked. Re-schedule keeps every type in Customer Approval
+// the customer is no longer asked. Re-schedule keeps every type that can reach Customer Approval
+// (Normal, Standard: an Emergency change never does) in it
 // (nothing goes back through CAB: the change itself has not changed) and asks the same
 // contacts again, in a fresh stage with the old one kept as a record; in none of them can
 // the box be unticked (the hole the lock exists to close), the project moved or the change
 // sent back to New. A Re-schedule writes no requirement flag: it needs none.
 func TestChangeRequestLockIntegration_RescheduleCannotReopenTheCustomersApproval(t *testing.T) {
-	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeEmergency, domain.ChangeRequestTypeStandard} {
+	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard} {
 		typ := typ
 		t.Run(string(typ), func(t *testing.T) {
 			f := newCustomerGroupFlow(t)

@@ -1,0 +1,495 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package repository_test
+
+import (
+	"errors"
+	"strings"
+	"testing"
+
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
+)
+
+// The Emergency rule against Postgres (change_request_emergency.go): an Emergency change
+// takes no customer step, and its one approval is the CAB's. Same harness as every
+// TestChangeRequest*Integration_* test (crFlow, DSN-gated by CHANGE_REQUEST_TEST_DSN, run
+// as a superuser and as the non-superuser csm_app).
+//
+// Two origins of data are covered, because the rule has to hold for both:
+//
+//   - changes created here: the two customer boxes are refused (create, PATCH, re-type);
+//   - changes that already exist -- a "legacy" row from before the rule, a ServiceNow-MIGRATED
+//     one (whose requirement flags is_customer_*_required are the sync's, and whose single
+//     stage carries no label), a row an earlier build gave an "ECAB Approval" stage: the flow
+//     ignores whatever boxes they hold, decides their one stage as the CAB's, and never
+//     provisions a customer stage for them.
+
+const emergencyMsgPrefix = "Emergency changes proceed without customer consent, so customer approval and customer review cannot be required"
+
+func (f *crFlow) wantEmergencyRefusal(what string, err error, fields ...string) {
+	f.t.Helper()
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		f.t.Fatalf("%s: err = %v (%T), want a *apierror.ValidationError", what, err, err)
+	}
+	if !strings.HasPrefix(ve.Msg, emergencyMsgPrefix) {
+		f.t.Fatalf("%s: message %q does not start with the reason %q", what, ve.Msg, emergencyMsgPrefix)
+	}
+	for _, field := range fields {
+		if !strings.Contains(ve.Msg, field) {
+			f.t.Fatalf("%s: message %q does not name %s", what, ve.Msg, field)
+		}
+	}
+}
+
+func (f *crFlow) storedModel(id string) string {
+	f.t.Helper()
+	var m string
+	if err := f.scoped.QueryRow(f.sys, `SELECT COALESCE(change_model::text, '') FROM change_request WHERE id = $1`, id).Scan(&m); err != nil {
+		f.t.Fatalf("read change_model: %v", err)
+	}
+	return m
+}
+
+func (f *crFlow) workItemCount() int {
+	f.t.Helper()
+	var n int
+	if err := f.scoped.QueryRow(f.sys, `SELECT COUNT(*) FROM work_item WHERE subject = $1`, crFlowSubject).Scan(&n); err != nil {
+		f.t.Fatalf("count change requests: %v", err)
+	}
+	return n
+}
+
+// The two sync-owned requirement flags, as the sync writes them.
+func (f *crFlow) syncFlags(id string) (approval, review bool) {
+	f.t.Helper()
+	if err := f.scoped.QueryRow(f.sys,
+		`SELECT COALESCE(is_customer_approval_required, false), COALESCE(is_customer_review_required, false) FROM change_request WHERE id = $1`, id).Scan(&approval, &review); err != nil {
+		f.t.Fatalf("read the sync's customer flags: %v", err)
+	}
+	return approval, review
+}
+
+// A create of an Emergency change with either box ticked is a 400 on every create path, and
+// nothing is written. Normal and Standard keep their boxes; an Emergency change with neither (or
+// both explicitly off) is created.
+func TestChangeRequestEmergencyIntegration_CreateRefusesTheBoxes(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	emergency := domain.ChangeRequestTypeEmergency
+	g := crFlowGroupID
+	yes, no := boolp(true), boolp(false)
+	create := func(typ domain.ChangeRequestType, approval, review *bool) error {
+		_, err := f.repo.CreateChangeRequest(f.sys, domain.CreateChangeRequestRequest{
+			Subject: crFlowSubject, Type: &typ, GroupID: &g, ProjectID: sp(crScopeProjectA), CustomerApprovalRequired: approval, CustomerReviewRequired: review,
+		}, crFlowEmail(crFlowCreatorID))
+		return err
+	}
+	for _, tc := range []struct {
+		name             string
+		approval, review *bool
+		fields           []string
+	}{
+		{"approval", yes, nil, []string{"customerApprovalRequired"}},
+		{"review", nil, yes, []string{"customerReviewRequired"}},
+		{"approval, review off", yes, no, []string{"customerApprovalRequired"}},
+		{"both", yes, yes, []string{"customerApprovalRequired", "customerReviewRequired"}},
+	} {
+		before := f.workItemCount()
+		f.wantEmergencyRefusal("plain create, "+tc.name, create(emergency, tc.approval, tc.review), tc.fields...)
+		// The ServiceNow-first create runs the same check before it writes anything.
+		_, err := f.repo.CreateChangeRequestFromServiceNow(f.sys, domain.CreateChangeRequestRequest{
+			Subject: crFlowSubject, Type: &emergency, GroupID: &g, CustomerApprovalRequired: tc.approval, CustomerReviewRequired: tc.review,
+		}, "3ccccccc-0000-0000-0000-00000000e001", "CHG-EMERGENCY-RULE-1", crFlowEmail(crFlowCreatorID))
+		f.wantEmergencyRefusal("ServiceNow-first create, "+tc.name, err, tc.fields...)
+		if after := f.workItemCount(); after != before {
+			t.Fatalf("%s: a refused create left %d change request(s) behind", tc.name, after-before)
+		}
+	}
+	if err := create(emergency, nil, nil); err != nil {
+		t.Fatalf("an Emergency change with no box: %v", err)
+	}
+	if err := create(emergency, no, no); err != nil {
+		t.Fatalf("an Emergency change with both boxes explicitly off: %v", err)
+	}
+	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard} {
+		if err := create(typ, yes, yes); err != nil {
+			t.Fatalf("a %s change with both boxes: %v", typ, err)
+		}
+	}
+}
+
+// On a stored Emergency change a PATCH cannot turn a box on, in any state and with or without a
+// Customer Project, and nothing of the request is written. A write of the value a box already
+// holds is the no-op it is everywhere in the lock, and the rest of the request goes through.
+func TestChangeRequestEmergencyIntegration_BoxesAreRefusedInEveryState(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	for _, state := range []string{"", "NEW", "ASSESS", "AUTHORIZE", "SCHEDULED", "IMPLEMENT", "REVIEW", "CLOSED", "CANCELED"} {
+		for _, project := range []*string{nil, sp(crScopeProjectA)} {
+			id := f.createWithProject(domain.ChangeRequestTypeEmergency, project, false, false)
+			f.setState(id, state)
+			label := state + "/project=" + lockDeref(project)
+			for _, req := range []struct {
+				what   string
+				req    domain.PatchChangeRequestRequest
+				fields []string
+			}{
+				{"approval", domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(true)}, []string{"customerApprovalRequired"}},
+				{"review", domain.PatchChangeRequestRequest{CustomerReviewRequired: boolp(true)}, []string{"customerReviewRequired"}},
+				{"both", domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(true), CustomerReviewRequired: boolp(true)}, []string{"customerApprovalRequired", "customerReviewRequired"}},
+			} {
+				r := req.req
+				r.Title = sp("must not be written")
+				_, err := f.patch(id, r)
+				f.wantEmergencyRefusal(label+" "+req.what, err, req.fields...)
+				if _, _, a, rv := f.lockStored(id); a || rv {
+					t.Fatalf("%s %s: a refused PATCH left the boxes %v/%v", label, req.what, a, rv)
+				}
+				if got := f.subjectOf(id); got != crFlowSubject {
+					t.Fatalf("%s %s: a refused PATCH wrote the rest of the request: %q", label, req.what, got)
+				}
+			}
+			// Turning a box off / resending the type: no change, accepted.
+			emergency := domain.ChangeRequestTypeEmergency
+			if _, err := f.patch(id, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(false), CustomerReviewRequired: boolp(false), Type: &emergency, Title: sp("the whole form, sent back")}); err != nil {
+				t.Fatalf("%s: resending the stored values: %v", label, err)
+			}
+			if got := f.subjectOf(id); got != "the whole form, sent back" {
+				t.Fatalf("%s: the rest of the resend was not written: %q", label, got)
+			}
+		}
+	}
+}
+
+// A legacy Emergency row (before the rule, or migrated) can carry a ticked box: a whole-form resend of
+// what it holds is a no-op, turning the OTHER box on is refused, and untick follows the lock (add-only
+// after New).
+func TestChangeRequestEmergencyIntegration_ALegacyTickedBoxIsNotRewritten(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	id := f.createWithProject(domain.ChangeRequestTypeEmergency, sp(crScopeProjectA), false, false)
+	f.execSQL(`UPDATE change_request SET customer_approval_required = true WHERE id = $1`, id)
+	emergency := domain.ChangeRequestTypeEmergency
+	if _, err := f.patch(id, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(true), Type: &emergency, Title: sp("resent")}); err != nil {
+		t.Fatalf("resending the stored ticked box of a legacy Emergency change: %v", err)
+	}
+	_, err := f.patch(id, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(true), CustomerReviewRequired: boolp(true)})
+	f.wantEmergencyRefusal("turning the review box on", err, "customerReviewRequired")
+	if _, _, a, r := f.lockStored(id); !a || r {
+		t.Fatalf("the stored boxes read %v/%v, want the legacy true/false untouched", a, r)
+	}
+	// New: any edit is free, so the legacy box may be turned off.
+	if _, err := f.patch(id, domain.PatchChangeRequestRequest{CustomerApprovalRequired: boolp(false)}); err != nil {
+		t.Fatalf("turning a legacy box off in New: %v", err)
+	}
+}
+
+// A change cannot be re-typed INTO Emergency while a box stays ticked, whatever the box (and in the same
+// request the boxes can be turned off); after Request Approval the type is frozen, which keeps its own
+// message; an Emergency change may be re-typed OUT of Emergency, with a box, in the same request.
+func TestChangeRequestEmergencyIntegration_RetypingIntoEmergency(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	emergency, normal := domain.ChangeRequestTypeEmergency, domain.ChangeRequestTypeNormal
+	for _, from := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard} {
+		for _, boxes := range []struct {
+			name             string
+			approval, review bool
+			fields           []string
+		}{
+			{"approval", true, false, []string{"customerApprovalRequired"}},
+			{"review", false, true, []string{"customerReviewRequired"}},
+			{"both", true, true, []string{"customerApprovalRequired", "customerReviewRequired"}},
+		} {
+			id := f.createWithProject(from, sp(crScopeProjectA), boxes.approval, boxes.review)
+			name := string(from) + "/" + boxes.name
+			_, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &emergency, Title: sp("must not be written")})
+			f.wantEmergencyRefusal("re-typing "+name, err, boxes.fields...)
+			if !strings.Contains(err.Error(), "before changing the type to emergency") {
+				t.Fatalf("%s: message %q does not say what to do", name, err.Error())
+			}
+			if got, want := f.storedModel(id), strings.ToUpper(string(from)); got != want {
+				t.Fatalf("%s: stored model after the refusal = %s, want %s", name, got, want)
+			}
+			if got := f.subjectOf(id); got != crFlowSubject {
+				t.Fatalf("%s: a refused re-type wrote the rest of the request: %q", name, got)
+			}
+			// The boxes off in the same request: accepted, and the change is an Emergency one.
+			if _, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &emergency, CustomerApprovalRequired: boolp(false), CustomerReviewRequired: boolp(false)}); err != nil {
+				t.Fatalf("%s: re-typing with the boxes cleared: %v", name, err)
+			}
+			if got := f.storedModel(id); got != "EMERGENCY" {
+				t.Fatalf("%s: stored model = %s, want EMERGENCY", name, got)
+			}
+			if _, _, a, r := f.lockStored(id); a || r {
+				t.Fatalf("%s: stored boxes %v/%v after re-typing, want both off", name, a, r)
+			}
+			// ...and back out of Emergency with a box, in one request.
+			if _, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &normal, CustomerApprovalRequired: boolp(true)}); err != nil {
+				t.Fatalf("%s: re-typing out of Emergency with a box: %v", name, err)
+			}
+		}
+	}
+	// Only one box ticked and cleared: the other one still stops it.
+	id := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, true)
+	_, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &emergency, CustomerApprovalRequired: boolp(false)})
+	f.wantEmergencyRefusal("re-typing with one box left", err, "customerReviewRequired")
+	// A change with no box is re-typed freely.
+	id = f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, false)
+	if _, err := f.patch(id, domain.PatchChangeRequestRequest{Type: &emergency}); err != nil {
+		t.Fatalf("re-typing a change with no box: %v", err)
+	}
+	// After Request Approval the type is frozen and says so, as it did before this rule.
+	id = f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, false)
+	f.requestApproval(id)
+	_, err = f.patch(id, domain.PatchChangeRequestRequest{Type: &emergency})
+	f.wantValidationError("re-typing after Request Approval", err, "type can no longer be changed")
+}
+
+// A row that carries the boxes anyway -- from before the rule, or migrated -- is acted on without the
+// customer: it can be sent for approval with a box ticked and no project (nobody is to be asked), goes
+// CAB -> Scheduled, and Customer Review is refused with the Emergency reason. The GitHub sync's state
+// writer reads the review gate the same way. A Normal change with the same boxes keeps asking the
+// customer (the controls).
+func TestChangeRequestEmergencyIntegration_LegacyBoxesAreIgnoredByTheGate(t *testing.T) {
+	t.Run("Request Approval with a box ticked and no project", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		id := f.createWithProject(domain.ChangeRequestTypeEmergency, nil, false, false)
+		f.execSQL(`UPDATE change_request SET customer_approval_required = true, customer_review_required = true WHERE id = $1`, id)
+		f.requestApproval(id) // would be refused for a Normal change: nobody to ask
+		f.expect(id, "after Request Approval", "AUTHORIZE", "canceled")
+		if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
+			t.Fatalf("CAB approval: %v", err)
+		}
+		f.expect(id, "after the CAB approval", "SCHEDULED", "implement", "canceled")
+		// The control: the same boxes on a Normal change are refused.
+		n := f.createWithProject(domain.ChangeRequestTypeNormal, nil, true, false)
+		_, err := f.patchState(n, domain.ChangeRequestStateAssess)
+		f.wantValidationError("Request Approval of a Normal change with a box and no project", err, "no Customer Project is set")
+	})
+	t.Run("the GitHub sync's state writer", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		gh := repository.NewGithubMutationRepository(f.scoped)
+		id := f.createWithProject(domain.ChangeRequestTypeEmergency, sp(crScopeProjectA), false, false)
+		f.execSQL(`UPDATE change_request SET customer_review_required = true WHERE id = $1`, id)
+		f.setState(id, "REVIEW")
+		if changed, err := gh.SetState(f.sys, id, "CLOSED"); err != nil || !changed {
+			t.Fatalf("SetState(REVIEW -> CLOSED) of an Emergency change with a stored review box = %v, %v, want true, nil", changed, err)
+		}
+		// The control: a Normal change with the review box must go through Customer Review.
+		n := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, true)
+		f.setState(n, "REVIEW")
+		if changed, err := gh.SetState(f.sys, n, "CLOSED"); err == nil || changed {
+			t.Fatalf("SetState(REVIEW -> CLOSED) of a Normal change with the review box = %v, %v, want a refusal", changed, err)
+		}
+	})
+	t.Run("a customer state it was forced into asks nobody", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		for _, state := range []string{"CUSTOMER_APPROVAL", "CUSTOMER_REVIEW"} {
+			id := f.createWithProject(domain.ChangeRequestTypeEmergency, sp(crScopeProjectA), false, false)
+			f.execSQL(`UPDATE change_request SET customer_approval_required = true, customer_review_required = true WHERE id = $1`, id)
+			f.setState(id, state)
+			// Restating the project is what asks the contacts of a change in a customer state; for an
+			// Emergency change it provisions nothing.
+			f.setProject(id, crScopeProjectA)
+			if st := f.customerStages(id); len(st) != 0 {
+				t.Fatalf("%s: an Emergency change was given the customer stage(s) %+v", state, st)
+			}
+			f.wantCanAnswer(id, "in "+state+" with no stage", false, crScopeUserA1, crScopeUserA2)
+			// And for a Normal change in the same state it does ask (the control).
+			n := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), true, true)
+			f.setState(n, state)
+			f.setProject(n, crScopeProjectA)
+			if st := f.customerStages(n); len(st) != 1 {
+				t.Fatalf("%s: the control Normal change has %d customer stages, want 1", state, len(st))
+			}
+		}
+	})
+}
+
+// A MIGRATED Emergency change (csm-sync-service mirrors it): ONE stage, no label, in the CAB group at
+// position 0, UPPER_SNAKE raw_status and approver states, the sync's customer flags ticked, our own boxes
+// false. It displays as the CAB stage, its approver can decide it, deciding schedules it, and the sync's
+// flags are neither read as a requirement nor ever written.
+func TestChangeRequestEmergencyIntegration_MigratedEmergencyDisplaysDecidesAndSchedulesAsCAB(t *testing.T) {
+	for _, ours := range []bool{false, true} {
+		name := "our boxes off"
+		if ours {
+			name = "our boxes on too (a dev row)"
+		}
+		t.Run(name, func(t *testing.T) {
+			f := newCustomerGroupFlow(t)
+			id := f.createWithProject(domain.ChangeRequestTypeEmergency, sp(crScopeProjectA), false, false)
+			f.execSQL(`UPDATE change_request SET is_customer_approval_required = true, is_customer_review_required = true,
+			                                       customer_approval_required = $2, customer_review_required = $2 WHERE id = $1`, id, ours)
+			f.setState(id, "AUTHORIZE")
+			cab := crCABGroupID
+			stage := f.seedSyncedStage(id, &cab, 30, map[string]string{crCABMemberUserID1: "REQUESTED", crCABMemberUserID2: "REQUESTED"})
+
+			// Displayed as the CAB stage, by its group, not as the "Assess" its position would give it.
+			view := f.approvalsAs(id, crCABMemberUserID1)
+			if len(view.Approvals) != 1 {
+				t.Fatalf("approvals = %+v, want the one stage", view.Approvals)
+			}
+			a := view.Approvals[0]
+			if a.Stage != "CAB Approval" || a.ApproverName != "CAB Approval" || a.Status != domain.ChangeRequestApprovalStatusPending {
+				t.Fatalf("the migrated stage reads %q / %q / %q, want CAB Approval / CAB Approval / PENDING", a.Stage, a.ApproverName, a.Status)
+			}
+			if a.AssignmentGroup == nil || a.AssignmentGroup.ID != crCABGroupID {
+				t.Fatalf("assignmentGroup = %+v, want the CAB group", a.AssignmentGroup)
+			}
+			f.wantCanDecide(id, "in Authorize", map[string][]string{crCABMemberUserID1: {"CAB Approval"}, crCABMemberUserID2: {"CAB Approval"}})
+			f.expect(id, "in Authorize", "AUTHORIZE", "canceled")
+
+			// Its approver decides it, and it schedules: never Customer Approval, whatever the flags say.
+			if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
+				t.Fatalf("the approver's decision on the migrated stage: %v", err)
+			}
+			f.expect(id, "after the CAB approval", "SCHEDULED", "implement", "canceled")
+			if got := f.approverState(stage, crCABMemberUserID1); got != "APPROVED" {
+				t.Fatalf("approver row = %s, want APPROVED", got)
+			}
+			if got := f.approverState(stage, crCABMemberUserID2); got != "CANCELLED" {
+				t.Fatalf("the sibling's row = %s, want CANCELLED", got)
+			}
+			if st := f.customerStages(id); len(st) != 0 {
+				t.Fatalf("customer stages = %+v, want none", st)
+			}
+			// The sync's flags are the sync's: not written by a decision.
+			if sa, sr := f.syncFlags(id); !sa || !sr {
+				t.Fatalf("the sync's flags after the decision = %v/%v, want them untouched (true/true)", sa, sr)
+			}
+			// Review goes straight to Closed.
+			f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
+			f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
+			f.step(id, domain.ChangeRequestStateClosed, "CLOSED")
+			if sa, sr := f.syncFlags(id); !sa || !sr {
+				t.Fatalf("the sync's flags at the end = %v/%v, want them untouched (true/true)", sa, sr)
+			}
+		})
+	}
+}
+
+// What a migrated Emergency change that is long finished reads like: the CAB stage, approved, with its
+// sync-shaped approver states; nothing can be decided on it. The same rows on a Normal change keep
+// their positional name.
+func TestChangeRequestEmergencyIntegration_AFinishedMigratedEmergencyStillReadsAsCAB(t *testing.T) {
+	f := newCustomerGroupFlow(t)
+	id := f.createWithProject(domain.ChangeRequestTypeEmergency, sp(crScopeProjectA), false, false)
+	f.setState(id, "CLOSED")
+	cab := crCABGroupID
+	stage := f.seedSyncedStage(id, &cab, 30, map[string]string{crCABMemberUserID1: "APPROVED", crCABMemberUserID2: "NOT_REQUIRED"})
+	f.execSQL(`UPDATE approval_stage SET raw_status = 'APPROVED' WHERE id = $1::uuid`, stage)
+	view := f.approvalsAs(id, crCABMemberUserID1)
+	if len(view.Approvals) != 1 || view.Approvals[0].Stage != "CAB Approval" || view.Approvals[0].Status != domain.ChangeRequestApprovalStatusApproved {
+		t.Fatalf("approvals = %+v, want the one approved CAB Approval stage", view.Approvals)
+	}
+	got := map[string]string{}
+	for _, ap := range view.Approvals[0].Approvers {
+		got[ap.ID] = ap.Status
+	}
+	if got[crCABMemberUserID1] != "APPROVED" || got[crCABMemberUserID2] != "NOT_REQUIRED" {
+		t.Fatalf("approver states = %v, want APPROVED and NOT_REQUIRED as the sync wrote them", got)
+	}
+	f.wantCanDecide(id, "in Closed", nil)
+
+	n := f.createWithProject(domain.ChangeRequestTypeNormal, sp(crScopeProjectA), false, false)
+	f.setState(n, "CLOSED")
+	f.seedSyncedStage(n, &cab, 30, map[string]string{crCABMemberUserID1: "APPROVED"})
+	if view := f.approvalsAs(n, crCABMemberUserID1); len(view.Approvals) != 1 || view.Approvals[0].Stage != "Assess" {
+		t.Fatalf("the same stage on a Normal change reads %+v, want the positional name it always had", view.Approvals)
+	}
+}
+
+// An in-flight Emergency change that an earlier build gave an "ECAB Approval" stage (a group of its
+// own): it is still shown under that name, the approvers that were asked can decide it as the CAB
+// stage, and deciding it schedules the change. Nobody who was not asked can (a decision needs the
+// caller's own REQUESTED row), the creator cannot, and a resent Request Approval adds no stage.
+func TestChangeRequestEmergencyIntegration_AHistoricECABStageStillDecides(t *testing.T) {
+	setup := func(t *testing.T) (*crFlow, string, string) {
+		f := newCustomerGroupFlow(t)
+		seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
+		id := f.createWithProject(domain.ChangeRequestTypeEmergency, sp(crScopeProjectA), false, false)
+		f.setState(id, "AUTHORIZE")
+		label, ecab := "ECAB Approval", crECABGroupID
+		stage := f.seedLooseStageInGroup(id, &label, &ecab, 30, map[string]string{crECABMemberUserID: "REQUESTED", crFlowCreatorID: "CANCELLED"})
+		return f, id, stage
+	}
+	t.Run("shown, decided as CAB, schedules", func(t *testing.T) {
+		f, id, stage := setup(t)
+		f.execSQL(`UPDATE change_request SET customer_approval_required = true WHERE id = $1`, id) // an old-build ticked box
+		view := f.approvalsAs(id, crECABMemberUserID)
+		if len(view.Approvals) != 1 || view.Approvals[0].Stage != "ECAB Approval" || view.Approvals[0].ApproverName != "ECAB Approval" {
+			t.Fatalf("approvals = %+v, want the stage shown as it was written", view.Approvals)
+		}
+		f.wantCanDecide(id, "in Authorize", map[string][]string{crECABMemberUserID: {"ECAB Approval"}})
+		if got := f.canDecideAs(id, crCABMemberUserID1); len(got) != 0 {
+			t.Fatalf("canDecide for a CAB member with no row on the stage = %v, want none", got)
+		}
+		// A CAB member who was not asked has no pending approval on it; the creator cannot approve.
+		err := f.decide(id, crCABMemberUserID1, "approved")
+		var nf *apierror.NotFoundError
+		if !errors.As(err, &nf) {
+			t.Fatalf("a CAB member with no row deciding the historic stage: err = %v (%T), want a NotFoundError", err, err)
+		}
+		f.wantForbidden("the creator on the historic stage", f.decide(id, crFlowCreatorID, "approved"), "creator")
+		f.expect(id, "after the refused decisions", "AUTHORIZE", "canceled")
+		// A resent Request Approval provisions nothing further.
+		if _, err := f.patchState(id, domain.ChangeRequestStateAssess); err != nil {
+			t.Fatalf("a resent Request Approval on the in-flight change: %v", err)
+		}
+		if got := f.labels(id); strings.Join(got, ",") != "ECAB Approval" {
+			t.Fatalf("stages after the resent Request Approval = %v, want only the historic one", got)
+		}
+		// The asked approver decides: Scheduled (never Customer Approval: an Emergency change asks no customer).
+		if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
+			t.Fatalf("the historic stage's approver deciding it: %v", err)
+		}
+		f.expect(id, "after the decision", "SCHEDULED", "implement", "canceled")
+		if got := f.approverState(stage, crECABMemberUserID); got != "APPROVED" {
+			t.Fatalf("approver row = %s, want APPROVED", got)
+		}
+		if st := f.customerStages(id); len(st) != 0 {
+			t.Fatalf("customer stages = %+v, want none", st)
+		}
+	})
+	t.Run("a rejection keeps it in Authorize", func(t *testing.T) {
+		f, id, stage := setup(t)
+		if err := f.decide(id, crECABMemberUserID, "rejected"); err != nil {
+			t.Fatalf("rejecting the historic stage: %v", err)
+		}
+		f.expect(id, "after the rejection", "AUTHORIZE", "canceled")
+		if got := f.approverState(stage, crECABMemberUserID); got != "REJECTED" {
+			t.Fatalf("approver row = %s, want REJECTED", got)
+		}
+	})
+	t.Run("a Cancel retires it like any stage", func(t *testing.T) {
+		f, id, stage := setup(t)
+		f.step(id, domain.ChangeRequestStateCanceled, "CANCELED")
+		if got := f.approverState(stage, crECABMemberUserID); got != "CANCELLED" {
+			t.Fatalf("approver row after Cancel = %s, want CANCELLED", got)
+		}
+	})
+	t.Run("the change moves on without it: the stage is stale, as any CAB stage", func(t *testing.T) {
+		f, id, _ := setup(t)
+		f.setState(id, "SCHEDULED")
+		err := f.decide(id, crECABMemberUserID, "approved")
+		var ce *apierror.ConflictError
+		if !errors.As(err, &ce) || !strings.Contains(ce.Msg, "no longer pending") {
+			t.Fatalf("deciding the historic stage after the change left Authorize: err = %v (%T), want the stale-approval conflict", err, err)
+		}
+	})
+}

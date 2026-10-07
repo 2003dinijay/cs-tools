@@ -595,11 +595,19 @@ func TestChangeRequestNoBypassIntegration_LegalNextStatesExactTable(t *testing.T
 	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeStandard, domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeEmergency} {
 		for _, approval := range []bool{false, true} {
 			for _, review := range []bool{false, true} {
-				id := f.createWithProject(typ, sp(crScopeProjectC), approval, review)
+				// An Emergency change cannot be CREATED with a box (it takes no customer step), but a
+				// row can carry one -- from before the rule, or ServiceNow-migrated -- so the boxes
+				// are written to it directly. The flow reads them as off: its table is the one of a
+				// change with no review box, whatever the stored value says.
+				emergency := typ == domain.ChangeRequestTypeEmergency
+				id := f.createWithProject(typ, sp(crScopeProjectC), approval && !emergency, review && !emergency)
+				if emergency {
+					f.execSQL(`UPDATE change_request SET customer_approval_required = $2, customer_review_required = $3 WHERE id = $1`, id, approval, review)
+				}
 				for _, st := range states {
 					f.setState(id, st)
 					got := f.legal(id)
-					w := want(st, review)
+					w := want(st, review && !emergency)
 					if strings.Join(got, ",") != strings.Join(w, ",") || (got == nil) != (w == nil) {
 						t.Errorf("%s approval=%v review=%v in %s: legalNextStates = %v, want %v", typ, approval, review, st, got, w)
 					}
