@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"regexp"
 	"strings"
 	"sync"
@@ -1301,6 +1302,76 @@ func TestCaseService_UpdateCase_AutocloseHoldIsMirroredToServiceNow(t *testing.T
 	}
 	if got := payload["autocloseHoldUntil"]; got != "2026-10-22" {
 		t.Errorf("writeback payload autocloseHoldUntil = %v, want 2026-10-22", got)
+	}
+}
+
+// TestCaseService_UpdateCase_AutocloseHoldReachesServiceNowOverHTTP is the
+// end-to-end proof for the dual-write promise: the hold must actually arrive at
+// ServiceNow. Unlike the stubbed-mirror test above, this runs the real chain
+// production wires in routes.go -- caseService, the async writeback dispatcher
+// and a real snCaseService as the mirror -- against a fake ServiceNow server,
+// and asserts the request ServiceNow receives: a PATCH on the case's own sysid,
+// the date-only value its integration service accepts, only that one field,
+// and the caller's own token forwarded so ServiceNow attributes the change.
+func TestCaseService_UpdateCase_AutocloseHoldReachesServiceNowOverHTTP(t *testing.T) {
+	// 18:29 UTC on the 22nd is the end of that day in Sri Lanka, which is what
+	// the portal sends for a hold picked as 22 Oct.
+	holdUntil := time.Date(2026, 10, 22, 18, 29, 0, 0, time.UTC)
+	userToken := fakeJWTWithEmail(t, "jane.doe@example.com")
+
+	type seen struct {
+		method, path, userToken string
+		body                    map[string]any
+	}
+	got := make(chan seen, 1)
+	client := newTestCaseClient(t, func(w http.ResponseWriter, r *http.Request) {
+		var body map[string]any
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		select {
+		case got <- seen{method: r.Method, path: r.URL.Path, userToken: r.Header.Get("x-user-id-token"), body: body}:
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"message": "Case updated successfully.", "case": {"id": "` + testWLCaseSysid + `", "updatedOn": "2026-10-07 10:00:00", "updatedBy": "jane.doe@example.com"}}`))
+	})
+	mirror := NewServiceNowCaseService(client, nil, nil, nil, nil, "", nil)
+
+	repo := &stubCaseRepo{
+		updateCaseFields: func(_ context.Context, _ domain.UpdateCaseRequest, _, _ string) (time.Time, error) {
+			return time.Date(2026, 10, 7, 12, 0, 0, 0, time.UTC), nil
+		},
+	}
+	userRepo := stubUserRepo{getUserByEmail: func(_ context.Context, email string) (domain.User, error) {
+		return domain.User{ID: "actor-id", Email: email}, nil
+	}}
+	failures := &recordingSNWritebackFailures{}
+	svc := NewCaseServiceWithSNWriteback(repo, userRepo, nil, alwaysUnrestrictedAccess{}, nil, NewSNWritebackDispatcher(failures), mirror, nil, "")
+
+	if _, err := svc.UpdateCase(contextWithUserIDToken(userToken), domain.UpdateCaseRequest{ID: testDeploymentUUID, AutocloseHoldUntil: &holdUntil}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	select {
+	case r := <-got:
+		if r.method != http.MethodPatch {
+			t.Errorf("ServiceNow got %s, want PATCH", r.method)
+		}
+		if want := "/cases/" + uuidToSysid(testDeploymentUUID); r.path != want {
+			t.Errorf("ServiceNow got path %q, want %q", r.path, want)
+		}
+		if r.userToken != userToken {
+			t.Errorf("the caller's user token was not forwarded to ServiceNow")
+		}
+		if len(r.body) != 1 || r.body["autocloseHoldUntil"] != "2026-10-22" {
+			t.Errorf("ServiceNow got body %v, want exactly {autocloseHoldUntil: 2026-10-22}", r.body)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("ServiceNow never received the hold: the dual-write mirror did not reach it")
+	}
+	// ServiceNow accepted it, so nothing must be queued for replay.
+	time.Sleep(50 * time.Millisecond)
+	if n := failures.count(); n != 0 {
+		t.Errorf("recorded %d writeback failures for a mirror ServiceNow accepted", n)
 	}
 }
 

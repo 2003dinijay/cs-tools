@@ -2880,7 +2880,12 @@ has neither column, so a hold on one is a 400, never a silent no-op.
 - Tests: `case_repo_autoclose_hold_integration_test.go` (real Postgres, run as a
   non-superuser so row-level security is in force; `CASE_STATS_TEST_DSN`),
   `TestCaseService_UpdateCase_AcceptsAutocloseHold` / `_AutocloseHoldIsMirroredToServiceNow`,
-  `TestSNCaseService_PatchCaseFieldsBundle_*`.
+  `TestSNCaseService_PatchCaseFieldsBundle_*`, and
+  `TestCaseService_UpdateCase_AutocloseHoldReachesServiceNowOverHTTP`, which runs
+  the real production chain (case service, writeback dispatcher, a real
+  `snCaseService` mirror) against a fake ServiceNow server and asserts the PATCH
+  it receives: the case's sysid, only `autocloseHoldUntil` as a date, the caller's
+  token forwarded.
 
 ## Change requests
 
