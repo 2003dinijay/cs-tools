@@ -15,6 +15,7 @@
 // under the License.
 
 import { fireEvent, render, screen } from "@testing-library/react";
+import { useState, type JSX } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import AsyncProjectMultiSelect from "@features/csm-cases/components/AsyncProjectMultiSelect";
@@ -30,14 +31,12 @@ afterEach(() => {
   mockedUseInfiniteProjectSearch.mockReset();
 });
 
-const PROJECTS = [
-  { id: "p1", name: "Customer 3 Project - Managed Cloud Subscription" },
-  { id: "p2", name: "CP Ph2 Test Project - Managed Cloud Subscription" },
-];
+const P1 = { id: "p1", name: "Customer 3 Project - Managed Cloud Subscription" };
+const P2 = { id: "p2", name: "CP Ph2 Test Project - Managed Cloud Subscription" };
 
-function mockResults(): void {
+function mockResults(projects: Array<{ id: string; name: string }>): void {
   mockedUseInfiniteProjectSearch.mockReturnValue({
-    projects: PROJECTS,
+    projects,
     isFetching: false,
     isFetchingNextPage: false,
     hasNextPage: false,
@@ -46,62 +45,58 @@ function mockResults(): void {
   });
 }
 
-describe("AsyncProjectMultiSelect — search text vs. selected-names summary", () => {
-  it("does not render the selected-names summary while the dropdown is open, so it can't collide with the typed search text", () => {
-    mockResults();
+/** Mirrors how a real caller wires this up (CasesFilterBar, etc.) — a plain
+ * values/onChange prop pair only re-renders with the new selection if
+ * something actually holds state and feeds it back, which a bare `vi.fn()`
+ * onChange does not. */
+function Harness({ initial = [] as string[] }): JSX.Element {
+  const [values, setValues] = useState<string[]>(initial);
+  return <AsyncProjectMultiSelect values={values} onChange={setValues} />;
+}
+
+describe("AsyncProjectMultiSelect", () => {
+  it("clears the typed search text once an option is picked, like a plain uncontrolled search box", () => {
+    mockResults([P1, P2]);
     const onChange = vi.fn();
-    render(<AsyncProjectMultiSelect values={["p1"]} onChange={onChange} />);
-
-    const input = screen.getByRole("combobox");
-    fireEvent.mouseDown(input);
-    fireEvent.change(input, { target: { value: "managed" } });
-
-    expect(screen.getByDisplayValue("managed")).toBeInTheDocument();
-    // The project's own name still legitimately appears once, as the open
-    // dropdown's own list option (with its checkbox ticked) — the bug this
-    // guards against is a *second* copy appearing in the tags/summary area,
-    // concatenated right next to the typed "managed" in the same input row.
-    expect(
-      screen.getAllByText("Customer 3 Project - Managed Cloud Subscription"),
-    ).toHaveLength(1);
-  });
-
-  it("restores the cursor to the end of the typed search text after selecting an option", async () => {
-    mockResults();
-    const onChange = vi.fn();
-    render(
-      <AsyncProjectMultiSelect id="test-project-select" values={[]} onChange={onChange} />,
-    );
+    render(<AsyncProjectMultiSelect values={[]} onChange={onChange} />);
 
     const input = screen.getByRole("combobox") as HTMLInputElement;
+    fireEvent.focus(input);
     fireEvent.mouseDown(input);
     fireEvent.change(input, { target: { value: "managed" } });
+    expect(input.value).toBe("managed");
 
-    const option = await screen.findByText("CP Ph2 Test Project - Managed Cloud Subscription");
-    fireEvent.click(option);
+    fireEvent.click(screen.getByText(P2.name));
 
-    // Move the caret away from the end first, so the assertion below proves
-    // something actually moved it back rather than it never having left.
-    input.setSelectionRange(0, 0);
-    await new Promise((resolve) => requestAnimationFrame(resolve));
-
-    expect(input.selectionStart).toBe(input.value.length);
-    expect(input.selectionEnd).toBe(input.value.length);
+    expect(onChange).toHaveBeenCalledWith(["p2"]);
+    expect(input.value).toBe("");
   });
 
-  it("clears the typed search text and shows the selected-names summary once the dropdown closes", () => {
-    mockResults();
-    const onChange = vi.fn();
-    render(<AsyncProjectMultiSelect values={["p1"]} onChange={onChange} />);
+  it("shows the selected-names summary immediately after picking, without closing the dropdown first", () => {
+    mockResults([P1, P2]);
+    render(<Harness />);
 
     const input = screen.getByRole("combobox");
+    fireEvent.focus(input);
     fireEvent.mouseDown(input);
-    fireEvent.change(input, { target: { value: "managed" } });
-    fireEvent.keyDown(input, { key: "Escape" });
+    fireEvent.click(screen.getByText(P2.name));
 
-    expect(screen.queryByDisplayValue("managed")).not.toBeInTheDocument();
-    expect(
-      screen.getByText("Customer 3 Project - Managed Cloud Subscription"),
-    ).toBeInTheDocument();
+    // The dropdown is still open (disableCloseOnSelect) and the summary
+    // already reflects the pick, not only after the user clicks away.
+    expect(screen.getByRole("listbox")).toBeInTheDocument();
+    expect(screen.getAllByText(P2.name)).toHaveLength(2); // the summary + the still-open list row
+  });
+
+  it("offers the top real search match first, not the already-selected project pinned ahead of it", () => {
+    // p2 is already selected, but the current search's own top match is p1 —
+    // the dropdown's first row (what Enter/the default highlight would act
+    // on) must be p1, not p2 forced to the front because it's selected.
+    mockResults([P1, P2]);
+    render(<AsyncProjectMultiSelect values={["p2"]} onChange={vi.fn()} />);
+
+    fireEvent.mouseDown(screen.getByRole("combobox"));
+
+    const options = screen.getAllByRole("option");
+    expect(options[0]).toHaveTextContent(P1.name);
   });
 });

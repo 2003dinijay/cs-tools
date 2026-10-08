@@ -49,7 +49,8 @@ interface AsyncProjectMultiSelectProps {
  * Project filter that searches the backend as the user types instead of
  * loading the whole project catalogue up front. Selected project names are
  * remembered (captured at selection time, plus any seed) so the chips stay
- * labelled even after the search results change.
+ * labelled even after the search results change. Input handling follows
+ * SearchableMultiSelect's own uncontrolled pattern (see onInputChange below).
  */
 export default function AsyncProjectMultiSelect({
   id = "cases-filter-project",
@@ -107,13 +108,18 @@ export default function AsyncProjectMultiSelect({
     [values, nameById],
   );
 
-  // Pool = current selection (so the field can render its chips) + the search
-  // results, de-duplicated by id.
-  const options: ProjectOption[] = useMemo(() => {
-    const results = projects.map((p) => ({ id: p.id, name: p.name || p.id }));
-    const seen = new Set(values);
-    return [...selectedOptions, ...results.filter((o) => !seen.has(o.id))];
-  }, [projects, values, selectedOptions]);
+  // The dropdown's own pool is just the live search results — not the
+  // current selection prepended in front of them (a previous version did
+  // this "so the field can render its chips", but renderTags/nameById
+  // already resolve a chip's label independently of what's in `options`,
+  // via `pickedNames`/`nameSeed`, so nothing actually needed it). Prepending
+  // the selection meant option 0 — what Enter/the default highlight acts on
+  // — was always an already-picked project instead of the top real search
+  // match, which is what made Enter appear to "select the wrong item."
+  const options: ProjectOption[] = useMemo(
+    () => projects.map((p) => ({ id: p.id, name: p.name || p.id })),
+    [projects],
+  );
 
   return (
     <Autocomplete<ProjectOption, true>
@@ -124,15 +130,7 @@ export default function AsyncProjectMultiSelect({
       value={selectedOptions}
       open={open}
       onOpen={() => setOpen(true)}
-      onClose={() => {
-        setOpen(false);
-        // Clear the stale search term once the user is done picking from it
-        // (the dropdown only closes on blur/Escape/click-away, never on a
-        // selection itself — see disableCloseOnSelect below) — otherwise it
-        // would resurface the next time renderTags shows the selected-names
-        // summary and visually collide with it (see renderTags' own comment).
-        setInput("");
-      }}
+      onClose={() => setOpen(false)}
       // Spinner only while the first page loads; later pages append on scroll.
       loading={isFetching && projects.length === 0}
       disableCloseOnSelect
@@ -160,20 +158,15 @@ export default function AsyncProjectMultiSelect({
           return m;
         });
         onChange(next.map((o) => o.id));
-        // MUI's own attempt to clear the input after a pick (ignored above,
-        // reason "reset") still leaves the cursor mid-string. Restore it to
-        // the end once the DOM settles.
-        requestAnimationFrame(() => {
-          const el = document.getElementById(id) as HTMLInputElement | null;
-          el?.setSelectionRange(el.value.length, el.value.length);
-        });
       }}
-      inputValue={input}
-      onInputChange={(_event, value, reason) => {
-        // Keep the typed term after a selection (reason "reset") so the user can
-        // pick several from one search; clear only on explicit input/clear.
-        if (reason === "input" || reason === "clear") setInput(value);
-      }}
+      // Deliberately NOT a controlled `inputValue` (see SearchableMultiSelect,
+      // mirrored here) — letting Autocomplete own the input lets it reset
+      // itself after each pick same as any plain search box. A previous
+      // version controlled it to keep a typed term across picks, which
+      // caused the leftover text, the stray cursor, and Enter's unpredictable
+      // target all at once. `onInputChange` just observes the typed query
+      // for the debounced search below; it's never fed back as `inputValue`.
+      onInputChange={(_event, value) => setInput(value)}
       noOptionsText={
         isError
           ? "Couldn't load projects. Try again."
@@ -182,17 +175,6 @@ export default function AsyncProjectMultiSelect({
             : "No projects found"
       }
       renderTags={(value) => {
-        // While the dropdown is open, the live search text in `input` is
-        // what the user is actively looking at — rendering the selected-
-        // names summary in the same single-line field at the same time
-        // visually concatenates the two (reported live: "Customer 3
-        // Project - Managed Cloud Subscription            managed" on one
-        // line, with "managed" the still-typed search term). The summary is
-        // only useful once the field is collapsed/closed — the checkboxes
-        // in the dropdown already show what's picked while it's open — so
-        // it's suppressed until then; onClose (above) clears the stale
-        // search text at the same moment this starts rendering again.
-        if (open) return null;
         const displayText = value.map((o) => o.name).join(", ");
         const content = (
           <Box
