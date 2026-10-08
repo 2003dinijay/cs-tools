@@ -139,13 +139,16 @@ func (d *Directory) RoleCount() int { return len(d.roleResults) }
 // and backing group ids) of the configured team whose group name exactly
 // matches name. ok is false if no configured team matches.
 func (d *Directory) TeamResultByGroupName(name string) (TeamResult, bool) {
-	t, ok := d.byGroupName[name]
-	if !ok {
-		return TeamResult{}, false
-	}
-	for _, r := range d.teamResults {
-		if r.ID == t.Key {
-			return r, true
+	// Matched case-insensitively: the `team` table's names can differ in case
+	// from the registry's display names ("rigel" vs "Rigel").
+	for _, t := range d.teams {
+		if !strings.EqualFold(t.Name, name) {
+			continue
+		}
+		for _, r := range d.teamResults {
+			if r.ID == t.Key {
+				return r, true
+			}
 		}
 	}
 	return TeamResult{}, false

@@ -271,9 +271,15 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 	if len(req.Filters.GroupNames) > 0 {
 		where += fmt.Sprintf(` AND EXISTS (
 			SELECT 1 FROM team_member tm JOIN team t ON t.id = tm.team_id
-			WHERE tm.user_id = u.id AND t.name = ANY($%d::text[])
+			WHERE tm.user_id = u.id AND LOWER(t.name) = ANY($%d::text[])
 		)`, argIdx)
-		filterArgs = append(filterArgs, req.Filters.GroupNames)
+		// Compared case-insensitively: the portal's registry names ("Rigel")
+		// and the team table's ("rigel") differ in case.
+		lowered := make([]string, len(req.Filters.GroupNames))
+		for i, n := range req.Filters.GroupNames {
+			lowered[i] = strings.ToLower(n)
+		}
+		filterArgs = append(filterArgs, lowered)
 		argIdx++
 	}
 
