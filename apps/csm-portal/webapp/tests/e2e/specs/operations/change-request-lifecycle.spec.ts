@@ -97,6 +97,7 @@ import {
   ACCEPT_NEEDS_EXPECTED,
   ACCEPT_NEEDS_EXPECTED_WINDOW,
   ACCEPT_ONLY_AGREE,
+  ACCEPT_PROPOSER_NOT_RECORDED,
   ACCEPT_WINDOW_HAS_NO_LENGTH,
   COUNTER_IS_THE_PROPOSAL,
   ON_HOLD_MESSAGE,
@@ -117,6 +118,7 @@ import {
   requirementCannotBeRemovedMessage,
   requirementGatePassedMessage,
   requirementNeedsProjectMessage,
+  NO_RECORDED_PROPOSAL_TO_DECLINE,
   nobodyToAskMessage,
   REQUEST_APPROVAL_NEEDS_PROJECT,
   CANNOT_RETURN_TO_NEW,
@@ -3133,7 +3135,7 @@ test.describe("change request approval flow — a customer's proposed time (mock
     await expect(detail.acceptDialog()).toBeVisible();
     await expect(detail.acceptDialog()).toContainText("The change will be scheduled for");
     await expect(detail.acceptDialog()).toContainText("The customer sees that you accepted it and is not asked again. No CAB approval is needed.");
-    await expect(detail.acceptDialog().getByRole("checkbox")).toHaveCount(0); // the proposer is on record
+    await expect(detail.acceptDialog().getByRole("checkbox")).toHaveCount(0); // there is never a confirmation to tick
     await proposalPicture(page, "02-accept-dialog-proposer-known");
     expect(api.state()).toBe("customer_approval"); // nothing is sent before the engineer confirms
     await detail.acceptDialogConfirm().click();
@@ -3247,42 +3249,57 @@ test.describe("change request approval flow — a customer's proposed time (mock
     expect(api.proposal().confirmation).toBeNull();
   });
 
-  test("the proposer is NOT recorded (a date WSO2 users write too, or one left over from an earlier round): the banner says so, Accept is not the primary action, and the dialog needs an explicit confirmation", async ({ page }) => {
+  test("nobody is recorded as having proposed the stored time (a date WSO2 users write too, or one left over from an earlier round): the banner says so, Accept is disabled with the reason and refused by the API, and Propose a different time is a plain Re-schedule that writes no answer", async ({ page }) => {
     const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
     await proposalWaiting(page, api, detail, false);
-    await expect(detail.proposalBanner()).toContainText("The proposer is not recorded.");
-    await expect(detail.proposalBanner()).not.toContainText("Proposed by Mia");
-    // Nobody is on record, so nothing says the customer proposed it: neutral title, window label and header note.
+    const stagesBefore = api.stages().map((st) => st.stage);
+    // Nobody is on record, so nothing says the customer proposed it and nothing waits for an answer: a stored time, an info banner,
+    // and the header still says the customer is being asked.
     await expect(detail.neutralProposalBanner()).toBeVisible();
     await expect(detail.customerProposalBanner()).toHaveCount(0);
-    await expect(detail.neutralProposalBanner()).toContainText("Proposed time");
-    await expect(detail.neutralProposalBanner()).not.toContainText("Proposed by the customer");
+    await expect(detail.neutralProposalBanner()).toContainText("A time is stored (");
+    await expect(detail.neutralProposalBanner()).toContainText(") but nobody is recorded as having proposed it.");
+    await expect(detail.neutralProposalBanner()).toContainText("Stored time");
+    await expect(detail.neutralProposalBanner()).not.toContainText("Proposed by");
     await expect(detail.neutralProposalBanner()).not.toContainText("The customer proposed");
-    await expect(detail.neutralProposalWaitingReason()).toBeVisible();
-    await expect(detail.customerProposalWaitingReason()).toHaveCount(0);
+    await expect(detail.proposalWaitingReason()).toHaveCount(0);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
     await proposalPicture(page, "04-banner-proposer-not-recorded");
-    await expect(detail.acceptProposedTimeButton()).toHaveClass(/MuiButton-outlined/);
-    await expect(detail.proposeDifferentTimeButton()).toHaveClass(/MuiButton-outlined/);
 
-    // The counter dialog leads with "A time was proposed: ...", not "The customer proposed ...".
+    // Accept is disabled, with the backend's own reason on a focusable wrapper; there is nothing to confirm and no dialog to open.
+    await expect(detail.acceptProposedTimeButton()).toBeDisabled();
+    const reason = `${ACCEPT_PROPOSER_NOT_RECORDED.charAt(0).toUpperCase()}${ACCEPT_PROPOSER_NOT_RECORDED.slice(1)}.`;
+    await expect(detail.proposalBanner().getByLabel(`Accept proposed time: ${reason}`)).toHaveAttribute("tabindex", "0");
+    await expect(detail.proposeDifferentTimeButton()).toBeEnabled();
+    // The API refuses an Accept sent anyway, with its code in the body, and writes nothing.
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: PROPOSED_START, ...SHOWN_WINDOW })).toEqual({
+      status: 409,
+      message: ACCEPT_PROPOSER_NOT_RECORDED,
+    });
+    // ... and a request with no window is not a decline of a time nobody proposed: refused, never a silent Disagree.
+    expect(await patchFromPage(page, { state: "authorize" })).toEqual({ status: 400, message: NO_RECORDED_PROPOSAL_TO_DECLINE });
+    expect(api.state()).toBe("customer_approval");
+    expect(api.proposal()).toEqual({ customerUpdatedOn: PROPOSED_START, confirmation: null });
+
+    // Propose a different time: a plain Re-schedule that names the stored time. No decline, the window must change.
     await detail.proposeDifferentTimeButton().click();
-    await expect(detail.counterDialog()).toContainText("A time was proposed:");
+    await expect(detail.counterDialog()).toContainText("A time is stored (");
+    await expect(detail.counterDialog()).toContainText("There is no proposal to decline.");
     await expect(detail.counterDialog()).not.toContainText("The customer proposed");
-    await detail.counterDialog().getByRole("button", { name: "Close", exact: true }).click();
+    await expect(detail.counterSubmit("Propose this time")).toBeDisabled();
+    await expect(detail.counterDialog().getByRole("button", { name: "Decline proposed time" })).toHaveCount(0);
+    await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START, detail.counterDialog());
+    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END, detail.counterDialog());
+    await detail.counterSubmit("Propose this time").click();
     await expect(detail.counterDialog()).toHaveCount(0);
-
-    await detail.acceptProposedTimeButton().click();
-    await expect(detail.acceptDialog()).toContainText("The proposer is not recorded.");
-    await expect(detail.acceptDialog()).toContainText("Proposed time");
-    await expect(detail.acceptDialog()).not.toContainText("Proposed by the customer");
-    await expect(detail.acceptDialogConfirm()).toBeDisabled();
-    await proposalPicture(page, "05-accept-dialog-proposer-not-recorded");
-    await detail.acceptDialog().getByRole("checkbox", { name: "I have checked that the customer proposed this time." }).check();
-    await expect(detail.acceptDialogConfirm()).toBeEnabled();
-    await detail.acceptDialogConfirm().click();
-    await expect(detail.currentStep()).toContainText("Scheduled");
-    expect(api.proposal().confirmation).toBe("agree");
+    // The customer is asked again (a fresh request, no CAB) and NO answer was written against a date nobody proposed.
+    expect(api.state()).toBe("customer_approval");
+    expect(api.proposal().confirmation).toBeNull();
+    // The window was typed in the signed-in user's zone and the PATCH carries UTC, so assert the day, never the hour.
+    expect(api.planned().start).toMatch(MOVED_TO_NEXT_WEEK);
+    expect(api.planned().end).toMatch(MOVED_TO_NEXT_WEEK);
+    expect(api.stages().map((st) => st.stage)).toEqual([...stagesBefore, "Customer Approval"]);
   });
 
   test("a date that is not a proposal waiting for WSO2 shows no banner and no actions on it: a stale date equal to the plan, an answered one, an internal approval still being asked (an unknown approval group), a change in Authorize", async ({ page }) => {
@@ -3386,9 +3403,64 @@ test.describe("change request approval flow — a customer's proposed time (mock
     expect(api.state()).toBe("customer_approval");
     expect(api.planned()).toEqual(ORIGINAL_WINDOW);
     expect(api.proposal().confirmation).toBeNull();
+    // That refusal names no code, but the proposal the dialog showed is not the one the page holds now once the change is read
+    // again: asking again would be refused again, so Accept is held back and Close is the way on.
+    await expect(detail.acceptDialogConfirm()).toBeDisabled();
     await detail.acceptDialog().getByRole("button", { name: "Close", exact: true }).click();
     await page.reload();
     await expect(detail.proposalBanner()).toContainText("Proposed by Max Member");
+  });
+
+  test("a window re-scheduled behind an open Accept confirmation: the refusal names its code, the dialog closes, the page says why with focus on the notice, shows the new window, and Accept then goes through", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    await detail.acceptProposedTimeButton().click();
+    api.moveWindow("2030-03-02 09:00:00", "2030-03-02 11:00:00"); // behind the open dialog
+    await detail.acceptDialogConfirm().click();
+    await expect(detail.acceptDialog()).toHaveCount(0);
+    const notice = detail.staleAnswerNotice();
+    const moved = windowChangedMessage("2030-03-02T09:00:00Z to 2030-03-02T11:00:00Z");
+    await expect(notice).toContainText(`${moved.charAt(0).toUpperCase()}${moved.slice(1)}.`); // the notice states it as a sentence
+    await expect(notice).toBeFocused();
+    // Nothing was accepted, and the page read the change again: the banner shows the planned window as it is now.
+    expect(api.state()).toBe("customer_approval");
+    expect(api.proposal().confirmation).toBeNull();
+    await expect(detail.proposalBanner()).toContainText(/Mar 2, 2030, \d{1,2}:\d{2} [AP]M to Mar 2, 2030, \d{1,2}:\d{2} [AP]M/);
+    // On the current state it goes through, and the notice goes with the next dialog.
+    await detail.acceptProposedTimeButton().click();
+    await expect(notice).toHaveCount(0);
+    await detail.acceptDialogConfirm().click();
+    await expect(detail.acceptDialog()).toHaveCount(0);
+    expect(api.state()).toBe("scheduled");
+  });
+
+  test("a window re-scheduled behind an open counter: the dialog closes with no note posted, and opened again the reason is recorded exactly once", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    const reason = "Freeze that week.";
+    const fillCounter = async (): Promise<void> => {
+      await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START, detail.counterDialog());
+      await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END, detail.counterDialog());
+      await detail.counterDialog().getByLabel("Reason (optional)").fill(reason);
+    };
+    await detail.proposeDifferentTimeButton().click();
+    await fillCounter();
+    api.moveWindow("2030-03-02 09:00:00", "2030-03-02 11:00:00"); // behind the open dialog
+    await detail.counterSubmit("Propose this time").click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+    await expect(detail.staleAnswerNotice()).toBeFocused();
+    expect(api.journal()).toEqual([]); // the refused attempt left no note behind
+    expect(api.proposal().confirmation).toBeNull();
+
+    await detail.proposeDifferentTimeButton().click();
+    await expect(detail.counterDialog().getByLabel("Reason (optional)")).toHaveValue("");
+    await fillCounter();
+    await detail.counterSubmit("Propose this time").click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+    expect(api.proposal().confirmation).toBe("disagree");
+    expect(api.journal()).toEqual([{ kind: "comment", text: reason }]); // once, after the change went through
   });
 
   test("a plain Re-schedule opened before the customer proposed never answers a proposal it did not see: the API says so, in words", async ({ page }) => {
@@ -5041,7 +5113,7 @@ test.describe("a customer's proposed time (real stack)", () => {
     await expect(detail.proposalBanner()).toHaveCount(0);
   });
 
-  test("on the rows the sync writes: a migrated change in Customer Approval with a customer date and no answer reads as a proposal whose proposer is not recorded, and is accepted after an explicit confirmation", async ({ page }) => {
+  test("on the rows the sync writes: a migrated change in Customer Approval with a customer date and no answer is a stored time nobody is recorded as having proposed: Accept is refused (page and API), and Propose a different time is a plain Re-schedule that writes no answer", async ({ page }) => {
     test.skip(!fs.existsSync(LEGACY_SQL), `the customer portal e2e fixture ${LEGACY_SQL} is not there (run from apps/csm-portal/webapp)`);
     await psql(fs.readFileSync(LEGACY_SQL, "utf8"));
     try {
@@ -5050,28 +5122,47 @@ test.describe("a customer's proposed time (real stack)", () => {
       const id = legacyId("CHG0039112");
       await psql(`update change_request set customer_updated_on = '2031-03-08 10:00:00+00', customer_updated_date_confirmation = NULL where id = '${id}'`);
       const read = (await staff("jane").get(id)).body as unknown as { customerProposal?: Record<string, unknown> };
-      expect(read.customerProposal).toMatchObject({ answer: "pending", startOn: "2031-03-08T10:00:00Z", endOn: "2031-03-08T12:00:00Z", canAccept: true });
-      // The last writer is the sync, not a registered contact: nobody is named, and the page says so.
-      expect(read.customerProposal?.proposerRecorded).toBe(false);
+      // The last writer is the sync, not a registered contact: nobody is named, and Accept is not on offer, with the reason.
+      expect(read.customerProposal).toMatchObject({ answer: "pending", startOn: "2031-03-08T10:00:00Z", proposerRecorded: false, canAccept: false });
+      expect(read.customerProposal?.acceptBlockedReason).toBe(ACCEPT_PROPOSER_NOT_RECORDED);
       expect(read.customerProposal?.proposedByEmail).toBeUndefined();
 
       await detail.goto(id);
-      await expect(detail.proposalBanner()).toBeVisible();
       await expect(detail.neutralProposalBanner()).toBeVisible(); // nobody on record: the banner does not say the customer proposed it
-      await expect(detail.neutralProposalWaitingReason()).toBeVisible();
-      await expect(detail.proposalBanner()).toContainText("The proposer is not recorded.");
-      await expect(detail.acceptProposedTimeButton()).toHaveClass(/MuiButton-outlined/);
-      await expect(detail.proposeDifferentTimeButton()).toHaveClass(/MuiButton-outlined/);
-      await shotTo(page, "43-csm-proposal-banner-proposer-not-recorded-migrated-row");
+      await expect(detail.proposalWaitingReason()).toHaveCount(0);
+      await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+      await expect(detail.neutralProposalBanner()).toContainText(") but nobody is recorded as having proposed it.");
+      await expect(detail.acceptProposedTimeButton()).toBeDisabled();
+      await expect(detail.proposeDifferentTimeButton()).toBeEnabled();
+      await shotTo(page, "43-csm-stored-time-nobody-recorded-migrated-row");
 
-      await detail.acceptProposedTimeButton().click();
-      await expect(detail.acceptDialogConfirm()).toBeDisabled();
-      await detail.acceptDialog().getByRole("checkbox", { name: "I have checked that the customer proposed this time." }).check();
-      await detail.acceptDialogConfirm().click();
-      await expect(detail.currentStep()).toContainText("Scheduled");
-      expect(await proposalRow(id)).toMatchObject({ state: "SCHEDULED", start: "2031-03-08 10:00:00", end: "2031-03-08 12:00:00", answer: "AGREE" });
-      // Nobody was asked on this row, so there is nothing to close and nothing was added.
-      expect(await writtenRows(id)).toMatchObject({ stages: 0, approvers: 0 });
+      // The API refuses an Accept sent anyway: a 409 with its code, and nothing is written.
+      const accept = await staff("alice").patch(id, {
+        confirmCustomerUpdatedDate: "agree",
+        expectedCustomerUpdatedOn: "2031-03-08T10:00:00Z",
+        expectedPlannedStartOn: "2031-03-01T10:00:00Z",
+        expectedPlannedEndOn: "2031-03-01T12:00:00Z",
+      });
+      expect(accept.status).toBe(409);
+      expect(accept.body as { message?: string; errorCode?: string }).toMatchObject({ message: ACCEPT_PROPOSER_NOT_RECORDED, errorCode: "change_request_proposer_not_recorded" });
+      // ... and a request with no window is no decline of a time nobody proposed.
+      const bare = await staff("alice").patch(id, { state: "authorize" });
+      expect([bare.status, (bare.body as { message?: string }).message]).toEqual([400, NO_RECORDED_PROPOSAL_TO_DECLINE]);
+      expect(await proposalRow(id)).toMatchObject({ state: "CUSTOMER_APPROVAL", start: "2031-03-01 10:00:00", answer: "" });
+
+      // Propose a different time: a plain Re-schedule (the window must change). The customers are asked, nothing is answered.
+      await detail.proposeDifferentTimeButton().click();
+      await expect(detail.counterDialog()).toContainText("There is no proposal to decline.");
+      await expect(detail.counterSubmit("Propose this time")).toBeDisabled();
+      await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START, detail.counterDialog());
+      await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END, detail.counterDialog());
+      await detail.counterSubmit("Propose this time").click();
+      await expect(detail.counterDialog()).toHaveCount(0);
+      expect(await proposalRow(id), "no DISAGREE is written against a date nobody proposed").toMatchObject({ state: "CUSTOMER_APPROVAL", answer: "" });
+      expect(
+        await psqlOutput(`select count(*) from approval_stage_approver a join approval_stage s on s.id = a.stage_id where s.work_item_id = '${id}' and s.checkpoint_label = 'Customer Approval' and a.state = 'REQUESTED'`),
+        "the project's contacts are asked to approve the new time",
+      ).toBe("2");
     } finally {
       await deleteLegacy();
     }
@@ -5118,7 +5209,7 @@ test.describe("a customer's proposed time (real stack)", () => {
       await deleteLegacy();
     }
   });
-  test("a customer date the sync left far ahead is a proposal that cannot be accepted: the window would end after the year 2100, the read model says so in the backend's words, and the last window that fits is accepted", async () => {
+  test("a customer date the sync left far ahead is a stored time nobody proposed: Accept is refused for that reason first, whatever window it would give, in the read model and at the API, and nothing is written", async () => {
     test.skip(!fs.existsSync(LEGACY_SQL), `the customer portal e2e fixture ${LEGACY_SQL} is not there (run from apps/csm-portal/webapp)`);
     await psql(fs.readFileSync(LEGACY_SQL, "utf8"));
     try {
@@ -5127,20 +5218,16 @@ test.describe("a customer's proposed time (real stack)", () => {
       const proposalOf = async (): Promise<Record<string, unknown> | undefined> =>
         ((await staff("jane").get(id)).body as unknown as { customerProposal?: Record<string, unknown> }).customerProposal;
 
-      // + the 2-hour planned length = 2101-01-01T00:30:00Z: past the last year every planned window is held to.
-      await psql(`update change_request set customer_updated_on = '2100-12-31 22:30:00+00', customer_updated_date_confirmation = NULL where id = '${id}'`);
-      const blocked = acceptTooFarAheadMessage("2100-12-31T22:30:00Z", "2101-01-01T00:30:00Z");
-      expect(await proposalOf()).toMatchObject({ answer: "pending", canAccept: false, acceptBlockedReason: blocked });
-      const refused = await staff("alice").patch(id, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: "2100-12-31T22:30:00Z", ...shown });
-      expect([refused.status, (refused.body as { message?: string }).message]).toEqual([409, blocked]);
-      expect(await proposalRow(id)).toMatchObject({ state: "CUSTOMER_APPROVAL", start: "2031-03-01 10:00:00", end: "2031-03-01 12:00:00", answer: "" });
-
-      // The last window that fits: it ends 2100-12-31T23:30:00Z, still year 2100.
-      await psql(`update change_request set customer_updated_on = '2100-12-31 21:30:00+00' where id = '${id}'`);
-      expect(await proposalOf()).toMatchObject({ answer: "pending", canAccept: true });
-      const accepted = await staff("alice").patch(id, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: "2100-12-31T21:30:00Z", ...shown });
-      expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
-      expect(await proposalRow(id)).toMatchObject({ state: "SCHEDULED", start: "2100-12-31 21:30:00", end: "2100-12-31 23:30:00", answer: "AGREE" });
+      // One whose 2-hour window would end after the year 2100, and the last one that fits: neither is accepted, since the sync's
+      // date has no registered contact recorded as its proposer. That refusal is the first reason, ahead of the window's own.
+      for (const start of ["2100-12-31 22:30:00+00", "2100-12-31 21:30:00+00"]) {
+        await psql(`update change_request set customer_updated_on = '${start}', customer_updated_date_confirmation = NULL where id = '${id}'`);
+        expect(await proposalOf()).toMatchObject({ answer: "pending", proposerRecorded: false, canAccept: false, acceptBlockedReason: ACCEPT_PROPOSER_NOT_RECORDED });
+        const startIso = start.replace(" ", "T").replace("+00", "Z");
+        const refused = await staff("alice").patch(id, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: startIso, ...shown });
+        expect([refused.status, (refused.body as { message?: string }).message]).toEqual([409, ACCEPT_PROPOSER_NOT_RECORDED]);
+        expect(await proposalRow(id)).toMatchObject({ state: "CUSTOMER_APPROVAL", start: "2031-03-01 10:00:00", end: "2031-03-01 12:00:00", answer: "" });
+      }
     } finally {
       await deleteLegacy();
     }

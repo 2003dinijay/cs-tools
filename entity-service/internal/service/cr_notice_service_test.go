@@ -250,7 +250,7 @@ func TestPlanDate_Turns(t *testing.T) {
 }
 
 // A Decline (WSO2 keeps the plan) and a different time (WSO2 proposes another window) both write the
-// answer DISAGREE -- ServiceNow's own Disagree -- so they are ONE turn and send ONE notice, the
+// answer DISAGREE -- the previous system's own Disagree -- so they are ONE turn and send ONE notice, the
 // Disagree notice: "Reject the proposed plan start date" / "WSO2 Team request to change the plan
 // start date". There is no notice kind of its own for a Decline, and the mail names NO time at all:
 // the new window of a different time is not in it (the customer reads it on the change request), and

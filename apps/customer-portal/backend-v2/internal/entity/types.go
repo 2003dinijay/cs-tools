@@ -1986,12 +1986,13 @@ type ChangeRequest struct {
 	CustomerCanAnswer *bool `json:"customerCanAnswer,omitempty"`
 
 	// CustomerProposal is entity-service's view of a time a customer proposed for the change
-	// request (ServiceNow's own customer_updated_on / customer_updated_date_confirmation pair): the
-	// proposed start, whether WSO2 has answered, and -- for the signed-in customer only -- whether
-	// the proposal is theirs. Only the fields a customer may see are decoded here: the proposer's
-	// name and email, whether WSO2 could accept it and why not are staff facts that entity-service
-	// withholds from a customer and that this type has no field for, so they cannot reach the
-	// portal whatever the payload says. Absent when no time was proposed.
+	// request (kept as the proposed start and its confirmation, customer_updated_on /
+	// customer_updated_date_confirmation): the proposed start, whether WSO2 has answered, and -- for
+	// the signed-in customer only -- whether the proposal is theirs. Only the fields a customer may
+	// see are decoded here: the proposer's name and email, whether WSO2 could accept it and why not
+	// are staff facts that entity-service withholds from a customer and that this type has no field
+	// for, so they cannot reach the portal whatever the payload says. Absent when no time was
+	// proposed.
 	CustomerProposal *ChangeRequestCustomerProposal `json:"customerProposal,omitempty"`
 }
 

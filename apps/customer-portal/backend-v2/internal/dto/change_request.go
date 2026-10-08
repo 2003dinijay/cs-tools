@@ -262,9 +262,10 @@ type ChangeRequestDetails struct {
 	IsOnHold *bool `json:"isOnHold,omitempty"`
 
 	// CustomerProposal is the conversation about a time a customer proposed: present when one was
-	// (entity-service derives it from ServiceNow's own customer_updated_on / confirmation columns).
-	// While it is pending the planned window (startDate / endDate) is still the one WSO2 planned and
-	// a customer who approves approves THAT; once WSO2 answers, the window is either the proposal
+	// (entity-service derives it from the proposed start and its confirmation, customer_updated_on /
+	// customer_updated_date_confirmation). While it is pending the planned window (startDate /
+	// endDate) is still the one WSO2 planned and a customer who approves approves THAT; once WSO2
+	// answers, the window is either the proposal
 	// (agreed: the change is scheduled for it) or WSO2's different time (disagreed). No names or
 	// emails are passed on, only whether the proposal is the signed-in customer's own.
 	CustomerProposal *ChangeRequestCustomerProposal `json:"customerProposal,omitempty"`

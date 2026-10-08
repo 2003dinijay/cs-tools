@@ -211,10 +211,10 @@ export class ChangeRequestDetailPage {
 
   /**
    * Header note while a proposed time waits for WSO2's answer: the change is waiting for WSO2, so the "Awaiting ..."
-   * note of `blockingReason()` is not shown. The note says the customer proposed the time only when the proposer is
-   * recorded ("Waiting for WSO2 to respond to the customer's proposed time"); otherwise it reads "Waiting for WSO2 to
-   * respond to the proposed time". This locator matches either; `customerProposalWaitingReason()` and
-   * `neutralProposalWaitingReason()` pin which one.
+   * note of `blockingReason()` is not shown. The note exists only when a customer is recorded as the proposer
+   * ("Waiting for WSO2 to respond to the customer's proposed time"); a stored time nobody is recorded as having proposed
+   * leaves the header at "Awaiting Customer Approval", since there is no proposal to respond to. This locator matches
+   * the one wording there is, and `neutralProposalWaitingReason()` the wording that must never appear.
    */
   proposalWaitingReason(): Locator {
     return this.page.getByText(/^Waiting for WSO2 to respond to the (customer's )?proposed time$/);
@@ -225,17 +225,17 @@ export class ChangeRequestDetailPage {
     return this.page.getByText(/^Waiting for WSO2 to respond to the customer's proposed time$/);
   }
 
-  /** The header note when the proposer is not recorded: it does not say the customer proposed the time. */
+  /** The header note that no page says any more: "Waiting for WSO2 to respond to the proposed time" (nobody proposed it). */
   neutralProposalWaitingReason(): Locator {
     return this.page.getByText(/^Waiting for WSO2 to respond to the proposed time$/);
   }
 
   /**
    * The banner under the stepper (a named region): "The customer proposed a new time" when the proposer is recorded,
-   * "A new time is waiting for your answer" when it is not. This locator matches either.
+   * "A time is stored on this change request" when nobody is. This locator matches either.
    */
   proposalBanner(): Locator {
-    return this.page.getByRole("region", { name: /^(The customer proposed a new time|A new time is waiting for your answer)$/ });
+    return this.page.getByRole("region", { name: /^(The customer proposed a new time|A time is stored on this change request)$/ });
   }
 
   /** The banner when the proposer is recorded. */
@@ -243,9 +243,9 @@ export class ChangeRequestDetailPage {
     return this.page.getByRole("region", { name: "The customer proposed a new time", exact: true });
   }
 
-  /** The banner when the proposer is not recorded: neutral title, the window labelled "Proposed time". */
+  /** The banner when nobody is recorded as the proposer: a time is stored, nothing waits for an answer, the window is labelled "Stored time". */
   neutralProposalBanner(): Locator {
-    return this.page.getByRole("region", { name: "A new time is waiting for your answer", exact: true });
+    return this.page.getByRole("region", { name: "A time is stored on this change request", exact: true });
   }
 
   /** The banner's primary answer (never the bar's: Accept lives only in the banner). */
@@ -275,6 +275,15 @@ export class ChangeRequestDetailPage {
   /** The counter dialog's submit: "Propose this time" (a different window) or "Decline proposed time" (the current time kept). */
   counterSubmit(label: "Propose this time" | "Decline proposed time"): Locator {
     return this.counterDialog().getByRole("button", { name: label, exact: true });
+  }
+
+  /**
+   * The page's own alert for an answer dialog that was closed for the engineer because the change is no longer what it showed
+   * (a refusal with one of the stale-answer codes): the backend's words, then "The page now shows the current state." It takes
+   * focus once the dialog is gone.
+   */
+  staleAnswerNotice(): Locator {
+    return this.page.getByRole("alert").filter({ hasText: "The page now shows the current state." });
   }
 
   /** "Re-schedule" -- the outlined button beside the primary action in Customer Approval. */

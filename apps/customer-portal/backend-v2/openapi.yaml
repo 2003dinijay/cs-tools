@@ -8083,7 +8083,7 @@ components:
       required: [startDate, answer]
       description: >-
         The conversation about a time a customer proposed (entity-service derives it from
-        ServiceNow's own customer_updated_on / customer_updated_date_confirmation columns);
+        the proposed start and its confirmation, customer_updated_on / customer_updated_date_confirmation);
         present when one was. While `answer` is "pending" the change request is still in Customer
         Approval and its planned window (startDate / endDate on the change itself) is still the one
         WSO2 planned: a proposal changes nothing until WSO2 answers, and a customer who approves
@@ -8107,13 +8107,17 @@ components:
           enum: [pending, agreed, disagreed, unanswered]
           description: >-
             pending: waits for WSO2. agreed: WSO2 accepted it. disagreed: WSO2 asked for a different
-            time. unanswered: history.
+            time. unanswered: history -- including a stored time that nobody is recorded as having
+            proposed (a date a WSO2 user wrote, or one left over from an older cycle): nothing waits
+            for WSO2 on a customer's account then, so it is never "pending" for a customer.
         proposerRecorded:
           type: boolean
           description: >-
-            While pending: whether the proposer can be named at all (a registered contact wrote it).
-            False for a date a WSO2 user wrote or one left over from an older cycle -- the portal
-            must not say a colleague proposed it then.
+            While pending: whether a registered contact is recorded as having proposed the time. A
+            pending proposal is only ever shown to a customer when somebody is, so it is true
+            whenever it is present here; `proposedByViewer` says whose proposal it is. (A time
+            nobody is recorded as having proposed reads `unanswered`, not pending, and carries
+            neither field.)
         proposedByViewer:
           type: boolean
           description: While pending - whether the proposal is the signed-in customer's own.

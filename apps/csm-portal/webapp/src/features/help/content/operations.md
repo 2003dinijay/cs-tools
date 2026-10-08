@@ -160,20 +160,37 @@ From the detail page a CS engineer can:
     cell then reads "Proposed time accepted", because nobody on staff records a
     customer's approval. Accept is held back, with the reason, while the change
     is on hold, once the proposed time has passed, when there is no planned
-    window to keep the length of, or when the window it would give ends after the
-    year 2100 (a date the previous system left far ahead).
+    window to keep the length of, when the window it would give ends after the
+    year 2100 (a date the previous system left far ahead), or when nobody is
+    recorded as having proposed the time (see below).
   - **Propose a different time** asks the customer to approve the time you set
     instead (again with no CAB). Keeping the current time **declines** the
     proposal: only the answer is recorded and the customer keeps their request
-    to approve the current time. The loop repeats with their next proposal.
+    to approve the current time. The loop repeats with their next proposal. The
+    optional reason you type is recorded as an internal note once the change has
+    been updated, so a refused attempt leaves no note behind.
 
   A date a WSO2 user wrote in the previous system, or one left over from an
-  earlier round, looks like a proposal too. When the page cannot say who
-  proposed the time ("The proposer is not recorded.") it does not say the
-  customer proposed it: the banner reads "A new time is waiting for your
-  answer" and the header "Waiting for WSO2 to respond to the proposed time".
-  Accept is no longer the single main button and asks you to confirm that the
-  customer really proposed it.
+  earlier round, looks like a proposal too. The only thing on record about who
+  proposed a time is who last changed the change request, and only when that is
+  one of the project's registered contacts: so a customer's genuine proposal
+  also reads "nobody is recorded" once anyone at WSO2 has edited the change
+  request since (an unrelated edit too, such as a plan or the assigned
+  engineer). When nobody is recorded as having proposed the stored time, it is
+  not a proposal and nothing waits for your answer: the banner reads "A time is stored on this change request" ("A time is
+  stored (...) but nobody is recorded as having proposed it."), the header stays
+  at "Awaiting Customer Approval", and **Accept proposed time** is disabled with
+  the reason, because no staff action stands in for the customer's own answer.
+  **Propose a different time** stays available as a plain Re-schedule: there is
+  no proposal to decline, so the window must change, and the customer is asked to
+  approve the time you set (the stored time itself will do, when it is the one
+  the customer wanted: it costs the customer one more approval).
+
+  If the proposal or the planned window moves while one of these dialogs is open
+  (the customer proposes again, or a colleague answers), the page does not send
+  the request it was opened on: when the answer is refused for that reason the
+  dialog closes, a notice at the top of the page says why and the page shows the
+  current state.
 
   Proposals and your answers are kept in PostgreSQL only: they are not mirrored
   to the previous system (there is no field for them), Accept's mirror is best

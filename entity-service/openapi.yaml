@@ -5858,14 +5858,14 @@ paths:
         the new window is applied, the pending customer request is cancelled (kept as a record)
         and a fresh one is provisioned for the project's registered contacts. Nothing goes
         through CAB again (the change itself has not changed, only its time) and no
-        requirement flag is written (neither customer_approval_required nor the ServiceNow-owned
-        is_customer_approval_required). It is refused with the words of Request Approval's
+        requirement flag is written (neither customer_approval_required nor the
+        is_customer_approval_required flag the sync owns). It is refused with the words of Request Approval's
         refusal ("customer approval is required but nobody on this project can be asked ...")
         when nobody can be asked.
 
         A customer's proposed time (see the customerProposal read model). A customer proposes a
-        START in the Customer Portal: it is written to customer_updated_on (ServiceNow's own
-        column) and nothing else; the change request stays in customer_approval with its planned
+        START in the Customer Portal: it is written to customer_updated_on (a column the
+        previous system also fills) and nothing else; the change request stays in customer_approval with its planned
         window and the customers' request untouched, and waits for WSO2. WSO2 answers with this
         PATCH, naming the proposal (expectedCustomerUpdatedOn) and, for Accept, the planned window
         the page showed (expectedPlannedStartOn / expectedPlannedEndOn): ACCEPT PROPOSED TIME is
@@ -5881,11 +5881,16 @@ paths:
         (409 otherwise); Accept / the answer is refused with a 409 when no proposal waits, the
         proposal or the planned window is not the one named, or the proposed start has passed, is
         too far ahead (the window it gives would end after the year 2100) or the planned window has
-        no length, and with a 400 when the change request is on hold. These
-        are PostgreSQL-only: ServiceNow's API has no field for them, so the dual-write mirror carries
+        no length, and with a 400 when the change request is on hold. A proposal is a CUSTOMER's
+        only when a registered contact of the project is recorded as having proposed it (see
+        customerProposal.proposerRecorded): Accept of any other stored time is refused with a 409
+        (errorCode change_request_proposer_not_recorded), and a staff {state: "authorize"} over it
+        is a plain re-schedule that writes no answer and is a 400 when it carries no window. These
+        are PostgreSQL-only: the previous system's API has no field for them, so the dual-write mirror carries
         only what PostgreSQL committed (Accept: scheduled and the window; a counter: the window, not
         the state; a customer's proposal: nothing), the sync may rewrite the columns while it runs, and
-        the pure ServiceNow data source refuses confirmCustomerUpdatedDate / expectedCustomerUpdatedOn.
+        the data source that talks to the previous system directly refuses confirmCustomerUpdatedDate /
+        expectedCustomerUpdatedOn.
 
         Compliance rule: no staff action records the customer's approval or review on
         the customer's behalf. The customer's answer is the customer's decision and
@@ -6101,10 +6106,14 @@ paths:
             `change_request_not_proposable` (a proposed time where none can be proposed),
             `change_request_on_hold` (a proposed time while WSO2 has the change on hold),
             `change_request_proposal_not_now` (a proposed time while an approval that is not
-            the customer's is also being asked) or `change_request_no_planned_window` (a
-            proposed time on a change request with no planned window to move). The schedule
-            code also names a WSO2 response (Accept proposed time, propose a different time)
-            whose expected planned window is no longer the change request's.
+            the customer's is also being asked), `change_request_no_planned_window` (a
+            proposed time on a change request with no planned window to move) or
+            `change_request_proposer_not_recorded` (WSO2's acceptance of a stored time that no
+            registered contact of the project is recorded as having proposed: no staff action
+            stands in for the customer's consent, so it is never accepted; proposing a different
+            time still works). The schedule code also names a WSO2 response (Accept proposed
+            time, propose a different time) whose expected planned window is no longer the
+            change request's.
           content:
             application/json:
               schema:
@@ -16870,9 +16879,14 @@ components:
         plannedStartOn:
           type: string
           nullable: true
+          description: >-
+            The planned start, RFC 3339 in UTC. Printed with the fractional seconds the stored value
+            has (and none when it holds whole seconds, as every migrated row does), so that what is
+            read goes back unchanged as expectedPlannedStartOn: those compare the instants exactly.
         plannedEndOn:
           type: string
           nullable: true
+          description: The planned end, printed like plannedStartOn.
         duration:
           type: string
           nullable: true
@@ -16918,7 +16932,7 @@ components:
       required: [startOn, answer]
       description: >-
         What the change request says about a time the customer proposed for it, derived on every
-        read from ServiceNow's own columns (customer_updated_on: the customer's proposed plan START;
+        read from two columns of the change request (customer_updated_on: the customer's proposed plan START;
         customer_updated_date_confirmation: WSO2's answer, AGREE / DISAGREE) and the approver rows;
         nothing extra is stored. Present on the PostgreSQL data source when customer_updated_on is
         set. While `answer` is "pending" the planned window (plannedStartOn / plannedEndOn) is still
@@ -16939,13 +16953,22 @@ components:
             pending: the change request is in customer_approval, the proposed start differs from the
             planned start, WSO2 has not answered and no approval but the customer's own is still asked
             -- the only state WSO2 can act on. agreed / disagreed: WSO2's answer. unanswered: history.
+            For an external reader (a customer) a stored time that nobody is recorded as having
+            proposed is also "unanswered": nothing waits for WSO2 on their account, and no
+            pending-only field is present.
         proposerRecorded:
           type: boolean
           description: >-
-            While pending: true when the last writer of the change request is a registered contact of
-            its project (then they proposed the time). False when it is not knowable -- a date a WSO2
-            user wrote in ServiceNow, one left from an older cycle, or a proposal edited over since --
-            and the page must say the proposer is not recorded.
+            While pending: true when the last writer of the change request (work_item.updated_by) is
+            a registered contact of the change request's project, who is then recorded as having
+            proposed the time. Nothing else names a proposer: no comment, audit or other log is read,
+            and nothing is added to record one. False when nobody is recorded -- a date a WSO2 user
+            wrote in the previous system, one left from an older cycle, or a genuine proposal that a
+            later write to the change request replaced as last writer -- and the page must say the
+            proposer is not recorded. Then canAccept is false: Accept proposed time is refused (409
+            change_request_proposer_not_recorded) and proposing a different time is a plain
+            re-schedule that writes no answer, which the customers then approve. Present only for a
+            staff reader or for a customer reading a recorded proposal.
         proposedByName:
           type: string
           description: Staff readers only, while pending and proposerRecorded.
@@ -16965,9 +16988,9 @@ components:
         acceptBlockedReason:
           type: string
           description: >-
-            Staff readers only, when canAccept is false: why, in the words of the refusal (on hold, the
-            proposed start has passed or would end beyond the year 2100, the planned window has no
-            length to keep).
+            Staff readers only, when canAccept is false: why, in the words of the refusal (nobody is
+            recorded as having proposed the time, on hold, the proposed start has passed or would end
+            beyond the year 2100, the planned window has no length to keep).
 
     ChangeRequest:
       allOf:
@@ -17170,6 +17193,10 @@ components:
             customerUpdatedOn:
               type: string
               nullable: true
+              description: >-
+                The customer's proposed plan start, RFC 3339 in UTC, printed with the fractional
+                seconds it has (as customerProposal.startOn, so the two read alike). workStart /
+                workEnd are printed the same way.
             labels:
               type: array
               items:
@@ -17787,12 +17814,13 @@ components:
           type: string
           description: >-
             Planned start date and time (format YYYY-MM-DD HH:MM:SS, UTC, or RFC 3339 with
-            a zone designator, on every data source: the ServiceNow service converts an RFC
-            3339 value to the layout ServiceNow takes before it forwards it). Years 2000
-            to 2100 only (on every data source); anything else ("infinity", "now", a date
-            alone, a zone name) is a 400 that names the field, on both create paths (the
-            ServiceNow-first one before ServiceNow is called), and on the ServiceNow data
-            source so is a "YYYY-MM-DD HH:MM:SS" value with a fractional second.
+            a zone designator, on every data source: the service that talks to the previous
+            system converts an RFC 3339 value to the layout that system takes before it
+            forwards it). Years 2000 to 2100 only (on every data source); anything else
+            ("infinity", "now", a date alone, a zone name) is a 400 that names the field, on
+            both create paths (the one that writes the previous system first refuses it before
+            that system is called), and on the data source that talks to the previous system
+            directly so is a "YYYY-MM-DD HH:MM:SS" value with a fractional second.
         plannedEndDate:
           type: string
           description: Planned end date and time, as plannedStartDate.
@@ -18042,12 +18070,12 @@ components:
           type: string
           description: >-
             Planned start date and time: "YYYY-MM-DD HH:MM:SS" (UTC), or RFC 3339
-            with a zone designator ("2030-03-01T09:00:00Z"), on every data source (the
-            ServiceNow one converts RFC 3339 to UTC "YYYY-MM-DD HH:MM:SS" before it
-            forwards the value). Years 2000 to 2100 only (on every data source); any
+            with a zone designator ("2030-03-01T09:00:00Z"), on every data source (the one
+            that talks to the previous system converts RFC 3339 to UTC "YYYY-MM-DD HH:MM:SS"
+            before it forwards the value). Years 2000 to 2100 only (on every data source); any
             other text (Postgres' "infinity", "now", a date alone, a zone name) is a 400,
-            and on the ServiceNow data source so is a "YYYY-MM-DD HH:MM:SS" value with a
-            fractional second.
+            and on the data source that talks to the previous system directly so is a
+            "YYYY-MM-DD HH:MM:SS" value with a fractional second.
         plannedEndOn:
           type: string
           description: >-
@@ -18057,20 +18085,24 @@ components:
           enum: [agree]
           description: >-
             ACCEPT PROPOSED TIME: WSO2's acceptance of the time the customer proposed
-            (ServiceNow's u_confirm_customer_updated_date). "agree" is the only value (to
-            decline, propose a different time). Sent by staff alone, with only
+            (the confirmation of the proposed date, customer_updated_date_confirmation). "agree"
+            is the only value (to decline, propose a different time). Sent by staff alone, with only
             expectedCustomerUpdatedOn, expectedPlannedStartOn and expectedPlannedEndOn (all
             three required): applies the proposed start to the planned window (the planned
             length is kept), writes AGREE and moves customer_approval to scheduled in one write.
-            403 for an external caller, 409 when no proposal waits or the page is stale, 400
-            when the change request is on hold. PostgreSQL data source only.
+            403 for an external caller, 409 when no proposal waits, the page is stale or no
+            registered contact of the project is recorded as having proposed the time
+            (errorCode change_request_proposer_not_recorded), 400 when the change request is
+            on hold. PostgreSQL data source only.
         expectedCustomerUpdatedOn:
           type: string
           format: date-time
           description: >-
             The proposal a staff answer is about (customerProposal.startOn, RFC 3339).
             Required with confirmCustomerUpdatedDate and, on a staff state "authorize", while a
-            proposal waits (refused with a 409 when none does). Anywhere else a 400.
+            proposal waits (refused with a 409 when none does). Over a stored time that nobody is
+            recorded as having proposed it is optional on "authorize" (no proposal waits), and
+            must be the stored time when sent (409 otherwise). Anywhere else a 400.
         expectedPlannedStartOn:
           type: string
           description: >-
@@ -18079,8 +18111,8 @@ components:
             otherwise): the planned start the caller was shown (RFC 3339, as the change
             request reads). The answer is recorded only while it is still the stored planned
             start, else 409. Omitted: no check (required with confirmCustomerUpdatedDate).
-            PostgreSQL data source only; the ServiceNow data source makes no such check and
-            ignores the field.
+            PostgreSQL data source only; the data source that talks to the previous system
+            directly makes no such check and ignores the field.
         expectedPlannedEndOn:
           type: string
           description: >-
@@ -20161,9 +20193,12 @@ components:
             not the customer's is also being asked; the customer's own answer is still
             possible), `change_request_no_planned_window` (409: a proposed time on a change
             request with no planned window to move; the customer's answer is still possible),
-            `change_request_not_asked` (403: a contact of the project who holds no REQUESTED row
-            on the live customer stage: registered after the request went out, or a row of
-            theirs cancelled directly; a withdrawn request is a 409), and
+            `change_request_proposer_not_recorded` (409: WSO2's acceptance of a stored time that
+            no registered contact of the project is recorded as having proposed; it is never
+            accepted on the customer's behalf), `change_request_not_asked` (403: a contact of the
+            project who holds no REQUESTED row on the live customer stage: registered after the
+            request went out, or a row of theirs cancelled directly; a withdrawn request is a
+            409), and
             `change_request_forbidden` (403: not a registered contact of the change
             request's project, its own creator, a user who may not decide an internal
             stage, or a field a customer may not set). The list grows, so this is

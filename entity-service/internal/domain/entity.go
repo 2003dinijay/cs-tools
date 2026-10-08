@@ -2575,11 +2575,12 @@ type CaseView struct {
 	WatchList []WatchListUser `json:"watchList,omitempty"`
 	// AutoclosureStep indicates where the case sits in ServiceNow's staged auto-closure
 	// sequence: DEFAULT -> FIRST_COMMENT -> ON_HOLD -> SECOND_COMMENT. Read-only —
-	// informational only; the sequence itself is fully owned by ServiceNow's own flows
-	// (ServiceNow data source only).
+	// informational only; the sequence itself is fully owned by ServiceNow's own flows.
+	// On the Postgres data sources it is csm-sync-service's copy of u_autoclosure_step,
+	// and ON_HOLD is also what AutocloseHoldUntil writes.
 	AutoclosureStep *string `json:"autoclosureStep,omitempty"`
 	// AutoclosureStateTime is when the auto-closure sequence next advances (e.g. the
-	// "eligible again after" date for a held case). Read-only (ServiceNow data source only).
+	// "eligible again after" date for a held case). Read-only.
 	AutoclosureStateTime *time.Time `json:"autoclosureStateTime,omitempty"`
 	// BestCaseFixEta is the internal-only best-case fix-commitment date, as a
 	// date-only "YYYY-MM-DD" string (ServiceNow u_best_case_fix_eta).
@@ -3015,9 +3016,10 @@ type SearchCasesResponse struct {
 // each other and of every other field in this request. RelatedCaseID, AutocloseHoldUntil,
 // Subject, Description, DeploymentID, DeployedProductID, BestCaseFixEta, MostLikelyFixEta, and
 // WorstCaseFixEta may be combined with each other in any subset within a single request.
-// WatchList, AssigneeEmail, ParentID, RelatedCaseID, AutocloseHoldUntil, Subject, Description,
+// WatchList, AssigneeEmail, ParentID, RelatedCaseID, Subject, Description,
 // DeploymentID, DeployedProductID, BestCaseFixEta, MostLikelyFixEta, and WorstCaseFixEta
-// are only supported for the ServiceNow data source.
+// are only supported for the ServiceNow data source. (AutocloseHoldUntil is supported on every
+// data source, except for announcements, which have no auto-closure sequence.)
 // An explicitly empty WatchList clears the case's watch list and counts as a provided field.
 // ResolutionCode, Cause, and CloseNotes are optional resolution fields only allowed when
 // State is closed or solution_proposed.
@@ -3075,7 +3077,16 @@ type UpdateCaseRequest struct {
 	// sequence: internally sets u_autoclosure_step = ON_HOLD and u_autoclosure_state_time
 	// to this date together, mirroring the real UX (an engineer picks a hold-until date).
 	// This is the only supported write against the auto-closure sequence — the raw step
-	// enum is not freely settable (ServiceNow data source only).
+	// enum is not freely settable. Every data source supports it except for announcements
+	// (a 400: they have no auto-closure sequence). The Postgres ones store it in the extension
+	// table's autoclosure_step/autoclosure_state_on and, under dual-write, mirror it to
+	// ServiceNow, whose own flow does the closing.
+	//
+	// The hold is a calendar day, and the day is the UTC date of this instant: send the chosen
+	// day at 00:00 UTC (2026-10-22T00:00:00Z holds until 22 Oct). An instant at the end of the
+	// chosen day in a timezone west of UTC is already the next UTC day (23:59 on 22 Oct in
+	// New York is 03:59 on 23 Oct UTC) and would hold a day late, so a client must not derive
+	// the instant from local end-of-day.
 	AutocloseHoldUntil *time.Time `json:"autocloseHoldUntil"`
 	// Subject updates the case's short description/title (ServiceNow data source only).
 	Subject *string `json:"subject"`
@@ -4438,8 +4449,8 @@ type PatchChangeRequestRequest struct {
 	ExpectedPlannedStartOn *string `json:"expectedPlannedStartOn,omitempty"`
 	ExpectedPlannedEndOn   *string `json:"expectedPlannedEndOn,omitempty"`
 	// ConfirmCustomerUpdatedDate is WSO2's ACCEPTANCE of the time a customer
-	// proposed for the change (change_request.customer_updated_date_confirmation,
-	// ServiceNow's u_confirm_customer_updated_date): the only value this API takes
+	// proposed for the change (change_request.customer_updated_date_confirmation, the
+	// confirmation of the proposed date): the only value this API takes
 	// is "agree", sent by staff with the proposal's own version
 	// (ExpectedCustomerUpdatedOn) and the planned window the page showed
 	// (ExpectedPlannedStartOn / ExpectedPlannedEndOn, all three required). It
@@ -4449,7 +4460,9 @@ type PatchChangeRequestRequest struct {
 	// customer. To decline a proposal, staff propose a different time (state
 	// "authorize" with the window they want, which writes "disagree"). It goes
 	// alone: with nothing but the three expected* fields. Refused for an external
-	// caller (403) and while no proposal is waiting (409). PostgreSQL data source
+	// caller (403), while no proposal is waiting and for a time that no registered
+	// contact of the project is recorded as having proposed (409, errorCode
+	// change_request_proposer_not_recorded). PostgreSQL data source
 	// only. See repository.acceptCustomerProposal and entity-service's CLAUDE.md,
 	// "A customer's proposed time".
 	ConfirmCustomerUpdatedDate *string `json:"confirmCustomerUpdatedDate,omitempty"`
@@ -4459,7 +4472,9 @@ type PatchChangeRequestRequest struct {
 	// -- a page opened before the customer proposed another time can never answer
 	// the new one. Required with ConfirmCustomerUpdatedDate; on a staff state
 	// "authorize" it is required while a proposal is waiting and refused (409) when
-	// none is. Postgres data source only.
+	// none is. Over a stored time that nobody is recorded as having proposed it is
+	// optional on "authorize" (no proposal waits) and must be the stored time when sent.
+	// Postgres data source only.
 	ExpectedCustomerUpdatedOn *string `json:"expectedCustomerUpdatedOn,omitempty"`
 	// OnHold/OnHoldReason gate change_request.is_on_hold/on_hold_reason
 	// (migration 0178). Combinable with every other field
@@ -4844,7 +4859,7 @@ type ChangeRequest struct {
 	// CustomerProposal is the conversation about a time the customer proposed
 	// (see ChangeRequestCustomerProposal): present on the PostgreSQL data source
 	// when customer_updated_on is set, absent otherwise. It is derived from the two
-	// ServiceNow-migrated columns customer_updated_on / customer_updated_date_confirmation
+	// synced columns customer_updated_on / customer_updated_date_confirmation
 	// and the approver rows; nothing extra is stored for it.
 	CustomerProposal *ChangeRequestCustomerProposal `json:"customerProposal,omitempty"`
 
@@ -4896,12 +4911,11 @@ type ChangeRequest struct {
 }
 
 // ChangeRequestCustomerProposal is what the change request says about a time the
-// customer proposed for it. ServiceNow already models that conversation and the
-// synced schema carries it: change_request.customer_updated_on is the customer's
-// proposed plan START (u_customer_updated) and
-// change_request.customer_updated_date_confirmation is WSO2's answer, AGREE or
-// DISAGREE (u_confirm_customer_updated_date). Nothing here is stored beyond those two
-// columns; the object is derived on every read.
+// customer proposed for it. The previous system already modelled that conversation and
+// the synced schema carries it: change_request.customer_updated_on is the customer's
+// proposed plan START and change_request.customer_updated_date_confirmation is WSO2's
+// answer, AGREE or DISAGREE (the confirmation of the proposed date). Nothing here is
+// stored beyond those two columns; the object is derived on every read.
 //
 // Answer is one of
 //
@@ -4909,7 +4923,9 @@ type ChangeRequest struct {
 //     the planned start, WSO2 has not answered, and no approval but the customer's own is
 //     still asked -- the only state WSO2 can act on (Accept proposed time / Propose a
 //     different time). The planned window (PlannedStartOn / PlannedEndOn) is still the
-//     one WSO2 planned: a proposal changes nothing until WSO2 answers.
+//     one WSO2 planned: a proposal changes nothing until WSO2 answers. A stored time that
+//     nobody is recorded as having proposed is pending for a staff reader (ProposerRecorded
+//     false, nothing to accept) and "unanswered" for a customer.
 //   - "agreed":      WSO2 accepted it (AGREE).
 //   - "disagreed":   WSO2 asked for a different time (DISAGREE).
 //   - "unanswered":  history -- the change moved on, or the proposal is the planned start
@@ -4922,13 +4938,18 @@ type ChangeRequestCustomerProposal struct {
 	// is "pending" and the planned window has a length.
 	EndOn  *string `json:"endOn,omitempty"`
 	Answer string  `json:"answer"`
-	// ProposerRecorded says whether the proposer can be named: while the answer is
-	// "pending", true when work_item.updated_by (the last writer of the change) is a
-	// registered contact of the change's project, which is then the person who proposed
-	// the time. False when it is not knowable -- a date a WSO2 user wrote in
-	// ServiceNow, one left over from an older cycle, or a proposal edited over since
-	// (nothing is added to record who proposed it): the banner then says the proposer
-	// is not recorded. Absent unless pending.
+	// ProposerRecorded says whether a registered contact of the change's project is
+	// recorded as having proposed the time: while the answer is "pending", true when the
+	// change's last writer (work_item.updated_by) is one, who is then the person who
+	// proposed it. Nothing else names a proposer (no comment, audit or other log is read)
+	// and nothing is added to record one. False when nobody is recorded -- a date a WSO2
+	// user wrote in the previous system, one left over from an older cycle, or a genuine
+	// proposal that a later write to the change replaced as last writer. A time nobody is
+	// recorded as having proposed is not a proposal WSO2 can accept (CanAccept is false,
+	// Accept is refused) and the banner says the proposer is not recorded; proposing a
+	// different time is the way on, and the customer then approves it. Absent unless
+	// pending. A customer is only ever shown a pending time that somebody is recorded as
+	// having proposed (otherwise they read "unanswered").
 	ProposerRecorded *bool `json:"proposerRecorded,omitempty"`
 	// ProposedByName / ProposedByEmail / ProposedOn: the proposer and the time, only
 	// for a staff reader, only while pending and ProposerRecorded is true.
@@ -4941,9 +4962,10 @@ type ChangeRequestCustomerProposal struct {
 	ProposedByViewer *bool `json:"proposedByViewer,omitempty"`
 	// CanAccept (a staff reader, while "pending"): whether "Accept proposed time"
 	// would be accepted right now; when it would not, AcceptBlockedReason says why in
-	// the words of the refusal the PATCH would give (the proposed start has passed, the
-	// change is on hold, the planned window has no length to keep). The server stays
-	// the authority: every act re-checks under the row lock.
+	// the words of the refusal the PATCH would give (nobody is recorded as having
+	// proposed the time, the proposed start has passed, the change is on hold, the
+	// planned window has no length to keep). The server stays the authority: every act
+	// re-checks under the row lock.
 	CanAccept           *bool   `json:"canAccept,omitempty"`
 	AcceptBlockedReason *string `json:"acceptBlockedReason,omitempty"`
 }

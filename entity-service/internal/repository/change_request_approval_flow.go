@@ -915,6 +915,11 @@ type changeRequestGateSnapshot struct {
 	// projectID is the stored Customer Project (work_item.project_id), nil when
 	// the change has none.
 	projectID *string
+	// priorWriter is work_item.updated_by as the PATCH found it, before its own write
+	// replaced it (set by lockChangeRequestForPatch only; read=false from every other reader
+	// of the snapshot, which run after a write of their own). A staff time response reads
+	// the proposer of a waiting time from it, never from the column afterwards.
+	priorWriter lastWriter
 }
 
 // lockChangeRequestGateSnapshot reads (and locks, FOR UPDATE) the fields the

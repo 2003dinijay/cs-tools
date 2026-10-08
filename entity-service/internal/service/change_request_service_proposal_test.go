@@ -28,7 +28,7 @@ import (
 )
 
 // The customer's proposed time (customer_updated_on) and WSO2's answer
-// (customer_updated_date_confirmation) are PostgreSQL-only: ServiceNow's change request API has
+// (customer_updated_date_confirmation) are PostgreSQL-only: the previous system's change request API has
 // no field for either. What is mirrored of the acts of that conversation is decided from WHO SENT
 // the PATCH (a customer's window is a proposal and never goes) and, for the acts WSO2 performs,
 // from what PostgreSQL COMMITTED; every other PATCH mirrors exactly what it always did.
@@ -85,7 +85,7 @@ const (
 )
 
 // runMirror sends req (as nobody in particular, see callerCtx) through the dual-write service whose
-// repository answers with committed, and returns what the ServiceNow mirror was asked to PATCH (nil
+// repository answers with committed, and returns what the mirror to the previous system was asked to PATCH (nil
 // when it was not called at all, within the wait expect gives: see mirrorExpectation).
 func runMirror(t *testing.T, expect mirrorExpectation, req domain.PatchChangeRequestRequest, committed domain.ChangeRequest) *domain.PatchChangeRequestRequest {
 	t.Helper()
@@ -122,7 +122,7 @@ func runMirrorAs(t *testing.T, ctx context.Context, expect mirrorExpectation, re
 		return &got
 	case <-time.After(wait):
 		if n := failures.count(); n != 0 {
-			t.Fatalf("nothing was dispatched but %d sn_writeback_failures were recorded", n)
+			t.Fatalf("nothing was dispatched but %d write-back failures were recorded", n)
 		}
 		return nil
 	}
@@ -158,12 +158,12 @@ func TestChangeRequestService_PatchChangeRequest_TheTimeConversationMirror(t *te
 		for name, req := range customerProposals {
 			got := runMirrorAs(t, callerCtx(t, &customerCaller), expectNoMirrorWrite, req, withProposal(committedAt("customer_approval", planStart, planEnd), "2030-03-08T09:00:00Z"))
 			if got != nil {
-				t.Fatalf("%s: the mirror was asked to PATCH %+v: the plan did not move, the proposal has no ServiceNow field", name, *got)
+				t.Fatalf("%s: the mirror was asked to PATCH %+v: the plan did not move, the proposal has no field in the previous system", name, *got)
 			}
 		}
 	})
 
-	t.Run("Accept mirrors Scheduled and the committed window, in ServiceNow's layout", func(t *testing.T) {
+	t.Run("Accept mirrors Scheduled and the committed window, in the previous system's layout", func(t *testing.T) {
 		req := domain.PatchChangeRequestRequest{ConfirmCustomerUpdatedDate: sPtr("agree"), ExpectedCustomerUpdatedOn: sPtr("2030-03-08T09:00:00Z"),
 			ExpectedPlannedStartOn: sPtr(planStart), ExpectedPlannedEndOn: sPtr(planEnd)}
 		got := runMirror(t, expectMirrorWrite, req, committedAt("scheduled", "2030-03-08T09:00:00Z", "2030-03-08T11:00:00Z"))
@@ -188,7 +188,7 @@ func TestChangeRequestService_PatchChangeRequest_TheTimeConversationMirror(t *te
 			}
 			want := domain.PatchChangeRequestRequest{PlannedStartOn: sPtr("2030-03-08 09:00:00"), PlannedEndOn: sPtr("2030-03-08 11:00:00")}
 			if !reflect.DeepEqual(*got, want) {
-				t.Fatalf("%s: mirrored %+v, want the window only %+v (ServiceNow stays where PostgreSQL stays)", name, *got, want)
+				t.Fatalf("%s: mirrored %+v, want the window only %+v (the previous system stays where PostgreSQL stays)", name, *got, want)
 			}
 		}
 	})
@@ -219,7 +219,7 @@ func TestChangeRequestService_PatchChangeRequest_TheTimeConversationMirror(t *te
 	})
 }
 
-// A customer's proposed window never reaches ServiceNow as the plan, and WHETHER IT IS ONE is
+// A customer's proposed window never reaches the previous system as the plan, and WHETHER IT IS ONE is
 // decided from who sent the PATCH, not from the read model the repository builds AFTER the commit
 // (GetChangeRequestByID -> fillCustomerProposal): that read runs in another transaction, logs and
 // swallows its errors, and can see a conversation that has moved on. Whatever it comes back with,
@@ -253,7 +253,7 @@ func TestChangeRequestService_PatchChangeRequest_ACustomersWindowIsNeverMirrored
 	} {
 		for shape, req := range customerProposals {
 			if got := runMirrorAs(t, callerCtx(t, &customerCaller), expectNoMirrorWrite, req, committed); got != nil {
-				t.Fatalf("%s / %s: the mirror was asked to PATCH %+v: a customer's window is a proposal, ServiceNow has no field for it and must not get it as the plan", name, shape, *got)
+				t.Fatalf("%s / %s: the mirror was asked to PATCH %+v: a customer's window is a proposal, the previous system has no field for it and must not get it as the plan", name, shape, *got)
 			}
 		}
 	}
@@ -285,7 +285,7 @@ func TestChangeRequestService_PatchChangeRequest_ACustomersWindowIsNeverMirrored
 				} {
 					got := runMirrorAs(t, callerCtx(t, scope), expectMirrorWrite, req, committed)
 					if got == nil || got.PlannedStartOn == nil || *got.PlannedStartOn != "2030-03-08 09:00:00" {
-						t.Fatalf("%s / %s / %s: mirrored %+v, want the window as ServiceNow takes it (the plan was applied)", who, shape, name, got)
+						t.Fatalf("%s / %s / %s: mirrored %+v, want the window as the previous system takes it (the plan was applied)", who, shape, name, got)
 					}
 				}
 			}
@@ -346,8 +346,8 @@ func TestChangeRequestService_PatchChangeRequest_EveryOtherPatchMirrorsAsBefore(
 	}
 }
 
-// The pure ServiceNow data source has no PostgreSQL columns to hold the answer: ServiceNow is the
-// authority there and answers the customer's proposed date itself. A request that carries the
+// The data source that talks to the previous system directly has no PostgreSQL columns to hold the
+// answer: that system is the authority there and answers the customer's proposed date itself. A request that carries the
 // answer is refused up front and nothing is sent; proposals and Re-schedules are forwarded as ever.
 func TestSNChangeRequestService_PatchChangeRequest_RefusesTheAnswerToAProposedTime(t *testing.T) {
 	svc := NewServiceNowChangeRequestService(nil)

@@ -622,7 +622,7 @@ export async function staffCountersProposal(
 }
 
 /**
- * WSO2 DECLINES the proposed time: "Propose a different time" with the window left as it is (ServiceNow's Disagree). The
+ * WSO2 DECLINES the proposed time: "Propose a different time" with the window left as it is (the previous system's Disagree). The
  * customers' live requests are untouched, and the planned window stays.
  */
 export async function staffDeclinesProposal(who: StaffPersona, id: string): Promise<ApiResult<{ message?: string }>> {
@@ -843,8 +843,8 @@ export const LEGACY = {
   customerApprovalToPropose: "CHG0039112",
   /** Customer Approval for the second contact (erin) to answer. */
   customerApprovalForErin: "CHG0039113",
-  /** Customer Approval with a window planned and ServiceNow's own unlabeled customer stage (dave and erin REQUESTED). */
-  customerApprovalAskedBySn: "CHG0039114",
+  /** Customer Approval with a window planned and the previous system's own unlabeled customer stage (dave and erin REQUESTED). */
+  customerApprovalAskedByPreviousSystem: "CHG0039114",
   /** Lumen Works Platform: the user's "Demo Test 1" shape, and a Scheduled one. */
   lumenDemoTest: "CHG0039201",
   lumenScheduled: "CHG0039202",
@@ -859,7 +859,7 @@ export const LEGACY = {
 /** The states in which a customer has always been shown a change request (everything past Authorize). */
 export const LEGACY_VISIBLE = [
   LEGACY.customerApproval, LEGACY.scheduled, LEGACY.implement, LEGACY.review, LEGACY.customerReview, LEGACY.rollback,
-  LEGACY.closed, LEGACY.canceled, LEGACY.customerApprovalToPropose, LEGACY.customerApprovalForErin, LEGACY.customerApprovalAskedBySn,
+  LEGACY.closed, LEGACY.canceled, LEGACY.customerApprovalToPropose, LEGACY.customerApprovalForErin, LEGACY.customerApprovalAskedByPreviousSystem,
   LEGACY.staleStageScheduled, LEGACY.oneSecondBefore,
 ] as const;
 

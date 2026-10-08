@@ -71,6 +71,25 @@ describe("generateChangeRequestReportPdf — the Customer approved row", () => {
     expect(customerApprovedRow({ hasCustomerApproved: false, confirmCustomerUpdatedDate: "agree" })).toBe("Proposed time accepted");
   });
 
+  // The Agree stays on the row when the customers are asked again: in Customer Approval nothing was scheduled by it, so the row must
+  // not say the proposed time was accepted (Approve and Reject are live for the customer).
+  it("reads No, not 'Proposed time accepted', for an Agree standing on a change that is (back) in Customer Approval, or before it", () => {
+    for (const state of ["customer_approval", "authorize", "assess", "new"] as const) {
+      expect(
+        customerApprovedRow({ state, hasCustomerApproved: false, customerProposal: { startOn: "2030-03-08T09:00:00Z", answer: "agreed" } }),
+        state,
+      ).toBe("No");
+      expect(customerApprovedRow({ state, hasCustomerApproved: false, confirmCustomerUpdatedDate: "agree" }), state).toBe("No");
+    }
+    // Once the change has moved on, the same Agree reads as accepted.
+    for (const state of ["scheduled", "implement", "closed"] as const) {
+      expect(
+        customerApprovedRow({ state, hasCustomerApproved: false, customerProposal: { startOn: "2030-03-08T09:00:00Z", answer: "agreed" } }),
+        state,
+      ).toBe("Proposed time accepted");
+    }
+  });
+
   it("still reads No for a proposal nobody accepted", () => {
     expect(
       customerApprovedRow({ hasCustomerApproved: false, customerProposal: { startOn: "2030-03-08T09:00:00Z", answer: "disagreed" } }),

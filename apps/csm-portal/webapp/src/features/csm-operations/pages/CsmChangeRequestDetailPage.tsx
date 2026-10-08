@@ -44,6 +44,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from "react";
 import { useLocation } from "react-router";
@@ -93,6 +94,9 @@ import {
   CUSTOMER_STEP_NOT_APPLICABLE,
   customerApprovedDisplay,
   isCustomerStepNotApplicable,
+  customerProposalProposer,
+  answerSnapshotMoved,
+  isStaleAnswerError,
   pendingCustomerProposal,
 } from "@features/csm-operations/utils/changeRequests";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
@@ -153,6 +157,13 @@ function buildTransitionPatch(target: string): BePatchChangeRequestPayload {
  */
 function transitionFallbackMessage(target: string): string {
   return `Could not move this change request to ${changeRequestStateLabel(target)}.`;
+}
+
+/** A refusal's words as one sentence of the page's own notice: first letter up, a full stop at the end. */
+function asSentence(message: string): string {
+  const text = message.trim();
+  if (!text) return text;
+  return `${text.charAt(0).toUpperCase()}${text.slice(1)}${/[.!?]$/.test(text) ? "" : "."}`;
 }
 
 function formatDateTime(value?: string | null): string {
@@ -321,7 +332,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
     | { from?: string }
     | undefined;
   const backTarget = backState?.from ?? OPERATIONS_CR_PATH;
-  const { data, isLoading, isError } = useGetChangeRequest(id);
+  const { data, isLoading, isError, refetch } = useGetChangeRequest(id);
   // Same label computation this page's own `recordView` call below uses —
   // The CR number as the short chip label (matching `CsmCaseDetailPage`'s
   // own `caseNumber`-only report); change requests have no separate
@@ -400,19 +411,31 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   // what the engineer answers is what they were shown, and the page refetching
   // behind the dialog (after a refusal, say) neither moves its pickers nor
   // swaps the proposal under their hands. The backend refuses a moved proposal or
-  // window in words, and the dialog shows them.
+  // window in words, and the dialog shows them. A refusal that names one of the
+  // stale-answer codes (see `isStaleAnswerError`) closes the dialog instead, and the
+  // page says why (`staleNotice`): the same request would be refused again. The optional
+  // reason is recorded only after the change has been updated, so no attempt, retry or
+  // reopened dialog can leave a duplicate note.
   const [reschedule, setReschedule] = useState<{
     cr: BeChangeRequestDetail;
     proposal: BeChangeRequestCustomerProposal | null;
   } | null>(null);
   const [rescheduleError, setRescheduleError] = useState<string | null>(null);
-  const [rescheduleReasonRecorded, setRescheduleReasonRecorded] = useState(false);
   // "Accept proposed time": its confirmation, on the same kind of snapshot.
   const [accept, setAccept] = useState<{
     cr: BeChangeRequestDetail;
     proposal: BeChangeRequestCustomerProposal;
   } | null>(null);
   const [acceptError, setAcceptError] = useState<string | null>(null);
+  // Why an answer dialog was closed for the engineer (what it showed is no longer what is stored). It is
+  // an alert on the page, and takes focus once the dialog is gone: the button that opened the dialog is
+  // often not there any more (the proposal was answered, or it moved), and focus would otherwise drop
+  // to the document body.
+  const [staleNotice, setStaleNotice] = useState<string | null>(null);
+  const staleNoticeRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    if (staleNotice) staleNoticeRef.current?.focus();
+  }, [staleNotice]);
 
   const attachmentList = useMemo(() => attachments ?? [], [attachments]);
 
@@ -556,14 +579,37 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
 
   const openReschedule = (): void => {
     setRescheduleError(null);
-    setRescheduleReasonRecorded(false);
+    setStaleNotice(null);
     setReschedule({ cr, proposal });
   };
 
   const openAccept = (): void => {
-    if (!proposal) return;
+    // Only a time a customer is recorded as having proposed can be accepted (the banner disables the button otherwise).
+    if (!proposal || !customerProposalProposer(proposal)) return;
     setAcceptError(null);
+    setStaleNotice(null);
     setAccept({ cr, proposal });
+  };
+
+  // After a refused attempt, whether the page now holds something other than what each dialog was opened on:
+  // the same request would be refused again, so the dialog holds submit back (see its `stale` prop).
+  const rescheduleStale =
+    !!reschedule && !!rescheduleError && answerSnapshotMoved(reschedule, { cr, proposal });
+  const acceptStale = !!accept && !!acceptError && answerSnapshotMoved(accept, { cr, proposal });
+
+  /**
+   * The dialog's own refusal was one of the stale-answer codes: what it showed is no longer what is stored,
+   * and the same request would be refused again. Closes both answer dialogs, says why on the page and reads
+   * the change request again so the page shows the truth (the patch hook invalidates the detail and the
+   * approvals when it settles; this read joins that one rather than starting another).
+   */
+  const closeAnswerDialogsAsStale = (err: unknown, fallback: string): void => {
+    setReschedule(null);
+    setRescheduleError(null);
+    setAccept(null);
+    setAcceptError(null);
+    setStaleNotice(`${asSentence(backendErrorMessage(err, fallback))} The page now shows the current state.`);
+    void refetch({ cancelRefetch: false });
   };
 
   /**
@@ -658,48 +704,52 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
   };
 
   /**
-   * Confirmed Re-schedule: the optional reason is recorded as an internal
-   * comment first (once, even across retries), then the state + new planned
-   * window are patched. The backend's refusal (e.g. "re-scheduling requires a
-   * changed planned start or end") is shown in the dialog as returned.
+   * Confirmed Re-schedule (or counter, or decline): the state + new planned window are patched, and the
+   * optional reason is recorded as an internal comment once that has gone through. After, not before: a
+   * refused attempt leaves no note behind, so a retry, or a dialog closed and opened again, can never post
+   * it twice. If the note then cannot be saved the change is already updated: the page says so, and the
+   * reason can be added as a comment. The backend's refusal (e.g. "re-scheduling requires a changed planned
+   * start or end") is shown in the dialog as returned, except one that means the change is no longer what the
+   * dialog showed: that closes it (see `closeAnswerDialogsAsStale`).
    */
   const confirmReschedule = async (
     patch: BePatchChangeRequestPayload,
     reason: string,
   ): Promise<void> => {
     setRescheduleError(null);
-    if (reason && !rescheduleReasonRecorded) {
-      try {
-        await postComment.mutateAsync({ changeRequestId: cr.id, bodyHtml: reason, internal: true });
-        setRescheduleReasonRecorded(true);
-      } catch (err) {
-        setRescheduleError(
-          backendErrorMessage(err, "Could not record the reason, so the change was not re-scheduled. Try again."),
-        );
-        return;
-      }
-    }
+    const answeredProposal = !!reschedule?.proposal;
     try {
       await patchCr.mutateAsync({ id: cr.id, patch });
-      setReschedule(null);
-      setRescheduleReasonRecorded(false);
     } catch (err) {
-      setRescheduleError(
-        backendErrorMessage(
-          err,
-          reschedule?.proposal
-            ? "Could not answer the proposed time."
-            : "Could not re-schedule this change request.",
-        ),
-      );
+      const fallback = answeredProposal
+        ? "Could not answer the proposed time."
+        : "Could not re-schedule this change request.";
+      if (isStaleAnswerError(err)) closeAnswerDialogsAsStale(err, fallback);
+      else setRescheduleError(backendErrorMessage(err, fallback));
+      return;
     }
+    if (reason) {
+      try {
+        await postComment.mutateAsync({ changeRequestId: cr.id, bodyHtml: reason, internal: true });
+      } catch (err) {
+        showError(
+          `The change request was updated, but your reason could not be recorded as an internal note (${backendErrorMessage(
+            err,
+            "the request failed",
+          )}). Add it as a comment instead.`,
+          err,
+        );
+      }
+    }
+    setReschedule(null);
   };
 
   /**
    * Accept the customer's proposed time (the previous system's "Agree"): the backend applies the proposal to
    * the planned window and moves the change straight to Scheduled in one step. What is sent is the
    * proposal and the planned window the dialog showed, so a proposal or window that moved behind it
-   * is refused in words (shown in the dialog) instead of accepting a time its reader never saw.
+   * is refused in words instead of accepting a time its reader never saw: shown in the dialog, or, when
+   * the refusal means the change is no longer what the dialog showed, on the page after the dialog closes.
    */
   const confirmAccept = async (): Promise<void> => {
     if (!accept) return;
@@ -717,7 +767,9 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
       });
       setAccept(null);
     } catch (err) {
-      setAcceptError(backendErrorMessage(err, "Could not accept the proposed time."));
+      const fallback = "Could not accept the proposed time.";
+      if (isStaleAnswerError(err)) closeAnswerDialogsAsStale(err, fallback);
+      else setAcceptError(backendErrorMessage(err, fallback));
     }
   };
 
@@ -841,6 +893,19 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           </Box>
         </Box>
       </Box>
+
+      {staleNotice && (
+        <Alert
+          ref={staleNoticeRef}
+          severity="warning"
+          role="alert"
+          tabIndex={-1}
+          className="csm-print-hide"
+          onClose={() => setStaleNotice(null)}
+        >
+          {staleNotice}
+        </Alert>
+      )}
 
       {/* Full width, under the header: eleven stages need more room than the
           header's left block leaves beside the action bar. */}
@@ -1257,12 +1322,11 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           proposal={reschedule.proposal}
           isSubmitting={transitionPending}
           error={rescheduleError}
-          reasonRecorded={rescheduleReasonRecorded}
+          stale={rescheduleStale}
           onClose={() => {
             if (transitionPending) return;
             setReschedule(null);
             setRescheduleError(null);
-            setRescheduleReasonRecorded(false);
           }}
           onSubmit={(patch, reason) => void confirmReschedule(patch, reason)}
         />
@@ -1274,6 +1338,7 @@ export default function CsmChangeRequestDetailPage(): JSX.Element {
           proposal={accept.proposal}
           isSubmitting={transitionPending}
           error={acceptError}
+          stale={acceptStale}
           onClose={() => {
             if (transitionPending) return;
             setAccept(null);

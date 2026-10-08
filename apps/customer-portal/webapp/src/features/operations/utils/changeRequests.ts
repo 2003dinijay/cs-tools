@@ -382,14 +382,29 @@ export function isProposalPending(
 }
 
 /**
- * True when WSO2 accepted a proposed time. Customer Approval is then done even
- * though `hasCustomerApproved` stays false: no staff action records a customer's
- * approval, and the proposal itself was the customer's consent (display only).
+ * True when WSO2 accepted a proposed time and the change request has moved on from
+ * Customer Approval (Scheduled or later): accepting schedules the change, so that is
+ * where it stands. Customer Approval is then done even though `hasCustomerApproved`
+ * stays false: no staff action records a customer's approval, and the proposal itself
+ * was the customer's consent (display only).
+ *
+ * An `agreed` answer is only the answer WSO2 once gave: nothing clears it when the
+ * change is asked again. A change request that sits in Customer Approval (or earlier,
+ * or in a state this page cannot place) with `agreed` standing was NOT scheduled by
+ * that acceptance (a later Re-schedule asked the customers again, or the answer is one
+ * the previous system wrote), and its Approve and Reject buttons are live: reading it
+ * as accepted would tell the customer there is nothing left to answer.
  */
 export function isProposalAccepted(
-  changeRequest?: Pick<ChangeRequestDetails, "customerProposal"> | null,
+  changeRequest?: Pick<ChangeRequestDetails, "state" | "customerProposal"> | null,
 ): boolean {
-  return getCustomerProposal(changeRequest)?.answer === "agreed";
+  if (getCustomerProposal(changeRequest)?.answer !== "agreed") return false;
+  const state = resolveChangeRequestCanonicalState(changeRequest?.state);
+  if (!state) return false;
+  return (
+    CHANGE_REQUEST_STATE_ORDER.indexOf(state) >
+    CHANGE_REQUEST_STATE_ORDER.indexOf(ChangeRequestStates.CUSTOMER_APPROVAL)
+  );
 }
 
 /**
@@ -415,8 +430,9 @@ export type ProposalNote = {
 /**
  * The note the details page keeps on screen while a proposed time is in play.
  *
- * - Waiting: the proposed time waits for WSO2 (the viewer's own, or a colleague's
- *   or one whose proposer is not recorded, which is said neutrally). When the
+ * - Waiting: the proposed time waits for WSO2 (the viewer's own, or a colleague's,
+ *   which is said neutrally; a stored time nobody is recorded as having proposed
+ *   is never sent to a customer as waiting: the backend reads it `unanswered`). When the
  *   viewer can still answer, it also says that Approve approves the CURRENT
  *   schedule, not the proposed time: the customer must not approve the wrong one.
  * - Not accepted: WSO2 did not accept it. The current window shown on the page is

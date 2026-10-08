@@ -135,18 +135,31 @@ describe("ChangeRequestRescheduleDialog", () => {
     expect(screen.getByLabelText(/reason \(optional\)/i)).toBeDisabled();
   });
 
-  it("locks the reason once it is recorded, so a retry can't silently drop an edit", () => {
-    renderDialog({ reasonRecorded: true });
-    expect(screen.getByLabelText(/reason \(optional\)/i)).toBeDisabled();
-    expect(
-      screen.getByText("Already recorded as a work note — retrying will only re-schedule."),
-    ).toBeInTheDocument();
+  it("keeps the reason editable, and says it is recorded once the change has been updated (never before the PATCH)", () => {
+    renderDialog();
+    expect(screen.getByLabelText(/reason \(optional\)/i)).toBeEnabled();
+    expect(screen.getByText("Recorded as an internal work note once the change has been updated.")).toBeInTheDocument();
+    // There is no "already recorded" lock: nothing is recorded by an attempt that was refused.
+    expect(screen.queryByText(/Already recorded/)).not.toBeInTheDocument();
   });
 
-  it("keeps the reason editable until it has been recorded", () => {
-    renderDialog({ reasonRecorded: false });
-    expect(screen.getByLabelText(/reason \(optional\)/i)).toBeEnabled();
-    expect(screen.getByText("Recorded as an internal work note.")).toBeInTheDocument();
+  describe("stale: the page moved on behind a refused attempt", () => {
+    it("holds submit back and says to close the dialog, for a plain Re-schedule", () => {
+      renderDialog({ stale: true, error: "the planned implementation time of this change request changed after you opened it" });
+      fireEvent.change(pickerInput("Planned end"), { target: { value: "03/01/2030 01:00 PM" } });
+      expect(submitButton()).toBeDisabled();
+      expect(screen.getByRole("alert")).toHaveTextContent("changed after you opened it");
+      expect(screen.getByRole("status")).toHaveTextContent(/Close\s+this dialog to see the current state/);
+      // Closing is still possible, and reading the reason is unchanged.
+      expect(within(screen.getByRole("dialog")).getByRole("button", { name: "Close" })).toBeEnabled();
+    });
+
+    it("is not shown, and submit follows the window alone, when nothing moved", () => {
+      renderDialog();
+      fireEvent.change(pickerInput("Planned end"), { target: { value: "03/01/2030 01:00 PM" } });
+      expect(submitButton()).toBeEnabled();
+      expect(screen.queryByRole("status")).not.toBeInTheDocument();
+    });
   });
 
   describe("the customer proposed a time (counter mode)", () => {
@@ -221,36 +234,68 @@ describe("ChangeRequestRescheduleDialog", () => {
       expect(onSubmit).not.toHaveBeenCalled();
     });
 
-    describe("the proposer is not recorded (a date WSO2 users write too, or one left over from an earlier round)", () => {
-      it("says a time was proposed, not that the customer proposed it, and keeps the rest of the lead", () => {
+    describe("nobody is recorded as having proposed the stored time (a date WSO2 users write too, or one left over from an earlier round)", () => {
+      const STORED = /A time is stored \(Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM\) but nobody is recorded as having proposed it\./;
+
+      it("says a time is stored and nobody proposed it, and that there is nothing to decline", () => {
         for (const proposal of [UNATTRIBUTED, { ...UNATTRIBUTED, proposerRecorded: false, proposedByName: "Mia Member" }]) {
           cleanup();
           renderDialog({ proposal });
           expect(screen.getByRole("heading", { name: "Propose a different time" })).toBeInTheDocument();
-          expect(screen.getByText(/A time was proposed: Mar 8, 2030, 9:00 AM to Mar 8, 2030, 11:00 AM\./)).toBeInTheDocument();
-          expect(screen.getByText(/Set the time WSO2 proposes instead and the customer is asked to approve it\./)).toBeInTheDocument();
-          expect(screen.getByText(/Keep the current time to decline the proposal\. No CAB approval is needed\./)).toBeInTheDocument();
-          expect(screen.queryByText(/The customer proposed/)).not.toBeInTheDocument();
+          expect(screen.getByText(STORED)).toBeInTheDocument();
+          expect(screen.getByText(/There is no proposal to decline\./)).toBeInTheDocument();
+          expect(screen.getByText(/Set the time WSO2 proposes and the customer is asked to approve it\. No CAB approval is needed\./)).toBeInTheDocument();
+          expect(screen.queryByText(/The customer proposed|Keep the current time|decline the proposal/)).not.toBeInTheDocument();
         }
       });
 
-      it("the very time proposed is still Accept's, in neutral words", () => {
+      it("is a plain Re-schedule: no decline, the window must change, and the hint says so", () => {
+        const { onSubmit } = renderDialog({ proposal: UNATTRIBUTED });
+        // Left as it is there is nothing to send: no "Decline proposed time" in this mode.
+        expect(screen.queryByRole("button", { name: "Decline proposed time" })).not.toBeInTheDocument();
+        expect(dialogButton("Propose this time")).toBeDisabled();
+        expect(screen.getByText("Change the planned start or end to propose a time.")).toBeInTheDocument();
+        fireEvent.click(dialogButton("Propose this time"));
+        expect(onSubmit).not.toHaveBeenCalled();
+        fireEvent.change(pickerInput("Planned end"), { target: { value: "03/01/2030 01:00 PM" } });
+        expect(dialogButton("Propose this time")).toBeEnabled();
+        expect(screen.queryByText("Change the planned start or end to propose a time.")).not.toBeInTheDocument();
+      });
+
+      it("the stored time itself may be named as the new window: nobody proposed it, so nothing says to use Accept", () => {
         const { onSubmit } = renderDialog({ proposal: UNATTRIBUTED });
         fireEvent.change(pickerInput("Planned start"), { target: { value: "03/08/2030 09:00 AM" } });
         fireEvent.change(pickerInput("Planned end"), { target: { value: "03/08/2030 11:00 AM" } });
-        expect(dialogButton("Propose this time")).toBeDisabled();
-        expect(screen.getByRole("status")).toHaveTextContent("That is the time that was proposed. Close this and use Accept proposed time instead.");
+        expect(screen.queryByRole("status")).not.toBeInTheDocument();
+        expect(dialogButton("Propose this time")).toBeEnabled();
         fireEvent.click(dialogButton("Propose this time"));
-        expect(onSubmit).not.toHaveBeenCalled();
-      });
-
-      it("answers exactly as it does with a proposer on record: the wording is the only difference", () => {
-        const { onSubmit } = renderDialog({ proposal: UNATTRIBUTED });
-        fireEvent.click(dialogButton("Decline proposed time"));
         expect(onSubmit).toHaveBeenCalledWith(
-          { state: "authorize", expectedCustomerUpdatedOn: "2030-03-08T09:00:00Z", ...SHOWN },
+          {
+            state: "authorize",
+            plannedStartOn: "2030-03-08 09:00:00",
+            plannedEndOn: "2030-03-08 11:00:00",
+            expectedCustomerUpdatedOn: "2030-03-08T09:00:00Z",
+            ...SHOWN,
+          },
           "",
         );
+      });
+
+      it("names the stored time and the planned window it was shown, so one that moved is refused in words", () => {
+        const { onSubmit } = renderDialog({ proposal: UNATTRIBUTED });
+        fireEvent.change(pickerInput("Planned end"), { target: { value: "03/01/2030 01:00 PM" } });
+        fireEvent.click(dialogButton("Propose this time"));
+        expect(onSubmit).toHaveBeenCalledWith(
+          { state: "authorize", plannedEndOn: "2030-03-01 13:00:00", expectedCustomerUpdatedOn: "2030-03-08T09:00:00Z", ...SHOWN },
+          "",
+        );
+      });
+
+      it("an end that is not after the start is still blocked", () => {
+        renderDialog({ proposal: UNATTRIBUTED });
+        fireEvent.change(pickerInput("Planned start"), { target: { value: "03/01/2030 12:00 PM" } });
+        expect(screen.getByText(/planned end must be after planned start/i)).toBeInTheDocument();
+        expect(dialogButton("Propose this time")).toBeDisabled();
       });
     });
 
@@ -269,14 +314,19 @@ describe("ChangeRequestRescheduleDialog", () => {
       expect(dialogButton("Propose this time")).toBeDisabled();
     });
 
-    it("keeps the reason as an internal work note, locked once recorded, in the counter's own words", () => {
+    it("hands the trimmed reason to the caller, which records it after the change has been updated", () => {
       const { onSubmit } = renderDialog({ proposal: PROPOSAL });
       fireEvent.change(screen.getByLabelText(/reason \(optional\)/i), { target: { value: "  Freeze that week.  " } });
       fireEvent.click(dialogButton("Decline proposed time"));
       expect(onSubmit).toHaveBeenCalledWith(expect.objectContaining({ state: "authorize" }), "Freeze that week.");
-      cleanup();
-      renderDialog({ proposal: PROPOSAL, reasonRecorded: true });
-      expect(screen.getByText("Already recorded as a work note — retrying will only answer the proposal.")).toBeInTheDocument();
+    });
+
+    it("holds the counter back when stale, the decline included", () => {
+      renderDialog({ proposal: PROPOSAL, stale: true });
+      expect(dialogButton("Decline proposed time")).toBeDisabled();
+      fireEvent.change(pickerInput("Planned start"), { target: { value: "03/15/2030 09:00 AM" } });
+      fireEvent.change(pickerInput("Planned end"), { target: { value: "03/15/2030 11:00 AM" } });
+      expect(dialogButton("Propose this time")).toBeDisabled();
     });
 
     it("shows the backend's refusal verbatim", () => {

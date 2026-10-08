@@ -47,9 +47,9 @@
 --   CHG0039106 Implement         CHG0039111 Canceled
 --   CHG0039112 Customer Approval, a second one for the proposal scenario (a window already planned)
 --   CHG0039113 Customer Approval, a third one for the second contact's answer (erin)
---   CHG0039114 Customer Approval, a window already planned, and ServiceNow's OWN customer stage: a stage with no
---              label whose group is the change request's customer_group_id, asking dave and erin (REQUESTED) --
---              the shape a change request ServiceNow put to its customers is synced in
+--   CHG0039114 Customer Approval, a window already planned, and the PREVIOUS SYSTEM's own customer stage: a stage with
+--              no label whose group is the change request's customer_group_id, asking dave and erin (REQUESTED) --
+--              the shape a change request the previous system put to its customers is synced in
 -- Rows on "Lumen Works Platform" (mira, noel; found by name, the id is random per database):
 --   CHG0039201 Customer Approval  (no live stage: the user's "Demo Test 1")
 --   CHG0039202 Scheduled
@@ -83,7 +83,7 @@ INSERT INTO legacy_cr VALUES
   ('CHG0039111','CANCELED',          'NORMAL',   'Legacy: Canceled',                                           'Example Corp Production', '1999-12-20 09:00:00+00', NULL, NULL, false),
   ('CHG0039112','CUSTOMER_APPROVAL', 'NORMAL',   'Legacy: Customer Approval to propose a time on',             'Example Corp Production', '1999-12-20 09:00:00+00', NULL, NULL, true),
   ('CHG0039113','CUSTOMER_APPROVAL', 'NORMAL',   'Legacy: Customer Approval for the second contact',           'Example Corp Production', '1999-12-20 09:00:00+00', NULL, NULL, false),
-  ('CHG0039114','CUSTOMER_APPROVAL', 'NORMAL',   'Legacy: Customer Approval, ServiceNow asked the customer group', 'Example Corp Production', '1999-12-20 09:00:00+00', NULL, NULL, true),
+  ('CHG0039114','CUSTOMER_APPROVAL', 'NORMAL',   'Legacy: Customer Approval, the previous system asked the customer group', 'Example Corp Production', '1999-12-20 09:00:00+00', NULL, NULL, true),
   ('CHG0039201','CUSTOMER_APPROVAL', 'NORMAL',   'Demo Test 1 (legacy, Customer Approval, no live stage)',     'Lumen Works Platform',    '1999-12-20 09:00:00+00', NULL, NULL, false),
   ('CHG0039202','SCHEDULED',         'NORMAL',   'Legacy: Scheduled on Lumen',                                 'Lumen Works Platform',    '1999-12-20 09:00:00+00', NULL, NULL, false),
   ('CHG0039301','AUTHORIZE',         'EMERGENCY','Legacy: Emergency in Authorize, synced stage with no label','Example Corp Production', '1999-12-20 09:00:00+00', NULL, NULL, false),
@@ -134,8 +134,8 @@ FROM (VALUES
 ) a(n, who, user_id)
 WHERE EXISTS (SELECT 1 FROM approval_stage s WHERE s.id = md5('legacy-stage-' || a.n)::uuid);
 
--- CHG0039114: ServiceNow's own customer stage. It has NO label (the sync never wrote one) and its group is the change
--- request's customer_group_id, which is how a stage ServiceNow asked of the customers is told from an internal one;
+-- CHG0039114: the previous system's own customer stage. It has NO label (the sync never wrote one) and its group is the change
+-- request's customer_group_id, which is how a stage the previous system asked of the customers is told from an internal one;
 -- the approvers are the customers it asked (dave and erin), REQUESTED. (The group is the seeded "Example Corp ABT":
 -- any group row does, what matters is that the stage's group IS the customer group of the change request.)
 UPDATE change_request SET customer_group_id = '00000000-0000-0000-0000-000000000901'

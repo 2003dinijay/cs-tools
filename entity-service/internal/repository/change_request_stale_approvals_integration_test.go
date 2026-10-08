@@ -540,17 +540,27 @@ func TestChangeRequestFlowIntegration_StaleApprovals_OldFlowRescheduleStillFinis
 	f.wantCanAnswer(id, "asked again", true, crScopeUserA1, crScopeUserA2)
 	// ...and the stale date, now that the change is back in Customer Approval, is a date that differs
 	// from the plan with no answer: it WAITS, but nobody is named as its proposer (the last writer is
-	// the CAB approver, not a contact of the project), and no customer is told it is theirs. It is
-	// WSO2's to answer -- Accept applies it, or a different time asks the customers afresh -- exactly as
-	// a date a WSO2 user wrote in ServiceNow is. (C3: a stale date on re-entry never reads as "the
-	// customer proposed".)
+	// the CAB approver, not a contact of the project), so it is no customer's proposal. Accept is
+	// refused for it (no staff action stands in for a consent nobody gave), a customer is not told
+	// it is theirs or that WSO2 is deciding on it, and a Re-schedule is a plain one. (C3: a stale
+	// date on re-entry never reads as "the customer proposed".)
 	f.wantAnswer(id, "back in Customer Approval with the stale date", "pending")
 	p := f.proposalOf(id)
 	if p == nil || p.ProposerRecorded == nil || *p.ProposerRecorded {
-		t.Fatalf("customerProposal on re-entry = %+v, want a pending proposal whose proposer is not recorded", p)
+		t.Fatalf("customerProposal on re-entry = %+v, want a pending time whose proposer is not recorded", p)
 	}
 	if p.ProposedByName != nil || p.ProposedByEmail != nil || p.ProposedOn != nil {
 		t.Fatalf("a stale date on re-entry was attributed to somebody: %+v", p)
+	}
+	if p.CanAccept == nil || *p.CanAccept || p.AcceptBlockedReason == nil || !strings.HasPrefix(*p.AcceptBlockedReason, msgAcceptNobodyRecorded) {
+		t.Fatalf("a stale date on re-entry can be accepted: %+v", p)
+	}
+	before := f.snap(id)
+	_, err = f.accept(id)
+	wantRefusalCode(t, "Accept of a stale date on re-entry", err, 409, apierror.CodeChangeRequestProposerNotRecorded)
+	f.wantRefusedSame("Accept of a stale date on re-entry", id, before, err)
+	if seen, err := f.getAsContact(id, crScopeUserA1); err != nil || seen.CustomerProposal == nil || seen.CustomerProposal.Answer != "unanswered" {
+		t.Fatalf("a customer's view of a stale date on re-entry = %+v (%v), want it as history", seen.CustomerProposal, err)
 	}
 	if _, err := f.approveAs(id, crScopeUserA1, true); err != nil {
 		t.Fatalf("the customer's approval after the old-flow re-schedule: %v", err)

@@ -463,8 +463,12 @@ func TestGetChangeRequest_CarriesTheCustomerProposal(t *testing.T) {
 			map[string]any{"startDate": "2030-03-08T09:00:00Z", "endDate": end, "answer": "pending", "proposerRecorded": true, "proposedByViewer": true}},
 		"pending, a colleague's": {&entity.ChangeRequestCustomerProposal{StartOn: "2030-03-08T09:00:00Z", EndOn: &end, Answer: "pending", ProposerRecorded: &yes, ProposedByViewer: &no},
 			map[string]any{"startDate": "2030-03-08T09:00:00Z", "endDate": end, "answer": "pending", "proposerRecorded": true, "proposedByViewer": false}},
-		"pending, nobody can say who": {&entity.ChangeRequestCustomerProposal{StartOn: "2030-03-08T09:00:00Z", EndOn: &end, Answer: "pending", ProposerRecorded: &no, ProposedByViewer: &no},
+		"pending, nobody can say who (an older entity-service)": {&entity.ChangeRequestCustomerProposal{StartOn: "2030-03-08T09:00:00Z", EndOn: &end, Answer: "pending", ProposerRecorded: &no, ProposedByViewer: &no},
 			map[string]any{"startDate": "2030-03-08T09:00:00Z", "endDate": end, "answer": "pending", "proposerRecorded": false, "proposedByViewer": false}},
+		// entity-service tells a customer a time waits for WSO2 only when somebody is recorded as having proposed it; a
+		// stored time nobody proposed comes as history, with nothing that says it is waiting.
+		"unanswered, a stored time nobody is recorded as having proposed": {&entity.ChangeRequestCustomerProposal{StartOn: "2030-03-08T09:00:00Z", Answer: "unanswered"},
+			map[string]any{"startDate": "2030-03-08T09:00:00Z", "answer": "unanswered"}},
 		"agreed":    {&entity.ChangeRequestCustomerProposal{StartOn: "2030-03-08T09:00:00Z", Answer: "agreed"}, map[string]any{"startDate": "2030-03-08T09:00:00Z", "answer": "agreed"}},
 		"disagreed": {&entity.ChangeRequestCustomerProposal{StartOn: "2030-03-08T09:00:00Z", Answer: "disagreed"}, map[string]any{"startDate": "2030-03-08T09:00:00Z", "answer": "disagreed"}},
 	} {

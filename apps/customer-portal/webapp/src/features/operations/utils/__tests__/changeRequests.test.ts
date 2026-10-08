@@ -605,6 +605,17 @@ describe("buildChangeRequestWorkflowStages and a proposed time", () => {
     expect(without?.description).toBe("Customer approval received");
   });
 
+  // An `agreed` answer is not cleared when the customers are asked again: back in Customer Approval it must not read as done.
+  it("an agreed answer on a change that is (back) in Customer Approval is not accepted: the step is current and the usual caption stays", () => {
+    const step = stageOf(
+      { ...base, state: approval, customerProposal: { startDate: "2030-03-01 09:00:00", answer: "agreed" } },
+      "Customer Approval",
+    );
+    expect(step).toMatchObject({ current: true, completed: false, disabled: false });
+    expect(step?.description).toBe("Customer approval received");
+    expect(step?.description).not.toMatch(/accepted/i);
+  });
+
   it("does not grey the step out in Implement or Review after an accepted proposal", () => {
     for (const state of [{ id: "-1", label: "Implement" }, { id: "0", label: "Review" }]) {
       const accepted = stageOf(
@@ -681,12 +692,39 @@ describe("a customer's proposed time", () => {
       expect(isProposalPending(cr(approval, undefined))).toBe(false);
     });
 
-    it("is accepted whenever WSO2 agreed, whatever state the change is in", () => {
+    it("is accepted when WSO2 agreed AND the change has moved on from Customer Approval", () => {
+      for (const label of ["Scheduled", "Implement", "Review", "Customer Review", "Rollback", "Closed", "Canceled"]) {
+        expect(isProposalAccepted(cr({ id: "x", label }, proposal("agreed"))), label).toBe(true);
+      }
       expect(isProposalAccepted(cr({ id: "-2", label: "Scheduled" }, proposal("agreed")))).toBe(true);
       expect(isProposalAccepted(cr({ id: "3", label: "Closed" }, proposal("agreed")))).toBe(true);
-      expect(isProposalAccepted(cr(approval, proposal("pending")))).toBe(false);
-      expect(isProposalAccepted(cr(approval, proposal("disagreed")))).toBe(false);
-      expect(isProposalAccepted(cr(approval, undefined))).toBe(false);
+    });
+
+    // An `agreed` answer stays on the row when the customers are asked again (a later Re-schedule, or an answer the previous
+    // system wrote): while the change is in Customer Approval, Approve and Reject are live and nothing was scheduled by it.
+    it("is NOT accepted while the change is in Customer Approval, whatever the answer says: Approve and Reject are live there", () => {
+      expect(isProposalAccepted(cr(approval, proposal("agreed")))).toBe(false);
+      expect(isProposalAccepted(cr({ label: "Customer Approval" }, proposal("agreed")))).toBe(false);
+    });
+
+    it("is not accepted before Customer Approval or in a state the page cannot place either", () => {
+      for (const label of ["New", "Assess", "Authorize"]) {
+        expect(isProposalAccepted(cr({ id: "x", label }, proposal("agreed"))), label).toBe(false);
+      }
+      expect(isProposalAccepted(cr({ id: "x", label: "Something Else" }, proposal("agreed")))).toBe(false);
+      expect(isProposalAccepted(cr({}, proposal("agreed")))).toBe(false);
+      expect(isProposalAccepted({ customerProposal: proposal("agreed") } as never)).toBe(false);
+    });
+
+    it("is not accepted for any other answer, or with nothing proposed, in any state", () => {
+      for (const label of ["Customer Approval", "Scheduled", "Closed"]) {
+        for (const answer of ["pending", "disagreed", "unanswered"]) {
+          expect(isProposalAccepted(cr({ id: "x", label }, proposal(answer))), `${label} ${answer}`).toBe(false);
+        }
+        expect(isProposalAccepted(cr({ id: "x", label }, undefined)), label).toBe(false);
+      }
+      expect(isProposalAccepted(undefined)).toBe(false);
+      expect(isProposalAccepted(null)).toBe(false);
     });
 
     it("is not accepted only while the change is still in Customer Approval", () => {
@@ -704,7 +742,7 @@ describe("a customer's proposed time", () => {
       expect(note?.text).toMatch(/Approving now approves the current schedule \(.*February 20, 2030.*\), not the proposed time\./);
     });
 
-    it("says a colleague's proposal, or one whose proposer is not recorded, neutrally", () => {
+    it("says a colleague's proposal neutrally (and so a pending one an older backend sends with nothing about who proposed it)", () => {
       for (const extra of [{ proposedByViewer: false }, {}]) {
         const note = getProposalNote(cr(approval, proposal("pending", extra)), true);
         expect(note?.kind).toBe("waiting");

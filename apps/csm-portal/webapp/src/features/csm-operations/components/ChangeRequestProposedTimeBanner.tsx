@@ -27,14 +27,17 @@ import {
   formatCrWindow,
   formatWindowLength,
   plannedWindowMs,
-  PROPOSER_NOT_RECORDED,
-  PROPOSER_NOT_RECORDED_ADVICE,
   proposedWindowMs,
+  STORED_TIME_ADVICE,
+  storedTimeSentence,
 } from "@features/csm-operations/utils/changeRequests";
 
 interface ChangeRequestProposedTimeBannerProps {
   cr: BeChangeRequestDetail;
-  /** The customer's proposal waiting for WSO2's answer (`pendingCustomerProposal`). */
+  /**
+   * The time stored on the change while it waits in Customer Approval (`pendingCustomerProposal`): a customer's proposal
+   * waiting for WSO2's answer, or, when nobody is recorded as having proposed it, a stored time with no proposal to answer.
+   */
   proposal: BeChangeRequestCustomerProposal;
   /** True while a state-changing request for this change is in flight: both answers wait. */
   isPending: boolean;
@@ -66,22 +69,23 @@ function WindowBlock({ label, window, note }: { label: string; window: string; n
 
 /**
  * "The customer proposed a new time": shown under the lifecycle stepper while a proposal waits for
- * WSO2's answer (the change stays in Customer Approval, the planned window untouched). With no
- * proposer on record it does not say the customer proposed it ("A new time is waiting for your
- * answer", the window labelled "Proposed time"), beside the note that the proposer is not recorded.
+ * WSO2's answer (the change stays in Customer Approval, the planned window untouched).
  *
  * The two answers are the previous system's own: "Accept proposed time" (Agree: the proposal becomes the
  * planned window and the change goes straight to Scheduled, no CAB, no new customer request) and
  * "Propose a different time" (Disagree: the customer is asked again; it is also how a proposal is
- * declined, keeping the current time). Accept is the one primary action -- unless the page cannot
- * say who proposed the time: the date is also written by WSO2 users in the previous system, and one left
- * over from an earlier round reads the same, so with no proposer on record neither answer is the
- * recommended one (both outlined, equally prominent) and Accept asks for an explicit confirmation
- * in its dialog.
+ * declined, keeping the current time). Accept is the one primary action.
  *
- * Accept is disabled, with a focusable reason, only for what the page can know (on hold, the
- * proposed time already passed, no planned window to keep the length of); the backend refuses each
- * of those in words as well and stays the authority.
+ * With nobody recorded as having proposed the time (the date is also written by WSO2 users in the previous
+ * system, and one left over from an earlier cycle reads the same) it is not a proposal, and the banner
+ * does not say it is: it says a time is stored but nobody is recorded as having proposed it, in an info
+ * alert that asks for no answer. Accept is disabled with the reason (no staff action stands in for the
+ * customer's own answer, so the backend refuses it too), and "Propose a different time" stays: a plain
+ * Re-schedule that asks the customer to approve the time WSO2 names.
+ *
+ * Accept is disabled, with a focusable reason, for what the page can know (nobody recorded as the proposer,
+ * on hold, the proposed time already passed, no planned window to keep the length of) and for the backend's
+ * own `canAccept: false`; the backend refuses each of those in words as well and stays the authority.
  */
 export default function ChangeRequestProposedTimeBanner({
   cr,
@@ -98,14 +102,13 @@ export default function ChangeRequestProposedTimeBanner({
   const proposed = proposedWindowMs(cr, proposal);
   const length = planned ? formatWindowLength(planned.endMs - planned.startMs) : "";
   const acceptBlocked = acceptProposedTimeBlockedReason(cr, proposal, nowMs);
-  // With nobody on record the Accept is not the one recommended action: both answers weigh the same.
-  const recommendAccept = !!proposer;
+  const storedWindow = formatCrWindow(proposal.startOn, proposed?.endMs ?? null);
 
   const accept = (
     <Button
       size="small"
-      variant={recommendAccept ? "contained" : "outlined"}
-      color={recommendAccept ? "success" : "primary"}
+      variant={proposer ? "contained" : "outlined"}
+      color={proposer ? "success" : "primary"}
       startIcon={<CheckCircle size={16} />}
       disabled={isPending || !!acceptBlocked}
       onClick={onAccept}
@@ -117,7 +120,7 @@ export default function ChangeRequestProposedTimeBanner({
 
   return (
     <Alert
-      severity="warning"
+      severity={proposer ? "warning" : "info"}
       role="region"
       aria-labelledby={titleId}
       icon={<CalendarClock size={20} />}
@@ -125,30 +128,33 @@ export default function ChangeRequestProposedTimeBanner({
     >
       <AlertTitle id={titleId}>{wording.bannerTitle}</AlertTitle>
       <Box sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-        <Typography variant="body2">
-          The planned time stays as it is until you answer. Accepting schedules the change for the proposed time with no
-          further approval; proposing a different time asks the customer again.
-        </Typography>
+        {proposer ? (
+          <Typography variant="body2">
+            The planned time stays as it is until you answer. Accepting schedules the change for the proposed time with no
+            further approval; proposing a different time asks the customer again.
+          </Typography>
+        ) : (
+          <>
+            <Typography variant="body2" data-testid="cr-proposal-proposer">
+              {storedTimeSentence(storedWindow)}
+            </Typography>
+            <Typography variant="body2">{STORED_TIME_ADVICE}</Typography>
+          </>
+        )}
         <Box sx={{ display: "flex", flexWrap: "wrap", gap: 2 }}>
           <WindowBlock label="Planned now" window={formatCrWindow(cr.plannedStartOn, cr.plannedEndOn)} />
           <WindowBlock
             label={wording.windowLabel}
-            window={formatCrWindow(proposal.startOn, proposed?.endMs ?? null)}
+            window={storedWindow}
             note={length && proposed?.endMs != null ? `Same length as the planned window (${length})` : undefined}
           />
         </Box>
-        <Typography variant="body2" data-testid="cr-proposal-proposer">
-          {proposer ? (
-            <>
-              Proposed by {customerProposalProposerLabel(proposer)}
-              {proposer.on ? ` on ${formatCrDateTime(proposer.on)}` : ""}.
-            </>
-          ) : (
-            <>
-              <strong>{PROPOSER_NOT_RECORDED}</strong> {PROPOSER_NOT_RECORDED_ADVICE}
-            </>
-          )}
-        </Typography>
+        {proposer && (
+          <Typography variant="body2" data-testid="cr-proposal-proposer">
+            Proposed by {customerProposalProposerLabel(proposer)}
+            {proposer.on ? ` on ${formatCrDateTime(proposer.on)}` : ""}.
+          </Typography>
+        )}
         <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
           {acceptBlocked ? (
             <Tooltip title={acceptBlocked}>

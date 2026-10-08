@@ -698,7 +698,7 @@ func TestChangeRequestCustomerOutcomeIntegration_ConcurrentAnswers(t *testing.T)
 }
 
 // "Propose new implementation time" is the customer's proposal of a START: it is
-// written to customer_updated_on (ServiceNow's own column for it) and the change
+// written to customer_updated_on (the column the previous system used for it) and the change
 // WAITS in Customer Approval for WSO2's answer -- no state move, no CAB stage, the
 // planned window and the customers' request untouched. WSO2 then accepts it (the
 // change is Scheduled with the proposal as its start, the planned length kept, no

@@ -28,7 +28,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
-// A customer's proposed time and WSO2's answer to it: ServiceNow's own mechanism,
+// A customer's proposed time and WSO2's answer to it: the previous system's own mechanism,
 // customer_updated_on (the proposed START) and customer_updated_date_confirmation (WSO2's
 // answer). See change_request_customer_proposal.go. The harness (planLength, proposeAs,
 // acceptReq, counterReq, snap, rowCounts, migratedInCustomerApproval, ...) is in
@@ -42,9 +42,12 @@ import (
 // The predicate matrix. Each row is a change as the data can leave it -- a native one, a
 // migrated one in flight, history, a date WSO2 wrote, an old date, a change waiting on an
 // internal approval -- and says what the read model makes of it and what Accept does. A
-// proposal waits only in Customer Approval with a finite proposed start that differs from
-// the plan, no answer, and no approval but the customer's still asked; anything else is
-// history or not ours to answer, and no act of this feature touches it.
+// time waits only in Customer Approval with a finite proposed start that differs from the
+// plan, no answer, and no approval but the customer's still asked; anything else is history
+// or not ours to answer, and no act of this feature touches it. A waiting time is a
+// customer's PROPOSAL, and answerable by WSO2, only when a registered contact of the project
+// is recorded as having proposed it (recorded): Accept is refused for any other (409, the
+// proposer's own errorCode) and a customer is never told it is theirs.
 func TestChangeRequestProposalIntegration_PredicateMatrix(t *testing.T) {
 	future := time.Now().UTC().AddDate(1, 0, 0).Truncate(time.Second).Format(time.RFC3339)
 	past := "2020-06-01T09:00:00Z"
@@ -55,7 +58,7 @@ func TestChangeRequestProposalIntegration_PredicateMatrix(t *testing.T) {
 		answer string
 		// acceptRefusal: Accept's 409 (a fragment); "" when the proposal waits and Accept is not tried here.
 		acceptRefusal string
-		// recorded: ProposerRecorded expected when the proposal waits.
+		// recorded: ProposerRecorded expected when the time waits.
 		recorded bool
 		// canAccept / blocked: what a staff reader is told when the proposal waits.
 		canAccept bool
@@ -84,12 +87,18 @@ func TestChangeRequestProposalIntegration_PredicateMatrix(t *testing.T) {
 	}
 	cab, sre, review := crCABGroupID, crFlowSREGroupID, "Review"
 	rows := []row{
-		{name: "M1 a migrated change in Customer Approval, the sync wrote the proposal, ServiceNow's own customer stage (unlabeled, the customer group) asks Alice and Bob",
+		{name: "M1 a migrated change in Customer Approval, the sync wrote the proposal, the previous system's own customer stage (unlabeled, the customer group) asks Alice and Bob",
 			setup: func(f *crFlow) string {
 				id := f.migratedInCustomerApproval()
 				f.syncWritesConversation(id, sp(future), "")
 				return id
-			}, answer: "pending", recorded: false, canAccept: true},
+			}, answer: "pending", recorded: false, canAccept: false, blocked: msgAcceptNobodyRecorded},
+		{name: "M1a the same, the date being one a customer proposed in the previous system (the sync set the customer as the last writer)",
+			setup: func(f *crFlow) string {
+				id := f.migratedInCustomerApproval()
+				f.customerWroteProposal(id, crScopeUserA1, future)
+				return id
+			}, answer: "pending", recorded: true, canAccept: true},
 		{name: "M1b the same with no customer_group_id: the stage cannot be proved to be the customer's, so it blocks",
 			setup: func(f *crFlow) string {
 				id := f.migratedInCustomerApproval()
@@ -166,25 +175,50 @@ func TestChangeRequestProposalIntegration_PredicateMatrix(t *testing.T) {
 				f.syncWritesConversation(id, sp(rsStart1), "")
 				return id
 			}, answer: "unanswered", acceptRefusal: msgNothingWaiting},
-		{name: "M8 a date a WSO2 user wrote in ServiceNow (the last writer is staff): waits, proposer not recorded",
+		{name: "M8 a date a WSO2 user wrote in the previous system (the last writer is staff): waits, proposer not recorded, Accept blocked",
 			setup: func(f *crFlow) string {
 				id := inCA(f)
 				f.syncWritesConversation(id, sp(future), "")
 				return id
-			}, answer: "pending", recorded: false, canAccept: true},
-		{name: "M9 a stale date from an old cycle, in the past: waits, Accept is blocked",
+			}, answer: "pending", recorded: false, canAccept: false, blocked: msgAcceptNobodyRecorded},
+		{name: "M8b the same on a change that has a parent record: the comment the existing trigger writes there is no reference, the last writer is staff",
+			setup: func(f *crFlow) string {
+				id := inCA(f)
+				f.giveParent(id, crScopeProjectA, false)
+				f.syncWritesConversationAs(id, "wso2.engineer@example.com", sp(future), "")
+				return id
+			}, answer: "pending", recorded: false, canAccept: false, blocked: msgAcceptNobodyRecorded},
+		{name: "M8c a migrated row whose last writer is the sync's own stamp: nobody is recorded",
+			setup: func(f *crFlow) string {
+				id := f.migratedInCustomerApproval()
+				f.syncWritesConversationAs(id, crSyncStamp, sp(future), "")
+				return id
+			}, answer: "pending", recorded: false, canAccept: false, blocked: msgAcceptNobodyRecorded},
+		{name: "M8d the same with a blank last writer",
+			setup: func(f *crFlow) string {
+				id := f.migratedInCustomerApproval()
+				f.syncWritesConversationAs(id, "", sp(future), "")
+				return id
+			}, answer: "pending", recorded: false, canAccept: false, blocked: msgAcceptNobodyRecorded},
+		{name: "M9 a stale date from an old cycle, in the past: waits, proposer not recorded, Accept is blocked for that first",
 			setup: func(f *crFlow) string {
 				id := inCA(f)
 				f.syncWritesConversation(id, sp(past), "")
 				return id
-			}, answer: "pending", recorded: false, canAccept: false, blocked: "has already passed"},
+			}, answer: "pending", recorded: false, canAccept: false, blocked: msgAcceptNobodyRecorded},
+		{name: "M9b a date in the past that a customer proposed (recorded): Accept is blocked because it has passed",
+			setup: func(f *crFlow) string {
+				id := inCA(f)
+				f.customerWroteProposal(id, crScopeUserA1, past)
+				return id
+			}, answer: "pending", recorded: true, canAccept: false, blocked: "has already passed"},
 		{name: "M10 a date the customer proposed through the API: waits, proposer recorded",
 			setup: func(f *crFlow) string {
 				id := inCA(f)
 				f.mustPropose(id, crScopeUserA1, rsStart2)
 				return id
 			}, answer: "pending", recorded: true, canAccept: true},
-		{name: "M10b the same after a staff edit replaced the last writer: waits, proposer no longer recorded",
+		{name: "M10b the same after a staff edit replaced the last writer: waits, proposer no longer recorded (nothing else names them)",
 			setup: func(f *crFlow) string {
 				id := inCA(f)
 				f.mustPropose(id, crScopeUserA1, rsStart2)
@@ -192,7 +226,30 @@ func TestChangeRequestProposalIntegration_PredicateMatrix(t *testing.T) {
 					t.Fatalf("a staff edit: %v", err)
 				}
 				return id
-			}, answer: "pending", recorded: false, canAccept: true},
+			}, answer: "pending", recorded: false, canAccept: false, blocked: msgAcceptNobodyRecorded},
+		{name: "M10c the same under a parent record: the comment the existing trigger wrote at the proposal names the customer, and is not read",
+			setup: func(f *crFlow) string {
+				id := inCA(f)
+				f.giveParent(id, crScopeProjectA, false)
+				f.mustPropose(id, crScopeUserA1, rsStart2)
+				if _, err := f.patch(id, domain.PatchChangeRequestRequest{WorkNote: sp("looking at it")}); err != nil {
+					t.Fatalf("a staff edit: %v", err)
+				}
+				if got := f.updatedBy(id); got == crFlowEmail(crScopeUserA1) {
+					t.Fatalf("the staff edit left the customer as the last writer (%q): the row proves nothing", got)
+				}
+				if got := f.commentsOn("3aaaaaaa-0000-0000-0000-0000000000c1"); len(got) != 1 {
+					t.Fatalf("the trigger's comment on the parent record = %q, want exactly one for the proposal (the fixture must have one to not read)", got)
+				}
+				return id
+			}, answer: "pending", recorded: false, canAccept: false, blocked: msgAcceptNobodyRecorded},
+		{name: "M10d a proposal by one contact, a later write to the change by their colleague (also a registered contact): the last writer is the recorded proposer, nothing else is looked at",
+			setup: func(f *crFlow) string {
+				id := inCA(f)
+				f.mustPropose(id, crScopeUserA1, rsStart2)
+				f.execSQL(`UPDATE work_item SET updated_by = $2 WHERE id = $1`, id, crFlowEmail(crScopeUserA2))
+				return id
+			}, answer: "pending", recorded: true, canAccept: true},
 		{name: "M11 an infinite proposed date reads as none and does not break the read",
 			setup: func(f *crFlow) string {
 				id := inCA(f)
@@ -245,6 +302,42 @@ func TestChangeRequestProposalIntegration_PredicateMatrix(t *testing.T) {
 				if p.EndOn == nil {
 					t.Fatal("a waiting proposal over a planned window carries its end")
 				}
+				// What a customer is told about the same time: theirs (or a colleague's) when somebody is
+				// recorded as having proposed it, and nothing waits for WSO2 on their account otherwise.
+				seen, err := f.getAsContact(id, crScopeUserA2)
+				if err != nil || seen.CustomerProposal == nil {
+					t.Fatalf("a customer's read of the change request = %+v (%v)", seen.CustomerProposal, err)
+				}
+				cp := seen.CustomerProposal
+				if r.recorded {
+					if cp.Answer != "pending" || cp.ProposerRecorded == nil || !*cp.ProposerRecorded || cp.ProposedByViewer == nil || cp.EndOn == nil {
+						t.Fatalf("a customer's view of a recorded proposal = %+v, want it pending with its proposer", cp)
+					}
+				} else if cp.Answer != "unanswered" || cp.EndOn != nil || cp.ProposerRecorded != nil || cp.ProposedByViewer != nil || cp.CanAccept != nil {
+					t.Fatalf("a customer's view of a time nobody is recorded as having proposed = %+v, want history: unanswered and nothing that says it waits", cp)
+				}
+				if cp.ProposedByEmail != nil || cp.ProposedByName != nil || cp.ProposedOn != nil || cp.AcceptBlockedReason != nil {
+					t.Fatalf("a customer was told who proposed it or what WSO2 may do: %+v", cp)
+				}
+				if !r.canAccept {
+					// What the read model says Accept would refuse, the PATCH refuses in the same words and
+					// writes nothing; with no proposer recorded it is the proposer's own code.
+					before := f.snap(id)
+					_, err := f.patch(id, domain.PatchChangeRequestRequest{
+						ConfirmCustomerUpdatedDate: sp("agree"), ExpectedCustomerUpdatedOn: sp(p.StartOn),
+						ExpectedPlannedStartOn: cr.PlannedStartOn, ExpectedPlannedEndOn: cr.PlannedEndOn})
+					if err == nil {
+						t.Fatal("Accept of a time the read model blocks was accepted")
+					}
+					reason := *p.AcceptBlockedReason
+					if !r.recorded {
+						wantRefusalCode(t, "Accept of a time nobody proposed", err, 409, apierror.CodeChangeRequestProposerNotRecorded)
+					}
+					if !strings.Contains(err.Error(), reason) {
+						t.Fatalf("Accept refused with %q, the read model said %q", err.Error(), reason)
+					}
+					f.wantRefusedSame("Accept of a time the read model blocks", id, before, err)
+				}
 				return
 			}
 			// History or not ours to answer: no waiting-only fact, and Accept is refused with
@@ -262,7 +355,13 @@ func TestChangeRequestProposalIntegration_PredicateMatrix(t *testing.T) {
 	}
 }
 
-const msgNothingWaiting = "no new time proposed by the customer is waiting for a response on this change request"
+const (
+	msgNothingWaiting = "no new time proposed by the customer is waiting for a response on this change request"
+	// msgAcceptNobodyRecorded is the beginning of the refusal (and of the read model's reason) for
+	// a time nobody is recorded as having proposed; the whole text is pinned by
+	// TestChangeRequestProposalIntegration_AcceptNeedsARecordedProposer.
+	msgAcceptNobodyRecorded = "nobody is recorded as having proposed this time"
+)
 
 // ---------------------------------------------------------------------------
 // WSO2 accepts the proposed time
@@ -373,13 +472,15 @@ func TestChangeRequestProposalIntegration_AcceptHappyAndEveryRefusal(t *testing.
 // is on hold, the planned window has no length to keep. Each leaves it exactly as it was, and
 // the read model says why Accept is blocked in the same words.
 func TestChangeRequestProposalIntegration_OnHoldAndPast(t *testing.T) {
+	// The hold is set the way the data can carry it without a write of ours (the sync, or an
+	// engineer's edit that is not what this test is about), so the proposer stays recorded and the
+	// refusal order shows: a staff PATCH of the hold is a write like any other and replaces the last
+	// writer (the next subtest).
 	t.Run("on hold", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
 		f.mustPropose(id, crScopeUserA1, rsStart2)
-		if _, err := f.patch(id, domain.PatchChangeRequestRequest{OnHold: boolp(true), OnHoldReason: sp("freeze")}); err != nil {
-			t.Fatalf("put on hold: %v", err)
-		}
+		f.execSQL(`UPDATE change_request SET is_on_hold = true WHERE id = $1`, id)
 		p := f.proposalOf(id)
 		if p == nil || p.CanAccept == nil || *p.CanAccept || p.AcceptBlockedReason == nil || *p.AcceptBlockedReason != "change request is on hold; take it off hold (onHold: false) before changing its state" {
 			t.Fatalf("customerProposal while on hold = %+v", p)
@@ -395,13 +496,42 @@ func TestChangeRequestProposalIntegration_OnHoldAndPast(t *testing.T) {
 		_, err = f.proposeAs(id, crScopeUserA2, rsStart3)
 		f.wantConflictExact("a proposal on hold", err, "this change request is on hold, so a new implementation time cannot be proposed now")
 		f.wantRefusedSame("a different time / a proposal on hold", id, before, err)
-		// Released, it works.
-		if _, err := f.patch(id, domain.PatchChangeRequestRequest{OnHold: boolp(false)}); err != nil {
-			t.Fatalf("take off hold: %v", err)
-		}
+		// Released the way it was set, it works: nothing else wrote to the change meanwhile.
+		f.execSQL(`UPDATE change_request SET is_on_hold = false WHERE id = $1`, id)
 		f.mustAccept(id)
 		f.expect(id, "after Accept", "SCHEDULED", "implement", "canceled")
 	})
+	for name, withParent := range map[string]bool{"no parent record": false, "under a parent record": true} {
+		withParent := withParent
+		t.Run("a staff PATCH of the hold replaces the last writer, "+name+": the proposer is no longer recorded", func(t *testing.T) {
+			f := newCustomerGroupFlow(t)
+			id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
+			if withParent {
+				f.giveParent(id, crScopeProjectA, false)
+			}
+			f.mustPropose(id, crScopeUserA1, rsStart2)
+			if _, err := f.patch(id, domain.PatchChangeRequestRequest{OnHold: boolp(true), OnHoldReason: sp("freeze")}); err != nil {
+				t.Fatalf("put on hold: %v", err)
+			}
+			if _, err := f.patch(id, domain.PatchChangeRequestRequest{OnHold: boolp(false)}); err != nil {
+				t.Fatalf("take off hold: %v", err)
+			}
+			p := f.proposalOf(id)
+			if p == nil || p.Answer != "pending" || p.ProposerRecorded == nil || *p.ProposerRecorded || p.CanAccept == nil || *p.CanAccept ||
+				p.AcceptBlockedReason == nil || !strings.HasPrefix(*p.AcceptBlockedReason, msgAcceptNobodyRecorded) {
+				t.Fatalf("customerProposal after the hold = %+v, want a pending time whose proposer is no longer recorded", p)
+			}
+			before := f.snap(id)
+			_, err := f.accept(id)
+			wantRefusalCode(t, "Accept after a staff edit", err, 409, apierror.CodeChangeRequestProposerNotRecorded)
+			f.wantRefusedSame("Accept after a staff edit", id, before, err)
+			// What stays possible: asking the customers to approve a time of WSO2's.
+			if err := f.counter(id, sp(rsStart3), sp(rsEnd3)); err != nil {
+				t.Fatalf("Propose a different time after a staff edit: %v", err)
+			}
+			f.wantPlanned(id, "after the different time", rsStart3, rsEnd3)
+		})
+	}
 	t.Run("the proposed start has passed", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
@@ -437,7 +567,7 @@ func TestChangeRequestProposalIntegration_OnHoldAndPast(t *testing.T) {
 			t.Run(name, func(t *testing.T) {
 				f := newCustomerGroupFlow(t)
 				id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
-				f.syncWritesConversation(id, sp(rsStart2), "")
+				f.customerWroteProposal(id, crScopeUserA1, rsStart2)
 				f.execSQL(mod, id)
 				cr := f.get(id)
 				p := cr.CustomerProposal
@@ -459,7 +589,7 @@ func TestChangeRequestProposalIntegration_OnHoldAndPast(t *testing.T) {
 	})
 }
 
-// customer_updated_on is a column ServiceNow writes as well, and nothing there keeps it inside the
+// customer_updated_on is a column the previous system writes as well, and nothing there keeps it inside the
 // range every planned window is held to. Accept writes the proposal as the planned start and
 // start + the planned length as the end, so a date that would put the end past the range is not one
 // WSO2 can accept (409, the read model says so in the same words); the last window inside the range
@@ -474,7 +604,7 @@ func TestChangeRequestProposalIntegration_AnAcceptStaysInsideTheRangeOfEveryWind
 		t.Run(name, func(t *testing.T) {
 			f := newCustomerGroupFlow(t)
 			id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
-			f.syncWritesConversation(id, sp(tc.start), "")
+			f.customerWroteProposal(id, crScopeUserA1, tc.start)
 			p := f.proposalOf(id)
 			if p == nil || p.Answer != "pending" || p.CanAccept == nil {
 				t.Fatalf("customerProposal = %+v, want a waiting proposal", p)
@@ -514,7 +644,7 @@ func TestChangeRequestProposalIntegration_AnAcceptStaysInsideTheRangeOfEveryWind
 func TestChangeRequestProposalIntegration_AnEmptyWindowHasNoLengthToKeep(t *testing.T) {
 	f := newCustomerGroupFlow(t)
 	id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
-	f.syncWritesConversation(id, sp(rsStart2), "")
+	f.customerWroteProposal(id, crScopeUserA1, rsStart2)
 	f.execSQL(`UPDATE change_request SET end_on = start_on WHERE id = $1`, id)
 	req := f.acceptReq(id)
 	before := f.snap(id)
@@ -637,7 +767,7 @@ func TestChangeRequestProposalIntegration_CounterHappyAndEveryRefusal(t *testing
 	f.wantConversation(id, "after the Re-schedule", rsStart2, "DISAGREE")
 }
 
-// Decline: ServiceNow's Disagree with the plan left as it is. WSO2 need not invent a time just to
+// Decline: the previous system's Disagree with the plan left as it is. WSO2 need not invent a time just to
 // say no: only the answer is written, the customers keep their live request, and nobody has to
 // be found to ask. Re-stating the planned window is the same decline ("keep our time").
 func TestChangeRequestProposalIntegration_DeclineKeepsTheWindow(t *testing.T) {
@@ -653,21 +783,9 @@ func TestChangeRequestProposalIntegration_DeclineKeepsTheWindow(t *testing.T) {
 			id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
 			f.mustPropose(id, crScopeUserA2, rsStart2)
 			stages := f.stageLabels(id)
-			// Nobody can be asked any more: a decline needs nobody.
-			var registered []string
-			rows, err := f.scoped.Query(f.sys, `SELECT id::text FROM project_contact WHERE project_id = $1 AND state = 'REGISTERED'`, crScopeProjectA)
-			if err != nil {
-				t.Fatalf("list the contacts: %v", err)
-			}
-			for rows.Next() {
-				var cid string
-				if err := rows.Scan(&cid); err != nil {
-					t.Fatalf("scan: %v", err)
-				}
-				registered = append(registered, cid)
-			}
-			rows.Close()
-			f.execSQL(`UPDATE project_contact SET state = 'DEACTIVATED'::project_contact_state_enum WHERE id = ANY($1::uuid[])`, registered)
+			// Nobody can be asked any more: a decline needs nobody (the proposer is the requester and
+			// the only registered contact left, so the proposal is still recorded as theirs).
+			restore := f.onlyTheProposerIsLeft(id, crScopeUserA2)
 
 			if err := f.counter(id, window[0], window[1]); err != nil {
 				t.Fatalf("decline: %v", err)
@@ -680,10 +798,10 @@ func TestChangeRequestProposalIntegration_DeclineKeepsTheWindow(t *testing.T) {
 				t.Fatalf("a decline changed the stages: %s, was %s", got, stages)
 			}
 			assertApprovers(t, "the customers' request after a decline", f.customerStages(id)[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
-			f.execSQL(`UPDATE project_contact SET state = 'REGISTERED'::project_contact_state_enum WHERE id = ANY($1::uuid[])`, registered)
+			restore()
 			f.wantCanAnswer(id, "after the decline", true, crScopeUserA1, crScopeUserA2)
 			// The customer is not told they can propose the time WSO2 declined again.
-			_, err = f.proposeAs(id, crScopeUserA1, rsStart2)
+			_, err := f.proposeAs(id, crScopeUserA1, rsStart2)
 			f.wantExact("proposing the declined time again", err, msgProposalWSO2AskedOther)
 			// ...but may propose another.
 			f.mustPropose(id, crScopeUserA1, rsStart3)
@@ -706,20 +824,9 @@ func TestChangeRequestProposalIntegration_CounterNeedsSomebodyToAsk(t *testing.T
 	f := newCustomerGroupFlow(t)
 	id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
 	f.mustPropose(id, crScopeUserA1, rsStart2)
-	var registered []string
-	rows, err := f.scoped.Query(f.sys, `SELECT id::text FROM project_contact WHERE project_id = $1 AND state = 'REGISTERED'`, crScopeProjectA)
-	if err != nil {
-		t.Fatalf("list the contacts: %v", err)
-	}
-	for rows.Next() {
-		var cid string
-		if err := rows.Scan(&cid); err != nil {
-			t.Fatalf("scan: %v", err)
-		}
-		registered = append(registered, cid)
-	}
-	rows.Close()
-	f.execSQL(`UPDATE project_contact SET state = 'DEACTIVATED'::project_contact_state_enum WHERE id = ANY($1::uuid[])`, registered)
+	// Nobody can be asked (the proposer is the requester and the only registered contact left), yet
+	// the proposer is still a registered contact: the proposal is still recorded as theirs.
+	f.onlyTheProposerIsLeft(id, crScopeUserA1)
 	before := f.snap(id)
 	for i := 0; i < 2; i++ {
 		err := f.counter(id, sp(rsStart3), sp(rsEnd3))
@@ -739,7 +846,7 @@ func TestChangeRequestProposalIntegration_CounterNeedsSomebodyToAsk(t *testing.T
 // The feature adds NOTHING to the database but what each act has to write: no comment, activity
 // or marker row of its own, no column, table or type. Every act is counted over EVERY table
 // before and after, and the delta must be exactly what the contract says -- the rows that
-// ServiceNow's own mechanism already produces (the event outbox row of any change_request update;
+// the previous system's own mechanism already produces (the event outbox row of any change_request update;
 // the plan-start-date comment on the parent record and the GitHub queue row it enqueues) and the
 // one customer stage a re-ask provisions, as a Re-schedule always did.
 func TestChangeRequestProposalIntegration_NoExtraRows(t *testing.T) {
@@ -829,11 +936,11 @@ func TestChangeRequestProposalIntegration_NoExtraRows(t *testing.T) {
 			}
 		}, map[string]int{})
 
-	// A change ServiceNow already asked (migrated shape: an unlabeled customer-group stage with
+	// A change the previous system already asked (migrated shape: an unlabeled customer-group stage with
 	// REQUESTED rows): the customer's first act gives it the labelled stage it lacks, one row per
 	// contact -- the existing behaviour of every customer act on such a row, pinned
 	// (change_request_synced_stages_integration_test.go) -- and writes the proposal. That is the
-	// whole delta. WSO2's Accept then adds nothing and leaves ServiceNow's rows alone.
+	// whole delta. WSO2's Accept then adds nothing and leaves the previous system's rows alone.
 	t.Run("a migrated change: the customer's proposal, then Accept", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		id := f.migratedInCustomerApproval()
@@ -848,7 +955,7 @@ func TestChangeRequestProposalIntegration_NoExtraRows(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// The ServiceNow-parity trigger runs as the customer's own transaction
+// The parity trigger runs as the customer's own transaction
 // ---------------------------------------------------------------------------
 
 // Trigger 0053 writes the plan-start-date comment on the parent record in the customer's own
@@ -1105,15 +1212,30 @@ func TestChangeRequestProposalIntegration_CustomerRefusals(t *testing.T) {
 }
 
 // A migrated change in Customer Approval: WSO2 answers a proposal the sync wrote (or a customer
-// made) exactly as it answers any other. Accept leaves ServiceNow's own REQUESTED rows alone
+// made) exactly as it answers any other. Accept leaves the previous system's own REQUESTED rows alone
 // (an unlabeled stage is of unknown kind and never cancelled by a guess), writes no stage, and
 // the proposal that a customer's first act made waits like any other.
 func TestChangeRequestProposalIntegration_AMigratedChangeIsAnsweredLikeAnyOther(t *testing.T) {
-	t.Run("Accept leaves ServiceNow's rows alone", func(t *testing.T) {
+	t.Run("a date the sync wrote is not a customer's proposal: Accept is refused, nothing is written", func(t *testing.T) {
 		f := newCustomerGroupFlow(t)
 		id := f.migratedInCustomerApproval()
 		future := time.Now().UTC().AddDate(1, 0, 0).Truncate(time.Second).Format(time.RFC3339)
 		f.syncWritesConversation(id, sp(future), "")
+		p := f.proposalOf(id)
+		if p == nil || p.Answer != "pending" || p.ProposerRecorded == nil || *p.ProposerRecorded || p.CanAccept == nil || *p.CanAccept {
+			t.Fatalf("customerProposal for a date the sync wrote = %+v, want it pending, no proposer recorded, Accept blocked", p)
+		}
+		before := f.snap(id)
+		_, err := f.accept(id)
+		wantRefusalCode(t, "Accept of a date the sync wrote", err, 409, apierror.CodeChangeRequestProposerNotRecorded)
+		f.wantRefusedSame("Accept of a date the sync wrote", id, before, err)
+	})
+	t.Run("Accept leaves the previous system's rows alone", func(t *testing.T) {
+		f := newCustomerGroupFlow(t)
+		id := f.migratedInCustomerApproval()
+		future := time.Now().UTC().AddDate(1, 0, 0).Truncate(time.Second).Format(time.RFC3339)
+		// A customer's own proposal, as the sync leaves it: the contact is the last writer.
+		f.customerWroteProposal(id, crScopeUserA1, future)
 		f.wantAnswer(id, "a migrated proposal", "pending")
 		stages := f.stages(id)
 		f.mustAccept(id)
@@ -1124,7 +1246,7 @@ func TestChangeRequestProposalIntegration_AMigratedChangeIsAnsweredLikeAnyOther(
 		if len(after) != len(stages) {
 			t.Fatalf("Accept wrote a stage: %d -> %d", len(stages), len(after))
 		}
-		assertApprovers(t, "ServiceNow's rows after Accept", after[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+		assertApprovers(t, "the previous system's rows after Accept", after[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 		if a, _ := f.customerOutcome(id); a {
 			t.Fatal("Accept recorded the customer's approval")
 		}
@@ -1138,9 +1260,9 @@ func TestChangeRequestProposalIntegration_AMigratedChangeIsAnsweredLikeAnyOther(
 		id := f.migratedInCustomerApproval()
 		f.mustPropose(id, crScopeUserA1, rsStart2)
 		f.wantAnswer(id, "after the customer's proposal", "pending")
-		// The labelled stage the first customer act gave it, next to ServiceNow's.
+		// The labelled stage the first customer act gave it, next to the previous system's.
 		if got := f.stageLabels(id); got != ",Customer Approval" {
-			t.Fatalf("stages after the customer's proposal = %q, want ServiceNow's unlabeled one and the labelled stage", got)
+			t.Fatalf("stages after the customer's proposal = %q, want the previous system's unlabeled one and the labelled stage", got)
 		}
 		if err := f.counter(id, sp(rsStart3), sp(rsEnd3)); err != nil {
 			t.Fatalf("a different time on a migrated change: %v", err)
@@ -1151,7 +1273,7 @@ func TestChangeRequestProposalIntegration_AMigratedChangeIsAnsweredLikeAnyOther(
 			t.Fatalf("stages after the different time = %q", got)
 		}
 		stages := f.stages(id)
-		assertApprovers(t, "ServiceNow's rows are not ours to cancel", stages[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+		assertApprovers(t, "the previous system's rows are not ours to cancel", stages[0].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 		assertApprovers(t, "the superseded labelled request", stages[1].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
 		assertApprovers(t, "the customers asked again", stages[2].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
 	})
@@ -1348,7 +1470,7 @@ func TestChangeRequestProposalIntegration_RacesHaveOneWinner(t *testing.T) {
 // change_request row change: a moved customer_updated_on while the snapshot is in CUSTOMER_APPROVAL
 // (the customer proposed -- read FIRST, because the 0052 trigger clears the answer in the same write),
 // else a confirmation that changed to AGREE (WSO2 accepted) or DISAGREE (WSO2 answered with another
-// time OR declined: both write DISAGREE, so both are the one notice ServiceNow's Disagree sends --
+// time OR declined: both write DISAGREE, so both are the one notice the previous system's Disagree sends --
 // service.TestPlanDate_ADeclineSendsTheSameNoticeAsADifferentTime). The real outbox rows of a real
 // proposal, different time, decline and Accept carry exactly that, so the existing notices turn
 // without a new notice kind.

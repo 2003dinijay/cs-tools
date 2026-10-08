@@ -18,8 +18,8 @@
 // A customer PROPOSES A NEW IMPLEMENTATION TIME in the customer portal, on the real
 // local stack, and WSO2 answers it.
 //
-// The process (entity-service/CLAUDE.md, "A customer's proposed time"): ServiceNow's own
-// mechanism. A contact who is asked at Customer Approval proposes a new START (the planned
+// The process (entity-service/CLAUDE.md, "A customer's proposed time"): the previous system's
+// own mechanism. A contact who is asked at Customer Approval proposes a new START (the planned
 // length stays, so the dialog shows the end and never asks for it). The proposal is written
 // to the change request's customer_updated_on and NOTHING else moves: the change STAYS in
 // Customer Approval, its planned window is what WSO2 planned, and every customer request
