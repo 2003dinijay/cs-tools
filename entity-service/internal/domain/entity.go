@@ -4602,6 +4602,12 @@ type PatchChangeRequestResponse struct {
 // It is what the repository validates and derives from.
 type ChangeRequestLinkSelection struct {
 	ProjectID *string
+	// AssignmentGroupID is the group the change is assigned to (the create
+	// form's "Assignment group"). When stated it must be a row of "group", the
+	// table work_item.assignment_group_id references and the one ServiceNow's
+	// groups are mirrored into. It is checked here, ahead of the write, so a
+	// group that is not one is refused in words naming the field.
+	AssignmentGroupID *string
 	// DeploymentIDs are the chosen deployments, in the order given.
 	DeploymentIDs []string
 	// DeploymentProductIDs is nil when the caller did not state them. Deployment

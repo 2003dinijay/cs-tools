@@ -17869,9 +17869,20 @@ components:
         groupId:
           type: string
           format: uuid
+          description: >
+            The assignment group, as `POST /groups/search` lists it. Must be a row of
+            `group` (a 400 saying which group cannot be used otherwise); with
+            `DATA_SOURCE=postgres-servicenow-dual-write` that is also what ServiceNow
+            knows it by.
         assignedEngineerId:
           type: string
           format: uuid
+          description: >
+            The person the change is assigned to. With
+            `DATA_SOURCE=postgres-servicenow-dual-write` the person must have a ServiceNow
+            account: one whose id is not a ServiceNow id is looked up there by email and
+            that account is used, and a person with none is refused with a 400 naming the
+            field (the same holds for `requestedById`).
         risk:
           type: string
           enum:

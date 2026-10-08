@@ -3899,6 +3899,63 @@ Wire them once the ServiceNow field names are known. A change request created in
 dual-write mode also gets its comment rows in PostgreSQL; if csm-sync-service syncs
 the ServiceNow journal back it may add its own copies.
 
+### Assignment group and assignee on create (dual-write)
+
+`POST /change-requests` under `DATA_SOURCE=postgres-servicenow-dual-write` creates in ServiceNow
+first, so every id it sends must be one ServiceNow issued. Two ids the form could offer were not
+always: **a group** (the group picker used to list the hand-curated `team` registry, and a team
+added by hand, such as an approval team, had no `"group"` row and no ServiceNow group; since
+`POST /groups/search` reads `"group"` itself the picker only offers real groups, but a stale form
+or a direct API call can still send one) and **a person** (`"user".id` is the ServiceNow sys_id only
+for a row synced from there; a user created in this database, a load-test user or one added through
+`POST /users`, has a random id). ServiceNow answers either with a bare 404, which the portal backend
+shows as "The requested resource was not found!" with nothing naming the field. Found live (CAB
+Approval as the group; a `dev-load` user as the assignee), each alone is enough to fail the create.
+
+- **Group** (`groupId`): checked with the rest of the links (`resolveChangeRequestLinks`,
+  `ChangeRequestLinkSelection.AssignmentGroupID`) in both the plain-Postgres and the
+  ServiceNow-first create, ahead of the write: it must be a row of `"group"`, else a 400 worded
+  for the person on the form (`unusableAssignmentGroupMessage`): `The selected assignment group
+  cannot be used: it is not an assignment group in ServiceNow, and a change request is created in
+  ServiceNow first, so it cannot be assigned to it. Choose another group in "Assignment group".`
+  Before this the plain path surfaced the foreign key's own message, which quotes the table.
+- **People** (`assignedEngineerId`, `requestedById`), dual-write only
+  (`resolveServiceNowPeople`, `WithChangeRequestSNUserLookup`, wired in `routes.go`): one
+  ServiceNow user search by id for the distinct ids; an id ServiceNow knows (a deactivated user
+  included: an id lookup lifts the active-only default) is sent as it is, so nothing that worked
+  can start failing. Any other id is looked up by the `"user"` row's email in ServiceNow (active
+  users only) and that account's id is sent instead; none found is a 400 that says who, why and
+  which field to change: `The change request was not created: <name> (<email>) has no ServiceNow
+  account, so they cannot be assigned this change request. A change request is created in
+  ServiceNow first, and ServiceNow does not know them. Choose someone else in "Assigned to".`
+  (`... the requester of this change request ... "Requested by"` for `requestedById`; a `"user"` row
+  that no longer exists says so). PostgreSQL keeps the caller's own ids (the foreign key is to
+  `"user"`). Cost: one extra ServiceNow call per create that names a person (a second only for one
+  ServiceNow does not know by id). Only a positive "ServiceNow has no such person" refuses: a lookup
+  that fails or cannot answer (ServiceNow slow or down, an upstream error, the `"user"` row
+  unreadable) is logged and that id goes to ServiceNow exactly as the caller sent it (not trimmed,
+  not lower-cased), as before this check existed, so it cannot stop a create that used to work. A
+  refusal is its own return value, not an error: the ServiceNow client reports an upstream 400 as a
+  `ValidationError` too, which must not be taken for one. The lookups share a bound of their own
+  (`snPeopleLookupTimeout`, 8s) so a slow user search cannot eat the request's 60s that the create
+  needs. An id that is padded or not a UUID is refused up front, as the create always refused it, so
+  ServiceNow never gets a clean id while PostgreSQL gets padded text.
+- **Whatever ServiceNow still does not recognise**: a "not found" from ServiceNow's create cannot
+  be about the change request (it does not exist yet), so `createChangeRequestSNFirst` returns it
+  as a 400 (`serviceNowUnknownRecordMsg`: "ServiceNow did not recognise one of the records it refers
+  to (the assignment group, the person ..., the service, the service offering or the configuration
+  item) ... Change one of those fields and try again.") instead of letting the portal show "The
+  requested resource was not found!". Nothing has been written to PostgreSQL at that point. Every
+  other ServiceNow failure passes through unchanged.
+- **Not covered**: `PATCH` `assignedEngineerId` / `assignedTeamId` is Postgres-first with an
+  asynchronous ServiceNow mirror, so a person or group ServiceNow lacks is recorded as a failed
+  write-back rather than shown to the user (a team without a `"group"` row is refused by the foreign
+  key as `assignedTeamId does not refer to an existing record`). The incident and problem create
+  and edit forms use the same group picker and are not changed here.
+- Tests: `change_request_sn_people_test.go` (every branch, against a fake ServiceNow directory),
+  `change_request_links_group_test.go`, and, against real Postgres (`CHANGE_REQUEST_TEST_DSN`),
+  `TestChangeRequestCreateIntegration_AGroupThatIsNotAServiceNowGroupIsRefusedInWords`.
+
 ### Customer Approval / Customer Review checkboxes
 
 Real ServiceNow's change request form has two checkboxes on creation, **Customer
