@@ -58,13 +58,13 @@ func serveWithRoles(g *AccessGuard, perm Permission, roles []string) (status int
 }
 
 func TestAccessGuard_PermissionMatrix(t *testing.T) {
-	// csEngineerPerms is every route permission cs_engineer holds. PermAdmin,
-	// PermEscalate, and PermApproveTimeCard are deliberately excluded and
-	// tested separately below -- escalating and approving a time card are
-	// each a dedicated responsibility cs_engineer does not share, the same
-	// way PermAdmin doesn't.
-	csEngineerPerms := []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermDownloadAttachment, PermWrite, PermViewSecurityCenter, PermUsePlg}
-	all := append(append([]Permission{}, csEngineerPerms...), PermAdmin, PermEscalate, PermApproveTimeCard, PermManagePlaybooks)
+	// csEngineerPerms is every route permission cs_engineer holds, escalation
+	// included (any internal engineer may escalate, as in ServiceNow).
+	// PermAdmin and PermApproveTimeCard are deliberately excluded and tested
+	// separately below -- approving a time card is a dedicated responsibility
+	// cs_engineer does not share, the same way PermAdmin isn't.
+	csEngineerPerms := []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermViewSecurityCenter, PermUsePlg}
+	all := append(append([]Permission{}, csEngineerPerms...), PermAdmin, PermApproveTimeCard, PermManagePlaybooks)
 	tests := []struct {
 		name  string
 		roles []string
@@ -73,7 +73,7 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 		{"viewer reads only", []string{"test-viewer"}, []Permission{PermView}},
 		{"escalator can view and escalate", []string{"test-escalator"}, []Permission{PermView, PermEscalate}},
 		{"downloader can view and download", []string{"test-attachment-downloader"}, []Permission{PermView, PermDownloadAttachment}},
-		{"CS engineer can do every route permission except admin-only, escalate, and approve-time-card ones", []string{"test-cs-engineer"}, csEngineerPerms},
+		{"CS engineer can do every route permission except admin-only and approve-time-card ones", []string{"test-cs-engineer"}, csEngineerPerms},
 		{"admin can do every route permission, including admin-only ones", []string{"test-admin"}, all},
 		{"usage metrics viewer can view only", []string{"test-usage-metrics-viewer"}, []Permission{PermView}},
 		{"timecard approver can view, use time cards and updates, and approve", []string{"test-timecard-approver"}, []Permission{PermView, PermTimeCardsAndUpdates, PermApproveTimeCard}},

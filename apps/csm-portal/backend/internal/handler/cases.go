@@ -283,35 +283,33 @@ func validateCaseEscalationBody(body []byte) (action string, ok bool) {
 	return action, true
 }
 
-// callerIsNotifiedOnCurrentEscalation reports whether the caller is one of the
-// people notified about the case's current (most recent) escalation level --
-// the only people authorized to de-escalate it. Escalating stays open to any
-// authenticated user; only de-escalation is gated this way.
+// callerIsCaseTeamLead reports whether the caller is one of the case's ABT
+// team leads (entity-service's teamLeads: team_member role 'lead' on the
+// account's CRE team) -- the only people authorized to de-escalate it.
+// Escalating is open to any internal engineer (PermEscalate); only
+// de-escalation is gated this way.
 //
-// Fails closed (returns false) on any lookup/parse error or when the case has
-// no escalation history at all (nothing to de-escalate, nobody was notified).
-// Matches by the caller's platform user id first (GET /users/me's own id
-// against a notified user's id, both platform UUIDs), falling back to a
-// case-insensitive email match when either id is empty -- the notified-user
-// id can be empty when the backing data source could not resolve a platform
-// record for that recipient.
-func (h *CaseHandler) callerIsNotifiedOnCurrentEscalation(r *http.Request, caseID string, user *middleware.UserInfo) bool {
+// Fails closed (returns false) on any lookup/parse error or when the case's
+// team has no lead. Matches by the caller's platform user id first (GET
+// /users/me's own id against a lead's id, both platform UUIDs), falling back
+// to a case-insensitive email match when either id is empty.
+func (h *CaseHandler) callerIsCaseTeamLead(r *http.Request, caseID string, user *middleware.UserInfo) bool {
 	raw, err := h.entity.SearchCaseEscalations(r.Context(), caseID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchCaseEscalations failed while checking de-escalation authorization", "userID", user.UserID, "caseID", caseID, "err", err)
 		return false
 	}
 	var history struct {
-		CurrentNotifiedUsers []struct {
+		TeamLeads []struct {
 			ID    string `json:"id"`
 			Email string `json:"email"`
-		} `json:"currentNotifiedUsers"`
+		} `json:"teamLeads"`
 	}
 	if err := json.Unmarshal(raw, &history); err != nil {
 		slog.ErrorContext(r.Context(), "entity SearchCaseEscalations: parse response failed while checking de-escalation authorization", "userID", user.UserID, "caseID", caseID, "err", err)
 		return false
 	}
-	if len(history.CurrentNotifiedUsers) == 0 {
+	if len(history.TeamLeads) == 0 {
 		return false
 	}
 
@@ -329,17 +327,17 @@ func (h *CaseHandler) callerIsNotifiedOnCurrentEscalation(r *http.Request, caseI
 		return false
 	}
 
-	for _, notified := range history.CurrentNotifiedUsers {
-		if caller.ID != "" && notified.ID != "" && caller.ID == notified.ID {
+	for _, lead := range history.TeamLeads {
+		if caller.ID != "" && lead.ID != "" && caller.ID == lead.ID {
 			return true
 		}
 		// Only fall back to email when an id is unavailable on either side --
 		// two different platform users must never be treated as the same
 		// person just because both ids happen to be missing and their emails
 		// happen to match by coincidence or staleness on one side.
-		if (caller.ID == "" || notified.ID == "") &&
-			caller.Email != "" && notified.Email != "" &&
-			strings.EqualFold(caller.Email, notified.Email) {
+		if (caller.ID == "" || lead.ID == "") &&
+			caller.Email != "" && lead.Email != "" &&
+			strings.EqualFold(caller.Email, lead.Email) {
 			return true
 		}
 	}
@@ -1715,14 +1713,15 @@ func (h *CaseHandler) CreateCaseEscalation(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	if action == "DEESCALATE" && !h.callerIsNotifiedOnCurrentEscalation(r, caseID, user) {
+	if action == "DEESCALATE" && !h.callerIsCaseTeamLead(r, caseID, user) {
 		writeError(w, http.StatusForbidden, ErrMsgForbidden)
 		return
 	}
 
-	// This route's permission (PermEscalate) is escalator-or-admin only —
-	// cs_engineer never holds it — so every caller reaching this point may
-	// have no "user" row yet. See ensureUserProvisioned's own doc comment.
+	// This route's permission (PermEscalate) is also held by roles that
+	// never write anything else here (escalator), so a caller reaching this
+	// point may have no "user" row yet. See ensureUserProvisioned's own doc
+	// comment.
 	ensureUserProvisioned(r.Context(), h.entity, user)
 
 	result, err := h.entity.CreateCaseEscalation(r.Context(), caseID, body)

@@ -110,15 +110,14 @@ describe("getPortalAccess", () => {
       canUseSecurityCenter: true,
       canUsePlg: true,
     };
-    // canEscalate is the one further exception beyond canCreateUser: admin
-    // holds it, cs_engineer does not (escalation is a dedicated
-    // responsibility -- see canEscalate's own doc comment). canManagePlaybooks
-    // is a third of the same kind: both roles hold canUsePlg, only admin may
-    // author a playbook template.
+    // Both hold canEscalate (any internal engineer may escalate, as in
+    // ServiceNow). canManagePlaybooks is the further exception beyond
+    // canCreateUser: both roles hold canUsePlg, only admin may author a
+    // playbook template.
     expect(getPortalAccess(["cs_engineer"])).toEqual({
       ...all,
       canCreateUser: false,
-      canEscalate: false,
+      canEscalate: true,
       canManagePlaybooks: false,
     });
     expect(getPortalAccess(["admin"])).toEqual({
@@ -167,11 +166,11 @@ describe("getPortalAccess", () => {
     }
   });
 
-  it("only admin and escalator can escalate -- CS engineer does not share this one", () => {
+  it("admin, CS engineer and escalator can escalate -- any internal engineer, as in ServiceNow", () => {
     expect(getPortalAccess(["admin"]).canEscalate).toBe(true);
+    expect(getPortalAccess(["cs_engineer"]).canEscalate).toBe(true);
     expect(getPortalAccess(["escalator"]).canEscalate).toBe(true);
     for (const role of [
-      "cs_engineer",
       "viewer",
       "attachment_downloader",
       "usage_metrics_viewer",
