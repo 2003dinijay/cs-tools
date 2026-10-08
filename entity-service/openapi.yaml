@@ -1976,7 +1976,9 @@ paths:
         Updates mutable profile fields for the user identified by the x-user-id-token header;
         only the caller's own profile can be written. With the PostgreSQL data source, send
         `timeZone`, `phone` or both (at least one); a field that is omitted or null is left
-        untouched. The alternate (non-PostgreSQL) data source requires `timeZone` and rejects `phone`.
+        untouched. The alternate (non-PostgreSQL) data source applies `timeZone` and accepts but
+        ignores `phone`; a phone-only request there succeeds as a no-op (200 with a message and
+        empty `user` fields).
       operationId: patchUserMe
       requestBody:
         required: true
@@ -1999,6 +2001,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "401":
           description: Unauthorized — x-user-id-token header is missing.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — no user row exists for the caller.
           content:
             application/json:
               schema:
@@ -12787,7 +12795,8 @@ components:
       type: object
       description: >
         At least one of `timeZone` or `phone` is required with the PostgreSQL data source;
-        `timeZone` is required with the alternate (non-PostgreSQL) data source.
+        `timeZone` is required with the alternate (non-PostgreSQL) data source unless `phone`
+        is sent, which that source accepts and ignores.
       properties:
         timeZone:
           type: string
@@ -12795,12 +12804,20 @@ components:
         phone:
           type: string
           nullable: true
-          maxLength: 32
           description: >
             The user's phone number. Surrounding whitespace is trimmed and no format is
-            enforced. An empty (or whitespace-only) value clears it. Omit or send null to
-            leave it unchanged. More than 32 characters after trimming is a 400. Not
-            supported by the alternate (non-PostgreSQL) data source.
+            enforced. The 32-character limit applies after trimming; longer is a 400. An
+            empty (or whitespace-only) value clears it. Omit or send null to leave it
+            unchanged. Accepted but ignored by the alternate (non-PostgreSQL) data source.
+      anyOf:
+        - required: [timeZone]
+          properties:
+            timeZone:
+              minLength: 1
+        - required: [phone]
+          properties:
+            phone:
+              nullable: false
 
     PatchUserMeUpdated:
       type: object

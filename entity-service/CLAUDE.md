@@ -8325,8 +8325,10 @@ and surfaces as a 500.
 `timeZone` cannot be cleared). `phone` is whitespace-trimmed, no format check, over 32 characters
 is a 400 (not a DB error), and an empty/blank value clears it to NULL. The 200 body is
 `{"message", "user": {"id", "updatedBy", "updatedOn", "timeZone"?, "phone"?}}` with `timeZone`/`phone`
-being the stored values after the write (omitted when NULL). The alternate (non-Postgres) data source still requires
-`timeZone` and rejects `phone` with a 400.
+being the stored values after the write (omitted when NULL). The alternate (non-Postgres) data source applies
+`timeZone` and accepts but ignores `phone` (callers update the identity provider first and then send
+phone here too, so rejecting it would fail after the phone was saved and drop a combined timeZone
+update); a phone-only request there is a no-op 200 with a message and empty `user` fields.
 
 ## POST /users creates a new "user" row (Postgres-only)
 

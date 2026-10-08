@@ -374,8 +374,8 @@ type GetUserMeResponse struct {
 // present. An absent (or null) field is left untouched; "absent" and null are not
 // distinguished. TimeZone cannot be cleared, so an empty value counts as absent.
 // Phone is trimmed, at most 32 characters, and an empty (after trimming) value
-// clears it. The alternate (non-Postgres) data source still requires TimeZone and does
-// not accept Phone.
+// clears it. The alternate (non-Postgres) data source applies TimeZone and accepts but
+// ignores Phone (a phone-only request is a no-op there).
 type PatchUserMeRequest struct {
 	TimeZone string  `json:"timeZone"`
 	Phone    *string `json:"phone"`
