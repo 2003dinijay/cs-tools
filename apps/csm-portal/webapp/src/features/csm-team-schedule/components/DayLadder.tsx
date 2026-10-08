@@ -99,6 +99,10 @@ interface DayLadderProps {
   zones: ScheduleZone[];
   absences: ScheduleAbsence[];
   absenceKinds: ScheduleAbsenceKind[];
+  /** Each team's own window, by team key (Americas: Americas cover). Someone
+   *  on their team's own window works it every day, so a card lists them
+   *  first, ahead of those taking their turn on it. */
+  teamDefaultShift?: Readonly<Record<string, string>>;
   /** The page's own group and team state. Rendered here as well as in the
    *  toolbar -- one control in two places, as the prototype has it. */
   family: RotaFamily;
@@ -201,6 +205,7 @@ export default function DayLadder({
   shifts,
   absences,
   absenceKinds,
+  teamDefaultShift,
   tz,
   zoneLabel,
   family,
@@ -308,6 +313,18 @@ export default function DayLadder({
           (a, b) => Number(a.shift?.isOnCall ?? false) - Number(b.shift?.isOnCall ?? false),
         );
         const lead = ordered[0];
+        // A window and its own on-call are one rotation, not two: the card
+        // takes the window's name ("Morning 6-9am", not "Morning 6-9am ·
+        // Morning 6-9am on-call") and lists everyone together, the on-call
+        // person tagged as such on their own row.
+        if (ordered.filter((c) => !c.shift?.isOnCall).length === 1) {
+          out.push({
+            ...lead,
+            key: ordered.map((c) => c.key).join("+"),
+            rows: ordered.flatMap((c) => c.rows),
+          });
+          continue;
+        }
         out.push({
           ...lead,
           key: ordered.map((c) => c.key).join("+"),
@@ -584,7 +601,7 @@ export default function DayLadder({
                   {lane.columns.map((column, columnIndex) => (
                     <div className="lncol" key={columnIndex}>
                       {column.map((block) => (
-                        <LadderBlock key={block.key} block={block} tz={tz} />
+                        <LadderBlock key={block.key} block={block} tz={tz} teamDefaultShift={teamDefaultShift} />
                       ))}
                     </div>
                   ))}
@@ -626,11 +643,28 @@ export default function DayLadder({
 }
 
 /** One card on the ladder: its hours as a chip, its label, and who is on it. */
-function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
+function LadderBlock({
+  block,
+  tz,
+  teamDefaultShift,
+}: {
+  block: Block;
+  tz: string;
+  teamDefaultShift?: Readonly<Record<string, string>>;
+}): JSX.Element {
   const token = block.chipToken ?? block.shift?.colourToken ?? "";
   const first = block.rows[0];
-  const shown = block.rows.slice(0, NAME_LIMIT);
-  const hidden = block.rows.length - shown.length;
+  // Who works the hours, then who is only on call for them. Among those who
+  // work them, anyone on their team's own window (always there) comes first,
+  // ahead of those taking their turn; the sort is stable, so the rest keep
+  // their order.
+  const always = (a: ScheduleAssignment) => teamDefaultShift?.[a.teamKey] === a.shiftCode;
+  const working = block.rows
+    .filter((a) => !a.isOnCall)
+    .sort((a, b) => Number(always(b)) - Number(always(a)));
+  const onCall = block.rows.filter((a) => a.isOnCall);
+  const shown = working.slice(0, NAME_LIMIT);
+  const hidden = working.length - shown.length;
   // A card with more people than it can list is not a list -- seventy names is
   // nothing anyone reads. The teams become the list, and a team hands over its
   // own people when the cursor rests on it.
@@ -715,14 +749,33 @@ function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
         ) : crowded ? (
           <TeamSplit rows={block.rows} />
         ) : (
-          <>
-            <div className="zsec">
-              {shown.map((a) => (
-                <NameRow key={a.id} assignment={a} hideTag={block.hideTags} />
-              ))}
-            </div>
-            {hidden > 0 ? <span className="lmore">+{hidden} more</span> : null}
-          </>
+          // Who works the hours on the left, side by side; who is only on call
+          // for them in a column of their own on the right, behind a dashed
+          // rule. On call is not working these hours -- reachable if an
+          // emergency comes up -- so it never reads as one more on the shift.
+          <div className={`zsplit${onCall.length > 0 ? " hasoc" : ""}`}>
+            {shown.length > 0 ? (
+              <div className="zwork">
+                {/* Names in columns that share the card's width, each whole on one line. */}
+                <div className="zsec zflow">
+                  {shown.map((a) => (
+                    <NameRow key={a.id} assignment={a} hideTag={block.hideTags} />
+                  ))}
+                </div>
+                {hidden > 0 ? <span className="lmore">+{hidden} more</span> : null}
+              </div>
+            ) : null}
+            {onCall.length > 0 ? (
+              <div className="zoc">
+                <span className="zocl" title="Not working these hours: on call only if an emergency comes up">
+                  On-call
+                </span>
+                {onCall.map((a) => (
+                  <NameRow key={a.id} assignment={a} hideTag />
+                ))}
+              </div>
+            ) : null}
+          </div>
         )}
       </div>
       {clipped && !isOpen ? (
@@ -821,7 +874,7 @@ function NameRow({
      avatar's colour, and the row's own tooltip. Spelling it out a third time
      cost about a quarter of the width the name needed, so the name was the
      thing that got cut. */
-  const tag = assignment.tier ?? (assignment.isOnCall ? "OC" : null);
+  const tag = assignment.tier ?? (assignment.isOnCall ? "On-call" : null);
   return (
     <span className="lnm" title={`${assignment.engineer.name} · ${teamNameOf(assignment.teamKey)}`}>
       <span className="av" style={{ background: teamColourOf(assignment.teamKey) }}>

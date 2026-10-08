@@ -112,22 +112,55 @@ function nineToFive(name: string, shiftCode: string, teamKey = "alpha") {
 }
 
 describe("DayLadder: cards that share their hours", () => {
-  it("holds a window and its on-call variant in one card, each naming its own people", () => {
+  it("holds a window and its on-call variant as one rotation, tagging only the on-call person", () => {
     // Placed by time alone, two windows with the same hours drew on top of
-    // each other and printed through one another.
-    renderLadder([
+    // each other and printed through one another. Held together they are one
+    // rotation: its name once, one list, and "On-call" on the person who is.
+    const { container } = renderLadder([
       assignment({
         name: "Asela", rotaDate: ISO, shiftCode: MORNING.code,
         startsAt: `${ISO}T00:30:00.000Z`, endsAt: `${ISO}T03:30:00.000Z`,
       }),
       assignment({
-        name: "Nuwan", rotaDate: ISO, shiftCode: MORNING_OC.code,
+        name: "Nuwan", rotaDate: ISO, shiftCode: MORNING_OC.code, isOnCall: true,
         startsAt: `${ISO}T00:30:00.000Z`, endsAt: `${ISO}T03:30:00.000Z`,
       }),
     ]);
-    expect(screen.getByText(/Morning 6-9am · Morning 6-9am on-call/)).toBeInTheDocument();
-    expect(screen.getByText("Asela")).toBeInTheDocument();
-    expect(screen.getByText("Nuwan")).toBeInTheDocument();
+    const card = [...container.querySelectorAll(".zblk")].find((c) => c.textContent?.includes("Asela"))!;
+    expect(card.querySelector(".zbt")).toHaveTextContent(/^Morning 6-9am$/);
+    expect(card.querySelectorAll(".zsl")).toHaveLength(0);
+    // On call is not working the hours: a column of its own, under a heading
+    // whose tooltip says what on call means.
+    const onCall = card.querySelector(".zoc")!;
+    expect(onCall.querySelector(".zocl")).toHaveTextContent("On-call");
+    expect(onCall.querySelector(".zocl")).toHaveAttribute("title", expect.stringContaining("emergency"));
+    expect(onCall).toHaveTextContent("Nuwan");
+    expect(onCall).not.toHaveTextContent("Asela");
+    expect(card.querySelector(".zflow")).toHaveTextContent("Asela");
+  });
+
+  it("lists whoever is on their team's own window first, ahead of those taking a turn", () => {
+    const morning = (name: string, teamKey: string) =>
+      assignment({
+        name, rotaDate: ISO, shiftCode: MORNING.code, teamKey,
+        startsAt: `${ISO}T00:30:00.000Z`, endsAt: `${ISO}T03:30:00.000Z`,
+      });
+    const { container } = render(
+      <DayLadder
+        day={WEDNESDAY}
+        tz={TZ}
+        zoneLabel="IST"
+        lanes={[lane([morning("Asela", "alpha"), morning("Zara", "southern")])]}
+        shifts={SHIFTS}
+        zones={ZONES}
+        absences={[]}
+        absenceKinds={[ANNUAL_LEAVE]}
+        teamDefaultShift={{ southern: MORNING.code }}
+        {...scopeControls()}
+      />,
+    );
+    const names = [...container.querySelectorAll(".zflow .lnm .who")].map((n) => n.textContent);
+    expect(names).toEqual(["Zara", "Asela"]);
   });
 
   it("folds a window that differs only by team into the crowded card", () => {

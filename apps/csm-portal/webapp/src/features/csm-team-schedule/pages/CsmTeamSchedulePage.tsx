@@ -1132,6 +1132,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               zones={zones}
               absences={absences.data?.absences ?? []}
               absenceKinds={catalogue.data?.absenceKinds ?? []}
+              teamDefaultShift={teamDefaultShift}
               {...scopeControls}
             />
           ) : view === "week" ? (
