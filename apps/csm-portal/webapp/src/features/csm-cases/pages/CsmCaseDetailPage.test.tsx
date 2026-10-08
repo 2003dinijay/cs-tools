@@ -2337,13 +2337,21 @@ describe("CsmCaseDetailPage — fix ETA and share-with-customer are two separate
       unknown,
       { onError: (err: unknown) => void },
     ];
+    const shareError = new Error("addPublicComment is only supported for the ServiceNow data source");
     act(() => {
-      shareOptions.onError(new Error("addPublicComment is only supported for the ServiceNow data source"));
+      shareOptions.onError(shareError);
     });
 
     expect(
       screen.queryByTestId("set-fix-eta-dialog-probe"),
     ).not.toBeInTheDocument();
+    // The share failure must be reported on its own, distinct from the
+    // already-succeeded ETA save — a future change that silently swallows it
+    // would leave the engineer with no idea the customer was never told.
+    expect(showErrorMock).toHaveBeenCalledWith(
+      "Fix ETA saved, but could not share it with the customer.",
+      shareError,
+    );
   });
 
   it("never sends addPublicComment when share-with-customer is off", () => {
@@ -2424,5 +2432,62 @@ describe("CsmCaseDetailPage — fix-ETA stale-callback guard", () => {
     ).toBeInTheDocument();
     // …and case-1's toast must not surface on case-2 either.
     expect(screen.queryByText(/fix eta updated/i)).not.toBeInTheDocument();
+  });
+
+  // The share PATCH is a real side effect the engineer asked for -- it must
+  // still fire even once the view has gone stale, unlike the UI feedback
+  // above. A stale view should only suppress a *display* consequence
+  // (closing the dialog, a toast), never skip a request the engineer
+  // actually requested.
+  it("still sends the share PATCH for a stale ETA save, even though the view moved on", () => {
+    patchCaseMutateMock.mockClear();
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={["/cases/case-1"]}>
+          <NavigateBetweenCasesButtons />
+          <LocationProbe />
+          <Routes>
+            <Route path="/cases/:caseId" element={<CsmCaseDetailPage />} />
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+
+    // Case-1: open the dialog and save with sharing on. The ETA PATCH is
+    // still in flight.
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub save fix eta with share/i }),
+    );
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
+    const [, case1EtaOptions] = patchCaseMutateMock.mock.calls[0] as [
+      unknown,
+      { onSuccess: () => void },
+    ];
+
+    // Move to case-2 before case-1's ETA save resolves.
+    fireEvent.click(screen.getByRole("button", { name: /go to case 2/i }));
+    expect(screen.getByTestId("location-probe")).toHaveTextContent(
+      "/cases/case-2",
+    );
+
+    // Case-1's ETA save resolves now, with case-2 on screen -- a stale view.
+    act(() => {
+      case1EtaOptions.onSuccess();
+    });
+
+    // The stale view must not get case-1's own UI feedback...
+    expect(screen.queryByText(/fix eta updated/i)).not.toBeInTheDocument();
+    // ...but the share PATCH it requested must still have been sent.
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(2);
+    const [sharePayload] = patchCaseMutateMock.mock.calls[1] as [
+      Record<string, unknown>,
+    ];
+    expect(sharePayload).toMatchObject({ addPublicComment: true });
   });
 });

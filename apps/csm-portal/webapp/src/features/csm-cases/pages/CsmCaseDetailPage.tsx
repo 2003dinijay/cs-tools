@@ -1922,16 +1922,23 @@ export default function CsmCaseDetailPage(): JSX.Element {
 
       patchCase.mutate(etaOnly as BeCaseUpdatePayload, {
         onSuccess: () => {
-          if (isStale()) return;
-          // Close on success, same as every other dialog on this page. The
-          // PATCH lands either way, so leaving it open reads as a failed save
-          // and invites a second submit of an estimate that's already stored.
-          setFixEtaOpen(false);
-          setFeedback({
-            message: "Fix ETA updated.",
-            severity: "success",
-            sticky: false,
-          });
+          // The share request is a real side effect the engineer asked for —
+          // it must still run even if the case view has since gone stale
+          // (navigated away mid-request); only the UI feedback below is
+          // skipped for a stale view, same as every other guarded callback
+          // on this page.
+          if (!isStale()) {
+            // Close on success, same as every other dialog on this page. The
+            // PATCH lands either way, so leaving it open reads as a failed
+            // save and invites a second submit of an estimate that's
+            // already stored.
+            setFixEtaOpen(false);
+            setFeedback({
+              message: "Fix ETA updated.",
+              severity: "success",
+              sticky: false,
+            });
+          }
           shareWithCustomer();
         },
         onError: (err) => {
