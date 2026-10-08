@@ -124,7 +124,15 @@ export default function AsyncProjectMultiSelect({
       value={selectedOptions}
       open={open}
       onOpen={() => setOpen(true)}
-      onClose={() => setOpen(false)}
+      onClose={() => {
+        setOpen(false);
+        // Clear the stale search term once the user is done picking from it
+        // (the dropdown only closes on blur/Escape/click-away, never on a
+        // selection itself — see disableCloseOnSelect below) — otherwise it
+        // would resurface the next time renderTags shows the selected-names
+        // summary and visually collide with it (see renderTags' own comment).
+        setInput("");
+      }}
       // Spinner only while the first page loads; later pages append on scroll.
       loading={isFetching && projects.length === 0}
       disableCloseOnSelect
@@ -167,6 +175,17 @@ export default function AsyncProjectMultiSelect({
             : "No projects found"
       }
       renderTags={(value) => {
+        // While the dropdown is open, the live search text in `input` is
+        // what the user is actively looking at — rendering the selected-
+        // names summary in the same single-line field at the same time
+        // visually concatenates the two (reported live: "Customer 3
+        // Project - Managed Cloud Subscription            managed" on one
+        // line, with "managed" the still-typed search term). The summary is
+        // only useful once the field is collapsed/closed — the checkboxes
+        // in the dropdown already show what's picked while it's open — so
+        // it's suppressed until then; onClose (above) clears the stale
+        // search text at the same moment this starts rendering again.
+        if (open) return null;
         const displayText = value.map((o) => o.name).join(", ");
         const content = (
           <Box
