@@ -34,7 +34,14 @@ func NewHandlers(
 	}
 }
 
-// actor returns the calling engineer's email, as resolved by Identity.
+// actor returns the calling engineer's `"user".id`, as resolved by Identity.
+//
+// The id, NOT the email: every attributed write sends this as actorId, and the
+// columns it lands in are UUID REFERENCES "user" (id). Identity takes the
+// email off the validated token, resolves it through GetCSUser, and puts the
+// resulting id here — which is also why a caller with no ACTIVE INTERNAL user
+// row is refused before any handler runs, rather than writing a row that
+// records nobody.
 func actor(r *http.Request) string { return middleware.UserIDFromContext(r.Context()) }
 
 // ---------------------------------------------------------------------------
