@@ -265,10 +265,23 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 	}
 
 	if len(req.Filters.GroupNames) > 0 {
-		where += fmt.Sprintf(` AND EXISTS (
-			SELECT 1 FROM team_member tm JOIN team t ON t.id = tm.team_id
-			WHERE tm.user_id = u.id AND t.name = ANY($%d::text[])
-		)`, argIdx)
+		// A name is matched against the curated `team` table and against the
+		// "group" table (via team_member.group_id or group_member), because the
+		// portal's registry names are ServiceNow group names.
+		where += fmt.Sprintf(` AND (
+			EXISTS (
+				SELECT 1 FROM team_member tm JOIN team t ON t.id = tm.team_id
+				WHERE tm.user_id = u.id AND t.name = ANY($%d::text[])
+			)
+			OR EXISTS (
+				SELECT 1 FROM team_member tm JOIN "group" g ON g.id = tm.group_id
+				WHERE tm.user_id = u.id AND g.name = ANY($%d::text[])
+			)
+			OR EXISTS (
+				SELECT 1 FROM group_member gm JOIN "group" g ON g.id = gm.group_id
+				WHERE gm.user_id = u.id AND g.name = ANY($%d::text[])
+			)
+		)`, argIdx, argIdx, argIdx)
 		filterArgs = append(filterArgs, req.Filters.GroupNames)
 		argIdx++
 	}
