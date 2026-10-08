@@ -110,8 +110,16 @@ export default function DashboardItemsPage({
         .map((s) => Number(s.id));
     }
     if (mode === "closed-last-30d") {
+      // Matches entity-service's own caseStatsResolvedStates (the Dashboard's
+      // "Closed (Last 30d)" tile): Solution Proposed counts as resolved too,
+      // deliberately reproducing the same overlap with "outstanding"/"action
+      // required" that ServiceNow's own implementation has.
       return filterMetadata.caseStates
-        .filter((s) => s.label === CaseStatus.CLOSED)
+        .filter(
+          (s) =>
+            s.label === CaseStatus.CLOSED ||
+            s.label === CaseStatus.SOLUTION_PROPOSED,
+        )
         .map((s) => Number(s.id));
     }
     return filterMetadata.caseStates
