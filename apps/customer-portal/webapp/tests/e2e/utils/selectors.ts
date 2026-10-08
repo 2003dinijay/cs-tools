@@ -432,16 +432,17 @@ export const NOVERA_CHAT = {
      * announcements status filter — so choosing an option closes the menu. */
     stateFilter: {
       selectId: "state",
-      label: "State",
+      label: "Status",
       /**
        * The list's first option, meaning "no filter".
        *
        * Choosing it on an unfiltered list is a no-op — no request is sent at all
-       * — so a spec must pick a real state instead. Verified live: the options
-       * are All States, Close, Abandoned, Converted, Open, Resolved, Active.
+       * — so a spec must pick a real state instead. Verified live, when this
+       * option still read "All States": the options are that one, Close,
+       * Abandoned, Converted, Open, Resolved, Active.
        * Note "Close" among them, the same wording the closed chip uses.
        */
-      allOption: "All States",
+      allOption: "All Statuses",
     },
     /** Sort controls, from the shared ListResultsBar. Both fields are
      * chronological, so the order labels read Newest/Oldest first throughout —
@@ -1151,7 +1152,7 @@ export const SECURITY_CENTER = {
     filters: {
       severityLabel: "Severity",
       /** The no-filter option in each select — excluded when picking a real
-       * value, the same trap as the chat history's "All States". */
+       * value, the same trap as the chat history's "All Statuses". */
       severityAllOption: "All Severity",
       productLabel: "Product",
       productPlaceholder: "Select a Product",
