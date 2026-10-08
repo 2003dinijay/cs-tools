@@ -347,7 +347,7 @@ type stubUserRepo struct {
 	getUserGroups        func(ctx context.Context, id string) ([]domain.UserGroupRef, error)
 	getUserProjectAccess func(ctx context.Context, email string) ([]domain.UserContactAccess, error)
 	createUser           func(ctx context.Context, req domain.CreateUserRequest, actor string) (domain.User, error)
-	updateUserTimeZone   func(ctx context.Context, userID, timezone string) (time.Time, error)
+	updateUserProfile    func(ctx context.Context, userID string, timezone, phone *string) (domain.UserProfileUpdate, error)
 }
 
 func (s stubUserRepo) CreateUser(ctx context.Context, req domain.CreateUserRequest, actor string) (domain.User, error) {
@@ -357,9 +357,9 @@ func (s stubUserRepo) CreateUser(ctx context.Context, req domain.CreateUserReque
 	panic("not implemented")
 }
 
-func (s stubUserRepo) UpdateUserTimeZone(ctx context.Context, userID, timezone string) (time.Time, error) {
-	if s.updateUserTimeZone != nil {
-		return s.updateUserTimeZone(ctx, userID, timezone)
+func (s stubUserRepo) UpdateUserProfile(ctx context.Context, userID string, timezone, phone *string) (domain.UserProfileUpdate, error) {
+	if s.updateUserProfile != nil {
+		return s.updateUserProfile(ctx, userID, timezone, phone)
 	}
 	panic("not implemented")
 }

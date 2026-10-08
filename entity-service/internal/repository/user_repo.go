@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -70,13 +69,13 @@ type UserRepository interface {
 	// use (user_name is UNIQUE), a ServiceUnavailableError naming any
 	// requested role not seeded in the role table.
 	CreateUser(ctx context.Context, req domain.CreateUserRequest, actor string) (domain.User, error)
-	// UpdateUserTimeZone sets "user".timezone for userID (PATCH /users/me's
-	// own write) and returns the new updated_on. A free-text column (no
-	// FK/enum constraint tying it to the timezone reference table), so any
-	// non-empty value is accepted as-is -- validated against that table only
-	// if a caller ever asks for it. Returns a NotFoundError if userID does
-	// not exist.
-	UpdateUserTimeZone(ctx context.Context, userID, timezone string) (time.Time, error)
+	// UpdateUserProfile is PATCH /users/me's own write for userID. A nil
+	// timezone or phone leaves that column untouched; a non-nil timezone is
+	// stored as-is (the column's FK to the timezone reference table, where
+	// present, rejects an unknown value); a non-nil phone is stored, and an
+	// empty one clears it to NULL. Returns the row's resulting updated_on,
+	// timezone and phone, or a NotFoundError if userID does not exist.
+	UpdateUserProfile(ctx context.Context, userID string, timezone, phone *string) (domain.UserProfileUpdate, error)
 }
 
 type userRepo struct {
@@ -89,9 +88,8 @@ func NewUserRepository(db *pgxpool.Pool) UserRepository {
 }
 
 // userColumns is the column list shared by GetUserByEmail and SearchUsers.
-// The "user" table (migration 0002) has no phone column -- unlike
-// account.phone, there is nothing to select for domain.User's Phone field,
-// so it is simply left nil (Go's pointer zero value) rather than queried.
+// phone (migration 0141) is NOT part of it: only GetUserByEmail appends it
+// (GET /users/me), so domain.User.Phone stays nil for the by-id and list reads.
 // timezone (not declared in this repo's own migrations/ -- confirmed
 // directly against the live database, same "built outside this directory"
 // class as the timezone reference table CLAUDE.md's "GET /metadata and
@@ -146,9 +144,16 @@ var userTypeFromEnum = map[string]domain.UserType{
 }
 
 func scanUser(row interface{ Scan(...any) error }) (domain.User, error) {
+	return scanUserExtra(row)
+}
+
+// scanUserExtra is scanUser plus extra destinations for columns appended after
+// userColumns/prefixUserColumns (GetUserByEmail's phone).
+func scanUserExtra(row interface{ Scan(...any) error }, extra ...any) (domain.User, error) {
 	var u domain.User
 	var firstName, lastName, email, userType *string
-	err := row.Scan(&u.ID, &u.UserName, &firstName, &lastName, &email, &userType, &u.CreatedOn, &u.UpdatedOn, &u.Timezone)
+	dest := append([]any{&u.ID, &u.UserName, &firstName, &lastName, &email, &userType, &u.CreatedOn, &u.UpdatedOn, &u.Timezone}, extra...)
+	err := row.Scan(dest...)
 	if err != nil {
 		return domain.User{}, err
 	}
@@ -170,7 +175,9 @@ func scanUser(row interface{ Scan(...any) error }) (domain.User, error) {
 func (r *userRepo) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
 	// An exact match wins; otherwise only a single ASCII case-insensitive match counts, so a
 	// Unicode case fold or two rows differing in case can never resolve to another user.
-	rows, err := r.db.Query(ctx, `SELECT `+userColumns+` FROM "user"
+	// phone is selected here only (GET /users/me); the by-id and list reads share
+	// userColumns and deliberately do not carry it.
+	rows, err := r.db.Query(ctx, `SELECT `+userColumns+`, phone FROM "user"
 		WHERE email = $1 OR ($2 AND lower(email) = lower($1) AND email !~ '[^[:ascii:]]')
 		ORDER BY (email = $1) DESC LIMIT 2`, email, isASCII(email))
 	if err != nil {
@@ -178,11 +185,13 @@ func (r *userRepo) GetUserByEmail(ctx context.Context, email string) (domain.Use
 	}
 	var matches []domain.User
 	for rows.Next() {
-		u, err := scanUser(rows)
+		var phone *string
+		u, err := scanUserExtra(rows, &phone)
 		if err != nil {
 			rows.Close()
 			return domain.User{}, fmt.Errorf("get user by email: %w", err)
 		}
+		u.Phone = phone
 		matches = append(matches, u)
 	}
 	rows.Close()
@@ -614,20 +623,25 @@ func (r *userRepo) CreateUser(ctx context.Context, req domain.CreateUserRequest,
 	return u, nil
 }
 
-// UpdateUserTimeZone implements UserRepository.
-func (r *userRepo) UpdateUserTimeZone(ctx context.Context, userID, timezone string) (time.Time, error) {
-	var updatedOn time.Time
+// UpdateUserProfile implements UserRepository.
+func (r *userRepo) UpdateUserProfile(ctx context.Context, userID string, timezone, phone *string) (domain.UserProfileUpdate, error) {
+	var out domain.UserProfileUpdate
 	err := r.db.QueryRow(ctx,
-		`UPDATE "user" SET timezone = $1, updated_on = NOW() WHERE id = $2 RETURNING updated_on`,
-		timezone, userID,
-	).Scan(&updatedOn)
+		`UPDATE "user"
+		    SET timezone = COALESCE($1::varchar, timezone),
+		        phone = CASE WHEN $2::varchar IS NULL THEN phone ELSE NULLIF($2::varchar, '') END,
+		        updated_on = NOW()
+		  WHERE id = $3
+		RETURNING updated_on, timezone, phone`,
+		timezone, phone, userID,
+	).Scan(&out.UpdatedOn, &out.Timezone, &out.Phone)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return time.Time{}, &apierror.NotFoundError{Msg: "user not found"}
+		return domain.UserProfileUpdate{}, &apierror.NotFoundError{Msg: "user not found"}
 	}
 	if err != nil {
-		return time.Time{}, fmt.Errorf("update user timezone: %w", err)
+		return domain.UserProfileUpdate{}, fmt.Errorf("update user profile: %w", err)
 	}
-	return updatedOn, nil
+	return out, nil
 }
 
 // grantRoles resolves each of names (role.name, migration 0008) to its id
