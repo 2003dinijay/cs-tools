@@ -87,6 +87,35 @@ describe("AsyncProjectMultiSelect", () => {
     expect(screen.getAllByText(P2.name)).toHaveLength(2); // the summary + the still-open list row
   });
 
+  it("hides the summary while typing a second search, instead of colliding with it, then shows both once picked", () => {
+    // Regression test: found live after the previous commit made renderTags
+    // unconditional again — picking a *first* project is fine (the box
+    // empties right back out), but typing a *second* query while the first
+    // project's summary was already showing collided on the same line,
+    // exactly like the original bug this component was first fixed for.
+    mockResults([P1, P2]);
+    render(<Harness initial={["p1"]} />);
+
+    expect(screen.getByText(P1.name)).toBeInTheDocument();
+
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.mouseDown(input);
+    fireEvent.change(input, { target: { value: "ph2" } });
+
+    // While actively typing, the summary is hidden (nothing to collide with
+    // the live query text) — p1's name still appears exactly once, as the
+    // open dropdown's own (ticked) list row, not a second time as a summary
+    // sharing the line with the live-typed query.
+    expect(screen.getAllByText(P1.name)).toHaveLength(1);
+
+    fireEvent.click(screen.getByText(P2.name));
+
+    // Picking clears the box again, so the summary is back — now for both.
+    expect(input.value).toBe("");
+    expect(screen.getByText(`${P1.name}, ${P2.name}`)).toBeInTheDocument();
+  });
+
   it("offers the top real search match first, not the already-selected project pinned ahead of it", () => {
     // p2 is already selected, but the current search's own top match is p1 —
     // the dropdown's first row (what Enter/the default highlight would act

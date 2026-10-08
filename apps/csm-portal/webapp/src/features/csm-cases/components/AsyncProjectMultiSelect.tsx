@@ -175,6 +175,18 @@ export default function AsyncProjectMultiSelect({
             : "No projects found"
       }
       renderTags={(value) => {
+        // Suppressed while the user has live text in the box — found live,
+        // after the previous commit made this unconditional again: picking
+        // a *first* project is fine (the box empties right back out, so
+        // there's nothing for the summary to collide with), but picking a
+        // *second* one meant typing a new query right next to an
+        // already-shown summary, on the same non-wrapping line — the exact
+        // overlap this component was first fixed for, just reached a
+        // different way. Keyed on `input` itself, not `open`: opening the
+        // dropdown to browse without typing anything should still show the
+        // summary immediately (that's the whole point of the previous
+        // commit), it's only live typed text that needs to hide it.
+        if (input) return null;
         const displayText = value.map((o) => o.name).join(", ");
         const content = (
           <Box
