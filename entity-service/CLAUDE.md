@@ -7532,36 +7532,6 @@ cannot drift:
   the query asks for, the result is identical to the un-narrowed one (checked against the dashboard's own
   repositories for all 50 projects: 0 mismatches). Mutation-checked: making the narrowing widen, or making it
   session-level, each fails `TestProjectActivityCountsIntegration`.
-- **Outstanding is "not closed", not "in an open state".** `caseStatsOutstandingStates` (the list `GET
-  /projects/{id}/stats` uses for its per-type counts) leaves out a case-like work item whose extension row is
-  missing (it has no state), but the dashboard's Outstanding tile (`GET /projects/{id}/stats/cases`) counts it,
-  as every state except `CLOSED`. A first version of this used the list and put the list below the dashboard
-  for the same project (staging copy: 8 of the 12 heaviest projects, by exactly their state-less items; the
-  issue's own project read 88 against 109). Checked on that data: the list now equals the dashboard's own
-  repository functions for all 12, and for a real customer's three projects.
-- **Announcements are not counted**, as on the dashboard (its tiles combine case, service request,
-  engagement and security report analysis only).
-- **Change requests apply the customer visibility rule** (`CRVisibility.andClause`, see "Customer visibility
-  and the cutover"): a customer's row counts only the change requests they may see, exactly as the stat
-  cards do. `NewGlobalSearchRepository` therefore takes the `CRVisibility` like `NewProjectStatsRepository`
-  does, wired in `routes.go`. The new query touches `change_request`, so it also has to pass
-  `TestChangeRequestVisibilityLint_*`.
-- **A failed count never fails the search.** The service logs a warning and leaves the three at 0: the list is
-  the portal's way into a project. That makes a failure look like a real zero, so look for the
-  `global search: project counts degraded to zero` warning before trusting a column of zeros.
-- **Not narrowed by the caller's role.** The dashboard also drops a type the user's role cannot use
-  (`hasSR`, `hasCR`, ...), which is not known per project here, so a user without access to a type still has
-  its items in the list's totals.
-- **Cost.** Only the customer portal calls `POST /search` (the CSM portal does not), so staff are
-  unaffected, and the queries are over the page's projects only (at most the page size). Measured on a
-  staging-like copy (409k work items) as the non-superuser application role: a staff page of 12 of the heaviest
-  projects ~30 ms; a customer on 3-4 projects 10-75 ms. A **non-staff caller registered on many projects pays
-  more per item**, because every case-like table's row-level-security policy runs a correlated `work_item`
-  lookup per row and compares the project against the viewer's whole project list (the planner also
-  misestimates and nests loops): a synthetic customer registered on the 50 heaviest projects of that copy took
-  ~350 ms for a page of 5 (3.5k items, the heaviest project among them) and ~460 ms for a page of 50 (6k items).
-  A real partner's projects are mostly far smaller, and the dashboard's own queries have the same shape, but if
-  `POST /search` latency matters for partners, this is where to look (not a different definition of the counts).
 - **The list's CSV/PDF export** used to read `POST /projects/search`, whose response has no
   `actionRequiredCount` / `outstandingCount` / `activeChatsCount` (the customer portal backend maps only
   `activeCasesCount`), so every exported row said 0. `fetchAllProjectsForExport` (customer portal webapp,
