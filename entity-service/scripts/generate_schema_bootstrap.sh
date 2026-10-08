@@ -202,6 +202,11 @@ trap 'rm -f "$schema_body" "$rls_body"' EXIT
 
 schema_count=0
 rls_count=0
+# Set the first time a legacy 0NNNNN_*.up.sql straggler is written to
+# schema_body, so that boundary gets one clear marker instead of the
+# 4-digit schema files and the legacy stragglers running together with
+# nothing in the file itself saying where one ends and the other begins.
+legacy_marker_written=0
 for f in $files; do
 	name="$(basename "$f")"
 	num=$(parse_num "$name")
@@ -227,6 +232,28 @@ for f in $files; do
 	1[0-9][0-9][0-9][0-9][0-9]_*.sql)
 		cat "$block" >>"$rls_body"
 		rls_count=$((rls_count + 1))
+		;;
+	0[0-9][0-9][0-9][0-9][0-9]_*.up.sql)
+		# The legacy stragglers (phase 3) still land in the schema file, not a
+		# third output file - there is no dependency between this cluster and
+		# the RLS track either way (confirmed: it covers KB tables,
+		# cloud_status_events and outage_communications, none of which any RLS
+		# migration touches), so which of the two files they end up in has no
+		# functional effect. This marker exists purely so a human reading the
+		# schema file can see where phase 1 (ordinary schema migrations) ends
+		# and phase 3 (the legacy, pre-NNNN_*.sql stragglers) begins, instead
+		# of the two running together indistinguishably.
+		if ((!legacy_marker_written)); then
+			{
+				echo "-- ===== legacy 6-digit stragglers below (000020-000105; predate the"
+				echo "-- NNNN_*.sql convention; see entity-service/CLAUDE.md's \"Database"
+				echo "-- migrations\" section) ====="
+				echo
+			} >>"$schema_body"
+			legacy_marker_written=1
+		fi
+		cat "$block" >>"$schema_body"
+		schema_count=$((schema_count + 1))
 		;;
 	*)
 		cat "$block" >>"$schema_body"

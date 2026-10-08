@@ -18,19 +18,23 @@
 -- owns (0136_change_request_deployment_table.sql: a surrogate id plus UNIQUE(change_request_id,
 -- deployment_id), fanned out from change_request.u_deployments by expand_list).
 --
--- Why: migration 0191 put FORCE ROW LEVEL SECURITY on that table with a SELECT, an INSERT and a
+-- Why: migration 100024 (originally inline in 0191, split out into the RLS track -- see that
+-- file's own header) put FORCE ROW LEVEL SECURITY on that table with a SELECT, an INSERT and a
 -- DELETE policy, and deliberately no UPDATE one ("the repository only ever deletes and re-inserts
 -- the whole list"). That is true of entity-service, but the sync writes the table the way it writes
 -- work_item_watcher: INSERT ... ON CONFLICT (change_request_id, deployment_id) DO UPDATE, and the
 -- conflict branch is an UPDATE. With RLS forced and no UPDATE policy, that branch is refused for
 -- every caller ("new row violates row-level security policy (USING expression)"), the same failure
 -- migration 100021 fixed for seven other table/command pairs. The sync connects with
--- app.is_internal = true, so the policy below is the same internal-only shape as 0190's.
+-- app.is_internal = true, so the policy below is the same internal-only shape as 100021's.
 --
 -- There is deliberately no project-member branch: a customer session is refused an UPDATE exactly
--- as before. No column, table or type changes; this adds one policy.
+-- as before. No column, table or type changes; this adds one policy. This file runs AFTER 100024
+-- in the RLS track (100023 < 100024), which is fine: CREATE POLICY has no dependency on another
+-- policy, or on ENABLE/FORCE ROW LEVEL SECURITY, already having run against the same table -- by
+-- the time every migration in this track has run, the end state is identical either way.
 --
--- change_request_deployed_product (also from 0191) gets no UPDATE policy: it is ours, not the
+-- change_request_deployed_product (also from 100024) gets no UPDATE policy: it is ours, not the
 -- sync's, and nothing writes it except entity-service's delete-and-re-insert. The pair is listed in
 -- rlsCommandsDeniedOnPurpose (rls_schema_integration_test.go) with that reason.
 --

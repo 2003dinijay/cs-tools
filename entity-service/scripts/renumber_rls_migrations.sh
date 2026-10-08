@@ -30,9 +30,12 @@
 # Excluded on purpose:
 #   - 0191_change_request_project_links.sql: creates the tables its own RLS
 #     policies protect in the SAME file (plus four ALTER TYPE ADD VALUE
-#     statements) -- a mixed schema+RLS migration, not pure RLS. Splitting it
-#     would mean extracting content, not just renaming a file, and was left
-#     out of this pass as a separate, higher-risk piece of work.
+#     statements) -- a mixed schema+RLS migration, not pure RLS. This script
+#     leaves it renumbering-untouched (it stays 0191, schema-only). ITS RLS
+#     PORTION WAS LATER SPLIT OUT BY HAND, in a follow-up pass after this
+#     script ran, into 100024_change_request_project_links_rls.sql -- see
+#     that file's own header. That follow-up edit is not part of this script
+#     and is not reproduced by re-running it.
 #   - The legacy 000020-000105 stragglers (KB tables, cloud_status_events,
 #     outage_communications): not RLS at all, and at least one of them
 #     (000020-000027) has FK targets that never existed in this schema at
@@ -100,7 +103,17 @@ echo "== Updating cross-reference comments to the new numbers =="
 #     renamed by this script either way)
 #   - "migration 0191" in 100023 (refers to 0191_change_request_project_links.sql,
 #     excluded above -- stays 0191, unrenamed)
-sed_i() { sed -i '' "$@"; }  # macOS/BSD sed; swap for `sed -i ""` -> `sed -i` on GNU if you run this on Linux
+# GNU sed takes `-i[SUFFIX]` (no space, no argument for "no backup"); BSD/macOS
+# sed requires the backup-suffix argument even when it's empty (`-i ''`), and
+# treats a bare `-i` as consuming the next argument as that suffix instead of
+# editing in place. Detect which one we have rather than hardcoding either -
+# `sed --version` succeeds (and prints "GNU sed") only on GNU sed; BSD/macOS
+# sed exits non-zero on an unrecognized `--version` flag.
+if sed --version >/dev/null 2>&1; then
+  sed_i() { sed -i "$@"; }        # GNU sed
+else
+  sed_i() { sed -i '' "$@"; }     # BSD/macOS sed
+fi
 
 sed_i -e "s/migration 000085/migration 100001/g" "$M/100002_case_escalation_rls.sql"
 
