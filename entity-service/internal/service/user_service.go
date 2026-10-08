@@ -257,6 +257,9 @@ func (s *userService) SearchUsers(ctx context.Context, req domain.SearchUsersReq
 	if err := validateUUIDs("groupIds", req.Filters.GroupIDs); err != nil {
 		return domain.SearchUsersResponse{}, err
 	}
+	if err := validateUUIDs("teamIds", req.Filters.TeamIDs); err != nil {
+		return domain.SearchUsersResponse{}, err
+	}
 	if req.SortBy.Field != "" && !validUserSortField[req.SortBy.Field] {
 		return domain.SearchUsersResponse{}, &apierror.ValidationError{Msg: "sortBy.field contains invalid value: " + string(req.SortBy.Field)}
 	}

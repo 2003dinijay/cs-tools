@@ -106,9 +106,13 @@ type SearchUsersFilters struct {
 	// GroupIDs restricts the search to members of these groups -- on
 	// ServiceNow, resolved to a user-ID set before the upstream call, since
 	// that data source cannot join users against group membership in one
-	// query; on Postgres, a plain EXISTS against team_member (migration
-	// 000028), matched directly in the same query.
+	// query; on Postgres, a plain EXISTS against group_member (migration
+	// 0140), matched directly in the same query. These are "group" ids, not
+	// `team` ids -- see TeamIDs for those.
 	GroupIDs []string `json:"groupIds"`
+	// TeamIDs restricts the search to members of these `team` rows (a plain
+	// EXISTS against team_member.team_id). Postgres data source only.
+	TeamIDs []string `json:"teamIds"`
 	// GroupNames restricts the search to members of the groups with these exact display
 	// names, resolved the same way GroupIDs is on each data source. It exists alongside
 	// GroupIDs because the caller's team registry is keyed by group name: group ids
