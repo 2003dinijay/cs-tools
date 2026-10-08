@@ -109,8 +109,64 @@ import { useReportCaseTabDraft } from "@features/case-tabs/hooks/useReportCaseTa
 import type { CreateChangeRequestFromIncidentNavState } from "@features/csm-operations/utils/changeRequests";
 import type { CreateIncidentFromIncidentNavState } from "@features/csm-operations/utils/incidents";
 import type { CreateProblemFromIncidentNavState } from "@features/csm-operations/utils/problems";
+import { sanitizeRichTextHtml, stripLightModeInlineStyles } from "@utils/sanitizeHtml";
+import { useDarkMode } from "@utils/useDarkMode";
 
 const OPERATIONS_INCIDENTS_PATH = "/operations/incidents";
+
+// A tag anywhere means the description is HTML: an incident raised by a
+// monitoring webhook (an Azure Monitor alert arrives as nested tables of its
+// payload) or one created from a case carrying the rich-text editor's HTML.
+// Anything else is plain text, e.g. typed in the create form or synced from
+// the previous system.
+const HTML_TAG = /<\/?[a-z][\s\S]*>/i;
+
+/**
+ * An incident's description: HTML rendered through the shared rich-text
+ * sanitiser (the full policy, not the description one, because a webhook's
+ * payload IS a table and the description policy strips tables), plain text
+ * as-is with its line breaks. In dark mode the light inline backgrounds a
+ * webhook paints on its label cells are stripped, as the comment bubbles do.
+ */
+function IncidentDescription({ text }: { text: string }): JSX.Element {
+  const isDarkMode = useDarkMode();
+  const isHtml = HTML_TAG.test(text);
+  const safeHtml = useMemo(
+    () => (isHtml ? sanitizeRichTextHtml(isDarkMode ? stripLightModeInlineStyles(text) : text) : ""),
+    [isHtml, isDarkMode, text],
+  );
+  if (!isHtml) {
+    return (
+      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+        {text}
+      </Typography>
+    );
+  }
+  return (
+    <Box
+      data-testid="incident-description-html"
+      sx={{
+        typography: "body2",
+        overflowWrap: "anywhere",
+        "& p:first-of-type": { mt: 0 },
+        "& p:last-child": { mb: 0 },
+        "& ul, & ol": { my: 0.5, pl: 3 },
+        "& a": { color: "primary.main" },
+        "& img": { maxWidth: "100%", height: "auto" },
+        "& table": { borderCollapse: "collapse", width: "100%", my: 0.5 },
+        "& th, & td": {
+          border: 1,
+          borderColor: "divider",
+          px: 1,
+          py: 0.5,
+          textAlign: "left",
+          verticalAlign: "top",
+        },
+      }}
+      dangerouslySetInnerHTML={{ __html: safeHtml }}
+    />
+  );
+}
 
 /**
  * A single confirmed-live upstream limitation of `PATCH /incidents/{id}`
@@ -746,9 +802,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
       {incident.description && (
         <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1 }}>
           <Typography variant="subtitle2">Description</Typography>
-          <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
-            {incident.description}
-          </Typography>
+          <IncidentDescription text={incident.description} />
         </Card>
       )}
 

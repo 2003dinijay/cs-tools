@@ -289,6 +289,68 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+describe("CsmIncidentDetailPage — description", () => {
+  afterEach(() => {
+    document.documentElement.removeAttribute("data-color-scheme");
+  });
+
+  it("renders an HTML description (a monitoring webhook's payload table) as content, not as its source", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_INCIDENT,
+        description:
+          '<table border="1" style="width:100%;"><tbody><tr>' +
+          '<td style="font-weight:bold;background:#f5f5f5;width:30%;">alertRule</td>' +
+          "<td>pods-not-ready-001</td></tr><tr>" +
+          '<td style="font-weight:bold;">severity</td><td>Sev0</td></tr></tbody></table>' +
+          '<script>window.__pwned = true</script><a href="javascript:alert(1)">x</a>',
+      },
+    });
+    renderPage();
+
+    const html = screen.getByTestId("incident-description-html");
+    expect(within(html).getByRole("table")).toBeInTheDocument();
+    expect(within(html).getByText("alertRule")).toBeInTheDocument();
+    expect(within(html).getByText("pods-not-ready-001")).toBeInTheDocument();
+    expect(within(html).getByText("Sev0")).toBeInTheDocument();
+    // The source is not shown as text, and the sanitiser has done its job.
+    expect(html.textContent).not.toContain("<td");
+    expect(html.querySelector("script")).toBeNull();
+    expect(html.querySelector("a")?.getAttribute("href")).toBeNull();
+    // Light mode keeps the webhook's own label-cell background.
+    expect(within(html).getByText("alertRule").getAttribute("style")).toContain("background");
+  });
+
+  it("strips the light inline backgrounds in dark mode, as the comment bubbles do", () => {
+    document.documentElement.setAttribute("data-color-scheme", "dark");
+    mockQueryResult({
+      data: {
+        ...BASE_INCIDENT,
+        description:
+          '<table><tbody><tr><td style="font-weight:bold;background:#f5f5f5;">alertRule</td>' +
+          "<td>pods-not-ready-001</td></tr></tbody></table>",
+      },
+    });
+    renderPage();
+
+    const cell = within(screen.getByTestId("incident-description-html")).getByText("alertRule");
+    expect(cell.getAttribute("style") ?? "").not.toContain("background");
+    expect(cell.getAttribute("style") ?? "").toContain("font-weight");
+  });
+
+  it("keeps a plain-text description as text with its line breaks (no HTML container)", () => {
+    mockQueryResult({
+      data: { ...BASE_INCIDENT, description: "Gateway returns 502\nsince 09:00 UTC. 1 < 2 and a & b." },
+    });
+    renderPage();
+
+    expect(screen.queryByTestId("incident-description-html")).toBeNull();
+    const text = screen.getByText(/Gateway returns 502/);
+    expect(text).toHaveStyle({ whiteSpace: "pre-wrap" });
+    expect(text.textContent).toBe("Gateway returns 502\nsince 09:00 UTC. 1 < 2 and a & b.");
+  });
+});
+
 describe("CsmIncidentDetailPage — tabs", () => {
   it("renders all five tabs and defaults to Activities", () => {
     mockQueryResult({ data: BASE_INCIDENT });
