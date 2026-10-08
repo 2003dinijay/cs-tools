@@ -83,6 +83,27 @@ describe("useWidgetPieData", () => {
     expect(result.current.total).toBe(4);
   });
 
+  it("posts each project slice through the resourceType's flat body, with no `filters` key", async () => {
+    postMock.mockResolvedValue({ total: 2 });
+
+    const { result } = renderHook(
+      () =>
+        useWidgetPieData("widget-1", "project", {}, [
+          { label: "In progress", query: { onboardingStatus: ["In-Progress"] } },
+        ]),
+      { wrapper },
+    );
+
+    await waitFor(() => expect(result.current.isLoading).toBe(false));
+
+    expect(postMock).toHaveBeenCalledWith(
+      "/projects/search",
+      { onboardingStatus: ["In-Progress"], pagination: { offset: 0, limit: 1 } },
+      { signal: expect.any(AbortSignal) },
+    );
+    expect(postMock.mock.calls[0][1]).not.toHaveProperty("filters");
+  });
+
   it("fires no queries and returns a zero total for an empty slices array", () => {
     const { result } = renderHook(() => useWidgetPieData("widget-1", "case", {}, []), { wrapper });
 

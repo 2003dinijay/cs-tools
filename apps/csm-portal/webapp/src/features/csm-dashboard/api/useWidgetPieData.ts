@@ -150,15 +150,16 @@ export function useWidgetPieData(
           // every other widget's own call, so it needs both at least as
           // much.
           return withWidgetFetchSlot(async (signal) => {
-            const res = await api.post<
-              { filters: Record<string, unknown>; pagination: { offset: number; limit: number } },
-              Record<string, unknown>
-            >(
+            // `project`'s search takes flat filters (see its
+            // `buildSearchRequestBody`). Other overrides, e.g. case_feedback's,
+            // also change the response shape and aren't handled by this
+            // count-only path, so they keep the default body.
+            const body = resourceType === "project" && config.buildSearchRequestBody
+              ? config.buildSearchRequestBody({ filters, offset: 0, limit: 1 })
+              : { filters, pagination: { offset: 0, limit: 1 } };
+            const res = await api.post<Record<string, unknown>, Record<string, unknown>>(
               config.searchEndpoint,
-              {
-                filters,
-                pagination: { offset: 0, limit: 1 },
-              },
+              body,
               { signal },
             );
             return typeof res.total === "number" ? res.total : 0;
