@@ -60,6 +60,14 @@ vi.mock("@features/csm-operations/api/usePatchChangeRequest", () => ({
     },
   }),
 }));
+// The originating service request's detail, which the form infers its project,
+// deployment, subject and description from. Undefined = not loaded / none.
+let sourceCaseFixture: Record<string, unknown> | undefined;
+vi.mock("@features/csm-cases/api/useGetCsmCaseDetail", () => ({
+  useGetCsmCaseDetail: (id: string | undefined) => ({
+    data: id && sourceCaseFixture && sourceCaseFixture.id === id ? sourceCaseFixture : undefined,
+  }),
+}));
 vi.mock("@features/settings/api/useGetUsersMe", () => ({
   useGetUsersMe: () => ({ data: undefined }),
 }));
@@ -1641,5 +1649,52 @@ describe("CreateChangeRequestPage — scope fields in the in-progress draft and 
     expect(screen.getByText(/customer project, category/i)).toBeInTheDocument();
     expect(screen.getByText(/Deployments, deployment products, schedule/i)).toBeInTheDocument();
     expect(screen.getByText(/The Customer Group follows the customer project/i)).toBeInTheDocument();
+  });
+});
+
+describe("CreateChangeRequestPage — fields inferred from the originating service request", () => {
+  beforeEach(() => {
+    sessionStorage.clear();
+    postChangeRequestMutateMock.mockReset();
+    sourceCaseFixture = {
+      id: "sr-1",
+      projectId: "proj-a",
+      projectName: "Acme Project",
+      subject: "Upgrade the gateway",
+      description: "<p>Needs a change</p>",
+      productContext: { deploymentId: SCOPE_FIXTURE["proj-a"][0].id },
+    };
+  });
+  afterEach(() => {
+    sourceCaseFixture = undefined;
+  });
+
+  it("fills project, deployment, subject and description when opened from the service request", () => {
+    locationState = { caseId: "sr-1", caseNumber: "CS-1", projectId: "proj-a" };
+    render(<CreateChangeRequestPage />);
+    expect(screen.getByDisplayValue("Upgrade the gateway")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("<p>Needs a change</p>")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("proj-a")).toBeInTheDocument();
+  });
+
+  it("infers the same fields when the service request is picked in the field instead", () => {
+    locationState = undefined;
+    render(<CreateChangeRequestPage />);
+    fireEvent.change(screen.getByLabelText(/originating service request/i), {
+      target: { value: encodeParentRecordValue("service_request", "sr-1") },
+    });
+    expect(screen.getByDisplayValue("Upgrade the gateway")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("proj-a")).toBeInTheDocument();
+  });
+
+  it("never overwrites a subject the user already typed", () => {
+    locationState = undefined;
+    render(<CreateChangeRequestPage />);
+    fillSubject();
+    const typed = (screen.getByLabelText(/short description|subject/i) as HTMLInputElement).value;
+    fireEvent.change(screen.getByLabelText(/originating service request/i), {
+      target: { value: encodeParentRecordValue("service_request", "sr-1") },
+    });
+    expect((screen.getByLabelText(/short description|subject/i) as HTMLInputElement).value).toBe(typed);
   });
 });

@@ -50,6 +50,7 @@ import { userLabel } from "@features/csm-operations/utils/incidentFormOptions";
 import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
 import { useSearchGroups } from "@api/useSearchGroups";
 import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
+import { useGetCsmCaseDetail } from "@features/csm-cases/api/useGetCsmCaseDetail";
 import { useSearchParentRecordsForSelect } from "@features/csm-operations/api/useSearchParentRecordsForSelect";
 import AsyncEntitySelect from "@components/AsyncEntitySelect";
 import ChangeRequestScopeFields, {
@@ -339,6 +340,36 @@ export default function CreateChangeRequestPage(): JSX.Element {
         subject: fromIncidentState.incidentSubject,
       })
     : undefined;
+
+  // Infer fields from the originating service request. Runs for whichever way
+  // the request got selected (the case page's "Create change request…" action
+  // or picking one in the field above), once per selected request, and only
+  // fills what is still blank — it never overwrites something the user typed
+  // or restored from a draft. The case detail is already cached when coming
+  // from the case page, so this costs no extra request there.
+  const sourceCaseId = parentSelection?.kind === "service_request" ? parentSelection.id : undefined;
+  const { data: sourceCase } = useGetCsmCaseDetail(sourceCaseId);
+  const [inferredFromCaseId, setInferredFromCaseId] = useState<string | undefined>(
+    // A restored draft already reflects what the user did with these fields.
+    draft ? sourceCaseId : undefined,
+  );
+  if (sourceCase && sourceCase.id === sourceCaseId && inferredFromCaseId !== sourceCaseId) {
+    setInferredFromCaseId(sourceCaseId);
+    const caseProjectId = sourceCase.projectId;
+    // A different project already chosen wins: the case's deployment would not
+    // belong to it.
+    if (caseProjectId && (!scope.projectId || scope.projectId === caseProjectId)) {
+      if (!scope.projectId) scope.setProject(caseProjectId, sourceCase.projectName);
+      const deploymentId = sourceCase.productContext.deploymentId;
+      if (deploymentId && scope.deploymentIds.length === 0) {
+        scope.setDeployments([deploymentId]);
+      }
+    }
+    if (!subject.trim() && sourceCase.subject) setSubject(sourceCase.subject.slice(0, SUBJECT_MAX));
+    if (isBlankHtml(description) && !isBlankHtml(sourceCase.description)) {
+      setDescription(sourceCase.description);
+    }
+  }
 
   // Defaults "Requested by" to the signed-in user, matching the legacy
   // ServiceNow form's own behaviour (usePostChangeRequest.ts/BE doesn't do
