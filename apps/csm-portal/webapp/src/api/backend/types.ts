@@ -1137,6 +1137,15 @@ export interface BeCaseSearchPayload {
    * that declares the field; it rejects unknown request fields.
    */
   skipTotal?: boolean;
+  /**
+   * The mirror image of `skipTotal`: skip the page query entirely and return
+   * `cases: []`, reading only `total`. For a count or pie/bar dashboard
+   * widget, whose only use for a search is `total` -- the page it would
+   * otherwise also pay for is never read. Rejected together with `skipTotal`.
+   * Needs an entity service that declares the field; it rejects unknown
+   * request fields.
+   */
+  countOnly?: boolean;
 }
 
 /**

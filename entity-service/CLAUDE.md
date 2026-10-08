@@ -6465,6 +6465,60 @@ assignment group carry that service's support group), while a CI's own
 `assignment_group` is a different, generic field that no synced service sets.
 The incident's own group belongs on `work_item.assignment_group_id`.
 
+### Searching services: ranked, not newest-first (the "Choreo" incident)
+
+`POST /services/search` used to return the newest `limit` matches of a name substring
+(`ORDER BY created_on DESC` on Postgres; ServiceNow's own creation order, 50 per page,
+on `DATA_SOURCE=servicenow`). The CSM portal's Create Incident "Service" picker shows
+20, so a service whose name is also the prefix of many newer records could not be
+picked. Found on production (digiops-cs#3338): searching "Choreo" matches 55 records,
+45 of them `service_offering` rows ("Choreo EU - DP ... Service Offering"), and the
+plain **Choreo** service (`cmdb_ci_service`, support group Artemis SRE Group) is the
+55th. An incident raised against an offering has no support group, so it was never
+assigned to the SRE group and the Choreo alerts never fired.
+
+With a non-empty query the results are now ranked: exact name, then name prefix, then a
+word of the name starts with it, then anywhere (`itServiceMatchTier`); within a tier
+services come before service offerings (ServiceNow data source only: on Postgres
+offerings live in the separate `service_offering` table), and equal ranks keep the
+source's order. Matching is case-insensitive on both data sources; the ServiceNow path also
+ignores runs of whitespace (one real offering is spelled "Choreo  EU" with two spaces), the
+Postgres path does not. The query is trimmed before it goes anywhere, so a whitespace-only query
+is an empty one and lists everything.
+
+- **Postgres** (`it_service_repo.go`): a `CASE` expression ahead of `created_on DESC`.
+  Its four bound parameters (the query, then the prefix, word-prefix and hyphen-prefix patterns) go after the filter's and only into the data query; the
+  count query binds none of them (Postgres rejects an unreferenced parameter).
+- **ServiceNow** (`sn_it_service_service.go`): the upstream only does `name CONTAINS`,
+  so ranking needs the matches. `fetchITServiceRankWindow` fetches page 0 (50, the
+  upstream's ceiling), reads `totalRecords` and fetches the rest concurrently, up to
+  `snITServiceRankPages` (5) pages = 250 matches, ranks that window and cuts the
+  requested page from it. `Total` stays the upstream's count. A query with more than 250
+  matches is ranked among the first 250; narrow it by typing more.
+- **Passed through unranked:** an empty query (nothing to rank by) and a page whose
+  `offset` is at or past the window. The window is exactly the upstream's first 250
+  matches, so a caller that walks the result page by page (`sre-alert-core-service`'s
+  `SearchService` resolves a label that way) continues where the window ends with nothing
+  skipped or repeated (`..._WalkingPastTheRankedWindowStillReachesEveryMatch`). The one page that
+  crosses the window's end is completed from the upstream rows right after it (one more call), so
+  every page is full and a caller that steps by its page size, whatever it is, reaches every match
+  once (`..._FixedStrideWalkReachesEveryMatchForAnyPageSize`; a short straddling page lost rows for
+  page sizes that do not divide 250).
+- **Cost:** a searched page is up to 5 upstream calls (2 for a query with 51-100 matches,
+  1 for fewer), the later ones in parallel, instead of 1; 6 for the page that crosses the
+  window's end. A caller that walks a many-match query page by page pays that per page, so a
+  walk for a label with no exact match costs several times what it did (about 26 calls for
+  300 matches, against 6); a label that exists is found on its first page. An upstream failure
+  on any page fails the search rather than returning a partly ranked list. The pages are
+  fetched at slightly different moments, so a record created in between could repeat the row at
+  a seam; the window is deduplicated by id, and a page that leaves short (the window then
+  holds 249 of its 250 rows) is filled from the rows right after the window like the page
+  that crosses its end, never asking the upstream for more than its page ceiling of 50.
+
+Tests: `sn_it_service_service_test.go` (a fake upstream shaped like production, with
+the 55 "Choreo" matches), `it_service_repo_integration_test.go` (real Postgres in a
+private schema; `IT_SERVICE_TEST_DSN`, skipped without it).
+
 ## time_card.state/issue_complexity became real enums; case_id now targets work_item
 
 A later migration revision changed `time_card`: `state`/`issue_complexity`
@@ -7476,6 +7530,73 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   `is_active` counts as active. Under `postgres-servicenow-dual-write`, this
   one endpoint reads Postgres directly (unlike `SearchCatalogs`, which still
   falls back to ServiceNow -- see `catalogService.snMirror`'s own doc comment).
+
+## Case search `countOnly`, and the projectOnboardingStatus `in` filter's exclusion-list rewrite
+
+Reported as a dashboard-performance finding, measured against a real load test and the perf
+database: the dashboard loads its widgets one at a time
+(`WIDGET_FETCH_CONCURRENCY_LIMIT = 1`, `csm-portal/webapp`'s `widgetFetchConcurrency.ts`), so the
+page time is the sum of every widget's own `POST /cases/search`, and a count or pie/bar widget's
+request was 46.5% of the dashboard's database time in that test (51% of it the `COUNT(*)`, 49%
+the page query) -- for a response whose only use is `total`.
+
+**`countOnly`** (`SearchCasesRequest.CountOnly`, `entity.go`) is the mirror image of the existing
+`SkipTotal`: `true` runs only the `COUNT(*)` query and returns `Cases` as an empty, non-nil slice
+(never `nil` -- `cases: []`, not `cases: null`, on the wire) without ever building or sending the
+page query at all. Rejected together with `SkipTotal` (`caseService.SearchCases`,
+`&apierror.ValidationError`) -- there would be nothing left for either flag to skip. Implemented
+in `caseRepo.SearchCases` as the exact mirror of the existing `if req.SkipTotal { ... } else {
+eg.Go(...) }` shape, just applied to the page-query goroutine instead of the count one, and
+returning before `dataQuery` is even built. Postgres data source only, cases only -- unlike
+`SkipTotal`, no other search request type declares it, since no other entity's dashboard widgets
+needed this (see `TestSearchCasesRequestDeclaresCountOnly`, the cases-only sibling of
+`TestSearchRequestsDeclareSkipTotal`).
+
+`apps/csm-portal/webapp`'s `useWidgetData`/`useWidgetPieData` send it for a `shape: "count"`
+widget or a pie/bar slice query, through `postCountingOnly` (`api/backend/postCountingOnly.ts`,
+the mirror of the existing `postSkippingTotal.ts`: sets the flag, falls back to the plain search
+and latches it off for the session on a 400, so a portal deployed ahead of its entity service
+doesn't strand every count/pie widget) -- gated on `config.searchEndpoint === "/cases/search" &&
+!config.buildSearchRequestBody`, since `countOnly` is a case-search-only field and a resourceType
+with its own diverging request shape (`case_feedback`'s flat `page`/`pageSize` contract) was
+never designed against it. `apps/csm-portal/backend` needed no change at all: its case-search
+handler forwards the request body as raw, untyped `[]byte` (see "Adding a new entity" above for
+why that's the established shape here), so an unknown-to-it field like `countOnly` rides through
+exactly as `skipTotal` always has.
+
+**The `projectOnboardingStatus` `in` filter is rewritten as an exclusion-list id lookup**, the
+same technique `caseLikeStateLookupClause` already uses for the `state` filter (see "Case search
+filters on the Postgres data source" below) -- but only for `in`, and only after revisiting that
+section's own earlier reasoning for why the state-filter technique wasn't applied here too. That
+reasoning held a general `in` filter is usually highly selective (a couple of statuses out of the
+full set), so building an id array to check membership against costs more than the simple
+indexed join this already was. **Every real dashboard widget's own `in` list is the opposite
+shape**: "every project except the in-progress ones" (6 of the 7 statuses), matching ~1,950 of
+~1,966 measured projects -- selective in reverse. Checking that per case row via the
+already-joined `p.onboarding_status` column (`caseSearchJoins`'s `LEFT JOIN project p`) keeps
+that join alive for every row even in a `COUNT(*)`-only query that reads no other column of `p`;
+replayed Query Store text measured the project lookup alone at ~10,200 of a widget's
+21,000-55,000 total data pages. The filter is now `wi.project_id IS NOT NULL AND wi.project_id
+<> ALL(ARRAY(SELECT id FROM project WHERE onboarding_status IS NULL OR onboarding_status <>
+ALL($n::text[]::onboarding_status_enum[])))` -- same NULL semantics as before (a project with no
+status, or a case with no project, never matches `in`), but with no WHERE-clause reference to the
+`p` alias left for this filter at all, which is what lets the planner drop the dead `LEFT JOIN
+project` from a `COUNT(*)`-only query entirely. The `notIn` branch is deliberately left as the
+plain join check: it already satisfies the no-project/no-status cases via its own `OR`, nothing
+marks it as a measured bottleneck the way `in` was, and the equivalent rewrite would need its own
+extra `OR wi.project_id IS NULL` term to keep that behaviour -- not worth the added risk without
+a measured case for it. `TestSearchCasesIntegration_ProjectOnboardingStatusInMatchesLegacyJoinForm`
+checks the rewrite against a raw, independently-written query using the original join form, run
+directly against the live schema, rather than against the (now-rewritten) repository code.
+
+**Confirmed directly against the perf database** (the one real environment with
+production-volume data, `EXPLAIN (ANALYZE, BUFFERS)` as an internal caller, the six-status widget
+filter against real `OPEN` cases): both forms return the identical total (1,774), and the
+rewritten form reads 177,746 buffers in 138ms against the original join form's 382,947 buffers in
+206ms for this one query -- a 54% reduction in buffers read, matching the mechanism predicted
+above exactly: the rewritten plan's `project` access is a single `Seq Scan` InitPlan computing the
+12-row excluded-id array once, with no further per-row access to `project` at all, where the
+original plan's `Merge Join` touched it once per matching `work_item` row.
 
 ## Case search filters on the Postgres data source
 

@@ -2874,6 +2874,14 @@ type SearchCasesRequest struct {
 	// ServiceNow-backed service, which always reports one, and when GroupBy is
 	// set (the totals are the bucket counts).
 	SkipTotal bool `json:"skipTotal,omitempty"`
+	// CountOnly is the mirror image of SkipTotal: the search runs only the
+	// COUNT query and skips the page query entirely, returning Cases as an
+	// empty slice. For a count or pie dashboard widget, whose only use for an
+	// ordinary search is reading Total off it -- the page query it would
+	// otherwise also pay for is never read and its one row is thrown away.
+	// Rejected together with SkipTotal (there would be nothing left to
+	// compute); Postgres data source only.
+	CountOnly bool `json:"countOnly,omitempty"`
 }
 
 // AggregateCasesRequest is the input for the dedicated case aggregate
