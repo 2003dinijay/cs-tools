@@ -495,8 +495,8 @@ func main() {
 	route("GET /announcement-requests/{id}/deliveries", handler.PermView, announcementRequestHandler.ListAnnouncementRequestDeliveries)
 	route("POST /projects/{id}/contacts/search", handler.PermViewSharedEntity, projectHandler.SearchProjectContacts)
 	route("GET /projects/{id}/contacts/{contactId}", handler.PermView, projectHandler.GetProjectContact)
-	// Customer-onboarding status per project contact — off by default (see
-	// loadOnboardingStatusEnabled). When off the handler is not constructed
+	// Customer-onboarding status per project contact — on unless the flag is
+	// "false" (see loadOnboardingStatusEnabled). When off the handler is not constructed
 	// and the route is not registered, so the path 404s like any unknown one
 	// and nothing else in this backend changes.
 	if loadOnboardingStatusEnabled() {

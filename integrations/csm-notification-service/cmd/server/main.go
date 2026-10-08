@@ -1160,8 +1160,8 @@ func mustEnv(key string) string {
 // envBool reads a boolean flag with its default spelled out at the call
 // site. Only the literal strings "true" and "false" (after trimming) change
 // the value; anything else, including unset, yields def. Killswitches such
-// as EMAIL_SENDING_ENABLED default to true; every CSM_MIGRATION_* flag
-// defaults to false and is turned on deliberately at cutover.
+// as EMAIL_SENDING_ENABLED default to true, and so does every CSM_MIGRATION_*
+// flag: it is off only when set to "false".
 func envBool(key string, def bool) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
 	case "true":
