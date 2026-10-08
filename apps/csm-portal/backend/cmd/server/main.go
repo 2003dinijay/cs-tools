@@ -132,7 +132,8 @@ func main() {
 	projectHandler := handler.NewProjectHandler(customerEntityClient)
 	teamHandler := handler.NewTeamHandler(customerEntityClient)
 	announcementExcludedProjectKeys := loadAnnouncementExcludedProjectKeys()
-	validateAnnouncementDataSourceCompatibility(loadCustomerEntityDataSource(), announcementExcludedProjectKeys)
+	customerEntityDataSource := loadCustomerEntityDataSource()
+	validateAnnouncementDataSourceCompatibility(customerEntityDataSource, announcementExcludedProjectKeys)
 	announcementHandler := handler.NewAnnouncementHandler(customerEntityClient, announcementExcludedProjectKeys)
 	announcementRequestHandler := handler.NewAnnouncementRequestHandler(customerEntityClient, announcementExcludedProjectKeys)
 	announcementRegistryHandler := handler.NewAnnouncementRegistryHandler(customerEntityClient)
@@ -144,7 +145,12 @@ func main() {
 	itServiceHandler := handler.NewITServiceHandler(customerEntityClient)
 	serviceOfferingHandler := handler.NewServiceOfferingHandler(customerEntityClient)
 	groupHandler := handler.NewGroupHandler(customerEntityClient)
-	referenceHandler := handler.NewReferenceHandler(dir).WithEntityClient(customerEntityClient)
+	referenceHandler := handler.NewReferenceHandler(dir)
+	// entity-service registers POST /teams/search only on the PostgreSQL data
+	// source, so a ServiceNow deployment keeps serving the registry alone.
+	if customerEntityDataSource == customerEntityDataSourcePostgres {
+		referenceHandler = referenceHandler.WithEntityClient(customerEntityClient)
+	}
 	configurationItemHandler := handler.NewConfigurationItemHandler(customerEntityClient)
 	catalogHandler := handler.NewCatalogHandler(customerEntityClient)
 	timeCardHandler := handler.NewTimeCardHandler(customerEntityClient)
