@@ -254,8 +254,11 @@ deliberately not committed to this repository — only placeholders appear here 
 `.env.example`. Unset, the registry is empty and team lookups return nothing, with a warning
 logged. `Display Name` is matched verbatim against the backing data source's group name when
 resolving members, so a wrong or blank one resolves **zero members silently**; that is why an empty
-field is rejected outright. The registry is resolved into an in-memory index at startup, so
-`POST /teams/search` makes no upstream call at all.
+field is rejected outright. The registry is resolved into an in-memory index at startup. `POST
+/teams/search` lists the entity service's `team` table (`POST /teams/search` there) and enriches
+each team whose name matches a registry row with that row's key, family and group ids; a request
+with a `family` filter is answered from the registry alone, since family is not stored on the
+`team` table.
 
 `CSM_USER_ROLES` does have a default, because role names are generic platform vocabulary rather
 than organisation-specific. It drives both the `roleIds` filter validation and the catalogue that

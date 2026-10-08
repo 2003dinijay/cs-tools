@@ -6499,6 +6499,12 @@ so its ids are the same ones `GET /groups/{id}` and
 `sys_user_grmember`) plus the `team_member` shapes described there. It used to
 read the curated `team` registry, whose ids `GET /groups/{id}` could not resolve.
 
+**`POST /teams/search`** (`team_repo.go` `SearchTeams`, Postgres only, registered
+beside `GET /teams/{id}/members`) lists the `team` table — `{id, name, type}`,
+ordered by name, with an optional case-insensitive substring `searchQuery` on the
+name. The CSM portal backend calls it for its own `POST /teams/search` and enriches
+rows from its configured registry.
+
 **Not wired up**: `project_type` has no corresponding field anywhere on
 `domain.Project`/`ProjectDetail` today, so there is nothing to populate
 without first adding a new response field — left alone pending that

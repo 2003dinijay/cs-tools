@@ -1860,12 +1860,16 @@ paths:
 
   /teams/search:
     post:
-      summary: Search the team registry.
+      summary: Search teams.
       description: >
-        A team's id is its registry key, which is stable across environments — unlike the
-        backing group's id. The registry is deployment configuration resolved once at
-        startup, including each team's family and the UUID form of its backing group id,
-        and served from memory: this endpoint makes no upstream call. The body is optional.
+        Lists the entity service's team table. A team that matches a row of the configured
+        registry by name is returned as that row: its id is the registry key, which is stable
+        across environments — unlike the backing group's id — together with its family and the
+        UUID form of its backing group ids. A team not in the registry is returned with its
+        team-table id and name only. A request with a family filter is answered from the
+        registry alone, since family is not stored on the team table. The body is optional.
+        Entity-service lists the team table on the PostgreSQL data source only; on ServiceNow
+        deployments this endpoint serves the registry alone.
       operationId: postTeamsSearch
       requestBody:
         description: Team search payload
@@ -1899,8 +1903,26 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: The entity service does not serve team search.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "502":
+          description: The entity service returned a response that could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "503":
+          description: The entity service is unavailable.
           content:
             application/json:
               schema:

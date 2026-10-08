@@ -5325,6 +5325,32 @@ type SearchGroupsResponse struct {
 	Limit  int     `json:"limit"`
 }
 
+// Team is one row of the `team` table as listed by POST /teams/search.
+type Team struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+// SearchTeamsFilters are the optional filters of POST /teams/search.
+type SearchTeamsFilters struct {
+	SearchQuery string `json:"searchQuery,omitempty"`
+}
+
+// SearchTeamsRequest is the input for POST /teams/search.
+type SearchTeamsRequest struct {
+	Filters    *SearchTeamsFilters `json:"filters,omitempty"`
+	Pagination Pagination          `json:"pagination"`
+}
+
+// SearchTeamsResponse is the paginated result of a teams search.
+type SearchTeamsResponse struct {
+	Teams  []Team `json:"teams"`
+	Total  int    `json:"total"`
+	Offset int    `json:"offset"`
+	Limit  int    `json:"limit"`
+}
+
 // ServiceOfferingServiceRef is the parent service reference within a service offering.
 type ServiceOfferingServiceRef struct {
 	ID   string `json:"id"`
