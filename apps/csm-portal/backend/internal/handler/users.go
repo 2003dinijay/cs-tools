@@ -25,6 +25,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/directory"
@@ -301,6 +302,13 @@ func (h *UsersHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 
 	if payload.PhoneNumber == nil && payload.TimeZone == nil {
 		writeError(w, http.StatusBadRequest, "At least one field must be provided for update.")
+		return
+	}
+
+	// Entity treats an empty timeZone as absent, so reject it up front rather than
+	// report a value that was never stored. Must precede the identity provider call.
+	if payload.TimeZone != nil && strings.TrimSpace(*payload.TimeZone) == "" {
+		writeError(w, http.StatusBadRequest, "timeZone must not be empty.")
 		return
 	}
 

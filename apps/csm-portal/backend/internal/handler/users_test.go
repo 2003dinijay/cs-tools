@@ -581,6 +581,39 @@ func TestPatchMe(t *testing.T) {
 		}
 	})
 
+	t.Run("rejects empty or blank timeZone without upstream calls", func(t *testing.T) {
+		for name, body := range map[string]string{
+			"empty with phone": `{"phoneNumber":"+15555550123","timeZone":""}`,
+			"empty alone":      `{"timeZone":""}`,
+			"whitespace only":  `{"timeZone":"   "}`,
+		} {
+			t.Run(name, func(t *testing.T) {
+				called := false
+				scimClient := &mockSCIMClient{
+					updateUserPhoneFn: func(_ context.Context, _, _ string) (*string, error) {
+						called = true
+						return nil, nil
+					},
+				}
+				entityClient := &mockEntityUserClient{
+					patchUserMeFn: func(_ context.Context, _ []byte) ([]byte, error) {
+						called = true
+						return []byte(`{}`), nil
+					},
+				}
+				h := NewUsersHandler(scimClient, entityClient, testDirectory(t), false, nil)
+				r := withUser(httptest.NewRequest(http.MethodPatch, "/users/me", strings.NewReader(body)))
+				w := httptest.NewRecorder()
+				h.PatchMe(w, r)
+				assertStatus(t, w, http.StatusBadRequest)
+				assertErrorMessage(t, w, "timeZone must not be empty.")
+				if called {
+					t.Error("no SCIM or entity call expected")
+				}
+			})
+		}
+	})
+
 	t.Run("SCIM failure does not call entity", func(t *testing.T) {
 		entityCalled := false
 		scimClient := &mockSCIMClient{
