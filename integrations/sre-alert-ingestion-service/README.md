@@ -187,11 +187,11 @@ curl -sS -X POST "$BASE/site24x7" -H 'Content-Type: application/json' -d '{"STAT
    `integrations/sre-alert-ingestion-service` and the Dockerfile build preset. The Dockerfile runs the
    tests, builds a static binary and runs it as user `10014`.
 2. **Endpoints** come from [`.choreo/component.yaml`](.choreo/component.yaml):
-   - One Public endpoint per vendor (`aws-alerts`, `azure-alerts`, … `site24x7-alerts`), base path
-     `/api/wso2/v1/sre_alert_api/<vendor>`. Each has its own public URL; vendors POST to it with
-     nothing appended (a trailing `/` or extra path answers `404`). Choreo enables OAuth2 on new
-     Public endpoints by default, so set each endpoint's security to what that vendor can send.
-     Adding a vendor needs a new endpoint here as well as its transform.
+   - `sre-alert-api`, base path `/api/wso2/v1/sre_alert_api`, Public: the vendor webhooks. Its
+     resources come from [`openapi.yaml`](openapi.yaml), one `POST /<vendor>` per vendor, so the
+     gateway only accepts known vendor paths. Vendors POST to `<endpoint URL>/<vendor>`. Choreo
+     enables OAuth2 on new Public endpoints by default; turn it off (or set the security the
+     vendors can send). Adding a vendor needs its path in `openapi.yaml` as well as its transform.
    - `healthz`, Public; use `/healthz` as the readiness probe.
    - `livez`, Project; use `/livez` as the liveness probe.
 3. **Environment variables**: set everything from [Environment variables](#environment-variables).
