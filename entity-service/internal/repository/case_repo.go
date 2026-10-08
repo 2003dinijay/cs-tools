@@ -1829,7 +1829,96 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	} else {
 		cv.Tags = tags
 	}
+
+	linkedCRs, err := r.fetchCaseLinkedChangeRequests(ctx, r.db, id)
+	if err != nil {
+		return domain.CaseView{}, err
+	}
+	cv.LinkedChangeRequests = linkedCRs
+
+	linkedSRs, err := fetchCaseLinkedServiceRequests(ctx, r.db, id)
+	if err != nil {
+		return domain.CaseView{}, err
+	}
+	cv.LinkedServiceRequests = linkedSRs
+
 	return cv, nil
+}
+
+// fetchCaseLinkedChangeRequests reads the change requests linked to the case
+// (work_item.parent_id = caseID and work_item.type = 'CHANGE_REQUEST').
+// The change request customer-visibility policy (CRVisibility) is applied so
+// that restricted callers only receive customer-visible change requests.
+func (r *caseRepo) fetchCaseLinkedChangeRequests(ctx context.Context, q rowsQuerier, caseID string) ([]domain.LinkedChangeRequestRef, error) {
+	// crvis: guarded by r.vis.andClause below
+	baseQuery := `
+		SELECT wi.id, wi.number, wi.subject
+		FROM work_item wi
+		JOIN change_request cr ON cr.id = wi.id
+		WHERE wi.parent_id = $1::uuid
+		  AND wi.type = 'CHANGE_REQUEST'`
+	args := []any{caseID}
+	visClause, args := r.vis.andClause(ctx, "wi", "cr", args)
+	query := baseQuery + visClause + ` ORDER BY wi.created_on ASC, wi.number ASC`
+
+	rows, err := q.Query(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("fetch case linked change requests: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]domain.LinkedChangeRequestRef, 0)
+	for rows.Next() {
+		var id, number, subject string
+		if err := rows.Scan(&id, &number, &subject); err != nil {
+			return nil, fmt.Errorf("fetch case linked change requests: scan: %w", err)
+		}
+		var name *string
+		if subject != "" {
+			name = &subject
+		}
+		result = append(result, domain.LinkedChangeRequestRef{
+			ID:     id,
+			Number: number,
+			Name:   name,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fetch case linked change requests: %w", err)
+	}
+	return result, nil
+}
+
+// fetchCaseLinkedServiceRequests reads any service-request cases linked to this
+// case as their parent (work_item.parent_id = caseID and work_item.type = 'SERVICE_REQUEST').
+func fetchCaseLinkedServiceRequests(ctx context.Context, q rowsQuerier, caseID string) ([]domain.LinkedServiceRequestRef, error) {
+	rows, err := q.Query(ctx, `
+		SELECT wi.id, wi.number, wi.subject
+		FROM work_item wi
+		WHERE wi.parent_id = $1::uuid
+		  AND wi.type = 'SERVICE_REQUEST'
+		ORDER BY wi.created_on ASC, wi.number ASC`, caseID)
+	if err != nil {
+		return nil, fmt.Errorf("fetch case linked service requests: %w", err)
+	}
+	defer rows.Close()
+
+	result := make([]domain.LinkedServiceRequestRef, 0)
+	for rows.Next() {
+		var id, number, subject string
+		if err := rows.Scan(&id, &number, &subject); err != nil {
+			return nil, fmt.Errorf("fetch case linked service requests: scan: %w", err)
+		}
+		result = append(result, domain.LinkedServiceRequestRef{
+			ID:     id,
+			Number: number,
+			Name:   subject,
+		})
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("fetch case linked service requests: %w", err)
+	}
+	return result, nil
 }
 
 // fetchCaseTags reads the tags currently attached to the case (== work_item)
