@@ -505,6 +505,19 @@ vi.mock("@features/csm-cases/components/SetFixEtaDialog", () => ({
       >
         stub save fix eta
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          onSave({
+            bestCaseFixEta: "2099-06-16",
+            addPublicComment: true,
+            product: "WSO2 API Manager",
+            publicTicket: "https://github.com/example/example/issues/1",
+          })
+        }
+      >
+        stub save fix eta with share
+      </button>
     </div>
   ),
 }));
@@ -2225,7 +2238,7 @@ describe("CsmCaseDetailPage — set fix ETA dialog closes on successful save", (
 
     // Share-with-customer off: the payload carries estimates only, no
     // addPublicComment — exactly the reported repro path.
-    fireEvent.click(screen.getByRole("button", { name: /stub save fix eta/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^stub save fix eta$/i }));
     expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
     const [payload, mutateOptions] = patchCaseMutateMock.mock.calls[0] as [
       Record<string, unknown>,
@@ -2241,6 +2254,117 @@ describe("CsmCaseDetailPage — set fix ETA dialog closes on successful save", (
     expect(
       screen.queryByTestId("set-fix-eta-dialog-probe"),
     ).not.toBeInTheDocument();
+  });
+});
+
+// Reported live (digiops-cs#3319): "Share fix ETA with customer" is
+// ServiceNow-only, and the backend rejects the *entire* PATCH when
+// addPublicComment is present on a deployment that isn't — bundled into one
+// call, that silently blocked saving the ETA dates too, which is what "the
+// ETA is not added to the ticket" actually was. Fixed by sending the ETA and
+// the share as two separate PATCHes, so the ETA always saves on its own.
+describe("CsmCaseDetailPage — fix ETA and share-with-customer are two separate PATCHes", () => {
+  beforeEach(() => {
+    patchCaseMutateMock.mockClear();
+  });
+
+  it("saves the ETA first, then shares it, as two separate mutate calls", () => {
+    renderPage();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub save fix eta with share/i }),
+    );
+
+    // First call: the ETA alone, no addPublicComment -- this is the call
+    // that must succeed even when sharing can't.
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
+    const [etaPayload, etaOptions] = patchCaseMutateMock.mock.calls[0] as [
+      Record<string, unknown>,
+      { onSuccess: () => void },
+    ];
+    expect(etaPayload).toEqual({ bestCaseFixEta: "2099-06-16" });
+
+    act(() => {
+      etaOptions.onSuccess();
+    });
+
+    // The dialog closes on the ETA save alone -- it must not wait on the
+    // share, which is a second, independent call.
+    expect(
+      screen.queryByTestId("set-fix-eta-dialog-probe"),
+    ).not.toBeInTheDocument();
+
+    // Second call: the share, carrying addPublicComment/product/publicTicket
+    // plus the same ETA date (the backend requires at least one alongside it).
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(2);
+    const [sharePayload] = patchCaseMutateMock.mock.calls[1] as [
+      Record<string, unknown>,
+    ];
+    expect(sharePayload).toEqual({
+      bestCaseFixEta: "2099-06-16",
+      addPublicComment: true,
+      product: "WSO2 API Manager",
+      publicTicket: "https://github.com/example/example/issues/1",
+    });
+  });
+
+  it("keeps the ETA saved even when the share PATCH is rejected", () => {
+    renderPage();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub save fix eta with share/i }),
+    );
+
+    const [, etaOptions] = patchCaseMutateMock.mock.calls[0] as [
+      unknown,
+      { onSuccess: () => void },
+    ];
+    act(() => {
+      etaOptions.onSuccess();
+    });
+
+    // The ETA's own success toast already fired; the dialog is already
+    // closed. The share PATCH failing next (e.g. a non-ServiceNow data
+    // source rejecting addPublicComment) must surface its own error, not
+    // reopen the dialog or undo the ETA save.
+    const [, shareOptions] = patchCaseMutateMock.mock.calls[1] as [
+      unknown,
+      { onError: (err: unknown) => void },
+    ];
+    act(() => {
+      shareOptions.onError(new Error("addPublicComment is only supported for the ServiceNow data source"));
+    });
+
+    expect(
+      screen.queryByTestId("set-fix-eta-dialog-probe"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("never sends addPublicComment when share-with-customer is off", () => {
+    renderPage();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /^stub save fix eta$/i }));
+
+    // Only the plain ETA call -- no second, share-only call follows a save
+    // that never asked to share.
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
+    const [, etaOptions] = patchCaseMutateMock.mock.calls[0] as [
+      unknown,
+      { onSuccess: () => void },
+    ];
+    act(() => {
+      etaOptions.onSuccess();
+    });
+    expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -2271,7 +2395,7 @@ describe("CsmCaseDetailPage — fix-ETA stale-callback guard", () => {
     fireEvent.click(
       screen.getByRole("button", { name: /stub open set fix eta/i }),
     );
-    fireEvent.click(screen.getByRole("button", { name: /stub save fix eta/i }));
+    fireEvent.click(screen.getByRole("button", { name: /^stub save fix eta$/i }));
     expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
     const [, case1Options] = patchCaseMutateMock.mock.calls[0] as [
       unknown,

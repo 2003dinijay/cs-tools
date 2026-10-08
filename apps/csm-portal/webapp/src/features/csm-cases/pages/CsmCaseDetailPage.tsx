@@ -1887,9 +1887,42 @@ export default function CsmCaseDetailPage(): JSX.Element {
       // case is on screen. Closing the dialog on a stale success would shut
       // the *new* case's dialog and throw away whatever was typed into it.
       const submittedViewToken = caseViewTokenRef.current;
-      patchCase.mutate(patch as BeCaseUpdatePayload, {
+      const isStale = (): boolean => caseViewTokenRef.current !== submittedViewToken;
+
+      // Sent as two separate PATCHes, not one: addPublicComment (the "share
+      // with customer" step) is ServiceNow-only and the backend rejects the
+      // *entire* request when it's present on another data source — which,
+      // bundled into one call, silently blocked saving the ETA dates too.
+      // Splitting them means the ETA always saves on its own, and a sharing
+      // failure (on a deployment that doesn't support it) is reported as
+      // its own, separate, accurate error instead of masking a save that
+      // actually succeeded.
+      const { addPublicComment, product, publicTicket, ...etaOnly } = patch;
+
+      const shareWithCustomer = (): void => {
+        if (!addPublicComment) return;
+        patchCase.mutate(
+          { ...etaOnly, addPublicComment, product, publicTicket } as BeCaseUpdatePayload,
+          {
+            onSuccess: () => {
+              if (isStale()) return;
+              setFeedback({
+                message: "Fix ETA shared with the customer.",
+                severity: "success",
+                sticky: false,
+              });
+            },
+            onError: (err) => {
+              if (isStale()) return;
+              showError("Fix ETA saved, but could not share it with the customer.", err);
+            },
+          },
+        );
+      };
+
+      patchCase.mutate(etaOnly as BeCaseUpdatePayload, {
         onSuccess: () => {
-          if (caseViewTokenRef.current !== submittedViewToken) return;
+          if (isStale()) return;
           // Close on success, same as every other dialog on this page. The
           // PATCH lands either way, so leaving it open reads as a failed save
           // and invites a second submit of an estimate that's already stored.
@@ -1899,9 +1932,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
             severity: "success",
             sticky: false,
           });
+          shareWithCustomer();
         },
         onError: (err) => {
-          if (caseViewTokenRef.current !== submittedViewToken) return;
+          if (isStale()) return;
           showError("Could not set the fix ETA.", err);
         },
       });
