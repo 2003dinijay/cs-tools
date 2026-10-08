@@ -683,7 +683,12 @@ func (r *orgPlatformRepository) AttachPlaybook(ctx context.Context, req domain.A
 		SELECT $1::UUID, pb.id, $3::UUID
 		FROM   plg_playbook pb
 		WHERE  pb.id::TEXT = $2 AND pb.active
-		ON CONFLICT (org_platform_id, playbook_id) DO NOTHING
+		-- The WHERE repeats uq_plg_playbook_run_attached's own predicate: the
+		-- constraint is a PARTIAL unique index, and ON CONFLICT cannot infer a
+		-- partial index from its columns alone -- without it Postgres raises
+		-- 42P10, "no unique or exclusion constraint matching the ON CONFLICT
+		-- specification", and every attach fails.
+		ON CONFLICT (org_platform_id, playbook_id) WHERE detached_on IS NULL DO NOTHING
 		RETURNING id::TEXT`, pairingID, req.PlaybookID, uuidArg(actor)).Scan(&runID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Either it is already attached, or the playbook is absent/inactive. The
