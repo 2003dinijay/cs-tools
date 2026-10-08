@@ -5118,6 +5118,14 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >-
+            The case cannot move: ESCALATE on a case already at EL5, or DEESCALATE on a
+            case already at EL0. DEESCALATE always returns the case to EL0.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "500":
           description: Internal server error.
           content:
@@ -10397,6 +10405,14 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Case not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >-
+            The case cannot move: ESCALATE on a case already at EL5, or DEESCALATE on a
+            case already at EL0. DEESCALATE always returns the case to EL0.
           content:
             application/json:
               schema:
@@ -24029,7 +24045,7 @@ components:
 
     CaseEscalationHistory:
       type: object
-      required: [escalations, total, currentNotifiedUsers]
+      required: [escalations, total, currentNotifiedUsers, teamLeads]
       properties:
         escalations:
           type: array
@@ -24044,8 +24060,15 @@ components:
             $ref: '#/components/schemas/EscalationNotifiedUser'
           description: >-
             The notified-users list of the case's most recent escalation record (empty when the
-            case has never been escalated). Only someone on this list is authorized to
-            de-escalate the case's current level.
+            case has never been escalated).
+        teamLeads:
+          type: array
+          items:
+            $ref: '#/components/schemas/EscalationNotifiedUser'
+          description: >-
+            The leads of the case's account's CRE (ABT) team. Only these users may de-escalate
+            the case from the CSM portal. Empty when the account has no CRE team or the team
+            has no lead.
 
     CaseEscalationCreateRequest:
       description: >

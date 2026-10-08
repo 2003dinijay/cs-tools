@@ -991,19 +991,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// case_escalation/case_escalation_notification_list (migration 0054)
 	// now back both SearchEscalations and CreateEscalation on Postgres for
 	// real -- see EscalationRepository.CreateEscalation's own doc comment
-	// for the level-transition/notification-recipient rule this
-	// approximates. This supersedes an earlier unconditional
+	// for the level-transition/notification-recipient rule (a port of
+	// ServiceNow's EscalationNotificationUtils). This supersedes an earlier unconditional
 	// unavailableCaseEscalationService stand-in that predated the schema.
 	escalationNotifyCfg := repository.EscalationNotificationConfig{
-		EL1AmericasTLGroupID:     cfg.EscalationEL1AmericasTLGroupID,
-		EL2AmericasTUGroupID:     cfg.EscalationEL2AmericasTUGroupID,
-		EL2ServiceProductGroupID: cfg.EscalationEL2ServiceProductGroupID,
-		EL2IdentityServerGroupID: cfg.EscalationEL2IdentityServerGroupID,
-		EL2DefaultProductGroupID: cfg.EscalationEL2DefaultProductGroupID,
-		EL3CREHeadGroupID:        cfg.EscalationEL3CREHeadGroupID,
-		EL4CCOGroupID:            cfg.EscalationEL4CCOGroupID,
-		EL4CROGroupID:            cfg.EscalationEL4CROGroupID,
-		EL5CEOGroupID:            cfg.EscalationEL5CEOGroupID,
+		EL1AmericasTLEmails:           cfg.EscalationEL1AmericasTLEmails,
+		EL2AmericasTUEmails:           cfg.EscalationEL2AmericasTUEmails,
+		EL2ProductServiceEmail:        cfg.EscalationEL2ProductServiceEmail,
+		EL2ProductIdentityServerEmail: cfg.EscalationEL2ProductIdentityServerEmail,
+		EL2ProductDefaultEmail:        cfg.EscalationEL2ProductDefaultEmail,
 	}
 	escalationRepo := repository.NewEscalationRepository(repository.NewScoped(db), escalationNotifyCfg)
 	var activeEscalationSvc service.EscalationService
@@ -1019,8 +1015,23 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	default:
 		activeEscalationSvc = service.NewEscalationService(escalationRepo, userRepo, caseRepo, accessSvc)
 	}
+	// case.escalated is what emails an escalation's notification list --
+	// DATA_SOURCE=postgres only. Under dual-write the escalation is mirrored
+	// into ServiceNow, whose "Internal Escalation notification" flow (record
+	// create on sn_customerservice_case_escalation, discovery scripts 79/80)
+	// already mails it; publishing here too would send everything twice. The
+	// same split as the SR automation.
+	if cfg.DataSource == config.DataSourcePostgres {
+		activeEscalationSvc = service.WithEscalationNotices(activeEscalationSvc, eventPublisher)
+	}
 	escalationHandler := handler.NewEscalationHandler(activeEscalationSvc)
-	caseEscalationHandler := handler.NewCaseEscalationHandler(service.NewCaseEscalationService(activeEscalationSvc, activeCaseSvc))
+	caseEscalationSvc := service.NewCaseEscalationService(activeEscalationSvc, activeCaseSvc)
+	if db != nil {
+		// The ABT team leads (who may de-escalate) live in Postgres team data
+		// whatever DATA_SOURCE is.
+		caseEscalationSvc = service.WithCaseTeamLeads(caseEscalationSvc, escalationRepo)
+	}
+	caseEscalationHandler := handler.NewCaseEscalationHandler(caseEscalationSvc)
 
 	changeRequestRepo := repository.NewChangeRequestRepository(repository.NewScoped(db), crVisibility)
 	var activeChangeRequestSvc service.ChangeRequestService

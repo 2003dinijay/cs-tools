@@ -835,8 +835,8 @@ type CaseGithubIssueService interface {
 type CaseEscalationService interface {
 	// SearchCaseEscalations returns the full escalation history for the given
 	// case, newest first, plus CurrentNotifiedUsers (the most recent record's
-	// notified-users list — who is authorized to de-escalate the case's
-	// current level). A ValidationError is returned for a malformed case UUID.
+	// notified-users list) and TeamLeads (the case's ABT team leads, who may
+	// de-escalate it). A ValidationError is returned for a malformed case UUID.
 	SearchCaseEscalations(ctx context.Context, caseID string) (domain.CaseEscalationHistory, error)
 	// CreateCaseEscalation escalates or de-escalates the given case, then
 	// records a work note on the case (verified live against SN dev data that

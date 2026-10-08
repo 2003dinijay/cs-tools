@@ -7525,19 +7525,22 @@ type SearchEscalationsResponse struct {
 }
 
 // CaseEscalationHistory is the response for GET /cases/{id}/escalations: a
-// single case's full escalation history (newest first), plus who is
-// authorized to de-escalate its current level.
+// single case's full escalation history (newest first), who was notified of
+// its current level, and the team leads who may de-escalate it.
 type CaseEscalationHistory struct {
 	Escalations []Escalation `json:"escalations"`
 	Total       int          `json:"total"`
 	// CurrentNotifiedUsers is the NotifiedUsers list of the most recent
 	// record in Escalations (i.e. who was notified about the case's current
 	// escalation level). Always present (an empty array, never omitted/null)
-	// when the case has never been escalated. Only someone on this list is
-	// authorized to de-escalate the case's current level -- surfaced as its
-	// own field so callers don't each re-derive "the first record's notified
-	// list" independently.
+	// when the case has never been escalated.
 	CurrentNotifiedUsers []EscalationNotifiedUser `json:"currentNotifiedUsers"`
+	// TeamLeads are the leads of the case's account's CRE (ABT) team
+	// (team_member role 'lead' on account.cre_team_id) -- the only internal
+	// users who may de-escalate the case. Always present, an empty array when
+	// the account has no CRE team, the team has no lead, or the data source
+	// cannot resolve them.
+	TeamLeads []EscalationNotifiedUser `json:"teamLeads"`
 }
 
 // --- case-grouped time cards (ServiceNow data source only) ---

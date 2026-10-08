@@ -538,39 +538,25 @@ type Config struct {
 	SalesEntityClientSecret string
 	SalesEntityScopes       string
 
-	// Escalation* configure the fixed, deployment-specific notification
-	// recipient GROUPS EscalationService.CreateEscalation (Postgres data
-	// source) layers on top of the per-case-derived ones (account technical
-	// owner, CRE team lead, product routing, CSM) -- see that method's own
-	// doc comment for the full EL1..EL5 cumulative rule these feed. Each one
-	// is a "group".id (migration 0074), resolved to its real member list
-	// via team_member.group_id, NOT a single fixed address -- every
-	// configured tier notifies however many people are actually in that
-	// group. Every one of these is OPTIONAL: an unset/empty value means "no
-	// recipients from this slot," never a startup failure or a request
-	// error -- not every deployment configures every tier on day one, same
-	// reasoning CustomerRoles/CSEngineerRole's own doc comments give for
-	// org-specific vocabulary that doesn't belong hardcoded in this repo.
-	// None of these are required by Validate for that reason, though a SET
-	// value is still checked there for being a well-formed UUID (a
-	// misconfigured group id would otherwise silently resolve zero
-	// recipients instead of surfacing the typo at startup).
-	EscalationEL1AmericasTLGroupID string
-	EscalationEL2AmericasTUGroupID string
-	// EscalationEL2ServiceProductGroupID/EscalationEL2IdentityServerGroupID/
-	// EscalationEL2DefaultProductGroupID are the three product-routed EL2
-	// buckets: the case's deployed product's category/business_unit picks
-	// exactly one (SERVICE -> service; SOFTWARE with business_unit IAM ->
-	// identity server; everything else, including no business_unit -> the
-	// software default). A case with no deployed product/product info at
-	// all gets none of the three, silently.
-	EscalationEL2ServiceProductGroupID string
-	EscalationEL2IdentityServerGroupID string
-	EscalationEL2DefaultProductGroupID string
-	EscalationEL3CREHeadGroupID        string
-	EscalationEL4CCOGroupID            string
-	EscalationEL4CROGroupID            string
-	EscalationEL5CEOGroupID            string
+	// Escalation* are the fixed EL1/EL2 case-escalation notification
+	// recipients EscalationService.CreateEscalation (Postgres data sources)
+	// adds to the per-case ones -- see EscalationRepository.CreateEscalation's
+	// doc comment for the full EL1..EL5 rule (EL3-EL5 come from the cre_head
+	// team position and the case_escalation_el4/el5 roles, not from config).
+	// Each is ServiceNow's matching x_wso2_customer_0.escalation.* system
+	// property, copied as it is: the two *_EMAILS are comma-separated lists,
+	// the rest one address each.
+	// Every one is OPTIONAL: unset means "no recipients from this slot",
+	// never a startup failure. A set value must look like an email address
+	// (Validate), since a typo would otherwise drop that tier silently.
+	EscalationEL1AmericasTLEmails []string
+	EscalationEL2AmericasTUEmails []string
+	// EscalationEL2Product*Email: exactly one of the three is notified at
+	// EL2, picked by the case's product (service / WSO2 Identity Server /
+	// anything else or no product).
+	EscalationEL2ProductServiceEmail        string
+	EscalationEL2ProductIdentityServerEmail string
+	EscalationEL2ProductDefaultEmail        string
 
 	// RedisURL/RedisAddr/RedisPassword configure the optional user cache in
 	// front of GET /users/{id} and GET /users/me (internal/cache), with the
@@ -704,15 +690,11 @@ func Load() *Config {
 		SalesEntityClientSecret:                       os.Getenv("SALES_ENTITY_CLIENT_SECRET"),
 		SalesEntityScopes:                             os.Getenv("SALES_ENTITY_SCOPES"),
 		CSMMigrationMembershipRegistrationEnabled:     envFlagOn("CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED"),
-		EscalationEL1AmericasTLGroupID:                os.Getenv("ESCALATION_EL1_AMERICAS_TL_GROUP_ID"),
-		EscalationEL2AmericasTUGroupID:                os.Getenv("ESCALATION_EL2_AMERICAS_TU_GROUP_ID"),
-		EscalationEL2ServiceProductGroupID:            os.Getenv("ESCALATION_EL2_SERVICE_PRODUCT_GROUP_ID"),
-		EscalationEL2IdentityServerGroupID:            os.Getenv("ESCALATION_EL2_IDENTITY_SERVER_GROUP_ID"),
-		EscalationEL2DefaultProductGroupID:            os.Getenv("ESCALATION_EL2_DEFAULT_PRODUCT_GROUP_ID"),
-		EscalationEL3CREHeadGroupID:                   os.Getenv("ESCALATION_EL3_CRE_HEAD_GROUP_ID"),
-		EscalationEL4CCOGroupID:                       os.Getenv("ESCALATION_EL4_CCO_GROUP_ID"),
-		EscalationEL4CROGroupID:                       os.Getenv("ESCALATION_EL4_CRO_GROUP_ID"),
-		EscalationEL5CEOGroupID:                       os.Getenv("ESCALATION_EL5_CEO_GROUP_ID"),
+		EscalationEL1AmericasTLEmails:                 splitComma(os.Getenv("ESCALATION_EL1_AMERICAS_TL_EMAILS")),
+		EscalationEL2AmericasTUEmails:                 splitComma(os.Getenv("ESCALATION_EL2_AMERICAS_TU_EMAILS")),
+		EscalationEL2ProductServiceEmail:              strings.TrimSpace(os.Getenv("ESCALATION_EL2_PRODUCT_EMAIL_SERVICE")),
+		EscalationEL2ProductIdentityServerEmail:       strings.TrimSpace(os.Getenv("ESCALATION_EL2_PRODUCT_EMAIL_IDENTITY_SERVER")),
+		EscalationEL2ProductDefaultEmail:              strings.TrimSpace(os.Getenv("ESCALATION_EL2_PRODUCT_EMAIL_DEFAULT")),
 		ServerReadTimeout:                             duration("SERVER_READ_TIMEOUT", DefaultServerReadTimeout),
 		ServerWriteTimeout:                            duration("SERVER_WRITE_TIMEOUT", DefaultServerWriteTimeout),
 		RequestTimeout:                                duration("REQUEST_TIMEOUT", DefaultRequestTimeout),
@@ -1022,25 +1004,22 @@ func (c *Config) Validate() error {
 	if c.CSMPortalBackendClientID != "" && c.CSMPortalBackendClientID == c.CustomerPortalBackendClientID {
 		return fmt.Errorf("CSM_PORTAL_BACKEND_CLIENT_ID and CUSTOMER_PORTAL_BACKEND_CLIENT_ID must not be the same client id")
 	}
-	// Each Escalation*GroupID is optional (unset = no recipients from that
-	// slot, see the field's own doc comment) but, if SET, must be a
-	// well-formed "group".id -- otherwise a typo'd env var would silently
-	// resolve to zero recipients at request time instead of failing loudly
-	// at startup where it's actually actionable.
-	escalationGroupIDs := map[string]string{
-		"ESCALATION_EL1_AMERICAS_TL_GROUP_ID":     c.EscalationEL1AmericasTLGroupID,
-		"ESCALATION_EL2_AMERICAS_TU_GROUP_ID":     c.EscalationEL2AmericasTUGroupID,
-		"ESCALATION_EL2_SERVICE_PRODUCT_GROUP_ID": c.EscalationEL2ServiceProductGroupID,
-		"ESCALATION_EL2_IDENTITY_SERVER_GROUP_ID": c.EscalationEL2IdentityServerGroupID,
-		"ESCALATION_EL2_DEFAULT_PRODUCT_GROUP_ID": c.EscalationEL2DefaultProductGroupID,
-		"ESCALATION_EL3_CRE_HEAD_GROUP_ID":        c.EscalationEL3CREHeadGroupID,
-		"ESCALATION_EL4_CCO_GROUP_ID":             c.EscalationEL4CCOGroupID,
-		"ESCALATION_EL4_CRO_GROUP_ID":             c.EscalationEL4CROGroupID,
-		"ESCALATION_EL5_CEO_GROUP_ID":             c.EscalationEL5CEOGroupID,
+	// Each Escalation* recipient is optional (unset = no recipients from
+	// that slot) but, if SET, must look like an email address -- a typo
+	// would otherwise drop that tier silently at escalation time instead of
+	// failing at startup where it is actionable.
+	escalationEmails := map[string][]string{
+		"ESCALATION_EL1_AMERICAS_TL_EMAILS":            c.EscalationEL1AmericasTLEmails,
+		"ESCALATION_EL2_AMERICAS_TU_EMAILS":            c.EscalationEL2AmericasTUEmails,
+		"ESCALATION_EL2_PRODUCT_EMAIL_SERVICE":         {c.EscalationEL2ProductServiceEmail},
+		"ESCALATION_EL2_PRODUCT_EMAIL_IDENTITY_SERVER": {c.EscalationEL2ProductIdentityServerEmail},
+		"ESCALATION_EL2_PRODUCT_EMAIL_DEFAULT":         {c.EscalationEL2ProductDefaultEmail},
 	}
-	for envVar, value := range escalationGroupIDs {
-		if value != "" && !validate.IsUUID(value) {
-			return fmt.Errorf("%s %q is not a valid UUID", envVar, value)
+	for envVar, values := range escalationEmails {
+		for _, v := range values {
+			if v != "" && (strings.ContainsAny(v, " \t,;") || strings.Count(v, "@") != 1 || strings.HasPrefix(v, "@") || strings.HasSuffix(v, "@")) {
+				return fmt.Errorf("%s %q is not an email address", envVar, v)
+			}
 		}
 	}
 	if v := c.IncidentDefaultServiceID; v != "" && !validate.IsUUID(v) {
