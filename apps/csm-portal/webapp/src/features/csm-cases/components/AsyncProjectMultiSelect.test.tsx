@@ -34,15 +34,22 @@ afterEach(() => {
 const P1 = { id: "p1", name: "Customer 3 Project - Managed Cloud Subscription" };
 const P2 = { id: "p2", name: "CP Ph2 Test Project - Managed Cloud Subscription" };
 
+/** `mockImplementation`, not `mockReturnValue` — returns a fresh
+ * array/object on every call, like the real `useInfiniteProjectSearch`
+ * (backed by TanStack Query's own `.flatMap()`) does on every render, even
+ * when nothing meaningful actually changed. Needed to catch the class of bug
+ * below: a memo that (incorrectly) depends on this hook's own return-value
+ * identity recomputes on every render, not only when something it actually
+ * cares about changes. */
 function mockResults(projects: Array<{ id: string; name: string }>): void {
-  mockedUseInfiniteProjectSearch.mockReturnValue({
-    projects,
+  mockedUseInfiniteProjectSearch.mockImplementation(() => ({
+    projects: projects.map((p) => ({ ...p })),
     isFetching: false,
     isFetchingNextPage: false,
     hasNextPage: false,
     isError: false,
     fetchNextPage: vi.fn(),
-  });
+  }));
 }
 
 /** Mirrors how a real caller wires this up (CasesFilterBar, etc.) — a plain
@@ -114,6 +121,33 @@ describe("AsyncProjectMultiSelect", () => {
     // Picking clears the box again, so the summary is back — now for both.
     expect(input.value).toBe("");
     expect(screen.getByText(`${P1.name}, ${P2.name}`)).toBeInTheDocument();
+  });
+
+  it("does not wipe the typed search text on every re-render, even with a project already selected", () => {
+    // Regression test: MUI's Autocomplete resets its own (uncontrolled)
+    // input text whenever its `value` prop gets a NEW reference while
+    // focused (see useAutocomplete's own value-changed effect). This
+    // component's `value` is `selectedOptions`, derived via useMemo from
+    // `nameById`, which used to get a brand new Map identity on every
+    // render purely because `projects` (this mock) returns a fresh
+    // array/objects each call — found live as the typed search term getting
+    // deleted while the user was still typing it, with a project already
+    // selected. mockResults' own mockImplementation reproduces that
+    // realistic non-referentially-stable hook output; selectedOptions must
+    // stay referentially stable regardless, so MUI never sees its `value`
+    // prop "change" when nothing the user picked actually did.
+    mockResults([P1, P2]);
+    render(<Harness initial={["p1"]} />);
+
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    fireEvent.focus(input);
+    fireEvent.mouseDown(input);
+    fireEvent.change(input, { target: { value: "m" } });
+    fireEvent.change(input, { target: { value: "ma" } });
+    fireEvent.change(input, { target: { value: "man" } });
+    fireEvent.change(input, { target: { value: "managed" } });
+
+    expect(input.value).toBe("managed");
   });
 
   it("offers the top real search match first, not the already-selected project pinned ahead of it", () => {

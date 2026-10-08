@@ -103,9 +103,22 @@ export default function AsyncProjectMultiSelect({
     return m;
   }, [nameSeed, projects, pickedNames]);
 
+  // Stable identity unless the selected ids themselves, or one of their
+  // resolved names, actually changes — deliberately NOT keyed on `values`/
+  // `nameById` directly, since `nameById` gets a new Map identity on every
+  // new page of search results (see its own useMemo above), including ones
+  // about other, not-yet-selected projects. MUI's Autocomplete resets its
+  // own (uncontrolled) input text whenever the `value` prop's reference
+  // changes while focused (see useAutocomplete's own value-changed effect,
+  // `if (focused && !valueChange) return;`) — so without this, typing a
+  // search term got wiped out from under the user mid-search the moment a
+  // new page of results came back, found live.
+  const selectedKey = values.join("\u0000");
+  const selectedNamesKey = values.map((v) => nameById.get(v) ?? v).join("\u0000");
   const selectedOptions: ProjectOption[] = useMemo(
     () => values.map((v) => ({ id: v, name: nameById.get(v) ?? v })),
-    [values, nameById],
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- selectedKey/selectedNamesKey capture everything that should trigger a recompute; depending on values/nameById directly would defeat the point of this memo (see comment above).
+    [selectedKey, selectedNamesKey],
   );
 
   // The dropdown's own pool is just the live search results — not the
