@@ -371,3 +371,113 @@ func (s *Store) LastCalled(ctx context.Context, emails []string) (map[string]tim
 	}
 	return out, nil
 }
+
+// The Special Ops (SME) page's keys (sme.go). Shared by nothing else, and not
+// per ladder: only the SRE engine places an SME page.
+const (
+	// smePagePrefix + "<incidentId>:<smeTeam>" is one open SME page, SETNX'd
+	// so a second alert for the same team while it is open is ignored. The
+	// value is the alert's changedOn.
+	smePagePrefix = "incident:escalation:sme:page:"
+	// smeOpenPrefix + "<incidentId>" is the set of SME teams with an open
+	// page on the incident, so an assignment can close them all.
+	smeOpenPrefix = "incident:escalation:sme:open:"
+	// smeClosedPrefix + "<incidentId>" is the latest changedOn among the
+	// pages an assignment closed. An alert timed at or before it is a replay
+	// of one already answered, not a new alert.
+	smeClosedPrefix = "incident:escalation:sme:closed:"
+	// smeClosedTTL outlives any redelivery or dead-letter retry.
+	smeClosedTTL = 7 * 24 * time.Hour
+)
+
+func smePageKey(incidentID, team string) string { return smePagePrefix + incidentID + ":" + team }
+
+// OpenSMEPage opens the incident's page for one SME team, reporting false when
+// one is already open.
+func (s *Store) OpenSMEPage(ctx context.Context, incidentID, team string, changedOn time.Time, ttl time.Duration) (bool, error) {
+	opened, err := s.rdb.SetNX(ctx, smePageKey(incidentID, team), changedOn.UTC().Format(time.RFC3339Nano), ttl).Result()
+	if err != nil || !opened {
+		return opened, err
+	}
+	open := smeOpenPrefix + incidentID
+	if err := s.rdb.SAdd(ctx, open, team).Err(); err != nil {
+		return true, err
+	}
+	return true, s.rdb.Expire(ctx, open, ttl).Err()
+}
+
+// CloseSMEPage drops one team's page, for an alert that paged nobody.
+func (s *Store) CloseSMEPage(ctx context.Context, incidentID, team string) error {
+	if err := s.rdb.Del(ctx, smePageKey(incidentID, team)).Err(); err != nil {
+		return err
+	}
+	return s.rdb.SRem(ctx, smeOpenPrefix+incidentID, team).Err()
+}
+
+// CloseSMEPages closes every open SME page on the incident -- an engineer has
+// been assigned -- and remembers the latest alert it closed, so a replay of
+// that alert cannot page again. Reports how many it closed.
+func (s *Store) CloseSMEPages(ctx context.Context, incidentID string) (int, error) {
+	open := smeOpenPrefix + incidentID
+	teams, err := s.rdb.SMembers(ctx, open).Result()
+	if err != nil || len(teams) == 0 {
+		return 0, err
+	}
+	latest, err := s.SMEClosedThrough(ctx, incidentID)
+	if err != nil {
+		return 0, err
+	}
+	keys := make([]string, 0, len(teams)+1)
+	for _, team := range teams {
+		key := smePageKey(incidentID, team)
+		keys = append(keys, key)
+		raw, err := s.rdb.Get(ctx, key).Result()
+		if errors.Is(err, redis.Nil) {
+			continue
+		}
+		if err != nil {
+			return 0, err
+		}
+		if at, perr := time.Parse(time.RFC3339Nano, raw); perr == nil && at.After(latest) {
+			latest = at
+		}
+	}
+	if !latest.IsZero() {
+		if err := s.rdb.Set(ctx, smeClosedPrefix+incidentID, latest.UTC().Format(time.RFC3339Nano), smeClosedTTL).Err(); err != nil {
+			return 0, err
+		}
+	}
+	keys = append(keys, open)
+	if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
+		return 0, err
+	}
+	return len(teams), nil
+}
+
+// SMEClosedThrough is the latest alert an assignment has closed on the
+// incident, zero when none.
+func (s *Store) SMEClosedThrough(ctx context.Context, incidentID string) (time.Time, error) {
+	raw, err := s.rdb.Get(ctx, smeClosedPrefix+incidentID).Result()
+	if errors.Is(err, redis.Nil) {
+		return time.Time{}, nil
+	}
+	if err != nil {
+		return time.Time{}, err
+	}
+	at, err := time.Parse(time.RFC3339Nano, raw)
+	if err != nil {
+		// Unreadable is treated as absent: a later alert still pages.
+		return time.Time{}, nil
+	}
+	return at, nil
+}
+
+// testCallClaimPrefix + "<userId>" holds one paging-number test call per
+// person at a time (testcall.go).
+const testCallClaimPrefix = "paging:testcall:"
+
+// ClaimTestCall takes the person's test-call slot for ttl, reporting false
+// while a recent one still holds it.
+func (s *Store) ClaimTestCall(ctx context.Context, userID string, ttl time.Duration) (bool, error) {
+	return s.rdb.SetNX(ctx, testCallClaimPrefix+userID, "1", ttl).Result()
+}

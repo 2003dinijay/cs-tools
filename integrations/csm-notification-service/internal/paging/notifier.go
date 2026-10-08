@@ -130,7 +130,7 @@ func (logNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) (De
 		"incident", plan.Trigger.Number,
 		"priority", plan.Trigger.Priority,
 		"rung", call.Level.String(),
-		"role", call.Level.RoleIn(plan.Trigger.Routing.Ladder),
+		"role", rungRole(call.Level, plan.Trigger.Routing),
 		"attempt", call.Ordinal,
 		"name", call.Recipient.Name,
 		"shift", call.Recipient.ShiftCode,
@@ -273,7 +273,7 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 	alert := notifications.EscalationAlert{
 		Audience:      room,
 		Rung:          call.Level.String(),
-		RungRole:      call.Level.RoleIn(t.Routing.Ladder),
+		RungRole:      rungRole(call.Level, t.Routing),
 		Attempt:       call.Ordinal,
 		Priority:      t.Priority,
 		IncidentRef:   t.caseRef(),

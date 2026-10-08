@@ -56,6 +56,10 @@ type memStore struct {
 	assignees map[string]string
 	// claims are due calls a replica has taken.
 	claims map[string]bool
+	// smePages are the open SME pages, keyed by smeKey, holding the press
+	// time; smeClosed is the latest press an assignment closed, per incident.
+	smePages  map[string]time.Time
+	smeClosed map[string]time.Time
 }
 
 func (m *memStore) ClaimCall(_ context.Context, member string, _ time.Duration) (bool, error) {
@@ -102,6 +106,46 @@ func (m *memStore) LastCalled(_ context.Context, emails []string) (map[string]ti
 		}
 	}
 	return out, nil
+}
+
+// smeKey is one open SME page in memStore.smePages.
+func smeKey(incidentID, team string) string { return incidentID + "|" + team }
+
+func (m *memStore) OpenSMEPage(_ context.Context, incidentID, team string, at time.Time, _ time.Duration) (bool, error) {
+	if m.smePages == nil {
+		m.smePages = map[string]time.Time{}
+	}
+	if _, open := m.smePages[smeKey(incidentID, team)]; open {
+		return false, nil
+	}
+	m.smePages[smeKey(incidentID, team)] = at
+	return true, nil
+}
+
+func (m *memStore) CloseSMEPage(_ context.Context, incidentID, team string) error {
+	delete(m.smePages, smeKey(incidentID, team))
+	return nil
+}
+
+func (m *memStore) CloseSMEPages(_ context.Context, incidentID string) (int, error) {
+	n := 0
+	for k, at := range m.smePages {
+		if strings.HasPrefix(k, incidentID+"|") {
+			if m.smeClosed == nil {
+				m.smeClosed = map[string]time.Time{}
+			}
+			if at.After(m.smeClosed[incidentID]) {
+				m.smeClosed[incidentID] = at
+			}
+			delete(m.smePages, k)
+			n++
+		}
+	}
+	return n, nil
+}
+
+func (m *memStore) SMEClosedThrough(_ context.Context, incidentID string) (time.Time, error) {
+	return m.smeClosed[incidentID], nil
 }
 
 func newMemStore() *memStore {

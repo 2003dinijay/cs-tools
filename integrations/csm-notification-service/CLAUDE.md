@@ -406,6 +406,54 @@ per-plan check). An elevation never restarts an SRE team's ladder: its clock
 does not depend on priority. The voice message and card say "assign the
 incident to yourself", and the rule is reported as `SRE_TIERS`.
 
+**SaaS and IaaS SRE are separate chains.** SRE has three sub-teams, each with
+its own L1 -> L2 -> L3: SaaS SRE (apollo, artemis; rota `SRE_SAAS`; zones
+TZ1-TZ3), IaaS SRE (`iaas`, type `sre-iaas`, assignment group "SRE IaaS";
+rota `SRE_IAAS`; Day/Night zones) and PaaS (none yet). The catalogue carries
+`rotaCode` on teams and zones; the engine stamps the incident's rota on the
+routing context (`RoutingContext.Rota`, from `TeamScheduleResolver.SRERota`):
+its own SRE team's rota, or `sre.teams.defaultRota` (default `SRE_SAAS`) for an
+incident with no SRE team (a case S0, a team-less monitoring alert). Only SRE
+windows whose zone is on that rota are read, so a SaaS incident never reaches
+an IaaS engineer or the other way round. A catalogue with no rota codes at all
+(an entity-service from before rotas) reads every SRE window, as before. The
+card's rung, the voice message and the work note name the chain ("SaaS SRE",
+"IaaS SRE"); with no rota they read exactly as before.
+
+### The Special Ops (SME) page (`sme.go`)
+
+entity-service publishes `incident.special_ops_alert` on the operations topic
+(`sre-events`) whenever an incident's assignment group changes **into** a
+Special Ops group, however it changed -- the "Escalate to Special Ops Team"
+button today -- and only when it has `SRE_EVENT_HUB_TOPIC` set. Here it arrives
+through the dispatcher's sre-events consumer (`HandleShared`), which hands it
+to the SRE engine (`Dispatcher.WithSpecialOpsPage` -> `Engine.HandleSpecialOpsAlert`);
+the paging engines' own consumers ignore the type, even when
+`INCIDENT_EVENT_HUB_TOPIC` is the same topic, so one alert pages once. The
+engine is built after the consumers start, so `main.go` calls
+`DeferSpecialOpsPage` first and an early alert waits for it. Off unless the
+file's `sme.enabled`:
+
+- **Gate**: the group the incident left (`previousAssignmentGroupName`, else
+  its id, through `sre.teams.aliases`) must be a SaaS SRE team (`SaaSSRETeam`:
+  its rota is `SRE_SAAS`; without rota codes, an SRE team not typed
+  `sre-iaas`). IaaS, CRE and unknown groups are logged and ignored.
+- The running SRE chain is stopped (`Escalated to SME`, the usual summary).
+- The SME team is the payload's `smeTeam`, else `sme.teams[teamKey]`; neither
+  is `NO_SME_TEAM` on the work note.
+- **One page**: whoever is on duty at `changedOn` on an SME-family window of
+  that team, longest since last called (the shared last-called hash), then
+  email. Over `sme.channel` (log/chat/call/both, `sme.chat`,
+  `sme.safety.allowedNumbers`), phone numbers as the ladders get them. A work
+  note says who was paged for which team and window, or why nobody was
+  (`NO_RECIPIENTS`, `NO_NUMBER`, `NUMBER_NOT_ALLOWED`, `CALL_FAILED`).
+- **Dedup**: a SETNX key per (incident, SME team), 24 h: the same team alerted
+  again while open is ignored, another team gets its own call. A page that
+  reached nobody is released. `incident.assigned` (incident topic, SRE engine)
+  closes every page on the incident and records the latest alert closed, so a
+  replay of it is ignored while a later one pages again.
+- **Not built**: the button-requires-an-assignee rule (M2) is deferred.
+
 ### Case Paging from customer cases (`cases.go`)
 
 The rules are `task-call-alert-flow/Case Paging Rules.xlsx` (agreed 2026-10-07),
@@ -493,6 +541,27 @@ named in `escalation.yaml` is never replaced; a lookup that fails, times out
 or is not E.164 leaves that one person `NO_NUMBER` and never fails the tier.
 `phones.source: none` turns it off. Nothing is persisted outside the plan, and
 the number is never logged.
+
+**Paging numbers** are the fallback. A lead or admin may store a paging-only
+number for somebody in CSM (entity-service's `paging_contact`); a recipient
+whose profile has no number is called on it (`ProfilePhoneResolver.WithPagingContacts`,
+one batched `GET /team-schedule/paging-contacts?emails=` per rung, 3 s). Order:
+a number in `escalation.yaml`, then the phone book, then the profile, then the
+paging number. A failed lookup leaves them `NO_NUMBER`, as before. Applies to
+the CRE and SRE ladders and the SME page alike.
+
+**Test calls** (`testcall.go`): `paging.test_call_requested` (entity-service,
+on the main topic, `entityId` = userId) reaches `dispatch` and is handed to
+`paging.TestCaller` (wired in `main.go` when Redis and `CUSTOMER_ENTITY_BASE_URL`
+are set). One request per person per 2 minutes (Redis SETNX); the file's
+`testCall` section (`enabled`, default on; `allowedNumbers`, empty = any) and
+`CALL_SENDING_ENABLED` gate it, and a refusal is reported `failed`. One short
+call is placed and the event acknowledged; a goroutine on the server context
+asks Twilio for the call's status (`TwilioClient.GetCall`) after 60 s, then
+every 20 s up to 3 min (still in progress at the end is `completed`, anything
+else `no-answer`), and PUTs `completed`/`no-answer`/`busy`/`failed` to
+`/team-schedule/paging-contacts/{userId}/test-result` (three attempts). A
+restart during the wait leaves the status `pending` (accepted for phase 1).
 
 **Calls switch on when the ABT lead pool is verified.** Before any call is
 placed, `applySafety` asks the resolver for its whole lead pool

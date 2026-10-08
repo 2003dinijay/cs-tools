@@ -198,6 +198,14 @@ type Dispatcher struct {
 	// posture WithOnboarding's own cfg has.
 	frustrationDetector escalationDetector
 
+	// pagingTests places paging-number test calls; set via
+	// WithPagingTestCalls, nil when not configured.
+	pagingTests pagingTestCaller
+
+	// specialOps is the SME page for incident.special_ops_alert; see
+	// DeferSpecialOpsPage.
+	specialOps *specialOpsHook
+
 	// slaEngine is set via WithSLAEngine — nil (REDIS_ADDR/REDIS_URL unset)
 	// means handleCaseCreated/handleStatusChanged/handleCommentAdded skip
 	// their own SLA-tracking call entirely, same optional-feature posture as
@@ -343,6 +351,107 @@ func (d *Dispatcher) WithFrustrationDetection(detector escalationDetector) *Disp
 func (d *Dispatcher) WithSLAEngine(engine slaEngineService) *Dispatcher {
 	d.slaEngine = engine
 	return d
+}
+
+// pagingTestCaller places a paging-number test call; internal/paging's
+// TestCaller implements it.
+type pagingTestCaller interface {
+	HandleTestCall(ctx context.Context, p events.PagingTestCallRequestedPayload) error
+}
+
+// WithPagingTestCalls routes paging.test_call_requested to tc. Optional: a
+// deployment without it (no Redis, no entity-service) logs and acknowledges
+// the event.
+func (d *Dispatcher) WithPagingTestCalls(tc pagingTestCaller) *Dispatcher {
+	d.pagingTests = tc
+	return d
+}
+
+// handlePagingTestCall hands a "Test call" press to the tester.
+func (d *Dispatcher) handlePagingTestCall(ctx context.Context, raw json.RawMessage) error {
+	var p events.PagingTestCallRequestedPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("dispatch: decode paging.test_call_requested payload: %w", err)
+	}
+	if d.pagingTests == nil {
+		slog.WarnContext(ctx, "dispatch: paging test calls are not configured here; ignoring the request",
+			"userId", p.UserID)
+		return nil
+	}
+	return d.pagingTests.HandleTestCall(ctx, p)
+}
+
+// specialOpsPager places the SME page for incident.special_ops_alert; the SRE
+// paging engine (internal/paging) implements it.
+type specialOpsPager interface {
+	HandleSpecialOpsAlert(ctx context.Context, incidentID string, p events.IncidentSpecialOpsAlertPayload) error
+}
+
+// specialOpsHook holds the SME pager. The pager is the SRE paging engine,
+// which cmd/server builds after the sre-events consumers have started, so the
+// hook is set up before them (DeferSpecialOpsPage) and filled in later
+// (WithSpecialOpsPage): an alert arriving in between waits for it rather than
+// being acknowledged with nobody paged.
+type specialOpsHook struct {
+	ready chan struct{}
+	once  sync.Once
+	pager specialOpsPager
+}
+
+// DeferSpecialOpsPage makes incident.special_ops_alert wait until
+// WithSpecialOpsPage has been called. Call it before any consumer starts, and
+// always follow it with WithSpecialOpsPage (nil when there is no SME page).
+func (d *Dispatcher) DeferSpecialOpsPage() *Dispatcher {
+	d.specialOps = &specialOpsHook{ready: make(chan struct{})}
+	return d
+}
+
+// WithSpecialOpsPage routes incident.special_ops_alert to p; nil means no SME
+// page here, and the alert is logged and acknowledged. Only the first call
+// counts. Without DeferSpecialOpsPage it must run before any consumer starts.
+func (d *Dispatcher) WithSpecialOpsPage(p specialOpsPager) *Dispatcher {
+	if d.specialOps == nil {
+		d.specialOps = &specialOpsHook{ready: make(chan struct{})}
+	}
+	h := d.specialOps
+	h.once.Do(func() {
+		h.pager = p
+		close(h.ready)
+	})
+	return d
+}
+
+// handleSpecialOpsAlert hands an incident's move into a Special Ops group to
+// the SME page. This dispatcher path is the only one that pages for it: the
+// paging engines' own consumers ignore the type, even when they read the
+// same topic, so one alert is one page (the page's Redis dedup is a second
+// guard).
+func (d *Dispatcher) handleSpecialOpsAlert(ctx context.Context, entityID string, raw json.RawMessage) error {
+	var p events.IncidentSpecialOpsAlertPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("dispatch: decode incident.special_ops_alert payload: %w", err)
+	}
+	h := d.specialOps
+	if h == nil {
+		slog.InfoContext(ctx, "dispatch: no SME page configured here; ignoring the Special Ops alert",
+			"incidentId", p.IncidentID)
+		return nil
+	}
+	select {
+	case <-h.ready:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	if h.pager == nil {
+		slog.InfoContext(ctx, "dispatch: no SME page configured here; ignoring the Special Ops alert",
+			"incidentId", p.IncidentID)
+		return nil
+	}
+	id := entityID
+	if id == "" {
+		id = p.IncidentID
+	}
+	return h.pager.HandleSpecialOpsAlert(ctx, id, p)
 }
 
 // WithOnboarding configures handleProjectContactInvited (see
@@ -542,6 +651,10 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 		return d.handleSRAcknowledged(ctx, record, env.Payload)
 	case events.TypeSRCommentAdded:
 		return d.handleSRCommentAdded(ctx, record, env.Payload)
+	case events.TypePagingTestCallRequested:
+		return d.handlePagingTestCall(ctx, env.Payload)
+	case events.TypeIncidentSpecialOpsAlert:
+		return d.handleSpecialOpsAlert(ctx, env.EntityID, env.Payload)
 	case events.TypeSLATierReached:
 		// Published by internal/slaengine's own Engine.Tick (a poller, not
 		// a consumer of this topic) — nothing here reacts to it yet; it

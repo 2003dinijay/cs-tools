@@ -34,6 +34,14 @@ type PhoneLookup interface {
 	MobileNumber(ctx context.Context, email string) (string, error)
 }
 
+// PagingContactLookup returns the paging-only numbers a lead or admin stored
+// in CSM for a batch of people (entity-service's paging_contact), keyed by
+// lower-cased email; someone with none is absent. EntityClient.PagingPhones is
+// the real one.
+type PagingContactLookup interface {
+	PagingPhones(ctx context.Context, emails []string) (map[string]string, error)
+}
+
 // e164 is the format a call can be placed to, and the same rule the CSM Portal
 // profile form enforces (UserProfileModal's E164).
 var e164 = regexp.MustCompile(`^\+[1-9]\d{7,14}$`)
@@ -73,8 +81,12 @@ type profilePhone struct {
 // that is not E.164 leaves that one person without a number, which the plan
 // reports, and everyone else is still called.
 type ProfilePhoneResolver struct {
-	inner  Resolver
+	inner Resolver
+	// lookup reads the profile number; nil when SCIM is not configured.
 	lookup PhoneLookup
+	// paging is the fallback for a person whose profile has no number: the
+	// paging-only number stored in CSM. nil when not configured.
+	paging PagingContactLookup
 	now    func() time.Time
 
 	mu    sync.Mutex
@@ -88,21 +100,81 @@ func NewProfilePhoneResolver(inner Resolver, lookup PhoneLookup) *ProfilePhoneRe
 		cache: map[string]profilePhone{}}
 }
 
+// WithPagingContacts returns p with the paging-number fallback: a person whose
+// profile has no number is called on the paging-only number stored for them
+// in CSM, if any. The profile always wins; a number named in escalation.yaml
+// wins over both. A nil lookup leaves the fallback off.
+func (p *ProfilePhoneResolver) WithPagingContacts(l PagingContactLookup) *ProfilePhoneResolver {
+	p.paging = l
+	return p
+}
+
 // Resolve implements Resolver.
 func (p *ProfilePhoneResolver) Resolve(ctx context.Context, level Level, rc RoutingContext) ([]Recipient, error) {
 	recipients, err := p.inner.Resolve(ctx, level, rc)
 	if err != nil || len(recipients) == 0 {
 		return recipients, err
 	}
+	return p.fill(ctx, recipients), nil
+}
+
+// fill gives every recipient without a number one: their profile's, else
+// their paging number -- the latter for the whole batch in one lookup.
+func (p *ProfilePhoneResolver) fill(ctx context.Context, recipients []Recipient) []Recipient {
 	out := make([]Recipient, len(recipients))
 	copy(out, recipients)
+	var missing []int
 	for i := range out {
 		if strings.TrimSpace(out[i].Phone) != "" || strings.TrimSpace(out[i].Email) == "" {
 			continue
 		}
-		out[i].Phone = p.number(ctx, out[i].Email, out[i].Name)
+		if p.lookup != nil {
+			out[i].Phone = p.number(ctx, out[i].Email, out[i].Name)
+		}
+		if out[i].Phone == "" {
+			missing = append(missing, i)
+		}
 	}
-	return out, nil
+	if len(missing) > 0 && p.paging != nil {
+		p.fillPaging(ctx, out, missing)
+	}
+	return out
+}
+
+// fillPaging fills the recipients at missing from their paging contacts. A
+// lookup that fails or times out leaves them NO_NUMBER, as before the
+// fallback existed; it never fails the tier. Numbers are never logged.
+func (p *ProfilePhoneResolver) fillPaging(ctx context.Context, out []Recipient, missing []int) {
+	seen := map[string]bool{}
+	emails := make([]string, 0, len(missing))
+	for _, i := range missing {
+		e := strings.ToLower(strings.TrimSpace(out[i].Email))
+		if !seen[e] {
+			seen[e] = true
+			emails = append(emails, e)
+		}
+	}
+	lctx, cancel := context.WithTimeout(ctx, profilePhoneTimeout)
+	defer cancel()
+	numbers, err := p.paging.PagingPhones(lctx, emails)
+	if err != nil {
+		slog.WarnContext(ctx, "incident escalation: could not read paging numbers; recipients without a profile number stay without one",
+			"recipients", len(emails), "err", err)
+		return
+	}
+	for _, i := range missing {
+		n := strings.TrimSpace(numbers[strings.ToLower(strings.TrimSpace(out[i].Email))])
+		switch {
+		case n == "":
+		case !e164.MatchString(n):
+			slog.WarnContext(ctx, "incident escalation: recipient's paging number is not E.164; not dialling it",
+				"recipient", out[i].Name)
+		default:
+			out[i].Phone = n
+			slog.InfoContext(ctx, "incident escalation: no profile number; using the recipient's paging number",
+				"recipient", out[i].Name)
+		}
+	}
 }
 
 // RuleFor passes the wrapped resolver's rule lookup through. BuildPlan asks
@@ -142,6 +214,24 @@ func (p *ProfilePhoneResolver) LadderFor(ctx context.Context, rc RoutingContext)
 	return LadderCRE, nil
 }
 
+// SRERota passes the wrapped resolver's SRE rota through, for the same reason
+// as TeamFamily: hidden, every SRE chain would go unnamed.
+func (p *ProfilePhoneResolver) SRERota(ctx context.Context, rc RoutingContext) (string, error) {
+	if r, ok := p.inner.(SRERotaResolver); ok {
+		return r.SRERota(ctx, rc)
+	}
+	return "", nil
+}
+
+// SaaSSRETeam passes the Special Ops gate through. A wrapped resolver without
+// one gates every handoff out -- it cannot read an SME rota either.
+func (p *ProfilePhoneResolver) SaaSSRETeam(ctx context.Context, group string) (bool, error) {
+	if r, ok := p.inner.(SpecialistResolver); ok {
+		return r.SaaSSRETeam(ctx, group)
+	}
+	return false, nil
+}
+
 // LeadPool implements LeadPoolResolver when the wrapped resolver does, with
 // the pool's numbers filled in the same way a rung's are.
 func (p *ProfilePhoneResolver) LeadPool(ctx context.Context) ([]Recipient, error) {
@@ -153,14 +243,7 @@ func (p *ProfilePhoneResolver) LeadPool(ctx context.Context) ([]Recipient, error
 	if err != nil {
 		return nil, err
 	}
-	out := make([]Recipient, len(pool))
-	copy(out, pool)
-	for i := range out {
-		if strings.TrimSpace(out[i].Phone) == "" && strings.TrimSpace(out[i].Email) != "" {
-			out[i].Phone = p.number(ctx, out[i].Email, out[i].Name)
-		}
-	}
-	return out, nil
+	return p.fill(ctx, pool), nil
 }
 
 // errNoLeadPool: the wrapped resolver cannot name a lead pool.

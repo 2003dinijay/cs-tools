@@ -19,6 +19,7 @@ package paging
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -151,6 +152,80 @@ func TestProfilePhoneResolver(t *testing.T) {
 		}
 		if got[0].Phone != "" {
 			t.Errorf("a timed-out lookup must leave no number, got %q", got[0].Phone)
+		}
+	})
+}
+
+// fakePagingContacts stands in for entity-service's paging contacts.
+type fakePagingContacts struct {
+	numbers map[string]string
+	err     error
+	calls   int
+	asked   []string
+}
+
+func (f *fakePagingContacts) PagingPhones(_ context.Context, emails []string) (map[string]string, error) {
+	f.calls++
+	f.asked = append(f.asked, emails...)
+	return f.numbers, f.err
+}
+
+// The paging number is the fallback for a profile with none: profile first,
+// one batched lookup, and a failed lookup changes nothing.
+func TestProfilePhoneResolver_PagingNumberFallback(t *testing.T) {
+	ctx := context.Background()
+	inner := StaticResolver{ByLevel: map[Level][]Recipient{Level0: {
+		{Name: "Profiled", Email: "p@example.com"},
+		{Name: "Paging", Email: "Pg@example.com"},
+		{Name: "Bad", Email: "bad@example.com"},
+		{Name: "Nothing", Email: "n@example.com"},
+		{Name: "Head", Email: "head@example.com", Phone: "+94770000099"},
+	}}}
+	lookup := &fakeLookup{numbers: map[string]string{"p@example.com": "+94770000001"}}
+	contacts := &fakePagingContacts{numbers: map[string]string{
+		"p@example.com": "+94770000011", "pg@example.com": "+94770000012",
+		"bad@example.com": "0770000013", "head@example.com": "+94770000014",
+	}}
+
+	got, err := NewProfilePhoneResolver(inner, lookup).WithPagingContacts(contacts).Resolve(ctx, Level0, RoutingContext{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := phones(got)
+	for email, want := range map[string]string{
+		"p@example.com":    "+94770000001", // the profile wins
+		"Pg@example.com":   "+94770000012", // no profile number: the paging one
+		"bad@example.com":  "",             // not E.164: not dialled
+		"n@example.com":    "",             // neither: NO_NUMBER, as before
+		"head@example.com": "+94770000099", // named in escalation.yaml: wins over both
+	} {
+		if p[email] != want {
+			t.Errorf("%s = %q, want %q", email, p[email], want)
+		}
+	}
+	if contacts.calls != 1 {
+		t.Errorf("%d paging lookups; want one batch", contacts.calls)
+	}
+	if strings.Join(contacts.asked, ",") != "pg@example.com,bad@example.com,n@example.com" {
+		t.Errorf("asked for %v; want only those without a profile number", contacts.asked)
+	}
+
+	t.Run("a failed lookup leaves today's behaviour", func(t *testing.T) {
+		failing := &fakePagingContacts{err: errors.New("entity-service down")}
+		got, err := NewProfilePhoneResolver(inner, lookup).WithPagingContacts(failing).Resolve(ctx, Level0, RoutingContext{})
+		if err != nil {
+			t.Fatalf("a paging lookup failure failed the tier: %v", err)
+		}
+		p := phones(got)
+		if p["p@example.com"] != "+94770000001" || p["Pg@example.com"] != "" {
+			t.Errorf("numbers = %v; want the profile one only", p)
+		}
+	})
+
+	t.Run("without a profile directory the paging number still applies", func(t *testing.T) {
+		got, _ := NewProfilePhoneResolver(inner, nil).WithPagingContacts(contacts).Resolve(ctx, Level0, RoutingContext{})
+		if p := phones(got); p["p@example.com"] != "+94770000011" {
+			t.Errorf("p@example.com = %q; want its paging number", p["p@example.com"])
 		}
 	})
 }

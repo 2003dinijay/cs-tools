@@ -33,21 +33,14 @@ import (
 // them, plus one CRE window, whatever the stub holds otherwise. The windows
 // are reference data rather than something a test varies.
 func (s *stubScheduleReader) ScheduleCatalogue(context.Context) (scheduleCatalogue, error) {
+	if s.catalogue != nil {
+		return *s.catalogue, nil
+	}
 	var cat scheduleCatalogue
 	for _, t := range []struct{ key, family string }{
 		{"apollo", "SRE"}, {"artemis", "SRE"}, {"atlas", "CRE"},
 	} {
-		cat.Teams = append(cat.Teams, struct {
-			Key    string `json:"key"`
-			Name   string `json:"name"`
-			Family string `json:"family"`
-		}{t.key, t.key, t.family})
-	}
-	str := func(v string) *string {
-		if v == "" {
-			return nil
-		}
-		return &v
+		cat.Teams = append(cat.Teams, catalogueTeam{Key: t.key, Name: t.key, Family: t.family})
 	}
 	for _, sh := range []struct{ code, family, zone, tier string }{
 		{"SRE_TZ1_L1", "SRE", "TZ1", "L1"},
@@ -57,14 +50,17 @@ func (s *stubScheduleReader) ScheduleCatalogue(context.Context) (scheduleCatalog
 		{"SRE_TZ3", "SRE", "TZ3", ""},
 		{"CRE_MORNING", "CRE", "", ""},
 	} {
-		cat.Shifts = append(cat.Shifts, struct {
-			Code     string  `json:"code"`
-			Family   string  `json:"family"`
-			ZoneCode *string `json:"zoneCode,omitempty"`
-			Tier     *string `json:"tier,omitempty"`
-		}{sh.code, sh.family, str(sh.zone), str(sh.tier)})
+		cat.Shifts = append(cat.Shifts, catalogueShift{Code: sh.code, Family: sh.family, ZoneCode: optStr(sh.zone), Tier: optStr(sh.tier)})
 	}
 	return cat, nil
+}
+
+// optStr is nil for "", as the catalogue's optional fields arrive.
+func optStr(v string) *string {
+	if v == "" {
+		return nil
+	}
+	return &v
 }
 
 // sreTeams is the SRE half of the configuration: the two SRE-ABTs.
@@ -880,9 +876,30 @@ func TestConfig_LocalComposeFileLoads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(cfg.SRE.Teams.ABTs) != 2 || cfg.SRE.Timing.Policy().Levels[Level1].NotificationInterval != 5*time.Minute {
+	if len(cfg.SRE.Teams.ABTs) != 3 || cfg.SRE.Timing.Policy().Levels[Level1].NotificationInterval != 5*time.Minute {
 		t.Fatalf("sre section = %+v", cfg.SRE)
 	}
+	// "SRE IaaS" is the IaaS team's assignment group.
+	r := NewTeamScheduleResolver(&stubScheduleReader{}, resolverTeamsFor(cfg), nil)
+	if got := r.keyOf("SRE IaaS"); got != "iaas" {
+		t.Errorf(`"SRE IaaS" resolves to %q, want iaas`, got)
+	}
+	if r.defaultRota != RotaSRESaaS {
+		t.Errorf("defaultRota = %q, want %s", r.defaultRota, RotaSRESaaS)
+	}
+	// The local stack logs the SME page rather than calling anybody.
+	if !cfg.SME.Enabled || cfg.SME.Channel != ChannelLog {
+		t.Errorf("sme section = %+v; want enabled on the log channel", cfg.SME)
+	}
+}
+
+// resolverTeamsFor merges the two sections the way cmd/server does.
+func resolverTeamsFor(cfg Config) TeamKeys {
+	teams := cfg.CRE.Teams
+	teams.SRE = cfg.SRE.Teams.ABTs
+	teams.Aliases = cfg.SRE.Teams.Aliases
+	teams.DefaultRota = cfg.SRE.Teams.DefaultRota
+	return teams
 }
 
 // The log channel names each rung the way its own ladder does: an SRE rung is

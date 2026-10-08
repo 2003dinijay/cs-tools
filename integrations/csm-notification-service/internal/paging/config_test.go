@@ -412,7 +412,8 @@ func TestLoadConfig_ExampleNamesTheRealABTTeams(t *testing.T) {
 	sre, _ := cfg.For(LadderKeySRE)
 
 	wantCRE := []string{"atlas", "castor", "draco", "phoenix", "rigel", "sirius", "vega"}
-	wantSRE := []string{"apollo", "artemis"}
+	// SaaS SRE's two teams and IaaS SRE's one (each pages its own rota).
+	wantSRE := []string{"apollo", "artemis", "iaas"}
 	if !equalStringSets(cre.Teams.ABTs, wantCRE) {
 		t.Errorf("cre-abt = %v, want %v", cre.Teams.ABTs, wantCRE)
 	}

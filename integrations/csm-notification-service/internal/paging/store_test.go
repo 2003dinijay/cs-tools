@@ -264,3 +264,44 @@ func TestParseWakeMember(t *testing.T) {
 		})
 	}
 }
+
+// The SME page's dedup against a real Redis: one open page per incident and
+// team, closed together by an assignment, which remembers the latest press.
+func TestStore_SMEPages(t *testing.T) {
+	s, closeFn := testStore(t)
+	defer closeFn()
+	ctx := context.Background()
+	id := "test-sme-" + time.Now().Format("150405.000000000")
+	at := time.Date(2026, 10, 8, 4, 30, 0, 0, time.UTC)
+	defer func() {
+		_ = s.rdb.Del(ctx, smePageKey(id, "asgardeo"), smePageKey(id, "choreo"),
+			smeOpenPrefix+id, smeClosedPrefix+id).Err()
+	}()
+
+	for _, c := range []struct {
+		team string
+		want bool
+	}{{"asgardeo", true}, {"asgardeo", false}, {"choreo", true}} {
+		got, err := s.OpenSMEPage(ctx, id, c.team, at, time.Minute)
+		if err != nil || got != c.want {
+			t.Fatalf("OpenSMEPage(%s) = %v, %v; want %v", c.team, got, err, c.want)
+		}
+	}
+	if err := s.CloseSMEPage(ctx, id, "choreo"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := s.OpenSMEPage(ctx, id, "choreo", at.Add(time.Minute), time.Minute); !got {
+		t.Fatal("a released page could not be opened again")
+	}
+	n, err := s.CloseSMEPages(ctx, id)
+	if err != nil || n != 2 {
+		t.Fatalf("CloseSMEPages = %d, %v; want 2", n, err)
+	}
+	closed, err := s.SMEClosedThrough(ctx, id)
+	if err != nil || !closed.Equal(at.Add(time.Minute)) {
+		t.Fatalf("SMEClosedThrough = %v, %v; want the latest press", closed, err)
+	}
+	if got, _ := s.OpenSMEPage(ctx, id, "asgardeo", at.Add(time.Hour), time.Minute); !got {
+		t.Fatal("a closed page could not be opened by a later press")
+	}
+}

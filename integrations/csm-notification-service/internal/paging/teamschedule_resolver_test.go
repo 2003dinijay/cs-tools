@@ -33,6 +33,8 @@ type stubScheduleReader struct {
 	onDuty     []onDutyAssignment
 	membersErr error
 	onDutyErr  error
+	// catalogue replaces the default SRE catalogue (sre_test.go) when set.
+	catalogue *scheduleCatalogue
 
 	gotTeamKeys []string
 	gotRoles    []string

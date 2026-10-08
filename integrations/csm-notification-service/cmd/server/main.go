@@ -601,6 +601,41 @@ func main() {
 		}
 	}
 
+	// Paging-number test calls (paging.test_call_requested, on this main
+	// topic). Wired before the main consumer starts, like WithSLAEngine. Needs
+	// Redis (one test call per person at a time) and entity-service (where
+	// the result is written); without them the event is acknowledged and
+	// logged.
+	if redisClient != nil && os.Getenv("CUSTOMER_ENTITY_BASE_URL") != "" {
+		testCallCfg, err := loadTestCallConfig()
+		if err != nil {
+			// The file decides what gets dialled; a broken one dials nothing.
+			slog.Error("invalid escalation configuration; paging test calls are reported failed", "err", err)
+			off := false
+			testCallCfg.Enabled = &off
+		}
+		tester := paging.NewTestCaller(ctx, twilioClient, paging.NewEntityClient(paging.EntityConfig{
+			BaseURL:      os.Getenv("CUSTOMER_ENTITY_BASE_URL"),
+			TokenURL:     os.Getenv("OAUTH2_TOKEN_URL"),
+			ClientID:     os.Getenv("OAUTH2_CLIENT_ID"),
+			ClientSecret: os.Getenv("OAUTH2_CLIENT_SECRET"),
+			Scopes:       splitComma(os.Getenv("CUSTOMER_ENTITY_SCOPES")),
+		}), paging.NewStore(redisClient), testCallCfg, callSendingEnabled)
+		dispatcher = dispatcher.WithPagingTestCalls(tester)
+		slog.Info("paging test calls are enabled", "enabled", testCallCfg.On(),
+			"allowListed", len(testCallCfg.AllowedNumbers) > 0, "sending", callSendingEnabled)
+	} else {
+		slog.Warn("paging test calls need Redis and CUSTOMER_ENTITY_BASE_URL; paging.test_call_requested will be ignored")
+	}
+
+	// incident.special_ops_alert (sre-events) pages the SME through the SRE
+	// engine, which is built further down, after the consumers start; until
+	// it is settled below, such an alert waits rather than being dropped.
+	dispatcher = dispatcher.DeferSpecialOpsPage()
+	// smePager is the SRE engine when it runs with sme.enabled; settled into
+	// the dispatcher once the escalation block below is done.
+	var smePager *paging.Engine
+
 	mainConsumers := startConsumers(ctx, "main", eventBusCfg, consumerGroup, mainConsumerCount, dispatcher.Handle, toDeadLetter)
 	dlqConsumers := startConsumers(ctx, "dlq", dlqCfg, dlqConsumerGroup, dlqConsumerCount, dispatcher.Handle, nil)
 	// Same dispatcher as the case consumers: it already routes on the
@@ -811,19 +846,35 @@ func main() {
 			// there through the same SCIM operations service and OAuth2 app
 			// the onboarding flow uses. A number named in escalation.yaml
 			// (the heads) still wins.
+			//
+			// When the profile has no number, the paging-only number a lead or
+			// admin stored in CSM (entity-service's paging contacts) is used
+			// instead -- never ahead of the profile.
 			if creCfg.PhoneSource() == paging.PhoneSourceProfile {
+				var profiles paging.PhoneLookup
 				if scimURL := strings.TrimSpace(os.Getenv("SCIM_BASE_URL")); scimURL == "" {
 					slog.Warn("incident escalation: phones.source is profile but SCIM_BASE_URL is not set; " +
-						"recipients without a number in escalation.yaml cannot be called")
+						"only numbers in escalation.yaml and paging numbers stored in CSM can be called")
 				} else {
-					escalationResolver = paging.NewProfilePhoneResolver(escalationResolver, scim.NewClient(scim.Config{
+					profiles = scim.NewClient(scim.Config{
 						BaseURL:      scimURL,
 						TokenURL:     os.Getenv("OAUTH2_TOKEN_URL"),
 						ClientID:     os.Getenv("OAUTH2_CLIENT_ID"),
 						ClientSecret: os.Getenv("OAUTH2_CLIENT_SECRET"),
 						Scopes:       splitComma(os.Getenv("SCIM_SCOPES")),
-					}))
+					})
 					slog.Info("incident escalation reads recipients' phone numbers from their CSM Portal profiles")
+				}
+				// Assigned only when present: a nil *EntityClient in the
+				// interface would not compare equal to nil.
+				var pagingContacts paging.PagingContactLookup
+				if escalationNotes != nil {
+					pagingContacts = escalationNotes
+					slog.Info("incident escalation falls back to paging numbers stored in CSM")
+				}
+				if profiles != nil || pagingContacts != nil {
+					escalationResolver = paging.NewProfilePhoneResolver(escalationResolver, profiles).
+						WithPagingContacts(pagingContacts)
 				}
 			}
 
@@ -888,10 +939,20 @@ func main() {
 						// Which incidents get a ladder, and what one may spend.
 						Ladder: l.cfg,
 						Kind:   l.kind,
+						// The Special Ops page; only the SRE engine places
+						// it, and it is off unless the file turns it on.
+						SME: escalationCfg.SME,
 						// Which ladders a record climbs is DefaultRouting, in
 						// code -- not configurable (see paging.Config).
 					},
 				)
+
+				if l.kind == paging.LadderSRE && escalationCfg.SME.Enabled {
+					// The SME page runs on the dispatcher's sre-events
+					// consumer, not on this engine's: the engine ignores
+					// incident.special_ops_alert even when it reads that topic.
+					smePager = escalationEngine
+				}
 
 				escalationCount := envInt("INCIDENT_ESCALATION_CONSUMER_COUNT", 1)
 				escalationConsumers = append(escalationConsumers,
@@ -938,6 +999,10 @@ func main() {
 					"channel", string(channel),
 					"ssml", os.Getenv("INCIDENT_ESCALATION_SSML") == "true",
 					"sending", callSendingEnabled)
+				if l.kind == paging.LadderSRE && escalationCfg.SME.Enabled {
+					slog.Info("case paging: incident.special_ops_alert pages the SME through the SRE engine",
+						"channel", string(escalationCfg.SME.Channel))
+				}
 			}
 
 			// dispatch.handleIncidentCreated's own single, immediate call to
@@ -955,6 +1020,17 @@ func main() {
 					"a new incident will get both the single immediate call and the escalation ladder")
 			}
 		}
+	}
+
+	// Settle the SME page on every path: an alert waiting in the dispatcher is
+	// released either to the SRE engine or to "not configured here". Passed as
+	// nil explicitly, never as a nil *paging.Engine, which would not compare
+	// equal to nil inside the interface.
+	if smePager != nil {
+		dispatcher.WithSpecialOpsPage(smePager)
+	} else {
+		dispatcher.WithSpecialOpsPage(nil)
+		slog.Info("case paging: no SME page here; incident.special_ops_alert is acknowledged and ignored")
 	}
 
 	<-ctx.Done()
@@ -1409,6 +1485,20 @@ func loadEscalationConfig(envChannel paging.Channel) (paging.Config, error) {
 	return cfg, nil
 }
 
+// loadTestCallConfig reads the escalation file's testCall section. No file
+// means the defaults: test calls on, to any number.
+func loadTestCallConfig() (paging.TestCallConfig, error) {
+	path := os.Getenv("INCIDENT_ESCALATION_CONFIG")
+	if path == "" {
+		return paging.TestCallConfig{}, nil
+	}
+	cfg, err := paging.LoadConfig(path)
+	if err != nil {
+		return paging.TestCallConfig{}, err
+	}
+	return cfg.TestCall, nil
+}
+
 // resolverTeams merges the two ladders' team keys into the one resolver both
 // ladders share: the CRE section names the ABTs, the Americas team and the
 // heads; the SRE section names the SRE teams. Aliases from either apply to
@@ -1416,6 +1506,8 @@ func loadEscalationConfig(envChannel paging.Channel) (paging.Config, error) {
 func resolverTeams(cre, sre paging.LadderConfig) paging.TeamKeys {
 	teams := cre.Teams
 	teams.SRE = sre.Teams.ABTs
+	// Which SRE rota pages an incident with no SRE team of its own.
+	teams.DefaultRota = sre.Teams.DefaultRota
 	if len(sre.Teams.Aliases) > 0 {
 		merged := make(map[string]string, len(cre.Teams.Aliases)+len(sre.Teams.Aliases))
 		for k, v := range cre.Teams.Aliases {

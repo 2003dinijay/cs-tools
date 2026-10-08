@@ -60,6 +60,12 @@ type ladderStore interface {
 	// ticking together cannot both dial it; ReleaseCall gives it back.
 	ClaimCall(ctx context.Context, member string, ttl time.Duration) (bool, error)
 	ReleaseCall(ctx context.Context, member string) error
+	// The Special Ops page's dedup (sme.go): one open page per incident and
+	// SME team, closed by an assignment.
+	OpenSMEPage(ctx context.Context, incidentID, team string, changedOn time.Time, ttl time.Duration) (bool, error)
+	CloseSMEPage(ctx context.Context, incidentID, team string) error
+	CloseSMEPages(ctx context.Context, incidentID string) (int, error)
+	SMEClosedThrough(ctx context.Context, incidentID string) (time.Time, error)
 }
 
 // callClaimTTL bounds a claim on one due call. Long enough to cover placing
@@ -103,6 +109,9 @@ type EngineConfig struct {
 	// because a P0 CRE incident climbs both at once. The zero value is the
 	// CRE ladder, which is what every engine was before the SRE one existed.
 	Kind Ladder
+	// SME is the Special Ops page, placed by the SRE engine alone. The zero
+	// value is off.
+	SME SMEConfig
 }
 
 // Engine runs the incident call-escalation ladder.
@@ -126,9 +135,12 @@ type Engine struct {
 	// a ladder that posts no chat card while an operator believes it does is
 	// precisely the failure this exists to surface.
 	missingChannels []Channel
-	store           ladderStore
-	notes           incidentNotes
-	cfg             EngineConfig
+	// smeNotifiers is how the Special Ops page reaches the SME, from the
+	// file's sme section; nil on an engine that does not place it.
+	smeNotifiers []notifier
+	store        ladderStore
+	notes        incidentNotes
+	cfg          EngineConfig
 	// clock is time.Now unless a test substitutes one; the staleness check
 	// in start is the only thing that reads it, and it has to be testable
 	// against a trigger that is genuinely old.
@@ -165,30 +177,56 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 	if notes != nil {
 		e.notes = notes
 	}
+	e.notifiers, e.missingChannels = buildNotifiers(cfg.Channel, cfg.Ladder.Chat, cfg.UseSSML, calls, chat, links, defaultChatProduct)
+	// Logged here rather than per attempt: this is a deployment mistake, it
+	// cannot change while the process runs, and one line at startup is
+	// actionable where one line per rung is noise. place() still reports the
+	// case where nothing at all is configured, because that one reaches
+	// nobody.
+	for _, ch := range e.missingChannels {
+		slog.Error("escalation: configured for a channel with no client; nothing will be sent over it",
+			"missingChannel", string(ch), "configuredChannel", string(cfg.Channel))
+	}
+	if cfg.Kind == LadderSRE && cfg.SME.Enabled {
+		var missing []Channel
+		e.smeNotifiers, missing = buildNotifiers(cfg.SME.Channel, cfg.SME.Chat, cfg.UseSSML, calls, chat, links, defaultChatProduct)
+		for _, ch := range missing {
+			slog.Error("escalation: the SME page is configured for a channel with no client; nothing will be sent over it",
+				"missingChannel", string(ch), "configuredChannel", string(cfg.SME.Channel))
+		}
+	}
+	return e
+}
+
+// buildNotifiers wires one notifier per channel selected, and names every
+// selected channel that has no client to serve it.
+func buildNotifiers(channel Channel, chatCfg Chat, useSSML bool, calls *notifications.TwilioClient, chat *notifications.GoogleChatClient, links PortalLinks, defaultChatProduct string) ([]notifier, []Channel) {
+	var out []notifier
+	var missing []Channel
 	// ChannelLog needs no client and so can never be half-configured — there
 	// is no missingChannels case for it. It is also exclusive: Uses() reports
 	// false for both real channels here, so a ladder set to log wires this
 	// notifier and nothing else, which is the point. A log ladder that also
 	// dialled would be the worst of both.
-	if cfg.Channel == ChannelLog {
-		e.notifiers = append(e.notifiers, logNotifier{})
+	if channel == ChannelLog {
+		out = append(out, logNotifier{})
 	}
-	if cfg.Channel.Uses(ChannelCall) {
+	if channel.Uses(ChannelCall) {
 		if calls == nil {
-			e.missingChannels = append(e.missingChannels, ChannelCall)
+			missing = append(missing, ChannelCall)
 		} else {
-			e.notifiers = append(e.notifiers, voiceNotifier{calls: calls, useSSML: cfg.UseSSML})
+			out = append(out, voiceNotifier{calls: calls, useSSML: useSSML})
 		}
 	}
-	if cfg.Channel.Uses(ChannelChat) {
+	if channel.Uses(ChannelChat) {
 		// The ladder's own webhook, when configured, replaces the shared
 		// client -- and must be resolved before deciding chat is unavailable,
 		// since a deployment may have a webhook for the ladder and no
 		// GOOGLE_CHAT_SPACES at all.
 		var room string
-		chat, room = ladderChat(cfg.Ladder.Chat, chat, defaultChatProduct, os.Getenv)
+		chat, room = ladderChat(chatCfg, chat, defaultChatProduct, os.Getenv)
 		if chat == nil {
-			e.missingChannels = append(e.missingChannels, ChannelChat)
+			missing = append(missing, ChannelChat)
 		} else {
 			// links goes in only when it is really there, for the same reason
 			// links is a value type on purpose. It used to be a
@@ -200,20 +238,10 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 			// before a real run caught it. A PortalLinks with no base URL
 			// simply returns an empty link, which the card renders as no link,
 			// so there is no nil to get wrong any more.
-			n := chatNotifier{chat: chat, audience: room, links: links}
-			e.notifiers = append(e.notifiers, n)
+			out = append(out, chatNotifier{chat: chat, audience: room, links: links})
 		}
 	}
-	// Logged here rather than per attempt: this is a deployment mistake, it
-	// cannot change while the process runs, and one line at startup is
-	// actionable where one line per rung is noise. place() still reports the
-	// case where nothing at all is configured, because that one reaches
-	// nobody.
-	for _, ch := range e.missingChannels {
-		slog.Error("escalation: configured for a channel with no client; nothing will be sent over it",
-			"missingChannel", string(ch), "configuredChannel", string(cfg.Channel))
-	}
-	return e
+	return out, missing
 }
 
 // Handle implements eventbus.Handle for this engine's own consumer group.
@@ -287,7 +315,10 @@ func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
 			// not yet seen it is not evidence it is being attended.
 			return nil
 		}
-		return e.cancelBy(ctx, env.EntityID, cancelAssigned)
+		err := e.cancelBy(ctx, env.EntityID, cancelAssigned)
+		// An engineer taking the incident also answers any Special Ops page
+		// open on it, so a later press may page again.
+		return errors.Join(err, e.closeSMEPages(ctx, env.EntityID))
 	default:
 		return e.cancelBy(ctx, env.EntityID, cancelStateChange)
 	}
@@ -311,6 +342,9 @@ const (
 	// cancelAssigned is the SRE ladder's own gesture: an engineer taking the
 	// incident.
 	cancelAssigned cancelReason = "Assignee set"
+	// cancelEscalatedToSME stops the SaaS SRE chain when the incident is
+	// handed to a Special Ops team, whose SME is paged instead (sme.go).
+	cancelEscalatedToSME cancelReason = "Escalated to SME"
 )
 
 // start expands a trigger into a ladder and schedules it.
@@ -559,10 +593,31 @@ func (e *Engine) claims(ctx context.Context, t *Trigger) bool {
 	t.Routing.Ladder = e.cfg.Kind
 	t.Routing.RouteRule = rule.Name
 	t.Routing.TeamOptional = rule.AdmitsNoTeam()
+	if e.cfg.Kind == LadderSRE {
+		t.Routing.Rota = e.sreRota(ctx, *t)
+	}
 	slog.InfoContext(ctx, "escalation: routing put the incident on this ladder",
 		"incidentId", t.IncidentID, "ladder", key, "rule", rule.Name,
-		"teamFamily", family, "contactType", t.Routing.ContactType, "priority", t.Priority)
+		"teamFamily", family, "contactType", t.Routing.ContactType, "priority", t.Priority,
+		"rota", t.Routing.Rota)
 	return true
+}
+
+// sreRota asks the resolver which SRE rota pages the incident: SaaS or IaaS.
+// A resolver that cannot say, or a failure to ask, leaves it empty -- the
+// resolver then decides per rung, and the chain goes unnamed.
+func (e *Engine) sreRota(ctx context.Context, t Trigger) string {
+	r, ok := e.resolver.(SRERotaResolver)
+	if !ok {
+		return ""
+	}
+	rota, err := r.SRERota(ctx, t.Routing)
+	if err != nil {
+		slog.WarnContext(ctx, "escalation: could not tell which SRE rota pages this incident",
+			"incidentId", t.IncidentID, "team", t.Routing.AssignedCRETeam, "err", err)
+		return ""
+	}
+	return rota
 }
 
 // teamFamily asks the resolver which family the incident's team belongs to.
@@ -943,19 +998,24 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 // joined: a chat webhook being down must not stop the phone ringing, and a
 // phone failing must not cost the room its sight of the escalation.
 func (e *Engine) place(ctx context.Context, plan Plan, call PlannedCall) error {
+	return e.placeVia(ctx, plan, call, e.notifiers, e.cfg.Channel)
+}
+
+// placeVia is place over the given notifiers; the SME page has its own.
+func (e *Engine) placeVia(ctx context.Context, plan Plan, call PlannedCall, notifiers []notifier, channel Channel) error {
 	t := plan.Trigger
 	if !e.cfg.CallSendingEnabled {
 		slog.InfoContext(ctx, "escalation: sending disabled (CALL_SENDING_ENABLED=false); not notifying",
 			"incidentId", t.IncidentID, "rule", t.Routing.Rule(), "priority", t.Priority,
 			"level", call.Level.String(), "attempt", call.Ordinal,
-			"channel", string(e.cfg.Channel), "to", maskPhone(call.Recipient.Phone))
+			"channel", string(channel), "to", maskPhone(call.Recipient.Phone))
 		return nil
 	}
-	if len(e.notifiers) == 0 {
+	if len(notifiers) == 0 {
 		// Configured for a channel whose client was never constructed. Not an
 		// error to retry — no tick will fix it — but never silent either.
 		slog.ErrorContext(ctx, "escalation: no notifier configured for this channel; nobody was contacted",
-			"incidentId", t.IncidentID, "channel", string(e.cfg.Channel),
+			"incidentId", t.IncidentID, "channel", string(channel),
 			"level", call.Level.String(), "attempt", call.Ordinal)
 		return nil
 	}
@@ -963,11 +1023,11 @@ func (e *Engine) place(ctx context.Context, plan Plan, call PlannedCall) error {
 	slog.InfoContext(ctx, "escalation: notifying",
 		"incidentId", t.IncidentID, "rule", t.Routing.Rule(), "priority", t.Priority,
 		"level", call.Level.String(), "attempt", call.Ordinal,
-		"channel", string(e.cfg.Channel), "to", maskPhone(call.Recipient.Phone),
+		"channel", string(channel), "to", maskPhone(call.Recipient.Phone),
 		"message", messageKind(e.cfg.UseSSML))
 
 	var errs []error
-	for _, n := range e.notifiers {
+	for _, n := range notifiers {
 		if call.HoldCall && n.Channel() == ChannelCall {
 			continue
 		}

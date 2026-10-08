@@ -102,6 +102,9 @@ type TeamScheduleResolver struct {
 	// aliases maps an assignment group's name to the rota key it stands for,
 	// for a group whose name is not simply its key ("SRE - Apollo").
 	aliases map[string]string
+	// defaultRota is the SRE rota an incident with no SRE team of its own
+	// pages (a customer case at S0, a monitoring alert). See TeamKeys.
+	defaultRota string
 	// phones supplies a number for each recipient. The rota holds none, so
 	// without it a rung can be reached over chat but not dialled.
 	phones PhoneBook
@@ -191,7 +194,16 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 		leadershipTeamKey:         teams.Leadership,
 		sreTeamKeys:               teamKeysFor(teams.SRE),
 		aliases:                   aliases,
+		defaultRota:               defaultRotaOf(teams.DefaultRota),
 	}
+}
+
+// defaultRotaOf normalises sre.teams.defaultRota, defaulting to SaaS.
+func defaultRotaOf(v string) string {
+	if v = strings.ToUpper(strings.TrimSpace(v)); v != "" {
+		return v
+	}
+	return DefaultSRERota
 }
 
 func teamKeysFor(names []string) []string {
@@ -329,7 +341,16 @@ type TeamKeys struct {
 	// for a group whose name is not simply its key -- the alert flow assigns
 	// "SRE - Apollo", the rota calls it apollo.
 	Aliases map[string]string `yaml:"aliases"`
+	// DefaultRota is the SRE rota (sre.teams.defaultRota) that pages an
+	// incident with no SRE team of its own: a customer case at S0, or a
+	// monitoring alert raised with no team. Empty is SRE_SAAS. An SRE team's
+	// own incident always pages its team's rota, whatever this says.
+	DefaultRota string `yaml:"defaultRota"`
 }
+
+// DefaultSRERota is the rota a team-less SRE page goes to when
+// sre.teams.defaultRota is not set: SaaS SRE (Apollo and Artemis).
+const DefaultSRERota = "SRE_SAAS"
 
 const defaultLeadershipTeamKey = "cre-leadership"
 
@@ -363,9 +384,14 @@ func (r TeamScheduleResolver) Resolve(ctx context.Context, level Level, rc Routi
 		out []Recipient
 		err error
 	)
-	if rc.Ladder == LadderSRE {
+	switch {
+	case rc.Ladder == LadderSME:
+		if level == Level0 {
+			out, err = r.resolveSME(ctx, rc)
+		}
+	case rc.Ladder == LadderSRE:
 		out, err = r.resolveSRE(ctx, level, rc)
-	} else {
+	default:
 		rule, ok := r.RuleFor(rc)
 		if !ok {
 			// No row covers this shift. Not an error: the ladder reports the
