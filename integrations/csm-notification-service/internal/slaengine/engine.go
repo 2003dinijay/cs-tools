@@ -247,18 +247,25 @@ func statusEffectFor(newStatus string) caseStatusEffect {
 //
 //   - "Awaiting Info" / "Solution Proposed": WSO2 is waiting on the
 //     customer, so neither clock should keep accumulating — pause both.
-//   - "Closed": resolution is genuinely done — force-complete it
-//     (AdvanceAlertedTier to 100, same as an early completion). workaround
-//     is only paused, not completed: there is no real "workaround
-//     provided" signal available here (see case.comment_added's own
-//     payload, which carries no such field either) — a documented,
-//     accepted gap carried forward from every earlier design this
-//     replaces, not newly introduced.
+//   - "Closed": resolution and response are genuinely done — force-complete
+//     both (AdvanceAlertedTier to 100, same as an early completion).
+//     workaround is only paused, not completed: there is no real
+//     "workaround provided" signal available here (see
+//     case.comment_added's own payload, which carries no such field
+//     either) — a documented, accepted gap carried forward from every
+//     earlier design this replaces, not newly introduced.
 //   - anything else (Open, Work In Progress, Waiting on WSO2, Reopened):
 //     resume both — the case is active again.
 //
-// The response clock is never touched here — it's only ever completed by
-// CompleteResponseClock, on a qualifying comment.
+// Closing is the one place besides a qualifying comment that force-completes
+// the response clock (reusing CompleteResponseClock itself, so there's only
+// one place that knows how). Without this, a case that closes without ever
+// getting a qualifying support-engineer reply (CompleteResponseClock never
+// called — reported live: a work note doesn't qualify, and neither does a
+// comment whose author didn't resolve as a recognized CS-engineer role)
+// left the response clock neither paused nor completed — its wake entries
+// stayed live in Redis, so a breach alert fired into Chat well after the
+// case had already closed.
 func (e *Engine) ApplyStateEffects(ctx context.Context, caseID, newStatus string) {
 	if err := e.store.SetState(ctx, caseID, ClockResponse, newStatus); err != nil {
 		slog.ErrorContext(ctx, "slaengine: failed to update clock state", "caseId", caseID, "clockType", ClockResponse, "err", err)
@@ -275,6 +282,7 @@ func (e *Engine) ApplyStateEffects(ctx context.Context, caseID, newStatus string
 		e.setPaused(ctx, caseID, ClockWorkaround, true)
 		e.setPaused(ctx, caseID, ClockResolution, true)
 	case effectClose:
+		e.CompleteResponseClock(ctx, caseID)
 		if _, err := e.store.AdvanceAlertedTier(ctx, caseID, ClockResolution, 100, time.Time{}); err != nil {
 			slog.ErrorContext(ctx, "slaengine: failed to complete resolution clock on case close", "caseId", caseID, "err", err)
 		}
