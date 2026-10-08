@@ -25,7 +25,7 @@ import (
 
 func writeConfig(t *testing.T, body string) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "escalation.yaml")
+	path := filepath.Join(t.TempDir(), "paging-alert.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -308,7 +308,7 @@ func TestLoadConfig_ExplicitZeroMaxLevelCaps(t *testing.T) {
 // first thing anybody copies, and KnownFields(true) means a stray key in it
 // would disable both ladders on a developer's first run with no clue why.
 func TestLoadConfig_ShippedExampleIsValid(t *testing.T) {
-	const path = "../../../../scripts/csm-compose/escalation.yaml"
+	const path = "../../../../scripts/csm-compose/paging-alert.yaml"
 	if _, err := os.Stat(path); err != nil {
 		t.Skipf("example config not reachable from here: %v", err)
 	}
@@ -400,7 +400,7 @@ cre:
 // people, so the ladder calls the wrong leads and nothing reports it. That
 // happened once already.
 func TestLoadConfig_ExampleNamesTheRealABTTeams(t *testing.T) {
-	const path = "../../../../scripts/csm-compose/escalation.yaml"
+	const path = "../../../../scripts/csm-compose/paging-alert.yaml"
 	if _, err := os.Stat(path); err != nil {
 		t.Skipf("example config not reachable: %v", err)
 	}
@@ -493,7 +493,7 @@ func TestStartWhen_PrioritiesCompareAcrossNotations(t *testing.T) {
 // limited the spend when they had not. That is the same failure the strict
 // decoder exists to prevent, so it gets the same treatment.
 func TestConfig_RejectsAnUnknownShiftInRotaCaps(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "escalation.yaml")
+	path := filepath.Join(t.TempDir(), "paging-alert.yaml")
 	write := func(body string) {
 		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 			t.Fatal(err)

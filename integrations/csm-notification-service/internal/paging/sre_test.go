@@ -745,7 +745,7 @@ func caseStatus(t *testing.T, status string) eventbus.Record {
 
 func loadYAML(t *testing.T, body string) (Config, error) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "escalation.yaml")
+	path := filepath.Join(t.TempDir(), "paging-alert.yaml")
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -872,7 +872,7 @@ func TestConfig_RefusesMisplacedAndOverlappingSettings(t *testing.T) {
 // The shipped local configuration must load: an invalid one disables both
 // ladders on the stack everybody tests against.
 func TestConfig_LocalComposeFileLoads(t *testing.T) {
-	cfg, err := LoadConfig(filepath.Join("..", "..", "..", "..", "scripts", "csm-compose", "escalation.yaml"))
+	cfg, err := LoadConfig(filepath.Join("..", "..", "..", "..", "scripts", "csm-compose", "paging-alert.yaml"))
 	if err != nil {
 		t.Fatal(err)
 	}

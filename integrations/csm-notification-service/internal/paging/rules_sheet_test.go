@@ -116,17 +116,17 @@ func (everyoneHasANumber) MobileNumber(_ context.Context, email string) (string,
 }
 
 // TestRulesSheet builds every rule's plan the way cmd/server does -- the
-// shipped escalation.yaml, the Team Schedule resolver, wrapped by the profile
+// shipped paging-alert.yaml, the Team Schedule resolver, wrapped by the profile
 // phone lookup -- and holds it to the sheet: the rule matched, how many people
 // each level calls, and when each level opens, for every priority.
 func TestRulesSheet(t *testing.T) {
-	cfg, err := LoadConfig("../../../../scripts/csm-compose/escalation.yaml")
+	cfg, err := LoadConfig("../../../../scripts/csm-compose/paging-alert.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	cre, ok := cfg.For(LadderKeyCRE)
 	if !ok {
-		t.Fatal("shipped escalation.yaml has no enabled cre ladder")
+		t.Fatal("shipped paging-alert.yaml has no enabled cre ladder")
 	}
 	reported := time.Date(2026, 10, 10, 16, 30, 0, 0, time.UTC) // any instant; the shift is given
 

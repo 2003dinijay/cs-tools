@@ -74,7 +74,7 @@ type profilePhone struct {
 // no phone numbers, and a call-channel plan drops anyone without one
 // (NO_NUMBER). People keep their own number current in the portal, so the
 // ladder reads it from there rather than keeping a second copy that goes
-// stale. A number already on the recipient -- one named in escalation.yaml,
+// stale. A number already on the recipient -- one named in paging-alert.yaml,
 // such as a head -- is an explicit override and is never replaced.
 //
 // It never fails a rung: a lookup that errors, times out or returns something
@@ -102,7 +102,7 @@ func NewProfilePhoneResolver(inner Resolver, lookup PhoneLookup) *ProfilePhoneRe
 
 // WithPagingContacts returns p with the paging-number fallback: a person whose
 // profile has no number is called on the paging-only number stored for them
-// in CSM, if any. The profile always wins; a number named in escalation.yaml
+// in CSM, if any. The profile always wins; a number named in paging-alert.yaml
 // wins over both. A nil lookup leaves the fallback off.
 func (p *ProfilePhoneResolver) WithPagingContacts(l PagingContactLookup) *ProfilePhoneResolver {
 	p.paging = l

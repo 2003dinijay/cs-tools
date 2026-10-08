@@ -844,7 +844,7 @@ func main() {
 			// person keeps their mobile on their own CSM Portal profile,
 			// which the portal stores on their Asgardeo user; read it from
 			// there through the same SCIM operations service and OAuth2 app
-			// the onboarding flow uses. A number named in escalation.yaml
+			// the onboarding flow uses. A number named in paging-alert.yaml
 			// (the heads) still wins.
 			//
 			// When the profile has no number, the paging-only number a lead or
@@ -854,7 +854,7 @@ func main() {
 				var profiles paging.PhoneLookup
 				if scimURL := strings.TrimSpace(os.Getenv("SCIM_BASE_URL")); scimURL == "" {
 					slog.Warn("incident escalation: phones.source is profile but SCIM_BASE_URL is not set; " +
-						"only numbers in escalation.yaml and paging numbers stored in CSM can be called")
+						"only numbers in paging-alert.yaml and paging numbers stored in CSM can be called")
 				} else {
 					profiles = scim.NewClient(scim.Config{
 						BaseURL:      scimURL,

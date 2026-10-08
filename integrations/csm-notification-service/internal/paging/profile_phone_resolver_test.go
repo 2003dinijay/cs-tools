@@ -197,7 +197,7 @@ func TestProfilePhoneResolver_PagingNumberFallback(t *testing.T) {
 		"Pg@example.com":   "+94770000012", // no profile number: the paging one
 		"bad@example.com":  "",             // not E.164: not dialled
 		"n@example.com":    "",             // neither: NO_NUMBER, as before
-		"head@example.com": "+94770000099", // named in escalation.yaml: wins over both
+		"head@example.com": "+94770000099", // named in paging-alert.yaml: wins over both
 	} {
 		if p[email] != want {
 			t.Errorf("%s = %q, want %q", email, p[email], want)

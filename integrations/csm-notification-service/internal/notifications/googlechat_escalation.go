@@ -45,7 +45,7 @@ type EscalationAlert struct {
 	// be the incident's product, from when Chat routed by product; routing is
 	// by audience now, and no audience is ever named after a product, so every
 	// card was dropped. The escalation ladder sets it from its own
-	// configuration (escalation.yaml chat.audience).
+	// configuration (paging-alert.yaml chat.audience).
 	Audience string
 	// Rung is the level being contacted, e.g. "LEVEL_2".
 	Rung string

@@ -62,7 +62,7 @@ func TestLadderChat_WebhookFromNamedVariable(t *testing.T) {
 // key and token. Failing the load stops the mistake before it is committed;
 // the error must not echo the value, or the secret lands in a log instead.
 func TestConfig_WebhookURLEnvRefusesAURL(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "escalation.yaml")
+	path := filepath.Join(t.TempDir(), "paging-alert.yaml")
 	const secret = "https://chat.googleapis.com/v1/spaces/SPACE/messages?key=KEY&token=TOKEN"
 	if err := os.WriteFile(path, []byte("enabled: true\ncre:\n  chat:\n    webhookUrlEnv: \""+secret+"\"\n"), 0o600); err != nil {
 		t.Fatal(err)

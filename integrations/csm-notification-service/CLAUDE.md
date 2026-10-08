@@ -537,7 +537,7 @@ without one (`NO_NUMBER`). `ProfilePhoneResolver` wraps whichever resolver is
 in use and fills a missing number from the person's Asgardeo user (the
 portal's profile dialog writes the `mobile` phone there; `scim.Client.MobileNumber`
 reads it back), once per person per two minutes, 3 s per lookup. A number
-named in `escalation.yaml` is never replaced; a lookup that fails, times out
+named in `paging-alert.yaml` is never replaced; a lookup that fails, times out
 or is not E.164 leaves that one person `NO_NUMBER` and never fails the tier.
 `phones.source: none` turns it off. Nothing is persisted outside the plan, and
 the number is never logged.
@@ -546,7 +546,7 @@ the number is never logged.
 number for somebody in CSM (entity-service's `paging_contact`); a recipient
 whose profile has no number is called on it (`ProfilePhoneResolver.WithPagingContacts`,
 one batched `GET /team-schedule/paging-contacts?emails=` per rung, 3 s). Order:
-a number in `escalation.yaml`, then the phone book, then the profile, then the
+a number in `paging-alert.yaml`, then the phone book, then the profile, then the
 paging number. A failed lookup leaves them `NO_NUMBER`, as before. Applies to
 the CRE and SRE ladders and the SME page alike.
 

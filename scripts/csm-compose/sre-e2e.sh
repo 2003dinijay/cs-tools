@@ -24,7 +24,7 @@
 # groups, Redis, the ticker), resolved against the Team Schedule, and stopped
 # by a real incident.assigned / incident.acknowledged / incident.comment_added
 # on the same topic. One ladder minute is one real minute: L2 comes 5 minutes
-# after L1. Nothing is dialled: escalation.yaml runs both ladders on the log
+# after L1. Nothing is dialled: paging-alert.yaml runs both ladders on the log
 # channel.
 #
 # Only incident creation is skipped -- POST /incidents is 503 on the local
