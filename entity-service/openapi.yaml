@@ -15641,10 +15641,12 @@ components:
           type: string
         type:
           type: string
-          enum: [case, incident, change_request, problem]
+          enum: [case, engagement, service_request, security_report_analysis, announcement, incident, change_request, problem]
           nullable: true
           description: >
-            What kind of record this reference points at. Null when the
+            What kind of record this reference points at. A related case (`relatedCase`)
+            reads as the type the related ticket is now, so a ticket that was converted
+            to another type shows as that type. Null when the
             backing data source could not resolve the referenced record's
             kind; a client must not then assume it is a case, since linking
             to a case detail page for a non-case record would 404.

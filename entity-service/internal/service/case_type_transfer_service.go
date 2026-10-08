@@ -340,6 +340,21 @@ func (s *caseService) transferCaseType(ctx context.Context, req domain.UpdateCas
 		if resp.Case.State == nil {
 			resp.Case.State = result.State
 		}
+		// A transfer completed after an ambiguous ServiceNow failure has no receipt of
+		// ServiceNow's own to speak of, and even a real one may omit these: take what
+		// Postgres committed, never overwriting what ServiceNow did supply.
+		if resp.Case.UpdatedOn.IsZero() {
+			resp.Case.UpdatedOn = result.UpdatedOn
+		}
+		if resp.Case.UpdatedBy == "" {
+			resp.Case.UpdatedBy = actorEmail
+		}
+		if resp.Case.WorkState == nil {
+			resp.Case.WorkState = result.WorkState
+		}
+		if resp.Message == "" {
+			resp.Message = "Case type changed successfully."
+		}
 	}
 	return resp, nil
 }

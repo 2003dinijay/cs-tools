@@ -485,7 +485,9 @@ func TestCaseService_UpdateCase_ServiceNowTimeoutAfterApplyingIsCompleted(t *tes
 			return domain.CaseView{Type: &typ, State: &snState}, nil
 		},
 	}
-	repo := newTransferStubRepo(repository.CaseTypeTransferResult{PreviousType: "case"})
+	committedOn := time.Date(2026, 10, 8, 14, 0, 0, 0, time.UTC)
+	ongoing := domain.CaseWorkStateOngoing
+	repo := newTransferStubRepo(repository.CaseTypeTransferResult{PreviousType: "case", UpdatedOn: committedOn, WorkState: &ongoing})
 	svc := NewCaseServiceWithSNWriteback(repo, transferUsers(), nil, alwaysUnrestrictedAccess{}, nil, nil, mirror, nil, "")
 	svc = WithCaseTypeTransfer(svc, repo)
 
@@ -507,6 +509,11 @@ func TestCaseService_UpdateCase_ServiceNowTimeoutAfterApplyingIsCompleted(t *tes
 	}
 	if len(repo.activity) != 1 {
 		t.Errorf("the completed transfer should be in the activity feed, got %v", repo.activity)
+	}
+	// ServiceNow gave no receipt here, so the response is built from what Postgres committed.
+	if !resp.Case.UpdatedOn.Equal(committedOn) || resp.Case.UpdatedBy != "jane.doe@example.com" ||
+		resp.Case.WorkState == nil || *resp.Case.WorkState != domain.CaseWorkStateOngoing || resp.Message == "" {
+		t.Errorf("the response after a completed-after-timeout transfer is incomplete: %+v (message %q)", resp.Case, resp.Message)
 	}
 }
 

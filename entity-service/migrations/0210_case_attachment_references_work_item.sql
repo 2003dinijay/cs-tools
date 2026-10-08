@@ -36,7 +36,7 @@
 -- The old key was also what kept an attachment off every other kind of work
 -- item (an announcement, a change request, an incident...). That rule is now
 -- made by the two attachment INSERTs themselves (case_repo.go,
--- attachmentOwnerWorkItemTypes): a case-like work item other than an
+-- caseLikeNonAnnouncementTypes): a case-like work item other than an
 -- announcement, nothing else. Apply this migration AFTER the entity-service
 -- build that carries them is deployed: the other way round, the old build has
 -- no such check and the narrower key is already gone. The build is safe without
@@ -49,10 +49,12 @@
 -- the new one is added only when it is missing (NOT VALID, then validated: see
 -- below).
 --
--- Adding a foreign key takes a SHARE ROW EXCLUSIVE lock on work_item, which is
--- brief because the constraint is added NOT VALID (no scan) and validated
--- afterwards under a lighter one. The lock_timeout makes the file give up (rerun
--- it) instead of queueing writers behind itself if work_item is busy.
+-- Dropping the old key and adding the new one take their locks (ACCESS EXCLUSIVE
+-- on case_attachment, SHARE ROW EXCLUSIVE on work_item) for a moment only: the new
+-- key is added NOT VALID, so there is no scan, and it is validated afterwards in a
+-- separate transaction under a lock that blocks nothing. The lock_timeout makes the
+-- file give up (rerun it) instead of queueing writers behind itself if work_item is
+-- busy.
 
 SET lock_timeout = '5s';
 
@@ -93,15 +95,31 @@ BEGIN
            AND confrelid = to_regclass('work_item')
            AND conkey = ARRAY[case_col]
     ) THEN
-        -- NOT VALID first: it enforces the constraint for every new or changed row
-        -- without scanning the existing ones, so a row the old constraint never
-        -- checked (a database whose table was created without it) cannot abort
-        -- this file and, with it, the migrations after it.
+        -- NOT VALID: the constraint is enforced for every new or changed row without
+        -- scanning the existing ones, so this transaction (which also holds the
+        -- locks the DROP above took) stays short, and a row the old constraint never
+        -- checked (a database whose table was created without it) cannot abort this
+        -- file and, with it, the migrations after it. It is validated below.
         ALTER TABLE case_attachment
             ADD CONSTRAINT case_attachment_work_item_id_fkey
             FOREIGN KEY (case_id) REFERENCES work_item(id) NOT VALID;
-        -- Then validate what is already there, which only takes a light lock. A
-        -- row that points at no work item is reported, not fatal.
+    END IF;
+END $$;
+
+-- Validate what is already there in a transaction of its own: a DO block is one
+-- transaction, so doing it above would scan the table while still holding the
+-- locks the DROP and the ADD took. On its own it needs only SHARE UPDATE
+-- EXCLUSIVE, which does not block reads or writes. A row that points at no work
+-- item is reported, not fatal, and the constraint stays NOT VALID (still enforced
+-- for new rows); the next run of this file tries again.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = to_regclass('case_attachment')
+           AND conname = 'case_attachment_work_item_id_fkey'
+           AND NOT convalidated
+    ) THEN
         BEGIN
             ALTER TABLE case_attachment VALIDATE CONSTRAINT case_attachment_work_item_id_fkey;
         EXCEPTION WHEN foreign_key_violation THEN

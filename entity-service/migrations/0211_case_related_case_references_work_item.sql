@@ -31,8 +31,9 @@
 -- The constraint is found by what it references, not by its name. Idempotent:
 -- nothing is dropped once the column targets work_item, and the new key is added
 -- only when it is missing, NOT VALID first (no scan, so a stale row cannot abort the
--- file and the migrations after it) and validated afterwards under a lighter lock.
--- A row that points at no work item is reported, not fatal. related_case_id is
+-- file and the migrations after it) and validated afterwards in a transaction of its
+-- own, under a lock that blocks nothing. A row that points at no work item is
+-- reported, not fatal. related_case_id is
 -- already indexed (idx_case_related_case_id), so checking it when a work item is
 -- deleted stays an index lookup.
 --
@@ -83,6 +84,23 @@ BEGIN
         ALTER TABLE "case"
             ADD CONSTRAINT case_related_case_id_work_item_fkey
             FOREIGN KEY (related_case_id) REFERENCES work_item(id) ON DELETE SET NULL NOT VALID;
+    END IF;
+END $$;
+
+-- Validate what is already there in a transaction of its own: a DO block is one
+-- transaction, so doing it above would scan "case" while still holding the locks
+-- the DROP and the ADD took. On its own it needs only SHARE UPDATE EXCLUSIVE, which
+-- does not block reads or writes. A row that points at no work item is reported,
+-- not fatal, and the constraint stays NOT VALID (still enforced for new rows); the
+-- next run of this file tries again.
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+         WHERE conrelid = to_regclass('"case"')
+           AND conname = 'case_related_case_id_work_item_fkey'
+           AND NOT convalidated
+    ) THEN
         BEGIN
             ALTER TABLE "case" VALIDATE CONSTRAINT case_related_case_id_work_item_fkey;
         EXCEPTION WHEN foreign_key_violation THEN
