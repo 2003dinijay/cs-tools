@@ -168,7 +168,7 @@ func scanUser(row interface{ Scan(...any) error }) (domain.User, error) {
 
 // GetUserByEmail implements UserRepository.
 func (r *userRepo) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
-	u, err := scanUser(r.db.QueryRow(ctx, `SELECT `+userColumns+` FROM "user" WHERE email = $1`, email))
+	u, err := scanUser(r.db.QueryRow(ctx, `SELECT `+userColumns+` FROM "user" WHERE lower(email) = lower($1)`, email))
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Msg never carries the email — writeServiceError (internal/handler/
 		// decode.go) logs every NotFoundError's Msg verbatim, so this is the
