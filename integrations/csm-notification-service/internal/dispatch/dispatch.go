@@ -91,21 +91,26 @@ type escalationDetector interface {
 }
 
 // slaEngineService abstracts internal/slaengine.Engine for testability — the
-// three triggers that keep SLA tracking current: a new case registers its
+// first three triggers keep SLA tracking current: a new case registers its
 // clocks, a status change pauses/resumes/completes them, and a qualifying
-// support-engineer reply completes the response clock early. Each call is
-// best-effort from this dispatcher's own point of view, same posture as
-// every other independent reaction in this file (a Chat/email failure never
-// fails the whole Handle call) — slaengine.Engine itself already logs its
-// own failures and never returns an error to call sites, so there is
-// nothing for this dispatcher to join/propagate here at all.
+// support-engineer reply completes the response clock early. Each of those
+// three calls is best-effort from this dispatcher's own point of view, same
+// posture as every other independent reaction in this file (a Chat/email
+// failure never fails the whole Handle call) — slaengine.Engine itself
+// already logs their failures and never returns an error to call sites, so
+// there is nothing for this dispatcher to join/propagate for them.
 type slaEngineService interface {
 	RegisterClocks(ctx context.Context, caseID, priority string, createdAt time.Time, caseNumber, wso2CaseID, caseTitle, caseType, product, team string)
 	ApplyStateEffects(ctx context.Context, caseID, newStatus string)
 	CompleteResponseClock(ctx context.Context, caseID string)
-	// CompleteWorkaroundClock is called from handleWorkaroundProvided, the
-	// same best-effort way as the three triggers above.
-	CompleteWorkaroundClock(ctx context.Context, caseID string)
+	// CompleteWorkaroundClock is called from handleWorkaroundProvided — the
+	// one trigger here that is NOT best-effort: unlike the three above, a
+	// lost workaround-provided signal has no later event or reconciliation
+	// pass to re-derive it from (see CompleteWorkaroundClock's own doc
+	// comment), so its error is returned and propagated, failing the
+	// record so eventbus.Consumer retries it instead of silently
+	// acknowledging a clock that was never actually completed.
+	CompleteWorkaroundClock(ctx context.Context, caseID string) error
 }
 
 // callSender abstracts notifications.TwilioClient's MakeCall for testability.
@@ -1087,23 +1092,30 @@ func (d *Dispatcher) handleCaseAcknowledged(ctx context.Context, record eventbus
 
 // handleWorkaroundProvided has no email/Chat reaction at all — unlike every
 // other handler in this file, it exists purely to feed
-// internal/slaengine.Engine.CompleteWorkaroundClock, the same direct,
-// best-effort "call straight from this handler" wiring RegisterClocks/
-// ApplyStateEffects/CompleteResponseClock already get from
+// internal/slaengine.Engine.CompleteWorkaroundClock, the same direct
+// "call straight from this handler" wiring RegisterClocks/ApplyStateEffects/
+// CompleteResponseClock already get from
 // handleCaseCreated/handleStatusChanged/handleCommentAdded — see
-// slaEngineService's own doc comment. No idempotency tracking is needed:
-// CompleteWorkaroundClock is itself idempotent (AdvanceAlertedTier never
-// moves the cursor backward) and has no side effect worth guarding against
-// a retry/redelivery the way an email/Chat send does. Always returns nil:
-// a nil slaEngine (REDIS_ADDR/REDIS_URL unset) is a silent no-op, same
-// posture as every other slaEngine call site in this file.
+// slaEngineService's own doc comment for why this one trigger, unlike its
+// three siblings, is NOT best-effort: its error is returned (wrapped) so
+// eventbus.Consumer retries the record rather than silently acknowledging a
+// workaround-provided signal that was never actually applied (e.g. a
+// transient Redis outage) — this is a one-shot signal with no later
+// reconciliation pass to recover it otherwise. No idempotency tracking is
+// needed regardless of outcome: CompleteWorkaroundClock is itself idempotent
+// (AdvanceAlertedTier never moves the cursor backward), so a redelivered
+// retry is harmless. A nil slaEngine (REDIS_ADDR/REDIS_URL unset) is a
+// silent no-op, same posture as every other slaEngine call site in this
+// file.
 func (d *Dispatcher) handleWorkaroundProvided(ctx context.Context, raw json.RawMessage) error {
 	var p events.WorkaroundProvidedPayload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return fmt.Errorf("dispatch: decode case.workaround_provided payload: %w", err)
 	}
 	if d.slaEngine != nil {
-		d.slaEngine.CompleteWorkaroundClock(ctx, p.CaseID)
+		if err := d.slaEngine.CompleteWorkaroundClock(ctx, p.CaseID); err != nil {
+			return fmt.Errorf("dispatch: complete workaround clock: %w", err)
+		}
 	}
 	return nil
 }

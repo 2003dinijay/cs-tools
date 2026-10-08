@@ -324,10 +324,26 @@ func (e *Engine) CompleteResponseClock(ctx context.Context, caseID string) {
 // existed, ApplyStateEffects only ever paused/resumed this clock, never
 // completed it — a documented gap this closes. Idempotent, same reasoning
 // as CompleteResponseClock.
-func (e *Engine) CompleteWorkaroundClock(ctx context.Context, caseID string) {
+//
+// Unlike every other trigger in this file, this one DOES return its store
+// error rather than just logging it (a CodeRabbit-caught gap): this is a
+// one-shot signal with no later reconciliation pass to re-derive it from —
+// RegisterClocks/ApplyStateEffects/CompleteResponseClock all react to
+// events whose effect either repeats (a resent status change) or is
+// re-established by a later event in the same case's lifecycle, and
+// Reconcile's own startup sweep can rebuild a clock's state from
+// entity-service's durable row regardless. A workaround-provided signal
+// lost here (e.g. a transient Redis outage) has no such second chance:
+// nothing else ever calls this again for the same PATCH. Returning the
+// error lets dispatch.handleWorkaroundProvided fail the record, so
+// eventbus.Consumer retries it instead of silently acknowledging a clock
+// that was never actually completed.
+func (e *Engine) CompleteWorkaroundClock(ctx context.Context, caseID string) error {
 	if _, err := e.store.AdvanceAlertedTier(ctx, caseID, ClockWorkaround, 100, time.Time{}); err != nil {
 		slog.ErrorContext(ctx, "slaengine: failed to complete workaround clock", "caseId", caseID, "err", err)
+		return fmt.Errorf("slaengine: complete workaround clock for %s: %w", caseID, err)
 	}
+	return nil
 }
 
 // Tick scans the Redis wake-index for every member due at or before now and

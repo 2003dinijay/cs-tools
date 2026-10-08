@@ -453,11 +453,32 @@ func TestCompleteWorkaroundClock_AdvancesToTier100(t *testing.T) {
 	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
 	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", time.Now(), "CS0001", "", "", "CASE", "", "")
 
-	e.CompleteWorkaroundClock(context.Background(), "case-1")
+	if err := e.CompleteWorkaroundClock(context.Background(), "case-1"); err != nil {
+		t.Fatalf("CompleteWorkaroundClock() error = %v", err)
+	}
 
 	meta, _, _ := st.GetClock(context.Background(), "case-1", ClockWorkaround)
 	if meta.AlertedTier != 100 {
 		t.Errorf("workaround AlertedTier = %d, want 100", meta.AlertedTier)
+	}
+}
+
+// TestCompleteWorkaroundClock_StoreFailure_ReturnsError is the regression
+// test for a CodeRabbit-caught gap: unlike its siblings (CompleteResponseClock
+// and the other triggers, all genuinely best-effort since a later event or
+// Reconcile's own startup sweep can re-derive their effect), a lost
+// workaround-provided signal has no second chance — so a store failure here
+// must be returned, not just logged, so dispatch.handleWorkaroundProvided
+// can fail the record for a retry instead of silently acknowledging a clock
+// that was never actually completed.
+func TestCompleteWorkaroundClock_StoreFailure_ReturnsError(t *testing.T) {
+	st := newFakeStore()
+	st.failAdvance = true
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", time.Now(), "CS0001", "", "", "CASE", "", "")
+
+	if err := e.CompleteWorkaroundClock(context.Background(), "case-1"); err == nil {
+		t.Fatal("expected CompleteWorkaroundClock() to return an error on a store failure, got nil")
 	}
 }
 
