@@ -7435,6 +7435,483 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-chain:
+    get:
+      summary: Who is on each tier of a family's Case Paging chain, and what the caller may change.
+      description: >
+        Case Paging pages people about an incident tier by tier until someone
+        acknowledges. This lists the memberships behind those tiers for one
+        family (CRE or SRE): each team's 1st-3rd responders (Tier 1), its Team
+        leads, the America lead (americas_team_lead) and the CRE and CS heads.
+        `canEdit` says which of those the calling user may change; a service
+        credential with no user may read but gets no edit rights. The SRE side
+        is read-only: its tiers come from the rota. Internal callers only;
+        PostgreSQL data source only.
+      operationId: getPagingChain
+      parameters:
+        - name: family
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [CRE, SRE]
+            default: CRE
+      responses:
+        "200":
+          description: The family's paging chain memberships.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingChainResponse'
+        "400":
+          description: Bad request — family is not CRE or SRE.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not available on this data source (no database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-chain/members/{membershipId}:
+    patch:
+      summary: Change one membership's place on the Case Paging chain.
+      description: >
+        Exactly one of `responderRank` or `role`. Making someone a team's 2nd
+        responder takes that slot off whoever held it; a new America lead, CRE
+        head or CS head replaces the previous one. Who may make each change is
+        checked on the write: a team's responders by its Team lead (or its
+        America lead, where it has one) or a CRE rota admin; a team's Team leads
+        by the CRE head or CS head (or the team's America lead) or a CRE rota
+        admin; the America lead and the CRE and CS heads by a CRE rota admin or
+        a portal admin. The SRE side cannot be changed here. Needs a user token.
+      operationId: updatePagingMember
+      parameters:
+        - name: membershipId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The membership (team_member) id.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdatePagingMemberRequest'
+      responses:
+        "200":
+          description: The membership as it now stands.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingChainMember'
+        "400":
+          description: Bad request — not exactly one change, a rank outside 0-3, an unknown role, or a lead as a responder.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller may not make this change, it is on the read-only SRE side, or there is no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such membership, or not available on this data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Someone else changed the same team at the same time.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-readiness:
+    get:
+      summary: Whether each Case Paging chain would reach someone over the next days.
+      description: >
+        Checks, from today (the rota's own clock, Asia/Colombo) for `days`
+        days: the CRE chain's standing positions (each CRE ABT's and the
+        Americas team's T1-T3 responders, each ABT's Team lead, the America
+        lead, the CRE head and CS head); that every zone the SaaS and IaaS SRE
+        rotas work each day has an L1, an L2 and an L3 rostered; that every
+        window of every SME rota team is rostered each day; and that every
+        specialist handoff dialog team names an existing SME team. People away
+        on a day are not counted as rostered. Read-only, computed on each
+        call. Internal callers only; PostgreSQL data source only.
+      operationId: getPagingReadiness
+      parameters:
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 14
+            default: 7
+      responses:
+        "200":
+          description: One entry per chain, in the order CRE, SRE_SAAS, SRE_IAAS, SME.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingReadinessResponse'
+        "400":
+          description: Bad request — days is not a whole number from 1 to 14.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not available on this data source (no database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-contacts:
+    get:
+      summary: Stored paging-only phone numbers, by email.
+      description: >
+        The paging-only numbers stored for the people with the given emails
+        (case-insensitive; an email two users share yields both), in full.
+        For csm-notification-service, which calls one when the person's
+        Asgardeo profile has no number, and for internal staff. A person with
+        no stored number is simply absent. Internal callers only (a service
+        credential is enough); PostgreSQL data source only.
+      operationId: listPagingContacts
+      parameters:
+        - name: emails
+          in: query
+          required: false
+          schema:
+            type: string
+          description: Comma-separated emails, at most 200. None returns an empty list.
+      responses:
+        "200":
+          description: The stored numbers.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingContactsResponse'
+        "400":
+          description: Bad request — more than 200 emails.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller is not internal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not available on this data source (no database).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-contacts/{userId}:
+    put:
+      summary: Store a person's paging-only phone number.
+      description: >
+        Stores the number paging calls when the person's Asgardeo profile has
+        none. Never written to Asgardeo; every change is audited. Changing the
+        number clears its last test. Allowed for a lead (lead or
+        americas_team_lead) of a team the person is on, the rota admin of a
+        family one of their teams is in (cre_rota_admin, sre_rota_admin,
+        sme_rota_admin), the CRE head or CS head, or a portal admin. Needs a
+        user token.
+      operationId: setPagingPhone
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SetPagingPhoneRequest'
+      responses:
+        "200":
+          description: The number as stored, in full.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingPhone'
+        "400":
+          description: Bad request — not an E.164 number, or the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller may not set this person's number, or there is no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such user, or not available on this data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Remove a person's paging-only phone number.
+      description: Same permission as setting it. Removing a number that is not there is not an error.
+      operationId: deletePagingPhone
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Bad request — the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller may not change this person's number, or there is no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such user, or not available on this data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-contacts/{userId}/test:
+    post:
+      summary: Ask for a test call to a person's paging-only number.
+      description: >
+        Marks the test pending and publishes paging.test_call_requested on the
+        main event topic; csm-notification-service places the call and
+        reports the outcome (PUT .../test-result). Same permission as setting
+        the number. At most one test every two minutes per person.
+      operationId: requestPagingTestCall
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "202":
+          description: The test call was requested.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingTestCallResponse'
+        "400":
+          description: Bad request — the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller may not test this person's number, or there is no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: No such user, or not available on this data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The person has no paging number.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "429":
+          description: A test call was asked for less than two minutes ago.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Event publishing is not configured, or the request could not be published (the test is then recorded as failed).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/paging-contacts/{userId}/test-result:
+    put:
+      summary: Report the outcome of a test call.
+      description: >
+        For the service that placed the call (csm-notification-service): a
+        service credential only, never a person's token.
+      operationId: recordPagingTestResult
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PagingTestResultRequest'
+      responses:
+        "204":
+          description: Recorded.
+        "400":
+          description: Bad request — unknown status, testedAt not RFC3339, or the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal service credential.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The person has no paging number, or not available on this data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /groups/search:
     post:
       summary: Search groups.
@@ -19880,6 +20357,217 @@ components:
         email:
           type: string
           description: Empty when the user row carries no address.
+    PagingChainMember:
+      type: object
+      required: [membershipId, teamKey, teamName, teamType, family, userId, name, email, role, responderRank, canEditPhone, pagingPhone]
+      properties:
+        membershipId: { type: string, format: uuid }
+        teamKey: { type: string, example: vega }
+        teamName: { type: string, example: Vega }
+        teamType: { type: string, example: cre-abt }
+        family: { type: string, enum: [CRE, SRE] }
+        userId: { type: string, format: uuid }
+        name: { type: string }
+        email: { type: string }
+        role:
+          type: string
+          description: The raw membership role (engineer, sub_lead, lead, americas_team_lead, cre_head, cs_head).
+          example: engineer
+        responderRank:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: 1, 2 or 3 for the team's 1st, 2nd or 3rd responder (Tier 1); 0 for none.
+        canEditPhone:
+          type: boolean
+          description: Whether the caller may set this person's paging-only number.
+        pagingPhone:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PagingPhone'
+          description: The person's paging-only number; null when none is stored.
+    PagingChainPermissions:
+      type: object
+      required: [responderTeams, teamLeadTeams, americasTeamLead, heads]
+      properties:
+        responderTeams:
+          type: array
+          items: { type: string }
+          description: Teams whose 1st-3rd responders the caller may pick.
+        teamLeadTeams:
+          type: array
+          items: { type: string }
+          description: Teams whose Team leads the caller may set.
+        americasTeamLead: { type: boolean, description: Whether the caller may set the America lead. }
+        heads: { type: boolean, description: Whether the caller may set the CRE head and CS head. }
+    PagingChainResponse:
+      type: object
+      required: [family, members, count, canEdit]
+      properties:
+        family: { type: string, enum: [CRE, SRE] }
+        members:
+          type: array
+          items: { $ref: '#/components/schemas/PagingChainMember' }
+        count: { type: integer }
+        canEdit: { $ref: '#/components/schemas/PagingChainPermissions' }
+    UpdatePagingMemberRequest:
+      type: object
+      description: Exactly one of the two.
+      properties:
+        responderRank:
+          type: integer
+          minimum: 0
+          maximum: 3
+          description: Make this person that responder of their team's Tier 1 (0 clears).
+        role:
+          type: string
+          enum: [lead, engineer, americas_team_lead, cre_head, cs_head]
+          description: >
+            A new America lead (americas_team_lead), CRE head or CS head
+            replaces the previous one, who steps back to lead or engineer.
+    PagingReadinessResponse:
+      type: object
+      required: [generatedAt, from, to, chains]
+      properties:
+        generatedAt: { type: string, format: date-time }
+        from: { type: string, format: date, description: The first rota date checked. }
+        to: { type: string, format: date, description: The last rota date checked. }
+        chains:
+          type: array
+          items: { $ref: '#/components/schemas/PagingReadinessChain' }
+    PagingReadinessChain:
+      type: object
+      required: [chain, label, ready, gaps, people]
+      properties:
+        chain: { type: string, enum: [CRE, SRE_SAAS, SRE_IAAS, SME] }
+        label: { type: string, enum: [CRE chain, SaaS SRE chain, IaaS SRE chain, SME page] }
+        ready:
+          type: boolean
+          description: True when the chain has no gap of severity error; a warning does not make it unready.
+        gaps:
+          type: array
+          items: { $ref: '#/components/schemas/PagingReadinessGap' }
+        people:
+          type: array
+          items: { $ref: '#/components/schemas/PagingReadinessPerson' }
+    PagingReadinessGap:
+      type: object
+      required: [code, severity, message, fix]
+      properties:
+        code:
+          type: string
+          description: >
+            Stable, for a client to branch on: MISSING_RESPONDER,
+            MISSING_TEAM_LEAD, MISSING_AMERICAS_LEAD, MISSING_HEAD, ON_LEAVE
+            (someone holding a position is away: an error for a responder, a
+            warning for a lead or head; teamKey and date set),
+            ACCOUNT_TEAM_NOT_ABT (CRE); ROTA_INACTIVE, TIER_UNCOVERED (SRE);
+            SHIFT_UNCOVERED, HANDOFF_TEAM_UNMAPPED (SME).
+          example: TIER_UNCOVERED
+        severity: { type: string, enum: [error, warning] }
+        message: { type: string, description: One sentence for a person; wording may change. }
+        fix:
+          type: string
+          enum: [responders, rota, profile, config, data]
+          description: >
+            Where it is fixed: responders (the Case Paging tab), rota (the
+            Team Schedule roster), profile, config (deployment configuration)
+            or data (records synced from elsewhere).
+        teamKey: { type: string, description: The team concerned, where there is one. }
+        date: { type: string, format: date }
+        zoneCode: { type: string, example: TZ2 }
+        tier: { type: string, description: T1-T3 for a CRE responder, L1-L3 for an SRE tier. }
+        shiftCode: { type: string, example: SME_ASG_NIGHT }
+    PagingReadinessPerson:
+      type: object
+      required: [userId, email, name, role, hasPagingPhone]
+      properties:
+        userId: { type: string, format: uuid }
+        hasPagingPhone:
+          type: boolean
+          description: Whether a paging-only number is stored for them. The number is never part of readiness.
+        pagingPhoneLastTestStatus:
+          type: string
+          enum: [pending, completed, no-answer, busy, failed]
+          description: The last test call's outcome; absent when never tested or no number.
+        pagingTier:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: >-
+            The Case Paging tier at which the chain first calls this person (1 = first called):
+            CRE responders 1, Team leads 2, America Team lead 3, CRE head 4, CS head 5; an SRE
+            person's earliest of L1 = 1, L2 = 2, L3 = 3; the SME on duty 1. Absent when unknown.
+        phoneOptional:
+          type: boolean
+          description: >-
+            True when a missing number does not stop the tier from reaching someone: the 2nd and
+            3rd responders, called together with the 1st. Absent (false) for every other
+            position, where a number is required.
+        email: { type: string }
+        name: { type: string }
+        role:
+          type: string
+          description: >
+            Why they are paged, for display: a CRE position ("T1 responder ·
+            Vega", "Team lead · Vega", "America lead", "CRE head"), the SRE
+            tiers held in the range ("L1, L2"), or the SME teams rostered on.
+    PagingPhone:
+      type: object
+      required: [masked, setBy, setAt]
+      description: >
+        A paging-only phone number: called by paging when the person's
+        Asgardeo profile has none. Never written to Asgardeo.
+      properties:
+        masked:
+          type: string
+          example: "+94•••••123"
+          description: The country code and the last three digits; always present.
+        phone:
+          type: string
+          example: "+94771234123"
+          description: The full E.164 number; only for a caller who may edit it.
+        setBy: { type: string, description: Email of who last set it. }
+        setAt: { type: string, format: date-time }
+        lastTestAt: { type: string, format: date-time }
+        lastTestStatus: { type: string, enum: [pending, completed, no-answer, busy, failed] }
+    SetPagingPhoneRequest:
+      type: object
+      required: [phone]
+      properties:
+        phone:
+          type: string
+          pattern: '^\+[1-9][0-9]{6,14}$'
+          example: "+94771234123"
+    PagingTestCallResponse:
+      type: object
+      required: [lastTestStatus]
+      properties:
+        lastTestStatus: { type: string, enum: [pending] }
+    PagingTestResultRequest:
+      type: object
+      required: [status, testedAt]
+      properties:
+        status: { type: string, enum: [completed, no-answer, busy, failed] }
+        testedAt: { type: string, format: date-time }
+    PagingContact:
+      type: object
+      required: [userId, email, phone, setBy, setAt]
+      properties:
+        userId: { type: string, format: uuid }
+        email: { type: string }
+        phone: { type: string, example: "+94771234123" }
+        setBy: { type: string }
+        setAt: { type: string, format: date-time }
+        lastTestAt: { type: string, format: date-time }
+        lastTestStatus: { type: string, enum: [pending, completed, no-answer, busy, failed] }
+    PagingContactsResponse:
+      type: object
+      required: [contacts]
+      properties:
+        contacts:
+          type: array
+          items: { $ref: '#/components/schemas/PagingContact' }
     ScheduleAssignmentsResponse:
       type: object
       properties:

@@ -203,7 +203,7 @@ func (a *specialOpsAlerts) alert(ctx context.Context, tx repository.IncidentRepo
 		Description: strOrEmpty(src.Description), State: strOrEmpty(src.State), Priority: strOrEmpty(src.Priority),
 		Impact: strOrEmpty(src.Impact), Urgency: strOrEmpty(src.Urgency),
 		ServiceID: strOrEmpty(src.ServiceID), ServiceName: strOrEmpty(src.ServiceName),
-		Product: product.Name, TeamKey: team.Key, TeamLabel: team.Label,
+		Product: product.Name, TeamKey: team.Key, TeamLabel: team.Label, SMETeam: team.SMETeam,
 		AssignmentGroupID: group, AssignmentGroupName: strOrEmpty(src.GroupName),
 		PreviousAssignmentGroupID: previous, PreviousAssignmentGroupName: strOrEmpty(src.PreviousGroupName),
 		ChangedBy: changedBy, ChangedOn: c.OccurredOn.UTC().Format(time.RFC3339),

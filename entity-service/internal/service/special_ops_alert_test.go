@@ -52,7 +52,7 @@ func soTeams(t *testing.T) *SpecialistHandoffConfig {
 	cfg, err := ParseSpecialistHandoffConfig(`{"products":[
 		{"name":"Choreo","serviceIds":["b9c999f8-1b86-a010-00ae-86acdd4bcb61"],"teams":[
 			{"key":"choreo-special-ops","label":"Choreo Special Ops","groupId":"fe0d8868-1b0b-3010-d64e-64a2604bcb3c"},
-			{"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"` + soChoreoRuntimeGroup + `"}]},
+			{"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"` + soChoreoRuntimeGroup + `","smeTeam":"choreo-runtime"}]},
 		{"name":"Asgardeo","serviceIds":["97ed1b8b-1ba2-6c10-00ae-86acdd4bcbd3"],"teams":[
 			{"key":"asgardeo-special-ops","label":"Asgardeo Special Ops","groupId":"7fb4f4c6-1b4b-3810-aea4-a936604bcb90"}]}]}`)
 	if err != nil {
@@ -99,7 +99,7 @@ func TestSpecialOpsAlert_PublishedForATeamGroup(t *testing.T) {
 		IncidentID: incidentReportTestID, Number: "INC0099990", Subject: "Choreo runtime degradation",
 		Description: "<p>pods restarting</p>", State: "IN_PROGRESS", Priority: "HIGH", Impact: "HIGH", Urgency: "MEDIUM",
 		ServiceID: "b9c999f8-1b86-a010-00ae-86acdd4bcb61", ServiceName: "Choreo",
-		Product: "Choreo", TeamKey: "choreo-runtime-team", TeamLabel: "Choreo Runtime Team",
+		Product: "Choreo", TeamKey: "choreo-runtime-team", TeamLabel: "Choreo Runtime Team", SMETeam: "choreo-runtime",
 		AssignmentGroupID: soChoreoRuntimeGroup, AssignmentGroupName: "Choreo Runtime Team",
 		PreviousAssignmentGroupID: soOtherGroup, PreviousAssignmentGroupName: "Choreo SRE",
 		ChangedBy: "jane.doe@wso2.com", ChangedOn: "2026-10-08T09:30:00Z",
@@ -124,6 +124,12 @@ func TestSpecialOpsAlert_CaseInsensitiveAndNoPreviousGroup(t *testing.T) {
 	_ = json.Unmarshal(pub.sent[0].Payload, &got)
 	if got.TeamKey != "asgardeo-special-ops" || got.Product != "Asgardeo" || got.PreviousAssignmentGroupID != "" {
 		t.Errorf("payload = %+v", got)
+	}
+	// A team whose configuration names no SME team leaves smeTeam out.
+	var raw map[string]any
+	_ = json.Unmarshal(pub.sent[0].Payload, &raw)
+	if _, present := raw["smeTeam"]; present {
+		t.Errorf("smeTeam present in %s, want it omitted", pub.sent[0].Payload)
 	}
 }
 

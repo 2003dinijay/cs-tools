@@ -282,6 +282,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// configured.
 	var scheduleHandler *handler.ScheduleHandler
 	var teamMemberHandler *handler.TeamMemberHandler
+	var pagingChainHandler *handler.PagingChainHandler
 
 	accountRepo := repository.NewAccountRepository(repository.NewScoped(db))
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
@@ -1191,6 +1192,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		log.Fatalf("invalid specialist handoff configuration: %v", handoffErr)
 	}
 	activeIncidentSvc = service.WithSpecialistHandoffConfig(activeIncidentSvc, handoffConfig)
+	if db != nil {
+		// Case Paging: who is on each tier of a team's paging chain, picked on
+		// the Team Schedule's Case Paging tab, and whether each chain would
+		// reach someone over the next days. Postgres-only, like the
+		// memberships and the rota it reads. Built here, after the handoff
+		// routing, because the readiness check reads which SME team each
+		// handoff dialog team pages.
+		pagingChainHandler = handler.NewPagingChainHandler(
+			// Test calls go out on the main shared topic (eventPublisher), not
+			// the incident one: a test call belongs to no incident.
+			service.NewPagingChainService(repository.NewPagingChainRepository(db), repository.NewPagingContactRepository(db),
+				accessSvc, handoffConfig, eventPublisher),
+		)
+	}
 	// One GitHub client per credential the products name, independent of the
 	// change-request sync. A credential with no token is logged, not fatal:
 	// its handoffs still go through and report that no issue was filed.
@@ -1546,6 +1561,21 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// five rungs from this, and the fifth by intersecting it with on-duty
 		// above.
 		mux.HandleFunc("GET /team-schedule/members", teamMemberHandler.GetTeamMembers)
+	}
+	if pagingChainHandler != nil {
+		// Who is on each tier of the CRE and SRE paging chains, what the caller
+		// may change, and changing one membership. The service reads the team
+		// from the row being changed, never from the request.
+		mux.HandleFunc("GET /team-schedule/paging-chain", pagingChainHandler.GetPagingChain)
+		mux.HandleFunc("PATCH /team-schedule/paging-chain/members/{membershipId}", pagingChainHandler.UpdatePagingMember)
+		mux.HandleFunc("GET /team-schedule/paging-readiness", pagingChainHandler.GetPagingReadiness)
+		// Paging-only phone numbers. The reads and the test-result report are
+		// for csm-notification-service too; the service checks who may do what.
+		mux.HandleFunc("GET /team-schedule/paging-contacts", pagingChainHandler.ListPagingContacts)
+		mux.HandleFunc("PUT /team-schedule/paging-contacts/{userId}", pagingChainHandler.SetPagingPhone)
+		mux.HandleFunc("DELETE /team-schedule/paging-contacts/{userId}", pagingChainHandler.DeletePagingPhone)
+		mux.HandleFunc("POST /team-schedule/paging-contacts/{userId}/test", pagingChainHandler.RequestTestCall)
+		mux.HandleFunc("PUT /team-schedule/paging-contacts/{userId}/test-result", pagingChainHandler.RecordTestResult)
 	}
 	if scheduleHandler != nil {
 

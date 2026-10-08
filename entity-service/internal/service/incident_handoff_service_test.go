@@ -45,7 +45,7 @@ const (
 // one-team product with no GitHub repository.
 const hoConfigJSON = `{"products":[
  {"name":"Choreo","serviceIds":["B9C999F8-1B86-A010-00AE-86ACDD4BCB61"],"github":{"owner":"wso2-enterprise","repo":"choreo"},
-  "teams":[{"key":"choreo-special-ops","label":"Choreo Special Ops","groupId":"fe0d8868-1b0b-3010-d64e-64a2604bcb3c"},
+  "teams":[{"key":"choreo-special-ops","label":"Choreo Special Ops","groupId":"fe0d8868-1b0b-3010-d64e-64a2604bcb3c","smeTeam":"choreo-runtime"},
            {"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"80dade5d-1b70-0710-a002-c9d3604bcbd7"},
            {"key":"choreo-apim-team","label":"Choreo APIM Team","groupId":"a79a1e9d-1b70-0710-a002-c9d3604bcb20"}]},
  {"name":"Asgardeo","serviceIds":["97ed1b8b-1ba2-6c10-00ae-86acdd4bcbd3"],"github":{"owner":"wso2-enterprise","repo":"asgardeo-product","credential":"asgardeo"},
@@ -88,6 +88,12 @@ func TestParseSpecialistHandoffConfig(t *testing.T) {
 	if len(cfg.Products) != 3 || cfg.Products[0].ServiceIDs[0] != hoChoreoService {
 		t.Fatalf("products %+v, want three with service ids lower-cased", cfg.Products)
 	}
+	if got := cfg.Products[0].Teams[0].SMETeam; got != "choreo-runtime" {
+		t.Errorf("smeTeam %q, want choreo-runtime", got)
+	}
+	if got := cfg.Products[0].Teams[1].SMETeam; got != "" {
+		t.Errorf("a team with no smeTeam reads %q, want empty", got)
+	}
 	if empty, err := ParseSpecialistHandoffConfig("  "); err != nil || len(empty.Products) != 0 {
 		t.Errorf("empty value: %+v %v, want an empty config", empty, err)
 	}
@@ -113,6 +119,7 @@ func TestParseSpecialistHandoffConfig(t *testing.T) {
 		"duplicate key":      wrap(product("X", hoMoesifService, "", ok, ok)),
 		"bad group id":       wrap(product("X", hoMoesifService, "", team("a", "Moesif"))),
 		"half a github":      wrap(product("X", hoMoesifService, `,"github":{"owner":"wso2-enterprise"}`, ok)),
+		"smeTeam not a key":  wrap(product("X", hoMoesifService, "", `{"key":"a","label":"L","groupId":"`+hoMoesifGroup+`","smeTeam":"Choreo Runtime"}`)),
 	} {
 		if _, err := ParseSpecialistHandoffConfig(raw); err == nil || !strings.Contains(err.Error(), "SPECIALIST_HANDOFF_CONFIG") {
 			t.Errorf("%s: err %v, want a SPECIALIST_HANDOFF_CONFIG error", name, err)

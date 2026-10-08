@@ -7037,7 +7037,9 @@ assignment group **changes to** a Special Ops group -- every team's `groupId` in
 which already claims those rows, publishes the alert (`WithSpecialOpsAlerts`, main.go) and
 acknowledges any other group as a no-op. A failed publish is retried and parked like the report
 flows. Payload: `events.IncidentSpecialOpsAlertPayload` (incident, service, product/team, both
-groups, who and when), keyed by the incident id. Off without the topic; unknown to the consumer
+groups, who and when), keyed by the incident id. `smeTeam` is the matched team's `smeTeam` from
+`SPECIALIST_HANDOFF_CONFIG` (the Team Schedule key of the SME rota Case Paging pages), omitted when
+the team names none. Off without the topic; unknown to the consumer
 until it adds the type (`HandleShared` skips unknown types on sre-events).
 
 **`UpdateProblem`/`UpdateIncident` are also not
