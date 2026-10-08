@@ -207,12 +207,19 @@ func TestFetchCaseLinkedChangeRequests_MapsRowsAndFilters(t *testing.T) {
 	repo := &caseRepo{vis: CRVisibility{}}
 
 	// Unrestricted caller
-	got, err := repo.fetchCaseLinkedChangeRequests(context.Background(), q, "case-1")
+	ctxUnrestricted := WithCallerIdentity(context.Background(), SearchScope{Unrestricted: true})
+	got, err := repo.fetchCaseLinkedChangeRequests(ctxUnrestricted, q, "case-1")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if len(got) != 2 {
 		t.Fatalf("got %d linked change requests, want 2", len(got))
+	}
+	if strings.Contains(q.lastQuery, "project_contact") || strings.Contains(q.lastQuery, "FALSE") {
+		t.Errorf("expected no visibility filter in query for unrestricted caller, got: %s", q.lastQuery)
+	}
+	if len(q.lastArgs) != 1 || q.lastArgs[0] != "case-1" {
+		t.Errorf("expected query args for unrestricted caller to carry only case-1, got: %+v", q.lastArgs)
 	}
 
 	if got[0].ID != "cr-1" || got[0].Number != "CHG0000001" || got[0].Name == nil || *got[0].Name != "Upgrade DB" {
