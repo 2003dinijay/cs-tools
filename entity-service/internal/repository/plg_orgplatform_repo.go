@@ -779,7 +779,7 @@ func (r *orgPlatformRepository) DetachRun(ctx context.Context, runID, actorID st
 	// An UPDATE rather than a DELETE, so the row survives to record who removed
 	// the playbook and when. plg_playbook_run_v and plg_work_queue_v both filter
 	// detached_on, so a detached run disappears from every read exactly as the
-	// deleted row used to -- see 0211.
+	// deleted row used to -- see 0212_plg_audit_attribution.sql.
 	//
 	// The guard is unchanged: no completed CLOSE_PLAYBOOK task on this run.
 	// Expressed against the task table rather than the view's run_status,
@@ -816,7 +816,13 @@ func (r *orgPlatformRepository) RunTaskShape(ctx context.Context, taskID string)
 		       COALESCE(ARRAY(SELECT o ->> 'code'
 		                      FROM   jsonb_array_elements(t.options) o), '{}')
 		FROM   plg_playbook_run_task t
-		WHERE  t.id::TEXT = $1`, taskID).Scan(&shape.ValueType, &shape.OptionCodes)
+		JOIN   plg_playbook_run run ON run.id = t.playbook_run_id
+		-- Only tasks of an ATTACHED run. A detached run's tasks survive now that
+		-- the detach is an update rather than a delete; before, the row went with
+		-- its run (ON DELETE CASCADE) and this query found nothing. Without the
+		-- join, history stays editable through a task id the caller can no longer
+		-- see in any read.
+		WHERE  t.id::TEXT = $1 AND run.detached_on IS NULL`, taskID).Scan(&shape.ValueType, &shape.OptionCodes)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return shape, &apierror.NotFoundError{Msg: "task not found"}
 	}
@@ -837,7 +843,9 @@ func (r *orgPlatformRepository) PatchRunTask(ctx context.Context, req domain.Pat
 		SELECT run.org_platform_id::TEXT
 		FROM   plg_playbook_run_task t
 		JOIN   plg_playbook_run run ON run.id = t.playbook_run_id
-		WHERE  t.id::TEXT = $1`, req.ID).Scan(&pairingID)
+		-- Attached runs only, same reason as RunTaskShape above: a detached run's
+		-- tasks are history and must not stay writable by id.
+		WHERE  t.id::TEXT = $1 AND run.detached_on IS NULL`, req.ID).Scan(&pairingID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return "", "", &apierror.NotFoundError{Msg: "task not found"}
 	}
