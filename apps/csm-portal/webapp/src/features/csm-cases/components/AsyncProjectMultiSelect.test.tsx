@@ -66,6 +66,29 @@ describe("AsyncProjectMultiSelect — search text vs. selected-names summary", (
     ).toHaveLength(1);
   });
 
+  it("restores the cursor to the end of the typed search text after selecting an option", async () => {
+    mockResults();
+    const onChange = vi.fn();
+    render(
+      <AsyncProjectMultiSelect id="test-project-select" values={[]} onChange={onChange} />,
+    );
+
+    const input = screen.getByRole("combobox") as HTMLInputElement;
+    fireEvent.mouseDown(input);
+    fireEvent.change(input, { target: { value: "managed" } });
+
+    const option = await screen.findByText("CP Ph2 Test Project - Managed Cloud Subscription");
+    fireEvent.click(option);
+
+    // Move the caret away from the end first, so the assertion below proves
+    // something actually moved it back rather than it never having left.
+    input.setSelectionRange(0, 0);
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+
+    expect(input.selectionStart).toBe(input.value.length);
+    expect(input.selectionEnd).toBe(input.value.length);
+  });
+
   it("clears the typed search text and shows the selected-names summary once the dropdown closes", () => {
     mockResults();
     const onChange = vi.fn();

@@ -160,6 +160,13 @@ export default function AsyncProjectMultiSelect({
           return m;
         });
         onChange(next.map((o) => o.id));
+        // MUI's own attempt to clear the input after a pick (ignored above,
+        // reason "reset") still leaves the cursor mid-string. Restore it to
+        // the end once the DOM settles.
+        requestAnimationFrame(() => {
+          const el = document.getElementById(id) as HTMLInputElement | null;
+          el?.setSelectionRange(el.value.length, el.value.length);
+        });
       }}
       inputValue={input}
       onInputChange={(_event, value, reason) => {
