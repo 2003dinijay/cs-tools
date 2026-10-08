@@ -606,6 +606,9 @@ func (s *snUserService) PatchMe(ctx context.Context, req domain.PatchUserMeReque
 	if req.TimeZone == "" {
 		return domain.PatchUserMeResponse{}, &apierror.ValidationError{Msg: "timeZone is required"}
 	}
+	if req.Phone != nil {
+		return domain.PatchUserMeResponse{}, &apierror.ValidationError{Msg: "phone is not supported by this data source"}
+	}
 
 	raw, err := s.client.Patch(ctx, "/users/me", token, snPatchUserMePayload{TimeZone: req.TimeZone})
 	if err != nil {

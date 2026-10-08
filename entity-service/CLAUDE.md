@@ -8294,6 +8294,10 @@ added by the sync-mirrored `0122_user_add_timezone.sql` — it was first confirm
 directly against the live database, before that migration was mirrored. The
 `timezone` reference table it points at is the sync's too (see "GET /metadata and
 GET /projects/{id}/metadata" above).
+`"user".phone` (`VARCHAR(32)`, nullable, sync-mirrored `0141_user_add_phone.sql`) is returned
+as `phone` by `GET /users/me` only, omitted when NULL: `GetUserByEmail` appends it to
+`userColumns`, while the by-id and list reads do not select it. `PATCH /users/me` also writes it
+(see below).
 `GetMe` was already wiring `domain.User.Timezone` through to its own response
 (`GetUserMeResponse.TimeZone`) before this was fixed — it just always came
 back `nil`, since `userColumns`/`prefixUserColumns`/`scanUser` never selected
@@ -8313,8 +8317,16 @@ path's own scoping. This service does not check the value against the
 `timezone` reference table, so any non-empty value passes the service; on a database
 with the sync's `0122` shape (the column REFERENCES `timezone(value)`) a value that is
 not in that table is refused by the foreign key (`user_timezone_fkey`, SQLSTATE 23503)
-and surfaces as a 500. Only a blank value is rejected up front (`"timeZone is required"`, mirroring
-`snUserService.PatchMe`'s own validation).
+and surfaces as a 500.
+`PATCH /users/me` body is `{"timeZone"?: string, "phone"?: string|null}` (Postgres source;
+`UpdateUserProfile` replaced `UpdateUserTimeZone`). At least one field is required (else 400
+`at least one of timeZone or phone is required`); an omitted or null field is left untouched
+(absent and null are not distinguished, matching the existing `timeZone` convention, and
+`timeZone` cannot be cleared). `phone` is whitespace-trimmed, no format check, over 32 characters
+is a 400 (not a DB error), and an empty/blank value clears it to NULL. The 200 body is
+`{"message", "user": {"id", "updatedBy", "updatedOn", "timeZone"?, "phone"?}}` with `timeZone`/`phone`
+being the stored values after the write (omitted when NULL). The alternate (non-Postgres) data source still requires
+`timeZone` and rejects `phone` with a 400.
 
 ## POST /users creates a new "user" row (Postgres-only)
 
