@@ -153,6 +153,42 @@ func TestCallRequestMarkCompletedIntegration(t *testing.T) {
 		}
 	})
 
+	t.Run("a call with no state at all is refused as unknown, not completed", func(t *testing.T) {
+		if _, err := scoped.Exec(ctx, `UPDATE customer_call SET state = NULL WHERE id = $1::text::uuid`, crCallPendingX); err != nil {
+			t.Fatalf("clear state: %v", err)
+		}
+		var conflict *apierror.ConflictError
+		err := complete(crCallPendingX, nil)
+		if !errors.As(err, &conflict) || !strings.Contains(conflict.Msg, "unknown state") {
+			t.Errorf("NULL state: got %v, want a ConflictError saying the state is unknown", err)
+		}
+		var state *string
+		if e := scoped.QueryRow(ctx, `SELECT state::text FROM customer_call WHERE id = $1::text::uuid`, crCallPendingX).Scan(&state); e != nil || state != nil {
+			t.Errorf("a refused conclude wrote a state: %v (err %v)", state, e)
+		}
+	})
+
+	t.Run("the other post-call fields are still written when no notes are given", func(t *testing.T) {
+		setCall(t, scoped, crCallPendingX, "SCHEDULED", &keep)
+		plan, actual, blank := "agreed next steps", 25, "  "
+		_, err := repo.UpdateCallRequest(ctx, domain.UpdateCallRequestRequest{
+			ID: crCallPendingX, State: domain.CallRequestStateConcluded, Notes: &blank, Plan: &plan, ActualDurationMin: &actual,
+		}, nil, who)
+		if err != nil {
+			t.Fatalf("complete with a plan and an actual duration: %v", err)
+		}
+		var state, notes, gotPlan, gotActual *string
+		if e := scoped.QueryRow(ctx,
+			`SELECT state::text, all_notes, plan, actual_call_duration FROM customer_call WHERE id = $1::text::uuid`, crCallPendingX,
+		).Scan(&state, &notes, &gotPlan, &gotActual); e != nil {
+			t.Fatalf("read: %v", e)
+		}
+		if state == nil || *state != "CONCLUDED" || notes == nil || *notes != keep ||
+			gotPlan == nil || *gotPlan != plan || gotActual == nil || *gotActual != "25" {
+			t.Errorf("state=%v notes=%v plan=%v actual=%v; want CONCLUDED, the old notes kept, the plan and 25 minutes written", state, notes, gotPlan, gotActual)
+		}
+	})
+
 	t.Run("an unknown call, or one on another case, is not found rather than a conflict", func(t *testing.T) {
 		setCall(t, scoped, crCallPendingX, "SCHEDULED", nil)
 		var notFound *apierror.NotFoundError
@@ -169,9 +205,12 @@ func TestCallRequestMarkCompletedIntegration(t *testing.T) {
 	})
 }
 
-// A customer registered on one project can complete a call on it, but a call on
-// another project must look absent: the conflict message names the call's current
-// state, so it may only ever be returned to someone who can already see the call.
+// Completing a call without notes is staff-only. The customer portal's backend
+// forwards any state key it is given and cannot send notes, and RLS lets a project
+// member update their own project's calls, so the old notes requirement was the only
+// thing that kept a customer from concluding a call: it must stay out of their reach,
+// on their own project's call as much as anyone else's, and the answer must not
+// depend on the call (nothing about it, or whether it exists, is revealed).
 func TestCallRequestMarkCompletedCustomerScopeIntegration(t *testing.T) {
 	pool := callRequestTestPool(t)
 	seedCallRequestSearchFixtures(t, pool)
@@ -180,35 +219,37 @@ func TestCallRequestMarkCompletedCustomerScopeIntegration(t *testing.T) {
 	repo := repository.NewCallRequestRepository(scoped)
 	customer := repository.WithCallerIdentity(context.Background(), repository.SearchScope{ViewerEmail: crCustomerEmail})
 
-	setCall(t, scoped, crCallPendingX, "SCHEDULED", nil)  // on the customer's project
-	setCall(t, scoped, crCallPendingY, "CANCELED", nil)   // on another project, in a state that would conflict
-	setCall(t, scoped, crCallHandedToA, "SCHEDULED", nil) // on another project, in a state that would be allowed
+	setCall(t, scoped, crCallPendingX, "SCHEDULED", nil)  // on the customer's own project
+	setCall(t, scoped, crCallPendingY, "CANCELED", nil)   // on another project
+	setCall(t, scoped, crCallHandedToA, "SCHEDULED", nil) // on another project
 	complete := func(id string) error {
 		_, err := repo.UpdateCallRequest(customer, domain.UpdateCallRequestRequest{ID: id, State: domain.CallRequestStateConcluded}, nil, crCustomerEmail)
 		return err
 	}
 
-	if err := complete(crCallPendingX); err != nil {
-		t.Fatalf("a member completing a scheduled call on their own project: %v", err)
-	}
-	if got := readCall(t, scoped, crCallPendingX); got.state != "CONCLUDED" {
-		t.Errorf("state = %s, want CONCLUDED", got.state)
-	}
-
-	var notFound *apierror.NotFoundError
-	var conflict *apierror.ConflictError
-	for _, id := range []string{crCallPendingY, crCallHandedToA} {
-		err := complete(id)
-		if errors.As(err, &conflict) {
-			t.Errorf("call %s on a project the caller is not in: got a ConflictError (%v), which would reveal its state", id, err)
-		} else if !errors.As(err, &notFound) {
-			t.Errorf("call %s on a project the caller is not in: got %v, want a NotFoundError", id, err)
+	want := map[string]string{crCallPendingX: "SCHEDULED", crCallPendingY: "CANCELED", crCallHandedToA: "SCHEDULED"}
+	for id, state := range want {
+		var forbidden *apierror.ForbiddenError
+		if err := complete(id); !errors.As(err, &forbidden) {
+			t.Errorf("call %s: a customer completing a call got %v, want a ForbiddenError", id, err)
+		}
+		if got := readCall(t, scoped, id); got.state != state {
+			t.Errorf("call %s: a refused conclude changed the state from %s to %s", id, state, got.state)
 		}
 	}
-	if got := readCall(t, scoped, crCallPendingY); got.state != "CANCELED" {
-		t.Errorf("a refused conclude changed another project's call to %s", got.state)
+	// A call that does not exist is refused the same way: no answer distinguishes it.
+	var forbidden *apierror.ForbiddenError
+	if err := complete("ca000000-0000-0000-0000-0000000000fe"); !errors.As(err, &forbidden) {
+		t.Errorf("unknown call: got %v, want the same ForbiddenError", err)
 	}
-	if got := readCall(t, scoped, crCallHandedToA); got.state != "SCHEDULED" {
-		t.Errorf("a refused conclude changed another project's call to %s", got.state)
+
+	// The staff path on the very same call still works, so the refusal is about who
+	// asks, not about the call.
+	staff := repository.WithSystemIdentity(context.Background())
+	if _, err := repo.UpdateCallRequest(staff, domain.UpdateCallRequestRequest{ID: crCallPendingX, State: domain.CallRequestStateConcluded}, nil, "engineer@example.com"); err != nil {
+		t.Fatalf("staff completing the same call: %v", err)
+	}
+	if got := readCall(t, scoped, crCallPendingX); got.state != "CONCLUDED" {
+		t.Errorf("state after staff completion = %s, want CONCLUDED", got.state)
 	}
 }

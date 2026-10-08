@@ -556,6 +556,13 @@ func (r *callRequestRepo) CreateCallRequestFromServiceNow(ctx context.Context, r
 // WHERE clause, so it is atomic with the write; a call that fails it comes back as
 // a ConflictError naming its current state, not as a misleading not-found.
 // Concluding WITH notes ("Send call notes") is unchanged and not guarded.
+//
+// That same transition is also staff-only. Before notes became optional the notes
+// requirement was the only thing stopping an external caller from concluding a
+// call: the customer portal's backend forwards any state key it is given, cannot
+// send notes, and RLS lets a project member update their own project's calls. So a
+// notes-less conclude from anyone but an internal (Unrestricted) caller is a
+// ForbiddenError, answered before any lookup so it says nothing about the call.
 func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.UpdateCallRequestRequest, assigneeID *string, callerEmail string) (domain.UpdateCallRequestResponse, error) {
 	var finalTimes *string
 	if req.UTCTimes != nil {
@@ -591,13 +598,18 @@ func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.Upda
 	// That path also never writes the notes column (blank notes included), so
 	// completing a call cannot erase what is already recorded on it.
 	notes := req.Notes
+	completableFrom := []string{
+		callRequestStateToEnum(domain.CallRequestStateScheduled),
+		callRequestStateToEnum(domain.CallRequestStateNotesPending),
+	}
 	var onlyFromStates any
 	if req.State == domain.CallRequestStateConcluded && (req.Notes == nil || strings.TrimSpace(*req.Notes) == "") {
-		notes = nil
-		onlyFromStates = []string{
-			callRequestStateToEnum(domain.CallRequestStateScheduled),
-			callRequestStateToEnum(domain.CallRequestStateNotesPending),
+		scope, ok := CallerIdentityFromContext(ctx)
+		if !ok || !scope.Unrestricted {
+			return domain.UpdateCallRequestResponse{}, &apierror.ForbiddenError{Msg: "only WSO2 staff can mark a call request as completed"}
 		}
+		notes = nil
+		onlyFromStates = completableFrom
 	}
 
 	const query = `
@@ -627,21 +639,31 @@ func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.Upda
 		notes, req.Plan, req.Attendees, req.ActionItems, actual, caseID, onlyFromStates,
 	).Scan(&id, &updatedOn)
 	if errors.Is(err, pgx.ErrNoRows) && onlyFromStates != nil {
-		// No row matched. Either the call is not visible/does not exist (not found), or
-		// it is in a state this conclude is not allowed from (conflict): look it up
-		// through the same caller identity to tell which, so a stale "Mark as
-		// completed" gets an accurate answer instead of "not found".
+		// No row matched. Either the call does not exist (not found), or it is in a state
+		// this conclude is not allowed from (conflict): look it up to tell which, so a
+		// stale "Mark as completed" gets an accurate answer instead of "not found".
 		var current *string
 		lookup := r.db.QueryRow(ctx,
 			`SELECT state::text FROM customer_call
 			 WHERE id = $1::text::uuid AND ($2::text::uuid IS NULL OR work_item_id = $2::text::uuid)`,
 			req.ID, caseID).Scan(&current)
-		if lookup == nil {
+		switch {
+		case lookup == nil:
+			if current != nil && (*current == completableFrom[0] || *current == completableFrom[1]) {
+				// It became completable between the UPDATE and this lookup (a concurrent
+				// reschedule, say): saying "not allowed from <state>" would be wrong.
+				return domain.UpdateCallRequestResponse{}, &apierror.ConflictError{Msg: "the call request changed while this was being applied; please try again"}
+			}
 			label := "in an unknown state"
 			if current != nil {
 				label = "currently " + CallRequestStateFromEnum(*current).Label
 			}
 			return domain.UpdateCallRequestResponse{}, &apierror.ConflictError{Msg: "a call request can only be marked completed while it is scheduled or notes pending (this one is " + label + ")"}
+		case errors.Is(lookup, pgx.ErrNoRows):
+			// Not visible or not there: fall through to not found below.
+		default:
+			// A failed lookup is a failure, not a missing call.
+			return domain.UpdateCallRequestResponse{}, fmt.Errorf("look up call request after refused conclude: %w", lookup)
 		}
 	}
 	if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {

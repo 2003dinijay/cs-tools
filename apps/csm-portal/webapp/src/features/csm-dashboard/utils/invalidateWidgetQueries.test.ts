@@ -54,27 +54,39 @@ describe("invalidateCallRequestWidgetQueries", () => {
   const isInvalidated = (qc: QueryClient, key: readonly unknown[]): boolean =>
     qc.getQueryState(key)?.isInvalidated === true;
 
-  it("marks only the dashboard widgets that list call requests as stale", async () => {
+  it("marks every dashboard widget over call requests as stale, whatever its shape", async () => {
     const qc = new QueryClient();
     const myCalls = [KEY, "my-calls", "call_request", { a: 1 }, 5, 0, undefined];
     const callsToAttend = [KEY, "calls-to-attend", "call_request", { b: 2 }, 10, 0, undefined];
-    const casesWidget = [KEY, "my-cases", "case", { a: 1 }, 5, 0, undefined];
-    const differentlyShaped = [KEY, "pie-slice", "w", "call_request"];
-    const caseCallRequests = [ApiQueryKeys.CASE_CALL_REQUESTS, "case-1", []];
-    for (const key of [myCalls, callsToAttend, casesWidget, differentlyShaped, caseCallRequests]) {
-      seedQuery(qc, key);
-    }
+    const pieSlice = [KEY, "pie-slice", "calls-by-state", "call_request", { state: "scheduled" }];
+    const groupBy = [KEY, "group-by", "calls-by-team", "call_request", { c: 3 }, "team"];
+    for (const key of [myCalls, callsToAttend, pieSlice, groupBy]) seedQuery(qc, key);
 
     await invalidateCallRequestWidgetQueries(qc);
 
-    expect(isInvalidated(qc, myCalls)).toBe(true);
-    expect(isInvalidated(qc, callsToAttend)).toBe(true);
-    // Nothing else is reloaded: another resource's widget, a key whose third slot is
-    // not the resource type, and the case-scoped call request list (which the
-    // mutation hook invalidates for itself).
-    expect(isInvalidated(qc, casesWidget)).toBe(false);
-    expect(isInvalidated(qc, differentlyShaped)).toBe(false);
-    expect(isInvalidated(qc, caseCallRequests)).toBe(false);
+    for (const key of [myCalls, callsToAttend, pieSlice, groupBy]) {
+      expect(isInvalidated(qc, key), JSON.stringify(key)).toBe(true);
+    }
+  });
+
+  it("reloads nothing else", async () => {
+    const qc = new QueryClient();
+    const casesWidget = [KEY, "my-cases", "case", { a: 1 }, 5, 0, undefined];
+    const casesPie = [KEY, "pie-slice", "cases-by-state", "case", { state: "open" }];
+    const casesGroupBy = [KEY, "group-by", "cases-by-team", "case", { c: 3 }, "team"];
+    // The slot a pie key holds a widget id in must not be mistaken for a resource type.
+    const widgetNamedLikeTheResource = [KEY, "pie-slice", "call_request", "case", {}];
+    const feedbackTrend = [KEY, "feedback-trend", "csat", { a: 1 }, "month"];
+    const caseCallRequests = [ApiQueryKeys.CASE_CALL_REQUESTS, "case-1", []];
+    const all = [casesWidget, casesPie, casesGroupBy, widgetNamedLikeTheResource, feedbackTrend, caseCallRequests];
+    for (const key of all) seedQuery(qc, key);
+
+    await invalidateCallRequestWidgetQueries(qc);
+
+    // The case-scoped call request list is the mutation hook's own business.
+    for (const key of all) {
+      expect(isInvalidated(qc, key), JSON.stringify(key)).toBe(false);
+    }
   });
 
   it("is a no-op when no dashboard has been opened yet", async () => {

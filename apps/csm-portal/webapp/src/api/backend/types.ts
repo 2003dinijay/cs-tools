@@ -2511,8 +2511,9 @@ export interface BeSearchCallRequestsResponse {
  *   required, `assignee` optional.
  * - `wso2_rejected` (agent reject) / `canceled`: `cancellationReason` optional
  *   (used as the reject/cancel reason).
- * - `concluded` (agent send notes): `notes` required, `plan`/`attendees`/
- *   `actionItems`/`actualDurationMin` optional.
+ * - `concluded`: agent "send call notes" supplies `notes` (plus optional
+ *   `plan`/`attendees`/`actionItems`/`actualDurationMin`); agent "mark as
+ *   completed" sends no notes at all.
  * - `pending_on_wso2` (reschedule request back to the customer): `utcTimes` +
  *   `durationInMinutes`.
  */

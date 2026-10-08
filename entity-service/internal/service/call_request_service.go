@@ -277,7 +277,8 @@ func (s *callRequestService) SearchAllCallRequests(ctx context.Context, req doma
 }
 
 // UpdateCallRequest implements CallRequestService. The input rules mirror the
-// ServiceNow implementation's (per-state required fields); req.Assignee is
+// ServiceNow implementation's (per-state required fields, except that a conclude
+// needs no notes -- see below); req.Assignee is
 // interpreted as the assignee's email, resolved to a user id. CancellationReason
 // is rejected: customer_call has no column to store it, and accepting it would
 // report success while silently discarding what the caller sent.
