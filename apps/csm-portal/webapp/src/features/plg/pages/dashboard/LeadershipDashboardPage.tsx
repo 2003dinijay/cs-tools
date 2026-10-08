@@ -93,7 +93,6 @@ export default function LeadershipDashboardPage(): JSX.Element {
                 label="Ingest failures"
                 value={data.summary.unresolvedIngestFailures}
                 hint="Ingest failure records from Moesif"
-                color="error.main"
               />
             </Grid>
           ) : null}
