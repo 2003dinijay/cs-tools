@@ -30,7 +30,7 @@
 --
 -- IMPORTANT, deliberately deferred (same posture already accepted for
 -- case_repo.go/incident_repo.go's SLA-filter regression -- see migration
--- 0144's own history): work_item itself has NO RLS yet (that lands in the
+-- 100005's own history): work_item itself has NO RLS yet (that lands in the
 -- case-adjacent phase, which finally converts case_repo.go). PatchChangeRequest
 -- updates BOTH work_item and change_request in one transaction; only the
 -- change_request half is protected by this migration. Concretely: title/
@@ -42,7 +42,7 @@
 -- not a new gap.
 --
 -- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
--- IF EXISTS -- see migration 0141's identical note.
+-- IF EXISTS -- see migration 100002's identical note.
 BEGIN;
 
 ALTER TABLE change_request ENABLE ROW LEVEL SECURITY;
@@ -64,7 +64,7 @@ CREATE POLICY change_request_visibility ON change_request
 -- rather than correlating back to the row being updated -- caught live via
 -- "more than one row returned by a subquery used as an expression" the first
 -- time this policy was exercised against real data. sla/customer_call/
--- time_card's own WITH CHECK subqueries (migrations 0142-0144) never hit
+-- time_card's own WITH CHECK subqueries (migrations 100003-100005) never hit
 -- this because they correlate on work_item_id, a name work_item has no
 -- column called, so there was no ambiguity to resolve incorrectly.
 DROP POLICY IF EXISTS change_request_update ON change_request;

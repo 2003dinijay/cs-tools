@@ -20,14 +20,14 @@
 --
 -- conversation shares its primary key with work_item (conversation.id IS
 -- work_item.id), same shape as change_request -- membership is derived
--- through that shared id, and (learned the hard way in migration 0145)
+-- through that shared id, and (learned the hard way in migration 100006)
 -- every correlated subquery below writes conversation.id explicitly, never
 -- a bare id, since work_item also has a column literally named id and an
 -- unqualified reference inside a "FROM work_item wi" subquery resolves to
 -- wi.id itself rather than correlating back to the outer row.
 --
 -- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
--- IF EXISTS -- see migration 0141's identical note.
+-- IF EXISTS -- see migration 100002's identical note.
 BEGIN;
 
 ALTER TABLE conversation ENABLE ROW LEVEL SECURITY;
@@ -64,7 +64,7 @@ CREATE POLICY conversation_update ON conversation
 -- ConversationRepository's own package doc comment), so nothing currently
 -- writes a new conversation row. Still given an explicit internal-only
 -- policy rather than left at zero, matching case_escalation's own
--- precedent (migration 0141): FORCE plus zero INSERT policies would also
+-- precedent (migration 100002): FORCE plus zero INSERT policies would also
 -- block a future internal/admin tooling need, not just an external one.
 DROP POLICY IF EXISTS conversation_write_internal_only ON conversation;
 CREATE POLICY conversation_write_internal_only ON conversation

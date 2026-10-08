@@ -17,7 +17,7 @@
 -- Migration 0141's case_escalation/case_escalation_notification_list write
 -- policies were internal-only because, at the time, EscalationService.
 -- CreateEscalation had no real implementation (always returned
--- ServiceUnavailableError -- see 0141's own doc comment). That has since
+-- ServiceUnavailableError -- see 100002's own doc comment). That has since
 -- changed: escalation_service.go's CreateEscalation is now a genuine,
 -- project-membership-authorized customer-facing write (POST /escalations
 -- and POST /cases/{id}/escalations both funnel through it, and it checks

@@ -34,7 +34,7 @@
 -- this migration series.
 --
 -- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
--- IF EXISTS -- see migration 0141's identical note.
+-- IF EXISTS -- see migration 100002's identical note.
 BEGIN;
 
 ALTER TABLE customer_call ENABLE ROW LEVEL SECURITY;

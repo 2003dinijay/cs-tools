@@ -15,7 +15,7 @@
 -- under the License.
 
 -- Removes row-level security from sla, incident, incident_task and problem
--- (added by migrations 0142 and 0148).
+-- (added by migrations 100003 and 100009).
 --
 -- Why: none of the four is reachable by the customer portal. The customer
 -- BFF (apps/customer-portal/backend-v2) never calls /slas, /incidents,

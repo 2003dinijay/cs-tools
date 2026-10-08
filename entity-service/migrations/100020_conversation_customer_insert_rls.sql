@@ -18,10 +18,10 @@
 -- INSERT internal-only because nothing created conversations natively then;
 -- every row was synced in from ServiceNow's u_chat_conversation. Now
 -- POST /conversations writes here on behalf of the customer, so the policy
--- matches case_write (migration 0147): internal, or a member of the
+-- matches case_write (migration 100008): internal, or a member of the
 -- work_item's project. The work_item half is already covered by
 -- work_item_write. The is_internal check is pre-wrapped in a scalar
--- subquery, the form migration 0154 rewrote every policy into.
+-- subquery, the form migration 100015 rewrote every policy into.
 
 SET lock_timeout = '5s';
 

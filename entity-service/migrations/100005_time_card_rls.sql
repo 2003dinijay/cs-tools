@@ -36,7 +36,7 @@
 -- project-membership one, and stays the BFF's job.
 --
 -- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
--- IF EXISTS -- see migration 0141's identical note.
+-- IF EXISTS -- see migration 100002's identical note.
 BEGIN;
 
 ALTER TABLE time_card ENABLE ROW LEVEL SECURITY;
@@ -76,7 +76,7 @@ CREATE POLICY time_card_delete ON time_card
 -- time_card_approver has no project_id of its own -- it reaches one via
 -- time_card.case_id, so its policy re-derives the same membership check
 -- through that join, mirroring case_escalation_notification_list's own
--- reasoning (migration 0141).
+-- reasoning (migration 100002).
 ALTER TABLE time_card_approver ENABLE ROW LEVEL SECURITY;
 ALTER TABLE time_card_approver FORCE ROW LEVEL SECURITY;
 

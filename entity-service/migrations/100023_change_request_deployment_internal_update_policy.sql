@@ -24,7 +24,7 @@
 -- work_item_watcher: INSERT ... ON CONFLICT (change_request_id, deployment_id) DO UPDATE, and the
 -- conflict branch is an UPDATE. With RLS forced and no UPDATE policy, that branch is refused for
 -- every caller ("new row violates row-level security policy (USING expression)"), the same failure
--- migration 0190 fixed for seven other table/command pairs. The sync connects with
+-- migration 100021 fixed for seven other table/command pairs. The sync connects with
 -- app.is_internal = true, so the policy below is the same internal-only shape as 0190's.
 --
 -- There is deliberately no project-member branch: a customer session is refused an UPDATE exactly
@@ -38,7 +38,7 @@
 -- lock_timeout makes a busy table fail the file instead of queueing behind a long query.
 -- Idempotent (the policy is dropped and recreated), so after a lock timeout, run it again.
 --
--- The internal check uses the planner-friendly scalar sub-select introduced by migration 0154.
+-- The internal check uses the planner-friendly scalar sub-select introduced by migration 100015.
 SET lock_timeout = '5s';
 
 DROP POLICY IF EXISTS change_request_deployment_update_internal_only ON change_request_deployment;

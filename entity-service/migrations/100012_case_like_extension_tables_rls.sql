@@ -14,19 +14,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Corrects migration 0147's own decision to leave engagement/
+-- Corrects migration 100008's own decision to leave engagement/
 -- service_request/security_report_analysis (the three other case-like
 -- work_item extension tables, alongside "case" and announcement) with NO
 -- RLS of their own. That migration's stated reasoning was that protecting
 -- them "would only risk infinite-recursion policy errors for zero
 -- additional safety," borrowing project_contact's own exclusion reasoning
--- (migration 0141) -- but that reasoning does not actually transfer here.
+-- (migration 100002) -- but that reasoning does not actually transfer here.
 -- project_contact is excluded because is_project_member() itself queries
 -- project_contact, so a policy ON project_contact that also called
 -- is_project_member() would recurse. Nothing about is_project_member()
 -- queries engagement/service_request/security_report_analysis, so no such
 -- recursion is possible for them -- they are structurally identical to
--- "case"/comment/case_attachment (migration 0147's own other tables),
+-- "case"/comment/case_attachment (migration 100008's own other tables),
 -- which already use this exact is_project_member-via-work_item-subquery
 -- shape with zero recursion issue.
 --
@@ -42,7 +42,7 @@
 -- same reasoning this entire migration series exists for.
 --
 -- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
--- IF EXISTS -- see migration 0141's identical note.
+-- IF EXISTS -- see migration 100002's identical note.
 BEGIN;
 
 ALTER TABLE engagement ENABLE ROW LEVEL SECURITY;
@@ -74,7 +74,7 @@ CREATE POLICY engagement_write ON engagement
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = engagement.id))
   );
 -- Internal-only, not omitted entirely -- same sla_delete-style test/admin
--- cleanup reasoning as migration 0147's other tables.
+-- cleanup reasoning as migration 100008's other tables.
 DROP POLICY IF EXISTS engagement_delete_internal_only ON engagement;
 CREATE POLICY engagement_delete_internal_only ON engagement
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');

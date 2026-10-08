@@ -24,7 +24,7 @@
 -- nobody remembers to gate.
 --
 -- This is the first table this mechanism is generalized to beyond
--- `announcement` (migration 000085) -- deliberately the simplest one
+-- `announcement` (migration 100001) -- deliberately the simplest one
 -- available: case_escalation has no customer-facing write path at all
 -- (EscalationService.CreateEscalation always returns
 -- ServiceUnavailableError -- see EscalationRepository's own doc comment),
@@ -68,7 +68,7 @@ $$;
 
 ALTER TABLE case_escalation ENABLE ROW LEVEL SECURITY;
 -- Without FORCE, a non-superuser table owner is still exempt from its own
--- table's RLS policies -- see migration 000085's identical note. Confirmed
+-- table's RLS policies -- see migration 100001's identical note. Confirmed
 -- against this database's local role; see this branch's plan for the
 -- explicit staging/production ownership check still outstanding before
 -- this migration runs anywhere but local.

@@ -23,7 +23,7 @@
 --                               security contact at all
 --   anyone else              -> nothing
 --
--- One change against the policy migration 0149 left behind: a security
+-- One change against the policy migration 100010 left behind: a security
 -- contact now also sees general announcements. Before, the policy matched on
 -- a single role per announcement, so a contact holding only SECURITY_CONTACT
 -- (the "Security Only" project group) saw security announcements and nothing
@@ -37,7 +37,7 @@
 -- rather than nobody but staff seeing them. As soon as the project has a
 -- security contact, ordinary portal users stop seeing them.
 --
--- LEAD_USER keeps the same access as PORTAL_USER (migration 000085's
+-- LEAD_USER keeps the same access as PORTAL_USER (migration 100001's
 -- reasoning stands: "can escalate a case" implies nothing extra about
 -- security-bulletin eligibility), and BUSINESS_CONTACT alone still
 -- contributes nothing.
@@ -50,11 +50,11 @@
 --
 -- The role check comes first in the OR so a security contact never pays for
 -- the announcement_is_security() lookup. The internal-caller check keeps the
--- InitPlan form migration 0154 introduced, since 0154 rewrote only the
+-- InitPlan form migration 100015 introduced, since 0154 rewrote only the
 -- policies that existed when it ran.
 --
 -- Comments and watchers on an announcement follow this automatically: their
--- policies (migration 0175) require the announcement row itself to be
+-- policies (migration 100016) require the announcement row itself to be
 -- visible, so no change is needed there.
 --
 -- ALTER POLICY replaces the expression in place: there is no moment at which

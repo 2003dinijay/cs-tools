@@ -15,7 +15,7 @@
 -- under the License.
 
 -- Enforces project-membership visibility for `sla` at the database layer,
--- second table after case_escalation (migration 0141) to move off
+-- second table after case_escalation (migration 100002) to move off
 -- Go-side project filtering.
 --
 -- Unlike case_escalation, `sla` has TWO real writers, both of which need to
@@ -41,7 +41,7 @@
 -- work_item-type branch needed.
 --
 -- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
--- IF EXISTS -- see migration 0141's identical note.
+-- IF EXISTS -- see migration 100002's identical note.
 BEGIN;
 
 ALTER TABLE sla ENABLE ROW LEVEL SECURITY;

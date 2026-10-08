@@ -39,7 +39,7 @@
 --     joins project and never returned them.
 --
 -- Every predicate uses the planner-friendly internal check introduced by
--- migration 0154, (SELECT current_setting('app.is_internal', true) = 'true'),
+-- migration 100015, (SELECT current_setting('app.is_internal', true) = 'true'),
 -- written out here because 0154 only rewrites policies that existed when it
 -- ran.
 --
