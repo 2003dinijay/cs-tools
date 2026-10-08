@@ -6465,6 +6465,60 @@ assignment group carry that service's support group), while a CI's own
 `assignment_group` is a different, generic field that no synced service sets.
 The incident's own group belongs on `work_item.assignment_group_id`.
 
+### Searching services: ranked, not newest-first (the "Choreo" incident)
+
+`POST /services/search` used to return the newest `limit` matches of a name substring
+(`ORDER BY created_on DESC` on Postgres; ServiceNow's own creation order, 50 per page,
+on `DATA_SOURCE=servicenow`). The CSM portal's Create Incident "Service" picker shows
+20, so a service whose name is also the prefix of many newer records could not be
+picked. Found on production (digiops-cs#3338): searching "Choreo" matches 55 records,
+45 of them `service_offering` rows ("Choreo EU - DP ... Service Offering"), and the
+plain **Choreo** service (`cmdb_ci_service`, support group Artemis SRE Group) is the
+55th. An incident raised against an offering has no support group, so it was never
+assigned to the SRE group and the Choreo alerts never fired.
+
+With a non-empty query the results are now ranked: exact name, then name prefix, then a
+word of the name starts with it, then anywhere (`itServiceMatchTier`); within a tier
+services come before service offerings (ServiceNow data source only: on Postgres
+offerings live in the separate `service_offering` table), and equal ranks keep the
+source's order. Matching is case-insensitive on both data sources; the ServiceNow path also
+ignores runs of whitespace (one real offering is spelled "Choreo  EU" with two spaces), the
+Postgres path does not. The query is trimmed before it goes anywhere, so a whitespace-only query
+is an empty one and lists everything.
+
+- **Postgres** (`it_service_repo.go`): a `CASE` expression ahead of `created_on DESC`.
+  Its four bound parameters (the query, then the prefix, word-prefix and hyphen-prefix patterns) go after the filter's and only into the data query; the
+  count query binds none of them (Postgres rejects an unreferenced parameter).
+- **ServiceNow** (`sn_it_service_service.go`): the upstream only does `name CONTAINS`,
+  so ranking needs the matches. `fetchITServiceRankWindow` fetches page 0 (50, the
+  upstream's ceiling), reads `totalRecords` and fetches the rest concurrently, up to
+  `snITServiceRankPages` (5) pages = 250 matches, ranks that window and cuts the
+  requested page from it. `Total` stays the upstream's count. A query with more than 250
+  matches is ranked among the first 250; narrow it by typing more.
+- **Passed through unranked:** an empty query (nothing to rank by) and a page whose
+  `offset` is at or past the window. The window is exactly the upstream's first 250
+  matches, so a caller that walks the result page by page (`sre-alert-core-service`'s
+  `SearchService` resolves a label that way) continues where the window ends with nothing
+  skipped or repeated (`..._WalkingPastTheRankedWindowStillReachesEveryMatch`). The one page that
+  crosses the window's end is completed from the upstream rows right after it (one more call), so
+  every page is full and a caller that steps by its page size, whatever it is, reaches every match
+  once (`..._FixedStrideWalkReachesEveryMatchForAnyPageSize`; a short straddling page lost rows for
+  page sizes that do not divide 250).
+- **Cost:** a searched page is up to 5 upstream calls (2 for a query with 51-100 matches,
+  1 for fewer), the later ones in parallel, instead of 1; 6 for the page that crosses the
+  window's end. A caller that walks a many-match query page by page pays that per page, so a
+  walk for a label with no exact match costs several times what it did (about 26 calls for
+  300 matches, against 6); a label that exists is found on its first page. An upstream failure
+  on any page fails the search rather than returning a partly ranked list. The pages are
+  fetched at slightly different moments, so a record created in between could repeat the row at
+  a seam; the window is deduplicated by id, and a page that leaves short (the window then
+  holds 249 of its 250 rows) is filled from the rows right after the window like the page
+  that crosses its end, never asking the upstream for more than its page ceiling of 50.
+
+Tests: `sn_it_service_service_test.go` (a fake upstream shaped like production, with
+the 55 "Choreo" matches), `it_service_repo_integration_test.go` (real Postgres in a
+private schema; `IT_SERVICE_TEST_DSN`, skipped without it).
+
 ## time_card.state/issue_complexity became real enums; case_id now targets work_item
 
 A later migration revision changed `time_card`: `state`/`issue_complexity`
