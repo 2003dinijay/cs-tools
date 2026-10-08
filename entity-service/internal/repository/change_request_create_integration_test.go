@@ -175,23 +175,16 @@ func TestChangeRequestCreateIntegration_FromServiceNowPersistsAssignmentGroup(t 
 	assertChangeRequestAssignedTeam(t, scoped, repo, crCreateSNID, groupID)
 }
 
-// A team added by hand to the registry the assignment-group picker lists has no "group"
-// row and no ServiceNow group. It is refused before anything is written, in words the
-// person on the form can act on: the group's name and the field to change; no id, no
+// A group id that is not a row of "group" (a stale id from a form opened before the group
+// search listed real groups, or a direct API call) is refused before anything is written, in
+// words the person on the form can act on: why, and which field to change; no id, no
 // field name, no table.
-func TestChangeRequestCreateIntegration_HandMadeTeamIsRefusedInWords(t *testing.T) {
+func TestChangeRequestCreateIntegration_AGroupThatIsNotAServiceNowGroupIsRefusedInWords(t *testing.T) {
 	scoped := changeRequestCreatePool(t)
 	repo := repository.NewChangeRequestRepository(scoped)
 	sys := repository.WithSystemIdentity(context.Background())
 
-	const teamID = "dddddddd-0000-4000-8000-0000000cc001"
-	const teamName = "CR Create Test Hand-made Team"
-	cleanup := func() { _, _ = scoped.Exec(sys, `DELETE FROM team WHERE id = $1`, teamID) }
-	cleanup()
-	t.Cleanup(cleanup)
-	if _, err := scoped.Exec(sys, `INSERT INTO team (id, created_on, updated_on, name, type) VALUES ($1, NOW(), NOW(), $2, 'test')`, teamID, teamName); err != nil {
-		t.Fatalf("seed team: %v", err)
-	}
+	const notAGroupID = "dddddddd-0000-4000-8000-0000000cc001"
 
 	check := func(t *testing.T, err error) {
 		t.Helper()
@@ -199,12 +192,12 @@ func TestChangeRequestCreateIntegration_HandMadeTeamIsRefusedInWords(t *testing.
 		if !errors.As(err, &ve) {
 			t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
 		}
-		for _, want := range []string{`"` + teamName + `"`, "cannot be used", "not an assignment group in ServiceNow", `"Assignment group"`} {
+		for _, want := range []string{"cannot be used", "not an assignment group in ServiceNow", `"Assignment group"`} {
 			if !strings.Contains(ve.Msg, want) {
 				t.Errorf("message %q does not contain %q", ve.Msg, want)
 			}
 		}
-		for _, bad := range []string{teamID, "groupId", "assignment_group_id", "table", "SQLSTATE"} {
+		for _, bad := range []string{notAGroupID, "groupId", "assignment_group_id", "table", "SQLSTATE"} {
 			if strings.Contains(ve.Msg, bad) {
 				t.Errorf("message %q shows %q to the person on the form", ve.Msg, bad)
 			}
@@ -212,12 +205,12 @@ func TestChangeRequestCreateIntegration_HandMadeTeamIsRefusedInWords(t *testing.
 	}
 
 	t.Run("the pre-flight the dual-write create runs before ServiceNow", func(t *testing.T) {
-		g := teamID
+		g := notAGroupID
 		_, err := repo.ValidateChangeRequestLinks(sys, domain.ChangeRequestLinkSelection{AssignmentGroupID: &g})
 		check(t, err)
 	})
 	t.Run("the plain PostgreSQL create", func(t *testing.T) {
-		g := teamID
+		g := notAGroupID
 		_, err := repo.CreateChangeRequest(sys, domain.CreateChangeRequestRequest{
 			Subject: crCreateSubject, Type: crCreateType(domain.ChangeRequestTypeNormal), GroupID: &g,
 		}, "cr-create-test@test.local")

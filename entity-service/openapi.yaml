@@ -7417,7 +7417,9 @@ paths:
         GET /change-requests/{id}/approvals): the group's name, description,
         group email and manager, and its active members in name order.
         `id` is a `"group"` id, NOT a `team` id (POST /groups/search lists
-        teams). Members are the users the approval pools provision from: for the
+        the same `"group"` table). Members are the group's `group_member` rows
+        (these can include people who are not approvers) plus the users the
+        approval pools provision from: for the
         CAB Approval / Devops Approval groups, which the pools
         resolve by name, a `team_member` whose `group_id` is any group of that
         name or whose `team_id` is a team of that name; for any other group (a
@@ -17831,10 +17833,10 @@ components:
           type: string
           format: uuid
           description: >
-            The assignment group. Must be a row of `group` (a 400 naming the field
-            otherwise); with `DATA_SOURCE=postgres-servicenow-dual-write` that is also
-            what ServiceNow knows it by. The groups search offers only these with
-            `assignableOnly`.
+            The assignment group, as `POST /groups/search` lists it. Must be a row of
+            `group` (a 400 saying which group cannot be used otherwise); with
+            `DATA_SOURCE=postgres-servicenow-dual-write` that is also what ServiceNow
+            knows it by.
         assignedEngineerId:
           type: string
           format: uuid
@@ -19232,16 +19234,6 @@ components:
         searchQuery:
           type: string
           description: Free-text search query.
-        assignableOnly:
-          type: boolean
-          description: >
-            Keep only the groups a record can be assigned to. On the PostgreSQL data
-            source the search lists the hand-curated team registry, and a team with no
-            row of the same id in `group` (one added by hand, such as an approval team)
-            cannot be assigned to: `work_item.assignment_group_id` references `group`,
-            and ServiceNow has no such group. Off by default, because the team filters
-            of the users page need the whole registry. No effect on the ServiceNow data
-            source, which lists real groups only.
 
     ScheduleZone:
       type: object
@@ -26321,6 +26313,11 @@ components:
               type: integer
             trialsEndingSoon:
               type: integer
+            unresolvedIngestFailures:
+              type: integer
+              description: >-
+                Rows in plg_ingest_failure with no resolved_on. Registrations the
+                ingest refused, which nobody has cleared. Not period-scoped.
         registrationsByProduct:
           type: array
           items:

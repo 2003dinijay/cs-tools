@@ -3748,15 +3748,17 @@ pool, like `GET /teams/{id}/members`).
   Approval / Customer Review stages** (recorded against no group: their approvers are
   the project's registered contacts) and for any stage with no group. Additive:
   `approverName` is unchanged, and the ServiceNow data source always returns `null`.
-* **`GET /groups/{id}`** (`id` is a `"group"` id, **not** a `team` id -- `POST
-  /groups/search` lists the `team` registry) returns `{id, name, description, email,
+* **`GET /groups/{id}`** (`id` is a `"group"` id -- the same id space `POST
+  /groups/search` lists, since both read the `"group"` table; not a `team` id) returns `{id, name, description, email,
   manager: {id, name}|null, members: [{id, name, email, userType, role}], total}`;
   absent parts are `null`, `members` is `[]` for a group nobody is in, `total` =
   `len(members)`. Unknown id is a 404, a malformed one a 400.
-* **Who is listed is who the approval pools provision from**, so the page and the
-  stage agree (apart from per-change exclusions such as the creator, who is
-  provisioned cancelled but is still *in* the group). There are two shapes of pool and
-  the page follows each: an **assigned group** (the Peer and Review stages) is
+* **Who is listed is the group's `group_member` rows (migration 0140) plus who the
+  approval pools provision from.** The `group_member` rows are always included for the
+  group's own id, so the page can list members who are not approvers and the stage
+  does not provision them. The `team_member` shapes below still apply on top (apart
+  from per-change exclusions such as the creator, who is provisioned cancelled but is
+  still *in* the group). There are two shapes of pool and the page follows each: an **assigned group** (the Peer and Review stages) is
   `team_member.group_id = <the group's id>` and nothing else (`groupMemberIDs`) -- a
   `team` that merely shares the group's name adds nobody, because its members are not in
   the peer pool either (the seed's Jane Doe sits in the *team* "Example Corp ABT" and in no
@@ -3899,24 +3901,23 @@ the ServiceNow journal back it may add its own copies.
 ### Assignment group and assignee on create (dual-write)
 
 `POST /change-requests` under `DATA_SOURCE=postgres-servicenow-dual-write` creates in ServiceNow
-first, so every id it sends must be one ServiceNow issued. Two ids the form offers are not
-always: **a team** (the group picker lists the hand-curated `team` registry, and a team added by
-hand, such as an approval team, has no `"group"` row and no ServiceNow group) and **a person**
-(`"user".id` is the ServiceNow sys_id only for a row synced from there; a user created in this
-database, a load-test user or one added through `POST /users`, has a random id). ServiceNow
-answers either with a bare 404, which the portal backend shows as "The requested resource was
-not found!" with nothing naming the field. Found live (CAB Approval as the group; a `dev-load`
-user as the assignee), each alone is enough to fail the create.
+first, so every id it sends must be one ServiceNow issued. Two ids the form could offer were not
+always: **a group** (the group picker used to list the hand-curated `team` registry, and a team
+added by hand, such as an approval team, had no `"group"` row and no ServiceNow group; since
+`POST /groups/search` reads `"group"` itself the picker only offers real groups, but a stale form
+or a direct API call can still send one) and **a person** (`"user".id` is the ServiceNow sys_id only
+for a row synced from there; a user created in this database, a load-test user or one added through
+`POST /users`, has a random id). ServiceNow answers either with a bare 404, which the portal backend
+shows as "The requested resource was not found!" with nothing naming the field. Found live (CAB
+Approval as the group; a `dev-load` user as the assignee), each alone is enough to fail the create.
 
 - **Group** (`groupId`): checked with the rest of the links (`resolveChangeRequestLinks`,
   `ChangeRequestLinkSelection.AssignmentGroupID`) in both the plain-Postgres and the
   ServiceNow-first create, ahead of the write: it must be a row of `"group"`, else a 400 worded
-  for the person on the form (`unusableAssignmentGroupMessage`): `The assignment group "CAB
-  Approval" cannot be used: it is not an assignment group in ServiceNow, and a change request is
-  created in ServiceNow first, so it cannot be assigned to it. Choose another group in "Assignment
-  group".` The name comes from the team registry the picker lists (only for the wording; without it
-  the message says "The selected assignment group"). Before this the plain path surfaced the
-  foreign key's own message, which quotes the table.
+  for the person on the form (`unusableAssignmentGroupMessage`): `The selected assignment group
+  cannot be used: it is not an assignment group in ServiceNow, and a change request is created in
+  ServiceNow first, so it cannot be assigned to it. Choose another group in "Assignment group".`
+  Before this the plain path surfaced the foreign key's own message, which quotes the table.
 - **People** (`assignedEngineerId`, `requestedById`), dual-write only
   (`resolveServiceNowPeople`, `WithChangeRequestSNUserLookup`, wired in `routes.go`): one
   ServiceNow user search by id for the distinct ids; an id ServiceNow knows (a deactivated user
@@ -3945,21 +3946,14 @@ user as the assignee), each alone is enough to fail the create.
   item) ... Change one of those fields and try again.") instead of letting the portal show "The
   requested resource was not found!". Nothing has been written to PostgreSQL at that point. Every
   other ServiceNow failure passes through unchanged.
-- **`POST /groups/search` `filters.assignableOnly`**: Postgres lists only teams that also have a
-  `"group"` row of the same id (the groups of the check above); off by default because the users
-  page's team filters need the whole registry; no effect on the ServiceNow data source. The CSM
-  webapp's change request create form and edit dialog send it. Deploy entity-service first: it
-  rejects request fields it does not declare, and the webapp falls back to the plain search on
-  that 400.
 - **Not covered**: `PATCH` `assignedEngineerId` / `assignedTeamId` is Postgres-first with an
   asynchronous ServiceNow mirror, so a person or group ServiceNow lacks is recorded as a failed
   write-back rather than shown to the user (a team without a `"group"` row is refused by the foreign
   key as `assignedTeamId does not refer to an existing record`). The incident and problem create
   and edit forms use the same group picker and are not changed here.
 - Tests: `change_request_sn_people_test.go` (every branch, against a fake ServiceNow directory),
-  `change_request_links_group_test.go`, `group_service_test.go`, and, against real Postgres:
-  `group_repo_integration_test.go` (private schema, `GROUP_REPO_TEST_DSN`) and
-  `TestChangeRequestCreateIntegration_HandMadeTeamIsRefusedInWords` (`CHANGE_REQUEST_TEST_DSN`).
+  `change_request_links_group_test.go`, and, against real Postgres (`CHANGE_REQUEST_TEST_DSN`),
+  `TestChangeRequestCreateIntegration_AGroupThatIsNotAServiceNowGroupIsRefusedInWords`.
 
 ### Customer Approval / Customer Review checkboxes
 
@@ -5344,7 +5338,7 @@ both fixed here:**
 **`team_member.group_id` is the real column for this, and it is distinct
 from `team_member.team_id`.** `team_member` carries both: `team_id`
 (`NOT NULL`) is the hand-curated internal team registry's own FK (`team`,
-migration 0033 — what `POST /groups/search`/`GetUserGroups` read), while
+migration 0033 — what `GetUserGroups` reads; `POST /groups/search` now reads `"group"`), while
 `group_id` (nullable) is a separate FK into the same `"group"` table
 `work_item.assignment_group_id`/`approval_stage.assignment_group_id`
 reference. These are two distinct tables with two distinct id spaces in
@@ -6490,12 +6484,14 @@ the tables to back them already existed and were queried elsewhere:
 `user_role`/`role` and `team_member`/`team` respectively for the caller's
 own id.
 
-**`POST /groups/search`** is now Postgres-backed too (`group_repo.go`),
-against `team` (migration 0033) — "mirror[s] a hand-curated allow-list of
-ServiceNow's OOB sys_user_group / sys_user_grmember tables" per that
-migration's own comment, the same concept `GroupService` searches.
-`domain.Group.Active` has no backing column and is hardcoded `true`;
-`Parent` has no hierarchy column on `team` and is always `nil`.
+**`POST /groups/search`** is Postgres-backed (`group_repo.go`), against the
+`"group"` table (migration 0074, mirrored from ServiceNow's `sys_user_group`),
+so its ids are the same ones `GET /groups/{id}` and
+`approval_stage.assignment_group_id` use. `Active` is `"group".is_active`
+(NULL = active); `Parent` is resolved from `parent_id`. Members on
+`GET /groups/{id}` come from `group_member` (migration 0140, mirrored from
+`sys_user_grmember`) plus the `team_member` shapes described there. It used to
+read the curated `team` registry, whose ids `GET /groups/{id}` could not resolve.
 
 **Not wired up**: `project_type` has no corresponding field anywhere on
 `domain.Project`/`ProjectDetail` today, so there is nothing to populate

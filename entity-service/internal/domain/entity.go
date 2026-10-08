@@ -5303,15 +5303,6 @@ type GroupDetail struct {
 // SearchGroupsFilters holds optional filter criteria for group searches.
 type SearchGroupsFilters struct {
 	SearchQuery string `json:"searchQuery,omitempty"`
-	// AssignableOnly keeps only the groups a record can be assigned to. On the
-	// PostgreSQL data source the search lists the hand-curated team registry,
-	// whose rows are not all assignment groups: work_item.assignment_group_id
-	// references "group", and a team that has no "group" row of the same id (one
-	// added by hand, such as an approval team) cannot be assigned to, nor sent to
-	// ServiceNow, which has never heard of it. The ServiceNow data source lists
-	// real groups only, so the flag changes nothing there. Off by default: the
-	// team filters on the users page need the whole registry.
-	AssignableOnly bool `json:"assignableOnly,omitempty"`
 }
 
 // SearchGroupsRequest is the input for POST /groups/search.

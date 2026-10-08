@@ -6131,8 +6131,9 @@ paths:
         approval stage: the group's name, description, group email and manager,
         and its active internal members in name order. `id` is the `assignmentGroup.id` of
         GET /change-requests/{id}/approvals -- a group id, NOT a team id
-        (POST /groups/search lists teams). The members are the people the
-        approval stage was provisioned from. Customer Approval / Customer Review
+        (POST /groups/search lists the same group table). The members are the
+        group's members, including people the approval stage was not
+        provisioned from. Customer Approval / Customer Review
         stages have no group (`assignmentGroup` is null); their approvers are the
         project's registered contacts, which the change request already carries as
         `customerContacts`. Internal staff only: a caller entity-service
@@ -22477,6 +22478,11 @@ components:
               type: integer
             trialsEndingSoon:
               type: integer
+            unresolvedIngestFailures:
+              type: integer
+              description: >-
+                Rows in plg_ingest_failure with no resolved_on. Registrations the
+                ingest refused, which nobody has cleared. Not period-scoped.
         registrationsByProduct:
           type: array
           items:

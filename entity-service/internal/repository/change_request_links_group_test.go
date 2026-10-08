@@ -32,13 +32,6 @@ import (
 // instead of reaching ServiceNow (a bare 404) or the foreign key (a message that
 // quotes the table).
 
-type nameRow struct{ v string }
-
-func (r nameRow) Scan(dest ...any) error {
-	*(dest[0].(**string)) = &r.v
-	return nil
-}
-
 type existsRow struct{ v bool }
 
 func (r existsRow) Scan(dest ...any) error {
@@ -48,12 +41,10 @@ func (r existsRow) Scan(dest ...any) error {
 
 // groupQueryer answers the one EXISTS query the group check runs and records it.
 type groupQueryer struct {
-	exists bool
-	err    error
-	// teamName answers the lookup that only words the refusal; nil = no such team.
-	teamName *string
-	queries  []string
-	args     [][]any
+	exists  bool
+	err     error
+	queries []string
+	args    [][]any
 }
 
 func (q *groupQueryer) Query(context.Context, string, ...any) (pgx.Rows, error) {
@@ -61,12 +52,6 @@ func (q *groupQueryer) Query(context.Context, string, ...any) (pgx.Rows, error) 
 }
 
 func (q *groupQueryer) QueryRow(_ context.Context, sql string, args ...any) pgx.Row {
-	if strings.Contains(sql, "FROM team") {
-		if q.teamName == nil {
-			return groupErrRow{pgx.ErrNoRows}
-		}
-		return nameRow{*q.teamName}
-	}
 	q.queries = append(q.queries, sql)
 	q.args = append(q.args, args)
 	if q.err != nil {
@@ -92,15 +77,14 @@ func TestResolveChangeRequestLinks_AssignmentGroup(t *testing.T) {
 		}
 	})
 
-	t.Run("a group that does not exist is refused in words that name the group and the field to change", func(t *testing.T) {
-		name := "CAB Approval"
-		q := &groupQueryer{exists: false, teamName: &name}
+	t.Run("a group that does not exist is refused in words that say why and which field to change", func(t *testing.T) {
+		q := &groupQueryer{exists: false}
 		_, err := resolveChangeRequestLinks(context.Background(), q, domain.ChangeRequestLinkSelection{AssignmentGroupID: sp(handMade)}, resolveLinkOpts{})
 		var ve *apierror.ValidationError
 		if !errors.As(err, &ve) {
 			t.Fatalf("err = %v, want a ValidationError", err)
 		}
-		for _, want := range []string{`"CAB Approval"`, "cannot be used", "not an assignment group in ServiceNow", `"Assignment group"`} {
+		for _, want := range []string{"cannot be used", "not an assignment group in ServiceNow", `"Assignment group"`} {
 			if !strings.Contains(ve.Msg, want) {
 				t.Errorf("message %q does not contain %q", ve.Msg, want)
 			}
@@ -109,15 +93,6 @@ func TestResolveChangeRequestLinks_AssignmentGroup(t *testing.T) {
 			if strings.Contains(ve.Msg, bad) {
 				t.Errorf("message %q shows %q to the person on the form", ve.Msg, bad)
 			}
-		}
-	})
-
-	t.Run("a group the team registry does not know is still refused, without a name", func(t *testing.T) {
-		q := &groupQueryer{exists: false}
-		_, err := resolveChangeRequestLinks(context.Background(), q, domain.ChangeRequestLinkSelection{AssignmentGroupID: sp(handMade)}, resolveLinkOpts{})
-		var ve *apierror.ValidationError
-		if !errors.As(err, &ve) || !strings.HasPrefix(ve.Msg, "The selected assignment group cannot be used") {
-			t.Fatalf("err = %v, want a refusal of the selected group", err)
 		}
 	})
 
