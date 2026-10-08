@@ -66,19 +66,34 @@ def test_what_for_chat_converts_list_items():
     assert "<ul>" not in result and "<li>" not in result
 
 
-def test_sanitize_allows_img_with_src_and_alt():
-    result = sanitize_what_html('<p>See:</p><img src="https://example.com/x.png" alt="a screenshot">')
-    assert '<img src="https://example.com/x.png" alt="a screenshot">' in result
+_UPLOAD_SRC = "http://localhost:8077/uploads/07ec86bdee9142da838c9a3511f780e8.webp"
+
+
+def test_sanitize_allows_img_pointing_at_an_actual_upload():
+    result = sanitize_what_html(f'<p>See:</p><img src="{_UPLOAD_SRC}" alt="a screenshot">')
+    assert f'<img src="{_UPLOAD_SRC}" alt="a screenshot">' in result
 
 
 def test_sanitize_drops_img_onerror_attribute():
-    result = sanitize_what_html('<img src="https://example.com/x.png" onerror="alert(1)">')
+    result = sanitize_what_html(f'<img src="{_UPLOAD_SRC}" onerror="alert(1)">')
     assert "onerror" not in result
+    assert "<img" in result
+
+
+def test_sanitize_strips_img_pointing_at_an_arbitrary_external_host():
+    # A direct API call (bypassing the editor, which never offers any other
+    # image source) could otherwise embed an arbitrary external image --
+    # e.g. a tracking pixel that fires whenever any OTHER employee opens
+    # the entry. Only a path shaped like this service's own uploads
+    # survives, regardless of host.
+    result = sanitize_what_html('<p>See:</p><img src="https://example.com/tracker.png" alt="x">')
+    assert "<img" not in result
+    assert "See:" in result
 
 
 def test_what_for_chat_drops_images_entirely():
     # Images are only ever shown on the entry's own page -- never in the
     # Chat Space post or the Novera DM broadcast.
-    result = what_for_chat('<p>Look:</p><img src="https://example.com/x.png" alt="a screenshot">')
+    result = what_for_chat(f'<p>Look:</p><img src="{_UPLOAD_SRC}" alt="a screenshot">')
     assert "<img" not in result
     assert "Look" in result

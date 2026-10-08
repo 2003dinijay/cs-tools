@@ -43,11 +43,13 @@ Config (env):
                           entity_client.py's ENTITY_SERVICE_* vars, just a
                           different downstream and header name (Choreo
                           Connect's own 401 response names "Bearer" as the
-                          expected scheme). Absent = the call is sent without
-                          an Authorization header, same "unset key = quietly
-                          off" posture as the rest of this module -- Choreo
-                          will then reject it at the gateway, logged below
-                          same as any other rejection.
+                          expected scheme). Any of the three absent while
+                          NOVERA_NOTIFY_URL IS set = this module does nothing
+                          (same no-op posture as NOVERA_NOTIFY_URL itself
+                          being unset) -- it does NOT send the request
+                          anyway and rely on Choreo to reject it, which
+                          would just be a guaranteed-to-fail call fired on
+                          every submission for a misconfigured deployment.
 """
 from __future__ import annotations
 
@@ -102,6 +104,15 @@ async def notify_novera(
     title: str, who: str, where: str, what: str, where_detail: str | None = None, entry_url: str | None = None
 ) -> None:
     if not NOVERA_NOTIFY_URL:
+        return
+    # Skipped as a true no-op, same as NOVERA_NOTIFY_URL being unset --
+    # previously, URL-set-but-gateway-creds-incomplete still sent the
+    # request with no Authorization header, relying on Choreo to reject it
+    # at the gateway. That contradicted this module's own documented
+    # "absent = no-op" posture (.env.example) and meant a guaranteed-to-fail
+    # request fired on every submission for a misconfigured deployment,
+    # instead of nothing happening at all (caught in review).
+    if not (CHOREO_TOKEN_URL and NOVERA_NOTIFY_CLIENT_ID and NOVERA_NOTIFY_CLIENT_SECRET):
         return
     # Payload build moved INSIDE the try -- what_for_chat (or anything else
     # here) raising would otherwise propagate straight out of this function

@@ -163,6 +163,30 @@ def _row_to_dict(row: dict) -> dict:
 # instead, which is correct for them regardless of index support.
 _FULLTEXT_MIN_QUERY_LEN = 3
 
+
+def _has_fulltext_eligible_token(query: str) -> bool:
+    # The length check is per WORD, not per whole query -- checking
+    # len(query) alone let a query like "Go is" (length 5) take the MATCH
+    # path even though both of its tokens ("Go", "is") are themselves under
+    # innodb_ft_min_token_size and would be ignored by the indexer, so the
+    # MATCH silently returned nothing despite "Go" appearing verbatim in the
+    # text (caught in review). Any single long-enough token is enough for
+    # MATCH to find something; LIKE is used only when every token is too
+    # short to ever match via FULLTEXT regardless.
+    return any(len(token) >= _FULLTEXT_MIN_QUERY_LEN for token in query.split())
+
+
+def _escape_like(value: str) -> str:
+    # LIKE's own wildcard characters (and its escape character itself) need
+    # escaping before a caller-supplied value is wrapped in %...% -- without
+    # this, a literal "_" in a search query matches ANY single character
+    # (so a bare "_" matches every row) and "%" matches any run of
+    # characters, neither of which a user typing those characters expects
+    # (caught in review). MySQL's default LIKE escape character is a
+    # backslash, so backslash itself is escaped first.
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
 SEARCH_SCOPE_COLUMNS = {
     "title": "title",
     "who": "who",
@@ -216,18 +240,18 @@ def list_submissions(
     query = (q or "").strip()
     if query:
         if scope == "what":
-            if len(query) >= _FULLTEXT_MIN_QUERY_LEN:
+            if _has_fulltext_eligible_token(query):
                 conditions.append("MATCH(what) AGAINST (%s IN NATURAL LANGUAGE MODE)")
                 params.append(query)
             else:
                 conditions.append("what LIKE %s")
-                params.append(f"%{query}%")
+                params.append(f"%{_escape_like(query)}%")
         else:
             column = SEARCH_SCOPE_COLUMNS.get(scope)
             if column is None:
                 raise ValueError(f"Unknown search scope: {scope!r}")
             conditions.append(f"{column} LIKE %s")
-            params.append(f"%{query}%")
+            params.append(f"%{_escape_like(query)}%")
 
     with pool.get_conn() as conn:
         with conn.cursor() as cur:

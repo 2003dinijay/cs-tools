@@ -49,7 +49,6 @@ _SIGNATURES: list[tuple[bytes, str, str]] = [
     (b"\x89PNG\r\n\x1a\n", "png", "image/png"),
     (b"\xff\xd8\xff", "jpg", "image/jpeg"),
     (b"GIF8", "gif", "image/gif"),
-    (b"RIFF", "webp", "image/webp"),  # WEBP = RIFF????WEBP; good enough without reading the inner chunk type
 ]
 
 
@@ -59,6 +58,14 @@ def detect_image_type(head: bytes) -> tuple[str, str] | None:
     for magic, ext, content_type in _SIGNATURES:
         if head.startswith(magic):
             return ext, content_type
+    # WEBP needs its OWN two-part check, not a plain prefix match -- the
+    # RIFF container format (bytes 0-3) is shared with other formats that
+    # are not images at all (a WAV file also starts with "RIFF"; bytes 4-7
+    # are a file-size field that varies per file), so "RIFF" alone
+    # previously classified a non-image file as a valid WEBP upload (caught
+    # in review). The actual format tag ("WEBP") only appears at bytes 8-11.
+    if head.startswith(b"RIFF") and head[8:12] == b"WEBP":
+        return "webp", "image/webp"
     return None
 
 

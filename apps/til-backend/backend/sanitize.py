@@ -29,12 +29,27 @@ HTML, so there's no new injection surface from allowing the tag itself.
 from __future__ import annotations
 
 import re
+from urllib.parse import urlparse
 
 import bleach
 
 ALLOWED_TAGS = ["p", "br", "strong", "em", "u", "ol", "ul", "li", "a", "img"]
 ALLOWED_ATTRIBUTES = {"a": ["href", "target"], "img": ["src", "alt"]}
 ALLOWED_PROTOCOLS = ["http", "https", "mailto", "tel"]
+
+# Matches exactly the path shape uploads.py's save_upload() produces
+# (f"{uuid.uuid4().hex}.{ext}" under /uploads/), checked against only the
+# PATH portion of an <img src> -- the host varies per environment (local
+# dev / Staging / prod all serve from a different origin via
+# request.base_url), so it can't be pinned to one exact origin here. A
+# direct API call (bypassing the editor, which never offers any other
+# image source) could otherwise embed an arbitrary external image -- e.g.
+# a tracking pixel that fires whenever any OTHER employee opens the entry,
+# since nothing before this validated the src was actually one of this
+# service's own uploads, just that the <img> tag and a URL-shaped src were
+# present.
+_UPLOAD_IMG_PATH_RE = re.compile(r"/uploads/[0-9a-f]{32}\.(?:png|jpe?g|gif|webp)$", re.IGNORECASE)
+_IMG_SRC_ATTR_RE = re.compile(r'<img\b[^>]*\bsrc="([^"]*)"[^>]*>', re.IGNORECASE)
 
 _BLOCK_END_RE = re.compile(r"</(p|li|br)>", re.IGNORECASE)
 _TAG_RE = re.compile(r"<[^>]*>")
@@ -47,15 +62,31 @@ _TAG_RE = re.compile(r"<[^>]*>")
 _SCRIPT_OR_STYLE_RE = re.compile(r"<(script|style)\b[^>]*>.*?</\1>", re.IGNORECASE | re.DOTALL)
 
 
+def _strip_non_upload_images(html: str) -> str:
+    """Removes an <img> tag outright (not just its src) if the path portion
+    of its src doesn't match an actual upload's shape. bleach's own
+    tag/attribute/protocol allowlist only confirms a src is *some*
+    http(s) URL -- it says nothing about WHICH host or path, so this runs
+    as a second pass afterward."""
+
+    def replace(match: re.Match[str]) -> str:
+        src = match.group(1)
+        path = urlparse(src).path
+        return match.group(0) if _UPLOAD_IMG_PATH_RE.search(path) else ""
+
+    return _IMG_SRC_ATTR_RE.sub(replace, html)
+
+
 def sanitize_what_html(html: str) -> str:
     without_scripts = _SCRIPT_OR_STYLE_RE.sub("", html)
-    return bleach.clean(
+    cleaned = bleach.clean(
         without_scripts,
         tags=ALLOWED_TAGS,
         attributes=ALLOWED_ATTRIBUTES,
         protocols=ALLOWED_PROTOCOLS,
         strip=True,
     )
+    return _strip_non_upload_images(cleaned)
 
 
 def what_plain_text(html: str) -> str:

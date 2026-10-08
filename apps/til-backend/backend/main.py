@@ -26,6 +26,7 @@ employee (see list_submissions / delete_submission below).
 from __future__ import annotations
 
 import os
+from datetime import date
 
 from dotenv import load_dotenv
 
@@ -74,6 +75,32 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan, title="Today I Learned Backend API", version="0.1.0")
+
+# Rejects an oversized request by its own declared Content-Length BEFORE
+# FastAPI/Starlette starts parsing the body at all -- uploads.read_bounded()
+# only runs once inside the route handler, by which point File(...) has
+# already driven Starlette's multipart parser over the whole request.
+# A known DoS exists in python-multipart's part-header parsing for exactly
+# this "oversized/malicious body reaches the parser" case (see
+# requirements.txt's own note on the version pin); checking here closes
+# that regardless of which library version is installed. Content-Length
+# can be absent or a client can lie via chunked transfer encoding, so this
+# is defense in depth, not a substitute for read_bounded()'s own file-level
+# check -- it narrows the worst case rather than guaranteeing it away.
+_MAX_REQUEST_BYTES = uploads.MAX_UPLOAD_BYTES + 64 * 1024  # headroom for multipart boundaries/field overhead
+
+
+@app.middleware("http")
+async def reject_oversized_requests(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length is not None:
+        try:
+            if int(content_length) > _MAX_REQUEST_BYTES:
+                return JSONResponse(status_code=413, content={"error": "Request body too large."})
+        except ValueError:
+            pass
+    return await call_next(request)
+
 
 app.add_middleware(
     CORSMiddleware,
@@ -125,6 +152,18 @@ async def list_submissions(
     capped_limit = min(max(limit, 1), 1000)
     if scope not in {"what", *db.SEARCH_SCOPE_COLUMNS}:
         return JSONResponse(status_code=400, content={"error": f"Invalid scope: {scope!r}"})
+    # Parsed (not just pattern-matched) and rejected outright on failure --
+    # db.list_submissions compares these lexicographically against
+    # LEFT(created_at, 10), which only sorts correctly for a real,
+    # zero-padded ISO date. An unparseable or non-zero-padded value (e.g.
+    # "2026-1-5") would silently sort into the wrong position and return
+    # wrong results with no error at all (caught in review).
+    for label, value in (("dateFrom", dateFrom), ("dateTo", dateTo)):
+        if value is not None:
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                return JSONResponse(status_code=400, content={"error": f"Invalid {label}: {value!r}"})
     # "mine" is a boolean flag from the caller, not a caller-supplied email --
     # it always resolves against the VERIFIED token's own email, never
     # anything the request could set directly, same "never trust what the

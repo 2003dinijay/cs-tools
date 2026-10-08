@@ -48,9 +48,12 @@ database, never that database itself.
 | Method | Path | Notes |
 |---|---|---|
 | GET | `/user-info` | `{ email, displayName, canModerate }` |
-| GET | `/submissions?limit=&cursor=` | Newest first; `nextCursor` is `null` on the last page |
-| POST | `/submissions` | `{ who, where, what }`; 403 unless the caller's verified token identity is the One WSO2 webapp's own Asgardeo client id |
+| GET | `/customers/search?q=` | `[{ id, name }]`; backs the Customer autocomplete, `[]` if `ENTITY_SERVICE_*` isn't configured |
+| GET | `/submissions?limit=&cursor=&q=&scope=&dateFrom=&dateTo=&mine=` | Newest first; `nextCursor` is `null` on the last page. `q`/`scope` search (`scope` one of `what`, `title`, `who`, `email`, `whereDetail`; default `what`), `dateFrom`/`dateTo` are `YYYY-MM-DD` (400 if not a valid date), `mine=true` restricts to the caller's own entries |
+| POST | `/submissions` | `{ title, who, where, what, whereDetail? }`; 403 unless the caller's verified token identity is the One WSO2 webapp's own Asgardeo client id |
+| GET | `/submissions/{id}` | A single entry |
 | DELETE | `/submissions/{id}` | 403 unless the caller is in `TIL_MODERATOR_GROUP` or is the entry's own submitter |
+| POST | `/uploads` | `multipart/form-data` with a `file` field (image, ≤5 MB); `{ url }`; same webapp-only gate as `POST /submissions` |
 | GET | `/health` | For Choreo/liveness checks |
 
 ## Design notes

@@ -117,6 +117,29 @@ def test_short_query_falls_back_to_like_instead_of_fulltext(db_module):
     assert len(page["items"]) == 1
 
 
+def test_multi_token_short_query_falls_back_to_like(db_module):
+    # Regression test: the FULLTEXT-eligibility check used to look at the
+    # WHOLE query's length, not each token's -- "Go is" (length 5) took the
+    # MATCH path even though both "Go" and "is" are themselves under
+    # innodb_ft_min_token_size, so MATCH silently found nothing despite "Go"
+    # appearing verbatim. Every token here is short, so this must still use
+    # LIKE and actually find the row.
+    db_module.create_submission("T", "Jane", "Internal", "Go is a great language for this service", "jane@example.com")
+    page = db_module.list_submissions(limit=10, q="Go is", scope="what")
+    assert len(page["items"]) == 1
+
+
+def test_like_search_escapes_wildcard_characters(db_module):
+    # Regression test: "_" and "%" are LIKE wildcards ("_" matches any
+    # single character, "%" matches any run) -- a literal "_" in a search
+    # query used to act as a wildcard and match every row instead of only
+    # rows actually containing a literal underscore.
+    db_module.create_submission("T", "Jane", "Internal", "normal text, no special chars", "jane@example.com")
+    db_module.create_submission("T", "Sam", "Internal", "has a literal _ underscore", "sam@example.com")
+    page = db_module.list_submissions(limit=10, q="_", scope="what")
+    assert [item["who"] for item in page["items"]] == ["Sam"]
+
+
 def test_who_scope_search_uses_like_on_who_column(db_module):
     db_module.create_submission("T", "Jane Doe", "Internal", "x", "jane@example.com")
     db_module.create_submission("T", "Sam Smith", "Internal", "x", "sam@example.com")

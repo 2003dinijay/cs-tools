@@ -103,6 +103,20 @@ def test_create_submission_uses_tokens_own_email():
     assert resp.json()["submittedByEmail"] == "jane@example.com"
 
 
+def test_list_submissions_rejects_an_invalid_date_filter():
+    # Regression test: dateFrom/dateTo used to be passed straight through to
+    # a lexicographic string compare with no validation -- a value like
+    # "2026-1-5" (not zero-padded) would silently sort into the wrong
+    # position and return wrong results with no error at all.
+    client = client_as(HUMAN_USER)
+    resp = client.get("/submissions", params={"dateFrom": "2026-1-5"})
+    assert resp.status_code == 400
+    resp = client.get("/submissions", params={"dateTo": "not-a-date"})
+    assert resp.status_code == 400
+    resp = client.get("/submissions", params={"dateFrom": "2026-01-05", "dateTo": "2026-01-31"})
+    assert resp.status_code == 200
+
+
 def test_create_submission_notifies_novera():
     client = client_as(HUMAN_USER)
     with patch("main.notify_novera", new_callable=AsyncMock) as mock_notify:
@@ -254,4 +268,21 @@ def test_upload_rejects_content_that_isnt_actually_an_image():
     # known signature -- the backend sniffs the real bytes, never trusts
     # a client-supplied header.
     resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.png", b"not a real image", "image/png")})
+    assert resp.status_code == 400
+
+
+def test_upload_accepts_a_valid_webp():
+    webp = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"\x00" * 8
+    resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.webp", webp, "image/webp")})
+    assert resp.status_code == 200
+    assert resp.json()["url"].endswith(".webp")
+
+
+def test_upload_rejects_a_non_webp_riff_file():
+    # A WAV file also starts with "RIFF" (the same generic container
+    # format) -- regression test for a real bug where "RIFF" alone was
+    # treated as proof of a WEBP image, letting a WAV file (or anything
+    # else RIFF-based) through as if it were one.
+    wav = b"RIFF" + b"\x00\x00\x00\x00" + b"WAVE" + b"\x00" * 8
+    resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.webp", wav, "audio/wav")})
     assert resp.status_code == 400
