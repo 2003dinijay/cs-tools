@@ -22,19 +22,23 @@ import type { BeCallRequestView } from "@api/backend/types";
 // The widget's data hooks are the seam: what the list shows, and what a change sends.
 const hooks = vi.hoisted(() => ({
   requests: [] as BeCallRequestView[],
+  listArgs: vi.fn(),
   patch: vi.fn(),
   patchPending: false,
 }));
 
 vi.mock("@features/csm-cases/api/useCsmCaseCallRequests", () => ({
-  useGetCsmCaseCallRequests: () => ({
+  useGetCsmCaseCallRequests: (caseId: string, states?: string[]) => {
+    hooks.listArgs(caseId, states);
+    return {
     data: hooks.requests,
     isLoading: false,
     isError: false,
     isFetching: false,
     refetch: vi.fn(),
     dataUpdatedAt: 0,
-  }),
+    };
+  },
   usePostCsmCaseCallRequest: () => ({ mutateAsync: vi.fn(), isPending: false }),
   usePatchCsmCaseCallRequest: () => ({ mutateAsync: hooks.patch, isPending: hooks.patchPending }),
 }));
@@ -145,5 +149,47 @@ describe("CallRequestsWidget: Mark as completed", () => {
     renderWidget();
     expect(complete()).toBeDisabled();
     expect(queryComplete()).toBeInTheDocument();
+  });
+});
+
+describe("CallRequestsWidget: state filter", () => {
+  beforeEach(() => {
+    hooks.listArgs.mockReset();
+    hooks.patch.mockReset().mockResolvedValue({});
+    hooks.patchPending = false;
+    hooks.requests = [call("cr-1", 3, "Scheduled")];
+  });
+
+  const lastStates = (): unknown => hooks.listArgs.mock.calls.at(-1)?.[1];
+  const pick = (name: RegExp): void => {
+    fireEvent.mouseDown(screen.getByRole("combobox"));
+    fireEvent.click(screen.getByRole("option", { name }));
+  };
+
+  it("asks only for the calls that can still move on, so finished ones leave the list", () => {
+    renderWidget();
+    expect(lastStates()).toEqual(["pending_on_customer", "pending_on_wso2", "scheduled", "notes_pending"]);
+    expect(screen.getByText("1 open")).toBeInTheDocument();
+  });
+
+  it("brings every call back on All states", () => {
+    renderWidget();
+    pick(/all states/i);
+    expect(lastStates()).toBeUndefined();
+    expect(screen.getByText("1 total")).toBeInTheDocument();
+  });
+
+  it("filters to a single state, finished ones included", () => {
+    renderWidget();
+    pick(/^concluded$/i);
+    expect(lastStates()).toEqual(["concluded"]);
+    expect(screen.getByText("1 matching")).toBeInTheDocument();
+  });
+
+  it("explains where finished calls went when nothing is open", () => {
+    hooks.requests = [];
+    renderWidget();
+    expect(screen.getByText(/no open call requests/i)).toBeInTheDocument();
+    expect(screen.getByText(/all states/i)).toBeInTheDocument();
   });
 });
