@@ -57,9 +57,10 @@ type Waker interface {
 	Wake()
 }
 
-// Fallback is told about alerts that could not be stored after the last retry; *dbfallback.Client implements it.
+// Fallback is told about alerts that could not be stored after the last retry, and when a batch is stored again; *dbfallback.Client implements it.
 type Fallback interface {
 	Notify(source, requestID string, alerts []model.Alert)
+	Recovered()
 }
 
 // Config tunes the allocator; see config.toml.example.
@@ -383,6 +384,9 @@ func (a *Allocator) writeBatch(batch []*submission, n int) {
 		"queue_len", len(a.queue), "queue_bytes", a.bytes.Load())
 	for si, sub := range batch {
 		a.finish(sub, Result{IDs: ids[si]})
+	}
+	if a.fallback != nil {
+		a.fallback.Recovered()
 	}
 	if a.waker != nil {
 		a.waker.Wake()

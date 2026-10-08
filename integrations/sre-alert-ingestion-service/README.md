@@ -53,8 +53,9 @@ service never creates incidents and never touches alert-core's own tables.
   on.
 - `internal/outbound/corewake`: the coalesced `POST /alertz` call to alert-core.
 - `internal/outbound/snsconfirm`: confirms AWS SNS topic subscriptions.
-- `internal/outbound/dbfallback`: posts alerts that fail their last database write to one Google
-  Chat space, so a database outage still reaches someone.
+- `internal/outbound/dbfallback`: on a database outage, posts a DATABASE CONNECTION FAILURE card to
+  one Google Chat space, then each alert that fails its last write as a reply in that card's
+  thread. The next stored batch ends the outage, so a later one opens a new thread.
 - `internal/transport/server`: the HTTP handlers for the source webhooks and health/liveness
   endpoints.
 - `internal/transport/auth`: optional per-source credential checking against alert-core's
