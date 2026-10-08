@@ -310,18 +310,30 @@ func (c *Client) GetPlaybook(ctx context.Context, id string) (*domain.Playbook, 
 	return &out, nil
 }
 
-func (c *Client) CreatePlaybook(ctx context.Context, req domain.CreatePlaybookRequest) (string, error) {
+// The playbook writes wrap their request in an anonymous struct embedding it
+// alongside actorId. Embedding keeps the JSON flat -- the request's own fields
+// promote -- so the body is the one entity-service already accepted plus
+// actorId, rather than a nested shape its decoder would reject.
+func (c *Client) CreatePlaybook(ctx context.Context, req domain.CreatePlaybookRequest, actorID string) (string, error) {
 	var out struct {
 		PlaybookID string `json:"playbookId"`
 	}
-	if err := c.post(ctx, "/plg/products/"+esc(req.ProductCode)+"/playbooks", req, &out); err != nil {
+	body := struct {
+		domain.CreatePlaybookRequest
+		ActorID string `json:"actorId"`
+	}{req, actorID}
+	if err := c.post(ctx, "/plg/products/"+esc(req.ProductCode)+"/playbooks", body, &out); err != nil {
 		return "", err
 	}
 	return out.PlaybookID, nil
 }
 
-func (c *Client) PatchPlaybook(ctx context.Context, req domain.PatchPlaybookRequest) error {
-	return c.patch(ctx, "/plg/playbooks/"+esc(req.ID), req, nil)
+func (c *Client) PatchPlaybook(ctx context.Context, req domain.PatchPlaybookRequest, actorID string) error {
+	body := struct {
+		domain.PatchPlaybookRequest
+		ActorID string `json:"actorId"`
+	}{req, actorID}
+	return c.patch(ctx, "/plg/playbooks/"+esc(req.ID), body, nil)
 }
 
 func (c *Client) ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest) error {

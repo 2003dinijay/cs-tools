@@ -21,13 +21,13 @@ import (
 
 // PlaybookWriter is the write half of the playbook templates.
 type PlaybookWriter interface {
-	Create(ctx context.Context, req domain.CreatePlaybookRequest) (domain.CreatePlaybookResult, error)
-	Patch(ctx context.Context, req domain.PatchPlaybookRequest) (domain.WriteResult, error)
+	Create(ctx context.Context, req domain.CreatePlaybookRequest, actorID string) (domain.CreatePlaybookResult, error)
+	Patch(ctx context.Context, req domain.PatchPlaybookRequest, actorID string) (domain.WriteResult, error)
 	ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest) (domain.WriteResult, error)
 	Delete(ctx context.Context, id string) (domain.WriteResult, error)
 }
 
-func (s *playbookService) Create(ctx context.Context, req domain.CreatePlaybookRequest) (domain.CreatePlaybookResult, error) {
+func (s *playbookService) Create(ctx context.Context, req domain.CreatePlaybookRequest, actorID string) (domain.CreatePlaybookResult, error) {
 	if !domain.ValidLifecycleStage[req.LifecycleStage] {
 		return domain.CreatePlaybookResult{}, invalidEnum("lifecycleStage", string(req.LifecycleStage))
 	}
@@ -46,18 +46,18 @@ func (s *playbookService) Create(ctx context.Context, req domain.CreatePlaybookR
 			return domain.CreatePlaybookResult{}, invalidEnum("tasks.valueType", string(req.Tasks[i].ValueType))
 		}
 	}
-	id, err := s.repo.Create(ctx, req)
+	id, err := s.repo.Create(ctx, req, actorID)
 	if err != nil {
 		return domain.CreatePlaybookResult{}, err
 	}
 	return domain.CreatePlaybookResult{PlaybookID: id}, nil
 }
 
-func (s *playbookService) Patch(ctx context.Context, req domain.PatchPlaybookRequest) (domain.WriteResult, error) {
+func (s *playbookService) Patch(ctx context.Context, req domain.PatchPlaybookRequest, actorID string) (domain.WriteResult, error) {
 	if err := validateUUID("playbookId", req.ID); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := s.repo.Patch(ctx, req); err != nil {
+	if err := s.repo.Patch(ctx, req, actorID); err != nil {
 		return domain.WriteResult{}, err
 	}
 	return domain.WriteResult{RowsAffected: 1}, nil

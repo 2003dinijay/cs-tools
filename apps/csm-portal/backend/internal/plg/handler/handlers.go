@@ -333,7 +333,7 @@ func (h *Handlers) CreatePlaybook(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ProductCode = r.PathValue("product")
 
-	pb, err := h.playbooks.Create(r.Context(), req)
+	pb, err := h.playbooks.Create(r.Context(), req, actor(r))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return
@@ -349,7 +349,7 @@ func (h *Handlers) PatchPlaybook(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ID = r.PathValue("playbookId")
 
-	pb, err := h.playbooks.Patch(r.Context(), req)
+	pb, err := h.playbooks.Patch(r.Context(), req, actor(r))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

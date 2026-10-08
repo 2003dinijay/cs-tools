@@ -27036,6 +27036,13 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PlgPlaybookTaskInput"
+        actorId:
+          type: string
+          format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as the
+            playbook's authored_by and updated_by. This service has no notion
+            of "the current user".
     PlgPatchPlaybookRequest:
       type: object
       properties:
@@ -27050,6 +27057,12 @@ components:
           type: string
         active:
           type: boolean
+        actorId:
+          type: string
+          format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as the
+            playbook's updated_by, which need not be whoever authored it.
     PlgReplaceTasksRequest:
       type: object
       required:

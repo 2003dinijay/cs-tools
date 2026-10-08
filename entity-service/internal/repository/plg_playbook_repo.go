@@ -25,8 +25,8 @@ type PlaybookRepository interface {
 	// passes which, and the caller derives it from health.
 	ListForStage(ctx context.Context, productID string, stage domain.LifecycleStage, kinds []domain.PlaybookType) ([]domain.Playbook, error)
 	Get(ctx context.Context, id string) (*domain.Playbook, error)
-	Create(ctx context.Context, req domain.CreatePlaybookRequest) (string, error)
-	Patch(ctx context.Context, req domain.PatchPlaybookRequest) error
+	Create(ctx context.Context, req domain.CreatePlaybookRequest, actorID string) (string, error)
+	Patch(ctx context.Context, req domain.PatchPlaybookRequest, actorID string) error
 	ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest) error
 	Delete(ctx context.Context, id string) error
 }
@@ -157,7 +157,7 @@ func (r *playbookRepository) Get(ctx context.Context, id string) (*domain.Playbo
 // The composite FK on (lifecycle_stage, target_stage) does the validation: a
 // playbook at a stage that carries none, or aiming somewhere the paths do not
 // allow, is refused by the database. That surfaces as a 400 with the reason.
-func (r *playbookRepository) Create(ctx context.Context, req domain.CreatePlaybookRequest) (string, error) {
+func (r *playbookRepository) Create(ctx context.Context, req domain.CreatePlaybookRequest, actorID string) (string, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return "", fmt.Errorf("begin create playbook: %w", err)
@@ -176,12 +176,14 @@ func (r *playbookRepository) Create(ctx context.Context, req domain.CreatePlaybo
 
 	var id string
 	err = tx.QueryRow(ctx, `
-		INSERT INTO plg_playbook (product_id, name, description, lifecycle_stage, playbook_type, display_order)
+		INSERT INTO plg_playbook (product_id, name, description, lifecycle_stage, playbook_type, display_order,
+		                          authored_by, updated_by)
 		VALUES ($1::UUID, $2, $3, $4::plg_lifecycle_stage_enum, $5::plg_playbook_type_enum,
-		        (SELECT COALESCE(MAX(display_order), 0) + 1 FROM plg_playbook WHERE product_id = $1::UUID))
+		        (SELECT COALESCE(MAX(display_order), 0) + 1 FROM plg_playbook WHERE product_id = $1::UUID),
+		        $6::UUID, $6::UUID)
 		RETURNING id::TEXT`,
 		productID, req.Name, req.Description,
-		string(req.LifecycleStage), string(req.PlaybookType)).Scan(&id)
+		string(req.LifecycleStage), string(req.PlaybookType), uuidArg(actorID)).Scan(&id)
 	if err != nil {
 		if isUniqueViolation(err) {
 			return "", &apierror.ConflictError{Msg: "a playbook with that name already exists for this product"}
@@ -227,18 +229,22 @@ func insertTasks(ctx context.Context, tx pgx.Tx, playbookID string, tasks []doma
 	return nil
 }
 
-func (r *playbookRepository) Patch(ctx context.Context, req domain.PatchPlaybookRequest) error {
+func (r *playbookRepository) Patch(ctx context.Context, req domain.PatchPlaybookRequest, actorID string) error {
+	// updated_by is set unconditionally rather than through COALESCE: this ran,
+	// so somebody edited the playbook, and the previous editor's id is no longer
+	// the answer to "who last changed this" even if every other field is nil.
 	const q = `
 		UPDATE plg_playbook
 		SET    name            = COALESCE($2, name),
 		       description     = COALESCE($3, description),
 		       lifecycle_stage = COALESCE($4::plg_lifecycle_stage_enum, lifecycle_stage),
 		       playbook_type   = COALESCE($5::plg_playbook_type_enum, playbook_type),
-		       active          = COALESCE($6, active)
+		       active          = COALESCE($6, active),
+		       updated_by      = $7::UUID
 		WHERE  id::TEXT = $1`
 
 	tag, err := r.db.Exec(ctx, q, req.ID, req.Name, req.Description,
-		enumArg(req.LifecycleStage), enumArg(req.PlaybookType), req.Active)
+		enumArg(req.LifecycleStage), enumArg(req.PlaybookType), req.Active, uuidArg(actorID))
 	if err != nil {
 		if isUniqueViolation(err) {
 			return &apierror.ConflictError{Msg: "another playbook on this product already uses that name"}
