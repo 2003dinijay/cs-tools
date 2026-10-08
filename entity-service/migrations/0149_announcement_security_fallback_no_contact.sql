@@ -53,6 +53,12 @@
 -- (PR #1974 and/or a real backfill), this function is the one place that
 -- needs simplifying back down to a plain column check -- not the policy
 -- itself.
+--
+-- One transaction: this file already had DROP POLICY IF EXISTS in front of
+-- its one CREATE POLICY, but no BEGIN/COMMIT wrapper around the two
+-- statements -- added for atomicity with the rest of this migration series.
+BEGIN;
+
 CREATE OR REPLACE FUNCTION announcement_is_security(ann_id UUID, ann_type announcement_type_enum)
 RETURNS BOOLEAN
 LANGUAGE sql
@@ -134,3 +140,5 @@ CREATE POLICY announcement_visibility ON announcement
         )
     )
   );
+
+COMMIT;

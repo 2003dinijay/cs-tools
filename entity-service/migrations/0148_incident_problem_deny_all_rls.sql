@@ -29,41 +29,60 @@
 -- incident/incident_task/problem had their own policies yet -- this
 -- migration adds no new Go-side identity plumbing, only the policies
 -- themselves.
+--
+-- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
+-- IF EXISTS -- see migration 0141's identical note.
+BEGIN;
+
 ALTER TABLE incident ENABLE ROW LEVEL SECURITY;
 ALTER TABLE incident FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS incident_deny_all_select ON incident;
 CREATE POLICY incident_deny_all_select ON incident
   FOR SELECT USING (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS incident_deny_all_insert ON incident;
 CREATE POLICY incident_deny_all_insert ON incident
   FOR INSERT WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS incident_deny_all_update ON incident;
 CREATE POLICY incident_deny_all_update ON incident
   FOR UPDATE USING (current_setting('app.is_internal', true) = 'true')
   WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS incident_deny_all_delete ON incident;
 CREATE POLICY incident_deny_all_delete ON incident
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
 
 ALTER TABLE incident_task ENABLE ROW LEVEL SECURITY;
 ALTER TABLE incident_task FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS incident_task_deny_all_select ON incident_task;
 CREATE POLICY incident_task_deny_all_select ON incident_task
   FOR SELECT USING (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS incident_task_deny_all_insert ON incident_task;
 CREATE POLICY incident_task_deny_all_insert ON incident_task
   FOR INSERT WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS incident_task_deny_all_update ON incident_task;
 CREATE POLICY incident_task_deny_all_update ON incident_task
   FOR UPDATE USING (current_setting('app.is_internal', true) = 'true')
   WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS incident_task_deny_all_delete ON incident_task;
 CREATE POLICY incident_task_deny_all_delete ON incident_task
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
 
 ALTER TABLE problem ENABLE ROW LEVEL SECURITY;
 ALTER TABLE problem FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS problem_deny_all_select ON problem;
 CREATE POLICY problem_deny_all_select ON problem
   FOR SELECT USING (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS problem_deny_all_insert ON problem;
 CREATE POLICY problem_deny_all_insert ON problem
   FOR INSERT WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS problem_deny_all_update ON problem;
 CREATE POLICY problem_deny_all_update ON problem
   FOR UPDATE USING (current_setting('app.is_internal', true) = 'true')
   WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS problem_deny_all_delete ON problem;
 CREATE POLICY problem_deny_all_delete ON problem
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
+
+COMMIT;

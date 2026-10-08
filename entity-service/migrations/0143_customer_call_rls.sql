@@ -32,9 +32,15 @@
 -- detached row is correctly invisible to every external caller and visible
 -- only to is_internal, consistent with every other nullable-join table in
 -- this migration series.
+--
+-- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
+-- IF EXISTS -- see migration 0141's identical note.
+BEGIN;
+
 ALTER TABLE customer_call ENABLE ROW LEVEL SECURITY;
 ALTER TABLE customer_call FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS customer_call_visibility ON customer_call;
 CREATE POLICY customer_call_visibility ON customer_call
   FOR SELECT
   USING (
@@ -42,11 +48,13 @@ CREATE POLICY customer_call_visibility ON customer_call
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = customer_call.work_item_id))
   );
 
+DROP POLICY IF EXISTS customer_call_write ON customer_call;
 CREATE POLICY customer_call_write ON customer_call
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = work_item_id))
   );
+DROP POLICY IF EXISTS customer_call_update ON customer_call;
 CREATE POLICY customer_call_update ON customer_call
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -57,3 +65,5 @@ CREATE POLICY customer_call_update ON customer_call
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = work_item_id))
   );
 -- No DELETE policy: nothing in this codebase deletes a customer_call row.
+
+COMMIT;

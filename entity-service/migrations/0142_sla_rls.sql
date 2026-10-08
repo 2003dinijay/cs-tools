@@ -39,9 +39,15 @@
 -- match a NULL project_id), so those rows are correctly invisible to every
 -- external caller and visible only to is_internal, with no separate
 -- work_item-type branch needed.
+--
+-- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
+-- IF EXISTS -- see migration 0141's identical note.
+BEGIN;
+
 ALTER TABLE sla ENABLE ROW LEVEL SECURITY;
 ALTER TABLE sla FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS sla_visibility ON sla;
 CREATE POLICY sla_visibility ON sla
   FOR SELECT
   USING (
@@ -49,11 +55,13 @@ CREATE POLICY sla_visibility ON sla
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = sla.work_item_id))
   );
 
+DROP POLICY IF EXISTS sla_write ON sla;
 CREATE POLICY sla_write ON sla
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = work_item_id))
   );
+DROP POLICY IF EXISTS sla_update ON sla;
 CREATE POLICY sla_update ON sla
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -69,5 +77,8 @@ CREATE POLICY sla_update ON sla
 -- than omitted entirely: an external caller was never going to delete an
 -- sla row anyway, and FORCE + zero policy would have also blocked the one
 -- legitimate internal case.
+DROP POLICY IF EXISTS sla_delete ON sla;
 CREATE POLICY sla_delete ON sla
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
+
+COMMIT;
