@@ -542,7 +542,7 @@ func TestLoad_M2MClientIDsFieldName(t *testing.T) {
 // path that touches Salesforce.
 func TestLoad_CSMMigrationPortalWritesEnabled(t *testing.T) {
 	for value, want := range map[string]bool{
-		"true": true, "TRUE": false, "True": false, "1": false, "yes": false, "": false, " true ": false,
+		"true": true, "TRUE": true, "1": true, "": true, "false": false, "FALSE": false, " false ": false,
 	} {
 		t.Setenv("CSM_MIGRATION_PORTAL_WRITES_ENABLED", value)
 		if got := Load().CSMMigrationPortalWritesEnabled; got != want {
@@ -558,7 +558,7 @@ func TestLoad_CSMMigrationPortalWritesEnabled(t *testing.T) {
 // than half-enabling a path that writes to Salesforce.
 func TestLoad_CSMMigrationMembershipRegistrationEnabled(t *testing.T) {
 	for value, want := range map[string]bool{
-		"true": true, "TRUE": false, "True": false, "1": false, "yes": false, "": false, " true ": false,
+		"true": true, "TRUE": true, "1": true, "": true, "false": false, "FALSE": false, " false ": false,
 	} {
 		t.Setenv("CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED", value)
 		if got := Load().CSMMigrationMembershipRegistrationEnabled; got != want {

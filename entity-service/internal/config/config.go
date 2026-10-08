@@ -663,9 +663,9 @@ func Load() *Config {
 		GithubLabelStatusAssigned:                os.Getenv("GITHUB_LABEL_STATUS_ASSIGNED"),
 		CRNoticesEnabled:                         os.Getenv("CR_NOTICES_ENABLED") == "true",
 		CRStrictVisibilityFromRaw:                strings.TrimSpace(os.Getenv("CR_STRICT_VISIBILITY_FROM")),
-		CSMMigrationSalesforceMembershipIngestEnabled: os.Getenv("CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED") == "true",
-		CSMMigrationSalesforceAccountIngestEnabled:    os.Getenv("CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED") == "true",
-		CSMMigrationPortalWritesEnabled:               os.Getenv("CSM_MIGRATION_PORTAL_WRITES_ENABLED") == "true",
+		CSMMigrationSalesforceMembershipIngestEnabled: envFlagOn("CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED"),
+		CSMMigrationSalesforceAccountIngestEnabled:    envFlagOn("CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED"),
+		CSMMigrationPortalWritesEnabled:               envFlagOn("CSM_MIGRATION_PORTAL_WRITES_ENABLED"),
 		CREventHubTopic:                               getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
 		ProjectEventHubTopic:                          getEnvOrDefault("PROJECT_EVENT_HUB_TOPIC", "project-events"),
 		IncidentEventHubTopic:                         strings.TrimSpace(os.Getenv("INCIDENT_EVENT_HUB_TOPIC")),
@@ -696,7 +696,7 @@ func Load() *Config {
 		SalesEntityClientID:                           os.Getenv("SALES_ENTITY_CLIENT_ID"),
 		SalesEntityClientSecret:                       os.Getenv("SALES_ENTITY_CLIENT_SECRET"),
 		SalesEntityScopes:                             os.Getenv("SALES_ENTITY_SCOPES"),
-		CSMMigrationMembershipRegistrationEnabled:     os.Getenv("CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED") == "true",
+		CSMMigrationMembershipRegistrationEnabled:     envFlagOn("CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED"),
 		EscalationEL1AmericasTLGroupID:                os.Getenv("ESCALATION_EL1_AMERICAS_TL_GROUP_ID"),
 		EscalationEL2AmericasTUGroupID:                os.Getenv("ESCALATION_EL2_AMERICAS_TU_GROUP_ID"),
 		EscalationEL2ServiceProductGroupID:            os.Getenv("ESCALATION_EL2_SERVICE_PRODUCT_GROUP_ID"),
@@ -722,11 +722,11 @@ func Load() *Config {
 			"clientId", cfg.CSMPortalBackendClientID)
 	}
 	// Set outside the literal so its longer key does not realign every field above.
-	cfg.CSMMigrationSalesforceOpportunityIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED") == "true"
-	cfg.CSMMigrationSalesforceProjectIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED") == "true"
-	cfg.CSMMigrationSalesforceProjectInsertEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED") == "true"
-	cfg.CSMMigrationSalesforcePartnerIngestEnabled = os.Getenv("CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED") == "true"
-	cfg.CSMMigrationCustomerEngagementIngestEnabled = os.Getenv("CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED") == "true"
+	cfg.CSMMigrationSalesforceOpportunityIngestEnabled = envFlagOn("CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED")
+	cfg.CSMMigrationSalesforceProjectIngestEnabled = envFlagOn("CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED")
+	cfg.CSMMigrationSalesforceProjectInsertEnabled = envFlagOn("CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED")
+	cfg.CSMMigrationSalesforcePartnerIngestEnabled = envFlagOn("CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED")
+	cfg.CSMMigrationCustomerEngagementIngestEnabled = envFlagOn("CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED")
 	cfg.CustomerEngagementFirefightingTypeID = strings.TrimSpace(os.Getenv("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID"))
 	cfg.RedisURL = strings.TrimSpace(os.Getenv("REDIS_URL"))
 	cfg.RedisAddr = strings.TrimSpace(os.Getenv("REDIS_ADDR"))
@@ -1190,6 +1190,11 @@ func (c *Config) HasGithubIntegration() bool {
 	return c.GithubIntegrationEnabled &&
 		c.GithubToken != "" &&
 		c.GithubIntegrationLogin != ""
+}
+
+// envFlagOn is true unless the value is "false" (case-insensitive).
+func envFlagOn(key string) bool {
+	return !strings.EqualFold(strings.TrimSpace(os.Getenv(key)), "false")
 }
 
 // envDuration reads a Go duration string (e.g. "5s", "500ms"), falling back to

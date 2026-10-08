@@ -1129,7 +1129,7 @@ func loadOnboardingStatusEnabled() bool {
 
 // onboardingStatusEnabled is the pure parse behind loadOnboardingStatusEnabled.
 func onboardingStatusEnabled(raw string) bool {
-	return strings.TrimSpace(raw) == "true"
+	return !strings.EqualFold(strings.TrimSpace(raw), "false")
 }
 
 // loadSftpgoConfig resolves the SFTPGo-backed attachment-storage feature
