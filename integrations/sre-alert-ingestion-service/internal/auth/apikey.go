@@ -164,6 +164,11 @@ type Audit struct {
 	logger *slog.Logger
 }
 
+// NewAudit wraps inner so it logs what it would reject without rejecting anything.
+func NewAudit(inner Authenticator, logger *slog.Logger) Authenticator {
+	return Audit{inner: inner, logger: logger}
+}
+
 // Authenticate always returns nil, logging what the wrapped Authenticator would
 // have rejected.
 func (a Audit) Authenticate(r *http.Request, vendor string) error {
