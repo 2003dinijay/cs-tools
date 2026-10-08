@@ -19,7 +19,6 @@ package csm
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -37,7 +36,7 @@ type CreateIncidentRequest struct {
 	WorkNotes *string `json:"workNotes,omitempty"`
 	// ContactType says how the incident was raised (entity-service's IncidentContactType); routing to the SRE escalation ladder reads it.
 	ContactType *string `json:"contactType,omitempty"`
-	// CorrelationID is the dedup fingerprint tag on ServiceNow's own correlation_id field, so SearchIncidentByCorrelationID finds a prior create by exact match.
+	// CorrelationID tags the incident with its fingerprint generation on ServiceNow's correlation_id field, for tracing it back to alert-core.
 	CorrelationID *string `json:"correlationId,omitempty"`
 }
 
@@ -105,8 +104,7 @@ type searchIncidentsRequest struct {
 }
 
 type searchIncidentsFilters struct {
-	Number        string `json:"number,omitempty"`
-	CorrelationID string `json:"correlationId,omitempty"`
+	Number string `json:"number,omitempty"`
 }
 
 type pagination struct {
@@ -128,8 +126,8 @@ type searchIncidentsResponse struct {
 // openIncidentStates copies entity-service's IncidentState values by hand (separate Go module, not importable) — keep in sync manually.
 var openIncidentStates = map[string]bool{"NEW": true, "IN_PROGRESS": true, "ON_HOLD": true}
 
-// IncidentState is authoritative for open/closed since only CSM/agents ever close incidents; found is false on no match.
-func (c *Client) IncidentState(ctx context.Context, number string) (open bool, found bool, err error) {
+// IncidentState is authoritative for open/closed since only CSM/agents ever close incidents; it looks up number exactly and accepts only the row whose id is incidentID; found is false on no match.
+func (c *Client) IncidentState(ctx context.Context, incidentID, number string) (open bool, found bool, err error) {
 	req := searchIncidentsRequest{
 		Filters:    searchIncidentsFilters{Number: number},
 		Pagination: pagination{Limit: 1, Offset: 0},
@@ -148,46 +146,16 @@ func (c *Client) IncidentState(ctx context.Context, number string) (open bool, f
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return false, false, fmt.Errorf("csm: decode incident search response: %w", err)
 	}
-	if len(resp.Incidents) == 0 || resp.Incidents[0].State == nil {
+	if len(resp.Incidents) == 0 {
 		return false, false, nil
 	}
-	return openIncidentStates[*resp.Incidents[0].State], true, nil
-}
-
-// ErrCorrelationFilterIgnored means the backend returned incidents regardless of correlationId (main's ServiceNow search does), so dedup cannot be done.
-var ErrCorrelationFilterIgnored = errors.New("csm: correlationId search filter not applied")
-
-// SearchIncidentByCorrelationID is the pre-create dedup check (a lost create response must not cause a duplicate on retry), matching correlation_id exactly and never free text, which matched unrelated incidents or timed out.
-func (c *Client) SearchIncidentByCorrelationID(ctx context.Context, correlationID string) (id, number string, found bool, err error) {
-	// Limit 2 so a filter the backend ignored shows up as several rows instead of an arbitrary first hit.
-	req := searchIncidentsRequest{
-		Filters:    searchIncidentsFilters{CorrelationID: correlationID},
-		Pagination: pagination{Limit: 2, Offset: 0},
-	}
-	body, err := json.Marshal(req)
-	if err != nil {
-		return "", "", false, fmt.Errorf("csm: marshal SearchIncidentsRequest: %w", err)
-	}
-
-	respBody, err := c.do(ctx, http.MethodPost, "/incidents/search", body)
-	if err != nil {
-		return "", "", false, err
-	}
-
-	var resp searchIncidentsResponse
-	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return "", "", false, fmt.Errorf("csm: decode incident search response: %w", err)
-	}
-	if len(resp.Incidents) == 0 {
-		return "", "", false, nil
-	}
-	if len(resp.Incidents) > 1 || resp.Total > 1 {
-		// A dedup tag names one incident generation, so several matches mean the correlationId filter was not applied.
-		return "", "", false, fmt.Errorf("%w: matched %d incidents", ErrCorrelationFilterIgnored, max(len(resp.Incidents), resp.Total))
-	}
 	hit := resp.Incidents[0]
-	if hit.ID == nil || *hit.ID == "" || hit.Number == nil || *hit.Number == "" {
-		return "", "", false, nil
+	// Another incident's row means the number filter was not applied; its state says nothing about this incident.
+	if hit.ID == nil || *hit.ID != incidentID || hit.Number == nil || *hit.Number != number {
+		return false, false, fmt.Errorf("csm: incident search for %s returned a different incident, number filter not applied", number)
 	}
-	return *hit.ID, *hit.Number, true, nil
+	if hit.State == nil {
+		return false, false, nil
+	}
+	return openIncidentStates[*hit.State], true, nil
 }
