@@ -15385,6 +15385,15 @@ components:
             hits). Defaults to false, which returns the exact total as before.
             Ignored on the ServiceNow data source, which always reports one,
             and for a search that sets groupBy (its totals are the bucket counts).
+        countOnly:
+          type: boolean
+          description: >-
+            The mirror image of skipTotal: when true, the search skips the
+            page query entirely and returns `cases: []`, reading only `total`.
+            For a count or pie/bar dashboard widget, whose only use for this
+            search is `total`. Defaults to false. Rejected (400) together with
+            skipTotal -- there would be nothing left to compute. Postgres data
+            source only.
         filters:
           $ref: '#/components/schemas/SearchCasesFilters'
         sortBy:

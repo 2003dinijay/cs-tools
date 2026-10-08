@@ -3114,23 +3114,40 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	// the LEFT JOIN below). A case whose project has no status set (NULL)
 	// satisfies notIn -- "not in progress" is true of it -- but never in.
 	//
-	// Deliberately NOT rewritten as a targeted id lookup against "project"
-	// the way caseLikeStateLookupClause rewrites the state filter, despite
-	// the superficial similarity: measured directly against production-
-	// volume data that doing so brings no benefit here and can be slower.
-	// The state lookup wins because a case search's state filter is
-	// typically highly selective (e.g. "open" is a small fraction of all
-	// cases); projectOnboardingStatus filters in practice are usually the
-	// opposite -- a widget excluding only a couple of terminal statuses
-	// matches nearly every project -- so building an array of almost every
-	// project id and checking per-row membership against it costs more than
-	// the simple indexed nested-loop join this already was.
+	// The `in` branch below is rewritten as an exclusion-list id lookup
+	// against "project", the same `caseLikeStateLookupClause` technique the
+	// state filter already uses, superseding an earlier version of this
+	// comment that argued against it: that reasoning assumed an `in` filter
+	// is usually highly selective, matching only a couple of statuses out of
+	// the full set -- true in general, but not the actual shape every
+	// dashboard widget sends. Every widget's own `in` list names 6 of the 7
+	// statuses ("every project except the in-progress ones"), so it matches
+	// nearly every project (~1,950 of ~1,966 measured), the opposite of a
+	// selective filter. Checking that per case row via the `p.onboarding_status`
+	// column keeps the LEFT JOIN project alive for every case row even in a
+	// COUNT(*)-only query that reads no other column of p -- the lookup into
+	// ~1,966 projects this filter alone cost about 10,200 of a widget's
+	// 21,000-55,000 total data pages (measured). Building a short exclusion
+	// list instead (here, the handful of projects that do NOT match) and
+	// checking wi.project_id against that list directly is both a cheaper
+	// check and, with no remaining WHERE-clause reference to the p alias at
+	// all, lets the planner drop the dead LEFT JOIN from a COUNT(*) query
+	// entirely -- measured as a 12% database-CPU reduction for this filter
+	// alone. The `notIn` branch below is left as the simple join check: it
+	// already satisfies both the no-project and null-status cases via the OR,
+	// and nothing here claims it is a bottleneck on real traffic the way
+	// `in` is -- rewriting it the same way would need its own extra `OR
+	// wi.project_id IS NULL` term to keep that same behaviour and was not
+	// worth the added risk without a measured case for it.
 	if len(req.Parsed.ProjectOnboardingStatuses) > 0 {
 		labels, err := onboardingStatusEnumLabels("projectOnboardingStatus", req.Parsed.ProjectOnboardingStatuses)
 		if err != nil {
 			return "", nil, argIdx, err
 		}
-		where += fmt.Sprintf(" AND p.onboarding_status = ANY($%d::text[]::onboarding_status_enum[])", argIdx)
+		where += fmt.Sprintf(
+			" AND wi.project_id IS NOT NULL AND wi.project_id <> ALL(ARRAY(SELECT id FROM project WHERE onboarding_status IS NULL OR onboarding_status <> ALL($%d::text[]::onboarding_status_enum[])))",
+			argIdx,
+		)
 		filterArgs = append(filterArgs, labels)
 		argIdx++
 	}
@@ -3258,6 +3275,47 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 
 	countQuery := "SELECT COUNT(*) FROM work_item wi " + joins + " " + where
 
+	var total int
+	cases := []domain.SearchCaseView{}
+
+	eg, egCtx := errgroup.WithContext(ctx)
+
+	// COUNT and SELECT each go through Scoped independently (rather than
+	// sharing one transaction) specifically so they can still run
+	// concurrently on separate pool connections, same as before this change
+	// -- a pgx.Tx is bound to a single connection, so one shared transaction
+	// across both goroutines would have serialized them. Scoped.QueryRow/
+	// Query each set the caller's identity (read from egCtx, stamped above)
+	// as their own implicit one-statement transaction, so there is no
+	// explicit tx/setCallerIdentity call needed here any more.
+
+	// SkipTotal: the caller does not show a total (global search shows a handful
+	// of hits), so the COUNT is not run at all -- it is as costly as the page
+	// query and holds a second pool connection while it runs.
+	if req.SkipTotal {
+		total = domain.TotalNotComputed
+	} else {
+		eg.Go(func() error {
+			if err := r.db.QueryRow(egCtx, countQuery, filterArgs...).Scan(&total); err != nil {
+				return fmt.Errorf("count cases: %w", err)
+			}
+			return nil
+		})
+	}
+
+	// CountOnly: the mirror image of SkipTotal -- a count/pie dashboard widget
+	// only ever reads Total off this response, so the page query below (as
+	// costly as the COUNT, and its one row is thrown away unread) is never
+	// built or run at all. cases stays the empty slice declared above,
+	// matching skipTotal/countOnly being rejected together in the service
+	// layer (there would be nothing left for this branch to skip).
+	if req.CountOnly {
+		if err := eg.Wait(); err != nil {
+			return nil, 0, err
+		}
+		return cases, total, nil
+	}
+
 	// The page is chosen first, by an inner query that selects only wi.id,
 	// and the display columns are joined onto just those rows afterwards.
 	// Every join in caseSearchJoins is on a primary key, so the inner query
@@ -3287,34 +3345,6 @@ func (r *caseRepo) SearchCases(ctx context.Context, req domain.SearchCasesReques
 		joins, sortCol, sortDir,
 	)
 	dataArgs := append(append([]any{}, filterArgs...), req.Pagination.Limit, req.Pagination.Offset)
-
-	var total int
-	var cases []domain.SearchCaseView
-
-	eg, egCtx := errgroup.WithContext(ctx)
-
-	// COUNT and SELECT each go through Scoped independently (rather than
-	// sharing one transaction) specifically so they can still run
-	// concurrently on separate pool connections, same as before this change
-	// -- a pgx.Tx is bound to a single connection, so one shared transaction
-	// across both goroutines would have serialized them. Scoped.QueryRow/
-	// Query each set the caller's identity (read from egCtx, stamped above)
-	// as their own implicit one-statement transaction, so there is no
-	// explicit tx/setCallerIdentity call needed here any more.
-
-	// SkipTotal: the caller does not show a total (global search shows a handful
-	// of hits), so the COUNT is not run at all -- it is as costly as the page
-	// query and holds a second pool connection while it runs.
-	if req.SkipTotal {
-		total = domain.TotalNotComputed
-	} else {
-		eg.Go(func() error {
-			if err := r.db.QueryRow(egCtx, countQuery, filterArgs...).Scan(&total); err != nil {
-				return fmt.Errorf("count cases: %w", err)
-			}
-			return nil
-		})
-	}
 
 	eg.Go(func() error {
 		rows, err := r.db.Query(egCtx, dataQuery, dataArgs...)
