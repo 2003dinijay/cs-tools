@@ -6425,12 +6425,14 @@ the tables to back them already existed and were queried elsewhere:
 `user_role`/`role` and `team_member`/`team` respectively for the caller's
 own id.
 
-**`POST /groups/search`** is now Postgres-backed too (`group_repo.go`),
-against `team` (migration 0033) — "mirror[s] a hand-curated allow-list of
-ServiceNow's OOB sys_user_group / sys_user_grmember tables" per that
-migration's own comment, the same concept `GroupService` searches.
-`domain.Group.Active` has no backing column and is hardcoded `true`;
-`Parent` has no hierarchy column on `team` and is always `nil`.
+**`POST /groups/search`** is Postgres-backed (`group_repo.go`), against the
+`"group"` table (migration 0074, mirrored from ServiceNow's `sys_user_group`),
+so its ids are the same ones `GET /groups/{id}` and
+`approval_stage.assignment_group_id` use. `Active` is `"group".is_active`
+(NULL = active); `Parent` is resolved from `parent_id`. Members on
+`GET /groups/{id}` come from `group_member` (migration 0140, mirrored from
+`sys_user_grmember`) plus the `team_member` shapes described there. It used to
+read the curated `team` registry, whose ids `GET /groups/{id}` could not resolve.
 
 **Not wired up**: `project_type` has no corresponding field anywhere on
 `domain.Project`/`ProjectDetail` today, so there is nothing to populate
