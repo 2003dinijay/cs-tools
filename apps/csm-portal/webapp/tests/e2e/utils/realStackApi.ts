@@ -28,7 +28,7 @@
 //
 // The staff personas are the local seed's (entity-service/CLAUDE.md, "Local seed personas"):
 // jane raises (a requester in no approval group, so she is nobody's approver), alice, bob and
-// carol sit in the Peer, CAB and ECAB groups.
+// carol sit in the Peer and CAB groups.
 //
 
 const OIDC_URL = process.env.E2E_OIDC_URL ?? "http://localhost:9100";

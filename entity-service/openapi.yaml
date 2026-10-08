@@ -5833,10 +5833,11 @@ paths:
         move) or a state it may move to from there -- the same table legalNextStates is
         rendered from, so what the portal offers is exactly what is accepted: new ->
         assess (Request Approval; where it lands depends on the type), canceled; assess
-        and authorize -> canceled only (the peer approval and the CAB / ECAB approval
+        and authorize -> canceled only (the peer approval and the CAB approval
         move them on by themselves); customer_approval -> authorize (Re-schedule /
         Propose a different time: the state does not move), canceled; scheduled -> implement, canceled; implement -> review, canceled; review
-        -> closed (or customer_review when customerReviewRequired), rollback, canceled;
+        -> closed (or customer_review when customerReviewRequired and the change is not an
+        Emergency change, which never asks the customer), rollback, canceled;
         customer_review -> rollback, canceled. closed, canceled and rollback are FINAL:
         every request to move one is a 400 that names both states (`state "implement"
         cannot be set manually from canceled: a change request that is canceled cannot be
@@ -5857,7 +5858,7 @@ paths:
         on every row, for every change type, and the change request STAYS in customer_approval:
         the new window is applied, the pending customer request is cancelled (kept as a record)
         and a fresh one is provisioned for the project's registered contacts. Nothing goes
-        through CAB / ECAB again (the change itself has not changed, only its time) and no
+        through CAB again (the change itself has not changed, only its time) and no
         requirement flag is written (neither customer_approval_required nor the
         is_customer_approval_required flag the sync owns). It is refused with the words of Request Approval's
         refusal ("customer approval is required but nobody on this project can be asked ...")
@@ -6186,8 +6187,8 @@ paths:
       description: >-
         The approval stages of the change request and who sits on each. For a CUSTOMER
         (an external caller) only the customer's own stages (Customer Approval /
-        Customer Review) are given whole; every internal stage (Peer, CAB, ECAB,
-        Review) is reduced to its stage label and status, with no approver names, no
+        Customer Review) are given whole; every internal stage (Peer, CAB, Review,
+        and a historic "ECAB Approval") is reduced to its stage label and status, with no approver names, no
         internal user ids and no group.
 
         A CUSTOMER (any caller that is not unrestricted) sees a change request only when
@@ -6250,7 +6251,7 @@ paths:
         -> closed (is_customer_review_required), rejected -> rollback.
 
         A stage can only be decided while the change request is in the state it belongs
-        to: Peer Approval in assess, CAB / ECAB Approval in authorize, Review in review,
+        to: Peer Approval in assess, CAB Approval (and a historic ECAB Approval) in authorize, Review in review,
         Customer Approval in customer_approval, Customer Review in customer_review. The
         approvers of a stage the change has left are cancelled when it moves on (all of
         them once it is closed, canceled or rolled back), and a decision on one that was
@@ -6300,7 +6301,7 @@ paths:
           description: >-
             The caller may not decide: the change request's creator, a user who
             is not an active internal user on an internal stage (peer, CAB,
-            ECAB, review), or -- while the change waits on its customer group's
+            review), or -- while the change waits on its customer group's
             Customer Approval / Customer Review -- anyone not in that group.
             The message says which; the body's `errorCode` is `change_request_not_asked`
             for a caller who holds no REQUESTED row on the customer group's live stage and
@@ -7391,7 +7392,7 @@ paths:
         group email and manager, and its active members in name order.
         `id` is a `"group"` id, NOT a `team` id (POST /groups/search lists
         teams). Members are the users the approval pools provision from: for the
-        CAB Approval / ECAB Approval / Devops Approval groups, which the pools
+        CAB Approval / Devops Approval groups, which the pools
         resolve by name, a `team_member` whose `group_id` is any group of that
         name or whose `team_id` is a team of that name; for any other group (a
         change's assigned group) a `team_member` whose `group_id` is this group.
@@ -17036,16 +17037,24 @@ components:
               description: >-
                 The creation form's "Customer Approval" checkbox: the change
                 needs the customer's approval before it is scheduled. When
-                true, CAB / ECAB approval (or Request Approval on a Standard
+                true, CAB approval (or Request Approval on a Standard
                 change) moves the change to customer_approval instead of
-                scheduled. PostgreSQL data source only (always false on the
+                scheduled. Cannot be true on an Emergency change (a 400:
+                "Emergency changes proceed without customer consent, so
+                customer approval and customer review cannot be required"):
+                an Emergency change never asks the customer, and the flow
+                ignores the stored value of a row that already has one.
+                PostgreSQL data source only (always false on the
                 ServiceNow data source).
             customerReviewRequired:
               type: boolean
               description: >-
                 The creation form's "Customer Review" checkbox: the change
                 needs the customer's review before it is closed. When true,
-                review offers customer_review instead of closed.
+                review offers customer_review instead of closed -- except on an
+                Emergency change, which never asks the customer (the stored
+                value of a row that already has it ticked is shown as it is
+                and ignored by the flow).
             customerCanAnswer:
               type: boolean
               description: >-
@@ -17085,23 +17094,29 @@ components:
               description: >-
                 Next states a human may move the change request to, per state
                 (the single source of truth the portal renders).
+                Wherever this text names customerApprovalRequired or
+                customerReviewRequired it means the flag IN EFFECT: for an Emergency
+                change both are false whatever value is stored (an Emergency change is
+                acted on without the customer's consent, so a row that already has a box
+                ticked still never offers or enters a customer step).
                 new: [assess, canceled] -- "assess" is the "Request Approval"
                 action for every type; the state it lands in depends on the
                 type (Assess for Normal, Authorize for Emergency, Scheduled for
                 Standard -- customer_approval instead when
-                customerApprovalRequired).
+                customerApprovalRequired, which an Emergency change never has in effect).
                 assess: [canceled] (the peer approval moves the change on by
                 itself, to authorize -- Assess -> Authorize was listed here
                 before although no PATCH ever took it); authorize: [canceled]
-                (CAB/ECAB approval moves the change on by itself: to scheduled,
-                or to customer_approval when customerApprovalRequired).
+                (CAB approval moves the change on by itself: to scheduled,
+                or to customer_approval when customerApprovalRequired -- never for an
+                Emergency change, whose CAB approval always schedules it).
                 customer_approval: [authorize, canceled] -- never "scheduled":
                 only the CUSTOMER's own approval (Customer Portal) schedules the
                 change, and no staff action stands in for it, whether or not
                 anybody was asked; "authorize" here is the wire name of the Time
                 Change loop: Re-schedule / Propose a different time (PATCH
                 {state: authorize}); the state does NOT move, nothing goes
-                through CAB/ECAB again, and the customer is asked again when the
+                through CAB again, and the customer is asked again when the
                 planned window changes (it is accepted from this state only,
                 and with no proposal waiting it is refused when the window does
                 not change). WSO2's acceptance of a time the customer proposed
@@ -17109,7 +17124,9 @@ components:
                 scheduled: [implement, canceled]; implement: [review,
                 canceled].
                 review: [customer_review, rollback, canceled] when
-                customerReviewRequired, else [closed, rollback, canceled].
+                customerReviewRequired, else [closed, rollback, canceled] (always the
+                else branch for an Emergency change: its review offers closed whatever
+                the stored flag says).
                 customer_review: [rollback, canceled] -- never "closed": only
                 the CUSTOMER's own review closes the change -- or [canceled]
                 while a customer group's "Customer Review" stage is pending (a
@@ -17233,9 +17250,9 @@ components:
           description: >-
             True only on the calling user's own REQUESTED row, when they may
             actually decide it (they are not the change request's creator, and
-            on an internal stage -- peer, CAB, ECAB, review -- are an active
+            on an internal stage -- peer, CAB, review -- are an active
             internal user) and the change request is in the state the row's
-            stage belongs to (peer: assess, CAB / ECAB: authorize, review:
+            stage belongs to (peer: assess, CAB: authorize, review:
             review, customer approval / review: customer_approval /
             customer_review) -- a REQUESTED row left on a stage the change has
             moved past is false. Advisory --
@@ -17265,8 +17282,11 @@ components:
         stage:
           type: string
           description: >-
-            Approval stage name: "Peer Approval", "CAB Approval", "ECAB Approval",
-            "Review", and -- for the change's customer group, while it is in
+            Approval stage name: "Peer Approval", "CAB Approval" (a Normal change's second
+            stage and an Emergency change's only one; a migrated Emergency
+            change's one unlabeled stage in the CAB group reads this way too), "Review",
+            "ECAB Approval" (only on an Emergency change an earlier build created: no
+            longer written, still shown and decided as the CAB stage), and -- for the change's customer group, while it is in
             customer_approval / customer_review -- "Customer Approval" /
             "Customer Review" (approverName is then the customer group's name),
             for stages provisioned by this service; legacy/synced stages may be
@@ -17715,7 +17735,11 @@ components:
           description: >-
             Required. Decides the approval flow: Standard needs no approval
             (Request Approval goes straight to Scheduled); Normal needs peer
-            approval then CAB approval; Emergency needs ECAB approval only.
+            approval then CAB approval; Emergency needs CAB approval only (one
+            stage in the CAB Approval group: the previous system has no Emergency CAB). An
+            Emergency change takes no customer step: creating one with
+            customerApprovalRequired or customerReviewRequired true, or re-typing
+            a change that has one ticked into Emergency, is a 400.
         category:
           type: string
           enum:
@@ -17845,7 +17869,8 @@ components:
             Request Approval is refused when customerApprovalRequired or
             customerReviewRequired is set and no project was chosen, and when it is set and
             the project has nobody who can be asked (no registered portal-user contact other
-            than the requester).
+            than the requester). An Emergency change is never refused for either reason: its
+            boxes are ignored by the flow.
         deploymentIds:
           type: array
           maxItems: 100
@@ -17897,19 +17922,22 @@ components:
           type: boolean
           description: >-
             The "Customer Approval" checkbox: the change needs the customer's
-            approval before it is scheduled (CAB / ECAB approval, or Request
+            approval before it is scheduled (CAB approval, or Request
             Approval on a Standard change, then moves it to customer_approval
             instead of scheduled). Defaults to false. A change request is created in
             new, where it can still be edited freely; Request Approval is refused when a
             box is set and no projectId was chosen, or the project has nobody who can be
-            asked (see PATCH). PostgreSQL data source only.
+            asked (see PATCH). Cannot be true when type is emergency (400: an
+            Emergency change proceeds without customer consent). PostgreSQL data
+            source only.
         customerReviewRequired:
           type: boolean
           description: >-
             The "Customer Review" checkbox: the change needs the customer's
             review before it is closed (review offers customer_review instead
             of closed). Defaults to false. As customerApprovalRequired for Request
-            Approval. PostgreSQL data source only.
+            Approval. Cannot be true when type is emergency (the same 400).
+            PostgreSQL data source only.
 
     ChangeRequestLinkOptionsRequest:
       type: object
@@ -18132,6 +18160,12 @@ components:
             - canceled
         type:
           type: string
+          description: >-
+            The change type. Frozen once approval has been requested. Changing a change
+            INTO emergency while customerApprovalRequired or customerReviewRequired would
+            stay true is a 400 ("Emergency changes proceed without customer consent, so
+            customer approval and customer review cannot be required: turn off ... before
+            changing the type to emergency"); send the boxes as false in the same request.
           enum:
             - standard
             - normal
@@ -18186,8 +18220,11 @@ components:
             stage") and only when the change request has a Customer Project ("cannot be
             turned on: this change request has no Customer Project ...") with somebody who
             can be asked ("customer approval is required but nobody on this project can be
-            asked ..."). Resending the stored value is always accepted. PostgreSQL data
-            source only.
+            asked ..."). Resending the stored value is always accepted. Cannot be turned
+            ON for an Emergency change, in any state (400: "Emergency changes proceed
+            without customer consent, so customer approval and customer review cannot be
+            required (customerApprovalRequired must be false for an Emergency change)").
+            PostgreSQL data source only.
         customerReviewRequired:
           type: boolean
           description: >-
@@ -18198,7 +18235,8 @@ components:
             longer be changed ...: the change request has already left the review stage")
             and only when the change request has a Customer Project with somebody who can
             be asked ("customer review is required but nobody on this project can be asked
-            ..."). PostgreSQL data source only.
+            ..."). Cannot be turned ON for an Emergency change, in any state (the same 400
+            as customerApprovalRequired). PostgreSQL data source only.
         implementationPlan:
           type: string
           nullable: true

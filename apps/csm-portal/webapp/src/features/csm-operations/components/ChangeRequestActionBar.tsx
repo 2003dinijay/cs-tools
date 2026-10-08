@@ -132,7 +132,7 @@ const MENU_ORDER: readonly string[] = [...FORWARD_ORDER, ...SECONDARY_ORDER, "ro
  * a PATCH, and nothing here records the customer's approval or review.
  *
  * `scheduled` is never offered. A CR is moved to Scheduled automatically the
- * moment its approval is granted (CAB/ECAB, Standard's Request Approval, or the
+ * moment its approval is granted (CAB, Standard's Request Approval, or the
  * customer's own approval at Customer Approval). There is no manual "Schedule"
  * action anywhere, and none out of `customer_approval` either: that move is
  * the customer's approval.
@@ -241,6 +241,8 @@ interface BlockedReasonContext {
  * Project (`requestApprovalNeedsProjectReason`) with at least one registered contact
  * (`requestApprovalNeedsContactReason`, only where the page knows the project has
  * none: a requester-only project is the backend's refusal, shown in the error banner).
+ * Neither applies to an Emergency change: the backend ignores its customer boxes, so a
+ * stored tick there asks nobody and blocks nothing.
  *
  * `rollback` is blocked out of Customer Review only (out of Review it is never
  * blocked): while the customer group's review is pending the backend refuses

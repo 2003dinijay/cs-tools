@@ -1311,6 +1311,30 @@ func TestCreateChangeRequest_CustomerGateFlags(t *testing.T) {
 		}
 	})
 
+	// An Emergency change takes no customer step; the entity service refuses a create that
+	// ticks a box on one and the form is shown its reason verbatim (the BFF does not
+	// second-guess the rule: the type and the boxes are the entity service's to judge).
+	t.Run("surfaces the refusal of a customer box on an Emergency change verbatim", func(t *testing.T) {
+		const msg = "Emergency changes proceed without customer consent, so customer approval and customer review cannot be required (customerApprovalRequired must be false for an Emergency change)"
+		body, _ := json.Marshal(map[string]any{"code": 400, "message": msg})
+		var forwarded []byte
+		client := &mockEntityChangeRequestClient{
+			createChangeRequestFn: func(_ context.Context, b []byte) ([]byte, error) {
+				forwarded = b
+				return nil, &apierror.Error{StatusCode: http.StatusBadRequest, Body: string(body)}
+			},
+		}
+		const payload = `{"subject":"Restart the gateway","type":"emergency","customerApprovalRequired":true}`
+		r := withUser(httptest.NewRequest(http.MethodPost, "/change-requests", strings.NewReader(payload)))
+		w := httptest.NewRecorder()
+		NewChangeRequestHandler(client).CreateChangeRequest(w, r)
+		assertStatus(t, w, http.StatusBadRequest)
+		assertErrorMessage(t, w, msg)
+		if string(forwarded) != payload {
+			t.Errorf("upstream received %q, want the body untouched (%q)", forwarded, payload)
+		}
+	})
+
 	t.Run("rejects a checkbox that is not a boolean", func(t *testing.T) {
 		for name, payload := range map[string]string{
 			"approval as string":  `{"subject":"x","type":"normal","customerApprovalRequired":"yes"}`,
@@ -1487,6 +1511,18 @@ func TestPatchChangeRequest_CustomerGateFlags(t *testing.T) {
 			"rollback outside the review states": {
 				`{"state":"rollback"}`,
 				`state "rollback" can only be set from review or customer_review`,
+			},
+			"a box turned on on an Emergency change": {
+				`{"customerApprovalRequired":true}`,
+				"Emergency changes proceed without customer consent, so customer approval and customer review cannot be required (customerApprovalRequired must be false for an Emergency change)",
+			},
+			"an Emergency change re-typed with a box ticked": {
+				`{"type":"emergency"}`,
+				"Emergency changes proceed without customer consent, so customer approval and customer review cannot be required: turn off customerReviewRequired before changing the type to emergency",
+			},
+			"customer_review on an Emergency change": {
+				`{"state":"customer_review"}`,
+				`state "customer_review" cannot be set: Emergency changes proceed without customer consent, so customer approval and customer review cannot be required; close it from review instead`,
 			},
 			"scheduled outside customer_approval": {
 				`{"state":"scheduled"}`,

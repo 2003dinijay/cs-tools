@@ -2033,7 +2033,7 @@ paths:
       summary: Get a change request's approval stages.
       description: >-
         The customer's own stages (Customer Approval / Customer Review) are given
-        whole; WSO2's internal stages (Peer, CAB, ECAB, Review) are reduced by
+        whole; WSO2's internal stages (Peer, CAB, Review, and a historic ECAB) are reduced by
         entity-service to their label and status, with no approver names or ids.
       operationId: getChangeRequestsIdApprovals
       parameters:

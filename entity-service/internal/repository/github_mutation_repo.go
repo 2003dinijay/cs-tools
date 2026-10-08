@@ -292,14 +292,16 @@ func (r *githubMutationRepository) SetState(ctx context.Context, id, state strin
 	err = r.db.InTx(ctx, func(tx pgx.Tx) error {
 		// The move is judged against the state under the row lock the UPDATE below
 		// would take anyway.
-		var current *string
+		var current, model *string
 		var reviewRequired bool
-		switch err := tx.QueryRow(ctx, `SELECT state::text, COALESCE(customer_review_required, false) FROM change_request WHERE id = $1::uuid FOR UPDATE`, id).Scan(&current, &reviewRequired); {
+		switch err := tx.QueryRow(ctx, `SELECT state::text, COALESCE(customer_review_required, false), change_model::text FROM change_request WHERE id = $1::uuid FOR UPDATE`, id).Scan(&current, &reviewRequired, &model); {
 		case errors.Is(err, pgx.ErrNoRows):
 			return nil // no such change request: the UPDATE below would match nothing as well
 		case err != nil:
 			return err
 		}
+		// An Emergency change has no customer review gate, whatever its box says.
+		_, reviewRequired = effectiveCustomerGates(stringOrEmpty(model), false, reviewRequired)
 		// A change waiting on the customer (Customer Approval / Customer Review)
 		// moves on only through the customer's own answer, never through a label
 		// or an issue event: refused, not skipped, so the sync sees it.
@@ -337,7 +339,7 @@ func (r *githubMutationRepository) SetState(ctx context.Context, id, state strin
 
 // githubSyncMoves are the states an issue event may move a change to: the plain moves of the
 // transition graph. Every other target belongs to the approval flow -- Request Approval (assess),
-// the peer / CAB / ECAB cascades (authorize, customer_approval, scheduled), the Review stage
+// the peer / CAB cascades (authorize, customer_approval, scheduled), the Review stage
 // provisioned on entering review, the customer's review gate (customer_review) -- and
 // returning to new is never a move.
 var githubSyncMoves = map[domain.ChangeRequestState]bool{

@@ -3035,7 +3035,7 @@ case and the Normal-with-a-stage resend through the real flow, an unsupported ty
 | Type | Flow |
 |---|---|
 | Normal | New →(**Request Approval**)→ Assess `[Peer Approval]` → Authorize `[CAB Approval]` → **Scheduled automatically on CAB approval** → Implement → Review → Closed |
-| Emergency | New →(**Request Approval**)→ Authorize `[ECAB Approval only]` → **Scheduled automatically on ECAB approval** → Implement → Review → Closed |
+| Emergency | New →(**Request Approval**)→ Authorize `[ONE stage: CAB Approval, in the existing "CAB Approval" group; no Peer, no Assess]` → **Scheduled automatically on that CAB approval** → Implement → Review → Closed |
 | Standard | New →(**Request Approval**)→ **Scheduled** (no approval stages at all) → Implement → Review → Closed |
 
 Two off-ramps/loops sit outside the table: **Roll back** (from Review / Customer
@@ -3063,7 +3063,8 @@ stage (see the first bullet after the table). What staff keep: **Cancel** (any
 non-final state), **Re-schedule** out of Customer Approval (the customer is asked
 again) and **Roll back** out of Customer Review (while nobody is being asked).
 Emergency changes are acted on without the customer's consent: they do not tick
-the customer boxes. Same rule for every door: the PATCH, the decision route (a
+the customer boxes, and cannot (see "Emergency: one CAB stage, no customer step" below).
+Same rule for every door: the PATCH, the decision route (a
 caller decides only their own `REQUESTED` row), create and clone (always New), the
 GitHub sync's `SetState` (refuses to leave a customer state), the dual-write mirror
 (a refused PATCH is never mirrored) and the pure ServiceNow data source (its
@@ -3081,7 +3082,7 @@ offered states are filtered the same way).
   |---|---|
   | new (or NULL) | `assess` (Request Approval), `canceled` |
   | assess | `canceled` only: the **peer approval** moves it on (Assess -> Authorize is the cascade's) |
-  | authorize | `canceled` only: the **CAB / ECAB approval** moves it on (to scheduled, or customer_approval) |
+  | authorize | `canceled` only: the **CAB approval** moves it on (to scheduled, or customer_approval -- never customer_approval for an Emergency change) |
   | customer_approval | `authorize` (Re-schedule / Propose a different time: **the state does not move**), `canceled`: the **customer's answer** moves it on -- and WSO2's **Accept proposed time** (`confirmCustomerUpdatedDate`, no state named), only while the customer's own proposal waits |
   | scheduled | `implement`, `canceled` |
   | implement | `review`, `canceled` |
@@ -3122,7 +3123,7 @@ offered states are filtered the same way).
 * **There is no "Schedule" action.** `scheduled` is never in `legalNextStates`
   and a manual `{state: "scheduled"}` (or `"authorize"` / `"customer_approval"`)
   PATCH is rejected (400) **from every state, `customer_approval` included**:
-  Scheduled is reached only by the CAB/ECAB approval cascade, by Request Approval
+  Scheduled is reached only by the CAB approval cascade, by Request Approval
   on a Standard change, or -- out of `customer_approval` -- by the customer's own
   approval. Out of `customer_approval` the 400 is `state "scheduled" cannot be set
   manually from customer_approval: the customer's approval can only be given by
@@ -3155,7 +3156,7 @@ offered states are filtered the same way).
   that source is forwarded to ServiceNow, which is the authority there).
   `legalNextStates` per state (the single source of truth the webapp renders): new
   `[assess, canceled]`, assess `[canceled]` (the peer approval moves it on), authorize
-  `[canceled]` (the CAB / ECAB approval does),
+  `[canceled]` (the CAB approval does),
   customer_approval `[authorize, canceled]` (`authorize` = Re-schedule / Propose a different time;
   the state does not move; WSO2's Accept proposed time is not a state: it is its own request,
   `confirmCustomerUpdatedDate`, so `scheduled` is still never offered), scheduled
@@ -3172,7 +3173,7 @@ offered states are filtered the same way).
   `customer_approval`, `PATCH {state: "authorize", plannedStartOn?,
   plannedEndOn?}` asks the customer about a new planned time. **`authorize` is the
   wire name of the loop, not a destination: the change STAYS in `customer_approval`
-  and nothing goes through CAB / ECAB again** (the change itself has not changed, only
+  and nothing goes through CAB again** (the change itself has not changed, only
   its time -- the user's rule; the old loop through CAB is deleted,
   `provisionReauthorizationStage`). It is the one manual way to use `authorize`; from any
   other state the PATCH is a 400 `state "authorize" cannot be set manually: it is
@@ -3191,8 +3192,10 @@ offered states are filtered the same way).
   (the stage stays as a record, `cancelLiveCustomerStages`) and a fresh "Customer
   Approval" stage is provisioned for the project's registered contacts
   (`provisionCustomerStage`), one `REQUESTED` row each, the creator listed cancelled:
-  the customer is asked again **at once**, for every type (Normal, Emergency,
-  Standard alike). The Review checkpoint is still provisioned later (only the FIRST
+  the customer is asked again **at once**, for every change that is in Customer Approval (Normal and
+  Standard reach it; an Emergency change never enters it, but one that is already there -- from before
+  the rule, or migrated -- is re-scheduled and asked again like any other, and a Re-schedule nobody
+  can be asked about is refused whole -- `TestChangeRequestFlowIntegration_RescheduleLegacyEmergencyInCustomerApproval`). The Review checkpoint is still provisioned later (only the FIRST
   stage of each label counts for the ordinal, `provisionApprovalStage`). Stage order
   after one loop of a Normal change: Peer, CAB, Customer Approval (cancelled),
   Customer Approval (live). **A Re-schedule writes no flag at all**: not our own
@@ -3204,8 +3207,8 @@ offered states are filtered the same way).
   registered contact other than the requester): register a contact for the project
   first`; a change with no Customer Project at all is not judged, as there): it used to
   be accepted and leave the change waiting. The loop can be repeated.
-  **Old-flow changes still in flight** (a Normal / Emergency change re-scheduled
-  before this loop changed: in `authorize` with a fresh CAB / ECAB stage live and the
+  **Old-flow changes still in flight** (a Normal change re-scheduled
+  before this loop changed: in `authorize` with a fresh CAB stage live and the
   customer's request cancelled) finish through the CAB as they always did, with no data
   fix: approval cascades to `customer_approval` and asks the customers afresh
   (`TestChangeRequestFlowIntegration_StaleApprovals_OldFlowRescheduleStillFinishesThroughTheCAB`).
@@ -3248,7 +3251,7 @@ offered states are filtered the same way).
   | Stage kind (label) | Decidable only while the change is in |
   |---|---|
   | Peer Approval (`Assess`) | `assess` |
-  | CAB Approval (`Authorize`), ECAB Approval | `authorize` |
+  | CAB Approval (`Authorize`; also the label an earlier build wrote for an Emergency change, `ECAB Approval`) | `authorize` |
   | Review | `review` |
   | Customer Approval | `customer_approval` |
   | Customer Review | `customer_review` |
@@ -3261,8 +3264,8 @@ offered states are filtered the same way).
     the end of every path that writes `change_request.state`: `patchChangeRequestTx`
     (whenever the PATCH carries a state: forward moves, Re-schedule, Roll back,
     Cancel, Close, the customer outcomes, on-hold-off-and-advance) and
-    `DecideChangeRequestApproval` (after its cascades: Peer -> Authorize, CAB /
-    ECAB -> Scheduled / Customer Approval, the customer stages' outcomes) and the
+    `DecideChangeRequestApproval` (after its cascades: Peer -> Authorize, CAB
+    -> Scheduled / Customer Approval, the customer stages' outcomes) and the
     GitHub sync's state writer (`githubMutationRepository.SetState`, a closed issue
     closing the change). It sets
     to `CANCELLED` (stamping `updated_on` / `updated_by`) every still-`REQUESTED`
@@ -3270,11 +3273,11 @@ offered states are filtered the same way).
     and **every** still-`REQUESTED` row once the change is `closed`, `canceled` or
     `rollback`. It runs after the stage the new state needs was provisioned, so
     that stage (the Review stage on entering Review, a customer stage, the fresh
-    CAB / ECAB stage of an old-flow Re-schedule still in flight) is kept; the
+    CAB stage of an old-flow Re-schedule still in flight) is kept; the
     superseded customer stage of a Re-schedule stays as a cancelled record. Examples: Review -> Customer Review /
     Closed / Rollback / Canceled cancels the Review approvers; leaving Customer
     Approval cancels the customer's. Request Approval (New -> Assess provisions
-    Peer for `assess`; an Emergency's New -> Authorize provisions ECAB for
+    Peer for `assess`; an Emergency's New -> Authorize provisions its one CAB stage for
     `authorize`; Standard has no stage) is unaffected.
   * **Decision guard** -- `DecideChangeRequestApproval` resolves the caller's
     pending stage (their oldest `REQUESTED` row on a stage decidable in the
@@ -3309,11 +3312,11 @@ offered states are filtered the same way).
   (`TestChangeRequestFlowIntegration_StaleApprovals_*`: the Review -> Customer
   Review -> Closed lifecycle with stages / row statuses / `canDecide` after every
   step, Review -> Closed, Roll back, Cancel from every state, the Re-schedule loop,
-  Emergency / Standard unaffected, the guard on crafted legacy rows, unguarded
+  Emergency (its one CAB stage) / Standard unaffected, the guard on crafted legacy rows, unguarded
   ServiceNow-style stages, the GitHub state write, the migration) and the unit tests
   `TestApprovalStageDecidableState*` / `TestApprovalStageOutOfState` /
   `TestStaleApprovalRefusal` in `change_request_repo_test.go`.
-* **Approver pools are INTERNAL-only.** Every internal stage (Peer, CAB, ECAB,
+* **Approver pools are INTERNAL-only.** Every internal stage (Peer, CAB,
   Review) is decided by WSO2 staff, who see every project; an external
   (customer) user sees only the projects they are a registered contact of, so an
   approver row for one could never be found, let alone decided. A pool is
@@ -3323,7 +3326,7 @@ offered states are filtered the same way).
   `EXTERNAL`, `SYSTEM` and `NOT_AVAILABLE` users are never eligible) —
   `internalApproverIDs` / `onlyInternalApprovers` in
   `change_request_approval_flow.go`, applied to the peer pool (assigned group and
-  the `Devops Approval` fallback), the CAB / ECAB groups and the Review pool. The
+  the `Devops Approval` fallback), the CAB group and the Review pool. The
   same test is applied again at decision time (`approverDecisionBlock`, also what
   drives `canDecide`): a non-internal user holding an internal-stage row is
   refused with a 403 (`only active internal (WSO2) users can approve or reject
@@ -3343,14 +3346,18 @@ offered states are filtered the same way).
     (`domain.PeerApprovalFallbackGroupName`, the ServiceNow flow's peer approval
     group, same rules) only when there is no assigned group or the assigned group
     yields nobody eligible (no active internal member other than the creator).
-    Neither → 400 "no eligible peer approvers".
-  * *CAB Approval* — Normal only, **right after** peer approval, its own
-    group (`CAB Approval`). Provisioned inside the peer-approval decision's
+    Neither → 400 "no eligible peer approvers" (which, when the `Devops Approval`
+    group has no members at all, also says the sync from the previous system does not mirror
+    that group's membership -- see "Empty approver groups" below).
+  * *CAB Approval* — the one group (`CAB Approval`) of **both** the Normal change's
+    second stage, **right after** peer approval, and the Emergency change's ONLY
+    stage (the previous system has no Emergency CAB: an Emergency change is approved by the
+    same CAB group, and a migrated Emergency change has exactly that one stage and
+    no Peer stage). For Normal it is provisioned inside the peer-approval decision's
     transaction; if it cannot be (nobody eligible) the peer decision is **rolled
-    back** with a 400 rather than stranding the change in Authorize. Request
+    back** with a 400 rather than stranding the change in Authorize. For Emergency
+    it is provisioned by Request Approval (position 0). Request
     Approval also pre-validates the CAB pool so the failure is early.
-  * *ECAB Approval* — Emergency only, **its own group** (`ECAB Approval`), the
-    only stage (no peer approval, no CAB).
   * Standard: no stage.
   * *Review* — assigned team, provisioned on a `{state: "review"}` PATCH once
     exactly two stages exist, i.e. Normal only. Its approvers can only decide
@@ -3365,7 +3372,7 @@ offered states are filtered the same way).
 
   | Persona | Email | Role → `user_type` | Seats |
   |---|---|---|---|
-  | Alice Perera | `alice.perera@example.com` | `internal` → INTERNAL | group "Example Corp ABT" (901, the assigned group of every fixture), "CAB Approval", "ECAB Approval", "Devops Approval"; peer approver on CHG-FIXED-003 (requested) / -004 (approved) |
+  | Alice Perera | `alice.perera@example.com` | `internal` → INTERNAL | group "Example Corp ABT" (901, the assigned group of every fixture), "CAB Approval" (also the Emergency change's one stage), "Devops Approval"; peer approver on CHG-FIXED-003 (requested) / -004 (approved) |
   | Bob Fernando | `bob.fernando@example.com` | `internal` → INTERNAL | same groups; peer approver on -003 (requested) / -004 (cancelled) |
   | Carol Silva | `carol.silva@example.com` | `internal` → INTERNAL | same groups; peer approver on -003 (requested) / -004 (cancelled) |
   | Dave Mendis | `dave.mendis@example.com` | `customer` → EXTERNAL | registered `PORTAL_USER` contact of project 401 "Example Corp Production"; Customer Approval approver on CHG-FIXED-007, Customer Review on -008 (requested) |
@@ -3384,7 +3391,7 @@ offered states are filtered the same way).
   * jane.doe (internal) is the requester persona: still a *team* member of Example
     Corp ABT (so `/users/me` and `GET /teams/{id}/members` keep working) but
     deliberately out of the *group* (`team_member.group_id` NULL), and in no CAB /
-    ECAB / Devops group. john.smith (a customer) is still in the assigned group on
+    Devops group. john.smith (a customer) is still in the assigned group on
     purpose — the standing probe of the INTERNAL-only pools: Request Approval on
     CHG-FIXED-002 provisions alice, bob and carol, never john. Neither is a
     registered contact of project 401 any more (Other Corp's sam.other is
@@ -3426,8 +3433,8 @@ offered states are filtered the same way).
     leave a database seeded before the personas on jane/john for ever. The
     personas and the eight `CHG-FIXED-*` fixtures are therefore upserted /
     deleted-and-reinserted: re-running the seed (`docker-compose -p <project> up
-    -d migrate`, which runs it every time) removes jane/john's contact, CAB/ECAB and
-    approver rows, installs the personas' and **resets the fixtures to their
+    -d migrate`, which runs it every time) removes jane/john's contact, CAB and
+    approver rows (and the personas' old ECAB group seats), installs the personas' and **resets the fixtures to their
     starting state** (state, stamps, stages, approvers), so no volume wipe is
     needed. The Playwright suite re-runs the seed before it starts.
   * **Who the customer portal's real-stack specs play**
@@ -3468,19 +3475,23 @@ offered states are filtered the same way).
     the pure machine-to-machine services (`csm-integration-service`,
     `csm-notification-service`); the old `AUTH_INTERNAL_CLIENT_IDS` is read by nothing.
   * Tests: `TestChangeRequestSeedIntegration_*` (personas, fixture approvers, the
-    seeded assigned group / CAB / ECAB end to end, the Devops fallback, and the
+    seeded assigned group / CAB end to end (Normal and Emergency), the Devops fallback, and the
     seed's self-healing from the old shape inside a rolled-back transaction),
     `_SeedCustomerGroupFixtures`, `_CustomerPortalEntitlements` (the project type
     flags and Lumen's type, from the old shape, twice, with nothing else touched).
 * **`CAB Approval` and `ECAB Approval` groups** are created by migration 0188
   (fixed ids `00000000-0000-4000-8000-00000000ca01` / `…eca1`) only when no group
-  of that name exists, idempotently; membership is NOT seeded (synced from
-  ServiceNow or set by an operator; the local compose seed adds the three internal
-  personas — see "Local seed personas").
+  of that name exists, idempotently; membership is NOT seeded (set by an operator;
+  the local compose seed adds the three internal personas to CAB — see "Local seed
+  personas"). **Only the CAB group is resolved**: the previous system has no Emergency CAB,
+  so nothing resolves the ECAB group any more (no constant, no checkpoint, no pool).
+  Its row is left in place -- migration 0188 is untouched, and an in-flight Emergency
+  change from before this rule may still point a stage at it (see "Emergency: one CAB
+  stage, no customer step" below).
   Groups are resolved **by name**; members are `team_member.group_id` (and
   `team_member.team_id` of a team with that name, which is how the CR-notice
   flow addresses them).
-* **The creator may not approve at any stage** (peer, CAB, ECAB) — they may
+* **The creator may not approve at any stage** (peer, CAB) — they may
   still cancel. The creator is the user whose email is `work_item.created_by`
   or who is `change_request.requested_by_user_id`. They are provisioned
   `CANCELLED` where they are in a pool, and `DecideChangeRequestApproval`
@@ -3500,10 +3511,106 @@ offered states are filtered the same way).
 * **Rejections** of the internal stages keep the existing behaviour: siblings
   cancelled, no state change in either direction. (A *customer contact's*
   rejection does move the change — see "Customer Group" below.)
-* Stage labels (`approval_stage.checkpoint_label`) are now `Peer Approval`,
-  `CAB Approval`, `ECAB Approval`, `Review`, plus the customer group's (project contacts') `Customer
+* Stage labels (`approval_stage.checkpoint_label`) written now are `Peer Approval`,
+  `CAB Approval`, `Review`, plus the customer group's (project contacts') `Customer
   Approval` / `Customer Review`; pre-existing `Assess`/`Authorize`
-  labels (and unlabeled positional stages) are still recognised as peer/CAB.
+  labels (and unlabeled positional stages) are still recognised as peer/CAB, and so is
+  **`ECAB Approval`**, the label an earlier build wrote on an Emergency change's only stage:
+  it is no longer written (`approvalStageLabelHistoricECAB`), only RECOGNISED, as the CAB
+  stage (see "Emergency: one CAB stage, no customer step" below).
+
+### Emergency: one CAB stage, no customer step
+
+The previous system has **no Emergency CAB** (and no "ECAB Approval" group). An Emergency change there is
+`New → Request Approval → Authorize → Scheduled`, approved by the same **`CAB Approval`** group a
+Normal change's second stage is, with no Peer / Assess stage; a change migrated from the previous system has
+exactly that one stage (no label, group `CAB Approval`, position 0). An earlier build of this service
+invented an "ECAB Approval" stage in a group of its own; that is gone.
+
+* **The flow.** `changeRequestFlowForModel("EMERGENCY")` → Request Approval writes `authorize` and
+  provisions **one stage**, `CAB Approval`, on the CAB group (`changeRequestEmergencyCABCheckpoint`:
+  the CAB checkpoint at position 0), its approvers the active internal members of that group (the
+  creator listed `CANCELLED`). Approving it moves the change to `scheduled`. Nothing else is asked.
+  There is no ECAB stage kind, group-name constant or checkpoint any more; `ECABApprovalGroupName`
+  and `stageKindECAB` are deleted, migration 0188 is untouched and its `ECAB Approval` group row is
+  left where it is (unused; its seed memberships are removed, `seed-entity-service.sql`).
+* **An Emergency change is recognised by `change_request.change_model = 'EMERGENCY'`** (the
+  `emergency` API type), read as text so it reads the same on every shape of the enum column
+  (`isEmergencyModel`, `effectiveChangeModel` -- the type the change will have once a PATCH is written).
+  Every place that routes on it: Request Approval's flow, the decision cascade, the customer gates
+  (below), `runtimeApprovalStageKind` (an Emergency change in Authorize has no peer stage, so a stage
+  on it is the CAB's), the approvals read's display, `provisionCustomerStage`, the GitHub sync's state
+  writer and the detail's `legalNextStates`.
+* **Historic `ECAB Approval` stages (an in-flight Emergency change from before this change, on a
+  development database).** The label is **not written any more but is still recognised**
+  (`approvalStageLabelHistoricECAB`, `classifyApprovalStage`): such a stage is **shown under the label it
+  was written with**, and it is **decided as the CAB stage** -- the approvers it already asked (its
+  `REQUESTED` rows, from the old ECAB group) can approve or reject it while the change is in Authorize;
+  approving schedules the change. Nobody who was not asked can decide it (a decision needs the caller's
+  own `REQUESTED` row; **no CAB member is added to it**), the creator rule and the internal-only rule hold,
+  a resent Request Approval provisions nothing further (the stage count), and once the change has left
+  Authorize the stage is stale like any CAB stage (409 on a decision, cancelled by the next state move).
+  Tests: `TestChangeRequestEmergencyIntegration_AHistoricECABStageStillDecides`.
+* **An Emergency change takes no customer step.** The two creation-form boxes
+  (`customerApprovalRequired` / `customerReviewRequired`, our migration-0189 columns) cannot be set on
+  one, and the flow ignores whatever the stored boxes say for one:
+  * **Refused (400)**, every time with the reason `Emergency changes proceed without customer consent, so
+    customer approval and customer review cannot be required`, followed by the field(s): a **create**
+    (`ValidateCreateChangeRequestCustomerGates`, applied by the plain create, the create that calls the previous system first
+    -- *before* it is called -- and both repository creates); a **PATCH that turns a box on** on a
+    stored Emergency change, in every state (`checkEmergencyCustomerConsent`, rule 2c of the creation-phase
+    gate, before the lock's own box rules); and a **PATCH that re-types a change INTO Emergency while a box
+    stays ticked** (`... : turn off customerApprovalRequired before changing the type to emergency`; the
+    boxes may be turned off in the same request; after Request Approval the type is frozen and keeps its own
+    message). A write of the value a box already holds is the usual no-op: a legacy ticked box is not rewritten
+    and a whole-form resend of it is accepted.
+  * **Ignored by the flow** (`effectiveCustomerGates`: both read false for an Emergency change, the stored
+    value left alone): CAB approval → `scheduled` (never `customer_approval`), Review → `closed` offered (never
+    `customer_review`; `{state: customer_review}` is refused with the Emergency reason), Request Approval needs
+    no project for a ticked box, `legalNextStates`, the GitHub sync's `SetState`, the nobody-to-ask checks.
+    **Reads are untouched**: `customerApprovalRequired` / `customerReviewRequired` and the sync's
+    `isCustomerApproved` / `isCustomerReviewed` show what is stored. This is what keeps a MIGRATED
+    Emergency change (whose requirement flags `is_customer_*_required` are the sync's, overwritten on every
+    delta and never written by this service) and a row an earlier build created with a box ticked on the
+    Emergency flow.
+  * **An Emergency change that is ALREADY in a customer state is not stranded.** The rule keeps a change
+    from *entering* Customer Approval / Customer Review; it does not look at the type once a change is
+    waiting there (a row from before the rule, or a migrated one that the previous system itself sent
+    to the customer). `provisionCustomerStage` and `legacyStageWouldBeProvisioned` therefore treat it like
+    any other change: `customerCanAnswer` is true for the project's contacts, the customer's first act gives
+    a migrated row the stage its answer is recorded on (Customer Approval -> Scheduled, Customer Review ->
+    Closed, a rejection -> Canceled / Rollback), a Re-schedule or a counter-proposal to a customer's
+    proposed time supersedes the request and **asks the contacts again** (a fresh stage, nothing through
+    CAB again), and one nobody can be asked about is refused whole with the customers' request untouched
+    (`requireSomebodyToAskForWindow`) -- a customer's request is never cancelled without a replacement.
+    `..._RescheduleLegacyEmergencyInCustomerApproval`, `..._LegacyBoxesAreIgnoredByTheGate`,
+    `..._MigratedEmergencyInACustomerStateIsAnswerable`.
+  * **Clone / duplicate** is the webapp prefilling the create form from a change; there is no clone
+    endpoint here. An Emergency clone cannot carry a ticked box because the create refuses one.
+* **A migrated Emergency change** (one unlabeled stage in the CAB group at position 0, `raw_status` and approver
+  `state` in the sync's UPPER_SNAKE spelling, the sync's `is_customer_*_required` possibly set, our own columns
+  false) **decides, schedules and displays as the CAB stage**: `runtimeApprovalStageKind` reads it as CAB by its
+  group, `changeRequestApprovalStageLabel` names it `CAB Approval` (not the positional `Assess`),
+  CAB approval → `scheduled`, the sync's flags untouched.
+  `TestChangeRequestEmergencyIntegration_MigratedEmergencyDisplaysDecidesAndSchedulesAsCAB`,
+  `..._AFinishedMigratedEmergencyStillReadsAsCAB`.
+* **Empty approver groups -- an operations matter, stated plainly.** A group may have no members: that is
+  an operations matter, and the refusal names the group. So in an environment where nobody maintains the
+  membership of the `CAB Approval` or `Devops Approval` group **a new Emergency change (and a
+  Normal change's CAB step) is refused at Request Approval** with `the "CAB Approval" group has no members to
+  provision as CAB Approval approvers: the sync from the previous system does not mirror the membership of the "CAB Approval"
+  group: it is maintained in the portal database (one team_member row per approver, with group_id set to that
+  group)`; the peer pool's refusal says the same of `Devops Approval` when that fallback is empty. There is no
+  admin screen and no schema for it (decided: a data / operations matter for now): somebody adds the approvers'
+  `team_member` rows (`group_id` = the group's id; the local compose seed does it for its three personas).
+  `TestChangeRequestFlowIntegration_NormalRequiresEligibleCABApprovers`.
+* **Tests** (real Postgres, as the superuser, as `csm_app` and on a copy whose approval tables have the
+  sync's enum columns): `change_request_emergency_integration_test.go` (create / PATCH / re-type refusals,
+  legacy boxes ignored, migrated shape, finished migrated shape, historic ECAB), the rewritten
+  `EmergencyLifecycle`, `EmergencyNeverReachesACustomerState`, `RescheduleLegacyEmergencyInCustomerApproval`,
+  `CustomerGroupEmergencyNeverAsksTheCustomer`; pure: `change_request_emergency_test.go` (`legalNextStates` per
+  state for an Emergency change, the gate helpers, the display, both rules' tables),
+  `TestRuntimeApprovalStageKind`, `TestClassifyApprovalStage`, `TestChangeRequestFlowForModel`.
 
 ### Approval stages mirrored from ServiceNow (no `checkpoint_label`), and "nobody is eligible"
 
@@ -3526,11 +3633,12 @@ on was **cancelled** by the next state change.
 used by `reconcileStaleApprovers`, `approvalStageInfo` (so also `callerPendingApprovalStage`
 and the decision itself) and `markCanDecide`. A stage with a label is read by it, as before.
 A stage with none is read as the first of these that applies, **and the result counts only in
-the state it is decided in** (`approvalStageDecidableState`: Peer in Assess, CAB / ECAB in
+the state it is decided in** (`approvalStageDecidableState`: Peer in Assess, CAB in
 Authorize), otherwise it is `stageKindOther`:
 
-1. its own assignment group: the group named `ECAB Approval` -> ECAB, `CAB Approval` -> CAB;
-2. an Emergency change in Authorize has no peer stage and no CAB stage -> ECAB;
+1. its own assignment group: the group named `CAB Approval` -> CAB (a migrated
+   Emergency change's one stage reads this way: no label, in the CAB group, at position 0);
+2. an Emergency change in Authorize has no peer stage -> CAB;
 3. the positional guess (0 Peer, 1 CAB).
 
 `stageKindOther` is not tied to any state: it is **never cancelled** by a state move
@@ -3549,15 +3657,18 @@ direction: the note read the group-name rule (1) as unconditional; here it also 
 state to match, so a CAB-group row on a change that has already been scheduled is not
 cancelled by the move on. In Authorize the two readings are identical.
 
-*Display is unchanged* (the approvals read still labels an unlabeled stage positionally --
-"Assess", "Authorize", then "Customer Approval" / `DYNAMIC_CONTACT` -- which is how a synced
-Review stage at position 2 reads to staff; `changeRequestApprovalStagePosition` is the display
-fallback and is not the runtime reading). Left alone on purpose: the labels are what the
-portals have always shown for synced data.
+*Display is unchanged except for one case* (the approvals read still labels an unlabeled stage
+positionally -- "Assess", "Authorize", then "Customer Approval" / `DYNAMIC_CONTACT` -- which is
+how a synced Review stage at position 2 reads to staff; `changeRequestApprovalStagePosition` is
+the display fallback and is not the runtime reading). The exception: an unlabeled stage in the
+`CAB Approval` group on an **Emergency** change is shown as **"CAB Approval"**
+(`changeRequestApprovalStageLabel`): an Emergency change has no peer stage, so "Assess" for its
+one stage -- a Peer stage to the portal -- would be wrong, and the group says what it is. Every
+other unlabeled stage keeps its positional name.
 
 **Diagnosable "nobody eligible".** Approver pools stay INTERNAL-only (an active user whose
 `user_type` is `INTERNAL`; `internalApproverIDs` is untouched). What changed is the refusal's
-message: when Request Approval is refused because the peer pool, the CAB / ECAB group or the
+message: when Request Approval is refused because the peer pool, the CAB group or the
 assigned team of the Review stage yields nobody, it now ends with counts of that group's
 members and why none counted -- by `user_type` (`NOT_AVAILABLE`, `EXTERNAL`, `SYSTEM`, none),
 inactive, no user record, the creator -- never names
@@ -3588,15 +3699,14 @@ WITH staged AS (
 ), classified AS (
   SELECT s.*,
          CASE s.pos WHEN 0 THEN 'PEER' WHEN 1 THEN 'CAB' ELSE 'OTHER' END AS positional,
-         CASE WHEN s.group_name = 'ECAB Approval' THEN 'ECAB'
-              WHEN s.group_name = 'CAB Approval' THEN 'CAB'
-              WHEN s.model = 'EMERGENCY' AND s.state = 'AUTHORIZE' THEN 'ECAB'
+         CASE WHEN s.group_name = 'CAB Approval' THEN 'CAB'
+              WHEN s.model = 'EMERGENCY' AND s.state = 'AUTHORIZE' THEN 'CAB'
               WHEN s.pos = 0 THEN 'PEER' WHEN s.pos = 1 THEN 'CAB' ELSE 'OTHER' END AS candidate
   FROM staged s
 )
 SELECT c.model, c.state, c.positional,
        CASE WHEN (c.candidate = 'PEER' AND c.state = 'ASSESS')
-              OR (c.candidate IN ('CAB', 'ECAB') AND c.state = 'AUTHORIZE') THEN c.candidate
+              OR (c.candidate = 'CAB' AND c.state = 'AUTHORIZE') THEN c.candidate
             ELSE 'OTHER' END AS kind_now,
        COUNT(*) AS stages, COUNT(DISTINCT c.work_item_id) AS changes,
        COUNT(*) FILTER (WHERE c.has_requested) AS with_requested_approver,
@@ -3615,8 +3725,9 @@ against a synced environment from here.
 
 Tests: `TestRuntimeApprovalStageKind` / `_NeverOutOfState` (the table, and that an unlabeled stage
 can never read as out of state or as a customer stage), `TestExcludedMembersSummary`, and against
-Postgres `TestChangeRequestSyncedStagesIntegration_*` with SN-shaped rows (an Emergency change in
-Authorize with one stage at position 0; a CAB-group stage with no label after two others; a stale
+Postgres `TestChangeRequestSyncedStagesIntegration_*` and `TestChangeRequestEmergencyIntegration_*`
+with migrated-shape rows (an Emergency change in Authorize with one stage at position 0, with and without
+the CAB group; a CAB-group stage with no label after two others; a stale
 position-0 stage on a change that moved on; a position-2 stage naming the customer's contact; an
 approver with no user; the counts). Two older tests asserted the position-only reading and were
 adapted: `TestChangeRequestIntegration_DecideApprovalDoesNotCascadeOutsideAssess` (the decision is
@@ -3649,8 +3760,8 @@ pool, like `GET /teams/{id}/members`).
   `team_member.group_id = <the group's id>` and nothing else (`groupMemberIDs`) -- a
   `team` that merely shares the group's name adds nobody, because its members are not in
   the peer pool either (the seed's Jane Doe sits in the *team* "Example Corp ABT" and in no
-  approval group); the **CAB Approval / ECAB Approval / Devops Approval** groups
-  (`namedPoolGroups`) are resolved by name (`namedGroup`): any `team_member` whose
+  approval group); the **CAB Approval / Devops Approval** groups
+  (`namedPoolGroups`; the unused ECAB group is not one) are resolved by name (`namedGroup`): any `team_member` whose
   `group_id` is a `"group"` of that name or whose `team_id` is a `team` of that name. A
   group row with no name matches on its own `group_id` only. **Only active INTERNAL users
   are listed** (`"user".user_type = 'INTERNAL'` and `is_active` not false, NULL counting as
@@ -3811,12 +3922,13 @@ receipt). Postgres data source only.
   source is not here), so they are not mirrored: the dual-write mirror strips
   them from the PATCH it replays (and skips the mirror entirely when nothing
   else is in the PATCH); the pure ServiceNow data source ignores them.
-* **Approval gate.** Wherever the flow moves a change to Scheduled — CAB / ECAB
+* **Approval gate.** Wherever the flow moves a change to Scheduled — CAB
   approval in `DecideChangeRequestApproval` (`approvalGateTarget`), or Request
   Approval on a Standard change (`requestApprovalDestination`; Standard has no
   internal approval to put the gate after, so the gate sits right after Request
   Approval — an assumption) — a change with `customerApprovalRequired` goes to
-  **`customer_approval`** instead. There `legalNextStates` is `[authorize,
+  **`customer_approval`** instead (never an Emergency change, whatever its box says:
+  `effectiveCustomerGates`). There `legalNextStates` is `[authorize,
   canceled]`: only the **customer's own approval** (Customer Portal) schedules the
   change and stamps `is_customer_approval_required = true`; the human PATCH
   `{state: "scheduled"}` is refused (400, from every state, with or without
@@ -3940,8 +4052,10 @@ The rules, in the order they are applied (**the first failing one wins, every re
    value, else the stored one) is set and the effective project (the request's `projectId`,
    else the stored one) is empty -> `approval cannot be requested: the customer's approval
    and/or review is required but no Customer Project is set, so there is nobody to ask.
-   Select a Customer Project first (or clear the requirement).` For every type (a Standard
-   change would otherwise land in Customer Approval with nobody to ask), in the same PATCH
+   Select a Customer Project first (or clear the requirement).` For every type that can carry a
+   box (a Standard change would otherwise land in Customer Approval with nobody to ask; an Emergency
+   change's boxes are ignored, so it is never refused for one -- see "Emergency: one CAB stage, no
+   customer step"), in the same PATCH
    that clears the box or chooses the project it is accepted, and a RESEND of
    `{state: "assess"}` on a change that already left New is the idempotent no-op it always
    was, even for a legacy change that ticked a box with no project. (The CSM webapp mirrors
@@ -3956,8 +4070,9 @@ The rules, in the order they are applied (**the first failing one wins, every re
    contact for the project first` (`customer review is required but ...` for the review box,
    `customer approval and customer review are required but ...` when both are set). It runs AFTER
    rule 6, which keeps its own message and precedence for a change with no project. For every type
-   that goes through Request Approval (Normal waits in Assess, Standard lands in Customer Approval
-   or Scheduled); a refused request writes nothing, not even the rest of its fields. **Why:** with no
+   that goes through Request Approval and can ask the customer (Normal waits in Assess, Standard lands
+   in Customer Approval or Scheduled; an Emergency change never asks the customer, so it is not refused
+   here whatever its stored boxes say); a refused request writes nothing, not even the rest of its fields. **Why:** with no
    staff action that answers for the customer (the Bypass is gone), a change that reaches Customer
    Approval / Customer Review with nobody to answer can only be cancelled (or rolled back from
    Review), an invitation to cancel and clone just to get past a gate.
@@ -3997,14 +4112,14 @@ The rules, in the order they are applied (**the first failing one wins, every re
 **The Re-schedule hole, closed (and the loop no longer reaches it).** A change that reached
 Customer Approval necessarily has `customer_approval_required = true`. Re-schedule used to
 send a Normal / Emergency change back to Authorize, and before the lock the box could be
-unticked there (it was editable until the gate), so the CAB / ECAB approval that followed
+unticked there (it was editable until the gate), so the CAB approval that followed
 went straight to Scheduled and the customer was never asked about the new plan. The box
 cannot be unticked in any state after New, the project cannot be swapped and the change
 cannot be sent back to New, and Re-schedule no longer goes back through CAB at all (it keeps
 the change in Customer Approval and asks the same contacts again in a fresh stage, the old
 one kept as a record, writing no flag).
 `TestChangeRequestLockIntegration_RescheduleCannotReopenTheCustomersApproval` proves it for
-Normal, Emergency and Standard; `..._CustomerProposalCannotReopenTheApproval` for the
+Normal and Standard (an Emergency change never reaches Customer Approval); `..._CustomerProposalCannotReopenTheApproval` for the
 customer's own proposal and WSO2's Accept; `..._CustomerReviewCannotBeReopened` for the review
 (a required review cannot be skipped by unticking it to close from Review). Corrections after
 New are a **cancel and a clone** (Clone is a create); there is no administrator override.
@@ -4183,7 +4298,7 @@ outcome). Code: `change_request_links.go`
   `checkpoint_label = "Customer Approval"`, **`assignment_group_id` NULL** (the
   group is not a `"group"` row), one `REQUESTED` `approval_stage_approver` per
   eligible contact; entering `customer_review` the same with `"Customer Review"`.
-  Entry points (all call `provisionCustomerStage`): CAB / ECAB approval cascade,
+  Entry points (all call `provisionCustomerStage`): CAB approval cascade (Normal),
   Request Approval on a Standard change, the `{state: "customer_review"}` PATCH,
   and any PATCH that carries `state` **or `projectId`** (after New an equal `projectId`
   is the accepted no-op write that still re-derives the contacts, see below). The stage kind rides on
@@ -4603,7 +4718,7 @@ lock by every act and by the detail read (one definition: they cannot drift): th
 confirmation is NULL; and **no approval but the customer's own is still being asked** -- the only
 `REQUESTED` approver rows are on a customer stage (label "Customer Approval", or the stage's group is the
 change's `customer_group_id`, the previous system's own record of who the customer is); ANY other `REQUESTED` row (Peer,
-CAB, ECAB, Review, a stage in a group this service has no name for) blocks it. The whole predicate is
+CAB, Review -- and a historic "ECAB Approval" --, a stage in a group this service has no name for) blocks it. The whole predicate is
 `COALESCE`d, so a NULL state reads false. It never matches a change waiting on a live CAB stage (it is in
 Authorize), a closed / scheduled / cancelled one, a date equal to the plan, an answered one, a NULL state. It
 does not say WHO wrote the date (the previous system lets WSO2 users write `customer_updated_on` too, and an old one looks
@@ -4972,7 +5087,7 @@ decision route on their own `REQUESTED` row, like anyone.
   `work_start_on` / `work_end_on`), so a row that holds an infinity by some other door reads as
   having no planned time instead of failing the scan (and with it the detail or the whole list).
   `TestChangeRequestCustomerProposalIntegration_*` pins the
-  proposal (start plus the end that keeps the length) for Normal / Emergency / Standard, the messages for a bad window
+  proposal (start plus the end that keeps the length) for Normal / Standard, the messages for a bad window
   (unchanged, ends before it starts, empty, in the past, not a date), the hostile values,
   UTC under a Colombo / Los Angeles session and a non-finite row that still reads.
 * **Lock order.** The answer and the proposal take the `work_item` row first (a
@@ -4988,7 +5103,7 @@ decision route on their own `REQUESTED` row, like anyone.
   absent and 404 by id, here and through backend-v2 (whose interim state narrowing is
   superseded by it and must go). `GET /change-requests/{id}/approvals` does not name WSO2's internal
   approvers to a customer -- the Customer Approval / Customer Review stages are given
-  whole, every other stage (Peer, CAB, ECAB, Review) as its label and status only, no
+  whole, every other stage (Peer, CAB, Review, and a historic ECAB) as its label and status only, no
   approver names, ids or group (`redactInternalApprovalStages`,
   `TestChangeRequestCustomerPrivacyIntegration_ApprovalsHideWhoApprovesInternally`).
 * Tests: `TestChangeRequestCustomerOutcomeIntegration_*` (real Postgres,

@@ -47,7 +47,7 @@ func TestChangeRequestCustomerProposalIntegration_WholeWindowKeepsTheDuration(t 
 		start, end string // as the customer sends them
 	}{
 		{"Normal, RFC 3339 in UTC", domain.ChangeRequestTypeNormal, "2030-03-08T09:00:00Z", "2030-03-08T11:00:00Z"},
-		{"Emergency, the webapp's 'YYYY-MM-DD HH:MM:SS' (UTC)", domain.ChangeRequestTypeEmergency, "2030-03-08 09:00:00", "2030-03-08 11:00:00"},
+		{"Normal, the webapp's 'YYYY-MM-DD HH:MM:SS' (UTC)", domain.ChangeRequestTypeNormal, "2030-03-08 09:00:00", "2030-03-08 11:00:00"},
 		{"Standard, RFC 3339 with an offset", domain.ChangeRequestTypeStandard, "2030-03-08T14:30:00+05:30", "2030-03-08T16:30:00+05:30"},
 	} {
 		tc := tc

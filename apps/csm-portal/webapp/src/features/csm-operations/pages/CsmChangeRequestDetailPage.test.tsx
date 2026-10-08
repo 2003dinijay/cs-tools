@@ -1370,7 +1370,7 @@ describe("CsmChangeRequestDetailPage — reports its own draft state to the tab 
 //   Normal    New -> Request Approval -> Assess [Peer Approval]
 //                 -> Authorize [CAB Approval] -> (auto) Scheduled
 //                 -> Implement -> Review -> Closed
-//   Emergency New -> Request Approval -> Authorize [ECAB Approval only]
+//   Emergency New -> Request Approval -> Authorize [one CAB Approval stage, no Peer, no customer steps]
 //                 -> (auto) Scheduled
 //   Standard  New -> Request Approval -> (auto) Scheduled, no approvals
 //
@@ -1381,7 +1381,7 @@ describe("CsmChangeRequestDetailPage — reports its own draft state to the tab 
 // `authorize`, and lists `scheduled` only from `customer_approval` (where it
 // records the customer's approval); Request Approval is
 // `PATCH {state:"assess"}`; approving Peer adds a CAB stage; approving
-// CAB/ECAB (or Standard's Request Approval) moves the CR to `customer_approval`
+// CAB (or Standard's Request Approval) moves the CR to `customer_approval`
 // when `customerApprovalRequired`, else straight to `scheduled`; Review offers
 // `customer_review` when `customerReviewRequired`, else `closed`;
 // `customer_review` -> `closed`.
@@ -1391,6 +1391,8 @@ const LC_CREATOR = { id: "u-creator", email: "casey@example.com", name: "Casey C
 const LC_PEER = { id: "u-peer", email: "pat@example.com", name: "Pat Peer" };
 const LC_PEER_TWO = { id: "u-peer2", email: "quinn@example.com", name: "Quinn Peer" };
 const LC_CAB = { id: "u-cab", email: "cam@example.com", name: "Cam Cab" };
+// The approver of a stage an OLDER Emergency change still carries: ECAB was retired, nothing creates such a stage any more,
+// but the ones already provisioned keep showing and keep being decidable by the approvers they asked.
 const LC_ECAB = { id: "u-ecab", email: "eli@example.com", name: "Eli Ecab" };
 
 const LC_CUST_ONE = { id: "u-cust1", email: "mia@acme.example", name: "Mia Member" };
@@ -1536,7 +1538,8 @@ function lcLegalNextStates(
 
 /** Where a CR lands once its internal approval is granted. */
 function lcAfterInternalApproval(): string {
-  return lc.cr.customerApprovalRequired ? "customer_approval" : "scheduled";
+  // An Emergency change ignores a stored customer box (the backend's effective gates): the CAB's approval schedules it.
+  return lc.cr.type !== "emergency" && lc.cr.customerApprovalRequired ? "customer_approval" : "scheduled";
 }
 
 /**
@@ -1949,6 +1952,7 @@ function lcSeed(
     if (
       target === "assess" &&
       from === "new" &&
+      lc.cr.type !== "emergency" && // an Emergency change ignores its stored customer boxes: nobody is asked
       (lc.cr.customerApprovalRequired || lc.cr.customerReviewRequired) &&
       lc.customerMembers.length === 0
     ) {
@@ -1957,8 +1961,9 @@ function lcSeed(
     if (target === "assess") {
       if (lc.cr.type === "standard") lcSetState(lcAfterInternalApproval());
       else if (lc.cr.type === "emergency") {
+        // One stage, in the existing CAB group: there is no ECAB, no Peer stage and no Assess.
         lcSetState("authorize");
-        lc.approvals = [lcStage("ECAB Approval", "ECAB", LC_ECAB)];
+        lc.approvals = [lcStage("CAB Approval", "CAB", LC_CAB)];
       } else {
         lcSetState("assess");
         lc.approvals = [lcStage("Peer Approval", "Peers", LC_PEER)];
@@ -2039,7 +2044,7 @@ function lcSeed(
         lcSetState("authorize");
         lc.approvals = [...lc.approvals, lcStage("CAB Approval", "CAB", LC_CAB)];
       } else if (current.stage === "CAB Approval" || current.stage === "ECAB Approval") {
-        lcSetState(lcAfterInternalApproval()); // CAB / ECAB approval moves the CR on itself
+        lcSetState(lcAfterInternalApproval()); // CAB approval (an older Emergency change's ECAB one too) moves the CR on itself
       }
       // Review: the answer is recorded and the CR stays in review.
     }
@@ -2068,6 +2073,8 @@ function lcSeedAtGate(
     status: "APPROVED",
     approvers: [{ id: who.id, name: who.name, status: "APPROVED" }],
   });
+  // An Emergency change sitting at a customer gate is an OLDER row (raised before Emergency changes stopped asking the
+  // customer), whose one internal stage was still named ECAB.
   lc.approvals =
     type === "normal" ? [settled("Peer Approval", "Peers", LC_PEER), settled("CAB Approval", "CAB", LC_CAB)] : type === "emergency" ? [settled("ECAB Approval", "ECAB", LC_ECAB)] : [];
   lcSetState(gate); // provisions nothing: nobody on the project can be asked
@@ -2657,7 +2664,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
   /** Normal change with Customer Approval, driven by clicks to Customer Approval. */
   function runToCustomerApproval(
     customerGroup: { members: Array<{ id: string; name: string }> } | null,
-    type: "normal" | "emergency" | "standard" = "normal",
+    type: "normal" | "standard" = "normal",
   ): ReturnType<typeof render> {
     lcSeed(type, { approval: true, review: false }, customerGroup);
     let view = lcOpenAs(LC_CREATOR);
@@ -2667,7 +2674,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
     }
     if (type !== "standard") {
-      view = lcOpenAs(type === "emergency" ? LC_ECAB : LC_CAB, view);
+      view = lcOpenAs(LC_CAB, view);
       fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
     }
     view = lcOpenAs(LC_CREATOR, view);
@@ -2675,10 +2682,10 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
     return view;
   }
 
-  /** The approval stage names, in order: Re-schedule must never add a CAB / ECAB one. */
+  /** The approval stage names, in order: Re-schedule must never add a CAB one. */
   const stageNames = (): string[] => lc.approvals.map((a) => a.stage);
 
-  it.each(["normal", "standard", "emergency"] as const)(
+  it.each(["normal", "standard"] as const)(
     "%s with a customer group: Re-schedule asks the customer again and stays in Customer Approval: no Authorize, no CAB, no second approval",
     async (type) => {
       const view = runToCustomerApproval({ members: LC_MEMBERS }, type);
@@ -2693,7 +2700,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));
       expect(screen.getByRole("heading", { name: /re-schedule this change/i })).toBeInTheDocument();
       expect(screen.getByText(/The customer is asked to approve it\. No further internal approval is needed/)).toBeInTheDocument();
-      expect(within(screen.getByRole("dialog")).queryByText(/Authorize|ECAB|CAB approval|goes back/)).not.toBeInTheDocument();
+      expect(within(screen.getByRole("dialog")).queryByText(/Authorize|CAB approval|goes back/)).not.toBeInTheDocument();
       expect(windowPicker("Planned start").value).toBe("03/01/2030 09:00 AM");
       expect(windowPicker("Planned end").value).toBe("03/01/2030 11:00 AM");
       expect(dialogSubmit()).toBeDisabled();
@@ -2726,7 +2733,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       expect(lc.cr.state).toBe("customer_approval");
       expect(currentStep()).toBe("Customer Approval");
       expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
-      expect(screen.queryByText(/Awaiting (CAB|ECAB)/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/Awaiting E?CAB/)).not.toBeInTheDocument();
       expect(stageNames()).toEqual([...stagesBefore, "Customer Approval"]);
       expect(screen.getByRole("button", { name: "Re-schedule" })).toBeInTheDocument();
       expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
@@ -2742,6 +2749,45 @@ describe("CsmChangeRequestDetailPage — lifecycle: Re-schedule", () => {
       view.unmount();
     },
   );
+
+  it("an OLDER Emergency change sitting in Customer Approval (raised before Emergency changes stopped asking the customer; its approval stage is still named ECAB): Re-schedule stays in Customer Approval too, with no Authorize and no CAB", async () => {
+    lcSeed("emergency", { approval: true, review: false }, { members: LC_MEMBERS });
+    lc.approvals = [
+      {
+        ...lcStage("ECAB Approval", "ECAB", LC_ECAB),
+        status: "APPROVED",
+        approvers: [{ id: LC_ECAB.id, name: LC_ECAB.name, status: "APPROVED" }],
+      },
+    ];
+    lcSetState("customer_approval"); // asks the project's contacts, as it did when the change got here
+    lcPublish();
+    const view = lcOpenAs(LC_CREATOR);
+    expect(currentStep()).toBe("Customer Approval");
+    expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
+    // The record is shown as it is: the ECAB stage keeps its name, and there is still no Assess on the line.
+    expect(within(approvalsRow("Eli Ecab")).getByText("ECAB Approval")).toBeInTheDocument();
+    expect(stepReading("Assess")).toBe("Assess, not taken");
+    // The customer gate it is in is real: shown as it is, while the review it never reached reads Not applicable.
+    expect(stepLabels()).toContain("Customer Approval");
+    expect(stepLabels()).not.toContain("Customer Review");
+    expect(metaValue("Customer approval required")).toBe("Yes");
+    expect(within(screen.getByText("Customer review required").parentElement!).getByText("Not applicable")).toBeInTheDocument();
+    const stagesBefore = stageNames();
+
+    fireEvent.click(screen.getByRole("button", { name: "Re-schedule" }));
+    expect(within(screen.getByRole("dialog")).queryByText(/Authorize|CAB|goes back/)).not.toBeInTheDocument();
+    fireEvent.change(windowPicker("Planned start"), { target: { value: "03/08/2030 09:00 AM" } });
+    fireEvent.change(windowPicker("Planned end"), { target: { value: "03/08/2030 11:00 AM" } });
+    fireEvent.click(dialogSubmit());
+    await waitFor(() => expect(lc.cr.plannedStartOn).toBe("2030-03-08 09:00:00"));
+    await waitFor(() => expect(screen.queryByRole("dialog")).not.toBeInTheDocument());
+
+    expect(lc.cr.state).toBe("customer_approval");
+    expect(currentStep()).toBe("Customer Approval");
+    expect(stageNames()).toEqual([...stagesBefore, "Customer Approval"]);
+    expect(screen.queryByText(/Awaiting E?CAB/)).not.toBeInTheDocument();
+    view.unmount();
+  });
 
   it("an older change at Customer Approval with nobody to ask: a Re-schedule is REFUSED in the words Request Approval uses, writes nothing, and can be tried again", { timeout: 30000 }, async () => {
     // Request Approval is refused for such a project, so the change starts at the gate (see lcSeedAtGate).
@@ -3518,8 +3564,8 @@ describe("CsmChangeRequestDetailPage — lifecycle: backend canDecide on approve
   });
 });
 
-describe("CsmChangeRequestDetailPage — lifecycle: Emergency (Request Approval -> ECAB only -> auto Scheduled)", () => {
-  it("has no Peer or CAB stage and lands on Scheduled when ECAB approves", () => {
+describe("CsmChangeRequestDetailPage — lifecycle: Emergency (Request Approval -> one CAB Approval -> auto Scheduled)", () => {
+  it("has a single CAB Approval stage, no Peer stage and no ECAB, and lands on Scheduled when the CAB approves", () => {
     lcSeed("emergency");
 
     let view = lcOpenAs(LC_CREATOR);
@@ -3527,14 +3573,15 @@ describe("CsmChangeRequestDetailPage — lifecycle: Emergency (Request Approval 
     fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
 
     expect(currentStep()).toBe("Authorize");
-    expect(screen.getByText("Awaiting ECAB Approval")).toBeInTheDocument();
-    expect(within(approvalsRow("Eli Ecab")).getByText("ECAB Approval")).toBeInTheDocument();
+    expect(screen.getByText("Awaiting CAB Approval")).toBeInTheDocument();
+    expect(within(approvalsRow("Cam Cab")).getByText("CAB Approval")).toBeInTheDocument();
     expect(screen.queryByText("Peer Approval")).not.toBeInTheDocument();
-    expect(screen.queryByText("CAB Approval")).not.toBeInTheDocument();
+    expect(screen.queryByText(/ECAB/)).not.toBeInTheDocument();
+    expect(lc.approvals.map((a) => a.stage)).toEqual(["CAB Approval"]);
     expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument(); // creator
     expectNoManualSchedule();
 
-    view = lcOpenAs(LC_ECAB, view);
+    view = lcOpenAs(LC_CAB, view);
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
     expect(currentStep()).toBe("Scheduled");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
@@ -3542,36 +3589,197 @@ describe("CsmChangeRequestDetailPage — lifecycle: Emergency (Request Approval 
     expect(screen.getByRole("button", { name: /^start implementation$/i })).toBeInTheDocument();
     view.unmount();
   });
+
+  it("draws the line New, Assess (not taken), Authorize, Scheduled, ... at every step, with no customer stage on it", () => {
+    lcSeed("emergency");
+    let view = lcOpenAs(LC_CREATOR);
+    const line = (): string[] => stepLabels().map((l) => `${l}=${stepReading(l).slice(l.length + 2)}`);
+
+    expect(line()).toEqual([
+      "New=current",
+      "Assess=not taken",
+      "Authorize=upcoming",
+      "Scheduled=upcoming",
+      "Implement=upcoming",
+      "Review=upcoming",
+      "Rollback=not taken",
+      "Closed=upcoming",
+      "Canceled=not taken",
+    ]);
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+    expect(line()).toEqual([
+      "New=done",
+      "Assess=not taken",
+      "Authorize=current",
+      "Scheduled=upcoming",
+      "Implement=upcoming",
+      "Review=upcoming",
+      "Rollback=not taken",
+      "Closed=upcoming",
+      "Canceled=not taken",
+    ]);
+    view = lcOpenAs(LC_CAB, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(line()).toEqual([
+      "New=done",
+      "Assess=not taken",
+      "Authorize=done",
+      "Scheduled=current",
+      "Implement=upcoming",
+      "Review=upcoming",
+      "Rollback=not taken",
+      "Closed=upcoming",
+      "Canceled=not taken",
+    ]);
+    view.unmount();
+  });
+
+  it("a Normal change of the same shape still passes through Assess (the line differs by type, nothing else)", () => {
+    lcSeed("normal");
+    const view = lcOpenAs(LC_CREATOR);
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+    expect(stepReading("Assess")).toBe("Assess, current");
+    view.unmount();
+  });
+
+  it("shows the customer's part as Not applicable on the Approval tab, from New to Scheduled", () => {
+    lcSeed("emergency", { approval: false, review: false }, { members: LC_MEMBERS });
+    let view = lcOpenAs(LC_CREATOR);
+    const notApplicable = (label: string): string => within(screen.getByText(label).parentElement!).getByText(/^(Yes|No|Not applicable)$/).textContent ?? "";
+    for (const label of ["Customer approval required", "Customer review required", "Customer approved", "Customer reviewed"]) {
+      expect(notApplicable(label), label).toBe("Not applicable");
+    }
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+    view = lcOpenAs(LC_CAB, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(currentStep()).toBe("Scheduled");
+    expect(notApplicable("Customer approval required")).toBe("Not applicable");
+    view.unmount();
+  });
+
+  it("a Normal change on the same page still reads Yes / No there", () => {
+    lcSeed("normal");
+    const view = lcOpenAs(LC_CREATOR);
+    expect(metaValue("Customer approval required")).toBe("No");
+    expect(metaValue("Customer review required")).toBe("No");
+    view.unmount();
+  });
 });
 
-describe("CsmChangeRequestDetailPage — lifecycle: Emergency with Customer Approval (ECAB -> Customer Approval -> Scheduled)", () => {
-  it("waits in Customer Approval after ECAB approves, and only the customer's own answer moves it on", () => {
-    lcSeed("emergency", { approval: true, review: false }, { members: LC_MEMBERS });
+describe("CsmChangeRequestDetailPage — lifecycle: an Emergency change never reaches a customer state (Request Approval -> CAB -> Scheduled, whoever the project's contacts are)", () => {
+  // Retired: "Emergency with Customer Approval (ECAB -> Customer Approval -> Scheduled)". An Emergency change acts without
+  // customer consent: its two customer boxes are off, the CAB's approval schedules it, and nobody is asked.
+  it("goes from the CAB's approval straight to Scheduled, even on a project with registered contacts, and never asks them", () => {
+    lcSeed("emergency", { approval: false, review: false }, { members: LC_MEMBERS });
 
     let view = lcOpenAs(LC_CREATOR);
     fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
     expect(currentStep()).toBe("Authorize");
-    expect(screen.getByText("Awaiting ECAB Approval")).toBeInTheDocument();
+    expect(screen.getByText("Awaiting CAB Approval")).toBeInTheDocument();
     expectNoManualSchedule();
+
+    view = lcOpenAs(LC_CAB, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(currentStep()).toBe("Scheduled");
+    expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
+    expect(screen.queryByText("Awaiting Customer Approval")).not.toBeInTheDocument();
+    expect(lc.approvals.some((a) => lcIsCustomerStage(a.stage))).toBe(false);
+    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /^start implementation$/i })).toBeInTheDocument();
+    expectNoManualSchedule();
+    view.unmount();
+  });
+
+  it("an Emergency change on a project with NO registered contact is not held back: Request Approval stays enabled (nobody is to be asked)", () => {
+    lcSeed("emergency", { approval: false, review: false }, null);
+    const view = lcOpenAs(LC_CREATOR);
+    expect(screen.getByRole("button", { name: "Request Approval" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+    expect(currentStep()).toBe("Authorize");
+    expect(showErrorMock).not.toHaveBeenCalled();
+    view.unmount();
+  });
+
+  // An older row (or one the sync wrote) can still carry a customer box ticked. The backend ignores it for an Emergency change,
+  // so Request Approval must not be held back for want of a project or of a registered contact, nor say it is.
+  it.each([
+    ["no Customer Project", { project: undefined, customerContacts: undefined }],
+    ["a Customer Project with no registered contact", { customerContacts: [] }],
+  ])("an Emergency change in New with a stored customer box ticked and %s has Request Approval enabled, with no reason, and goes through the CAB alone", (_name, patch) => {
+    lcSeed("emergency", { approval: false, review: false }, null);
+    lc.cr = { ...lc.cr, customerApprovalRequired: true, customerReviewRequired: true, ...patch };
+    lcPublish();
+
+    let view = lcOpenAs(LC_CREATOR);
+    const button = screen.getByRole("button", { name: "Request Approval" });
+    expect(button).toBeEnabled();
+    expect(screen.queryByLabelText(/before requesting approval/i)).not.toBeInTheDocument();
+    fireEvent.click(button);
+    expect(showErrorMock).not.toHaveBeenCalled();
+    expect(currentStep()).toBe("Authorize");
+    expect(lc.approvals.map((a) => a.stage)).toEqual(["CAB Approval"]);
+
+    view = lcOpenAs(LC_CAB, view);
+    fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
+    expect(currentStep()).toBe("Scheduled");
+    expect(lc.approvals.some((a) => lcIsCustomerStage(a.stage))).toBe(false);
+    view.unmount();
+  });
+
+  it("a NORMAL change with the same stored boxes and no project keeps its reason: Request Approval is disabled", () => {
+    lcSeed("normal", { approval: false, review: false }, null);
+    lc.cr = { ...lc.cr, customerApprovalRequired: true, project: undefined, customerContacts: undefined };
+    lcPublish();
+
+    const view = lcOpenAs(LC_CREATOR);
+    const button = screen.getByRole("button", { name: "Request Approval" });
+    expect(button).toBeDisabled();
+    expect(button.closest('[tabindex="0"]')).toHaveAttribute("aria-label", "Request Approval: Select a Customer Project before requesting approval");
+    view.unmount();
+  });
+
+  it("Request Approval on a database where nobody maintains the CAB group: the backend's readable refusal (which group, and that the sync does not mirror it) shows verbatim in the error banner, and the change stays in New", () => {
+    // A group may have no members ("CAB Approval" here), so a stage that needs it cannot be provisioned until somebody
+    // maintains the group: an ops / data matter, answered in words that name the group.
+    const refusal =
+      'the "CAB Approval" group has no members to provision as CAB Approval approvers: the sync from the previous system does not mirror the membership of the "CAB Approval" group: it is maintained in the portal database (one team_member row per approver, with group_id set to that group)';
+    lcSeed("emergency", { approval: false, review: false }, null);
+    patchMutateMock.mockImplementationOnce((_input: unknown, options?: { onError?: (err: Error) => void }) => {
+      options?.onError?.(new BackendApiError(400, refusal));
+    });
+    const view = lcOpenAs(LC_CREATOR);
+    expect(screen.getByRole("button", { name: "Request Approval" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "Request Approval" }));
+    expect(showErrorMock).toHaveBeenCalledTimes(1);
+    expect(showErrorMock.mock.calls[0]![0]).toBe(refusal);
+    expect(showErrorMock.mock.calls[0]![0]).toContain('"CAB Approval" group');
+    expect(showErrorMock.mock.calls[0]![0]).toContain("does not mirror the membership");
+    expect(lc.cr.state).toBe("new");
+    expect(lc.approvals).toEqual([]);
+    expect(currentStep()).toBe("New");
+    expect(screen.getByRole("button", { name: "Request Approval" })).toBeEnabled();
+    view.unmount();
+  });
+
+  it("an OLDER Emergency change with a live ECAB stage still shows it, and the approvers it asked can still decide it", () => {
+    lcSeed("emergency");
+    // As an older version of the portal left it: Authorize, with one REQUESTED stage named ECAB.
+    lcSetState("authorize");
+    lc.approvals = [lcStage("ECAB Approval", "ECAB", LC_ECAB)];
+    lcPublish();
+
+    let view = lcOpenAs(LC_CREATOR);
+    expect(currentStep()).toBe("Authorize");
+    expect(screen.getByText("Awaiting ECAB Approval")).toBeInTheDocument();
+    expect(within(approvalsRow("Eli Ecab")).getByText("ECAB Approval")).toBeInTheDocument();
+    expect(stepReading("Assess")).toBe("Assess, not taken");
+    // Only the approver the stage asked has the controls: the creator has none.
+    expect(screen.queryByRole("button", { name: /^approve$/i })).not.toBeInTheDocument();
 
     view = lcOpenAs(LC_ECAB, view);
     fireEvent.click(screen.getByRole("button", { name: /^approve$/i }));
-    expect(currentStep()).toBe("Customer Approval");
-    expect(screen.getByText("Awaiting Customer Approval")).toBeInTheDocument();
-    expect(screen.queryByText("Peer Approval")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /start implementation/i })).not.toBeInTheDocument();
-    expectNoManualSchedule();
-
-    // The ECAB approver is staff like any other: no way to answer for the customer.
-    expect(screen.queryByText(/bypass/i)).not.toBeInTheDocument();
-    view = lcOpenAs(LC_CREATOR, view);
-    expectOnlyCancelOffered("approval");
-
-    lcCustomerDecides(LC_CUST_ONE, "approved");
     expect(currentStep()).toBe("Scheduled");
     expect(screen.queryByText(/awaiting/i)).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /^start implementation$/i })).toBeInTheDocument();
-    expectNoManualSchedule();
     view.unmount();
   });
 });
@@ -3989,7 +4197,6 @@ describe("CsmChangeRequestDetailPage — customer group: Request Approval is ref
   it.each([
     ["normal", { approval: false, review: true }],
     ["standard", { approval: true, review: false }],
-    ["emergency", { approval: true, review: true }],
   ] as const)("the same for a %s change with the customer part ticked as %j", (type, flags) => {
     lcSeed(type, flags, null);
     const view = lcOpenAs(LC_CREATOR);

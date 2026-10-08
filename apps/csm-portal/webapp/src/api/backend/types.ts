@@ -2722,12 +2722,14 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
   hasCustomerReviewed?: boolean;
   /**
    * The two ServiceNow-style creation checkboxes. `customerApprovalRequired`
-   * adds a `customer_approval` step after internal (CAB/ECAB/Standard)
+   * adds a `customer_approval` step after internal (CAB/Standard)
    * approval and before `scheduled`; `customerReviewRequired` adds a
    * `customer_review` step after `review` and before `closed`. Distinct from
    * `hasCustomerApproved` / `hasCustomerReviewed`, which are the customer's
    * confirmation outcome. Optional so a response from a backend that
-   * predates them still type-checks; absent is treated as `false`.
+   * predates them still type-checks; absent is treated as `false`. An Emergency
+   * change acts without customer consent: both are `false` on it (a change of
+   * that type raised before the rule can still carry one set).
    */
   customerApprovalRequired?: boolean;
   customerReviewRequired?: boolean;
@@ -2878,8 +2880,10 @@ export interface BeChangeRequestCustomerProposal {
 /** An approval stage seen on a change request, e.g. Assess, Authorize. */
 export type BeChangeRequestApprovalStage = "Assess" | "Authorize" | "Customer Approval";
 // Stage names are an open, backend-owned string (`BeChangeRequestApproval.stage`):
-// beyond the above, the Peer / CAB / ECAB stages may arrive as "Peer Approval",
-// "CAB Approval", "ECAB Approval" or "Emergency CAB". Labelled by
+// beyond the above, the Peer / CAB stages may arrive as "Peer Approval" or
+// "CAB Approval". An Emergency change has a single CAB stage; "ECAB Approval" /
+// "Emergency CAB" only remain on Emergency changes raised before ECAB was retired,
+// and are still tolerated (and shown as "ECAB Approval"). Labelled by
 // `approvalStageLabel` in `changeRequests.ts`.
 
 /** Who a change-request approval stage is assigned to. */
@@ -3017,7 +3021,8 @@ export interface BeCreateChangeRequestPayload {
   priority?: BeChangeRequestPriority;
   impact?: BeChangeRequestImpact;
   /** Required: one of "normal" | "standard" | "emergency" (the create form
-   * offers exactly these three). Drives the approval flow server-side. */
+   * offers exactly these three). Drives the approval flow server-side: Normal =
+   * Peer then CAB, Standard = none, Emergency = a single CAB stage. */
   type: BeChangeRequestType;
   state?: BeChangeRequestState;
   groupId?: string;
@@ -3046,10 +3051,12 @@ export interface BeCreateChangeRequestPayload {
   /** "Implementation Plan visible to customers" in this portal's UI. */
   isPlanningVisibleToCustomers?: boolean;
   /** "Customer Approval" checkbox: adds a customer approval step after
-   * internal approval, before scheduling. The create form always sends it. */
+   * internal approval, before scheduling. The create form always sends it
+   * (`false` for an Emergency change, which proceeds without customer consent). */
   customerApprovalRequired?: boolean;
   /** "Customer Review" checkbox: adds a customer review step after Review,
-   * before closing. The create form always sends it. */
+   * before closing. The create form always sends it (`false` for an Emergency
+   * change, which proceeds without customer consent). */
   customerReviewRequired?: boolean;
 }
 

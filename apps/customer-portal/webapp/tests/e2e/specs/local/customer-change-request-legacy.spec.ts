@@ -505,7 +505,7 @@ test.describe("Local stack — legacy (migrated) change requests", () => {
     expect(stage, "the synced stage is read").toBeTruthy();
     const aliceRow = stage!.approvers?.find((a) => a.name === "Alice Perera");
     expect(aliceRow?.status).toBe("REQUESTED");
-    expect(aliceRow?.canDecide, "the pending approver of the synced ECAB stage can decide").toBe(true);
+    expect(aliceRow?.canDecide, "the pending approver of the synced Emergency stage can decide").toBe(true);
     // A customer is shown none of this while it is in Authorize: legacy Authorize is hidden.
     expect((await customerApi("dave").get(emergency)).status).toBe(404);
     const decided = await alice.decide(emergency, "approved");

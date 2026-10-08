@@ -703,14 +703,13 @@ func TestChangeRequestCustomerOutcomeIntegration_ConcurrentAnswers(t *testing.T)
 // planned window and the customers' request untouched. WSO2 then accepts it (the
 // change is Scheduled with the proposal as its start, the planned length kept, no
 // CAB, no second ask) or proposes a different time (DISAGREE, the customers are asked
-// again), for every change type.
+// again), for every change type that reaches Customer Approval (an Emergency change never does).
 func TestChangeRequestCustomerOutcomeIntegration_ProposeNewTimeWaitsForWSO2(t *testing.T) {
-	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard, domain.ChangeRequestTypeEmergency} {
+	for _, typ := range []domain.ChangeRequestType{domain.ChangeRequestTypeNormal, domain.ChangeRequestTypeStandard} {
 		typ := typ
 		wantStages := map[domain.ChangeRequestType]string{
-			domain.ChangeRequestTypeNormal:    "Peer Approval,CAB Approval,Customer Approval",
-			domain.ChangeRequestTypeStandard:  "Customer Approval",
-			domain.ChangeRequestTypeEmergency: "ECAB Approval,Customer Approval",
+			domain.ChangeRequestTypeNormal:   "Peer Approval,CAB Approval,Customer Approval",
+			domain.ChangeRequestTypeStandard: "Customer Approval",
 		}[typ]
 		t.Run(string(typ), func(t *testing.T) {
 			f := newCustomerGroupFlow(t)

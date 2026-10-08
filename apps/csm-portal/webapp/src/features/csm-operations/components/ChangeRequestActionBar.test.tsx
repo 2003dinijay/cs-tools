@@ -440,6 +440,69 @@ describe("ChangeRequestActionBar — per-target blocked reasons", () => {
     });
   });
 
+  // The backend ignores an Emergency change's two customer boxes (one CAB approval, nobody asked), so a box still ticked on
+  // the stored row (an older change, or one written by the sync) needs neither a project nor a registered contact. The
+  // button must not claim otherwise; a Normal change with the same row keeps its reason.
+  describe("Request Approval on an Emergency change with a customer box still ticked", () => {
+    const PROJECT_REASON = "Select a Customer Project before requesting approval";
+    const CONTACT_REASON = "Register a contact for the Customer Project before requesting approval";
+    const PROJECT = { id: "proj-a", name: "Example Corp Platform" };
+
+    it.each([
+      ["Customer Approval", { customerApprovalRequired: true }],
+      ["Customer Review", { customerReviewRequired: true }],
+      ["both", { customerApprovalRequired: true, customerReviewRequired: true }],
+    ])("is enabled, with no reason, when %s is ticked and there is no Customer Project", (_name, flags) => {
+      const { onAction } = renderBar({ state: "new", type: "emergency", legalNextStates: ["assess"], ...flags });
+      const button = screen.getByRole("button", { name: /request approval/i });
+      expect(button).toBeEnabled();
+      expect(screen.queryByLabelText(/before requesting approval/i)).not.toBeInTheDocument();
+      fireEvent.click(button);
+      expect(onAction).toHaveBeenCalledWith("assess");
+    });
+
+    it.each([
+      ["Customer Approval", { customerApprovalRequired: true }],
+      ["Customer Review", { customerReviewRequired: true }],
+      ["both", { customerApprovalRequired: true, customerReviewRequired: true }],
+    ])("is enabled, with no reason, when %s is ticked and the project has no registered contact", (_name, flags) => {
+      const { onAction } = renderBar({ state: "new", type: "emergency", legalNextStates: ["assess"], project: PROJECT, customerContacts: [], ...flags });
+      const button = screen.getByRole("button", { name: /request approval/i });
+      expect(button).toBeEnabled();
+      expect(screen.queryByLabelText(/before requesting approval/i)).not.toBeInTheDocument();
+      fireEvent.click(button);
+      expect(onAction).toHaveBeenCalledWith("assess");
+    });
+
+    it("reads the type in any case, as the rest of the page does", () => {
+      renderBar({ state: "new", type: "Emergency", legalNextStates: ["assess"], customerApprovalRequired: true });
+      expect(screen.getByRole("button", { name: /request approval/i })).toBeEnabled();
+    });
+
+    it("still needs the assigned team, which the CAB stage is provisioned from", () => {
+      renderBar({ state: "new", type: "emergency", legalNextStates: ["assess"], assignedTeam: null, customerApprovalRequired: true });
+      const button = screen.getByRole("button", { name: /request approval/i });
+      expect(button).toBeDisabled();
+      expect(button.closest('[tabindex="0"]')).toHaveAttribute("aria-label", "Request Approval: Set an assigned team before requesting approval");
+    });
+
+    it("leaves a Normal change with the same stored row blocked, with the project reason and then the contact reason", () => {
+      const { onAction } = renderBar({ state: "new", type: "normal", legalNextStates: ["assess"], customerApprovalRequired: true });
+      const noProject = screen.getByRole("button", { name: /request approval/i });
+      expect(noProject).toBeDisabled();
+      expect(noProject.closest('[tabindex="0"]')).toHaveAttribute("aria-label", `Request Approval: ${PROJECT_REASON}`);
+      fireEvent.click(noProject);
+      cleanup();
+
+      renderBar({ state: "new", type: "normal", legalNextStates: ["assess"], project: PROJECT, customerContacts: [], customerApprovalRequired: true }, { onAction });
+      const noContact = screen.getByRole("button", { name: /request approval/i });
+      expect(noContact).toBeDisabled();
+      expect(noContact.closest('[tabindex="0"]')).toHaveAttribute("aria-label", `Request Approval: ${CONTACT_REASON}`);
+      fireEvent.click(noContact);
+      expect(onAction).not.toHaveBeenCalled();
+    });
+  });
+
   it("blocks only the target with the unmet prerequisite, leaving the others clickable", () => {
     // `assess` is blocked *and* is first in FORWARD_ORDER, so it stays the
     // promoted (disabled) primary while `canceled` stays usable behind the
@@ -457,7 +520,7 @@ describe("ChangeRequestActionBar — per-target blocked reasons", () => {
 });
 
 /**
- * CAB (or ECAB) approval moves a CR to Scheduled automatically, and a Standard
+ * CAB approval moves a CR to Scheduled automatically, and a Standard
  * change goes straight there from Request Approval -- there is no manual
  * "Schedule" button. The backend no longer lists `scheduled` in
  * `legalNextStates`; the bar also filters it defensively.

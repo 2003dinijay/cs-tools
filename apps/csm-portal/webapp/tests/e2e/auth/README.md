@@ -88,7 +88,7 @@ session per role. Mint both against the running local stack (webapp on
 | Role (`storageState/<role>.json`) | `E2E_AUTH_EMAIL` | Who |
 |---|---|---|
 | `crApprover` | `jane.doe@example.com` | internal; the requester persona (in no approval group) |
-| `crInternalApprover` | `alice.perera@example.com` | internal; peer / CAB / ECAB approver (Bob Fernando and Carol Silva hold the same seats) |
+| `crInternalApprover` | `alice.perera@example.com` | internal; peer / CAB approver (Bob Fernando and Carol Silva hold the same seats) |
 
 ```bash
 mint() { # mint <role> <email local part>

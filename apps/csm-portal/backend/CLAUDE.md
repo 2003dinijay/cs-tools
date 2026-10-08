@@ -274,6 +274,13 @@ reached the browser; this is what stops them being sent at all to a caller who s
 to the entity service as-is (no field allow-list), with two checks on top:
 
 * `POST` requires `type` of `standard`, `normal` or `emergency` (`validateChangeRequestCreateType`).
+* **An Emergency change takes no customer step** (the previous system has no Emergency CAB and acts on an Emergency
+  change without the customer's consent): a `POST` with `type: emergency` and either box true, a `PATCH` that
+  turns a box on of an Emergency change, and a `PATCH {type: emergency}` that leaves a box ticked are refused by
+  the entity service with a 400 ("Emergency changes proceed without customer consent, so customer approval and
+  customer review cannot be required ..."), which reaches the form verbatim -- the BFF does not repeat the rule
+  (`TestCreateChangeRequest_CustomerGateFlags`, `TestPatchChangeRequest_CustomerGateFlags`). An Emergency
+  change's approvals are one `CAB Approval` stage (an in-flight one from an earlier build may read `ECAB Approval`).
 * **Every body guard of the change request handlers reads keys the way the entity service's decoder
   does -- without regard to case.** The entity service decodes with `encoding/json`, which matches a
   key to a field case-insensitively, so `ISCUSTOMERAPPROVED`, `iscustomerreviewed` and

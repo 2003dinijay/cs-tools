@@ -468,6 +468,12 @@ func (s *changeRequestService) createChangeRequestPortal(ctx context.Context, re
 	if !repository.ChangeRequestTypeSupported(*req.Type) {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
 	}
+	// An Emergency change takes no customer step: refused here, before the previous
+	// system is called on the dual-write path, where a refusal after the fact would
+	// strand a record there with no PostgreSQL row.
+	if err := repository.ValidateCreateChangeRequestCustomerGates(req.Type, req.CustomerApprovalRequired, req.CustomerReviewRequired); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
+	}
 	if err := validateChangeRequestCreateScope(req); err != nil {
 		return domain.CreateChangeRequestResponse{}, err
 	}
@@ -508,6 +514,12 @@ func (s *changeRequestService) createChangeRequestSNFirst(ctx context.Context, r
 	}
 	if !repository.ChangeRequestTypeSupported(*req.Type) {
 		return domain.CreateChangeRequestResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("type %q is not supported on the PostgreSQL data source", *req.Type)}
+	}
+	// An Emergency change takes no customer step: refused here, before the previous
+	// system is called on the dual-write path, where a refusal after the fact would
+	// strand a record there with no PostgreSQL row.
+	if err := repository.ValidateCreateChangeRequestCustomerGates(req.Type, req.CustomerApprovalRequired, req.CustomerReviewRequired); err != nil {
+		return domain.CreateChangeRequestResponse{}, err
 	}
 	if err := validateChangeRequestCreateScope(req); err != nil {
 		return domain.CreateChangeRequestResponse{}, err

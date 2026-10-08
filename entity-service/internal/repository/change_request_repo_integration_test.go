@@ -3241,9 +3241,10 @@ func TestChangeRequestIntegration_PatchCustomerFlagsNeverFromStaffWhateverIsStor
 // ---------------------------------------------------------------------------
 // Type-dependent approval flow (change_request_approval_flow.go).
 //
-// Lifecycle tests for Normal (peer then CAB), Emergency (ECAB only) and
-// Standard (no approval), the creator/INTERNAL-only approver rules, the CAB/ECAB groups
-// the migration creates, the automatic move to Scheduled, and the mandatory
+// Lifecycle tests for Normal (peer then CAB), Emergency (the one CAB stage; the previous
+// system has no Emergency CAB) and Standard (no approval), the creator/INTERNAL-only approver
+// rules, the CAB / ECAB groups the migration creates (the ECAB one is unused now), the
+// automatic move to Scheduled, and the mandatory
 // type on create -- all against the real Postgres this file's neighbours use:
 //
 //	CHANGE_REQUEST_TEST_DSN=postgres://... go test ./internal/repository/ -run ChangeRequestFlowIntegration
@@ -3251,12 +3252,19 @@ func TestChangeRequestIntegration_PatchCustomerFlagsNeverFromStaffWhateverIsStor
 
 const (
 	// crCABGroupID / crECABGroupID are the fixed ids migration
-	// 0188_change_request_approval_groups.sql gives the two groups.
+	// 0188_change_request_approval_groups.sql gives the two groups. The ECAB one is
+	// UNUSED now (an Emergency change is approved by the CAB group, as in the previous system):
+	// the tests keep it only to show nothing resolves it, and to stand in for the group
+	// an earlier build's "ECAB Approval" stage was asked of.
 	crCABGroupID  = "00000000-0000-4000-8000-00000000ca01"
 	crECABGroupID = "00000000-0000-4000-8000-00000000eca1"
+	// crECABGroupName is that group's name (nothing in the service names it any more).
+	crECABGroupName = "ECAB Approval"
 
-	// crCABMemberUserID{1,2} / crECABMemberUserID are seeded as members of the
-	// CAB / ECAB groups by the tests that need an eligible second approver.
+	// crCABMemberUserID{1,2} are seeded as members of the CAB group by the tests that
+	// need an eligible approver (a Normal change's second stage AND an Emergency
+	// change's only one); crECABMemberUserID is the member of the unused ECAB group a
+	// historic ECAB stage was asked of.
 	crCABMemberUserID1 = "3aaaaaaa-0000-0000-0000-0000000000c1"
 	crCABMemberUserID2 = "3aaaaaaa-0000-0000-0000-0000000000c2"
 	crECABMemberUserID = "3aaaaaaa-0000-0000-0000-0000000000e1"
@@ -3767,13 +3775,15 @@ func TestChangeRequestFlowIntegration_NormalFullLifecycle(t *testing.T) {
 	}
 }
 
-// Emergency: no peer approval; Request Approval goes straight to Authorize
-// with ONLY the ECAB stage (its own group, not CAB); ECAB approval schedules.
+// Emergency: no peer approval; Request Approval goes straight to Authorize with ONE stage,
+// the CAB Approval stage in the existing CAB group (the previous system has no Emergency CAB, so
+// there is no ECAB stage and no ECAB group is asked); that CAB approval schedules.
 func TestChangeRequestFlowIntegration_EmergencyLifecycle(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
-	// CAB members exist too -- an emergency must NOT involve them.
 	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+	// The unused ECAB group has a member too (an earlier build asked its members): an
+	// emergency must NOT ask them any more.
 	seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
 	id := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
 
@@ -3784,24 +3794,24 @@ func TestChangeRequestFlowIntegration_EmergencyLifecycle(t *testing.T) {
 		t.Fatalf("emergency state after Request Approval = %q, want AUTHORIZE (no peer step)", got)
 	}
 	stages := f.stages(id)
-	if len(stages) != 1 || stages[0].label != "ECAB Approval" || stages[0].groupID != crECABGroupID {
-		t.Fatalf("emergency stages = %+v, want exactly one \"ECAB Approval\" stage on the ECAB group", stages)
+	if len(stages) != 1 || stages[0].label != "CAB Approval" || stages[0].groupID != crCABGroupID {
+		t.Fatalf("emergency stages = %+v, want exactly one \"CAB Approval\" stage on the CAB group", stages)
 	}
-	assertApprovers(t, "ECAB stage", stages[0].approvers, map[string]string{crECABMemberUserID: "REQUESTED"})
+	assertApprovers(t, "the CAB stage", stages[0].approvers, map[string]string{crCABMemberUserID1: "REQUESTED"})
 	assertStates(t, "legalNextStates(Authorize)", f.legal(id), "canceled")
 
-	// Neither a peer nor a regular CAB member can decide an emergency.
-	for _, uid := range []string{crFlowPeerAID, crCABMemberUserID1} {
+	// Neither a peer nor a member of the unused ECAB group can decide an emergency.
+	for _, uid := range []string{crFlowPeerAID, crECABMemberUserID} {
 		if err := f.decide(id, uid, "approved"); err == nil {
-			t.Fatalf("user %s decided the ECAB stage without an ECAB row", uid)
+			t.Fatalf("user %s decided the CAB stage without a CAB row", uid)
 		}
 	}
 
-	if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
-		t.Fatalf("ECAB approval: %v", err)
+	if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
+		t.Fatalf("CAB approval: %v", err)
 	}
 	if got := f.state(id); got != "SCHEDULED" {
-		t.Fatalf("state after ECAB approval = %q, want SCHEDULED (automatic)", got)
+		t.Fatalf("state after CAB approval = %q, want SCHEDULED (automatic)", got)
 	}
 	assertStates(t, "legalNextStates(Scheduled)", f.legal(id), "implement", "canceled")
 	if len(f.stages(id)) != 1 {
@@ -3866,7 +3876,7 @@ func TestChangeRequestFlowIntegration_RequestApprovalOnlyFromNew(t *testing.T) {
 }
 
 // The creator may never approve their own change request -- neither the
-// peer stage nor CAB/ECAB -- but may still cancel it.
+// peer stage nor CAB -- but may still cancel it.
 func TestChangeRequestFlowIntegration_CreatorCannotApproveAnyStage(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
@@ -4118,7 +4128,7 @@ func TestChangeRequestFlowIntegration_PeerPoolFallsBackToDevopsApprovalOnlyWhenA
 }
 
 // An EXTERNAL (customer) member of the assigned team is never provisioned as
-// an approver of an internal stage -- Peer, CAB, ECAB or Review -- and neither
+// an approver of an internal stage -- Peer, CAB or Review -- and neither
 // is an inactive user or one with no derivable type; the creator stays a
 // cancelled row. Mixed pools keep exactly their active internal users.
 func TestChangeRequestFlowIntegration_MixedPoolsKeepOnlyActiveInternalUsers(t *testing.T) {
@@ -4130,8 +4140,6 @@ func TestChangeRequestFlowIntegration_MixedPoolsKeepOnlyActiveInternalUsers(t *t
 	seedGroupMembersOfType(t, f.scoped, crFlowGroupID, "NOT_AVAILABLE", crFlowNoTypeID)
 	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
 	seedExternalGroupMembers(t, f.scoped, crCABGroupID, crCABExternalID)
-	seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
-	seedExternalGroupMembers(t, f.scoped, crECABGroupID, crECABExternalID)
 
 	// Normal: Peer, then CAB, then (after Implement) Review.
 	id := f.create(domain.ChangeRequestTypeNormal, crFlowGroupID)
@@ -4152,16 +4160,20 @@ func TestChangeRequestFlowIntegration_MixedPoolsKeepOnlyActiveInternalUsers(t *t
 		crFlowCreatorID: "CANCELLED", crFlowPeerAID: "REQUESTED", crFlowPeerBID: "REQUESTED", crFlowOutsiderID: "REQUESTED",
 	})
 
-	// Emergency: ECAB only.
+	// Emergency: the CAB stage only, from the same CAB group (its customer member is left out).
 	eid := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
 	f.requestApproval(eid)
-	assertApprovers(t, "ECAB stage", f.stage(eid, "ECAB Approval").approvers, map[string]string{crECABMemberUserID: "REQUESTED"})
+	assertApprovers(t, "the Emergency CAB stage", f.stage(eid, "CAB Approval").approvers, map[string]string{crCABMemberUserID1: "REQUESTED"})
+	if got := f.labels(eid); strings.Join(got, ",") != "CAB Approval" {
+		t.Fatalf("emergency stages = %v, want the one CAB Approval stage", got)
+	}
 }
 
 // A group made only of customers has no one to give an internal approval: the
 // request is refused up front, with a message that names the group and says
-// customers cannot approve -- for the CAB, the ECAB, and the Review stage
-// (whose assigned team has lost its internal members by then).
+// customers cannot approve -- for the CAB (a Normal change's and an Emergency
+// change's alike) and the Review stage (whose assigned team has lost its internal
+// members by then).
 func TestChangeRequestFlowIntegration_AllExternalGroupsAreRefusedClearly(t *testing.T) {
 	t.Run("CAB", func(t *testing.T) {
 		f := newCRFlow(t)
@@ -4178,13 +4190,21 @@ func TestChangeRequestFlowIntegration_AllExternalGroupsAreRefusedClearly(t *test
 			t.Fatalf("refused Request Approval left %d stages", n)
 		}
 	})
-	t.Run("ECAB", func(t *testing.T) {
+	t.Run("Emergency uses the CAB group", func(t *testing.T) {
 		f := newCRFlow(t)
 		f.seedAssignedGroup()
-		seedExternalGroupMembers(t, f.scoped, crECABGroupID, crECABExternalID)
+		seedExternalGroupMembers(t, f.scoped, crCABGroupID, crCABExternalID)
+		// The unused ECAB group's members do not stand in for it.
+		seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
 		id := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
 		_, err := f.patchState(id, domain.ChangeRequestStateAssess)
-		f.wantValidationError("ECAB of customers only", err, `the "ECAB Approval" group has no active internal (WSO2) members`)
+		f.wantValidationError("Emergency CAB of customers only", err, `the "CAB Approval" group has no active internal (WSO2) members`)
+		if got := f.state(id); got != "NEW" {
+			t.Fatalf("state after refused Request Approval = %q, want NEW", got)
+		}
+		if n := len(f.stages(id)); n != 0 {
+			t.Fatalf("refused Request Approval left %d stages", n)
+		}
 	})
 	t.Run("CAB cascade rolls the peer decision back", func(t *testing.T) {
 		f := newCRFlow(t)
@@ -4272,18 +4292,17 @@ func TestChangeRequestFlowIntegration_ExternalUserCannotDecideInternalStage(t *t
 	f.forceApprover(id, "Review", crFlowExternalID)
 	wantRefused("Review", crFlowExternalID)
 
-	// ECAB stage of an Emergency change.
-	seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
+	// The one CAB stage of an Emergency change.
 	eid := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
 	f.requestApproval(eid)
-	f.forceApprover(eid, "ECAB Approval", crFlowExternalID)
-	f.wantForbidden("ECAB decision by a customer", f.decide(eid, crFlowExternalID, "approved"), "ECAB Approval")
+	f.forceApprover(eid, "CAB Approval", crFlowExternalID)
+	f.wantForbidden("Emergency CAB decision by a customer", f.decide(eid, crFlowExternalID, "approved"), "CAB Approval")
 	if got := f.canDecideAs(eid, crFlowExternalID); len(got) != 0 {
-		t.Fatalf("canDecide for a customer on the ECAB stage = %v, want none", got)
+		t.Fatalf("canDecide for a customer on the Emergency CAB stage = %v, want none", got)
 	}
 	f.wantState(eid, "AUTHORIZE")
-	if err := f.decide(eid, crECABMemberUserID, "approved"); err != nil {
-		t.Fatalf("internal ECAB approval: %v", err)
+	if err := f.decide(eid, crCABMemberUserID1, "approved"); err != nil {
+		t.Fatalf("internal Emergency CAB approval: %v", err)
 	}
 	f.wantState(eid, "SCHEDULED")
 }
@@ -4431,11 +4450,26 @@ func TestChangeRequestFlowIntegration_NormalRequiresEligibleCABApprovers(t *test
 		t.Fatalf("refused Request Approval left %d approval stages", n)
 	}
 
-	// Same for Emergency and the ECAB group.
+	// An Emergency change is approved by the same CAB group, so it is refused the same way
+	// (the unused ECAB group's members are not a way round it). The message names the group
+	// and says the sync from the previous system does not mirror its membership: a group may
+	// have no members, which is an operations matter, and this is how the refusal shows it.
+	seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
 	eid := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
 	_, err = f.patchState(eid, domain.ChangeRequestStateAssess)
-	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, domain.ECABApprovalGroupName) {
-		t.Fatalf("emergency Request Approval with an empty ECAB group err = %v (%T), want a ValidationError naming %q", err, err, domain.ECABApprovalGroupName)
+	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, domain.CABApprovalGroupName) {
+		t.Fatalf("emergency Request Approval with an empty CAB group err = %v (%T), want a ValidationError naming %q", err, err, domain.CABApprovalGroupName)
+	}
+	for _, want := range []string{`the "CAB Approval" group has no members`, "the sync from the previous system does not mirror the membership", "team_member"} {
+		if !strings.Contains(ve.Msg, want) {
+			t.Fatalf("emergency Request Approval with an empty CAB group message %q should contain %q", ve.Msg, want)
+		}
+	}
+	if got := f.state(eid); got != "NEW" {
+		t.Fatalf("emergency state after refused Request Approval = %q, want NEW", got)
+	}
+	if n := len(f.stages(eid)); n != 0 {
+		t.Fatalf("refused emergency Request Approval left %d stages", n)
 	}
 
 	// A CAB group whose only member is the creator is also a dead end.
@@ -4472,7 +4506,7 @@ func TestChangeRequestFlowIntegration_PeerApprovalRefusedWhenCABGroupEmptied(t *
 	}
 }
 
-// A CAB/ECAB rejection keeps the existing rejection behaviour: siblings are
+// A CAB rejection keeps the existing rejection behaviour: siblings are
 // cancelled and the state is NOT advanced (nor rolled back).
 func TestChangeRequestFlowIntegration_CABRejectionDoesNotSchedule(t *testing.T) {
 	f := newCRFlow(t)
@@ -4598,11 +4632,12 @@ func TestChangeRequestFlowIntegration_CanDecide(t *testing.T) {
 	}
 }
 
-// The CAB Approval and ECAB Approval groups exist after the migrations, and
-// re-running the migration neither fails nor duplicates them.
+// The CAB Approval and ECAB Approval groups exist after the migrations (the second is
+// unused now and is left in place), and re-running the migration neither fails nor
+// duplicates them.
 func TestChangeRequestFlowIntegration_ApprovalGroupsExistAndMigrationIsIdempotent(t *testing.T) {
 	f := newCRFlow(t)
-	for _, name := range []string{domain.CABApprovalGroupName, domain.ECABApprovalGroupName} {
+	for _, name := range []string{domain.CABApprovalGroupName, crECABGroupName} {
 		var n int
 		if err := f.scoped.QueryRow(f.sys, `SELECT COUNT(*) FROM "group" WHERE name = $1`, name).Scan(&n); err != nil {
 			t.Fatalf("count %q: %v", name, err)
@@ -4615,7 +4650,7 @@ func TestChangeRequestFlowIntegration_ApprovalGroupsExistAndMigrationIsIdempoten
 	if err := f.scoped.QueryRow(f.sys, `SELECT id::text FROM "group" WHERE name = $1 ORDER BY created_on LIMIT 1`, domain.CABApprovalGroupName).Scan(&cabID); err != nil {
 		t.Fatalf("read CAB group: %v", err)
 	}
-	if err := f.scoped.QueryRow(f.sys, `SELECT id::text FROM "group" WHERE name = $1 ORDER BY created_on LIMIT 1`, domain.ECABApprovalGroupName).Scan(&ecabID); err != nil {
+	if err := f.scoped.QueryRow(f.sys, `SELECT id::text FROM "group" WHERE name = $1 ORDER BY created_on LIMIT 1`, crECABGroupName).Scan(&ecabID); err != nil {
 		t.Fatalf("read ECAB group: %v", err)
 	}
 	if cabID == ecabID {
@@ -4628,7 +4663,7 @@ func TestChangeRequestFlowIntegration_ApprovalGroupsExistAndMigrationIsIdempoten
 	}
 	var before, after []string
 	collect := func(into *[]string) {
-		rows, err := f.scoped.Query(f.sys, `SELECT id::text FROM "group" WHERE name IN ($1, $2) ORDER BY id`, domain.CABApprovalGroupName, domain.ECABApprovalGroupName)
+		rows, err := f.scoped.Query(f.sys, `SELECT id::text FROM "group" WHERE name IN ($1, $2) ORDER BY id`, domain.CABApprovalGroupName, crECABGroupName)
 		if err != nil {
 			t.Fatalf("list groups: %v", err)
 		}
@@ -4692,7 +4727,7 @@ func TestChangeRequestFlowIntegration_CreateRequiresCreatableType(t *testing.T) 
 // Customer Approval / Customer Review checkboxes
 // (change_request.customer_approval_required / customer_review_required,
 // migration 0189). They add an optional customer step on each side of the
-// implementation: CAB / ECAB approval (or Request Approval on a Standard
+// implementation: CAB approval (or Request Approval on a Standard
 // change) moves the change to Customer Approval instead of Scheduled, where a
 // human records the customer's approval; Review offers Customer Review (then
 // Closed) instead of Closed.
@@ -4991,40 +5026,52 @@ func TestChangeRequestFlowIntegration_NormalCustomerGateLifecycles(t *testing.T)
 	}
 }
 
-// Emergency with Customer Approval ticked: ECAB approval moves the change to
-// Customer Approval (not Scheduled); the customer's own approval then schedules
-// it. Unticked is covered by EmergencyLifecycle.
-func TestChangeRequestFlowIntegration_EmergencyCustomerApprovalLifecycle(t *testing.T) {
+// An Emergency change takes no customer step. The rule refuses the two boxes on a new one,
+// but a row can still carry them -- one from before the rule, or a migrated one
+// whose requirement flags are the previous system's own -- and the flow ignores them: the CAB approval
+// SCHEDULES it (never Customer Approval), Review goes straight to Closed (never Customer
+// Review), so no customer stage is provisioned along the way. (Replaces the test that drove an
+// Emergency change through ECAB approval into Customer Approval.)
+func TestChangeRequestFlowIntegration_EmergencyNeverReachesACustomerState(t *testing.T) {
 	f := newCRFlow(t)
 	f.seedAssignedGroup()
-	seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
-	id := f.createAnswerable(domain.ChangeRequestTypeEmergency, crFlowGroupID, boolp(true), nil)
+	seedApprovalGroupMembers(t, f.scoped, crCABGroupID, crCABMemberUserID1)
+	id := f.createAnswerable(domain.ChangeRequestTypeEmergency, crFlowGroupID, boolp(false), boolp(false))
+	f.execSQL(`UPDATE change_request SET customer_approval_required = true, customer_review_required = true WHERE id = $1`, id)
 
 	f.expect(id, "after create", "NEW", "assess", "canceled")
 	f.requestApproval(id)
 	f.expect(id, "after Request Approval", "AUTHORIZE", "canceled")
-	if stages := f.stages(id); len(stages) != 1 || stages[0].label != "ECAB Approval" {
-		t.Fatalf("stages = %+v, want only the ECAB stage", stages)
+	if stages := f.stages(id); len(stages) != 1 || stages[0].label != "CAB Approval" {
+		t.Fatalf("stages = %+v, want only the CAB stage", stages)
 	}
 
-	// The gate is NOT reached by Request Approval for an Emergency change: the
-	// ECAB approval still comes first.
-	if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
-		t.Fatalf("ECAB approval: %v", err)
+	// The CAB approval is the last internal step: it schedules.
+	if err := f.decide(id, crCABMemberUserID1, "approved"); err != nil {
+		t.Fatalf("CAB approval: %v", err)
 	}
-	f.expect(id, "after ECAB approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
-	if approved, _ := f.customerOutcome(id); approved {
-		t.Fatal("is_customer_approval_required is true before the customer's approval was given")
+	f.expect(id, "after the CAB approval", "SCHEDULED", "implement", "canceled")
+	if n := len(f.customerStages(id)); n != 0 {
+		t.Fatalf("an Emergency change was given %d customer stage(s)", n)
+	}
+	if approved, reviewed := f.customerOutcome(id); approved || reviewed {
+		t.Fatalf("customer outcome = approved:%v reviewed:%v, want none (nobody was asked)", approved, reviewed)
 	}
 
-	f.customerApproves(id)
-	f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
-	if approved, _ := f.customerOutcome(id); !approved {
-		t.Fatal("is_customer_approval_required = false after the customer's approval")
-	}
 	f.step(id, domain.ChangeRequestStateImplement, "IMPLEMENT", "review", "canceled")
-	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled") // review not ticked: straight to Closed
+	// The stored review box says true; the flow reads it as false: Review offers Closed.
+	f.step(id, domain.ChangeRequestStateReview, "REVIEW", "closed", "rollback", "canceled")
+	_, err := f.patchState(id, domain.ChangeRequestStateCustomerReview)
+	f.wantValidationError("Customer Review on an Emergency change", err, "Emergency changes proceed without customer consent")
+	f.expect(id, "after the refused Customer Review", "REVIEW", "closed", "rollback", "canceled")
 	f.step(id, domain.ChangeRequestStateClosed, "CLOSED")
+	if n := len(f.customerStages(id)); n != 0 {
+		t.Fatalf("an Emergency change ended with %d customer stage(s)", n)
+	}
+	// Reads show what is stored, untouched.
+	if cr := f.get(id); !cr.CustomerApprovalRequired || !cr.CustomerReviewRequired {
+		t.Fatalf("the stored boxes read back as %v/%v, want them untouched (true/true)", cr.CustomerApprovalRequired, cr.CustomerReviewRequired)
+	}
 }
 
 // Standard with Customer Approval ticked: it has no internal approval to wait
@@ -6997,7 +7044,7 @@ func TestChangeRequestScopeIntegration_LegacyStoredGroupIsIgnored(t *testing.T) 
 // PATCH {state: "authorize", plannedStartOn/plannedEndOn} with a changed window
 // supersedes the customer's pending request and asks the customer again, for every
 // change type: "authorize" is the wire name, the state does not move and NOTHING goes
-// through CAB / ECAB again -- the change itself has not changed, only its time. It is
+// through CAB again -- the change itself has not changed, only its time. It is
 // refused when nobody can be asked, as Request Approval is. The customer's own proposed
 // time waits for WSO2 (customer_updated_on) and is answered with Accept proposed time or
 // a different time through the same wire name (change_request_proposal_*_test.go).
@@ -7211,29 +7258,100 @@ func TestChangeRequestFlowIntegration_RescheduleWithNobodyToAskTwice(t *testing.
 	f.step(id, domain.ChangeRequestStateCanceled, "CANCELED")
 }
 
-// Emergency with Customer Approval ticked and a customer group: Re-schedule asks the
-// customers again, nothing goes through ECAB again.
-func TestChangeRequestFlowIntegration_RescheduleEmergency(t *testing.T) {
-	f := newCustomerGroupFlow(t)
-	id := f.reachCustomerApproval(domain.ChangeRequestTypeEmergency)
-
-	if err := f.reschedule(id, nil, sp(rsEnd2)); err != nil { // only the end changes
-		t.Fatalf("re-schedule: %v", err)
+// An Emergency change that is ALREADY in Customer Approval -- a row from before the rule, or a
+// migrated one -- is not taken out of the customer's hands: the question it was
+// given stands, and every act of the Customer Approval loop works on it exactly as on any other
+// change. The customer's own answer moves it; a Re-schedule or a counter-proposal applies the
+// window, supersedes the request and ASKS THE PROJECT'S CONTACTS AGAIN (a fresh stage, nothing
+// goes through CAB again); one that cannot ask anybody is refused whole, with the customers'
+// pending request untouched (the rule every other change follows -- never a cancelled request
+// that nobody replaces). The Emergency rule only keeps such a change from ENTERING a customer
+// state (CAB approval schedules it, Review closes it). (Replaces the test that pinned a
+// Re-schedule which cancelled the request and asked nobody, so that only a Cancel was left.)
+func TestChangeRequestFlowIntegration_RescheduleLegacyEmergencyInCustomerApproval(t *testing.T) {
+	legacy := func(t *testing.T) (*crFlow, string) {
+		f := newCustomerGroupFlow(t)
+		id := f.reachCustomerApproval(domain.ChangeRequestTypeNormal)
+		f.execSQL(`UPDATE change_request SET change_model = 'EMERGENCY' WHERE id = $1`, id)
+		if got := f.get(id).Type; got == nil || *got != "emergency" {
+			t.Fatalf("type = %v, want emergency", got)
+		}
+		return f, id
 	}
-	f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
-	f.wantPlanned(id, "after Re-schedule", rsStart1, rsEnd2)
-	if got := f.stageLabels(id); got != "ECAB Approval,Customer Approval,Customer Approval" {
-		t.Fatalf("emergency stages after Re-schedule = %s, want one fresh customer stage and no ECAB", got)
-	}
-	stages := f.stages(id)
-	assertApprovers(t, "superseded customer stage", stages[1].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
-	assertApprovers(t, "fresh customer stage", stages[2].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
-	assertApprovers(t, "the ECAB stage stands as a record", stages[0].approvers, map[string]string{crECABMemberUserID: "APPROVED"})
-
-	if err := f.decide(id, crScopeUserA1, "approved"); err != nil {
-		t.Fatalf("customer approval: %v", err)
-	}
-	f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
+	t.Run("the customer's answer still works", func(t *testing.T) {
+		f, id := legacy(t)
+		f.expect(id, "in Customer Approval", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		f.customerApproves(id)
+		f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
+	})
+	t.Run("a Re-schedule supersedes the request and asks the project's contacts again", func(t *testing.T) {
+		f, id := legacy(t)
+		if err := f.reschedule(id, nil, sp(rsEnd2)); err != nil { // only the end changes
+			t.Fatalf("re-schedule: %v", err)
+		}
+		f.expect(id, "after Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		f.wantPlanned(id, "after Re-schedule", rsStart1, rsEnd2)
+		// The old request stays as a record, a fresh one is live, and nothing went through CAB again.
+		if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,Customer Approval" {
+			t.Fatalf("stages after Re-schedule = %s, want the old ones and a fresh customer stage", got)
+		}
+		stages := f.stages(id)
+		assertApprovers(t, "the superseded customer stage", stages[2].approvers, map[string]string{crScopeUserA1: "CANCELLED", crScopeUserA2: "CANCELLED"})
+		assertApprovers(t, "the fresh customer stage", stages[3].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+		f.wantCanAnswer(id, "after Re-schedule", true, crScopeUserA1, crScopeUserA2)
+		// The customer's answer on the fresh request moves it, and stamps the customer's approval.
+		if err := f.decide(id, crScopeUserA2, "approved"); err != nil {
+			t.Fatalf("the customer's answer on the fresh request: %v", err)
+		}
+		f.expect(id, "after the customer's approval", "SCHEDULED", "implement", "canceled")
+		f.wantPlanned(id, "after the customer's approval", rsStart1, rsEnd2)
+		if approved, _ := f.customerOutcome(id); !approved {
+			t.Fatal("the customer's approval was not recorded")
+		}
+	})
+	t.Run("a customer's proposed time answered with a counter-proposal asks them again", func(t *testing.T) {
+		f, id := legacy(t)
+		f.mustPropose(id, crScopeUserA1, rsStart2)
+		f.wantAnswer(id, "after the proposal", "pending")
+		if err := f.counter(id, sp(rsStart3), sp(rsEnd3)); err != nil {
+			t.Fatalf("counter-proposal: %v", err)
+		}
+		f.expect(id, "after the counter-proposal", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		f.wantPlanned(id, "after the counter-proposal", rsStart3, rsEnd3)
+		stages := f.stages(id)
+		if got := f.stageLabels(id); got != "Peer Approval,CAB Approval,Customer Approval,Customer Approval" {
+			t.Fatalf("stages after the counter-proposal = %s, want a fresh customer stage", got)
+		}
+		assertApprovers(t, "the fresh customer stage", stages[3].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+	})
+	t.Run("a Re-schedule nobody can be asked about is refused whole, the customers' request untouched", func(t *testing.T) {
+		f, id := legacy(t)
+		var registered []string
+		rows, err := f.scoped.Query(f.sys, `SELECT id::text FROM project_contact WHERE project_id = $1 AND state = 'REGISTERED'`, crScopeProjectA)
+		if err != nil {
+			t.Fatalf("list the registered contacts: %v", err)
+		}
+		for rows.Next() {
+			var cid string
+			if err := rows.Scan(&cid); err != nil {
+				t.Fatalf("scan contact: %v", err)
+			}
+			registered = append(registered, cid)
+		}
+		rows.Close()
+		f.execSQL(`UPDATE project_contact SET state = 'DEACTIVATED'::project_contact_state_enum WHERE id = ANY($1::uuid[])`, registered)
+		before := f.snap(id)
+		f.wantExact("re-schedule with every contact gone", f.reschedule(id, nil, sp(rsEnd2)), nobodyMsgApproval)
+		f.wantExact("counter-proposal with every contact gone", f.counter(id, sp(rsStart3), sp(rsEnd3)), nobodyMsgApproval)
+		f.expect(id, "after the refused acts", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		f.wantPlanned(id, "after the refused acts", rsStart1, rsEnd1)
+		if n := f.liveStageRows(id, "Customer Approval"); n != 2 {
+			t.Fatalf("customer request has %d live rows after the refused acts, want 2 (untouched)", n)
+		}
+		if after := f.snap(id); after != before {
+			t.Fatalf("a refused act changed the change request:\n  before: %s\n  after:  %s", before, after)
+		}
+	})
 }
 
 // Standard has no internal approval either: Re-schedule applies the dates, stays in

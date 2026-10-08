@@ -660,6 +660,30 @@ func TestSNChangeRequestService_CreateChangeRequest_RequiresType(t *testing.T) {
 	}
 }
 
+// TestSNChangeRequestService_CreateChangeRequest_EmergencyWithACustomerBoxIsRefused: an
+// Emergency change takes no customer step, so the ServiceNow-only data source refuses a
+// create that ticks either box as the PostgreSQL ones do (before ServiceNow is called: the
+// client here is nil), rather than accepting and dropping it.
+func TestSNChangeRequestService_CreateChangeRequest_EmergencyWithACustomerBoxIsRefused(t *testing.T) {
+	svc := NewServiceNowChangeRequestService(nil)
+	emergency := domain.ChangeRequestTypeEmergency
+	yes := true
+	const reason = "Emergency changes proceed without customer consent, so customer approval and customer review cannot be required"
+	for name, req := range map[string]domain.CreateChangeRequestRequest{
+		"approval": {Subject: "subject", Type: &emergency, CustomerApprovalRequired: &yes},
+		"review":   {Subject: "subject", Type: &emergency, CustomerReviewRequired: &yes},
+	} {
+		_, err := svc.CreateChangeRequest(contextWithUserIDToken("token"), req)
+		ve, ok := err.(*apierror.ValidationError)
+		if !ok {
+			t.Fatalf("%s: expected *apierror.ValidationError, got %T: %v", name, err, err)
+		}
+		if !strings.HasPrefix(ve.Msg, reason) {
+			t.Errorf("%s: message %q should give the reason %q", name, ve.Msg, reason)
+		}
+	}
+}
+
 // TestWithoutCustomerOutcomeStates: ServiceNow's own offered next states never
 // reach the portal with the two states only the CUSTOMER can reach in them --
 // "scheduled" (from any state, Customer Approval included: the customer's own

@@ -50,20 +50,19 @@ func endFor(start string) string {
 
 // reachCustomerApproval creates a change of the type on project A (contacts Alice
 // and Bob), planned rsStart1 .. rsEnd1, and drives it to Customer Approval through
-// the real flow. Emergency goes through its ECAB approval.
+// the real flow. An Emergency change cannot be driven there: it takes no customer step
+// (it carries no box, and is scheduled by its CAB approval), so asking for one is a bug in
+// the test.
 func (f *crFlow) reachCustomerApproval(typ domain.ChangeRequestType) string {
 	f.t.Helper()
+	if typ == domain.ChangeRequestTypeEmergency {
+		f.t.Fatal("an Emergency change never reaches Customer Approval")
+	}
 	id := f.createWithProject(typ, sp(crScopeProjectA), true, false)
 	f.setPlanned(id, rsStart1, rsEnd1)
 	switch typ {
 	case domain.ChangeRequestTypeNormal:
 		f.driveToCustomerApproval(id)
-	case domain.ChangeRequestTypeEmergency:
-		seedApprovalGroupMembers(f.t, f.scoped, crECABGroupID, crECABMemberUserID)
-		f.requestApproval(id)
-		if err := f.decide(id, crECABMemberUserID, "approved"); err != nil {
-			f.t.Fatalf("ECAB approval: %v", err)
-		}
 	default:
 		f.requestApproval(id)
 	}

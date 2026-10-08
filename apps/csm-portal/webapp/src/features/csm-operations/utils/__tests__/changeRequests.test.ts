@@ -35,6 +35,7 @@ import {
   countActiveCRFilters,
   CUSTOMER_PROPOSAL_WAITING_REASON,
   customerApprovedDisplay,
+  CUSTOMER_STEP_NOT_APPLICABLE,
   customerGateWithheldTargets,
   customerProposalProposer,
   customerProposalProposerLabel,
@@ -56,6 +57,9 @@ import {
   isChangeRequestCategory,
   isChangeRequestCreator,
   isCreatableChangeRequestType,
+  isCustomerStepNotApplicable,
+  isEmergencyChangeRequestType,
+  EMERGENCY_CUSTOMER_STEPS_HELPER,
   anyApproverBeingAsked,
   NO_CUSTOMER_CONTACTS_HELPER,
   NOBODY_ASKED_HELPER,
@@ -323,6 +327,7 @@ describe("changeRequestBlockingReason", () => {
     ["Peer Approval", "Awaiting Peer Approval"],
     ["CAB Approval", "Awaiting CAB Approval"],
     ["CAB", "Awaiting CAB Approval"],
+    // An Emergency change raised before ECAB was retired: its stage still reads as it was named.
     ["ECAB Approval", "Awaiting ECAB Approval"],
     ["ECAB", "Awaiting ECAB Approval"],
     ["Emergency CAB", "Awaiting ECAB Approval"],
@@ -386,6 +391,7 @@ describe("approvalStageLabel", () => {
     ["Peer Approval", "Peer Approval"],
     ["Authorize", "CAB Approval"],
     ["CAB Approval", "CAB Approval"],
+    // Historic only: a stage an earlier version gave an Emergency change keeps its label.
     ["Emergency CAB", "ECAB Approval"],
     ["ECAB Approval", "ECAB Approval"],
     ["Review", "Review"],
@@ -886,6 +892,36 @@ describe("requestApprovalNeedsProjectReason", () => {
   it("is about the move out of New only", () => {
     expect(requestApprovalNeedsProjectReason({ state: "assess", customerApprovalRequired: true })).toBeNull();
   });
+
+  describe("an Emergency change (the backend ignores its two customer boxes: nobody is asked, so no project is needed)", () => {
+    it("never blocks, whichever box is still ticked on the stored row and whether or not it has a project", () => {
+      for (const flags of [
+        { customerApprovalRequired: true },
+        { customerReviewRequired: true },
+        { customerApprovalRequired: true, customerReviewRequired: true },
+      ]) {
+        expect(requestApprovalNeedsProjectReason({ state: "new", type: "emergency", ...flags }), JSON.stringify(flags)).toBeNull();
+        expect(requestApprovalNeedsProjectReason({ state: "new", type: "emergency", project: withProject, ...flags }), JSON.stringify(flags)).toBeNull();
+      }
+    });
+
+    it("reads the type the way the rest of the page does: case and padding ignored", () => {
+      for (const type of ["Emergency", "EMERGENCY", " emergency "]) {
+        expect(requestApprovalNeedsProjectReason({ state: "new", type, customerApprovalRequired: true }), type).toBeNull();
+      }
+    });
+
+    it("still blocks every other change with a ticked box and no project: Normal, Standard, no type recorded or an unknown one", () => {
+      for (const type of ["normal", "Normal", "standard", "emergency-ish", "", null, undefined]) {
+        expect(requestApprovalNeedsProjectReason({ state: "new", type, customerApprovalRequired: true }), String(type)).toBe(
+          REQUEST_APPROVAL_NEEDS_PROJECT_REASON,
+        );
+        expect(requestApprovalNeedsProjectReason({ state: "new", type, customerReviewRequired: true }), String(type)).toBe(
+          REQUEST_APPROVAL_NEEDS_PROJECT_REASON,
+        );
+      }
+    });
+  });
 });
 
 describe("requestApprovalNeedsContactReason", () => {
@@ -933,6 +969,39 @@ describe("requestApprovalNeedsContactReason", () => {
       expect(requestApprovalNeedsContactReason({ state, customerApprovalRequired: true, project, customerContacts: [] }), state).toBeNull();
     }
   });
+
+  describe("an Emergency change (the backend ignores its two customer boxes: nobody is asked, so nobody is missing)", () => {
+    it("never blocks for an empty contact list, whichever box is still ticked on the stored row", () => {
+      for (const flags of [
+        { customerApprovalRequired: true },
+        { customerReviewRequired: true },
+        { customerApprovalRequired: true, customerReviewRequired: true },
+      ]) {
+        expect(requestApprovalNeedsContactReason({ state: "new", type: "emergency", project, customerContacts: [], ...flags }), JSON.stringify(flags)).toBeNull();
+      }
+      // No state recorded yet is the creation phase too.
+      expect(requestApprovalNeedsContactReason({ type: "emergency", customerApprovalRequired: true, project, customerContacts: [] })).toBeNull();
+    });
+
+    it("reads the type the way the rest of the page does: case and padding ignored", () => {
+      for (const type of ["Emergency", "EMERGENCY", " emergency "]) {
+        expect(requestApprovalNeedsContactReason({ state: "new", type, customerApprovalRequired: true, project, customerContacts: [] }), type).toBeNull();
+      }
+    });
+
+    it("still blocks every other change with a ticked box and a project with no registered contact: Normal, Standard, no type recorded or an unknown one", () => {
+      for (const type of ["normal", "Normal", "standard", "emergency-ish", "", null, undefined]) {
+        expect(
+          requestApprovalNeedsContactReason({ state: "new", type, customerApprovalRequired: true, project, customerContacts: [] }),
+          String(type),
+        ).toBe(REQUEST_APPROVAL_NEEDS_CONTACT_REASON);
+        expect(
+          requestApprovalNeedsContactReason({ state: "new", type, customerReviewRequired: true, project, customerContacts: [] }),
+          String(type),
+        ).toBe(REQUEST_APPROVAL_NEEDS_CONTACT_REASON);
+      }
+    });
+  });
 });
 
 describe("CHANGE_REQUEST_CREATE_TYPE_OPTIONS", () => {
@@ -953,6 +1022,63 @@ describe("CHANGE_REQUEST_CREATE_TYPE_OPTIONS", () => {
     expect(isCreatableChangeRequestType("model")).toBe(false);
     expect(isCreatableChangeRequestType("")).toBe(false);
     expect(isCreatableChangeRequestType(undefined)).toBe(false);
+  });
+});
+
+describe("the Emergency change type", () => {
+  it("is recognised by the backend's enum value, however it is cased or padded", () => {
+    expect(isEmergencyChangeRequestType("emergency")).toBe(true);
+    expect(isEmergencyChangeRequestType(" Emergency ")).toBe(true);
+    expect(isEmergencyChangeRequestType("normal")).toBe(false);
+    expect(isEmergencyChangeRequestType("standard")).toBe(false);
+    expect(isEmergencyChangeRequestType("")).toBe(false);
+    expect(isEmergencyChangeRequestType(null)).toBe(false);
+    expect(isEmergencyChangeRequestType(undefined)).toBe(false);
+  });
+
+  it("says in one line why the two customer boxes are off", () => {
+    expect(EMERGENCY_CUSTOMER_STEPS_HELPER).toBe("Emergency changes proceed without customer approval or review.");
+  });
+
+  describe("a customer step is not applicable to an Emergency change (the flow never asks the customer), unless the record shows it went there", () => {
+    const emergency = { type: "emergency", state: "authorize" };
+
+    it("reads Not applicable on an Emergency change, whatever its stored boxes hold", () => {
+      expect(CUSTOMER_STEP_NOT_APPLICABLE).toBe("Not applicable");
+      for (const state of ["new", "authorize", "scheduled", "implement", "review", "closed", "canceled", "rollback"]) {
+        expect(isCustomerStepNotApplicable({ type: "emergency", state }, "approval"), state).toBe(true);
+        expect(isCustomerStepNotApplicable({ type: "emergency", state }, "review"), state).toBe(true);
+      }
+    });
+
+    it("shows a step as it is when the change sits in that customer state", () => {
+      expect(isCustomerStepNotApplicable({ type: "emergency", state: "customer_approval" }, "approval")).toBe(false);
+      expect(isCustomerStepNotApplicable({ type: "emergency", state: "customer_approval" }, "review")).toBe(true);
+      expect(isCustomerStepNotApplicable({ type: "emergency", state: "customer_review" }, "review")).toBe(false);
+      expect(isCustomerStepNotApplicable({ type: "emergency", state: "customer_review" }, "approval")).toBe(true);
+    });
+
+    it("shows a step as it is when the customer's outcome is on record", () => {
+      expect(isCustomerStepNotApplicable({ ...emergency, hasCustomerApproved: true }, "approval")).toBe(false);
+      expect(isCustomerStepNotApplicable({ ...emergency, hasCustomerApproved: true }, "review")).toBe(true);
+      expect(isCustomerStepNotApplicable({ ...emergency, hasCustomerReviewed: true }, "review")).toBe(false);
+    });
+
+    it("shows a step as it is when a stage row of that gate exists, however the backend spells it", () => {
+      expect(isCustomerStepNotApplicable(emergency, "approval", [{ stage: "Customer Approval" }])).toBe(false);
+      expect(isCustomerStepNotApplicable(emergency, "approval", [{ stage: "customer_approval" }])).toBe(false);
+      expect(isCustomerStepNotApplicable(emergency, "review", [{ stage: "Customer Review" }])).toBe(false);
+      expect(isCustomerStepNotApplicable(emergency, "review", [{ stage: "Customer Approval" }])).toBe(true);
+      expect(isCustomerStepNotApplicable(emergency, "approval", [{ stage: "CAB Approval" }, { stage: "ECAB Approval" }])).toBe(true);
+      expect(isCustomerStepNotApplicable(emergency, "approval", [])).toBe(true);
+    });
+
+    it("never applies to any other type: Normal, Standard and the rest read Yes / No", () => {
+      for (const type of ["normal", "standard", "model", undefined, null]) {
+        expect(isCustomerStepNotApplicable({ type, state: "authorize" }, "approval"), String(type)).toBe(false);
+        expect(isCustomerStepNotApplicable({ type, state: "authorize" }, "review"), String(type)).toBe(false);
+      }
+    });
   });
 });
 
