@@ -2477,6 +2477,47 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /teams/search:
+    post:
+      summary: Search the team table (PostgreSQL data source only).
+      description: >-
+        Lists rows of the `team` table, ordered by name, with an optional
+        case-insensitive substring filter on the name. This is the curated
+        team registry, distinct from `POST /groups/search`, which lists the
+        `"group"` table.
+      operationId: searchTeams
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SearchTeamsRequest'
+      responses:
+        "200":
+          description: Teams matching the filters.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SearchTeamsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /teams/{id}/members:
     get:
       summary: Get a team's member roster.
@@ -19776,6 +19817,42 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/Group'
+        total:
+          type: integer
+        offset:
+          type: integer
+        limit:
+          type: integer
+
+    SearchTeamsRequest:
+      type: object
+      properties:
+        filters:
+          type: object
+          properties:
+            searchQuery:
+              type: string
+        pagination:
+          $ref: '#/components/schemas/Pagination'
+
+    Team:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+
+    SearchTeamsResponse:
+      type: object
+      properties:
+        teams:
+          type: array
+          items:
+            $ref: '#/components/schemas/Team'
         total:
           type: integer
         offset:
