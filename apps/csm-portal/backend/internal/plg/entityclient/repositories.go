@@ -197,9 +197,13 @@ func (c *Client) AttachPlaybook(ctx context.Context, req domain.AttachPlaybookRe
 
 // DetachRun removes a run. Zero rows means it was closed, and closed runs are
 // not detachable — that would erase a recorded outcome.
-func (c *Client) DetachRun(ctx context.Context, runID string) (string, string, error) {
+func (c *Client) DetachRun(ctx context.Context, runID, actorID string) (string, string, error) {
 	var out writeResult
-	if err := c.delete(ctx, "/plg/playbook-runs/"+esc(runID), &out); err != nil {
+	// actorId as a query parameter, because a DELETE has no body. url.Values
+	// does the escaping rather than string concatenation, which is where an id
+	// that is not the UUID it is assumed to be would otherwise reach the path.
+	q := url.Values{"actorId": {actorID}}
+	if err := c.delete(ctx, "/plg/playbook-runs/"+esc(runID)+"?"+q.Encode(), &out); err != nil {
 		return "", "", err
 	}
 	if out.RowsAffected == 0 {

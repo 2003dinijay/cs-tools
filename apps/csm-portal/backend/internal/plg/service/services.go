@@ -131,7 +131,7 @@ type OrgPlatformService interface {
 	Get(ctx context.Context, orgID, productCode string) (*domain.ProductDetail, error)
 	Patch(ctx context.Context, req domain.PatchOrgPlatformRequest, actor string) (*domain.ProductDetail, error)
 	AttachPlaybook(ctx context.Context, req domain.AttachPlaybookRequest, actor string) (*domain.ProductDetail, error)
-	DetachRun(ctx context.Context, runID string) (*domain.ProductDetail, error)
+	DetachRun(ctx context.Context, runID, actorID string) (*domain.ProductDetail, error)
 	PatchRunTask(ctx context.Context, req domain.PatchRunTaskRequest, actor string) (*domain.ProductDetail, error)
 	CreateNote(ctx context.Context, req domain.CreateNoteRequest, actor string) (*domain.ProductDetail, error)
 	UpdateNote(ctx context.Context, req domain.UpdateNoteRequest, actor string) (*domain.ProductDetail, error)
@@ -237,11 +237,11 @@ func (s *orgPlatformService) AttachPlaybook(ctx context.Context, req domain.Atta
 	return s.repo.Get(ctx, req.OrganizationID, req.ProductCode)
 }
 
-func (s *orgPlatformService) DetachRun(ctx context.Context, runID string) (*domain.ProductDetail, error) {
+func (s *orgPlatformService) DetachRun(ctx context.Context, runID, actorID string) (*domain.ProductDetail, error) {
 	if err := validateUUID("playbookRunId", runID); err != nil {
 		return nil, err
 	}
-	orgID, code, err := s.repo.DetachRun(ctx, runID)
+	orgID, code, err := s.repo.DetachRun(ctx, runID, actorID)
 	if err != nil {
 		return nil, err
 	}

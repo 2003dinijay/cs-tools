@@ -24,7 +24,7 @@ type PairingWriter interface {
 	Acknowledge(ctx context.Context, req domain.AcknowledgeRequest, actorID string) (domain.AcknowledgeResult, error)
 	PatchPairing(ctx context.Context, req domain.PatchOrgPlatformRequest, actorID string) (domain.PatchPairingResult, error)
 	AttachPlaybook(ctx context.Context, req domain.AttachPlaybookRequest, actorID string) error
-	DetachRun(ctx context.Context, runID string) (domain.WriteResult, string, string, error)
+	DetachRun(ctx context.Context, runID, actorID string) (domain.WriteResult, string, string, error)
 	PatchRunTask(ctx context.Context, req domain.PatchRunTaskRequest, actorID string) (string, string, error)
 	CreateNote(ctx context.Context, req domain.CreateNoteRequest, actorID string) error
 	UpdateNote(ctx context.Context, req domain.UpdateNoteRequest, actorID string) (domain.WriteResult, string, string, error)
@@ -118,11 +118,11 @@ func (s *pairingService) AttachPlaybook(ctx context.Context, req domain.AttachPl
 	return s.repo.AttachPlaybook(ctx, req, actorID)
 }
 
-func (s *pairingService) DetachRun(ctx context.Context, runID string) (domain.WriteResult, string, string, error) {
+func (s *pairingService) DetachRun(ctx context.Context, runID, actorID string) (domain.WriteResult, string, string, error) {
 	if err := validateUUID("playbookRunId", runID); err != nil {
 		return domain.WriteResult{}, "", "", err
 	}
-	return s.repo.DetachRun(ctx, runID)
+	return s.repo.DetachRun(ctx, runID, actorID)
 }
 
 func (s *pairingService) PatchRunTask(ctx context.Context, req domain.PatchRunTaskRequest, actorID string) (string, string, error) {

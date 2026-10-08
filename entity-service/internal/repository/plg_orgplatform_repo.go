@@ -22,7 +22,7 @@ type OrgPlatformRepository interface {
 	Acknowledge(ctx context.Context, req domain.AcknowledgeRequest, actor string) (domain.AcknowledgeResult, error)
 
 	AttachPlaybook(ctx context.Context, req domain.AttachPlaybookRequest, actor string) error
-	DetachRun(ctx context.Context, runID string) (res domain.WriteResult, orgID, productCode string, err error)
+	DetachRun(ctx context.Context, runID, actorID string) (res domain.WriteResult, orgID, productCode string, err error)
 	PatchRunTask(ctx context.Context, req domain.PatchRunTaskRequest, actor string) (orgID, productCode string, err error)
 	RunTaskShape(ctx context.Context, taskID string) (domain.RunTaskShape, error)
 
@@ -697,7 +697,8 @@ func (r *orgPlatformRepository) AttachPlaybook(ctx context.Context, req domain.A
 		var attached bool
 		if e := tx.QueryRow(ctx, `
 			SELECT EXISTS (SELECT 1 FROM plg_playbook_run
-			               WHERE org_platform_id::TEXT = $1 AND playbook_id::TEXT = $2)`,
+			               WHERE org_platform_id::TEXT = $1 AND playbook_id::TEXT = $2
+			                 AND detached_on IS NULL)`,
 			pairingID, req.PlaybookID).Scan(&attached); e != nil {
 			return fmt.Errorf("check existing run: %w", e)
 		}
@@ -738,19 +739,30 @@ func (r *orgPlatformRepository) AttachPlaybook(ctx context.Context, req domain.A
 	return tx.Commit(ctx)
 }
 
-// DetachRun removes a run and its task instances.
+// DetachRun takes a playbook off a pairing, recording who did it.
 //
 // GUARDED WRITE (contract W4). A closed run cannot be detached — that would
 // erase a recorded outcome. The refusal is in the DELETE's WHERE clause rather
 // than a read before it, so a run closed in between is still protected.
-func (r *orgPlatformRepository) DetachRun(ctx context.Context, runID string) (domain.WriteResult, string, string, error) {
+func (r *orgPlatformRepository) DetachRun(ctx context.Context, runID, actorID string) (domain.WriteResult, string, string, error) {
 	var res domain.WriteResult
 
 	// Locate first: the caller's response is the reloaded pairing, so the ids are
-	// needed whether or not the delete applies.
+	// needed whether or not the detach applies.
+	//
+	// detached_on IS NULL here as well as in the UPDATE, so an already-detached
+	// run is NOT FOUND rather than a conflict. Every read of a run goes through
+	// plg_playbook_run_v, which filters detached rows, so such a run is already
+	// invisible to the caller -- 404 is what the rest of the API says about it.
+	//
+	// It also keeps rowsAffected == 0 meaning exactly one thing downstream: the
+	// run has a completed CLOSE_PLAYBOOK task. The BFF turns that single case
+	// into its 409 and names it; without this filter that message would also be
+	// returned for a repeated detach, where it is simply untrue.
 	var pairingID string
 	err := r.db.QueryRow(ctx,
-		`SELECT org_platform_id::TEXT FROM plg_playbook_run WHERE id::TEXT = $1`,
+		`SELECT org_platform_id::TEXT FROM plg_playbook_run
+		  WHERE id::TEXT = $1 AND detached_on IS NULL`,
 		runID).Scan(&pairingID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return res, "", "", &apierror.NotFoundError{Msg: "playbook run not found"}
@@ -764,16 +776,28 @@ func (r *orgPlatformRepository) DetachRun(ctx context.Context, runID string) (do
 		return res, "", "", err
 	}
 
-	// The guard: no completed CLOSE_PLAYBOOK task on this run. Expressed against
-	// the task table rather than the view's run_status, because a WHERE clause
-	// cannot reference a derived column of the row it is deleting.
+	// An UPDATE rather than a DELETE, so the row survives to record who removed
+	// the playbook and when. plg_playbook_run_v and plg_work_queue_v both filter
+	// detached_on, so a detached run disappears from every read exactly as the
+	// deleted row used to -- see 0211.
+	//
+	// The guard is unchanged: no completed CLOSE_PLAYBOOK task on this run.
+	// Expressed against the task table rather than the view's run_status,
+	// because a WHERE clause cannot reference a derived column of its own row.
+	//
+	// detached_on IS NULL is part of the WHERE, which makes a second detach a
+	// no-op (rowsAffected 0) instead of overwriting the first detacher with
+	// whoever repeated the call.
 	tag, err := r.db.Exec(ctx, `
-		DELETE FROM plg_playbook_run r
+		UPDATE plg_playbook_run r
+		SET    detached_on = NOW(),
+		       detached_by = $3::UUID
 		WHERE  r.id::TEXT = $1
+		  AND  r.detached_on IS NULL
 		  AND  NOT EXISTS (SELECT 1 FROM plg_playbook_run_task t
 		                   WHERE t.playbook_run_id = r.id
 		                     AND t.code = $2 AND t.is_completed)`,
-		runID, domain.TaskCodeClose)
+		runID, domain.TaskCodeClose, uuidArg(actorID))
 	if err != nil {
 		return res, "", "", fmt.Errorf("detach playbook run: %w", err)
 	}

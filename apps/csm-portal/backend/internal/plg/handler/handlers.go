@@ -192,7 +192,7 @@ func (h *Handlers) AttachPlaybook(w http.ResponseWriter, r *http.Request) {
 
 // DetachRun serves DELETE /playbook-runs/{playbookRunId}.
 func (h *Handlers) DetachRun(w http.ResponseWriter, r *http.Request) {
-	detail, err := h.pairings.DetachRun(r.Context(), r.PathValue("playbookRunId"))
+	detail, err := h.pairings.DetachRun(r.Context(), r.PathValue("playbookRunId"), actor(r))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

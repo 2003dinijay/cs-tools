@@ -42,7 +42,7 @@ type OrgPlatformRepository interface {
 	Acknowledge(ctx context.Context, req domain.AcknowledgeRequest, actor string) error
 
 	AttachPlaybook(ctx context.Context, req domain.AttachPlaybookRequest, actor string) error
-	DetachRun(ctx context.Context, runID string) (orgID, productCode string, err error)
+	DetachRun(ctx context.Context, runID, actorID string) (orgID, productCode string, err error)
 	PatchRunTask(ctx context.Context, req domain.PatchRunTaskRequest, actor string) (orgID, productCode string, err error)
 	RunTaskShape(ctx context.Context, taskID string) (domain.RunTaskShape, error)
 

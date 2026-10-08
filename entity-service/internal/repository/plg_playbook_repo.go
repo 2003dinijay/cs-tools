@@ -41,7 +41,12 @@ const playbookSelect = `
 	       pb.name, pb.description,
 	       pb.lifecycle_stage::TEXT, ls.name, pb.playbook_type::TEXT,
 	       pb.display_order, pb.active,
-	       (SELECT COUNT(*)::INT FROM plg_playbook_run r WHERE r.playbook_id = pb.id),
+	       -- Attached runs only, so this sits consistently beside the ACTIVE
+	       -- count below it, which reads plg_playbook_run_v and is already
+	       -- filtered. Counting detached rows here would make "3 runs, 1 active"
+	       -- true of a playbook attached to one pairing.
+	       (SELECT COUNT(*)::INT FROM plg_playbook_run r
+	         WHERE r.playbook_id = pb.id AND r.detached_on IS NULL),
 	       (SELECT COUNT(*)::INT FROM plg_playbook_run_v v
 	         WHERE v.playbook_id = pb.id AND v.run_status = 'ACTIVE'),
 	       pb.created_at, pb.updated_at
@@ -339,6 +344,11 @@ func (r *playbookRepository) ReplaceTasks(ctx context.Context, req domain.Replac
 
 // Delete removes a playbook. Refused while any pairing still runs it — the FK is
 // ON DELETE RESTRICT, and naming the count is more use than the raw error.
+//
+// This count deliberately includes DETACHED runs, unlike every other read of
+// this table. The FK restricts on the row existing, not on it being attached, so
+// a count filtered to attached rows would report zero and then fail on the
+// delete itself with the raw constraint error this exists to replace.
 func (r *playbookRepository) Delete(ctx context.Context, id string) error {
 	var inUse int
 	if err := r.db.QueryRow(ctx,
