@@ -34,8 +34,8 @@ func TestBuildCreationNote_RendersAlertAsHTMLTable(t *testing.T) {
 	}
 	got := BuildCreationNote("ALT000000020", a)
 
-	if !strings.HasPrefix(got, "Incident auto-created from Alert: ALT000000020\n") {
-		t.Fatalf("expected a plain-text intro line naming the alert id, got: %s", got)
+	if !strings.HasPrefix(got, "<p>Incident auto-created from Alert: ALT000000020</p>") {
+		t.Fatalf("expected an HTML intro paragraph naming the alert id, got: %s", got)
 	}
 	if !strings.Contains(got, "<table") || !strings.Contains(got, "</table>") {
 		t.Fatalf("expected an HTML table, got: %s", got)
