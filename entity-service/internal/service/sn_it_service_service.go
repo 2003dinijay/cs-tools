@@ -141,13 +141,21 @@ func (s *snITServiceService) SearchITServices(ctx context.Context, req domain.Se
 	}
 	rankITServices(window, query)
 
-	// A page that crosses the window's end is completed from the upstream rows
-	// right after the window, which is exactly where a page starting at the end
-	// begins. Without this it would be short, and a caller that steps by its
-	// page size (rather than by how many rows came back) would skip the rows
-	// between the short page and its next offset.
-	if wantEnd := offset + limit; wantEnd > snITServiceRankWindow && total > snITServiceRankWindow {
-		tail, err := s.fetchITServicePage(ctx, token, filters, snITServiceRankWindow, wantEnd-snITServiceRankWindow)
+	// A page that runs past the rows the window holds is completed from the
+	// upstream rows right after the window, which is exactly where a page
+	// starting at the window's end begins. Without this it would be short, and
+	// a caller that steps by its page size (rather than by how many rows came
+	// back) would skip the rows between the short page and its next offset.
+	// "Past the rows the window holds" covers both a page crossing the nominal
+	// end (250) and one ending at it when deduplication left the window a row or
+	// two short; the missing rows are the ones that slid off the end of the
+	// shifted last page, i.e. the ones right after it.
+	if wantEnd := offset + limit; wantEnd > len(window) && total > snITServiceRankWindow {
+		// Never more than the upstream's page ceiling, which it answers with an
+		// error: an upstream holding far fewer rows than its count claims leaves
+		// a large shortfall that no single page can fill.
+		need := min(wantEnd-len(window), maxLimit)
+		tail, err := s.fetchITServicePage(ctx, token, filters, snITServiceRankWindow, need)
 		if err != nil {
 			return domain.SearchITServicesResponse{}, err
 		}

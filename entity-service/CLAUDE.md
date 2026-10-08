@@ -6396,7 +6396,9 @@ is an empty one and lists everything.
   300 matches, against 6); a label that exists is found on its first page. An upstream failure
   on any page fails the search rather than returning a partly ranked list. The pages are
   fetched at slightly different moments, so a record created in between could repeat the row at
-  a seam; the window is deduplicated by id.
+  a seam; the window is deduplicated by id, and a page that leaves short (the window then
+  holds 249 of its 250 rows) is filled from the rows right after the window like the page
+  that crosses its end, never asking the upstream for more than its page ceiling of 50.
 
 Tests: `sn_it_service_service_test.go` (a fake upstream shaped like production, with
 the 55 "Choreo" matches), `it_service_repo_integration_test.go` (real Postgres in a

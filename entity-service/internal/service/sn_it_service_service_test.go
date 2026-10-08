@@ -505,6 +505,54 @@ func TestSNITServiceSearch_DuplicateAtAPageSeamIsDroppedWithinOneResponse(t *tes
 	}
 }
 
+// The dedupe above can leave the window one row short (249 of 250), and a page
+// that ends at the window's nominal end then comes back one row short. The
+// shortfall is filled from the rows right after the window: with a record
+// created between the pages, the row that fell off the end of the shifted last
+// page is exactly the next one the upstream holds.
+func TestSNITServiceSearch_PageEndingAtTheWindowIsFullAfterADedupe(t *testing.T) {
+	fake := &fakeServiceNowServices{
+		records: widgetRecords(300),
+		afterFirstCall: func(f *fakeServiceNowServices) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.records = append([]snITService{fakeService(9999, "Widget NEW", "cmdb_ci_service")}, f.records...)
+		},
+	}
+	// offset 230, limit 20 ends exactly at the nominal window end (250).
+	resp := searchITServices(t, fake, "widget", 230, 20)
+
+	if len(resp.Services) != 20 {
+		t.Fatalf("page has %d rows, want a full page of 20", len(resp.Services))
+	}
+	seen := map[string]bool{}
+	for _, n := range itServiceNames(resp) {
+		if seen[n] {
+			t.Errorf("%q is on the page twice", n)
+		}
+		seen[n] = true
+	}
+}
+
+// Filling a shortfall must never ask the upstream for more than its page
+// ceiling, which it answers with an error: an upstream holding far fewer rows
+// than its count claims leaves a large shortfall.
+func TestSNITServiceSearch_ShortfallTopUpStaysWithinThePageCeiling(t *testing.T) {
+	fake := &fakeServiceNowServices{records: widgetRecords(60), totalOverride: 300}
+	svc := NewServiceNowITServiceService(newTestSNClient(t, fake))
+
+	resp, err := svc.SearchITServices(context.Background(), domain.SearchITServicesRequest{
+		Filters:    &domain.SearchITServicesFilters{SearchQuery: "widget"},
+		Pagination: domain.Pagination{Offset: 240, Limit: 50}, // 290 wanted, 60 held: a shortfall of 230
+	})
+	if err != nil {
+		t.Fatalf("a large shortfall must not become an upstream limit error: %v", err)
+	}
+	if len(resp.Services) != 0 {
+		t.Errorf("got %d rows past the end of the data, want none", len(resp.Services))
+	}
+}
+
 // An upstream whose count is larger than the rows it holds must not panic or
 // repeat rows; the walk simply ends where the rows do.
 func TestSNITServiceSearch_TotalLargerThanTheRowsHeld(t *testing.T) {
