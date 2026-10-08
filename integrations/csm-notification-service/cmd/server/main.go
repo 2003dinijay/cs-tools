@@ -1041,9 +1041,9 @@ func main() {
 // requires this service's OAuth2 client id to be in its
 // AUTH_INTERNAL_CLIENT_IDS for that endpoint.
 func loadOnboardingConfig(steps *entity.CustomerEntityClient, emailClient *notifications.EmailClient) dispatch.OnboardingConfig {
-	// CSM_MIGRATION_* flags are opt-in: off unless exactly "true".
-	identityEnabled := envBool("CSM_MIGRATION_ONBOARD_IDENTITY_ENABLED", false)
-	emailEnabled := envBool("CSM_MIGRATION_ONBOARD_EMAIL_ENABLED", false)
+	// CSM_MIGRATION_* flags are on unless set to "false".
+	identityEnabled := envBool("CSM_MIGRATION_ONBOARD_IDENTITY_ENABLED", true)
+	emailEnabled := envBool("CSM_MIGRATION_ONBOARD_EMAIL_ENABLED", true)
 
 	scimBaseURL := os.Getenv("SCIM_BASE_URL")
 	if identityEnabled && scimBaseURL == "" {

@@ -265,27 +265,19 @@ func TestStartupRejectsPostgresWithExcludedProjectKeys(t *testing.T) {
 	}
 }
 
-// TestOnboardingStatusEnabled pins the deliberately strict parse behind
-// CSM_MIGRATION_ONBOARDING_STATUS_ENABLED: only the exact string "true"
-// (whitespace-trimmed) turns the feature on. Every CSM_MIGRATION_* flag is a
-// cutover switch, so the ParseBool leniency SFTPGO_* enjoys ("1", "TRUE",
-// "t") is intentionally not accepted here — a value that merely looks truthy
-// must leave the route unregistered.
+// TestOnboardingStatusEnabled pins the parse behind
+// CSM_MIGRATION_ONBOARDING_STATUS_ENABLED: on unless the value is "false".
 func TestOnboardingStatusEnabled(t *testing.T) {
 	tests := []struct {
 		raw  string
 		want bool
 	}{
-		{"", false},
-		{"false", false},
-		{"0", false},
-		{"1", false},
-		{"TRUE", false},
-		{"True", false},
-		{"t", false},
-		{"yes", false},
+		{"", true},
 		{"true", true},
-		{"  true\n", true},
+		{"1", true},
+		{"false", false},
+		{"FALSE", false},
+		{"  False\n", false},
 	}
 	for _, tc := range tests {
 		t.Run("value="+tc.raw, func(t *testing.T) {
@@ -296,19 +288,14 @@ func TestOnboardingStatusEnabled(t *testing.T) {
 	}
 }
 
-// TestLoadOnboardingStatusEnabledReadsEnv checks the env-reading wrapper
-// against the same rule for the two values a deployment will actually set.
+// TestLoadOnboardingStatusEnabledReadsEnv checks the env-reading wrapper.
 func TestLoadOnboardingStatusEnabledReadsEnv(t *testing.T) {
-	t.Setenv(onboardingStatusFlag, "true")
-	if !loadOnboardingStatusEnabled() {
-		t.Error("expected on when the flag is exactly \"true\"")
-	}
-	t.Setenv(onboardingStatusFlag, "TRUE")
-	if loadOnboardingStatusEnabled() {
-		t.Error("expected off for \"TRUE\": only the exact lower-case value opts in")
-	}
 	t.Setenv(onboardingStatusFlag, "")
+	if !loadOnboardingStatusEnabled() {
+		t.Error("expected on when the flag is unset/empty")
+	}
+	t.Setenv(onboardingStatusFlag, "false")
 	if loadOnboardingStatusEnabled() {
-		t.Error("expected off when the flag is unset/empty")
+		t.Error("expected off when the flag is \"false\"")
 	}
 }

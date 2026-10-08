@@ -1107,18 +1107,10 @@ const onboardingStatusFlag = "CSM_MIGRATION_ONBOARDING_STATUS_ENABLED"
 // loadOnboardingStatusEnabled resolves the customer-onboarding status feature
 // flag:
 //
-//	CSM_MIGRATION_ONBOARDING_STATUS_ENABLED  Exactly "true" (after trimming
-//	                                         whitespace) turns the feature on.
-//	                                         Off by default — unset, empty, or
-//	                                         any other value (including "1",
-//	                                         "TRUE", "yes") keeps it dark and
-//	                                         changes nothing else in this
-//	                                         backend. Deliberately stricter
-//	                                         than the strconv.ParseBool
-//	                                         parsing SFTPGO_* uses: every
-//	                                         CSM_MIGRATION_* flag is a
-//	                                         cutover switch that must not
-//	                                         flip on by accident.
+//	CSM_MIGRATION_ONBOARDING_STATUS_ENABLED  On unless the value is "false"
+//	                                         (case-insensitive, trimmed), like
+//	                                         every CSM_MIGRATION_* switch. Off,
+//	                                         the route is not registered.
 func loadOnboardingStatusEnabled() bool {
 	enabled := onboardingStatusEnabled(os.Getenv(onboardingStatusFlag))
 	if enabled {
@@ -1129,7 +1121,7 @@ func loadOnboardingStatusEnabled() bool {
 
 // onboardingStatusEnabled is the pure parse behind loadOnboardingStatusEnabled.
 func onboardingStatusEnabled(raw string) bool {
-	return strings.TrimSpace(raw) == "true"
+	return !strings.EqualFold(strings.TrimSpace(raw), "false")
 }
 
 // loadSftpgoConfig resolves the SFTPGo-backed attachment-storage feature

@@ -536,33 +536,30 @@ func TestLoad_M2MClientIDsFieldName(t *testing.T) {
 	}
 }
 
-// TestLoad_CSMMigrationPortalWritesEnabled pins the kill switch's parsing:
-// only the exact string "true" turns the portal membership writes on, so a
-// typo, a "1", or a "TRUE" leaves them off rather than half-enabling a write
-// path that touches Salesforce.
-func TestLoad_CSMMigrationPortalWritesEnabled(t *testing.T) {
-	for value, want := range map[string]bool{
-		"true": true, "TRUE": false, "True": false, "1": false, "yes": false, "": false, " true ": false,
-	} {
-		t.Setenv("CSM_MIGRATION_PORTAL_WRITES_ENABLED", value)
-		if got := Load().CSMMigrationPortalWritesEnabled; got != want {
-			t.Errorf("CSM_MIGRATION_PORTAL_WRITES_ENABLED=%q -> %v, want %v", value, got, want)
-		}
+// TestLoad_CSMMigrationSwitchesDefaultOn pins the switch parsing: every
+// CSM_MIGRATION_* switch is on unless its value is "false", case-insensitive.
+func TestLoad_CSMMigrationSwitchesDefaultOn(t *testing.T) {
+	switches := map[string]func(*Config) bool{
+		"CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED":  func(c *Config) bool { return c.CSMMigrationSalesforceMembershipIngestEnabled },
+		"CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED":     func(c *Config) bool { return c.CSMMigrationSalesforceAccountIngestEnabled },
+		"CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED": func(c *Config) bool { return c.CSMMigrationSalesforceOpportunityIngestEnabled },
+		"CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED":     func(c *Config) bool { return c.CSMMigrationSalesforceProjectIngestEnabled },
+		"CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED":     func(c *Config) bool { return c.CSMMigrationSalesforceProjectInsertEnabled },
+		"CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED":     func(c *Config) bool { return c.CSMMigrationSalesforcePartnerIngestEnabled },
+		"CSM_MIGRATION_PORTAL_WRITES_ENABLED":                 func(c *Config) bool { return c.CSMMigrationPortalWritesEnabled },
+		"CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED":       func(c *Config) bool { return c.CSMMigrationMembershipRegistrationEnabled },
+		"CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED":    func(c *Config) bool { return c.CSMMigrationCustomerEngagementIngestEnabled },
 	}
-}
-
-// TestLoad_CSMMigrationMembershipRegistrationEnabled pins the same parse for
-// the registration kill switch. It gates POST /users/me/memberships/register,
-// which clears a contact's Salesforce lockout and flips the membership to
-// REGISTERED, so a "TRUE" or a "1" must leave the route unregistered rather
-// than half-enabling a path that writes to Salesforce.
-func TestLoad_CSMMigrationMembershipRegistrationEnabled(t *testing.T) {
-	for value, want := range map[string]bool{
-		"true": true, "TRUE": false, "True": false, "1": false, "yes": false, "": false, " true ": false,
-	} {
-		t.Setenv("CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED", value)
-		if got := Load().CSMMigrationMembershipRegistrationEnabled; got != want {
-			t.Errorf("CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED=%q -> %v, want %v", value, got, want)
+	values := map[string]bool{
+		"": true, "true": true, "1": true, "yes": true, "false": false, "FALSE": false, " False ": false,
+	}
+	for key, get := range switches {
+		for value, want := range values {
+			t.Setenv(key, value)
+			cfg := Load()
+			if got := get(cfg); got != want {
+				t.Errorf("%s=%q -> %v, want %v", key, value, got, want)
+			}
 		}
 	}
 }

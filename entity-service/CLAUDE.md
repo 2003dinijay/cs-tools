@@ -370,7 +370,7 @@ the tie-break lives in `internal/repository/sf_id_resolve.go`. Deletes still hit
 
 The same `POST /salesforce/events` endpoint also ingests customer **memberships**
 — Salesforce `Project_Contact__c` (a Contact's membership of a project) and
-`Contact` — when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true`. Off by default:
+`Contact` — when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` is on (every `CSM_MIGRATION_*` switch is on unless set to `false`). Off:
 `routes.go` then constructs the service with `NewSalesforceEventService`, which
 acknowledges those entities with 204 and ignores them (the behaviour before this
 branch existed). On, it uses `NewSalesforceEventServiceWithMembershipIngest`
@@ -665,7 +665,7 @@ registers none).
 ## Salesforce Opportunity ingest
 
 `POST /salesforce/events` acts on `Opportunity` envelopes when
-`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true` (off by default: they are
+`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` is on (off: they are
 acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest.go`
 (attached to the event service with `WithOpportunityIngest` in `routes.go`),
 `internal/repository/sf_opportunity_repo.go`, `GetOpportunity` in
@@ -724,7 +724,7 @@ acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest
 ## Salesforce Project ingest
 
 `POST /salesforce/events` acts on `Project__c` envelopes when
-`CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED=true` (off by default: acknowledged and
+`CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED` is on (off: acknowledged and
 ignored). Code: `internal/service/salesforce_project_ingest.go` (`WithProjectIngest` in
 `routes.go`), `internal/repository/salesforce_project_repo.go`, `GetProject` in
 `internal/salesentity/project.go`. Plan: `docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md` §6.
@@ -819,8 +819,7 @@ Ports ServiceNow `processAllocationEvent` for allocation-app events, in one tran
 
 The partner links in `account_relationship` ("partner **Is Partner Of** customer",
 read by the invitation validator through `AccountPartnerRepository`) are refreshed
-from Salesforce when `CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true` (off by
-default). Code: `RefreshPartners` in `internal/service/salesforce_partner_ingest.go`
+from Salesforce when `CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED` is on. Code: `RefreshPartners` in `internal/service/salesforce_partner_ingest.go`
 (attached with `WithPartnerIngest` in `routes.go`),
 `internal/repository/account_partner_write_repo.go`, `GetCustomerPartners` in
 `internal/salesentity/partners.go`. Plan: `docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md`
@@ -1492,7 +1491,7 @@ create.
 
 ## Portal-driven membership writes
 
-`CSM_MIGRATION_PORTAL_WRITES_ENABLED=true` (exactly `"true"`, off by default)
+`CSM_MIGRATION_PORTAL_WRITES_ENABLED` (on unless `false`)
 registers four write endpoints under the existing `/projects/{id}/contacts`
 namespace. They are how **both** portals change who is a contact on a project:
 the Customer Portal when a customer admin manages their own users, and the CSM

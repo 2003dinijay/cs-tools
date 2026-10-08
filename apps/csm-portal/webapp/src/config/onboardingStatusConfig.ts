@@ -21,15 +21,14 @@
  * Read from the runtime `window.config.CSM_MIGRATION_ONBOARDING_STATUS_ENABLED`
  * key. The same flag name gates the backend route it depends on
  * (`GET /projects/{id}/onboarding-steps`); both must be on for the column to
- * work, and off is the default on both sides so a deployment gets nothing new
- * until it opts in. Only `true` — the boolean, or the string `"true"` for
- * platforms that inject config as strings — turns it on; any other value is
- * off, and off means the column is not rendered and no request is made.
+ * work. Like every CSM_MIGRATION_* switch it is on unless set to `false` (the
+ * boolean, or the string `"false"`); off means the column is not rendered and
+ * no request is made.
  *
  * Read at call time (not module load, unlike `apiConfig.ts`) so a test can set
  * `window.config` per case; the value is fixed for a real page load anyway.
  */
 export function isOnboardingStatusEnabled(): boolean {
   const raw = window.config?.CSM_MIGRATION_ONBOARDING_STATUS_ENABLED;
-  return raw === true || raw === "true";
+  return !(raw === false || (typeof raw === "string" && raw.trim().toLowerCase() === "false"));
 }
