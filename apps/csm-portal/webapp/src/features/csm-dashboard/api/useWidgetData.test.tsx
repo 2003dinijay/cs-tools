@@ -81,6 +81,50 @@ describe("useWidgetData", () => {
     );
   });
 
+  it("posts a flat body with no `filters` key to /projects/search (count and sorted list)", async () => {
+    postMock.mockResolvedValue({ total: 2, projects: [] });
+
+    renderHook(
+      () =>
+        useWidgetData({
+          widgetId: "p1",
+          resourceType: "project",
+          filters: { onboardingStatus: ["In-Progress"] },
+          shape: "count",
+        }),
+      { wrapper },
+    );
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+    expect(postMock).toHaveBeenCalledWith(
+      "/projects/search",
+      { onboardingStatus: ["In-Progress"], pagination: { offset: 0, limit: 1 } },
+      { signal: expect.any(AbortSignal) },
+    );
+
+    postMock.mockClear();
+    renderHook(
+      () =>
+        useWidgetData({
+          widgetId: "p2",
+          resourceType: "project",
+          filters: { onboardingStatus: ["In-Progress"] },
+          shape: "list",
+          listLimit: 5,
+          sortBy: { field: "endDate", order: "asc" },
+        }),
+      { wrapper },
+    );
+    await waitFor(() => expect(postMock).toHaveBeenCalledTimes(1));
+    const [, body] = postMock.mock.calls[0];
+    expect(body).toEqual({
+      onboardingStatus: ["In-Progress"],
+      sortBy: "endDate",
+      sortOrder: "asc",
+      pagination: { offset: 0, limit: 5 },
+    });
+    expect(body).not.toHaveProperty("filters");
+  });
+
   it("caps concurrent in-flight /cases/search calls at WIDGET_FETCH_CONCURRENCY_LIMIT when a dashboard's worth of widgets all mount at once", async () => {
     // A dashboard with more widgets than abt-engineer's ~20 — deliberately
     // not a clean multiple of the cap.
