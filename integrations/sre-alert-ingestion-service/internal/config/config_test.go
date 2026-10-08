@@ -68,7 +68,6 @@ func TestLoad_RejectsInvalidValues(t *testing.T) {
 	cases := map[string]string{
 		"zero batch":        "[allocator]\nmax_batch = 0\n",
 		"negative timeout":  "[store]\nquery_timeout = \"-1s\"\n",
-		"empty auth mode":   "[auth]\nmode = \"\"\n",
 		"bad duration":      "[wake]\ntimeout = \"soon\"\n",
 		"zero idle":         "[server]\nidle_timeout = \"0s\"\n",
 		"zero drain delay":  "[server]\ndrain_delay = \"0s\"\n",
@@ -111,65 +110,53 @@ func TestLoadEnv(t *testing.T) {
 	}
 }
 
-func TestParseWebhookAPIKeys(t *testing.T) {
-	keys, err := ParseWebhookAPIKeys(" aws:k1 ,datadog:k2, ")
-	if err != nil || len(keys) != 2 || keys["aws"] != "k1" || keys["datadog"] != "k2" {
-		t.Fatalf("keys = %v, err = %v", keys, err)
-	}
-	// Only the first colon splits, so a key may contain them.
-	if k, err := ParseWebhookAPIKeys("aws:a:b:c"); err != nil || k["aws"] != "a:b:c" {
-		t.Errorf("colon-containing key = %v, err = %v", k, err)
-	}
-	for name, raw := range map[string]string{
-		"no colon":     "aws",
-		"empty vendor": ":key",
-		"empty key":    "aws:",
-		"duplicate":    "aws:k1,aws:k2",
+func TestLoadEnv_AuthSwitches(t *testing.T) {
+	for _, tc := range []struct {
+		enabled, auditOnly     string
+		wantEnabled, wantAudit bool
+	}{
+		{"", "", false, false}, // unset: auth off
+		{"true", "", true, false},
+		{"true", "true", true, true},
+		{"false", "true", false, true}, // main ignores audit-only when auth is off
+		{" TRUE ", "", true, false},    // a console paste can carry case and spaces
+		{"1", "0", true, false},
 	} {
-		if _, err := ParseWebhookAPIKeys(raw); err == nil {
-			t.Errorf("%s: %q should be rejected", name, raw)
+		t.Setenv("AUTH_ENABLED", tc.enabled)
+		t.Setenv("AUTH_AUDIT_ONLY", tc.auditOnly)
+		e, err := LoadEnv()
+		if err != nil {
+			t.Fatalf("AUTH_ENABLED=%q AUTH_AUDIT_ONLY=%q: %v", tc.enabled, tc.auditOnly, err)
+		}
+		if e.AuthEnabled != tc.wantEnabled || e.AuthAuditOnly != tc.wantAudit {
+			t.Errorf("AUTH_ENABLED=%q AUTH_AUDIT_ONLY=%q: got (%v, %v), want (%v, %v)",
+				tc.enabled, tc.auditOnly, e.AuthEnabled, e.AuthAuditOnly, tc.wantEnabled, tc.wantAudit)
 		}
 	}
 }
 
-// The value is often pasted into a console: quotes, newlines and stray spaces must
-// not silently hand keys to the wrong vendors.
-func TestParseWebhookAPIKeys_PasteFormats(t *testing.T) {
-	for name, raw := range map[string]string{
-		"quoted whole value":  `"aws:k1,datadog:k2"`,
-		"single quotes":       `'aws:k1,datadog:k2'`,
-		"newline separated":   "aws:k1\ndatadog:k2",
-		"crlf separated":      "aws:k1\r\ndatadog:k2",
-		"semicolon separated": "aws:k1;datadog:k2",
-		"space after comma":   "aws:k1, datadog:k2",
-		"quoted entries":      `"aws:k1","datadog:k2"`,
-	} {
-		t.Run(name, func(t *testing.T) {
-			keys, err := ParseWebhookAPIKeys(raw)
-			if err != nil || len(keys) != 2 || keys["aws"] != "k1" || keys["datadog"] != "k2" {
-				t.Errorf("keys = %v, err = %v", keys, err)
-			}
-		})
+// A typo in a security switch must fail at startup, not silently leave auth off.
+func TestLoadEnv_RejectsAmbiguousAuthSwitch(t *testing.T) {
+	for _, v := range []string{"ture", "enabled", "2"} {
+		t.Setenv("AUTH_ENABLED", v)
+		if _, err := LoadEnv(); err == nil || !strings.Contains(err.Error(), "AUTH_ENABLED") {
+			t.Errorf("AUTH_ENABLED=%q: err = %v, want an error naming AUTH_ENABLED", v, err)
+		}
 	}
 }
 
-// The error goes to the startup log, so it must never contain key material.
-func TestParseWebhookAPIKeys_ErrorsNeverContainTheKey(t *testing.T) {
-	const secret = "s3cr3tKeyMaterial"
-	for _, raw := range []string{
-		secret,                         // bare key pasted with no vendor prefix
-		"aws:k1," + secret,             // one good entry, then a bare key
-		":" + secret,                   // empty vendor
-		secret + ":",                   // trailing colon: the key lands in the vendor half
-		secret + ":a," + secret + ":b", // a repeated "vendor" that is really a key
-	} {
-		_, err := ParseWebhookAPIKeys(raw)
-		if err == nil {
-			t.Errorf("%q should be rejected", raw)
-			continue
-		}
-		if strings.Contains(err.Error(), secret) {
-			t.Errorf("error leaks the key: %v", err)
-		}
+// A config.toml still carrying [auth] is flagged, so it can't silently switch auth off.
+func TestLoad_FlagsLegacyAuthSection(t *testing.T) {
+	dir := t.TempDir()
+	legacy := filepath.Join(dir, "legacy.toml")
+	os.WriteFile(legacy, []byte("[auth]\nmode = \"integration_users\"\n"), 0o644)
+	clean := filepath.Join(dir, "clean.toml")
+	os.WriteFile(clean, []byte("[server]\nmax_body_bytes = 2097152\n"), 0o644)
+
+	if cfg, err := Load(legacy); err != nil || !cfg.LegacyAuthSection {
+		t.Errorf("legacy [auth]: LegacyAuthSection = %v, err = %v; want true", cfg.LegacyAuthSection, err)
+	}
+	if cfg, err := Load(clean); err != nil || cfg.LegacyAuthSection {
+		t.Errorf("no [auth]: LegacyAuthSection = %v, err = %v; want false", cfg.LegacyAuthSection, err)
 	}
 }

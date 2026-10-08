@@ -14,32 +14,19 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package auth is the vendor-route auth hook, selected by auth.mode: "none" accepts
-// everything, "audit" logs mismatches without rejecting, "apikey" enforces (see
-// APIKey). Another scheme is a new Authenticator and mode, not a router change.
+// Package auth checks vendor webhooks against alerts-core's integration_users table (AUTH_ENABLED).
 package auth
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/http"
-)
-
-// The supported auth.mode values.
-const (
-	ModeNone   = "none"
-	ModeAudit  = "audit"
-	ModeAPIKey = "apikey"
-	// ModeIntegrationUsers verifies against alerts-core's integration_users table.
-	ModeIntegrationUsers = "integration_users"
 )
 
 // ErrUnauthorized is returned by an Authenticator that rejects a request; the router answers 401.
 var ErrUnauthorized = errors.New("unauthorized")
 
-// Authenticator decides whether a vendor webhook request may proceed. It runs after the
-// router has matched the vendor and before the body is transformed.
+// Authenticator decides whether a vendor webhook may proceed, before the body is read.
 type Authenticator interface {
 	Authenticate(r *http.Request, vendor string) error
 }
@@ -50,28 +37,24 @@ type None struct{}
 // Authenticate always succeeds.
 func (None) Authenticate(*http.Request, string) error { return nil }
 
-// New returns the Authenticator for mode, erroring on an unknown one so a typo in
-// config.toml fails at startup rather than leaving the routes open. ModeNone ignores
-// every argument; ModeIntegrationUsers needs users.
-func New(mode string, keys map[string]string, vendors []string, users *IntegrationUsers, logger *slog.Logger) (Authenticator, error) {
-	switch mode {
-	case ModeNone:
-		return None{}, nil
-	case ModeAudit:
-		// Not requireEveryVendor: audit is for the window where some have no key.
-		inner, err := NewAPIKey(keys, vendors, false)
-		if err != nil {
-			return nil, err
-		}
-		return Audit{inner: inner, logger: logger}, nil
-	case ModeAPIKey:
-		return NewAPIKey(keys, vendors, true)
-	case ModeIntegrationUsers:
-		if users == nil {
-			return nil, fmt.Errorf("auth.mode %q needs a Cassandra session", mode)
-		}
-		return users, nil
-	default:
-		return nil, fmt.Errorf("unknown auth.mode %q (want %q, %q, %q or %q)", mode, ModeNone, ModeAudit, ModeAPIKey, ModeIntegrationUsers)
+// Audit logs what it would reject but never rejects, so enabling auth can't drop alerts.
+type Audit struct {
+	inner  Authenticator
+	logger *slog.Logger
+}
+
+// NewAudit wraps inner so it logs what it would reject without rejecting anything.
+func NewAudit(inner Authenticator, logger *slog.Logger) Authenticator {
+	return Audit{inner: inner, logger: logger}
+}
+
+// Authenticate always returns nil, logging what the wrapped Authenticator would reject.
+func (a Audit) Authenticate(r *http.Request, vendor string) error {
+	if err := a.inner.Authenticate(r, vendor); err != nil {
+		a.logger.Warn("auth would reject request",
+			"vendor", vendor,
+			"path", r.URL.Path,
+			"reason", err.Error())
 	}
+	return nil
 }
