@@ -4419,8 +4419,10 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 	// NULL (neither true nor false in a WHERE clause), which would silently
 	// exclude it too.
 	commentWorkNoteFilter := ""
+	commentWorkNoteDataFilter := ""
 	if excludeWorkNotes {
 		commentWorkNoteFilter = ` AND type IS DISTINCT FROM 'WORK_NOTE'::comment_type_enum`
+		commentWorkNoteDataFilter = ` AND cm.type IS DISTINCT FROM 'WORK_NOTE'::comment_type_enum`
 	}
 
 	countQuery := `
@@ -4458,7 +4460,7 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 					cm.type
 				FROM comment cm
 				LEFT JOIN "user" u1 ON LOWER(u1.email) = LOWER(cm.created_by)
-				WHERE cm.work_item_id = $1` + strings.ReplaceAll(commentWorkNoteFilter, "type", "cm.type") + `
+				WHERE cm.work_item_id = $1` + commentWorkNoteDataFilter + `
 				ORDER BY cm.id, u1.id
 			) c
 
