@@ -67,6 +67,17 @@ PREPARE stmt FROM @add_title;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;
 
+-- The ADD COLUMN above fills every pre-existing row's title with '' (its
+-- DEFAULT) -- the app enforces a non-empty title for every NEW submission
+-- going forward, but a historical row from before this column existed
+-- would otherwise come back from the API, and render on the feed/entry
+-- page, with a silently blank title rather than one that reads as
+-- deliberately pre-dating this field. Safe to re-run: a row only ever
+-- matches title = '' here because it's an untouched pre-existing row (no
+-- path in the app can create a new row with an empty title), so this
+-- never overwrites anything the column's own DEFAULT didn't just set.
+UPDATE til_submissions SET title = 'Untitled entry' WHERE title = '';
+
 SET @add_submitted_by_email_idx := (
     SELECT IF(
         COUNT(*) = 0,

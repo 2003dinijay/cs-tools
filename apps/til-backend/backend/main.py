@@ -116,6 +116,21 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# A raw ASGI middleware that counts actual received bytes (rather than
+# trusting Content-Length) was attempted here, to close the gap where
+# Content-Length is absent or a lie. Abandoned: interacting with
+# BaseHTTPMiddleware's own body-streaming internals (reject_oversized_
+# requests above is BaseHTTPMiddleware-based) produced a confirmed
+# infinite receive() loop under exactly the oversized-body scenario this
+# was meant to protect against -- a worse failure mode than the gap it
+# closes. The correct place for a hard body-size cap that can't be
+# bypassed by a missing/lying Content-Length is the reverse proxy or
+# gateway in front of this service (e.g. Choreo's own request-size
+# limit), not application code fighting the ASGI body-streaming layer.
+# reject_oversized_requests above remains as defense in depth for the
+# honest-Content-Length case; read_bounded() in uploads.py remains the
+# file-level backstop.
+
 # Serves whatever POST /uploads has saved -- StaticFiles needs the directory
 # to already exist at mount time, so this runs before the mount, not lazily
 # inside the upload handler.
@@ -202,7 +217,13 @@ async def create_submission(request: Request, user: dict = Depends(require_auth)
     where_detail = where_detail.strip() if isinstance(where_detail, str) else None
     # Re-sanitized here even though the frontend editor already does --
     # never trust that a direct API call went through it. See sanitize.py.
-    what = sanitize_what_html(body["what"])
+    # request.url.netloc (not a configured constant) is this request's OWN
+    # host -- this backend serves from a different host per environment, so
+    # there's no single fixed value to validate an <img src> against ahead
+    # of time; the only host that's always correct is whichever one the
+    # caller actually used to reach this same backend's POST /uploads a
+    # moment earlier.
+    what = sanitize_what_html(body["what"], request_host=request.url.netloc)
 
     # submittedByEmail always comes from the verified token -- this is the
     # one guarantee that makes "no anonymous entries" actually true

@@ -15,12 +15,10 @@
 # under the License.
 
 """Broadcasts a new submission into every connected user's own 1:1 DM with
-Novera (WSO2's internal Google Chat AI agent) -- a SEPARATE channel from
-chat_notify.py's own Chat Space webhook post, which stays untouched. Novera
-owns the actual broadcast (it knows every connected user's own DM space);
-this module's only job is the one outbound call telling it a new entry
-exists, same "single write path notifies everyone" posture as
-chat_notify.py already has for the Space.
+Novera (WSO2's internal Google Chat AI agent) -- the one notification
+channel a new submission fans out through. Novera owns the actual
+broadcast (it knows every connected user's own DM space); this module's
+only job is the one outbound call telling it a new entry exists.
 
 Same "absent key = quietly off" posture as the rest of this service:
 unset NOVERA_NOTIFY_URL means this is a no-op, not an error -- share/read
@@ -117,30 +115,27 @@ async def notify_novera(
     # Payload build moved INSIDE the try -- what_for_chat (or anything else
     # here) raising would otherwise propagate straight out of this function
     # uncaught, turning an already-saved submission into a 500 for the
-    # caller despite db.create_submission and the Space webhook post both
-    # having already succeeded. Same reasoning extends the except clause to
+    # caller despite db.create_submission having already succeeded. Same
+    # reasoning extends the except clause to
     # Exception broadly, not just httpx.RequestError -- this call is
     # best-effort by design (see module docstring), so nothing in it should
     # ever be allowed to fail the request it's attached to.
     try:
         payload = {
-            # Escaped for the same reason chat_notify.py escapes this exact
-            # field for the Space card: `who` is free text this service only
-            # .strip()s, never HTML-escapes, and Novera's own card embeds it
-            # directly in a textParagraph. Defense in depth -- Novera's own
-            # broadcast code escapes it too, but this shouldn't rely on that
-            # alone any more than chat_notify.py relies on the frontend editor
-            # alone.
-            # Same reasoning as "who" above -- free text til-backend only
-            # .strip()s, never HTML-escapes.
+            # Escaped before this ever reaches Novera: `title`/`who` are
+            # free text this service only .strip()s, never HTML-escapes, and
+            # Novera's own card embeds them directly in a textParagraph.
+            # Defense in depth -- Novera's own broadcast code escapes them
+            # too, but this shouldn't rely on that alone any more than it
+            # relies on the frontend editor alone.
             "title": html_module.escape(title),
             "who": html_module.escape(who),
             "where": where,
             "whereDetail": where_detail,
-            # Same Chat-markup subset conversion as the Space card (Novera's own
-            # broadcast posts through the same Chat API cardsV2 primitive) --
-            # reusing it here keeps the two notification channels looking like
-            # the same product instead of reimplementing the format translation.
+            # what_for_chat converts sanitize_what_html's own allowlisted
+            # markup (p/strong/em/ol/ul/li/a/img) down to the small HTML
+            # subset Google Chat's textParagraph understands (b/i/a/br) --
+            # reusing it here rather than reimplementing that translation.
             "what": what_for_chat(what),
             "entryUrl": entry_url,
         }
@@ -155,9 +150,9 @@ async def notify_novera(
                 headers=headers,
                 timeout=10,
             )
-        # Not raised -- best-effort, same as chat_notify.py's own webhook
-        # posts. A rejected response (e.g. Novera's secret doesn't match)
-        # must still be visible to an operator, not just silently eaten.
+        # Not raised -- best-effort by design (see module docstring). A
+        # rejected response (e.g. a gateway auth failure) must still be
+        # visible to an operator, not just silently eaten.
         if response.status_code >= 300:
             print(
                 f"novera_notify: Novera rejected the broadcast (status {response.status_code}): "

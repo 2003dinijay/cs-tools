@@ -164,6 +164,32 @@ def test_create_submission_sanitizes_what_even_if_client_skips_the_editor():
     assert resp.json()["what"] == "<p>hi</p>"
 
 
+def test_create_submission_keeps_img_on_the_request_s_own_host():
+    # TestClient's default base_url is http://testserver -- this confirms
+    # main.py actually threads request.url.netloc through to
+    # sanitize_what_html end-to-end, not just that the function itself
+    # behaves correctly in isolation (see test_sanitize.py for that).
+    client = client_as(HUMAN_USER)
+    src = "http://testserver/uploads/07ec86bdee9142da838c9a3511f780e8.webp"
+    resp = client.post(
+        "/submissions",
+        json={"title": "T", "who": "Jane", "where": "Internal", "what": f'<p>See:</p><img src="{src}">'},
+    )
+    assert resp.status_code == 200
+    assert src in resp.json()["what"]
+
+
+def test_create_submission_strips_img_on_a_different_host():
+    client = client_as(HUMAN_USER)
+    evil_src = "https://attacker.example/uploads/07ec86bdee9142da838c9a3511f780e8.webp"
+    resp = client.post(
+        "/submissions",
+        json={"title": "T", "who": "Jane", "where": "Internal", "what": f'<p>See:</p><img src="{evil_src}">'},
+    )
+    assert resp.status_code == 200
+    assert "<img" not in resp.json()["what"]
+
+
 def test_create_submission_rejects_invalid_payload():
     client = client_as(HUMAN_USER)
     resp = client.post("/submissions", json={"title": "T", "who": "", "where": "Internal", "what": "x"})
@@ -286,3 +312,5 @@ def test_upload_rejects_a_non_webp_riff_file():
     wav = b"RIFF" + b"\x00\x00\x00\x00" + b"WAVE" + b"\x00" * 8
     resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.webp", wav, "audio/wav")})
     assert resp.status_code == 400
+
+
