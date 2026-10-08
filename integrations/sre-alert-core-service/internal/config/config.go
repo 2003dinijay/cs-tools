@@ -54,7 +54,9 @@ type PollConfig struct {
 	ReadConcurrency int `toml:"read_concurrency"`
 	// MaxWindow caps how many alert ids a single poll cycle processes at once, bounding memory usage under large alert bursts.
 	MaxWindow int `toml:"max_window"`
-	// GapTimeout bounds how long a missing alert id blocks the rest before being skipped and logged loudly.
+	// GapTimeout is how long an alert id may stay missing, measured from when the current leader
+	// first saw it missing, before it's skipped and logged loudly. Every missing id in the window
+	// ages at once, so a whole gap is skipped together after one GapTimeout.
 	GapTimeout Duration `toml:"gap_timeout"`
 }
 
