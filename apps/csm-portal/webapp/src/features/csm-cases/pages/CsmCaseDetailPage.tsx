@@ -3354,6 +3354,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
 
       {fixEtaOpen && (
         <SetFixEtaDialog
+          // Sharing now posts through the same comment endpoint
+          // CsmCaseCommentInput's own public-reply composer uses, so it's
+          // gated by the identical backend rule — reusing
+          // publicReplyGateReason rather than a second, possibly-drifting
+          // copy of the same check.
+          publicCommentDisabledReason={publicReplyGateReason}
           currentBestCaseFixEta={c.bestCaseFixEta}
           currentMostLikelyFixEta={c.mostLikelyFixEta}
           currentWorstCaseFixEta={c.worstCaseFixEta}
