@@ -220,6 +220,21 @@ describe("UserProfilePage", () => {
     expect(screen.getByText("No CSM Platform roles assigned.")).toBeInTheDocument();
   });
 
+  // csmPlatformRoles is absent (not []) when the backend's SCIM lookup itself
+  // failed, or no AccessGuard was wired -- that must read as "couldn't check",
+  // never as the false "confirmed zero roles" a plain `?? []` would collapse
+  // it to, matching the pattern already established by ExternalAccountMetaCell.
+  it("renders 'Unavailable', with no count, when csmPlatformRoles is absent (the SCIM lookup itself failed)", () => {
+    mockQueryResult({
+      data: { ...INTERNAL_USER, email: "jane.doe@wso2.com", csmPlatformRoles: undefined },
+    });
+    renderPage();
+    expect(screen.getByText("CSM Platform roles")).toBeInTheDocument();
+    expect(screen.queryByText(/CSM Platform roles \(/i)).not.toBeInTheDocument();
+    expect(screen.getByText("Unavailable")).toBeInTheDocument();
+    expect(screen.queryByText("No CSM Platform roles assigned.")).not.toBeInTheDocument();
+  });
+
   // The CSM Platform roles section is gated on email domain, not userType --
   // a wso2.com account can be mistakenly tagged external in the backing data
   // source and still have a real Asgardeo CSM role assignment worth showing.

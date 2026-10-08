@@ -348,6 +348,12 @@ function PermissionsCard({ user }: { user: NormalizedUserDetail }): JSX.Element 
   }));
 
   const showCsmPlatformRoles = isWso2Email(user.email);
+  // Absent (SCIM lookup failed, or no AccessGuard wired) must read differently
+  // from a present-but-empty array (the user genuinely holds no CSM Platform
+  // role) -- collapsing both to [] here would tell the viewer "no roles"
+  // when the truth is "couldn't check", the same distinction
+  // ExternalAccountMetaCell already makes for its own best-effort SCIM status.
+  const csmPlatformRolesAvailable = user.csmPlatformRoles !== undefined;
   const csmPlatformRoleLabels = (user.csmPlatformRoles ?? []).map((r) => grantableRoleLabel(r));
 
   return (
@@ -363,9 +369,12 @@ function PermissionsCard({ user }: { user: NormalizedUserDetail }): JSX.Element 
         {showCsmPlatformRoles && (
           <Box sx={{ flex: "1 1 260px", minWidth: 220, display: "flex", flexDirection: "column", gap: 1 }}>
             <Typography variant="body2" sx={{ fontWeight: 600 }}>
-              CSM Platform roles ({csmPlatformRoleLabels.length})
+              CSM Platform roles{csmPlatformRolesAvailable ? ` (${csmPlatformRoleLabels.length})` : ""}
             </Typography>
-            <PlainChipCluster labels={csmPlatformRoleLabels} emptyMessage="No CSM Platform roles assigned." />
+            <PlainChipCluster
+              labels={csmPlatformRoleLabels}
+              emptyMessage={csmPlatformRolesAvailable ? "No CSM Platform roles assigned." : "Unavailable"}
+            />
           </Box>
         )}
         {internal && (
