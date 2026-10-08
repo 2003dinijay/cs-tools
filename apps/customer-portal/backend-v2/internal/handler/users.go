@@ -87,6 +87,12 @@ func (h *UserHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Register a first sign-in's invited memberships before reading the profile, so
+	// this response and the requests after it already see the REGISTERED state.
+	if h.firstAccessEnabled {
+		h.completeFirstAccess(r.Context(), user.UserID)
+	}
+
 	result, err := h.entity.GetMe(r.Context())
 	if err != nil {
 		// entity-service 404s GetMe when the caller's email has no "user" row
@@ -127,18 +133,6 @@ func (h *UserHandler) GetMe(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSONValue(w, http.StatusOK, resp)
-
-	// Cutover only. After the profile has already gone to the browser, ask
-	// entity-service to finish onboarding this user if they still have an
-	// invitation open: clear their Salesforce lockout flag, mark the
-	// membership REGISTERED, refresh the database. It is deliberately
-	// invisible — it runs after the response, on its own context, and a
-	// failure is logged and dropped. Nothing about this request's outcome
-	// depends on it, and entity-service answers immediately for the usual
-	// case of a user with nothing invited.
-	if h.firstAccessEnabled {
-		go h.completeFirstAccess(context.WithoutCancel(r.Context()), user.UserID)
-	}
 }
 
 // completeFirstAccess runs the onboarding call described in GetMe. It never
