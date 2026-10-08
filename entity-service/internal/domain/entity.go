@@ -4363,6 +4363,8 @@ type SearchIncidentsFilters struct {
 	// ServiceNow's `number` column, routed as a first-class filter rather
 	// than through the free-text SearchQuery scan.
 	Number *string `json:"number,omitempty"`
+	// CorrelationID exactly matches ServiceNow's correlation_id, the key a caller set on CreateIncidentRequest.CorrelationID (optional).
+	CorrelationID *string `json:"correlationId,omitempty"`
 	// Filters is the generic field/op/values filter array. Supported fields:
 	//   - "state" (op in): domain IncidentState enum values (NEW,
 	//     IN_PROGRESS, ON_HOLD, RESOLVED, CLOSED, CANCELLED), translated to
@@ -4592,6 +4594,10 @@ type CreateIncidentRequest struct {
 	ChangeRequestID     *string              `json:"changeRequestId,omitempty"`
 	ProblemID           *string              `json:"problemId,omitempty"`
 	CausedByID          *string              `json:"causedById,omitempty"`
+	// CorrelationID is an optional caller-supplied key stored on ServiceNow's correlation_id, found again via SearchIncidentsFilters.CorrelationID.
+	CorrelationID *string `json:"correlationId,omitempty"`
+	// Environment is an optional label (e.g. "Staging") stored on ServiceNow's custom u_enviroment field, max 40 characters.
+	Environment *string `json:"environment,omitempty"`
 }
 
 // CreateIncidentResponse is the output for POST /incidents.
