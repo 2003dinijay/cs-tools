@@ -547,6 +547,10 @@ type Playbook struct {
 	ActiveRuns     int            `json:"activeRuns"`
 	CreatedOn      time.Time      `json:"createdOn"`
 	UpdatedOn      time.Time      `json:"updatedOn"`
+	// Passed through from entity-service. Nil for playbooks written before
+	// attribution existed; UpdatedBy need not be the author.
+	AuthoredBy *UserRef `json:"authoredBy"`
+	UpdatedBy  *UserRef `json:"updatedBy"`
 }
 
 // PlaybookTaskInput is one desired task in a submitted task list.

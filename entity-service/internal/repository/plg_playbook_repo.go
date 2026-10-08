@@ -49,10 +49,17 @@ const playbookSelect = `
 	         WHERE r.playbook_id = pb.id AND r.detached_on IS NULL),
 	       (SELECT COUNT(*)::INT FROM plg_playbook_run_v v
 	         WHERE v.playbook_id = pb.id AND v.run_status = 'ACTIVE'),
-	       pb.created_at, pb.updated_at
+	       pb.created_at, pb.updated_at,
+	       pb.authored_by::TEXT, au.email, au.display_name,
+	       pb.updated_by::TEXT,  up.email, up.display_name
 	FROM   plg_playbook pb
 	JOIN   plg_product p            ON p.id = pb.product_id
-	JOIN   plg_lifecycle_stage ls   ON ls.stage = pb.lifecycle_stage`
+	JOIN   plg_lifecycle_stage ls   ON ls.stage = pb.lifecycle_stage
+	-- LEFT, not JOIN: both are null on every playbook written before
+	-- attribution existed, and plg_user_v deliberately does not filter by
+	-- user_type, so an author who has since been deactivated still renders.
+	LEFT   JOIN plg_user_v au       ON au.id = pb.authored_by
+	LEFT   JOIN plg_user_v up       ON up.id = pb.updated_by`
 
 // stageOrder sorts playbooks by the lifecycle order of their source stage, so
 // the manager's sections come out in lifecycle order without the client sorting.
@@ -72,14 +79,18 @@ func (r *playbookRepository) list(ctx context.Context, q string, args ...any) ([
 	pos := map[string]int{}
 	for rows.Next() {
 		var pb domain.Playbook
+		var aID, aEmail, aName, uID, uEmail, uName *string
 		if err := rows.Scan(&pb.ID, &pb.Product.ID, &pb.Product.Code, &pb.Product.Name,
 			&pb.Name, &pb.Description,
 			&pb.LifecycleStage, &pb.StageName, &pb.PlaybookType,
 			&pb.DisplayOrder, &pb.Active, &pb.RunCount, &pb.ActiveRuns,
-			&pb.CreatedOn, &pb.UpdatedOn); err != nil {
+			&pb.CreatedOn, &pb.UpdatedOn,
+			&aID, &aEmail, &aName, &uID, &uEmail, &uName); err != nil {
 			rows.Close()
 			return nil, fmt.Errorf("scan playbook: %w", err)
 		}
+		pb.AuthoredBy = userRef(aID, aEmail, aName)
+		pb.UpdatedBy = userRef(uID, uEmail, uName)
 		pb.Tasks = []domain.PlaybookTask{}
 		items = append(items, pb)
 		ids = append(ids, pb.ID)

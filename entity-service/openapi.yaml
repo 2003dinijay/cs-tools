@@ -26526,6 +26526,34 @@ components:
         updatedOn:
           type: string
           format: date-time
+        authoredBy:
+          type: object
+          nullable: true
+          description: >-
+            Who created this playbook. Null for playbooks written before
+            attribution existed.
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+            name:
+              type: string
+        updatedBy:
+          type: object
+          nullable: true
+          description: >-
+            Who last edited it, which need not be the author -- any admin may
+            edit any playbook.
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+            name:
+              type: string
     PlgDashboard:
       type: object
       properties:
