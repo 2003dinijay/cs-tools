@@ -365,7 +365,7 @@ func (h *Handlers) ReplacePlaybookTasks(w http.ResponseWriter, r *http.Request) 
 	}
 	req.PlaybookID = r.PathValue("playbookId")
 
-	pb, err := h.playbooks.ReplaceTasks(r.Context(), req)
+	pb, err := h.playbooks.ReplaceTasks(r.Context(), req, actor(r))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

@@ -336,8 +336,12 @@ func (c *Client) PatchPlaybook(ctx context.Context, req domain.PatchPlaybookRequ
 	return c.patch(ctx, "/plg/playbooks/"+esc(req.ID), body, nil)
 }
 
-func (c *Client) ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest) error {
-	return c.put(ctx, "/plg/playbooks/"+esc(req.PlaybookID)+"/tasks", req, nil)
+func (c *Client) ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest, actorID string) error {
+	body := struct {
+		domain.ReplacePlaybookTasksRequest
+		ActorID string `json:"actorId"`
+	}{req, actorID}
+	return c.put(ctx, "/plg/playbooks/"+esc(req.PlaybookID)+"/tasks", body, nil)
 }
 
 func (c *Client) DeletePlaybook(ctx context.Context, id string) error {

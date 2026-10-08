@@ -28,6 +28,11 @@ type patchPlaybookBody struct {
 	ActorID string `json:"actorId"`
 }
 
+type replaceTasksBody struct {
+	domain.ReplacePlaybookTasksRequest
+	ActorID string `json:"actorId"`
+}
+
 // CreatePlaybook serves POST /plg/products/{productCode}/playbooks. (W7)
 //
 // Atomic: the playbook and its tasks land together. The task list arrives
@@ -70,12 +75,13 @@ func (h *PlgPlaybookHandler) PatchPlaybook(w http.ResponseWriter, r *http.Reques
 // DEFERRABLE INITIALLY DEFERRED, which is what lets a reorder happen without
 // tripping over itself mid-transaction.
 func (h *PlgPlaybookHandler) ReplacePlaybookTasks(w http.ResponseWriter, r *http.Request) {
-	var req domain.ReplacePlaybookTasksRequest
-	if !decodeRequest(w, r, &req) {
+	var body replaceTasksBody
+	if !decodeRequest(w, r, &body) {
 		return
 	}
+	req := body.ReplacePlaybookTasksRequest
 	req.PlaybookID = r.PathValue("playbookId")
-	res, err := h.svc.ReplaceTasks(r.Context(), req)
+	res, err := h.svc.ReplaceTasks(r.Context(), req, body.ActorID)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

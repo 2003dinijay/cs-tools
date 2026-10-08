@@ -27,7 +27,7 @@ type PlaybookRepository interface {
 	Get(ctx context.Context, id string) (*domain.Playbook, error)
 	Create(ctx context.Context, req domain.CreatePlaybookRequest, actorID string) (string, error)
 	Patch(ctx context.Context, req domain.PatchPlaybookRequest, actorID string) error
-	ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest) error
+	ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest, actorID string) error
 	Delete(ctx context.Context, id string) error
 }
 
@@ -198,7 +198,7 @@ func (r *playbookRepository) Create(ctx context.Context, req domain.CreatePlaybo
 		return "", fmt.Errorf("create playbook: %w", err)
 	}
 
-	if err := insertTasks(ctx, tx, id, req.Tasks); err != nil {
+	if err := insertTasks(ctx, tx, id, req.Tasks, actorID); err != nil {
 		return "", err
 	}
 	if err := tx.Commit(ctx); err != nil {
@@ -207,16 +207,17 @@ func (r *playbookRepository) Create(ctx context.Context, req domain.CreatePlaybo
 	return id, nil
 }
 
-func insertTasks(ctx context.Context, tx pgx.Tx, playbookID string, tasks []domain.PlaybookTaskInput) error {
+func insertTasks(ctx context.Context, tx pgx.Tx, playbookID string, tasks []domain.PlaybookTaskInput, actorID string) error {
 	for i, t := range tasks {
 		opts, err := optionsArg(t.Options)
 		if err != nil {
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO plg_playbook_task (playbook_id, code, name, description, sequence_no, value_type, options)
-			VALUES ($1::UUID, $2, $3, $4, $5, $6::plg_task_value_type_enum, $7::JSONB)`,
-			playbookID, t.Code, t.Name, t.Description, i+1, string(t.ValueType), opts); err != nil {
+			INSERT INTO plg_playbook_task (playbook_id, code, name, description, sequence_no, value_type, options,
+			                               created_by, updated_by)
+			VALUES ($1::UUID, $2, $3, $4, $5, $6::plg_task_value_type_enum, $7::JSONB, $8::UUID, $8::UUID)`,
+			playbookID, t.Code, t.Name, t.Description, i+1, string(t.ValueType), opts, uuidArg(actorID)); err != nil {
 			if isUniqueViolation(err) {
 				return &apierror.ValidationError{Msg: "duplicate task code: " + t.Code}
 			}
@@ -270,7 +271,7 @@ func (r *playbookRepository) Patch(ctx context.Context, req domain.PatchPlaybook
 // A task still referenced by a run cannot be deleted (the FK is ON DELETE
 // RESTRICT), so it is deactivated instead. It stays out of new runs while the
 // instances that point at it survive.
-func (r *playbookRepository) ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest) error {
+func (r *playbookRepository) ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest, actorID string) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin replace tasks: %w", err)
@@ -301,16 +302,21 @@ func (r *playbookRepository) ReplaceTasks(ctx context.Context, req domain.Replac
 			return err
 		}
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO plg_playbook_task (playbook_id, code, name, description, sequence_no, value_type, options, active)
-			VALUES ($1::UUID, $2, $3, $4, $5, $6::plg_task_value_type_enum, $7::JSONB, TRUE)
+			INSERT INTO plg_playbook_task (playbook_id, code, name, description, sequence_no, value_type, options, active,
+			                               created_by, updated_by)
+			VALUES ($1::UUID, $2, $3, $4, $5, $6::plg_task_value_type_enum, $7::JSONB, TRUE, $8::UUID, $8::UUID)
 			ON CONFLICT (playbook_id, code) DO UPDATE
 			    SET name        = EXCLUDED.name,
 			        description = EXCLUDED.description,
 			        sequence_no = EXCLUDED.sequence_no,
 			        value_type  = EXCLUDED.value_type,
 			        options     = EXCLUDED.options,
-			        active      = TRUE`,
-			req.PlaybookID, t.Code, t.Name, t.Description, i+1, string(t.ValueType), opts); err != nil {
+			        active      = TRUE,
+			        -- created_by is NOT in this list: a task that already exists
+			        -- keeps whoever first added it, even when a later editor
+			        -- revives or reorders it. Only updated_by moves.
+			        updated_by  = EXCLUDED.updated_by`,
+			req.PlaybookID, t.Code, t.Name, t.Description, i+1, string(t.ValueType), opts, uuidArg(actorID)); err != nil {
 			if isConstraintViolation(err) {
 				return &apierror.ValidationError{Msg: t.Code + " is a structural task and is always a tick box"}
 			}

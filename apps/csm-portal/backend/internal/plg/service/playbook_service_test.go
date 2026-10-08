@@ -16,9 +16,10 @@ type fakePlaybookRepo struct {
 	// createdBy and patchedBy record the actor each call carried, so a test can
 	// assert the caller reaches the repository rather than only that the call
 	// compiled with an extra argument.
-	createdBy []string
-	patchedBy []string
-	got       domain.Playbook
+	createdBy       []string
+	patchedBy       []string
+	tasksReplacedBy []string
+	got             domain.Playbook
 }
 
 func (f *fakePlaybookRepo) Create(_ context.Context, req domain.CreatePlaybookRequest, actorID string) (string, error) {
@@ -41,8 +42,9 @@ func (f *fakePlaybookRepo) Patch(_ context.Context, _ domain.PatchPlaybookReques
 	f.patchedBy = append(f.patchedBy, actorID)
 	return nil
 }
-func (f *fakePlaybookRepo) ReplaceTasks(context.Context, domain.ReplacePlaybookTasksRequest) error {
-	panic("not reached")
+func (f *fakePlaybookRepo) ReplaceTasks(_ context.Context, _ domain.ReplacePlaybookTasksRequest, actorID string) error {
+	f.tasksReplacedBy = append(f.tasksReplacedBy, actorID)
+	return nil
 }
 func (f *fakePlaybookRepo) Delete(context.Context, string) error { panic("not reached") }
 
@@ -252,4 +254,30 @@ func TestPlaybookWritesCarryTheActor(t *testing.T) {
 			t.Errorf("repository received actor %q, want %q", repo.patchedBy[0], testActorID)
 		}
 	})
+}
+
+// TestReplaceTasksCarriesTheActor covers the third write on a playbook.
+//
+// Tasks are edited far more often than the playbook row itself -- adding one,
+// reordering, retiring one -- and any admin may do it to any playbook, so this
+// is the attribution that answers "who changed the checklist".
+func TestReplaceTasksCarriesTheActor(t *testing.T) {
+	repo := &fakePlaybookRepo{}
+	svc := NewPlaybookService(repo)
+	_, err := svc.ReplaceTasks(context.Background(), domain.ReplacePlaybookTasksRequest{
+		PlaybookID: "11111111-1111-1111-1111-111111111111",
+		Tasks: []domain.PlaybookTaskInput{
+			{Code: "INITIATE", Name: "Initiate", ValueType: domain.ValueBoolean},
+			{Code: "CLOSE_PLAYBOOK", Name: "Close", ValueType: domain.ValueBoolean},
+		},
+	}, testActorID)
+	if err != nil {
+		t.Fatalf("replace tasks: %v", err)
+	}
+	if len(repo.tasksReplacedBy) != 1 {
+		t.Fatalf("expected one call, got %d", len(repo.tasksReplacedBy))
+	}
+	if repo.tasksReplacedBy[0] != testActorID {
+		t.Errorf("repository received actor %q, want %q", repo.tasksReplacedBy[0], testActorID)
+	}
 }

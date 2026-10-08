@@ -21,7 +21,7 @@ type PlaybookService interface {
 	Get(ctx context.Context, id string) (*domain.Playbook, error)
 	Create(ctx context.Context, req domain.CreatePlaybookRequest, actorID string) (*domain.Playbook, error)
 	Patch(ctx context.Context, req domain.PatchPlaybookRequest, actorID string) (*domain.Playbook, error)
-	ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest) (*domain.Playbook, error)
+	ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest, actorID string) (*domain.Playbook, error)
 	Delete(ctx context.Context, id string) error
 }
 
@@ -114,7 +114,7 @@ func (s *playbookService) Patch(ctx context.Context, req domain.PatchPlaybookReq
 	return s.repo.Get(ctx, req.ID)
 }
 
-func (s *playbookService) ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest) (*domain.Playbook, error) {
+func (s *playbookService) ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest, actorID string) (*domain.Playbook, error) {
 	if err := validateUUID("playbookId", req.PlaybookID); err != nil {
 		return nil, err
 	}
@@ -124,7 +124,7 @@ func (s *playbookService) ReplaceTasks(ctx context.Context, req domain.ReplacePl
 	}
 	req.Tasks = tasks
 
-	if err := s.repo.ReplaceTasks(ctx, req); err != nil {
+	if err := s.repo.ReplaceTasks(ctx, req, actorID); err != nil {
 		return nil, err
 	}
 	return s.repo.Get(ctx, req.PlaybookID)

@@ -60,7 +60,7 @@ type PlaybookRepository interface {
 	Get(ctx context.Context, id string) (*domain.Playbook, error)
 	Create(ctx context.Context, req domain.CreatePlaybookRequest, actorID string) (string, error)
 	Patch(ctx context.Context, req domain.PatchPlaybookRequest, actorID string) error
-	ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest) error
+	ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest, actorID string) error
 	Delete(ctx context.Context, id string) error
 }
 

@@ -23,7 +23,7 @@ import (
 type PlaybookWriter interface {
 	Create(ctx context.Context, req domain.CreatePlaybookRequest, actorID string) (domain.CreatePlaybookResult, error)
 	Patch(ctx context.Context, req domain.PatchPlaybookRequest, actorID string) (domain.WriteResult, error)
-	ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest) (domain.WriteResult, error)
+	ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest, actorID string) (domain.WriteResult, error)
 	Delete(ctx context.Context, id string) (domain.WriteResult, error)
 }
 
@@ -63,7 +63,7 @@ func (s *playbookService) Patch(ctx context.Context, req domain.PatchPlaybookReq
 	return domain.WriteResult{RowsAffected: 1}, nil
 }
 
-func (s *playbookService) ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest) (domain.WriteResult, error) {
+func (s *playbookService) ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest, actorID string) (domain.WriteResult, error) {
 	if err := validateUUID("playbookId", req.PlaybookID); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -72,7 +72,7 @@ func (s *playbookService) ReplaceTasks(ctx context.Context, req domain.ReplacePl
 			return domain.WriteResult{}, invalidEnum("tasks.valueType", string(req.Tasks[i].ValueType))
 		}
 	}
-	if err := s.repo.ReplaceTasks(ctx, req); err != nil {
+	if err := s.repo.ReplaceTasks(ctx, req, actorID); err != nil {
 		return domain.WriteResult{}, err
 	}
 	return domain.WriteResult{RowsAffected: len(req.Tasks)}, nil

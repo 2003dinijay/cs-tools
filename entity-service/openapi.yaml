@@ -27072,6 +27072,12 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PlgPlaybookTaskInput"
+        actorId:
+          type: string
+          format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as each
+            task's updated_by, and as created_by for tasks this call adds.
     PlgPlaybookTaskInput:
       type: object
       required:
