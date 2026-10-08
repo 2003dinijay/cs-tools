@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 
@@ -34,13 +35,20 @@ import (
 // per page, and a totalRecords that counts every match. It counts the calls it
 // serves and fails any page whose offset is in failOffsets.
 type fakeServiceNowServices struct {
+	mu          sync.Mutex
 	records     []snITService
 	calls       atomic.Int32
 	failOffsets map[int]bool
+	// afterFirstCall runs once, after the first request has been answered, to
+	// change the data between the pages of one search.
+	afterFirstCall func(f *fakeServiceNowServices)
+	// totalOverride, when non-zero, is reported as totalRecords whatever the
+	// data holds, for an upstream whose count disagrees with its rows.
+	totalOverride int
 }
 
 func (f *fakeServiceNowServices) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	f.calls.Add(1)
+	n := f.calls.Add(1)
 	var body snITServiceSearchPayload
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -55,9 +63,13 @@ func (f *fakeServiceNowServices) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	f.mu.Lock()
+	records := append([]snITService(nil), f.records...)
+	f.mu.Unlock()
+
 	q := strings.ToLower(body.Filters.SearchQuery)
 	var matches []snITService
-	for _, rec := range f.records {
+	for _, rec := range records {
 		if q == "" || strings.Contains(strings.ToLower(derefString(rec.Name)), q) {
 			matches = append(matches, rec)
 		}
@@ -65,13 +77,20 @@ func (f *fakeServiceNowServices) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	start := min(body.Pagination.Offset, len(matches))
 	end := min(start+body.Pagination.Limit, len(matches))
 
+	total := len(matches)
+	if f.totalOverride != 0 {
+		total = f.totalOverride
+	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(snITServicesResponse{
 		Services:     matches[start:end],
-		TotalRecords: len(matches),
+		TotalRecords: total,
 		Offset:       body.Pagination.Offset,
 		Limit:        body.Pagination.Limit,
 	})
+	if n == 1 && f.afterFirstCall != nil {
+		f.afterFirstCall(f)
+	}
 }
 
 func fakeService(n int, name, class string) snITService {
@@ -358,6 +377,172 @@ func TestSNITServiceSearch_RejectsALimitAboveTheCeiling(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected a validation error")
+	}
+}
+
+// widgetRecords are n services all matching "widget", in upstream order.
+func widgetRecords(n int) []snITService {
+	recs := make([]snITService, n)
+	for i := range recs {
+		recs[i] = fakeService(i+1, fmt.Sprintf("Widget %03d", i), "cmdb_ci_service")
+	}
+	return recs
+}
+
+// A caller that steps by its page size, not by how many rows came back, must
+// still reach every match once, whether or not the page size divides the
+// window: the page that crosses the window's end is completed from the rows
+// after it. (With a short straddling page, limits 20, 30 and 40 lost 10, 20
+// and 30 of 300 rows.)
+func TestSNITServiceSearch_FixedStrideWalkReachesEveryMatchForAnyPageSize(t *testing.T) {
+	const matches = 300
+	for _, limit := range []int{1, 7, 20, 25, 30, 40, 49, 50} {
+		t.Run(fmt.Sprintf("limit %d", limit), func(t *testing.T) {
+			fake := &fakeServiceNowServices{records: widgetRecords(matches)}
+			svc := NewServiceNowITServiceService(newTestSNClient(t, fake))
+			seen := map[string]int{}
+			for offset := 0; offset < matches; offset += limit {
+				resp, err := svc.SearchITServices(context.Background(), domain.SearchITServicesRequest{
+					Filters:    &domain.SearchITServicesFilters{SearchQuery: "widget"},
+					Pagination: domain.Pagination{Offset: offset, Limit: limit},
+				})
+				if err != nil {
+					t.Fatalf("offset %d: %v", offset, err)
+				}
+				if want := min(limit, matches-offset); len(resp.Services) != want {
+					t.Fatalf("offset %d: page has %d rows, want a full page of %d", offset, len(resp.Services), want)
+				}
+				for _, s := range resp.Services {
+					seen[derefString(s.Name)]++
+				}
+			}
+			if len(seen) != matches {
+				t.Errorf("reached %d of %d rows", len(seen), matches)
+			}
+			for name, n := range seen {
+				if n != 1 {
+					t.Errorf("%q returned %d times", name, n)
+				}
+			}
+		})
+	}
+}
+
+// Completing the straddling page costs one more upstream call, and only for a
+// page that actually crosses the window's end.
+func TestSNITServiceSearch_StraddlingPageCostsOneExtraCall(t *testing.T) {
+	cases := []struct {
+		name          string
+		offset, limit int
+		wantCalls     int32
+	}{
+		{"inside the window", 0, 20, 5},
+		{"ends exactly at the window's end", 230, 20, 5},
+		{"crosses the window's end", 240, 20, 6},
+		{"starts at the window's end", 250, 20, 1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fake := &fakeServiceNowServices{records: widgetRecords(300)}
+			searchITServices(t, fake, "widget", tc.offset, tc.limit)
+			if got := fake.calls.Load(); got != tc.wantCalls {
+				t.Errorf("upstream calls = %d, want %d", got, tc.wantCalls)
+			}
+		})
+	}
+}
+
+// The ranking spans every page of the window: an exact match that sits on the
+// third upstream page still comes first, and the window costs one call per page.
+func TestSNITServiceSearch_RanksAcrossAMultiPageWindow(t *testing.T) {
+	var recs []snITService
+	for i := 0; i < 260; i++ {
+		name := fmt.Sprintf("Choreo thing %03d", i)
+		if i == 120 { // upstream page 3 of 6
+			name = "Choreo"
+		}
+		recs = append(recs, fakeService(i+1, name, "cmdb_ci_service"))
+	}
+	fake := &fakeServiceNowServices{records: recs}
+	resp := searchITServices(t, fake, "choreo", 0, 20)
+
+	if got := derefString(resp.Services[0].Name); got != "Choreo" {
+		t.Errorf("first row = %q, want the exact match from the third page", got)
+	}
+	if resp.Total != 260 {
+		t.Errorf("Total = %d, want 260", resp.Total)
+	}
+	if got := fake.calls.Load(); got != int32(snITServiceRankPages) {
+		t.Errorf("upstream calls = %d, want %d (one per page of the window)", got, snITServiceRankPages)
+	}
+}
+
+// A record created between the first page and the concurrent ones shifts the
+// later pages by one and repeats the row at the seam. One response must not
+// contain it twice. (Rows can still move between two separate requests; no
+// offset paging can promise otherwise, and the old single call could not either.)
+func TestSNITServiceSearch_DuplicateAtAPageSeamIsDroppedWithinOneResponse(t *testing.T) {
+	fake := &fakeServiceNowServices{
+		records: widgetRecords(120),
+		afterFirstCall: func(f *fakeServiceNowServices) {
+			f.mu.Lock()
+			defer f.mu.Unlock()
+			f.records = append([]snITService{fakeService(9999, "Widget NEW", "cmdb_ci_service")}, f.records...)
+		},
+	}
+	// offset 25, limit 50 spans the seam between the first and second upstream page (row 50).
+	resp := searchITServices(t, fake, "widget", 25, 50)
+
+	seen := map[string]bool{}
+	for _, n := range itServiceNames(resp) {
+		if seen[n] {
+			t.Errorf("%q is in the response twice", n)
+		}
+		seen[n] = true
+	}
+	if len(resp.Services) != 50 {
+		t.Errorf("response has %d rows, want a full page of 50", len(resp.Services))
+	}
+}
+
+// An upstream whose count is larger than the rows it holds must not panic or
+// repeat rows; the walk simply ends where the rows do.
+func TestSNITServiceSearch_TotalLargerThanTheRowsHeld(t *testing.T) {
+	fake := &fakeServiceNowServices{records: widgetRecords(240), totalOverride: 300}
+	svc := NewServiceNowITServiceService(newTestSNClient(t, fake))
+
+	seen := map[string]int{}
+	for offset := 0; offset < 300; offset += 50 {
+		resp, err := svc.SearchITServices(context.Background(), domain.SearchITServicesRequest{
+			Filters:    &domain.SearchITServicesFilters{SearchQuery: "widget"},
+			Pagination: domain.Pagination{Offset: offset, Limit: 50},
+		})
+		if err != nil {
+			t.Fatalf("offset %d: %v", offset, err)
+		}
+		for _, s := range resp.Services {
+			seen[derefString(s.Name)]++
+		}
+	}
+	if len(seen) != 240 {
+		t.Errorf("reached %d rows, want the 240 the upstream holds", len(seen))
+	}
+	for name, n := range seen {
+		if n != 1 {
+			t.Errorf("%q returned %d times", name, n)
+		}
+	}
+}
+
+// A service offering is told apart by its class, whatever the case it is spelled in.
+func TestRankITServices_OfferingClassIsCaseInsensitive(t *testing.T) {
+	services := []snITService{
+		fakeService(1, "Choreo EU Offering", "Service_Offering"),
+		fakeService(2, "Choreo EU Service", "cmdb_ci_service"),
+	}
+	rankITServices(services, "choreo")
+	if derefString(services[0].Name) != "Choreo EU Service" {
+		t.Errorf("a service should rank ahead of an offering, got %q first", derefString(services[0].Name))
 	}
 }
 

@@ -212,20 +212,45 @@ func TestITServiceSearchRankingKeepsTheSupportGroup(t *testing.T) {
 	}
 }
 
-// LIKE metacharacters in the query are literal in the match and in the ranking.
+// LIKE metacharacters in the query are literal in the match AND in the ranking.
+// Each pair below is seeded oldest first with the genuine prefix match older than
+// the row that only looks like one when the metacharacter is read as a wildcard:
+// with unescaped rank patterns the newer look-alike would sort first.
 func TestITServiceSearchRankingTreatsWildcardsLiterally(t *testing.T) {
 	pool := itServiceTestPool(t)
-	seedITServices(t, pool, []string{"a_b exact", "axb decoy", "100% uptime", "1000 decoy"}, nil)
+	seedITServices(t, pool, []string{
+		"a_b real prefix", "axb and a_b", "axb decoy", // underscore: one wildcard character
+		"100% uptime", "1000 and 100%", "1000 decoy", // percent: any run of characters
+		`back\slash real prefix`, `xback\slash tail`, "backxslash decoy", // backslash: the escape character itself
+	}, nil)
 	repo := repository.NewITServiceRepository(pool)
 
-	if got, total := searchServiceNames(t, repo, "a_b", 20, 0); total != 1 || len(got) != 1 || got[0] != "a_b exact" {
-		t.Errorf("a_b matched %q (total %d), want only the literal underscore", got, total)
+	cases := []struct {
+		query string
+		want  []string
+	}{
+		{"a_b", []string{"a_b real prefix", "axb and a_b"}},
+		{"100%", []string{"100% uptime", "1000 and 100%"}},
+		{`back\slash`, []string{`back\slash real prefix`, `xback\slash tail`}},
 	}
-	if got, total := searchServiceNames(t, repo, "100%", 20, 0); total != 1 || len(got) != 1 || got[0] != "100% uptime" {
-		t.Errorf("100%% matched %q (total %d), want only the literal percent sign", got, total)
+	for _, tc := range cases {
+		got, total := searchServiceNames(t, repo, tc.query, 20, 0)
+		if total != len(tc.want) || strings.Join(got, "|") != strings.Join(tc.want, "|") {
+			t.Errorf("query %q: got %q (total %d), want %q in that order", tc.query, got, total, tc.want)
+		}
 	}
-	if got, total := searchServiceNames(t, repo, `back\slash`, 20, 0); total != 0 || len(got) != 0 {
-		t.Errorf("a backslash query matched %q (total %d), want nothing and no SQL error", got, total)
+}
+
+// A word that starts with the query ranks the same whether a space or a hyphen
+// precedes it, and both rank ahead of a query buried inside a word, however old.
+func TestITServiceSearchRankingWordPrefixTier(t *testing.T) {
+	pool := itServiceTestPool(t)
+	seedITServices(t, pool, []string{"my-choreo-thing", "my choreo thing", "xchoreox buried"}, nil)
+
+	got, total := searchServiceNames(t, repository.NewITServiceRepository(pool), "choreo", 20, 0)
+	want := "my choreo thing|my-choreo-thing|xchoreox buried" // equal tier keeps newest first
+	if total != 3 || strings.Join(got, "|") != want {
+		t.Errorf("got %q (total %d), want %q", got, total, want)
 	}
 }
 

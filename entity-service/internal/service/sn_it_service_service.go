@@ -107,7 +107,9 @@ const snITServiceClassOffering = "service_offering"
 // whole result page by page (the SRE alert service resolves a label that way)
 // still reaches every match: the window holds exactly the first
 // snITServiceRankWindow upstream matches, so the pages after it continue where
-// it ends with nothing repeated and nothing skipped.
+// it ends with nothing repeated and nothing skipped. The one page that crosses
+// the window's end is completed from the rows after it (one more call), so
+// every page is full whatever its size.
 func (s *snITServiceService) SearchITServices(ctx context.Context, req domain.SearchITServicesRequest) (domain.SearchITServicesResponse, error) {
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchITServicesResponse{}, err
@@ -138,6 +140,19 @@ func (s *snITServiceService) SearchITServices(ctx context.Context, req domain.Se
 		return domain.SearchITServicesResponse{}, err
 	}
 	rankITServices(window, query)
+
+	// A page that crosses the window's end is completed from the upstream rows
+	// right after the window, which is exactly where a page starting at the end
+	// begins. Without this it would be short, and a caller that steps by its
+	// page size (rather than by how many rows came back) would skip the rows
+	// between the short page and its next offset.
+	if wantEnd := offset + limit; wantEnd > snITServiceRankWindow && total > snITServiceRankWindow {
+		tail, err := s.fetchITServicePage(ctx, token, filters, snITServiceRankWindow, wantEnd-snITServiceRankWindow)
+		if err != nil {
+			return domain.SearchITServicesResponse{}, err
+		}
+		window = append(window, tail.Services...)
+	}
 
 	end := min(offset+limit, len(window))
 	var page []snITService
@@ -198,7 +213,24 @@ func (s *snITServiceService) fetchITServiceRankWindow(ctx context.Context, token
 	for _, page := range rest {
 		window = append(window, page...)
 	}
-	return window, total, nil
+	return dedupeITServices(window), total, nil
+}
+
+// dedupeITServices drops a service that appears twice, keeping its first
+// place. The pages are fetched at slightly different moments, so a record
+// created in between shifts the later pages by one and repeats the row at the
+// seam; one call to the upstream could never do that.
+func dedupeITServices(services []snITService) []snITService {
+	seen := make(map[string]struct{}, len(services))
+	out := services[:0]
+	for _, svc := range services {
+		if _, dup := seen[svc.ID]; dup {
+			continue
+		}
+		seen[svc.ID] = struct{}{}
+		out = append(out, svc)
+	}
+	return out
 }
 
 // rankITServices orders services in place, best match for query first. The
@@ -215,7 +247,7 @@ func rankITServices(services []snITService, query string) {
 		rows[i] = ranked{
 			svc:  svc,
 			tier: itServiceMatchTier(normalizeITServiceName(derefString(svc.Name)), q),
-			off:  svc.Class != nil && *svc.Class == snITServiceClassOffering,
+			off:  svc.Class != nil && strings.EqualFold(*svc.Class, snITServiceClassOffering),
 		}
 	}
 	sort.SliceStable(rows, func(i, j int) bool {

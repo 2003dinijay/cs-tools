@@ -6366,11 +6366,13 @@ With a non-empty query the results are now ranked: exact name, then name prefix,
 word of the name starts with it, then anywhere (`itServiceMatchTier`); within a tier
 services come before service offerings (ServiceNow data source only: on Postgres
 offerings live in the separate `service_offering` table), and equal ranks keep the
-source's order. Case and runs of whitespace do not matter (one real offering is spelled
-"Choreo  EU" with two spaces), and the query is trimmed before it goes anywhere.
+source's order. Matching is case-insensitive on both data sources; the ServiceNow path also
+ignores runs of whitespace (one real offering is spelled "Choreo  EU" with two spaces), the
+Postgres path does not. The query is trimmed before it goes anywhere, so a whitespace-only query
+is an empty one and lists everything.
 
 - **Postgres** (`it_service_repo.go`): a `CASE` expression ahead of `created_on DESC`.
-  Its three bound parameters go after the filter's and only into the data query; the
+  Its four bound parameters (the query, then the prefix, word-prefix and hyphen-prefix patterns) go after the filter's and only into the data query; the
   count query binds none of them (Postgres rejects an unreferenced parameter).
 - **ServiceNow** (`sn_it_service_service.go`): the upstream only does `name CONTAINS`,
   so ranking needs the matches. `fetchITServiceRankWindow` fetches page 0 (50, the
@@ -6383,11 +6385,18 @@ source's order. Case and runs of whitespace do not matter (one real offering is 
   matches, so a caller that walks the result page by page (`sre-alert-core-service`'s
   `SearchService` resolves a label that way) continues where the window ends with nothing
   skipped or repeated (`..._WalkingPastTheRankedWindowStillReachesEveryMatch`). The one page that
-  straddles the window's end is short (it stops there), so such a caller must continue from
-  `offset + len(page)`, not a fixed stride; `SearchService` does.
+  crosses the window's end is completed from the upstream rows right after it (one more call), so
+  every page is full and a caller that steps by its page size, whatever it is, reaches every match
+  once (`..._FixedStrideWalkReachesEveryMatchForAnyPageSize`; a short straddling page lost rows for
+  page sizes that do not divide 250).
 - **Cost:** a searched page is up to 5 upstream calls (2 for a query with 51-100 matches,
-  1 for fewer), the later ones in parallel, instead of 1. An upstream failure on any page
-  fails the search rather than returning a partly ranked list.
+  1 for fewer), the later ones in parallel, instead of 1; 6 for the page that crosses the
+  window's end. A caller that walks a many-match query page by page pays that per page, so a
+  walk for a label with no exact match costs several times what it did (about 26 calls for
+  300 matches, against 6); a label that exists is found on its first page. An upstream failure
+  on any page fails the search rather than returning a partly ranked list. The pages are
+  fetched at slightly different moments, so a record created in between could repeat the row at
+  a seam; the window is deduplicated by id.
 
 Tests: `sn_it_service_service_test.go` (a fake upstream shaped like production, with
 the 55 "Choreo" matches), `it_service_repo_integration_test.go` (real Postgres in a

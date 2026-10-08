@@ -7487,7 +7487,7 @@ paths:
 
   /services/search:
     post:
-      summary: Search CMDB IT services (ServiceNow data source only).
+      summary: Search CMDB IT services.
       operationId: searchITServices
       requestBody:
         required: true
@@ -19851,7 +19851,9 @@ components:
             a query the order is that of the underlying source.
 
             On the ServiceNow data source the ranking covers the first 250 matches;
-            a page that starts past them continues in the source's own order.
+            a page that starts past them continues in the source's own order, and the
+            page that crosses the 250th match is completed from the rows after it, so
+            pages are always full. A whitespace-only query is the same as no query.
 
     SearchITServicesRequest:
       type: object

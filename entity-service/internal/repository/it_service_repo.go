@@ -106,11 +106,11 @@ func (r *itServiceRepo) SearchITServices(ctx context.Context, searchQuery string
 		rank = fmt.Sprintf(
 			`CASE WHEN LOWER(s.name) = LOWER($%d) THEN 0
 			      WHEN s.name ILIKE $%d ESCAPE '\' THEN 1
-			      WHEN s.name ILIKE $%d ESCAPE '\' THEN 2
+			      WHEN s.name ILIKE $%d ESCAPE '\' OR s.name ILIKE $%d ESCAPE '\' THEN 2
 			      ELSE 3 END, `,
-			n+1, n+2, n+3,
+			n+1, n+2, n+3, n+4,
 		)
-		rankArgs = []any{searchQuery, escaped + "%", "% " + escaped + "%"}
+		rankArgs = []any{searchQuery, escaped + "%", "% " + escaped + "%", "%-" + escaped + "%"}
 	}
 
 	countQuery := "SELECT COUNT(*) FROM service s " + where
