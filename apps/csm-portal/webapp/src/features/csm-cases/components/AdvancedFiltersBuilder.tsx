@@ -28,7 +28,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { Plus, Trash2 } from "@wso2/oxygen-ui-icons-react";
-import { useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import MultiSelectField from "@components/MultiSelectField";
 import AsyncCreatedByMultiSelect from "@features/csm-cases/components/AsyncCreatedByMultiSelect";
 import AsyncAssigneeMultiSelect from "@features/csm-cases/components/AsyncAssigneeMultiSelect";
@@ -114,6 +114,13 @@ interface DateOrPresetValueInputProps {
   onChange: (next: string) => void;
 }
 
+/** How long the custom date picker waits after the last edit before
+ * committing a *complete, valid* date upstream — see `DateOrPresetValueInput`'s
+ * own doc comment for why this exists and why it only applies to that one
+ * path (never to a preset pick or an explicit clear, both already instant,
+ * discrete actions with nothing to coalesce). */
+const CUSTOM_DATE_COMMIT_DEBOUNCE_MS = 300;
+
 /**
  * The `createdOn`/`updatedOn`/`closedOn` row's value input: a preset
  * dropdown (human labels for the common relative-date placeholders — see
@@ -125,6 +132,40 @@ interface DateOrPresetValueInputProps {
  * yet" — the caller should key this component by `field-op` (see
  * `AdvancedFiltersBuilder`) so switching to a different date row/op resets
  * that local state instead of carrying it over.
+ *
+ * The calendar's own `value` is local state (`localDate`), not derived
+ * directly from the incoming `value` prop on every render — found live as a
+ * real bug otherwise: MUI's `DatePicker` reports an invalid (`NaN`) `Date`
+ * on every keystroke while a masked `MM/DD/YYYY` field is still incomplete
+ * (e.g. month and day typed, year not finished yet), not just on an actual
+ * clear (which reports `null` instead). Reading `value` straight off
+ * `parseDateOnly(value)` and treating "not a valid complete date" as "clear
+ * it" committed `""` upstream on every one of those keystrokes, which then
+ * round-tripped back down through `value` and reset the field to empty —
+ * wiping out the month/day the user had already typed the moment they
+ * started on the year. Keeping the displayed date as local state, updated
+ * on every keystroke regardless of completeness, and only ever pushing a
+ * value upstream for the two outcomes that actually mean something —
+ * `null` (the clear button) or a complete, valid `Date` — fixes this
+ * without losing anything: MUI never fights a controlled value that hasn't
+ * itself changed, so the field keeps whatever's been typed so far during
+ * every intermediate, incomplete render.
+ *
+ * A complete, valid date is also debounced before being committed upstream
+ * (`CUSTOM_DATE_COMMIT_DEBOUNCE_MS`), the same technique `useDebouncedValue`
+ * applies elsewhere in this app, but implemented with a cancellable
+ * `setTimeout` here rather than that hook directly: a rapid run of valid
+ * intermediate dates (e.g. holding the calendar's day/month stepper, or
+ * quickly clicking several days in the popup) would otherwise commit a
+ * value — and, through this row's own `onUpdateRow`, likely re-run a
+ * search — once per intermediate value instead of once the user actually
+ * settles. An explicit clear is committed immediately, never debounced: a
+ * deliberate, discrete action reads as unresponsive if delayed the same way
+ * a mid-typing keystroke is. A preset pick (the dropdown below) is a
+ * separate, already-discrete action and was never debounced; picking one
+ * also cancels any still-pending custom-date commit, so a quick switch away
+ * from a half-typed custom date can never have that stale value land after
+ * the preset the user actually chose.
  */
 function DateOrPresetValueInput({
   labelId,
@@ -134,6 +175,27 @@ function DateOrPresetValueInput({
   const [mode, setMode] = useState<"preset" | "custom">(
     value && !isRelativeDatePreset(value) ? "custom" : "preset",
   );
+  const [localDate, setLocalDate] = useState<Date | null>(() => parseDateOnly(value));
+  const commitTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const cancelPendingCommit = (): void => {
+    if (commitTimeoutRef.current) {
+      clearTimeout(commitTimeoutRef.current);
+      commitTimeoutRef.current = null;
+    }
+  };
+  // Cancel a still-pending debounced commit if this row is removed (or
+  // re-keyed to a different field/op) while the timer is in flight, so it
+  // can never fire `onChange` against a row that's no longer this one.
+  useEffect(() => cancelPendingCommit, []);
+
+  const commitDateDebounced = (next: string): void => {
+    cancelPendingCommit();
+    commitTimeoutRef.current = setTimeout(() => {
+      commitTimeoutRef.current = null;
+      onChange(next);
+    }, CUSTOM_DATE_COMMIT_DEBOUNCE_MS);
+  };
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
@@ -156,8 +218,12 @@ function DateOrPresetValueInput({
           displayEmpty
           onChange={(e) => {
             const next = e.target.value;
+            // A discrete pick always wins over a half-typed custom date
+            // still waiting to be committed.
+            cancelPendingCommit();
             if (next === CUSTOM_DATE_SENTINEL) {
               setMode("custom");
+              setLocalDate(null);
               onChange("");
             } else {
               setMode("preset");
@@ -178,14 +244,23 @@ function DateOrPresetValueInput({
         <LocalizationProvider dateAdapter={AdapterDateFns}>
           <DatePicker
             label="Exact date"
-            value={parseDateOnly(value)}
-            onChange={(date) =>
-              onChange(
-                date instanceof Date && !Number.isNaN(date.getTime())
-                  ? formatDateOnly(date)
-                  : "",
-              )
-            }
+            value={localDate}
+            onChange={(date) => {
+              setLocalDate(date);
+              if (date === null) {
+                // The field's own clear button -- a deliberate, discrete
+                // action, committed immediately.
+                cancelPendingCommit();
+                onChange("");
+              } else if (date instanceof Date && !Number.isNaN(date.getTime())) {
+                // A complete, valid date -- debounce the actual commit.
+                commitDateDebounced(formatDateOnly(date));
+              }
+              // Anything else is an incomplete date reported mid-typing
+              // (e.g. month/day entered, year not finished) -- leave the
+              // committed value exactly as it is; see this function's own
+              // doc comment for why that's what fixes the reset bug.
+            }}
             slotProps={{
               textField: { size: "small", fullWidth: true },
               field: { clearable: true },
