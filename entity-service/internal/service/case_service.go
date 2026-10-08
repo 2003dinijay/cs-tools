@@ -2828,6 +2828,9 @@ func prepareCaseSearchFilters(ctx context.Context, req domain.SearchCasesRequest
 
 // SearchCases implements CaseService.
 func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesRequest) (domain.SearchCasesResponse, error) {
+	if req.CountOnly && req.SkipTotal {
+		return domain.SearchCasesResponse{}, &apierror.ValidationError{Msg: "countOnly and skipTotal cannot both be set: countOnly already skips the page query, and skipTotal would leave nothing to compute"}
+	}
 	if err := normalizePagination(&req.Pagination); err != nil {
 		return domain.SearchCasesResponse{}, err
 	}

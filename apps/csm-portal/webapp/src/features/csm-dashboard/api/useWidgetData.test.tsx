@@ -76,6 +76,7 @@ describe("useWidgetData", () => {
       {
         filters: { states: ["open"] },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );

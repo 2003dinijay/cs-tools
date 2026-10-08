@@ -7451,6 +7451,73 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   one endpoint reads Postgres directly (unlike `SearchCatalogs`, which still
   falls back to ServiceNow -- see `catalogService.snMirror`'s own doc comment).
 
+## Case search `countOnly`, and the projectOnboardingStatus `in` filter's exclusion-list rewrite
+
+Reported as a dashboard-performance finding, measured against a real load test and the perf
+database: the dashboard loads its widgets one at a time
+(`WIDGET_FETCH_CONCURRENCY_LIMIT = 1`, `csm-portal/webapp`'s `widgetFetchConcurrency.ts`), so the
+page time is the sum of every widget's own `POST /cases/search`, and a count or pie/bar widget's
+request was 46.5% of the dashboard's database time in that test (51% of it the `COUNT(*)`, 49%
+the page query) -- for a response whose only use is `total`.
+
+**`countOnly`** (`SearchCasesRequest.CountOnly`, `entity.go`) is the mirror image of the existing
+`SkipTotal`: `true` runs only the `COUNT(*)` query and returns `Cases` as an empty, non-nil slice
+(never `nil` -- `cases: []`, not `cases: null`, on the wire) without ever building or sending the
+page query at all. Rejected together with `SkipTotal` (`caseService.SearchCases`,
+`&apierror.ValidationError`) -- there would be nothing left for either flag to skip. Implemented
+in `caseRepo.SearchCases` as the exact mirror of the existing `if req.SkipTotal { ... } else {
+eg.Go(...) }` shape, just applied to the page-query goroutine instead of the count one, and
+returning before `dataQuery` is even built. Postgres data source only, cases only -- unlike
+`SkipTotal`, no other search request type declares it, since no other entity's dashboard widgets
+needed this (see `TestSearchCasesRequestDeclaresCountOnly`, the cases-only sibling of
+`TestSearchRequestsDeclareSkipTotal`).
+
+`apps/csm-portal/webapp`'s `useWidgetData`/`useWidgetPieData` send it for a `shape: "count"`
+widget or a pie/bar slice query, through `postCountingOnly` (`api/backend/postCountingOnly.ts`,
+the mirror of the existing `postSkippingTotal.ts`: sets the flag, falls back to the plain search
+and latches it off for the session on a 400, so a portal deployed ahead of its entity service
+doesn't strand every count/pie widget) -- gated on `config.searchEndpoint === "/cases/search" &&
+!config.buildSearchRequestBody`, since `countOnly` is a case-search-only field and a resourceType
+with its own diverging request shape (`case_feedback`'s flat `page`/`pageSize` contract) was
+never designed against it. `apps/csm-portal/backend` needed no change at all: its case-search
+handler forwards the request body as raw, untyped `[]byte` (see "Adding a new entity" above for
+why that's the established shape here), so an unknown-to-it field like `countOnly` rides through
+exactly as `skipTotal` always has.
+
+**The `projectOnboardingStatus` `in` filter is rewritten as an exclusion-list id lookup**, the
+same technique `caseLikeStateLookupClause` already uses for the `state` filter (see "Case search
+filters on the Postgres data source" below) -- but only for `in`, and only after revisiting that
+section's own earlier reasoning for why the state-filter technique wasn't applied here too. That
+reasoning held a general `in` filter is usually highly selective (a couple of statuses out of the
+full set), so building an id array to check membership against costs more than the simple
+indexed join this already was. **Every real dashboard widget's own `in` list is the opposite
+shape**: "every project except the in-progress ones" (6 of the 7 statuses), matching ~1,950 of
+~1,966 measured projects -- selective in reverse. Checking that per case row via the
+already-joined `p.onboarding_status` column (`caseSearchJoins`'s `LEFT JOIN project p`) keeps
+that join alive for every row even in a `COUNT(*)`-only query that reads no other column of `p`;
+replayed Query Store text measured the project lookup alone at ~10,200 of a widget's
+21,000-55,000 total data pages. The filter is now `wi.project_id IS NOT NULL AND wi.project_id
+<> ALL(ARRAY(SELECT id FROM project WHERE onboarding_status IS NULL OR onboarding_status <>
+ALL($n::text[]::onboarding_status_enum[])))` -- same NULL semantics as before (a project with no
+status, or a case with no project, never matches `in`), but with no WHERE-clause reference to the
+`p` alias left for this filter at all, which is what lets the planner drop the dead `LEFT JOIN
+project` from a `COUNT(*)`-only query entirely. The `notIn` branch is deliberately left as the
+plain join check: it already satisfies the no-project/no-status cases via its own `OR`, nothing
+marks it as a measured bottleneck the way `in` was, and the equivalent rewrite would need its own
+extra `OR wi.project_id IS NULL` term to keep that behaviour -- not worth the added risk without
+a measured case for it. `TestSearchCasesIntegration_ProjectOnboardingStatusInMatchesLegacyJoinForm`
+checks the rewrite against a raw, independently-written query using the original join form, run
+directly against the live schema, rather than against the (now-rewritten) repository code.
+
+**Confirmed directly against the perf database** (the one real environment with
+production-volume data, `EXPLAIN (ANALYZE, BUFFERS)` as an internal caller, the six-status widget
+filter against real `OPEN` cases): both forms return the identical total (1,774), and the
+rewritten form reads 177,746 buffers in 138ms against the original join form's 382,947 buffers in
+206ms for this one query -- a 54% reduction in buffers read, matching the mechanism predicted
+above exactly: the rewritten plan's `project` access is a single `Seq Scan` InitPlan computing the
+12-row excluded-id array once, with no further per-row access to `project` at all, where the
+original plan's `Merge Join` touched it once per matching `work_item` row.
+
 ## Case search filters on the Postgres data source
 
 `caseRepo.SearchCases` implements `tag`, `projectOnboardingStatus` (in/notIn),
