@@ -251,6 +251,15 @@ func (s *sequencedSweeper) callCount() int {
 	return len(s.calls)
 }
 
+// snapshot copies calls under the lock -- Run's goroutine keeps appending to
+// it until ctx is actually cancelled, which cancel() does not wait for, so
+// reading the slice directly races with that append under go test -race.
+func (s *sequencedSweeper) snapshot() []time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]time.Time(nil), s.calls...)
+}
+
 // A sustained run of failures must not keep polling at the same fixed
 // UnlistenedInterval forever -- the gap between passes must grow -- and a
 // single successful pass must reset it back down.
@@ -278,7 +287,8 @@ func TestOutageNoticeDrainerBacksOffTheUnlistenedPollOnSustainedFailure(t *testi
 	}
 	cancel()
 
-	gap := func(i int) time.Duration { return sweeper.calls[i].Sub(sweeper.calls[i-1]) }
+	calls := sweeper.snapshot()
+	gap := func(i int) time.Duration { return calls[i].Sub(calls[i-1]) }
 	// Generous lower bounds only -- real scheduling jitter runs long, never short.
 	if g := gap(1); g < base {
 		t.Errorf("gap after 1st failure = %s, want >= %s (base)", g, base)

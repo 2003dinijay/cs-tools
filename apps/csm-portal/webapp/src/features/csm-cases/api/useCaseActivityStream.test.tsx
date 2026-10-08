@@ -95,6 +95,7 @@ describe("useCaseActivityStream", () => {
 
   afterEach(() => {
     vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
   it("does not connect when caseId is unset", async () => {
