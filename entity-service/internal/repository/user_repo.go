@@ -168,18 +168,35 @@ func scanUser(row interface{ Scan(...any) error }) (domain.User, error) {
 
 // GetUserByEmail implements UserRepository.
 func (r *userRepo) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
-	u, err := scanUser(r.db.QueryRow(ctx, `SELECT `+userColumns+` FROM "user" WHERE lower(email) = lower($1)`, email))
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Msg never carries the email — writeServiceError (internal/handler/
-		// decode.go) logs every NotFoundError's Msg verbatim, so this is the
-		// one place that decides whether it leaks into logs for every caller
-		// of this method, not just GetMe.
-		return domain.User{}, &apierror.NotFoundError{Msg: "no user found with that email"}
-	}
+	// An exact match wins; otherwise only a single ASCII case-insensitive match counts, so a
+	// Unicode case fold or two rows differing in case can never resolve to another user.
+	rows, err := r.db.Query(ctx, `SELECT `+userColumns+` FROM "user"
+		WHERE email = $1 OR ($2 AND lower(email) = lower($1) AND email !~ '[^[:ascii:]]')
+		ORDER BY (email = $1) DESC LIMIT 2`, email, isASCII(email))
 	if err != nil {
 		return domain.User{}, fmt.Errorf("get user by email: %w", err)
 	}
-	return u, nil
+	var matches []domain.User
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			rows.Close()
+			return domain.User{}, fmt.Errorf("get user by email: %w", err)
+		}
+		matches = append(matches, u)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return domain.User{}, fmt.Errorf("get user by email: %w", err)
+	}
+	if len(matches) > 0 && (matches[0].Email == email || len(matches) == 1) {
+		return matches[0], nil
+	}
+	// Msg never carries the email — writeServiceError (internal/handler/
+	// decode.go) logs every NotFoundError's Msg verbatim, so this is the
+	// one place that decides whether it leaks into logs for every caller
+	// of this method, not just GetMe.
+	return domain.User{}, &apierror.NotFoundError{Msg: "no user found with that email"}
 }
 
 // SearchUsers implements UserRepository.
@@ -687,4 +704,14 @@ func (r *userRepo) GetUserGroups(ctx context.Context, userID string) ([]domain.U
 		return nil, fmt.Errorf("iterate user groups: %w", err)
 	}
 	return groups, nil
+}
+
+// isASCII reports whether s has only ASCII characters.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }
