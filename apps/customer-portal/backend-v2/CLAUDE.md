@@ -780,6 +780,16 @@ Two more examples, both in this same "restrict, don't mirror" category:
   `filters.type: comment` on **read** too — entity-service's search endpoint returns `work_note`
   entries verbatim unless the caller filters them out, and those are internal WSO2 annotations that
   must never reach the customer regardless of which reference entity they're attached to.
+- `POST /cases/{id}/activities/search` (`CaseHandler.SearchCaseActivities`) forces
+  `ExcludeWorkNotes: true` onto every request it forwards, regardless of what the client sends —
+  the same restrict-don't-mirror shape as the generic comments endpoints above, for the case
+  activity feed specifically. Found live: entity-service's own `total` counted a
+  `WORK_NOTE`-type comment the same as a public one, while this handler's `dto.MapSearchCaseActivities`
+  already filtered work notes out of the *array* — so a case with one internal note showed
+  `totalRecords: 2` against one visible activity. Forcing the new flag server-side (entity-service's
+  own `SearchCaseActivitiesRequest.ExcludeWorkNotes`, nil/false everywhere else — see that repo's own
+  CLAUDE.md) makes `totalRecords` agree with what's actually rendered, instead of recomputing a count
+  client-side after the fact (which would only ever be correct for a single page, not across pages).
 
 **Not every field worth restricting is a security decision — some are just an entity-service scoping
 convenience, and the path (not the body) is the more reliable source for it.**
