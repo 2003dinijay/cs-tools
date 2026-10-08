@@ -1068,6 +1068,17 @@ type DashboardSummary struct {
 	// period-scoped, for the same reason NewRegistrations is not.
 	PairingsNeedingAttention int `json:"pairingsNeedingAttention"`
 	TrialsEndingSoon         int `json:"trialsEndingSoon"`
+	// UnresolvedIngestFailures counts rows in plg_ingest_failure that nobody has
+	// marked resolved. Never period-scoped, for the same reason NewRegistrations
+	// is not: a backlog that disappears because someone narrowed the date range
+	// is a backlog nobody clears.
+	//
+	// It exists because that table has no workflow at all -- no endpoint lists
+	// it, no PLG route touches it, no alert fires -- so until this count,
+	// a registration the ingest refused was visible only as two log lines in two
+	// different services. The repository method behind it (OpenCount) was
+	// written for exactly this and had no caller.
+	UnresolvedIngestFailures int `json:"unresolvedIngestFailures"`
 }
 
 // DashboardAnalytics is the single payload the dashboard consumes.

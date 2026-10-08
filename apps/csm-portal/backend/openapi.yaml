@@ -22478,6 +22478,11 @@ components:
               type: integer
             trialsEndingSoon:
               type: integer
+            unresolvedIngestFailures:
+              type: integer
+              description: >-
+                Rows in plg_ingest_failure with no resolved_on. Registrations the
+                ingest refused, which nobody has cleared. Not period-scoped.
         registrationsByProduct:
           type: array
           items:

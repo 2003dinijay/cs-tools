@@ -636,6 +636,8 @@ export interface DashboardSummary {
   newRegistrations: number;
   pairingsNeedingAttention: number;
   trialsEndingSoon: number;
+  /** Rows in plg_ingest_failure nobody has marked resolved. Normally 0. */
+  unresolvedIngestFailures: number;
 }
 
 export interface DashboardAnalytics {
