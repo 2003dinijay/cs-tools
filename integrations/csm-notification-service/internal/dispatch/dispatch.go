@@ -103,6 +103,9 @@ type slaEngineService interface {
 	RegisterClocks(ctx context.Context, caseID, priority string, createdAt time.Time, caseNumber, wso2CaseID, caseTitle, caseType, product, team string)
 	ApplyStateEffects(ctx context.Context, caseID, newStatus string)
 	CompleteResponseClock(ctx context.Context, caseID string)
+	// CompleteWorkaroundClock is called from handleWorkaroundProvided, the
+	// same best-effort way as the three triggers above.
+	CompleteWorkaroundClock(ctx context.Context, caseID string)
 }
 
 // callSender abstracts notifications.TwilioClient's MakeCall for testability.
@@ -514,6 +517,8 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 		return d.handleCaseAcknowledged(ctx, record, env.Payload)
 	case events.TypeSeverityChanged:
 		return d.handleSeverityChanged(ctx, record, env.Payload)
+	case events.TypeWorkaroundProvided:
+		return d.handleWorkaroundProvided(ctx, env.Payload)
 	case events.TypeIncidentCreated:
 		return d.handleIncidentCreated(ctx, record, env.Payload)
 	case events.TypeIncidentAcknowledged, events.TypeIncidentPriorityElevated, events.TypeIncidentCommentAdded,
@@ -1078,6 +1083,29 @@ func (d *Dispatcher) handleCaseAcknowledged(ctx context.Context, record eventbus
 		d.forget(chatKey)
 	}
 	return chatErr
+}
+
+// handleWorkaroundProvided has no email/Chat reaction at all — unlike every
+// other handler in this file, it exists purely to feed
+// internal/slaengine.Engine.CompleteWorkaroundClock, the same direct,
+// best-effort "call straight from this handler" wiring RegisterClocks/
+// ApplyStateEffects/CompleteResponseClock already get from
+// handleCaseCreated/handleStatusChanged/handleCommentAdded — see
+// slaEngineService's own doc comment. No idempotency tracking is needed:
+// CompleteWorkaroundClock is itself idempotent (AdvanceAlertedTier never
+// moves the cursor backward) and has no side effect worth guarding against
+// a retry/redelivery the way an email/Chat send does. Always returns nil:
+// a nil slaEngine (REDIS_ADDR/REDIS_URL unset) is a silent no-op, same
+// posture as every other slaEngine call site in this file.
+func (d *Dispatcher) handleWorkaroundProvided(ctx context.Context, raw json.RawMessage) error {
+	var p events.WorkaroundProvidedPayload
+	if err := json.Unmarshal(raw, &p); err != nil {
+		return fmt.Errorf("dispatch: decode case.workaround_provided payload: %w", err)
+	}
+	if d.slaEngine != nil {
+		d.slaEngine.CompleteWorkaroundClock(ctx, p.CaseID)
+	}
+	return nil
 }
 
 // handleSeverityChanged has two independent reactions, like handleCaseCreated

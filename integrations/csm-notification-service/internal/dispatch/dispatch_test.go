@@ -645,10 +645,11 @@ func TestDispatcher_Handle_CommentAdded(t *testing.T) {
 
 // mockSLAEngine is a hand-written fake for slaEngineService.
 type mockSLAEngine struct {
-	mu                    sync.Mutex
-	registerCalls         []struct{ caseID, priority, caseNumber string }
-	applyStateCalls       []struct{ caseID, newStatus string }
-	completeResponseCalls []string
+	mu                      sync.Mutex
+	registerCalls           []struct{ caseID, priority, caseNumber string }
+	applyStateCalls         []struct{ caseID, newStatus string }
+	completeResponseCalls   []string
+	completeWorkaroundCalls []string
 }
 
 func (m *mockSLAEngine) RegisterClocks(_ context.Context, caseID, priority string, _ time.Time, caseNumber, _, _, _, _, _ string) {
@@ -667,6 +668,12 @@ func (m *mockSLAEngine) CompleteResponseClock(_ context.Context, caseID string) 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.completeResponseCalls = append(m.completeResponseCalls, caseID)
+}
+
+func (m *mockSLAEngine) CompleteWorkaroundClock(_ context.Context, caseID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.completeWorkaroundCalls = append(m.completeWorkaroundCalls, caseID)
 }
 
 // TestDispatcher_Handle_CaseCreated_RegistersSLAClocksWhenConfigured verifies
@@ -756,6 +763,39 @@ func TestDispatcher_Handle_CommentAdded_NotSupportEngineer_DoesNotCompleteRespon
 	}
 	if len(sla.completeResponseCalls) != 0 {
 		t.Errorf("expected no CompleteResponseClock call, got %v", sla.completeResponseCalls)
+	}
+}
+
+// TestDispatcher_Handle_WorkaroundProvided_CompletesWorkaroundClock verifies
+// handleWorkaroundProvided calls slaEngine.CompleteWorkaroundClock with the
+// payload's own caseId — the fix for the case PATCH workaroundProvided:true
+// gap (entity-service's own Postgres-side SLA engine completed its clock,
+// but this engine's own Redis-based one never heard about it at all before
+// this event existed).
+func TestDispatcher_Handle_WorkaroundProvided_CompletesWorkaroundClock(t *testing.T) {
+	sla := &mockSLAEngine{}
+	d := newTestDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, &mockCallSender{}).WithSLAEngine(sla)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.workaround_provided","entityId":"CASE-1","payload":{"caseId":"CASE-1"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(sla.completeWorkaroundCalls) != 1 || sla.completeWorkaroundCalls[0] != "CASE-1" {
+		t.Errorf("unexpected CompleteWorkaroundClock calls: %v", sla.completeWorkaroundCalls)
+	}
+}
+
+// TestDispatcher_Handle_WorkaroundProvided_NoEngineConfigured_NoError verifies
+// an unconfigured slaEngine (REDIS_ADDR/REDIS_URL unset) is a silent no-op,
+// same posture as every other slaEngine call site in this file.
+func TestDispatcher_Handle_WorkaroundProvided_NoEngineConfigured_NoError(t *testing.T) {
+	d := newTestDispatcher(&mockEmailSender{}, &mockGoogleChatSender{}, &mockCallSender{})
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.workaround_provided","entityId":"CASE-1","payload":{"caseId":"CASE-1"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
 	}
 }
 

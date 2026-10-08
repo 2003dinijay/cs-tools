@@ -249,11 +249,15 @@ func statusEffectFor(newStatus string) caseStatusEffect {
 //     customer, so neither clock should keep accumulating — pause both.
 //   - "Closed": resolution and response are genuinely done — force-complete
 //     both (AdvanceAlertedTier to 100, same as an early completion).
-//     workaround is only paused, not completed: there is no real
-//     "workaround provided" signal available here (see
-//     case.comment_added's own payload, which carries no such field
-//     either) — a documented, accepted gap carried forward from every
-//     earlier design this replaces, not newly introduced.
+//     workaround is only paused, not completed, here — a real "workaround
+//     provided" signal now exists (case.workaround_provided, see
+//     events.WorkaroundProvidedPayload's own doc comment), but it's
+//     consumed by its own handler (dispatch.handleWorkaroundProvided →
+//     CompleteWorkaroundClock), independently of a status change, not by
+//     this function. A case closed without ever having workaroundProvided
+//     set true simply never completes this clock — functionally safe
+//     regardless, since processDueMember drops a paused clock's due wake
+//     entry without alerting, same as a completed one would.
 //   - anything else (Open, Work In Progress, Waiting on WSO2, Reopened):
 //     resume both — the case is active again.
 //
@@ -308,6 +312,21 @@ func (e *Engine) setPaused(ctx context.Context, caseID, clockType string, paused
 func (e *Engine) CompleteResponseClock(ctx context.Context, caseID string) {
 	if _, err := e.store.AdvanceAlertedTier(ctx, caseID, ClockResponse, 100, time.Time{}); err != nil {
 		slog.ErrorContext(ctx, "slaengine: failed to complete response clock", "caseId", caseID, "err", err)
+	}
+}
+
+// CompleteWorkaroundClock force-completes the workaround clock — called
+// from dispatch.handleWorkaroundProvided when entity-service publishes
+// events.TypeWorkaroundProvided (a case's workaroundProvided field was set
+// to true via PATCH; entity-service has no equivalent "recall" event, so
+// there's no opposite operation here either — same accepted gap
+// CompleteWorkaroundClock's entity-service namesake documents). Before this
+// existed, ApplyStateEffects only ever paused/resumed this clock, never
+// completed it — a documented gap this closes. Idempotent, same reasoning
+// as CompleteResponseClock.
+func (e *Engine) CompleteWorkaroundClock(ctx context.Context, caseID string) {
+	if _, err := e.store.AdvanceAlertedTier(ctx, caseID, ClockWorkaround, 100, time.Time{}); err != nil {
+		slog.ErrorContext(ctx, "slaengine: failed to complete workaround clock", "caseId", caseID, "err", err)
 	}
 }
 

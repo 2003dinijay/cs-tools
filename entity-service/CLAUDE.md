@@ -2182,6 +2182,35 @@ regardless of severity.
   does **not** reopen a completed clock; `SLAEngineRepository` has no
   "uncomplete" operation, and a recall is rare enough that this stays a
   known, accepted gap rather than something built speculatively.
+- **That only fixed this engine's own Postgres-side clock — reported live as
+  a separate, distinct gap: `csm-notification-service`'s own, independent
+  Redis-based SLA engine had no way to hear about a workaround being
+  provided at all.** Setting `workaroundProvided:true` published no event
+  whatsoever — `updateCaseFields`/`snCaseService.UpdateCase`'s own
+  `CompleteWorkaroundClock` call above is deliberately independent of
+  `s.publisher` (it never touches Event Hub), and no other code path
+  published anything either, unlike response (a qualifying comment, already
+  carried by `case.comment_added`'s own `IsSupportEngineerResponse`) or
+  resolution (a status change to Closed, already carried by
+  `case.status_changed`). So that service's own workaround clock could still
+  fire a breach alert well after a workaround had genuinely been provided —
+  the exact bug class `ApplyStateEffects`'s own "pause, don't complete"
+  workaround treatment on close was already confirmed safe against (see
+  that repo's own `CLAUDE.md`), just via a different trigger this time.
+  Fixed with a new, minimal event, `case.workaround_provided`
+  (`events.WorkaroundProvidedPayload`, carrying only the case id — no
+  `Recipients`/email reaction and no Chat alert, a pure tracking signal),
+  published by the shared `publishWorkaroundProvidedEvent` function
+  (`sn_case_service.go`) from both `caseService.updateCaseFields` and
+  `snCaseService.UpdateCase`, in the identical place and under the identical
+  `WorkaroundProvided != nil && *req.WorkaroundProvided` gate as the
+  `CompleteWorkaroundClock` call above, but independent of it — `false` is
+  never published either, matching that call's own "no uncomplete
+  operation" posture. `csm-notification-service` consumes it directly via a
+  new `dispatch.handleWorkaroundProvided` → `slaengine.Engine.
+  CompleteWorkaroundClock`, the same direct-call wiring `RegisterClocks`/
+  `ApplyStateEffects`/`CompleteResponseClock` already get — see that repo's
+  own `CLAUDE.md` for the consuming side.
 - **Sharing a fix ETA with the customer completes BOTH the workaround and
   resolution clocks, not just one.** The webapp's "Share fix ETA with
   customer" action (`SetFixEtaDialog.tsx`, ServiceNow-only on the wire —

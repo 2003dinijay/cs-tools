@@ -2599,6 +2599,15 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 	if s.slaEngine != nil && req.WorkaroundProvided != nil && *req.WorkaroundProvided {
 		s.slaEngine.CompleteWorkaroundClock(ctx, req.ID)
 	}
+	// Deliberately independent of s.slaEngine above -- this is the signal
+	// csm-notification-service's own Redis-based SLA engine needs to
+	// complete ITS OWN workaround clock, a different tracker in a
+	// different process from the SLAEngineService call just above; see
+	// events.WorkaroundProvidedPayload's own doc comment for why nothing
+	// published this before.
+	if req.WorkaroundProvided != nil && *req.WorkaroundProvided {
+		publishWorkaroundProvidedEvent(ctx, s.publisher, req.ID)
+	}
 	// Checked via GetCaseEtaSharedOn, not a request field -- eta_shared_on
 	// has no ServiceNow equivalent and no guaranteed connection to this
 	// specific PATCH (see snCaseService.UpdateCase's own identical check
