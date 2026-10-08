@@ -213,7 +213,8 @@ type resolvedService struct {
 	groupID string
 }
 
-// createRequest builds the POST /incidents body; it never sends assignmentGroupId, since entity-service now rejects it on create and assigns serviceId's support group itself.
+// createRequest builds the POST /incidents body. The assignment group and contact type are what put an
+// alert-born incident on the SRE escalation ladder: without either, it matches no SRE routing rule.
 func (n *Notifier) createRequest(inc model.Incident, svc resolvedService, tag, creationNote string) csm.CreateIncidentRequest {
 	req := csm.CreateIncidentRequest{
 		CallerID:      n.callerID,
@@ -226,6 +227,10 @@ func (n *Notifier) createRequest(inc model.Incident, svc resolvedService, tag, c
 	}
 	if creationNote != "" {
 		req.WorkNotes = &creationNote
+	}
+	if svc.groupID != "" {
+		group := svc.groupID
+		req.AssignmentGroupID = &group
 	}
 	if ct := contactTypeForSource(inc.Source); ct != "" {
 		req.ContactType = &ct
