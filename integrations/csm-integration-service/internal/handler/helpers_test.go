@@ -254,6 +254,7 @@ func (m *mockEntityVulnerabilityClient) SyncProductVulnerabilities(ctx context.C
 type mockEntityIncidentClient struct {
 	createIncidentFn  func(ctx context.Context, body []byte) ([]byte, error)
 	searchIncidentsFn func(ctx context.Context, body []byte) ([]byte, error)
+	updateIncidentFn  func(ctx context.Context, id string, body []byte) ([]byte, error)
 }
 
 func (m *mockEntityIncidentClient) CreateIncident(ctx context.Context, body []byte) ([]byte, error) {
@@ -266,6 +267,26 @@ func (m *mockEntityIncidentClient) CreateIncident(ctx context.Context, body []by
 func (m *mockEntityIncidentClient) SearchIncidents(ctx context.Context, body []byte) ([]byte, error) {
 	if m.searchIncidentsFn != nil {
 		return m.searchIncidentsFn(ctx, body)
+	}
+	return []byte(`{}`), nil
+}
+
+func (m *mockEntityIncidentClient) UpdateIncident(ctx context.Context, id string, body []byte) ([]byte, error) {
+	if m.updateIncidentFn != nil {
+		return m.updateIncidentFn(ctx, id, body)
+	}
+	return []byte(`{}`), nil
+}
+
+// ----- mock entity IT-service client -----
+
+type mockEntityITServiceClient struct {
+	searchITServicesFn func(ctx context.Context, body []byte) ([]byte, error)
+}
+
+func (m *mockEntityITServiceClient) SearchITServices(ctx context.Context, body []byte) ([]byte, error) {
+	if m.searchITServicesFn != nil {
+		return m.searchITServicesFn(ctx, body)
 	}
 	return []byte(`{}`), nil
 }
