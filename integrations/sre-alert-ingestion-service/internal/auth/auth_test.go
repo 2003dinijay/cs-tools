@@ -29,7 +29,7 @@ func discard() *slog.Logger {
 }
 
 func TestNew_None(t *testing.T) {
-	a, err := New(ModeNone, nil, nil, discard())
+	a, err := New(ModeNone, nil, nil, nil, discard())
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -39,20 +39,20 @@ func TestNew_None(t *testing.T) {
 }
 
 func TestNew_UnknownModeFails(t *testing.T) {
-	if _, err := New("basic", nil, nil, discard()); err == nil {
+	if _, err := New("basic", nil, nil, nil, discard()); err == nil {
 		t.Error("unknown mode should fail at startup")
 	}
 }
 
 func TestNew_APIKeyRequiresEveryVendor(t *testing.T) {
-	_, err := New(ModeAPIKey, map[string]string{"aws": "k"}, []string{"aws", "datadog"}, discard())
+	_, err := New(ModeAPIKey, map[string]string{"aws": "k"}, []string{"aws", "datadog"}, nil, discard())
 	if err == nil {
 		t.Fatal("apikey mode should refuse to start with datadog unprotected")
 	}
 }
 
 func TestNew_AuditAllowsPartialConfig(t *testing.T) {
-	a, err := New(ModeAudit, map[string]string{"aws": "k"}, []string{"aws", "datadog"}, discard())
+	a, err := New(ModeAudit, map[string]string{"aws": "k"}, []string{"aws", "datadog"}, nil, discard())
 	if err != nil {
 		t.Fatalf("audit mode should start with a partial config: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestNew_AuditAllowsPartialConfig(t *testing.T) {
 
 func TestNew_RejectsKeyForUnknownVendor(t *testing.T) {
 	for _, mode := range []string{ModeAudit, ModeAPIKey} {
-		if _, err := New(mode, map[string]string{"awz": "k"}, []string{"aws"}, discard()); err == nil {
+		if _, err := New(mode, map[string]string{"awz": "k"}, []string{"aws"}, nil, discard()); err == nil {
 			t.Errorf("%s: a typo'd vendor name should fail at startup", mode)
 		}
 	}

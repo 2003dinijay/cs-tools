@@ -68,6 +68,9 @@ type ServerConfig struct {
 // AuthConfig selects the auth hook implementation. Only "none" exists today.
 type AuthConfig struct {
 	Mode string `toml:"mode"`
+	// CacheTTL is how long a verified integration_users credential is reused before
+	// re-reading the row; 0 disables the cache. Only used by "integration_users".
+	CacheTTL Duration `toml:"cache_ttl"`
 }
 
 // AllocatorConfig tunes the id allocator: queue depth before 503, alerts claimed
@@ -145,7 +148,7 @@ func Defaults() Config {
 			IdleTimeout:    Duration(60 * time.Second),
 			MaxBodyBytes:   1 << 20,
 		},
-		Auth: AuthConfig{Mode: "none"},
+		Auth: AuthConfig{Mode: "none", CacheTTL: Duration(60 * time.Second)},
 		Allocator: AllocatorConfig{
 			QueueSize:        5000,
 			QueueMaxBytes:    256 << 20,
