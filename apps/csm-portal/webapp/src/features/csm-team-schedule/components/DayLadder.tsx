@@ -667,8 +667,10 @@ function LadderBlock({
   const hidden = working.length - shown.length;
   // A card with more people than it can list is not a list -- seventy names is
   // nothing anyone reads. The teams become the list, and a team hands over its
-  // own people when the cursor rests on it.
-  const crowded = block.rows.length > NAME_LIMIT;
+  // own people when the cursor rests on it. Counted on who works the hours:
+  // whoever is on call keeps their own column either way, so a big shift's
+  // team list never takes them in as one more person working it.
+  const crowded = working.length > NAME_LIMIT;
 
   // A card is as tall as its hours, and some hours are short: the Americas
   // weekend night shows only 21:00-24:00 on the Sunday it starts, three hours
@@ -746,15 +748,19 @@ function LadderBlock({
               {section.list.length === 0 ? <span className="gap">Nobody rostered</span> : null}
             </div>
           ))
-        ) : crowded ? (
-          <TeamSplit rows={block.rows} />
+        ) : crowded && onCall.length === 0 ? (
+          <TeamSplit rows={working} />
         ) : (
           // Who works the hours on the left, side by side; who is only on call
           // for them in a column of their own on the right, behind a dashed
           // rule. On call is not working these hours -- reachable if an
           // emergency comes up -- so it never reads as one more on the shift.
-          <div className={`zsplit${onCall.length > 0 ? " hasoc" : ""}`}>
-            {shown.length > 0 ? (
+          <div className={`zsplit${onCall.length > 0 ? " hasoc" : ""}${crowded ? " crowd" : ""}`}>
+            {crowded ? (
+              <div className="zwork">
+                <TeamSplit rows={working} />
+              </div>
+            ) : shown.length > 0 ? (
               <div className="zwork">
                 {/* Names in columns that share the card's width, each whole on one line. */}
                 <div className="zsec zflow">
@@ -817,10 +823,17 @@ function TeamSplit({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
             onMouseEnter={() => setHovered(team)}
             onFocus={() => setHovered(team)}
             onBlur={() => setHovered(null)}
-            onClick={() => togglePin(team)}
+            // The card itself opens and closes on a click when it is holding
+            // more than it shows; picking a team is not that click, or the
+            // card could close just as the team opens.
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePin(team);
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter" || e.key === " ") {
                 e.preventDefault();
+                e.stopPropagation();
                 togglePin(team);
               }
             }}

@@ -2288,7 +2288,7 @@
    full). */
 .csm-ts .ladder .zsec.zflow {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
   gap: 2px 16px;
 }
 .csm-ts .ladder .zsec.zflow .lnm {
@@ -2357,7 +2357,7 @@
   grid-template-columns: none;
   grid-template-rows: repeat(3, auto);
   grid-auto-flow: column;
-  grid-auto-columns: minmax(200px, max-content);
+  grid-auto-columns: minmax(min(200px, 40cqi), max-content);
 }
 
 /* Room between a card's heading and the people under it: at 4px the names
@@ -2378,4 +2378,47 @@
 .csm-ts .ladder .lane .zblk .zsec.zflow .lnm .who,
 .csm-ts .ladder .lane .zblk .zoc .lnm .who {
   line-height: 1.2;
+}
+
+/* A big shift with someone on call: its team list takes the room that is
+   left, and the on-call column keeps its place beside it. */
+.csm-ts .ladder .zblk .zsplit.hasoc.crowd {
+  flex: 1;
+  min-height: 0;
+}
+.csm-ts .ladder .zblk .zsplit.hasoc.crowd .zwork {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* A narrow card -- a lane split between several cards, or a small screen --
+   has no room for name columns side by side with an on-call column. A column
+   of names never asks for more than the card's own width, and below 420px the
+   on-call column moves under the people working, behind a dashed rule on top
+   instead of at its side. */
+.csm-ts .ladder .zblk {
+  container-type: inline-size;
+}
+@container (max-width: 420px) {
+  .csm-ts .ladder .zblk .zsplit.hasoc {
+    flex-direction: column;
+    gap: 6px;
+  }
+  .csm-ts .ladder .zblk .zsplit.hasoc .zwork {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+  .csm-ts .ladder .zblk .zsplit.hasoc .zsec.zflow {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-flow: row;
+  }
+  .csm-ts .ladder .zblk .zoc {
+    max-width: none;
+    padding-left: 0;
+    padding-top: 4px;
+    border-left: 0;
+    border-top: 1px dashed color-mix(in srgb, var(--oc-fg) 45%, var(--line));
+  }
 }

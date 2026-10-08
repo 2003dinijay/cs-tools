@@ -139,6 +139,30 @@ describe("DayLadder: cards that share their hours", () => {
     expect(card.querySelector(".zflow")).toHaveTextContent("Asela");
   });
 
+  it("keeps the on-call column when a full shift and its on-call share a card", () => {
+    // Twelve on the window and one on call is thirteen rows -- over the limit
+    // that turns a card into a team list, which would take the on-call person
+    // in as one more working. Counted on who works, it stays a list of names
+    // with the on-call person in their own column.
+    const working = Array.from({ length: 12 }, (_, i) =>
+      assignment({
+        name: `Morn${i}`, rotaDate: ISO, shiftCode: MORNING.code,
+        startsAt: `${ISO}T00:30:00.000Z`, endsAt: `${ISO}T03:30:00.000Z`,
+      }),
+    );
+    const { container } = renderLadder([
+      ...working,
+      assignment({
+        name: "Nuwan", rotaDate: ISO, shiftCode: MORNING_OC.code, isOnCall: true,
+        startsAt: `${ISO}T00:30:00.000Z`, endsAt: `${ISO}T03:30:00.000Z`,
+      }),
+    ]);
+    const card = [...container.querySelectorAll(".zblk")].find((c) => c.textContent?.includes("Morn0"))!;
+    expect(card.querySelector(".teamsplit")).toBeNull();
+    expect(card.querySelectorAll(".zflow .lnm")).toHaveLength(12);
+    expect(card.querySelector(".zoc")).toHaveTextContent("Nuwan");
+  });
+
   it("lists whoever is on their team's own window first, ahead of those taking a turn", () => {
     const morning = (name: string, teamKey: string) =>
       assignment({
