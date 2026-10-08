@@ -315,7 +315,7 @@ AUTH_ESCALATOR_ROLES=example-escalators-role,example-leads-role
 | `view_operations` | the same reads under `/incidents`, `/change-requests`, `/problems`, `/incident-tasks`, `/outages`, `/alerts` and `/smart-alerts` — CS engineer and admin only, so a view-only role sees cases and customers but not Operations |
 | `time_cards_and_updates` | every time-card route (`POST /time-cards/search`, `POST /time-cards`, `PATCH`/`DELETE /time-cards/{id}`) and the update-level lookups (`GET /updates/product-update-levels`, `POST /updates/levels/search`) — CS engineer, admin and time-card approver only, so a view-only role sees neither area. Approving/rejecting a time card (a `state`-carrying `PATCH /time-cards/{id}`) additionally requires the separate `approve_time_card` permission below, held only by time-card approver and admin |
 | `approve_time_card` | `PATCH /time-cards/{id}` when the body sets `state` (approve/reject) — time-card approver and admin only, checked by inspecting the body inside the shared handler, not a route permission of its own |
-| `escalate` | `POST /cases/{id}/escalations` — escalator and admin only |
+| `escalate` | `POST /cases/{id}/escalations` — cs_engineer, escalator and admin; de-escalating also requires being one of the case's ABT team leads |
 | `download_attachment` | `GET /attachments/{id}/content`, `POST /attachments/{id}/share` |
 | `write` | every other `POST`/`PATCH`/`DELETE`, including case, incident and change-request comments — except the `admin`-only routes below |
 | `admin` | `POST /users` (create a new platform user), `GET /roles/grantable` (which portal roles that endpoint can grant) — held by the `admin` role alone; `cs_engineer` does not grant it |

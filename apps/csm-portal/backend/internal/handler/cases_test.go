@@ -2398,7 +2398,7 @@ func TestCreateCaseEscalation(t *testing.T) {
 		}
 	})
 
-	t.Run("de-escalation is rejected when the case has no escalation history", func(t *testing.T) {
+	t.Run("de-escalation is rejected when the case's team has no lead", func(t *testing.T) {
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
 				return []byte(`{"escalations":[],"total":0}`), nil
@@ -2418,16 +2418,16 @@ func TestCreateCaseEscalation(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
-	t.Run("de-escalation is rejected for a caller not notified on the current escalation", func(t *testing.T) {
+	t.Run("de-escalation is rejected for a caller who is not one of the case's team leads", func(t *testing.T) {
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-2","email":"lead@example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"u-2","email":"lead@example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
 			},
 			createCaseEscalationFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
-				t.Fatal("upstream CreateCaseEscalation should not be called when the caller wasn't notified")
+				t.Fatal("upstream CreateCaseEscalation should not be called when the caller isn't a team lead")
 				return nil, nil
 			},
 		}
@@ -2441,11 +2441,11 @@ func TestCreateCaseEscalation(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
-	t.Run("de-escalation is allowed for a caller notified on the current escalation, matched by id", func(t *testing.T) {
+	t.Run("de-escalation is allowed for one of the case's team leads, matched by id", func(t *testing.T) {
 		var upstreamCalled bool
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-1","email":"someone-else@example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"u-1","email":"someone-else@example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
@@ -2466,11 +2466,11 @@ func TestCreateCaseEscalation(t *testing.T) {
 		}
 	})
 
-	t.Run("de-escalation is allowed for a caller notified on the current escalation, matched by email when id is empty", func(t *testing.T) {
+	t.Run("de-escalation is allowed for one of the case's team leads, matched by email when id is empty", func(t *testing.T) {
 		var upstreamCalled bool
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"","email":"Agent@Example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"","email":"Agent@Example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
@@ -2494,7 +2494,7 @@ func TestCreateCaseEscalation(t *testing.T) {
 	t.Run("de-escalation is rejected when ids differ, even if emails happen to match", func(t *testing.T) {
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-2","email":"agent@example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"u-2","email":"agent@example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
@@ -2671,7 +2671,7 @@ func TestCreateCaseEscalation(t *testing.T) {
 		var upstreamCalled bool
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-1","email":"agent@example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"u-1","email":"agent@example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
@@ -2729,7 +2729,7 @@ func TestCreateCaseEscalation(t *testing.T) {
 		var upstreamCalled bool
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-1","email":"agent@example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"u-1","email":"agent@example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
@@ -4430,4 +4430,30 @@ func TestSplGetAttachmentsInfo_MissingCaseIDIs400(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.GetAttachmentsInfo(w, r)
 	assertStatus(t, w, http.StatusBadRequest)
+}
+
+// TestCaseHandler_CreateCaseEscalation_NotifiedButNotTeamLeadCannotDeescalate:
+// being on the escalation's notification list (Americas TL, account owner,
+// CSM, ...) is no longer enough -- only the case's ABT team leads may
+// de-escalate.
+func TestCaseHandler_CreateCaseEscalation_NotifiedButNotTeamLeadCannotDeescalate(t *testing.T) {
+	const testCaseID = "11111111-1111-1111-1111-111111111111"
+	client := &mockEntityCaseClient{
+		searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
+			return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-1","email":"agent@example.com"}],"teamLeads":[{"id":"u-2","email":"lead@example.com"}]}`), nil
+		},
+		getUserMeFn: func(_ context.Context) ([]byte, error) {
+			return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
+		},
+		createCaseEscalationFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+			t.Fatal("upstream CreateCaseEscalation should not be called for a notified non-lead")
+			return nil, nil
+		},
+	}
+	h := NewCaseHandler(client)
+	r := withUser(httptest.NewRequest(http.MethodPost, "/cases/"+testCaseID+"/escalations", strings.NewReader(`{"action":"DEESCALATE"}`)))
+	r.SetPathValue("id", testCaseID)
+	w := httptest.NewRecorder()
+	h.CreateCaseEscalation(w, r)
+	assertStatus(t, w, http.StatusForbidden)
 }

@@ -348,7 +348,7 @@ vi.mock("@features/csm-cases/api/useCsmCaseGithubIssue", () => ({
 }));
 vi.mock("@features/csm-cases/api/useGetCsmCaseEscalations", () => ({
   useGetCsmCaseEscalations: () => ({
-    data: { escalations: [], currentNotifiedUsers: [] },
+    data: { escalations: [], currentNotifiedUsers: [], teamLeads: [] },
     isLoading: false,
     isError: false,
   }),

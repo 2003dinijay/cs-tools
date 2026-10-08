@@ -45,10 +45,10 @@ export interface PortalAccess {
   /** Holds at least one portal role — the minimum to use the portal at all. */
   hasAnyRole: boolean;
   /**
-   * Escalating or de-escalating a case. `admin` and `escalator` only —
-   * `cs_engineer` does NOT hold it, mirroring the backend's `PermEscalate`.
-   * Escalation is a dedicated responsibility, not something being a CS
-   * engineer alone grants.
+   * Escalating or de-escalating a case: `admin`, `cs_engineer` and
+   * `escalator`, mirroring the backend's `PermEscalate` -- any internal
+   * engineer may escalate, as in ServiceNow. De-escalating also requires
+   * being one of the case's ABT team leads.
    */
   canEscalate: boolean;
   canDownloadAttachment: boolean;
@@ -118,9 +118,9 @@ export interface PortalAccess {
 /**
  * What a user's `GET /users/me` roles let them see and do. Matched
  * case-insensitively. `admin` can do everything; `cs_engineer` can do
- * everything EXCEPT escalate a case (a dedicated responsibility, held only
- * by `escalator` plus `admin` — see `canEscalate`'s own doc comment) —
- * approving a time card is a similarly dedicated responsibility, but it
+ * everything except admin-only actions, escalating included (see
+ * `canEscalate`'s own doc comment) — approving a time card is a dedicated
+ * responsibility, but it
  * isn't a flag on this type at all, see `canUseTimeCardsAndUpdates`'s own
  * doc comment for why; `attachment_downloader` adds just that one ability;
  * `worknote_creator` also adds internal work notes (see `canAddWorkNotes`);
@@ -157,9 +157,9 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
   const full = isAdmin || has(PORTAL_ROLE.csEngineer);
   return {
     hasAnyRole: ALL_PORTAL_ROLES.some(has),
-    // canEscalate deliberately checks isAdmin, not full: cs_engineer alone
-    // must not grant it (see its own doc comment above).
-    canEscalate: isAdmin || has(PORTAL_ROLE.escalator),
+    // Any internal engineer may escalate, as in ServiceNow; de-escalating is
+    // further limited to the case's ABT team leads (CsmCaseDetailPage).
+    canEscalate: full || has(PORTAL_ROLE.escalator),
     canDownloadAttachment: full || has(PORTAL_ROLE.attachmentDownloader),
     canUseOperations: full,
     canUseTimeCardsAndUpdates: full || has(PORTAL_ROLE.timecardApprover),

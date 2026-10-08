@@ -45,10 +45,12 @@ const (
 	// broader than approving one — see PermApproveTimeCard below, which is what's
 	// actually narrowed to the approver role.
 	PermTimeCardsAndUpdates
-	// PermEscalate is escalating or de-escalating a case. Held ONLY by the
-	// escalator role and admin — NOT the CS engineer, unlike most other
-	// permissions here. Escalation is a dedicated responsibility, not something
-	// being a CS engineer alone should grant.
+	// PermEscalate is escalating or de-escalating a case. Held by the CS
+	// engineer, the escalator role and admin: any internal engineer may
+	// escalate, as in ServiceNow (whose escalation API lets every internal
+	// user escalate). De-escalating additionally requires being one of the
+	// case's ABT team leads -- CaseHandler.CreateCaseEscalation checks that
+	// itself, since a route permission can't see the case.
 	PermEscalate
 	// PermApproveTimeCard is approving or rejecting a time card — a state
 	// transition on the same PATCH /time-cards/{id} route ordinary field edits
@@ -291,7 +293,7 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner),
 			PermViewOperations:      build(cfg.CsEngineer, cfg.Admin),
 			PermTimeCardsAndUpdates: build(cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover),
-			PermEscalate:            build(cfg.Escalator, cfg.Admin),
+			PermEscalate:            build(cfg.Escalator, cfg.CsEngineer, cfg.Admin),
 			PermDownloadAttachment:  build(cfg.AttachmentDownloader, cfg.CsEngineer, cfg.Admin),
 			PermWrite:               build(cfg.CsEngineer, cfg.Admin),
 			PermViewAllDashboards:   build(cfg.CsEngineer, cfg.Admin),

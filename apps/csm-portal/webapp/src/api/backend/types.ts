@@ -1266,16 +1266,18 @@ export interface BeCreatedCaseEscalation {
 }
 
 /** Response for `GET /cases/{id}/escalations` -- the case's full escalation
- * history, newest first, plus who's authorized to de-escalate the current
- * level. Deliberately not `BeSearchResponseBase`: the wire response carries
- * no `offset`/`limit`/`hasMore` fields. */
+ * history, newest first, plus who's authorized to de-escalate it.
+ * Deliberately not `BeSearchResponseBase`: the wire response carries no
+ * `offset`/`limit`/`hasMore` fields. */
 export interface BeCaseEscalationSearchResponse {
   escalations: BeCaseEscalation[];
   total: number;
   /** The notified-users list of the case's most recent escalation record
-   * (empty/absent when the case has never been escalated). Only someone on
-   * this list is authorized to de-escalate the case's current level. */
+   * (empty/absent when the case has never been escalated). */
   currentNotifiedUsers?: BeCaseEscalationNotifiedUser[];
+  /** The leads of the case's account's CRE (ABT) team -- the only users who
+   * may de-escalate the case. */
+  teamLeads?: BeCaseEscalationNotifiedUser[];
 }
 
 /**
