@@ -5606,8 +5606,8 @@ paths:
         The body must carry `type`: one of `standard`, `normal` or `emergency`
         (400 with an explanatory message otherwise). The type decides the approval
         flow -- Standard needs none, Normal needs peer then CAB approval, Emergency
-        needs CAB approval only (one stage in the CAB Approval group; ServiceNow
-        has no Emergency CAB). An Emergency change takes no customer step, so
+        needs CAB approval only (one stage in the CAB Approval group; the previous
+        system has no Emergency CAB). An Emergency change takes no customer step, so
         `customerApprovalRequired` / `customerReviewRequired` cannot be true on
         one: such a create is a 400 ("Emergency changes proceed without customer
         consent, so customer approval and customer review cannot be required").

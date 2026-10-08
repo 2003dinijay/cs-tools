@@ -205,11 +205,10 @@ From the detail page a CS engineer can:
   disabled and unticked while the type is Emergency ("Emergency changes proceed
   without customer approval or review."); choosing Emergency clears them, and
   choosing another type leaves them off for you to tick again. The CAB Approval
-  stage is asked of the members of the **CAB Approval** group. The ServiceNow sync
-  does not mirror that group's membership, so where nobody maintains it in the
-  portal database, Request Approval on a new Emergency change is refused with a
-  message naming the group (a data matter for whoever looks after the database:
-  there is no screen for it).
+  stage is asked of the members of the **CAB Approval** group. A group may have no
+  members: that is an operations matter (there is no screen for it), and where
+  nobody maintains that group's membership in the portal database, Request
+  Approval on a new Emergency change is refused with a message naming the group.
 - **Edit** the Customer Project, deployments, category, planned window,
   assignment group, assigned engineer, requested by, rollback duration,
   whether the Implementation Plan is visible to customers, the Customer

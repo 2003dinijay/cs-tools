@@ -3275,11 +3275,11 @@ offered states are filtered the same way).
     group, same rules) only when there is no assigned group or the assigned group
     yields nobody eligible (no active internal member other than the creator).
     Neither → 400 "no eligible peer approvers" (which, when the `Devops Approval`
-    group has no members at all, also says the ServiceNow sync does not mirror
+    group has no members at all, also says the sync from the previous system does not mirror
     that group's membership -- see "Empty approver groups" below).
   * *CAB Approval* — the one group (`CAB Approval`) of **both** the Normal change's
     second stage, **right after** peer approval, and the Emergency change's ONLY
-    stage (ServiceNow has no Emergency CAB: an Emergency change is approved by the
+    stage (the previous system has no Emergency CAB: an Emergency change is approved by the
     same CAB group, and a migrated Emergency change has exactly that one stage and
     no Peer stage). For Normal it is provisioned inside the peer-approval decision's
     transaction; if it cannot be (nobody eligible) the peer decision is **rolled
@@ -3411,7 +3411,7 @@ offered states are filtered the same way).
   (fixed ids `00000000-0000-4000-8000-00000000ca01` / `…eca1`) only when no group
   of that name exists, idempotently; membership is NOT seeded (set by an operator;
   the local compose seed adds the three internal personas to CAB — see "Local seed
-  personas"). **Only the CAB group is resolved**: ServiceNow has no Emergency CAB,
+  personas"). **Only the CAB group is resolved**: the previous system has no Emergency CAB,
   so nothing resolves the ECAB group any more (no constant, no checkpoint, no pool).
   Its row is left in place -- migration 0188 is untouched, and an in-flight Emergency
   change from before this rule may still point a stage at it (see "Emergency: one CAB
@@ -3449,9 +3449,9 @@ offered states are filtered the same way).
 
 ### Emergency: one CAB stage, no customer step
 
-ServiceNow has **no Emergency CAB** (and no "ECAB Approval" group). An Emergency change there is
+The previous system has **no Emergency CAB** (and no "ECAB Approval" group). An Emergency change there is
 `New → Request Approval → Authorize → Scheduled`, approved by the same **`CAB Approval`** group a
-Normal change's second stage is, with no Peer / Assess stage; a change migrated from ServiceNow has
+Normal change's second stage is, with no Peer / Assess stage; a change migrated from the previous system has
 exactly that one stage (no label, group `CAB Approval`, position 0). An earlier build of this service
 invented an "ECAB Approval" stage in a group of its own; that is gone.
 
@@ -3484,8 +3484,8 @@ invented an "ECAB Approval" stage in a group of its own; that is gone.
   one, and the flow ignores whatever the stored boxes say for one:
   * **Refused (400)**, every time with the reason `Emergency changes proceed without customer consent, so
     customer approval and customer review cannot be required`, followed by the field(s): a **create**
-    (`ValidateCreateChangeRequestCustomerGates`, applied by the plain create, the ServiceNow-first create
-    -- *before* ServiceNow is called -- and both repository creates); a **PATCH that turns a box on** on a
+    (`ValidateCreateChangeRequestCustomerGates`, applied by the plain create, the create that calls the previous system first
+    -- *before* it is called -- and both repository creates); a **PATCH that turns a box on** on a
     stored Emergency change, in every state (`checkEmergencyCustomerConsent`, rule 2c of the creation-phase
     gate, before the lock's own box rules); and a **PATCH that re-types a change INTO Emergency while a box
     stays ticked** (`... : turn off customerApprovalRequired before changing the type to emergency`; the
@@ -3497,13 +3497,13 @@ invented an "ECAB Approval" stage in a group of its own; that is gone.
     `customer_review`; `{state: customer_review}` is refused with the Emergency reason), Request Approval needs
     no project for a ticked box, `legalNextStates`, the GitHub sync's `SetState`, the nobody-to-ask checks.
     **Reads are untouched**: `customerApprovalRequired` / `customerReviewRequired` and the sync's
-    `isCustomerApproved` / `isCustomerReviewed` show what is stored. This is what keeps a ServiceNow-MIGRATED
+    `isCustomerApproved` / `isCustomerReviewed` show what is stored. This is what keeps a MIGRATED
     Emergency change (whose requirement flags `is_customer_*_required` are the sync's, overwritten on every
     delta and never written by this service) and a row an earlier build created with a box ticked on the
     Emergency flow.
   * **An Emergency change that is ALREADY in a customer state is not stranded.** The rule keeps a change
     from *entering* Customer Approval / Customer Review; it does not look at the type once a change is
-    waiting there (a row from before the rule, or a ServiceNow-migrated one that ServiceNow itself sent
+    waiting there (a row from before the rule, or a migrated one that the previous system itself sent
     to the customer). `provisionCustomerStage` and `legacyStageWouldBeProvisioned` therefore treat it like
     any other change: `customerCanAnswer` is true for the project's contacts, the customer's first act gives
     a migrated row the stage its answer is recorded on (Customer Approval -> Scheduled, Customer Review ->
@@ -3522,11 +3522,11 @@ invented an "ECAB Approval" stage in a group of its own; that is gone.
   CAB approval → `scheduled`, the sync's flags untouched.
   `TestChangeRequestEmergencyIntegration_MigratedEmergencyDisplaysDecidesAndSchedulesAsCAB`,
   `..._AFinishedMigratedEmergencyStillReadsAsCAB`.
-* **Empty approver groups -- an operations matter, stated plainly.** The sync mirrors a curated set of
-  teams and **not** the `CAB Approval` or `Devops Approval` groups: in synced data they have **no
-  `team_member` rows**. So in an environment where nobody maintains that membership **a new Emergency change (and a
+* **Empty approver groups -- an operations matter, stated plainly.** A group may have no members: that is
+  an operations matter, and the refusal names the group. So in an environment where nobody maintains the
+  membership of the `CAB Approval` or `Devops Approval` group **a new Emergency change (and a
   Normal change's CAB step) is refused at Request Approval** with `the "CAB Approval" group has no members to
-  provision as CAB Approval approvers: the ServiceNow sync does not mirror the membership of the "CAB Approval"
+  provision as CAB Approval approvers: the sync from the previous system does not mirror the membership of the "CAB Approval"
   group: it is maintained in the portal database (one team_member row per approver, with group_id set to that
   group)`; the peer pool's refusal says the same of `Devops Approval` when that fallback is empty. There is no
   admin screen and no schema for it (decided: a data / operations matter for now): somebody adds the approvers'
@@ -3564,7 +3564,7 @@ A stage with none is read as the first of these that applies, **and the result c
 the state it is decided in** (`approvalStageDecidableState`: Peer in Assess, CAB in
 Authorize), otherwise it is `stageKindOther`:
 
-1. its own assignment group: the group named `CAB Approval` -> CAB (a ServiceNow-migrated
+1. its own assignment group: the group named `CAB Approval` -> CAB (a migrated
    Emergency change's one stage reads this way: no label, in the CAB group, at position 0);
 2. an Emergency change in Authorize has no peer stage -> CAB;
 3. the positional guess (0 Peer, 1 CAB).
@@ -3654,7 +3654,7 @@ against a synced environment from here.
 Tests: `TestRuntimeApprovalStageKind` / `_NeverOutOfState` (the table, and that an unlabeled stage
 can never read as out of state or as a customer stage), `TestExcludedMembersSummary`, and against
 Postgres `TestChangeRequestSyncedStagesIntegration_*` and `TestChangeRequestEmergencyIntegration_*`
-with SN-shaped rows (an Emergency change in Authorize with one stage at position 0, with and without
+with migrated-shape rows (an Emergency change in Authorize with one stage at position 0, with and without
 the CAB group; a CAB-group stage with no label after two others; a stale
 position-0 stage on a change that moved on; a position-2 stage naming the customer's contact; an
 approver with no user; the counts). Two older tests asserted the position-only reading and were
