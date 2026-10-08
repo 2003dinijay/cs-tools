@@ -35,8 +35,6 @@ type CreateIncidentRequest struct {
 	WorkNotes *string `json:"workNotes,omitempty"`
 	// ContactType says how the incident was raised (entity-service's IncidentContactType); routing to the SRE escalation ladder reads it.
 	ContactType *string `json:"contactType,omitempty"`
-	// AssignmentGroupID is the group the incident is assigned to; the SRE ladder finds the owning SRE team from it.
-	AssignmentGroupID *string `json:"assignmentGroupId,omitempty"`
 	// CorrelationID is the dedup fingerprint tag on ServiceNow's own correlation_id field, so SearchIncidentByCorrelationID finds a prior create by exact match.
 	CorrelationID *string `json:"correlationId,omitempty"`
 }

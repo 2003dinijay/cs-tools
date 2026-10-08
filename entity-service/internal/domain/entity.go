@@ -3534,10 +3534,19 @@ type CaseActivity struct {
 // SearchCaseActivitiesRequest is the input for listing the activity feed of a case.
 // CaseID is populated from the URL path parameter and is not part of the JSON body.
 // When IncludeFieldChanges is nil or false, only comment and attachment entries are returned.
+// When ExcludeWorkNotes is true, WORK_NOTE-type comments are excluded from both the
+// page and Total -- added for callers (the customer portal) that must never show an
+// internal note to a customer and must not report a Total higher than what they can
+// actually display (see MapSearchCaseActivities' own history in the customer-portal
+// backend-v2 for the bug this closes: that BFF already filtered work notes out of the
+// array client-side, but forwarded this repository's unfiltered Total unchanged).
+// Nil/false preserves the original, unfiltered behavior for every other caller (the
+// CSM portal, which must still see work notes and their correct count).
 type SearchCaseActivitiesRequest struct {
 	CaseID              string     `json:"-"`
 	Pagination          Pagination `json:"pagination"`
 	IncludeFieldChanges *bool      `json:"includeFieldChanges,omitempty"`
+	ExcludeWorkNotes    *bool      `json:"excludeWorkNotes,omitempty"`
 }
 
 // SearchCaseActivitiesResponse is the paginated result of a case activity search.
