@@ -114,6 +114,18 @@ export function callRequestStateColor(
   return key ? CALL_REQUEST_STATE_COLOR[key] : "default";
 }
 
+/**
+ * The states a call request can still move on from: a case's call list shows only
+ * these by default, so a call that has been completed, canceled or rejected stops
+ * cluttering it (it stays one state-filter choice away).
+ */
+export const OPEN_CALL_REQUEST_STATES: BeCallRequestStateKey[] = [
+  "pending_on_customer",
+  "pending_on_wso2",
+  "scheduled",
+  "notes_pending",
+];
+
 /** All 8 state keys, used to drive filter dropdowns. */
 export const ALL_CALL_REQUEST_STATES: BeCallRequestStateKey[] = [
   "pending_on_customer",

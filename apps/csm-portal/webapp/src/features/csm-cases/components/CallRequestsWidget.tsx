@@ -44,6 +44,7 @@ import {
 import {
   ALL_CALL_REQUEST_STATES,
   CALL_REQUEST_STATE_LABEL,
+  OPEN_CALL_REQUEST_STATES,
   callRequestCaseStateBlockReason,
   type CallRequestAgentAction,
   resolveCallRequestStateKey,
@@ -86,6 +87,9 @@ interface CallRequestsWidgetProps {
   readOnly?: boolean;
 }
 
+/** "open" = calls that can still move on, "all" = every call, else a single state. */
+type CallRequestStateFilter = BeCallRequestStateKey | "open" | "all";
+
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
@@ -99,10 +103,16 @@ export function CallRequestsWidget({
   isClosed,
   readOnly,
 }: CallRequestsWidgetProps): JSX.Element {
-  // State filter — empty string means "all". Filtering happens server-side
-  // via `filters.states` on the search request.
-  const [stateFilter, setStateFilter] = useState<BeCallRequestStateKey | "">("");
-  const activeStates = stateFilter ? [stateFilter] : undefined;
+  // State filter. The default shows only calls that can still move on, so a call
+  // that was completed, canceled or rejected leaves the list; "all" brings every
+  // call back. Filtering happens server-side via `filters.states`.
+  const [stateFilter, setStateFilter] = useState<CallRequestStateFilter>("open");
+  const activeStates =
+    stateFilter === "all"
+      ? undefined
+      : stateFilter === "open"
+        ? OPEN_CALL_REQUEST_STATES
+        : [stateFilter];
 
   const { data, isLoading, isError, refetch, isFetching, dataUpdatedAt } =
     useGetCsmCaseCallRequests(caseId, activeStates);
@@ -319,7 +329,9 @@ export function CallRequestsWidget({
               <Chip
                 size="small"
                 variant="outlined"
-                label={`${requests.length} ${stateFilter ? "matching" : "total"}`}
+                label={`${requests.length} ${
+                  stateFilter === "open" ? "open" : stateFilter === "all" ? "total" : "matching"
+                }`}
               />
             )}
           </Box>
@@ -341,7 +353,7 @@ export function CallRequestsWidget({
                 // focus-driven default, and force the cascade with
                 // `!important` since a plain `sx={{ top: 0 }}` loses to that
                 // theme rule's higher specificity.
-                shrink={stateFilter !== ""}
+                shrink
                 sx={{ top: "0px !important" }}
               >
                 Filter by state
@@ -350,12 +362,11 @@ export function CallRequestsWidget({
                 labelId="cr-filter-label"
                 value={stateFilter}
                 label="Filter by state"
-                notched={stateFilter !== ""}
-                onChange={(e) =>
-                  setStateFilter(e.target.value as BeCallRequestStateKey | "")
-                }
+                notched
+                onChange={(e) => setStateFilter(e.target.value as CallRequestStateFilter)}
               >
-                <MenuItem value="">All states</MenuItem>
+                <MenuItem value="open">Open calls</MenuItem>
+                <MenuItem value="all">All states</MenuItem>
                 <Divider />
                 {ALL_CALL_REQUEST_STATES.map((s) => (
                   <MenuItem key={s} value={s}>
@@ -426,9 +437,11 @@ export function CallRequestsWidget({
         {!isLoading && !isError && requests.length === 0 && (
           <Box sx={{ py: 3, textAlign: "center" }}>
             <Typography variant="body2" color="text.secondary">
-              {stateFilter
-                ? `No call requests in state "${CALL_REQUEST_STATE_LABEL[stateFilter]}".`
-                : "No call requests yet."}
+              {stateFilter === "open"
+                ? "No open call requests. Choose \"All states\" to see finished ones."
+                : stateFilter === "all"
+                  ? "No call requests yet."
+                  : `No call requests in state "${CALL_REQUEST_STATE_LABEL[stateFilter]}".`}
             </Typography>
           </Box>
         )}
