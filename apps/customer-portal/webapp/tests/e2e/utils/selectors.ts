@@ -437,9 +437,9 @@ export const NOVERA_CHAT = {
        * The list's first option, meaning "no filter".
        *
        * Choosing it on an unfiltered list is a no-op — no request is sent at all
-       * — so a spec must pick a real state instead. Verified live: the options
-       * are All States (now All Statuses), Close, Abandoned, Converted, Open,
-       * Resolved, Active.
+       * — so a spec must pick a real state instead. Verified live, when this
+       * option still read "All States": the options are that one, Close,
+       * Abandoned, Converted, Open, Resolved, Active.
        * Note "Close" among them, the same wording the closed chip uses.
        */
       allOption: "All Statuses",

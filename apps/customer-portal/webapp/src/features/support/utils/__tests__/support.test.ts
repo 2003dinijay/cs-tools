@@ -236,5 +236,13 @@ describe("deriveFilterLabels", () => {
       label: "Case Type",
       allLabel: "All Case Types",
     });
+    expect(deriveFilterLabels("createdBy")).toEqual({
+      label: "Created By",
+      allLabel: "All Users",
+    });
+    expect(deriveFilterLabels("status")).toEqual({
+      label: "Status",
+      allLabel: "All Statuses",
+    });
   });
 });

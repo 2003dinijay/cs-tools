@@ -887,6 +887,10 @@ export function formatRelativeTime(date: string | Date | undefined): string {
 /**
  * Derives the label and pluralized "all" label from a filter ID.
  *
+ * `caseType`, `createdBy` and `state` have fixed wording (`state` reads as
+ * "Status" so every list page matches); any other ID is capitalised and
+ * pluralized.
+ *
  * @param id - The filter ID (e.g., "status").
  * @returns { label: string; allLabel: string } The derived labels.
  */
