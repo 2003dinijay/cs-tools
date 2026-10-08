@@ -75,9 +75,12 @@ type SearchUsersResponse struct {
 	Users []UserSummary `json:"users"`
 }
 
-// PatchUserMeRequest is the request body for PATCH /users/me.
+// PatchUserMeRequest is the request body for PATCH /users/me. At least one
+// field must be set. A nil field is omitted from the body and left untouched
+// by entity-service; a pointer to "" is sent as "" (for Phone, that clears it).
 type PatchUserMeRequest struct {
-	TimeZone string `json:"timeZone"`
+	TimeZone *string `json:"timeZone,omitempty"`
+	Phone    *string `json:"phone,omitempty"`
 }
 
 // PatchUserMeUpdated contains the key fields returned after a successful user update.
