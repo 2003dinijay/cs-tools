@@ -22,6 +22,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/apierror"
@@ -179,6 +180,11 @@ func (h *UserHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 	}
 	if payload.PhoneNumber == nil && payload.TimeZone == nil {
 		writeError(w, http.StatusBadRequest, "At least one field must be provided for update.")
+		return
+	}
+
+	if payload.TimeZone != nil && strings.TrimSpace(*payload.TimeZone) == "" {
+		writeError(w, http.StatusBadRequest, "timeZone must not be empty.")
 		return
 	}
 

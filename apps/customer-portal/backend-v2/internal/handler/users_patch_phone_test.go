@@ -172,3 +172,25 @@ func TestPatchMe_EmptyPhoneClears(t *testing.T) {
 		t.Fatalf("empty phone must be sent as empty string, got %+v", rec.reqs[0])
 	}
 }
+
+func TestPatchMe_EmptyTimeZoneRejectedBeforeAnyUpstreamCall(t *testing.T) {
+	for name, body := range map[string]string{
+		"empty with phone": `{"phoneNumber":"+15555550123","timeZone":""}`,
+		"empty alone":      `{"timeZone":""}`,
+		"whitespace only":  `{"phoneNumber":"+15555550123","timeZone":"   "}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			rec := &patchRecorder{}
+			h := newPatchHandler(rec, sp("+15555550123"), nil)
+
+			w := doPatchMe(h, body)
+
+			if w.Code != http.StatusBadRequest || !strings.Contains(w.Body.String(), "timeZone must not be empty.") {
+				t.Fatalf("status %d body %s", w.Code, w.Body)
+			}
+			if len(rec.calls) != 0 {
+				t.Fatalf("upstream calls = %v, want none", rec.calls)
+			}
+		})
+	}
+}
