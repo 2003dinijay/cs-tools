@@ -34,6 +34,7 @@ import (
 	"time"
 
 	"github.com/cenkalti/backoff/v4"
+	"golang.org/x/sync/singleflight"
 
 	"alert-core-service/internal/apierror"
 	"alert-core-service/internal/csm"
@@ -48,10 +49,11 @@ type Notifier struct {
 	callerID                string
 	unknownServiceID        string
 	services                *serviceCache
+	// serviceResolveGroup collapses concurrent cache misses for the same unresolved label into one CSM search.
+	serviceResolveGroup     singleflight.Group
 	fallbackChatWebhookURLs []string
 	maxAttempts             int
 	retryBaseDelay          time.Duration
-	sendEnvironmentField    bool
 }
 
 // Config groups New's dependencies to avoid a growing positional-argument list.
@@ -64,8 +66,6 @@ type Config struct {
 	MaxAttempts     int
 	RetryBaseDelay  time.Duration
 	HTTPTimeout     time.Duration
-	// Gates whether NotifyCSM populates CreateIncidentRequest.Environment.
-	SendEnvironmentField bool
 }
 
 func New(logger *slog.Logger, csm *csm.Client, cfg Config) *Notifier {
@@ -79,7 +79,6 @@ func New(logger *slog.Logger, csm *csm.Client, cfg Config) *Notifier {
 		fallbackChatWebhookURLs: splitURLs(os.Getenv("FALLBACK_CHAT_WEBHOOK_URLS")),
 		maxAttempts:             cfg.MaxAttempts,
 		retryBaseDelay:          cfg.RetryBaseDelay,
-		sendEnvironmentField:    cfg.SendEnvironmentField,
 	}
 	if len(n.fallbackChatWebhookURLs) == 0 {
 		logger.Warn("FALLBACK_CHAT_WEBHOOK_URLS not set; incidents will not reach Chat if CSM fails")
@@ -136,7 +135,7 @@ func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentI
 	if inc.Description != "" {
 		req.WorkNotes = &inc.Description
 	}
-	if n.sendEnvironmentField && inc.Environment != "" {
+	if inc.Environment != "" {
 		env := truncateRunes(inc.Environment, maxEnvironmentLen)
 		req.Environment = &env
 	}
@@ -213,22 +212,36 @@ func (n *Notifier) resolveServiceID(ctx context.Context, label string) (string, 
 	if id, ok := n.services.get(label, time.Now()); ok {
 		return id, nil
 	}
-	id, err := n.csm.SearchServiceID(ctx, label)
-	if err != nil {
-		return "", err
+	// Collapses concurrent same-label lookups into one CSM search on its own context (not any single caller's), so one caller's cancellation can't fail it for the others still waiting.
+	resultCh := n.serviceResolveGroup.DoChan(label, func() (any, error) {
+		id, err := n.csm.SearchServiceID(context.WithoutCancel(ctx), label)
+		if err != nil {
+			return "", err
+		}
+		if id != "" {
+			n.services.set(label, id, time.Now())
+		}
+		return id, nil
+	})
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case res := <-resultCh:
+		if res.Err != nil {
+			return "", res.Err
+		}
+		id := res.Val.(string)
+		if id == "" {
+			return n.unknownServiceID, nil
+		}
+		return id, nil
 	}
-	if id == "" {
-		return n.unknownServiceID, nil
-	}
-	n.services.set(label, id, time.Now())
-	return id, nil
 }
 
 // maxEnvironmentLen matches ServiceNow's custom incident.u_enviroment field's max_length.
 const maxEnvironmentLen = 40
 
-// truncateRunes bounds s to at most n runes, so a caller-supplied value never
-// overflows a downstream fixed-width field like ServiceNow's u_enviroment.
+// truncateRunes bounds s to at most n runes, so it never overflows a downstream fixed-width field like ServiceNow's u_enviroment.
 func truncateRunes(s string, n int) string {
 	r := []rune(s)
 	if len(r) <= n {

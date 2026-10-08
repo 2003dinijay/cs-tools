@@ -28,9 +28,7 @@ import (
 // WakeHeaderName is the alternative to an Authorization header on the wake call.
 const WakeHeaderName = "X-API-Key"
 
-// RequireKey guards the wake endpoint with WAKE_API_KEY, sent as a bearer token
-// (the key alone, or base64("<name>:<key>")) or the WakeHeaderName header. Failures
-// are a bare 401, reason logged not returned. An empty key disables the check.
+// RequireKey guards the wake endpoint with WAKE_API_KEY (bearer token, base64 pair, or WakeHeaderName header); failures are a bare 401, reason logged not returned; empty key disables the check.
 func RequireKey(key string, logger *slog.Logger, next http.Handler) http.Handler {
 	if key == "" {
 		return next
@@ -55,8 +53,7 @@ func RequireKey(key string, logger *slog.Logger, next http.Handler) http.Handler
 	})
 }
 
-// presentedKeys returns every key the request could be carrying: a bearer token
-// counts twice, as the raw value and as the value half of a base64 pair.
+// presentedKeys returns every key the request could carry; a bearer token counts twice, as raw value and as the value half of a base64 pair.
 func wakeKeysPresented(r *http.Request) []string {
 	var out []string
 	if token, ok := wakeBearerToken(r); ok {
@@ -71,8 +68,7 @@ func wakeKeysPresented(r *http.Request) []string {
 	return out
 }
 
-// bearerToken returns the Authorization: Bearer token; the scheme is matched
-// case-insensitively, per RFC 7235.
+// bearerToken returns the Authorization: Bearer token; the scheme is matched case-insensitively, per RFC 7235.
 func wakeBearerToken(r *http.Request) (string, bool) {
 	const prefix = "bearer "
 	header := r.Header.Get("Authorization")
@@ -83,8 +79,7 @@ func wakeBearerToken(r *http.Request) (string, bool) {
 	return token, token != ""
 }
 
-// decodeColonPair decodes base64("<name>:<value>"), reporting false for a token
-// that is not base64 or has no colon — the case for a bare key.
+// decodeColonPair decodes base64("<name>:<value>"), reporting false for a non-base64 token or one with no colon (a bare key).
 func wakeDecodeColonPair(token string) (name, value string, ok bool) {
 	raw, err := base64.StdEncoding.DecodeString(token)
 	if err != nil {

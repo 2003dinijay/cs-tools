@@ -34,8 +34,7 @@ func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
 }
 
-// fakeAlerts is a minimal in-memory alertReader. errByID lets a test force a specific error (e.g.
-// store.ErrAlertNotFound or a generic read failure) for an id not present in byID.
+// fakeAlerts is a minimal in-memory alertReader; errByID forces a specific error for an id not present in byID.
 type fakeAlerts struct {
 	byID    map[string]model.Alert
 	errByID map[string]error
@@ -52,16 +51,13 @@ func (f *fakeAlerts) Get(_ context.Context, id string) (model.Alert, error) {
 	return a, nil
 }
 
-// fakeIncidents is an in-memory incidentStore, safe for concurrent use, mirroring what
-// store.IncidentRepo does against Cassandra closely enough to exercise the engine's own logic.
+// fakeIncidents is an in-memory incidentStore, safe for concurrent use, mirroring store.IncidentRepo closely enough to exercise the engine's own logic.
 type fakeIncidents struct {
 	mu   sync.Mutex
 	byFP map[string]model.Incident
-	// recordCSMIncidentErr forces RecordCSMIncident to fail, simulating a persist failure right
-	// after CSM has already accepted the incident.
+	// recordCSMIncidentErr forces RecordCSMIncident to fail, simulating a persist failure right after CSM accepted the incident.
 	recordCSMIncidentErr error
-	// dedupWindow mirrors store.IncidentRepo's own field, used by Upsert's IsOpen check below.
-	// Defaults to a generous value so existing tests are unaffected unless they shrink it.
+	// dedupWindow mirrors store.IncidentRepo's own field; defaults generous so existing tests are unaffected unless they shrink it.
 	dedupWindow time.Duration
 }
 
@@ -112,9 +108,7 @@ func (f *fakeIncidents) Upsert(_ context.Context, alertID string, a model.Alert,
 		existing.Severity = severityNum
 	}
 	existing.LastSeen = time.Now()
-	// Mirrors store.IncidentRepo.Upsert: this path is only ever reached (rather than annotate) for
-	// an incident that is no longer open, so folding a new occurrence into it must reset delivery
-	// state -- otherwise a closed incident's csm_confirmed/notified silently swallow the recurrence.
+	// Mirrors store.IncidentRepo.Upsert: this path only reaches a no-longer-open incident, so folding a new occurrence in must reset delivery state.
 	if !existing.IsOpen(time.Now(), f.dedupWindow) {
 		existing.FirstSeen = existing.LastSeen
 		existing.IncidentID = ""
@@ -126,103 +120,107 @@ func (f *fakeIncidents) Upsert(_ context.Context, alertID string, a model.Alert,
 		existing.PendingNotes = nil
 		existing.StateCheckedAt = time.Time{}
 	}
+	existing.Version++
 	f.byFP[fp] = existing
 	return existing, false, nil
 }
 
-func (f *fakeIncidents) RecordAlertID(_ context.Context, existing model.Incident, alertID string) error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	inc := f.byFP[existing.Fingerprint]
-	for _, seen := range inc.AlertIDs {
-		if seen == alertID {
-			return nil
-		}
+// casUpdate mirrors store.IncidentRepo.casUpdate's contract: mutate only if existing.Version matches what's stored, else report store.ErrStaleWrite; callers must hold f.mu.
+func (f *fakeIncidents) casUpdate(existing model.Incident, mutate func(*model.Incident)) (int64, error) {
+	inc, ok := f.byFP[existing.Fingerprint]
+	if !ok || inc.Version != existing.Version {
+		return existing.Version, store.ErrStaleWrite
 	}
-	inc.AlertIDs = append(inc.AlertIDs, alertID)
+	mutate(&inc)
+	inc.Version++
 	f.byFP[existing.Fingerprint] = inc
-	return nil
+	return inc.Version, nil
 }
 
-func (f *fakeIncidents) RecordCSMIncident(_ context.Context, fingerprint, incidentID, incidentNumber string) error {
+func (f *fakeIncidents) RecordAlertID(_ context.Context, existing model.Incident, alertID string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, seen := range existing.AlertIDs {
+		if seen == alertID {
+			return existing.Version, nil
+		}
+	}
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.AlertIDs = append(inc.AlertIDs, alertID)
+	})
+}
+
+func (f *fakeIncidents) RecordCSMIncident(_ context.Context, existing model.Incident, incidentID, incidentNumber string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	if f.recordCSMIncidentErr != nil {
-		return f.recordCSMIncidentErr
+		return existing.Version, f.recordCSMIncidentErr
 	}
-	inc := f.byFP[fingerprint]
-	inc.IncidentID = incidentID
-	inc.IncidentNumber = incidentNumber
-	inc.CSMConfirmed = true
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.IncidentID = incidentID
+		inc.IncidentNumber = incidentNumber
+		inc.CSMConfirmed = true
+	})
 }
 
-func (f *fakeIncidents) RecordCSMAttemptStarted(_ context.Context, fingerprint string, attempts int) error {
+func (f *fakeIncidents) RecordCSMAttemptStarted(_ context.Context, existing model.Incident, attempts int) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.CSMAttempts = attempts
-	inc.CSMLastAttemptAt = time.Now()
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.CSMAttempts = attempts
+		inc.CSMLastAttemptAt = time.Now()
+	})
 }
 
-func (f *fakeIncidents) RecordCSMAttemptFailure(_ context.Context, fingerprint string, attempts, maxAttempts int, permanent bool) error {
+func (f *fakeIncidents) RecordCSMAttemptFailure(_ context.Context, existing model.Incident, attempts, maxAttempts int, permanent bool) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.CSMAttempts = attempts
-	inc.CSMPermanentlyFailed = permanent || attempts >= maxAttempts
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.CSMAttempts = attempts
+		inc.CSMPermanentlyFailed = permanent || attempts >= maxAttempts
+	})
 }
 
-func (f *fakeIncidents) SyncStatus(_ context.Context, fingerprint, status string, checkedAt time.Time) error {
+func (f *fakeIncidents) SyncStatus(_ context.Context, existing model.Incident, status string, checkedAt time.Time) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.Status = status
-	inc.StateCheckedAt = checkedAt
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.Status = status
+		inc.StateCheckedAt = checkedAt
+	})
 }
 
-func (f *fakeIncidents) RecordStateChecked(_ context.Context, fingerprint string, checkedAt time.Time) error {
+func (f *fakeIncidents) RecordStateChecked(_ context.Context, existing model.Incident, checkedAt time.Time) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.StateCheckedAt = checkedAt
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.StateCheckedAt = checkedAt
+	})
 }
 
-func (f *fakeIncidents) AppendWorkNote(_ context.Context, existing model.Incident, note string) error {
+func (f *fakeIncidents) AppendWorkNote(_ context.Context, existing model.Incident, note string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[existing.Fingerprint]
-	inc.WorkNotes = append(inc.WorkNotes, note)
-	inc.PendingNotes = append(inc.PendingNotes, note)
-	f.byFP[existing.Fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.WorkNotes = append(inc.WorkNotes, note)
+		inc.PendingNotes = append(inc.PendingNotes, note)
+	})
 }
 
-func (f *fakeIncidents) ClearPendingNotes(_ context.Context, fingerprint string, remaining []string) error {
+func (f *fakeIncidents) ClearPendingNotes(_ context.Context, existing model.Incident, remaining []string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.PendingNotes = remaining
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.PendingNotes = remaining
+	})
 }
 
-func (f *fakeIncidents) MarkFallbackNotified(_ context.Context, fingerprint string) error {
+func (f *fakeIncidents) MarkFallbackNotified(_ context.Context, existing model.Incident) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	inc := f.byFP[fingerprint]
-	inc.Fallback = true
-	f.byFP[fingerprint] = inc
-	return nil
+	return f.casUpdate(existing, func(inc *model.Incident) {
+		inc.Fallback = true
+	})
 }
 
 func (f *fakeIncidents) ListPending(_ context.Context) ([]model.Incident, error) {
@@ -239,8 +237,7 @@ func (f *fakeIncidents) ListPending(_ context.Context) ([]model.Incident, error)
 	return out, nil
 }
 
-// fakeNotifier counts NotifyCSM calls so tests can assert an incident is never delivered to CSM
-// twice, and lets tests control whether CSM confirms.
+// fakeNotifier counts NotifyCSM calls so tests can assert no double-delivery, and lets tests control whether CSM confirms.
 type fakeNotifier struct {
 	csmOK      bool
 	csmID      string
@@ -456,8 +453,7 @@ func TestHandle_PermanentlyFailedIncident_RecoversOnNextAlert(t *testing.T) {
 		t.Fatalf("expected a permanently-failed incident to report IsOpen()=false")
 	}
 
-	// CSM recovers; a later alert on the same fingerprint must get its own fresh delivery attempt,
-	// not be silently swallowed as a local Duplicate note forever.
+	// CSM recovers; a later alert on the same fingerprint must get its own fresh delivery attempt, not be swallowed as a Duplicate note forever.
 	notifier.csmOK = true
 	notifier.csmID, notifier.csmNumber = "csm-2", "INC0000002"
 	outcome := e.Handle(ctx, "ALT2", alert)
@@ -569,8 +565,7 @@ func TestHandle_GenerationReset_FlushesPendingNotesFirst(t *testing.T) {
 	e.Handle(ctx, "ALT1", alert) // creates + confirms the incident
 	fp := model.Fingerprint(alert.Source, alert.Service, alert.MetricName, alert.Environment, alert.UniqueIdentifier)
 
-	// A note queued on the outgoing generation, still unflushed, and the incident has aged past its
-	// dedup window -- the next alert on this fingerprint is about to trigger a generation reset.
+	// A note queued on the outgoing generation is still unflushed, and the incident has aged past its dedup window, about to trigger a generation reset.
 	inc := incidents.byFP[fp]
 	inc.PendingNotes = []string{"queued note"}
 	inc.FirstSeen = time.Now().Add(-6 * time.Minute)
@@ -698,8 +693,7 @@ func TestPrepare_DistinguishesNotFoundFromOtherReadErrors(t *testing.T) {
 }
 
 func TestAnnotate_UsesFreshReadNotStaleSnapshot(t *testing.T) {
-	// Push fails so the newly appended note stays visible in PendingNotes for inspection, rather than
-	// being immediately flushed away by annotate's own deliverAndPersist call.
+	// Push fails so the newly appended note stays visible in PendingNotes instead of being flushed away by annotate's deliverAndPersist call.
 	notifier := &fakeNotifier{csmOK: true, csmID: "csm-1", csmNumber: "INC0000001", pushNoteErr: fmt.Errorf("csm patch failed")}
 	e, incidents := newTestEngine(nil, notifier)
 	ctx := context.Background()
