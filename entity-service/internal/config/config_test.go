@@ -1073,3 +1073,22 @@ func TestConfig_Validate_CRStrictVisibilityFromRefusesAnUnparsableValue(t *testi
 }
 
 func ptrTime(t time.Time) *time.Time { return &t }
+
+// INCIDENT_DEFAULT_SERVICE_ID is optional, and a UUID when set.
+func TestConfig_IncidentDefaultServiceID(t *testing.T) {
+	for value, wantErr := range map[string]bool{
+		"":                                     false,
+		"5ddddddd-dddd-4ddd-8ddd-dddddddddddd": false,
+		"not-a-uuid":                           true,
+	} {
+		c := baseValidConfig()
+		c.IncidentDefaultServiceID = value
+		if err := c.Validate(); (err != nil) != wantErr {
+			t.Errorf("INCIDENT_DEFAULT_SERVICE_ID=%q: err = %v, want error %v", value, err, wantErr)
+		}
+	}
+	t.Setenv("INCIDENT_DEFAULT_SERVICE_ID", "  5ddddddd-dddd-4ddd-8ddd-dddddddddddd ")
+	if got := Load().IncidentDefaultServiceID; got != "5ddddddd-dddd-4ddd-8ddd-dddddddddddd" {
+		t.Errorf("Load() = %q, want the trimmed id", got)
+	}
+}

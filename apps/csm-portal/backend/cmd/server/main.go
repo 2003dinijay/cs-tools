@@ -593,6 +593,7 @@ func main() {
 	route("POST /incidents/search", handler.PermViewOperations, incidentHandler.SearchIncidents)
 	route("POST /incidents/aggregate", handler.PermViewOperations, incidentHandler.AggregateIncidents)
 	route("POST /incidents", handler.PermWrite, incidentHandler.CreateIncident)
+	route("GET /incidents/create-defaults", handler.PermViewOperations, incidentHandler.GetIncidentCreateDefaults)
 	route("GET /incidents/{id}", handler.PermViewOperations, incidentHandler.GetIncident)
 	route("PATCH /incidents/{id}", handler.PermWrite, incidentHandler.PatchIncident)
 	route("POST /incidents/{id}/comments", handler.PermWrite, incidentHandler.CreateIncidentComment)

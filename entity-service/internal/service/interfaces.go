@@ -1172,6 +1172,11 @@ type IncidentService interface {
 	// empty when the service has only one specialist team, so the dialog
 	// offers no choice. An empty serviceID lists every sub-team.
 	ListSpecialistHandoffTeams(ctx context.Context, serviceID string) (domain.SpecialistHandoffTeamsResponse, error)
+	// GetIncidentCreateDefaults returns the default service
+	// (INCIDENT_DEFAULT_SERVICE_ID) and its support group: the group
+	// CreateIncident assigns when the incident's own service has none. Read
+	// only; the group is null when the default is unset, missing or groupless.
+	GetIncidentCreateDefaults(ctx context.Context) (domain.IncidentCreateDefaults, error)
 }
 
 // ProblemService defines the operations available on the problems entity.

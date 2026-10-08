@@ -5297,6 +5297,12 @@ type GroupDetail struct {
 // SearchGroupsFilters holds optional filter criteria for group searches.
 type SearchGroupsFilters struct {
 	SearchQuery string `json:"searchQuery,omitempty"`
+	// SupportGroupsOnly limits the result to the groups an incident can be
+	// created in with an explicit assignmentGroupId: active groups that are
+	// the support group of at least one service. Their ids are "group" ids
+	// (the ones assignmentGroupId takes), not team-registry ids, which the
+	// search returns without this filter on the Postgres data source.
+	SupportGroupsOnly bool `json:"supportGroupsOnly,omitempty"`
 }
 
 // SearchGroupsRequest is the input for POST /groups/search.
@@ -6037,11 +6043,17 @@ type CreateIncidentRequest struct {
 	ContactType         *IncidentContactType `json:"contactType,omitempty"`
 	Impact              IncidentImpact       `json:"impact"`
 	Urgency             IncidentUrgency      `json:"urgency"`
-	// AssignmentGroupID is never read from the request body: an incident's
-	// assignment group is its service's support group, set by the incident
-	// service before either create path runs. One rule, one place -- a
-	// caller that sends assignmentGroupId gets a 400 for an unknown field.
-	AssignmentGroupID  *string  `json:"-"`
+	// AssignmentGroupID is optional. The incident service decides the group
+	// once, before either create path runs (resolveAssignmentGroup), the same
+	// way for every caller and DATA_SOURCE:
+	//   - sent: used if it is an active group that is the support group of at
+	//     least one service, else 400 (blank counts as not sent);
+	//   - not sent: the service's support group;
+	//   - the service has none: the support group of the default service
+	//     (INCIDENT_DEFAULT_SERVICE_ID), logged as a warning;
+	//   - no default group either: unassigned, logged as an error.
+	// A creation work note records which of these chose the group.
+	AssignmentGroupID  *string  `json:"assignmentGroupId,omitempty"`
 	AssignedEngineerID *string  `json:"assignedEngineerId,omitempty"`
 	Subject            string   `json:"subject"`
 	WatchList          []string `json:"watchList,omitempty"`
@@ -6065,6 +6077,16 @@ type CreateIncidentRequest struct {
 	// (max length 40; name kept as ServiceNow spells it, misspelling
 	// included). Also persisted on this service's own Postgres incident row.
 	Environment *string `json:"environment,omitempty"`
+}
+
+// IncidentCreateDefaults is the output for GET /incidents/create-defaults:
+// what POST /incidents falls back to when the incident's service has no
+// support group. DefaultServiceID is INCIDENT_DEFAULT_SERVICE_ID (null when
+// unset); DefaultGroup is that service's support group (null when the
+// variable is unset, the service does not exist or it has no support group).
+type IncidentCreateDefaults struct {
+	DefaultServiceID *string    `json:"defaultServiceId"`
+	DefaultGroup     *EntityRef `json:"defaultGroup"`
 }
 
 // CreateIncidentResponse is the output for POST /incidents.

@@ -3144,7 +3144,13 @@ export interface BeGroup {
 }
 
 export interface BeGroupSearchPayload {
-  filters?: { searchQuery?: string };
+  filters?: {
+    searchQuery?: string;
+    /** Only groups that are the support group of at least one service — the
+     * groups an incident may be assigned to on create. Omitted (not `false`)
+     * when unset, so older callers send the same body as before. */
+    supportGroupsOnly?: boolean;
+  };
   pagination: BePagination;
 }
 
@@ -3612,8 +3618,10 @@ export interface BeCreateIncidentPayload {
   contactType?: BeIncidentContactType;
   impact: BeIncidentImpact;
   urgency: BeIncidentUrgency;
-  // No assignmentGroupId: the backend sets the group from `serviceId`'s
-  // support group, and refuses a create that sends one.
+  /** Optional. When sent it must be the support group of some service (the
+   * backend 400s otherwise). When omitted the backend uses `serviceId`'s
+   * support group, else the Default service's support group. */
+  assignmentGroupId?: string;
   assignedEngineerId?: string;
   subject: string;
   watchList?: string[];
@@ -3629,6 +3637,16 @@ export interface BeCreateIncidentPayload {
   problemId?: string;
   causedById?: string;
   environment?: string;
+}
+
+/**
+ * `GET /incidents/create-defaults` — what the create form falls back to when
+ * the picked Service has no support group of its own: the Default service and
+ * its support group (the "default team"). Either is `null` when not configured.
+ */
+export interface BeIncidentCreateDefaults {
+  defaultServiceId: string | null;
+  defaultGroup: BeEntityRef | null;
 }
 
 /** `POST /incidents` response — the created identifiers. */

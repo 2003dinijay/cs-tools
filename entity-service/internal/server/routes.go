@@ -1175,6 +1175,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		handoffIssueClients[credential] = github.NewClient(github.Config{BaseURL: cfg.GithubBaseURL, Token: token})
 	}
 	activeIncidentSvc = service.WithHandoffIssueCreators(activeIncidentSvc, handoffIssueClients)
+	// The team an incident gets when its service has no support group
+	// (resolveAssignmentGroup). Checked once in the background: a missing or
+	// groupless default is logged, never fatal -- the create still works, it
+	// just leaves such incidents unassigned.
+	activeIncidentSvc = service.WithIncidentDefaultService(activeIncidentSvc, cfg.IncidentDefaultServiceID)
+	if cfg.IncidentDefaultServiceID != "" && (db != nil || cfg.DataSource == config.DataSourceServiceNow) {
+		go service.CheckIncidentDefaultService(context.Background(), activeIncidentSvc, cfg.IncidentDefaultServiceID)
+	}
 	incidentHandler := handler.NewIncidentHandler(activeIncidentSvc)
 
 	problemRepo := repository.NewProblemRepository(repository.NewScoped(db))
@@ -1560,8 +1568,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /users/me", userHandler.GetMe)
 		mux.HandleFunc("PATCH /users/me", userHandler.PatchMe)
 		mux.HandleFunc("POST /users/search", userHandler.SearchUsers)
-	mux.HandleFunc("POST /users/by-ids", userHandler.GetUsersByIDs)
-	mux.HandleFunc("POST /users", userHandler.CreateUser)
+		mux.HandleFunc("POST /users/by-ids", userHandler.GetUsersByIDs)
+		mux.HandleFunc("POST /users", userHandler.CreateUser)
 	}
 	if snAccountHandler != nil {
 		mux.HandleFunc("GET /accounts/{id}", internalOnly(accessSvc, snAccountHandler.GetAccount))
@@ -1784,6 +1792,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("GET /incidents/{id}", internalOnly(accessSvc, incidentHandler.GetIncident))
 	mux.HandleFunc("PATCH /incidents/{id}", internalOnly(accessSvc, incidentHandler.PatchIncident))
 	mux.HandleFunc("POST /incidents", internalOnly(accessSvc, incidentHandler.CreateIncident))
+	mux.HandleFunc("GET /incidents/create-defaults", internalOnly(accessSvc, incidentHandler.GetIncidentCreateDefaults))
 	mux.HandleFunc("POST /incidents/search", internalOnly(accessSvc, incidentHandler.SearchIncidents))
 	mux.HandleFunc("POST /incidents/aggregate", internalOnly(accessSvc, incidentHandler.AggregateIncidents))
 	mux.HandleFunc("POST /incidents/{id}/activities/search", internalOnly(accessSvc, incidentHandler.SearchIncidentActivities))
