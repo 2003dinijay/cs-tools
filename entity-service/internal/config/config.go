@@ -557,6 +557,11 @@ type Config struct {
 	EscalationEL2ProductServiceEmail        string
 	EscalationEL2ProductIdentityServerEmail string
 	EscalationEL2ProductDefaultEmail        string
+	// CaseEscalationNotices is CASE_ESCALATION_NOTICES_ENABLED, the off switch
+	// for publishing case.escalated (the escalation email): unset or "true"
+	// means on wherever Postgres holds the escalation (DATA_SOURCE=postgres and
+	// dual-write); "false" turns it off. See CaseEscalationNoticesOn.
+	CaseEscalationNotices string
 
 	// RedisURL/RedisAddr/RedisPassword configure the optional user cache in
 	// front of GET /users/{id} and GET /users/me (internal/cache), with the
@@ -695,6 +700,7 @@ func Load() *Config {
 		EscalationEL2ProductServiceEmail:              strings.TrimSpace(os.Getenv("ESCALATION_EL2_PRODUCT_EMAIL_SERVICE")),
 		EscalationEL2ProductIdentityServerEmail:       strings.TrimSpace(os.Getenv("ESCALATION_EL2_PRODUCT_EMAIL_IDENTITY_SERVER")),
 		EscalationEL2ProductDefaultEmail:              strings.TrimSpace(os.Getenv("ESCALATION_EL2_PRODUCT_EMAIL_DEFAULT")),
+		CaseEscalationNotices:                         strings.ToLower(strings.TrimSpace(os.Getenv("CASE_ESCALATION_NOTICES_ENABLED"))),
 		ServerReadTimeout:                             duration("SERVER_READ_TIMEOUT", DefaultServerReadTimeout),
 		ServerWriteTimeout:                            duration("SERVER_WRITE_TIMEOUT", DefaultServerWriteTimeout),
 		RequestTimeout:                                duration("REQUEST_TIMEOUT", DefaultRequestTimeout),
@@ -1022,6 +1028,9 @@ func (c *Config) Validate() error {
 			}
 		}
 	}
+	if v := c.CaseEscalationNotices; v != "" && v != "true" && v != "false" {
+		return fmt.Errorf("CASE_ESCALATION_NOTICES_ENABLED %q must be true, false or unset", v)
+	}
 	if v := c.IncidentDefaultServiceID; v != "" && !validate.IsUUID(v) {
 		return fmt.Errorf("INCIDENT_DEFAULT_SERVICE_ID %q is not a valid UUID", v)
 	}
@@ -1083,6 +1092,20 @@ func isSysID(v string) bool {
 // nothing more. Memberships never go through the ServiceNow mirror: ServiceNow
 // gets them from Salesforce, through its own Service Bus subscription, so it
 // stays current in either mode.
+// CaseEscalationNoticesOn reports whether escalations publish case.escalated
+// (the escalation email): on wherever Postgres holds the escalation --
+// DATA_SOURCE=postgres and dual-write alike -- unless
+// CASE_ESCALATION_NOTICES_ENABLED=false. Never on the ServiceNow data source,
+// which has no Postgres escalation to publish from.
+//
+// Under dual-write the escalation is also mirrored into ServiceNow, whose
+// "Internal Escalation notification" flow mails it too wherever that instance
+// delivers mail. Switch the flow off when this goes live there, or each
+// escalation is emailed twice.
+func (c *Config) CaseEscalationNoticesOn() bool {
+	return c.PostgresAuthoritative() && c.CaseEscalationNotices != "false"
+}
+
 func (c *Config) PostgresAuthoritative() bool {
 	return c.DataSource == DataSourcePostgres || c.DataSource == DataSourcePostgresServiceNowDualWrite
 }

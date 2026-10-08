@@ -1098,3 +1098,43 @@ func TestConfig_IncidentDefaultServiceID(t *testing.T) {
 		t.Errorf("Load() = %q, want the trimmed id", got)
 	}
 }
+
+// TestConfig_CaseEscalationNoticesOn: on for postgres and dual-write alike
+// unless switched off; the ServiceNow data source never publishes.
+func TestConfig_CaseEscalationNoticesOn(t *testing.T) {
+	for _, tc := range []struct {
+		ds      DataSource
+		setting string
+		want    bool
+	}{
+		{DataSourcePostgres, "", true},
+		{DataSourcePostgresServiceNowDualWrite, "", true},
+		{DataSourcePostgresServiceNowDualWrite, "true", true},
+		{DataSourcePostgres, "false", false},
+		{DataSourcePostgresServiceNowDualWrite, "false", false},
+		{DataSourceServiceNow, "", false},
+		{DataSourceServiceNow, "true", false},
+	} {
+		c := Config{DataSource: tc.ds, CaseEscalationNotices: tc.setting}
+		if got := c.CaseEscalationNoticesOn(); got != tc.want {
+			t.Errorf("DATA_SOURCE=%s CASE_ESCALATION_NOTICES_ENABLED=%q: got %v, want %v", tc.ds, tc.setting, got, tc.want)
+		}
+	}
+}
+
+// TestConfig_Validate_CaseEscalationNotices: anything but true / false / unset
+// refuses to start, so a typo can't silently pick the default.
+func TestConfig_Validate_CaseEscalationNotices(t *testing.T) {
+	for _, v := range []string{"", "true", "false"} {
+		c := baseValidConfig()
+		c.CaseEscalationNotices = v
+		if err := c.Validate(); err != nil {
+			t.Errorf("%q: unexpected error %v", v, err)
+		}
+	}
+	c := baseValidConfig()
+	c.CaseEscalationNotices = "yes"
+	if err := c.Validate(); err == nil {
+		t.Error(`"yes": want a startup error`)
+	}
+}
