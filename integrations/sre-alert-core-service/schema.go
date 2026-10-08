@@ -14,15 +14,10 @@
 // specific language governing permissions and limitations
 // under the License.
 
-package lease
+// Package schema embeds schema.sql so the server can apply it at startup.
+package schema
 
-import (
-	"testing"
+import _ "embed"
 
-	"go.uber.org/goleak"
-)
-
-// TestMain fails the suite if any test in this package leaves a goroutine running.
-func TestMain(m *testing.M) {
-	goleak.VerifyTestMain(m)
-}
+//go:embed schema.sql
+var SQL string // schema.sql; every statement is idempotent.
