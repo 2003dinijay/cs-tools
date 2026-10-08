@@ -39,7 +39,7 @@ func TestWake_PostsToAlertsCore(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(discard(), srv.URL+"/alert", time.Second)
+	c := New(discard(), srv.URL+"/alert", "", time.Second)
 	c.Wake()
 	c.Wait(context.Background())
 	if calls.Load() != 1 || method != http.MethodPost {
@@ -64,7 +64,7 @@ func TestWake_OneInFlightAndCoalescesTheRest(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	c := New(discard(), srv.URL, 5*time.Second)
+	c := New(discard(), srv.URL, "", 5*time.Second)
 	c.Wake()
 	<-entered // first call is in flight
 	for range 5 {
@@ -82,7 +82,7 @@ func TestWake_OneInFlightAndCoalescesTheRest(t *testing.T) {
 }
 
 func TestWake_EmptyURLIsNoOp(t *testing.T) {
-	c := New(discard(), "", time.Second)
+	c := New(discard(), "", "", time.Second)
 	c.Wake()
 	c.Wait(context.Background()) // must not hang
 }
@@ -92,11 +92,43 @@ func TestWake_ErrorsAreOnlyLogged(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	c := New(discard(), srv.URL, time.Second)
+	c := New(discard(), srv.URL, "", time.Second)
 	c.Wake()
 	c.Wait(context.Background())
 
-	unreachable := New(discard(), "http://127.0.0.1:1", 200*time.Millisecond)
+	unreachable := New(discard(), "http://127.0.0.1:1", "", 200*time.Millisecond)
 	unreachable.Wake()
 	unreachable.Wait(context.Background())
+}
+
+func TestWake_SendsBearerKey(t *testing.T) {
+	var got string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = r.Header.Get("Authorization")
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := New(discard(), srv.URL, "wake-secret", time.Second)
+	c.Wake()
+	c.Wait(context.Background())
+	if want := "Bearer wake-secret"; got != want {
+		t.Errorf("Authorization = %q, want %q", got, want)
+	}
+}
+
+func TestWake_NoKeySendsNoHeader(t *testing.T) {
+	seen := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, seen = r.Header["Authorization"]
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	c := New(discard(), srv.URL, "", time.Second)
+	c.Wake()
+	c.Wait(context.Background())
+	if seen {
+		t.Error("no key configured, but an Authorization header was sent")
+	}
 }

@@ -268,6 +268,40 @@ type Env struct {
 	// ChatWebhookURLs are Google Chat incoming webhooks for rejected-webhook and DB-failure
 	// cards. Empty disables the cards (local dev); rejections and failures are still logged.
 	ChatWebhookURLs []string `env:"FALLBACK_CHAT_WEBHOOK_URLS" envSeparator:","`
+	// WebhookAPIKeysRaw is the unparsed value; read WebhookAPIKeys instead.
+	WebhookAPIKeysRaw string `env:"WEBHOOK_API_KEYS"`
+	// WebhookAPIKeys maps vendor to secret, for auth.mode "audit" and "apikey".
+	WebhookAPIKeys map[string]string `env:"-"`
+	// WakeKey is alerts-core's WAKE_API_KEY, sent as a bearer token. Empty sends
+	// no header, which only works if alerts-core has none either.
+	WakeKey string `env:"ALERT_CORE_WAKE_KEY"`
+}
+
+// ParseWebhookAPIKeys parses comma-separated <vendor>:<key> pairs. Blank entries
+// are skipped; only the first colon splits, so a key may contain colons, not commas.
+func ParseWebhookAPIKeys(raw string) (map[string]string, error) {
+	keys := make(map[string]string)
+	for _, pair := range strings.Split(raw, ",") {
+		pair = strings.TrimSpace(pair)
+		if pair == "" {
+			continue
+		}
+		vendor, key, found := strings.Cut(pair, ":")
+		vendor, key = strings.TrimSpace(vendor), strings.TrimSpace(key)
+		switch {
+		case !found:
+			return nil, fmt.Errorf("webhook api keys: entry %q is not <vendor>:<key>", pair)
+		case vendor == "":
+			return nil, fmt.Errorf("webhook api keys: entry with an empty vendor name")
+		case key == "":
+			return nil, fmt.Errorf("webhook api keys: empty key for vendor %q", vendor)
+		}
+		if _, dup := keys[vendor]; dup {
+			return nil, fmt.Errorf("webhook api keys: vendor %q listed twice", vendor)
+		}
+		keys[vendor] = key
+	}
+	return keys, nil
 }
 
 // LoadEnv parses Env, trimming blanks out of the comma-separated Chat webhook list.
@@ -277,6 +311,7 @@ func LoadEnv() (Env, error) {
 		return Env{}, fmt.Errorf("env config: %w", err)
 	}
 	e.WakeURL = strings.TrimSpace(e.WakeURL)
+	e.WakeKey = strings.TrimSpace(e.WakeKey)
 	urls := e.ChatWebhookURLs[:0]
 	for _, u := range e.ChatWebhookURLs {
 		if u = strings.TrimSpace(u); u != "" {
@@ -284,5 +319,10 @@ func LoadEnv() (Env, error) {
 		}
 	}
 	e.ChatWebhookURLs = urls
+	keys, err := ParseWebhookAPIKeys(e.WebhookAPIKeysRaw)
+	if err != nil {
+		return Env{}, err
+	}
+	e.WebhookAPIKeys = keys
 	return e, nil
 }

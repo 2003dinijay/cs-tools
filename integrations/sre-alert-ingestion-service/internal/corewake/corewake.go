@@ -34,6 +34,7 @@ import (
 type Client struct {
 	logger  *slog.Logger
 	url     string
+	key     string
 	http    *http.Client
 	mu      sync.Mutex
 	running bool
@@ -42,11 +43,14 @@ type Client struct {
 }
 
 // New returns a Client. An empty url logs a warning and makes Wake a no-op (local dev).
-func New(logger *slog.Logger, url string, timeout time.Duration) *Client {
+// key is alerts-core's WAKE_API_KEY, sent as a bearer token; empty sends no header.
+func New(logger *slog.Logger, url, key string, timeout time.Duration) *Client {
 	if url == "" {
 		logger.Warn("ALERT_CORE_WAKE_URL not set; alerts-core will pick alerts up on its own poll")
+	} else if key == "" {
+		logger.Warn("ALERT_CORE_WAKE_KEY not set; wake-ups will be rejected if alerts-core requires one")
 	}
-	c := &Client{logger: logger, url: url, http: &http.Client{Timeout: timeout}}
+	c := &Client{logger: logger, url: url, key: key, http: &http.Client{Timeout: timeout}}
 	c.idle = sync.NewCond(&c.mu)
 	return c
 }
@@ -86,6 +90,9 @@ func (c *Client) send() {
 	if err != nil {
 		c.logger.Warn("alerts-core wake-up request invalid", "error", err)
 		return
+	}
+	if c.key != "" {
+		req.Header.Set("Authorization", "Bearer "+c.key)
 	}
 	resp, err := c.http.Do(req)
 	if err != nil {

@@ -32,7 +32,11 @@ idle_timeout = "60s"
 max_body_bytes = 1048576
 
 [auth]
-# Vendor-route auth hook. Only "none" exists today: the routes are public.
+# Vendor-route auth hook:
+#   "none"   accept everything; the routes are public.
+#   "audit"  check keys and log mismatches, reject nothing. Use while reconfiguring
+#            vendors, so enabling auth cannot drop alerts.
+#   "apikey" require a key from WEBHOOK_API_KEYS. Startup fails if a vendor has none.
 mode = "none"
 
 [allocator]

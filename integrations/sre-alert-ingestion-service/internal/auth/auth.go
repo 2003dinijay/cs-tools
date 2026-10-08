@@ -14,16 +14,23 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package auth is the vendor-route auth hook. Only "none" exists today: the
-// vendor URLs are public until an auth method is chosen, and the Choreo gateway rate limit is
-// the only protection. Adding Basic auth or a shared-secret header later is a new
-// Authenticator selected by auth.mode, not a restructure of the router.
+// Package auth is the vendor-route auth hook, selected by auth.mode: "none" accepts
+// everything, "audit" logs mismatches without rejecting, "apikey" enforces (see
+// APIKey). Another scheme is a new Authenticator and mode, not a router change.
 package auth
 
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net/http"
+)
+
+// The supported auth.mode values.
+const (
+	ModeNone   = "none"
+	ModeAudit  = "audit"
+	ModeAPIKey = "apikey"
 )
 
 // ErrUnauthorized is returned by an Authenticator that rejects a request; the router answers 401.
@@ -41,13 +48,23 @@ type None struct{}
 // Authenticate always succeeds.
 func (None) Authenticate(*http.Request, string) error { return nil }
 
-// New returns the Authenticator for auth.mode, or an error for an unknown mode so a typo in
-// config.toml fails at startup instead of silently leaving the routes open.
-func New(mode string) (Authenticator, error) {
+// New returns the Authenticator for mode, erroring on an unknown one so a typo in
+// config.toml fails at startup rather than leaving the routes open. ModeNone
+// ignores keys and vendors.
+func New(mode string, keys map[string]string, vendors []string, logger *slog.Logger) (Authenticator, error) {
 	switch mode {
-	case "none":
+	case ModeNone:
 		return None{}, nil
+	case ModeAudit:
+		// Not requireEveryVendor: audit is for the window where some have no key.
+		inner, err := NewAPIKey(keys, vendors, false)
+		if err != nil {
+			return nil, err
+		}
+		return Audit{inner: inner, logger: logger}, nil
+	case ModeAPIKey:
+		return NewAPIKey(keys, vendors, true)
 	default:
-		return nil, fmt.Errorf("unknown auth.mode %q", mode)
+		return nil, fmt.Errorf("unknown auth.mode %q (want %q, %q or %q)", mode, ModeNone, ModeAudit, ModeAPIKey)
 	}
 }
