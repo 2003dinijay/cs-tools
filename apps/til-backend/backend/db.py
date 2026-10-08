@@ -138,6 +138,7 @@ def create_submission(
         "what": what,
         "submittedByEmail": submitted_by_email,
         "createdAt": created_at,
+        "updatedAt": None,
     }
 
 
@@ -151,6 +152,7 @@ def _row_to_dict(row: dict) -> dict:
         "what": row["what"],
         "submittedByEmail": row["submitted_by_email"],
         "createdAt": row["created_at"],
+        "updatedAt": row["updated_at"],
     }
 
 
@@ -295,6 +297,26 @@ def get_submission(submission_id: str) -> dict | None:
     if row is None:
         return None
     return _row_to_dict(row)
+
+
+def update_submission(
+    submission_id: str, title: str, where: str, what: str, where_detail: str | None = None
+) -> dict | None:
+    """Replaces an entry's content and stamps updated_at. The byline (who,
+    submitted_by_email) and created_at are never touched. None when no entry
+    has that id."""
+    updated_at = datetime.now(timezone.utc).isoformat()
+    with pool.get_conn() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE til_submissions "
+                "SET title = %s, where_ = %s, where_detail = %s, what = %s, updated_at = %s "
+                "WHERE id = %s",
+                (title, where, where_detail, what, updated_at, submission_id),
+            )
+            if cur.rowcount == 0:
+                return None
+    return get_submission(submission_id)
 
 
 def delete_submission(submission_id: str) -> bool:

@@ -72,6 +72,22 @@ def test_list_submissions_respects_limit_and_sets_cursor(db_module):
     assert page["nextCursor"] is not None
 
 
+def test_update_submission_replaces_content_and_stamps_updated_at(db_module):
+    created = db_module.create_submission("T", "Jane", "Internal", "x", "jane@example.com")
+    assert created["updatedAt"] is None
+    updated = db_module.update_submission(created["id"], "T2", "Customer", "y", where_detail="Acme Corp")
+    assert (updated["title"], updated["where"], updated["whereDetail"], updated["what"]) == ("T2", "Customer", "Acme Corp", "y")
+    assert updated["updatedAt"] is not None
+    # The byline and creation time are never part of an edit.
+    assert (updated["who"], updated["submittedByEmail"], updated["createdAt"]) == (
+        "Jane", "jane@example.com", created["createdAt"]
+    )
+
+
+def test_update_nonexistent_submission_returns_none(db_module):
+    assert db_module.update_submission("does-not-exist", "T", "Internal", "x") is None
+
+
 def test_delete_submission_removes_it(db_module):
     created = db_module.create_submission("T", "Jane", "Customer", "x", "jane@example.com")
     assert db_module.delete_submission(created["id"]) is True
