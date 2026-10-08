@@ -227,7 +227,6 @@ export default function AllConversationsPage(): JSX.Element {
 
   const handleClearFilters = () => {
     setFilters({});
-    setSearchTerm("");
     setPage(1);
   };
 
