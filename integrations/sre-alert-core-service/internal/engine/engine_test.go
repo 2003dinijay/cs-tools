@@ -119,7 +119,7 @@ func (f *fakeIncidents) Upsert(_ context.Context, alertID string, a model.Alert,
 		existing.FirstSeen = existing.LastSeen
 		existing.IncidentID = ""
 		existing.IncidentNumber = "PENDING-" + fp[:8]
-		existing.Notified = false
+		existing.Fallback = false
 		existing.CSMConfirmed = false
 		existing.CSMAttempts = 0
 		existing.CSMPermanentlyFailed = false
@@ -163,6 +163,7 @@ func (f *fakeIncidents) RecordCSMAttemptStarted(_ context.Context, fingerprint s
 	defer f.mu.Unlock()
 	inc := f.byFP[fingerprint]
 	inc.CSMAttempts = attempts
+	inc.CSMLastAttemptAt = time.Now()
 	f.byFP[fingerprint] = inc
 	return nil
 }
@@ -215,11 +216,11 @@ func (f *fakeIncidents) ClearPendingNotes(_ context.Context, fingerprint string,
 	return nil
 }
 
-func (f *fakeIncidents) MarkNotified(_ context.Context, fingerprint string) error {
+func (f *fakeIncidents) MarkFallbackNotified(_ context.Context, fingerprint string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	inc := f.byFP[fingerprint]
-	inc.Notified = true
+	inc.Fallback = true
 	f.byFP[fingerprint] = inc
 	return nil
 }
@@ -290,7 +291,7 @@ func (n *fakeNotifier) IncidentState(_ context.Context, incidentNumber string) (
 
 func newTestEngine(alerts map[string]model.Alert, notifier *fakeNotifier) (*Engine, *fakeIncidents) {
 	incidents := newFakeIncidents()
-	e := New(testLogger(), &fakeAlerts{byID: alerts}, incidents, notifier, model.Defaults{}, 3, 0, time.Hour)
+	e := New(testLogger(), &fakeAlerts{byID: alerts}, incidents, notifier, model.Defaults{}, 3, 0, time.Hour, CSMRetryConfig{BaseDelay: time.Hour, Multiplier: 3, MaxDelay: time.Hour})
 	return e, incidents
 }
 
@@ -355,11 +356,6 @@ func TestHandle_DuplicateAlertOnOpenIncident_Annotates(t *testing.T) {
 	}
 }
 
-// TestHandle_IdempotentReplaySkipsDuplicateNote is the case cs-tools#2016's review flagged in
-// poll.Poller: a poll window whose cursor stalls on a later Retry re-runs every already-handled
-// id in that window on the next cycle, including one that was only ever annotated (never
-// Upserted, so Upsert's own alertID-membership check never saw it). Replaying the exact same
-// alert id against the same incident must be a no-op, not a second work note.
 func TestHandle_IdempotentReplaySkipsDuplicateNote(t *testing.T) {
 	notifier := &fakeNotifier{csmOK: true, csmID: "csm-1", csmNumber: "INC0000001"}
 	e, incidents := newTestEngine(nil, notifier)
@@ -377,11 +373,6 @@ func TestHandle_IdempotentReplaySkipsDuplicateNote(t *testing.T) {
 	}
 }
 
-// TestRetrySweepAndHandle_NeverDoubleDeliverSameIncident exercises the race cs-tools#2016's
-// review flagged in the old single global notifyMu design: RetrySweep reading a stale
-// ListPending snapshot while Handle concurrently confirms the same incident. deliverAndPersist
-// now re-reads the row under a per-fingerprint lock, so only one of the two racing callers should
-// ever actually call NotifyCSM.
 func TestRetrySweepAndHandle_NeverDoubleDeliverSameIncident(t *testing.T) {
 	notifier := &fakeNotifier{csmOK: true, csmID: "csm-1", csmNumber: "INC0000001"}
 	e, incidents := newTestEngine(nil, notifier)
@@ -417,10 +408,6 @@ func TestRetrySweepAndHandle_NeverDoubleDeliverSameIncident(t *testing.T) {
 	}
 }
 
-// TestHandle_RecurrenceAfterCsmCloses_NotifiesAgain is the case cs-tools#2016's review flagged:
-// once CSM closes an incident, a later alert for the same fingerprint must not be folded silently
-// into the closed row. It needs a fresh delivery cycle (and a fresh dedup tag, so NotifyCSM's
-// search can't just reuse the incident CSM already closed).
 func TestHandle_RecurrenceAfterCsmCloses_NotifiesAgain(t *testing.T) {
 	notifier := &fakeNotifier{csmOK: true, csmID: "csm-1", csmNumber: "INC0000001", openStates: map[string]bool{}}
 	e, incidents := newTestEngine(nil, notifier)
@@ -450,17 +437,11 @@ func TestHandle_RecurrenceAfterCsmCloses_NotifiesAgain(t *testing.T) {
 	}
 }
 
-// TestHandle_PermanentlyFailedIncident_RecoversOnNextAlert is the case the latest review flagged:
-// model.Incident.IsOpen() used to treat any CSM-unconfirmed incident as open forever, so once an
-// incident was marked CSMPermanentlyFailed (CSM will never confirm it), every later alert on that
-// fingerprint was folded into it as a silent local Duplicate note -- no further CSM attempt, no
-// further Chat message, forever. IsOpen() now treats a permanently-failed incident as closed, so the
-// next alert starts a fresh delivery generation instead.
 func TestHandle_PermanentlyFailedIncident_RecoversOnNextAlert(t *testing.T) {
 	notifier := &fakeNotifier{csmOK: false, chatOK: true}
 	incidents := newFakeIncidents()
 	// maxCSMAttempts=1 so the very first failed attempt already exhausts retries and marks permanent failure.
-	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 1, 0, time.Hour)
+	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 1, 0, time.Hour, CSMRetryConfig{BaseDelay: time.Hour, Multiplier: 3, MaxDelay: time.Hour})
 	ctx := context.Background()
 
 	alert := model.Alert{Service: "svc", MetricName: "cpu", Severity: "critical", Source: "vendor"}
@@ -493,14 +474,38 @@ func TestHandle_PermanentlyFailedIncident_RecoversOnNextAlert(t *testing.T) {
 	}
 }
 
-// TestHandle_DuplicateWithinDedupWindow_Folds confirms an alert on the same fingerprint arriving
-// before the dedup window elapses still folds into the existing incident, even though CSM has
-// already confirmed it open -- the window only matters once it has actually elapsed.
+func TestDeliverAndPersist_CSMRetryBacksOffDuringOutage(t *testing.T) {
+	notifier := &fakeNotifier{csmOK: false, chatOK: true}
+	incidents := newFakeIncidents()
+	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 20, 0, time.Hour, CSMRetryConfig{BaseDelay: 30 * time.Second, Multiplier: 3, MaxDelay: time.Hour})
+	ctx := context.Background()
+
+	alert := model.Alert{Service: "svc", MetricName: "cpu", Severity: "critical", Source: "vendor"}
+	e.Handle(ctx, "ALT1", alert)
+	fp := model.Fingerprint(alert.Source, alert.Service, alert.MetricName, alert.Environment, alert.UniqueIdentifier)
+	if calls := notifier.csmCalls.Load(); calls != 1 {
+		t.Fatalf("csmCalls = %d, want 1", calls)
+	}
+
+	e.deliverAndPersist(ctx, fp)
+	if calls := notifier.csmCalls.Load(); calls != 1 {
+		t.Fatalf("csmCalls = %d, want still 1: backoff window hasn't elapsed", calls)
+	}
+
+	inc := incidents.byFP[fp]
+	inc.CSMLastAttemptAt = time.Now().Add(-31 * time.Second)
+	incidents.byFP[fp] = inc
+	e.deliverAndPersist(ctx, fp)
+	if calls := notifier.csmCalls.Load(); calls != 2 {
+		t.Fatalf("csmCalls = %d, want 2: backoff window elapsed", calls)
+	}
+}
+
 func TestHandle_DuplicateWithinDedupWindow_Folds(t *testing.T) {
 	notifier := &fakeNotifier{csmOK: true, csmID: "csm-1", csmNumber: "INC0000001"}
 	incidents := newFakeIncidents()
 	incidents.dedupWindow = 5 * time.Minute
-	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 3, 0, 5*time.Minute)
+	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 3, 0, 5*time.Minute, CSMRetryConfig{BaseDelay: time.Hour, Multiplier: 3, MaxDelay: time.Hour})
 	ctx := context.Background()
 
 	alert := model.Alert{Service: "svc", MetricName: "cpu", Severity: "critical", Source: "vendor"}
@@ -524,16 +529,11 @@ func TestHandle_DuplicateWithinDedupWindow_Folds(t *testing.T) {
 	}
 }
 
-// TestHandle_DedupWindowExpired_StartsNewIncidentGeneration confirms that once the fixed dedup
-// window (measured from FirstSeen) has elapsed, the next alert on the same fingerprint starts a
-// fresh incident generation instead of folding as a duplicate -- even though CSM still reports the
-// previous incident open. This is the behavior requested for the "5 min window, then new incident"
-// case.
 func TestHandle_DedupWindowExpired_StartsNewIncidentGeneration(t *testing.T) {
 	notifier := &fakeNotifier{csmOK: true, csmID: "csm-1", csmNumber: "INC0000001"}
 	incidents := newFakeIncidents()
 	incidents.dedupWindow = 5 * time.Minute
-	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 3, 0, 5*time.Minute)
+	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 3, 0, 5*time.Minute, CSMRetryConfig{BaseDelay: time.Hour, Multiplier: 3, MaxDelay: time.Hour})
 	ctx := context.Background()
 
 	alert := model.Alert{Service: "svc", MetricName: "cpu", Severity: "critical", Source: "vendor"}
@@ -558,15 +558,11 @@ func TestHandle_DedupWindowExpired_StartsNewIncidentGeneration(t *testing.T) {
 	}
 }
 
-// TestHandle_GenerationReset_FlushesPendingNotesFirst is the case a CodeRabbit review of the dedup
-// window flagged: Upsert's generation-reset branch discards PendingNotes, so a note that was queued
-// (e.g. a CSM PATCH failed earlier) but never got flushed before the incident aged out of its dedup
-// window would be silently lost instead of ever reaching CSM. Handle must flush it first.
 func TestHandle_GenerationReset_FlushesPendingNotesFirst(t *testing.T) {
 	notifier := &fakeNotifier{csmOK: true, csmID: "csm-1", csmNumber: "INC0000001"}
 	incidents := newFakeIncidents()
 	incidents.dedupWindow = 5 * time.Minute
-	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 3, 0, 5*time.Minute)
+	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 3, 0, 5*time.Minute, CSMRetryConfig{BaseDelay: time.Hour, Multiplier: 3, MaxDelay: time.Hour})
 	ctx := context.Background()
 
 	alert := model.Alert{Service: "svc", MetricName: "cpu", Severity: "critical", Source: "vendor"}
@@ -595,10 +591,6 @@ func TestHandle_GenerationReset_FlushesPendingNotesFirst(t *testing.T) {
 	}
 }
 
-// TestAnnotate_PushesPendingNoteImmediately_AndRetriesOnFailure is the case the latest review
-// flagged: engine.go's old annotate() pushed a work note to CSM at most once, best-effort, with no
-// retry on PATCH failure and no path at all for a note written before CSM confirmed the incident.
-// Notes now go through PendingNotes and deliverAndPersist's shared retry machinery.
 func TestAnnotate_PushesPendingNoteImmediately_AndRetriesOnFailure(t *testing.T) {
 	notifier := &fakeNotifier{csmOK: true, csmID: "csm-1", csmNumber: "INC0000001"}
 	e, incidents := newTestEngine(nil, notifier)
@@ -631,12 +623,10 @@ func TestAnnotate_PushesPendingNoteImmediately_AndRetriesOnFailure(t *testing.T)
 	}
 }
 
-// TestAnnotate_NoteWrittenBeforeCsmConfirmed_FlushesOnceConfirmed covers the other half of the same
-// review comment: a work note written while CSM is still unconfirmed had no path to CSM at all before.
 func TestAnnotate_NoteWrittenBeforeCsmConfirmed_FlushesOnceConfirmed(t *testing.T) {
 	notifier := &fakeNotifier{csmOK: false} // CSM create keeps failing (transient) while the duplicate arrives
 	incidents := newFakeIncidents()
-	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 5, 0, time.Hour)
+	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 5, 0, time.Hour, CSMRetryConfig{BaseDelay: 0, Multiplier: 3, MaxDelay: time.Hour})
 	ctx := context.Background()
 
 	alert := model.Alert{Service: "svc", MetricName: "cpu", Severity: "critical", Source: "vendor"}
@@ -669,13 +659,10 @@ func TestAnnotate_NoteWrittenBeforeCsmConfirmed_FlushesOnceConfirmed(t *testing.
 	}
 }
 
-// TestDeliverAndPersist_ChatNotSentWhenCsmSucceedsButPersistFails is the minor issue the latest
-// review flagged: if CSM accepts the incident but persisting that result locally fails, the old code
-// still fell back to Chat, telling a human about an incident that already exists on CSM.
 func TestDeliverAndPersist_ChatNotSentWhenCsmSucceedsButPersistFails(t *testing.T) {
 	notifier := &fakeNotifier{csmOK: true, csmID: "csm-1", csmNumber: "INC0000001", chatOK: true}
 	incidents := newFakeIncidents()
-	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 3, 0, time.Hour)
+	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 3, 0, time.Hour, CSMRetryConfig{BaseDelay: time.Hour, Multiplier: 3, MaxDelay: time.Hour})
 	ctx := context.Background()
 
 	fp := model.Fingerprint("vendor", "svc", "cpu", "", "")
@@ -692,10 +679,6 @@ func TestDeliverAndPersist_ChatNotSentWhenCsmSucceedsButPersistFails(t *testing.
 	}
 }
 
-// TestPrepare_DistinguishesNotFoundFromOtherReadErrors is the case the latest review flagged in
-// poll.go: the gap-timeout skip used to fire on any read error after GapTimeout, not only on a row
-// that genuinely doesn't exist yet. A real read error (e.g. a Cosmos outage) must never report
-// notFound=true, since the poller only bounds the "not visible yet" case with a timeout.
 func TestPrepare_DistinguishesNotFoundFromOtherReadErrors(t *testing.T) {
 	alerts := &fakeAlerts{
 		errByID: map[string]error{
@@ -703,7 +686,7 @@ func TestPrepare_DistinguishesNotFoundFromOtherReadErrors(t *testing.T) {
 			"DBERR":    context.DeadlineExceeded,
 		},
 	}
-	e := New(testLogger(), alerts, newFakeIncidents(), &fakeNotifier{}, model.Defaults{}, 3, 0, time.Hour)
+	e := New(testLogger(), alerts, newFakeIncidents(), &fakeNotifier{}, model.Defaults{}, 3, 0, time.Hour, CSMRetryConfig{BaseDelay: time.Hour, Multiplier: 3, MaxDelay: time.Hour})
 	ctx := context.Background()
 
 	if _, _, outcome, ready, notFound := e.Prepare(ctx, "NOTFOUND"); ready || outcome != Retry || !notFound {
@@ -714,12 +697,6 @@ func TestPrepare_DistinguishesNotFoundFromOtherReadErrors(t *testing.T) {
 	}
 }
 
-// TestAnnotate_UsesFreshReadNotStaleSnapshot is the race CodeRabbit flagged: RetrySweep's
-// flushPendingNotes runs concurrently with the poller's Handle calls, both writing PendingNotes from
-// their own snapshot. If annotate wrote from the (possibly stale) `existing` it was handed rather than
-// re-reading under the fingerprint lock, a note a concurrent flush already cleared to CSM could be
-// resurrected. This simulates that ordering directly: `stale` still shows the flushed note as pending,
-// but the store has since moved on.
 func TestAnnotate_UsesFreshReadNotStaleSnapshot(t *testing.T) {
 	// Push fails so the newly appended note stays visible in PendingNotes for inspection, rather than
 	// being immediately flushed away by annotate's own deliverAndPersist call.
@@ -749,17 +726,11 @@ func TestAnnotate_UsesFreshReadNotStaleSnapshot(t *testing.T) {
 	}
 }
 
-// TestDeliverAndPersist_CSMAttemptsAdvanceEvenWhenConfirmPersistFails is the case CodeRabbit flagged:
-// NotifyCSM's fail-open dedup search relies on CSMAttempts to know whether a prior CreateIncident could
-// have happened. If attempts were only recorded after an observed failure, a lost success (CSM created
-// the incident but RecordCSMIncident then fails) would leave CSMAttempts unchanged, so the next call
-// would still look like a genuine first attempt and could fail open into a duplicate create. Attempts
-// must now be persisted before NotifyCSM is even called, so they advance regardless.
 func TestDeliverAndPersist_CSMAttemptsAdvanceEvenWhenConfirmPersistFails(t *testing.T) {
 	notifier := &fakeNotifier{csmOK: true, csmID: "csm-1", csmNumber: "INC0000001"}
 	incidents := newFakeIncidents()
 	incidents.recordCSMIncidentErr = fmt.Errorf("cassandra write failed")
-	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 5, 0, time.Hour)
+	e := New(testLogger(), &fakeAlerts{}, incidents, notifier, model.Defaults{}, 5, 0, time.Hour, CSMRetryConfig{BaseDelay: 0, Multiplier: 3, MaxDelay: time.Hour})
 	ctx := context.Background()
 
 	fp := model.Fingerprint("vendor", "svc", "cpu", "", "")
