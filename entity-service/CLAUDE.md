@@ -3748,15 +3748,17 @@ pool, like `GET /teams/{id}/members`).
   Approval / Customer Review stages** (recorded against no group: their approvers are
   the project's registered contacts) and for any stage with no group. Additive:
   `approverName` is unchanged, and the ServiceNow data source always returns `null`.
-* **`GET /groups/{id}`** (`id` is a `"group"` id, **not** a `team` id -- `POST
-  /groups/search` lists the `team` registry) returns `{id, name, description, email,
+* **`GET /groups/{id}`** (`id` is a `"group"` id -- the same id space `POST
+  /groups/search` lists, since both read the `"group"` table; not a `team` id) returns `{id, name, description, email,
   manager: {id, name}|null, members: [{id, name, email, userType, role}], total}`;
   absent parts are `null`, `members` is `[]` for a group nobody is in, `total` =
   `len(members)`. Unknown id is a 404, a malformed one a 400.
-* **Who is listed is who the approval pools provision from**, so the page and the
-  stage agree (apart from per-change exclusions such as the creator, who is
-  provisioned cancelled but is still *in* the group). There are two shapes of pool and
-  the page follows each: an **assigned group** (the Peer and Review stages) is
+* **Who is listed is the group's `group_member` rows (migration 0140) plus who the
+  approval pools provision from.** The `group_member` rows are always included for the
+  group's own id, so the page can list members who are not approvers and the stage
+  does not provision them. The `team_member` shapes below still apply on top (apart
+  from per-change exclusions such as the creator, who is provisioned cancelled but is
+  still *in* the group). There are two shapes of pool and the page follows each: an **assigned group** (the Peer and Review stages) is
   `team_member.group_id = <the group's id>` and nothing else (`groupMemberIDs`) -- a
   `team` that merely shares the group's name adds nobody, because its members are not in
   the peer pool either (the seed's Jane Doe sits in the *team* "Example Corp ABT" and in no
@@ -5279,7 +5281,7 @@ both fixed here:**
 **`team_member.group_id` is the real column for this, and it is distinct
 from `team_member.team_id`.** `team_member` carries both: `team_id`
 (`NOT NULL`) is the hand-curated internal team registry's own FK (`team`,
-migration 0033 — what `POST /groups/search`/`GetUserGroups` read), while
+migration 0033 — what `GetUserGroups` reads; `POST /groups/search` now reads `"group"`), while
 `group_id` (nullable) is a separate FK into the same `"group"` table
 `work_item.assignment_group_id`/`approval_stage.assignment_group_id`
 reference. These are two distinct tables with two distinct id spaces in
@@ -6425,12 +6427,14 @@ the tables to back them already existed and were queried elsewhere:
 `user_role`/`role` and `team_member`/`team` respectively for the caller's
 own id.
 
-**`POST /groups/search`** is now Postgres-backed too (`group_repo.go`),
-against `team` (migration 0033) — "mirror[s] a hand-curated allow-list of
-ServiceNow's OOB sys_user_group / sys_user_grmember tables" per that
-migration's own comment, the same concept `GroupService` searches.
-`domain.Group.Active` has no backing column and is hardcoded `true`;
-`Parent` has no hierarchy column on `team` and is always `nil`.
+**`POST /groups/search`** is Postgres-backed (`group_repo.go`), against the
+`"group"` table (migration 0074, mirrored from ServiceNow's `sys_user_group`),
+so its ids are the same ones `GET /groups/{id}` and
+`approval_stage.assignment_group_id` use. `Active` is `"group".is_active`
+(NULL = active); `Parent` is resolved from `parent_id`. Members on
+`GET /groups/{id}` come from `group_member` (migration 0140, mirrored from
+`sys_user_grmember`) plus the `team_member` shapes described there. It used to
+read the curated `team` registry, whose ids `GET /groups/{id}` could not resolve.
 
 **Not wired up**: `project_type` has no corresponding field anywhere on
 `domain.Project`/`ProjectDetail` today, so there is nothing to populate

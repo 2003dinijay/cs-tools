@@ -7417,7 +7417,9 @@ paths:
         GET /change-requests/{id}/approvals): the group's name, description,
         group email and manager, and its active members in name order.
         `id` is a `"group"` id, NOT a `team` id (POST /groups/search lists
-        teams). Members are the users the approval pools provision from: for the
+        the same `"group"` table). Members are the group's `group_member` rows
+        (these can include people who are not approvers) plus the users the
+        approval pools provision from: for the
         CAB Approval / Devops Approval groups, which the pools
         resolve by name, a `team_member` whose `group_id` is any group of that
         name or whose `team_id` is a team of that name; for any other group (a

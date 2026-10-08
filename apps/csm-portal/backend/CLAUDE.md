@@ -431,7 +431,7 @@ names and emails) forwards to the entity service's `GET /groups/{id}` and return
 total}` untouched.
 
 * `id` is a **group** id (the `assignmentGroup.id` from the approvals response), not a
-  team id -- `POST /groups/search` and `GET /teams/{id}/members` are the team registry.
+  team id -- `POST /groups/search` lists the same group ids, while `GET /teams/{id}/members` is the team registry.
   It must be a UUID (400 `ErrMsgInvalidUUID` otherwise, no upstream call).
 * **Internal staff only.** The BFF does not widen it: entity-service refuses an
   external caller with 403 and the BFF returns that as 403 (`mapUpstreamErrorGeneric`);

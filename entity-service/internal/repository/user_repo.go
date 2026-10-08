@@ -249,9 +249,17 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 	}
 
 	if len(req.Filters.GroupIDs) > 0 {
-		where += fmt.Sprintf(` AND EXISTS (
-			SELECT 1 FROM team_member tm WHERE tm.user_id = u.id AND tm.team_id = ANY($%d::uuid[])
-		)`, argIdx)
+		// GroupIDs are "group" ids (what POST /groups/search returns): a member
+		// is a group_member row, or a team_member whose group_id points at the
+		// group. team_id is still matched so a curated `team` id keeps working.
+		where += fmt.Sprintf(` AND (
+			EXISTS (SELECT 1 FROM group_member gm WHERE gm.user_id = u.id AND gm.group_id = ANY($%d::uuid[]))
+			OR EXISTS (
+				SELECT 1 FROM team_member tm
+				WHERE tm.user_id = u.id
+				  AND (tm.group_id = ANY($%d::uuid[]) OR tm.team_id = ANY($%d::uuid[]))
+			)
+		)`, argIdx, argIdx, argIdx)
 		filterArgs = append(filterArgs, req.Filters.GroupIDs)
 		argIdx++
 	}
