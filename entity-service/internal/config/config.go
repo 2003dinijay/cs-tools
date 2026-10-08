@@ -282,6 +282,15 @@ type Config struct {
 	// onboarding dead-letter queue can be watched on its own.
 	// csm-notification-service consumes it with its own consumer group.
 	ProjectEventHubTopic string
+	// IncidentEventHubTopic, when set, is where every incident.* event goes
+	// (created, assigned, acknowledged, comment_added, priority_elevated)
+	// instead of EventHubTopic: incidents are SRE work and get their own
+	// topic, while case-events keeps the customer cases. All of an
+	// incident's events move together, so its stop signals stay on the
+	// topic its trigger arrived on. Empty keeps them on EventHubTopic.
+	// csm-notification-service must read it first (its own
+	// INCIDENT_EVENT_HUB_TOPIC) -- set it there before here.
+	IncidentEventHubTopic string
 	// CRStrictVisibilityFromRaw is CR_STRICT_VISIBILITY_FROM: the instant (RFC
 	// 3339, with a zone, e.g. 2026-11-01T00:00:00Z) from which a change request
 	// is visible to a customer only when it was designated to them (the
@@ -659,6 +668,7 @@ func Load() *Config {
 		CSMMigrationPortalWritesEnabled:               os.Getenv("CSM_MIGRATION_PORTAL_WRITES_ENABLED") == "true",
 		CREventHubTopic:                               getEnvOrDefault("CR_EVENT_HUB_TOPIC", "cr-events"),
 		ProjectEventHubTopic:                          getEnvOrDefault("PROJECT_EVENT_HUB_TOPIC", "project-events"),
+		IncidentEventHubTopic:                         strings.TrimSpace(os.Getenv("INCIDENT_EVENT_HUB_TOPIC")),
 		CRNoticePollInterval:                          envDuration("CR_NOTICE_POLL_INTERVAL", 5*time.Second),
 		OutageEventHubTopic:                           getEnvOrDefault("OUTAGE_EVENT_HUB_TOPIC", "outage-events"),
 		SREEventHubTopic:                              strings.TrimSpace(os.Getenv("SRE_EVENT_HUB_TOPIC")),
