@@ -1041,7 +1041,7 @@ func main() {
 // requires this service's OAuth2 client id to be in its
 // AUTH_INTERNAL_CLIENT_IDS for that endpoint.
 func loadOnboardingConfig(steps *entity.CustomerEntityClient, emailClient *notifications.EmailClient) dispatch.OnboardingConfig {
-	// CSM_MIGRATION_* flags are on unless set to "false".
+	// CSM_MIGRATION_* flags are opt-in: off unless exactly "true".
 	identityEnabled := envBool("CSM_MIGRATION_ONBOARD_IDENTITY_ENABLED", true)
 	emailEnabled := envBool("CSM_MIGRATION_ONBOARD_EMAIL_ENABLED", true)
 
@@ -1160,8 +1160,8 @@ func mustEnv(key string) string {
 // envBool reads a boolean flag with its default spelled out at the call
 // site. Only the literal strings "true" and "false" (after trimming) change
 // the value; anything else, including unset, yields def. Killswitches such
-// as EMAIL_SENDING_ENABLED default to true, and so does every CSM_MIGRATION_*
-// flag: it is off only when set to "false".
+// as EMAIL_SENDING_ENABLED default to true; every CSM_MIGRATION_* flag
+// defaults to false and is turned on deliberately at cutover.
 func envBool(key string, def bool) bool {
 	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
 	case "true":

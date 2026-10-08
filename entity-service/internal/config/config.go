@@ -144,54 +144,52 @@ type Config struct {
 	// CSMMigrationSalesforceMembershipIngestEnabled turns on the
 	// Project_Contact__c / Contact branch of POST /salesforce/events (the
 	// customer onboarding database write), from
-	// CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED (on unless "false").
-	// Off, those envelopes are acknowledged and ignored. The Account branch
-	// is unaffected by this flag.
+	// CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true. Defaults to
+	// false: those envelopes are then acknowledged and ignored, as before
+	// the branch existed. The Account branch is unaffected by this flag.
 	CSMMigrationSalesforceMembershipIngestEnabled bool
 	// CSMMigrationSalesforceAccountIngestEnabled turns on the Account branch
 	// of POST /salesforce/events, from
-	// CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED (on unless "false").
-	// Set it to "false" while the ServiceNow sync still owns the account
-	// table, or both writers fight over the same rows; off, Account envelopes
-	// are acknowledged and ignored.
+	// CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED=true. Defaults to false:
+	// Account envelopes are then acknowledged and ignored, because the
+	// ServiceNow sync still owns the account table and both writing it would
+	// fight over the same rows.
 	CSMMigrationSalesforceAccountIngestEnabled bool
 	// CSMMigrationSalesforceOpportunityIngestEnabled turns on the Opportunity
 	// branch of POST /salesforce/events (sf_opportunity plus its
 	// sf_opportunity_product line items), from
-	// CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED (on unless "false").
-	// Set it to "false" while csm-sync-service still copies these tables from
-	// ServiceNow, or the two writers create duplicate rows (different row ids,
-	// non-unique sf_id); off, Opportunity envelopes are acknowledged and ignored.
+	// CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true. Defaults to
+	// false: Opportunity envelopes are then acknowledged and ignored, because
+	// csm-sync-service still copies these tables from ServiceNow and the two
+	// writers would create duplicate rows (different row ids, non-unique sf_id).
 	CSMMigrationSalesforceOpportunityIngestEnabled bool
 	// CSMMigrationSalesforceProjectIngestEnabled turns on the Project__c
 	// branch of POST /salesforce/events, from
-	// CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED (on unless "false").
-	// On, it updates the ten Salesforce-owned project columns of rows CSM
-	// already has; off, Project__c envelopes are acknowledged and ignored.
+	// CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED=true. Defaults to false:
+	// Project__c envelopes are acknowledged and ignored. On, it updates the
+	// ten Salesforce-owned project columns of rows CSM already has.
 	CSMMigrationSalesforceProjectIngestEnabled bool
 	// CSMMigrationSalesforceProjectInsertEnabled lets the Project ingest (and
 	// EnsureProject, for memberships and linked opportunities) insert
 	// projects CSM does not have, from
-	// CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED (on unless "false").
-	// Set it to "false" (update-only mode) while csm-sync-service still inserts
-	// project rows from ServiceNow: an ingest-created row would make its insert
-	// fail on project.key forever.
+	// CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED=true. Defaults to false,
+	// the update-only mode: while csm-sync-service still inserts project rows
+	// from ServiceNow, an ingest-created row would make its insert fail on
+	// project.key forever. Turn on at cutover, when csm-sync-service stops.
 	CSMMigrationSalesforceProjectInsertEnabled bool
 	// CSMMigrationSalesforcePartnerIngestEnabled turns on the partner-link
 	// refresh (account_relationship "Is Partner Of" / "Is Customer Of") that
 	// runs after Account events, after partner-contact membership events and
 	// from POST /salesforce/accounts/{sfId}/refresh-partners, from
-	// CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED (on unless "false").
-	// Set it to "false" while csm-sync-service still copies
-	// account_relationship from ServiceNow; off, nothing refreshes partners
-	// and the route is not registered.
+	// CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true. Defaults to false:
+	// nothing refreshes partners and the route is not registered, because
+	// csm-sync-service still copies account_relationship from ServiceNow.
 	CSMMigrationSalesforcePartnerIngestEnabled bool
 	// CSMMigrationMembershipRegistrationEnabled turns on POST /users/me/memberships/register,
 	// which marks the signed-in user's still-INVITED memberships as
-	// REGISTERED in Salesforce (see membership_registration_service.go), from
-	// CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED (on unless "false"). Off,
-	// routes.go does not register the route — it 404s, and nothing on this
-	// path can write to Salesforce.
+	// REGISTERED in Salesforce (see membership_registration_service.go). Defaults to
+	// false, and while it is false routes.go does not register the route at
+	// all — it 404s, and nothing on this path can write to Salesforce.
 	CSMMigrationMembershipRegistrationEnabled bool
 	// CSMMigrationPortalWritesEnabled turns on the portal-driven membership
 	// write endpoints (POST/PATCH/DELETE /projects/{id}/contacts[/{email}]
@@ -199,13 +197,13 @@ type Config struct {
 	// deactivate customer users through them, and each one writes Postgres
 	// and Salesforce together.
 	//
-	// CSM_MIGRATION_PORTAL_WRITES_ENABLED (on unless "false"). Off, the routes
-	// are not registered at all rather than answering 403. It needs the Sales
-	// Entity create endpoints; without them a portal call would write the
-	// database and leave Salesforce behind.
+	// OFF BY DEFAULT (the value must be exactly "true"), and with it off the
+	// routes are not registered at all rather than answering 403: until the
+	// Sales Entity create endpoints this depends on are deployed, a portal
+	// that called them would write the database and leave Salesforce behind.
 	CSMMigrationPortalWritesEnabled bool
 	// CSMMigrationCustomerEngagementIngestEnabled registers POST /customer-engagements/allocation-events
-	// (CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED, on unless "false"); off, the route is not registered.
+	// (CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED); off, the route is not registered.
 	CSMMigrationCustomerEngagementIngestEnabled bool
 	// CustomerEngagementFirefightingTypeID is the Firefighting type's ServiceNow sys_id
 	// (CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID); unset skips creating firefighting engagements.
@@ -1194,8 +1192,7 @@ func (c *Config) HasGithubIntegration() bool {
 		c.GithubIntegrationLogin != ""
 }
 
-// envFlagOn reads a CSM_MIGRATION_* switch: on unless the value is "false"
-// (case-insensitive), so a deployment only sets the ones it turns off.
+// envFlagOn is true unless the value is "false" (case-insensitive).
 func envFlagOn(key string) bool {
 	return !strings.EqualFold(strings.TrimSpace(os.Getenv(key)), "false")
 }

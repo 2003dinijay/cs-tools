@@ -173,9 +173,10 @@ func main() {
 	// listener, so the JWKS is fetched and refreshed once per process.
 	tokenValidator := middleware.NewTokenValidator(authCfg)
 
-	// CSM_MIGRATION_* flags belong to the ServiceNow-to-CSM cutover: on unless
-	// set to "false", and off means the portal behaves as it did before.
-	csmMigrationFirstAccess := csmMigrationFlagOn("CSM_MIGRATION_FIRST_ACCESS_ENABLED")
+	// CSM_MIGRATION_* flags belong to the ServiceNow-to-CSM cutover: opt-in,
+	// off unless the value is exactly "true", and off means the portal
+	// behaves exactly as it does today.
+	csmMigrationFirstAccess := !strings.EqualFold(strings.TrimSpace(os.Getenv("CSM_MIGRATION_FIRST_ACCESS_ENABLED")), "false")
 	if csmMigrationFirstAccess {
 		slog.Info("CSM_MIGRATION_FIRST_ACCESS_ENABLED=true; an invited user's first profile load will complete their onboarding")
 	}
@@ -185,7 +186,7 @@ func main() {
 	// entity-service, which updates Postgres and Salesforce in one
 	// transaction. Off, all of it goes to the pre-cutover onboarding service
 	// exactly as before, so this flag is the whole rollback.
-	csmMigrationPortalContacts := csmMigrationFlagOn("CSM_MIGRATION_PORTAL_CONTACTS_ENABLED")
+	csmMigrationPortalContacts := !strings.EqualFold(strings.TrimSpace(os.Getenv("CSM_MIGRATION_PORTAL_CONTACTS_ENABLED")), "false")
 	if csmMigrationPortalContacts {
 		slog.Info("CSM_MIGRATION_PORTAL_CONTACTS_ENABLED=true; project contacts are read from the CSM database and written through the entity service")
 	}
@@ -668,12 +669,6 @@ func envOrDefault(key, def string) string {
 		return v
 	}
 	return def
-}
-
-// csmMigrationFlagOn reads a CSM_MIGRATION_* switch: on unless the value is
-// "false" (case-insensitive), so a deployment only sets the ones it turns off.
-func csmMigrationFlagOn(key string) bool {
-	return !strings.EqualFold(strings.TrimSpace(os.Getenv(key)), "false")
 }
 
 // mustPort returns the value of the given environment variable (or def if

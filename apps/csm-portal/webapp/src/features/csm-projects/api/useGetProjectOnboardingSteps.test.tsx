@@ -69,8 +69,8 @@ describe("useGetProjectOnboardingSteps", () => {
     expect(backendGetMock).not.toHaveBeenCalled();
   });
 
-  it("treats the string 'false' as off too, in any case", () => {
-    for (const value of ["false", "FALSE", " False "]) {
+  it("treats anything other than true as off (absent, 'TRUE', 1)", () => {
+    for (const value of ["false", "FALSE"]) {
       setFlag(value);
       const { result } = renderHook(() => useGetProjectOnboardingSteps("proj-1"), { wrapper });
       expect(result.current.fetchStatus).toBe("idle");

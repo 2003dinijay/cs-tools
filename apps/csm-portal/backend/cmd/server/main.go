@@ -495,8 +495,8 @@ func main() {
 	route("GET /announcement-requests/{id}/deliveries", handler.PermView, announcementRequestHandler.ListAnnouncementRequestDeliveries)
 	route("POST /projects/{id}/contacts/search", handler.PermViewSharedEntity, projectHandler.SearchProjectContacts)
 	route("GET /projects/{id}/contacts/{contactId}", handler.PermView, projectHandler.GetProjectContact)
-	// Customer-onboarding status per project contact — on unless the flag is
-	// "false" (see loadOnboardingStatusEnabled). When off the handler is not constructed
+	// Customer-onboarding status per project contact — off by default (see
+	// loadOnboardingStatusEnabled). When off the handler is not constructed
 	// and the route is not registered, so the path 404s like any unknown one
 	// and nothing else in this backend changes.
 	if loadOnboardingStatusEnabled() {
@@ -1107,10 +1107,18 @@ const onboardingStatusFlag = "CSM_MIGRATION_ONBOARDING_STATUS_ENABLED"
 // loadOnboardingStatusEnabled resolves the customer-onboarding status feature
 // flag:
 //
-//	CSM_MIGRATION_ONBOARDING_STATUS_ENABLED  On unless the value is "false"
-//	                                         (case-insensitive, trimmed), like
-//	                                         every CSM_MIGRATION_* switch. Off,
-//	                                         the route is not registered.
+//	CSM_MIGRATION_ONBOARDING_STATUS_ENABLED  Exactly "true" (after trimming
+//	                                         whitespace) turns the feature on.
+//	                                         Off by default — unset, empty, or
+//	                                         any other value (including "1",
+//	                                         "TRUE", "yes") keeps it dark and
+//	                                         changes nothing else in this
+//	                                         backend. Deliberately stricter
+//	                                         than the strconv.ParseBool
+//	                                         parsing SFTPGO_* uses: every
+//	                                         CSM_MIGRATION_* flag is a
+//	                                         cutover switch that must not
+//	                                         flip on by accident.
 func loadOnboardingStatusEnabled() bool {
 	enabled := onboardingStatusEnabled(os.Getenv(onboardingStatusFlag))
 	if enabled {

@@ -65,16 +65,16 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `SALES_ENTITY_CLIENT_ID` | no* | — | Choreo connection client id |
 | `SALES_ENTITY_CLIENT_SECRET` | no* | — | Choreo connection client secret |
 | `SALES_ENTITY_SCOPES` | no | — | Optional space-separated OAuth2 scopes for REST `sales/sales-entity-service` |
-| `CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED` | no | `true` | On unless `"false"`; registers `POST /users/me/memberships/register` (see "Membership registration" below). Off = the route 404s and nothing on that path can write to Salesforce |
-| `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `true` | On unless `"false"`; it enables `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes, the Contact writer included (see "Salesforce membership ingest" and "The Contact writer" below). The Account branch is unaffected |
-| `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `true` | On unless `"false"`; it enables `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Set it to `"false"` while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; the SE-1 columns are kept when Salesforce sends none; see "Salesforce Account ingest" for the full column set |
-| `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` | no | `true` | On unless `"false"`; it enables `POST /salesforce/events` to act on `Opportunity` envelopes (`sf_opportunity` plus its `sf_opportunity_product` line items, see "Salesforce Opportunity ingest" below) and `Linked_Opportunity__c`, `Invoice__c` and standalone `OpportunityLineItem` envelopes (`sf_opportunity_link`, `sf_invoice`, `sf_opportunity_product`); off, they are acknowledged and ignored. Set it to `"false"` while csm-sync-service still copies these tables from ServiceNow: the two writers use different row ids and `sf_id` is not unique, so both on means duplicate rows |
-| `CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED` | no | `true` | On unless `"false"`; it enables `POST /salesforce/events` to act on `Project__c` envelopes (see "Salesforce Project ingest" below); off, they are acknowledged and ignored. Update-only unless the insert switch is on too |
-| `CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED` | no | `true` | On unless `"false"`. With the project flag on, lets the Project ingest and `EnsureProject` insert projects CSM does not have. Set it to `"false"` while csm-sync-service still inserts `project` rows (different id schemes and a UNIQUE `key`: its insert would fail forever), then remove the override at cutover |
-| `CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED` | no | `true` | On unless `"false"`; it enables the partner-link refresh (`account_relationship` "Is Partner Of" / "Is Customer Of") to run after Account events and partner-contact membership events, and for `POST /salesforce/accounts/{sfId}/refresh-partners` to be registered (see "Salesforce partner relationships" below). Set it to `"false"` while csm-sync-service still copies `account_relationship` from ServiceNow |
-| `SALESFORCE_INGEST_RETRY_INTERVAL` | no | `5m` | How often the Salesforce ingest retry worker re-runs memberships whose DATABASE step FAILED because their project or account was not in CSM yet, and how old such a failure must be before it is re-run (see "Salesforce ingest ledger and the delayed-retry job" below). `0` disables the job, and so does an unparseable or negative value (logged as a warning; it fails closed rather than falling back to `5m`). Only runs while `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` is on |
-| `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `true` | On unless `"false"`; it is needed to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
-| `CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED` | no | `true` | On unless `"false"`; registers `POST /customer-engagements/allocation-events` (Postgres-authoritative only); see "Allocation events" below |
+| `CSM_MIGRATION_MEMBERSHIP_REGISTRATION_ENABLED` | no | `false` | Must be `"true"` for `POST /users/me/memberships/register` to be registered at all (see "Membership registration" below). Off = the route 404s and nothing on that path can write to Salesforce |
+| `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project_Contact__c`/`Contact` envelopes, the Contact writer included (see "Salesforce membership ingest" and "The Contact writer" below). The Account branch is unaffected |
+| `CSM_MIGRATION_SALESFORCE_ACCOUNT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Account` envelopes; off, they are acknowledged and ignored. Keep it off while the ServiceNow sync still writes `account`. The upsert resolves the row by `sf_id` (not unique since migration 0095), then links a same-`number` row with no `sf_id`, then inserts; the SE-1 columns are kept when Salesforce sends none; see "Salesforce Account ingest" for the full column set |
+| `CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Opportunity` envelopes (`sf_opportunity` plus its `sf_opportunity_product` line items, see "Salesforce Opportunity ingest" below) and `Linked_Opportunity__c`, `Invoice__c` and standalone `OpportunityLineItem` envelopes (`sf_opportunity_link`, `sf_invoice`, `sf_opportunity_product`); off, they are acknowledged and ignored. Keep it off while csm-sync-service still copies these tables from ServiceNow: the two writers use different row ids and `sf_id` is not unique, so both on means duplicate rows |
+| `CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED` | no | `false` | Must be `"true"` for `POST /salesforce/events` to act on `Project__c` envelopes (see "Salesforce Project ingest" below); off, they are acknowledged and ignored. Update-only unless the insert switch is on too |
+| `CSM_MIGRATION_SALESFORCE_PROJECT_INSERT_ENABLED` | no | `false` | With the project flag on, lets the Project ingest and `EnsureProject` insert projects CSM does not have. Keep it off while csm-sync-service still inserts `project` rows (different id schemes and a UNIQUE `key`: its insert would fail forever); turn it on at cutover |
+| `CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED` | no | `false` | Must be `"true"` for the partner-link refresh (`account_relationship` "Is Partner Of" / "Is Customer Of") to run after Account events and partner-contact membership events, and for `POST /salesforce/accounts/{sfId}/refresh-partners` to be registered (see "Salesforce partner relationships" below). Keep it off while csm-sync-service still copies `account_relationship` from ServiceNow |
+| `SALESFORCE_INGEST_RETRY_INTERVAL` | no | `5m` | How often the Salesforce ingest retry worker re-runs memberships whose DATABASE step FAILED because their project or account was not in CSM yet, and how old such a failure must be before it is re-run (see "Salesforce ingest ledger and the delayed-retry job" below). `0` disables the job, and so does an unparseable or negative value (logged as a warning; it fails closed rather than falling back to `5m`). Only runs when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true` |
+| `CSM_MIGRATION_PORTAL_WRITES_ENABLED` | no | `false` | Must be `"true"` to register the four portal-driven membership write routes under `/projects/{id}/contacts` (see "Portal-driven membership writes" below). Also needs `DATA_SOURCE=postgres`, a pool, and the full `SALES_ENTITY_*` set (`Config.HasPortalMembershipWrites`). Off means the routes are **not registered at all**, not 403 |
+| `CSM_MIGRATION_CUSTOMER_ENGAGEMENT_INGEST_ENABLED` | no | `false` | Registers `POST /customer-engagements/allocation-events` (Postgres-authoritative only); see "Allocation events" below |
 | `CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID` | no | — | ServiceNow sys_id written as `engagement_type_id` on firefighting engagements created by allocation events. Unset skips creating them |
 | `REDIS_URL` | no | — | `rediss://:<key>@<host>:<port>` (TLS, Azure Managed Redis); wins over `REDIS_ADDR`. Turns on the user cache (see "User cache (Redis)" below). `Validate` requires a `redis`/`rediss` scheme and a host, and never echoes the URL |
 | `REDIS_ADDR` / `REDIS_PASSWORD` | no | — | Plain, non-TLS Redis for local runs. Either this or `REDIS_URL` makes `Config.HasRedis` true |
@@ -370,7 +370,7 @@ the tie-break lives in `internal/repository/sf_id_resolve.go`. Deletes still hit
 
 The same `POST /salesforce/events` endpoint also ingests customer **memberships**
 — Salesforce `Project_Contact__c` (a Contact's membership of a project) and
-`Contact` — when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED` is on (every `CSM_MIGRATION_*` switch is on unless set to `false`). Off:
+`Contact` — when `CSM_MIGRATION_SALESFORCE_MEMBERSHIP_INGEST_ENABLED=true`. Off by default:
 `routes.go` then constructs the service with `NewSalesforceEventService`, which
 acknowledges those entities with 204 and ignores them (the behaviour before this
 branch existed). On, it uses `NewSalesforceEventServiceWithMembershipIngest`
@@ -665,7 +665,7 @@ registers none).
 ## Salesforce Opportunity ingest
 
 `POST /salesforce/events` acts on `Opportunity` envelopes when
-`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED` is on (off: they are
+`CSM_MIGRATION_SALESFORCE_OPPORTUNITY_INGEST_ENABLED=true` (off by default: they are
 acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest.go`
 (attached to the event service with `WithOpportunityIngest` in `routes.go`),
 `internal/repository/sf_opportunity_repo.go`, `GetOpportunity` in
@@ -724,7 +724,7 @@ acknowledged and ignored). Code: `internal/service/salesforce_opportunity_ingest
 ## Salesforce Project ingest
 
 `POST /salesforce/events` acts on `Project__c` envelopes when
-`CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED` is on (off: acknowledged and
+`CSM_MIGRATION_SALESFORCE_PROJECT_INGEST_ENABLED=true` (off by default: acknowledged and
 ignored). Code: `internal/service/salesforce_project_ingest.go` (`WithProjectIngest` in
 `routes.go`), `internal/repository/salesforce_project_repo.go`, `GetProject` in
 `internal/salesentity/project.go`. Plan: `docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md` §6.
@@ -819,7 +819,8 @@ Ports ServiceNow `processAllocationEvent` for allocation-app events, in one tran
 
 The partner links in `account_relationship` ("partner **Is Partner Of** customer",
 read by the invitation validator through `AccountPartnerRepository`) are refreshed
-from Salesforce when `CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED` is on. Code: `RefreshPartners` in `internal/service/salesforce_partner_ingest.go`
+from Salesforce when `CSM_MIGRATION_SALESFORCE_PARTNER_INGEST_ENABLED=true` (off by
+default). Code: `RefreshPartners` in `internal/service/salesforce_partner_ingest.go`
 (attached with `WithPartnerIngest` in `routes.go`),
 `internal/repository/account_partner_write_repo.go`, `GetCustomerPartners` in
 `internal/salesentity/partners.go`. Plan: `docs/customer-onboarding/SALESFORCE_SYNC_PLAN.md`
@@ -1491,7 +1492,7 @@ create.
 
 ## Portal-driven membership writes
 
-`CSM_MIGRATION_PORTAL_WRITES_ENABLED` (on unless `false`)
+`CSM_MIGRATION_PORTAL_WRITES_ENABLED=true` (exactly `"true"`, off by default)
 registers four write endpoints under the existing `/projects/{id}/contacts`
 namespace. They are how **both** portals change who is a contact on a project:
 the Customer Portal when a customer admin manages their own users, and the CSM
