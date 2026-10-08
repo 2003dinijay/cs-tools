@@ -78,13 +78,17 @@ func New(teams []Team, roles []string) (*Directory, error) {
 		roleSet:      make(map[string]bool, len(roles)),
 	}
 
+	seenNames := make(map[string]struct{}, len(teams))
 	for _, t := range teams {
 		if _, dup := d.byKey[t.Key]; dup {
 			return nil, fmt.Errorf("team registry: teamKey %q is configured more than once", t.Key)
 		}
-		if _, dup := d.byGroupName[t.Name]; dup {
+		// Compared case-insensitively: TeamResultByGroupName matches names that
+		// way, so two names differing only in case would be ambiguous.
+		if _, dup := seenNames[strings.ToLower(t.Name)]; dup {
 			return nil, fmt.Errorf("team registry: displayName %q is configured more than once", t.Name)
 		}
+		seenNames[strings.ToLower(t.Name)] = struct{}{}
 		d.byKey[t.Key] = t
 		d.byGroupName[t.Name] = t
 		d.groupNames = append(d.groupNames, t.Name)
