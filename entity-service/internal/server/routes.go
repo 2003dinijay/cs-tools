@@ -215,6 +215,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		githubSyncRepo repository.GithubSyncRepository
 		githubClient   *github.Client
 		githubLabelSet service.GithubLabels
+		// githubSync is the issue sync, kept for the SR automation set up
+		// further down (WithGithubSRNotices).
+		githubSync service.GithubSyncService
 	)
 	var scheduledTaskRunHandler *handler.ScheduledTaskRunHandler
 	if db != nil {
@@ -251,6 +254,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			// it carries; account_github_repo is the fallback for one that
 			// does not.
 			githubSyncSvc = service.WithGithubRepoConfig(githubSyncSvc, githubClient, cfg.GithubRepoConfigPath)
+			githubSync = githubSyncSvc
 			githubDeliveryHandler = handler.NewGithubDeliveryHandler(githubSyncSvc, cfg.M2MClientIDs)
 			githubServiceRequestHandler = handler.NewGithubServiceRequestHandler(githubSyncSvc, cfg.M2MClientIDs)
 		}
@@ -918,8 +922,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			}),
 			eventPublishFailureSvc,
 		)
-		activeCaseSvc = service.WithSRNotices(activeCaseSvc, service.NewSRNoticeService(
-			repository.NewSRNoticeRepository(repository.NewScoped(db)), srEventPublisher, cfg.SRAlertSRETeamIDs))
+		srNotices := service.NewSRNoticeService(
+			repository.NewSRNoticeRepository(repository.NewScoped(db)), srEventPublisher, cfg.SRAlertSRETeamIDs)
+		activeCaseSvc = service.WithSRNotices(activeCaseSvc, srNotices)
+		// An SR created from a GitHub issue gets the same automation and card.
+		// Set in place, so the GitHub handlers built above already have it.
+		if githubSync != nil {
+			service.WithGithubSRNotices(githubSync, srNotices)
+		}
 		slog.Info("service request events enabled", "topic", cfg.SREEventHubTopic, "automatedTeams", len(cfg.SRAlertSRETeamIDs))
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MClientIDs)
