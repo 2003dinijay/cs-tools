@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"sre-alert-ingestion-service/internal/model"
@@ -54,11 +55,27 @@ type Config struct {
 	Defaults map[string]string `json:"Defaults"`
 }
 
-// LoadConfig reads the Config from the SITE24X7_ALERT_CONFIG env var.
+// defaultConfig is the built-in config, so no SITE24X7_ALERT_CONFIG is needed on the deployment.
+var defaultConfig = Config{
+	TagList: map[string]string{
+		"Service":     "Service",
+		"Environment": "Environment",
+		"Category":    "Category",
+	},
+	Defaults: map[string]string{
+		"Service":     " ",
+		"Category":    "Service Interruption",
+		"Environment": "Production",
+		"Severity":    "Critical",
+		"Metric_Name": "Not Available",
+	},
+}
+
+// LoadConfig returns defaultConfig, or the SITE24X7_ALERT_CONFIG env var in its place when set.
 func LoadConfig() (Config, error) {
 	raw := utils.AlertConfigRaw("SITE24X7_ALERT_CONFIG")
 	if strings.TrimSpace(raw) == "" {
-		return Config{}, nil
+		return Config{TagList: maps.Clone(defaultConfig.TagList), Defaults: maps.Clone(defaultConfig.Defaults)}, nil
 	}
 	var cfg Config
 	if err := json.Unmarshal([]byte(raw), &cfg); err != nil {
@@ -87,7 +104,7 @@ func Transform(raw []byte, cfg Config) (Alert, error) {
 
 	alert := Alert{
 		Service:          utils.FirstNonEmpty(extracted["Service"], cfg.Defaults["Service"]),
-		MetricName:       utils.Str(payload, "MONITORNAME"),
+		MetricName:       utils.FirstNonEmpty(utils.Str(payload, "MONITORNAME"), cfg.Defaults["Metric_Name"]),
 		Severity:         mapSeverity(status, cfg.Defaults["Severity"]),
 		Category:         utils.FirstNonEmpty(extracted["Category"], cfg.Defaults["Category"]),
 		Environment:      utils.FirstNonEmpty(extracted["Environment"], cfg.Defaults["Environment"]),
