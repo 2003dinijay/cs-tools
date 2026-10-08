@@ -18715,19 +18715,24 @@ components:
                 type: string
               description: >-
                 Next states a human may move the change request to, per state.
+                Wherever this text names customerApprovalRequired or customerReviewRequired
+                it means the flag in effect: for an Emergency change both are false whatever
+                value is stored (it is acted on without the customer's consent).
                 new: [assess, canceled] ("assess" is the "Request Approval"
                 action for every type; the state it lands in depends on the
-                type and on customerApprovalRequired). assess: [canceled] (the
+                type and on customerApprovalRequired, never for an Emergency change). assess: [canceled] (the
                 peer approval moves the change on by itself). authorize:
                 [canceled] (CAB approval moves the change on by itself: to
-                scheduled, or to customer_approval when customerApprovalRequired). customer_approval: [authorize,
+                scheduled, or to customer_approval when customerApprovalRequired, never for an
+                Emergency change, which CAB approval always schedules). customer_approval: [authorize,
                 canceled] -- never "scheduled": only the CUSTOMER's own approval
                 (Customer Portal) schedules the change, and no staff action
                 records it for them; "authorize" here is Re-schedule / Propose a
                 different time (the state does not move). scheduled:
                 [implement, canceled]. implement: [review, canceled]. review:
                 [customer_review, rollback, canceled] when customerReviewRequired,
-                else [closed, rollback, canceled]. customer_review: [rollback,
+                else [closed, rollback, canceled] (always the else branch for an Emergency
+                change). customer_review: [rollback,
                 canceled] -- never "closed": only the CUSTOMER's own review closes
                 the change -- or [canceled] while the customer group's review
                 request is pending. Terminal states: none.
