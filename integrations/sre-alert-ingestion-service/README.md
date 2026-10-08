@@ -64,7 +64,7 @@ go run ./cmd/server
 go build ./... && go vet ./... && go test ./...
 ```
 
-Requires Go 1.25.5 and a non-production PostgreSQL database (never the production one) via the
+Requires Go 1.26 and a non-production PostgreSQL database (never the production one) via the
 `PG*` environment variables; see `.env.example`. Azure Flexible Server requires
 `PGSSLMODE=require` (the default); a local Postgres for development can set
 `PGSSLMODE=disable`.

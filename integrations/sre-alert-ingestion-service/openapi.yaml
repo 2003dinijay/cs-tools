@@ -323,14 +323,16 @@ components:
         status:
           type: string
           example: OK
+        alt_id:
+          type: string
+          description: The stored alert's id. Present when the request stored exactly one alert.
+          example: ALT000000123
         alt_ids:
           type: array
+          description: Every stored alert's id, in request order. Present only for a multi-alert request that stored several alerts.
           items:
             type: string
             example: ALT000000123
-        count:
-          type: integer
-          example: 1
     Error:
       type: object
       properties:

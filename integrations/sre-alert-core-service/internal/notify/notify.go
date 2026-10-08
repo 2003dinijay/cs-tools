@@ -34,7 +34,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"golang.org/x/sync/singleflight"
 
 	"alert-core-service/internal/csm"
@@ -180,39 +180,31 @@ func (n *Notifier) IncidentState(ctx context.Context, incidentNumber string) (op
 func (n *Notifier) createIncidentWithRetry(ctx context.Context, tag string, req csm.CreateIncidentRequest) (*csm.CreateIncidentResult, error) {
 	eb := backoff.NewExponentialBackOff()
 	eb.InitialInterval = n.retryBaseDelay
-	b := backoff.WithContext(backoff.WithMaxRetries(eb, uint64(n.maxAttempts-1)), ctx)
 
-	var result *csm.CreateIncidentResult
 	attempt := 0
-	err := backoff.Retry(func() error {
+	return backoff.Retry(ctx, func() (*csm.CreateIncidentResult, error) {
 		attempt++
 		if attempt > 1 {
 			// Recheck dedup on retry: prior attempt may have succeeded but lost response; CreateIncident isn't idempotent.
 			id, number, found, err := n.csm.SearchIncidentByCorrelationID(ctx, tag)
 			if err != nil {
-				return fmt.Errorf("dedup search before retry: %w", err)
+				return nil, fmt.Errorf("dedup search before retry: %w", err)
 			}
 			if found {
 				n.logger.Info("found existing csm incident via dedup search on retry, reusing", "incident_id", id, "incident_number", number)
-				result = &csm.CreateIncidentResult{IncidentID: id, IncidentNumber: number}
-				return nil
+				return &csm.CreateIncidentResult{IncidentID: id, IncidentNumber: number}, nil
 			}
 		}
 		res, err := n.csm.CreateIncident(ctx, req)
 		if err == nil {
-			result = res
-			return nil
+			return res, nil
 		}
 		var apiErr *csm.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != http.StatusTooManyRequests {
-			return backoff.Permanent(err)
+			return nil, backoff.Permanent(err)
 		}
-		return err
-	}, b)
-	if err != nil {
 		return nil, err
-	}
-	return result, nil
+	}, backoff.WithBackOff(eb), backoff.WithMaxTries(uint(n.maxAttempts)))
 }
 
 // resolvedService is a CMDB service and the group that supports it ("" when it has none).
@@ -498,24 +490,17 @@ func (n *Notifier) postWithRetry(ctx context.Context, url string, payload any) (
 
 	eb := backoff.NewExponentialBackOff()
 	eb.InitialInterval = n.retryBaseDelay
-	b := backoff.WithContext(backoff.WithMaxRetries(eb, uint64(n.maxAttempts-1)), ctx)
 
-	var respBody []byte
-	err = backoff.Retry(func() error {
+	return backoff.Retry(ctx, func() ([]byte, error) {
 		status, rb, err := n.post(ctx, url, body)
 		if err == nil {
-			respBody = rb
-			return nil
+			return rb, nil
 		}
 		if status >= 400 && status < 500 && status != http.StatusTooManyRequests {
-			return backoff.Permanent(err)
+			return nil, backoff.Permanent(err)
 		}
-		return err
-	}, b)
-	if err != nil {
 		return nil, err
-	}
-	return respBody, nil
+	}, backoff.WithBackOff(eb), backoff.WithMaxTries(uint(n.maxAttempts)))
 }
 
 // post returns status 0 when the request never got a response.

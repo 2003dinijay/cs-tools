@@ -42,7 +42,7 @@ type Config struct {
 type RetentionConfig struct {
 	// Interval is how often one replica purges expired rows.
 	Interval Duration `toml:"interval"`
-	// Alerts is how long a processed alert row is kept.
+	// Alerts is how long a processed alert row, and a raw_alerts webhook body, is kept.
 	Alerts Duration `toml:"alerts"`
 	// Incidents is how long an incident with nothing left to deliver is kept after its last alert.
 	Incidents Duration `toml:"incidents"`
@@ -72,6 +72,10 @@ type PostgresConfig struct {
 	ConnectBaseDelay   Duration `toml:"connect_base_delay"`
 	ConnectTimeout     Duration `toml:"connect_timeout"`
 	QueryTimeout       Duration `toml:"query_timeout"`
+	// AuthRefreshInterval is how often the in-memory copy of integration_users behind /alertz is reloaded.
+	AuthRefreshInterval Duration `toml:"auth_refresh_interval"`
+	// AuthMaxStale is how long the last good copy serves while refreshes fail, before /alertz answers 503.
+	AuthMaxStale Duration `toml:"auth_max_stale"`
 }
 
 // NotifyConfig tunes retry attempts, backoff delay, and per-call timeout for outbound CSM and Chat webhook requests.
@@ -129,15 +133,17 @@ func defaults() Config {
 	return Config{
 		Poll: PollConfig{
 			Interval:    Duration(10 * time.Second),
-			Concurrency: 64,
+			Concurrency: 128,
 			MaxBatch:    500,
 			ClaimTTL:    Duration(2 * time.Minute),
 		},
 		Postgres: PostgresConfig{
-			ConnectMaxAttempts: 5,
-			ConnectBaseDelay:   Duration(2 * time.Second),
-			ConnectTimeout:     Duration(10 * time.Second),
-			QueryTimeout:       Duration(5 * time.Second),
+			ConnectMaxAttempts:  5,
+			ConnectBaseDelay:    Duration(2 * time.Second),
+			ConnectTimeout:      Duration(10 * time.Second),
+			QueryTimeout:        Duration(5 * time.Second),
+			AuthRefreshInterval: Duration(30 * time.Second),
+			AuthMaxStale:        Duration(15 * time.Minute),
 		},
 		Notify: NotifyConfig{
 			MaxAttempts:          3,
@@ -151,8 +157,8 @@ func defaults() Config {
 			CSMRetryMultiplier:   2,
 			CSMRetryMaxDelay:     Duration(15 * time.Minute),
 			ChatThreadingEnabled: true,
-			ChatFallbackDelay:    Duration(60 * time.Second),
-			DeliveryConcurrency:  32,
+			ChatFallbackDelay:    Duration(25 * time.Second),
+			DeliveryConcurrency:  64,
 		},
 		Server: ServerConfig{
 			ShutdownGrace: Duration(15 * time.Second),
@@ -208,6 +214,10 @@ func (c Config) validate() error {
 		return fmt.Errorf("postgres.connect_timeout must be positive")
 	case c.Postgres.QueryTimeout <= 0:
 		return fmt.Errorf("postgres.query_timeout must be positive")
+	case c.Postgres.AuthRefreshInterval <= 0:
+		return fmt.Errorf("postgres.auth_refresh_interval must be positive")
+	case c.Postgres.AuthMaxStale <= c.Postgres.AuthRefreshInterval:
+		return fmt.Errorf("postgres.auth_max_stale must exceed postgres.auth_refresh_interval")
 	case c.Notify.MaxAttempts <= 0:
 		return fmt.Errorf("notify.max_attempts must be positive")
 	case c.Notify.RetryBaseDelay <= 0:
