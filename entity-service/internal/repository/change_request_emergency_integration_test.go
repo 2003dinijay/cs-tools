@@ -34,7 +34,7 @@ import (
 // Two origins of data are covered, because the rule has to hold for both:
 //
 //   - changes created here: the two customer boxes are refused (create, PATCH, re-type);
-//   - changes that already exist -- a "legacy" row from before the rule, a ServiceNow-MIGRATED
+//   - changes that already exist -- a "legacy" row from before the rule, a MIGRATED
 //     one (whose requirement flags is_customer_*_required are the sync's, and whose single
 //     stage carries no label), a row an earlier build gave an "ECAB Approval" stage: the flow
 //     ignores whatever boxes they hold, decides their one stage as the CAB's, and never
@@ -112,11 +112,11 @@ func TestChangeRequestEmergencyIntegration_CreateRefusesTheBoxes(t *testing.T) {
 	} {
 		before := f.workItemCount()
 		f.wantEmergencyRefusal("plain create, "+tc.name, create(emergency, tc.approval, tc.review), tc.fields...)
-		// The ServiceNow-first create runs the same check before it writes anything.
+		// The create that calls the previous system first runs the same check before it writes anything.
 		_, err := f.repo.CreateChangeRequestFromServiceNow(f.sys, domain.CreateChangeRequestRequest{
 			Subject: crFlowSubject, Type: &emergency, GroupID: &g, CustomerApprovalRequired: tc.approval, CustomerReviewRequired: tc.review,
 		}, "3ccccccc-0000-0000-0000-00000000e001", "CHG-EMERGENCY-RULE-1", crFlowEmail(crFlowCreatorID))
-		f.wantEmergencyRefusal("ServiceNow-first create, "+tc.name, err, tc.fields...)
+		f.wantEmergencyRefusal("previous-system-first create, "+tc.name, err, tc.fields...)
 		if after := f.workItemCount(); after != before {
 			t.Fatalf("%s: a refused create left %d change request(s) behind", tc.name, after-before)
 		}
@@ -329,7 +329,7 @@ func TestChangeRequestEmergencyIntegration_LegacyBoxesAreIgnoredByTheGate(t *tes
 	})
 }
 
-// A MIGRATED Emergency change that is sitting in a customer state: ServiceNow itself asked the
+// A MIGRATED Emergency change that is sitting in a customer state: the previous system itself asked the
 // customer group (an UNLABELED stage in customer_group_id, EXTERNAL approvers), our own boxes
 // are false and the sync's requirement flags may be set. It is not stranded: it reads
 // customerCanAnswer true for the contacts, the customer's first act gives it the stage this
@@ -353,8 +353,8 @@ func TestChangeRequestEmergencyIntegration_MigratedEmergencyInACustomerStateIsAn
 	}
 	t.Run("Customer Approval: the customer approves", func(t *testing.T) {
 		f, id := migrated(t, "CUSTOMER_APPROVAL", true)
-		f.wantCanAnswer(id, "in Customer Approval, ServiceNow's stage only", true, crScopeUserA1, crScopeUserA2)
-		f.wantCanAnswer(id, "in Customer Approval, ServiceNow's stage only", false, crScopeUserSecurity, crScopeUserInactive)
+		f.wantCanAnswer(id, "in Customer Approval, the migrated stage only", true, crScopeUserA1, crScopeUserA2)
+		f.wantCanAnswer(id, "in Customer Approval, the migrated stage only", false, crScopeUserSecurity, crScopeUserInactive)
 		if _, err := f.approveAs(id, crScopeUserA1, true); err != nil {
 			t.Fatalf("the customer's approval: %v", err)
 		}
@@ -384,7 +384,7 @@ func TestChangeRequestEmergencyIntegration_MigratedEmergencyInACustomerStateIsAn
 	})
 	t.Run("Customer Review: the customer confirms", func(t *testing.T) {
 		f, id := migrated(t, "CUSTOMER_REVIEW", true)
-		f.wantCanAnswer(id, "in Customer Review, ServiceNow's stage only", true, crScopeUserA1, crScopeUserA2)
+		f.wantCanAnswer(id, "in Customer Review, the migrated stage only", true, crScopeUserA1, crScopeUserA2)
 		if _, err := f.reviewAs(id, crScopeUserA2, true); err != nil {
 			t.Fatalf("the customer's review: %v", err)
 		}

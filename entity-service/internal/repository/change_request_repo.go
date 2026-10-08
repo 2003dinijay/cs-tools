@@ -1485,7 +1485,7 @@ func patchChangeRequestTx(ctx context.Context, tx pgx.Tx, id string, req domain.
 		reviewRequired = *req.CustomerReviewRequired
 	}
 	// An Emergency change is acted on without the customer's consent: whatever its
-	// boxes say (a legacy or ServiceNow-migrated row can carry one), neither gate
+	// boxes say (a legacy or migrated row can carry one), neither gate
 	// applies to it -- the type in effect being the request's, else the stored one.
 	approvalRequired, reviewRequired = effectiveCustomerGates(effectiveChangeModel(gates.model, req.Type), approvalRequired, reviewRequired)
 	if req.State != nil {
@@ -2054,7 +2054,7 @@ var (
 	changeRequestCABCheckpoint = changeRequestApprovalCheckpoint{Position: 1, Label: approvalStageLabelCAB, Pool: poolNamedGroup, GroupName: domain.CABApprovalGroupName}
 	// changeRequestEmergencyCABCheckpoint is an Emergency change's ONLY stage (no
 	// peer approval, so it sits at position 0): the same "CAB Approval" stage, in the
-	// same group, as a Normal change's second one -- ServiceNow has no Emergency CAB,
+	// same group, as a Normal change's second one -- the previous system has no Emergency CAB,
 	// and an Emergency change migrated from it has exactly this one stage. Entered by
 	// Request Approval (state Authorize); approving it moves the change to Scheduled.
 	changeRequestEmergencyCABCheckpoint = changeRequestApprovalCheckpoint{Position: 0, Label: approvalStageLabelCAB, Pool: poolNamedGroup, GroupName: domain.CABApprovalGroupName}
@@ -2633,7 +2633,7 @@ func (r *changeRequestRepo) GetChangeRequestApprovals(ctx context.Context, id st
 		return domain.ChangeRequestApprovals{}, fmt.Errorf("get change request approvals: approvers: %w", err)
 	}
 
-	// The change's own state and type: the stage names of a ServiceNow-synced Emergency
+	// The change's own state and type: the stage names of a synced Emergency
 	// change (buildChangeRequestApprovals) and who may decide (markCanDecide) are read
 	// from them. Failing to read them is not fatal to the read: the stages are named by
 	// position, as before, and nobody is marked as able to decide.
@@ -2758,7 +2758,7 @@ func (r *changeRequestRepo) markCanDecide(ctx context.Context, id string, stages
 // unchanged.
 //
 // One exception to the position fallback, for a stage with no label on an EMERGENCY
-// change (model is its upper-case change_model label): ServiceNow gives an Emergency
+// change (model is its upper-case change_model label): the previous system gives an Emergency
 // change no peer stage and routes it to the CAB group alone, so such a stage in the
 // "CAB Approval" group IS the CAB stage and is named so, wherever it sits -- not
 // "Assess" because it happens to be first. (The same group-first reading decides it,

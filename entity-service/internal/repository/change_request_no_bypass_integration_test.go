@@ -596,7 +596,7 @@ func TestChangeRequestNoBypassIntegration_LegalNextStatesExactTable(t *testing.T
 		for _, approval := range []bool{false, true} {
 			for _, review := range []bool{false, true} {
 				// An Emergency change cannot be CREATED with a box (it takes no customer step), but a
-				// row can carry one -- from before the rule, or ServiceNow-migrated -- so the boxes
+				// row can carry one -- from before the rule, or migrated -- so the boxes
 				// are written to it directly. The flow reads them as off: its table is the one of a
 				// change with no review box, whatever the stored value says.
 				emergency := typ == domain.ChangeRequestTypeEmergency

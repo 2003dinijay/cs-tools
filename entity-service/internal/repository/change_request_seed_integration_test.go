@@ -152,7 +152,7 @@ func TestChangeRequestSeedIntegration_Personas(t *testing.T) {
 	// Group membership: the internal personas sit in the assigned group and in
 	// the two approval groups that are resolved (CAB, which an Emergency change uses
 	// too, and the Devops Approval peer fallback); the customers in none of them. The
-	// ECAB group (unused: ServiceNow has no Emergency CAB) is seeded empty.
+	// ECAB group (unused: the previous system has no Emergency CAB) is seeded empty.
 	const internalGroups = "CAB Approval,Devops Approval,Example Corp ABT"
 	for _, id := range []string{seedAliceID, seedBobID, seedCarolID} {
 		if got := f.groupNamesOf(id); got != internalGroups {

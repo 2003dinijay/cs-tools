@@ -196,8 +196,8 @@ WHERE id = '00000000-0000-0000-0000-000000000903';
 --   They are members of "Example Corp ABT" (group 901, the assigned group of
 --   every fixture below), of "CAB Approval" and of "Devops Approval" (the peer
 --   approval fallback group, seeded here so the fallback can be exercised
---   locally). Neither of those two groups is mirrored from ServiceNow, so their
---   membership is a data matter: without rows like these, Request Approval on a
+--   locally). The membership of those two groups is a data matter (an operations
+--   matter: there is no screen for it): without rows like these, Request Approval on a
 --   Normal change (its CAB stage) or an Emergency change (its only stage, also the
 --   CAB's) is refused with "the \"CAB Approval\" group has no members ...".
 --
@@ -246,7 +246,7 @@ ON CONFLICT (id) DO UPDATE SET team_id = EXCLUDED.team_id, user_id = EXCLUDED.us
 -- CAB Approval membership (migration 0188 creates the group, empty). A Normal
 -- change cannot be sent for approval, and its peer approval cannot cascade to CAB,
 -- unless the CAB group has an eligible (active, internal) member -- and an Emergency
--- change, whose ONE stage is the CAB's too (ServiceNow has no Emergency CAB), cannot
+-- change, whose ONE stage is the CAB's too (the previous system has no Emergency CAB), cannot
 -- be sent for approval at all -- so the three internal personas sit in the group,
 -- which lets the fixtures run the full Request Approval -> Peer -> CAB -> Scheduled
 -- (Normal) and Request Approval -> CAB -> Scheduled (Emergency) flows locally.

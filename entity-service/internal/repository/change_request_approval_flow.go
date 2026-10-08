@@ -36,9 +36,9 @@ import (
 // Standard "does not require approval", Emergency "must be implemented as
 // soon as possible").
 //
-// ServiceNow has no Emergency CAB. An Emergency change is approved by the same
+// The previous system has no Emergency CAB. An Emergency change is approved by the same
 // "CAB Approval" group a Normal change's second stage is, and an Emergency change
-// migrated from ServiceNow has exactly that one stage (no Peer stage). An earlier
+// migrated from the previous system has exactly that one stage (no Peer stage). An earlier
 // build wrote a stage labelled "ECAB Approval" for Emergency changes; that label
 // is no longer written, but a stage that still carries it is shown under it and is
 // decided as the CAB stage (approvalStageLabelHistoricECAB):
@@ -96,7 +96,7 @@ import (
 // ValidateCreateChangeRequestCustomerGates), and the flow ignores whatever the stored
 // boxes say for a change whose type is Emergency (effectiveCustomerGates), so a row
 // that already carries one -- an Emergency change from before the rule, or a
-// ServiceNow-migrated one -- still goes CAB approval -> Scheduled and Review ->
+// migrated one -- still goes CAB approval -> Scheduled and Review ->
 // Closed. Reads of the stored values are untouched. An Emergency change that is
 // ALREADY waiting in a customer state (the same two kinds of row) is not taken out of
 // the customer's hands: the customer stage logic below does not look at the type, so
@@ -185,7 +185,7 @@ const (
 	approvalStageLabelReview = "Review"
 	// approvalStageLabelHistoricECAB is the label an earlier build wrote on an
 	// Emergency change's only stage ("ECAB Approval", in a group of its own).
-	// ServiceNow has no Emergency CAB, so nothing writes it any more: it is only
+	// The previous system has no Emergency CAB, so nothing writes it any more: it is only
 	// RECOGNISED, so an in-flight Emergency change that already holds such a stage
 	// keeps showing it under that name and its approvers (the REQUESTED rows that
 	// were written for it) can still decide it, as the CAB stage -- classifyApprovalStage.
@@ -297,7 +297,7 @@ func classifyApprovalStage(label *string, position int) approvalStageKind {
 //
 //  1. the stage's own assignment group names it: the "CAB Approval" group makes
 //     it a CAB stage -- whatever the change's type and whatever its position, which
-//     is how a ServiceNow-migrated Emergency change's one stage (no Peer stage, in
+//     is how a migrated Emergency change's one stage (no Peer stage, in
 //     the CAB group, at position 0) reads;
 //  2. failing that, an Emergency change in Authorize has no peer stage, so a stage
 //     on it can only be the CAB's;
@@ -542,12 +542,12 @@ func noInternalMembersError(ctx context.Context, q crQuerier, poolDescription, l
 }
 
 // notMirroredGroupNote is what a refusal about an approver group that has no members adds,
-// for the groups the approval flow resolves by name (CAB Approval, Devops Approval): the
-// ServiceNow sync mirrors a curated set of teams and not these, so their membership is
-// maintained in the portal database itself (no admin screen, no schema of its own), and
-// until somebody has done that a stage that needs the group cannot be created.
+// for the groups the approval flow resolves by name (CAB Approval, Devops Approval): a group
+// may have no members, which is an operations matter -- their membership is maintained in the
+// portal database itself (no admin screen, no schema of its own), and until somebody has done
+// that a stage that needs the group cannot be created, so the refusal names the group.
 func notMirroredGroupNote(groupName string) string {
-	return fmt.Sprintf("the ServiceNow sync does not mirror the membership of the %q group: it is maintained in the portal database (one team_member row per approver, with group_id set to that group)", groupName)
+	return fmt.Sprintf("the sync from the previous system does not mirror the membership of the %q group: it is maintained in the portal database (one team_member row per approver, with group_id set to that group)", groupName)
 }
 
 // namedGroup resolves a group by name: its id (preferring, when the mirror
@@ -1677,7 +1677,7 @@ func reconcileStaleApprovers(ctx context.Context, tx pgx.Tx, workItemID, actorEm
 //   - an Emergency change is treated like any other. The Emergency rule keeps it from
 //     ENTERING a customer state (effectiveCustomerGates: CAB approval schedules it,
 //     Review closes it), so a state that has a customer stage is only ever one it is
-//     already waiting in -- a row from before the rule, or a ServiceNow-migrated one --
+//     already waiting in -- a row from before the rule, or a migrated one --
 //     and the question the customer was given there stands: it is asked, replaced
 //     on a Re-schedule and answered like the same question on any other change.
 //     Nothing here may leave such a change waiting in a customer state with nobody to

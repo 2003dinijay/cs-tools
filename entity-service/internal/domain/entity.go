@@ -3915,7 +3915,7 @@ func IsCreatableChangeRequestType(t ChangeRequestType) bool {
 //
 //   - CABApprovalGroupName: the Change Advisory Board, the approver pool of a
 //     Normal change's second (CAB) approval stage and of an Emergency change's
-//     only approval stage (ServiceNow has no Emergency CAB: an Emergency change is
+//     only approval stage (the previous system has no Emergency CAB: an Emergency change is
 //     approved by this same group).
 //   - PeerApprovalFallbackGroupName: the peer approval fallback group
 //     ("Devops Approval" in the ServiceNow flow). A Normal change's peer stage

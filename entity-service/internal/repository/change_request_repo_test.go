@@ -820,7 +820,7 @@ func TestCustomerGateHelpers(t *testing.T) {
 
 // TestChangeRequestFlowForModel pins what Request Approval does per change
 // type: Normal -> Assess + Peer Approval stage, Emergency -> Authorize + the one
-// CAB Approval stage (no peer approval; ServiceNow has no Emergency CAB),
+// CAB Approval stage (no peer approval; the previous system has no Emergency CAB),
 // Standard -> Scheduled with no stage at all. A NULL/legacy type follows the
 // Normal flow.
 func TestChangeRequestFlowForModel(t *testing.T) {

@@ -27,8 +27,8 @@ import (
 )
 
 // The pure half of the Emergency rule (change_request_emergency.go): an Emergency
-// change takes no customer step, and its approval is the one CAB stage ServiceNow
-// itself gives it. The database half is in change_request_emergency_integration_test.go.
+// change takes no customer step, and its approval is the one CAB stage the previous
+// system itself gives it. The database half is in change_request_emergency_integration_test.go.
 
 func emergencyType(s string) *domain.ChangeRequestType {
 	t := domain.ChangeRequestType(s)

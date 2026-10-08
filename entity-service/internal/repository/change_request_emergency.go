@@ -39,7 +39,7 @@ import (
 //     type is frozen once approval has been requested (checkChangeTypeEdit), so a
 //     re-type is only ever possible in New.
 //   - Changes that already exist -- one created before this rule with a box ticked, or a
-//     ServiceNow-migrated one (whose requirement flags are ServiceNow's, written by the
+//     migrated one (whose requirement flags are the previous system's, written by the
 //     sync, and never ours to edit). Nothing is rewritten and reads show what is
 //     stored, but the FLOW ignores the boxes for an Emergency change
 //     (effectiveCustomerGates): CAB approval schedules it and Review closes it, so
@@ -49,7 +49,7 @@ import (
 //     punished for a legacy ticked box it did not touch.
 //
 // What the rule does NOT do is strand a change that is already in a customer state (a
-// row from before the rule, or one ServiceNow itself sent to the customer): there the
+// row from before the rule, or one the previous system itself sent to the customer): there the
 // customer's question stands and every act of the loop works as on any other change --
 // the customer's own answer moves it, a Re-schedule or a counter-proposal asks the
 // project's contacts again, and one that cannot ask anybody is refused whole
@@ -103,8 +103,8 @@ func legalChangeRequestNextStatesForModel(state *string, model string, customerR
 // ValidateCreateChangeRequestCustomerGates is the create-time half of the rule: an
 // Emergency change cannot be created with either customer box ticked. Exported, like
 // ValidateCreateChangeRequestType, so every create path applies the identical rule and
-// message -- in particular BEFORE ServiceNow is called on the dual-write path, where a
-// refusal after the fact would strand a ServiceNow record with no PostgreSQL row.
+// message -- in particular BEFORE the previous system is called on the dual-write path, where a
+// refusal after the fact would strand a record there with no PostgreSQL row.
 func ValidateCreateChangeRequestCustomerGates(t *domain.ChangeRequestType, approvalRequired, reviewRequired *bool) error {
 	if t == nil || !isEmergencyModel(changeRequestTypeToChangeModel[*t]) {
 		return nil

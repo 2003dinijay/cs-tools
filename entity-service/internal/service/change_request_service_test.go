@@ -833,8 +833,8 @@ func TestChangeRequestService_PatchChangeRequest_CustomerGateFlagsStayOutOfTheMi
 // TestChangeRequestService_CreateChangeRequest_EmergencyWithACustomerBoxIsRefusedBeforeAnyWrite:
 // an Emergency change takes no customer step, so a create that ticks either box is a 400 --
 // on the plain path before the repository is called, and on the dual-write path BEFORE
-// ServiceNow is called (a refusal after ServiceNow accepted the create would strand a
-// ServiceNow record with no PostgreSQL row). The same create with the boxes off, and a Normal
+// the previous system is called (a refusal after it accepted the create would strand a
+// record there with no PostgreSQL row). The same create with the boxes off, and a Normal
 // change with them on, go through.
 func TestChangeRequestService_CreateChangeRequest_EmergencyWithACustomerBoxIsRefusedBeforeAnyWrite(t *testing.T) {
 	yes, no := true, false
@@ -868,10 +868,10 @@ func TestChangeRequestService_CreateChangeRequest_EmergencyWithACustomerBoxIsRef
 				t.Fatalf("err = %v (%T), want a ValidationError that gives the reason", err, err)
 			}
 		})
-		t.Run("servicenow-first/"+name, func(t *testing.T) {
+		t.Run("previous-system-first/"+name, func(t *testing.T) {
 			mirror := &stubMirrorChangeRequestService{
 				createChangeRequest: func(context.Context, domain.CreateChangeRequestRequest) (domain.CreateChangeRequestResponse, error) {
-					t.Fatal("ServiceNow must never be called for an Emergency change with a customer box")
+					t.Fatal("the previous system must never be called for an Emergency change with a customer box")
 					return domain.CreateChangeRequestResponse{}, nil
 				},
 			}

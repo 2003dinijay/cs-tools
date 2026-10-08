@@ -47,7 +47,7 @@ func TestRuntimeApprovalStageKind(t *testing.T) {
 		{"position 3 in Customer Review is never the customer's", nil, nil, 3, "NORMAL", "CUSTOMER_REVIEW", stageKindOther},
 		{"an empty label is no label", str(""), nil, 1, "NORMAL", "AUTHORIZE", stageKindCAB},
 		// The group the stage is assigned to says what it is.
-		// "ECAB Approval" names no stage any more (ServiceNow has no Emergency CAB): a stage
+		// "ECAB Approval" names no stage any more (the previous system has no Emergency CAB): a stage
 		// in a group of that name is read like one in any other group, by position.
 		{"a group named ECAB Approval is not special, position 3", nil, str("ECAB Approval"), 3, "NORMAL", "AUTHORIZE", stageKindOther},
 		{"a group named ECAB Approval is not special, position 1", nil, str("ECAB Approval"), 1, "NORMAL", "AUTHORIZE", stageKindCAB},

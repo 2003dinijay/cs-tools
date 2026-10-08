@@ -17274,7 +17274,7 @@ components:
           type: string
           description: >-
             Approval stage name: "Peer Approval", "CAB Approval" (a Normal change's second
-            stage and an Emergency change's only one; a ServiceNow-migrated Emergency
+            stage and an Emergency change's only one; a migrated Emergency
             change's one unlabeled stage in the CAB group reads this way too), "Review",
             "ECAB Approval" (only on an Emergency change an earlier build created: no
             longer written, still shown and decided as the CAB stage), and -- for the change's customer group, while it is in
@@ -17727,7 +17727,7 @@ components:
             Required. Decides the approval flow: Standard needs no approval
             (Request Approval goes straight to Scheduled); Normal needs peer
             approval then CAB approval; Emergency needs CAB approval only (one
-            stage in the CAB Approval group: ServiceNow has no Emergency CAB). An
+            stage in the CAB Approval group: the previous system has no Emergency CAB). An
             Emergency change takes no customer step: creating one with
             customerApprovalRequired or customerReviewRequired true, or re-typing
             a change that has one ticked into Emergency, is a 400.

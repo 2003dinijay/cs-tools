@@ -3241,8 +3241,8 @@ func TestChangeRequestIntegration_PatchCustomerFlagsNeverFromStaffWhateverIsStor
 // ---------------------------------------------------------------------------
 // Type-dependent approval flow (change_request_approval_flow.go).
 //
-// Lifecycle tests for Normal (peer then CAB), Emergency (the one CAB stage; ServiceNow
-// has no Emergency CAB) and Standard (no approval), the creator/INTERNAL-only approver
+// Lifecycle tests for Normal (peer then CAB), Emergency (the one CAB stage; the previous
+// system has no Emergency CAB) and Standard (no approval), the creator/INTERNAL-only approver
 // rules, the CAB / ECAB groups the migration creates (the ECAB one is unused now), the
 // automatic move to Scheduled, and the mandatory
 // type on create -- all against the real Postgres this file's neighbours use:
@@ -3253,7 +3253,7 @@ func TestChangeRequestIntegration_PatchCustomerFlagsNeverFromStaffWhateverIsStor
 const (
 	// crCABGroupID / crECABGroupID are the fixed ids migration
 	// 0188_change_request_approval_groups.sql gives the two groups. The ECAB one is
-	// UNUSED now (an Emergency change is approved by the CAB group, as in ServiceNow):
+	// UNUSED now (an Emergency change is approved by the CAB group, as in the previous system):
 	// the tests keep it only to show nothing resolves it, and to stand in for the group
 	// an earlier build's "ECAB Approval" stage was asked of.
 	crCABGroupID  = "00000000-0000-4000-8000-00000000ca01"
@@ -3776,7 +3776,7 @@ func TestChangeRequestFlowIntegration_NormalFullLifecycle(t *testing.T) {
 }
 
 // Emergency: no peer approval; Request Approval goes straight to Authorize with ONE stage,
-// the CAB Approval stage in the existing CAB group (ServiceNow has no Emergency CAB, so
+// the CAB Approval stage in the existing CAB group (the previous system has no Emergency CAB, so
 // there is no ECAB stage and no ECAB group is asked); that CAB approval schedules.
 func TestChangeRequestFlowIntegration_EmergencyLifecycle(t *testing.T) {
 	f := newCRFlow(t)
@@ -4452,15 +4452,15 @@ func TestChangeRequestFlowIntegration_NormalRequiresEligibleCABApprovers(t *test
 
 	// An Emergency change is approved by the same CAB group, so it is refused the same way
 	// (the unused ECAB group's members are not a way round it). The message names the group
-	// and says the ServiceNow sync does not mirror its membership: on a synced environment
-	// nobody maintains it unless an operator has, and this is how that shows.
+	// and says the sync from the previous system does not mirror its membership: a group may
+	// have no members, which is an operations matter, and this is how the refusal shows it.
 	seedApprovalGroupMembers(t, f.scoped, crECABGroupID, crECABMemberUserID)
 	eid := f.create(domain.ChangeRequestTypeEmergency, crFlowGroupID)
 	_, err = f.patchState(eid, domain.ChangeRequestStateAssess)
 	if !errors.As(err, &ve) || !strings.Contains(ve.Msg, domain.CABApprovalGroupName) {
 		t.Fatalf("emergency Request Approval with an empty CAB group err = %v (%T), want a ValidationError naming %q", err, err, domain.CABApprovalGroupName)
 	}
-	for _, want := range []string{`the "CAB Approval" group has no members`, "the ServiceNow sync does not mirror the membership", "team_member"} {
+	for _, want := range []string{`the "CAB Approval" group has no members`, "the sync from the previous system does not mirror the membership", "team_member"} {
 		if !strings.Contains(ve.Msg, want) {
 			t.Fatalf("emergency Request Approval with an empty CAB group message %q should contain %q", ve.Msg, want)
 		}
@@ -5027,8 +5027,8 @@ func TestChangeRequestFlowIntegration_NormalCustomerGateLifecycles(t *testing.T)
 }
 
 // An Emergency change takes no customer step. The rule refuses the two boxes on a new one,
-// but a row can still carry them -- one from before the rule, or a ServiceNow-migrated one
-// whose requirement flags are ServiceNow's own -- and the flow ignores them: the CAB approval
+// but a row can still carry them -- one from before the rule, or a migrated one
+// whose requirement flags are the previous system's own -- and the flow ignores them: the CAB approval
 // SCHEDULES it (never Customer Approval), Review goes straight to Closed (never Customer
 // Review), so no customer stage is provisioned along the way. (Replaces the test that drove an
 // Emergency change through ECAB approval into Customer Approval.)
@@ -7259,7 +7259,7 @@ func TestChangeRequestFlowIntegration_RescheduleWithNobodyToAskTwice(t *testing.
 }
 
 // An Emergency change that is ALREADY in Customer Approval -- a row from before the rule, or a
-// ServiceNow-migrated one -- is not taken out of the customer's hands: the question it was
+// migrated one -- is not taken out of the customer's hands: the question it was
 // given stands, and every act of the Customer Approval loop works on it exactly as on any other
 // change. The customer's own answer moves it; a Re-schedule or a counter-proposal applies the
 // window, supersedes the request and ASKS THE PROJECT'S CONTACTS AGAIN (a fresh stage, nothing
