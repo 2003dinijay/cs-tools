@@ -204,6 +204,14 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Before the body is read, so an unauthenticated caller costs a header parse rather
+	// than up to server.max_body_bytes of allocation plus an integration_users lookup.
+	// Every credential position is in the headers, so nothing here needs the body.
+	if err := s.auth.Authenticate(r, vendor); err != nil {
+		writeJSON(w, http.StatusUnauthorized, rejected("unauthorized"))
+		return
+	}
+
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.maxBodyBytes))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
@@ -219,11 +227,6 @@ func (s *Server) vendorRoute(w http.ResponseWriter, r *http.Request) {
 		}
 		s.logger.Warn("webhook body read failed", "request_id", RequestID(r.Context()), "vendor", vendor, "error", err)
 		writeJSON(w, http.StatusBadRequest, rejected("could not read request body"))
-		return
-	}
-
-	if err := s.auth.Authenticate(r, vendor); err != nil {
-		writeJSON(w, http.StatusUnauthorized, rejected("unauthorized"))
 		return
 	}
 
