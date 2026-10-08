@@ -132,6 +132,7 @@ var KnownTypes = []Type{
 	TypeOutageNotificationDue, TypeOutageCommunicationDue,
 	TypeProjectContactInvited, TypeProjectContactRegistered,
 	TypeSRCreated, TypeSRAcknowledged, TypeSRCommentAdded,
+	TypeCaseEscalated,
 }
 
 // Envelope is the wire shape of every record on the event bus: Payload's

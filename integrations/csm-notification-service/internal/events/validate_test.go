@@ -248,3 +248,47 @@ func TestValidate_ServiceRequest(t *testing.T) {
 		})
 	}
 }
+
+// TestValidate_CaseEscalated covers case.escalated: required fields, the
+// levels being an escalation (never a de-escalation, which is not
+// published), the caseId/entityId match, and that an escalation with nobody
+// to mail is rejected.
+func TestValidate_CaseEscalated(t *testing.T) {
+	const id = "11111111-1111-1111-1111-111111111111"
+	payload := func(mod func(p map[string]any)) json.RawMessage {
+		p := map[string]any{
+			"caseId": id, "caseNumber": "CS0012345", "caseTitle": "Gateway down",
+			"escalationId": "e1", "previousLevel": 1, "currentLevel": 2,
+			"actorEmail": "a@x.com", "escalatedOn": "2026-10-08T09:03:17Z", "recipients": []string{"r@x.com"},
+		}
+		if mod != nil {
+			mod(p)
+		}
+		raw, _ := json.Marshal(p)
+		return raw
+	}
+
+	if err := Validate(id, TypeCaseEscalated, payload(nil)); err != nil {
+		t.Fatalf("a well-formed escalation: Validate() = %v, want nil", err)
+	}
+
+	for name, mod := range map[string]func(p map[string]any){
+		"no case number":      func(p map[string]any) { delete(p, "caseNumber") },
+		"no escalation id":    func(p map[string]any) { delete(p, "escalationId") },
+		"no actor":            func(p map[string]any) { delete(p, "actorEmail") },
+		"no time":             func(p map[string]any) { delete(p, "escalatedOn") },
+		"de-escalation":       func(p map[string]any) { p["previousLevel"], p["currentLevel"] = 2, 0 },
+		"level above EL5":     func(p map[string]any) { p["currentLevel"] = 6 },
+		"same level":          func(p map[string]any) { p["previousLevel"] = 2 },
+		"no recipients":       func(p map[string]any) { p["recipients"] = []string{} },
+		"malformed recipient": func(p map[string]any) { p["recipients"] = []string{"not-an-email"} },
+		"other case's id":     func(p map[string]any) { p["caseId"] = "22222222-2222-2222-2222-222222222222" },
+		"unknown field":       func(p map[string]any) { p["action"] = "ESCALATE" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := Validate(id, TypeCaseEscalated, payload(mod)); err == nil {
+				t.Fatal("Validate() = nil, want an error")
+			}
+		})
+	}
+}

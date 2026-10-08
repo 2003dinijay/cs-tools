@@ -524,6 +524,8 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 		// consumer's retries and dead-letter a perfectly valid event that
 		// simply is not this consumer's concern.
 		return nil
+	case events.TypeCaseEscalated:
+		return d.handleCaseEscalated(ctx, record, env.Payload)
 	case events.TypeCRApprovalRequested:
 		return d.handleCRApprovalRequested(ctx, record, env.Payload)
 	case events.TypeCRPlanDateNotice:
