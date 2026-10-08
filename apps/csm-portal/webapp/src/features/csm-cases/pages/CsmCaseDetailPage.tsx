@@ -363,6 +363,31 @@ const CASE_TAB_IDS: readonly CaseTabId[] = TAB_DEFS.filter(
   (t) => !t.hidden,
 ).map((t) => t.id);
 
+/**
+ * Composes the customer-visible comment posted for "Share fix ETA with
+ * customer" — a plain rendering, not ServiceNow's own "Share Fix ETA" CWF
+ * template (its exact wording isn't available to this codebase; this posts
+ * a real comment directly via POST /cases/{id}/comments instead, which
+ * works on every data source, unlike the ServiceNow-only addPublicComment
+ * PATCH field). Only the ETA fields actually set are included, matching the
+ * dialog's own "all three independently optional" behavior.
+ */
+function buildFixEtaShareComment(fields: {
+  bestCaseFixEta?: string;
+  mostLikelyFixEta?: string;
+  worstCaseFixEta?: string;
+  product?: string;
+  publicTicket?: string;
+}): string {
+  const lines: string[] = [];
+  if (fields.product) lines.push(`Product: ${fields.product}`);
+  if (fields.publicTicket) lines.push(`Public ticket: ${fields.publicTicket}`);
+  if (fields.bestCaseFixEta) lines.push(`Best case: ${fields.bestCaseFixEta}`);
+  if (fields.mostLikelyFixEta) lines.push(`Most likely: ${fields.mostLikelyFixEta}`);
+  if (fields.worstCaseFixEta) lines.push(`Worst case: ${fields.worstCaseFixEta}`);
+  return `<p><strong>Fix ETA</strong></p><p>${lines.join("<br>")}</p>`;
+}
+
 export default function CsmCaseDetailPage(): JSX.Element {
   // Real router hooks — called unconditionally regardless of `routeOverride`
   // below (rules of hooks), but their VALUES are only actually used when
@@ -1889,22 +1914,27 @@ export default function CsmCaseDetailPage(): JSX.Element {
       const submittedViewToken = caseViewTokenRef.current;
       const isStale = (): boolean => caseViewTokenRef.current !== submittedViewToken;
 
-      // Sent as two separate PATCHes, not one: addPublicComment (the "share
-      // with customer" step) is ServiceNow-only and the backend rejects the
-      // *entire* request when it's present on another data source — which,
-      // bundled into one call, silently blocked saving the ETA dates too.
-      // Splitting them means the ETA always saves on its own, and a sharing
-      // failure (on a deployment that doesn't support it) is reported as
-      // its own, separate, accurate error instead of masking a save that
-      // actually succeeded.
+      // The ETA save and the "share with customer" step are sent separately,
+      // not bundled into one PATCH: addPublicComment (ServiceNow's own way
+      // of doing the share) is ServiceNow-only, and the backend used to
+      // reject the *entire* request when it was present on another data
+      // source — silently blocking the ETA save too. The share step itself
+      // no longer goes through that field at all: it posts a real,
+      // customer-visible comment via POST /cases/{id}/comments instead,
+      // which works on every data source.
       const { addPublicComment, product, publicTicket, ...etaOnly } = patch;
 
       const shareWithCustomer = (): void => {
-        if (!addPublicComment) return;
-        patchCase.mutate(
-          { ...etaOnly, addPublicComment, product, publicTicket } as BeCaseUpdatePayload,
-          {
-            onSuccess: () => {
+        if (!addPublicComment || !caseId) return;
+        void postComment
+          .mutateAsync({
+            caseId,
+            bodyHtml: buildFixEtaShareComment({ ...etaOnly, product, publicTicket }),
+            authorName: engineerName,
+            internal: false,
+          })
+          .then(
+            () => {
               if (isStale()) return;
               setFeedback({
                 message: "Fix ETA shared with the customer.",
@@ -1912,12 +1942,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 sticky: false,
               });
             },
-            onError: (err) => {
+            (err: unknown) => {
               if (isStale()) return;
               showError("Fix ETA saved, but could not share it with the customer.", err);
             },
-          },
-        );
+          );
       };
 
       patchCase.mutate(etaOnly as BeCaseUpdatePayload, {
@@ -1947,7 +1976,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
         },
       });
     },
-    [patchCase, showError],
+    [patchCase, postComment, caseId, engineerName, showError],
   );
 
   const onRequestUpdate = useCallback(
