@@ -2330,9 +2330,9 @@ describe("CsmCaseDetailPage — fix ETA save and share-with-customer are indepen
     expect(commentInput.internal).toBe(false);
     expect(commentInput.bodyHtml).toContain("Product: WSO2 API Manager");
     expect(commentInput.bodyHtml).toContain(
-      "Public ticket: https://github.com/example/example/issues/1",
+      "Public git issue: https://github.com/example/example/issues/1",
     );
-    expect(commentInput.bodyHtml).toContain("Best case: 2099-06-16");
+    expect(commentInput.bodyHtml).toContain("Best Case Estimate: 2099-06-16");
   });
 
   it("keeps the ETA saved even when the share comment post is rejected", async () => {
@@ -2432,7 +2432,7 @@ describe("CsmCaseDetailPage — fix ETA save and share-with-customer are indepen
       "Product: &lt;img src=x onerror=alert(1)&gt;",
     );
     expect(commentInput.bodyHtml).toContain(
-      "Public ticket: Tom &amp; Jerry&#039;s &lt;ticket&gt;",
+      "Public git issue: Tom &amp; Jerry&#039;s &lt;ticket&gt;",
     );
   });
 });

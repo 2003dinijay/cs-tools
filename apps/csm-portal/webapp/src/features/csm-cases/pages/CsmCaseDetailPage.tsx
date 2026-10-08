@@ -366,12 +366,13 @@ const CASE_TAB_IDS: readonly CaseTabId[] = TAB_DEFS.filter(
 
 /**
  * Composes the customer-visible comment posted for "Share fix ETA with
- * customer" — a plain rendering, not ServiceNow's own "Share Fix ETA" CWF
- * template (its exact wording isn't available to this codebase; this posts
- * a real comment directly via POST /cases/{id}/comments instead, which
- * works on every data source, unlike the ServiceNow-only addPublicComment
- * PATCH field). Only the ETA fields actually set are included, matching the
- * dialog's own "all three independently optional" behavior.
+ * customer" — matches the real wording ServiceNow production's own "Share
+ * Fix ETA" CWF action uses verbatim, so the comment reads identically
+ * regardless of which data source actually posted it. Posted directly via
+ * POST /cases/{id}/comments instead of ServiceNow's own addPublicComment
+ * PATCH field, which works on every data source. Only the ETA fields
+ * actually set are included, matching the dialog's own "all three
+ * independently optional" behavior.
  */
 function buildFixEtaShareComment(fields: {
   bestCaseFixEta?: string;
@@ -387,12 +388,18 @@ function buildFixEtaShareComment(fields: {
   const lines: string[] = [];
   if (fields.product) lines.push(`Product: ${escapeHtml(fields.product)}`);
   if (fields.publicTicket) {
-    lines.push(`Public ticket: ${escapeHtml(fields.publicTicket)}`);
+    lines.push(`Public git issue: ${escapeHtml(fields.publicTicket)}`);
   }
-  if (fields.bestCaseFixEta) lines.push(`Best case: ${fields.bestCaseFixEta}`);
-  if (fields.mostLikelyFixEta) lines.push(`Most likely: ${fields.mostLikelyFixEta}`);
-  if (fields.worstCaseFixEta) lines.push(`Worst case: ${fields.worstCaseFixEta}`);
-  return `<p><strong>Fix ETA</strong></p><p>${lines.join("<br>")}</p>`;
+  if (fields.bestCaseFixEta) {
+    lines.push(`Best Case Estimate: ${fields.bestCaseFixEta}`);
+  }
+  if (fields.mostLikelyFixEta) {
+    lines.push(`Most Likely Estimate: ${fields.mostLikelyFixEta}`);
+  }
+  if (fields.worstCaseFixEta) {
+    lines.push(`Worst Case Estimate: ${fields.worstCaseFixEta}`);
+  }
+  return `<p>ETA information for the fix will be as follows.</p><p>${lines.join("<br>")}</p>`;
 }
 
 export default function CsmCaseDetailPage(): JSX.Element {
