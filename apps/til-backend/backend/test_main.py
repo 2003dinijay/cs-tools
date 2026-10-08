@@ -125,6 +125,15 @@ def test_create_submission_notifies_novera():
         mock_notify.assert_called_once()
 
 
+def test_novera_link_opens_the_entry_as_an_article():
+    client = client_as(HUMAN_USER)
+    with patch("main.ONE_WSO2_BASE_URL", "https://one.example"), patch(
+        "main.notify_novera", new_callable=AsyncMock
+    ) as mock_notify:
+        created = client.post("/submissions", json={"title": "T", "who": "Jane", "where": "Internal", "what": "x"}).json()
+        assert mock_notify.call_args.kwargs["entry_url"] == f"https://one.example/knowledge-base/{created['id']}?view=article"
+
+
 def test_create_submission_rejects_non_webapp_callers():
     # The One WSO2 webapp is the ONLY entry point allowed to create an
     # entry -- checked against the token's own verified client_id (main.py

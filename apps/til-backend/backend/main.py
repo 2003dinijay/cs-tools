@@ -56,9 +56,11 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 # Base URL of the One WSO2 webapp itself (NOT this backend) -- used only to
-# build each entry's shareable link (.../knowledge-base/{id}) for the Novera
-# broadcast card. Optional: absent just means that link is omitted, same
-# "unset key = quietly off" posture as the rest of this service.
+# build each entry's shareable link for the Novera broadcast card. The link
+# opens the entry as a full-page article (.../knowledge-base/{id}?view=article);
+# the webapp owns that query parameter. Optional: absent just means that link
+# is omitted, same "unset key = quietly off" posture as the rest of this
+# service.
 ONE_WSO2_BASE_URL = os.environ.get("ONE_WSO2_BASE_URL", "").rstrip("/")
 
 
@@ -246,7 +248,7 @@ async def create_submission(request: Request, user: dict = Depends(require_auth)
     # The gate above already guarantees this request came from the real
     # webapp, so Novera's DM broadcast fires unconditionally here -- no
     # further identity check needed at this point.
-    entry_url = f"{ONE_WSO2_BASE_URL}/knowledge-base/{submission['id']}" if ONE_WSO2_BASE_URL else None
+    entry_url = f"{ONE_WSO2_BASE_URL}/knowledge-base/{submission['id']}?view=article" if ONE_WSO2_BASE_URL else None
     await notify_novera(title=title, who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
 
     return submission
