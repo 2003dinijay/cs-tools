@@ -105,7 +105,6 @@ type searchIncidentsRequest struct {
 
 type searchIncidentsFilters struct {
 	Number        string `json:"number,omitempty"`
-	SearchQuery   string `json:"searchQuery,omitempty"`
 	CorrelationID string `json:"correlationId,omitempty"`
 }
 
@@ -154,58 +153,37 @@ func (c *Client) IncidentState(ctx context.Context, number string) (open bool, f
 	return openIncidentStates[*resp.Incidents[0].State], true, nil
 }
 
-// SearchIncidentByCorrelationID is the pre-create dedup check (a lost create response must not cause a duplicate on retry), matching correlation_id exactly, falling back to legacy free-text search for pre-correlationId incidents.
+// SearchIncidentByCorrelationID is the pre-create dedup check (a lost create response must not cause a duplicate on retry), matching correlation_id exactly and never free text, which matched unrelated incidents or timed out.
 func (c *Client) SearchIncidentByCorrelationID(ctx context.Context, correlationID string) (id, number string, found bool, err error) {
-	hit, err := c.searchIncidents(ctx, searchIncidentsFilters{CorrelationID: correlationID})
-	if err != nil {
-		return "", "", false, err
-	}
-	if hit != nil {
-		return hit.ID, hit.Number, true, nil
-	}
-
-	hit, err = c.searchIncidents(ctx, searchIncidentsFilters{SearchQuery: correlationID})
-	if err != nil {
-		return "", "", false, err
-	}
-	if hit != nil {
-		return hit.ID, hit.Number, true, nil
-	}
-	return "", "", false, nil
-}
-
-// foundIncident is the id/number pair for a search hit that passed presence validation.
-type foundIncident struct {
-	ID     string
-	Number string
-}
-
-// searchIncidents runs one /incidents/search call and returns the first valid hit, or nil if none.
-func (c *Client) searchIncidents(ctx context.Context, filters searchIncidentsFilters) (*foundIncident, error) {
+	// Limit 2 so a filter the backend ignored shows up as several rows instead of an arbitrary first hit.
 	req := searchIncidentsRequest{
-		Filters:    filters,
-		Pagination: pagination{Limit: 1, Offset: 0},
+		Filters:    searchIncidentsFilters{CorrelationID: correlationID},
+		Pagination: pagination{Limit: 2, Offset: 0},
 	}
 	body, err := json.Marshal(req)
 	if err != nil {
-		return nil, fmt.Errorf("csm: marshal SearchIncidentsRequest: %w", err)
+		return "", "", false, fmt.Errorf("csm: marshal SearchIncidentsRequest: %w", err)
 	}
 
 	respBody, err := c.do(ctx, http.MethodPost, "/incidents/search", body)
 	if err != nil {
-		return nil, err
+		return "", "", false, err
 	}
 
 	var resp searchIncidentsResponse
 	if err := json.Unmarshal(respBody, &resp); err != nil {
-		return nil, fmt.Errorf("csm: decode incident search response: %w", err)
+		return "", "", false, fmt.Errorf("csm: decode incident search response: %w", err)
 	}
 	if len(resp.Incidents) == 0 {
-		return nil, nil
+		return "", "", false, nil
+	}
+	if len(resp.Incidents) > 1 || resp.Total > 1 {
+		// A dedup tag names one incident generation, so several matches mean the correlationId filter was not applied.
+		return "", "", false, fmt.Errorf("csm: correlationId search matched %d incidents, filter not applied", max(len(resp.Incidents), resp.Total))
 	}
 	hit := resp.Incidents[0]
 	if hit.ID == nil || *hit.ID == "" || hit.Number == nil || *hit.Number == "" {
-		return nil, nil
+		return "", "", false, nil
 	}
-	return &foundIncident{ID: *hit.ID, Number: *hit.Number}, nil
+	return *hit.ID, *hit.Number, true, nil
 }
