@@ -138,7 +138,7 @@ func main() {
 		SummaryInterval:  dbFailureInterval,
 		HTTPTimeout:      chatTimeout,
 	})
-	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, envCfg.WakeKey, cfg.Wake.Timeout.Duration())
+	waker := corewake.New(base.With("component", "corewake"), envCfg.WakeURL, envCfg.WakeUsername, envCfg.WakeSecret, cfg.Wake.Timeout.Duration())
 
 	sns, err := newSNSConfirmer(base.With("component", "snsconfirm"))
 	if err != nil {

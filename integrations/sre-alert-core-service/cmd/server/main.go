@@ -161,12 +161,10 @@ func main() {
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	// The endpoint is Public, so WAKE_API_KEY is its only protection.
-	wakeKey := os.Getenv("WAKE_API_KEY")
-	if wakeKey == "" {
-		logger.Warn("WAKE_API_KEY is empty: the wake endpoint is unauthenticated")
-	}
-	mux.Handle("/alertz", auth.RequireKey(wakeKey, base.With("component", "auth"), http.HandlerFunc(h.ServeAlert)))
+	// alert-ingestion authenticates against integration_users, the same store its
+	// vendor webhooks use. The endpoint is Public, so this is its only protection.
+	userRepo := auth.NewUserRepo(session)
+	mux.Handle("/alertz", auth.RequireAuth(userRepo, base.With("component", "auth"))(http.HandlerFunc(h.ServeAlert)))
 
 	port := os.Getenv("PORT")
 	if port == "" {

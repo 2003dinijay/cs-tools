@@ -115,7 +115,7 @@ func presentedKeys(r *http.Request) []credential {
 	}
 	if token, ok := bearerToken(r); ok {
 		out = append(out, credential{token, "bearer token"})
-		// The shape alerts-core's RequireKey accepts, so one header suits both.
+		// The shape alerts-core's RequireAuth accepts, so one header suits both.
 		if _, key, ok := decodeColonPair(token); ok {
 			out = append(out, credential{key, "bearer token"})
 		}

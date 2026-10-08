@@ -83,6 +83,10 @@ func TestIsExpired(t *testing.T) {
 		"unset (zero time) never expires": {time.Time{}, false},
 		"future expiry is not expired":    {now.Add(time.Hour), false},
 		"past expiry is expired":          {now.Add(-time.Hour), true},
+		// Cosmos DB returns an unset expires_at as the epoch; without this, every
+		// user provisioned without -ttl is rejected as expired.
+		"cosmos epoch reads as unset": {time.Unix(0, 0), false},
+		"just after epoch is expiry":  {time.Unix(1, 0), true},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
