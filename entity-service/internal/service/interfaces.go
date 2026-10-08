@@ -892,7 +892,10 @@ type CallRequestService interface {
 	SearchAllCallRequests(ctx context.Context, req domain.SearchAllCallRequestsRequest) (domain.SearchCallRequestsResponse, error)
 	// UpdateCallRequest updates the state or other fields of a call request.
 	// The target state selects the behaviour (customer/agent transitions, scheduling,
-	// rejection, conclusion with notes). A ValidationError is returned for invalid
+	// rejection, conclusion). Notes are optional when concluding: on the Postgres
+	// data source a conclude without them ("Mark as completed") is staff-only (a
+	// ForbiddenError otherwise) and only applies to a scheduled or notes-pending
+	// call (a ConflictError otherwise). A ValidationError is returned for invalid
 	// input; a NotFoundError if no call request matches.
 	UpdateCallRequest(ctx context.Context, req domain.UpdateCallRequestRequest) (domain.UpdateCallRequestResponse, error)
 }

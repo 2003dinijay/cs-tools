@@ -15,6 +15,7 @@
 // under the License.
 
 import {
+  Alert,
   Box,
   Button,
   Card,
@@ -29,7 +30,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { Phone, Plus, RefreshCw } from "@wso2/oxygen-ui-icons-react";
-import { useEffect, useState, type JSX } from "react";
+import { useEffect, useRef, useState, type JSX } from "react";
 import type { BeCallRequestView, BeCallRequestStateKey } from "@api/backend/types";
 import type {
   CaseState,
@@ -130,6 +131,11 @@ export function CallRequestsWidget({
   const [notesTarget, setNotesTarget] = useState<BeCallRequestView | null>(null);
   const [cancelTarget, setCancelTarget] = useState<BeCallRequestView | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
+  // "Mark as completed" has no dialog of its own to show a failure in, so its error
+  // is shown on the card. The ref (not just the mutation's isPending) is what stops
+  // a fast double click from sending the PATCH twice before the first re-render.
+  const [completeError, setCompleteError] = useState<string | null>(null);
+  const completingRef = useRef(false);
 
   const isReschedule =
     resolveCallRequestStateKey(scheduleTarget?.state) === "scheduled";
@@ -154,7 +160,11 @@ export function CallRequestsWidget({
 
   const handleAction = (action: CallRequestAgentAction, cr: BeCallRequestView) => {
     setActionError(null);
+    setCompleteError(null);
     switch (action) {
+      case "complete":
+        void handleComplete(cr);
+        break;
       case "schedule":
       case "reschedule":
         setScheduleTarget(cr);
@@ -244,6 +254,32 @@ export function CallRequestsWidget({
         err instanceof Error ? err.message : "Could not send the call notes.",
       );
     }
+  };
+
+  // One click, no dialog and no notes: concludes the call (engineers had no way to finish a call). The
+  // backend only accepts this for a scheduled / notes-pending call and answers 409
+  // (with the call's current state) when the row on screen is stale.
+  const handleComplete = async (cr: BeCallRequestView) => {
+    if (completingRef.current) return;
+    completingRef.current = true;
+    setCompleteError(null);
+    try {
+      await patchCallRequest.mutateAsync({
+        caseId,
+        callRequestId: cr.id,
+        patch: { state: "concluded" },
+      });
+    } catch (err) {
+      setCompleteError(
+        err instanceof Error && err.message
+          ? err.message
+          : "Could not mark the call request as completed.",
+      );
+    }
+    // Reset after the try/catch rather than in a `finally`: the catch above never
+    // rethrows, so this always runs, and the React Compiler does not support a
+    // `finally` clause (it would skip optimizing this whole component).
+    completingRef.current = false;
   };
 
   const handleCancel = async (cancellationReason: string) => {
@@ -397,12 +433,19 @@ export function CallRequestsWidget({
           </Box>
         )}
 
+        {completeError && (
+          <Alert severity="error" onClose={() => setCompleteError(null)}>
+            {completeError}
+          </Alert>
+        )}
+
         {!isLoading && !isError && requests.length > 0 && (
           <CallRequestsTable
             requests={requests}
             onAction={handleAction}
             isClosed={isClosed}
             readOnly={readOnly}
+            busy={patchCallRequest.isPending}
           />
         )}
       </Card>

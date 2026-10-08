@@ -4949,6 +4949,16 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: >
+            On the Postgres data source, the call request is not in a state this
+            change is allowed from. Concluding without notes ("Mark as completed")
+            needs a scheduled or notes-pending call; the message names its current
+            state.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
           content:
@@ -19531,8 +19541,10 @@ components:
         notes:
           type: string
           description: >
-            Free-form notes describing the outcome of the call. Set when
-            concluding the request.
+            Free-form notes describing the outcome of the call. Optional when
+            concluding the request: a conclude with no notes ("Mark as
+            completed") is for WSO2 staff and, on the Postgres data source,
+            leaves the notes already recorded untouched.
         plan:
           type: string
           description: Optional plan or next steps agreed during the call.

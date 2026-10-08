@@ -2520,8 +2520,9 @@ export interface BeSearchCallRequestsResponse {
  *   required, `assignee` optional.
  * - `wso2_rejected` (agent reject) / `canceled`: `cancellationReason` optional
  *   (used as the reject/cancel reason).
- * - `concluded` (agent send notes): `notes` required, `plan`/`attendees`/
- *   `actionItems`/`actualDurationMin` optional.
+ * - `concluded`: agent "send call notes" supplies `notes` (plus optional
+ *   `plan`/`attendees`/`actionItems`/`actualDurationMin`); agent "mark as
+ *   completed" sends no notes at all.
  * - `pending_on_wso2` (reschedule request back to the customer): `utcTimes` +
  *   `durationInMinutes`.
  */
@@ -2537,7 +2538,9 @@ export interface BeUpdateCallRequestPayload {
   meetingDate?: string;
   /** Agent (or team) assigned to run the call; used for `scheduled`. */
   assignee?: string;
-  /** Call notes; required for `concluded`. */
+  /** Call notes for `concluded`. Optional: "Mark as completed" concludes a call
+   * with none (the backend then only accepts it for a scheduled / notes-pending
+   * call); "Send call notes" always supplies them. */
   notes?: string;
   /** Follow-up plan recorded alongside the call notes; used for `concluded`. */
   plan?: string;

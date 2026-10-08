@@ -5738,6 +5738,15 @@ paths:
         conclusion with post-call notes (notes, plan, attendees, actionItems,
         actualDurationMin). On the Postgres data source cancellationReason is
         rejected with 400, because customer_call has no column to store it.
+
+        Concluding needs no notes ("Mark as completed"). On the Postgres data
+        source a conclude with no (or blank) notes is restricted to WSO2 staff
+        (403 for any other caller), is only accepted for a call that is
+        scheduled or notes pending (any other current state is a 409 naming
+        that state) and leaves the notes the call already has untouched.
+        Concluding with notes is not restricted by the current state. The
+        ServiceNow data source applies none of these restrictions itself and
+        leaves them to ServiceNow.
       operationId: updateCallRequest
       parameters:
         - name: id
@@ -5771,8 +5780,25 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: >-
+            A conclude with no notes was attempted by a caller who is not WSO2 staff
+            (Postgres data source).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >-
+            Postgres data source: the call request is not in a state this change is
+            allowed from (a conclude with no notes needs a scheduled or notes-pending
+            call).
           content:
             application/json:
               schema:

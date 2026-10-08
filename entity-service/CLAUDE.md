@@ -7476,7 +7476,33 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   reason -- note the customer portal passes it through, so cancelling *with* a
   reason fails on this data source until a column exists); `closed_on`/`closed_by_id`
   are never set (which states count as "closed" is unspecified); state
-  transitions aren't validated against the current state.
+  transitions aren't validated against the current state, with one exception.
+- **"Mark as completed" (digiops-cs#3350)** is `PATCH state: concluded` with no
+  notes, one click in the CSM portal. The "notes is required when state is
+  concluded" rule was dropped for it (in `callRequestService` and in
+  `snCallRequestService`, whose local validation also runs for the dual-write
+  mirror, so keeping it there would fail every such mirror before ServiceNow saw
+  it). What replaces it, in `callRequestRepo.UpdateCallRequest`, on the Postgres
+  data source:
+  - **Staff only.** A conclude with no (or blank) notes from anyone but an
+    internal (`Unrestricted`) caller is a `ForbiddenError` (403), answered before
+    any lookup. This matters: the customer portal's backend forwards whatever
+    state key it is given (key 8 is `concluded`), cannot send notes, and RLS lets
+    a project member update their own project's calls, so the notes rule had been
+    the only thing stopping a customer from concluding a call.
+  - **Only from `scheduled` or `notes_pending`**, enforced in the UPDATE's own
+    WHERE clause (atomic with the write); anything else (pending, rejected,
+    canceled, already concluded, NULL) is a `ConflictError` (409) naming the
+    current state. If the call became completable between the UPDATE and the
+    lookup the 409 says it changed and to retry; a failed lookup is an error, not
+    a 404.
+  - **Blank notes are none**: never written, so completing a call cannot erase the
+    notes it already has. Concluding WITH notes ("Send call notes") is not guarded.
+  - **The pure ServiceNow data source has neither the staff-only rule nor the state
+    guard** -- it forwards to ServiceNow, which applies its own rules. Whether
+    ServiceNow accepts a notes-less conclude is its decision; under dual-write the
+    Postgres change commits first and a refused mirror is only recorded in
+    `sn_writeback_failures`, so check that table after rolling this out.
 
 ### Service-request catalog -- `catalog_repo.go`/`catalog_service.go`
 

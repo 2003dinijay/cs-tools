@@ -134,16 +134,29 @@ export const ALL_CALL_REQUEST_STATES: BeCallRequestStateKey[] = [
  * fails on submit.
  *
  * - `pending_on_wso2`: agent can schedule the call or reject it.
- * - `scheduled`: agent can reschedule or cancel. Sending notes from this
- *   state is normally gated by the backend's post-due automation moving the
- *   request to `notes_pending` first; it is not offered here.
- * - `notes_pending`: agent can send call notes (concludes the request).
+ * - `scheduled`: agent can reschedule, mark it completed, or cancel. Sending
+ *   notes from this state is normally gated by the backend's post-due
+ *   automation moving the request to `notes_pending` first; it is not offered
+ *   here -- "Mark as completed" is the way to finish a call without waiting for
+ *   (or writing) notes.
+ * - `notes_pending`: agent can send call notes (concludes the request) or just
+ *   mark it completed with no notes.
  * - `pending_on_customer`: the customer owns scheduling/rejecting; the agent
  *   can only cancel on their behalf.
  * - Terminal states (`customer_rejected`, `wso2_rejected`, `canceled`,
  *   `concluded`): no actions.
+ *
+ * `complete` ("Mark as completed") is a one-click
+ * `state: concluded` with no notes -- the backend only accepts that from
+ * `scheduled` / `notes_pending`, which is exactly where it is offered.
  */
-export type CallRequestAgentAction = "schedule" | "reschedule" | "reject" | "sendNotes" | "cancel";
+export type CallRequestAgentAction =
+  | "schedule"
+  | "reschedule"
+  | "reject"
+  | "sendNotes"
+  | "complete"
+  | "cancel";
 
 export const CALL_REQUEST_AGENT_ACTIONS: Record<
   BeCallRequestStateKey,
@@ -151,11 +164,11 @@ export const CALL_REQUEST_AGENT_ACTIONS: Record<
 > = {
   pending_on_customer: ["cancel"],
   pending_on_wso2: ["schedule", "reject"],
-  scheduled: ["reschedule", "cancel"],
+  scheduled: ["reschedule", "complete", "cancel"],
   customer_rejected: [],
   wso2_rejected: [],
   canceled: [],
-  notes_pending: ["sendNotes"],
+  notes_pending: ["sendNotes", "complete"],
   concluded: [],
 };
 
