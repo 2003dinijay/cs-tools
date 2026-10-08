@@ -20,9 +20,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strings"
-
-	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/scim"
 )
 
 // withPortalRoles adds a `csmPlatformRoles` field to GET /users/{id}'s
@@ -41,11 +38,25 @@ import (
 // only ever describes the caller -- there is no way to read another user's
 // token from here. SCIM's own user search returns the same role assignment
 // for ANY user by email, so this reaches the same portal-role vocabulary for
-// the user being VIEWED via SCIM instead. SCIM's roles span every Asgardeo
-// application the person holds a role in, not just this portal, so they are
-// filtered to the CSM app's own prefix (scim.CSMAppRolePrefix) first --
-// matching what the JWT's own "roles" claim already narrows to at
-// token-issuance time.
+// the user being VIEWED via SCIM instead.
+//
+// SCIM's roles span every Asgardeo application the person holds a role in,
+// not just this portal, but the full, unfiltered list is handed straight to
+// RolesFor -- the exact same call GetMe makes with the JWT claim's roles.
+// RolesFor already only matches a role name against what AUTH_<ROLE>_ROLES
+// actually configures per portal role, so a role belonging to some other
+// application simply never matches anything and is silently ignored, same as
+// it would be filtered out here. An earlier version first narrowed SCIM's
+// roles to a hardcoded prefix (guessed at, not derived from this
+// deployment's actual Asgardeo role-naming convention) before calling
+// RolesFor -- confirmed live, via temporary diagnostic logging, that the
+// guess was wrong, so the filter silently dropped every role and no CSM
+// Platform role was ever resolved for anyone, regardless of what they
+// actually held in Asgardeo. RolesFor's own exact-match-against-
+// configuration behavior makes that intermediate filter both wrong and
+// unnecessary -- removed outright rather than repointed at a different
+// hardcoded guess, which would only repeat the same failure mode the next
+// time the naming convention changes.
 //
 // Gated on the target's email domain (isWso2Email), not `userType`: a
 // wso2.com address is reserved for WSO2 staff regardless of what userType
@@ -86,29 +97,7 @@ func (h *UsersHandler) withPortalRoles(ctx context.Context, raw []byte, callerID
 		return raw
 	}
 
-	var csmRoles []string
-	for _, role := range info.Roles {
-		if strings.HasPrefix(role, scim.CSMAppRolePrefix) {
-			csmRoles = append(csmRoles, role)
-		}
-	}
-
-	portalRoleKeys := h.access.RolesFor(csmRoles)
-	// Diagnostic only, not a failure: a staff member can legitimately hold no
-	// CSM Platform role. Logs the raw, unfiltered SCIM role names (not PII)
-	// whenever the resolved list comes back empty, so a report of "this
-	// person's real Asgardeo role isn't showing" can be checked against what
-	// SCIM actually returned -- without it there is no way to tell a genuine
-	// "holds nothing" apart from "info.Roles didn't have the 'app-csm-'
-	// prefix" apart from "had it, but didn't match any configured
-	// AUTH_<ROLE>_ROLES value" after the fact, since none of that survives
-	// into the API response itself.
-	if len(portalRoleKeys) == 0 {
-		slog.InfoContext(ctx, "withPortalRoles: no CSM Platform role resolved",
-			"userID", callerID, "scimRoles", info.Roles, "csmPrefixedRoles", csmRoles)
-	}
-
-	encoded, err := json.Marshal(portalRoleKeys)
+	encoded, err := json.Marshal(h.access.RolesFor(info.Roles))
 	if err != nil {
 		slog.WarnContext(ctx, "withPortalRoles: encode roles failed", "userID", callerID, "err", err)
 		return raw

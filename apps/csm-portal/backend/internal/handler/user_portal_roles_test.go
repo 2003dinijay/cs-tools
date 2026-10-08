@@ -28,18 +28,19 @@ import (
 )
 
 // testAccessConfigForCSMRoles mirrors testAccessConfig, but with dummy token
-// role names carrying the "app-csm-" prefix SCIM roles actually use -- so
-// withPortalRoles' own prefix filter has something real to match against.
+// role names shaped like SCIM role display names (plain strings, no assumed
+// prefix of any kind) -- withPortalRoles hands SCIM's roles straight to
+// RolesFor, so these are what it matches against.
 func testAccessConfigForCSMRoles() AccessConfig {
 	return AccessConfig{
-		Viewer:               []string{"app-csm-test-viewer"},
-		Escalator:            []string{"app-csm-test-escalator"},
-		AttachmentDownloader: []string{"app-csm-test-attachment-downloader"},
-		UsageMetricsViewer:   []string{"app-csm-test-usage-metrics-viewer"},
-		CsEngineer:           []string{"app-csm-test-cs-engineer"},
-		Admin:                []string{"app-csm-test-admin"},
-		TimecardApprover:     []string{"app-csm-test-timecard-approver"},
-		DashboardDesigner:    []string{"app-csm-test-dashboard-designer"},
+		Viewer:               []string{"test-viewer"},
+		Escalator:            []string{"test-escalator"},
+		AttachmentDownloader: []string{"test-attachment-downloader"},
+		UsageMetricsViewer:   []string{"test-usage-metrics-viewer"},
+		CsEngineer:           []string{"test-cs-engineer"},
+		Admin:                []string{"test-admin"},
+		TimecardApprover:     []string{"test-timecard-approver"},
+		DashboardDesigner:    []string{"test-dashboard-designer"},
 	}
 }
 
@@ -53,6 +54,10 @@ type getUserPortalRolesResponse struct {
 // SCIM's role assignment through AccessGuard.RolesFor -- entity-service's own
 // `roles` field (the Customer Portal's own role vocabulary) is left
 // untouched, since the two describe different things for the same person.
+// SCIM's full, unfiltered role list is passed straight to RolesFor: a role
+// belonging to some other Asgardeo application ("some-other-app-role") is
+// correctly ignored because it simply never matches any configured
+// AUTH_<ROLE>_ROLES value -- not because of any separate narrowing step.
 func TestGetUser_PortalRoles_AddsCsmPlatformRolesForWso2Email(t *testing.T) {
 	const id = "11111111-1111-1111-1111-111111111111"
 	var gotEmail string
@@ -60,7 +65,7 @@ func TestGetUser_PortalRoles_AddsCsmPlatformRolesForWso2Email(t *testing.T) {
 		searchUserFn: func(_ context.Context, email string) (*scim.UserInfo, error) {
 			gotEmail = email
 			return &scim.UserInfo{Roles: []string{
-				"app-csm-test-admin", "some-other-app-role",
+				"test-admin", "some-other-app-role",
 			}}, nil
 		},
 	}, &mockEntityUserClient{
@@ -87,17 +92,13 @@ func TestGetUser_PortalRoles_AddsCsmPlatformRolesForWso2Email(t *testing.T) {
 	}
 }
 
-// TestGetUser_PortalRoles_EmptyWhenScimRolesDontMatchAnyConfiguredRole: found
-// live -- SCIM can return a non-empty role list for a wso2.com target where
-// none of them carry the "app-csm-" prefix (or none match a configured
-// AUTH_<ROLE>_ROLES value), e.g. because the role names Asgardeo actually
-// holds for that person don't match what this backend is configured to look
-// for. csmPlatformRoles must still come back as a present, empty array in
-// that case -- not omitted, not an error -- diagnosed via the "no CSM
-// Platform role resolved" log line in withPortalRoles (which logs the raw,
-// unfiltered SCIM roles precisely so this can be told apart from "holds
-// nothing in Asgardeo at all" after the fact).
-func TestGetUser_PortalRoles_EmptyWhenScimRolesDontMatchAnyConfiguredRole(t *testing.T) {
+// TestGetUser_PortalRoles_EmptyWhenNoScimRoleMatchesAnyConfiguredRole: SCIM
+// can return a non-empty role list for a wso2.com target where none of them
+// match any configured AUTH_<ROLE>_ROLES value -- e.g. the person genuinely
+// holds no role for this portal in Asgardeo, or holds roles for other
+// applications only. csmPlatformRoles must still come back as a present,
+// empty array in that case -- not omitted, not an error.
+func TestGetUser_PortalRoles_EmptyWhenNoScimRoleMatchesAnyConfiguredRole(t *testing.T) {
 	const id = "11111111-1111-1111-1111-111111111111"
 	h := NewUsersHandler(&mockSCIMClient{
 		searchUserFn: func(_ context.Context, _ string) (*scim.UserInfo, error) {
@@ -132,7 +133,7 @@ func TestGetUser_PortalRoles_AddedForAWso2EmailEvenWhenTaggedExternal(t *testing
 	const id = "11111111-1111-1111-1111-111111111111"
 	h := NewUsersHandler(&mockSCIMClient{
 		searchUserFn: func(_ context.Context, _ string) (*scim.UserInfo, error) {
-			return &scim.UserInfo{Roles: []string{"app-csm-test-admin"}}, nil
+			return &scim.UserInfo{Roles: []string{"test-admin"}}, nil
 		},
 	}, &mockEntityUserClient{
 		getUserFn: func(_ context.Context, _ string) ([]byte, error) {
@@ -164,7 +165,7 @@ func TestGetUser_PortalRoles_SkippedForNonWso2Email(t *testing.T) {
 	h := NewUsersHandler(&mockSCIMClient{
 		searchUserFn: func(_ context.Context, _ string) (*scim.UserInfo, error) {
 			called = true
-			return &scim.UserInfo{Roles: []string{"app-csm-test-admin"}}, nil
+			return &scim.UserInfo{Roles: []string{"test-admin"}}, nil
 		},
 	}, &mockEntityUserClient{
 		getUserFn: func(_ context.Context, _ string) ([]byte, error) {
@@ -200,7 +201,7 @@ func TestGetUser_PortalRoles_SkippedWhenAccessGuardNotWired(t *testing.T) {
 	h := NewUsersHandler(&mockSCIMClient{
 		searchUserFn: func(_ context.Context, _ string) (*scim.UserInfo, error) {
 			called = true
-			return &scim.UserInfo{Roles: []string{"app-csm-test-admin"}}, nil
+			return &scim.UserInfo{Roles: []string{"test-admin"}}, nil
 		},
 	}, &mockEntityUserClient{
 		getUserFn: func(_ context.Context, _ string) ([]byte, error) {
