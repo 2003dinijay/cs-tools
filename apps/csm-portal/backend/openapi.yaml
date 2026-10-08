@@ -16369,6 +16369,18 @@ components:
               description: >
                 SCIM "external" org existence/lock status. Present for external contacts only
                 (userType other than internal); absent when the SCIM lookup itself failed.
+            csmPlatformRoles:
+              type: array
+              items:
+                type: string
+              description: >
+                The CSM portal's own Asgardeo-backed role assignment (viewer, escalator,
+                cs_engineer, admin, ...), the same vocabulary GET /users/me reports for the
+                caller -- a separate field from this object's own `roles`, which is
+                entity-service's role vocabulary (admin, commenter, customer, ...) and is
+                left untouched. Present only for a wso2.com-email target, regardless of its
+                recorded userType; absent when the target's email is not wso2.com, when no
+                AccessGuard is configured, or when the SCIM lookup itself failed.
 
     ExternalAccountStatus:
       type: object
