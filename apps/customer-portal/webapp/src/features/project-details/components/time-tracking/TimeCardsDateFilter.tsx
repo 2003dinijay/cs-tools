@@ -20,7 +20,7 @@ import { format } from "date-fns";
 
 const { LocalizationProvider, DatePicker } = DatePickers;
 import type { JSX } from "react";
-import { useControlledDatePickerValue } from "@hooks/useControlledDatePickerValue";
+import { useControlledDatePickerValue, isPastOrPresentDate } from "@hooks/useControlledDatePickerValue";
 import type { TimeCardsDateFilterProps } from "@features/project-details/types/projectDetailsComponents";
 
 function parseDateOnly(value: string): Date | null {
@@ -49,17 +49,23 @@ export default function TimeCardsDateFilter({
   onClear,
 }: TimeCardsDateFilterProps): JSX.Element {
   const hasFilters = Boolean(startDate || endDate);
+  // isComplete: isPastOrPresentDate -- both pickers below are `disableFuture`
+  // (case-created-date filters can't meaningfully name a future day), but
+  // MUI's own `disableFuture` only disables the calendar popup's future
+  // days; it doesn't stop a hand-typed future date from reaching onChange.
   const start = useControlledDatePickerValue({
     value: startDate,
     onChange: onStartDateChange,
     parse: parseDateOnly,
     format: formatDateOnly,
+    isComplete: isPastOrPresentDate,
   });
   const end = useControlledDatePickerValue({
     value: endDate,
     onChange: onEndDateChange,
     parse: parseDateOnly,
     format: formatDateOnly,
+    isComplete: isPastOrPresentDate,
   });
 
   return (

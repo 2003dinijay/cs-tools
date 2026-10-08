@@ -18,6 +18,7 @@ import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   useControlledDatePickerValue,
+  isPastOrPresentDate,
   type UseControlledDatePickerValueOptions,
 } from "@hooks/useControlledDatePickerValue";
 
@@ -207,5 +208,48 @@ describe("useControlledDatePickerValue", () => {
     });
     advance(300);
     expect(onChange).toHaveBeenCalledWith("2026-01-15");
+  });
+});
+
+describe("isPastOrPresentDate", () => {
+  it("accepts today and any earlier date", () => {
+    expect(isPastOrPresentDate(new Date())).toBe(true);
+    expect(isPastOrPresentDate(new Date(2020, 0, 1))).toBe(true);
+  });
+
+  it("rejects a date later than today", () => {
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+    expect(isPastOrPresentDate(tomorrow)).toBe(false);
+  });
+
+  it("rejects an incomplete/invalid date the same as the default check", () => {
+    expect(isPastOrPresentDate(new Date(NaN))).toBe(false);
+    expect(isPastOrPresentDate(null)).toBe(false);
+  });
+});
+
+describe("useControlledDatePickerValue with isComplete: isPastOrPresentDate", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("never commits a hand-typed future date, even though it's a complete, valid Date", () => {
+    const { result, onChange } = setup({ isComplete: isPastOrPresentDate });
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    act(() => {
+      result.current.handleChange(tomorrow);
+    });
+    advance(1000);
+
+    // This is the gap a `disableFuture`-flagged MUI DatePicker alone does
+    // not close: it marks the typed value invalid in the UI, but still
+    // reports it through onChange -- the caller has to reject it itself.
+    expect(onChange).not.toHaveBeenCalled();
   });
 });

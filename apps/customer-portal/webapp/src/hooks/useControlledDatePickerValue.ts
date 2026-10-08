@@ -25,6 +25,28 @@ function isValidDate(date: unknown): date is Date {
   return date instanceof Date && !Number.isNaN(date.getTime());
 }
 
+/**
+ * A complete, valid date that is also not later than today -- the `isComplete`
+ * override a `disableFuture`-flagged `DatePicker` needs. MUI's own
+ * `disableFuture` prop only disables the calendar popup's future days and
+ * marks a typed future date as visually invalid (`textField.error`); it does
+ * not stop `onChange` from firing with that date, so without this, a caller
+ * still receives and commits a hand-typed future date regardless of
+ * `disableFuture` being set. Found live, immediately after the reset-while-
+ * typing fix shipped: that bug tended to wipe an in-progress edit before the
+ * user finished typing a complete date at all, which incidentally made a
+ * complete future date rare to ever reach `onChange` in practice. Fixing the
+ * reset made typing a complete date reliable, which is exactly what
+ * surfaced this separate, pre-existing gap. Compares at the instant of the
+ * call, not a memoized "today": a date-only value (local midnight) is
+ * always `<=` "right now" on the same calendar day, so this correctly
+ * allows "today" throughout the day and only ever rejects a day strictly
+ * after it.
+ */
+export function isPastOrPresentDate(date: unknown): date is Date {
+  return isValidDate(date) && date.getTime() <= Date.now();
+}
+
 export interface UseControlledDatePickerValueOptions {
   /** The committed, external value (e.g. "2026-01-15", or "" for none). */
   value: string;
