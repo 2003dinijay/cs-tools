@@ -126,8 +126,8 @@ type searchIncidentsResponse struct {
 // openIncidentStates copies entity-service's IncidentState values by hand (separate Go module, not importable) — keep in sync manually.
 var openIncidentStates = map[string]bool{"NEW": true, "IN_PROGRESS": true, "ON_HOLD": true}
 
-// IncidentState is authoritative for open/closed since only CSM/agents ever close incidents; found is false on no match.
-func (c *Client) IncidentState(ctx context.Context, number string) (open bool, found bool, err error) {
+// IncidentState is authoritative for open/closed since only CSM/agents ever close incidents; it looks up number exactly and accepts only the row whose id is incidentID; found is false on no match.
+func (c *Client) IncidentState(ctx context.Context, incidentID, number string) (open bool, found bool, err error) {
 	req := searchIncidentsRequest{
 		Filters:    searchIncidentsFilters{Number: number},
 		Pagination: pagination{Limit: 1, Offset: 0},
@@ -146,8 +146,16 @@ func (c *Client) IncidentState(ctx context.Context, number string) (open bool, f
 	if err := json.Unmarshal(respBody, &resp); err != nil {
 		return false, false, fmt.Errorf("csm: decode incident search response: %w", err)
 	}
-	if len(resp.Incidents) == 0 || resp.Incidents[0].State == nil {
+	if len(resp.Incidents) == 0 {
 		return false, false, nil
 	}
-	return openIncidentStates[*resp.Incidents[0].State], true, nil
+	hit := resp.Incidents[0]
+	// Another incident's row means the number filter was not applied; its state says nothing about this incident.
+	if hit.ID == nil || *hit.ID != incidentID || hit.Number == nil || *hit.Number != number {
+		return false, false, fmt.Errorf("csm: incident search for %s returned a different incident, number filter not applied", number)
+	}
+	if hit.State == nil {
+		return false, false, nil
+	}
+	return openIncidentStates[*hit.State], true, nil
 }

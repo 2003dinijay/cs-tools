@@ -144,8 +144,8 @@ func (n *Notifier) PushWorkNote(ctx context.Context, incidentID, note string) er
 }
 
 // IncidentState returns found=false when CSM has no matching incident yet.
-func (n *Notifier) IncidentState(ctx context.Context, incidentNumber string) (open bool, found bool, err error) {
-	return n.csm.IncidentState(ctx, incidentNumber)
+func (n *Notifier) IncidentState(ctx context.Context, incidentID, incidentNumber string) (open bool, found bool, err error) {
+	return n.csm.IncidentState(ctx, incidentID, incidentNumber)
 }
 
 // createIncidentWithRetry retries transient CreateIncident failures with backoff; 4xx other than 429 is permanent.
