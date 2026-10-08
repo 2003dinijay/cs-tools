@@ -326,7 +326,7 @@ func TestApplyStateEffects_AwaitingInfo_PausesWorkaroundAndResolution(t *testing
 	}
 }
 
-func TestApplyStateEffects_Closed_CompletesResolutionAndPausesWorkaround(t *testing.T) {
+func TestApplyStateEffects_Closed_CompletesResolutionAndResponseAndPausesWorkaround(t *testing.T) {
 	st := newFakeStore()
 	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
 	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", time.Now(), "CS0001", "", "", "CASE", "", "")
@@ -339,6 +339,74 @@ func TestApplyStateEffects_Closed_CompletesResolutionAndPausesWorkaround(t *test
 	}
 	if wMeta, _, _ := st.GetClock(context.Background(), "case-1", ClockWorkaround); !wMeta.Paused {
 		t.Error("workaround clock not paused on close")
+	}
+	// Regression for a real reported bug: a case that
+	// closes without ever getting a qualifying support-engineer reply
+	// (CompleteResponseClock never called -- a work note doesn't qualify,
+	// and neither does a comment whose author didn't resolve as a
+	// recognized CS-engineer role) used to leave the response clock
+	// neither paused nor completed, so its Redis wake entries stayed live
+	// and a breach alert fired well after the case had already closed.
+	rMeta, _, _ := st.GetClock(context.Background(), "case-1", ClockResponse)
+	if rMeta.AlertedTier != 100 {
+		t.Errorf("response AlertedTier = %d, want 100 (force-completed on close, same as resolution)", rMeta.AlertedTier)
+	}
+}
+
+// TestApplyStateEffects_Closed_WithoutAQualifyingReply_NeverAlertsOnResponse
+// is the end-to-end regression for a real reported bug: a case closes with no
+// CompleteResponseClock ever called (no qualifying support-engineer reply --
+// only a work note was added), and a Tick long after close must not fire a
+// response-clock breach alert.
+func TestApplyStateEffects_Closed_WithoutAQualifyingReply_NeverAlertsOnResponse(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	e := newTestEngine(st, chat, &fakePublisher{})
+	start := time.Now().Add(-2 * time.Hour)
+	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", start, "CS0001", "", "", "CASE", "", "")
+
+	// The case closes with no qualifying support-engineer reply ever having
+	// completed the response clock -- matching the issue's own repro (a
+	// comment and a work note were added, neither of which qualifies).
+	e.ApplyStateEffects(context.Background(), "case-1", "Closed")
+
+	// Now time passes well beyond every tier's original due date (the
+	// issue's own "wait more than 1 hour" step) and a tick runs.
+	if err := e.Tick(context.Background(), time.Now().Add(1*time.Hour)); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	for _, c := range chat.calls {
+		if c.clockType == ClockResponse {
+			t.Fatalf("a response-clock breach alert was sent after the case closed with no qualifying reply: %+v", c)
+		}
+	}
+}
+
+// TestApplyStateEffects_Closed_NoClockTypeAlertsAfterClose is the same proof
+// as the response-only test above, but for all three clock types at once,
+// closing a case directly from "Open" (no intermediate pause) with no
+// WorkaroundProvided-equivalent signal and no qualifying reply ever having
+// run -- the worst case for every clock. Workaround is only paused on
+// close (not completed, a documented accepted gap -- see ApplyStateEffects'
+// own doc comment), but processDueMember drops a paused clock's wake entry
+// without alerting regardless of tier, so it must be just as silent as the
+// two force-completed clocks here.
+func TestApplyStateEffects_Closed_NoClockTypeAlertsAfterClose(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	e := newTestEngine(st, chat, &fakePublisher{})
+	start := time.Now().Add(-2 * time.Hour)
+	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", start, "CS0001", "", "", "CASE", "", "")
+
+	e.ApplyStateEffects(context.Background(), "case-1", "Closed")
+
+	if err := e.Tick(context.Background(), time.Now().Add(1*time.Hour)); err != nil {
+		t.Fatalf("Tick: %v", err)
+	}
+
+	if len(chat.calls) != 0 {
+		t.Fatalf("expected no breach alerts of any clock type after close, got: %+v", chat.calls)
 	}
 }
 
