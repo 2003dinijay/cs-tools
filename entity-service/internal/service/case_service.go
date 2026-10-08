@@ -413,6 +413,15 @@ func validateCreateCaseRequest(req *domain.CreateCaseRequest) error {
 	if req.ProjectID == "" {
 		return &apierror.ValidationError{Msg: "projectId is required"}
 	}
+	// Optional on every type; validated here (not just snCaseService's own
+	// CreateCase, which already did this for its ServiceNow payload) so a
+	// malformed value is a clean 400 on the Postgres path too, rather than
+	// a raw "invalid input syntax for type uuid" surfacing from the INSERT.
+	if req.ConversationID != "" {
+		if err := validateUUIDs("conversationId", []string{req.ConversationID}); err != nil {
+			return err
+		}
+	}
 	// Announcements have no deployment/deployed-product concept: these fields
 	// are deliberately omitted at the ServiceNow layer, not just optional.
 	if req.Type != "announcement" {

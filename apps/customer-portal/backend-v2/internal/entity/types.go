@@ -1474,10 +1474,16 @@ type CaseActivity struct {
 
 // SearchCaseActivitiesRequest is the input for POST /cases/{id}/activities/search.
 // CaseID is populated from the URL path parameter and is not part of the JSON body.
+// ExcludeWorkNotes is always forced true by the handler (CaseHandler.SearchCaseActivities),
+// never left to the caller's own request body: an internal WORK_NOTE comment must never
+// reach the customer portal, in the Total count or the page itself -- see that handler's
+// own comment for why this can't be left as a client-side array filter alone (it used to
+// filter work notes out of the array but still forward entity-service's unfiltered Total).
 type SearchCaseActivitiesRequest struct {
 	CaseID              string     `json:"-"`
 	Pagination          Pagination `json:"pagination"`
 	IncludeFieldChanges *bool      `json:"includeFieldChanges,omitempty"`
+	ExcludeWorkNotes    *bool      `json:"excludeWorkNotes,omitempty"`
 }
 
 // SearchCaseActivitiesResponse is entity-service's response for POST /cases/{id}/activities/search.

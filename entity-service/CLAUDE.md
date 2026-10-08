@@ -2454,6 +2454,78 @@ already use — no route path, request, or response shape changed.
   filtering, the same deliberate posture as `AccountContactRepository`/
   `ProjectContactRepository`'s own `callerEmail` parameter below.
 
+## Linking a case to its originating conversation, and the activity feed's work-note count
+
+Reported live: a case created from a Novera chat ("create case" from an
+active conversation) showed no chat history at all on its Activity tab — on the Postgres and
+dual-write data sources only, not ServiceNow. `work_item.conversation_id` (migration 0021) is a
+real, already-indexed self-reference into `work_item` — exactly the mechanism needed — but
+nothing on this data source ever wrote or read it: `CreateCaseRequest.ConversationID` reached
+`caseService.CreateCase`/`createCaseSNFirst` and the shared `CreateCaseRequest` struct, but
+neither `case_repo.go`'s `create*PortalQuery` (plain Postgres) nor its `create*FromServiceNowQuery`
+(dual-write mirror insert) ever included `conversation_id` in their INSERT, and `GetCaseByID`
+never selected or joined it back into `CaseView.Conversation`. The ServiceNow data source has
+always worked, because `snCaseService.CreateCase`/`GetCaseByID` round-trip this through
+ServiceNow's own API instead — this gap was Postgres-only. The webapp's own Activity tab
+(`CaseDetailsActivityPanel.tsx`) already merges in `GET /conversations/{id}/messages` whenever
+it sees a non-null `conversation.id` on the case detail — it needed no changes at all once
+entity-service started actually populating the field.
+
+**Fix, no migration needed (the column already existed):** `createCaseTx`/`CreateCaseFromServiceNow`
+now bind `req.ConversationID` into every create query's `conversation_id` column, and
+`GetCaseByID` resolves it back via a `LEFT JOIN work_item conv ON conv.id = wi.conversation_id`,
+populating `CaseView.Conversation` with the conversation's own `subject` as its display name —
+exactly the shape `snCaseService.GetCaseByID` already produces. Only applies going forward: a
+case created before this shipped has no stored link and cannot get one retroactively.
+
+**A CodeRabbit-equivalent security review caught a real gap in the first version of this fix**:
+`req.ConversationID` was only validated as a well-formed UUID, with no check that it was a
+conversation the caller actually had any business linking to — a caller could set it to any
+other `work_item` id, including a real conversation belonging to a different project entirely,
+and `GetCaseByID`'s join would then surface that other project's chat subject back through
+their own case, a genuine cross-tenant disclosure. Fixed with the same discipline this file
+already uses elsewhere for a caller-supplied cross-table reference (see `caseLikeWorkItemTypes`
+existence checks, and the IDOR fix on `SearchCaseActivities`/`SearchIncidentActivities`
+documented above):
+
+- **Write side, plain Postgres (`createCaseTx`)**: before anything is inserted, one
+  `SELECT EXISTS (... WHERE id = $1 AND type = 'CONVERSATION'::work_item_type_enum AND
+  project_id = $2::uuid)` requires the conversation to belong to the *same project* the case is
+  being created under — a real conversation's `project_id` always matches the project it was
+  created under (`POST /projects/{id}/conversations`), so this never rejects a legitimate
+  caller. A mismatch is a `ValidationError` ("conversationId must reference an existing
+  conversation in this project") — one message for "doesn't exist" and "exists but wrong
+  project" alike, so the error itself can't be used to probe for other projects' conversation
+  ids.
+- **Write side, dual-write mirror (`CreateCaseFromServiceNow`)**: the new
+  `conversationRefOrNil` applies the identical type+project check but resolves a mismatch to
+  `nil` (silently skips the link, logs a warning) rather than failing the create outright —
+  consistent with this method's own established posture for `deployment`/`deployed_product`
+  (see `existingRefOrNil`'s doc comment): ServiceNow has already committed the case by the time
+  this runs, so refusing the Postgres insert over a bad conversation reference would orphan it
+  the same way an unmirrored deployment id would.
+- **Read side, defense in depth (`GetCaseByID`)**: the `conv` join itself now also requires
+  `conv.type = 'CONVERSATION'::work_item_type_enum AND conv.project_id = wi.project_id`, so even
+  a row that somehow ended up with a mismatched link (a legacy row, a future bug elsewhere)
+  can never surface a foreign-project subject through this endpoint — the read side doesn't
+  rely on the write side alone having gotten this right.
+
+**A second, unrelated bug surfaced in the same report**: the customer portal's Activity tab
+also showed `totalRecords` higher than the number of activities actually rendered. Root cause:
+`SearchCaseActivities`'s `total` (comment + attachment [+ field-change] counts) never
+discriminated by `comment.type`, so a `WORK_NOTE`-type comment (an internal WSO2 annotation)
+counted toward `total` the same as a public one, while the customer-portal BFF's own
+`MapSearchCaseActivities` correctly filtered work notes out of the *array* but forwarded this
+repository's unfiltered `total` unchanged. `SearchCaseActivitiesRequest` gained
+`ExcludeWorkNotes *bool` (same optional-pointer convention as `IncludeFieldChanges` right next
+to it): nil/false — every existing caller, including the CSM portal, which must still see work
+notes and their correct count — preserves the exact original behavior; `true` adds
+`type IS DISTINCT FROM 'WORK_NOTE'::comment_type_enum` to both the count query and the comment
+branch of the data query (`IS DISTINCT FROM`, not `<>`, so a comment with no type at all still
+counts/shows — a plain `<>` against NULL is neither true nor false in a `WHERE` clause and would
+silently exclude it too). Only `apps/customer-portal/backend-v2`'s handler sets it, and always
+forces it server-side rather than trusting the request body — see that repo's own CLAUDE.md.
+
 ## Case tags, case watch list, account/project contacts, and user roles
 
 A second round of wiring previously-ServiceNow-only routes up to Postgres,
