@@ -28,6 +28,13 @@ type PlaybookWriter interface {
 }
 
 func (s *playbookService) Create(ctx context.Context, req domain.CreatePlaybookRequest, actorID string) (domain.CreatePlaybookResult, error) {
+	// Every attributed write validates the caller, the same as the pairing
+	// writes do -- see validateActor. Without it an omitted actorId reaches
+	// uuidArg as "", becomes a NULL column, and the write SUCCEEDS while
+	// recording nobody: an attribution hole that looks like working code.
+	if err := validateActor(actorID); err != nil {
+		return domain.CreatePlaybookResult{}, err
+	}
 	if !domain.ValidLifecycleStage[req.LifecycleStage] {
 		return domain.CreatePlaybookResult{}, invalidEnum("lifecycleStage", string(req.LifecycleStage))
 	}
@@ -54,6 +61,13 @@ func (s *playbookService) Create(ctx context.Context, req domain.CreatePlaybookR
 }
 
 func (s *playbookService) Patch(ctx context.Context, req domain.PatchPlaybookRequest, actorID string) (domain.WriteResult, error) {
+	// Every attributed write validates the caller, the same as the pairing
+	// writes do -- see validateActor. Without it an omitted actorId reaches
+	// uuidArg as "", becomes a NULL column, and the write SUCCEEDS while
+	// recording nobody: an attribution hole that looks like working code.
+	if err := validateActor(actorID); err != nil {
+		return domain.WriteResult{}, err
+	}
 	if err := validateUUID("playbookId", req.ID); err != nil {
 		return domain.WriteResult{}, err
 	}
@@ -64,6 +78,13 @@ func (s *playbookService) Patch(ctx context.Context, req domain.PatchPlaybookReq
 }
 
 func (s *playbookService) ReplaceTasks(ctx context.Context, req domain.ReplacePlaybookTasksRequest, actorID string) (domain.WriteResult, error) {
+	// Every attributed write validates the caller, the same as the pairing
+	// writes do -- see validateActor. Without it an omitted actorId reaches
+	// uuidArg as "", becomes a NULL column, and the write SUCCEEDS while
+	// recording nobody: an attribution hole that looks like working code.
+	if err := validateActor(actorID); err != nil {
+		return domain.WriteResult{}, err
+	}
 	if err := validateUUID("playbookId", req.PlaybookID); err != nil {
 		return domain.WriteResult{}, err
 	}

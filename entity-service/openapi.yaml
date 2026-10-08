@@ -26937,6 +26937,8 @@ components:
               type: integer
     PlgPatchOrganizationRequest:
       type: object
+      required:
+        - actorId
       properties:
         ownerId:
           type: string
@@ -27084,6 +27086,7 @@ components:
         - name
         - playbookType
         - lifecycleStage
+        - actorId
       properties:
         name:
           type: string
@@ -27107,6 +27110,8 @@ components:
             of "the current user".
     PlgPatchPlaybookRequest:
       type: object
+      required:
+        - actorId
       properties:
         name:
           type: string
@@ -27129,6 +27134,7 @@ components:
       type: object
       required:
         - tasks
+        - actorId
       properties:
         tasks:
           type: array

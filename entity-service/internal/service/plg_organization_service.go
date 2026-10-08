@@ -82,6 +82,11 @@ func (s *organizationService) Get(ctx context.Context, id string) (*domain.Organ
 // integrity, and a later caller with a legitimate reason to unassign should not
 // have to fight a rule that belongs to someone else's product.
 func (s *organizationService) Patch(ctx context.Context, req domain.PatchOrganizationRequest, actorID string) (*domain.OrganizationDetail, error) {
+	// Same rule as every other attributed write: an owner change that records
+	// nobody is worse than one that is refused.
+	if err := validateActor(actorID); err != nil {
+		return nil, err
+	}
 	if err := validateUUID("organizationId", req.ID); err != nil {
 		return nil, err
 	}
