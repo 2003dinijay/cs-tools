@@ -849,7 +849,7 @@ test.describe("change request lifecycle — no bypass, and the stepper, while th
 //                 -> Authorize [CAB Approval] -> (auto) Scheduled
 //                 -> Implement -> Review -> Closed
 //   Emergency New -> Request Approval -> Authorize [one CAB Approval stage: no
-//                 Peer, no Assess, no ECAB (ServiceNow has none), no customer steps]
+//                 Peer, no Assess, no ECAB (the previous system has none), no customer steps]
 //                 -> (auto) Scheduled -> Implement -> Review -> Closed
 //   Standard  New -> Request Approval -> (auto) Scheduled, no approvals
 //

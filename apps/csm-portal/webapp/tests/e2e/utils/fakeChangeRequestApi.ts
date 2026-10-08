@@ -41,7 +41,7 @@
 //     approval ticked would skip Peer, CAB and the customer) and is refused (`stateJumpMessage`);
 //   - Request Approval (`PATCH {state:"assess"}`) on a Normal CR enters Assess
 //     with a "Peer Approval" stage; on an Emergency CR it enters Authorize with
-//     ONE "CAB Approval" stage in the existing CAB group (there is no ECAB: ServiceNow
+//     ONE "CAB Approval" stage in the existing CAB group (there is no ECAB: the previous system
 //     has none, and no Peer / Assess stage either); on a Standard CR it goes straight
 //     to the post-approval state with no approvals;
 //   - approving Peer Approval adds a "CAB Approval" stage and moves to
@@ -205,7 +205,7 @@ export const FAKE_CREATOR: FakeUser = { id: "00000000-0000-0000-0000-00000000e00
 export const FAKE_PEER: FakeUser = { id: "00000000-0000-0000-0000-00000000e002", name: "Pat Peer", email: "pat.peer@example.com" };
 export const FAKE_CAB: FakeUser = { id: "00000000-0000-0000-0000-00000000e003", name: "Cam Cab", email: "cam.cab@example.com" };
 /**
- * The approver of the stage an OLDER Emergency change still carries ("ECAB Approval"): ECAB does not exist in ServiceNow and
+ * The approver of the stage an OLDER Emergency change still carries ("ECAB Approval"): ECAB does not exist in the previous system and
  * nothing creates such a stage any more, but the ones already provisioned keep displaying and their approvers keep deciding them.
  */
 export const FAKE_ECAB: FakeUser = { id: "00000000-0000-0000-0000-00000000e004", name: "Eli Ecab", email: "eli.ecab@example.com" };
@@ -591,7 +591,7 @@ export interface FakeChangeRequestApi {
   startAtState(state: "review" | "customer_approval" | "customer_review"): void;
   /**
    * An OLDER Emergency change request, as an earlier version of the portal left it: in Authorize with its one approval stage
-   * named "ECAB Approval" (the ECAB group, `FAKE_ECAB_GROUP`) still REQUESTED for `FAKE_ECAB`. ECAB does not exist in ServiceNow and
+   * named "ECAB Approval" (the ECAB group, `FAKE_ECAB_GROUP`) still REQUESTED for `FAKE_ECAB`. ECAB does not exist in the previous system and
    * nothing creates such a stage any more, but ones already provisioned keep displaying, and the approvers they asked can still
    * decide them. The open page is not refreshed.
    */

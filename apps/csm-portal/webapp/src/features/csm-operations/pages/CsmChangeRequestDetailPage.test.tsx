@@ -3739,10 +3739,10 @@ describe("CsmChangeRequestDetailPage — lifecycle: an Emergency change never re
   });
 
   it("Request Approval on a database where nobody maintains the CAB group: the backend's readable refusal (which group, and that the sync does not mirror it) shows verbatim in the error banner, and the change stays in New", () => {
-    // The synced data holds no members for the "CAB Approval" group (the sync mirrors a curated set of teams only), so a stage
-    // that needs it cannot be provisioned until somebody maintains the group: an ops / data matter, answered in words.
+    // A group may have no members ("CAB Approval" here), so a stage that needs it cannot be provisioned until somebody
+    // maintains the group: an ops / data matter, answered in words that name the group.
     const refusal =
-      'the "CAB Approval" group has no members to provision as CAB Approval approvers: the ServiceNow sync does not mirror the membership of the "CAB Approval" group: it is maintained in the portal database (one team_member row per approver, with group_id set to that group)';
+      'the "CAB Approval" group has no members to provision as CAB Approval approvers: the sync from the previous system does not mirror the membership of the "CAB Approval" group: it is maintained in the portal database (one team_member row per approver, with group_id set to that group)';
     lcSeed("emergency", { approval: false, review: false }, null);
     patchMutateMock.mockImplementationOnce((_input: unknown, options?: { onError?: (err: Error) => void }) => {
       options?.onError?.(new BackendApiError(400, refusal));
@@ -3753,7 +3753,7 @@ describe("CsmChangeRequestDetailPage — lifecycle: an Emergency change never re
     expect(showErrorMock).toHaveBeenCalledTimes(1);
     expect(showErrorMock.mock.calls[0]![0]).toBe(refusal);
     expect(showErrorMock.mock.calls[0]![0]).toContain('"CAB Approval" group');
-    expect(showErrorMock.mock.calls[0]![0]).toContain("sync does not mirror");
+    expect(showErrorMock.mock.calls[0]![0]).toContain("does not mirror the membership");
     expect(lc.cr.state).toBe("new");
     expect(lc.approvals).toEqual([]);
     expect(currentStep()).toBe("New");

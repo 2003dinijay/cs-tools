@@ -162,10 +162,10 @@ export function approvalStatusColor(status?: string | null): ChipColor {
 /**
  * Display labels for the approval stages of the change-request flow:
  * Normal changes go Peer Approval -> CAB Approval; Emergency changes have a
- * single CAB Approval (there is no separate Emergency CAB: ServiceNow has none
+ * single CAB Approval (there is no separate Emergency CAB: the previous system has none
  * either); Standard changes have none. The backend decides which stages exist --
  * this only maps a stage name it returned to its label, so both the legacy
- * ServiceNow-style names ("Assess", "Authorize") and the explicit ones ("Peer
+ * names of the previous system ("Assess", "Authorize") and the explicit ones ("Peer
  * Approval", "CAB Approval") read the same; the post-implementation "Review"
  * stage keeps its own name. Matching is case/space/punctuation-insensitive.
  *
