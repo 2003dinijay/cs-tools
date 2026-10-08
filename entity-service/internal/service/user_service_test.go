@@ -304,7 +304,7 @@ func TestUserService_SearchUsers_UserIDsGroupFiltersReachRepository(t *testing.T
 }
 
 // TestUserService_SearchUsers_UserIDsGroupFilters_RejectsMalformedUUID proves
-// userIds/groupIds still validate as UUIDs before reaching the repository --
+// userIds/groupIds/teamIds still validate as UUIDs before reaching the repository --
 // only the blanket "unsupported on Postgres" rejection was removed.
 func TestUserService_SearchUsers_UserIDsGroupFilters_RejectsMalformedUUID(t *testing.T) {
 	tests := []struct {
@@ -313,6 +313,7 @@ func TestUserService_SearchUsers_UserIDsGroupFilters_RejectsMalformedUUID(t *tes
 	}{
 		{name: "userIds", filters: domain.SearchUsersFilters{UserIDs: []string{"not-a-uuid"}}},
 		{name: "groupIds", filters: domain.SearchUsersFilters{GroupIDs: []string{"not-a-uuid"}}},
+		{name: "teamIds", filters: domain.SearchUsersFilters{TeamIDs: []string{"not-a-uuid"}}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

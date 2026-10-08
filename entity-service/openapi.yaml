@@ -12861,6 +12861,15 @@ components:
             Restrict to members of these groups. Resolved to a user-id set before the
             upstream call, because the data source cannot join users against group
             membership in one query. ServiceNow data source only.
+        teamIds:
+          type: array
+          maxItems: 50
+          items:
+            type: string
+            format: uuid
+          description: >
+            Restrict to members of these `team` rows (`team_member`), the ids
+            POST /teams/search returns. PostgreSQL data source only.
         groupNames:
           type: array
           maxItems: 50

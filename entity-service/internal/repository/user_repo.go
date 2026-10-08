@@ -249,39 +249,30 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 	}
 
 	if len(req.Filters.GroupIDs) > 0 {
-		// GroupIDs are "group" ids (what POST /groups/search returns): a member
-		// is a group_member row, or a team_member whose group_id points at the
-		// group. team_id is still matched so a curated `team` id keeps working.
-		where += fmt.Sprintf(` AND (
-			EXISTS (SELECT 1 FROM group_member gm WHERE gm.user_id = u.id AND gm.group_id = ANY($%d::uuid[]))
-			OR EXISTS (
-				SELECT 1 FROM team_member tm
-				WHERE tm.user_id = u.id
-				  AND (tm.group_id = ANY($%d::uuid[]) OR tm.team_id = ANY($%d::uuid[]))
-			)
-		)`, argIdx, argIdx, argIdx)
+		// GroupIDs are "group" ids (what POST /groups/search returns); a member
+		// is a group_member row.
+		where += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM group_member gm WHERE gm.user_id = u.id AND gm.group_id = ANY($%d::uuid[])
+		)`, argIdx)
 		filterArgs = append(filterArgs, req.Filters.GroupIDs)
 		argIdx++
 	}
 
+	if len(req.Filters.TeamIDs) > 0 {
+		// TeamIDs are `team` ids (what POST /teams/search returns); a member is
+		// a team_member row.
+		where += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM team_member tm WHERE tm.user_id = u.id AND tm.team_id = ANY($%d::uuid[])
+		)`, argIdx)
+		filterArgs = append(filterArgs, req.Filters.TeamIDs)
+		argIdx++
+	}
+
 	if len(req.Filters.GroupNames) > 0 {
-		// A name is matched against the curated `team` table and against the
-		// "group" table (via team_member.group_id or group_member), because the
-		// portal's registry names are ServiceNow group names.
-		where += fmt.Sprintf(` AND (
-			EXISTS (
-				SELECT 1 FROM team_member tm JOIN team t ON t.id = tm.team_id
-				WHERE tm.user_id = u.id AND t.name = ANY($%d::text[])
-			)
-			OR EXISTS (
-				SELECT 1 FROM team_member tm JOIN "group" g ON g.id = tm.group_id
-				WHERE tm.user_id = u.id AND g.name = ANY($%d::text[])
-			)
-			OR EXISTS (
-				SELECT 1 FROM group_member gm JOIN "group" g ON g.id = gm.group_id
-				WHERE gm.user_id = u.id AND g.name = ANY($%d::text[])
-			)
-		)`, argIdx, argIdx, argIdx)
+		where += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM team_member tm JOIN team t ON t.id = tm.team_id
+			WHERE tm.user_id = u.id AND t.name = ANY($%d::text[])
+		)`, argIdx)
 		filterArgs = append(filterArgs, req.Filters.GroupNames)
 		argIdx++
 	}

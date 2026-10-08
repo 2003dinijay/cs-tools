@@ -6505,6 +6505,11 @@ ordered by name, with an optional case-insensitive substring `searchQuery` on th
 name. The CSM portal backend calls it for its own `POST /teams/search` and enriches
 rows from its configured registry.
 
+`POST /users/search` keeps the two id spaces apart: `filters.groupIds` are `"group"`
+ids matched against `group_member`, `filters.teamIds` are `team` ids matched against
+`team_member.team_id`, and `filters.groupNames` matches `team.name` through
+`team_member` (the portal resolves registry team keys to those names).
+
 **Not wired up**: `project_type` has no corresponding field anywhere on
 `domain.Project`/`ProjectDetail` today, so there is nothing to populate
 without first adding a new response field — left alone pending that
