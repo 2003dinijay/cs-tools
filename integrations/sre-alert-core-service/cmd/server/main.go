@@ -163,7 +163,7 @@ func main() {
 	if wakeKey == "" {
 		logger.Warn("WAKE_API_KEY is empty: the wake endpoint is unauthenticated")
 	}
-	mux.Handle("/alert", auth.RequireKey(wakeKey, base.With("component", "auth"), http.HandlerFunc(h.ServeAlert)))
+	mux.Handle("/alertz", auth.RequireKey(wakeKey, base.With("component", "auth"), http.HandlerFunc(h.ServeAlert)))
 
 	port := os.Getenv("PORT")
 	if port == "" {

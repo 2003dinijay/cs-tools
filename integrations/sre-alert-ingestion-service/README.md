@@ -9,7 +9,7 @@ alerts-core's own tables (`alert_cursor`, `incidents_*`, `processor_lease`).
 ```
 vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids → insert + read back) ──▶ alerts
                                            │                                               ▲
-                                           └── POST /alert (wake-up) ──▶ alerts-core ──reads┘
+                                           └── POST /alertz (wake-up) ──▶ alerts-core ──reads┘
 ```
 
 ## What it does
@@ -37,7 +37,7 @@ vendor ──POST──▶ ingestion (transform → allocator: CAS-claim ids →
 - **Memory**: everything accepted but not finished is capped at `allocator.queue_max_bytes`; past
   it, new webhooks get `503` at once.
 - **Response**: `201` only after every alert in the request has been written and read back.
-- **Wake-up**: one `POST /alert` to alerts-core per written batch. Calls are coalesced so at most
+- **Wake-up**: one `POST /alertz` to alerts-core per written batch. Calls are coalesced so at most
   one is in flight. If it fails, alerts-core's own 10-second poll still picks the rows up.
 - **Chat cards** (Google Chat, cardsV2): a *rejected webhook* card (at most one per vendor + error
   class, and 10 in total, per `reject.window`) and a *DB failure* card (at most `fallback.cards_per_minute`, then one
@@ -110,7 +110,7 @@ docker run --rm -p 8080:8080 --env-file .env \
 | `CASSANDRA_KEY` | yes | Cosmos DB primary or secondary key (secret) |
 | `CASSANDRA_USERNAME` | no | Defaults to the account name (first DNS label of the contact point) |
 | `CASSANDRA_PORT` | no | Default `10350` |
-| `ALERT_CORE_WAKE_URL` | no | alerts-core's `POST /alert` URL. Empty: no wake-up, alerts-core's poll still works |
+| `ALERT_CORE_WAKE_URL` | no | alerts-core's `POST /alertz` URL. Empty: no wake-up, alerts-core's poll still works |
 | `FALLBACK_CHAT_WEBHOOK_URLS` | no | Comma-separated Google Chat webhook URLs (secret). Empty: no cards, only logs |
 | `AWS_SNS_SUBSCRIPTION_NOTIFICATION_CONFIG` | no | `{"teams":{"<team>":"<email>","Default":"<email>"}}`: who is emailed about SNS subscription confirmations, by the AWS URL's `?team=` |
 | `EMAIL_BASE_URL`, `EMAIL_TOKEN_URL`, `EMAIL_CLIENT_ID`, `EMAIL_CLIENT_SECRET`, `EMAIL_FROM_ADDRESS` | no | WSO2 email notification service (OAuth2 client credentials) for those emails. `EMAIL_CLIENT_SECRET` is a secret. Empty `EMAIL_BASE_URL` disables email |
@@ -212,7 +212,7 @@ curl -sS -X POST "$BASE/site24x7" -H 'Content-Type: application/json' -d '{"STAT
    defaults.
 5. **Connecting to alerts-core**: add a connection from this component to the
    `sre-alert-core-service` component's endpoint (Project visibility is enough) and set
-   `ALERT_CORE_WAKE_URL` to that endpoint's URL plus `/alert`. Both components must use the same
+   `ALERT_CORE_WAKE_URL` to that endpoint's URL plus `/alertz`. Both components must use the same
    `CASSANDRA_*` values: this service writes the `alerts` rows that alerts-core reads.
 6. **Replicas**: any number. Ids stay unique across replicas because every claim is a
    compare-and-set on `alert_seq`.

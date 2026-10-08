@@ -97,7 +97,7 @@ type CassandraConfig struct {
 	ConnectTimeout     Duration `toml:"connect_timeout"`
 }
 
-// WakeConfig bounds the fire-and-forget POST /alert to alerts-core.
+// WakeConfig bounds the fire-and-forget POST /alertz to alerts-core.
 type WakeConfig struct {
 	Timeout Duration `toml:"timeout"`
 }
@@ -262,7 +262,7 @@ func (c Config) Validate() error {
 // per-vendor <VENDOR>_ALERT_CONFIG variables are read by their own packages.
 type Env struct {
 	Port string `env:"PORT" envDefault:"8080"`
-	// WakeURL is alerts-core's POST /alert. Empty disables the wake-up (local dev); the
+	// WakeURL is alerts-core's POST /alertz. Empty disables the wake-up (local dev); the
 	// 10-second poll on alerts-core still picks the alerts up.
 	WakeURL string `env:"ALERT_CORE_WAKE_URL"`
 	// ChatWebhookURLs are Google Chat incoming webhooks for rejected-webhook and DB-failure
