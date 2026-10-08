@@ -558,7 +558,10 @@ func main() {
 	// role that can see the portal can see who is on the rota. Editing the
 	// rota is a lead's job and will need a permission of its own when the
 	// write routes land -- see the plan's Phase 2b.
-	scheduleHandler := handler.NewScheduleHandler(customerEntityClient)
+	// One SCIM phone cache for the Case Paging reads: the paging chain and the
+	// readiness strip ask about the same people.
+	pagingPhones := handler.NewPagingPhoneChecker(scimClient)
+	scheduleHandler := handler.NewScheduleHandler(customerEntityClient).WithPagingPhones(pagingPhones)
 	route("GET /team-schedule/catalogue", handler.PermView, scheduleHandler.GetScheduleCatalogue)
 	route("POST /team-schedule/assignments/search", handler.PermView, scheduleHandler.SearchScheduleAssignments)
 	route("POST /team-schedule/absences/search", handler.PermView, scheduleHandler.SearchScheduleAbsences)
@@ -573,6 +576,15 @@ func main() {
 	route("GET /team-schedule/activity", handler.PermView, scheduleHandler.GetScheduleActivity)
 	route("GET /team-schedule/edit-markers", handler.PermView, scheduleHandler.GetScheduleEditMarkers)
 	route("GET /team-schedule/my-lead-teams", handler.PermView, scheduleHandler.GetMyLeadTeams)
+	// Case Paging tab: who is on each tier of the paging chain, one change to
+	// it, and whether every chain has someone to page over the coming days.
+	route("GET /team-schedule/paging-chain", handler.PermView, scheduleHandler.GetPagingChain)
+	route("PATCH /team-schedule/paging-chain/members/{id}", handler.PermWrite, scheduleHandler.UpdatePagingMember)
+	pagingReadinessHandler := handler.NewPagingReadinessHandler(customerEntityClient, pagingPhones)
+	route("GET /team-schedule/paging-readiness", handler.PermView, pagingReadinessHandler.GetPagingReadiness)
+	route("PUT /team-schedule/paging-contacts/{userId}", handler.PermWrite, scheduleHandler.PutPagingContact)
+	route("DELETE /team-schedule/paging-contacts/{userId}", handler.PermWrite, scheduleHandler.DeletePagingContact)
+	route("POST /team-schedule/paging-contacts/{userId}/test", handler.PermWrite, scheduleHandler.TestPagingContact)
 	route("POST /team-schedule/assignments/apply", handler.PermWrite, scheduleHandler.ApplyScheduleRange)
 	route("POST /team-schedule/absences/apply", handler.PermWrite, scheduleHandler.ApplyScheduleAbsence)
 	route("DELETE /team-schedule/absences/{id}", handler.PermWrite, scheduleHandler.DeleteScheduleAbsence)
