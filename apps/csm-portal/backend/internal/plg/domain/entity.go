@@ -1059,6 +1059,10 @@ type DashboardSummary struct {
 	// period-scoped, for the same reason NewRegistrations is not.
 	PairingsNeedingAttention int `json:"pairingsNeedingAttention"`
 	TrialsEndingSoon         int `json:"trialsEndingSoon"`
+	// UnresolvedIngestFailures is passed through from entity-service. See that
+	// repo's own DashboardSummary for what it counts and why it is not
+	// period-scoped.
+	UnresolvedIngestFailures int `json:"unresolvedIngestFailures"`
 }
 
 // DashboardAnalytics is the single payload the dashboard consumes.
