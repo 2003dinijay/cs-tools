@@ -109,33 +109,26 @@ import { useReportCaseTabDraft } from "@features/case-tabs/hooks/useReportCaseTa
 import type { CreateChangeRequestFromIncidentNavState } from "@features/csm-operations/utils/changeRequests";
 import type { CreateIncidentFromIncidentNavState } from "@features/csm-operations/utils/incidents";
 import type { CreateProblemFromIncidentNavState } from "@features/csm-operations/utils/problems";
-import { sanitizeRichTextHtml, stripLightModeInlineStyles } from "@utils/sanitizeHtml";
-import { useDarkMode } from "@utils/useDarkMode";
+import { looksLikeHtml, sanitizeStructuredHtml } from "@utils/sanitizeHtml";
+import { linkifyBareUrls } from "@features/csm-cases/utils/commentContent";
 
 const OPERATIONS_INCIDENTS_PATH = "/operations/incidents";
 
-// A tag anywhere means the description is HTML: an incident raised by a
-// monitoring webhook (an Azure Monitor alert arrives as nested tables of its
-// payload) or one created from a case carrying the rich-text editor's HTML.
-// Anything else is plain text, e.g. typed in the create form or synced from
-// the previous system.
-const HTML_TAG = /<\/?[a-z][\s\S]*>/i;
-
 /**
- * An incident's description: HTML rendered through the shared rich-text
- * sanitiser (the full policy, not the description one, because a webhook's
- * payload IS a table and the description policy strips tables), plain text
- * as-is with its line breaks. In dark mode the light inline backgrounds a
- * webhook paints on its label cells are stripped, as the comment bubbles do.
+ * An incident's description: an incident raised by a monitoring webhook (an
+ * Azure Monitor alert arrives as nested tables of its payload) or from a case
+ * carries HTML, anything else is plain text (typed in the create form, synced
+ * from the previous system). HTML goes through the restricted structured
+ * policy (tables kept; styles, images and form elements dropped; links open in
+ * a new tab) and bare URLs are linkified as in comments. Plain text is shown
+ * as-is with its line breaks.
  */
 function IncidentDescription({ text }: { text: string }): JSX.Element {
-  const isDarkMode = useDarkMode();
-  const isHtml = HTML_TAG.test(text);
-  const safeHtml = useMemo(
-    () => (isHtml ? sanitizeRichTextHtml(isDarkMode ? stripLightModeInlineStyles(text) : text) : ""),
-    [isHtml, isDarkMode, text],
+  const html = useMemo(
+    () => (looksLikeHtml(text) ? linkifyBareUrls(sanitizeStructuredHtml(text)) : null),
+    [text],
   );
-  if (!isHtml) {
+  if (html === null) {
     return (
       <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
         {text}
@@ -152,7 +145,6 @@ function IncidentDescription({ text }: { text: string }): JSX.Element {
         "& p:last-child": { mb: 0 },
         "& ul, & ol": { my: 0.5, pl: 3 },
         "& a": { color: "primary.main" },
-        "& img": { maxWidth: "100%", height: "auto" },
         "& table": { borderCollapse: "collapse", width: "100%", my: 0.5 },
         "& th, & td": {
           border: 1,
@@ -163,7 +155,7 @@ function IncidentDescription({ text }: { text: string }): JSX.Element {
           verticalAlign: "top",
         },
       }}
-      dangerouslySetInnerHTML={{ __html: safeHtml }}
+      dangerouslySetInnerHTML={{ __html: html }}
     />
   );
 }
