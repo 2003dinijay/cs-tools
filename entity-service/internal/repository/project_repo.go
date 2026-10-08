@@ -336,10 +336,16 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 			// narrow fix at the one place real data violates the schema's
 			// own declared constraint, not a wider contract change every
 			// other reader of Project.SfID would also have to handle.
-			var sfID, aID, aName *string
+			// p.name has no NOT NULL constraint either (same gap as sf_id
+			// above, confirmed live: "cannot scan NULL into *string" the
+			// moment a project with no name reached this query) -- scanned
+			// into a nullable temp var and defaulted to "" below for the
+			// same reason sfID is, rather than widening domain.Project.Name
+			// to *string.
+			var sfID, name, aID, aName *string
 			var acct domain.ProjectSearchAccountRef
 			if err := rows.Scan(
-				&p.ID, &p.AccountID, &sfID, &p.Name, &p.Key, &projectTypeName,
+				&p.ID, &p.AccountID, &sfID, &name, &p.Key, &projectTypeName,
 				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn,
 				&p.ClosureState, &p.EndDateClosureState, &p.InvoiceDueDateClosureState,
 				&p.ComplianceViolationClosureState, &p.ComplianceViolationDate, &p.SuspensionProcessState,
@@ -352,6 +358,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 			if sfID != nil {
 				p.SfID = *sfID
 			}
+			p.Name = stringOrEmpty(name)
 			if aID != nil {
 				acct.ID, acct.Name = *aID, stringOrEmpty(aName)
 				p.Account = &acct
@@ -420,6 +427,9 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	var projectTypeName *string
 	// sf_id is nullable in production data (migration 0095 dropped NOT NULL).
 	var sfID *string
+	// name has no NOT NULL constraint either -- same gap, confirmed live via
+	// SearchProjects' identical scan (see that method's own comment).
+	var name *string
 	// has_service_request_write_access (migration 0130) is a direct port of
 	// ServiceNow's ProjectTypeFeatureManager.FEATURE_MATRIX (see
 	// reference_data_repo.go's own doc comment) -- reusing it here is what
@@ -493,7 +503,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		 LEFT JOIN "user" amu ON amu.id = a.account_manager_id
 		 WHERE p.id = $1`+scopeClause, scopeArgs...,
 	).Scan(
-		&v.ID, &sfID, &v.Name, &v.Key,
+		&v.ID, &sfID, &name, &v.Key,
 		&v.StartDate, &v.EndDate, &v.CreatedOn, &v.UpdatedOn,
 		&aID, &aName, &aNumber, &v.Account.ActivationDate, &v.Account.Region,
 		&agentEnabled, &kbReferencesEnabled,
@@ -532,6 +542,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		v.Account.Number = *aNumber
 	}
 	v.SfID = stringOrEmpty(sfID)
+	v.Name = stringOrEmpty(name)
 	v.Account.AgentEnabled = agentEnabled != nil && *agentEnabled
 	v.Account.KbReferencesEnabled = kbReferencesEnabled != nil && *kbReferencesEnabled
 	v.Account.Tier = stringOrEmpty(supportTier)
