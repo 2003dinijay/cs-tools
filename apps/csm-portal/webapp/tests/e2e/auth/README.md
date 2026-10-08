@@ -121,6 +121,12 @@ CSM page as an internal user:
   / `:8081` / `:3000` defaults);
 - against the fake API, it is `api.customerDecides(contact, decision)`.
 
+A customer's PROPOSED TIME (a new start; the change then waits in Customer Approval for WSO2's answer) is applied the same
+way: `proposeAsCustomer(crId, email, { plannedStartOn })` in `utils/customerPortalDecision.ts` on the real stack
+(`PATCH /change-requests/{id}` to entity-service with the contact's own ID token, as the customer portal's backend sends it),
+`api.customerProposes(contact, startOn)` against the fake API. `api.seedProposal(...)` seeds the shapes that must NOT read as a
+proposal ("a customer's proposed time (mocked backend)" in the lifecycle spec).
+
 Staff never record a customer's approval or review, so there is nothing for a spec to drive on the CSM side
 either: no "Bypass customer approval" / "Bypass customer review" entry exists in the "Change state" menu, enabled or
 disabled, and the specs assert it is absent (with the customer asked and with nobody asked). The seeded-fixture

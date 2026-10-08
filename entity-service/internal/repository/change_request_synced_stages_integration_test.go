@@ -46,7 +46,7 @@ func (f *crFlow) seedSyncedStage(id string, groupID *string, ageMinutes int, row
 	var stageID string
 	if err := f.scoped.QueryRow(f.sys,
 		`INSERT INTO approval_stage (id, created_on, updated_on, created_by, updated_by, work_item_id, assignment_group_id, raw_status)
-		 VALUES (gen_random_uuid(), now() - make_interval(mins => $2::int), now(), 'sn-sync', 'sn-sync', $1, $3::uuid, 'requested') RETURNING id::text`,
+		 VALUES (gen_random_uuid(), now() - make_interval(mins => $2::int), now(), 'sn-sync', 'sn-sync', $1, $3::uuid, 'REQUESTED') RETURNING id::text`,
 		id, ageMinutes, groupID).Scan(&stageID); err != nil {
 		f.t.Fatalf("seed a synced stage: %v", err)
 	}

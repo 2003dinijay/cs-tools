@@ -192,6 +192,14 @@ export async function raise(options: {
   return { id: change.id, number: change.number };
 }
 
+/**
+ * Gives a change request still in New its planned window (UTC, "YYYY-MM-DD HH:MM:SS"), the way the create form would: a
+ * customer can only propose a time for a change that has a window whose length the proposal keeps.
+ */
+export async function plan(change: Raised, window: { start: string; end: string }): Promise<void> {
+  await ok("plan the window", await staff("jane").patch(change.id, { plannedStartOn: window.start, plannedEndOn: window.end }));
+}
+
 /** A call that must succeed (200). */
 export async function ok(label: string, result: ApiResult): Promise<void> {
   if (result.status !== 200) throw new Error(`${label} answered ${result.status}: ${JSON.stringify(result.body)}`);

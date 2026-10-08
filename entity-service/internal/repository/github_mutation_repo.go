@@ -26,6 +26,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
 // NewChangeRequestFromIssue is what a GitHub issue contributes to a new
@@ -101,7 +102,11 @@ type GithubMutationRepository interface {
 	// UpdateFromIssue applies an edited issue to an existing change request.
 	UpdateFromIssue(ctx context.Context, id string, in NewChangeRequestFromIssue) error
 	// SetState moves a change request, and only if it is not already there --
-	// a redundant write would enqueue an outbound push about nothing.
+	// a redundant write would enqueue an outbound push about nothing. The move is
+	// judged by the same transition graph a staff PATCH {state} obeys: a final
+	// change has no exit, no step is jumped, no approval gate is skipped, and a
+	// change waiting on the customer moves only by the customer's own answer
+	// (checkGithubStateMove) -- an issue event is no way round any of it.
 	SetState(ctx context.Context, id, state string) (changed bool, err error)
 	// AddComment records a comment relayed from GitHub.
 	AddComment(ctx context.Context, changeRequestID, content, createdBy string) error
@@ -269,6 +274,13 @@ const githubSyncActor = "github-sync"
 // crvis: GitHub inbound sync under the system identity (M2M-only webhook handlers); no customer identity reaches it
 func (r *githubMutationRepository) SetState(ctx context.Context, id, state string) (bool, error) {
 	ctx = withGithubSystemIdentity(ctx)
+	// The state is read the way the table of moves is written, and a value that is not a state
+	// of the lifecycle is refused before it reaches a comparison or the enum cast.
+	requested, err := normalizeRequestedChangeRequestState(domain.ChangeRequestState(state))
+	if err != nil {
+		return false, err
+	}
+	state = strings.ToUpper(string(requested))
 	// IS DISTINCT FROM so a move to the state it already holds writes nothing:
 	// the outbound trigger would otherwise enqueue a push announcing a change
 	// that did not happen.
@@ -277,22 +289,28 @@ func (r *githubMutationRepository) SetState(ctx context.Context, id, state strin
 		SET state = $2::change_request_state_enum
 		WHERE id = $1::uuid AND state IS DISTINCT FROM $2::change_request_state_enum`
 	changed := false
-	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
-		// A change waiting on the customer (Customer Approval / Customer Review)
-		// moves on only through the customer's own answer, never through a label
-		// or an issue event: refused, not skipped, so the sync sees it. Read under
-		// the row lock the UPDATE below would take anyway.
+	err = r.db.InTx(ctx, func(tx pgx.Tx) error {
+		// The move is judged against the state under the row lock the UPDATE below
+		// would take anyway.
 		var current *string
-		switch err := tx.QueryRow(ctx, `SELECT state::text FROM change_request WHERE id = $1::uuid FOR UPDATE`, id).Scan(&current); {
+		var reviewRequired bool
+		switch err := tx.QueryRow(ctx, `SELECT state::text, COALESCE(customer_review_required, false) FROM change_request WHERE id = $1::uuid FOR UPDATE`, id).Scan(&current, &reviewRequired); {
 		case errors.Is(err, pgx.ErrNoRows):
 			return nil // no such change request: the UPDATE below would match nothing as well
 		case err != nil:
 			return err
 		}
+		// A change waiting on the customer (Customer Approval / Customer Review)
+		// moves on only through the customer's own answer, never through a label
+		// or an issue event: refused, not skipped, so the sync sees it.
 		if current != nil && customerStageSpecForState(strings.ToUpper(*current)) != nil && !strings.EqualFold(*current, state) {
 			return &apierror.ValidationError{Msg: fmt.Sprintf(
 				"state %q cannot be set from the GitHub sync: the change request is in %s, which only the customer's own answer (given in the Customer Portal) can move it out of",
 				state, strings.ToLower(*current))}
+		}
+		// And every other move obeys the graph a staff PATCH does.
+		if err := checkGithubStateMove(strings.ToUpper(stringOrEmpty(current)), requested, reviewRequired); err != nil {
+			return err
 		}
 		tag, err := tx.Exec(ctx, query, id, state)
 		if err != nil {
@@ -308,9 +326,56 @@ func (r *githubMutationRepository) SetState(ctx context.Context, id, state strin
 		return reconcileStaleApprovers(ctx, tx, id, githubSyncActor)
 	})
 	if err != nil {
+		var ve *apierror.ValidationError
+		if errors.As(err, &ve) {
+			return false, err
+		}
 		return false, fmt.Errorf("github: set state %s on %s: %w", state, id, err)
 	}
 	return changed, nil
+}
+
+// githubSyncMoves are the states an issue event may move a change to: the plain moves of the
+// transition graph. Every other target belongs to the approval flow -- Request Approval (assess),
+// the peer / CAB / ECAB cascades (authorize, customer_approval, scheduled), the Review stage
+// provisioned on entering review, the customer's review gate (customer_review) -- and
+// returning to new is never a move.
+var githubSyncMoves = map[domain.ChangeRequestState]bool{
+	domain.ChangeRequestStateImplement: true,
+	domain.ChangeRequestStateClosed:    true,
+	domain.ChangeRequestStateCanceled:  true,
+	domain.ChangeRequestStateRollback:  true,
+}
+
+// checkGithubStateMove is the transition graph's verdict on a state the GitHub sync wants to
+// write, for a change in the given (upper-case, "" for NULL) state: the staff graph
+// (checkStaffStateRequest: a final change has no exit, no step is jumped) and legalNextStates
+// (an edge of the table, with the customer-review flag choosing between Closed and Customer
+// Review) -- narrowed to the plain moves githubSyncMoves lists. A write of the state the change
+// is already in is no move and is accepted. Nothing here is a new rule: it is the PATCH's, so
+// that no caller wired to SetState later can do what the PATCH refuses.
+func checkGithubStateMove(current string, requested domain.ChangeRequestState, reviewRequired bool) error {
+	if err := checkStaffStateRequest(current, requested, reviewRequired); err != nil {
+		return err
+	}
+	cur := strings.ToLower(current)
+	if cur == "" {
+		cur = string(domain.ChangeRequestStateNew)
+	}
+	if string(requested) == cur {
+		return nil
+	}
+	for _, next := range legalChangeRequestNextStates(&cur, reviewRequired) {
+		if domain.ChangeRequestState(next) == requested && githubSyncMoves[requested] {
+			return nil
+		}
+	}
+	if !githubSyncMoves[requested] {
+		return &apierror.ValidationError{Msg: fmt.Sprintf(
+			"state %q cannot be set from the GitHub sync: it is reached through the approval flow (Request Approval and the approvals' own cascades), not by an issue event",
+			strings.ToUpper(string(requested)))}
+	}
+	return changeRequestJumpRefusal(strings.ToUpper(cur), requested, reviewRequired)
 }
 
 func (r *githubMutationRepository) AddComment(ctx context.Context, changeRequestID, content, createdBy string) error {
@@ -418,7 +483,6 @@ func (r *githubMutationRepository) workItemByIssue(ctx context.Context, in NewSe
 	}
 	return id, nil
 }
-
 
 // CreateServiceRequestFromIssue implements GithubMutationRepository.
 func (r *githubMutationRepository) CreateServiceRequestFromIssue(ctx context.Context, in NewServiceRequestFromIssue) (string, string, error) {

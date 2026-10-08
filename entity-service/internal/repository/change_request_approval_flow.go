@@ -350,6 +350,16 @@ func approvalStageInfo(ctx context.Context, q crQuerier, workItemID, stageID str
 // who raised the change here. An unreadable/missing change request yields an
 // empty set, not an error.
 func changeRequestCreatorUserIDs(ctx context.Context, q crQuerier, workItemID string) (map[string]bool, error) {
+	return changeRequestCreatorUserIDsWith(ctx, q, workItemID, nil)
+}
+
+// changeRequestCreatorUserIDsWith is changeRequestCreatorUserIDs judged AS IF a
+// PATCH's own requestedById had already been written: a non-nil requestedBy (the
+// request's field, a pointer to pointer exactly like domain.PatchChangeRequestRequest's)
+// replaces the stored requested_by_user_id -- with nobody when it clears the field --
+// while the creator named by work_item.created_by stays. It is how the nobody-to-ask
+// refusal judges a request that changes the requester in the same PATCH.
+func changeRequestCreatorUserIDsWith(ctx context.Context, q crQuerier, workItemID string, requestedByOverride **string) (map[string]bool, error) {
 	ids := map[string]bool{}
 	var requestedBy, createdBy *string
 	err := q.QueryRow(ctx, `
@@ -362,6 +372,9 @@ func changeRequestCreatorUserIDs(ctx context.Context, q crQuerier, workItemID st
 			return ids, nil
 		}
 		return nil, fmt.Errorf("read change request creator: %w", err)
+	}
+	if requestedByOverride != nil {
+		requestedBy = *requestedByOverride
 	}
 	if requestedBy != nil && *requestedBy != "" {
 		ids[strings.ToLower(*requestedBy)] = true
@@ -867,6 +880,11 @@ type changeRequestGateSnapshot struct {
 	// projectID is the stored Customer Project (work_item.project_id), nil when
 	// the change has none.
 	projectID *string
+	// priorWriter is work_item.updated_by as the PATCH found it, before its own write
+	// replaced it (set by lockChangeRequestForPatch only; read=false from every other reader
+	// of the snapshot, which run after a write of their own). A staff time response reads
+	// the proposer of a waiting time from it, never from the column afterwards.
+	priorWriter lastWriter
 }
 
 // lockChangeRequestGateSnapshot reads (and locks, FOR UPDATE) the fields the
@@ -1093,6 +1111,14 @@ func anyContactToAsk(members []string, creatorIDs map[string]bool) bool {
 // what provisionCustomerStage reads. Nothing is written. A blank project has
 // nobody (the caller says that in its own words).
 func customerGroupCanBeAsked(ctx context.Context, q crQuerier, workItemID, projectID string) (bool, error) {
+	return customerGroupCanBeAskedWith(ctx, q, workItemID, projectID, nil)
+}
+
+// customerGroupCanBeAskedWith is customerGroupCanBeAsked with the creators judged as
+// if a PATCH's own requestedById were already written (changeRequestCreatorUserIDsWith):
+// the refusal of a request that changes the requester must predict the provisioning
+// that follows the write, not the one before it.
+func customerGroupCanBeAskedWith(ctx context.Context, q crQuerier, workItemID, projectID string, requestedBy **string) (bool, error) {
 	if strings.TrimSpace(projectID) == "" {
 		return false, nil
 	}
@@ -1103,7 +1129,7 @@ func customerGroupCanBeAsked(ctx context.Context, q crQuerier, workItemID, proje
 	if len(members) == 0 {
 		return false, nil
 	}
-	creatorIDs, err := changeRequestCreatorUserIDs(ctx, q, workItemID)
+	creatorIDs, err := changeRequestCreatorUserIDsWith(ctx, q, workItemID, requestedBy)
 	if err != nil {
 		return false, err
 	}
@@ -1359,40 +1385,6 @@ func checkRescheduleWindow(ctx context.Context, tx pgx.Tx, id string, start, end
 	return nil
 }
 
-// provisionReauthorizationStage opens a FRESH stage for a checkpoint that has
-// already run (CAB / ECAB after a Re-schedule): the same group, the same
-// creator exclusion, a new approval_stage row (the earlier stage stays as a
-// record). Idempotent: a stage of this label that still has a requested
-// approver is left alone. Unlike provisionApprovalStage it does not test the
-// checkpoint's ordinal position -- repeating a checkpoint is the point. A group
-// with nobody eligible is a ValidationError, so a change is never re-scheduled
-// into an approval nobody can give.
-func provisionReauthorizationStage(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string, cp changeRequestApprovalCheckpoint) error {
-	if err := setCallerIdentity(ctx, tx, SearchScope{Unrestricted: true}); err != nil {
-		return fmt.Errorf("re-schedule: escalate identity: %w", err)
-	}
-	var live bool
-	if err := tx.QueryRow(ctx,
-		`SELECT EXISTS (SELECT 1 FROM approval_stage ast
-		                 WHERE ast.work_item_id = $1 AND ast.checkpoint_label = $2
-		                   AND EXISTS (SELECT 1 FROM approval_stage_approver asa WHERE asa.stage_id = ast.id AND asa.state = 'REQUESTED'))`,
-		workItemID, cp.Label).Scan(&live); err != nil {
-		return fmt.Errorf("re-schedule: check live %s stage: %w", cp.Label, err)
-	}
-	if live {
-		return nil
-	}
-	creatorIDs, err := changeRequestCreatorUserIDs(ctx, tx, workItemID)
-	if err != nil {
-		return fmt.Errorf("re-schedule: %w", err)
-	}
-	pool, err := resolveApprovalPool(ctx, tx, cp, nil, creatorIDs)
-	if err != nil {
-		return err
-	}
-	return insertApprovalStage(ctx, tx, workItemID, actorEmail, cp.Label, pool, creatorIDs)
-}
-
 // cancelLiveCustomerStages cancels the requested approvers of every live
 // customer stage (the stages stay, as a record).
 func cancelLiveCustomerStages(ctx context.Context, tx pgx.Tx, workItemID, actorEmail string) error {
@@ -1539,7 +1531,7 @@ func staleApprovalRefusal(kind approvalStageKind, currentState string) error {
 //   - any other known state: the requested rows of every stage whose decidable
 //     state (approvalStageDecidableState) is not the current one -- e.g. the
 //     Review stage's approvers once the change has left Review for Customer
-//     Review, the customer's once it was re-scheduled back to Authorize.
+//     Review, the customer's once an old-flow Re-schedule sent it back to Authorize.
 //
 // The stages stay as a record; only the approver rows move to `CANCELLED`
 // (updated_by = actorEmail, like every other cancel helper). A stage is

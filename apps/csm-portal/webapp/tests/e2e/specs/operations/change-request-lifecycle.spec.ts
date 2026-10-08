@@ -70,8 +70,8 @@ import type { Browser, Locator, Page } from "@playwright/test";
 import { test, expect, withRole, hasSession, openContextAs, type TimecardRole } from "../../fixtures/test";
 import { ChangeRequestCreatePage } from "../../pages/ChangeRequestCreatePage";
 import { ChangeRequestDetailPage } from "../../pages/ChangeRequestDetailPage";
-import { decideAsCustomer } from "../../utils/customerPortalDecision";
-import { EXAMPLE_CORP, OTHER_CORP, ok, raise, realStackNamed, stateOf, staff, walkTo, type ApiResult, type Raised, type WalkTarget } from "../../utils/realStackApi";
+import { decideAsCustomer, proposeAsCustomer } from "../../utils/customerPortalDecision";
+import { EXAMPLE_CORP, OTHER_CORP, ok, plan, raise, realStackNamed, stateOf, staff, walkTo, type ApiResult, type Raised, type WalkTarget } from "../../utils/realStackApi";
 import {
   FAKE_CAB,
   FAKE_CAB_COLLEAGUE,
@@ -93,14 +93,31 @@ import {
   FAKE_PEER_GROUP,
   FAKE_PROJECT_CONTACTS,
   FAKE_PROJECTS,
+  ACCEPT_CANNOT_COMBINE,
+  ACCEPT_NEEDS_EXPECTED,
+  ACCEPT_NEEDS_EXPECTED_WINDOW,
+  ACCEPT_ONLY_AGREE,
+  ACCEPT_PROPOSER_NOT_RECORDED,
+  ACCEPT_WINDOW_HAS_NO_LENGTH,
+  COUNTER_IS_THE_PROPOSAL,
+  ON_HOLD_MESSAGE,
+  PROPOSAL_NO_LONGER_WAITING,
+  acceptNotInCustomerApproval,
+  acceptTooFarAheadMessage,
   customerAnswerRefusal,
+  customerProposedWhileOpenMessage,
   customerStageManualRefusal,
   finalStateMessage,
   installFakeChangeRequestApi,
+  NO_PROPOSAL_WAITING,
+  proposalChangedMessage,
+  proposalPassedMessage,
+  windowChangedMessage,
   projectFrozenMessage,
   requirementCannotBeRemovedMessage,
   requirementGatePassedMessage,
   requirementNeedsProjectMessage,
+  NO_RECORDED_PROPOSAL_TO_DECLINE,
   nobodyToAskMessage,
   REQUEST_APPROVAL_NEEDS_PROJECT,
   CANNOT_RETURN_TO_NEW,
@@ -2710,11 +2727,17 @@ test.describe("change request approval flow — a Review approver's controls fol
 });
 
 // ---------------------------------------------------------------------------
-// Re-schedule -- the diagram's Time Change loop. In Customer Approval an outlined
-// "Re-schedule" button opens a dialog (current window prefilled, at least one end
-// must change, optional reason); the change goes back to Authorize for CAB / ECAB
-// approval again, then the customer is asked again. Offered from Customer Approval
-// only. Runs against the in-browser fake of the backend contract.
+// Re-schedule and the customer's proposed time -- the diagram's Time Change loop, in the previous system's own
+// mechanism. "authorize" is the wire name of the loop, but the change NEVER leaves Customer Approval and never goes
+// back through CAB / ECAB: the change itself has not changed.
+//
+//  - Re-schedule (an outlined button, Customer Approval only): a dialog (current window prefilled, at least one end
+//    must change, optional reason); the customer is asked to approve the new time again, in a fresh request.
+//  - A customer's PROPOSED time waits in Customer Approval, the planned window untouched, until WSO2 answers: a banner
+//    shows it beside the planned time, with "Accept proposed time" (the change goes straight to Scheduled, no CAB, no new
+//    customer request) and "Propose a different time" (the customer is asked again; keeping the current time declines).
+//
+// Runs against the in-browser fake of the backend contract.
 // ---------------------------------------------------------------------------
 
 /** Re-schedule is not offered: no such button and no such menu entry. */
@@ -2734,8 +2757,11 @@ const NEXT_WEEK_END = { month: 3, day: 8, year: 2030, hour12: 2, minute: 0, pm: 
 const ORIGINAL_WINDOW = { start: "2030-03-01 09:00:00", end: "2030-03-01 11:00:00" };
 const MOVED_TO_NEXT_WEEK = /^2030-03-0[78] \d{2}:\d{2}:00$/;
 
+/** The stage names the fake holds, in order (a Re-schedule must never add a CAB / ECAB one). */
+const stageNames = (api: FakeChangeRequestApi): string[] => api.stages().map((st) => st.stage);
+
 test.describe("change request approval flow — Re-schedule", () => {
-  test("Normal with a customer group: Customer Approval -> Re-schedule -> Authorize -> CAB approves -> Customer Approval again -> a member approves (in the customer portal) -> Scheduled, state shown after every step", async ({
+  test("Normal with a customer group: Customer Approval -> Re-schedule -> still Customer Approval, the customer asked again (no Authorize, no CAB) -> a member approves (in the customer portal) -> Scheduled, state shown after every step", async ({
     page,
   }) => {
     test.setTimeout(240_000);
@@ -2767,10 +2793,12 @@ test.describe("change request approval flow — Re-schedule", () => {
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
     await expect(detail.rescheduleButton()).toBeVisible();
     await expectOnlyCancelActionable(detail, "approval");
+    const stagesBefore = stageNames(api);
 
-    // The dialog starts on the current window and will not submit without a change.
+    // The dialog starts on the current window, says the customer is asked (no CAB), and will not submit without a change.
     await detail.rescheduleButton().click();
     await expect(detail.rescheduleDialog()).toBeVisible();
+    await expect(detail.rescheduleDialog().getByText(/The customer is asked to approve it\. No further internal approval is needed/)).toBeVisible();
     await expect(detail.rescheduleSubmit()).toBeDisabled();
     await expect(detail.rescheduleDialog().getByText("Change the planned start or end to re-schedule.")).toBeVisible();
     await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START);
@@ -2779,16 +2807,16 @@ test.describe("change request approval flow — Re-schedule", () => {
     await detail.rescheduleDialog().getByLabel("Reason (optional)").fill("Customer freeze next week.");
     await detail.rescheduleSubmit().click();
 
-    // Back at Authorize, waiting on a fresh CAB stage; the customer's request is superseded.
-    await expect(detail.currentStep()).toContainText("Authorize");
+    // Still Customer Approval, waiting on the customer: the old request is a record, the fresh one is live, no CAB was opened.
     await expect(detail.rescheduleDialog()).toHaveCount(0);
-    expect(api.state()).toBe("authorize");
-    await expect(detail.blockingReason()).toHaveText("Awaiting CAB Approval");
-    await expect(detail.rescheduleButton()).toHaveCount(0);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    expect(api.state()).toBe("customer_approval");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(detail.rescheduleButton()).toBeVisible();
     await expectNoBypass(detail);
-    expect(api.stages().map((s) => s.stage)).toEqual(["Peer Approval", "CAB Approval", "Customer Approval", "CAB Approval"]);
+    expect(stageNames(api)).toEqual([...stagesBefore, "Customer Approval"]);
     expect(api.stages()[2].approvers.map((a) => a.status)).toEqual(["CANCELLED", "CANCELLED"]);
-    expect(api.stages()[3].approvers.map((a) => a.status)).toEqual(["REQUESTED"]);
+    expect(api.stages()[3].approvers.map((a) => a.status)).toEqual(["REQUESTED", "REQUESTED"]);
     expect(api.planned().start).toMatch(MOVED_TO_NEXT_WEEK);
     expect(api.planned().end).toMatch(MOVED_TO_NEXT_WEEK);
     expect(api.journal()).toContainEqual({ kind: "comment", text: "Customer freeze next week." });
@@ -2798,17 +2826,10 @@ test.describe("change request approval flow — Re-schedule", () => {
       plannedStartOn: api.planned().start,
       plannedEndOn: api.planned().end,
     });
-    await expectNoRescheduleOffered(detail);
-
-    // The new CAB approval asks the customer group again.
-    await switchTo(page, api, FAKE_CAB);
-    await expect(detail.approveButton()).toHaveCount(1);
-    await detail.approve("Cam Cab");
-    await expect(detail.currentStep()).toContainText("Customer Approval");
-    expect(api.state()).toBe("customer_approval");
-    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
     await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval").nth(1)).toHaveText("Requested");
     await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval").first()).toHaveText("Cancelled");
+    // Nobody at WSO2 has anything to approve: there is no CAB stage to decide.
+    await expect(detail.approveButton()).toHaveCount(0);
 
     // The customer answers in the customer portal; the CSM page shows Scheduled.
     await customerAnswers(page, api, FAKE_CUST_ONE, "approved");
@@ -2818,7 +2839,7 @@ test.describe("change request approval flow — Re-schedule", () => {
     await expectNoRescheduleOffered(detail);
   });
 
-  test("an older Normal change at Customer Approval with no customer group: Re-schedule is the outlined button beside Change state, which holds only Cancel change; the dialog blocks an unchanged window and shows the backend's refusal", async ({
+  test("an older Normal change at Customer Approval with nobody to ask: Re-schedule is the outlined button beside Change state, but it is REFUSED in the words Request Approval uses, writes nothing and can be tried again; an unchanged window is blocked in the dialog", async ({
     page,
   }) => {
     test.setTimeout(240_000);
@@ -2832,36 +2853,53 @@ test.describe("change request approval flow — Re-schedule", () => {
     await detail.rescheduleButton().click();
     await expect(detail.rescheduleSubmit()).toBeDisabled();
 
-    // The backend's 400 is shown verbatim: the change moved on behind the dialog's back.
+    // Nobody can be asked: the backend's refusal is the one Request Approval gives, shown verbatim; nothing was written.
     await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
     await expect(detail.rescheduleSubmit()).toBeEnabled();
+    await detail.rescheduleSubmit().click();
+    await expect(detail.rescheduleDialog().getByRole("alert")).toHaveText(nobodyToAskMessage(true, false));
+    expect(api.state()).toBe("customer_approval");
+    expect(api.planned()).toEqual(ORIGINAL_WINDOW);
+    expect(api.stages().map((st) => st.stage)).toEqual(["Peer Approval", "CAB Approval"]);
+    expect(api.journal()).toEqual([]);
+    // Repeatable: the same refusal, the same nothing.
+    await detail.rescheduleSubmit().click();
+    await expect(detail.rescheduleDialog().getByRole("alert")).toHaveText(nobodyToAskMessage(true, false));
+    expect(api.planned()).toEqual(ORIGINAL_WINDOW);
+    await detail.rescheduleDialog().getByRole("button", { name: "Close", exact: true }).click();
+    await expect(detail.rescheduleDialog()).toHaveCount(0);
+
+    // The backend's other 400 is shown too: the change moved on behind the dialog's back.
+    await detail.rescheduleButton().click();
+    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
     api.setState("scheduled");
     await detail.rescheduleSubmit().click();
-    await expect(detail.rescheduleDialog().getByRole("alert")).toContainText(
-      'state "authorize" cannot be set manually',
-    );
+    await expect(detail.rescheduleDialog().getByRole("alert")).toContainText('state "authorize" cannot be set manually');
     await expect(detail.rescheduleDialog().getByRole("alert")).toContainText(
       "it can only be set by hand to re-schedule a change from customer_approval",
     );
     expect(api.state()).toBe("scheduled");
     expect(api.planned()).toEqual(ORIGINAL_WINDOW);
-    await detail.rescheduleDialog().getByRole("button", { name: "Close", exact: true }).click();
-    await expect(detail.rescheduleDialog()).toHaveCount(0);
+  });
 
-    // Back in Customer Approval, the loop works; the reasonless submit records no comment.
-    api.setState("customer_approval");
+  test("a contact registers on the project: the same older change can then be re-scheduled, and the customer is asked in a fresh request", async ({ page }) => {
+    test.setTimeout(240_000);
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, NO_CONTACTS);
+    const detail = new ChangeRequestDetailPage(page);
+    await openOlderChangeAt(api, detail, "customer_approval");
+    api.setProjectContacts(GAMMA.id, [FAKE_CUST_ONE]);
     await page.reload();
-    await expect(detail.currentStep()).toContainText("Customer Approval");
     await detail.rescheduleButton().click();
     await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
     await detail.rescheduleSubmit().click();
-    await expect(detail.currentStep()).toContainText("Authorize");
-    await expect(detail.blockingReason()).toHaveText("Awaiting CAB Approval");
-    expect(api.journal()).toEqual([]);
-    expect(api.stages().map((s) => s.stage)).toEqual(["Peer Approval", "CAB Approval", "CAB Approval"]);
+    await expect(detail.rescheduleDialog()).toHaveCount(0);
+    expect(api.state()).toBe("customer_approval");
+    expect(api.stages().map((st) => st.stage)).toEqual(["Peer Approval", "CAB Approval", "Customer Approval"]);
+    expect(api.stages()[2].approvers.map((a) => a.status)).toEqual(["REQUESTED"]);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
   });
 
-  test("Emergency: Re-schedule goes back to Authorize for ECAB approval", async ({ page }) => {
+  test("Emergency (an older row sitting in Customer Approval): Re-schedule stays in Customer Approval too: no ECAB, no Authorize", async ({ page }) => {
     test.setTimeout(240_000);
     const api = await installFakeChangeRequestApi(page, "emergency", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
     const detail = new ChangeRequestDetailPage(page);
@@ -2874,18 +2912,16 @@ test.describe("change request approval flow — Re-schedule", () => {
     await expect(detail.currentStep()).toContainText("Customer Approval");
 
     await detail.rescheduleButton().click();
-    await expect(detail.rescheduleDialog().getByText(/ECAB approval again/)).toBeVisible();
+    await expect(detail.rescheduleDialog().getByText(/ECAB/)).toHaveCount(0);
     await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
     await detail.rescheduleSubmit().click();
-    await expect(detail.currentStep()).toContainText("Authorize");
-    await expect(detail.blockingReason()).toHaveText("Awaiting ECAB Approval");
-    // The customer's superseded request stays as a record between the two ECAB stages.
-    expect(api.stages().map((s) => s.stage)).toEqual(["ECAB Approval", "Customer Approval", "ECAB Approval"]);
-
-    await switchTo(page, api, FAKE_ECAB);
-    await detail.approveButton().click();
+    await expect(detail.rescheduleDialog()).toHaveCount(0);
     await expect(detail.currentStep()).toContainText("Customer Approval");
     expect(api.state()).toBe("customer_approval");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    // The customer's superseded request stays as a record before the fresh one; no ECAB stage was added.
+    expect(stageNames(api)).toEqual(["ECAB Approval", "Customer Approval", "Customer Approval"]);
+    await expect(detail.approveButton()).toHaveCount(0);
   });
 
   test("Standard with a customer group: Re-schedule stays in Customer Approval and asks the customer again", async ({ page }) => {
@@ -2905,7 +2941,7 @@ test.describe("change request approval flow — Re-schedule", () => {
     await expect(detail.rescheduleButton()).toBeVisible();
 
     await detail.rescheduleButton().click();
-    await expect(detail.rescheduleDialog().getByText(/stays in Customer Approval/)).toBeVisible();
+    await expect(detail.rescheduleDialog().getByText(/The customer is asked to approve it/)).toBeVisible();
     await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
     await detail.rescheduleSubmit().click();
     await expect(detail.rescheduleDialog()).toHaveCount(0);
@@ -2918,6 +2954,507 @@ test.describe("change request approval flow — Re-schedule", () => {
     expect(api.stages()[1].approvers.map((a) => a.status)).toEqual(["REQUESTED", "REQUESTED"]);
     await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
     await expect(detail.rescheduleButton()).toBeVisible();
+  });
+});
+
+// A time the customer proposed: the previous system's own `customer_updated_on` / confirmation pair. The proposal is made in the customer
+// portal (`api.customerProposes`); the CSM page shows it and WSO2 answers it.
+const PROPOSED_START = "2030-03-08T09:00:00Z"; // the planned window is 2030-03-01 09:00 - 11:00 (2 hours)
+/** The planned window a page opened on the original plan shows (what an Accept names as the plan it replaces). */
+const SHOWN_WINDOW = { expectedPlannedStartOn: ORIGINAL_WINDOW.start, expectedPlannedEndOn: ORIGINAL_WINDOW.end };
+const PROPOSED_WINDOW_TEXT = /Mar 8, 2030, \d{1,2}:\d{2} [AP]M to Mar 8, 2030, \d{1,2}:\d{2} [AP]M/;
+
+/** Drives a Normal change (the customer's approval on) to Customer Approval and has Mia propose a time; the creator is signed in. */
+async function proposalWaiting(page: Page, api: FakeChangeRequestApi, detail: ChangeRequestDetailPage, proposerKnown = true): Promise<void> {
+  await driveToCustomerApproval(page, api, detail);
+  if (proposerKnown) api.customerProposes(FAKE_CUST_ONE, PROPOSED_START);
+  else api.seedProposal({ startOn: PROPOSED_START, proposerKnown: false });
+  await switchTo(page, api, FAKE_CREATOR);
+  await expect(detail.proposalBanner()).toBeVisible();
+}
+
+/**
+ * A picture of the page for review (previews only, never committed): written to E2E_SHOT_DIR as `<name>-<scheme>.png`, 1440 wide,
+ * in the colour scheme E2E_SHOT_SCHEME names (light, or dark by default). A no-op without the directory.
+ */
+async function proposalPicture(page: Page, name: string): Promise<void> {
+  const dir = process.env.E2E_SHOT_DIR?.trim();
+  if (!dir) return;
+  const scheme = process.env.E2E_SHOT_SCHEME === "light" ? "light" : "dark";
+  await page.setViewportSize({ width: 1440, height: 1000 });
+  await page.emulateMedia({ colorScheme: scheme });
+  fs.mkdirSync(dir, { recursive: true });
+  await page.waitForTimeout(600); // a dialog fades in, a theme repaints: wait it out
+  await page.screenshot({ path: path.join(dir, `${name}-${scheme}.png`) });
+}
+
+test.describe("change request approval flow — a customer's proposed time (mocked backend)", () => {
+  test.describe.configure({ timeout: 240_000 });
+
+  test("the proposal waits in Customer Approval, planned window untouched: the banner shows both windows and who proposed it, the header says the change waits for WSO2, and nothing else was written", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToCustomerApproval(page, api, detail);
+    const stagesBefore = JSON.stringify(api.stages());
+    await expect(detail.proposalBanner()).toHaveCount(0); // nothing proposed yet
+
+    api.customerProposes(FAKE_CUST_ONE, PROPOSED_START);
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.proposalBanner()).toBeVisible();
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    expect(api.state()).toBe("customer_approval");
+    expect(api.planned()).toEqual(ORIGINAL_WINDOW); // not overwritten before WSO2 agrees
+    expect(JSON.stringify(api.stages())).toBe(stagesBefore); // no stage, no approver row touched
+    expect(api.proposal()).toEqual({ customerUpdatedOn: PROPOSED_START, confirmation: null });
+    // The header waits for WSO2, not for the customer.
+    await expect(detail.proposalWaitingReason()).toHaveText("Waiting for WSO2 to respond to the customer's proposed time");
+    await expect(detail.customerProposalWaitingReason()).toBeVisible();
+    await expect(detail.neutralProposalWaitingReason()).toHaveCount(0);
+    await expect(detail.customerProposalBanner()).toBeVisible(); // the proposer is on record, so the banner says the customer proposed it
+    await expect(detail.neutralProposalBanner()).toHaveCount(0);
+    await expect(detail.blockingReason()).toHaveCount(0);
+    // The banner: planned beside proposed, the proposer, Accept the one primary action.
+    const banner = detail.proposalBanner();
+    await expect(banner).toContainText("Planned now");
+    await expect(banner).toContainText("Proposed by the customer");
+    await expect(banner).toContainText(PROPOSED_WINDOW_TEXT);
+    await expect(banner).toContainText("Same length as the planned window (2 hours)");
+    await expect(banner).toContainText("Proposed by Mia Member (mia.member@acme.example)");
+    await proposalPicture(page, "01-banner-proposer-known");
+    await expect(detail.acceptProposedTimeButton()).toHaveClass(/MuiButton-contained/);
+    await expect(detail.proposeDifferentTimeButton()).toHaveClass(/MuiButton-outlined/);
+    // The bar's own outlined action is the counter now: no Re-schedule, no bypass, Cancel is all the menu holds.
+    await expect(detail.rescheduleButton()).toHaveCount(0);
+    await expect(detail.page.getByRole("button", { name: "Propose a different time" })).toHaveCount(2); // the bar's and the banner's
+    await expectOnlyCancelActionable(detail, "approval");
+    // The customer's own request is still live: only they can approve the current time.
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
+  });
+
+  test("ACCEPT: one confirmation, the proposal becomes the planned window and the change is Scheduled; no CAB, no new customer request, and nothing is stamped as the customer's approval", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    const stageNamesBefore = stageNames(api);
+
+    await detail.acceptProposedTimeButton().click();
+    await expect(detail.acceptDialog()).toBeVisible();
+    await expect(detail.acceptDialog()).toContainText("The change will be scheduled for");
+    await expect(detail.acceptDialog()).toContainText("The customer sees that you accepted it and is not asked again. No CAB approval is needed.");
+    await expect(detail.acceptDialog().getByRole("checkbox")).toHaveCount(0); // there is never a confirmation to tick
+    await proposalPicture(page, "02-accept-dialog-proposer-known");
+    expect(api.state()).toBe("customer_approval"); // nothing is sent before the engineer confirms
+    await detail.acceptDialogConfirm().click();
+
+    await expect(detail.acceptDialog()).toHaveCount(0);
+    await expect(detail.currentStep()).toContainText("Scheduled");
+    expect(api.state()).toBe("scheduled");
+    // Exactly the Accept contract: the answer, the proposal it accepts and the window the page showed; never a `state`.
+    const patches = api.requestBodies().filter((b) => b.request.startsWith("PATCH"));
+    expect(patches[patches.length - 1]?.body).toEqual({
+      confirmCustomerUpdatedDate: "agree",
+      expectedCustomerUpdatedOn: PROPOSED_START,
+      expectedPlannedStartOn: ORIGINAL_WINDOW.start,
+      expectedPlannedEndOn: ORIGINAL_WINDOW.end,
+    });
+    // The window is the proposal with the planned length (2 hours) kept; the answer is Agree.
+    expect(api.planned()).toEqual({ start: "2030-03-08 09:00:00", end: "2030-03-08 11:00:00" });
+    expect(api.proposal()).toEqual({ customerUpdatedOn: PROPOSED_START, confirmation: "agree" });
+    // No CAB and no second customer request: the stages are what they were, and nobody is asked any more.
+    expect(stageNames(api)).toEqual(stageNamesBefore);
+    expect(api.stages().flatMap((st) => st.approvers).filter((a) => a.status === "REQUESTED")).toEqual([]);
+    // The customer's approval is not stamped (no staff action records it): the cell says what happened, not a misleading No.
+    expect(api.customerApproved()).toBe(false);
+    await expect(detail.overviewCell("Customer approved")).toContainText("Proposed time accepted");
+    await expect(detail.overviewCell("Customer approved")).not.toHaveText(/\bNo\b/);
+    await proposalPicture(page, "06-after-accept-scheduled");
+    await expect(detail.proposalBanner()).toHaveCount(0);
+    await expect(detail.proposalWaitingReason()).toHaveCount(0);
+    await expect(detail.blockingReason()).toHaveCount(0);
+    await expectNoBypass(detail);
+    // SRE details show WSO2's answer.
+    await detail.page.getByRole("tab", { name: "Plan" }).click();
+    await expect(detail.overviewCell("WSO2 answer to the customer's time")).toContainText("Agree");
+  });
+
+  test("COUNTER: a different time asks the customer again (no CAB), answers the proposal Disagree and the banner is gone; the loop repeats with the customer's next proposal", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    const stageNamesBefore = stageNames(api);
+
+    await detail.proposeDifferentTimeButton().click();
+    await expect(detail.counterDialog()).toBeVisible();
+    await expect(detail.counterDialog()).toContainText("No CAB approval is needed.");
+    // Prefilled with the PLANNED window; the submit says what it does.
+    await expect(detail.counterSubmit("Decline proposed time")).toBeEnabled();
+    await proposalPicture(page, "03-counter-dialog-decline");
+    await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START, detail.counterDialog());
+    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END, detail.counterDialog());
+    await detail.counterSubmit("Propose this time").click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+
+    expect(api.state()).toBe("customer_approval");
+    expect(api.proposal()).toEqual({ customerUpdatedOn: PROPOSED_START, confirmation: "disagree" });
+    expect(api.planned().start).toMatch(MOVED_TO_NEXT_WEEK);
+    // The customer is asked again in a fresh request, nothing else opened.
+    expect(stageNames(api)).toEqual([...stageNamesBefore, "Customer Approval"]);
+    expect(api.stages()[stageNamesBefore.length].approvers.map((a) => a.status)).toEqual(["REQUESTED", "REQUESTED"]);
+    const patches = api.requestBodies().filter((b) => b.request.startsWith("PATCH"));
+    expect(patches[patches.length - 1]?.body).toMatchObject({ state: "authorize", expectedCustomerUpdatedOn: PROPOSED_START });
+    await expect(detail.proposalBanner()).toHaveCount(0);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(detail.rescheduleButton()).toBeVisible();
+
+    // The customer proposes again (their next proposal clears the standing answer): the banner is back.
+    api.customerProposes(FAKE_CUST_TWO, "2030-03-20T10:00:00Z");
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.proposalBanner()).toBeVisible();
+    await expect(detail.proposalBanner()).toContainText("Proposed by Max Member (max.member@acme.example)");
+    expect(api.proposal().confirmation).toBeNull();
+  });
+
+  test("DECLINE (keep the current time): only the answer is written; the customer keeps their live request and nothing new is opened", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    const stagesBefore = JSON.stringify(api.stages());
+
+    await detail.proposeDifferentTimeButton().click();
+    await expect(detail.counterDialog()).toContainText("The current time stays, so the proposal is declined.");
+    await detail.counterSubmit("Decline proposed time").click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+    expect(api.proposal()).toEqual({ customerUpdatedOn: PROPOSED_START, confirmation: "disagree" });
+    expect(api.state()).toBe("customer_approval");
+    expect(api.planned()).toEqual(ORIGINAL_WINDOW);
+    expect(JSON.stringify(api.stages())).toBe(stagesBefore);
+    const patches = api.requestBodies().filter((b) => b.request.startsWith("PATCH"));
+    expect(patches[patches.length - 1]?.body).toEqual({
+      state: "authorize",
+      expectedCustomerUpdatedOn: PROPOSED_START,
+      expectedPlannedStartOn: ORIGINAL_WINDOW.start,
+      expectedPlannedEndOn: ORIGINAL_WINDOW.end,
+    });
+    await expect(detail.proposalBanner()).toHaveCount(0);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
+  });
+
+  test("the very time the customer proposed is not a counter: the dialog says to use Accept, and the API refuses it in words", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    await detail.proposeDifferentTimeButton().click();
+    // 09:00 - 11:00 UTC on 8 March, typed in the viewer's own time zone as the pickers show it.
+    const zone = await detail.page.evaluate(() => Intl.DateTimeFormat().resolvedOptions().timeZone);
+    expect(zone).toBeTruthy();
+    expect(await patchFromPage(page, { state: "authorize", plannedStartOn: "2030-03-08 09:00:00", plannedEndOn: "2030-03-08 11:00:00", expectedCustomerUpdatedOn: PROPOSED_START })).toEqual({
+      status: 400,
+      message: COUNTER_IS_THE_PROPOSAL,
+    });
+    expect(api.proposal().confirmation).toBeNull();
+  });
+
+  test("nobody is recorded as having proposed the stored time (a date WSO2 users write too, or one left over from an earlier round): the banner says so, Accept is disabled with the reason and refused by the API, and Propose a different time is a plain Re-schedule that writes no answer", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail, false);
+    const stagesBefore = api.stages().map((st) => st.stage);
+    // Nobody is on record, so nothing says the customer proposed it and nothing waits for an answer: a stored time, an info banner,
+    // and the header still says the customer is being asked.
+    await expect(detail.neutralProposalBanner()).toBeVisible();
+    await expect(detail.customerProposalBanner()).toHaveCount(0);
+    await expect(detail.neutralProposalBanner()).toContainText("A time is stored (");
+    await expect(detail.neutralProposalBanner()).toContainText(") but nobody is recorded as having proposed it.");
+    await expect(detail.neutralProposalBanner()).toContainText("Stored time");
+    await expect(detail.neutralProposalBanner()).not.toContainText("Proposed by");
+    await expect(detail.neutralProposalBanner()).not.toContainText("The customer proposed");
+    await expect(detail.proposalWaitingReason()).toHaveCount(0);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await proposalPicture(page, "04-banner-proposer-not-recorded");
+
+    // Accept is disabled, with the backend's own reason on a focusable wrapper; there is nothing to confirm and no dialog to open.
+    await expect(detail.acceptProposedTimeButton()).toBeDisabled();
+    const reason = `${ACCEPT_PROPOSER_NOT_RECORDED.charAt(0).toUpperCase()}${ACCEPT_PROPOSER_NOT_RECORDED.slice(1)}.`;
+    await expect(detail.proposalBanner().getByLabel(`Accept proposed time: ${reason}`)).toHaveAttribute("tabindex", "0");
+    await expect(detail.proposeDifferentTimeButton()).toBeEnabled();
+    // The API refuses an Accept sent anyway, with its code in the body, and writes nothing.
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: PROPOSED_START, ...SHOWN_WINDOW })).toEqual({
+      status: 409,
+      message: ACCEPT_PROPOSER_NOT_RECORDED,
+    });
+    // ... and a request with no window is not a decline of a time nobody proposed: refused, never a silent Disagree.
+    expect(await patchFromPage(page, { state: "authorize" })).toEqual({ status: 400, message: NO_RECORDED_PROPOSAL_TO_DECLINE });
+    expect(api.state()).toBe("customer_approval");
+    expect(api.proposal()).toEqual({ customerUpdatedOn: PROPOSED_START, confirmation: null });
+
+    // Propose a different time: a plain Re-schedule that names the stored time. No decline, the window must change.
+    await detail.proposeDifferentTimeButton().click();
+    await expect(detail.counterDialog()).toContainText("A time is stored (");
+    await expect(detail.counterDialog()).toContainText("There is no proposal to decline.");
+    await expect(detail.counterDialog()).not.toContainText("The customer proposed");
+    await expect(detail.counterSubmit("Propose this time")).toBeDisabled();
+    await expect(detail.counterDialog().getByRole("button", { name: "Decline proposed time" })).toHaveCount(0);
+    await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START, detail.counterDialog());
+    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END, detail.counterDialog());
+    await detail.counterSubmit("Propose this time").click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+    // The customer is asked again (a fresh request, no CAB) and NO answer was written against a date nobody proposed.
+    expect(api.state()).toBe("customer_approval");
+    expect(api.proposal().confirmation).toBeNull();
+    // The window was typed in the signed-in user's zone and the PATCH carries UTC, so assert the day, never the hour.
+    expect(api.planned().start).toMatch(MOVED_TO_NEXT_WEEK);
+    expect(api.planned().end).toMatch(MOVED_TO_NEXT_WEEK);
+    expect(api.stages().map((st) => st.stage)).toEqual([...stagesBefore, "Customer Approval"]);
+  });
+
+  test("a date that is not a proposal waiting for WSO2 shows no banner and no actions on it: a stale date equal to the plan, an answered one, an internal approval still being asked (an unknown approval group), a change in Authorize", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToCustomerApproval(page, api, detail);
+
+    // 1. A date left over from an earlier cycle: it equals the planned start, so there is nothing to answer.
+    api.seedProposal({ startOn: "2030-03-01T09:00:00Z" });
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(detail.proposalBanner()).toHaveCount(0);
+    await expect(detail.rescheduleButton()).toBeVisible();
+    // ... and a plain Re-schedule is not an answer to it: the API would have said so had a proposal been waiting.
+    expect(await patchFromPage(page, { state: "authorize", expectedCustomerUpdatedOn: "2030-03-01T09:00:00Z" })).toEqual({ status: 409, message: PROPOSAL_NO_LONGER_WAITING });
+
+    // 2. WSO2 already answered it (a standing Disagree), whoever wrote the date.
+    api.seedProposal({ startOn: PROPOSED_START, confirmation: "disagree" });
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(detail.proposalBanner()).toHaveCount(0);
+
+    // 3. An approval is still being asked of somebody that is not the customer: an inconsistent row, or a group we have no name for.
+    api.seedProposal({ startOn: PROPOSED_START });
+    api.addInternalRequestedRow();
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.proposalBanner()).toHaveCount(0);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: PROPOSED_START, ...SHOWN_WINDOW })).toEqual({ status: 409, message: NO_PROPOSAL_WAITING });
+
+    // 4. A change in Authorize (an older row whose fresh CAB stage is live) with the same date on it: no banner, no actions.
+    api.setState("authorize");
+    await page.reload();
+    await expect(detail.currentStep()).toContainText("Authorize");
+    await expect(detail.proposalBanner()).toHaveCount(0);
+    await expect(detail.rescheduleButton()).toHaveCount(0);
+    await expect(detail.proposeDifferentTimeButton()).toHaveCount(0);
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: PROPOSED_START, ...SHOWN_WINDOW })).toEqual({
+      status: 409,
+      message: acceptNotInCustomerApproval("authorize"),
+    });
+    expect(api.state()).toBe("authorize");
+  });
+
+  test("Accept is disabled with its reason on hold, once the proposed time has passed, or when its window would end after the year 2100; the API refuses each in words", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+
+    api.setOnHold(true);
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.acceptProposedTimeButton()).toBeDisabled();
+    await expect(detail.page.getByLabel("Accept proposed time: This change request is on hold. Take it off hold first.")).toBeVisible();
+    await expect(detail.proposeDifferentTimeButton()).toBeEnabled();
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: PROPOSED_START, ...SHOWN_WINDOW })).toEqual({ status: 400, message: ON_HOLD_MESSAGE });
+    api.setOnHold(false);
+
+    // A proposal that has since passed (seeded in the past: the customer portal refuses to make one).
+    api.seedProposal({ startOn: "2020-01-01T09:00:00Z", proposerKnown: true });
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.acceptProposedTimeButton()).toBeDisabled();
+    await expect(detail.page.getByLabel("Accept proposed time: The proposed time has passed. Propose a different time.")).toBeVisible();
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: "2020-01-01T09:00:00Z", ...SHOWN_WINDOW })).toEqual({
+      status: 409,
+      message: proposalPassedMessage("2020-01-01T09:00:00Z"),
+    });
+    expect(api.state()).toBe("customer_approval");
+    expect(api.proposal().confirmation).toBeNull();
+
+    // A date left far ahead (the previous system writes the column too; the customer portal refuses to make one): the planned 2-hour
+    // length from it would end after the year 2100, a window no other path may write. Held back in the backend's words, and the
+    // last window that fits is accepted.
+    api.seedProposal({ startOn: "2100-12-31T22:30:00Z", proposerKnown: true });
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.acceptProposedTimeButton()).toBeDisabled();
+    await expect(
+      detail.page.getByLabel(/^Accept proposed time: The time the customer proposed \(2100-12-31T22:30:00Z\) is too far ahead to be accepted/),
+    ).toBeVisible();
+    await expect(detail.proposeDifferentTimeButton()).toBeEnabled();
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: "2100-12-31T22:30:00Z", ...SHOWN_WINDOW })).toEqual({
+      status: 409,
+      message: acceptTooFarAheadMessage("2100-12-31T22:30:00Z", "2101-01-01T00:30:00Z"),
+    });
+    expect(api.state()).toBe("customer_approval");
+    expect(api.planned()).toEqual(ORIGINAL_WINDOW);
+    api.seedProposal({ startOn: "2100-12-31T21:30:00Z", proposerKnown: true });
+    await switchTo(page, api, FAKE_CREATOR);
+    await expect(detail.acceptProposedTimeButton()).toBeEnabled();
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: "2100-12-31T21:30:00Z", ...SHOWN_WINDOW })).toMatchObject({ status: 200 });
+    expect(api.state()).toBe("scheduled");
+  });
+
+  test("a time the customer re-proposed behind an open confirmation is refused in the backend's words, the dialog keeps what the engineer was shown, and nothing is accepted", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    await detail.acceptProposedTimeButton().click();
+    api.customerProposes(FAKE_CUST_TWO, "2030-03-20T10:00:00Z"); // behind the open dialog
+    await detail.acceptDialogConfirm().click();
+    await expect(detail.acceptDialog().getByRole("alert")).toHaveText(proposalChangedMessage("2030-03-20T10:00:00Z"));
+    expect(api.state()).toBe("customer_approval");
+    expect(api.planned()).toEqual(ORIGINAL_WINDOW);
+    expect(api.proposal().confirmation).toBeNull();
+    // That refusal names no code, but the proposal the dialog showed is not the one the page holds now once the change is read
+    // again: asking again would be refused again, so Accept is held back and Close is the way on.
+    await expect(detail.acceptDialogConfirm()).toBeDisabled();
+    await detail.acceptDialog().getByRole("button", { name: "Close", exact: true }).click();
+    await page.reload();
+    await expect(detail.proposalBanner()).toContainText("Proposed by Max Member");
+  });
+
+  test("a window re-scheduled behind an open Accept confirmation: the refusal names its code, the dialog closes, the page says why with focus on the notice, shows the new window, and Accept then goes through", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    await detail.acceptProposedTimeButton().click();
+    api.moveWindow("2030-03-02 09:00:00", "2030-03-02 11:00:00"); // behind the open dialog
+    await detail.acceptDialogConfirm().click();
+    await expect(detail.acceptDialog()).toHaveCount(0);
+    const notice = detail.staleAnswerNotice();
+    const moved = windowChangedMessage("2030-03-02T09:00:00Z to 2030-03-02T11:00:00Z");
+    await expect(notice).toContainText(`${moved.charAt(0).toUpperCase()}${moved.slice(1)}.`); // the notice states it as a sentence
+    await expect(notice).toBeFocused();
+    // Nothing was accepted, and the page read the change again: the banner shows the planned window as it is now.
+    expect(api.state()).toBe("customer_approval");
+    expect(api.proposal().confirmation).toBeNull();
+    await expect(detail.proposalBanner()).toContainText(/Mar 2, 2030, \d{1,2}:\d{2} [AP]M to Mar 2, 2030, \d{1,2}:\d{2} [AP]M/);
+    // On the current state it goes through, and the notice goes with the next dialog.
+    await detail.acceptProposedTimeButton().click();
+    await expect(notice).toHaveCount(0);
+    await detail.acceptDialogConfirm().click();
+    await expect(detail.acceptDialog()).toHaveCount(0);
+    expect(api.state()).toBe("scheduled");
+  });
+
+  test("a window re-scheduled behind an open counter: the dialog closes with no note posted, and opened again the reason is recorded exactly once", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    const reason = "Freeze that week.";
+    const fillCounter = async (): Promise<void> => {
+      await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START, detail.counterDialog());
+      await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END, detail.counterDialog());
+      await detail.counterDialog().getByLabel("Reason (optional)").fill(reason);
+    };
+    await detail.proposeDifferentTimeButton().click();
+    await fillCounter();
+    api.moveWindow("2030-03-02 09:00:00", "2030-03-02 11:00:00"); // behind the open dialog
+    await detail.counterSubmit("Propose this time").click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+    await expect(detail.staleAnswerNotice()).toBeFocused();
+    expect(api.journal()).toEqual([]); // the refused attempt left no note behind
+    expect(api.proposal().confirmation).toBeNull();
+
+    await detail.proposeDifferentTimeButton().click();
+    await expect(detail.counterDialog().getByLabel("Reason (optional)")).toHaveValue("");
+    await fillCounter();
+    await detail.counterSubmit("Propose this time").click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+    expect(api.proposal().confirmation).toBe("disagree");
+    expect(api.journal()).toEqual([{ kind: "comment", text: reason }]); // once, after the change went through
+  });
+
+  test("a plain Re-schedule opened before the customer proposed never answers a proposal it did not see: the API says so, in words", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await driveToCustomerApproval(page, api, detail);
+    await detail.rescheduleButton().click();
+    api.customerProposes(FAKE_CUST_ONE, PROPOSED_START); // behind the open dialog
+    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
+    await detail.rescheduleSubmit().click();
+    await expect(detail.rescheduleDialog().getByRole("alert")).toHaveText(customerProposedWhileOpenMessage(PROPOSED_START));
+    expect(api.planned()).toEqual(ORIGINAL_WINDOW);
+    expect(api.proposal().confirmation).toBeNull();
+  });
+
+  test("every refusal of the two answers, in the backend's words, and none writes anything: the shape of Accept, the state, a stale window, a stale proposal", async ({ page }) => {
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, { customerApprovalRequired: true }, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    await proposalWaiting(page, api, detail);
+    const stagesBefore = JSON.stringify(api.stages());
+    const refusal = (status: number, message: string) => ({ status, message });
+    const shown = { expectedPlannedStartOn: ORIGINAL_WINDOW.start, expectedPlannedEndOn: ORIGINAL_WINDOW.end };
+    const accept = (extra: Record<string, unknown>) =>
+      patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: PROPOSED_START, ...shown, ...extra });
+
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "disagree", expectedCustomerUpdatedOn: PROPOSED_START, ...shown })).toEqual(refusal(400, ACCEPT_ONLY_AGREE));
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", ...shown })).toEqual(refusal(400, ACCEPT_NEEDS_EXPECTED));
+    // The window the page showed is required too: an Accept never lands on a plan its reader did not see.
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: PROPOSED_START })).toEqual(
+      refusal(400, ACCEPT_NEEDS_EXPECTED_WINDOW),
+    );
+    expect(await accept({ subject: "something else" })).toEqual(refusal(400, ACCEPT_CANNOT_COMBINE));
+    expect(await accept({ expectedPlannedStartOn: "2030-03-02 09:00:00" })).toEqual(
+      refusal(409, windowChangedMessage("2030-03-01T09:00:00Z to 2030-03-01T11:00:00Z")),
+    );
+    expect(await patchFromPage(page, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: "2030-03-09T09:00:00Z", ...shown })).toEqual(
+      refusal(409, proposalChangedMessage(PROPOSED_START)),
+    );
+    // A Re-schedule that names a proposal that is not the waiting one, and one that names none while one waits.
+    expect(await patchFromPage(page, { state: "authorize", expectedCustomerUpdatedOn: "2030-03-09T09:00:00Z" })).toEqual(
+      refusal(409, proposalChangedMessage(PROPOSED_START)),
+    );
+    expect(await patchFromPage(page, { state: "authorize", plannedEndOn: "2030-03-01 12:00:00" })).toEqual(
+      refusal(409, customerProposedWhileOpenMessage(PROPOSED_START)),
+    );
+    // Neither answer is a manual `scheduled`: that stays refused whoever asks, a waiting proposal included.
+    expect(await patchStateFromPage(page, "scheduled")).toEqual(refusal(400, customerAnswerRefusal("scheduled")));
+
+    // Nothing was written by any of it.
+    expect(api.state()).toBe("customer_approval");
+    expect(api.planned()).toEqual(ORIGINAL_WINDOW);
+    expect(api.proposal()).toEqual({ customerUpdatedOn: PROPOSED_START, confirmation: null });
+    expect(JSON.stringify(api.stages())).toBe(stagesBefore);
+    expect(ACCEPT_WINDOW_HAS_NO_LENGTH).toBeTruthy();
+  });
+
+  test("a legacy change in Customer Approval whose requirement box is false (a migrated row) is asked again by a Re-schedule: it stays in Customer Approval, no CAB, nothing but its own window and request changes; and only the customer's own answer schedules it", async ({ page }) => {
+    // A change that sits in Customer Approval with its stored requirement false: how a migrated change looks. The registered
+    // contacts of its project are asked (the backend provisions their stage on the next write).
+    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, {}, ON_ACME);
+    const detail = new ChangeRequestDetailPage(page);
+    api.setState("customer_approval");
+    api.syncCustomers();
+    await openDetail(detail);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    expect(api.flags()).toEqual({ customerApprovalRequired: false, customerReviewRequired: false });
+    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
+    await expect(detail.rescheduleButton()).toBeVisible();
+
+    await detail.rescheduleButton().click();
+    await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START);
+    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
+    await detail.rescheduleSubmit().click();
+    await expect(detail.rescheduleDialog()).toHaveCount(0);
+    expect(api.state()).toBe("customer_approval");
+    expect(stageNames(api)).toEqual(["Customer Approval", "Customer Approval"]);
+    expect(api.stages().map((st) => st.approvers.map((a) => a.status))).toEqual([
+      ["CANCELLED", "CANCELLED"],
+      ["REQUESTED", "REQUESTED"],
+    ]);
+    // A Re-schedule writes no requirement flag (a sync-owned shape it must not touch) and never the outcome stamp.
+    expect(api.flags()).toEqual({ customerApprovalRequired: false, customerReviewRequired: false });
+    expect(api.customerApproved()).toBe(false);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+
+    await customerAnswers(page, api, FAKE_CUST_TWO, "approved");
+    await expect(detail.currentStep()).toContainText("Scheduled");
+    expect(api.state()).toBe("scheduled");
   });
 });
 
@@ -3667,49 +4204,6 @@ test.describe("change request state machine — final states and jumps (mocked b
     await detail.sendForCustomerReviewButton().click();
     await expect(detail.currentStep()).toContainText("Customer Review");
   });
-
-  test("Re-schedule on a row whose customer requirement was never ticked (a migrated row, defaulted to false) re-asks the customer: the CAB's new approval goes back to Customer Approval, never to Scheduled", async ({ page }) => {
-    test.setTimeout(240_000);
-    // A change that sits in Customer Approval with its stored requirement false: how a migrated change looks. The
-    // registered contacts of its project are asked (the backend provisions their stage on the next write).
-    const api = await installFakeChangeRequestApi(page, "normal", FAKE_CREATOR, {}, ON_ACME);
-    const detail = new ChangeRequestDetailPage(page);
-    api.setState("customer_approval");
-    api.syncCustomers();
-    await openDetail(detail);
-    await expect(detail.currentStep()).toContainText("Customer Approval");
-    expect(api.flags()).toEqual({ customerApprovalRequired: false, customerReviewRequired: false });
-    await expect(detail.approverStatus(FAKE_CUST_ONE.name, "Customer Approval")).toHaveText("Requested");
-    // Re-schedule is offered, as for every change in Customer Approval.
-    await expect(detail.rescheduleButton()).toBeVisible();
-
-    await detail.rescheduleButton().click();
-    await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START);
-    await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END);
-    await detail.rescheduleSubmit().click();
-    await expect(detail.currentStep()).toContainText("Authorize");
-    expect(api.state()).toBe("authorize");
-    expect(api.stages().filter((st) => st.stage === "Customer Approval").flatMap((st) => st.approvers.map((a) => a.status))).toEqual(["CANCELLED", "CANCELLED"]);
-    // The Re-schedule wrote our own requirement (the customer IS to be asked), with the new window.
-    expect(api.flags().customerApprovalRequired).toBe(true);
-
-    // The CAB approves the new plan: the customer is asked again (a fresh stage), not skipped to Scheduled.
-    await switchTo(page, api, FAKE_CAB);
-    await detail.approve("Cam Cab");
-    await switchTo(page, api, FAKE_CREATOR);
-    await expect(detail.currentStep()).toContainText("Customer Approval");
-    expect(api.state(), "the CAB's approval went to the customer, not past them").toBe("customer_approval");
-    expect(api.stages().filter((st) => st.stage === "Customer Approval").map((st) => st.approvers.map((a) => a.status))).toEqual([
-      ["CANCELLED", "CANCELLED"],
-      ["REQUESTED", "REQUESTED"],
-    ]);
-    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
-
-    // Only the customer's own answer schedules it.
-    await customerAnswers(page, api, FAKE_CUST_TWO, "approved");
-    await expect(detail.currentStep()).toContainText("Scheduled");
-    expect(api.state()).toBe("scheduled");
-  });
 });
 
 // ---------------------------------------------------------------------------
@@ -4068,7 +4562,7 @@ test.describe("the customer requirements lock (real stack)", () => {
     await shotTo(page, "23-csm-edit-dialog-assess-no-project-boxes-disabled");
   });
 
-  test("a Re-schedule back to Authorize cannot reopen anything: the customer box stays ticked, the project cannot be swapped, and the CAB's approval of the new plan asks the same contacts again in a fresh stage", async ({ page }) => {
+  test("a Re-schedule asks the customer again and the change stays in Customer Approval: no Authorize, no CAB; the box stays ticked and the project cannot be swapped, and the customer's own answer then schedules it", async ({ page }) => {
     await pictureWindow(page);
     const cr = await raise({ subject: lockSubject("re-schedule"), projectId: EXAMPLE_CORP.id, approval: true, review: false });
     const jane = staff("jane");
@@ -4084,36 +4578,39 @@ test.describe("the customer requirements lock (real stack)", () => {
       ))
         .split("\n")
         .filter(Boolean);
+    const stageCount = async () => Number(await psqlOutput(`select count(*) from approval_stage where work_item_id = '${cr.id}'`));
     expect(await customerRows()).toEqual(["REQUESTED", "REQUESTED"]);
+    const stagesBefore = await stageCount();
 
-    // Re-schedule (a new window, back to Authorize), the way the Re-schedule dialog sends it.
+    // Re-schedule (a new window), the way the Re-schedule dialog sends it.
     const start = new Date(Date.now() + 9 * 86_400_000);
     start.setUTCHours(10, 0, 0, 0);
     const iso = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
     const end = new Date(start.getTime() + 2 * 3_600_000);
     await ok("Re-schedule", await staff("alice").patch(cr.id, { state: "authorize", plannedStartOn: iso(start), plannedEndOn: iso(end) }));
-    expect(await stateOf(cr.id)).toBe("authorize");
-    expect(await customerRows(), "the customers' request is cancelled, not deleted").toEqual(["CANCELLED", "CANCELLED"]);
+    // The state does not move and no CAB stage is opened: the change itself has not changed.
+    expect(await stateOf(cr.id)).toBe("customer_approval");
+    expect(await customerRows(), "the customers' request is cancelled, not deleted, and asked again in a fresh stage").toEqual(["CANCELLED", "CANCELLED", "REQUESTED", "REQUESTED"]);
+    expect(await stageCount(), "one new stage: the customers'").toBe(stagesBefore + 1);
 
-    // The hole: in Authorize the box used to be unticked, so the CAB's next approval went straight to Scheduled.
+    // A ticked box can never be unticked, and the project is frozen: nothing customer-related is open to a Re-schedule either.
     const untick = await jane.patch(cr.id, { customerApprovalRequired: false });
-    expect([untick.status, message(untick)]).toEqual([400, requirementCannotBeRemovedMessage("customerApprovalRequired", "authorize")]);
+    expect([untick.status, message(untick)]).toEqual([400, requirementCannotBeRemovedMessage("customerApprovalRequired", "customer_approval")]);
     const swap = await jane.patch(cr.id, { projectId: OTHER_CORP.id });
-    expect([swap.status, message(swap)]).toEqual([400, projectFrozenMessage("authorize")]);
+    expect([swap.status, message(swap)]).toEqual([400, projectFrozenMessage("customer_approval")]);
     const detail = new ChangeRequestDetailPage(page);
     await detail.goto(cr.id);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+    await expect(detail.proposalBanner()).toHaveCount(0);
     await detail.openEditDialog();
     await expect(detail.editProjectField()).toBeDisabled();
     await expect(detail.editCustomerApprovalCheckbox()).toBeChecked();
     await expect(detail.editCustomerApprovalCheckbox()).toBeDisabled();
-    await shotTo(page, "24-csm-edit-dialog-authorize-after-reschedule-nothing-customer-related-editable");
+    await shotTo(page, "24-csm-edit-dialog-customer-approval-after-reschedule-nothing-customer-related-editable");
     await detail.editDialog().getByRole("button", { name: "Cancel" }).click();
 
-    // The CAB approves the new plan (bob): Customer Approval again, a fresh stage for the same two contacts.
-    await ok("CAB approval of the new plan", await staff("bob").decide(cr.id, "approved"));
-    expect(await stateOf(cr.id), "the CAB's approval went to the customer, not past them").toBe("customer_approval");
-    expect(await customerRows()).toEqual(["CANCELLED", "CANCELLED", "REQUESTED", "REQUESTED"]);
-    // ... and the customer's answer (applied as the customer portal does) schedules it.
+    // The customer's answer (applied as the customer portal does) schedules it: nobody at WSO2 had anything to approve.
     const answered = await decideAsCustomer(cr.id, "dave.mendis@example.com", "approved");
     expect(answered.status, answered.body).toBe(200);
     expect(await stateOf(cr.id)).toBe("scheduled");
@@ -4289,21 +4786,25 @@ test.describe("migrated (legacy) change requests in the CSM portal (real stack)"
     expect(await stateOf(id)).toBe("customer_review");
   });
 
-  test("Re-schedule on a legacy change in Customer Approval whose requirement box is false (migration 0189 defaulted it) asks the customer again: the CAB's approval of the new plan goes back to Customer Approval, never to Scheduled, and only the customer's own answer schedules it", async () => {
+  test("Re-schedule on a legacy change in Customer Approval whose requirement box is false (migration 0189 defaulted it) asks the customer again and the change stays in Customer Approval: no CAB, the box is not written, and only the customer's own answer schedules it", async () => {
     const id = legacyId("CHG0039104");
     const alice = staff("alice");
     expect((await staff("jane").get(id)).body.customerApprovalRequired, "a migrated row's own requirement column is false").toBeFalsy();
+    const stageCount = async () => Number(await psqlOutput(`select count(*) from approval_stage where work_item_id = '${id}'`));
+    expect(await stageCount(), "a migrated row nobody was asked about has no stage").toBe(0);
 
     const start = new Date(Date.now() + 9 * 86_400_000);
     start.setUTCHours(10, 0, 0, 0);
     const iso = (d: Date) => d.toISOString().slice(0, 19).replace("T", " ");
     await ok("Re-schedule", await alice.patch(id, { state: "authorize", plannedStartOn: iso(start), plannedEndOn: iso(new Date(start.getTime() + 2 * 3_600_000)) }));
-    expect(await stateOf(id)).toBe("authorize");
-    // Our own requirement column now says the customer is to be asked (never the sync-owned outcome flag).
-    expect((await staff("jane").get(id)).body.customerApprovalRequired).toBe(true);
+    expect(await stateOf(id), "no CAB loop: the change itself has not changed").toBe("customer_approval");
+    // Our own requirement column is a sync-owned shape a Re-schedule must not touch; the customer is asked all the same (a fresh stage).
+    expect((await staff("jane").get(id)).body.customerApprovalRequired).toBeFalsy();
+    expect(await stageCount(), "the contacts are asked in one fresh customer stage, and no CAB stage").toBe(1);
+    expect(
+      await psqlOutput(`select s.checkpoint_label || ':' || a.state from approval_stage s join approval_stage_approver a on a.stage_id = s.id where s.work_item_id = '${id}' order by a.id`),
+    ).toBe("Customer Approval:REQUESTED\nCustomer Approval:REQUESTED");
 
-    await ok("CAB approval of the new plan", await alice.decide(id, "approved"));
-    expect(await stateOf(id), "the CAB's approval went to the customer, not past them").toBe("customer_approval");
     const answered = await decideAsCustomer(id, "dave.mendis@example.com", "approved");
     expect(answered.status, answered.body).toBe(200);
     expect(await stateOf(id)).toBe("scheduled");
@@ -4329,6 +4830,313 @@ test.describe("migrated (legacy) change requests in the CSM portal (real stack)"
     // ...and then it stays: add-only holds for a migrated row exactly as for a native one.
     const untick = await staff("jane").patch(legacyId("CHG0039105"), { customerReviewRequired: false });
     expect(untick.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A customer's PROPOSED TIME, on the REAL stack (the CSM webapp, the CSM backend, entity-service as csm_app with row-level
+// security, the database). The previous system's own mechanism: the customer's proposal is written to customer_updated_on (a planned
+// START) and nothing else, the change STAYS in Customer Approval with the planned window untouched, and WSO2 answers it from the
+// change request: Accept proposed time (Scheduled in one step, no CAB, no new customer request) or Propose a different time
+// (the customer is asked again; keeping the window declines). The customer proposes the way the customer portal does (a PATCH
+// to entity-service with their own token, utils/customerPortalDecision.ts); every database assertion is on the rows the
+// backend wrote, so "nothing else was written" is checked where it matters.
+// ---------------------------------------------------------------------------
+
+const PROPOSAL_PREFIX = "E2E proposal: ";
+const proposalSubject = (title: string): string => `${PROPOSAL_PREFIX}${title}`;
+async function deleteProposalChanges(): Promise<void> {
+  await psql(`delete from work_item where type = 'CHANGE_REQUEST' and subject like '${PROPOSAL_PREFIX}%'`);
+}
+
+/** The columns a proposal reads and writes, as the database holds them (UTC, "YYYY-MM-DD HH:MM:SS"). */
+async function proposalRow(id: string): Promise<{ state: string; start: string; end: string; proposed: string; answer: string; stamped: string }> {
+  const utc = (col: string): string => `coalesce(to_char(${col} at time zone 'utc', 'YYYY-MM-DD HH24:MI:SS'), '')`;
+  const out = await psqlOutput(
+    `select state::text, ${utc("start_on")}, ${utc("end_on")}, ${utc("customer_updated_on")}, ` +
+      `coalesce(customer_updated_date_confirmation::text, ''), coalesce(is_customer_approval_required::text, '') from change_request where id = '${id}'`,
+  );
+  const [state, start, end, proposed, answer, stamped] = out.split("|");
+  return { state: state!, start: start!, end: end!, proposed: proposed!, answer: answer!, stamped: stamped! };
+}
+
+/** Row counts of the tables a proposal must not grow, for a change request. */
+async function writtenRows(id: string): Promise<{ stages: number; approvers: number; comments: number }> {
+  const count = async (sql: string): Promise<number> => Number(await psqlOutput(sql));
+  return {
+    stages: await count(`select count(*) from approval_stage where work_item_id = '${id}'`),
+    approvers: await count(`select count(*) from approval_stage_approver where work_item_id = '${id}'`),
+    comments: await count(`select count(*) from comment where work_item_id = '${id}'`),
+  };
+}
+
+const utcIso = (d: Date): string => d.toISOString().slice(0, 19).replace("T", " ");
+/** A start `days` days ahead at `hour`:00 UTC. */
+function startIn(days: number, hour = 10): Date {
+  const d = new Date(Date.now() + days * 86_400_000);
+  d.setUTCHours(hour, 0, 0, 0);
+  return d;
+}
+
+test.describe("a customer's proposed time (real stack)", () => {
+  test.describe.configure({ timeout: 240_000 });
+  test.beforeEach(async () => {
+    test.skip(
+      !realStackNamed(),
+      "name the stack under test: E2E_CSM_BFF_URL, E2E_OIDC_URL, E2E_ENTITY_SERVICE_URL, E2E_POSTGRES_CONTAINER (see auth/README.md)",
+    );
+    await deleteProposalChanges();
+  });
+  test.afterAll(async () => {
+    if (realStackNamed()) await deleteProposalChanges();
+  });
+
+  /** A Normal change on Example Corp (dave and erin are asked), planned two weeks out for two hours, brought to Customer Approval. */
+  async function atCustomerApproval(title: string): Promise<{ cr: Raised; planned: { start: Date; end: Date } }> {
+    const cr = await raise({ subject: proposalSubject(title), projectId: EXAMPLE_CORP.id, approval: true, review: false });
+    const start = startIn(14);
+    const planned = { start, end: new Date(start.getTime() + 2 * 3_600_000) };
+    await plan(cr, { start: utcIso(planned.start), end: utcIso(planned.end) });
+    await ok("Request Approval", await staff("jane").patch(cr.id, { state: "assess" }));
+    await ok("Peer approval", await staff("alice").decide(cr.id, "approved"));
+    await ok("CAB approval", await staff("alice").decide(cr.id, "approved"));
+    expect(await stateOf(cr.id)).toBe("customer_approval");
+    return { cr, planned };
+  }
+
+  test("Dave proposes a start: the change waits in Customer Approval with its window untouched and nothing else written; the banner names him, and Accept proposed time schedules it by the proposal, with no CAB, no new request and nothing stamped as the customer's approval", async ({ page }) => {
+    await pictureWindow(page);
+    const { cr, planned } = await atCustomerApproval("accept");
+    const before = await writtenRows(cr.id);
+    const proposedStart = new Date(planned.start.getTime() + 7 * 86_400_000);
+
+    const proposal = await proposeAsCustomer(cr.id, "dave.mendis@example.com", { plannedStartOn: utcIso(proposedStart) });
+    expect(proposal.status, proposal.body).toBe(200);
+    // The previous system's own columns hold it; the plan, the state and every stage and approver row are what they were.
+    const waiting = await proposalRow(cr.id);
+    expect(waiting).toMatchObject({ state: "CUSTOMER_APPROVAL", start: utcIso(planned.start), end: utcIso(planned.end), proposed: utcIso(proposedStart), answer: "" });
+    const afterProposal = await writtenRows(cr.id);
+    expect({ stages: afterProposal.stages, approvers: afterProposal.approvers }, "a proposal writes no stage and no approver row").toEqual({ stages: before.stages, approvers: before.approvers });
+
+    // What WSO2 reads: the backend's own verdict, Dave named as the proposer, Accept on offer.
+    const read = (await staff("jane").get(cr.id)).body as unknown as { customerProposal?: Record<string, unknown>; hasCustomerApproved?: boolean };
+    expect(read.customerProposal).toMatchObject({ answer: "pending", proposerRecorded: true, proposedByEmail: "dave.mendis@example.com", canAccept: true });
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(cr.id);
+    await expect(detail.currentStep()).toContainText("Customer Approval");
+    await expect(detail.proposalBanner()).toBeVisible();
+    await expect(detail.customerProposalBanner()).toBeVisible(); // the proposer is on record
+    await expect(detail.proposalBanner()).toContainText("Proposed by Dave Mendis (dave.mendis@example.com)");
+    await expect(detail.proposalBanner()).toContainText("Same length as the planned window (2 hours)");
+    await expect(detail.proposalWaitingReason()).toBeVisible();
+    await expect(detail.acceptProposedTimeButton()).toBeEnabled();
+    await shotTo(page, "40-csm-proposal-banner-real-stack");
+
+    // Accept, from the page.
+    await detail.acceptProposedTimeButton().click();
+    await expect(detail.acceptDialog()).toBeVisible();
+    await shotTo(page, "41-csm-accept-proposed-time-dialog-real-stack");
+    await detail.acceptDialogConfirm().click();
+    await expect(detail.acceptDialog()).toHaveCount(0);
+    await expect(detail.currentStep()).toContainText("Scheduled");
+
+    const accepted = await proposalRow(cr.id);
+    expect(accepted, "the proposal is the plan, its length kept, the answer is AGREE, the change is Scheduled").toMatchObject({
+      state: "SCHEDULED",
+      start: utcIso(proposedStart),
+      end: utcIso(new Date(proposedStart.getTime() + 2 * 3_600_000)),
+      answer: "AGREE",
+    });
+    expect(accepted.stamped, "no staff action records the customer's approval").not.toBe("true");
+    const after = await writtenRows(cr.id);
+    expect({ stages: after.stages, approvers: after.approvers }, "no CAB stage, no second request").toEqual({ stages: before.stages, approvers: before.approvers });
+    expect(
+      (await psqlOutput(`select count(*) from approval_stage_approver where work_item_id = '${cr.id}' and state = 'REQUESTED'`)),
+      "the customers' own request is closed like any state change closes it",
+    ).toBe("0");
+    const scheduled = (await staff("jane").get(cr.id)).body as unknown as { hasCustomerApproved?: boolean; customerProposal?: { answer?: string } };
+    expect(scheduled.hasCustomerApproved).toBeFalsy();
+    expect(scheduled.customerProposal?.answer).toBe("agreed");
+    await expect(detail.proposalBanner()).toHaveCount(0);
+    await detail.page.getByRole("tab", { name: "Approval" }).click();
+    await expect(detail.overviewCell("Customer approved")).toContainText("Proposed time accepted");
+    await shotTo(page, "42-csm-after-accept-real-stack");
+    // Accept is another door whose only precondition is the customer's own proposal: a manual scheduled stays refused.
+    const refused = await staff("alice").patch(cr.id, { state: "scheduled" });
+    expect(refused.status).toBe(400);
+  });
+
+  test("Propose a different time asks the customer again (no CAB) and answers the proposal DISAGREE; a decline keeps the window and the customers' live request; the customer's next proposal brings the banner back", async ({ page }) => {
+    await pictureWindow(page);
+    const { cr, planned } = await atCustomerApproval("counter and decline");
+    const before = await writtenRows(cr.id);
+    const first = new Date(planned.start.getTime() + 7 * 86_400_000);
+    expect((await proposeAsCustomer(cr.id, "dave.mendis@example.com", { plannedStartOn: utcIso(first) })).status).toBe(200);
+    const pendingVersion = ((await staff("jane").get(cr.id)).body as unknown as { customerProposal?: { startOn?: string } }).customerProposal?.startOn;
+    expect(pendingVersion).toBeTruthy();
+
+    // A Re-schedule that names no proposal while one waits is refused: an old client never answers a time it did not see.
+    const blind = await staff("alice").patch(cr.id, { state: "authorize", plannedEndOn: utcIso(new Date(planned.end.getTime() + 3_600_000)) });
+    expect(blind.status).toBe(409);
+    expect((blind.body as { message?: string }).message).toBe(customerProposedWhileOpenMessage(pendingVersion!));
+
+    // The counter: WSO2's own window, with the proposal and the plan it was shown.
+    const counterStart = new Date(planned.start.getTime() + 3 * 86_400_000);
+    const counter = await staff("alice").patch(cr.id, {
+      state: "authorize",
+      plannedStartOn: utcIso(counterStart),
+      plannedEndOn: utcIso(new Date(counterStart.getTime() + 2 * 3_600_000)),
+      expectedCustomerUpdatedOn: pendingVersion,
+      expectedPlannedStartOn: planned.start.toISOString(),
+      expectedPlannedEndOn: planned.end.toISOString(),
+    });
+    expect(counter.status, JSON.stringify(counter.body)).toBe(200);
+    expect(await proposalRow(cr.id)).toMatchObject({ state: "CUSTOMER_APPROVAL", start: utcIso(counterStart), proposed: utcIso(first), answer: "DISAGREE" });
+    const afterCounter = await writtenRows(cr.id);
+    expect(afterCounter.stages, "one new stage, the customers' fresh request: no CAB").toBe(before.stages + 1);
+    expect(
+      await psqlOutput(`select count(*) from approval_stage_approver a join approval_stage s on s.id = a.stage_id where s.work_item_id = '${cr.id}' and s.checkpoint_label = 'Customer Approval' and a.state = 'REQUESTED'`),
+    ).toBe("2");
+    const detail = new ChangeRequestDetailPage(page);
+    await detail.goto(cr.id);
+    await expect(detail.proposalBanner()).toHaveCount(0);
+    await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+
+    // The customer proposes again (their next proposal clears the answer): the banner is back, and WSO2 declines it, keeping the window.
+    const second = new Date(counterStart.getTime() + 5 * 86_400_000);
+    expect((await proposeAsCustomer(cr.id, "erin.jayawardena@example.com", { plannedStartOn: utcIso(second) })).status).toBe(200);
+    await page.reload();
+    await expect(detail.proposalBanner()).toBeVisible();
+    await expect(detail.proposalBanner()).toContainText("Proposed by Erin Jayawardena (erin.jayawardena@example.com)");
+    const live = await writtenRows(cr.id);
+    await detail.proposeDifferentTimeButton().click();
+    await expect(detail.counterDialog()).toBeVisible();
+    await expect(detail.counterSubmit("Decline proposed time")).toBeEnabled();
+    await detail.counterSubmit("Decline proposed time").click();
+    await expect(detail.counterDialog()).toHaveCount(0);
+    expect(await proposalRow(cr.id)).toMatchObject({ state: "CUSTOMER_APPROVAL", start: utcIso(counterStart), proposed: utcIso(second), answer: "DISAGREE" });
+    expect(await writtenRows(cr.id), "a decline writes the answer and nothing else").toEqual(live);
+    await expect(detail.proposalBanner()).toHaveCount(0);
+  });
+
+  test("on the rows the sync writes: a migrated change in Customer Approval with a customer date and no answer is a stored time nobody is recorded as having proposed: Accept is refused (page and API), and Propose a different time is a plain Re-schedule that writes no answer", async ({ page }) => {
+    test.skip(!fs.existsSync(LEGACY_SQL), `the customer portal e2e fixture ${LEGACY_SQL} is not there (run from apps/csm-portal/webapp)`);
+    await psql(fs.readFileSync(LEGACY_SQL, "utf8"));
+    try {
+      const detail = new ChangeRequestDetailPage(page);
+      // CHG0039112: Customer Approval, a window planned (2031-03-01 10:00 - 12:00), nobody asked (no stage). The sync wrote a customer date, no answer.
+      const id = legacyId("CHG0039112");
+      await psql(`update change_request set customer_updated_on = '2031-03-08 10:00:00+00', customer_updated_date_confirmation = NULL where id = '${id}'`);
+      const read = (await staff("jane").get(id)).body as unknown as { customerProposal?: Record<string, unknown> };
+      // The last writer is the sync, not a registered contact: nobody is named, and Accept is not on offer, with the reason.
+      expect(read.customerProposal).toMatchObject({ answer: "pending", startOn: "2031-03-08T10:00:00Z", proposerRecorded: false, canAccept: false });
+      expect(read.customerProposal?.acceptBlockedReason).toBe(ACCEPT_PROPOSER_NOT_RECORDED);
+      expect(read.customerProposal?.proposedByEmail).toBeUndefined();
+
+      await detail.goto(id);
+      await expect(detail.neutralProposalBanner()).toBeVisible(); // nobody on record: the banner does not say the customer proposed it
+      await expect(detail.proposalWaitingReason()).toHaveCount(0);
+      await expect(detail.blockingReason()).toHaveText("Awaiting Customer Approval");
+      await expect(detail.neutralProposalBanner()).toContainText(") but nobody is recorded as having proposed it.");
+      await expect(detail.acceptProposedTimeButton()).toBeDisabled();
+      await expect(detail.proposeDifferentTimeButton()).toBeEnabled();
+      await shotTo(page, "43-csm-stored-time-nobody-recorded-migrated-row");
+
+      // The API refuses an Accept sent anyway: a 409 with its code, and nothing is written.
+      const accept = await staff("alice").patch(id, {
+        confirmCustomerUpdatedDate: "agree",
+        expectedCustomerUpdatedOn: "2031-03-08T10:00:00Z",
+        expectedPlannedStartOn: "2031-03-01T10:00:00Z",
+        expectedPlannedEndOn: "2031-03-01T12:00:00Z",
+      });
+      expect(accept.status).toBe(409);
+      expect(accept.body as { message?: string; errorCode?: string }).toMatchObject({ message: ACCEPT_PROPOSER_NOT_RECORDED, errorCode: "change_request_proposer_not_recorded" });
+      // ... and a request with no window is no decline of a time nobody proposed.
+      const bare = await staff("alice").patch(id, { state: "authorize" });
+      expect([bare.status, (bare.body as { message?: string }).message]).toEqual([400, NO_RECORDED_PROPOSAL_TO_DECLINE]);
+      expect(await proposalRow(id)).toMatchObject({ state: "CUSTOMER_APPROVAL", start: "2031-03-01 10:00:00", answer: "" });
+
+      // Propose a different time: a plain Re-schedule (the window must change). The customers are asked, nothing is answered.
+      await detail.proposeDifferentTimeButton().click();
+      await expect(detail.counterDialog()).toContainText("There is no proposal to decline.");
+      await expect(detail.counterSubmit("Propose this time")).toBeDisabled();
+      await detail.fillRescheduleWindow("Planned start", NEXT_WEEK_START, detail.counterDialog());
+      await detail.fillRescheduleWindow("Planned end", NEXT_WEEK_END, detail.counterDialog());
+      await detail.counterSubmit("Propose this time").click();
+      await expect(detail.counterDialog()).toHaveCount(0);
+      expect(await proposalRow(id), "no DISAGREE is written against a date nobody proposed").toMatchObject({ state: "CUSTOMER_APPROVAL", answer: "" });
+      expect(
+        await psqlOutput(`select count(*) from approval_stage_approver a join approval_stage s on s.id = a.stage_id where s.work_item_id = '${id}' and s.checkpoint_label = 'Customer Approval' and a.state = 'REQUESTED'`),
+        "the project's contacts are asked to approve the new time",
+      ).toBe("2");
+    } finally {
+      await deleteLegacy();
+    }
+  });
+
+  test("a date on a migrated change that is NOT a proposal waiting for WSO2 is never read as one: one waiting on an unlabeled approval in Authorize, one whose date is the planned start, one with an answer", async () => {
+    test.skip(!fs.existsSync(LEGACY_SQL), `the customer portal e2e fixture ${LEGACY_SQL} is not there (run from apps/csm-portal/webapp)`);
+    await psql(fs.readFileSync(LEGACY_SQL, "utf8"));
+    try {
+      const message = (r: ApiResult) => (r.body as { message?: string }).message;
+      const answerOf = async (id: string): Promise<string | undefined> =>
+        ((await staff("jane").get(id)).body as unknown as { customerProposal?: { answer?: string } }).customerProposal?.answer;
+
+      // CHG0039301: an Emergency change in Authorize, its one synced stage unlabeled and REQUESTED (alice, bob). A stale customer date on it.
+      const authorize = legacyId("CHG0039301");
+      await psql(`update change_request set customer_updated_on = '2031-03-08 10:00:00+00' where id = '${authorize}'`);
+      expect(await answerOf(authorize)).toBe("unanswered");
+      const accept = await staff("alice").patch(authorize, {
+        confirmCustomerUpdatedDate: "agree",
+        expectedCustomerUpdatedOn: "2031-03-08T10:00:00Z",
+        expectedPlannedStartOn: "2031-03-01T10:00:00Z",
+        expectedPlannedEndOn: "2031-03-01T12:00:00Z",
+      });
+      expect([accept.status, message(accept)]).toEqual([409, acceptNotInCustomerApproval("authorize")]);
+      expect(await stateOf(authorize)).toBe("authorize");
+
+      // CHG0039112 with the date equal to the planned start (applied already): nothing to answer.
+      const applied = legacyId("CHG0039112");
+      await psql(`update change_request set customer_updated_on = start_on, customer_updated_date_confirmation = NULL where id = '${applied}'`);
+      expect(await answerOf(applied)).toBe("unanswered");
+
+      // ... and with a standing answer (a Disagree written in the previous system): history, not a proposal.
+      await psql(`update change_request set customer_updated_on = '2031-03-08 10:00:00+00', customer_updated_date_confirmation = 'DISAGREE' where id = '${applied}'`);
+      expect(await answerOf(applied)).toBe("disagreed");
+      const again = await staff("alice").patch(applied, {
+        confirmCustomerUpdatedDate: "agree",
+        expectedCustomerUpdatedOn: "2031-03-08T10:00:00Z",
+        expectedPlannedStartOn: "2031-03-01T10:00:00Z",
+        expectedPlannedEndOn: "2031-03-01T12:00:00Z",
+      });
+      expect([again.status, message(again)]).toEqual([409, NO_PROPOSAL_WAITING]);
+      expect(await stateOf(applied)).toBe("customer_approval");
+    } finally {
+      await deleteLegacy();
+    }
+  });
+  test("a customer date the sync left far ahead is a stored time nobody proposed: Accept is refused for that reason first, whatever window it would give, in the read model and at the API, and nothing is written", async () => {
+    test.skip(!fs.existsSync(LEGACY_SQL), `the customer portal e2e fixture ${LEGACY_SQL} is not there (run from apps/csm-portal/webapp)`);
+    await psql(fs.readFileSync(LEGACY_SQL, "utf8"));
+    try {
+      const id = legacyId("CHG0039112"); // Customer Approval, planned 2031-03-01 10:00 - 12:00 (2 hours), nobody asked
+      const shown = { expectedPlannedStartOn: "2031-03-01T10:00:00Z", expectedPlannedEndOn: "2031-03-01T12:00:00Z" };
+      const proposalOf = async (): Promise<Record<string, unknown> | undefined> =>
+        ((await staff("jane").get(id)).body as unknown as { customerProposal?: Record<string, unknown> }).customerProposal;
+
+      // One whose 2-hour window would end after the year 2100, and the last one that fits: neither is accepted, since the sync's
+      // date has no registered contact recorded as its proposer. That refusal is the first reason, ahead of the window's own.
+      for (const start of ["2100-12-31 22:30:00+00", "2100-12-31 21:30:00+00"]) {
+        await psql(`update change_request set customer_updated_on = '${start}', customer_updated_date_confirmation = NULL where id = '${id}'`);
+        expect(await proposalOf()).toMatchObject({ answer: "pending", proposerRecorded: false, canAccept: false, acceptBlockedReason: ACCEPT_PROPOSER_NOT_RECORDED });
+        const startIso = start.replace(" ", "T").replace("+00", "Z");
+        const refused = await staff("alice").patch(id, { confirmCustomerUpdatedDate: "agree", expectedCustomerUpdatedOn: startIso, ...shown });
+        expect([refused.status, (refused.body as { message?: string }).message]).toEqual([409, ACCEPT_PROPOSER_NOT_RECORDED]);
+        expect(await proposalRow(id)).toMatchObject({ state: "CUSTOMER_APPROVAL", start: "2031-03-01 10:00:00", end: "2031-03-01 12:00:00", answer: "" });
+      }
+    } finally {
+      await deleteLegacy();
+    }
   });
 });
 
