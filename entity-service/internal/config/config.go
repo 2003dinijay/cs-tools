@@ -557,12 +557,10 @@ type Config struct {
 	EscalationEL2ProductServiceEmail        string
 	EscalationEL2ProductIdentityServerEmail string
 	EscalationEL2ProductDefaultEmail        string
-	// CaseEscalationNotices is CASE_ESCALATION_NOTICES_ENABLED, the switch
-	// for publishing case.escalated (the escalation email): "" (unset) means
-	// on for DATA_SOURCE=postgres and off under dual-write, where ServiceNow's
-	// own "Internal Escalation notification" flow mails the mirrored row;
-	// "true" turns it on under dual-write too (switch SN's flow off, or both
-	// send); "false" turns it off everywhere. See CaseEscalationNoticesOn.
+	// CaseEscalationNotices is CASE_ESCALATION_NOTICES_ENABLED, the off switch
+	// for publishing case.escalated (the escalation email): unset or "true"
+	// means on wherever Postgres holds the escalation (DATA_SOURCE=postgres and
+	// dual-write); "false" turns it off. See CaseEscalationNoticesOn.
 	CaseEscalationNotices string
 
 	// RedisURL/RedisAddr/RedisPassword configure the optional user cache in
@@ -1095,23 +1093,17 @@ func isSysID(v string) bool {
 // gets them from Salesforce, through its own Service Bus subscription, so it
 // stays current in either mode.
 // CaseEscalationNoticesOn reports whether escalations publish case.escalated
-// (the escalation email). Never on the ServiceNow data source, which has no
-// Postgres escalation to publish from. Otherwise CASE_ESCALATION_NOTICES_ENABLED
-// decides, and unset means DATA_SOURCE=postgres only: under dual-write the
-// escalation is mirrored into ServiceNow and its "Internal Escalation
-// notification" flow sends the email, so ours would be a second copy.
+// (the escalation email): on wherever Postgres holds the escalation --
+// DATA_SOURCE=postgres and dual-write alike -- unless
+// CASE_ESCALATION_NOTICES_ENABLED=false. Never on the ServiceNow data source,
+// which has no Postgres escalation to publish from.
+//
+// Under dual-write the escalation is also mirrored into ServiceNow, whose
+// "Internal Escalation notification" flow mails it too wherever that instance
+// delivers mail. Switch the flow off when this goes live there, or each
+// escalation is emailed twice.
 func (c *Config) CaseEscalationNoticesOn() bool {
-	if !c.PostgresAuthoritative() {
-		return false
-	}
-	switch c.CaseEscalationNotices {
-	case "true":
-		return true
-	case "false":
-		return false
-	default:
-		return c.DataSource == DataSourcePostgres
-	}
+	return c.PostgresAuthoritative() && c.CaseEscalationNotices != "false"
 }
 
 func (c *Config) PostgresAuthoritative() bool {

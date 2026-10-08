@@ -1099,9 +1099,8 @@ func TestConfig_IncidentDefaultServiceID(t *testing.T) {
 	}
 }
 
-// TestConfig_CaseEscalationNoticesOn: unset follows DATA_SOURCE (postgres on,
-// dual-write off, where ServiceNow's flow sends); true / false override it;
-// the ServiceNow data source never publishes.
+// TestConfig_CaseEscalationNoticesOn: on for postgres and dual-write alike
+// unless switched off; the ServiceNow data source never publishes.
 func TestConfig_CaseEscalationNoticesOn(t *testing.T) {
 	for _, tc := range []struct {
 		ds      DataSource
@@ -1109,9 +1108,11 @@ func TestConfig_CaseEscalationNoticesOn(t *testing.T) {
 		want    bool
 	}{
 		{DataSourcePostgres, "", true},
-		{DataSourcePostgresServiceNowDualWrite, "", false},
+		{DataSourcePostgresServiceNowDualWrite, "", true},
 		{DataSourcePostgresServiceNowDualWrite, "true", true},
 		{DataSourcePostgres, "false", false},
+		{DataSourcePostgresServiceNowDualWrite, "false", false},
+		{DataSourceServiceNow, "", false},
 		{DataSourceServiceNow, "true", false},
 	} {
 		c := Config{DataSource: tc.ds, CaseEscalationNotices: tc.setting}
