@@ -144,7 +144,7 @@ func main() {
 	itServiceHandler := handler.NewITServiceHandler(customerEntityClient)
 	serviceOfferingHandler := handler.NewServiceOfferingHandler(customerEntityClient)
 	groupHandler := handler.NewGroupHandler(customerEntityClient)
-	referenceHandler := handler.NewReferenceHandler(dir)
+	referenceHandler := handler.NewReferenceHandler(dir).WithEntityClient(customerEntityClient)
 	configurationItemHandler := handler.NewConfigurationItemHandler(customerEntityClient)
 	catalogHandler := handler.NewCatalogHandler(customerEntityClient)
 	timeCardHandler := handler.NewTimeCardHandler(customerEntityClient)

@@ -118,6 +118,13 @@ func (c *CustomerEntityClient) GetTeamMembers(ctx context.Context, teamID string
 	return c.do(ctx, http.MethodGet, fmt.Sprintf("/teams/%s/members", url.PathEscape(teamID)), nil)
 }
 
+// SearchTeams calls POST /teams/search on the entity service, which lists the
+// `team` table. The body is forwarded verbatim and the response is returned as
+// raw JSON.
+func (c *CustomerEntityClient) SearchTeams(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/teams/search", body)
+}
+
 // SearchCaseActivities calls POST /cases/{id}/activities/search on the entity service.
 // The path-scoped body is forwarded verbatim and the response is returned as raw JSON;
 // typed response structs are deferred.
