@@ -1746,7 +1746,19 @@ export default function CsmCaseDetailPage(): JSX.Element {
               sticky: true,
             });
           },
-          onError: (err) => showError("Could not change the case type.", err),
+          onError: (err) => {
+            // A refused transfer carries its reason (ServiceNow turning down a
+            // missing catalog answer, a case that cannot move to another type
+            // yet, a caller who may not do it) -- surface a 4xx message verbatim
+            // rather than the generic fallback, same treatment as every other
+            // 4xx on this page. Without it the engineer only ever saw "Could
+            // not change the case type." whatever the cause.
+            const msg =
+              err instanceof BackendApiError && err.status < 500 && err.message
+                ? err.message
+                : "Could not change the case type.";
+            showError(msg, err);
+          },
         },
       );
     },

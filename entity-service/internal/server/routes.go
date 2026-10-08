@@ -862,6 +862,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// below), not for DataSourceServiceNow: that mode's CreateCase never
 		// reaches this service's Postgres data at all.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		// PATCH /cases/{id} with a "type" (the CSM portal's "Change case type"):
+		// moves the case between extension tables, asking ServiceNow first from
+		// inside the same Postgres transaction -- see caseService.transferCaseType.
+		// Without this the request is refused ("only supported for the ServiceNow
+		// data source"), which is how a type change failed for every case here.
+		activeCaseSvc = service.WithCaseTypeTransfer(activeCaseSvc, caseRepo)
 		// Case ATTACHMENTS: file bytes still live ONLY in ServiceNow in this
 		// mode (SFTPGo, the CSM-native/Postgres storage backend, is never
 		// used here) — but metadata is now ALSO written into and read from
@@ -896,6 +902,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// See the matching comment in the DataSourcePostgresServiceNowDualWrite
 		// case above.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		// Same transfer as in the dual-write branch above, with no ServiceNow step.
+		activeCaseSvc = service.WithCaseTypeTransfer(activeCaseSvc, caseRepo)
 		// Without this, isSupportEngineerAuthor always returns false on this
 		// data source -- the SLA response-clock completion signal and
 		// events.CommentAddedPayload.IsSupportEngineerResponse never fire for

@@ -2052,6 +2052,45 @@ describe("CsmCaseDetailPage — change case type", () => {
   });
 });
 
+describe("CsmCaseDetailPage — change case type: a refused transfer", () => {
+  function submitTransferAndGetHandlers(): { onError: (err: unknown) => void } {
+    // This file does not clear showErrorMock between tests, so a "generic message"
+    // assertion could otherwise be satisfied by a call an earlier test made.
+    showErrorMock.mockClear();
+    renderPage();
+    fireEvent.click(screen.getByRole("button", { name: /stub open change case type/i }));
+    fireEvent.click(screen.getByRole("button", { name: /stub transfer to engagement/i }));
+    return patchCaseMutateMock.mock.calls.at(-1)?.[1] as { onError: (err: unknown) => void };
+  }
+
+  it("shows the backend's own reason for a 4xx", () => {
+    const handlers = submitTransferAndGetHandlers();
+    handlers.onError(new BackendApiError(409, "This case has attachments that still point at its current type."));
+
+    expect(showErrorMock).toHaveBeenCalledTimes(1);
+    expect(showErrorMock).toHaveBeenCalledWith(
+      "This case has attachments that still point at its current type.",
+      expect.anything(),
+    );
+  });
+
+  it("keeps the generic message for a server error, whose text is not for the engineer", () => {
+    const handlers = submitTransferAndGetHandlers();
+    handlers.onError(new BackendApiError(500, "pq: connection refused"));
+
+    expect(showErrorMock).toHaveBeenCalledTimes(1);
+    expect(showErrorMock).toHaveBeenCalledWith("Could not change the case type.", expect.anything());
+  });
+
+  it("keeps the generic message for an error that is not the backend's", () => {
+    const handlers = submitTransferAndGetHandlers();
+    handlers.onError(new Error("Failed to fetch"));
+
+    expect(showErrorMock).toHaveBeenCalledTimes(1);
+    expect(showErrorMock).toHaveBeenCalledWith("Could not change the case type.", expect.anything());
+  });
+});
+
 describe("CsmCaseDetailPage — Linked change requests widget only shows on service requests", () => {
   it("does not render LinkedChangeRequestsWidget for a plain case, even one carrying stale linkedChangeRequests data", () => {
     // A plain case should never carry `linkedChangeRequests` per the field's

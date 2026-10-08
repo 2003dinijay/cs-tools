@@ -166,6 +166,15 @@ func CaseResolutionCodeFromEnum(enumLabel string) domain.CaseResolutionCode {
 // resolved_on columns (migrations 0023/0024), unlike CHANGE_REQUEST,
 // INCIDENT, PROBLEM, and the rest of work_item_type_enum, which are surfaced
 // through entirely different endpoints.
+// caseLikeNonAnnouncementTypes are the work item types that may own a case
+// attachment or be named as another case's related case: every case-like type
+// except an announcement, which has never been able to (it had no "case" row for
+// the old foreign keys to point at, and the row level security of the announcement
+// tables relies on that). Those foreign keys now point at work_item (migrations
+// 0210 and 0211) so a ticket keeps both after it is converted to another type, and
+// the statements that write either check this list instead.
+const caseLikeNonAnnouncementTypes = `'{CASE,ENGAGEMENT,SERVICE_REQUEST,SECURITY_REPORT_ANALYSIS}'::work_item_type_enum[]`
+
 const caseLikeWorkItemTypes = `'{CASE,ENGAGEMENT,SERVICE_REQUEST,SECURITY_REPORT_ANALYSIS,ANNOUNCEMENT}'::work_item_type_enum[]`
 
 // announcementVisibilityLeakGuard excludes an ANNOUNCEMENT-typed work_item
@@ -1508,7 +1517,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		ackID, ackName, ackEmail                 *string
 		closerID, closerName                     *string
 		pcID, pcNum, pcType                      *string
-		rcID, rcNum                              *string
+		rcID, rcNum, rcType                      *string
 		convID, convSubject                      *string
 		accountID, accountName, accountTier      *string
 		severity, issueType, workState, caseType *string
@@ -1561,7 +1570,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		        ack.id, COALESCE(ack.name, NULLIF(TRIM(CONCAT_WS(' ', ack.first_name, ack.last_name)), '')), ack.email,
 		        closer.id, COALESCE(closer.name, NULLIF(TRIM(CONCAT_WS(' ', closer.first_name, closer.last_name)), '')),
 		        pw.id, pw.number, pw.type::TEXT,
-		        rc_wi.id, rc_wi.number,
+		        rc_wi.id, rc_wi.number, rc_wi.type::TEXT,
 		        conv.id, conv.subject
 		 FROM work_item wi
 		 LEFT JOIN "case" c ON c.id = wi.id
@@ -1579,8 +1588,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		 LEFT JOIN "user" ack ON ack.id = wi.acknowledged_by_user_id
 		 LEFT JOIN "user" closer ON closer.id = `+caseLikeClosedByUserIDColumn+`
 		 LEFT JOIN work_item pw ON pw.id = wi.parent_id
-		 LEFT JOIN "case" rc ON rc.id = c.related_case_id
-		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id
+		 LEFT JOIN work_item rc_wi ON rc_wi.id = c.related_case_id
 		 LEFT JOIN work_item conv ON conv.id = wi.conversation_id
 		     AND conv.type = 'CONVERSATION'::work_item_type_enum AND conv.project_id = wi.project_id
 		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)
@@ -1605,7 +1613,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		&ackID, &ackName, &ackEmail,
 		&closerID, &closerName,
 		&pcID, &pcNum, &pcType,
-		&rcID, &rcNum,
+		&rcID, &rcNum, &rcType,
 		&convID, &convSubject,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -1800,10 +1808,16 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		cv.ParentCase = &domain.CaseNumberRef{ID: *pcID, Number: *pcNum, Type: t}
 	}
 	if rcID != nil {
-		// "case".related_case_id (migration 0041) is a foreign key into
-		// "case" specifically, so a resolved related record is always
-		// another case.
-		cv.RelatedCase = &domain.CaseNumberRef{ID: *rcID, Number: *rcNum, Type: &parentRefTypeCase}
+		// "case".related_case_id points at work_item (migration 0211), so the
+		// related ticket is whatever type it is now: a ticket that was converted to
+		// an engagement stays related to the cases that named it.
+		relatedType := parentRefTypeCase
+		if rcType != nil {
+			if t, ok := workItemTypeToCaseType[*rcType]; ok {
+				relatedType = t
+			}
+		}
+		cv.RelatedCase = &domain.CaseNumberRef{ID: *rcID, Number: *rcNum, Type: &relatedType}
 	}
 	// work_item.conversation_id (migration 0021) links a case back to the
 	// Novera chat it was created from -- a real, indexed column that was
@@ -2553,9 +2567,15 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 
 // CreateCaseAttachment implements CaseRepository.
 func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error) {
+	// The EXISTS is the check the table's old foreign key to "case"(id) used to make
+	// for free: only a case-like work item (never an announcement, a change request,
+	// an incident...) owns an attachment. The key now points at work_item (migration
+	// 0210) so a case that changes type keeps its attachments, which makes this
+	// the only thing keeping the narrower rule. A non-matching id inserts nothing.
 	const query = `
 		INSERT INTO case_attachment (case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		SELECT $1::uuid, $2::text, $3::text, $4::text, $5::bigint, $6::text, $7::uuid, $8::text
+		WHERE EXISTS (SELECT 1 FROM work_item w WHERE w.id = $1::uuid AND w.type = ANY(` + caseLikeNonAnnouncementTypes + `))
 		RETURNING id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, created_on, status`
 
 	var (
@@ -2569,6 +2589,11 @@ func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAt
 		&a.ID, &a.ReferenceID, &storageKey, &a.Name, &a.Type, &a.SizeBytes, &a.Description,
 		&uploadedByID, &a.CreatedOn, &a.Status,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// No case-like work item with this id (see the EXISTS above) -- the same
+		// answer the foreign key gave for an id that is not a case.
+		return domain.Attachment{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist"}
+	}
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
@@ -2594,9 +2619,11 @@ func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAt
 // follows -- id is supplied by the caller (ServiceNow's own attachment
 // sys_id, converted), not generated, and storage_key is always NULL.
 func (r *caseRepo) CreateCaseAttachmentFromServiceNow(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string, createdOn time.Time) (domain.Attachment, error) {
+	// Same case-like-only rule as CreateCaseAttachment, for the same reason.
 	const query = `
 		INSERT INTO case_attachment (id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status, created_on)
-		VALUES ($1, $2, NULL, $3, $4, $5, $6, $7, 'complete', $8)
+		SELECT $1::uuid, $2::uuid, NULL, $3::text, $4::text, $5::bigint, $6::text, $7::uuid, 'complete', $8::timestamptz
+		WHERE EXISTS (SELECT 1 FROM work_item w WHERE w.id = $2::uuid AND w.type = ANY(` + caseLikeNonAnnouncementTypes + `))
 		RETURNING id, case_id, filename, mime_type, size_bytes, description, uploaded_by, created_on, status`
 
 	var (
@@ -2609,6 +2636,9 @@ func (r *caseRepo) CreateCaseAttachmentFromServiceNow(ctx context.Context, req d
 		&a.ID, &a.ReferenceID, &a.Name, &a.Type, &a.SizeBytes, &a.Description,
 		&uploadedByID, &a.CreatedOn, &a.Status,
 	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.Attachment{}, &apierror.ValidationError{Msg: "one or more referenced IDs do not exist"}
+	}
 	if err != nil {
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
@@ -3028,8 +3058,7 @@ const caseSearchJoins = `LEFT JOIN "case" c ON c.id = wi.id
 		 LEFT JOIN product_version pv ON pv.id = dp.version_id
 		 LEFT JOIN "user" ae ON ae.id = wi.assigned_to_id
 		 LEFT JOIN work_item pw ON pw.id = wi.parent_id
-		 LEFT JOIN "case" rc ON rc.id = c.related_case_id
-		 LEFT JOIN work_item rc_wi ON rc_wi.id = rc.id`
+		 LEFT JOIN work_item rc_wi ON rc_wi.id = c.related_case_id`
 
 // buildCaseSearchWhere renders the WHERE clause (and its bound arguments) shared by
 // SearchCases and AggregateCases. It expects the joins in caseSearchJoins.
@@ -4087,6 +4116,18 @@ func updateCaseFieldsTx(ctx context.Context, tx pgx.Tx, req domain.UpdateCaseReq
 	caseArgs := []any{req.ID}
 	idx := 2
 	if req.RelatedCaseID != nil {
+		// The key now points at work_item, which holds every kind of ticket; a case
+		// is related only to another case-like ticket (never an incident, a change
+		// request, an announcement...), as the old key to "case" guaranteed.
+		var ok bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM work_item WHERE id = $1::uuid AND type = ANY(`+caseLikeNonAnnouncementTypes+`))`,
+			*req.RelatedCaseID).Scan(&ok); err != nil {
+			return time.Time{}, fmt.Errorf("update case fields: look up related case: %w", err)
+		}
+		if !ok {
+			return time.Time{}, &apierror.ValidationError{Msg: "relatedCaseId does not exist"}
+		}
 		caseSets = append(caseSets, fmt.Sprintf("related_case_id = $%d::uuid", idx))
 		caseArgs = append(caseArgs, *req.RelatedCaseID)
 		idx++

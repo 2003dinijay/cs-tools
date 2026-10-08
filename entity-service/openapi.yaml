@@ -4197,8 +4197,24 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: The caller may not do this (a type transfer is for internal callers only).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Case not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >
+            Conflict. A type transfer of a case that has attachments, before migration
+            `0210_case_attachment_references_work_item` is applied, or of a case that other
+            cases name as their related case, before `0211_case_related_case_references_work_item`
+            is applied; nothing was changed.
           content:
             application/json:
               schema:
@@ -14762,8 +14778,20 @@ components:
         `assigneeEmail`, and `acknowledge` are supported by every data source.
         `resolutionCode`, `cause`, and `closeNotes` are optional and may only be provided alongside
         `state` when the state is `closed` or `solution_proposed`.
-        `type` transfers the case to another type and is supported only for the ServiceNow
-        data source. Its companion fields carry the target type's mandatory data:
+        `type` transfers the case to another type and is supported by every data source, for
+        internal callers only (403 otherwise). On the Postgres data sources the old type's
+        extension row is replaced by one of the new type in one transaction, and under
+        dual-write ServiceNow is asked first from inside that transaction, so a refusal there
+        leaves nothing changed. The case keeps its number, state, work state, resolution data,
+        attachments, comments and time cards. A case with attachments cannot be moved until
+        migration `0210_case_attachment_references_work_item` has been applied (409 until then).
+        Only the ticket itself is converted: tickets related to it stay what they are and stay
+        related to it (a case others relate to is refused with a 409 only until migration
+        `0211_case_related_case_references_work_item` is applied).
+        Both flavours of `case` can be moved, in either direction: an Incident (severity S0-S3)
+        and a Query (severity S4); moving an S4 case out of, or into, `case` re-marks its time
+        cards billable or not, as a severity change across the S4 line does.
+        Its companion fields carry the target type's mandatory data:
         `severity` and `issueType` alongside `type: case`; `engagementType` and
         `engagementPaymentType` alongside `type: engagement`; `catalogId`, `catalogItemId`
         and a non-empty `variables` alongside `type: service_request`; none for
@@ -14796,7 +14824,7 @@ components:
           type: string
           enum: [case, engagement, security_report_analysis, service_request]
           description: >
-            Transfers the case to this type (ServiceNow only). `announcement` and the
+            Transfers the case to this type (internal callers only). `announcement` and the
             hosting_* types are system-managed and are never valid transfer targets.
         engagementType:
           type: string
@@ -15622,10 +15650,12 @@ components:
           type: string
         type:
           type: string
-          enum: [case, incident, change_request, problem]
+          enum: [case, engagement, service_request, security_report_analysis, announcement, incident, change_request, problem]
           nullable: true
           description: >
-            What kind of record this reference points at. Null when the
+            What kind of record this reference points at. A related case (`relatedCase`)
+            reads as the type the related ticket is now, so a ticket that was converted
+            to another type shows as that type. Null when the
             backing data source could not resolve the referenced record's
             kind; a client must not then assume it is a case, since linking
             to a case detail page for a non-case record would 404.
