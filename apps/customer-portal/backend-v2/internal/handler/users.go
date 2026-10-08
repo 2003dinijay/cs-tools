@@ -154,8 +154,12 @@ func (h *UserHandler) completeFirstAccess(ctx context.Context, userID string) {
 	}
 }
 
-// PatchMe handles PATCH /users/me. phoneNumber is updated via SCIM; timeZone
-// is updated via entity-service. At least one field must be provided.
+// PatchMe handles PATCH /users/me. phoneNumber is updated via SCIM first;
+// the phone number SCIM stored (or the requested one if SCIM returns none) and
+// any timeZone are then mirrored to entity-service in a single PATCH. At least
+// one field must be provided. If SCIM fails entity-service is not called; if
+// the entity call fails the request fails, and a retry is safe because the
+// SCIM update is idempotent.
 func (h *UserHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -180,6 +184,8 @@ func (h *UserHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 
 	resp := dto.UserUpdateResponse{}
 
+	entityReq := entity.PatchUserMeRequest{TimeZone: payload.TimeZone}
+
 	if payload.PhoneNumber != nil {
 		updatedPhone, err := h.scim.UpdateUserPhone(r.Context(), user.UserID, *payload.PhoneNumber)
 		if err != nil {
@@ -188,12 +194,18 @@ func (h *UserHandler) PatchMe(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		resp.PhoneNumber = updatedPhone
+		stored := payload.PhoneNumber
+		if updatedPhone != nil {
+			stored = updatedPhone
+		}
+		entityReq.Phone = stored
 	}
 
-	if payload.TimeZone != nil {
-		if _, err := h.entity.PatchMe(r.Context(), entity.PatchUserMeRequest{TimeZone: *payload.TimeZone}); err != nil {
-			slog.ErrorContext(r.Context(), "entity PatchMe failed", "userID", user.UserID, "err", summarizeErr(err))
-			mapUpstreamError(w, err, "Failed to update time zone.")
+	if entityReq.Phone != nil || entityReq.TimeZone != nil {
+		if _, err := h.entity.PatchMe(r.Context(), entityReq); err != nil {
+			slog.ErrorContext(r.Context(), "entity PatchMe failed", "userID", user.UserID,
+				"phoneUpdated", entityReq.Phone != nil, "timeZoneUpdated", entityReq.TimeZone != nil, "err", summarizeErr(err))
+			mapUpstreamError(w, err, "Failed to update profile.")
 			return
 		}
 		resp.TimeZone = payload.TimeZone
