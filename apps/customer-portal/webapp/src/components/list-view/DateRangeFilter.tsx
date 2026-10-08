@@ -19,6 +19,7 @@ import { Box, Typography } from "@wso2/oxygen-ui";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFns";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
+import { useControlledDatePickerValue } from "@hooks/useControlledDatePickerValue";
 import {
   toUtcStartOfDay,
   toUtcEndOfDay,
@@ -54,7 +55,12 @@ function parseUtcIsoEndDate(value: string | undefined): Date | null {
 // Treating an incomplete year the same as an invalid one -- waiting for the
 // rest of the digits rather than forwarding a technically-parseable but
 // nonsensical date -- is the correct fix; padding it to "0002-01-10" would
-// only make the malformed value syntactically valid, not correct.
+// only make the malformed value syntactically valid, not correct. Passed as
+// `useControlledDatePickerValue`'s own `isComplete` override below, so this
+// stricter check also gates the general incomplete-date handling that hook
+// provides (see its own doc comment) -- a short year alone, with no other
+// section left to type, would otherwise look "complete" to that hook's
+// default NaN-only check.
 function isCompleteCalendarDate(date: unknown): date is Date {
   return date instanceof Date && !isNaN(date.getTime()) && date.getFullYear() >= 1000;
 }
@@ -80,8 +86,20 @@ export default function DateRangeFilter({
   onStartChange,
   onEndChange,
 }: DateRangeFilterProps): JSX.Element {
-  const parsedStart = parseUtcIso(startDate);
-  const parsedEnd = parseUtcIsoEndDate(endDate);
+  const start = useControlledDatePickerValue({
+    value: startDate ?? "",
+    onChange: (next) => onStartChange(next || undefined),
+    parse: parseUtcIso,
+    format: toUtcStartOfDay,
+    isComplete: isCompleteCalendarDate,
+  });
+  const end = useControlledDatePickerValue({
+    value: endDate ?? "",
+    onChange: (next) => onEndChange(next || undefined),
+    parse: parseUtcIsoEndDate,
+    format: toUtcEndOfDay,
+    isComplete: isCompleteCalendarDate,
+  });
 
   return (
     <LocalizationProvider dateAdapter={AdapterDateFns}>
@@ -102,26 +120,22 @@ export default function DateRangeFilter({
         >
           <DatePicker
             label="From"
-            value={parsedStart}
-            maxDate={parsedEnd ?? undefined}
-            onChange={(date) => {
-              onStartChange(isCompleteCalendarDate(date) ? toUtcStartOfDay(date) : undefined);
-            }}
+            value={start.localDate}
+            maxDate={end.localDate ?? undefined}
+            onChange={start.handleChange}
             slotProps={{
               textField: { size: "small", fullWidth: true },
-              field: { clearable: true },
+              field: { clearable: true, onClear: start.handleClear },
             }}
           />
           <DatePicker
             label="To"
-            value={parsedEnd}
-            minDate={parsedStart ?? undefined}
-            onChange={(date) => {
-              onEndChange(isCompleteCalendarDate(date) ? toUtcEndOfDay(date) : undefined);
-            }}
+            value={end.localDate}
+            minDate={start.localDate ?? undefined}
+            onChange={end.handleChange}
             slotProps={{
               textField: { size: "small", fullWidth: true },
-              field: { clearable: true },
+              field: { clearable: true, onClear: end.handleClear },
             }}
           />
         </Box>
