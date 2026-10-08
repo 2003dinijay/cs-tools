@@ -1015,13 +1015,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	default:
 		activeEscalationSvc = service.NewEscalationService(escalationRepo, userRepo, caseRepo, accessSvc)
 	}
-	// case.escalated is what emails an escalation's notification list --
-	// DATA_SOURCE=postgres only. Under dual-write the escalation is mirrored
-	// into ServiceNow, whose "Internal Escalation notification" flow (record
-	// create on sn_customerservice_case_escalation, discovery scripts 79/80)
-	// already mails it; publishing here too would send everything twice. The
-	// same split as the SR automation.
-	if cfg.DataSource == config.DataSourcePostgres {
+	// case.escalated is what emails an escalation's notification list. By
+	// default DATA_SOURCE=postgres only: under dual-write the escalation is
+	// mirrored into ServiceNow, whose "Internal Escalation notification" flow
+	// (record create on sn_customerservice_case_escalation, discovery scripts
+	// 79/80) already mails it, and publishing here too would send everything
+	// twice. CASE_ESCALATION_NOTICES_ENABLED overrides it either way -- see
+	// Config.CaseEscalationNoticesOn.
+	if cfg.CaseEscalationNoticesOn() {
 		activeEscalationSvc = service.WithEscalationNotices(activeEscalationSvc, eventPublisher)
 	}
 	escalationHandler := handler.NewEscalationHandler(activeEscalationSvc)
