@@ -418,6 +418,90 @@ func TestChangeRequestEmergencyIntegration_MigratedEmergencyInACustomerStateIsAn
 	})
 }
 
+// An Emergency change that is ALREADY waiting in Customer Approval (a migrated one, or one from before
+// the rule) takes part in the customer's proposed-time conversation exactly as any other change does:
+// the same predicate, the same recorded-proposer rule for Accept, the same plain Re-schedule over a date
+// nobody proposed, the same counter-proposal that asks the project's contacts again. The Emergency rule
+// keeps a change from ENTERING Customer Approval; it never looks at the type once the change is there,
+// and it never writes the sync's requirement flags.
+func TestChangeRequestEmergencyIntegration_MigratedEmergencyFollowsTheProposedTimeRules(t *testing.T) {
+	// A migrated change in Customer Approval (the unlabeled customer stage asks the project's two
+	// contacts), typed Emergency, with both of the sync's requirement flags set.
+	emergencyInCustomerApproval := func(t *testing.T) (*crFlow, string) {
+		t.Helper()
+		f := newCustomerGroupFlow(t)
+		id := f.migratedInCustomerApproval()
+		f.execSQL(`UPDATE change_request SET change_model = 'EMERGENCY', is_customer_approval_required = true,
+		                  is_customer_review_required = true WHERE id = $1`, id)
+		return f, id
+	}
+	untouchedSyncFlags := func(t *testing.T, f *crFlow, id, when string) {
+		t.Helper()
+		if sa, sr := f.syncFlags(id); !sa || !sr {
+			t.Fatalf("the sync's flags %s = %v/%v, want them untouched (true/true)", when, sa, sr)
+		}
+	}
+
+	t.Run("a registered contact's proposal waits, is recorded, and WSO2's Accept schedules it: no CAB, no second ask", func(t *testing.T) {
+		f, id := emergencyInCustomerApproval(t)
+		f.mustPropose(id, crScopeUserA1, rsStart2)
+		f.expect(id, "after the proposal", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		// The customer's first act gave the migrated row the stage this service answers on (as on any change in
+		// that shape); from here on nothing may add one.
+		stages := len(f.stages(id))
+		p := f.proposalOf(id)
+		if p == nil || p.Answer != "pending" || p.ProposerRecorded == nil || !*p.ProposerRecorded || p.CanAccept == nil || !*p.CanAccept {
+			t.Fatalf("customerProposal = %+v, want it pending, its proposer recorded and Accept open", p)
+		}
+		f.mustAccept(id)
+		f.expect(id, "after Accept", "SCHEDULED", "implement", "canceled")
+		f.wantPlanned(id, "after Accept", rsStart2, endFor(rsStart2))
+		f.wantConversation(id, "after Accept", rsStart2, "AGREE")
+		if got := len(f.stages(id)); got != stages {
+			t.Fatalf("stages after Accept = %d, want the %d it had (no CAB stage, no second ask)", got, stages)
+		}
+		untouchedSyncFlags(t, f, id, "after Accept")
+	})
+
+	t.Run("a date nobody is recorded as having proposed cannot be accepted, and a plain Re-schedule over it asks the contacts again", func(t *testing.T) {
+		f, id := emergencyInCustomerApproval(t)
+		f.syncWritesConversation(id, sp(rsStart2), "")
+		p := f.proposalOf(id)
+		if p == nil || p.Answer != "pending" || p.ProposerRecorded == nil || *p.ProposerRecorded || p.CanAccept == nil || *p.CanAccept {
+			t.Fatalf("customerProposal for a date nobody proposed = %+v, want it pending with no proposer recorded and Accept closed", p)
+		}
+		before := f.snap(id)
+		_, err := f.accept(id)
+		f.wantConflictExact("Accept of a date nobody proposed", err, msgAcceptNobodyRecordedFull)
+		wantRefusalCode(t, "Accept of a date nobody proposed", err, 409, apierror.CodeChangeRequestProposerNotRecorded)
+		f.wantRefusedSame("Accept of a date nobody proposed", id, before, err)
+
+		if err := f.reschedule(id, sp(rsStart3), sp(rsEnd3)); err != nil {
+			t.Fatalf("a Re-schedule over a date nobody proposed: %v", err)
+		}
+		f.expect(id, "after the Re-schedule", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		f.wantPlanned(id, "after the Re-schedule", rsStart3, rsEnd3)
+		f.wantConversation(id, "after the Re-schedule", rsStart2, "") // no answer is written against a date nobody proposed
+		custom := f.customerStages(id)
+		assertApprovers(t, "the contacts asked again", custom[len(custom)-1].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+		untouchedSyncFlags(t, f, id, "after the Re-schedule")
+	})
+
+	t.Run("a different time answers the contact's proposal and asks the project's contacts again, still in Customer Approval", func(t *testing.T) {
+		f, id := emergencyInCustomerApproval(t)
+		f.mustPropose(id, crScopeUserA2, rsStart2)
+		if err := f.counter(id, sp(rsStart3), sp(rsEnd3)); err != nil {
+			t.Fatalf("Propose a different time: %v", err)
+		}
+		f.expect(id, "after the different time", "CUSTOMER_APPROVAL", "authorize", "canceled")
+		f.wantPlanned(id, "after the different time", rsStart3, rsEnd3)
+		f.wantConversation(id, "after the different time", rsStart2, "DISAGREE")
+		custom := f.customerStages(id)
+		assertApprovers(t, "the contacts asked again", custom[len(custom)-1].approvers, map[string]string{crScopeUserA1: "REQUESTED", crScopeUserA2: "REQUESTED"})
+		untouchedSyncFlags(t, f, id, "after the different time")
+	})
+}
+
 // A MIGRATED Emergency change (csm-sync-service mirrors it): ONE stage, no label, in the CAB group at
 // position 0, UPPER_SNAKE raw_status and approver states, the sync's customer flags ticked, our own boxes
 // false. It displays as the CAB stage, its approver can decide it, deciding schedules it, and the sync's
