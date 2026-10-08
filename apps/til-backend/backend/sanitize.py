@@ -34,7 +34,12 @@ from urllib.parse import urlparse
 import bleach
 
 ALLOWED_TAGS = ["p", "br", "strong", "em", "u", "ol", "ul", "li", "a", "img"]
-ALLOWED_ATTRIBUTES = {"a": ["href", "target"], "img": ["src", "alt"]}
+# "width" backs the webapp editor's resize overlay -- a plain HTML
+# dimension attribute (e.g. "50%"), never a CSS "style" string, so
+# there's no style-based injection surface from allowing it. Mirrors
+# tilRichText.ts's own SANITIZE_CONFIG addition on the frontend -- see
+# its comment for the full reasoning.
+ALLOWED_ATTRIBUTES = {"a": ["href", "target"], "img": ["src", "alt", "width"]}
 ALLOWED_PROTOCOLS = ["http", "https", "mailto", "tel"]
 
 # Matches exactly the path shape uploads.py's save_upload() produces

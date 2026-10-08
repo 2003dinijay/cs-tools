@@ -80,6 +80,23 @@ def test_sanitize_drops_img_onerror_attribute():
     assert "<img" in result
 
 
+def test_sanitize_keeps_img_width_attribute():
+    # Backs the webapp editor's resize overlay (S/M/L width presets) -- a
+    # plain dimension attribute, not a CSS "style" string.
+    result = sanitize_what_html(f'<img src="{_UPLOAD_SRC}" width="50%">')
+    assert 'width="50%"' in result
+
+
+def test_sanitize_drops_img_style_attribute():
+    # "width" is allowed specifically because it can't carry CSS -- "style"
+    # itself must stay out of the allowlist regardless, or a resize overlay
+    # could just as easily have been built on an arbitrary style injection
+    # surface instead of this one safe attribute.
+    result = sanitize_what_html(f'<img src="{_UPLOAD_SRC}" style="position:fixed;top:0;left:0;width:100vw;height:100vh;">')
+    assert "style" not in result
+    assert "<img" in result
+
+
 def test_sanitize_strips_img_pointing_at_an_arbitrary_external_host():
     # A direct API call (bypassing the editor, which never offers any other
     # image source) could otherwise embed an arbitrary external image --
