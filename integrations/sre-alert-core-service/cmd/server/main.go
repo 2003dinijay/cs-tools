@@ -31,6 +31,7 @@ import (
 	"github.com/cenkalti/backoff/v4"
 	"github.com/gocql/gocql"
 
+	"alert-core-service/internal/auth"
 	"alert-core-service/internal/cassandra"
 	"alert-core-service/internal/config"
 	"alert-core-service/internal/csm"
@@ -72,6 +73,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	userRepo := auth.NewUserRepo(session)
 	alerts := store.NewAlertRepo(session)
 	incidents, err := store.NewIncidentRepo(session, depCfg.Poll.MaxWindow, depCfg.Engine.DedupWindow.Duration())
 	if err != nil {
@@ -157,7 +159,7 @@ func main() {
 	mux.HandleFunc("/livez", func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
-	mux.HandleFunc("/alertz", h.ServeAlert)
+	mux.Handle("/alertz", auth.RequireAuth(userRepo, base.With("component", "auth"))(http.HandlerFunc(h.ServeAlert)))
 
 	port := os.Getenv("PORT")
 	if port == "" {
