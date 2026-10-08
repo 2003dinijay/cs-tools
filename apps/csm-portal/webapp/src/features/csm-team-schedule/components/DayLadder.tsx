@@ -736,28 +736,41 @@ function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
 
 /**
  * The teams down the side, and the team the cursor is on filling the rest of
- * the card. The first team is open at rest, so the card is never a wall of
- * nothing, and hovering only swaps which pane is shown -- nothing re-renders
- * underneath the cursor.
+ * the card. At rest no team is open: with the first one's members showing,
+ * the card read as if that one team were the whole rotation. Hovering or
+ * focusing a team shows it while the cursor stays on the card; a click (or
+ * Enter) keeps it open, for touch screens too, and a second click closes it.
  */
 function TeamSplit({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
   const teamColourOf = useTeamColour();
   const teamNameOf = useTeamName();
   const byTeam = useMemo(() => [...groupBy(rows, (r) => r.teamKey).entries()], [rows]);
-  const [active, setActive] = useState<string>(() => byTeam[0]?.[0] ?? "");
-  const current = byTeam.find(([team]) => team === active) ?? byTeam[0];
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [pinned, setPinned] = useState<string | null>(null);
+  const shownKey = hovered ?? pinned;
+  const current = byTeam.find(([team]) => team === shownKey);
+  const togglePin = (team: string) => setPinned((p) => (p === team ? null : team));
 
   return (
-    <div className="teamsplit">
+    <div className="teamsplit" onMouseLeave={() => setHovered(null)}>
       <div className="teamlist">
         {byTeam.map(([team, teamRows]) => (
           <span
             key={team}
             className={`tl${team === current?.[0] ? " on" : ""}`}
+            role="button"
+            aria-pressed={pinned === team}
             tabIndex={0}
-            onMouseEnter={() => setActive(team)}
-            onFocus={() => setActive(team)}
-            onClick={() => setActive(team)}
+            onMouseEnter={() => setHovered(team)}
+            onFocus={() => setHovered(team)}
+            onBlur={() => setHovered(null)}
+            onClick={() => togglePin(team)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                togglePin(team);
+              }
+            }}
           >
             <i style={{ background: teamColourOf(team) }} />
             <span className="tn" title={teamNameOf(team)}>
@@ -783,7 +796,9 @@ function TeamSplit({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
               ))}
             </div>
           </div>
-        ) : null}
+        ) : (
+          <div className="tlhint">Hover over a team to see who is on it.</div>
+        )}
       </div>
     </div>
   );
@@ -821,7 +836,8 @@ function NameRow({
   );
 }
 
-/** The off-rota column: one card per reason, leave grouped by team. */
+/** The off-rota column: one card for everyone on leave, grouped by team, then
+ *  one card per other reason. */
 function OffRotaStack({
   absences,
   kinds,
@@ -841,23 +857,45 @@ function OffRotaStack({
   // instead; useful to know, but it is not a gap. The catalogue's own order
   // decides the rest, so two kinds in the same bucket keep their usual
   // sequence.
+  //
+  // Every kind of leave shares one card. Which kind it is changes nothing
+  // about the gap it leaves, a card per kind split one question ("who is
+  // away?") across several, and the kind -- maternity, sick -- is the
+  // person's own business on a view the whole team reads.
   const BUCKET_ORDER: Record<string, number> = { LEAVE: 0, ALLOCATION: 1, EXCLUDED: 2 };
-  const cards = kinds
-    .map((kind) => ({ kind, rows: byKind.get(kind.code) ?? [] }))
-    .filter((c) => c.rows.length > 0)
-    .sort((a, b) => (BUCKET_ORDER[a.kind.bucket] ?? 9) - (BUCKET_ORDER[b.kind.bucket] ?? 9));
+  const leaveCodes = new Set(kinds.filter((k) => k.bucket === "LEAVE").map((k) => k.code));
+  const leaveRows = absences.filter((a) => leaveCodes.has(a.kindCode));
+  const cards = [
+    ...(leaveRows.length > 0
+      ? [{ key: "LEAVE", label: "Leave", token: "AL", isLeave: true, rows: leaveRows }]
+      : []),
+    ...kinds
+      .filter((kind) => kind.bucket !== "LEAVE")
+      .map((kind) => ({
+        key: kind.code,
+        label: kind.label,
+        shortCode: kind.shortCode,
+        token: kind.colourToken,
+        isLeave: false,
+        rows: byKind.get(kind.code) ?? [],
+        order: BUCKET_ORDER[kind.bucket] ?? 9,
+      }))
+      .filter((c) => c.rows.length > 0)
+      .sort((a, b) => a.order - b.order),
+  ];
 
   return (
     <div className="offstack">
       {cards.length === 0 ? <div className="offnone">nobody today</div> : null}
-      {cards.map(({ kind, rows }) => {
-        const byTeam = kind.bucket === "LEAVE" ? groupBy(rows, (r) => r.teamKey) : null;
+      {cards.map((card) => {
+        const { rows } = card;
+        const byTeam = card.isLeave ? groupBy(rows, (r) => r.teamKey) : null;
         return (
-          <div key={kind.code} className={`offcard ${kind.colourToken}`}>
+          <div key={card.key} className={`offcard ${card.token}`}>
             <div className="offh">
-              <span className={`chip sm ${kind.colourToken}`}>{kind.shortCode}</span>
-              <span className="offl" title={kind.label}>
-                {kind.label}
+              {"shortCode" in card ? <span className={`chip sm ${card.token}`}>{card.shortCode}</span> : null}
+              <span className="offl" title={card.label}>
+                {card.label}
               </span>
               <b>{rows.length}</b>
             </div>

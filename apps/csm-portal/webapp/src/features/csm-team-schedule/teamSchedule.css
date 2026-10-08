@@ -2211,3 +2211,70 @@
 .csm-ts .tw.roster.split thead tr:first-child th.day:not(.today) .d {
   display: inline;
 }
+
+/* ── Day view: the rotation reads before the people on it ─────────────────
+   A card's heading -- its hours, its name and how many are on it -- was set
+   smaller and greyer than the names under it, so a glance found people first
+   and had to hunt for which rotation they were on. The heading is now the
+   largest, darkest line on the card, and the other headings of the day view
+   (a tier row, a crowded card's team list, an off-rota card's kind) step up
+   with it, each still above the names it heads. */
+.csm-ts .ladder .zbh {
+  font-size: 13px;
+  column-gap: 8px;
+}
+.csm-ts .ladder .zbh .chip.sm {
+  height: 22px;
+  padding: 0 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.csm-ts .ladder .zbh > b.zbt {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.csm-ts .ladder .zbh .zbn {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.csm-ts .ladder .zsl {
+  font-size: 11px;
+  line-height: 15px;
+}
+.csm-ts .ladder .zsl b {
+  font-size: 11.5px;
+  color: var(--ink);
+}
+.csm-ts .ladder .zblk .teamlist .tl {
+  font-size: 12.5px;
+}
+.csm-ts .ladder .zblk .teamlist .tl b {
+  font-weight: 800;
+}
+.csm-ts .ladder .zblk .tlph {
+  font-size: 11px;
+}
+.csm-ts .ladder .offh .offl {
+  font-size: 12px;
+  font-weight: 700;
+}
+.csm-ts .ladder .offh b {
+  font-size: 12.5px;
+}
+
+/* A crowded card opens on its team list alone; the pane says how to see a
+   team instead of standing empty. */
+.csm-ts .ladder .zblk .tlhint {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  min-height: 24px;
+  font-size: 11.5px;
+  font-style: italic;
+  color: var(--muted);
+}
+.csm-ts .ladder .zblk .teamsplit .tl {
+  cursor: pointer;
+}

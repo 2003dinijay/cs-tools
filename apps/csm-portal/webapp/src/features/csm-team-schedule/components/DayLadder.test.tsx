@@ -16,12 +16,14 @@
  * under the License.
  */
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import DayLadder, { type LadderLane } from "./DayLadder";
 import {
   ANNUAL_LEAVE,
+  LIEU_LEAVE,
+  RND,
   EVENING,
   REGULAR,
   REGULAR_IND,
@@ -167,8 +169,38 @@ describe("DayLadder: who is not on the rota", () => {
       [nineToFive("Asela", REGULAR.code)],
       [absence({ name: "Nuwan", startsOn: ISO, endsOn: ISO })],
     );
-    expect(screen.getByText("Annual leave")).toBeInTheDocument();
+    expect(screen.getByText("Leave")).toBeInTheDocument();
     expect(screen.getByText("Nuwan")).toBeInTheDocument();
+  });
+
+  it("keeps every kind of leave in one card, without naming the kind, and allocations apart", () => {
+    const { container } = render(
+      <DayLadder
+        day={WEDNESDAY}
+        tz={TZ}
+        zoneLabel="IST"
+        lanes={[lane([nineToFive("Asela", REGULAR.code)])]}
+        shifts={SHIFTS}
+        zones={ZONES}
+        absences={[
+          absence({ name: "Nuwan", startsOn: ISO, endsOn: ISO }),
+          absence({ name: "Lena", startsOn: ISO, endsOn: ISO, kindCode: LIEU_LEAVE.code }),
+          absence({ name: "Omar", startsOn: ISO, endsOn: ISO, kindCode: RND.code }),
+        ]}
+        absenceKinds={[ANNUAL_LEAVE, LIEU_LEAVE, RND]}
+        {...scopeControls()}
+      />,
+    );
+    const cards = [...container.querySelectorAll(".offcard")];
+    expect(cards).toHaveLength(2);
+    expect(cards[0].querySelector(".offl")).toHaveTextContent("Leave");
+    expect(cards[0].querySelector(".offh b")).toHaveTextContent("2");
+    expect(cards[0]).toHaveTextContent("Nuwan");
+    expect(cards[0]).toHaveTextContent("Lena");
+    expect(screen.queryByText("Annual leave")).not.toBeInTheDocument();
+    expect(screen.queryByText("Lieu leave")).not.toBeInTheDocument();
+    expect(cards[1]).toHaveTextContent("R&D");
+    expect(cards[1]).toHaveTextContent("Omar");
   });
 });
 
@@ -314,9 +346,43 @@ describe("DayLadder: a stint worked on another team's rota", () => {
 });
 
 describe("DayLadder: a crowded card's team pane", () => {
+  const twoTeams = () => [
+    ...Array.from({ length: 8 }, (_, i) => nineToFive(`Orion${i}`, REGULAR.code, "orion_abt_cre_team")),
+    ...Array.from({ length: 7 }, (_, i) => nineToFive(`Lyra${i}`, REGULAR.code, "lyra_abt_cre_team")),
+  ];
+  const teamButton = (container: HTMLElement, name: string) =>
+    [...container.querySelectorAll<HTMLElement>(".teamsplit .tl")].find((el) => el.textContent?.includes(name))!;
+
+  it("opens on the team list alone, so no one team reads as the whole rotation", () => {
+    const { container } = renderLadder(twoTeams());
+    expect(container.querySelectorAll(".teamsplit .tl")).toHaveLength(2);
+    expect(container.querySelector(".teampane .tlph")).toBeNull();
+    expect(screen.queryByText("Orion0")).not.toBeInTheDocument();
+    expect(screen.getByText("Hover over a team to see who is on it.")).toBeInTheDocument();
+  });
+
+  it("shows a team while it is hovered, and closes it when the cursor leaves", () => {
+    const { container } = renderLadder(twoTeams());
+    fireEvent.mouseEnter(teamButton(container, "Orion"));
+    expect(screen.getByText("Orion0")).toBeInTheDocument();
+    fireEvent.mouseLeave(container.querySelector(".teamsplit")!);
+    expect(screen.queryByText("Orion0")).not.toBeInTheDocument();
+  });
+
+  it("keeps a clicked team open until it is clicked again", () => {
+    const { container } = renderLadder(twoTeams());
+    const orion = teamButton(container, "Orion");
+    fireEvent.click(orion);
+    fireEvent.mouseLeave(container.querySelector(".teamsplit")!);
+    expect(screen.getByText("Orion0")).toBeInTheDocument();
+    expect(orion).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(orion);
+    expect(screen.queryByText("Orion0")).not.toBeInTheDocument();
+  });
+
   it("heads the team by name, not by its directory key", () => {
-    const people = Array.from({ length: 14 }, (_, i) => nineToFive(`Reg${i}`, REGULAR.code, "orion_abt_cre_team"));
-    const { container } = renderLadder(people);
+    const { container } = renderLadder(twoTeams());
+    fireEvent.mouseEnter(teamButton(container, "Orion"));
     const heading = container.querySelector(".teampane .tlph");
     expect(heading).toHaveTextContent("Orion team");
     expect(heading).not.toHaveTextContent("orion_abt_cre_team");
