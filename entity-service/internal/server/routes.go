@@ -1029,6 +1029,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// are the only methods of it this mode ever calls.
 		snChangeRequestMirrorSvc := service.NewServiceNowChangeRequestService(serviceNowIntegrationServiceClient)
 		activeChangeRequestSvc = service.NewChangeRequestServiceWithSNWriteback(changeRequestRepo, userRepo, snChangeRequestMirrorSvc, snWritebackDispatcher)
+		// Create checks the assignee and requester against ServiceNow first, which
+		// refuses a user it has never heard of with a bare 404.
+		activeChangeRequestSvc = service.WithChangeRequestSNUserLookup(activeChangeRequestSvc, snUserService)
 	default:
 		activeChangeRequestSvc = service.NewChangeRequestService(changeRequestRepo, userRepo)
 	}

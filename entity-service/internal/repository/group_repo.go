@@ -33,8 +33,11 @@ import (
 // searches.
 type GroupRepository interface {
 	// SearchGroups returns a filtered, paginated slice of teams together
-	// with the total count of matching rows before pagination.
-	SearchGroups(ctx context.Context, searchQuery string, limit, offset int) ([]domain.Group, int, error)
+	// with the total count of matching rows before pagination. With
+	// assignableOnly set, only teams that also exist as a "group" row of the same id
+	// are listed: the groups a record can be assigned to (see
+	// domain.SearchGroupsFilters.AssignableOnly).
+	SearchGroups(ctx context.Context, searchQuery string, assignableOnly bool, limit, offset int) ([]domain.Group, int, error)
 }
 
 type groupRepo struct {
@@ -53,9 +56,15 @@ func NewGroupRepository(db *pgxpool.Pool) GroupRepository {
 // ServiceNow's own sys_user_group, which can hold deactivated groups).
 // Parent has no backing column either (team is flat, no hierarchy) and is
 // always nil.
-func (r *groupRepo) SearchGroups(ctx context.Context, searchQuery string, limit, offset int) ([]domain.Group, int, error) {
+func (r *groupRepo) SearchGroups(ctx context.Context, searchQuery string, assignableOnly bool, limit, offset int) ([]domain.Group, int, error) {
 	where := "WHERE 1=1"
 	args := []any{}
+	if assignableOnly {
+		// work_item.assignment_group_id references "group", and so does what is sent
+		// to ServiceNow; a team with no "group" row of its id (one added by hand) is
+		// neither. No parameter: the filter is the same for every caller.
+		where += ` AND EXISTS (SELECT 1 FROM "group" g WHERE g.id = team.id)`
+	}
 	if searchQuery != "" {
 		escaped := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`).Replace(searchQuery)
 		args = append(args, "%"+escaped+"%")

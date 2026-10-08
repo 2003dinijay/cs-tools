@@ -48,7 +48,7 @@ import { usePostChangeRequest } from "@features/csm-operations/api/usePostChange
 import { usePatchChangeRequest } from "@features/csm-operations/api/usePatchChangeRequest";
 import { userLabel } from "@features/csm-operations/utils/incidentFormOptions";
 import { useGetUsersMe } from "@features/settings/api/useGetUsersMe";
-import { useSearchGroups } from "@api/useSearchGroups";
+import { useSearchAssignableGroups } from "@api/useSearchGroups";
 import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import { useGetCsmCaseDetail } from "@features/csm-cases/api/useGetCsmCaseDetail";
 import { useSearchParentRecordsForSelect } from "@features/csm-operations/api/useSearchParentRecordsForSelect";
@@ -1107,7 +1107,7 @@ export default function CreateChangeRequestPage(): JSX.Element {
                 value={groupId}
                 onChange={setGroupId}
                 disabled={isSubmitting}
-                useSearch={useSearchGroups}
+                useSearch={useSearchAssignableGroups}
                 getId={(g) => g.id}
                 getLabel={(g) => g.name}
               />

@@ -17830,9 +17830,20 @@ components:
         groupId:
           type: string
           format: uuid
+          description: >
+            The assignment group. Must be a row of `group` (a 400 naming the field
+            otherwise); with `DATA_SOURCE=postgres-servicenow-dual-write` that is also
+            what ServiceNow knows it by. The groups search offers only these with
+            `assignableOnly`.
         assignedEngineerId:
           type: string
           format: uuid
+          description: >
+            The person the change is assigned to. With
+            `DATA_SOURCE=postgres-servicenow-dual-write` the person must have a ServiceNow
+            account: one whose id is not a ServiceNow id is looked up there by email and
+            that account is used, and a person with none is refused with a 400 naming the
+            field (the same holds for `requestedById`).
         risk:
           type: string
           enum:
@@ -19221,6 +19232,16 @@ components:
         searchQuery:
           type: string
           description: Free-text search query.
+        assignableOnly:
+          type: boolean
+          description: >
+            Keep only the groups a record can be assigned to. On the PostgreSQL data
+            source the search lists the hand-curated team registry, and a team with no
+            row of the same id in `group` (one added by hand, such as an approval team)
+            cannot be assigned to: `work_item.assignment_group_id` references `group`,
+            and ServiceNow has no such group. Off by default, because the team filters
+            of the users page need the whole registry. No effect on the ServiceNow data
+            source, which lists real groups only.
 
     ScheduleZone:
       type: object

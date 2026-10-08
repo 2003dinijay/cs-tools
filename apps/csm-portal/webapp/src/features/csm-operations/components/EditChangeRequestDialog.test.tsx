@@ -21,12 +21,13 @@ import { clearUserPreferredTimeZone, setUserPreferredTimeZone } from "@utils/dat
 import type { BeChangeRequestDetail, BePatchChangeRequestPayload } from "@api/backend/types";
 
 
-// The "Assignment group" picker goes through useSearchGroups, which hits the
-// backend client via react-query — stub it out (same approach as
-// EditIncidentDialog.test.tsx).
+// The "Assignment group" picker goes through useSearchAssignableGroups (only the
+// groups a change can be assigned to), which hits the backend client via
+// react-query — stub it out (same approach as EditIncidentDialog.test.tsx).
 const useSearchGroupsMock = vi.fn(() => ({ data: [], isFetching: false, isError: false }));
 vi.mock("@api/useSearchGroups", () => ({
   useSearchGroups: (...args: unknown[]) => useSearchGroupsMock(...(args as [])),
+  useSearchAssignableGroups: (...args: unknown[]) => useSearchGroupsMock(...(args as [])),
 }));
 
 // The "Requested by" picker (added for CR field parity) goes through the

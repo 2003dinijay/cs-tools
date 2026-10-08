@@ -3144,7 +3144,8 @@ export interface BeGroup {
 }
 
 export interface BeGroupSearchPayload {
-  filters?: { searchQuery?: string };
+  /** `assignableOnly`: only the groups a record can be assigned to (see `useSearchAssignableGroups`). */
+  filters?: { searchQuery?: string; assignableOnly?: boolean };
   pagination: BePagination;
 }
 

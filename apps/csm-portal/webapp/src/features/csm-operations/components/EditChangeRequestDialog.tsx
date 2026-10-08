@@ -37,7 +37,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { useCallback, useMemo, useState, type JSX } from "react";
-import { useSearchGroups } from "@api/useSearchGroups";
+import { useSearchAssignableGroups } from "@api/useSearchGroups";
 import { useSearchInternalUsersByName } from "@api/useSearchUsersByName";
 import type {
   BeChangeRequestCategory,
@@ -571,7 +571,7 @@ export default function EditChangeRequestDialog({
             value={assignedTeamId}
             onChange={setAssignedTeamId}
             disabled={isSaving}
-            useSearch={useSearchGroups}
+            useSearch={useSearchAssignableGroups}
             getId={(g) => g.id}
             getLabel={(g) => g.name}
             knownLabel={cr.assignedTeam?.name}

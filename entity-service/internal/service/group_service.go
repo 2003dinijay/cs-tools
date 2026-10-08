@@ -38,14 +38,16 @@ func (s *groupService) SearchGroups(ctx context.Context, req domain.SearchGroups
 		return domain.SearchGroupsResponse{}, err
 	}
 	searchQuery := ""
+	assignableOnly := false
 	if req.Filters != nil {
+		assignableOnly = req.Filters.AssignableOnly
 		if err := validateSearchQuery(req.Filters.SearchQuery); err != nil {
 			return domain.SearchGroupsResponse{}, err
 		}
 		searchQuery = req.Filters.SearchQuery
 	}
 
-	groups, total, err := s.repo.SearchGroups(ctx, searchQuery, req.Pagination.Limit, req.Pagination.Offset)
+	groups, total, err := s.repo.SearchGroups(ctx, searchQuery, assignableOnly, req.Pagination.Limit, req.Pagination.Offset)
 	if err != nil {
 		return domain.SearchGroupsResponse{}, err
 	}

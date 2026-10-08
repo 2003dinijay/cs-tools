@@ -30,6 +30,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -172,4 +173,63 @@ func TestChangeRequestCreateIntegration_FromServiceNowPersistsAssignmentGroup(t 
 		t.Fatalf("CreateChangeRequestFromServiceNow id = %q, want %q", resp.ChangeRequest.ID, crCreateSNID)
 	}
 	assertChangeRequestAssignedTeam(t, scoped, repo, crCreateSNID, groupID)
+}
+
+// A team added by hand to the registry the assignment-group picker lists has no "group"
+// row and no ServiceNow group. It is refused before anything is written, in words the
+// person on the form can act on: the group's name and the field to change; no id, no
+// field name, no table.
+func TestChangeRequestCreateIntegration_HandMadeTeamIsRefusedInWords(t *testing.T) {
+	scoped := changeRequestCreatePool(t)
+	repo := repository.NewChangeRequestRepository(scoped)
+	sys := repository.WithSystemIdentity(context.Background())
+
+	const teamID = "dddddddd-0000-4000-8000-0000000cc001"
+	const teamName = "CR Create Test Hand-made Team"
+	cleanup := func() { _, _ = scoped.Exec(sys, `DELETE FROM team WHERE id = $1`, teamID) }
+	cleanup()
+	t.Cleanup(cleanup)
+	if _, err := scoped.Exec(sys, `INSERT INTO team (id, created_on, updated_on, name, type) VALUES ($1, NOW(), NOW(), $2, 'test')`, teamID, teamName); err != nil {
+		t.Fatalf("seed team: %v", err)
+	}
+
+	check := func(t *testing.T, err error) {
+		t.Helper()
+		var ve *apierror.ValidationError
+		if !errors.As(err, &ve) {
+			t.Fatalf("err = %v (%T), want *apierror.ValidationError", err, err)
+		}
+		for _, want := range []string{`"` + teamName + `"`, "cannot be used", "not an assignment group in ServiceNow", `"Assignment group"`} {
+			if !strings.Contains(ve.Msg, want) {
+				t.Errorf("message %q does not contain %q", ve.Msg, want)
+			}
+		}
+		for _, bad := range []string{teamID, "groupId", "assignment_group_id", "table", "SQLSTATE"} {
+			if strings.Contains(ve.Msg, bad) {
+				t.Errorf("message %q shows %q to the person on the form", ve.Msg, bad)
+			}
+		}
+	}
+
+	t.Run("the pre-flight the dual-write create runs before ServiceNow", func(t *testing.T) {
+		g := teamID
+		_, err := repo.ValidateChangeRequestLinks(sys, domain.ChangeRequestLinkSelection{AssignmentGroupID: &g})
+		check(t, err)
+	})
+	t.Run("the plain PostgreSQL create", func(t *testing.T) {
+		g := teamID
+		_, err := repo.CreateChangeRequest(sys, domain.CreateChangeRequestRequest{
+			Subject: crCreateSubject, Type: crCreateType(domain.ChangeRequestTypeNormal), GroupID: &g,
+		}, "cr-create-test@test.local")
+		check(t, err)
+	})
+	t.Run("nothing was written", func(t *testing.T) {
+		var n int
+		if err := scoped.QueryRow(sys, `SELECT COUNT(*) FROM work_item WHERE subject = $1`, crCreateSubject).Scan(&n); err != nil {
+			t.Fatalf("count: %v", err)
+		}
+		if n != 0 {
+			t.Errorf("%d work items were written for a refused create", n)
+		}
+	})
 }
