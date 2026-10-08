@@ -78,13 +78,17 @@ func New(teams []Team, roles []string) (*Directory, error) {
 		roleSet:      make(map[string]bool, len(roles)),
 	}
 
+	seenNames := make(map[string]struct{}, len(teams))
 	for _, t := range teams {
 		if _, dup := d.byKey[t.Key]; dup {
 			return nil, fmt.Errorf("team registry: teamKey %q is configured more than once", t.Key)
 		}
-		if _, dup := d.byGroupName[t.Name]; dup {
+		// Compared case-insensitively: TeamResultByGroupName matches names that
+		// way, so two names differing only in case would be ambiguous.
+		if _, dup := seenNames[strings.ToLower(t.Name)]; dup {
 			return nil, fmt.Errorf("team registry: displayName %q is configured more than once", t.Name)
 		}
+		seenNames[strings.ToLower(t.Name)] = struct{}{}
 		d.byKey[t.Key] = t
 		d.byGroupName[t.Name] = t
 		d.groupNames = append(d.groupNames, t.Name)
@@ -139,13 +143,16 @@ func (d *Directory) RoleCount() int { return len(d.roleResults) }
 // and backing group ids) of the configured team whose group name exactly
 // matches name. ok is false if no configured team matches.
 func (d *Directory) TeamResultByGroupName(name string) (TeamResult, bool) {
-	t, ok := d.byGroupName[name]
-	if !ok {
-		return TeamResult{}, false
-	}
-	for _, r := range d.teamResults {
-		if r.ID == t.Key {
-			return r, true
+	// Matched case-insensitively: the `team` table's names can differ in case
+	// from the registry's display names ("rigel" vs "Rigel").
+	for _, t := range d.teams {
+		if !strings.EqualFold(t.Name, name) {
+			continue
+		}
+		for _, r := range d.teamResults {
+			if r.ID == t.Key {
+				return r, true
+			}
 		}
 	}
 	return TeamResult{}, false

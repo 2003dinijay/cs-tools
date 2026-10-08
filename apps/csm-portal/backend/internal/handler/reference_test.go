@@ -379,3 +379,16 @@ func TestReferenceHandler_SearchTeams_FromEntityService(t *testing.T) {
 		}
 	})
 }
+
+func TestReferenceHandler_SearchTeams_MatchesRegistryNamesIgnoringCase(t *testing.T) {
+	fake := &fakeTeamSearchClient{resp: []byte(`{"teams":[{"id":"11111111-1111-1111-1111-111111111111","name":"abt one","type":"cre"}],"total":1}`)}
+	h := NewReferenceHandler(testDirectory(t)).WithEntityClient(fake)
+	w := httptest.NewRecorder()
+	h.SearchTeams(w, withUser(httptest.NewRequest(http.MethodPost, "/teams/search", strings.NewReader(`{}`))))
+
+	assertStatus(t, w, http.StatusOK)
+	got := decodeJSON[directory.SearchTeamsResponse](t, w)
+	if len(got.Teams) != 1 || got.Teams[0].ID != "abt-1" || got.Teams[0].Family != "cre-abt" {
+		t.Errorf("teams = %+v, want the registry row for a differently-cased team name", got.Teams)
+	}
+}
