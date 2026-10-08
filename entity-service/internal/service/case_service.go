@@ -99,6 +99,10 @@ type caseService struct {
 	// catalog answers when the caller sent none (fillServiceRequestText). nil
 	// unless wired via WithServiceRequestCatalog.
 	srCatalog srCatalogReader
+	// typeTransfer backs UpdateCase's type transfer (see transferCaseType). nil
+	// unless wired via WithCaseTypeTransfer, in which case a request carrying a
+	// type is refused as it was before the transfer existed.
+	typeTransfer repository.CaseTypeTransferRepository
 }
 
 // srNotifier is what caseService needs from SRNoticeService; an interface so
@@ -1481,8 +1485,15 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	if err := validateUUIDs("id", []string{req.ID}); err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
-	// Fields with no Postgres implementation at all: a full type transfer,
-	// and everything sn_case_service.go's own UpdateCase only ever accepts
+	// A type transfer has its own path: it moves the case between extension
+	// tables (and, under dual-write, asks ServiceNow first inside the same
+	// transaction) -- see transferCaseType. Without the wiring it falls through
+	// to the refusal below, exactly as before.
+	if req.Type != nil && s.typeTransfer != nil {
+		return s.transferCaseType(ctx, req)
+	}
+	// Fields with no Postgres implementation at all: a full type transfer
+	// (unless wired, above), and everything sn_case_service.go's own UpdateCase only ever accepts
 	// as PART of one -- engagementType/engagementPaymentType/issueType/
 	// catalogId/catalogItemId/variables are rejected there too whenever
 	// req.Type is nil ("... are only allowed when type is also provided").

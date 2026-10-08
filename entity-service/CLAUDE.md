@@ -2848,11 +2848,9 @@ the variable names (`exclusiveCount`/`combinableCount` in both files' own
   `sn_case_service.go` only accepts them when `type` is also provided (a
   full type transfer) -- `"engagementType, engagementPaymentType, issueType,
   catalogId, catalogItemId, and variables are only allowed when type is also
-  provided"`. `type` itself has no Postgres implementation (a real type
-  transfer would mean moving a row between `"case"`/`engagement`/
-  `service_request`/etc, each a physically separate extension table --
-  genuinely larger, separate work, not attempted here), so none of its five
-  companions have anywhere to go either. `addPublicComment`/`product`/
+  provided"`. Those companions ride only with a type transfer, which now has
+  its own path (see "Case type transfer" below); sent without `type`, or to a
+  build where that path is not wired, they are still refused. `addPublicComment`/`product`/
   `publicTicket` (the "Share Fix ETA" comment-posting side effect) remain
   rejected too. `autocloseHoldUntil` is **not** in this list: it was, on the
   belief that no column backed it, but every case-like extension table has
@@ -2917,6 +2915,114 @@ resolution fields silently ignored -- never validated, never written. The
 check now runs immediately after the `exclusiveCount`/`combinableCount`
 validation and before any branch (`WatchList`/`AssigneeEmail`/`ParentID`/
 `Acknowledge`/the combinable bundle) gets a chance to return early.
+
+## Case type transfer (`PATCH /cases/{id}` with `type`)
+
+The CSM portal's "Change case type" sends `{type, ...companions}` and used to fail
+on every case on the `postgres` and `postgres-servicenow-dual-write` data sources:
+`caseService.UpdateCase` refused any `type` ("... are only supported for the
+ServiceNow data source"), because only `snCaseService` could transfer one, and the
+portal showed only its generic "Could not change the case type." Code:
+`case_type_transfer_service.go` (`caseService.transferCaseType`, wired by
+`service.WithCaseTypeTransfer` in `routes.go`) and
+`repository/case_type_transfer_repo.go` (`TransferCaseType`). Without the wiring the
+old refusal still applies; `DATA_SOURCE=servicenow` is unchanged.
+
+- **Internal callers only** (`RequireInternalCaller`, 403 otherwise). ServiceNow decides
+  this by the roles it holds; here there is no such layer, and a customer's session must
+  not be able to re-type a case through whatever PATCH the customer portal forwards.
+- **One transaction, ServiceNow asked inside it.** The Postgres statements run first, the
+  dual-write service's remote step (`snMirror.UpdateCase`, which validates and PATCHes
+  ServiceNow) runs after them and before the commit. ServiceNow refusing rolls Postgres
+  back; a Postgres failure (a missing row, a constraint) is found before ServiceNow is
+  asked. Only a failed COMMIT after ServiceNow succeeded leaves the two stores apart; it
+  is logged at ERROR with the case id and the next sync of the case corrects Postgres.
+  This is the opposite order from the Postgres-first, asynchronously mirrored updates on
+  purpose: a transfer has no "stale field, retry later" form, and ServiceNow's own
+  validation (catalog item, missing answers) is something the engineer must see.
+  The state ServiceNow reports afterwards is written to the new row.
+- **What a transfer does to the rows.** `work_item.type` moves; the extension row of the
+  old type is deleted and one of the new type inserted with what every case-like row has in
+  common (state, work state, close notes, cause, resolution code, closed by/on, resolved on,
+  auto-closure step/time). The four state enums share one label set and the four cause enums
+  another, so the copy goes through text. What is type-specific is dropped or supplied: the
+  severity and issue type of a `"case"`, the type and payment type of an engagement. The
+  number, id, project, deployment, watchers, tags, comments, attachments and time cards live
+  on `work_item` and stay. **Only the ticket being converted changes**: tickets that name it as
+  their related case, its child cases, its change requests and the ticket it relates to are not
+  converted and not touched. The related-case link needed a migration for that to hold:
+  `"case".related_case_id` was a foreign key into `"case"` with `ON DELETE SET NULL` and was read
+  through a `"case"` join, so replacing the converted ticket's `"case"` row would have cleared the
+  link on every other ticket pointing at it (about 2.5% of cases carry one on staging) and, in
+  dual-write, left ServiceNow holding a link Postgres could no longer store.
+  `0211_case_related_case_references_work_item.sql` points it at `work_item(id)` (same
+  `ON DELETE SET NULL`; found by what it references, `NOT VALID` then validated, idempotent), the
+  two case reads (`GetCaseByID`, the list search) read the related ticket straight from
+  `work_item` (so it shows as an engagement once converted), and `UpdateCaseFields` checks that a
+  `relatedCaseId` is a case-like ticket (the key now accepts any work item). Until 0211 is applied
+  the transfer notices the old key (`pg_constraint`) and refuses a ticket others relate to, with a
+  409 naming them, before ServiceNow is asked anything; with 0211 it goes through. The converted
+  ticket's OWN outgoing related link is not carried (an engagement has no column for it, as a
+  native one never has; ServiceNow keeps it).
+- **Incident (S0-S3) and Query (S4) are both a `"case"`.** Postgres has no separate type;
+  severity decides which one ServiceNow makes. Both directions are tested for both. S4 has
+  two consequences: time cards (the same LOW/S4 line `UpdateCase` applies on a severity
+  change: moving an S4 case out of `"case"`, or any case into S4, re-marks them via
+  `recomputeTimeCardsBillable`, in a savepoint inside the transfer) and SLA clocks (moving
+  INTO `"case"` calls `ReviseCaseClocks` with the new severity, a Query only gets the
+  response clock; moving OUT calls it with no severity, which cancels the CSM clocks).
+- **Validation is the ServiceNow service's, restated** (`validateCaseTypeTransfer`): type
+  aliases resolved first; nothing else rides along but the transfer's own companions;
+  `case` needs severity AND issue type, `engagement` needs both engagement fields,
+  `service_request` needs a catalog, a catalog item and at least one answer (the answers are
+  not stored on plain Postgres, as on create), `security_report_analysis` takes none.
+  `announcement` and the `hosting_*` types are never a source or a target; the same type is
+  refused.
+- **Attachments needed a migration.** `case_attachment.case_id` referenced `"case"(id)` with
+  no cascade (the constraint is `case_attachment_case_id_fkey` where created by 0106 and
+  `case_attachments_case_id_fkey` where renamed from the plural table), so an attachment
+  pinned its `"case"` row and a case with one could not be moved: replacing the row was
+  refused. Moving to Security Report Analysis needs an attachment, so every such transfer was
+  affected. `0210_case_attachment_references_work_item.sql` points it at `work_item(id)`
+  (found by what it references, `NOT VALID` then validated, idempotent). Until it is applied
+  a transfer of a case with attachments answers a 409 and changes nothing. **Deploy the
+  entity-service build first and apply the migrations after it**: the build is safe without them
+  (0210: a case with attachments gets a 409; 0211: a ticket others relate to gets a 409), but 0210
+  without the build leaves a window with no owner-type check, and 0211 without the build leaves
+  the old build reading the link through `"case"`. The old key was
+  also the only thing keeping an attachment off every other kind of work item (the announcement
+  tables' row-level security relies on an announcement never owning one), so the two insert
+  paths (`CreateCaseAttachment`, `CreateCaseAttachmentFromServiceNow`) now check in SQL that the
+  work item is a case, engagement, service request or security report analysis, and answer the
+  same "one or more referenced IDs do not exist" as the key did for anything else. The effect
+  is that the three non-case types can own attachments, which the old target made impossible.
+- **A slow or failing ServiceNow call does not decide the outcome by guessing.** The call is
+  bounded so about 20 s of the request's deadline remain afterwards. A refusal (400/401/403/
+  404/409 from the integration service) is final and rolls back. Anything else (a deadline, a
+  dropped connection, a 5xx) does not say whether ServiceNow applied the transfer, so the
+  service asks ServiceNow for the case, on a context detached from the request's cancellation
+  (the request may be what just ran out of time) with its own 10 s bound: if ServiceNow already
+  holds the new type the transfer completes in Postgres, otherwise it rolls back and the
+  original error is returned. This removes the worst outcome, a case that is one type in
+  ServiceNow and another in the portal because of a timeout. The transaction (and a row lock on
+  that one work item) stays open for the length of the ServiceNow call.
+- **After the commit, best-effort, never undoing it:** an activity entry ("Type: Case ->
+  Engagement") and the SLA clocks above. No event is published (there is no `case.type_changed`).
+  A GitHub-linked service request still gets the one "record created" notice its insert
+  trigger always sends.
+- **Known gap, not caused by the transfer:** `GetCaseByID` does not return `engagementType`
+  for any engagement on this data source (only the list search selects `eng.type`), so
+  anything keyed on it from the detail read, such as the Migration reminder wording of "Request
+  update", sees nothing for native and transferred Migration tickets alike. The stored type and
+  payment type are correct.
+- Tests: `case_type_transfer_service_test.go` (validation rules, internal-only, ServiceNow
+  inside the transaction and its refusal leaving nothing, ambiguous ServiceNow failures, SLA per
+  direction), `case_type_transfer_repo_integration_test.go` (real Postgres as a non-superuser,
+  run with `CASE_STATS_TEST_DSN`; every source type to every target, Incident and Query, carried
+  columns, billable flag, attachments, remote state, rollback, who may own an attachment) and
+  `case_type_transfer_production_integration_test.go` (another ticket's related link, linked
+  change requests / child cases / watchers / tags / comments untouched, a ticket with thousands
+  of comments and time cards, a transferred Migration ticket through its normal life).
 
 ## Auto-closure hold (`autocloseHoldUntil`) on the Postgres data sources
 
