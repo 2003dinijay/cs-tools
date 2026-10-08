@@ -136,7 +136,7 @@ func (h *Handlers) PatchOrganization(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ID = r.PathValue("organizationId")
 
-	org, err := h.orgs.Patch(r.Context(), req)
+	org, err := h.orgs.Patch(r.Context(), req, actor(r))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

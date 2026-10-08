@@ -58,7 +58,7 @@ func (s *referenceService) LifecycleCatalogue(ctx context.Context) (*domain.Life
 type OrganizationService interface {
 	Search(ctx context.Context, req domain.SearchOrganizationsRequest) (domain.SearchOrganizationsResponse, error)
 	Get(ctx context.Context, id string) (*domain.OrganizationDetail, error)
-	Patch(ctx context.Context, req domain.PatchOrganizationRequest) (*domain.OrganizationDetail, error)
+	Patch(ctx context.Context, req domain.PatchOrganizationRequest, actorID string) (*domain.OrganizationDetail, error)
 }
 
 type organizationService struct {
@@ -95,7 +95,7 @@ func (s *organizationService) Get(ctx context.Context, id string) (*domain.Organ
 	return s.repo.Get(ctx, id)
 }
 
-func (s *organizationService) Patch(ctx context.Context, req domain.PatchOrganizationRequest) (*domain.OrganizationDetail, error) {
+func (s *organizationService) Patch(ctx context.Context, req domain.PatchOrganizationRequest, actorID string) (*domain.OrganizationDetail, error) {
 	if err := validateUUID("organizationId", req.ID); err != nil {
 		return nil, err
 	}
@@ -111,7 +111,7 @@ func (s *organizationService) Patch(ctx context.Context, req domain.PatchOrganiz
 		return nil, apierror.Validation(
 			"ownerId must name a CS engineer — an organisation cannot be left unassigned once claimed")
 	}
-	if err := s.repo.Patch(ctx, req); err != nil {
+	if err := s.repo.Patch(ctx, req, actorID); err != nil {
 		return nil, err
 	}
 	return s.repo.Get(ctx, req.ID)

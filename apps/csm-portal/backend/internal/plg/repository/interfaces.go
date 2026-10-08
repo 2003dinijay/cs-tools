@@ -32,7 +32,7 @@ type ReferenceRepository interface {
 type OrganizationRepository interface {
 	Search(ctx context.Context, req domain.SearchOrganizationsRequest) ([]domain.OrganizationSummary, int, error)
 	Get(ctx context.Context, id string) (*domain.OrganizationDetail, error)
-	Patch(ctx context.Context, req domain.PatchOrganizationRequest) error
+	Patch(ctx context.Context, req domain.PatchOrganizationRequest, actorID string) error
 }
 
 // OrgPlatformRepository serves the product tab.

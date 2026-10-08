@@ -113,9 +113,9 @@ func (c *Client) Get(ctx context.Context, id string) (*domain.OrganizationDetail
 	return &out, nil
 }
 
-func (c *Client) Patch(ctx context.Context, req domain.PatchOrganizationRequest) error {
+func (c *Client) Patch(ctx context.Context, req domain.PatchOrganizationRequest, actorID string) error {
 	return c.patch(ctx, "/plg/organizations/"+esc(req.ID),
-		map[string]any{"ownerId": req.OwnerID}, nil)
+		map[string]any{"ownerId": req.OwnerID, "actorId": actorID}, nil)
 }
 
 // ---------------------------------------------------------------------------

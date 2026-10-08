@@ -26886,6 +26886,12 @@ components:
         actorId:
           type: string
           format: uuid
+        actorId:
+          type: string
+          format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as
+            owner_updated_by, alongside owner_updated_on.
     PlgPatchPairingRequest:
       type: object
       required:
