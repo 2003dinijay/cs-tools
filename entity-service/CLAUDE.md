@@ -3980,8 +3980,10 @@ The rules, in the order they are applied (**the first failing one wins, every re
    value, else the stored one) is set and the effective project (the request's `projectId`,
    else the stored one) is empty -> `approval cannot be requested: the customer's approval
    and/or review is required but no Customer Project is set, so there is nobody to ask.
-   Select a Customer Project first (or clear the requirement).` For every type (a Standard
-   change would otherwise land in Customer Approval with nobody to ask), in the same PATCH
+   Select a Customer Project first (or clear the requirement).` For every type that can carry a
+   box (a Standard change would otherwise land in Customer Approval with nobody to ask; an Emergency
+   change's boxes are ignored, so it is never refused for one -- see "Emergency: one CAB stage, no
+   customer step"), in the same PATCH
    that clears the box or chooses the project it is accepted, and a RESEND of
    `{state: "assess"}` on a change that already left New is the idempotent no-op it always
    was, even for a legacy change that ticked a box with no project. (The CSM webapp mirrors
@@ -3996,8 +3998,9 @@ The rules, in the order they are applied (**the first failing one wins, every re
    contact for the project first` (`customer review is required but ...` for the review box,
    `customer approval and customer review are required but ...` when both are set). It runs AFTER
    rule 6, which keeps its own message and precedence for a change with no project. For every type
-   that goes through Request Approval (Normal waits in Assess, Standard lands in Customer Approval
-   or Scheduled); a refused request writes nothing, not even the rest of its fields. **Why:** with no
+   that goes through Request Approval and can ask the customer (Normal waits in Assess, Standard lands
+   in Customer Approval or Scheduled; an Emergency change never asks the customer, so it is not refused
+   here whatever its stored boxes say); a refused request writes nothing, not even the rest of its fields. **Why:** with no
    staff action that answers for the customer (the Bypass is gone), a change that reaches Customer
    Approval / Customer Review with nobody to answer can only be cancelled (or rolled back from
    Review), an invitation to cancel and clone just to get past a gate.
