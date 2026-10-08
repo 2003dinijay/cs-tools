@@ -525,6 +525,19 @@ vi.mock("@features/csm-cases/components/SetFixEtaDialog", () => ({
       >
         stub save fix eta with share
       </button>
+      <button
+        type="button"
+        onClick={() =>
+          onSave({
+            bestCaseFixEta: "2099-06-16",
+            addPublicComment: true,
+            product: '<img src=x onerror=alert(1)>',
+            publicTicket: "Tom & Jerry's <ticket>",
+          })
+        }
+      >
+        stub save fix eta with share (html input)
+      </button>
     </div>
   ),
 }));
@@ -2284,7 +2297,7 @@ describe("CsmCaseDetailPage — fix ETA save and share-with-customer are indepen
       screen.getByRole("button", { name: /stub open set fix eta/i }),
     );
     fireEvent.click(
-      screen.getByRole("button", { name: /stub save fix eta with share/i }),
+      screen.getByRole("button", { name: /^stub save fix eta with share$/i }),
     );
 
     // The only PATCH is the ETA alone, no addPublicComment -- this is the
@@ -2331,7 +2344,7 @@ describe("CsmCaseDetailPage — fix ETA save and share-with-customer are indepen
       screen.getByRole("button", { name: /stub open set fix eta/i }),
     );
     fireEvent.click(
-      screen.getByRole("button", { name: /stub save fix eta with share/i }),
+      screen.getByRole("button", { name: /^stub save fix eta with share$/i }),
     );
 
     const [, etaOptions] = patchCaseMutateMock.mock.calls[0] as [
@@ -2381,6 +2394,46 @@ describe("CsmCaseDetailPage — fix ETA save and share-with-customer are indepen
     });
     expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
     expect(postCommentMutateAsyncMock).not.toHaveBeenCalled();
+  });
+
+  // CodeRabbit catch: product/publicTicket are free-text form input that
+  // ends up in a customer-visible comment -- unescaped, a value containing
+  // HTML would be stored as live markup rather than literal text.
+  it("escapes HTML-significant characters in product/publicTicket before posting the share comment", async () => {
+    renderPage();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: /stub open set fix eta/i }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", {
+        name: /stub save fix eta with share \(html input\)/i,
+      }),
+    );
+
+    const [, etaOptions] = patchCaseMutateMock.mock.calls[0] as [
+      unknown,
+      { onSuccess: () => void },
+    ];
+    await act(async () => {
+      etaOptions.onSuccess();
+      await Promise.resolve();
+    });
+
+    expect(postCommentMutateAsyncMock).toHaveBeenCalledTimes(1);
+    const [commentInput] = postCommentMutateAsyncMock.mock.calls[0] as [
+      { bodyHtml: string },
+    ];
+    // Neither raw input survives as live markup...
+    expect(commentInput.bodyHtml).not.toContain("<img src=x onerror=alert(1)>");
+    expect(commentInput.bodyHtml).not.toContain("Tom & Jerry's <ticket>");
+    // ...it's escaped instead.
+    expect(commentInput.bodyHtml).toContain(
+      "Product: &lt;img src=x onerror=alert(1)&gt;",
+    );
+    expect(commentInput.bodyHtml).toContain(
+      "Public ticket: Tom &amp; Jerry&#039;s &lt;ticket&gt;",
+    );
   });
 });
 
@@ -2472,7 +2525,7 @@ describe("CsmCaseDetailPage — fix-ETA stale-callback guard", () => {
       screen.getByRole("button", { name: /stub open set fix eta/i }),
     );
     fireEvent.click(
-      screen.getByRole("button", { name: /stub save fix eta with share/i }),
+      screen.getByRole("button", { name: /^stub save fix eta with share$/i }),
     );
     expect(patchCaseMutateMock).toHaveBeenCalledTimes(1);
     const [, case1EtaOptions] = patchCaseMutateMock.mock.calls[0] as [

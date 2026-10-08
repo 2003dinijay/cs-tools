@@ -181,6 +181,7 @@ import { useCaseRouteOverride } from "@context/case-tabs/CaseRouteOverrideContex
 import { replaceUuids } from "@utils/redactIds";
 import { formatUtcDateForDisplay } from "@utils/dateTime";
 import {
+  escapeHtml,
   isBlankHtml,
   isDescriptionEchoedInComment,
   stripHtmlTags,
@@ -379,9 +380,15 @@ function buildFixEtaShareComment(fields: {
   product?: string;
   publicTicket?: string;
 }): string {
+  // product/publicTicket are free-text form input that ends up in a
+  // customer-visible comment — escape before interpolating, same as any
+  // other user-entered text embedded in markup. The ETA dates are not user
+  // free-text (picker-produced "YYYY-MM-DD" strings) and need no escaping.
   const lines: string[] = [];
-  if (fields.product) lines.push(`Product: ${fields.product}`);
-  if (fields.publicTicket) lines.push(`Public ticket: ${fields.publicTicket}`);
+  if (fields.product) lines.push(`Product: ${escapeHtml(fields.product)}`);
+  if (fields.publicTicket) {
+    lines.push(`Public ticket: ${escapeHtml(fields.publicTicket)}`);
+  }
   if (fields.bestCaseFixEta) lines.push(`Best case: ${fields.bestCaseFixEta}`);
   if (fields.mostLikelyFixEta) lines.push(`Most likely: ${fields.mostLikelyFixEta}`);
   if (fields.worstCaseFixEta) lines.push(`Worst case: ${fields.worstCaseFixEta}`);
