@@ -12537,6 +12537,13 @@ components:
                 A single incident number (e.g. "INC0010001"); matches
                 exactly. Routed as a first-class filter rather than through
                 the free-text searchQuery scan.
+            correlationId:
+              type: string
+              description: >-
+                Matches ServiceNow's correlation_id field exactly. Lets a
+                caller that set CreateIncidentRequest.correlationId find that
+                same incident again without a free-text searchQuery scan over
+                subject or workNotes.
             filters:
               type: array
               items:
@@ -12748,6 +12755,21 @@ components:
           type: string
           format: uuid
           nullable: true
+        correlationId:
+          type: string
+          nullable: true
+          description: Optional caller-supplied external-system key, stored on ServiceNow's
+            correlation_id field. Look it up via SearchIncidentsFilters.correlationId
+            to find an incident this caller already created, without depending on
+            free-text search over subject or workNotes.
+        environment:
+          type: string
+          nullable: true
+          maxLength: 40
+          description: Optional label (e.g. "Staging", "Production") identifying the
+            environment the source alert fired against. Maps to ServiceNow's own
+            custom incident.u_enviroment field (name kept as ServiceNow spells it,
+            misspelling included).
 
     CreateIncidentResponse:
       type: object
