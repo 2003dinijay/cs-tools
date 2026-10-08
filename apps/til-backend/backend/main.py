@@ -47,7 +47,14 @@ from novera_notify import notify_novera
 from sanitize import sanitize_what_html
 from validation import TIL_WHERE_OPTIONS, WHAT_MAX_LENGTH, validate_submission_payload
 
-CORS_ALLOWED_ORIGIN = os.environ.get("CORS_ALLOWED_ORIGIN", "http://localhost:3000")
+# Comma-separated so a second origin (e.g. a temporary tunnel URL used only
+# so a Novera broadcast card's link actually resolves) can be allowed
+# alongside the webapp's normal origin, without replacing it.
+CORS_ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.environ.get("CORS_ALLOWED_ORIGIN", "http://localhost:3000").split(",")
+    if origin.strip()
+]
 # Base URL of the One WSO2 webapp itself (NOT this backend) -- used only to
 # build each entry's shareable link (.../knowledge-base/{id}) for the Novera
 # broadcast card. Optional: absent just means that link is omitted, same
@@ -104,7 +111,7 @@ async def reject_oversized_requests(request: Request, call_next):
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[CORS_ALLOWED_ORIGIN],
+    allow_origins=CORS_ALLOWED_ORIGINS,
     allow_methods=["*"],
     allow_headers=["*"],
 )

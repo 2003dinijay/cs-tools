@@ -28,7 +28,7 @@ from sanitize import sanitize_what_html, what_plain_text
 
 TIL_WHERE_OPTIONS = ("Customer", "Partner", "Internal", "Other")
 WHERE_OPTIONS_REQUIRING_DETAIL = ("Customer", "Partner", "Other")
-TITLE_MAX_LENGTH = 50
+TITLE_MAX_LENGTH = 100
 WHO_MAX_LENGTH = 200
 WHERE_DETAIL_MAX_LENGTH = 200
 WHAT_MAX_LENGTH = 5000
