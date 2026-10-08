@@ -14,13 +14,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package model is the canonical alert written to the alerts.alert column. Its JSON must
-// match sre-alert-core-service's model.Alert field for field: alerts-core parses exactly
-// these eight keys and fingerprints source|service|metric_name|environment|unique_identifier.
+// Package model is the canonical alert written to the alerts.alert column, field for field with sre-alert-core-service's model.Alert.
 package model
 
-// Alert is the canonical alert. Field names and JSON keys are fixed by the contract with
-// alerts-core; do not add fields.
+import (
+	"crypto/sha256"
+	"encoding/hex"
+	"strings"
+)
+
+// Alert's field names and JSON keys are fixed by the contract with alerts-core; do not add fields.
 type Alert struct {
 	Service          string `json:"service"`
 	MetricName       string `json:"metric_name"`
@@ -30,4 +33,10 @@ type Alert struct {
 	Source           string `json:"source"`
 	UniqueIdentifier string `json:"unique_identifier"`
 	Description      string `json:"description"`
+}
+
+// Fingerprint must match sre-alert-core-service's model.Fingerprint; alerts-core uses it to claim one incident's alerts together.
+func Fingerprint(a Alert) string {
+	sum := sha256.Sum256([]byte(strings.Join([]string{a.Source, a.Service, a.MetricName, a.Environment, a.UniqueIdentifier}, "|")))
+	return hex.EncodeToString(sum[:])
 }
