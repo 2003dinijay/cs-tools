@@ -446,7 +446,7 @@ func TestCaseService_SearchCases_RejectsUnsupportedPostgresFields(t *testing.T) 
 	}
 }
 
-// TestCaseService_SearchCases_RejectsCountOnlyWithSkipTotal is the digiops-cs#3349
+// TestCaseService_SearchCases_RejectsCountOnlyWithSkipTotal is the
 // regression guard: countOnly and skipTotal are mirror-image flags (skip the
 // page query vs. skip the count), and combining them would leave nothing for
 // the search to actually compute.

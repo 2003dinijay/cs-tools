@@ -14,13 +14,12 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// CountOnly on case search (digiops-cs#3349): the page query is never sent,
-// Total matches what the same search would report without it, and Cases is
-// an empty slice, not nil. Also proves the projectOnboardingStatus "in"
-// filter's exclusion-list rewrite (same ticket) matches the original
-// inclusion-join semantics exactly, against real data. Runs the real
-// repository on a real database and records the statements it sends.
-// Skipped without CASE_STATS_TEST_DSN.
+// CountOnly on case search: the page query is never sent, Total matches what
+// the same search would report without it, and Cases is an empty slice, not
+// nil. Also proves the projectOnboardingStatus "in" filter's exclusion-list
+// rewrite matches the original inclusion-join semantics exactly, against
+// real data. Runs the real repository on a real database and records the
+// statements it sends. Skipped without CASE_STATS_TEST_DSN.
 //
 //	CASE_STATS_TEST_DSN=postgres://... go test ./internal/repository/ -run CountOnly
 //	CASE_STATS_TEST_DSN=postgres://... go test ./internal/repository/ -run ProjectOnboardingStatusInMatchesLegacyJoinForm
@@ -97,6 +96,12 @@ func TestSearchCasesCountOnlyIntegration_StatementsSent(t *testing.T) {
 
 // Total must agree whether or not CountOnly is set -- it is still the same
 // COUNT query either way, just optionally paired with a page query.
+//
+// buildCaseSearchWhere reads req.Parsed, not the raw Filters.Filters -- that
+// translation normally happens in the service layer
+// (service.ParseCaseFieldFilters), which this repository-level test bypasses
+// entirely, so Parsed.Types is set directly here instead (same convention as
+// case_repo_assignee_sort_integration_test.go's searchAssigneeSortNames).
 func TestSearchCasesCountOnlyIntegration_TotalMatchesOrdinarySearch(t *testing.T) {
 	pool, _ := tracedPool(t)
 	cases := repository.NewCaseRepository(repository.NewScoped(pool))
@@ -105,9 +110,7 @@ func TestSearchCasesCountOnlyIntegration_TotalMatchesOrdinarySearch(t *testing.T
 	base := domain.SearchCasesRequest{
 		SortBy:     domain.CaseSort{Field: domain.CaseSortFieldCreatedOn, Order: domain.CaseSortOrderDesc},
 		Pagination: domain.Pagination{Limit: 5},
-		Filters: domain.SearchCasesFilters{
-			Filters: []domain.CaseFieldFilter{{Field: "type", Op: "in", Values: []string{"case"}}},
-		},
+		Parsed:     domain.ParsedCaseFilters{Types: []string{"case"}},
 	}
 
 	_, wantTotal, err := cases.SearchCases(ctx, base, scope)
@@ -135,25 +138,31 @@ func TestSearchCasesCountOnlyIntegration_TotalMatchesOrdinarySearch(t *testing.T
 // This proves the rewrite returns exactly the same total as the original
 // join form, evaluated here as a raw, independent query against the live
 // schema rather than against the (now-rewritten) repository code itself.
+//
+// Parsed is set directly (see TestSearchCasesCountOnlyIntegration_TotalMatchesOrdinarySearch's
+// own doc comment for why), and the oracle query runs through the same
+// Scoped/WithCallerIdentity path SearchCases itself uses -- a plain
+// pool.QueryRow with no identity set would see a different row set than the
+// scoped repository call under row-level security, which would make this
+// "equivalence" check meaningless.
 func TestSearchCasesIntegration_ProjectOnboardingStatusInMatchesLegacyJoinForm(t *testing.T) {
 	pool, _ := tracedPool(t)
-	cases := repository.NewCaseRepository(repository.NewScoped(pool))
+	scoped := repository.NewScoped(pool)
+	cases := repository.NewCaseRepository(scoped)
 	scope := repository.SearchScope{Unrestricted: true, ViewerEmail: "count-only-test@wso2.com"}
 	ctx := repository.WithCallerIdentity(context.Background(), scope)
 
 	// The six statuses every real dashboard widget sends: "every project
-	// except the in-progress ones" -- see the digiops-cs#3349 issue text.
+	// except the in-progress ones".
 	statuses := []string{"Cancelled", "Completed", "Expired", "Not-Applicable", "Not-Started", "OnHold"}
 	req := domain.SearchCasesRequest{
 		SortBy:     domain.CaseSort{Field: domain.CaseSortFieldCreatedOn, Order: domain.CaseSortOrderDesc},
 		Pagination: domain.Pagination{Limit: 1},
 		CountOnly:  true,
-		Filters: domain.SearchCasesFilters{
-			Filters: []domain.CaseFieldFilter{
-				{Field: "state", Op: "in", Values: []string{"open"}},
-				{Field: "type", Op: "in", Values: []string{"case"}},
-				{Field: "projectOnboardingStatus", Op: "in", Values: statuses},
-			},
+		Parsed: domain.ParsedCaseFilters{
+			Types:                     []string{"case"},
+			States:                    []domain.CaseState{domain.CaseStateOpen},
+			ProjectOnboardingStatuses: statuses,
 		},
 	}
 	_, gotTotal, err := cases.SearchCases(ctx, req, scope)
@@ -171,7 +180,7 @@ func TestSearchCasesIntegration_ProjectOnboardingStatusInMatchesLegacyJoinForm(t
 		WHERE wi.type = 'CASE' AND c.state = 'OPEN'
 		  AND p.onboarding_status = ANY($1::text[]::onboarding_status_enum[])`
 	var wantTotal int
-	if err := pool.QueryRow(context.Background(), legacyQuery, []string{
+	if err := scoped.QueryRow(ctx, legacyQuery, []string{
 		"CANCELLED", "COMPLETED", "EXPIRED", "NOT_APPLICABLE", "NOT_STARTED", "ON_HOLD",
 	}).Scan(&wantTotal); err != nil {
 		t.Fatalf("legacy oracle query: %v", err)

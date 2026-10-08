@@ -189,6 +189,14 @@ export function useWidgetData({
       ApiQueryKeys.CSM_DASHBOARD_WIDGET_DATA,
       widgetId,
       resourceType,
+      // `shape` is part of the key, not just `limit`/`effectiveOffset`: a
+      // shape: "count" search and a shape: "list" one with listLimit: 1
+      // otherwise collide on an identical key (both resolve limit to 1,
+      // offset to 0) -- the count search's response caches `items: []`
+      // (count tiles never read it), so a widget switched from count to
+      // list in the Dashboard Builder editor would render an empty table
+      // until that cache entry went stale, despite real rows existing.
+      shape,
       resolvedFilters,
       limit,
       effectiveOffset,
