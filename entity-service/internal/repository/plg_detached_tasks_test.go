@@ -59,5 +59,37 @@ func TestDetachedRunTasksAreNotReachable(t *testing.T) {
 			t.Errorf("%s does not scope to attached runs: a task of a DETACHED run is still "+
 				"readable/writable by id. Join plg_playbook_run and require detached_on IS NULL.", fn)
 		}
+
+		// Every UPDATE in the function must carry the guard itself, not just the
+		// lookup that precedes it. A read-then-write pair leaves a window: a
+		// concurrent detach between the two lands the write on history, and a
+		// lock cannot span that gap. The predicate has to travel inside each
+		// statement, the same way the detach's own guard does.
+		for _, stmt := range updateStatements(body) {
+			if !strings.Contains(stmt, "detached_on IS NULL") {
+				t.Errorf("%s has an UPDATE that does not re-check the parent run:\n%s\n"+
+					"add AND EXISTS (SELECT 1 FROM plg_playbook_run r WHERE r.id = "+
+					"plg_playbook_run_task.playbook_run_id AND r.detached_on IS NULL)", fn, stmt)
+			}
+		}
+	}
+}
+
+// updateStatements returns each UPDATE … backtick-quoted SQL literal in src,
+// from the UPDATE keyword to the end of that literal.
+func updateStatements(src string) []string {
+	var out []string
+	for i := 0; ; {
+		u := strings.Index(src[i:], "UPDATE plg_playbook_run_task")
+		if u < 0 {
+			return out
+		}
+		u += i
+		end := strings.Index(src[u:], "`")
+		if end < 0 {
+			return append(out, src[u:])
+		}
+		out = append(out, src[u:u+end])
+		i = u + end + 1
 	}
 }

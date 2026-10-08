@@ -866,6 +866,14 @@ func (r *orgPlatformRepository) PatchRunTask(ctx context.Context, req domain.Pat
 		                            WHEN $6::TEXT[] IS NOT NULL THEN NULLIF($6::TEXT[], '{}')
 		                            ELSE value_checked END
 		WHERE  id::TEXT = $1
+		  -- The attached check travels INSIDE the statement, not only in the
+		  -- lookup above: between that read and this write a concurrent detach
+		  -- can land, and a lock cannot span the gap. This is the same guarded
+		  -- write the detach itself uses -- zero rows means the precondition no
+		  -- longer holds, which the caller reads as "not found".
+		  AND  EXISTS (SELECT 1 FROM plg_playbook_run r
+		               WHERE r.id = plg_playbook_run_task.playbook_run_id
+		                 AND r.detached_on IS NULL)
 		RETURNING is_completed`
 
 	// Both writes go in one transaction. is_completed is generated from the
@@ -881,6 +889,13 @@ func (r *orgPlatformRepository) PatchRunTask(ctx context.Context, req domain.Pat
 	var completed bool
 	if err := tx.QueryRow(ctx, q, req.ID, req.ClearValue,
 		req.BoolValue, req.NumberValue, req.TextValue, req.CheckedCodes).Scan(&completed); err != nil {
+		// No row matched: either the task is gone, or its run was detached
+		// between the lookup and this statement. Both mean the same thing to the
+		// caller, and both are the answer every read already gives for a
+		// detached run.
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", &apierror.NotFoundError{Msg: "task not found"}
+		}
 		if isConstraintViolation(err) {
 			return "", "", &apierror.ValidationError{Msg: "that value does not match the task's type"}
 		}
@@ -893,7 +908,10 @@ func (r *orgPlatformRepository) PatchRunTask(ctx context.Context, req domain.Pat
 		UPDATE plg_playbook_run_task
 		SET    completed_on = CASE WHEN is_completed THEN COALESCE(completed_on, NOW()) ELSE NULL END,
 		       completed_by = CASE WHEN is_completed THEN COALESCE(completed_by, $2::UUID) ELSE NULL END
-		WHERE  id::TEXT = $1`, req.ID, uuidArg(actor)); err != nil {
+		WHERE  id::TEXT = $1
+		  AND  EXISTS (SELECT 1 FROM plg_playbook_run r
+		               WHERE r.id = plg_playbook_run_task.playbook_run_id
+		                 AND r.detached_on IS NULL)`, req.ID, uuidArg(actor)); err != nil {
 		return "", "", actorWrite(err, actor, "stamp completion")
 	}
 
