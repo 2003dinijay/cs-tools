@@ -441,6 +441,47 @@ func TestCompleteResponseClock_AdvancesToTier100(t *testing.T) {
 	}
 }
 
+// --- CompleteWorkaroundClock ---
+
+// TestCompleteWorkaroundClock_AdvancesToTier100 is the regression test for
+// the case PATCH workaroundProvided:true gap: entity-service's own
+// Postgres-side SLA engine completed its workaround clock, but this
+// engine's own Redis-based clock had no way to hear about it at all until
+// case.workaround_provided existed.
+func TestCompleteWorkaroundClock_AdvancesToTier100(t *testing.T) {
+	st := newFakeStore()
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", time.Now(), "CS0001", "", "", "CASE", "", "")
+
+	if err := e.CompleteWorkaroundClock(context.Background(), "case-1"); err != nil {
+		t.Fatalf("CompleteWorkaroundClock() error = %v", err)
+	}
+
+	meta, _, _ := st.GetClock(context.Background(), "case-1", ClockWorkaround)
+	if meta.AlertedTier != 100 {
+		t.Errorf("workaround AlertedTier = %d, want 100", meta.AlertedTier)
+	}
+}
+
+// TestCompleteWorkaroundClock_StoreFailure_ReturnsError is the regression
+// test for a CodeRabbit-caught gap: unlike its siblings (CompleteResponseClock
+// and the other triggers, all genuinely best-effort since a later event or
+// Reconcile's own startup sweep can re-derive their effect), a lost
+// workaround-provided signal has no second chance — so a store failure here
+// must be returned, not just logged, so dispatch.handleWorkaroundProvided
+// can fail the record for a retry instead of silently acknowledging a clock
+// that was never actually completed.
+func TestCompleteWorkaroundClock_StoreFailure_ReturnsError(t *testing.T) {
+	st := newFakeStore()
+	st.failAdvance = true
+	e := newTestEngine(st, &fakeChat{}, &fakePublisher{})
+	e.RegisterClocks(context.Background(), "case-1", "CATASTROPHIC", time.Now(), "CS0001", "", "", "CASE", "", "")
+
+	if err := e.CompleteWorkaroundClock(context.Background(), "case-1"); err == nil {
+		t.Fatal("expected CompleteWorkaroundClock() to return an error on a store failure, got nil")
+	}
+}
+
 // --- Tick / processDueMember ---
 
 func TestTick_AlertsADueTierAndRemovesTheWakeEntry(t *testing.T) {
@@ -863,7 +904,7 @@ func TestEngine_ProcessDueMember_IncarnationChangedMidFlight_DoesNotClobberNewCl
 	base := newFakeStore()
 	oldStartedAt := time.Now().Add(-time.Hour)
 	newStartedAt := time.Now().Add(time.Minute) // a genuinely different incarnation
-	newWakeAt := time.Now().Add(time.Hour)       // the new clock's own, still-future tier-50 due time
+	newWakeAt := time.Now().Add(time.Hour)      // the new clock's own, still-future tier-50 due time
 
 	base.clocks["case-1|response"] = ClockMeta{StartedAt: oldStartedAt, Priority: "CATASTROPHIC"}
 	base.wake[wakeMember("case-1", "response", 50)] = time.Now().Add(-time.Minute) // due now, under the OLD incarnation

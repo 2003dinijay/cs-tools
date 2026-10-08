@@ -73,6 +73,11 @@ const publishCaseAcknowledgedTimeout = 5 * time.Second
 // needs.
 const publishSeverityChangedTimeout = 5 * time.Second
 
+// publishWorkaroundProvidedTimeout bounds publishWorkaroundProvidedEvent's
+// own publish call — see publishStatusChangedTimeout's doc comment for why.
+// No GetCaseByID enrichment is needed: the payload carries only the case id.
+const publishWorkaroundProvidedTimeout = 5 * time.Second
+
 // applyResponseSLATimeout bounds registerCaseSLAClocks'/
 // applyResponseSLAOnComment's own GetCaseByID/author resolution
 // (SearchCaseComments) + role lookup (SearchUsers) + SLAEngineService calls
@@ -1923,6 +1928,35 @@ func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherSe
 	slog.InfoContext(ctx, "update case: case.severity_changed published", "caseId", caseID)
 }
 
+// publishWorkaroundProvidedEvent publishes case.workaround_provided — see
+// events.WorkaroundProvidedPayload's own doc comment for why this exists.
+// Factored out to a package-level function, same "follow the write, not
+// DATA_SOURCE" reasoning as publishSeverityChangedEvent's own doc comment,
+// so both caseService.updateCaseFields and snCaseService.UpdateCase can
+// call it without duplicating it. The payload carries only the case id —
+// there's no recipient audience and no display enrichment to resolve for a
+// pure tracking signal, so this needs no CaseView at all.
+func publishWorkaroundProvidedEvent(ctx context.Context, publisher EventPublisherService, caseID string) {
+	if publisher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishWorkaroundProvidedTimeout)
+	defer cancel()
+
+	payload, err := json.Marshal(events.WorkaroundProvidedPayload{CaseID: caseID})
+	if err != nil {
+		slog.ErrorContext(ctx, "update case: encode case.workaround_provided payload failed", "caseId", caseID, "error", err)
+		return
+	}
+	if err := publisher.Publish(ctx, events.TypeWorkaroundProvided, caseID, payload); err != nil {
+		// Not logging err itself — see publishCaseCreatedEvent's matching
+		// log line for why.
+		slog.ErrorContext(ctx, "update case: publish case.workaround_provided failed", "caseId", caseID)
+		return
+	}
+	slog.InfoContext(ctx, "update case: case.workaround_provided published", "caseId", caseID)
+}
+
 // publishCaseAssigned best-effort publishes a case.assigned event after
 // UpdateCase changes a case's assignee. assigneeName/assigneeEmail
 // identify who the case is now assigned *to* — not who performed the
@@ -3561,6 +3595,16 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	// doc comment.
 	if s.slaEngine != nil && req.WorkaroundProvided != nil && *req.WorkaroundProvided {
 		s.slaEngine.CompleteWorkaroundClock(ctx, req.ID)
+	}
+	// Deliberately independent of s.slaEngine above and of s.publisher's
+	// usual EVENT_PUBLISHING_ENABLED gate (publishWorkaroundProvidedEvent
+	// checks s.publisher itself) -- this is the signal
+	// csm-notification-service's own Redis-based SLA engine needs to
+	// complete ITS OWN workaround clock; see
+	// events.WorkaroundProvidedPayload's own doc comment for why nothing
+	// published this before.
+	if req.WorkaroundProvided != nil && *req.WorkaroundProvided {
+		publishWorkaroundProvidedEvent(ctx, s.publisher, req.ID)
 	}
 	// Independent of the WorkaroundProvided check above, same "no Event Hub
 	// dependency" reasoning -- a caller can set workaroundProvided and
