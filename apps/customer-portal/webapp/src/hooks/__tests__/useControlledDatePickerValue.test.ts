@@ -253,3 +253,62 @@ describe("useControlledDatePickerValue with isComplete: isPastOrPresentDate", ()
     expect(onChange).not.toHaveBeenCalled();
   });
 });
+
+describe("useControlledDatePickerValue with a short-year guard composed with isPastOrPresentDate", () => {
+  // Mirrors `DateRangeFilter`'s own `isCompleteCalendarDate`: its short-year
+  // guard, plus a future-date rejection now that every real caller of that
+  // component filters on a "Created Date"/"Updated Date" that can't be in
+  // the future.
+  function isCompleteCalendarDate(date: unknown): date is Date {
+    return (
+      date instanceof Date &&
+      !Number.isNaN(date.getTime()) &&
+      date.getFullYear() >= 1000 &&
+      isPastOrPresentDate(date)
+    );
+  }
+
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("never commits a hand-typed future date, even with a full year typed", () => {
+    const { result, onChange } = setup({ isComplete: isCompleteCalendarDate });
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 1);
+
+    act(() => {
+      result.current.handleChange(tomorrow);
+    });
+    advance(1000);
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("still rejects a short, technically-valid year even when it's in the past", () => {
+    const { result, onChange } = setup({ isComplete: isCompleteCalendarDate });
+    const shortYearDate = new Date(2026, 0, 15);
+    shortYearDate.setFullYear(2);
+
+    act(() => {
+      result.current.handleChange(shortYearDate);
+    });
+    advance(1000);
+
+    expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("commits a complete date that is both a full year and not in the future", () => {
+    const { result, onChange } = setup({ isComplete: isCompleteCalendarDate });
+
+    act(() => {
+      result.current.handleChange(new Date(2020, 0, 15));
+    });
+    advance(300);
+
+    expect(onChange).toHaveBeenCalledWith("2020-01-15");
+  });
+});

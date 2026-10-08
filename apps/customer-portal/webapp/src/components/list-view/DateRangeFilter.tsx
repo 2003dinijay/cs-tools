@@ -19,7 +19,7 @@ import { Box, Typography } from "@wso2/oxygen-ui";
 import { LocalizationProvider } from "@mui/x-date-pickers/LocalizationProvider";
 import { AdapterDateFns } from "@mui/x-date-pickers/AdapterDateFns";
 import { DatePicker } from "@mui/x-date-pickers/DatePicker";
-import { useControlledDatePickerValue } from "@hooks/useControlledDatePickerValue";
+import { useControlledDatePickerValue, isPastOrPresentDate } from "@hooks/useControlledDatePickerValue";
 import {
   toUtcStartOfDay,
   toUtcEndOfDay,
@@ -55,14 +55,28 @@ function parseUtcIsoEndDate(value: string | undefined): Date | null {
 // Treating an incomplete year the same as an invalid one -- waiting for the
 // rest of the digits rather than forwarding a technically-parseable but
 // nonsensical date -- is the correct fix; padding it to "0002-01-10" would
-// only make the malformed value syntactically valid, not correct. Passed as
-// `useControlledDatePickerValue`'s own `isComplete` override below, so this
-// stricter check also gates the general incomplete-date handling that hook
-// provides (see its own doc comment) -- a short year alone, with no other
-// section left to type, would otherwise look "complete" to that hook's
-// default NaN-only check.
+// only make the malformed value syntactically valid, not correct.
+//
+// Every real caller of this component filters on "Created Date" or "Updated
+// Date" (a support case/engagement can't have either in the future), so a
+// future date is rejected here too, the same way `TimeCardsDateFilter`/
+// `UsageMetricsTimeRangeSelector` already reject one via `isPastOrPresentDate`
+// -- this component had no such guard at all before, on either the "From" or
+// "To" side, found live from a real screenshot of the calendar popup
+// happily offering every future day as clickable on the "From" field.
+// Composed with the short-year check above into one `isComplete` override
+// (below) passed to `useControlledDatePickerValue` for both fields -- see
+// that hook's own doc comment for why `isComplete` is the right layer for a
+// hand-typed date, and `disableFuture` on the `DatePicker` itself (below) is
+// the matching visual layer so the calendar popup actually greys out and
+// disables those days instead of silently swallowing a click on one.
 function isCompleteCalendarDate(date: unknown): date is Date {
-  return date instanceof Date && !isNaN(date.getTime()) && date.getFullYear() >= 1000;
+  return (
+    date instanceof Date &&
+    !isNaN(date.getTime()) &&
+    date.getFullYear() >= 1000 &&
+    isPastOrPresentDate(date)
+  );
 }
 
 export type DateRangeFilterProps = {
@@ -121,6 +135,7 @@ export default function DateRangeFilter({
           <DatePicker
             label="From"
             value={start.localDate}
+            disableFuture
             maxDate={end.localDate ?? undefined}
             onChange={start.handleChange}
             slotProps={{
@@ -131,6 +146,7 @@ export default function DateRangeFilter({
           <DatePicker
             label="To"
             value={end.localDate}
+            disableFuture
             minDate={start.localDate ?? undefined}
             onChange={end.handleChange}
             slotProps={{
