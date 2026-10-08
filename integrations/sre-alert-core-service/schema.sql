@@ -62,8 +62,17 @@ CREATE TABLE IF NOT EXISTS incidents_processed (
   delivery_due_at         timestamptz,
   fold_version            bigint NOT NULL DEFAULT 0,
   created_at              timestamptz NOT NULL DEFAULT now(),
+  -- The first alert's routing signals (an alarm-named group, the SNS topic, the AWS account); see notify.assignmentGroup.
+  assignment_group        text NOT NULL DEFAULT '',
+  source_topic            text NOT NULL DEFAULT '',
+  source_account          text NOT NULL DEFAULT '',
   UNIQUE (fingerprint, first_seen)
 ) WITH (fillfactor = 80, autovacuum_vacuum_scale_factor = 0.05);
+
+-- For a database created before the routing columns existed.
+ALTER TABLE incidents_processed ADD COLUMN IF NOT EXISTS assignment_group text NOT NULL DEFAULT '';
+ALTER TABLE incidents_processed ADD COLUMN IF NOT EXISTS source_topic text NOT NULL DEFAULT '';
+ALTER TABLE incidents_processed ADD COLUMN IF NOT EXISTS source_account text NOT NULL DEFAULT '';
 
 -- The delivery loop reads only incidents whose CSM/Chat work is due.
 CREATE INDEX IF NOT EXISTS incidents_processed_due_idx ON incidents_processed (delivery_due_at) WHERE delivery_due_at IS NOT NULL;
