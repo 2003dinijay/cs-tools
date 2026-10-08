@@ -47,3 +47,19 @@ export function invalidateWidgetQueries(
     },
   });
 }
+
+/**
+ * Mark every dashboard widget that lists call requests stale (and refetch the ones
+ * on screen), whatever its id or filters. Widget data is cached for five minutes, so
+ * without this a call request that was just completed, scheduled or rejected would
+ * stay on "My Call Requests" / "Calls To Attend" until the cache expired. Keyed on
+ * the resource type in the query key (`[WIDGET_DATA, widgetId, resourceType, ...]`),
+ * so no other widget is reloaded.
+ */
+export function invalidateCallRequestWidgetQueries(queryClient: QueryClient): Promise<void> {
+  return queryClient.invalidateQueries({
+    predicate: (query) =>
+      query.queryKey[0] === ApiQueryKeys.CSM_DASHBOARD_WIDGET_DATA &&
+      query.queryKey[2] === "call_request",
+  });
+}

@@ -313,11 +313,17 @@ func (s *callRequestService) UpdateCallRequest(ctx context.Context, req domain.U
 		if req.DurationMinutes == nil {
 			return domain.UpdateCallRequestResponse{}, &apierror.ValidationError{Msg: "durationInMinutes is required when state is scheduled"}
 		}
-	case domain.CallRequestStateConcluded:
-		if req.Notes == nil || strings.TrimSpace(*req.Notes) == "" {
-			return domain.UpdateCallRequestResponse{}, &apierror.ValidationError{Msg: "notes is required when state is concluded"}
-		}
 	}
+	// A conclude with blank notes is a conclude with none: dropping them here (rather
+	// than storing "   ") keeps "Mark as completed" from overwriting the call's real
+	// notes, in Postgres and in the mirror, which both see this req.
+	if req.State == domain.CallRequestStateConcluded && req.Notes != nil && strings.TrimSpace(*req.Notes) == "" {
+		req.Notes = nil
+	}
+	// concluded needs no notes here: "Mark as completed" is a one-click action that
+	// concludes a call without writing any (digiops-cs#3350), and "Send call notes"
+	// still collects them in the UI. What keeps a notes-less conclude safe is the
+	// repository, which only applies it to a call that is scheduled or notes pending.
 	if req.CaseID != "" {
 		if err := validateUUIDs("caseId", []string{req.CaseID}); err != nil {
 			return domain.UpdateCallRequestResponse{}, err

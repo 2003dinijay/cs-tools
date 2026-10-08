@@ -22,6 +22,7 @@ import {
   type UseQueryResult,
 } from "@tanstack/react-query";
 import { ApiQueryKeys } from "@constants/apiConstants";
+import { invalidateCallRequestWidgetQueries } from "@features/csm-dashboard/utils/invalidateWidgetQueries";
 import { useBackendApi } from "@api/backend/client";
 import type {
   BeCallRequestStateKey,
@@ -144,6 +145,9 @@ export function usePatchCsmCaseCallRequest(): UseMutationResult<
       void queryClient.invalidateQueries({
         queryKey: [ApiQueryKeys.CASE_CALL_REQUESTS, variables.caseId],
       });
+      // Any change to a call request (scheduled, rejected, completed, ...) can move it
+      // on or off the dashboards' call-request lists.
+      void invalidateCallRequestWidgetQueries(queryClient);
     },
   });
 }

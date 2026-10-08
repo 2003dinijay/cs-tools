@@ -314,7 +314,6 @@ func TestCallRequestService_UpdateValidation(t *testing.T) {
 		{"scheduled needs meetingDate", domain.UpdateCallRequestRequest{ID: testUUID, State: scheduled, DurationMinutes: num(30)}},
 		{"scheduled needs duration", domain.UpdateCallRequestRequest{ID: testUUID, State: scheduled, MeetingDate: str("2026-10-02T10:00:00Z")}},
 		{"meetingDate must be RFC3339", domain.UpdateCallRequestRequest{ID: testUUID, State: scheduled, MeetingDate: str("tomorrow"), DurationMinutes: num(30)}},
-		{"concluded needs notes", domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateConcluded}},
 		{"non-positive actual duration", domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateNotesPending, ActualDurationMin: num(0)}},
 		{"empty utcTimes when provided", domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateCanceled, UTCTimes: []string{}}},
 	}
@@ -326,6 +325,51 @@ func TestCallRequestService_UpdateValidation(t *testing.T) {
 	// Valid input still needs an authenticated caller.
 	_, err := svc.UpdateCallRequest(ctx, domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateCanceled})
 	requireErrKind(t, "update without token", err, &apierror.UnauthorizedError{})
+}
+
+// TestCallRequestService_UpdateCallRequest_ConcludeWithoutNotes covers the one-click
+// "Mark as completed" (digiops-cs#3350): a conclude with no post-call notes is not a
+// validation error any more, reaches the repository as sent, and a conflict the
+// repository reports (the call is not scheduled / notes pending) is passed on as a
+// conflict rather than turned into a 400 or a 500.
+func TestCallRequestService_UpdateCallRequest_ConcludeWithoutNotes(t *testing.T) {
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	blank := "   "
+	for name, notes := range map[string]*string{"nil notes": nil, "whitespace-only notes": &blank} {
+		t.Run(name, func(t *testing.T) {
+			var got domain.UpdateCallRequestRequest
+			calls := 0
+			svc := &callRequestService{repo: &stubCallRequestRepo{
+				updateCallRequest: func(_ context.Context, r domain.UpdateCallRequestRequest, _ *string, _ string) (domain.UpdateCallRequestResponse, error) {
+					calls++
+					got = r
+					return domain.UpdateCallRequestResponse{Message: "ok"}, nil
+				},
+			}}
+			if _, err := svc.UpdateCallRequest(ctx, domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateConcluded, Notes: notes}); err != nil {
+				t.Fatalf("a conclude without notes must pass validation: %v", err)
+			}
+			if calls != 1 || got.State != domain.CallRequestStateConcluded {
+				t.Errorf("repository calls = %d, state = %q; want 1 call concluding the request", calls, got.State)
+			}
+			if got.Notes != nil {
+				t.Errorf("notes reaching the repository = %q, want none (blank notes must not be written)", *got.Notes)
+			}
+		})
+	}
+
+	t.Run("a repository conflict stays a conflict", func(t *testing.T) {
+		svc := &callRequestService{repo: &stubCallRequestRepo{
+			updateCallRequest: func(context.Context, domain.UpdateCallRequestRequest, *string, string) (domain.UpdateCallRequestResponse, error) {
+				return domain.UpdateCallRequestResponse{}, &apierror.ConflictError{Msg: "only a scheduled call"}
+			},
+		}}
+		_, err := svc.UpdateCallRequest(ctx, domain.UpdateCallRequestRequest{ID: testUUID, State: domain.CallRequestStateConcluded})
+		var conflict *apierror.ConflictError
+		if !errors.As(err, &conflict) {
+			t.Errorf("got %T (%v), want the repository's *apierror.ConflictError passed through", err, err)
+		}
+	})
 }
 
 func TestCatalogService_Validation(t *testing.T) {

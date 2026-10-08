@@ -17,7 +17,7 @@
 import { describe, expect, it } from "vitest";
 import { QueryClient } from "@tanstack/react-query";
 import { ApiQueryKeys } from "@constants/apiConstants";
-import { invalidateWidgetQueries } from "./invalidateWidgetQueries";
+import { invalidateCallRequestWidgetQueries, invalidateWidgetQueries } from "./invalidateWidgetQueries";
 
 const KEY = ApiQueryKeys.CSM_DASHBOARD_WIDGET_DATA;
 
@@ -47,5 +47,37 @@ describe("invalidateWidgetQueries", () => {
     expect(isStale([KEY, "group-by", targetId, "field"])).toBe(true);
     expect(isStale([KEY, "feedback-trend", targetId, "month"])).toBe(true);
     expect(isStale([KEY, "unrelated-widget"])).toBe(false);
+  });
+});
+
+describe("invalidateCallRequestWidgetQueries", () => {
+  const isInvalidated = (qc: QueryClient, key: readonly unknown[]): boolean =>
+    qc.getQueryState(key)?.isInvalidated === true;
+
+  it("marks only the dashboard widgets that list call requests as stale", async () => {
+    const qc = new QueryClient();
+    const myCalls = [KEY, "my-calls", "call_request", { a: 1 }, 5, 0, undefined];
+    const callsToAttend = [KEY, "calls-to-attend", "call_request", { b: 2 }, 10, 0, undefined];
+    const casesWidget = [KEY, "my-cases", "case", { a: 1 }, 5, 0, undefined];
+    const differentlyShaped = [KEY, "pie-slice", "w", "call_request"];
+    const caseCallRequests = [ApiQueryKeys.CASE_CALL_REQUESTS, "case-1", []];
+    for (const key of [myCalls, callsToAttend, casesWidget, differentlyShaped, caseCallRequests]) {
+      seedQuery(qc, key);
+    }
+
+    await invalidateCallRequestWidgetQueries(qc);
+
+    expect(isInvalidated(qc, myCalls)).toBe(true);
+    expect(isInvalidated(qc, callsToAttend)).toBe(true);
+    // Nothing else is reloaded: another resource's widget, a key whose third slot is
+    // not the resource type, and the case-scoped call request list (which the
+    // mutation hook invalidates for itself).
+    expect(isInvalidated(qc, casesWidget)).toBe(false);
+    expect(isInvalidated(qc, differentlyShaped)).toBe(false);
+    expect(isInvalidated(qc, caseCallRequests)).toBe(false);
+  });
+
+  it("is a no-op when no dashboard has been opened yet", async () => {
+    await expect(invalidateCallRequestWidgetQueries(new QueryClient())).resolves.toBeUndefined();
   });
 });

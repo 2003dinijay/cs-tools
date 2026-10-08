@@ -7422,7 +7422,23 @@ migration file). Timestamps are RFC3339 UTC like the rest of the Postgres code.
   reason -- note the customer portal passes it through, so cancelling *with* a
   reason fails on this data source until a column exists); `closed_on`/`closed_by_id`
   are never set (which states count as "closed" is unspecified); state
-  transitions aren't validated against the current state.
+  transitions aren't validated against the current state, with one exception.
+- **"Mark as completed" (digiops-cs#3350)** is `PATCH state: concluded` with no
+  notes, one click in the CSM portal. The "notes is required when state is
+  concluded" rule was dropped for it (in `callRequestService` and in
+  `snCallRequestService`, whose local validation also runs for the dual-write
+  mirror, so keeping it there would fail every such mirror before ServiceNow saw
+  it). What replaces it is a guard in `callRequestRepo.UpdateCallRequest`'s own
+  UPDATE: a conclude with no (or blank) notes only applies to a call whose current
+  state is `scheduled` or `notes_pending`, atomically with the write; anything else
+  (pending, rejected, cancelled, already concluded) is a `ConflictError` (409)
+  naming the current state, looked up under the caller's own identity so a call
+  they cannot see is a 404, never a 409 that reveals its state. Blank notes are
+  treated as none, never written, so completing a call cannot erase the notes it
+  already has. Concluding WITH notes ("Send call notes") is not guarded. Whether
+  ServiceNow itself accepts a notes-less conclude is its decision: under
+  dual-write the Postgres change commits first and a refused mirror is only
+  recorded in `sn_writeback_failures`, so check that table after rolling this out.
 
 ### Service-request catalog -- `catalog_repo.go`/`catalog_service.go`
 
