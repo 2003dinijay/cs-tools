@@ -32,9 +32,9 @@
 --
 -- service_request/engagement/security_report_analysis (the three other
 -- case-like work_item extension tables, alongside "case" and announcement)
--- got NO RLS of their own in this migration -- CORRECTED by migration 0151.
+-- got NO RLS of their own in this migration -- CORRECTED by migration 100012.
 -- The reasoning originally written here borrowed project_contact's own
--- exclusion justification (migration 0141: protecting it would recurse,
+-- exclusion justification (migration 100002: protecting it would recurse,
 -- since is_project_member() itself queries project_contact) and wrongly
 -- applied it to these three tables, which is_project_member() never
 -- queries at all -- they are structurally identical to "case"/comment/
@@ -45,9 +45,15 @@
 -- grep, not assumed) -- exactly the "safe by Go-code accident, not by
 -- database guarantee" gap this whole migration series exists to close.
 -- See 0151 for the real fix and the full reasoning.
+--
+-- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
+-- IF EXISTS -- see migration 100002's identical note.
+BEGIN;
+
 ALTER TABLE work_item ENABLE ROW LEVEL SECURITY;
 ALTER TABLE work_item FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS work_item_visibility ON work_item;
 CREATE POLICY work_item_visibility ON work_item
   FOR SELECT
   USING (
@@ -61,7 +67,8 @@ CREATE POLICY work_item_visibility ON work_item
 -- writing the same expression in both is what stops a caller moving a case
 -- OUT of a project they belong to as much as it stops moving one IN --
 -- PatchChangeRequest's own project_id write (already live, migration
--- 0145's own deferred-gap note) is exactly the write path this closes.
+-- 100006's own deferred-gap note) is exactly the write path this closes.
+DROP POLICY IF EXISTS work_item_update ON work_item;
 CREATE POLICY work_item_update ON work_item
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -86,6 +93,7 @@ CREATE POLICY work_item_update ON work_item
 -- rather than needing its own internal-only policy, since a real customer
 -- create (once it exists) must also be able to succeed through this same
 -- policy.
+DROP POLICY IF EXISTS work_item_write ON work_item;
 CREATE POLICY work_item_write ON work_item
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
@@ -95,12 +103,14 @@ CREATE POLICY work_item_write ON work_item
 -- work_item row, but FORCE plus zero policies would also block legitimate
 -- internal/admin/test cleanup, the same sla_delete lesson from migration
 -- 0142.
+DROP POLICY IF EXISTS work_item_delete_internal_only ON work_item;
 CREATE POLICY work_item_delete_internal_only ON work_item
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
 
 ALTER TABLE "case" ENABLE ROW LEVEL SECURITY;
 ALTER TABLE "case" FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS case_visibility ON "case";
 CREATE POLICY case_visibility ON "case"
   FOR SELECT
   USING (
@@ -108,6 +118,7 @@ CREATE POLICY case_visibility ON "case"
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = "case".id))
   );
 
+DROP POLICY IF EXISTS case_update ON "case";
 CREATE POLICY case_update ON "case"
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -118,6 +129,7 @@ CREATE POLICY case_update ON "case"
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = "case".id))
   );
 
+DROP POLICY IF EXISTS case_write ON "case";
 CREATE POLICY case_write ON "case"
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
@@ -125,6 +137,7 @@ CREATE POLICY case_write ON "case"
   );
 -- Internal-only, not omitted entirely -- same sla_delete-style reasoning as
 -- work_item_delete_internal_only above.
+DROP POLICY IF EXISTS case_delete_internal_only ON "case";
 CREATE POLICY case_delete_internal_only ON "case"
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
 
@@ -154,6 +167,7 @@ CREATE POLICY case_delete_internal_only ON "case"
 ALTER TABLE comment ENABLE ROW LEVEL SECURITY;
 ALTER TABLE comment FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS comment_visibility ON comment;
 CREATE POLICY comment_visibility ON comment
   FOR SELECT
   USING (
@@ -161,11 +175,13 @@ CREATE POLICY comment_visibility ON comment
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = comment.work_item_id))
   );
 
+DROP POLICY IF EXISTS comment_write ON comment;
 CREATE POLICY comment_write ON comment
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = work_item_id))
   );
+DROP POLICY IF EXISTS comment_update ON comment;
 CREATE POLICY comment_update ON comment
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -178,19 +194,21 @@ CREATE POLICY comment_update ON comment
 -- Internal-only, not omitted entirely: comments are soft-deleted
 -- (comment.deleted_at) by every PRODUCTION code path, never hard-deleted,
 -- but the same sla_delete-style test/admin cleanup need applies.
+DROP POLICY IF EXISTS comment_delete_internal_only ON comment;
 CREATE POLICY comment_delete_internal_only ON comment
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
 
 -- comment_edit_history has no project_id or work_item_id of its own -- it
 -- reaches one via comment.work_item_id, so its policy re-derives the same
 -- membership check through that join, mirroring case_escalation_
--- notification_list's own reasoning (migration 0141). Append-only from
+-- notification_list's own reasoning (migration 100002). Append-only from
 -- this codebase's perspective (UpdateComment inserts a row every time it
 -- runs, nothing ever updates or deletes one), so only SELECT/INSERT
 -- policies exist.
 ALTER TABLE comment_edit_history ENABLE ROW LEVEL SECURITY;
 ALTER TABLE comment_edit_history FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS comment_edit_history_visibility ON comment_edit_history;
 CREATE POLICY comment_edit_history_visibility ON comment_edit_history
   FOR SELECT
   USING (
@@ -203,6 +221,7 @@ CREATE POLICY comment_edit_history_visibility ON comment_edit_history
     ))
   );
 
+DROP POLICY IF EXISTS comment_edit_history_write ON comment_edit_history;
 CREATE POLICY comment_edit_history_write ON comment_edit_history
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
@@ -216,6 +235,7 @@ CREATE POLICY comment_edit_history_write ON comment_edit_history
 -- Internal-only, not omitted entirely -- same sla_delete-style test/admin
 -- cleanup reasoning as every other "nothing in production deletes this"
 -- table in this migration.
+DROP POLICY IF EXISTS comment_edit_history_delete_internal_only ON comment_edit_history;
 CREATE POLICY comment_edit_history_delete_internal_only ON comment_edit_history
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
 
@@ -228,6 +248,7 @@ CREATE POLICY comment_edit_history_delete_internal_only ON comment_edit_history
 ALTER TABLE case_attachment ENABLE ROW LEVEL SECURITY;
 ALTER TABLE case_attachment FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS case_attachment_visibility ON case_attachment;
 CREATE POLICY case_attachment_visibility ON case_attachment
   FOR SELECT
   USING (
@@ -235,11 +256,13 @@ CREATE POLICY case_attachment_visibility ON case_attachment
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = case_attachment.case_id))
   );
 
+DROP POLICY IF EXISTS case_attachment_write ON case_attachment;
 CREATE POLICY case_attachment_write ON case_attachment
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = case_id))
   );
+DROP POLICY IF EXISTS case_attachment_update ON case_attachment;
 CREATE POLICY case_attachment_update ON case_attachment
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -249,6 +272,7 @@ CREATE POLICY case_attachment_update ON case_attachment
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = case_id))
   );
+DROP POLICY IF EXISTS case_attachment_delete ON case_attachment;
 CREATE POLICY case_attachment_delete ON case_attachment
   FOR DELETE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -260,6 +284,7 @@ CREATE POLICY case_attachment_delete ON case_attachment
 ALTER TABLE work_item_tag ENABLE ROW LEVEL SECURITY;
 ALTER TABLE work_item_tag FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS work_item_tag_visibility ON work_item_tag;
 CREATE POLICY work_item_tag_visibility ON work_item_tag
   FOR SELECT
   USING (
@@ -267,11 +292,13 @@ CREATE POLICY work_item_tag_visibility ON work_item_tag
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = work_item_tag.work_item_id))
   );
 
+DROP POLICY IF EXISTS work_item_tag_write ON work_item_tag;
 CREATE POLICY work_item_tag_write ON work_item_tag
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = work_item_id))
   );
+DROP POLICY IF EXISTS work_item_tag_update ON work_item_tag;
 CREATE POLICY work_item_tag_update ON work_item_tag
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -281,6 +308,7 @@ CREATE POLICY work_item_tag_update ON work_item_tag
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = work_item_id))
   );
+DROP POLICY IF EXISTS work_item_tag_delete ON work_item_tag;
 CREATE POLICY work_item_tag_delete ON work_item_tag
   FOR DELETE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -290,11 +318,12 @@ CREATE POLICY work_item_tag_delete ON work_item_tag
 -- work_item_watcher has no project_id of its own -- reaches one via
 -- work_item_id. No UPDATE policy: SetCaseWatchList always deletes and
 -- re-inserts the whole list, mirroring time_card_approver's identical
--- reasoning (migration 0144) for why that table also has no UPDATE
+-- reasoning (migration 100005) for why that table also has no UPDATE
 -- policy.
 ALTER TABLE work_item_watcher ENABLE ROW LEVEL SECURITY;
 ALTER TABLE work_item_watcher FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS work_item_watcher_visibility ON work_item_watcher;
 CREATE POLICY work_item_watcher_visibility ON work_item_watcher
   FOR SELECT
   USING (
@@ -302,11 +331,13 @@ CREATE POLICY work_item_watcher_visibility ON work_item_watcher
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = work_item_watcher.work_item_id))
   );
 
+DROP POLICY IF EXISTS work_item_watcher_write ON work_item_watcher;
 CREATE POLICY work_item_watcher_write ON work_item_watcher
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = work_item_id))
   );
+DROP POLICY IF EXISTS work_item_watcher_delete ON work_item_watcher;
 CREATE POLICY work_item_watcher_delete ON work_item_watcher
   FOR DELETE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -323,6 +354,7 @@ CREATE POLICY work_item_watcher_delete ON work_item_watcher
 ALTER TABLE work_item_activity ENABLE ROW LEVEL SECURITY;
 ALTER TABLE work_item_activity FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS work_item_activity_visibility ON work_item_activity;
 CREATE POLICY work_item_activity_visibility ON work_item_activity
   FOR SELECT
   USING (
@@ -330,6 +362,7 @@ CREATE POLICY work_item_activity_visibility ON work_item_activity
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = work_item_activity.work_item_id))
   );
 
+DROP POLICY IF EXISTS work_item_activity_write ON work_item_activity;
 CREATE POLICY work_item_activity_write ON work_item_activity
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
@@ -339,5 +372,8 @@ CREATE POLICY work_item_activity_write ON work_item_activity
 -- trail, nothing in this codebase updates one. DELETE is internal-only,
 -- not omitted, for the same test/admin cleanup reasoning as elsewhere in
 -- this migration.
+DROP POLICY IF EXISTS work_item_activity_delete_internal_only ON work_item_activity;
 CREATE POLICY work_item_activity_delete_internal_only ON work_item_activity
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
+
+COMMIT;

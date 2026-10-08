@@ -45,7 +45,7 @@
 -- The seven policies are independent and the file is idempotent (each policy is dropped and
 -- recreated), so after a lock timeout, run it again.
 --
--- The internal check uses the planner-friendly scalar sub-select introduced by migration 0154.
+-- The internal check uses the planner-friendly scalar sub-select introduced by migration 100015.
 SET lock_timeout = '5s';
 
 BEGIN;

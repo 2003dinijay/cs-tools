@@ -105,6 +105,14 @@ AS $$
     )
 $$;
 
+-- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
+-- IF EXISTS: CREATE POLICY has no IF NOT EXISTS form, so without this a
+-- partial failure partway through this file (or a re-run against a database
+-- where these four policies were already applied by hand, outside
+-- csm_migration_applied_migration) fails immediately on "policy already
+-- exists" for whichever ones already landed, with no clean way to retry.
+BEGIN;
+
 ALTER TABLE announcement ENABLE ROW LEVEL SECURITY;
 
 -- Without FORCE, a non-superuser table owner is still exempt from its own
@@ -123,6 +131,7 @@ ALTER TABLE announcement FORCE ROW LEVEL SECURITY;
 CREATE INDEX IF NOT EXISTS idx_project_contact_project_id_email
   ON project_contact (project_id, LOWER(email));
 
+DROP POLICY IF EXISTS announcement_visibility ON announcement;
 CREATE POLICY announcement_visibility ON announcement
   FOR SELECT
   USING (
@@ -152,9 +161,14 @@ CREATE POLICY announcement_visibility ON announcement
 -- command blocks 100% of that command by default, for every role,
 -- including the table owner. Without these three policies, the sync job's
 -- INSERTs would have started failing outright the moment this shipped.
+DROP POLICY IF EXISTS announcement_write_unrestricted ON announcement;
 CREATE POLICY announcement_write_unrestricted ON announcement
   FOR INSERT WITH CHECK (true);
+DROP POLICY IF EXISTS announcement_update_unrestricted ON announcement;
 CREATE POLICY announcement_update_unrestricted ON announcement
   FOR UPDATE USING (true) WITH CHECK (true);
+DROP POLICY IF EXISTS announcement_delete_unrestricted ON announcement;
 CREATE POLICY announcement_delete_unrestricted ON announcement
   FOR DELETE USING (true);
+
+COMMIT;

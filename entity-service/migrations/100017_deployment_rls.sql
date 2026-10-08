@@ -39,7 +39,7 @@
 --     joins project and never returned them.
 --
 -- Every predicate uses the planner-friendly internal check introduced by
--- migration 0154, (SELECT current_setting('app.is_internal', true) = 'true'),
+-- migration 100015, (SELECT current_setting('app.is_internal', true) = 'true'),
 -- written out here because 0154 only rewrites policies that existed when it
 -- ran.
 --
@@ -53,11 +53,18 @@
 -- FORCE ROW LEVEL SECURITY on a table with only some of its policies (every
 -- missing one denies, so the table would silently stop working) and a retry
 -- would then fail on "policy already exists". All or nothing instead.
+--
+-- Every CREATE POLICY is also preceded by its own DROP POLICY IF EXISTS:
+-- the BEGIN/COMMIT above only protects against a partial failure within
+-- THIS run -- it does nothing for a re-run against a database where these
+-- policies were already applied by hand, outside csm_migration_applied_migration,
+-- which would otherwise fail immediately on "policy already exists".
 BEGIN;
 
 ALTER TABLE deployment ENABLE ROW LEVEL SECURITY;
 ALTER TABLE deployment FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS deployment_visibility ON deployment;
 CREATE POLICY deployment_visibility ON deployment
   FOR SELECT
   USING (
@@ -67,6 +74,7 @@ CREATE POLICY deployment_visibility ON deployment
 
 -- INSERT: a member may create a deployment in their own project (the portal's
 -- "Add Deployment"), internal callers anywhere.
+DROP POLICY IF EXISTS deployment_write ON deployment;
 CREATE POLICY deployment_write ON deployment
   FOR INSERT
   WITH CHECK (
@@ -77,6 +85,7 @@ CREATE POLICY deployment_write ON deployment
 -- UPDATE: USING sees the old row, WITH CHECK the new one; repeating the
 -- membership test in both stops a caller moving a deployment out of, as well
 -- as into, a project they belong to.
+DROP POLICY IF EXISTS deployment_update ON deployment;
 CREATE POLICY deployment_update ON deployment
   FOR UPDATE
   USING (
@@ -90,6 +99,7 @@ CREATE POLICY deployment_update ON deployment
 
 -- DELETE: nothing in production code deletes a deployment (deactivation is
 -- is_active = FALSE), so internal-only, mirroring work_item_delete_internal_only.
+DROP POLICY IF EXISTS deployment_delete_internal_only ON deployment;
 CREATE POLICY deployment_delete_internal_only ON deployment
   FOR DELETE
   USING ((SELECT current_setting('app.is_internal', true) = 'true'));
@@ -98,6 +108,7 @@ CREATE POLICY deployment_delete_internal_only ON deployment
 ALTER TABLE deployed_product ENABLE ROW LEVEL SECURITY;
 ALTER TABLE deployed_product FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS deployed_product_visibility ON deployed_product;
 CREATE POLICY deployed_product_visibility ON deployed_product
   FOR SELECT
   USING (
@@ -116,6 +127,7 @@ CREATE POLICY deployed_product_visibility ON deployed_product
 -- member and the row is rejected. Rows with a NULL project_id or NULL
 -- deployment_id skip the check: their project is resolved from the other
 -- column (COALESCE), so there is nothing to disagree with.
+DROP POLICY IF EXISTS deployed_product_write ON deployed_product;
 CREATE POLICY deployed_product_write ON deployed_product
   FOR INSERT
   WITH CHECK (
@@ -136,6 +148,7 @@ CREATE POLICY deployed_product_write ON deployed_product
     )
   );
 
+DROP POLICY IF EXISTS deployed_product_update ON deployed_product;
 CREATE POLICY deployed_product_update ON deployed_product
   FOR UPDATE
   USING (
@@ -173,6 +186,7 @@ CREATE POLICY deployed_product_update ON deployed_product
     )
   );
 
+DROP POLICY IF EXISTS deployed_product_delete_internal_only ON deployed_product;
 CREATE POLICY deployed_product_delete_internal_only ON deployed_product
   FOR DELETE
   USING ((SELECT current_setting('app.is_internal', true) = 'true'));

@@ -20,7 +20,7 @@
 -- work_item_watcher were gated on project membership alone (migration
 -- 0147). A project member who is NOT cleared for a particular announcement
 -- (for example a General Access contact and a security announcement,
--- migration 0149) could still read its comments, or add to them, by
+-- migration 100010) could still read its comments, or add to them, by
 -- work-item UUID: the announcement row was hidden but everything hanging off
 -- it was not.
 --

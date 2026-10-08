@@ -30,7 +30,7 @@
 --
 -- IMPORTANT, deliberately deferred (same posture already accepted for
 -- case_repo.go/incident_repo.go's SLA-filter regression -- see migration
--- 0144's own history): work_item itself has NO RLS yet (that lands in the
+-- 100005's own history): work_item itself has NO RLS yet (that lands in the
 -- case-adjacent phase, which finally converts case_repo.go). PatchChangeRequest
 -- updates BOTH work_item and change_request in one transaction; only the
 -- change_request half is protected by this migration. Concretely: title/
@@ -40,9 +40,15 @@
 -- change_request's own columns become correctly scoped by this migration.
 -- This is a strict improvement over today (where NONE of it was scoped),
 -- not a new gap.
+--
+-- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
+-- IF EXISTS -- see migration 100002's identical note.
+BEGIN;
+
 ALTER TABLE change_request ENABLE ROW LEVEL SECURITY;
 ALTER TABLE change_request FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS change_request_visibility ON change_request;
 CREATE POLICY change_request_visibility ON change_request
   FOR SELECT
   USING (
@@ -58,9 +64,10 @@ CREATE POLICY change_request_visibility ON change_request
 -- rather than correlating back to the row being updated -- caught live via
 -- "more than one row returned by a subquery used as an expression" the first
 -- time this policy was exercised against real data. sla/customer_call/
--- time_card's own WITH CHECK subqueries (migrations 0142-0144) never hit
+-- time_card's own WITH CHECK subqueries (migrations 100003-100005) never hit
 -- this because they correlate on work_item_id, a name work_item has no
 -- column called, so there was no ambiguity to resolve incorrectly.
+DROP POLICY IF EXISTS change_request_update ON change_request;
 CREATE POLICY change_request_update ON change_request
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -83,6 +90,7 @@ CREATE POLICY change_request_update ON change_request
 -- statement (see CreateChangeRequestFromServiceNow's own code comment)
 -- rather than trusting whatever identity happened to be on the original
 -- request context.
+DROP POLICY IF EXISTS change_request_write_internal_only ON change_request;
 CREATE POLICY change_request_write_internal_only ON change_request
   FOR INSERT WITH CHECK (current_setting('app.is_internal', true) = 'true');
 -- No DELETE policy: nothing in this codebase deletes a change_request row.
@@ -103,6 +111,7 @@ CREATE POLICY change_request_write_internal_only ON change_request
 ALTER TABLE approval_stage ENABLE ROW LEVEL SECURITY;
 ALTER TABLE approval_stage FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS approval_stage_visibility ON approval_stage;
 CREATE POLICY approval_stage_visibility ON approval_stage
   FOR SELECT
   USING (
@@ -113,17 +122,21 @@ CREATE POLICY approval_stage_visibility ON approval_stage
 -- entity-service never writes approval_stage itself (read-only from this
 -- codebase's perspective) -- internal-only is purely a safe default for
 -- internal tooling/admin use, not a path any current Go code exercises.
+DROP POLICY IF EXISTS approval_stage_write_internal_only ON approval_stage;
 CREATE POLICY approval_stage_write_internal_only ON approval_stage
   FOR INSERT WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS approval_stage_update_internal_only ON approval_stage;
 CREATE POLICY approval_stage_update_internal_only ON approval_stage
   FOR UPDATE USING (current_setting('app.is_internal', true) = 'true')
   WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS approval_stage_delete_internal_only ON approval_stage;
 CREATE POLICY approval_stage_delete_internal_only ON approval_stage
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
 
 ALTER TABLE approval_stage_approver ENABLE ROW LEVEL SECURITY;
 ALTER TABLE approval_stage_approver FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS approval_stage_approver_visibility ON approval_stage_approver;
 CREATE POLICY approval_stage_approver_visibility ON approval_stage_approver
   FOR SELECT
   USING (
@@ -137,6 +150,7 @@ CREATE POLICY approval_stage_approver_visibility ON approval_stage_approver
 -- see changeRequestApprovalStagePosition's own doc comment) deciding their
 -- own pending approval. Must mirror change_request_update's condition so
 -- that real flow keeps working.
+DROP POLICY IF EXISTS approval_stage_approver_update ON approval_stage_approver;
 CREATE POLICY approval_stage_approver_update ON approval_stage_approver
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -148,7 +162,11 @@ CREATE POLICY approval_stage_approver_update ON approval_stage_approver
   );
 -- INSERT/DELETE are internal-only: entity-service never performs either
 -- (rows are sync-service-inserted and FK-cascade-deleted only).
+DROP POLICY IF EXISTS approval_stage_approver_write_internal_only ON approval_stage_approver;
 CREATE POLICY approval_stage_approver_write_internal_only ON approval_stage_approver
   FOR INSERT WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS approval_stage_approver_delete_internal_only ON approval_stage_approver;
 CREATE POLICY approval_stage_approver_delete_internal_only ON approval_stage_approver
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
+
+COMMIT;

@@ -34,9 +34,15 @@
 -- their own project's time cards; it does not re-implement "customers
 -- can't create time cards at all", which is a persona rule, not a
 -- project-membership one, and stays the BFF's job.
+--
+-- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
+-- IF EXISTS -- see migration 100002's identical note.
+BEGIN;
+
 ALTER TABLE time_card ENABLE ROW LEVEL SECURITY;
 ALTER TABLE time_card FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS time_card_visibility ON time_card;
 CREATE POLICY time_card_visibility ON time_card
   FOR SELECT
   USING (
@@ -44,11 +50,13 @@ CREATE POLICY time_card_visibility ON time_card
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = time_card.case_id))
   );
 
+DROP POLICY IF EXISTS time_card_write ON time_card;
 CREATE POLICY time_card_write ON time_card
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = case_id))
   );
+DROP POLICY IF EXISTS time_card_update ON time_card;
 CREATE POLICY time_card_update ON time_card
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -58,6 +66,7 @@ CREATE POLICY time_card_update ON time_card
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = case_id))
   );
+DROP POLICY IF EXISTS time_card_delete ON time_card;
 CREATE POLICY time_card_delete ON time_card
   FOR DELETE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -67,10 +76,11 @@ CREATE POLICY time_card_delete ON time_card
 -- time_card_approver has no project_id of its own -- it reaches one via
 -- time_card.case_id, so its policy re-derives the same membership check
 -- through that join, mirroring case_escalation_notification_list's own
--- reasoning (migration 0141).
+-- reasoning (migration 100002).
 ALTER TABLE time_card_approver ENABLE ROW LEVEL SECURITY;
 ALTER TABLE time_card_approver FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS time_card_approver_visibility ON time_card_approver;
 CREATE POLICY time_card_approver_visibility ON time_card_approver
   FOR SELECT
   USING (
@@ -83,6 +93,7 @@ CREATE POLICY time_card_approver_visibility ON time_card_approver
     ))
   );
 
+DROP POLICY IF EXISTS time_card_approver_write ON time_card_approver;
 CREATE POLICY time_card_approver_write ON time_card_approver
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
@@ -93,6 +104,7 @@ CREATE POLICY time_card_approver_write ON time_card_approver
       WHERE tc.id = time_card_id
     ))
   );
+DROP POLICY IF EXISTS time_card_approver_delete ON time_card_approver;
 CREATE POLICY time_card_approver_delete ON time_card_approver
   FOR DELETE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -107,3 +119,5 @@ CREATE POLICY time_card_approver_delete ON time_card_approver
 -- an existing approver row (UpdateTimeCardFields deletes and re-inserts the
 -- whole list instead), so FORCE + zero UPDATE policy correctly blocks a
 -- command that should never run.
+
+COMMIT;

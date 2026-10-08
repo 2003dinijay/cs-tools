@@ -19,7 +19,7 @@
 --
 -- Comments of type WORK_NOTE are the support team's internal notes. The
 -- customer portal backend removes them in Go (apps/customer-portal/backend-v2,
--- dto.MapSearchCaseActivities), but the comment policies from 0147/0175 only
+-- dto.MapSearchCaseActivities), but the comment policies from 100008/100016 only
 -- ask for project membership, so the database itself did not distinguish them.
 -- Any caller of entity-service that did not apply the Go filter, and the
 -- activity total (counted before that filter), saw them too.
@@ -37,7 +37,7 @@
 -- comment_delete_internal_only is already internal-only.
 --
 -- ALTER POLICY replaces the expressions in place, so this is safe to re-run.
--- One transaction (see 0175): all three policies move together.
+-- One transaction (see 100016): all three policies move together.
 BEGIN;
 
 ALTER POLICY comment_visibility ON comment

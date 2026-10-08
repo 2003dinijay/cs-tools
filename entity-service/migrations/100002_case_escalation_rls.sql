@@ -24,7 +24,7 @@
 -- nobody remembers to gate.
 --
 -- This is the first table this mechanism is generalized to beyond
--- `announcement` (migration 000085) -- deliberately the simplest one
+-- `announcement` (migration 100001) -- deliberately the simplest one
 -- available: case_escalation has no customer-facing write path at all
 -- (EscalationService.CreateEscalation always returns
 -- ServiceUnavailableError -- see EscalationRepository's own doc comment),
@@ -43,6 +43,15 @@
 -- could in principle match a project_contact row with a blank email; NULLIF
 -- turns that into NULL, which the membership EXISTS can never match,
 -- keeping the fail-closed default intact.
+--
+-- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
+-- IF EXISTS: CREATE POLICY has no IF NOT EXISTS form, so without this a
+-- partial failure partway through this file (or a re-run against a database
+-- where these policies were already applied by hand, outside
+-- csm_migration_applied_migration) fails immediately on "policy already
+-- exists" for whichever ones already landed, with no clean way to retry.
+BEGIN;
+
 CREATE OR REPLACE FUNCTION is_project_member(target_project_id UUID)
 RETURNS BOOLEAN
 LANGUAGE sql
@@ -59,12 +68,13 @@ $$;
 
 ALTER TABLE case_escalation ENABLE ROW LEVEL SECURITY;
 -- Without FORCE, a non-superuser table owner is still exempt from its own
--- table's RLS policies -- see migration 000085's identical note. Confirmed
+-- table's RLS policies -- see migration 100001's identical note. Confirmed
 -- against this database's local role; see this branch's plan for the
 -- explicit staging/production ownership check still outstanding before
 -- this migration runs anywhere but local.
 ALTER TABLE case_escalation FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS case_escalation_visibility ON case_escalation;
 CREATE POLICY case_escalation_visibility ON case_escalation
   FOR SELECT
   USING (
@@ -77,11 +87,14 @@ CREATE POLICY case_escalation_visibility ON case_escalation
 -- always-true like announcement's: FORCE with zero policies for a command
 -- blocks that command entirely for every role, so an internal sync process
 -- that DOES write this table needs is_internal=true set, not a bypass.
+DROP POLICY IF EXISTS case_escalation_write_internal_only ON case_escalation;
 CREATE POLICY case_escalation_write_internal_only ON case_escalation
   FOR INSERT WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS case_escalation_update_internal_only ON case_escalation;
 CREATE POLICY case_escalation_update_internal_only ON case_escalation
   FOR UPDATE USING (current_setting('app.is_internal', true) = 'true')
   WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS case_escalation_delete_internal_only ON case_escalation;
 CREATE POLICY case_escalation_delete_internal_only ON case_escalation
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
 
@@ -92,6 +105,7 @@ CREATE POLICY case_escalation_delete_internal_only ON case_escalation
 ALTER TABLE case_escalation_notification_list ENABLE ROW LEVEL SECURITY;
 ALTER TABLE case_escalation_notification_list FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS case_escalation_notification_list_visibility ON case_escalation_notification_list;
 CREATE POLICY case_escalation_notification_list_visibility ON case_escalation_notification_list
   FOR SELECT
   USING (
@@ -104,10 +118,15 @@ CREATE POLICY case_escalation_notification_list_visibility ON case_escalation_no
     ))
   );
 
+DROP POLICY IF EXISTS case_escalation_notification_list_write_internal_only ON case_escalation_notification_list;
 CREATE POLICY case_escalation_notification_list_write_internal_only ON case_escalation_notification_list
   FOR INSERT WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS case_escalation_notification_list_update_internal_only ON case_escalation_notification_list;
 CREATE POLICY case_escalation_notification_list_update_internal_only ON case_escalation_notification_list
   FOR UPDATE USING (current_setting('app.is_internal', true) = 'true')
   WITH CHECK (current_setting('app.is_internal', true) = 'true');
+DROP POLICY IF EXISTS case_escalation_notification_list_delete_internal_only ON case_escalation_notification_list;
 CREATE POLICY case_escalation_notification_list_delete_internal_only ON case_escalation_notification_list
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
+
+COMMIT;

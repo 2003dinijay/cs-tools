@@ -25,7 +25,7 @@
 --
 -- IMPORTANT, discovered while making this change, and it changed this
 -- migration's own design: the policy this alters does NOT match what
--- entity-service's own migration 000085 last defined. That migration's
+-- entity-service's own migration 100001 last defined. That migration's
 -- announcement_visibility policy calls an announcement_is_security(id,
 -- type) FUNCTION (deriving security-or-not from announcement_type plus a
 -- "Security Announcement" work_item_tag), but that function does not
@@ -46,13 +46,19 @@
 -- also does NOT switch to announcement_type alone -- either would either
 -- entrench a column being deprecated or immediately stop restricting every
 -- currently-known real security announcement. Instead it revives migration
--- 000085's own two-signal function (which was written but, per the above,
+-- 100001's own two-signal function (which was written but, per the above,
 -- never actually reached this database), computing security status live
 -- from announcement_type OR the tag on every read rather than trusting
 -- either column's own bookkeeping. Once announcement_type becomes reliable
 -- (PR #1974 and/or a real backfill), this function is the one place that
 -- needs simplifying back down to a plain column check -- not the policy
 -- itself.
+--
+-- One transaction: this file already had DROP POLICY IF EXISTS in front of
+-- its one CREATE POLICY, but no BEGIN/COMMIT wrapper around the two
+-- statements -- added for atomicity with the rest of this migration series.
+BEGIN;
+
 CREATE OR REPLACE FUNCTION announcement_is_security(ann_id UUID, ann_type announcement_type_enum)
 RETURNS BOOLEAN
 LANGUAGE sql
@@ -70,7 +76,7 @@ $$;
 
 -- project_has_security_contact centralizes the new "does this project have
 -- anyone who can see security announcements at all" check -- written the
--- same way is_project_member is (migration 0141): a shared, STABLE
+-- same way is_project_member is (migration 100002): a shared, STABLE
 -- function rather than a per-policy copy of the same join chain, so this
 -- rule can't drift if it's ever needed elsewhere.
 CREATE OR REPLACE FUNCTION project_has_security_contact(target_project_id UUID)
@@ -109,13 +115,13 @@ CREATE POLICY announcement_visibility ON announcement
       WHERE wi.id = announcement.id
         -- LOWER(...) both sides, and NULLIF guarding the bare column, not a
         -- plain pc.email = current_setting(...) comparison -- migration
-        -- 000085's original policy (which this DROP POLICY/CREATE POLICY
+        -- 100001's original policy (which this DROP POLICY/CREATE POLICY
         -- replaces) used exactly this form, with its own supporting
         -- expression index on LOWER(email); dropping the LOWER() here would
         -- silently deny a legitimate viewer whose stored project_contact
         -- email differs only in case from what the JWT carries, and would
         -- stop using that index. NULLIF matches is_project_member's own
-        -- guard (migration 0141): current_setting(..., true) returns ''
+        -- guard (migration 100002): current_setting(..., true) returns ''
         -- (not NULL) once a transaction-local set_config reverts, and a
         -- bare '' could in principle match a project_contact row with a
         -- blank email.
@@ -134,3 +140,5 @@ CREATE POLICY announcement_visibility ON announcement
         )
     )
   );
+
+COMMIT;

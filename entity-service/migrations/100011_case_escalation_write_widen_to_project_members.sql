@@ -17,7 +17,7 @@
 -- Migration 0141's case_escalation/case_escalation_notification_list write
 -- policies were internal-only because, at the time, EscalationService.
 -- CreateEscalation had no real implementation (always returned
--- ServiceUnavailableError -- see 0141's own doc comment). That has since
+-- ServiceUnavailableError -- see 100002's own doc comment). That has since
 -- changed: escalation_service.go's CreateEscalation is now a genuine,
 -- project-membership-authorized customer-facing write (POST /escalations
 -- and POST /cases/{id}/escalations both funnel through it, and it checks
@@ -32,7 +32,15 @@
 -- a new case_escalation row rather than mutating an existing one); no
 -- customer flow updates or deletes a case_escalation record, so UPDATE/DELETE
 -- stay internal-only, unchanged from 0141.
-DROP POLICY case_escalation_write_internal_only ON case_escalation;
+--
+-- One transaction, and IF EXISTS on both DROP POLICY statements below: a
+-- plain DROP POLICY (no IF EXISTS) fails outright on a re-run, once the
+-- first run has already renamed the policy away -- same "safe to re-run"
+-- requirement as every CREATE POLICY in this migration series.
+BEGIN;
+
+DROP POLICY IF EXISTS case_escalation_write_internal_only ON case_escalation;
+DROP POLICY IF EXISTS case_escalation_write ON case_escalation;
 CREATE POLICY case_escalation_write ON case_escalation
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
@@ -44,7 +52,8 @@ CREATE POLICY case_escalation_write ON case_escalation
 -- write under READ COMMITTED, so the join below sees it), so the same
 -- membership check is re-derived through case_escalation.work_item_id rather
 -- than trusting the parent insert's own check implicitly.
-DROP POLICY case_escalation_notification_list_write_internal_only ON case_escalation_notification_list;
+DROP POLICY IF EXISTS case_escalation_notification_list_write_internal_only ON case_escalation_notification_list;
+DROP POLICY IF EXISTS case_escalation_notification_list_write ON case_escalation_notification_list;
 CREATE POLICY case_escalation_notification_list_write ON case_escalation_notification_list
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
@@ -55,3 +64,5 @@ CREATE POLICY case_escalation_notification_list_write ON case_escalation_notific
       WHERE ce.id = case_escalation_id
     ))
   );
+
+COMMIT;

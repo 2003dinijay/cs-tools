@@ -14,19 +14,19 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- Corrects migration 0147's own decision to leave engagement/
+-- Corrects migration 100008's own decision to leave engagement/
 -- service_request/security_report_analysis (the three other case-like
 -- work_item extension tables, alongside "case" and announcement) with NO
 -- RLS of their own. That migration's stated reasoning was that protecting
 -- them "would only risk infinite-recursion policy errors for zero
 -- additional safety," borrowing project_contact's own exclusion reasoning
--- (migration 0141) -- but that reasoning does not actually transfer here.
+-- (migration 100002) -- but that reasoning does not actually transfer here.
 -- project_contact is excluded because is_project_member() itself queries
 -- project_contact, so a policy ON project_contact that also called
 -- is_project_member() would recurse. Nothing about is_project_member()
 -- queries engagement/service_request/security_report_analysis, so no such
 -- recursion is possible for them -- they are structurally identical to
--- "case"/comment/case_attachment (migration 0147's own other tables),
+-- "case"/comment/case_attachment (migration 100008's own other tables),
 -- which already use this exact is_project_member-via-work_item-subquery
 -- shape with zero recursion issue.
 --
@@ -40,9 +40,15 @@
 -- closes a real structural gap without changing today's actual behavior --
 -- it makes safe-by-Go-code-accident into safe-by-database-guarantee, the
 -- same reasoning this entire migration series exists for.
+--
+-- One transaction, and every CREATE POLICY preceded by its own DROP POLICY
+-- IF EXISTS -- see migration 100002's identical note.
+BEGIN;
+
 ALTER TABLE engagement ENABLE ROW LEVEL SECURITY;
 ALTER TABLE engagement FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS engagement_visibility ON engagement;
 CREATE POLICY engagement_visibility ON engagement
   FOR SELECT
   USING (
@@ -50,6 +56,7 @@ CREATE POLICY engagement_visibility ON engagement
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = engagement.id))
   );
 
+DROP POLICY IF EXISTS engagement_update ON engagement;
 CREATE POLICY engagement_update ON engagement
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -60,19 +67,22 @@ CREATE POLICY engagement_update ON engagement
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = engagement.id))
   );
 
+DROP POLICY IF EXISTS engagement_write ON engagement;
 CREATE POLICY engagement_write ON engagement
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = engagement.id))
   );
 -- Internal-only, not omitted entirely -- same sla_delete-style test/admin
--- cleanup reasoning as migration 0147's other tables.
+-- cleanup reasoning as migration 100008's other tables.
+DROP POLICY IF EXISTS engagement_delete_internal_only ON engagement;
 CREATE POLICY engagement_delete_internal_only ON engagement
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
 
 ALTER TABLE service_request ENABLE ROW LEVEL SECURITY;
 ALTER TABLE service_request FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS service_request_visibility ON service_request;
 CREATE POLICY service_request_visibility ON service_request
   FOR SELECT
   USING (
@@ -80,6 +90,7 @@ CREATE POLICY service_request_visibility ON service_request
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = service_request.id))
   );
 
+DROP POLICY IF EXISTS service_request_update ON service_request;
 CREATE POLICY service_request_update ON service_request
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -90,17 +101,20 @@ CREATE POLICY service_request_update ON service_request
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = service_request.id))
   );
 
+DROP POLICY IF EXISTS service_request_write ON service_request;
 CREATE POLICY service_request_write ON service_request
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = service_request.id))
   );
+DROP POLICY IF EXISTS service_request_delete_internal_only ON service_request;
 CREATE POLICY service_request_delete_internal_only ON service_request
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
 
 ALTER TABLE security_report_analysis ENABLE ROW LEVEL SECURITY;
 ALTER TABLE security_report_analysis FORCE ROW LEVEL SECURITY;
 
+DROP POLICY IF EXISTS security_report_analysis_visibility ON security_report_analysis;
 CREATE POLICY security_report_analysis_visibility ON security_report_analysis
   FOR SELECT
   USING (
@@ -108,6 +122,7 @@ CREATE POLICY security_report_analysis_visibility ON security_report_analysis
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = security_report_analysis.id))
   );
 
+DROP POLICY IF EXISTS security_report_analysis_update ON security_report_analysis;
 CREATE POLICY security_report_analysis_update ON security_report_analysis
   FOR UPDATE USING (
     current_setting('app.is_internal', true) = 'true'
@@ -118,10 +133,14 @@ CREATE POLICY security_report_analysis_update ON security_report_analysis
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = security_report_analysis.id))
   );
 
+DROP POLICY IF EXISTS security_report_analysis_write ON security_report_analysis;
 CREATE POLICY security_report_analysis_write ON security_report_analysis
   FOR INSERT WITH CHECK (
     current_setting('app.is_internal', true) = 'true'
     OR is_project_member((SELECT wi.project_id FROM work_item wi WHERE wi.id = security_report_analysis.id))
   );
+DROP POLICY IF EXISTS security_report_analysis_delete_internal_only ON security_report_analysis;
 CREATE POLICY security_report_analysis_delete_internal_only ON security_report_analysis
   FOR DELETE USING (current_setting('app.is_internal', true) = 'true');
+
+COMMIT;
