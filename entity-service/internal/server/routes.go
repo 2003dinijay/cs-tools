@@ -1358,7 +1358,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	} else {
 		globalHandler = handler.NewGlobalHandler(service.NewGlobalService(
 			referenceDataRepo,
-			repository.NewGlobalSearchRepository(repository.NewScoped(db)),
+			repository.NewGlobalSearchRepository(repository.NewScoped(db), crVisibility),
 			accessSvc,
 		))
 	}

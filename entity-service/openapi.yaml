@@ -9922,7 +9922,9 @@ paths:
         (403). No user token and no client id match above is refused (401) -- there is no
         legitimate caller to resolve. A token that is present but invalid is always
         rejected with 401. The project counts (`activeChatsCount`, `actionRequiredCount`,
-        `outstandingCount`) are 0 on Postgres.
+        `outstandingCount`) are the figures the project's own dashboard shows (outstanding and
+        action-required cases, service requests, engagements, security report analyses and the
+        change requests the caller may see; active conversations). A failed lookup leaves them 0.
       operationId: globalSearch
       requestBody:
         required: false

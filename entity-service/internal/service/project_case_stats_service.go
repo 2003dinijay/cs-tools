@@ -47,6 +47,11 @@ const (
 // same numbers during the migration.
 var caseStatsResolvedStates = []string{caseStateClosed, caseStateSolutionProposed}
 
+// caseStatsActionRequiredStates are the case states waiting on the customer:
+// the project's actionRequiredCount, and the Action Required number the
+// project list shows (see globalService.GlobalSearch).
+var caseStatsActionRequiredStates = []string{caseStateAwaitingInfo, caseStateSolutionProposed}
+
 // projectCaseStatsService is the Postgres-backed ProjectCaseStatsService.
 //
 // It reproduces ServiceNow's ProjectStatsUtils.getProjectScopeCaseStats
@@ -222,7 +227,7 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 			incrementCount(resp.OutstandingSeverityCount, row.Severity, row.Count)
 		}
 
-		if row.State == caseStateAwaitingInfo || row.State == caseStateSolutionProposed {
+		if containsString(caseStatsActionRequiredStates, row.State) {
 			resp.ActionRequiredCount += row.Count
 		}
 

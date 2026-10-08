@@ -7407,9 +7407,11 @@ not one shared allow-list -- see `AccessClientConfig`'s own doc comment:
   case-like work items; `sortBy` accepts `name`/`createdOn`/`updatedOn` only
   (mapped to fixed columns, never interpolated). Case `state`/`severity` use
   the raw enum labels as id and label (same vocabulary as project metadata).
-  `activeChatsCount`/`actionRequiredCount`/`outstandingCount` are 0 -- their
-  definition lives in ServiceNow-side logic with no Postgres equivalent yet
-  (TODO).
+  `activeChatsCount`/`actionRequiredCount`/`outstandingCount` on each project
+  are the figures the project's own dashboard shows, computed for the page of
+  projects returned (see "Project list counts on `POST /search`" below). They
+  used to be hard-coded 0 on Postgres, so the customer portal's project list
+  showed 0 in all three columns (digiops-cs#3373).
 - `GET /projects/{id}` / `GET /cases/{id}` -- a project or case outside scope
   is a 404, indistinguishable from one that doesn't exist at all (never a 403
   that would reveal it exists). The scope filter is folded straight into the
@@ -7475,6 +7477,88 @@ above as not-yet-wired. Every OTHER case mutation (`UpdateCase`, `AddCaseTag`,
 `AcknowledgeCase`, `CreateCaseComment`, ...) remains unscoped -- this is a
 narrow, deliberately inconsistent fix for one endpoint under active review,
 not a decision that case mutations are scoped now.
+
+## Project list counts on `POST /search`
+
+The customer portal's project list (the table behind "View more", and the project results of its search box) shows **Action Required**, **Outstanding** and **Active Chats** for each project. On the Postgres
+data source they used to be hard-coded to 0 (`activeChatsCount` / `actionRequiredCount` / `outstandingCount`
+on `GlobalSearchProject`, left as a TODO), so every project read 0 in all three (digiops-cs#3373).
+
+`globalService.fillProjectActivityCounts` now fills them for the page of projects a search returns, from
+`GlobalSearchRepository.ProjectActivityCounts`: three grouped queries for the whole page (not three per
+project), run concurrently, through `Scoped` with the caller's identity (the same scope the search itself
+used). They are the numbers the project's own dashboard shows, from the same state groupings, so the two
+cannot drift:
+
+| Count | Made of | States (the project stats constants, passed in) |
+|---|---|---|
+| Outstanding | cases, service requests, engagements, security report analyses + change requests | cases: every state **but `CLOSED`**, an item with no state included (`caseStateClosed`; the dashboard tile's rule, `projectCaseStatsService`); change requests `crOutstandingStatesFor(scope)` (a customer's Authorize counts, staff's does not) |
+| Action Required | the same items waiting on the customer | `caseStatsActionRequiredStates` (Awaiting Info, Solution Proposed); change requests Customer Approval, Customer Review |
+| Active Chats | conversations | `conversationActiveStates` (OPEN, ACTIVE) |
+
+- **Outstanding is "not closed", not "in an open state".** `caseStatsOutstandingStates` (the list `GET
+  /projects/{id}/stats` uses for its per-type counts) leaves out a case-like work item whose extension row is
+  missing (it has no state), but the dashboard's Outstanding tile (`GET /projects/{id}/stats/cases`) counts it,
+  as every state except `CLOSED`. A first version of this used the list and put the list below the dashboard
+  for the same project (staging copy: 8 of the 12 heaviest projects, by exactly their state-less items; the
+  issue's own project read 88 against 109). Checked on that data: the list now equals the dashboard's own
+  repository functions for all 12, and for a real customer's three projects.
+- **Announcements are not counted**, as on the dashboard (its tiles combine case, service request,
+  engagement and security report analysis only).
+- **Change requests apply the customer visibility rule** (`CRVisibility.andClause`, see "Customer visibility
+  and the cutover"): a customer's row counts only the change requests they may see, exactly as the stat
+  cards do. `NewGlobalSearchRepository` therefore takes the `CRVisibility` like `NewProjectStatsRepository`
+  does, wired in `routes.go`. The new query touches `change_request`, so it also has to pass
+  `TestChangeRequestVisibilityLint_*`.
+- **A failed count never fails the search.** The service logs a warning and leaves the three at 0: the list is
+  the portal's way into a project. That makes a failure look like a real zero, so look for the
+  `global search: project counts degraded to zero` warning before trusting a column of zeros.
+- **Not narrowed by the caller's role.** The dashboard also drops a type the user's role cannot use
+  (`hasSR`, `hasCR`, ...), which is not known per project here, so a user without access to a type still has
+  its items in the list's totals.
+- **Cost, and the narrowing for callers on many projects.** Only the customer portal calls `POST /search` (the
+  CSM portal does not), so staff are unaffected, and the queries are over the page's projects only. Measured on
+  a staging-like copy (409k work items) as the non-superuser application role: staff, a page of 50 of the
+  heaviest projects ~31 ms; a customer on 3-4 projects 10-75 ms. Every row-level-security policy re-parses
+  `app.viewer_project_ids` (the viewer's whole project list) into a `uuid[]` for each row it checks, so the cost
+  per item grows with the length of that list: a synthetic customer registered on the 50 heaviest projects took
+  ~300-360 ms for a page of 10, ~350-380 ms for 25 and ~430-470 ms for 50 when nothing was done about it.
+  `ProjectActivityCounts` therefore serves a **non-staff caller registered on more than 10 projects
+  (`projectActivityChunkSize`) in chunks of 10 projects, each in its own `Scoped` transaction whose
+  `app.viewer_project_ids` is first narrowed to the chunk** (`narrowViewerProjectIDsSQL`). Same customer after:
+  page of 10 ~115 ms, 25 ~160 ms, 50 ~240 ms. Everyone else (staff, a customer on 10 projects or fewer) takes
+  the single-statement path exactly as before.
+  **This does not weaken row-level security**, and the tests are built to prove it rather than assume it:
+  the narrowing is an *intersection computed in the database* with the list `Scoped` established one statement
+  earlier in the same transaction (from `project_contact`, `REGISTERED`), so it can only remove projects from
+  what the policies let through, never add one, and nothing caller-supplied is trusted as membership
+  (`scope.ProjectIDs` only decides whether narrowing is worth doing); it is `set_config(..., true)`, so it
+  reverts at commit and cannot reach another statement on the connection; policies, `Scoped`, `runSearch` and
+  every other repository are untouched; an internal caller's list is `{}` and is never narrowed. For the rows
+  the query asks for, the result is identical to the un-narrowed one (checked against the dashboard's own
+  repositories for all 50 projects: 0 mismatches). Mutation-checked: making the narrowing widen, or making it
+  session-level, each fails `TestProjectActivityCountsIntegration`.
+- **The list's CSV/PDF export** used to read `POST /projects/search`, whose response has no
+  `actionRequiredCount` / `outstandingCount` / `activeChatsCount` (the customer portal backend maps only
+  `activeCasesCount`), so every exported row said 0. `fetchAllProjectsForExport` (customer portal webapp,
+  `projectsExport.ts`) now reads `POST /search` (projects only), the request the Projects tables themselves use,
+  for the user's, the partner's and the Projects-page exports alike. The status column keeps its old format
+  (`Open`, `Read Only`, `Pending Notified`): `POST /search` returns the raw lowercase value, the endpoint the
+  export used to read title-cased it, so the export does the same. **Still on `POST /projects/search`**: the
+  home page's project card grid and `ProjectListTable`, which `ProjectHub` shows only for a non-partner user with
+  one project or whose projects are all suspended (everyone else gets `UserGlobalSearch` / `PartnerGlobalSearch`,
+  which read `POST /search`), so they still show their placeholder / 0; a separate, rarely reached gap.
+- **A request that runs out of time during the counts fails**, like the search itself would, instead of
+  answering 200 with zeros (`fillProjectActivityCounts` returns the context's error; only a lookup failure that
+  is not the request ending degrades to zero).
+- Tests: `TestGlobalSearch_*Count*` (service: the states handed over, per caller, not asked for a cases-only
+  search, a failure leaves the list intact, a request that ends during the lookup fails), `TestProjectActivityCountsIntegration` (real Postgres, run as the
+  non-superuser application role and as a superuser; `CASE_STATS_TEST_DSN`: staff and customer callers,
+  strict and legacy change request visibility, announcements excluded, an item with no state counted,
+  another customer's project, the search's own ids keying the result, and a partner on 12 projects: chunked and
+  narrowed gives the same numbers as un-narrowed, a project they are not a member of stays at zero even inside a
+  chunk of members, and the narrowed list does not outlive the call on a reused connection). The webapp's export:
+  `projectsExport.test.ts`.
 
 ## Call requests and the service-request catalog (migrations 000067-000072)
 
