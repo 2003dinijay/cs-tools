@@ -24,7 +24,7 @@ import {
 import { Calendar } from "@wso2/oxygen-ui-icons-react";
 import { format } from "date-fns";
 import type { JSX } from "react";
-import { useControlledDatePickerValue } from "@hooks/useControlledDatePickerValue";
+import { useControlledDatePickerValue, isPastOrPresentDate } from "@hooks/useControlledDatePickerValue";
 import {
   USAGE_METRICS_CUSTOM_RANGE_APPLY,
   USAGE_METRICS_CUSTOM_RANGE_BUTTON,
@@ -82,17 +82,22 @@ export default function UsageMetricsTimeRangeSelector({
 }: UsageMetricsTimeRangeSelectorProps): JSX.Element {
   const timeLabel = USAGE_TIME_RANGE_LABELS[timeRange];
 
+  // isComplete: isPastOrPresentDate -- both pickers below are `disableFuture`,
+  // but MUI's own `disableFuture` only disables the calendar popup's future
+  // days; it doesn't stop a hand-typed future date from reaching onChange.
   const customStartPicker = useControlledDatePickerValue({
     value: customStart,
     onChange: onCustomStartChange,
     parse: parseDateOnly,
     format: formatDateOnly,
+    isComplete: isPastOrPresentDate,
   });
   const customEndPicker = useControlledDatePickerValue({
     value: customEnd,
     onChange: onCustomEndChange,
     parse: parseDateOnly,
     format: formatDateOnly,
+    isComplete: isPastOrPresentDate,
   });
 
   const customRangeError = (() => {
