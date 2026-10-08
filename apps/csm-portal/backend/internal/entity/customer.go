@@ -321,6 +321,12 @@ func (c *CustomerEntityClient) ListSpecialistHandoffTeams(ctx context.Context, s
 	return c.do(ctx, http.MethodGet, path, nil)
 }
 
+// GetIncidentCreateDefaults calls GET /incidents/create-defaults on the entity
+// service: the default service and its support group. Raw JSON.
+func (c *CustomerEntityClient) GetIncidentCreateDefaults(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/incidents/create-defaults", nil)
+}
+
 // HandOffIncidentToSpecialist calls POST /incidents/{id}/specialist-handoffs on the entity
 // service: hands the incident off to its specialist group in one atomic call. Response is
 // returned as raw JSON; typed response structs are deferred.

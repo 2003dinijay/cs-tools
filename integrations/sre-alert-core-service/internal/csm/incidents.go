@@ -25,6 +25,7 @@ import (
 )
 
 // CreateIncidentRequest proxies entity-service's own contract verbatim; this service does not define its own incident shape.
+// It never carries an assignment group: entity-service sets that from the service's support group.
 type CreateIncidentRequest struct {
 	CallerID  string  `json:"callerId"`
 	Category  string  `json:"category"` // "INQUIRY" | "SERVICE_INTERRUPTION" | "SECURITY"
@@ -35,8 +36,6 @@ type CreateIncidentRequest struct {
 	WorkNotes *string `json:"workNotes,omitempty"`
 	// ContactType says how the incident was raised (entity-service's IncidentContactType); routing to the SRE escalation ladder reads it.
 	ContactType *string `json:"contactType,omitempty"`
-	// AssignmentGroupID is the group the incident is assigned to; the SRE ladder finds the owning SRE team from it.
-	AssignmentGroupID *string `json:"assignmentGroupId,omitempty"`
 	// CorrelationID is the dedup fingerprint tag on ServiceNow's own correlation_id field, so SearchIncidentByCorrelationID finds a prior create by exact match.
 	CorrelationID *string `json:"correlationId,omitempty"`
 }

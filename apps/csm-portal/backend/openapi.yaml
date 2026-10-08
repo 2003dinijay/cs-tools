@@ -6075,7 +6075,13 @@ paths:
 
   /groups/search:
     post:
-      summary: Search assignment groups (ServiceNow data source only).
+      summary: Search assignment groups.
+      description: >-
+        Forwarded to the entity service unchanged. With
+        filters.supportGroupsOnly true the result is limited to the groups an
+        incident can be created in with an explicit assignmentGroupId: active
+        groups that are the support group of at least one service (their ids
+        are what assignmentGroupId takes).
       operationId: searchGroups
       security:
         - bearerAuth: []
@@ -6085,6 +6091,22 @@ paths:
           application/json:
             schema:
               type: object
+              properties:
+                filters:
+                  type: object
+                  properties:
+                    searchQuery:
+                      type: string
+                    supportGroupsOnly:
+                      type: boolean
+                      default: false
+                pagination:
+                  type: object
+                  properties:
+                    limit:
+                      type: integer
+                    offset:
+                      type: integer
       responses:
         "200":
           description: Matching groups.
@@ -7400,6 +7422,61 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "500":
           description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /incidents/create-defaults:
+    get:
+      summary: The team an incident falls back to.
+      description: >-
+        The entity service's default service and its support group: the group
+        POST /incidents assigns when no assignmentGroupId is sent and the
+        incident's service has no support group. Passed through untouched.
+        defaultServiceId is null when no default service is configured;
+        defaultGroup is null when there is none, or the default service is
+        missing or has no support group (such incidents are created unassigned).
+      operationId: getIncidentCreateDefaults
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Ok
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [defaultServiceId, defaultGroup]
+                properties:
+                  defaultServiceId:
+                    type: string
+                    format: uuid
+                    nullable: true
+                  defaultGroup:
+                    type: object
+                    nullable: true
+                    required: [id, name]
+                    properties:
+                      id:
+                        type: string
+                        format: uuid
+                      name:
+                        type: string
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error
           content:
             application/json:
               schema:
@@ -20658,8 +20735,8 @@ components:
           type: string
           format: uuid
           description: >-
-            The incident's assignment group is set from this service's support
-            group; there is no assignmentGroupId on create.
+            When no assignmentGroupId is sent, the incident's assignment group
+            is this service's support group (see assignmentGroupId).
         serviceOfferingId:
           type: string
           format: uuid
@@ -20678,6 +20755,19 @@ components:
         urgency:
           type: string
           enum: [HIGH, MEDIUM, LOW]
+        assignmentGroupId:
+          type: string
+          format: uuid
+          nullable: true
+          description: >-
+            Optional. This backend checks only that it is a UUID (400
+            otherwise) and forwards the body unchanged; the entity service
+            decides the group. Sent: used when it is an active group that is
+            the support group of at least one service (POST /groups/search
+            with filters.supportGroupsOnly lists them), otherwise 400. Not
+            sent: the service's support group; when the service has none, the
+            default team (GET /incidents/create-defaults); with neither, the
+            incident is created unassigned. A work note records the choice.
         assignedEngineerId:
           type: string
           format: uuid

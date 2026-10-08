@@ -239,6 +239,12 @@ type Config struct {
 	// validated by service.ParseSpecialistHandoffConfig at startup; empty
 	// hands nothing off.
 	SpecialistHandoffConfig string
+	// IncidentDefaultServiceID is INCIDENT_DEFAULT_SERVICE_ID: the service
+	// (service.id, a UUID) whose support group a new incident gets when its
+	// own service has none -- the "default team". Empty: such an incident is
+	// created unassigned and logged as an error. Validated as a UUID; checked
+	// at startup (best effort, logged only) to exist and have a support group.
+	IncidentDefaultServiceID string
 	// SpecialistHandoffGithubTokens is SPECIALIST_HANDOFF_GITHUB_TOKENS, a
 	// secret: one line of JSON mapping a credential name to the GitHub token
 	// that files a specialist handoff's internal issue (ServiceNow's
@@ -657,6 +663,7 @@ func Load() *Config {
 		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
 		SpecialistHandoffConfig:                  os.Getenv("SPECIALIST_HANDOFF_CONFIG"),
 		SpecialistHandoffGithubTokens:            os.Getenv("SPECIALIST_HANDOFF_GITHUB_TOKENS"),
+		IncidentDefaultServiceID:                 strings.TrimSpace(os.Getenv("INCIDENT_DEFAULT_SERVICE_ID")),
 		GithubLabelTypeIncident:                  os.Getenv("GITHUB_LABEL_TYPE_INCIDENT"),
 		GithubLabelTypeServiceRequest:            os.Getenv("GITHUB_LABEL_TYPE_SERVICE_REQUEST"),
 		GithubLabelsClass:                        os.Getenv("GITHUB_LABELS_CLASS"),
@@ -1035,6 +1042,9 @@ func (c *Config) Validate() error {
 		if value != "" && !validate.IsUUID(value) {
 			return fmt.Errorf("%s %q is not a valid UUID", envVar, value)
 		}
+	}
+	if v := c.IncidentDefaultServiceID; v != "" && !validate.IsUUID(v) {
+		return fmt.Errorf("INCIDENT_DEFAULT_SERVICE_ID %q is not a valid UUID", v)
 	}
 	if v := c.CustomerEngagementFirefightingTypeID; v != "" && !isSysID(v) {
 		return fmt.Errorf("CUSTOMER_ENGAGEMENT_FIREFIGHTING_TYPE_ID must be a 32-character hex sys_id")

@@ -79,6 +79,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `REDIS_URL` | no | — | `rediss://:<key>@<host>:<port>` (TLS, Azure Managed Redis); wins over `REDIS_ADDR`. Turns on the user cache (see "User cache (Redis)" below). `Validate` requires a `redis`/`rediss` scheme and a host, and never echoes the URL |
 | `REDIS_ADDR` / `REDIS_PASSWORD` | no | — | Plain, non-TLS Redis for local runs. Either this or `REDIS_URL` makes `Config.HasRedis` true |
 | `USER_CACHE_TTL` | no | `10m` | Backstop lifetime of a cached user; an unparseable or non-positive value falls back to `10m` |
+| `INCIDENT_DEFAULT_SERVICE_ID` | no | — | UUID of the service whose support group a new incident gets when no `assignmentGroupId` is sent and its own service has no support group (logged WARN each time). Unset / missing / groupless: such incidents are created unassigned (logged ERROR). A non-UUID refuses to start; checked at startup, log only. See "Incident assignment group on create" |
 | `CR_STRICT_VISIBILITY_FROM` | no | — | RFC 3339 instant **with a zone**: change requests created at or after it are visible to a customer only when designated to them; earlier ones are "legacy" and keep today's visibility. Unset/empty = no cutover, every change request is legacy (the safe default and the rollback; a WARN is logged at startup). An unparsable value refuses to start. Set once per environment at release and never move it — see "Customer visibility and the cutover" |
 
 \* `DB_USER`/`DB_PASSWORD`/`DB_NAME` are required when `DATA_SOURCE=postgres`
@@ -6441,6 +6442,35 @@ read the curated `team` registry, whose ids `GET /groups/{id}` could not resolve
 without first adding a new response field — left alone pending that
 decision, not overlooked.
 
+## Incident assignment group on create
+
+`POST /incidents` decides the incident's group once, before anything is written, in
+`resolveAssignmentGroup` (`internal/service/incident_assignment_group.go`), the same for
+every caller and every `DATA_SOURCE`:
+
+1. `assignmentGroupId` sent: used when it is in the **support-group set**, else 400
+   `assignmentGroupId must be the active support group of a service` with `errorCode`
+   `incident_assignment_group_not_allowed`, which the CSM portal BFF passes through
+   (non-UUID: 400 without a code; blank: not sent).
+2. Not sent: the service's support group (`service.support_group_id`).
+3. The service has none (or does not exist): the support group of `INCIDENT_DEFAULT_SERVICE_ID`, slog WARN.
+4. No default group (unset, missing, groupless): unassigned, slog ERROR. Not a request failure.
+5. A lookup failure returns its error; nothing is created.
+
+The **support-group set** is `supportGroupSetSQL` (`support_group_repo.go`): active `"group"` rows
+(`is_active` NULL counts as active) that are the support group of at least one service. The create
+check (`IncidentRepository.IsSupportGroup`) and `POST /groups/search` with
+`filters.supportGroupsOnly` (`GroupRepository.SearchSupportGroups`, which reads `"group"`, not the
+`team` registry) share it. A work note records the choice ("Assignment group set from service X's
+support group" / "Assignment group chosen by <actor>" / "Service X has no support group; assigned
+to the default team (G)"), after the caller's own `workNotes`. Dual-write decides on Postgres before
+the ServiceNow create (the mirror never looks one up), so both stores get the same group and a
+refused group never reaches ServiceNow; Postgres keeps no create work notes in that mode (an older
+gap), so the note lands in ServiceNow only. `DATA_SOURCE=servicenow` uses the same function over
+ServiceNow's services (`scanSNServices`: only a complete scan may conclude "not there"); the service
+list carries no group's active flag, so that set cannot leave out an inactive group.
+`GET /incidents/create-defaults` (internal only) reports the default service and its group.
+
 ## IT services (CMDB services)
 
 `service` (migration 0044) is the CMDB service catalogue: `incident`,
@@ -8506,7 +8536,7 @@ All shared types live in `internal/domain/entity.go`. Conventions:
 
 `apierror.WriteJSON(w, status, msg)` writes `{"code": <status>, "message": "<msg>"}`.
 
-**Machine-readable `errorCode`.** The `message` is wording for people and changes as it is improved, so a client must never branch on it. A refusal a client has to tell apart from the others of its status carries a stable `errorCode` string beside the message: `{"code": 409, "message": "...", "errorCode": "change_request_on_hold"}` (`apierror.ErrorResponse.ErrorCode`, written by `apierror.WriteJSONWithCode`; omitted when there is none, so an unnamed refusal's body is exactly what it always was). Only `*ConflictError` and `*ForbiddenError` have a `Code` field today (set where the refusal is raised, `Code: apierror.CodeChangeRequestOnHold`; `writeServiceError` writes it). Rules: **no database change** (it is attached in code, nothing is stored); the status and the message of the refusal are untouched by naming it; the constants live in `internal/apierror/codes.go`, are lower `snake_case`, are **only ever added to, never renamed or reused for another meaning** (`TestCodes_AreStableLowerSnakeCase` pins them), and the OpenAPI `ErrorResponse.errorCode` description lists them (deliberately not a closed enum, so a client treats a value it does not know as "no more specific than the status"). The customer portal's PATCH `/change-requests/{id}` (a customer's answer or proposed implementation time) and the approvals decision route name these:
+**Machine-readable `errorCode`.** The `message` is wording for people and changes as it is improved, so a client must never branch on it. A refusal a client has to tell apart from the others of its status carries a stable `errorCode` string beside the message: `{"code": 409, "message": "...", "errorCode": "change_request_on_hold"}` (`apierror.ErrorResponse.ErrorCode`, written by `apierror.WriteJSONWithCode`; omitted when there is none, so an unnamed refusal's body is exactly what it always was). `*ConflictError`, `*ForbiddenError` and `*ValidationError` have a `Code` field (set where the refusal is raised, `Code: apierror.CodeChangeRequestOnHold`; `writeServiceError` writes it). Rules: **no database change** (it is attached in code, nothing is stored); the status and the message of the refusal are untouched by naming it; the constants live in `internal/apierror/codes.go`, are lower `snake_case`, are **only ever added to, never renamed or reused for another meaning** (`TestCodes_AreStableLowerSnakeCase` pins them), and the OpenAPI `ErrorResponse.errorCode` description lists them (deliberately not a closed enum, so a client treats a value it does not know as "no more specific than the status"). The customer portal's PATCH `/change-requests/{id}` (a customer's answer or proposed implementation time) and the approvals decision route name these:
 
 | Refusal | `errorCode` | Status |
 |---|---|---|
@@ -8519,6 +8549,7 @@ All shared types live in `internal/domain/entity.go`. Conventions:
 | WSO2's acceptance of a stored time that no registered contact of the project is recorded as having proposed (written by someone at WSO2, left over from an earlier cycle, or a genuine proposal that a later write to the change replaced as its last writer): no staff action stands in for the customer's consent; proposing a different time still works | `change_request_proposer_not_recorded` | 409 |
 | A registered contact holding no `REQUESTED` row on the customer stage that is LIVE (registered after the request went out, or a row of theirs cancelled directly): proposing, or answering on it. A request that was withdrawn (a sibling's answer settled the stage) leaves no live stage and is a 409 instead: `change_request_approval_not_pending` for an answer, `change_request_not_proposable` for a proposal | `change_request_not_asked` | 403 |
 | Not a registered PORTAL_USER contact of the change request's project, the change request's own creator, a user who may not decide an internal stage, a field a customer may not set, a caller with no user record | `change_request_forbidden` | 403 |
+| `POST /incidents` with an `assignmentGroupId` that is not an active support group of any service (a non-UUID value is a plain 400 with no code); nothing created | `incident_assignment_group_not_allowed` | 400 |
 
 `TestWriteServiceError_CarriesTheMachineReadableCode` (handler) and `TestChangeRequestErrorCodesIntegration_*` (repository, against a real database) pin each code to its refusal. customer-portal `backend-v2` and the CSM portal BFF pass the code through with the status they give it; the customer webapp classifies a refusal by it (`describeChangeRequestActionError`), and a 409 with a code it does not know, or none (an older entity-service), is "something went wrong, refresh", never "already answered".
 
