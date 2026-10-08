@@ -34,9 +34,11 @@ function createdOnRow(values: string[] = []): UnifiedFilterRow {
   return { field: "createdOn", op: "gte", values, origin: "typed" };
 }
 
-function renderWithRow(row: UnifiedFilterRow): { onUpdateRow: ReturnType<typeof vi.fn> } {
+function renderWithRow(
+  row: UnifiedFilterRow,
+): { onUpdateRow: ReturnType<typeof vi.fn>; rerenderWithRow: (next: UnifiedFilterRow) => void } {
   const onUpdateRow = vi.fn();
-  render(
+  const { rerender } = render(
     <AdvancedFiltersBuilder
       rows={[row]}
       onUpdateRow={onUpdateRow}
@@ -46,7 +48,19 @@ function renderWithRow(row: UnifiedFilterRow): { onUpdateRow: ReturnType<typeof 
       sreTeamOptions={[]}
     />,
   );
-  return { onUpdateRow };
+  const rerenderWithRow = (next: UnifiedFilterRow): void => {
+    rerender(
+      <AdvancedFiltersBuilder
+        rows={[next]}
+        onUpdateRow={onUpdateRow}
+        onRemoveRow={vi.fn()}
+        onAddRow={vi.fn()}
+        creTeamOptions={[]}
+        sreTeamOptions={[]}
+      />,
+    );
+  };
+  return { onUpdateRow, rerenderWithRow };
 }
 
 /** The custom date picker's own `FormControl` group. MUI's notched-outline
@@ -164,5 +178,85 @@ describe("AdvancedFiltersBuilder — createdOn custom date", () => {
     expect(onUpdateRow).toHaveBeenCalledTimes(1);
     const [, nextRow] = onUpdateRow.mock.calls[0];
     expect(nextRow.values).toEqual(["__today__"]);
+  });
+
+  it("supersedes a still-pending commit with whatever the user edits to next, valid or not", () => {
+    const { onUpdateRow } = renderWithRow(createdOnRow());
+    switchToCustomDate();
+    onUpdateRow.mockClear(); // see the first test's own comment on this call
+
+    // A complete date is typed but its debounce hasn't settled yet.
+    fireEvent.change(dateHiddenInput(), { target: { value: "01/15/2026" } });
+    advance(100);
+
+    // The user keeps editing before it fires, landing on a different
+    // complete date rather than the one already scheduled.
+    fireEvent.change(dateHiddenInput(), { target: { value: "02/20/2026" } });
+    advance(1000);
+
+    // Only the latest edit commits -- the superseded "01/15/2026" must never
+    // land, not even as an earlier call before the real one.
+    expect(onUpdateRow).toHaveBeenCalledTimes(1);
+    const [, nextRow] = onUpdateRow.mock.calls[0];
+    expect(nextRow.values).toEqual(["2026-02-20"]);
+  });
+
+  it("never commits a stale valid date once the user has moved on to an incomplete edit", () => {
+    const { onUpdateRow } = renderWithRow(createdOnRow());
+    switchToCustomDate();
+    onUpdateRow.mockClear(); // see the first test's own comment on this call
+
+    // A complete date is typed but its debounce hasn't settled yet.
+    fireEvent.change(dateHiddenInput(), { target: { value: "01/15/2026" } });
+    advance(100);
+
+    // The user clears the field down to nothing before it fires -- the
+    // field's underlying text clearing (not the dedicated clear button),
+    // which reports through the same `null`/incomplete path a section
+    // deletion does.
+    fireEvent.change(dateHiddenInput(), { target: { value: "" } });
+
+    // The now-superseded "01/15/2026" must never land, however long is
+    // waited, and nothing else should commit either (see the dedicated
+    // "ignores a section being cleared" test for why `null` itself never
+    // commits a clear on its own).
+    advance(1000);
+    expect(onUpdateRow).not.toHaveBeenCalled();
+  });
+
+  it("stays in sync when the parent changes this row's value externally", () => {
+    const { onUpdateRow, rerenderWithRow } = renderWithRow(createdOnRow());
+    switchToCustomDate();
+    onUpdateRow.mockClear(); // see the first test's own comment on this call
+
+    // A date is typed but its debounce hasn't settled yet.
+    fireEvent.change(dateHiddenInput(), { target: { value: "01/15/2026" } });
+
+    // The parent resets this exact field/op's value some other way (e.g. a
+    // "clear all filters" action) while the row stays mounted -- same key,
+    // so this component's own local state does not reset on its own.
+    rerenderWithRow(createdOnRow(["2026-02-01"]));
+
+    // The field must show the externally-set date, not the half-settled one.
+    expect(dateHiddenInput().value).toBe("02/01/2026");
+
+    // And the earlier, now-superseded commit must never land afterwards.
+    advance(1000);
+    expect(onUpdateRow).not.toHaveBeenCalled();
+  });
+
+  it("ignores a section being cleared while editing -- only the clear button commits an actual clear", () => {
+    const { onUpdateRow } = renderWithRow(createdOnRow(["2026-01-15"]));
+    switchToCustomDate();
+    onUpdateRow.mockClear(); // see the first test's own comment on this call
+
+    // Clearing the underlying field's text (as removing one of its sections
+    // while editing does) reports `null` through the picker's main
+    // `onChange` -- the same value the dedicated clear button reports
+    // through `onClear`. Only the latter may commit a clear.
+    fireEvent.change(dateHiddenInput(), { target: { value: "" } });
+
+    advance(1000);
+    expect(onUpdateRow).not.toHaveBeenCalled();
   });
 });
