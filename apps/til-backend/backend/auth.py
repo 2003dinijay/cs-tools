@@ -39,15 +39,6 @@ Config (env):
                           moderator" -- same reasoning as the PAR migration
                           tool's ADMIN_LDAP_GROUP.
     GROUPS_CLAIM          claim key carrying the user's groups (default: "groups").
-    TIL_CHAT_SERVICE_ACCOUNT_EMAIL
-                          Optional. The TIL Chat App's own service-account
-                          identity (see chat_app/README.md). ONLY a caller
-                          authenticated as exactly this email may set
-                          `onBehalfOfEmail` on a submission -- every other
-                          caller has that field rejected outright, never
-                          silently ignored. Absent = the Chat App integration
-                          cannot submit on a human's behalf at all, which is
-                          the safe default, not a degraded one.
 """
 import os
 import time
@@ -59,7 +50,6 @@ ASGARDEO_JWKS_URL = os.environ.get("ASGARDEO_JWKS_URL", "").rstrip("/")
 ASGARDEO_ISSUER = os.environ.get("ASGARDEO_ISSUER", "")
 TIL_MODERATOR_GROUP = os.environ.get("TIL_MODERATOR_GROUP", "")
 GROUPS_CLAIM = os.environ.get("GROUPS_CLAIM", "groups")
-TIL_CHAT_SERVICE_ACCOUNT_EMAIL = os.environ.get("TIL_CHAT_SERVICE_ACCOUNT_EMAIL", "")
 # Optional. Comma-separated allowlist of OAuth client ids permitted to call
 # this API (checked against the token's `aud` and `client_id`/`azp` claims).
 # Unset (default) = any token from the configured issuer is accepted
@@ -204,7 +194,6 @@ async def require_auth(request: Request) -> dict:
     groups = _extract_groups(claims)
     is_moderator = TIL_MODERATOR_GROUP in groups
 
-    is_chat_service_account = bool(TIL_CHAT_SERVICE_ACCOUNT_EMAIL) and email == TIL_CHAT_SERVICE_ACCOUNT_EMAIL
     # The verified Asgardeo client (aud/client_id/azp) this token was issued
     # to -- see main.py's is_one_wso2_webapp_request for why this, not a
     # request header, is what decides whether to trigger the Novera broadcast.
@@ -223,6 +212,5 @@ async def require_auth(request: Request) -> dict:
         "name": display_name,
         "groups": groups,
         "is_moderator": is_moderator,
-        "is_chat_service_account": is_chat_service_account,
         "token_identities": token_identities,
     }

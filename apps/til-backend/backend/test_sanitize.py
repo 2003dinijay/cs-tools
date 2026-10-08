@@ -64,3 +64,82 @@ def test_what_for_chat_converts_list_items():
     assert "• First" in result
     assert "• Second" in result
     assert "<ul>" not in result and "<li>" not in result
+
+
+_UPLOAD_HOST = "localhost:8077"
+_UPLOAD_SRC = f"http://{_UPLOAD_HOST}/uploads/07ec86bdee9142da838c9a3511f780e8.webp"
+
+
+def test_sanitize_allows_img_pointing_at_an_actual_upload():
+    result = sanitize_what_html(f'<p>See:</p><img src="{_UPLOAD_SRC}" alt="a screenshot">', request_host=_UPLOAD_HOST)
+    assert f'<img src="{_UPLOAD_SRC}" alt="a screenshot">' in result
+
+
+def test_sanitize_drops_img_onerror_attribute():
+    result = sanitize_what_html(f'<img src="{_UPLOAD_SRC}" onerror="alert(1)">', request_host=_UPLOAD_HOST)
+    assert "onerror" not in result
+    assert "<img" in result
+
+
+def test_sanitize_keeps_img_width_attribute():
+    # Backs the webapp editor's resize overlay (S/M/L width presets) -- a
+    # plain dimension attribute, not a CSS "style" string.
+    result = sanitize_what_html(f'<img src="{_UPLOAD_SRC}" width="50%">', request_host=_UPLOAD_HOST)
+    assert 'width="50%"' in result
+
+
+def test_sanitize_drops_img_style_attribute():
+    # "width" is allowed specifically because it can't carry CSS -- "style"
+    # itself must stay out of the allowlist regardless, or a resize overlay
+    # could just as easily have been built on an arbitrary style injection
+    # surface instead of this one safe attribute.
+    result = sanitize_what_html(
+        f'<img src="{_UPLOAD_SRC}" style="position:fixed;top:0;left:0;width:100vw;height:100vh;">',
+        request_host=_UPLOAD_HOST,
+    )
+    assert "style" not in result
+    assert "<img" in result
+
+
+def test_sanitize_strips_img_pointing_at_an_arbitrary_external_host():
+    # A direct API call (bypassing the editor, which never offers any other
+    # image source) could otherwise embed an arbitrary external image --
+    # e.g. a tracking pixel that fires whenever any OTHER employee opens
+    # the entry. Fails on PATH shape alone here, regardless of host.
+    result = sanitize_what_html('<p>See:</p><img src="https://example.com/tracker.png" alt="x">', request_host=_UPLOAD_HOST)
+    assert "<img" not in result
+    assert "See:" in result
+
+
+def test_sanitize_strips_img_with_matching_path_on_a_different_host():
+    # The gap flagged in review: a PATH that matches this service's own
+    # upload shape exactly, but on a HOST that isn't the one the current
+    # request actually came in on. Checking path alone (the previous
+    # behavior) let this through -- every other employee's browser would
+    # fetch the external host's image when they opened the entry.
+    evil_src = "https://attacker.example/uploads/07ec86bdee9142da838c9a3511f780e8.webp"
+    result = sanitize_what_html(f'<img src="{evil_src}" alt="x">', request_host=_UPLOAD_HOST)
+    assert "<img" not in result
+
+
+def test_sanitize_strips_absolute_img_src_when_request_host_unknown():
+    # No request_host passed (the default) means there's nothing to compare
+    # against -- treat that as "nothing matches" rather than silently
+    # allowing every absolute URL through.
+    result = sanitize_what_html(f'<img src="{_UPLOAD_SRC}" alt="x">')
+    assert "<img" not in result
+
+
+def test_sanitize_keeps_relative_upload_src_regardless_of_host():
+    # A bare relative path has no host to compare -- same-origin by
+    # construction, nothing to validate against request_host.
+    result = sanitize_what_html('<img src="/uploads/07ec86bdee9142da838c9a3511f780e8.webp" alt="x">')
+    assert "<img" in result
+
+
+def test_what_for_chat_drops_images_entirely():
+    # Images are only ever shown on the entry's own page -- never in the
+    # Novera DM broadcast.
+    result = what_for_chat(f'<p>Look:</p><img src="{_UPLOAD_SRC}" alt="a screenshot">')
+    assert "<img" not in result
+    assert "Look" in result
