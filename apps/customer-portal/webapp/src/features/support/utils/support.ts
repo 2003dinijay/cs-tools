@@ -900,6 +900,11 @@ export function deriveFilterLabels(id: string): {
   if (id === "createdBy") {
     return { label: "Created By", allLabel: "All Users" };
   }
+  // Change requests and chat history key their filter as "state", but every
+  // list page words it "Status" (cases, announcements, security).
+  if (id === "state") {
+    return { label: "Status", allLabel: "All Statuses" };
+  }
   const label = id.charAt(0).toUpperCase() + id.slice(1);
   const allLabel = `All ${
     label.endsWith("s")
