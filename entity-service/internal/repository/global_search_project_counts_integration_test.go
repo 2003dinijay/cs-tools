@@ -96,9 +96,10 @@ func plcHex(n int) string {
 
 // seedProjectActivity builds the fixture. In the main project:
 //
-//	cases:            OPEN, AWAITING_INFO, SOLUTION_PROPOSED, CLOSED, and one with no state at all
-//	                  (a work item whose "case" extension row is missing: real synced data has
-//	                  them, and the dashboard counts them as outstanding)
+//	cases:            OPEN, AWAITING_INFO, SOLUTION_PROPOSED, CLOSED, and two with no state of
+//	                  their own type (a work item whose "case" extension row is missing, and one
+//	                  typed CASE whose only extension row is an engagement's: real synced data has
+//	                  both, no list filtered by state can show them, so neither is counted)
 //	service request:  WORK_IN_PROGRESS
 //	announcement:     OPEN                      (never counted)
 //	change requests:  NEW, AUTHORIZE, CUSTOMER_APPROVAL, IMPLEMENT, CLOSED
@@ -211,6 +212,9 @@ func seedProjectActivity(t *testing.T, pool *pgxpool.Pool) {
 	caseIn(plcProjectMain, "SOLUTION_PROPOSED")
 	caseIn(plcProjectMain, "CLOSED")
 	item("CASE", plcProjectMain) // no "case" row: no state
+	// typed CASE but its only extension row is an engagement's: a state, though not its own type's
+	mismatchID := item("CASE", plcProjectMain)
+	exec(`INSERT INTO engagement (id, state, type) VALUES ($1, 'OPEN', 'MIGRATION')`, mismatchID)
 	srID := item("SERVICE_REQUEST", plcProjectMain)
 	exec(`INSERT INTO service_request (id, state) VALUES ($1, 'WORK_IN_PROGRESS')`, srID)
 	annID := item("ANNOUNCEMENT", plcProjectMain)
@@ -273,12 +277,12 @@ func TestProjectActivityCountsIntegration(t *testing.T) {
 	}
 
 	t.Run("staff see what the dashboard counts", func(t *testing.T) {
-		// Cases 4 (OPEN, AWAITING_INFO, SOLUTION_PROPOSED and the one with no state: only
-		// CLOSED is left out) + the service request 1 + change requests 2 (CUSTOMER_APPROVAL,
-		// IMPLEMENT: NEW, AUTHORIZE and CLOSED are not outstanding for staff) = 7; the
-		// announcement is not counted. Action required: 2 cases + 1 change request.
+		// Cases 3 (OPEN, AWAITING_INFO, SOLUTION_PROPOSED: CLOSED is left out, and so are the
+		// two items with no state of their own type) + the service request 1 + change requests 2
+		// (CUSTOMER_APPROVAL, IMPLEMENT: NEW, AUTHORIZE and CLOSED are not outstanding for staff)
+		// = 6; the announcement is not counted. Action required: 2 cases + 1 change request.
 		// Chats: ACTIVE, OPEN.
-		check(t, legacyRepo, repository.SearchScope{Unrestricted: true}, plcStaffStates, plcProjectMain, want{2, 3, 7})
+		check(t, legacyRepo, repository.SearchScope{Unrestricted: true}, plcStaffStates, plcProjectMain, want{2, 3, 6})
 	})
 
 	t.Run("a project with nothing in it is present at zero", func(t *testing.T) {
@@ -324,8 +328,8 @@ func TestProjectActivityCountsIntegration(t *testing.T) {
 			if !ok {
 				t.Fatalf("no counts under the id search returned for %s: %v", p.Key, got)
 			}
-			if p.Key == "PLCMAIN" && (c.ActiveChats != 2 || c.ActionRequired != 3 || c.Outstanding != 7) {
-				t.Errorf("PLCMAIN counts = %+v, want chats 2 / action 3 / outstanding 7", c)
+			if p.Key == "PLCMAIN" && (c.ActiveChats != 2 || c.ActionRequired != 3 || c.Outstanding != 6) {
+				t.Errorf("PLCMAIN counts = %+v, want chats 2 / action 3 / outstanding 6", c)
 			}
 		}
 	})
@@ -340,22 +344,22 @@ func TestProjectActivityCountsIntegration(t *testing.T) {
 	t.Run("a customer asked for a change request sees it, even in Authorize", func(t *testing.T) {
 		// Designated on CUSTOMER_APPROVAL and AUTHORIZE; legacy visibility adds
 		// IMPLEMENT (and CLOSED, which is not outstanding). NEW stays hidden.
-		// Outstanding: 5 case-like + CUSTOMER_APPROVAL + AUTHORIZE + IMPLEMENT = 8.
-		check(t, legacyRepo, plcCustomer(plcEmailDesig, plcProjectMain), plcCustomerStates(), plcProjectMain, want{2, 3, 8})
+		// Outstanding: 4 case-like + CUSTOMER_APPROVAL + AUTHORIZE + IMPLEMENT = 7.
+		check(t, legacyRepo, plcCustomer(plcEmailDesig, plcProjectMain), plcCustomerStates(), plcProjectMain, want{2, 3, 7})
 	})
 
 	t.Run("strict visibility keeps only the designated change requests", func(t *testing.T) {
 		// IMPLEMENT is no longer visible: only the two designated ones remain.
-		check(t, strictRepo, plcCustomer(plcEmailDesig, plcProjectMain), plcCustomerStates(), plcProjectMain, want{2, 3, 7})
+		check(t, strictRepo, plcCustomer(plcEmailDesig, plcProjectMain), plcCustomerStates(), plcProjectMain, want{2, 3, 6})
 	})
 
 	t.Run("a registered contact who was never asked sees no strict change request", func(t *testing.T) {
-		check(t, strictRepo, plcCustomer(plcEmailUndesig, plcProjectMain), plcCustomerStates(), plcProjectMain, want{2, 2, 5})
+		check(t, strictRepo, plcCustomer(plcEmailUndesig, plcProjectMain), plcCustomerStates(), plcProjectMain, want{2, 2, 4})
 	})
 
 	t.Run("legacy visibility shows an undesignated contact what customers always saw", func(t *testing.T) {
 		// CUSTOMER_APPROVAL and IMPLEMENT are past Authorize; AUTHORIZE and NEW are not.
-		check(t, legacyRepo, plcCustomer(plcEmailUndesig, plcProjectMain), plcCustomerStates(), plcProjectMain, want{2, 3, 7})
+		check(t, legacyRepo, plcCustomer(plcEmailUndesig, plcProjectMain), plcCustomerStates(), plcProjectMain, want{2, 3, 6})
 	})
 
 	// ---- a partner registered on more than 10 projects: served in chunks, each narrowed ----
@@ -394,8 +398,8 @@ func TestProjectActivityCountsIntegration(t *testing.T) {
 		}
 		// The partner is a registered contact of the main project too (never designated): what an
 		// undesignated contact sees under legacy visibility.
-		if got := narrowed[plcProjectMain]; got.ActiveChats != 2 || got.ActionRequired != 3 || got.Outstanding != 7 {
-			t.Errorf("main project = %+v, want chats 2 / action 3 / outstanding 7", got)
+		if got := narrowed[plcProjectMain]; got.ActiveChats != 2 || got.ActionRequired != 3 || got.Outstanding != 6 {
+			t.Errorf("main project = %+v, want chats 2 / action 3 / outstanding 6", got)
 		}
 	})
 

@@ -233,6 +233,30 @@ func announcementLeakGuardFor(scope SearchScope) string {
 const caseLikeStateColumn = `COALESCE(c.state::TEXT, eng.state::TEXT, sr.state::TEXT, sra.state::TEXT,
 	CASE WHEN ann.state::TEXT = 'CLOSE' THEN 'CLOSED' ELSE ann.state::TEXT END)`
 
+// caseLikeOwnStateColumn is the state of a case-like work item as read from the
+// extension table of its OWN type only (work_item.type), NULL when that table
+// has no row for it. It is what every list filter on state matches
+// (caseLikeStateLookupTables looks each type up in its own table), so a count
+// that must equal what a list shows reads the state through this and not
+// through caseLikeStateColumn, whose COALESCE also finds a state in another
+// type's table. Synced data has both kinds of row that the two disagree on:
+//
+//   - a work item whose extension row is missing altogether (no state anywhere);
+//   - a work item typed CASE whose only extension row is an engagement's or a
+//     security report's (a state, but not one a CASE-typed list can see).
+//
+// Neither appears in a list filtered by state, so neither may be counted as
+// outstanding, action required or resolved by a card that links to such a list.
+// announcement_state_enum's CLOSE is normalised to CLOSED, as in
+// caseLikeStateColumn.
+const caseLikeOwnStateColumn = `CASE wi.type
+	WHEN 'CASE' THEN c.state::TEXT
+	WHEN 'ENGAGEMENT' THEN eng.state::TEXT
+	WHEN 'SERVICE_REQUEST' THEN sr.state::TEXT
+	WHEN 'SECURITY_REPORT_ANALYSIS' THEN sra.state::TEXT
+	WHEN 'ANNOUNCEMENT' THEN CASE WHEN ann.state::TEXT = 'CLOSE' THEN 'CLOSED' ELSE ann.state::TEXT END
+END`
+
 // caseLikeCauseColumn/caseLikeCloseNotesColumn/caseLikeResolvedOnColumn
 // mirror caseLikeStateColumn for the other three columns every case-like
 // extension table shares. *_cause_enum's label sets are identical across all
@@ -3168,17 +3192,23 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		argIdx++
 	}
 
+	// closedOn reads the closure time of whichever extension table the work item
+	// has (caseLikeClosedOnColumn), not "case".closed_on alone: engagements,
+	// service requests and security report analyses carry their own closed_on,
+	// and the dashboard's Closed (Last 30d) tile counts them
+	// (ResolvedBuckets), so a list behind that tile must be able to find them.
 	if req.Parsed.ClosedStartDate != nil {
-		where += fmt.Sprintf(" AND c.closed_on >= $%d", argIdx)
+		where += fmt.Sprintf(" AND "+caseLikeClosedOnColumn+" >= $%d", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.ClosedStartDate)
 		argIdx++
 	}
 	if req.Parsed.ClosedEndDate != nil {
-		where += fmt.Sprintf(" AND c.closed_on <= $%d", argIdx)
+		where += fmt.Sprintf(" AND "+caseLikeClosedOnColumn+" <= $%d", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.ClosedEndDate)
 		argIdx++
 	}
-	// resolvedOn: "case".resolved_on (migration 0023). Case-only, like closedOn.
+	// resolvedOn: "case".resolved_on (migration 0023). Case-only (closedOn above
+	// reads every case-like extension table; this one has not been widened).
 	if req.Parsed.ResolvedStartDate != nil {
 		where += fmt.Sprintf(" AND c.resolved_on >= $%d", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.ResolvedStartDate)

@@ -398,6 +398,13 @@ responses are fanned out into eight differently-shaped, purpose-built views rath
   many cases are in the *open* state") using this deployment's default ServiceNow state IDs. If
   cs-tools' ServiceNow instance uses different state IDs for these, these constants need to become
   configurable here too — they are not currently.
+  The breakdown a lookup reads is normalised to those ids first: on the Postgres data source
+  entity-service sends the raw enum label as the id (`{"id":"ACTIVE"}`), so `MapConversationStats`
+  runs `normalizeConversationStateChoices` before `countForState`, as `MapProjectCaseStats` does for
+  case states. Without it Support's Active Chats / Resolved via Chat cards were absent (0) while the
+  lists behind them, which filter on the same numeric state keys, held hundreds of conversations
+  (digiops-cs#3390). Active Chats is the Active state alone (ServiceNow's meaning, and what its list
+  shows), not entity-service's `activeCount` (Open + Active), which `GET /projects/{id}/stats` still passes through.
 
 ## Middleware chain
 

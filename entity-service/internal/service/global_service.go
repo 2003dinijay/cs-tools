@@ -193,9 +193,9 @@ func (s *globalService) GlobalSearch(ctx context.Context, req domain.GlobalSearc
 // groupings the project stats use, so the two cannot drift:
 //
 //   - outstanding: cases, service requests, engagements and security report
-//     analyses that are not closed (an item with no state counts: that is how
-//     the dashboard counts), plus the change requests that are in motion for
-//     this caller (crOutstandingStatesFor).
+//     analyses that are not closed (an item with no state of its own type is
+//     not counted, as on the dashboard: no list can show it), plus the change
+//     requests that are in motion for this caller (crOutstandingStatesFor).
 //   - action required: those waiting on the customer -- cases in Awaiting
 //     Info or Solution Proposed, change requests in Customer Approval or
 //     Customer Review.

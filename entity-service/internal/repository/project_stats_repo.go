@@ -230,7 +230,7 @@ func (r *projectStatsRepo) OutstandingCounts(ctx context.Context, projectID stri
 	// caseLikeJoins LEFT JOINs announcement, which is RLS-protected (migration
 	// 000085): without the caller's identity set in this same transaction, a
 	// restricted announcement's row is invisible to the join, ann.state comes
-	// back NULL, and caseLikeStateColumn's CASE/COALESCE then excludes it from
+	// back NULL, and caseLikeOwnStateColumn's CASE then excludes it from
 	// every state filter -- undercounting outstanding announcements for a
 	// caller who is otherwise entitled to see them via project membership.
 	// Scoped.InTx sets that identity (read from ctx) once at the start of
@@ -242,7 +242,7 @@ func (r *projectStatsRepo) OutstandingCounts(ctx context.Context, projectID stri
 			  LEFT JOIN "case" c ON c.id = wi.id`+caseLikeJoins+`
 			 WHERE wi.project_id = $1::uuid
 			   AND wi.type = ANY(`+caseLikeWorkItemTypes+`)
-			   AND `+caseLikeStateColumn+` = ANY($2)
+			   AND `+caseLikeOwnStateColumn+` = ANY($2)
 			 GROUP BY 1`, projectID, caseStates)
 		if err != nil {
 			return fmt.Errorf("project stats: outstanding case counts: %w", err)
