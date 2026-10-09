@@ -35,6 +35,7 @@ import { usePostProjectDeploymentsSearchInfinite } from "@api/usePostProjectDepl
 import type { ProductCategory, ProjectDeploymentItem } from "@features/project-details/types/deployments";
 import {
   extractDeploymentProducts,
+  usePostDeploymentProductsSearchAll,
   usePostDeploymentProductsSearchInfinite,
 } from "@features/project-details/api/usePostDeploymentProductsSearch";
 import { useAuthApiClient } from "@/hooks/useAuthApiClient";
@@ -58,6 +59,7 @@ import { resolveDisplayTimeZone } from "@utils/dateTime";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import useGetProjectContacts from "@features/settings/api/useGetProjectContacts";
 import {
+  filterDeploymentProductsByCategory,
   getBaseDeploymentOptions,
   getBaseProductOptions,
   getDeploymentProductDisplayLabel,
@@ -294,34 +296,63 @@ export default function CreateServiceRequestPage(): JSX.Element {
   const selectedDeploymentId = selectedDeploymentMatch?.id ?? "";
 
   const srProductCategories = (projectFeatures?.srProductCategories ?? undefined) as ProductCategory[] | undefined;
+  // A category restriction is a client-side exclusion (the server deliberately
+  // still returns NULL-category products — see filterDeploymentProductsByCategory),
+  // so lazy, scroll-triggered pagination can strand eligible products on a later
+  // page: a fetched page made entirely of NULL-category products filters down to
+  // an empty, unscrollable menu while more pages remain. usePostDeploymentProductsSearchAll
+  // fetches every page up front instead, which is safe here since a restricted
+  // deployment's eligible product set is small; the plain, unrestricted infinite
+  // hook (the common case) keeps its lazy pagination unchanged.
+  const hasProductCategoryRestriction =
+    !!srProductCategories && srProductCategories.length > 0;
   const deploymentProductsQuery = usePostDeploymentProductsSearchInfinite(
     selectedDeploymentId,
     {
       pageSize: 10,
-      enabled: !!selectedDeploymentId,
-      request: srProductCategories
+      enabled: !!selectedDeploymentId && !hasProductCategoryRestriction,
+    },
+  );
+  const deploymentProductsAllQuery = usePostDeploymentProductsSearchAll(
+    selectedDeploymentId,
+    {
+      pageSize: 50,
+      enabled: !!selectedDeploymentId && hasProductCategoryRestriction,
+      request: hasProductCategoryRestriction
         ? { filters: { productCategories: srProductCategories } }
         : undefined,
     },
   );
-  const deploymentProductsLoading = deploymentProductsQuery.isLoading;
-  const deploymentProductsData = useMemo(
-    () =>
+  const deploymentProductsLoading = hasProductCategoryRestriction
+    ? deploymentProductsAllQuery.isLoading
+    : deploymentProductsQuery.isLoading;
+  const deploymentProductsData = useMemo(() => {
+    if (hasProductCategoryRestriction) {
+      return deploymentProductsAllQuery.data ?? [];
+    }
+    return (
       deploymentProductsQuery.data?.pages.flatMap((p) =>
         extractDeploymentProducts(p),
-      ) ?? [],
-    [deploymentProductsQuery.data],
-  );
+      ) ?? []
+    );
+  }, [
+    hasProductCategoryRestriction,
+    deploymentProductsAllQuery.data,
+    deploymentProductsQuery.data,
+  ]);
 
   const allDeploymentProducts = useMemo(
     () =>
-      (deploymentProductsData ?? []).filter((item) => {
-        const label = getDeploymentProductDisplayLabel(item);
-        return (
-          Boolean(label.trim()) && !isUnknownPlaceholderProductLabel(label)
-        );
-      }),
-    [deploymentProductsData],
+      filterDeploymentProductsByCategory(
+        (deploymentProductsData ?? []).filter((item) => {
+          const label = getDeploymentProductDisplayLabel(item);
+          return (
+            Boolean(label.trim()) && !isUnknownPlaceholderProductLabel(label)
+          );
+        }),
+        srProductCategories,
+      ),
+    [deploymentProductsData, srProductCategories],
   );
   const baseProductOptions = getBaseProductOptions(allDeploymentProducts);
   const sortedProductOptions = useMemo(
@@ -696,14 +727,20 @@ export default function CreateServiceRequestPage(): JSX.Element {
           isFetchingMoreDeployments={deploymentsQuery.isFetchingNextPage}
           onLoadMoreProducts={() => {
             if (
+              !hasProductCategoryRestriction &&
               deploymentProductsQuery.hasNextPage &&
               !deploymentProductsQuery.isFetchingNextPage
             ) {
               void deploymentProductsQuery.fetchNextPage();
             }
           }}
-          hasMoreProducts={!!deploymentProductsQuery.hasNextPage}
-          isFetchingMoreProducts={deploymentProductsQuery.isFetchingNextPage}
+          hasMoreProducts={
+            !hasProductCategoryRestriction && !!deploymentProductsQuery.hasNextPage
+          }
+          isFetchingMoreProducts={
+            !hasProductCategoryRestriction &&
+            deploymentProductsQuery.isFetchingNextPage
+          }
           projectTypeLabel={projectDetails?.type?.label}
         >
           <Autocomplete
