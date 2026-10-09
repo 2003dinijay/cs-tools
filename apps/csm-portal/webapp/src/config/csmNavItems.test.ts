@@ -41,8 +41,46 @@ describe("nav tree invariants", () => {
 
   it("keeps a query-param tab from claiming its section's landing route", () => {
     const incidents = navNodeById("operations.incidents");
-    expect(navNodeRoutes(incidents!)).toEqual(["/operations/incidents"]);
+    expect(navNodeRoutes(incidents!)).toEqual(["/operations/incidents", "/operations/incident-tasks"]);
     expect(navNodePath(incidents!)).toBe("/operations");
+  });
+});
+
+describe("top-level nav order", () => {
+  const ids = CSM_NAV_ITEMS.map((section) => section.id);
+  const below = (upper: string, lower: string): void => {
+    expect(ids.indexOf(lower)).toBe(ids.indexOf(upper) + 1);
+  };
+
+  it("puts Announcements directly below Engagements", () => {
+    below("engagements", "announcements");
+  });
+
+  it("puts Customers directly below Security Center, and PLG directly below Customers", () => {
+    below("security-center", "customers");
+    below("customers", "plg");
+  });
+
+  it("puts Team Schedule directly below Time cards", () => {
+    below("time-cards", "team-schedule");
+  });
+
+  it("keeps the remaining sections in their existing relative order", () => {
+    expect(ids.filter((id) => id !== "viewer")).toEqual([
+      "dashboard",
+      "support",
+      "operations",
+      "engagements",
+      "announcements",
+      "security-center",
+      "customers",
+      "plg",
+      "updates",
+      "time-cards",
+      "team-schedule",
+      "admin",
+      "help",
+    ]);
   });
 });
 
@@ -100,6 +138,13 @@ describe("navNodeMatchForPath", () => {
 
   it("returns undefined for an unknown route", () => {
     expect(navNodeMatchForPath("/nothing-here")).toBeUndefined();
+  });
+
+  it("prefers a child over its parent on an equal-length prefix tie (viewer's href aliases viewer.cases')", () => {
+    expect(navNodeMatchForPath("/spl/cases")).toMatchObject({
+      node: { id: "viewer.cases" },
+      prefix: "/spl/cases",
+    });
   });
 });
 

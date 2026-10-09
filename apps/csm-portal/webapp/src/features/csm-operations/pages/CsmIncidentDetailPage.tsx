@@ -42,8 +42,10 @@ import { useLocation } from "react-router";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { BackendApiError } from "@api/backend/client";
 import ExportPdfButton from "@components/ExportPdfButton";
+import { ApiQueryKeys } from "@constants/apiConstants";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import { useEngineerDisplayName } from "@hooks/useEngineerDisplayName";
 import { useIdTokenClaims } from "@hooks/useIdTokenClaims";
 import { useRecordRecentView } from "@features/csm-recent/hooks/useRecentViews";
@@ -53,13 +55,19 @@ import {
   useGetCsmIncidentComments,
   usePostCsmIncidentComment,
 } from "@features/csm-operations/api/useCsmIncidentComments";
+import {
+  useDeleteComment,
+  usePatchComment,
+} from "@features/csm-cases/api/useCsmCaseComments";
 import { useGetCsmIncidentActivities } from "@features/csm-operations/api/useCsmIncidentActivities";
 import EditIncidentDialog from "@features/csm-operations/components/EditIncidentDialog";
 import EntityRefLink from "@features/csm-operations/components/EntityRefLink";
+import IncidentTasksWidget from "@features/csm-operations/components/IncidentTasksWidget";
 import IncidentActionBar from "@features/csm-operations/components/IncidentActionBar";
 import IncidentCreateMenu from "@features/csm-operations/components/IncidentCreateMenu";
 import IncidentResolutionDialog from "@features/csm-operations/components/IncidentResolutionDialog";
 import HandoffToSpecialistDialog from "@features/csm-operations/components/HandoffToSpecialistDialog";
+import { useSpecialistHandoffTeams } from "@features/csm-operations/api/useSpecialistHandoffTeams";
 import SpecialistHandoffBadge from "@features/csm-operations/components/SpecialistHandoffBadge";
 import { useHandOffIncident } from "@features/csm-operations/api/useHandOffIncident";
 import {
@@ -101,8 +109,56 @@ import { useReportCaseTabDraft } from "@features/case-tabs/hooks/useReportCaseTa
 import type { CreateChangeRequestFromIncidentNavState } from "@features/csm-operations/utils/changeRequests";
 import type { CreateIncidentFromIncidentNavState } from "@features/csm-operations/utils/incidents";
 import type { CreateProblemFromIncidentNavState } from "@features/csm-operations/utils/problems";
+import { looksLikeHtml, sanitizeStructuredHtml } from "@utils/sanitizeHtml";
+import { linkifyBareUrls } from "@features/csm-cases/utils/commentContent";
 
 const OPERATIONS_INCIDENTS_PATH = "/operations/incidents";
+
+/**
+ * An incident's description: an incident raised by a monitoring webhook (an
+ * Azure Monitor alert arrives as nested tables of its payload) or from a case
+ * carries HTML, anything else is plain text (typed in the create form, synced
+ * from the previous system). HTML goes through the restricted structured
+ * policy (tables kept; styles, images and form elements dropped; links open in
+ * a new tab) and bare URLs are linkified as in comments. Plain text is shown
+ * as-is with its line breaks.
+ */
+function IncidentDescription({ text }: { text: string }): JSX.Element {
+  const html = useMemo(
+    () => (looksLikeHtml(text) ? linkifyBareUrls(sanitizeStructuredHtml(text)) : null),
+    [text],
+  );
+  if (html === null) {
+    return (
+      <Typography variant="body2" sx={{ whiteSpace: "pre-wrap" }}>
+        {text}
+      </Typography>
+    );
+  }
+  return (
+    <Box
+      data-testid="incident-description-html"
+      sx={{
+        typography: "body2",
+        overflowWrap: "anywhere",
+        "& p:first-of-type": { mt: 0 },
+        "& p:last-child": { mb: 0 },
+        "& ul, & ol": { my: 0.5, pl: 3 },
+        "& a": { color: "primary.main" },
+        "& table": { borderCollapse: "collapse", width: "100%", my: 0.5 },
+        "& th, & td": {
+          border: 1,
+          borderColor: "divider",
+          px: 1,
+          py: 0.5,
+          textAlign: "left",
+          verticalAlign: "top",
+        },
+      }}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+}
 
 /**
  * A single confirmed-live upstream limitation of `PATCH /incidents/{id}`
@@ -220,6 +276,7 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   const handOffIncident = useHandOffIncident();
   const [editOpen, setEditOpen] = useState(false);
   const [handoffOpen, setHandoffOpen] = useState(false);
+  const handoffTeams = useSpecialistHandoffTeams(data?.service?.id, handoffOpen);
   // Kept for the dialog's inline success/warning result, cleared whenever the
   // dialog is reopened for a fresh attempt.
   const [handoffResult, setHandoffResult] = useState<BeIncidentHandoffResult | null>(null);
@@ -238,12 +295,34 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   // uses for its own watch list.
   const { user: currentUser } = useCurrentUser();
   const currentUserEmail = useIdTokenClaims()?.email;
+  // UX only — the backend 403s attachment downloads the same regardless of
+  // this flag, so hiding the control here is never the enforcement.
+  const { canDownloadAttachment } = usePortalAccess();
 
   const {
     data: comments,
     isLoading: isCommentsLoading,
     isError: isCommentsError,
   } = useGetCsmIncidentComments(id);
+  const patchComment = usePatchComment();
+  const deleteComment = useDeleteComment();
+  const onEditComment = useCallback(
+    (commentId: string, content: string) =>
+      patchComment.mutateAsync({
+        commentId,
+        content,
+        invalidateQueryKey: [ApiQueryKeys.INCIDENT_COMMENTS, id],
+      }),
+    [patchComment, id],
+  );
+  const onDeleteComment = useCallback(
+    (commentId: string) =>
+      deleteComment.mutateAsync({
+        commentId,
+        invalidateQueryKey: [ApiQueryKeys.INCIDENT_COMMENTS, id],
+      }),
+    [deleteComment, id],
+  );
   const {
     data: activityAudit,
     isLoading: isActivityLoading,
@@ -500,7 +579,6 @@ export default function CsmIncidentDetailPage(): JSX.Element {
   // Choreo/Asgardeo-specific copy would have to — a heuristic, not a gate:
   // the select is purely a convenience, and submitting it for a non-Choreo
   // incident is harmless (the backend just ignores it).
-  const isChoreoService = /choreo/i.test(incident.service?.name ?? "");
   const hasLinks = !!(incident.parent || incident.changeRequest || incident.problem || incident.causedBy);
   const hasLinkedServiceRequests =
     !!incident.linkedServiceRequests && incident.linkedServiceRequests.length > 0;
@@ -601,17 +679,23 @@ export default function CsmIncidentDetailPage(): JSX.Element {
                 isPending={patchIncident.isPending}
                 onAction={onIncidentAction}
               />
-              <Button
-                variant="outlined"
-                size="small"
-                startIcon={<UserCog size={14} />}
-                onClick={() => {
-                  setHandoffResult(null);
-                  setHandoffOpen(true);
-                }}
-              >
-                Escalate to specialist team
-              </Button>
+              {/* Shown when the incident can be handed off now, as
+                  ServiceNow shows "Escalate to Special Ops" only when
+                  canEscalateToSpecialOps holds. An absent flag (ServiceNow
+                  data source) keeps the button. */}
+              {incident.canHandOffToSpecialist !== false && (
+                <Button
+                  variant="outlined"
+                  size="small"
+                  startIcon={<UserCog size={14} />}
+                  onClick={() => {
+                    setHandoffResult(null);
+                    setHandoffOpen(true);
+                  }}
+                >
+                  Escalate to specialist team
+                </Button>
+              )}
               <IncidentCreateMenu
                 items={[
                   {
@@ -706,6 +790,13 @@ export default function CsmIncidentDetailPage(): JSX.Element {
         </Box>
         <Typography variant="h5">{incident.subject || "Incident"}</Typography>
       </Box>
+
+      {incident.description && (
+        <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1 }}>
+          <Typography variant="subtitle2">Description</Typography>
+          <IncidentDescription text={incident.description} />
+        </Card>
+      )}
 
       {incident.specialistHandoff && (
         <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
@@ -832,12 +923,20 @@ export default function CsmIncidentDetailPage(): JSX.Element {
             comments={comments ?? []}
             audit={activityAudit ?? []}
             attachments={attachmentList}
-            onDownloadAttachment={onDownloadAttachment}
-            preview={{
-              onGetPreviewContent: getAttachmentPreviewContent,
-              previewTarget,
-              onPreviewTargetChange: setPreviewTarget,
-            }}
+            onDownloadAttachment={
+              canDownloadAttachment ? onDownloadAttachment : undefined
+            }
+            preview={
+              canDownloadAttachment
+                ? {
+                    onGetPreviewContent: getAttachmentPreviewContent,
+                    previewTarget,
+                    onPreviewTargetChange: setPreviewTarget,
+                  }
+                : undefined
+            }
+            onEditComment={onEditComment}
+            onDeleteComment={onDeleteComment}
           />
         </Card>
       )}
@@ -863,11 +962,14 @@ export default function CsmIncidentDetailPage(): JSX.Element {
               <MetaCell label="Subcategory">
                 <Typography variant="body2">{incident.subcategory || "—"}</Typography>
               </MetaCell>
-              <MetaCell label="Contact type">
+              <MetaCell label="Channel">
                 <Typography variant="body2">{incident.contactType || "—"}</Typography>
               </MetaCell>
               <MetaCell label="Impact">
                 <Typography variant="body2">{incident.impact || "—"}</Typography>
+              </MetaCell>
+              <MetaCell label="Environment">
+                <Typography variant="body2">{incident.environment || "—"}</Typography>
               </MetaCell>
               <MetaCell label="Urgency">
                 <Typography variant="body2">{incident.urgency || "—"}</Typography>
@@ -890,67 +992,77 @@ export default function CsmIncidentDetailPage(): JSX.Element {
       )}
 
       {activeTab === "related" && (
-        <Box
-          sx={{
-            display: "grid",
-            gap: 2,
-            gridTemplateColumns: {
-              xs: "1fr",
-              md: "repeat(2, minmax(0, 1fr))",
-            },
-            alignItems: "start",
-          }}
-        >
-          {hasLinks ? (
-            <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
-              <Typography variant="subtitle2">Linked records</Typography>
-              <Box
-                sx={{
-                  display: "grid",
-                  gap: 2,
-                  gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
-                }}
-              >
-                <MetaCell label="Parent incident">
-                  <EntityRefLink value={incident.parent} routeBase="/operations/incidents" />
-                </MetaCell>
-                <MetaCell label="Change request">
-                  <EntityRefLink value={incident.changeRequest} routeBase="/operations/change-requests" />
-                </MetaCell>
-                <MetaCell label="Problem">
-                  <EntityRefLink value={incident.problem} routeBase="/operations/problems" />
-                </MetaCell>
-                {/* "Caused by" has no confirmed target record type (could be a
-                    change request, a problem, or something else) — same caveat
-                    as Problem.originCase — so it's left as plain text rather
-                    than guessing a route. */}
-                <MetaCell label="Caused by"><RefText value={incident.causedBy} /></MetaCell>
-              </Box>
-            </Card>
-          ) : (
-            <Typography variant="body2" color="text.secondary">
-              No linked records for this incident.
-            </Typography>
-          )}
+        <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          {/* Tasks first and full width: the table needs the room, and it
+              is the part of this tab people act on. */}
+          <IncidentTasksWidget incidentId={incident.id as string} />
 
-          {hasLinkedServiceRequests && (
-            <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
-              <Typography variant="subtitle2">Linked service requests</Typography>
-              <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
-                {incident.linkedServiceRequests?.map((sr) => (
-                  <Chip
-                    key={sr.id}
-                    size="small"
-                    variant="outlined"
-                    clickable
-                    label={`${sr.number} — ${sr.name}`}
-                    onClick={() => navigate(`/cases/${encodeURIComponent(sr.id)}`)}
-                    sx={{ fontWeight: 600 }}
-                  />
-                ))}
-              </Box>
-            </Card>
-          )}
+          <Box
+            sx={{
+              display: "grid",
+              gap: 2,
+              gridTemplateColumns: {
+                xs: "1fr",
+                md: "repeat(2, minmax(0, 1fr))",
+              },
+              alignItems: "start",
+            }}
+          >
+            {hasLinks ? (
+              <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 2 }}>
+                <Typography variant="subtitle2">Linked records</Typography>
+                <Box
+                  sx={{
+                    display: "grid",
+                    gap: 2,
+                    gridTemplateColumns: "repeat(2, minmax(0, 1fr))",
+                  }}
+                >
+                  <MetaCell label="Parent incident">
+                    <EntityRefLink value={incident.parent} routeBase="/operations/incidents" />
+                  </MetaCell>
+                  <MetaCell label="Change request">
+                    <EntityRefLink value={incident.changeRequest} routeBase="/operations/change-requests" />
+                  </MetaCell>
+                  <MetaCell label="Problem">
+                    <EntityRefLink value={incident.problem} routeBase="/operations/problems" />
+                  </MetaCell>
+                  {/* "Caused by" has no confirmed target record type (could be a
+                      change request, a problem, or something else) — same caveat
+                      as Problem.originCase — so it's left as plain text rather
+                      than guessing a route. */}
+                  <MetaCell label="Caused by"><RefText value={incident.causedBy} /></MetaCell>
+                </Box>
+              </Card>
+            ) : (
+              <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
+                <Typography variant="subtitle2">Linked records</Typography>
+                <Typography variant="body2" color="text.secondary">
+                  No linked records for this incident.
+                </Typography>
+              </Card>
+            )}
+
+
+            {hasLinkedServiceRequests && (
+              <Card sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}>
+                <Typography variant="subtitle2">Linked service requests</Typography>
+                <Box sx={{ display: "flex", flexWrap: "wrap", gap: 1 }}>
+                  {incident.linkedServiceRequests?.map((sr) => (
+                    <Chip
+                      key={sr.id}
+                      size="small"
+                      variant="outlined"
+                      clickable
+                      label={`${sr.number} — ${sr.name}`}
+                      onClick={() => navigate(`/cases/${encodeURIComponent(sr.id)}`)}
+                      sx={{ fontWeight: 600 }}
+                    />
+                  ))}
+                </Box>
+              </Card>
+            )}
+          </Box>
         </Box>
       )}
 
@@ -979,12 +1091,18 @@ export default function CsmIncidentDetailPage(): JSX.Element {
                 : null
             }
             onUpload={onUploadAttachment}
-            onDownload={onDownloadAttachment}
-            preview={{
-              onGetPreviewContent: getAttachmentPreviewContent,
-              previewTarget,
-              onPreviewTargetChange: setPreviewTarget,
-            }}
+            onDownload={
+              canDownloadAttachment ? onDownloadAttachment : undefined
+            }
+            preview={
+              canDownloadAttachment
+                ? {
+                    onGetPreviewContent: getAttachmentPreviewContent,
+                    previewTarget,
+                    onPreviewTargetChange: setPreviewTarget,
+                  }
+                : undefined
+            }
           />
         </Card>
       )}
@@ -1039,7 +1157,8 @@ export default function CsmIncidentDetailPage(): JSX.Element {
 
       {handoffOpen && (
         <HandoffToSpecialistDialog
-          showTeamSelect={isChoreoService}
+          teamOptions={handoffTeams.data ?? []}
+          isLoadingTeams={handoffTeams.isLoading}
           isSubmitting={handOffIncident.isPending}
           result={handoffResult}
           onClose={() => {

@@ -57,6 +57,7 @@ func TestSNIncidentService_CreateIncident_WatchListResolvedToEmails(t *testing.T
 	var gotBody map[string]any
 	mux := http.NewServeMux()
 	mux.HandleFunc("/users/search", watchListUserSearchStub(t))
+	mux.HandleFunc("/services/search", snServicesStub(nil))
 	mux.HandleFunc("/incidents", func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {
 			t.Fatalf("expected POST, got %s", r.Method)
@@ -876,6 +877,7 @@ func TestSNIncidentService_AggregateIncidents_StateGroupByRemapsKeyToDomainEnum(
 func TestSNIncidentService_CreateIncident_CorrelationIDAndEnvironmentForwarded(t *testing.T) {
 	var gotBody map[string]any
 	mux := http.NewServeMux()
+	mux.HandleFunc("/services/search", snServicesStub(nil))
 	mux.HandleFunc("/incidents", func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("decode request body: %v", err)
@@ -908,6 +910,7 @@ func TestSNIncidentService_CreateIncident_CorrelationIDAndEnvironmentForwarded(t
 func TestSNIncidentService_CreateIncident_OmitsUnsetCorrelationIDAndEnvironment(t *testing.T) {
 	var gotBody map[string]any
 	mux := http.NewServeMux()
+	mux.HandleFunc("/services/search", snServicesStub(nil))
 	mux.HandleFunc("/incidents", func(w http.ResponseWriter, r *http.Request) {
 		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
 			t.Fatalf("decode request body: %v", err)

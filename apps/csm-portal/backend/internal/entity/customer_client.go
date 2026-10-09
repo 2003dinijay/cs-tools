@@ -45,7 +45,14 @@ func WithUserIDToken(ctx context.Context, token string) context.Context {
 	return context.WithValue(ctx, userIDTokenKey, token)
 }
 
-func userIDTokenFromContext(ctx context.Context) string {
+// UserIDTokenFromContext returns the x-user-id-token this request arrived with,
+// or "" when it carried none.
+//
+// Exported because PLG's entity client is a different package with context keys
+// of its own, so it cannot read this one. Its middleware copies the value across
+// — the same bridge ForwardCorrelationID already builds for the correlation id,
+// and for the same reason: two packages, one concept, package-private keys.
+func UserIDTokenFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(userIDTokenKey).(string)
 	return v
 }
@@ -118,6 +125,14 @@ func NewCustomerEntityClient(cfg CustomerEntityConfig) *CustomerEntityClient {
 	}
 }
 
+// maxEntityErrBody caps how much of an entity-service error body is kept on
+// apierror.Error.Body. The handler layer parses that excerpt as the
+// {"code","message"} envelope to show the caller the real reason
+// (upstreamErrorMessageStrict), so it must hold a whole envelope: at 256
+// bytes a long validation message was cut mid-string, failed to parse, and
+// reached the portal as the generic "Invalid request payload." instead.
+const maxEntityErrBody = 4096
+
 // do executes an authenticated HTTP request against the entity service and
 // returns the raw JSON response body. The caller owns the returned slice.
 func (c *CustomerEntityClient) do(ctx context.Context, method, path string, body []byte) ([]byte, error) {
@@ -133,7 +148,7 @@ func (c *CustomerEntityClient) do(ctx context.Context, method, path string, body
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	if token := userIDTokenFromContext(ctx); token != "" {
+	if token := UserIDTokenFromContext(ctx); token != "" {
 		req.Header.Set("x-user-id-token", token)
 	}
 	if id := correlationIDFromContext(ctx); id != "" {
@@ -152,10 +167,9 @@ func (c *CustomerEntityClient) do(ctx context.Context, method, path string, body
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		const maxErrBody = 256
 		excerpt := respBody
-		if len(excerpt) > maxErrBody {
-			excerpt = excerpt[:maxErrBody]
+		if len(excerpt) > maxEntityErrBody {
+			excerpt = excerpt[:maxEntityErrBody]
 		}
 		return nil, &apierror.Error{StatusCode: resp.StatusCode, Body: string(excerpt)}
 	}
@@ -171,7 +185,7 @@ func (c *CustomerEntityClient) doBinary(ctx context.Context, path string) (body 
 	if err != nil {
 		return nil, "", fmt.Errorf("entity: build request GET %s: %w", path, err)
 	}
-	if token := userIDTokenFromContext(ctx); token != "" {
+	if token := UserIDTokenFromContext(ctx); token != "" {
 		req.Header.Set("x-user-id-token", token)
 	}
 	if id := correlationIDFromContext(ctx); id != "" {
@@ -190,10 +204,9 @@ func (c *CustomerEntityClient) doBinary(ctx context.Context, path string) (body 
 	}
 
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		const maxErrBody = 256
 		excerpt := respBody
-		if len(excerpt) > maxErrBody {
-			excerpt = excerpt[:maxErrBody]
+		if len(excerpt) > maxEntityErrBody {
+			excerpt = excerpt[:maxEntityErrBody]
 		}
 		return nil, "", &apierror.Error{StatusCode: resp.StatusCode, Body: string(excerpt)}
 	}

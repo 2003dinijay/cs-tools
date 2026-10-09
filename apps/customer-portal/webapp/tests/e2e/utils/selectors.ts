@@ -432,16 +432,17 @@ export const NOVERA_CHAT = {
      * announcements status filter — so choosing an option closes the menu. */
     stateFilter: {
       selectId: "state",
-      label: "State",
+      label: "Status",
       /**
        * The list's first option, meaning "no filter".
        *
        * Choosing it on an unfiltered list is a no-op — no request is sent at all
-       * — so a spec must pick a real state instead. Verified live: the options
-       * are All States, Close, Abandoned, Converted, Open, Resolved, Active.
+       * — so a spec must pick a real state instead. Verified live, when this
+       * option still read "All States": the options are that one, Close,
+       * Abandoned, Converted, Open, Resolved, Active.
        * Note "Close" among them, the same wording the closed chip uses.
        */
-      allOption: "All States",
+      allOption: "All Statuses",
     },
     /** Sort controls, from the shared ListResultsBar. Both fields are
      * chronological, so the order labels read Newest/Oldest first throughout —
@@ -729,6 +730,8 @@ export const CHANGE_REQUESTS_LIST = {
     list: "List View",
     calendar: "Calendar View",
   },
+  /** The Operations hub's footer button that opens this list. */
+  hubViewAllButton: "View all change requests",
   /** Shown when the list has nothing to show — the second only once a search or
    * filter has been applied. */
   emptyMessage: "No change requests yet.",
@@ -743,6 +746,149 @@ export const CHANGE_REQUESTS_LIST = {
    * list reads as empty.
    */
   numberPattern: /CHG\d+/,
+} as const;
+
+/** A change request's detail page
+ * (`/projects/:projectId/operations/change-requests/:changeRequestId`), as a
+ * customer sees it while the change waits on them (Customer Approval / Customer
+ * Review).
+ *
+ * Every string here is the page's own copy (ChangeRequestDetailsPage,
+ * ChangeRequestRejectConfirmDialog, ProposeNewImplementationTimeModal and the
+ * helpers in features/operations/utils), kept in one place so a rewording is one
+ * edit. The answer buttons carry no test id: they are told apart by name. */
+export const CHANGE_REQUEST_DETAILS = {
+  /** The answer buttons. Customer Approval offers the first three, Customer
+   * Review the last two (it has no Propose New Time). */
+  buttons: {
+    approve: "Approve",
+    reject: "Reject",
+    proposeNewTime: "Propose New Time",
+    successful: "Successful",
+    unsuccessful: "Unsuccessful",
+  },
+  /** The lifecycle panel's stage names, as the page prints them. */
+  stages: {
+    new: "New",
+    assess: "Assess",
+    authorize: "Authorize",
+    customerApproval: "Customer Approval",
+    scheduled: "Scheduled",
+    implement: "Implement",
+    review: "Review",
+    customerReview: "Customer Review",
+    rollback: "Rollback",
+    closed: "Closed",
+    canceled: "Canceled",
+  },
+  /** The page's own marker for the stage the change is in. */
+  currentMarker: "Current",
+  /** The banners that answer a click (role "alert"). */
+  banners: {
+    approved: "Change request approved. It is now scheduled.",
+    rejected: "Change request rejected. It has been canceled.",
+    markedSuccessful: "Change request marked as successful. It is now closed.",
+    markedUnsuccessful:
+      "Change request marked as unsuccessful. It is now in rollback.",
+    /** HTTP 409 on an answer: somebody answered first, or nothing is asked any more. */
+    alreadyAnswered:
+      "This request was already answered or is no longer waiting for your answer.",
+    /** The toast after a proposal (the same for every change type: there is no CAB round trip). */
+    proposed:
+      "New time proposed. WSO2 will accept it or suggest a different time, and the answer will appear on this page.",
+    /** HTTP 409 on an answer: the schedule moved while the page was open. */
+    scheduleChanged:
+      "The schedule of this change request changed after you opened it. Review the updated schedule, then answer again.",
+  },
+  /** What the page says around the answer buttons. */
+  notes: {
+    /** Customer Review's question, which also names its two buttons' group. */
+    reviewPrompt: "This change has been implemented. Was it successful?",
+    /** The group of Customer Approval's three buttons. */
+    approvalGroup: "Answer this change request",
+    /** Beside a Propose New Time that is switched off because WSO2 holds the change. */
+    onHold:
+      "WSO2 has this change request on hold, so a new time cannot be proposed right now. You can still approve or reject it.",
+    /**
+     * Kept on the page for a proposal made BEFORE proposals waited in Customer Approval (the change went back to
+     * Authorize for a fresh CAB approval and finishes through it): a new proposal never shows it.
+     */
+    internalReview:
+      "WSO2 is reviewing this change request internally. You will be asked to approve the schedule once it is confirmed.",
+    /** Kept on the page (not a five-second toast) while a proposed time waits for WSO2: the id of the status note. */
+    waitingNoteId: "cr-proposal-waiting-note",
+    /** ...in the proposer's own words, or neutrally for a colleague's / an unrecorded proposer. */
+    waitingOwn: "Waiting for WSO2 to respond to your proposed time",
+    waitingOther: "was proposed for this change request and is waiting for WSO2's response",
+    /** Said to a customer who can still answer: Approve approves the CURRENT schedule. */
+    approvingNow: "Approving now approves the current schedule",
+    /** WSO2 did not accept the proposed time (it asked for another or kept its own): the id of the note. */
+    notAcceptedNoteId: "cr-proposal-not-accepted-note",
+    notAccepted: "WSO2 did not accept the proposed time",
+    /** ...says "current", never "new": a decline leaves the window as it was. */
+    notAcceptedBelow: "The current planned window is shown below: approve it, reject it, or propose another start.",
+    /** Under the planned start while a proposal waits (id), and the note once WSO2 accepted it (id). */
+    windowProposedStartId: "cr-window-proposed-start",
+    windowAcceptedId: "cr-window-proposal-accepted",
+    windowAccepted: "WSO2 accepted the proposed start",
+    /** Beside a Propose New Time that is off because the change has no window to move. */
+    noWindow:
+      "This change request has no planned time yet, so a new time cannot be proposed for it. You can still approve or reject it.",
+  },
+  /** What the lifecycle panel says under the Customer Approval step while a proposed time is in play. */
+  stageCaptions: {
+    customerApproval: "Customer approval received",
+    waitingOwn: "Waiting for WSO2 to respond to your proposed time",
+    waitingOther: "A proposed time is waiting for WSO2's response",
+    accepted: "Proposed time accepted by WSO2",
+  },
+  /** The window card's title: a plan until the change is scheduled. */
+  windowCard: {
+    planned: "Planned Maintenance Window",
+    scheduled: "Scheduled Maintenance Window",
+  },
+  /** The confirmation before the answers that cannot be taken back. */
+  rejectConfirm: {
+    approvalTitle: "Reject this change request?",
+    approvalMessage: "Rejecting cancels this change request.",
+    approvalHint:
+      "If you only need a different time, go back and use Propose New Time instead.",
+    /** What the hint says instead while WSO2 has the change on hold (Propose New Time is off). */
+    approvalHintOnHold:
+      "A new time cannot be proposed right now because WSO2 has this change request on hold.",
+    approvalConfirm: "Reject change request",
+    reviewTitle: "Mark this change as unsuccessful?",
+    reviewMessage: "Marking it unsuccessful sends the change into rollback.",
+    reviewConfirm: "Mark unsuccessful",
+    goBack: "Go back",
+  },
+  /** Propose New Implementation Time dialog. */
+  propose: {
+    title: "Propose New Implementation Time",
+    startLabel: "Proposed start",
+    /** Read-only: a proposal moves the START and keeps the planned length, so the end is shown, never typed. */
+    endLabel: "Proposed end",
+    submit: "Submit Proposal",
+    cancel: "Cancel",
+    /** The same for every change type (no CAB round trip, no second approval is promised). */
+    notice:
+      "You are proposing a new start time, not approving one. WSO2 will either accept it or suggest a different time.",
+    lengthStaysTheSame: "stays the same",
+    errors: {
+      startRequired: "Enter the proposed start date and time.",
+      startPast: "The proposed start must be in the future.",
+      /** The start equals the planned start (the backend refuses it too). */
+      unchanged: "This is the same as the current schedule. Choose a different start.",
+      /** The start equals the time that already waits for WSO2 (the backend refuses it too). */
+      alreadyProposed:
+        "That time is already proposed and is waiting for WSO2's response. Choose a different start.",
+      /** HTTP 409 on a proposal: nothing to move, the change has no planned window. */
+      noWindow: "This change request has no planned time yet, so a new time cannot be proposed for it.",
+      /** HTTP 409 on a proposal: WSO2 has the change on hold (an answer is still taken). */
+      onHold:
+        "This change request is on hold, so a new time cannot be proposed right now.",
+    },
+  },
 } as const;
 
 /** MUI TablePagination's default labels.
@@ -1006,7 +1152,7 @@ export const SECURITY_CENTER = {
     filters: {
       severityLabel: "Severity",
       /** The no-filter option in each select — excluded when picking a real
-       * value, the same trap as the chat history's "All States". */
+       * value, the same trap as the chat history's "All Statuses". */
       severityAllOption: "All Severity",
       productLabel: "Product",
       productPlaceholder: "Select a Product",
