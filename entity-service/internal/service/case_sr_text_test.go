@@ -108,12 +108,115 @@ func TestFillServiceRequestText(t *testing.T) {
 		}
 	})
 
-	t.Run("not wired is a no-op", func(t *testing.T) {
-		s := &caseService{}
-		req := srFormRequest(domain.Variable{ID: "v-title", Value: "t"})
+	t.Run("short description becomes title when title is absent", func(t *testing.T) {
+		shortDescQuestions := []domain.CatalogItemVariable{
+			{ID: "v-short", QuestionText: "Short Description", Order: 1},
+			{ID: "v-env", QuestionText: "Environment", Order: 2},
+		}
+		cat := fakeSRCatalog{
+			vars:  shortDescQuestions,
+			items: catalog.items,
+		}
+		s := &caseService{srCatalog: cat}
+		req := srFormRequest(
+			domain.Variable{ID: "v-short", Value: "Need urgent patch"},
+			domain.Variable{ID: "v-env", Value: "Production"},
+		)
 		s.fillServiceRequestText(context.Background(), &req)
-		if req.Subject != "" {
-			t.Errorf("Subject = %q, want untouched", req.Subject)
+		if req.Subject != "Need urgent patch" {
+			t.Errorf("Subject = %q, want 'Need urgent patch'", req.Subject)
+		}
+		want := "<p><strong>Environment</strong>: Production</p>"
+		if req.Description != want {
+			t.Errorf("Description = %q, want %q", req.Description, want)
+		}
+	})
+
+	t.Run("request details becomes title when title is absent", func(t *testing.T) {
+		reqDetailsQuestions := []domain.CatalogItemVariable{
+			{ID: "v-details", QuestionText: "Request Details", Order: 1},
+			{ID: "v-desc", QuestionText: "Description", Order: 2},
+		}
+		cat := fakeSRCatalog{
+			vars:  reqDetailsQuestions,
+			items: catalog.items,
+		}
+		s := &caseService{srCatalog: cat}
+		req := srFormRequest(
+			domain.Variable{ID: "v-details", Value: "Restart LB instance"},
+			domain.Variable{ID: "v-desc", Value: "Instance 2 is degraded"},
+		)
+		s.fillServiceRequestText(context.Background(), &req)
+		if req.Subject != "Restart LB instance" {
+			t.Errorf("Subject = %q, want 'Restart LB instance'", req.Subject)
+		}
+		want := "<p><strong>Description</strong>: Instance 2 is degraded</p>"
+		if req.Description != want {
+			t.Errorf("Description = %q, want %q", req.Description, want)
+		}
+	})
+
+	t.Run("title takes precedence over short description and request details", func(t *testing.T) {
+		mixedQuestions := []domain.CatalogItemVariable{
+			{ID: "v-title", QuestionText: "Title", Order: 1},
+			{ID: "v-short", QuestionText: "Short Description", Order: 2},
+			{ID: "v-details", QuestionText: "Request Details", Order: 3},
+		}
+		cat := fakeSRCatalog{
+			vars:  mixedQuestions,
+			items: catalog.items,
+		}
+		s := &caseService{srCatalog: cat}
+		req := srFormRequest(
+			domain.Variable{ID: "v-title", Value: "Primary Title"},
+			domain.Variable{ID: "v-short", Value: "Secondary Short"},
+			domain.Variable{ID: "v-details", Value: "Tertiary Details"},
+		)
+		s.fillServiceRequestText(context.Background(), &req)
+		if req.Subject != "Primary Title" {
+			t.Errorf("Subject = %q, want 'Primary Title'", req.Subject)
+		}
+		want := "<p><strong>Short Description</strong>: Secondary Short</p><p><strong>Request Details</strong>: Tertiary Details</p>"
+		if req.Description != want {
+			t.Errorf("Description = %q, want %q", req.Description, want)
+		}
+	})
+
+	t.Run("catalog item name found across catalogs even when catalog id differs", func(t *testing.T) {
+		// In ServiceNow, the catalog id is sc_catalog sys_id (e.g. "sn-cat-service-catalog"),
+		// while the caller passes category sys_id ("caller-cat-information-request").
+		catWithDifferentID := fakeSRCatalog{
+			vars: []domain.CatalogItemVariable{{ID: "v-purpose", QuestionText: "Purpose", Order: 1}},
+			items: []domain.Catalog{
+				{
+					ID:           "sn-cat-service-catalog",
+					CatalogItems: []domain.CatalogItem{{ID: "item-1", Name: "Request Product Logs"}},
+				},
+			},
+		}
+		s := &caseService{srCatalog: catWithDifferentID}
+		req := srFormRequest(domain.Variable{ID: "v-purpose", Value: "Debugging issue"})
+		req.CatalogID = "caller-cat-information-request"
+		s.fillServiceRequestText(context.Background(), &req)
+		if req.Subject != "Request Product Logs" {
+			t.Errorf("Subject = %q, want 'Request Product Logs' from item name", req.Subject)
+		}
+		want := "<p><strong>Purpose</strong>: Debugging issue</p>"
+		if req.Description != want {
+			t.Errorf("Description = %q, want %q", req.Description, want)
+		}
+	})
+
+	t.Run("WithServiceRequestCatalog wires snCaseService", func(t *testing.T) {
+		sn := &snCaseService{}
+		mockCat := fakeSRCatalog{}
+		wired := WithServiceRequestCatalog(sn, mockCat)
+		if wired != sn {
+			t.Errorf("expected same service instance returned")
+		}
+		if sn.srCatalog == nil {
+			t.Errorf("expected sn.srCatalog to be wired, got nil")
 		}
 	})
 }
+
