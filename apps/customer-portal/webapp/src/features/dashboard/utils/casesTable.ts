@@ -74,11 +74,16 @@ const RAW_ENUM_LABEL_PATTERN = /^[A-Z0-9_]+$/;
 export function formatCaseStatusLabel(label?: string | null): string {
   if (!label) return "--";
   const trimmed = label.trim();
+  if (!trimmed) return "--";
   if (!RAW_ENUM_LABEL_PATTERN.test(trimmed)) return trimmed;
-  return trimmed
+  const formatted = trimmed
     .replace(/_/g, " ")
     .toLowerCase()
     .replace(/(^|\s)([a-z])/g, (_m, sep: string, ch: string) => sep + ch.toUpperCase());
+  // A raw value made up entirely of underscores (e.g. "___") passes the enum
+  // check but turns into pure whitespace once underscores become spaces --
+  // fall back to the placeholder rather than rendering a blank cell.
+  return formatted.trim() ? formatted : "--";
 }
 
 /**

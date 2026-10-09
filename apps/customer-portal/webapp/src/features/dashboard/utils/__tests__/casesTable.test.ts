@@ -98,6 +98,13 @@ describe("casesTable utils", () => {
       expect(formatCaseStatusLabel(null)).toBe("--");
       expect(formatCaseStatusLabel("")).toBe("--");
     });
+
+    it("returns '--' for a label that is whitespace-only or becomes blank after normalizing", () => {
+      expect(formatCaseStatusLabel("   ")).toBe("--");
+      // All-underscore input passes the raw-enum check but turns into pure
+      // whitespace once underscores become spaces.
+      expect(formatCaseStatusLabel("___")).toBe("--");
+    });
   });
 
   describe("formatCasesTableCaseIdentifier", () => {
