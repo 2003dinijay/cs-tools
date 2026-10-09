@@ -247,6 +247,11 @@ type Dispatcher struct {
 	emailDebugMode       bool
 	emailDebugRecipients []string
 
+	// statusPage / statusPageReports handle outage.status_page_due; nil until
+	// WithStatusPage (CLOUD_STATUS_WEBHOOK_URLS unset).
+	statusPage        statusPagePoster
+	statusPageReports cloudStatusDeliveryReporter
+
 	// callSendingEnabled is the same kind of killswitch (CALL_SENDING_ENABLED)
 	// for incident.created's Twilio call specifically — see
 	// handleIncidentCreated's own doc comment.
@@ -462,6 +467,27 @@ func (d *Dispatcher) handleSpecialOpsAlert(ctx context.Context, entityID string,
 	return h.pager.HandleSpecialOpsAlert(ctx, id, p)
 }
 
+// statusPagePoster is the slice of *statuspage.Webhook the dispatcher uses.
+type statusPagePoster interface {
+	Post(ctx context.Context, cloud, event, timestamp string) error
+}
+
+// cloudStatusDeliveryReporter is the slice of *entity.CustomerEntityClient
+// that claims a status-page webhook and records its outcome.
+type cloudStatusDeliveryReporter interface {
+	ClaimCloudStatusWebhook(ctx context.Context, webhookID, claimToken string) error
+	RecordCloudStatusDelivery(ctx context.Context, webhookID, claimToken string, d entity.CloudStatusDelivery) error
+}
+
+// WithStatusPage configures handleStatusPageDue and returns d for chaining.
+// Optional per deployment: without it, outage.status_page_due is reported back
+// as undelivered so csm-scheduled-tasks posts it on its next tick.
+func (d *Dispatcher) WithStatusPage(poster statusPagePoster, reports cloudStatusDeliveryReporter) *Dispatcher {
+	d.statusPage = poster
+	d.statusPageReports = reports
+	return d
+}
+
 // WithOnboarding configures handleProjectContactInvited (see
 // OnboardingConfig) and returns d for chaining. Not part of NewDispatcher's
 // parameter list deliberately: the feature is optional per deployment and
@@ -651,6 +677,8 @@ func (d *Dispatcher) Handle(ctx context.Context, record eventbus.Record) error {
 		return d.handleCRPlanDateNotice(ctx, record, env.Payload)
 	case events.TypeOutageNotificationDue, events.TypeOutageCommunicationDue:
 		return d.handleOutageNotice(ctx, env.Type, env.Payload)
+	case events.TypeOutageStatusPageDue:
+		return d.handleStatusPageDue(ctx, env.Payload)
 	case events.TypeProjectContactInvited:
 		return d.handleProjectContactInvited(ctx, record, env.Payload)
 	case events.TypeProjectContactRegistered:

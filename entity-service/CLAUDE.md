@@ -7671,17 +7671,15 @@ cannot drift:
 
 | Count | Made of | States (the project stats constants, passed in) |
 |---|---|---|
-| Outstanding | cases, service requests, engagements, security report analyses + change requests | cases: every state **but `CLOSED`**, an item with no state included (`caseStateClosed`; the dashboard tile's rule, `projectCaseStatsService`); change requests `crOutstandingStatesFor(scope)` (a customer's Authorize counts, staff's does not) |
+| Outstanding | cases, service requests, engagements, security report analyses + change requests | cases: every state **but `CLOSED`**, an item with no state of its own type left out (`caseStateClosed`; the dashboard tile's rule, `projectCaseStatsService`; see "Cards count what their lists show"); change requests `crOutstandingStatesFor(scope)` (a customer's Authorize counts, staff's does not) |
 | Action Required | the same items waiting on the customer | `caseStatsActionRequiredStates` (Awaiting Info, Solution Proposed); change requests Customer Approval, Customer Review |
 | Active Chats | conversations | `conversationActiveStates` (OPEN, ACTIVE) |
 
-- **Outstanding is "not closed", not "in an open state".** `caseStatsOutstandingStates` (the list `GET
-  /projects/{id}/stats` uses for its per-type counts) leaves out a case-like work item whose extension row is
-  missing (it has no state), but the dashboard's Outstanding tile (`GET /projects/{id}/stats/cases`) counts it,
-  as every state except `CLOSED`. A first version of this used the list and put the list below the dashboard
-  for the same project (staging copy: 8 of the 12 heaviest projects, by exactly their state-less items; the
-  issue's own project read 88 against 109). Checked on that data: the list now equals the dashboard's own
-  repository functions for all 12, and for a real customer's three projects.
+- **Outstanding is "not closed", not "in an open state".** A state added to the enum is outstanding without
+  being listed anywhere. It counts only an item that has a state **of its own type** (below), the same
+  definition as the dashboard's Outstanding tile (`GET /projects/{id}/stats/cases`). Until digiops-cs#3390 this
+  line said the opposite (a state-less item counted, to match the tile, which then read higher than the list
+  behind it); the tile, the dashboard chart, the Support card and this list now all leave it out.
 - **Announcements are not counted**, as on the dashboard (its tiles combine case, service request,
   engagement and security report analysis only).
 - **Change requests apply the customer visibility rule** (`CRVisibility.andClause`, see "Customer visibility
@@ -7733,11 +7731,58 @@ cannot drift:
 - Tests: `TestGlobalSearch_*Count*` (service: the states handed over, per caller, not asked for a cases-only
   search, a failure leaves the list intact, a request that ends during the lookup fails), `TestProjectActivityCountsIntegration` (real Postgres, run as the
   non-superuser application role and as a superuser; `CASE_STATS_TEST_DSN`: staff and customer callers,
-  strict and legacy change request visibility, announcements excluded, an item with no state counted,
+  strict and legacy change request visibility, announcements excluded, an item with no state of its own type (none at all, or an engagement's row under a CASE) left out,
   another customer's project, the search's own ids keying the result, and a partner on 12 projects: chunked and
   narrowed gives the same numbers as un-narrowed, a project they are not a member of stays at zero even inside a
   chunk of members, and the narrowed list does not outlive the call on a reused connection). The webapp's export:
   `projectsExport.test.ts`.
+
+## Cards count what their lists show (digiops-cs#3390)
+
+The customer portal's dashboard and Support cards (Outstanding, Closed (Last 30d), Active Chats) each link to a
+list and a customer compares the two. They are built from different code (the stats repositories for the card,
+`SearchCases` / `SearchConversations` with the filters the portal sends for the list), and on a Managed Cloud
+project of the dev database (Customer 3 Project) they disagreed three ways: Outstanding 602 against 578, Closed
+(Last 30d) 30 against 23, Active Chats 0 against 281.
+
+- **State of its own type: `caseLikeOwnStateColumn`.** A list filtered by state matches each type in its own
+  extension table (`caseLikeStateLookupTables`), while `caseLikeStateColumn` COALESCEs the five tables. Synced data
+  has work items the two read differently: 830 of 11,977 `CASE` rows have a state in no extension table at all, 63 are typed
+  `CASE` with a state only in another type's table (on dev, the 24 behind the 602 / 578 gap: 21 and 3). Neither shows in
+  any list filtered by state, so every count a card shows reads the state through `caseLikeOwnStateColumn`:
+  `StateSeverityCounts`, `StateEngagementTypeCounts`, `ResolvedBuckets` (`projectCaseStatsRepo`), `OutstandingCounts`
+  (`GET /projects/{id}/stats`' per-type counts) and `ProjectActivityCounts` (the project list). Such a row comes back
+  with an empty `State`; `projectCaseStatsService` keeps it in `totalCount` and leaves it out of
+  `activeCount` / `outstandingCount` (`State != "" && != CLOSED`), so the dashboard's Outstanding card, its
+  Outstanding Support Cases chart (which has always skipped it: no severity) and the list agree. Not changed:
+  `ClosedByCreatedWindow` (a change-rate figure with no list) and `SLAStatusInputs`.
+- **`closedOn` filter reads the extension table of the item's own type.** `buildCaseSearchWhere` used to match
+  `"case".closed_on` only, so the Closed (Last 30d) list never found a closed service request or engagement although
+  the card (`ResolvedBuckets`) counts them. Both now use `caseLikeOwnClosedOnColumn` (the closure time of the table
+  of `wi.type`, like `caseLikeOwnStateColumn`), so a CASE-typed item whose only extension row is an engagement's does
+  not match on the engagement's date. `GetCaseByID` keeps `caseLikeClosedOnColumn` (it shows whatever closure time
+  the item has). `resolvedOn`
+  is still `"case".resolved_on` only (nothing links a card to it). Same plan cost as before on the staging-like copy
+  (the extension joins were already in the query): 55-69 ms for the heaviest project's closed-in-30-days count,
+  either way.
+- **Test:** `TestCardsAgreeWithTheirListsIntegration` (real Postgres, `CASE_STATS_TEST_DSN`) seeds the three kinds of
+  row and asserts card = list for case, service request and engagement; against the old code it fails on all three.
+  `TestGetProjectCaseStats_RowsWithoutAStateAreNotOutstanding` is the service half.
+- **Active Chats** is the customer portal backend's: it read the Active count by ServiceNow's numeric id out of a
+  state breakdown whose ids are raw enum labels on this data source, so the card was absent/0 (see
+  `apps/customer-portal/backend-v2/CLAUDE.md`). entity-service's `activeCount` here is Open + Active; the portal
+  card and its list use the Active state alone.
+- **Resolved via Chat (Last 30d) is really 30 days.** A conversation has no resolved-on column, so "resolved in the
+  last 30 days" is state `RESOLVED` and `work_item.updated_on` within 30 days (a resolved chat is rarely touched
+  again). The card is `ProjectConversationStatsResponse.ResolvedPastThirtyDays` (`ResolvedConversationsPastThirtyDays`,
+  Postgres only; a pointer, absent on ServiceNow and on older builds, where the portal backend falls back to the
+  Resolved entry of `stateCount`, which has no period). The list is `SearchConversations` with
+  `filters.startUpdatedDate` / `endUpdatedDate` (inclusive; an end before the start is a 400; the ServiceNow-backed
+  search does not forward them). The customer portal's list sends only the start. Test:
+  `TestConversationResolvedWindowIntegration`.
+- **Deploy:** entity-service first (card counts, the closed-date filter, the 30-day figure and filter), then the
+  customer portal backend (Active Chats, Resolved via Chat), then the webapp (the list's window). Entity-service
+  rejects unknown request fields, so the backend must not go out before it. No migration.
 
 ## Call requests and the service-request catalog (migrations 000067-000072)
 

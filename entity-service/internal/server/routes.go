@@ -1325,8 +1325,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if cfg.DataSource == config.DataSourceServiceNow {
 		outageHandler = handler.NewOutageHandler(service.NewServiceNowOutageService(serviceNowIntegrationServiceClient))
 	} else if cfg.HasDatabase() {
-		outageHandler = handler.NewOutageHandler(
-			service.NewOutageService(repository.NewOutageRepository(repository.NewScoped(db))))
+		outageSvc := service.NewOutageService(repository.NewOutageRepository(repository.NewScoped(db)))
+		// The status page hears about a declared or ended outage from the
+		// write itself: outage.status_page_due on sre-events, posted by
+		// csm-notification-service. Needs the operations topic and the
+		// status-page scope; without either, csm-scheduled-tasks posts on
+		// its tick as before.
+		if srEventPublisher != nil && len(cfg.CloudStatusServiceIDs) > 0 {
+			outageSvc = service.WithOutageCloudStatus(outageSvc, service.WithCloudStatusPublisher(
+				service.NewCloudStatusService(repository.NewCloudStatusRepository(db), cfg.CloudStatusServiceIDs),
+				srEventPublisher))
+			slog.Info("cloud status: outage writes publish outage.status_page_due", "topic", cfg.SREEventHubTopic)
+		}
+		outageHandler = handler.NewOutageHandler(outageSvc)
 	}
 
 	// cloudStatusHandler is Postgres-only, and unconditionally so even though
@@ -1915,6 +1926,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)
 		mux.HandleFunc("GET /internal/cloud-status/pending", cloudStatusHandler.Pending)
 		mux.HandleFunc("POST /internal/cloud-status/{id}/delivery", cloudStatusHandler.RecordDelivery)
+		mux.HandleFunc("POST /internal/cloud-status/{id}/claim", cloudStatusHandler.Claim)
 	}
 
 	mux.HandleFunc("POST /problems", internalOnly(accessSvc, problemHandler.CreateProblem))

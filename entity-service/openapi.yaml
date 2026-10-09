@@ -1637,10 +1637,12 @@ paths:
   /internal/cloud-status/pending:
     get:
       summary: >-
-        Internal-caller-only. Returns the cloud status webhooks still owed to
-        the public dashboards and not yet past their attempt limit, oldest
-        first, with each cloud already translated to the slug the dashboards
-        are addressed by.
+        Internal-caller-only. Claims and returns the cloud status webhooks still
+        owed to the public dashboards and not yet past their attempt limit,
+        oldest first, with each cloud already translated to the slug the
+        dashboards are addressed by. Every returned webhook has an attempt
+        started under its claimToken: the caller must post it and report the
+        outcome; nobody else can post it meanwhile.
       operationId: listPendingCloudStatusWebhooks
       responses:
         "200":
@@ -1688,6 +1690,59 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: No such webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >-
+            Conflict — no open attempt to record against: already delivered, or
+            the claimToken is not the current attempt's.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/cloud-status/{id}/claim:
+    post:
+      summary: >-
+        Internal-caller-only. Starts the attempt to post a webhook published as
+        outage.status_page_due, under the claimToken the event carried. Only a
+        204 allows the caller to post; after it, nobody else can post the
+        webhook, and an attempt that runs out without a reported outcome is
+        never re-sent automatically.
+      operationId: claimCloudStatusWebhook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloudStatusClaim'
+      responses:
+        "204":
+          description: Claimed -- post it, then report the outcome with the same claimToken.
+        "400":
+          description: BadRequest — invalid id or claimToken.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >-
+            Conflict — do not post: already delivered, or no longer reserved
+            under this claimToken (the scheduled task has it).
           content:
             application/json:
               schema:
@@ -11693,13 +11748,20 @@ paths:
   /plg/playbook-runs/{playbookRunId}:
     delete:
       summary: Detach a playbook run.
-      description: "Refused while the run is closed \u2014 that would erase a recorded outcome. This is a GUARDED WRITE. The decision travels inside the statement as a `WHERE` clause rather than being read first, because a lock cannot span an HTTP boundary. `rowsAffected: 0` means the precondition no longer held; deciding what that means (usually `409`) is the caller's job, not this service's."
+      description: "A SOFT detach: the row is kept and stamped with `detached_on` and `detached_by`, so who removed a playbook from a pairing is recoverable. Every read filters detached runs (`plg_playbook_run_v`, `plg_work_queue_v`), so the run disappears exactly as the deleted row used to, and the same playbook can be attached again \u2014 uniqueness is a PARTIAL index over attached rows only. A run that is already detached is `404`, not a conflict: it is invisible to every read. Refused while the run is closed \u2014 that would erase a recorded outcome. This is a GUARDED WRITE. The decision travels inside the statement as a `WHERE` clause rather than being read first, because a lock cannot span an HTTP boundary. `rowsAffected: 0` means the precondition no longer held; deciding what that means (usually `409`) is the caller's job, not this service's."
       operationId: plgDetachRun
       parameters:
         - name: playbookRunId
           in: path
           required: true
           description: "The run's id."
+          schema:
+            type: string
+            format: uuid
+        - name: actorId
+          in: query
+          required: true
+          description: "The `user` id the caller has already resolved, recorded as `detached_by`. A query parameter rather than a body field because this is a DELETE, and a body on one is accepted by some proxies and dropped by others. This service has no notion of \"the current user\"."
           schema:
             type: string
             format: uuid
@@ -25914,6 +25976,10 @@ components:
           type: integer
         lastError:
           type: string
+        claimToken:
+          type: string
+          format: uuid
+          description: The attempt this webhook was handed out under; send it back with the outcome.
       required: [id, outageId, number, event, wireEvent, cloud, timestamp, attemptCount]
     PendingCloudStatusWebhooks:
       type: object
@@ -25924,6 +25990,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PendingCloudStatusWebhook'
+        unknownOutcome:
+          type: integer
+          description: >-
+            Webhooks whose last attempt ended with no known outcome (a timeout
+            after sending, or a sender that never reported). Never re-sent
+            automatically -- the dashboard may already have them.
       required: [count, webhooks]
     CloudStatusDeliveryReport:
       type: object
@@ -25933,7 +26005,27 @@ components:
         error:
           type: string
           description: Required when delivered is false.
+        unknown:
+          type: boolean
+          description: >-
+            The request was sent and no answer came back, so the dashboard may
+            have it. The webhook is then never posted again automatically.
+            Requires delivered=false.
+        claimToken:
+          type: string
+          format: uuid
+          description: >-
+            The token the webhook was handed out under (pending response or
+            outage.status_page_due). When given, the report is accepted only
+            for that attempt.
       required: [delivered]
+    CloudStatusClaim:
+      type: object
+      properties:
+        claimToken:
+          type: string
+          format: uuid
+      required: [claimToken]
     AnnouncementRequest:
       description: >
         A draft, in-review, or approved announcement that has not yet been
@@ -27227,6 +27319,30 @@ components:
               updatedOn:
                 type: string
                 format: date-time
+              authoredBy:
+                type: object
+                nullable: true
+                description: Who created this playbook. Null if written before attribution existed.
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  email:
+                    type: string
+                  name:
+                    type: string
+              updatedBy:
+                type: object
+                nullable: true
+                description: Who last edited it, which need not be the author.
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  email:
+                    type: string
+                  name:
+                    type: string
     PlgPlaybook:
       type: object
       properties:
@@ -27293,6 +27409,34 @@ components:
         updatedOn:
           type: string
           format: date-time
+        authoredBy:
+          type: object
+          nullable: true
+          description: >-
+            Who created this playbook. Null for playbooks written before
+            attribution existed.
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+            name:
+              type: string
+        updatedBy:
+          type: object
+          nullable: true
+          description: >-
+            Who last edited it, which need not be the author -- any admin may
+            edit any playbook.
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+            name:
+              type: string
     PlgDashboard:
       type: object
       properties:
@@ -27645,6 +27789,8 @@ components:
               type: integer
     PlgPatchOrganizationRequest:
       type: object
+      required:
+        - actorId
       properties:
         ownerId:
           type: string
@@ -27653,6 +27799,9 @@ components:
         actorId:
           type: string
           format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as
+            owner_updated_by, alongside owner_updated_on.
     PlgPatchPairingRequest:
       type: object
       required:
@@ -27789,6 +27938,7 @@ components:
         - name
         - playbookType
         - lifecycleStage
+        - actorId
       properties:
         name:
           type: string
@@ -27803,8 +27953,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PlgPlaybookTaskInput"
+        actorId:
+          type: string
+          format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as the
+            playbook's authored_by and updated_by. This service has no notion
+            of "the current user".
     PlgPatchPlaybookRequest:
       type: object
+      required:
+        - actorId
       properties:
         name:
           type: string
@@ -27817,15 +27976,28 @@ components:
           type: string
         active:
           type: boolean
+        actorId:
+          type: string
+          format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as the
+            playbook's updated_by, which need not be whoever authored it.
     PlgReplaceTasksRequest:
       type: object
       required:
         - tasks
+        - actorId
       properties:
         tasks:
           type: array
           items:
             $ref: "#/components/schemas/PlgPlaybookTaskInput"
+        actorId:
+          type: string
+          format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as each
+            task's updated_by, and as created_by for tasks this call adds.
     PlgPlaybookTaskInput:
       type: object
       required:

@@ -23071,6 +23071,16 @@ components:
               updatedOn:
                 type: string
                 format: date-time
+              authoredBy:
+                allOf:
+                  - $ref: '#/components/schemas/PlgUserRef'
+                nullable: true
+                description: Who created this playbook. Null if written before attribution existed.
+              updatedBy:
+                allOf:
+                  - $ref: '#/components/schemas/PlgUserRef'
+                nullable: true
+                description: Who last edited it, which need not be the author.
     PlgDashboard:
       type: object
       properties:
@@ -23390,6 +23400,16 @@ components:
         updatedOn:
           type: string
           format: date-time
+        authoredBy:
+          allOf:
+            - $ref: '#/components/schemas/PlgUserRef'
+          nullable: true
+          description: Who created this playbook. Null if written before attribution existed.
+        updatedBy:
+          allOf:
+            - $ref: '#/components/schemas/PlgUserRef'
+          nullable: true
+          description: Who last edited it, which need not be the author.
     PlgSearchOrganizationsRequest:
       type: object
       properties:

@@ -151,7 +151,7 @@ var KnownTypes = []Type{
 	TypePagingTestCallRequested,
 	TypeSLATierReached,
 	TypeCRApprovalRequested, TypeCRPlanDateNotice,
-	TypeOutageNotificationDue, TypeOutageCommunicationDue,
+	TypeOutageNotificationDue, TypeOutageCommunicationDue, TypeOutageStatusPageDue,
 	TypeProjectContactInvited, TypeProjectContactRegistered,
 	TypeSRCreated, TypeSRAcknowledged, TypeSRCommentAdded,
 	TypeCaseEscalated,

@@ -24,7 +24,7 @@ type PairingWriter interface {
 	Acknowledge(ctx context.Context, req domain.AcknowledgeRequest, actorID string) (domain.AcknowledgeResult, error)
 	PatchPairing(ctx context.Context, req domain.PatchOrgPlatformRequest, actorID string) (domain.PatchPairingResult, error)
 	AttachPlaybook(ctx context.Context, req domain.AttachPlaybookRequest, actorID string) error
-	DetachRun(ctx context.Context, runID string) (domain.WriteResult, string, string, error)
+	DetachRun(ctx context.Context, runID, actorID string) (domain.WriteResult, string, string, error)
 	PatchRunTask(ctx context.Context, req domain.PatchRunTaskRequest, actorID string) (string, string, error)
 	CreateNote(ctx context.Context, req domain.CreateNoteRequest, actorID string) error
 	UpdateNote(ctx context.Context, req domain.UpdateNoteRequest, actorID string) (domain.WriteResult, string, string, error)
@@ -126,12 +126,21 @@ func (s *pairingService) AttachPlaybook(ctx context.Context, req domain.AttachPl
 	return err
 }
 
-func (s *pairingService) DetachRun(ctx context.Context, runID string) (domain.WriteResult, string, string, error) {
+func (s *pairingService) DetachRun(ctx context.Context, runID, actorID string) (domain.WriteResult, string, string, error) {
 	if err := validateUUID("playbookRunId", runID); err != nil {
 		return domain.WriteResult{}, "", "", err
 	}
-	res, orgID, code, err := s.repo.DetachRun(ctx, runID)
-	plgAudit(ctx, "detach run", "", err, "playbookRunId", runID)
+	// Detach is attributed like every other write here, and it is the one that
+	// most needs to be: a detached run is gone from the pairing, so detached_by
+	// is the only remaining record of who removed it. Without this check an
+	// omitted actorId reaches uuidArg as "", becomes a NULL column, and the
+	// request still returns 200 -- a detach that happened with nobody attached
+	// to it, and no way to find out who afterwards.
+	if err := validateActor(actorID); err != nil {
+		return domain.WriteResult{}, "", "", err
+	}
+	res, orgID, code, err := s.repo.DetachRun(ctx, runID, actorID)
+	plgAudit(ctx, "detach run", actorID, err, "playbookRunId", runID)
 	return res, orgID, code, err
 }
 
