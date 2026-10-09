@@ -7663,7 +7663,7 @@ cannot drift:
 
 | Count | Made of | States (the project stats constants, passed in) |
 |---|---|---|
-| Outstanding | cases, service requests, engagements, security report analyses + change requests | cases: every state **but `CLOSED`**, an item with no state of its own type left out (`caseStateClosed`; the dashboard tile's rule, `projectCaseStatsService`; see "Cards count what their lists show"); change requests `crOutstandingStatesFor(scope)` (a customer's Authorize counts, staff's does not) |
+| Outstanding | cases, service requests, engagements, security report analyses + change requests | cases: every state **but `CLOSED`**, an item with no state of its own type left out (`caseStateClosed`; the dashboard tile's rule, `projectCaseStatsService`; see "Cards count what their lists show"); change requests `crOutstandingStatesFor(scope)` (a customer's Authorize counts, and so does a staff user's on the customer portal; staff anywhere else do not) |
 | Action Required | the same items waiting on the customer | `caseStatsActionRequiredStates` (Awaiting Info, Solution Proposed); change requests Customer Approval, Customer Review |
 | Active Chats | conversations | `conversationActiveStates` (OPEN, ACTIVE) |
 
