@@ -65,5 +65,5 @@ func plgAudit(ctx context.Context, op, actorID string, err error, attrs ...any) 
 		slog.ErrorContext(ctx, "plg "+op+": failed", append(base, "err", err)...)
 		return
 	}
-	slog.InfoContext(ctx, "plg "+op+": done", base...)
+	slog.InfoContext(ctx, "plg "+op+": success", base...)
 }

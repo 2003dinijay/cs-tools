@@ -63,7 +63,7 @@ func auditWrite(r *http.Request, op string, err error, attrs ...any) {
 		slog.ErrorContext(r.Context(), "plg "+op+": failed", append(base, "err", err)...)
 		return
 	}
-	slog.InfoContext(r.Context(), "plg "+op+": done", base...)
+	slog.InfoContext(r.Context(), "plg "+op+": success", base...)
 }
 
 // enumPtr renders an optional enum for a log attribute.
