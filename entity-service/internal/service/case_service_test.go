@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -1421,6 +1422,70 @@ func TestCaseService_UpdateCase_AutocloseHoldReachesServiceNowOverHTTP(t *testin
 	time.Sleep(50 * time.Millisecond)
 	if n := failures.count(); n != 0 {
 		t.Errorf("recorded %d writeback failures for a mirror ServiceNow accepted", n)
+	}
+}
+
+// TestCaseService_UpdateCase_M2MCallerCanSetCombinableFields is the
+// regression guard for a real, live-confirmed bug: a pure M2M caller (e.g.
+// csm-integration-service, which forwards no x-user-id-token at all) got a
+// hard 401 setting bestCaseFixEta/etc, because updateCaseFields' actor
+// resolution required a real user token with no fallback -- unlike
+// pgProjectUpdateService.resolveUpdatedBy, which already tolerated this for
+// PATCH /projects/{id}. An Unrestricted-scope caller (M2M_CLIENT_IDS) with no
+// token must now succeed, stamping work_item.updated_by with its own client
+// id instead of being rejected.
+func TestCaseService_UpdateCase_M2MCallerCanSetCombinableFields(t *testing.T) {
+	bestCaseFixEta := "2026-10-15"
+	var gotActorID, gotActorEmail string
+	repo := &stubCaseRepo{
+		updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, actorID, actorEmail string) (time.Time, error) {
+			gotActorID, gotActorEmail = actorID, actorEmail
+			return time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC), nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{ClientID: "csm-integration-service"})
+	if _, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, BestCaseFixEta: &bestCaseFixEta}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotActorID != "" {
+		t.Errorf("actorID = %q, want empty (no real user record for an M2M caller)", gotActorID)
+	}
+	if gotActorEmail != "csm-integration-service" {
+		t.Errorf("actorEmail (stamped as work_item.updated_by) = %q, want the caller's client id", gotActorEmail)
+	}
+}
+
+// TestCaseService_UpdateCase_M2MCallerWithRestrictedScopeStillRejected proves
+// the M2M fallback above only applies to an Unrestricted caller -- a request
+// with no token and no Unrestricted scope still gets the original 401,
+// rather than the fallback silently widening who may PATCH these fields.
+func TestCaseService_UpdateCase_M2MCallerWithRestrictedScopeStillRejected(t *testing.T) {
+	bestCaseFixEta := "2026-10-15"
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil, stubAccess{scope: AccessScope{Unrestricted: false}}, nil)
+
+	_, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, BestCaseFixEta: &bestCaseFixEta})
+	var unauthorized *apierror.UnauthorizedError
+	if !errors.As(err, &unauthorized) {
+		t.Fatalf("expected UnauthorizedError, got %v", err)
+	}
+}
+
+// TestCaseService_UpdateCase_M2MCallerCannotProvideWorkaround proves the one
+// deliberate carve-out: workaroundProvided needs a real "user" row to stamp
+// workaround_provided_by_user_id with, which an M2M caller (empty actor ID)
+// cannot supply -- it must be rejected with a clear ValidationError, not sent
+// to the repository as an empty-string UUID cast.
+func TestCaseService_UpdateCase_M2MCallerCannotProvideWorkaround(t *testing.T) {
+	workaroundProvided := true
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{ClientID: "csm-integration-service"})
+	_, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkaroundProvided: &workaroundProvided})
+	var validation *apierror.ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("expected ValidationError, got %v", err)
 	}
 }
 

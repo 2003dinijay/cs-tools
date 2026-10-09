@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
@@ -2574,10 +2575,16 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 
 	// The actor is only needed to stamp workaround_provided_by_user_id and
 	// work_item.updated_by -- resolved once regardless, since updated_by is
-	// always written.
-	actor, err := s.resolveActor(ctx)
+	// always written. resolveActorOrM2M (not resolveActor) so a pure M2M
+	// caller with no end-user token -- e.g. csm-integration-service setting
+	// a fix-ETA -- can still PATCH these fields; see that method's own doc
+	// comment.
+	actor, err := s.resolveActorOrM2M(ctx)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
+	}
+	if req.WorkaroundProvided != nil && *req.WorkaroundProvided && actor.ID == "" {
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workaroundProvided requires an authenticated end-user caller: a pure M2M caller has no user record to attribute it to"}
 	}
 
 	updatedOn, err := s.repo.UpdateCaseFields(ctx, req, actor.ID, actor.Email)
@@ -2980,6 +2987,48 @@ func (s *caseService) resolveActor(ctx context.Context) (domain.User, error) {
 		return domain.User{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
 	}
 	return s.userRepo.GetUserByEmail(ctx, email)
+}
+
+// resolveActorOrM2M is resolveActor plus an M2M fallback, mirroring
+// pgProjectUpdateService.resolveUpdatedBy: with no x-user-id-token, a caller
+// whose AccessScope is Unrestricted (an M2M_CLIENT_IDS client, or the CSM
+// portal backend) is resolved to its own client id instead of being
+// rejected outright. Used only by updateCaseFields, whose combinable-field
+// bundle (bestCaseFixEta/mostLikelyFixEta/worstCaseFixEta/subject/
+// description/deploymentId/deployedProductId/relatedCaseId/
+// workaroundProvided) a pure M2M caller -- e.g. csm-integration-service,
+// which forwards no end-user identity at all -- must be able to PATCH.
+// Every other resolveActor call site (assign, acknowledge, watch list, add
+// a tag, add a comment, close a case) keeps requiring a real end-user
+// token: those actions' actor is meant to be a real person, not a service
+// account, so they are deliberately not widened here.
+//
+// The returned domain.User.ID is empty on the M2M fallback (there is no
+// real "user" row to attribute to) -- updateCaseFields itself rejects
+// WorkaroundProvided:true in that case, since that field needs a real user
+// id to stamp workaround_provided_by_user_id with. Email is used
+// unconditionally to stamp work_item.updated_by, a free-text audit column
+// that already accepts a client id just as well as a real email (see that
+// column's own doc comment elsewhere in this codebase).
+func (s *caseService) resolveActorOrM2M(ctx context.Context) (domain.User, error) {
+	if middleware.UserIDTokenFromContext(ctx) != "" {
+		return s.resolveActor(ctx)
+	}
+	if s.access == nil {
+		return domain.User{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.User{}, err
+	}
+	if !scope.Unrestricted {
+		return domain.User{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+	clientID := auth.IdentityFromContext(ctx).ClientID
+	if clientID == "" {
+		clientID = "internal-client"
+	}
+	return domain.User{Email: clientID}, nil
 }
 
 // recordFieldChangeActivity is a best-effort wrapper around
