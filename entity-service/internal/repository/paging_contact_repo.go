@@ -27,7 +27,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 )
 
-// PagingContactRepository reads and writes paging_contact (migration 0213):
+// PagingContactRepository reads and writes paging_contact (migration 0216):
 // a person's paging-only phone number, and the last test call to it.
 //
 // Every write names the actor for the audit trigger in the same transaction

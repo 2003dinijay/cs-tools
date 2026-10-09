@@ -32,7 +32,7 @@ import (
 // PagingChainRepository reads and changes the people on a Case Paging chain:
 // the team_member rows behind each tier. See domain.PagingChainMember.
 //
-// Every write names the actor for the audit trigger (migration 0212) and runs
+// Every write names the actor for the audit trigger (migration 0214) and runs
 // in one transaction, so a move ("make X the 2nd responder", which takes the
 // slot off whoever held it) is never half applied.
 type PagingChainRepository interface {

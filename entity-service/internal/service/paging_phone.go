@@ -32,7 +32,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
-// Paging-only phone numbers (migration 0213). Paging calls the number on a
+// Paging-only phone numbers (migration 0216). Paging calls the number on a
 // person's Asgardeo profile; where that has none, a lead or rota admin can
 // store one here. It is never written to Asgardeo. A "Test call" asks
 // csm-notification-service to ring it (paging.test_call_requested), which

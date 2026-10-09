@@ -324,7 +324,7 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
 A **rota** is a named rotation inside a family. SRE runs SaaS (Apollo & Artemis)
 and IaaS. **SME**, a third family added in 0199, runs one rota per product:
 Asgardeo, Choreo Runtime, Bijira, Devant, WSO2 Cloud · Agent platform,
-WSO2 Cloud · Core and Moesif, plus U2 and B-Central (0214). The source is the "CSM SRE + SME on call" doc.
+WSO2 Cloud · Core and Moesif, plus U2 and B-Central (0217). The source is the "CSM SRE + SME on call" doc.
 PaaS SRE is N/A there, so it has no rota until it has a schedule.
 
 | Rota | Family | Team type | Zones (LK time) | Duty rotates | Escalation |
@@ -341,7 +341,7 @@ PaaS SRE is N/A there, so it has no rota until it has a schedule.
 | `SME_U2` | SME | `sme-u2` | `U2_D` / `U2_N`, as Moesif | weekly | 5 min |
 | `SME_B_CENTRAL` | SME | `sme-b-central` | `BCN_D` / `BCN_N`, as Moesif | weekly | 5 min |
 
-U2 and B-Central were added by migration 0214, data only, with the windows their rota sheet gives. Unlike the other SME rotations it also inserts their two team rows (keys `u2`, `b-central`), only when no team has that key, so every environment gets them from one script.
+U2 and B-Central were added by migration 0217, data only, with the windows their rota sheet gives. Unlike the other SME rotations it also inserts their two team rows (keys `u2`, `b-central`), only when no team has that key, so every environment gets them from one script.
 
 **How it hangs together:**
 - **Teams join a rota by type.** A team is on the rota whose `team_type` matches

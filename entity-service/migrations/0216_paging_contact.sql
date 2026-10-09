@@ -31,7 +31,7 @@
 --
 -- Re-runnable: the table and its constraints are created only if missing,
 -- and the trigger is replaced. One transaction with a short lock timeout, as
--- 0155 and 0212.
+-- 0155 and 0214.
 
 BEGIN;
 SET LOCAL lock_timeout = '5s';
