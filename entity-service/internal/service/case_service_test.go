@@ -1479,6 +1479,71 @@ func TestCaseService_UpdateCase_DoesNotCompleteWorkaroundSLAOnRecall(t *testing.
 	}
 }
 
+// TestCaseService_UpdateCase_PublishesWorkaroundProvided is the regression
+// guard for a second, distinct gap on top of the one above: entity-service's
+// own Postgres-side SLAEngineService (just above) completed its workaround
+// clock, but nothing published any event at all for
+// csm-notification-service's own, independent Redis-based SLA engine to
+// hear about it -- its workaround clock could still fire a breach alert
+// well after a workaround had genuinely been provided. case.workaround_provided
+// closes that gap.
+func TestCaseService_UpdateCase_PublishesWorkaroundProvided(t *testing.T) {
+	workaroundProvided := true
+	repo := &stubCaseRepo{
+		updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, actorID, actorEmail string) (time.Time, error) {
+			return time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), nil
+		},
+	}
+	userRepo := stubUserRepo{getUserByEmail: func(_ context.Context, email string) (domain.User, error) {
+		return domain.User{ID: "actor-id", Email: email}, nil
+	}}
+	pub := &mockEventPublisher{}
+	svc := NewCaseServiceWithSNWriteback(repo, userRepo, pub, alwaysUnrestrictedAccess{}, nil, nil, nil, &fakeSLAEngineService{}, "")
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	if _, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkaroundProvided: &workaroundProvided}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	call, found := findPublishCall(pub.calls, events.TypeWorkaroundProvided)
+	if !found {
+		t.Fatalf("expected a case.workaround_provided publish, got %v", publishedTypes(pub.calls))
+	}
+	var payload events.WorkaroundProvidedPayload
+	if err := json.Unmarshal(call.payload, &payload); err != nil {
+		t.Fatalf("decode payload: %v", err)
+	}
+	if payload.CaseID != testDeploymentUUID {
+		t.Errorf("payload caseId = %q, want %q", payload.CaseID, testDeploymentUUID)
+	}
+}
+
+// TestCaseService_UpdateCase_DoesNotPublishWorkaroundProvidedOnRecall is the
+// negative counterpart -- false (a recall) must not publish either, same
+// "no uncomplete operation" posture as CompleteWorkaroundClock.
+func TestCaseService_UpdateCase_DoesNotPublishWorkaroundProvidedOnRecall(t *testing.T) {
+	workaroundProvided := false
+	repo := &stubCaseRepo{
+		updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, actorID, actorEmail string) (time.Time, error) {
+			return time.Date(2026, 9, 24, 12, 0, 0, 0, time.UTC), nil
+		},
+	}
+	userRepo := stubUserRepo{getUserByEmail: func(_ context.Context, email string) (domain.User, error) {
+		return domain.User{ID: "actor-id", Email: email}, nil
+	}}
+	pub := &mockEventPublisher{}
+	svc := NewCaseServiceWithSNWriteback(repo, userRepo, pub, alwaysUnrestrictedAccess{}, nil, nil, nil, &fakeSLAEngineService{}, "")
+
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+	if _, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkaroundProvided: &workaroundProvided}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if _, found := findPublishCall(pub.calls, events.TypeWorkaroundProvided); found {
+		t.Errorf("expected no case.workaround_provided publish for a recall, got %v", publishedTypes(pub.calls))
+	}
+}
+
 // TestCaseService_UpdateCase_RejectsMalformedFixEtaDate proves a malformed
 // date in the combinable bundle is a validation error before it ever
 // reaches the repository (the stub panics if reached).
