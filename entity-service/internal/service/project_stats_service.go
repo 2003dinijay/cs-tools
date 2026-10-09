@@ -312,6 +312,12 @@ func (s *projectStatsService) GetProjectConversationStats(ctx context.Context, p
 			resp.ActiveCount += row.Count
 		}
 	}
+
+	resolved, err := s.repo.ResolvedConversationsPastThirtyDays(ctx, projectID, createdByEmail)
+	if err != nil {
+		return domain.ProjectConversationStatsResponse{}, err
+	}
+	resp.ResolvedPastThirtyDays = &resolved
 	return resp, nil
 }
 

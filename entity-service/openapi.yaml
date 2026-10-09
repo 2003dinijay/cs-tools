@@ -11206,13 +11206,20 @@ paths:
   /plg/playbook-runs/{playbookRunId}:
     delete:
       summary: Detach a playbook run.
-      description: "Refused while the run is closed \u2014 that would erase a recorded outcome. This is a GUARDED WRITE. The decision travels inside the statement as a `WHERE` clause rather than being read first, because a lock cannot span an HTTP boundary. `rowsAffected: 0` means the precondition no longer held; deciding what that means (usually `409`) is the caller's job, not this service's."
+      description: "A SOFT detach: the row is kept and stamped with `detached_on` and `detached_by`, so who removed a playbook from a pairing is recoverable. Every read filters detached runs (`plg_playbook_run_v`, `plg_work_queue_v`), so the run disappears exactly as the deleted row used to, and the same playbook can be attached again \u2014 uniqueness is a PARTIAL index over attached rows only. A run that is already detached is `404`, not a conflict: it is invisible to every read. Refused while the run is closed \u2014 that would erase a recorded outcome. This is a GUARDED WRITE. The decision travels inside the statement as a `WHERE` clause rather than being read first, because a lock cannot span an HTTP boundary. `rowsAffected: 0` means the precondition no longer held; deciding what that means (usually `409`) is the caller's job, not this service's."
       operationId: plgDetachRun
       parameters:
         - name: playbookRunId
           in: path
           required: true
           description: "The run's id."
+          schema:
+            type: string
+            format: uuid
+        - name: actorId
+          in: query
+          required: true
+          description: "The `user` id the caller has already resolved, recorded as `detached_by`. A query parameter rather than a body field because this is a DELETE, and a body on one is accepted by some proxies and dropped by others. This service has no notion of \"the current user\"."
           schema:
             type: string
             format: uuid
@@ -26499,6 +26506,30 @@ components:
               updatedOn:
                 type: string
                 format: date-time
+              authoredBy:
+                type: object
+                nullable: true
+                description: Who created this playbook. Null if written before attribution existed.
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  email:
+                    type: string
+                  name:
+                    type: string
+              updatedBy:
+                type: object
+                nullable: true
+                description: Who last edited it, which need not be the author.
+                properties:
+                  id:
+                    type: string
+                    format: uuid
+                  email:
+                    type: string
+                  name:
+                    type: string
     PlgPlaybook:
       type: object
       properties:
@@ -26565,6 +26596,34 @@ components:
         updatedOn:
           type: string
           format: date-time
+        authoredBy:
+          type: object
+          nullable: true
+          description: >-
+            Who created this playbook. Null for playbooks written before
+            attribution existed.
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+            name:
+              type: string
+        updatedBy:
+          type: object
+          nullable: true
+          description: >-
+            Who last edited it, which need not be the author -- any admin may
+            edit any playbook.
+          properties:
+            id:
+              type: string
+              format: uuid
+            email:
+              type: string
+            name:
+              type: string
     PlgDashboard:
       type: object
       properties:
@@ -26917,6 +26976,8 @@ components:
               type: integer
     PlgPatchOrganizationRequest:
       type: object
+      required:
+        - actorId
       properties:
         ownerId:
           type: string
@@ -26925,6 +26986,9 @@ components:
         actorId:
           type: string
           format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as
+            owner_updated_by, alongside owner_updated_on.
     PlgPatchPairingRequest:
       type: object
       required:
@@ -27061,6 +27125,7 @@ components:
         - name
         - playbookType
         - lifecycleStage
+        - actorId
       properties:
         name:
           type: string
@@ -27075,8 +27140,17 @@ components:
           type: array
           items:
             $ref: "#/components/schemas/PlgPlaybookTaskInput"
+        actorId:
+          type: string
+          format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as the
+            playbook's authored_by and updated_by. This service has no notion
+            of "the current user".
     PlgPatchPlaybookRequest:
       type: object
+      required:
+        - actorId
       properties:
         name:
           type: string
@@ -27089,15 +27163,28 @@ components:
           type: string
         active:
           type: boolean
+        actorId:
+          type: string
+          format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as the
+            playbook's updated_by, which need not be whoever authored it.
     PlgReplaceTasksRequest:
       type: object
       required:
         - tasks
+        - actorId
       properties:
         tasks:
           type: array
           items:
             $ref: "#/components/schemas/PlgPlaybookTaskInput"
+        actorId:
+          type: string
+          format: uuid
+          description: >-
+            The `user` id the caller has already resolved. Recorded as each
+            task's updated_by, and as created_by for tasks this call adds.
     PlgPlaybookTaskInput:
       type: object
       required:

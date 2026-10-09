@@ -308,6 +308,10 @@ export interface Playbook {
   activeRuns: number;
   createdOn: string;
   updatedOn: string;
+  /** Null for playbooks written before attribution existed. */
+  authoredBy: UserRef | null;
+  /** Who last edited it, which need not be the author. */
+  updatedBy: UserRef | null;
 }
 
 export interface PlaybookTaskInput {
