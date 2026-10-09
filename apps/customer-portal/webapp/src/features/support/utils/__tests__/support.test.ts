@@ -328,6 +328,34 @@ describe("collapseCodeBlockWhitespace / collapseCommentSourceWhitespace", () => 
     expect(collapseCodeBlockWhitespace(source)).toBe(source);
   });
 
+  it("also cleans laid-out HTML written outside the [code] blocks", () => {
+    const source =
+      "<div>\r\n  <p>Intro</p>\r\n</div>\r\n[code]<ul>\r\n  <li>One</li>\r\n</ul>[/code]\r\n<div>\r\n  <p>Outro</p>\r\n</div>";
+    expect(collapseCodeBlockWhitespace(source)).toBe(
+      "<div><p>Intro</p></div>[code]<ul><li>One</li></ul>[/code]<div><p>Outro</p></div>",
+    );
+  });
+
+  it("judges a newline beside a block against its neighbours, so inline spacing survives", () => {
+    const source =
+      "<p>\r\n  See <b>this</b>\r\n[code]<b>that</b>[/code]\r\n  then stop\r\n</p>";
+    expect(collapseCodeBlockWhitespace(source)).toBe(
+      "<p>See <b>this</b> [code]<b>that</b>[/code] then stop</p>",
+    );
+  });
+
+  it("does not let markup inside a block turn the plain text around it into laid-out HTML", () => {
+    const source = "Line one\nLine two\n[code]<p>a</p>\n<p>b</p>[/code]\nLine three\nLine four";
+    expect(collapseCodeBlockWhitespace(source)).toBe(
+      "Line one\nLine two\n[code]<p>a</p><p>b</p>[/code]\nLine three\nLine four",
+    );
+  });
+
+  it("still cleans each block when the text already holds the placeholder characters", () => {
+    const source = "\uE000 note\n[code]<p>a</p>\n<p>b</p>[/code]";
+    expect(collapseCodeBlockWhitespace(source)).toBe("\uE000 note\n[code]<p>a</p><p>b</p>[/code]");
+  });
+
   it("picks the per-block or whole-body form by whether the body has [code] markers", () => {
     expect(collapseCommentSourceWhitespace("[code]<p>a</p>\n<p>b</p>[/code]\nplain\ntext")).toBe(
       "[code]<p>a</p><p>b</p>[/code]\nplain\ntext",

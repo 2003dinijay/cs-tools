@@ -1228,20 +1228,34 @@ export function collapseHtmlSourceWhitespace(html: string): string {
 
 /**
  * {@link collapseHtmlSourceWhitespace} applied to the inside of each
- * `[code]...[/code]` block, leaving the text between blocks and the markers
- * themselves exactly as they were. ServiceNow's `[code]` marks a stretch as raw
- * HTML; everything outside it is plain text. Legacy escaped markers (`[\code]`,
- * `[\/code]`) are matched and kept as written so the unwrapping functions see the
- * same input they always did.
+ * `[code]...[/code]` block and, separately, to the text around the blocks. ServiceNow's
+ * `[code]` marks a stretch as raw HTML; text outside it is normally plain, and
+ * plain text is left alone by the helper (its newlines are line breaks), but HTML
+ * source laid out outside a block is cleaned the same way as inside one. The
+ * markers themselves are kept exactly as written, legacy escaped ones
+ * (`[\code]`, `[\/code]`) included, so the unwrapping functions see the same
+ * input they always did.
  *
  * @param content - Raw content with `[code]...[/code]` blocks.
  * @returns {string} Content with each block's HTML source whitespace removed.
  */
 export function collapseCodeBlockWhitespace(content: string): string {
-  return content.replace(
-    /(\[\\?code\])([\s\S]*?)(\[\\?\/code\])/gi,
-    (_match, open: string, inner: string, close: string) =>
-      `${open}${collapseHtmlSourceWhitespace(inner)}${close}`,
+  const codeBlock = /(\[\\?code\])([\s\S]*?)(\[\\?\/code\])/gi;
+  const collapseBlock = (_match: string, open: string, inner: string, close: string): string =>
+    `${open}${collapseHtmlSourceWhitespace(inner)}${close}`;
+  // Each block is swapped for a placeholder so the text around it is cleaned in
+  // one pass with the right context (a newline on either side of a block is
+  // judged against its neighbours, not cut off at the marker) and so markup
+  // inside a block never decides whether the outside is laid-out HTML.
+  if (/[\uE000\uE001]/.test(content)) return content.replace(codeBlock, collapseBlock);
+  const blocks: string[] = [];
+  const masked = content.replace(codeBlock, (...args) => {
+    blocks.push(collapseBlock(...(args as [string, string, string, string])));
+    return `\uE000${blocks.length - 1}\uE001`;
+  });
+  return collapseHtmlSourceWhitespace(masked).replace(
+    /\uE000(\d+)\uE001/g,
+    (_match, index: string) => blocks[Number(index)],
   );
 }
 
