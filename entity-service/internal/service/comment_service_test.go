@@ -111,8 +111,8 @@ func TestCommentService_CreateComment_MirrorsToServiceNow(t *testing.T) {
 		if got.ReferenceID != req.ReferenceID || got.Content != req.Content {
 			t.Errorf("mirror got %+v, want referenceId/content to match %+v", got, req)
 		}
-		if got.CreatedBy != "jane.doe@example.com" {
-			t.Errorf("mirror got createdBy %q, want the resolved caller email", got.CreatedBy)
+		if got.CreatedBy != "" {
+			t.Errorf("mirror got createdBy %q, want it omitted so ServiceNow resolves the author from the token", got.CreatedBy)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("mirror.CreateComment was never called")

@@ -307,8 +307,8 @@ func (s *commentService) CreateComment(ctx context.Context, req domain.CreateCom
 	// reach here (rejected above), so unlike case's comment mirror there is
 	// no type to skip dispatch for.
 	if s.snWriteback != nil {
+		// req.CreatedBy is "" or "agent" here; ServiceNow resolves the author from the token otherwise.
 		mirrorReq := req
-		mirrorReq.CreatedBy = createdBy
 		s.snWriteback.Dispatch(ctx, "comment", req.ReferenceID, "create",
 			map[string]any{"referenceId": req.ReferenceID, "referenceType": req.ReferenceType, "type": req.Type, "content": req.Content},
 			func(writeCtx context.Context) error {
