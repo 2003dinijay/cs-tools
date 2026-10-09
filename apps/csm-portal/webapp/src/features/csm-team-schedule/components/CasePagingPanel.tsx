@@ -149,6 +149,12 @@ export default function CasePagingPanel({
   const chainTeams = teams.filter((t) => t !== leadership);
   const shownTeams = teamFilter ? chainTeams.filter((t) => t.key === teamFilter) : chainTeams;
 
+  /** Whether the reader may change anything on this chain. A reader who may
+   *  not (an SME or SRE rota admin, say) is not offered "Edit paging chain"
+   *  at all; the server still checks every edit. */
+  const mayEditAny =
+    !!can &&
+    (can.responderTeams.length > 0 || can.teamLeadTeams.length > 0 || can.americasTeamLead || can.heads);
   const mayResponders = (key: string) => !!can?.responderTeams.includes(key.toLowerCase());
   const mayTeamLeads = (key: string) => !!can?.teamLeadTeams.includes(key.toLowerCase());
 
@@ -266,19 +272,21 @@ export default function CasePagingPanel({
         </h2>
         <div className="tools">
           {totalGaps > 0 ? <span className="rng">{totalGaps} gap{totalGaps === 1 ? "" : "s"}</span> : null}
-          <button
-            className={`btn sm${editing ? " primary" : ""}`}
-            aria-pressed={editing}
-            onClick={() => {
-              setEditing((v) => !v);
-              setChanged(new Set());
-            }}
-          >
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-              <path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16v4z" />
-            </svg>
-            <span>{editing ? "Done editing" : "Edit paging chain"}</span>
-          </button>
+          {mayEditAny || editing ? (
+            <button
+              className={`btn sm${editing ? " primary" : ""}`}
+              aria-pressed={editing}
+              onClick={() => {
+                setEditing((v) => !v);
+                setChanged(new Set());
+              }}
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+                <path d="M4 20h4l10-10a2.8 2.8 0 0 0-4-4L4 16v4z" />
+              </svg>
+              <span>{editing ? "Done editing" : "Edit paging chain"}</span>
+            </button>
+          ) : null}
           <select
             className="teampick"
             aria-label="Show one team"

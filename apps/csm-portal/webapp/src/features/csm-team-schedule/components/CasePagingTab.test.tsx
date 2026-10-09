@@ -125,6 +125,29 @@ describe("CasePagingTab", () => {
     expect(onOpenRota).toHaveBeenCalledWith({ family: "SME", rotaCode: undefined });
   });
 
+  it("opens on the reader's own chain when given one, and the picker still switches", () => {
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" />);
+    expect(screen.getByRole("tab", { name: "SME" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Open the SME rota" })).toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "CRE paging chain by team and level" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "CRE" }));
+    expect(screen.getByRole("tab", { name: "CRE" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("table", { name: "CRE paging chain by team and level" })).toBeInTheDocument();
+  });
+
+  it("opens an IaaS SRE reader on the IaaS SRE chain", () => {
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SRE_IAAS" />);
+    expect(screen.getByRole("tab", { name: "IaaS SRE" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "Open the IaaS SRE rota" })).toBeInTheDocument();
+  });
+
+  it("offers an SME rota admin every chain, opening on SME", () => {
+    render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" />);
+    expect(screen.getAllByRole("tab")).toHaveLength(5);
+    expect(screen.getByRole("tab", { name: "SME" })).toHaveAttribute("aria-selected", "true");
+  });
+
   it("offers the chains in order: CRE, the three SRE sub-teams together, then SME", () => {
     render(<CasePagingTab onOpenRota={vi.fn()} />);
     expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([

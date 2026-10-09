@@ -576,6 +576,41 @@ func TestGetPagingChain_AddsProfilePhone(t *testing.T) {
 	}
 }
 
+// entity-service's own hasProfilePhone (from "user".phone) stands where it
+// says true; where it says false SCIM is asked only while the fallback is on.
+func TestGetPagingChain_ProfilePhoneFromEntityService(t *testing.T) {
+	upstream := `{"members":[
+	  {"membershipId":"m1","email":"db@example.com","hasProfilePhone":true},
+	  {"membershipId":"m2","email":"asg@example.com","hasProfilePhone":false}]}`
+	read := func(phones *PagingPhoneChecker) []map[string]any {
+		h := NewScheduleHandler(&mockEntityScheduleClient{
+			pagingChainFn: func(context.Context, string) ([]byte, error) { return []byte(upstream), nil },
+		}).WithPagingPhones(phones)
+		w := httptest.NewRecorder()
+		h.GetPagingChain(w, withUser(httptest.NewRequest(http.MethodGet, "/team-schedule/paging-chain?family=CRE", nil)))
+		assertStatus(t, w, http.StatusOK)
+		return decodeJSON[struct {
+			Members []map[string]any `json:"members"`
+		}](t, w).Members
+	}
+
+	sc := &fakeSCIM{phones: map[string]string{"asg@example.com": "+94770000002"}}
+	got := read(NewPagingPhoneChecker(sc))
+	if got[0]["hasProfilePhone"] != true || got[1]["hasProfilePhone"] != true {
+		t.Fatalf("fallback on: hasProfilePhone = %v, %v; want true, true", got[0]["hasProfilePhone"], got[1]["hasProfilePhone"])
+	}
+	if strings.Join(sc.asked, ",") != "asg@example.com" {
+		t.Errorf("SCIM asked about %v; want only the member entity-service has no number for", sc.asked)
+	}
+
+	off := &fakeSCIM{phones: map[string]string{"asg@example.com": "+94770000002"}}
+	got = read(NewPagingPhoneChecker(off).WithSCIMFallback(false))
+	if got[0]["hasProfilePhone"] != true || got[1]["hasProfilePhone"] != false || len(off.asked) != 0 {
+		t.Fatalf("fallback off: hasProfilePhone = %v, %v and SCIM asked %v; want true, false, nobody",
+			got[0]["hasProfilePhone"], got[1]["hasProfilePhone"], off.asked)
+	}
+}
+
 func TestGetPagingChain_UnreadableResponsePassesThrough(t *testing.T) {
 	h := NewScheduleHandler(&mockEntityScheduleClient{
 		pagingChainFn: func(context.Context, string) ([]byte, error) { return []byte(`{"members":"odd"}`), nil },

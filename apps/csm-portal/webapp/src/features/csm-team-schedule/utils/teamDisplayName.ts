@@ -28,10 +28,12 @@ const ACRONYMS = new Set(["abt", "cre", "sre", "sme", "iaas", "fde"]);
  * capitalised: "Atlas", "Customer Onboarding", "CRE Leadership".
  *
  * A name that is already written for people ("CRE Leadership") comes back
- * unchanged, and one with nothing left after the suffix keeps its words.
+ * unchanged, and one with nothing left after the suffix keeps its words. A
+ * hyphen before a capital is part of the name ("B-Central"); any other one
+ * splits words ("choreo-runtime", "Cre-leadership").
  */
 export function teamDisplayName(raw: string): string {
-  const words = raw.trim().split(/[\s_-]+/).filter(Boolean);
+  const words = raw.trim().split(/[\s_]+|-(?![A-Z])/).filter(Boolean);
   if (words.length === 0) return raw;
   const lower = words.map((w) => w.toLowerCase());
 

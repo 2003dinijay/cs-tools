@@ -47,12 +47,19 @@ type phoneCacheEntry struct {
 }
 
 // PagingPhoneChecker answers "does this person have a mobile number on their
-// profile" for the Case Paging reads, from SCIM, with one cache and one
-// concurrency bound shared by every read that asks -- the readiness strip and
-// the paging chain ask about the same people.
+// profile" for the Case Paging reads. entity-service answers first, from the
+// number the portal stores on the person ("user".phone); SCIM is asked only
+// for the people it does not answer for, with one cache and one concurrency
+// bound shared by every read that asks -- the readiness strip and the paging
+// chain ask about the same people.
 type PagingPhoneChecker struct {
 	scim phoneLookupClient
-	now  func() time.Time
+	// scimFallback is whether someone entity-service reports with no profile
+	// number is still looked up in SCIM. On until "user".phone has been
+	// filled from Asgardeo for everyone; then SCIM is only asked about people
+	// an older entity-service does not report on at all.
+	scimFallback bool
+	now          func() time.Time
 
 	mu    sync.Mutex
 	cache map[string]phoneCacheEntry
@@ -61,10 +68,45 @@ type PagingPhoneChecker struct {
 // NewPagingPhoneChecker creates a PagingPhoneChecker backed by SCIM.
 func NewPagingPhoneChecker(scimClient phoneLookupClient) *PagingPhoneChecker {
 	return &PagingPhoneChecker{
-		scim:  scimClient,
-		now:   time.Now,
-		cache: make(map[string]phoneCacheEntry),
+		scim:         scimClient,
+		scimFallback: true,
+		now:          time.Now,
+		cache:        make(map[string]phoneCacheEntry),
 	}
+}
+
+// WithSCIMFallback turns the SCIM fallback on or off (on by default); see
+// PagingPhoneChecker.scimFallback.
+func (p *PagingPhoneChecker) WithSCIMFallback(on bool) *PagingPhoneChecker {
+	p.scimFallback = on
+	return p
+}
+
+// profilePhones answers "has a mobile number on their profile" for each email
+// (normalised by the caller). entityAnswer is what entity-service said, by
+// email; someone it said has one is not asked again. SCIM is asked about
+// anyone it said has none, while the fallback is on, and about anyone it said
+// nothing about. failed is the SCIM lookups that failed, as in lookup.
+func (p *PagingPhoneChecker) profilePhones(ctx context.Context, emails []string, entityAnswer map[string]bool) (hasPhone, failed map[string]bool) {
+	var ask []string
+	for _, e := range emails {
+		has, answered := entityAnswer[e]
+		if has || (answered && (p == nil || !p.scimFallback)) {
+			continue
+		}
+		ask = append(ask, e)
+	}
+	if p != nil && p.scim != nil && len(ask) > 0 {
+		hasPhone, failed = p.lookup(ctx, ask)
+	} else {
+		hasPhone, failed = map[string]bool{}, map[string]bool{}
+	}
+	for e, has := range entityAnswer {
+		if has {
+			hasPhone[e] = true
+		}
+	}
+	return hasPhone, failed
 }
 
 // lookup answers "has a mobile number on their profile" for each email

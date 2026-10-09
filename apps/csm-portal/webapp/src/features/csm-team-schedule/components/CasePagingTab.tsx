@@ -63,6 +63,9 @@ const CHAINS: readonly ChainOption[] = [
 interface Props {
   /** Switch the page to the week view on a rota (and team, zone, day). */
   onOpenRota: (target: PagingRotaTarget) => void;
+  /** The chain the tab opens on: the reader's own (SME for an SME rota
+   *  admin, their SRE sub-team's for SRE). CRE when absent. */
+  initialChain?: PagingChainCode;
 }
 
 /**
@@ -71,8 +74,20 @@ interface Props {
  * rota has on, so for them the tab says where to set people and how ready the
  * chain is. Each chain opens with its readiness strip.
  */
-export default function CasePagingTab({ onOpenRota }: Props): JSX.Element {
-  const [chainCode, setChainCode] = useState<PagingChainCode>("CRE");
+export default function CasePagingTab({ onOpenRota, initialChain = "CRE" }: Props): JSX.Element {
+  const chains = CHAINS;
+  const offered = (code: PagingChainCode | undefined): code is PagingChainCode =>
+    !!code && chains.some((c) => c.code === code && !c.disabledReason);
+  // The reader's pick, else the chain they belong to, else the first one
+  // offered. Derived rather than seeded into state, so a profile that settles
+  // after the first frame still opens the right chain.
+  const [chainChoice, setChainCode] = useState<PagingChainCode | undefined>(undefined);
+  const firstOffered = chains.find((c) => !c.disabledReason)?.code as PagingChainCode | undefined;
+  const chainCode: PagingChainCode = offered(chainChoice)
+    ? chainChoice
+    : offered(initialChain)
+      ? initialChain
+      : (firstOffered ?? initialChain);
   const readiness = useGetPagingReadiness(PAGING_READINESS_DAYS);
   // The people a phone gap can be acted on for: the CRE chain (the same read
   // as the panel's), and SRE's while an SRE chain is on screen. SME's people
@@ -100,7 +115,7 @@ export default function CasePagingTab({ onOpenRota }: Props): JSX.Element {
     return { label: "Add number", onClick: () => phone.edit(m) };
   };
 
-  const option = CHAINS.find((c) => c.code === chainCode) ?? CHAINS[0];
+  const option = chains.find((c) => c.code === chainCode) ?? chains[0] ?? CHAINS[0];
   const chainReadiness = readiness.data?.chains.find((c) => c.chain === chainCode);
   const stripRead = {
     chain: chainReadiness,
@@ -122,7 +137,7 @@ export default function CasePagingTab({ onOpenRota }: Props): JSX.Element {
 
   const picker = (
     <div className="seg teamseg cp-chains" role="tablist" aria-label="Paging chain">
-      {CHAINS.map((c) => {
+      {chains.map((c) => {
         const disabled = Boolean(c.disabledReason);
         return (
           <button

@@ -48,6 +48,7 @@ import WeekTable from "../components/WeekTable";
 import CasePagingTab, { type PagingRotaTarget } from "../components/CasePagingTab";
 import { useGetPagingChain } from "../api/usePagingChain";
 import type {
+  PagingChainCode,
   RotaFamily,
   ScheduleAbsencesResponse,
   ScheduleAssignment,
@@ -64,6 +65,7 @@ import {
   moveKindFor,
   movesOfferedOn,
   monthPieces,
+  narrowsToOneRota,
   readerFamily,
   rosterRange,
   type RosterSpan,
@@ -366,6 +368,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  stay on, and where a rota'd family opens. */
   const myRota = (catalogue.data?.teams ?? []).find((t) => t.key === user?.team?.teamKey)?.rotaCode;
 
+  /** The paging chain Case Paging opens on: the reader's own. SME for SME,
+   *  the reader's SRE sub-team's for SRE (SaaS unless their team is on the
+   *  IaaS rota, and for an SRE rota admin, who holds no team), else CRE. */
+  const myPagingChain: PagingChainCode =
+    myFamily === "SME" ? "SME" : myFamily === "SRE" ? (myRota === "SRE_IAAS" ? "SRE_IAAS" : "SRE_SAAS") : "CRE";
+
   /** The team filter, where it belongs to the group on screen. A team picked
    *  on Today's SRE side means nothing on the reader's CRE roster, and would
    *  otherwise filter it to nobody. Any team of the family may be picked --
@@ -386,9 +394,10 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     if (has(myRota)) return myRota;
     return familyRotas[0].code;
   })();
-  /** Only a family that runs more than one rota is narrowed by it. SRE with
-   *  SaaS alone reads exactly as before. */
-  const rotaScoped = familyRotas.length > 1;
+  /** Only a family that runs more than one rota is narrowed by it (SRE with
+   *  SaaS alone reads exactly as before), and never SME -- see
+   *  narrowsToOneRota. */
+  const rotaScoped = narrowsToOneRota(family, familyRotas.length);
 
   const weekStart = useMemo(() => mondayOf(anchor), [anchor]);
   /** The group/team controls the cards render in their own heads. It is the
@@ -527,16 +536,22 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  its Day and Night to SaaS's ladder, week and roster. A window with no
    *  zone, or a zone no rota claims, belongs to every rota as before. My week
    *  stays on the reader's own rota whatever Today is showing. */
+  /** SME is not narrowed to one rotation (see rotaScoped), so its views keep
+   *  every SME rotation's windows; My week still stays on the reader's own. */
+  const smeRotas = useMemo(
+    () => (family === "SME" && view !== "mine" ? familyRotas.map((r) => r.code).join("|") : ""),
+    [family, view, familyRotas],
+  );
   const shifts = useMemo(() => {
-    const keep = scopeRota;
+    const keep = smeRotas ? new Set(smeRotas.split("|")) : scopeRota ? new Set([scopeRota]) : undefined;
     if (!keep) return allShifts;
     const out = new Map<string, ScheduleShift>();
     for (const [code, sh] of allShifts) {
       const zoneRota = sh.zoneCode ? rotaOfZone.get(sh.zoneCode) : undefined;
-      if (!zoneRota || zoneRota === keep) out.set(code, sh);
+      if (!zoneRota || keep.has(zoneRota)) out.set(code, sh);
     }
     return out;
-  }, [allShifts, rotaOfZone, scopeRota]);
+  }, [allShifts, rotaOfZone, scopeRota, smeRotas]);
 
   // The history of the lead's own teams over the months on screen. Read only
   // while the panel is open -- it is a question a lead asks now and then, not
@@ -1166,7 +1181,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
         <div className="card" id="ts-panel" role="tabpanel" aria-labelledby={`ts-tab-${view}`}>
           {view === "paging" ? (
-            <CasePagingTab onOpenRota={openRota} />
+            <CasePagingTab onOpenRota={openRota} initialChain={myPagingChain} />
           ) : assignments.isError ? (
             <QueryErrorState message="Could not load the rota." error={assignments.error} />
           ) : busy ? (

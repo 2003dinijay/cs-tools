@@ -19,7 +19,7 @@
 import { describe, expect, it } from "vitest";
 import type { ScheduleAssignment, ScheduleShift } from "../types";
 import { MOE_DAY, MOE_NIGHT, TZ1, TZ1_L1, TZ1_WE, TZ2, TZ2_WE, TZ3, REGULAR } from "../test/fixtures";
-import { escalationGrid, kindsOfferedOn, monthPieces, moveKindFor, movesOfferedOn, readerFamily, rosterRange, rotaZoneName, zoneColumnOf, zoneDisplayName, zoneLabelOn } from "./rota";
+import { escalationGrid, kindsOfferedOn, monthPieces, moveKindFor, movesOfferedOn, narrowsToOneRota, readerFamily, rosterRange, rotaZoneName, zoneColumnOf, zoneDisplayName, zoneLabelOn } from "./rota";
 import {
   dayLabel,
   zoneAbbreviation,
@@ -434,5 +434,22 @@ describe("a tag worked as another team's normal hours", () => {
     // Regular hours is everybody's: Migration, which is not rota work there,
     // is never picked by choosing it.
     expect(moveKindFor([BR, MIG], "CRE_REGULAR", "vega")).toBeUndefined();
+  });
+});
+
+describe("narrowsToOneRota", () => {
+  it("narrows SRE once it runs more than one rota, whose columns differ", () => {
+    expect(narrowsToOneRota("SRE", 2)).toBe(true);
+    expect(narrowsToOneRota("SRE", 1)).toBe(false);
+  });
+
+  it("never narrows SME: every rotation is a Day and a Night, on one grid", () => {
+    expect(narrowsToOneRota("SME", 7)).toBe(false);
+    expect(narrowsToOneRota("SME", 1)).toBe(false);
+  });
+
+  it("narrows CRE only if it ever runs more than one rota", () => {
+    expect(narrowsToOneRota("CRE", 1)).toBe(false);
+    expect(narrowsToOneRota("CRE", 2)).toBe(true);
   });
 });

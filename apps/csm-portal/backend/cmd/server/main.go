@@ -560,7 +560,12 @@ func main() {
 	// write routes land -- see the plan's Phase 2b.
 	// One SCIM phone cache for the Case Paging reads: the paging chain and the
 	// readiness strip ask about the same people.
-	pagingPhones := handler.NewPagingPhoneChecker(scimClient)
+	// Case Paging reads a person's profile number from entity-service
+	// ("user".phone). Until that column has been filled from Asgardeo for
+	// everyone, people it has no number for are also looked up in SCIM;
+	// PAGING_PHONE_SCIM_FALLBACK=false turns that off.
+	pagingPhones := handler.NewPagingPhoneChecker(scimClient).
+		WithSCIMFallback(strings.TrimSpace(os.Getenv("PAGING_PHONE_SCIM_FALLBACK")) != "false")
 	scheduleHandler := handler.NewScheduleHandler(customerEntityClient).WithPagingPhones(pagingPhones)
 	route("GET /team-schedule/catalogue", handler.PermView, scheduleHandler.GetScheduleCatalogue)
 	route("POST /team-schedule/assignments/search", handler.PermView, scheduleHandler.SearchScheduleAssignments)

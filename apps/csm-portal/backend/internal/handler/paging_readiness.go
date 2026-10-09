@@ -111,6 +111,9 @@ type pagingReadinessPerson struct {
 	PagingPhoneLastTestStatus string `json:"pagingPhoneLastTestStatus,omitempty"`
 	PagingTier                int    `json:"pagingTier,omitempty"`
 	PhoneOptional             bool   `json:"phoneOptional,omitempty"`
+	// HasProfilePhone is entity-service's answer from "user".phone; absent
+	// from an entity-service that predates it, which leaves the answer to SCIM.
+	HasProfilePhone *bool `json:"hasProfilePhone,omitempty"`
 }
 
 // PagingReadinessHandler serves the Case Paging tab's readiness strip.
@@ -204,7 +207,15 @@ func verdictFor(p pagingReadinessPerson, hasProfile, profileFailed bool) phoneVe
 // does not settle it, is skipped, and each chain they are on carries one
 // PHONE_CHECK_UNAVAILABLE warning instead.
 func (h *PagingReadinessHandler) addPhoneGaps(ctx context.Context, readiness *PagingReadiness) {
-	hasPhone, failed := h.phones.lookup(ctx, distinctEmails(readiness.Chains))
+	entityAnswer := make(map[string]bool)
+	for _, c := range readiness.Chains {
+		for _, p := range c.People {
+			if e := normalizeEmail(p.Email); e != "" && p.HasProfilePhone != nil {
+				entityAnswer[e] = entityAnswer[e] || *p.HasProfilePhone
+			}
+		}
+	}
+	hasPhone, failed := h.phones.profilePhones(ctx, distinctEmails(readiness.Chains), entityAnswer)
 	if len(failed) > 0 {
 		slog.WarnContext(ctx, "paging readiness: phone check unavailable for some people", "count", len(failed))
 	}

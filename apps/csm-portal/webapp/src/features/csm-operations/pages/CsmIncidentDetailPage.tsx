@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { Box, Button, Card, Chip, Skeleton, Tab, Tabs, Typography } from "@wso2/oxygen-ui";
+import { Box, Button, Card, Chip, Skeleton, Tab, Tabs, Tooltip, Typography } from "@wso2/oxygen-ui";
 import {
   Activity,
   ArrowLeft,
@@ -239,6 +239,13 @@ const INCIDENT_TAB_IDS: readonly IncidentTabId[] = TAB_DEFS.map((t) => t.id);
  * code/notes for those two (see `checkSilentlyDroppedNotes`'s doc comment
  * for the related, already-handled `additionalComments`/`workNotes` quirk).
  */
+/** Why "Escalate to specialist team" is disabled on an incident nobody is
+ * assigned to. The assignee is responsible for the page to the SME on duty,
+ * so the escalation needs one; the backend refuses it too (409
+ * incident_handoff_needs_assignee). */
+export const HANDOFF_NEEDS_ASSIGNEE_REASON =
+  "Assign the incident to an engineer first: the assignee is responsible for the page to the SME on duty.";
+
 export default function CsmIncidentDetailPage(): JSX.Element {
   // Real router hooks — called unconditionally regardless of `routeOverride`
   // below (rules of hooks), but their VALUES are only actually used when
@@ -683,19 +690,41 @@ export default function CsmIncidentDetailPage(): JSX.Element {
                   ServiceNow shows "Escalate to Special Ops" only when
                   canEscalateToSpecialOps holds. An absent flag (ServiceNow
                   data source) keeps the button. */}
-              {incident.canHandOffToSpecialist !== false && (
-                <Button
-                  variant="outlined"
-                  size="small"
-                  startIcon={<UserCog size={14} />}
-                  onClick={() => {
-                    setHandoffResult(null);
-                    setHandoffOpen(true);
-                  }}
-                >
-                  Escalate to specialist team
-                </Button>
-              )}
+              {incident.canHandOffToSpecialist !== false &&
+                (incident.assignedTo ? (
+                  <Button
+                    variant="outlined"
+                    size="small"
+                    startIcon={<UserCog size={14} />}
+                    onClick={() => {
+                      setHandoffResult(null);
+                      setHandoffOpen(true);
+                    }}
+                  >
+                    Escalate to specialist team
+                  </Button>
+                ) : (
+                  <Tooltip title={HANDOFF_NEEDS_ASSIGNEE_REASON}>
+                    {/* A disabled button is not focusable, so this labelled
+                        wrapper is what exposes the reason to the keyboard
+                        and to assistive tech. */}
+                    <Box
+                      component="span"
+                      tabIndex={0}
+                      aria-label={`Escalate to specialist team: ${HANDOFF_NEEDS_ASSIGNEE_REASON}`}
+                      sx={{ flexShrink: 0 }}
+                    >
+                      <Button
+                        variant="outlined"
+                        size="small"
+                        startIcon={<UserCog size={14} />}
+                        disabled
+                      >
+                        Escalate to specialist team
+                      </Button>
+                    </Box>
+                  </Tooltip>
+                ))}
               <IncidentCreateMenu
                 items={[
                   {

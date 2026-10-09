@@ -444,6 +444,18 @@ export function zoneColumnOf(zoneCode: string): string {
   return zoneDisplayName(zoneCode);
 }
 
+/**
+ * Whether a family's views are narrowed to one rota at a time. SRE is, once it
+ * runs more than one: SaaS works TZ1-TZ3 and IaaS a Day and a Night, and a
+ * grid drawn for both would give each the other's columns. SME never is:
+ * every SME rotation is a Day and a Night, so they all share one grid (see
+ * zoneColumnOf), and narrowing it to the first rotation left every other SME
+ * team's people on the roster with none of their rota.
+ */
+export function narrowsToOneRota(family: RotaFamily, rotaCount: number): boolean {
+  return rotaCount > 1 && family !== "SME";
+}
+
 
 /** The kinds a lead may mark somebody away for on one rota: leave, and the
  *  time allocations that rota uses.

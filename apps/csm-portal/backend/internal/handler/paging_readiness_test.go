@@ -22,6 +22,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -417,4 +418,49 @@ func TestPagingReadiness_PhoneGapsFollowThePagingTiers(t *testing.T) {
 	if g := chainOf(t, got, "CRE").Gaps[0]; g.Severity != "error" || g.PagingTier != 1 {
 		t.Errorf("merged person gap = %+v, want error at tier 1", g)
 	}
+}
+
+// entity-service answers first, from "user".phone: someone it says has a
+// profile number is never looked up in SCIM. Someone it says has none is
+// still looked up while the SCIM fallback is on, and is not once it is off --
+// so a directory outage no longer leaves anyone unchecked.
+func TestPagingReadiness_ProfileNumberFromEntityService(t *testing.T) {
+	body := `{"chains":[{"chain":"CRE","label":"CRE","ready":true,"gaps":[],"people":[
+	  {"userId":"u1","email":"db@example.com","name":"Db","role":"L1","hasPagingPhone":false,"hasProfilePhone":true},
+	  {"userId":"u2","email":"asg@example.com","name":"Asg","role":"L1","hasPagingPhone":false,"hasProfilePhone":false},
+	  {"userId":"u3","email":"old@example.com","name":"Old","role":"L1","hasPagingPhone":false}]}]}`
+
+	t.Run("fallback on: SCIM answers for the people entity-service has no number for", func(t *testing.T) {
+		sc := &fakeSCIM{phones: map[string]string{"asg@example.com": "+94770000002", "old@example.com": "+94770000003"}}
+		got := decodeJSON[PagingReadiness](t, getReadiness(t, NewPagingReadinessHandler(&fakeReadinessEntity{body: body}, NewPagingPhoneChecker(sc)), ""))
+		if c := chainOf(t, got, "CRE"); !c.Ready || len(c.Gaps) != 0 {
+			t.Fatalf("CRE = %+v, want ready with no gaps", c)
+		}
+		sc.mu.Lock()
+		defer sc.mu.Unlock()
+		if strings.Join(sorted(sc.asked), ",") != "asg@example.com,old@example.com" {
+			t.Errorf("SCIM asked about %v; want only the two entity-service has no number for", sc.asked)
+		}
+	})
+
+	t.Run("fallback off: entity-service's answer stands, an older one's silence still asks SCIM", func(t *testing.T) {
+		sc := &fakeSCIM{fail: map[string]bool{"asg@example.com": true}, phones: map[string]string{"old@example.com": "+94770000003"}}
+		phones := NewPagingPhoneChecker(sc).WithSCIMFallback(false)
+		got := decodeJSON[PagingReadiness](t, getReadiness(t, NewPagingReadinessHandler(&fakeReadinessEntity{body: body}, phones), ""))
+		c := chainOf(t, got, "CRE")
+		if c.Ready || fmt.Sprint(gapCodes(c)) != "[NO_PHONE]" || c.Gaps[0].UserID != "u2" {
+			t.Fatalf("CRE = %+v, want one NO_PHONE for Asg and no PHONE_CHECK_UNAVAILABLE", c)
+		}
+		sc.mu.Lock()
+		defer sc.mu.Unlock()
+		if strings.Join(sc.asked, ",") != "old@example.com" {
+			t.Errorf("SCIM asked about %v; want only the person entity-service did not report on", sc.asked)
+		}
+	})
+}
+
+func sorted(in []string) []string {
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	return out
 }

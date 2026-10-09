@@ -129,6 +129,26 @@ describe("CasePagingPanel: the CRE chain as a team-by-level matrix", () => {
     expect(within(rowOf(/^Level 4/)).getByRole("cell")).toHaveTextContent("Sol Head");
   });
 
+  it("offers no Edit paging chain to a reader who may change nothing, and still shows the chain", () => {
+    chain.data = {
+      ...matrixChain(),
+      canEdit: { responderTeams: [], teamLeadTeams: [], americasTeamLead: false, heads: false },
+    };
+    renderPanel();
+    expect(screen.queryByRole("button", { name: /Edit paging chain/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "CRE paging chain by team and level" })).toBeInTheDocument();
+    expect(screen.getByText("Val First")).toBeInTheDocument();
+  });
+
+  it("offers Edit paging chain to a reader who may change only the heads", () => {
+    chain.data = {
+      ...matrixChain(),
+      canEdit: { responderTeams: [], teamLeadTeams: [], americasTeamLead: false, heads: true },
+    };
+    renderPanel();
+    expect(screen.getByRole("button", { name: /Edit paging chain/ })).toBeInTheDocument();
+  });
+
   it("shows names, not pickers, until editing, and an empty slot in words", () => {
     renderPanel();
     const table = screen.getByRole("table", { name: "CRE paging chain by team and level" });

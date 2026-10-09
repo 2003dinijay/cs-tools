@@ -79,8 +79,8 @@ func NewScheduleHandler(entity entityScheduleClient) *ScheduleHandler {
 }
 
 // WithPagingPhones makes GET /team-schedule/paging-chain say, per member,
-// whether they have a mobile number on their profile -- from the same SCIM
-// cache the readiness strip reads.
+// whether they have a mobile number on their profile: entity-service's answer
+// where it gives one, else the same SCIM cache the readiness strip reads.
 func (h *ScheduleHandler) WithPagingPhones(phones *PagingPhoneChecker) *ScheduleHandler {
 	h.phones = phones
 	return h
@@ -292,10 +292,12 @@ func (h *ScheduleHandler) GetPagingChain(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, h.withProfilePhones(r.Context(), result))
 }
 
-// withProfilePhones adds "hasProfilePhone" to each member of a paging-chain
-// response, leaving every other field as entity-service sent it. Best effort:
-// a member whose lookup failed gets no field, and a response that cannot be
-// read is returned unchanged.
+// withProfilePhones sets "hasProfilePhone" on each member of a paging-chain
+// response, leaving every other field as entity-service sent it.
+// entity-service's own answer stands where it says true, and where it says
+// false once the SCIM fallback is off; SCIM answers the rest. Best effort: a
+// member whose lookup failed keeps what entity-service sent (no field from an
+// older one), and a response that cannot be read is returned unchanged.
 func (h *ScheduleHandler) withProfilePhones(ctx context.Context, raw []byte) []byte {
 	if h.phones == nil {
 		return raw
@@ -315,14 +317,23 @@ func (h *ScheduleHandler) withProfilePhones(ctx context.Context, raw []byte) []b
 		return normalizeEmail(e)
 	}
 	seen := make(map[string]bool)
+	entityAnswer := make(map[string]bool)
 	var emails []string
 	for _, m := range members {
-		if e := emailOf(m); e != "" && !seen[e] {
+		e := emailOf(m)
+		if e == "" {
+			continue
+		}
+		if !seen[e] {
 			seen[e] = true
 			emails = append(emails, e)
 		}
+		var has bool
+		if raw, ok := m["hasProfilePhone"]; ok && json.Unmarshal(raw, &has) == nil {
+			entityAnswer[e] = entityAnswer[e] || has
+		}
 	}
-	hasPhone, failed := h.phones.lookup(ctx, emails)
+	hasPhone, failed := h.phones.profilePhones(ctx, emails, entityAnswer)
 	if len(failed) > 0 {
 		slog.WarnContext(ctx, "paging chain: profile phone check unavailable for some people", "count", len(failed))
 	}
