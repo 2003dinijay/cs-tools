@@ -630,6 +630,66 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /sla-status/clock-state:
+    get:
+      summary: >-
+        Return the full, current state of one (work item, clock target) "sla"
+        row, regardless of whether it is currently active — unlike
+        GET /sla-status, which only ever lists active rows. Lets a caller
+        tell a genuinely resolved clock (a real row, in a terminal stage)
+        apart from one that was never registered at all (no row found),
+        which the active-only list can never distinguish between. Used by
+        integrations/csm-notification-service as a final check against this
+        service's own durable record immediately before sending a breach
+        alert for a clock whose Redis-held completion state may have fallen
+        out of sync. Has no ServiceNow equivalent of its own — always backed
+        by Postgres.
+      operationId: getSLAClockState
+      parameters:
+        - name: workItemId
+          in: query
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: target
+          in: query
+          required: true
+          description: Case-insensitive. One of response, workaround, resolution.
+          schema:
+            type: string
+            enum: [response, workaround, resolution]
+        - name: source
+          in: query
+          description: >-
+            Optional, same accepted values as GET /sla-status's own "source".
+            Omitted matches a row of either source.
+          schema:
+            type: string
+            enum: [csm, servicenow]
+      responses:
+        "200":
+          description: >-
+            The clock's current state, or an all-zero/false body with
+            found=false when no row exists for this (work item, target,
+            source) at all.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SLAClockState'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /sla-duration-policy:
     get:
       summary: >-
@@ -25858,6 +25918,26 @@ components:
           type: integer
         offset:
           type: integer
+
+    SLAClockState:
+      type: object
+      description: >-
+        The full, current state of one (work item, clock target) "sla" row,
+        regardless of whether it is currently active. All fields except
+        found are at their zero value when found is false.
+      properties:
+        found:
+          type: boolean
+        isActive:
+          type: boolean
+        stage:
+          type: string
+        hasBreached:
+          type: boolean
+        startedOn:
+          type: string
+          format: date-time
+          nullable: true
 
     SLADurationPolicyItem:
       type: object

@@ -215,6 +215,17 @@ type SLAStatusService interface {
 	// engine's own (much smaller) row set rather than the full
 	// ServiceNow-synced table.
 	SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination, sourceFilter string) (domain.SearchSLAStatusResponse, error)
+
+	// GetClockState returns the full, current state of one (work item,
+	// clock target) "sla" row, regardless of whether it's currently
+	// "active" -- unlike SearchActiveSLAStatuses, which only ever lists
+	// active rows. See domain.SLAClockState's own doc comment for why this
+	// distinction exists and who needs it. A ValidationError is returned
+	// for a malformed workItemId, an unrecognized target (must be
+	// "response"/"workaround"/"resolution", case-insensitive), or an
+	// unrecognized sourceFilter (same accepted values as
+	// SearchActiveSLAStatuses's own).
+	GetClockState(ctx context.Context, workItemID, target, sourceFilter string) (domain.SLAClockState, error)
 }
 
 // SLADurationPolicyService backs GET /sla-duration-policy — see
