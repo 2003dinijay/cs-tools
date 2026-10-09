@@ -886,6 +886,30 @@ func (r *orgPlatformRepository) PatchRunTask(ctx context.Context, req domain.Pat
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// Lock the parent run for the duration, and confirm under that lock that it
+	// is still attached.
+	//
+	// Guarding each statement individually is not enough. The two writes below
+	// are separate statements, and READ COMMITTED gives each its own snapshot:
+	// a detach committing BETWEEN them leaves the first applied and the second
+	// matching nothing, which is the split state this function exists to
+	// prevent — a value recorded as complete with no completed_on or
+	// completed_by beside it. The guards stay as defence, but this is what
+	// closes the window: a concurrent detach now waits for this transaction
+	// instead of landing inside it.
+	var locked string
+	if err := tx.QueryRow(ctx, `
+		SELECT r.id::TEXT
+		FROM   plg_playbook_run_task t
+		JOIN   plg_playbook_run r ON r.id = t.playbook_run_id
+		WHERE  t.id::TEXT = $1 AND r.detached_on IS NULL
+		FOR    UPDATE OF r`, req.ID).Scan(&locked); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return "", "", &apierror.NotFoundError{Msg: "task not found"}
+		}
+		return "", "", fmt.Errorf("lock playbook run: %w", err)
+	}
+
 	var completed bool
 	if err := tx.QueryRow(ctx, q, req.ID, req.ClearValue,
 		req.BoolValue, req.NumberValue, req.TextValue, req.CheckedCodes).Scan(&completed); err != nil {
@@ -904,15 +928,23 @@ func (r *orgPlatformRepository) PatchRunTask(ctx context.Context, req domain.Pat
 
 	// Stamp or clear the completion trail to match what the generated column now
 	// says, so the two can never describe different states.
-	if _, err := tx.Exec(ctx, `
+	tag, err := tx.Exec(ctx, `
 		UPDATE plg_playbook_run_task
 		SET    completed_on = CASE WHEN is_completed THEN COALESCE(completed_on, NOW()) ELSE NULL END,
 		       completed_by = CASE WHEN is_completed THEN COALESCE(completed_by, $2::UUID) ELSE NULL END
 		WHERE  id::TEXT = $1
 		  AND  EXISTS (SELECT 1 FROM plg_playbook_run r
 		               WHERE r.id = plg_playbook_run_task.playbook_run_id
-		                 AND r.detached_on IS NULL)`, req.ID, uuidArg(actor)); err != nil {
+		                 AND r.detached_on IS NULL)`, req.ID, uuidArg(actor))
+	if err != nil {
 		return "", "", actorWrite(err, actor, "stamp completion")
+	}
+	// Impossible while the lock above is held, and worth failing loudly rather
+	// than committing half the change if it ever becomes possible: the value is
+	// already written by this point, so a silent miss here is the split state
+	// again.
+	if tag.RowsAffected() == 0 {
+		return "", "", fmt.Errorf("stamp completion: the run was detached mid-transaction")
 	}
 
 	if err := tx.Commit(ctx); err != nil {
