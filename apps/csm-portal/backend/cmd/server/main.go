@@ -559,6 +559,7 @@ func main() {
 	// rota is a lead's job and will need a permission of its own when the
 	// write routes land -- see the plan's Phase 2b.
 	scheduleHandler := handler.NewScheduleHandler(customerEntityClient)
+	rotaGenerateHandler := handler.NewRotaGenerateHandler(customerEntityClient)
 	route("GET /team-schedule/catalogue", handler.PermView, scheduleHandler.GetScheduleCatalogue)
 	route("POST /team-schedule/assignments/search", handler.PermView, scheduleHandler.SearchScheduleAssignments)
 	route("POST /team-schedule/absences/search", handler.PermView, scheduleHandler.SearchScheduleAbsences)
@@ -578,6 +579,9 @@ func main() {
 	route("DELETE /team-schedule/absences/{id}", handler.PermWrite, scheduleHandler.DeleteScheduleAbsence)
 	route("POST /team-schedule/absence-kinds", handler.PermWrite, scheduleHandler.CreateScheduleAbsenceKind)
 	route("DELETE /team-schedule/absence-kinds/{code}", handler.PermWrite, scheduleHandler.DeleteScheduleAbsenceKind)
+	// "Generate month": a lead of the SaaS SRE rota works a month out from
+	// the availability marked on it. Who may is entity-service's decision.
+	route("POST /team-schedule/rotas/{code}/generate", handler.PermWrite, rotaGenerateHandler.GenerateRotaMonth)
 	route("POST /configuration-items/search", handler.PermView, configurationItemHandler.SearchConfigurationItems)
 	route("POST /time-cards/search", handler.PermTimeCardsAndUpdates, timeCardHandler.SearchTimeCards)
 	route("POST /time-cards", handler.PermTimeCardsAndUpdates, timeCardHandler.CreateTimeCard)

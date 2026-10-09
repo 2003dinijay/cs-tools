@@ -703,6 +703,17 @@ describe("MonthRoster: back from a move mid-month", () => {
     expect(cells[15]).toBe(REGULAR.shortCode);
   });
 
+  it("draws no LK on a team whose engineers work one zone a day", () => {
+    // An SRE SaaS engineer works TZ1 or TZ2 and nights, never LK's whole day;
+    // the generated SUP says which, so an unmarked weekday stays blank.
+    const { container } = renderRoster({
+      assignments: [],
+      teamMembers: { bravo: [{ userId: "u-Nia", name: "Nia", email: "n@example.com", isLead: false, role: "engineer" }] },
+      teamsWithoutDefault: new Set(["bravo"]),
+    });
+    expect(container.querySelectorAll(".chip.dflt")).toHaveLength(0);
+  });
+
   it("reads a team's own ordinary day where it has one", () => {
     const { container } = renderRoster({
       assignments: [],
