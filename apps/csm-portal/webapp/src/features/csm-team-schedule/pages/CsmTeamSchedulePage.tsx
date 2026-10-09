@@ -47,6 +47,8 @@ import RecentChanges from "../components/RecentChanges";
 import WeekTable from "../components/WeekTable";
 import CasePagingTab, { type PagingRotaTarget } from "../components/CasePagingTab";
 import { useGetPagingChain } from "../api/usePagingChain";
+import GenerateRotaDialog from "../components/GenerateRotaDialog";
+import { GENERATED_ROTA } from "../api/useGenerateRota";
 import type {
   PagingChainCode,
   RotaFamily,
@@ -464,6 +466,17 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  is the reader's own rota, or the family's first for a reader with none
    *  (a rota admin), who otherwise saw IaaS's lanes on their own week. */
   const scopeRota: string | undefined = view === "mine" ? (myRota ?? rota) : rota;
+
+  /** Whether the SaaS rota's "Generate month" is offered: on the roster of
+   *  that rota, to a reader who may edit one of its teams. The server checks
+   *  again (a lead of Apollo or Artemis, or an SRE rota admin). */
+  const [generateOpen, setGenerateOpen] = useState(false);
+  const canGenerateRota =
+    view === "roster" &&
+    scopeRota === GENERATED_ROTA &&
+    (catalogue.data?.teams ?? []).some(
+      (t) => t.rotaCode === GENERATED_ROTA && (leadTeams.data ?? []).includes(t.key),
+    );
   // A family running more than one rota reads only the scoped rota's teams;
   // otherwise the family alone, as before.
   const teamKeys = shownTeamKey ? [shownTeamKey] : rotaScoped && scopeRota ? teamsOf(family, scopeRota) : undefined;
@@ -927,6 +940,28 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     [catalogue.data?.teams],
   );
 
+  /** The generated rota's teams and their people, for choosing each team's TZ3. */
+  const generateTeams = useMemo(
+    () =>
+      (catalogue.data?.teams ?? [])
+        .filter((t) => t.rotaCode === GENERATED_ROTA)
+        .sort((a, b) => a.sortOrder - b.sortOrder)
+        .map((t) => ({
+          key: t.key,
+          name: teamDisplayName(t.name),
+          members: [...(t.members ?? [])].sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email)),
+        })),
+    [catalogue.data?.teams],
+  );
+
+  /** Teams the roster draws no LK for: the generated rota's own, whose
+   *  engineers work one zone a day and carry its SUP instead. */
+  const teamsWithoutDefault = useMemo(
+    () =>
+      new Set((catalogue.data?.teams ?? []).filter((t) => t.rotaCode === GENERATED_ROTA).map((t) => t.key)),
+    [catalogue.data?.teams],
+  );
+
   /** Each team's members, by key, so the roster shows every one of them. */
   const teamMembers = useMemo(
     () => Object.fromEntries((catalogue.data?.teams ?? []).map((t) => [t.key, t.members ?? []])),
@@ -1117,6 +1152,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                 <span>{editing ? "Done editing" : "Edit rota"}</span>
               </button>
             ) : null}
+
+            {canGenerateRota ? (
+              <button className="btn sm" onClick={() => setGenerateOpen(true)}>
+                <span>Generate month</span>
+              </button>
+            ) : null}
           </div>
         </div>
 
@@ -1232,6 +1273,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               leadTeams={leadTeams.data ?? []}
               teamMembers={teamMembers}
               teamDefaultShift={teamDefaultShift}
+              teamsWithoutDefault={teamsWithoutDefault}
               editedCells={editedCells}
               editing={editing}
               onEditCell={editCell}
@@ -1296,6 +1338,9 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           onClear={clearCell}
           onClose={() => setPicker(null)}
         />
+      ) : null}
+      {canGenerateRota ? (
+        <GenerateRotaDialog open={generateOpen} onClose={() => setGenerateOpen(false)} teams={generateTeams} />
       ) : null}
     </div>
     </TeamColourProvider>

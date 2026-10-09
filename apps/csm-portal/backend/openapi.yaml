@@ -13399,6 +13399,99 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /team-schedule/rotas/{code}/generate:
+    post:
+      summary: Generate (or preview) a month of a rota from the availability marked on it.
+      description: >
+        The Team Schedule's "Generate month" action, proxied to entity-service.
+        Only SRE_SAAS (Apollo and Artemis) can be generated. Entity-service
+        decides who may: a lead of one of the rota's teams, or an SRE rota
+        admin. `dryRun` returns the month without writing it; a month that
+        already holds generated turns needs `regenerate`. Turns set by hand
+        are never replaced. Refusals carry entity-service's reason.
+      operationId: generateTeamScheduleRotaMonth
+      parameters:
+        - name: code
+          in: path
+          required: true
+          description: Rota code
+          schema:
+            type: string
+            example: SRE_SAAS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [month]
+              properties:
+                month:
+                  type: string
+                  description: YYYY-MM, the current month or a later one.
+                dryRun:
+                  type: boolean
+                regenerate:
+                  type: boolean
+                from:
+                  type: string
+                  format: date
+                nightCrew:
+                  type: object
+                  description: Team key -> the people chosen to work that team's TZ3 for the month; L1, L2 and L3 go round them.
+                  additionalProperties:
+                    type: array
+                    items: {type: string}
+      responses:
+        "200":
+          description: The month, previewed (dryRun). Entity-service's GenerateRotaMonthResponse, passed through.
+          content:
+            application/json:
+              schema:
+                type: object
+        "201":
+          description: The month, written. Entity-service's GenerateRotaMonthResponse, passed through.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: A bad month or from, a month that is over, or from in the past.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Not a lead or admin of the rota.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: The rota cannot be generated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: The month is already generated; send regenerate.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /team-schedule/absence-kinds/{code}:
     delete:
       summary: Delete a leave or allocation tag once nothing uses it.

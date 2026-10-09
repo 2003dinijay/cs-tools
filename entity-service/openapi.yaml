@@ -7088,6 +7088,98 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/rotas/{code}/generate:
+    post:
+      summary: Generate a month of a rota from the availability marked on it.
+      description: >
+        The Team Schedule's "Generate month" action. Works out a month of the
+        SaaS SRE rota (Apollo and Artemis) the way the leads' rota sheet did:
+        L1, L2 and L3 per team for TZ1, TZ2 and TZ3 every weekday (the weekend
+        window and TZ3 at a weekend, with an on-call and an escalation), the
+        regular hours (SUP) of everyone working, and Lieu leave on the Monday
+        and Tuesday after a weekend on-call. One person works one zone a day:
+        each team's lead is L3 on TZ1 (the weekend window at a weekend), and the
+        other zones' L3 is a teammate free that day. Reads leave and allocations
+        (RnD, ENG, ...) as days away. Nights: when TZ3 regular hours are marked
+        in the month, those people are the night rota; when none are, every
+        engineer (not the leads) takes a turn, two per team each week. Turns are
+        written as source GENERATED; a turn set by hand is never touched, a slot
+        a lead filled by hand is left to them, and a person whose day someone
+        else set is put on no other zone that day.
+        `dryRun` returns the month without writing it. A month that already has
+        generated turns needs `regenerate`, which replaces the generated turns
+        from `from` on. Only SRE_SAAS can be generated. Internal staff with a
+        user token who lead one of the rota's teams, or hold the SRE rota admin
+        role; a service credential is refused.
+      operationId: generateRotaMonth
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            example: SRE_SAAS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GenerateRotaMonthRequest'
+      responses:
+        "200":
+          description: The month, worked out and not written (dryRun).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerateRotaMonthResponse'
+        "201":
+          description: The month, written.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GenerateRotaMonthResponse'
+        "400":
+          description: A bad month or from, a month that is over, or from in the past.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not internal, no user token, or not a lead or admin of the rota.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The rota cannot be generated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The month already has generated turns; send regenerate.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: The catalogue lacks a SaaS shift, the lieu kind, or a team on the rota.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/absences/apply:
     post:
       summary: Mark one engineer away across a span, or bring them back over it.
@@ -13058,6 +13150,92 @@ components:
         do not carry this requirement.
 
   schemas:
+    GenerateRotaMonthRequest:
+      type: object
+      required: [month]
+      properties:
+        month:
+          type: string
+          description: YYYY-MM. The current month or a later one.
+          example: "2026-11"
+        dryRun:
+          type: boolean
+          description: Work the month out and return it without writing.
+        regenerate:
+          type: boolean
+          description: Replace the turns an earlier generation wrote, from `from` on.
+        from:
+          type: string
+          format: date
+          description: First day written. Defaults to the first of the month, or today in a month that has started.
+        nightCrew:
+          type: object
+          description: >
+            Team key -> the people chosen to work that team's TZ3 for the month.
+            Their TZ3 L1, L2 and L3 go round them night by night (weekends
+            included) and they work no other zone; a night they are short is
+            filled from the team and warned about. A team left out keeps the
+            usual nights. Each id must be a member of that team (400 otherwise).
+          additionalProperties:
+            type: array
+            items: {type: string, format: uuid}
+          example: {apollo: ["6ed08bc9-1b20-6690-182c-0dc5604bcb6b"]}
+    GeneratedRotaTurn:
+      type: object
+      properties:
+        userId: {type: string, format: uuid}
+        name: {type: string}
+        teamKey: {type: string}
+        shiftCode: {type: string, example: SRE_TZ1_L1}
+        tier:
+          type: string
+          enum: ["L1", "L2", "L3", ""]
+          description: Empty for regular hours (SUP, the SRE_TZn_REGULAR shifts), which are not a turn.
+        rotaDate: {type: string, format: date}
+    GeneratedLieuLeave:
+      type: object
+      properties:
+        userId: {type: string, format: uuid}
+        name: {type: string}
+        teamKey: {type: string}
+        startsOn: {type: string, format: date}
+        endsOn: {type: string, format: date}
+    RotaGenerationWarning:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+          description: Absent for a warning about the whole month.
+        message: {type: string}
+    GenerateRotaMonthResponse:
+      type: object
+      properties:
+        rotaCode: {type: string}
+        month: {type: string}
+        from: {type: string, format: date}
+        dryRun: {type: boolean}
+        alreadyGenerated:
+          type: boolean
+          description: The month already holds generated turns; a real run needs regenerate.
+        summary:
+          type: object
+          properties:
+            planned: {type: integer}
+            keptByHand: {type: integer, description: Planned turns not written because a lead filled the slot by hand.}
+            written: {type: integer}
+            replaced: {type: integer}
+            lieuPlanned: {type: integer}
+            lieuWritten: {type: integer}
+        turns:
+          type: array
+          items: {$ref: '#/components/schemas/GeneratedRotaTurn'}
+        lieuLeave:
+          type: array
+          items: {$ref: '#/components/schemas/GeneratedLieuLeave'}
+        warnings:
+          type: array
+          items: {$ref: '#/components/schemas/RotaGenerationWarning'}
     SpecialistHandoffTeamsResponse:
       type: object
       properties:
