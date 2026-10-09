@@ -879,6 +879,10 @@ type snCaseService struct {
 	// registerCaseSLAClocks), applyResponseSLAOnComment, and
 	// applyCaseStateSLAEffects. See internal/service/sla_engine_service.go.
 	slaEngine SLAEngineService
+	// srCatalog derives a service request's subject and description from its
+	// catalog answers when the caller sent none (fillServiceRequestText). nil
+	// unless wired via WithServiceRequestCatalog.
+	srCatalog srCatalogReader
 }
 
 // NewSNCaseService constructs a CaseService that delegates SearchCases to the
@@ -983,6 +987,10 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 		DeployedProductID: uuidToSysid(req.DeployedProductID),
 	}
 
+	if req.Type == "service_request" && s.srCatalog != nil {
+		fillServiceRequestText(ctx, s.srCatalog, &req)
+	}
+
 	switch req.Type {
 	case "case":
 		payload.Title = req.Subject
@@ -996,6 +1004,8 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 		if err := validateUUIDs("catalogItemId", []string{req.CatalogItemID}); err != nil {
 			return domain.CreateCaseResponse{}, err
 		}
+		payload.Title = req.Subject
+		payload.Description = req.Description
 		payload.CatalogID = uuidToSysid(req.CatalogID)
 		payload.CatalogItemID = uuidToSysid(req.CatalogItemID)
 		if len(req.Variables) > 0 {
