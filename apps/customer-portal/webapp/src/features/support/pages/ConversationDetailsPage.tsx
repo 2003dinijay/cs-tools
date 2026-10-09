@@ -64,6 +64,7 @@ import {
   formatDateOnly,
   formatCommentDate,
   getInitials,
+  isNoveraOrBotSender,
 } from "@features/support/utils/support";
 import { ROUTE_PREVIOUS_PAGE } from "@features/project-hub/constants/navigationConstants";
 import { ConversationListRowAction } from "@features/support/types/conversations";
@@ -309,9 +310,7 @@ export default function ConversationDetailsPage(): JSX.Element {
   const chatMessages: Message[] = useMemo(
     () =>
       messages.map((msg) => {
-        const isBot =
-          msg.type?.toLowerCase() === "bot" ||
-          msg.createdBy?.toLowerCase() === "novera";
+        const isBot = isNoveraOrBotSender(msg.createdBy, msg.type);
         const createdByDisplayName = [
           msg.createdByFirstName,
           msg.createdByLastName,
@@ -324,7 +323,10 @@ export default function ConversationDetailsPage(): JSX.Element {
           text: msg.content,
           sender: isBot ? ChatSender.BOT : ChatSender.USER,
           timestamp: dateFromApiCreatedOn(msg.createdOn),
-          createdBy: createdByDisplayName || msg.createdBy || "Unknown",
+          createdBy:
+            createdByDisplayName ||
+            msg.createdBy ||
+            (isBot ? NOVERA_DISPLAY_NAME : "Unknown"),
           createdOnRaw: msg.createdOn ?? "--",
           showFeedbackActions: false,
         };

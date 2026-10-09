@@ -142,6 +142,51 @@ describe("ConversationDetailsPage", () => {
     expect(screen.getByText(/why do I see <thinking> here\?/)).toBeInTheDocument();
   });
 
+  // Regression: the real transcript stores a Novera reply with createdBy: ""
+  // (never the literal name "Novera") and only whole-second precision, so it
+  // often shares its triggering question's exact timestamp. Both the author
+  // label ("Unknown" instead of "Novera") and the ordering (the reply
+  // rendering above the question) were wrong before this fix.
+  it("labels an empty-createdBy reply as Novera and keeps it after the question that shares its timestamp", () => {
+    const message = (id: string, createdBy: string, content: string) => ({
+      id,
+      createdBy,
+      content,
+      type: "comment",
+      createdOn: "2026-06-24T16:19:34Z",
+      isEscalated: false,
+      hasInlineAttachments: false,
+      inlineAttachments: [],
+    });
+    mockUseGetConversationMessages.mockReturnValue({
+      data: {
+        pages: [
+          {
+            comments: [
+              message("question-1", "Jane Doe", "hi i need help"),
+              message("reply-1", "", "I'm sorry, you've reached your limit."),
+            ],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: undefined,
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    });
+
+    render(<ConversationDetailsPage />);
+
+    expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+    const names = screen.getAllByText(/Jane Doe|Novera/);
+    expect(names.map((el) => el.textContent)).toEqual([
+      "Jane Doe",
+      "Novera",
+    ]);
+  });
+
   it("should navigate to returnTo when back clicked", () => {
     render(<ConversationDetailsPage />);
 
