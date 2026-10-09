@@ -49,6 +49,10 @@ import (
 // already renders.
 type TeamScheduleResolver struct {
 	entity teamScheduleReader
+	// callOnLeave is the routing context's CallOnLeave for the rung being
+	// resolved. Set on Resolve's own copy of the resolver (a value receiver),
+	// so the rota reads below it see it without each taking it as a parameter.
+	callOnLeave bool
 	// rules is the table this resolver routes by. Held rather than read from a
 	// package variable so a deployment can correct a row without a release.
 	rules []Rule
@@ -114,7 +118,10 @@ type TeamScheduleResolver struct {
 // can stand in for it without an HTTP server.
 type teamScheduleReader interface {
 	TeamMembers(ctx context.Context, teamKeys, roles, alertTiers, teamTypes []string) ([]teamMember, error)
-	OnDutyAt(ctx context.Context, at time.Time) ([]onDutyAssignment, error)
+	OnDutyAt(ctx context.Context, at time.Time, includeOnLeave bool) ([]onDutyAssignment, error)
+	// AwayOn is the lower-cased emails of everyone on leave on a date
+	// (YYYY-MM-DD), for the rungs that come from membership, not the rota.
+	AwayOn(ctx context.Context, day string) (map[string]bool, error)
 	ScheduleCatalogue(ctx context.Context) (scheduleCatalogue, error)
 }
 
@@ -384,11 +391,10 @@ func (r TeamScheduleResolver) Resolve(ctx context.Context, level Level, rc Routi
 		out []Recipient
 		err error
 	)
+	r.callOnLeave = rc.CallOnLeave
 	switch {
 	case rc.Ladder == LadderSME:
-		if level == Level0 {
-			out, err = r.resolveSME(ctx, rc)
-		}
+		out, err = r.resolveSME(ctx, level, rc)
 	case rc.Ladder == LadderSRE:
 		out, err = r.resolveSRE(ctx, level, rc)
 	default:
@@ -400,6 +406,9 @@ func (r TeamScheduleResolver) Resolve(ctx context.Context, level Level, rc Routi
 			return nil, nil
 		}
 		out, err = r.fromSource(ctx, rule.Levels[level], rc)
+		if err == nil && !rc.CallOnLeave {
+			out, err = r.withoutAway(ctx, out, rc.At)
+		}
 	}
 	for i := range out {
 		if out[i].Phone == "" {
@@ -422,9 +431,9 @@ func (r TeamScheduleResolver) RuleFor(rc RoutingContext) (Rule, bool) {
 // RuleForCtx is RuleFor with a context, since answering "is this an ABT team"
 // may mean asking entity-service when the ABT is resolved by type.
 func (r TeamScheduleResolver) RuleForCtx(ctx context.Context, rc RoutingContext) (Rule, bool) {
-	if rc.Ladder == LadderSRE {
-		// The rule table is the CRE ladder's; an SRE plan must not report one
-		// of its rows.
+	if rc.Ladder == LadderSRE || rc.Ladder == LadderSME {
+		// The rule table is the CRE ladder's; an SRE or SME plan must not
+		// report one of its rows.
 		return Rule{}, false
 	}
 	// keyOf, not teamKeyFor: a case carries its team's NAME ("Rigel") and a
@@ -605,7 +614,7 @@ var alertTiers = []string{"T1", "T2", "T3"}
 // rota -- the SRE teams' included. Taken whole, a CRE ladder's first
 // responders were mostly SRE engineers. See TeamKeys.RotaTeams.
 func (r TeamScheduleResolver) onDutyHere(ctx context.Context, at time.Time) ([]onDutyAssignment, error) {
-	onDuty, err := r.entity.OnDutyAt(ctx, at)
+	onDuty, err := r.entity.OnDutyAt(ctx, at, r.callOnLeave)
 	if err != nil {
 		return nil, err
 	}
@@ -621,6 +630,37 @@ func (r TeamScheduleResolver) onDutyHere(ctx context.Context, at time.Time) ([]o
 		if ok {
 			out = append(out, a)
 		}
+	}
+	return out, nil
+}
+
+// withoutAway drops from a CRE rung everyone on leave on the incident's date
+// (in IST, the CRE ladder's shifts' zone): the responders, leads and heads it
+// takes from team membership, which knows nothing of leave. The rota rungs
+// were filtered by the on-duty read already; filtering them again changes
+// nothing. A rung left empty reaches nobody and the ladder climbs past it.
+// It never fails the rung: see the fail-open note below.
+func (r TeamScheduleResolver) withoutAway(ctx context.Context, in []Recipient, at time.Time) ([]Recipient, error) {
+	if len(in) == 0 {
+		return in, nil
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	away, err := r.entity.AwayOn(ctx, at.In(IST).Format(time.DateOnly))
+	if err != nil {
+		// Fail open: a pager that cannot read leave still rings the rung
+		// rather than reaching nobody.
+		slog.WarnContext(ctx, "escalation: could not read who is on leave; calling the rung as it is", "err", err)
+		return in, nil
+	}
+	out := in[:0:0]
+	for _, p := range in {
+		if away[strings.ToLower(strings.TrimSpace(p.Email))] {
+			slog.InfoContext(ctx, "escalation: on leave; not calling them (onLeave: skip)", "recipient", p.Name)
+			continue
+		}
+		out = append(out, p)
 	}
 	return out, nil
 }

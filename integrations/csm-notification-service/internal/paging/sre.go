@@ -133,6 +133,13 @@ func SREPolicy(includeL4 bool) PriorityPolicy {
 // most SRE incidents arrive by the alert flow, and the SRE team's clock does
 // not depend on priority -- so it always gets its fixed clock.
 func PolicyFor(policies map[string]PriorityPolicy, t Trigger) (PriorityPolicy, bool) {
+	if t.Routing.Ladder == LadderSME {
+		// The SME ladder runs on sme.timing, whatever the priority.
+		if sme, found := policies[SMEPolicyKey]; found {
+			return sme, true
+		}
+		return SREPolicy(false), true
+	}
 	if t.Routing.Ladder != LadderSRE {
 		return Lookup(policies, t.Priority)
 	}
@@ -145,17 +152,29 @@ func PolicyFor(policies map[string]PriorityPolicy, t Trigger) (PriorityPolicy, b
 // withSREPolicy returns policies with the SRE entry set, copying rather than
 // writing into the caller's map (DefaultPolicy is shared).
 func withSREPolicy(policies map[string]PriorityPolicy, sre PriorityPolicy) map[string]PriorityPolicy {
+	return withPolicy(policies, SREPolicyKey, sre)
+}
+
+// withPolicy returns policies with key set to p, copying the map.
+func withPolicy(policies map[string]PriorityPolicy, key string, p PriorityPolicy) map[string]PriorityPolicy {
 	out := make(map[string]PriorityPolicy, len(policies)+1)
 	for k, v := range policies {
 		out[k] = v
 	}
-	out[SREPolicyKey] = sre
+	out[key] = p
 	return out
 }
+
+// SMEPolicyKey is the SME ladder's entry in the engine's policies: its clock
+// is sme.timing.
+const SMEPolicyKey = "SME"
 
 // RoleIn names who a rung is on the given ladder, for a reader in a chat space.
 func (l Level) RoleIn(ladder Ladder) string {
 	if ladder == LadderSME {
+		if tier, ok := sreTier[l]; ok {
+			return "Special Ops " + tier + " on duty"
+		}
 		return "Special Ops on duty"
 	}
 	if ladder != LadderSRE {

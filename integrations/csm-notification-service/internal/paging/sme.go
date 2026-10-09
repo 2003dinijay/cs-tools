@@ -18,6 +18,7 @@ package paging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -36,18 +37,28 @@ import (
 // button -- and only when it has SRE_EVENT_HUB_TOPIC set. The dispatcher's
 // sre-events consumer hands it here (HandleSpecialOpsAlert); the paging
 // engines' own consumers ignore the type, so one alert pages once. The SaaS
-// SRE chain stops, and ONE call goes to the SME on duty for the current
-// Day/Night window of the chosen SME team. Not a ladder: no rungs, no clock,
-// nothing stored but the dedup key.
+// SRE chain stops, and an SME ladder starts for the chosen SME team: L1 of
+// its current Day/Night window at once, L2 and L3 after sme.timing's interval
+// each (five minutes by default), each rung asked at the moment it opens.
+// Someone rostered on the window with no tier counts as L1. The ladder runs on
+// the SRE engine's ticker under its own key (smeLadderKey), so several SME
+// teams can run on one incident at once.
 //
 //	same SME team alerted again while its page is open   ignored
-//	a different SME team                                 its own call
-//	an engineer assigned afterwards                      closes every page,
+//	a different SME team                                 its own ladder
+//	an engineer assigned afterwards                      stops the ladders raised
+//	                                                     before the assignment,
 //	                                                     so a later alert pages
+//	an assignment handled before the alert it answers    the alert pages nobody
+//
+// The assignment and the alert come on different topics, so either may be
+// handled first; both are compared by time (the assignment's assignedOn, the
+// alert's changedOn), not by arrival.
 //
 // IaaS SRE incidents, CRE teams and unknown groups never page SME (the gate
-// below). NOT BUILT: the rule that the button needs an assignee first (M2)
-// belongs to the portal and is deferred.
+// below). The escalate button needs an assignee first: entity-service refuses
+// a handoff on an unassigned incident (409 incident_handoff_needs_assignee),
+// and the CSM portal disables the button.
 
 // smePageTTL bounds an open SME page that no assignment ever closes.
 const smePageTTL = 24 * time.Hour
@@ -146,6 +157,7 @@ func (e *Engine) handleSpecialOps(ctx context.Context, pr specialOpsPress) error
 		team = e.cfg.SME.TeamFor(pr.TeamKey)
 	}
 	t := smeTrigger(pr, team)
+	t.Routing.CallOnLeave = e.cfg.SME.OnLeave.Calls()
 	if team == "" {
 		log.WarnContext(ctx, "escalation: no SME team mapped for this Special Ops team; no SME page")
 		e.writeSMENote(ctx, t, pr, nil, "NO_SME_TEAM",
@@ -154,14 +166,15 @@ func (e *Engine) handleSpecialOps(ctx context.Context, pr specialOpsPress) error
 	}
 	log = log.With("smeTeam", team)
 
-	// A replay of an alert an assignment has already answered is not a new
-	// one, even though its page key is gone.
+	// An alert an assignment has already answered -- a replay of one whose
+	// page was closed, or one raised before an assignment handled first --
+	// pages nobody.
 	closed, err := e.store.SMEClosedThrough(ctx, incidentID)
 	if err != nil {
 		return fmt.Errorf("escalation: read closed SME pages for %s: %w", incidentID, err)
 	}
 	if !closed.IsZero() && !pr.At.After(closed) {
-		log.InfoContext(ctx, "escalation: ignored, SME page already answered (a replay of an earlier alert)")
+		log.InfoContext(ctx, "escalation: ignored, SME page already answered by an assignment")
 		return nil
 	}
 
@@ -174,15 +187,32 @@ func (e *Engine) handleSpecialOps(ctx context.Context, pr specialOpsPress) error
 		log.InfoContext(ctx, "escalation: ignored, SME page already open")
 		return nil
 	}
+	// Read again now the page is open: an assignment handled between the
+	// first read and the open either saw the open page and closed it, or
+	// recorded its time before this read.
+	if closed, err = e.store.SMEClosedThrough(ctx, incidentID); err != nil {
+		e.releaseSMEPage(ctx, incidentID, team)
+		return fmt.Errorf("escalation: read closed SME pages for %s: %w", incidentID, err)
+	}
+	if !closed.IsZero() && !pr.At.After(closed) {
+		e.releaseSMEPage(ctx, incidentID, team)
+		log.InfoContext(ctx, "escalation: ignored, an engineer was assigned after this alert was raised")
+		return nil
+	}
 
-	paged, err := e.pageSME(ctx, t, pr)
-	if err != nil || !paged {
-		// Nobody was reached, so nothing is open: a retry, or the next
+	started, err := e.startSMELadder(ctx, t, pr)
+	if err != nil || !started {
+		// Nobody will be reached, so nothing is open: a retry, or the next
 		// alert, tries again.
 		e.releaseSMEPage(ctx, incidentID, team)
 	}
 	return err
 }
+
+// smeLadderKey is the store key of the incident's SME ladder for one team.
+// Not the incident id -- several SME teams can run on one incident, beside
+// its SRE chain -- and with no '|', which ends a wake member's key.
+func smeLadderKey(incidentID, team string) string { return incidentID + ":sme:" + team }
 
 // stopForHandoff stops the incident's running SRE chain, writing its summary
 // the way any other cancellation does.
@@ -220,60 +250,92 @@ func smeTrigger(pr specialOpsPress, team string) Trigger {
 	}
 }
 
-// pageSME finds the ONE SME on duty and pages them. It reports whether
-// somebody was reached; an error means a retry may do better.
-func (e *Engine) pageSME(ctx context.Context, t Trigger, p specialOpsPress) (bool, error) {
+// startSMELadder plans the SME ladder -- one call per rung, L1 to L3 of the
+// team's current window, on sme.timing -- and schedules it on the SRE
+// engine's ticker. It reports whether anybody will be called; an error means
+// a retry may do better.
+func (e *Engine) startSMELadder(ctx context.Context, t Trigger, p specialOpsPress) (bool, error) {
 	sme := e.cfg.SME
-	people, err := e.resolver.Resolve(ctx, Level0, t.Routing)
-	if err != nil {
-		return false, fmt.Errorf("escalation: resolve the SME on duty for %s: %w", t.IncidentID, err)
-	}
-	if len(people) == 0 {
-		slog.WarnContext(ctx, "escalation: nobody on duty for the SME team; no SME page",
-			"incidentId", t.IncidentID, "smeTeam", t.Routing.SMETeam, "at", t.At.Format(time.RFC3339))
-		e.writeSMENote(ctx, t, p, nil, "NO_RECIPIENTS",
-			fmt.Sprintf("nobody on duty for SME team %s at %s", t.Routing.SMETeam, istStamp(t.At)))
-		return false, nil
-	}
-	who := people[0]
-
-	if sme.Channel.Uses(ChannelCall) {
-		reason := "NO_NUMBER"
-		if who.Phone != "" && !sme.Dialable(who.Phone) {
-			who.Phone, reason = "", "NUMBER_NOT_ALLOWED"
-		}
-		if who.Phone == "" && sme.Channel == ChannelCall {
-			slog.WarnContext(ctx, "escalation: the SME on duty cannot be called; no SME page",
-				"incidentId", t.IncidentID, "smeTeam", t.Routing.SMETeam, "recipient", who.Name, "reason", reason)
-			e.writeSMENote(ctx, t, p, &who, reason, "")
-			return false, nil
-		}
-	}
-
 	if len(e.smeNotifiers) == 0 && e.cfg.CallSendingEnabled {
 		// sme.channel names a channel with no client (logged at startup).
-		// Unlike a ladder rung this is the only page, so it is not recorded
-		// as sent.
 		slog.ErrorContext(ctx, "escalation: no notifier for the SME page's channel; nobody was contacted",
 			"incidentId", t.IncidentID, "channel", string(sme.Channel))
-		e.writeSMENote(ctx, t, p, &who, "NO_CHANNEL", string(sme.Channel))
+		e.writeSMENote(ctx, t, p, nil, "NO_CHANNEL", string(sme.Channel))
 		return false, nil
 	}
-	plan := Plan{Trigger: t, Calls: []PlannedCall{{Level: Level0, Ordinal: 1, At: t.At, Recipient: who}}}
-	if err := e.placeVia(ctx, plan, plan.Calls[0], e.smeNotifiers, sme.Channel); err != nil {
-		if !isPermanent(err) {
-			return false, fmt.Errorf("escalation: page the SME for %s: %w", t.IncidentID, err)
+	plan, err := BuildPlan(ctx, t, e.policies, e.resolver, sme.Channel)
+	if err != nil {
+		return false, fmt.Errorf("escalation: plan the SME ladder for %s: %w", t.IncidentID, err)
+	}
+	e.applySMESafety(&plan)
+	for _, is := range plan.Issues {
+		slog.WarnContext(ctx, "escalation: SME rung cannot be called",
+			"incidentId", t.IncidentID, "smeTeam", t.Routing.SMETeam, "level", is.Level.String(), "reason", is.Reason)
+	}
+	if len(plan.Calls) == 0 {
+		reason, detail := "NO_RECIPIENTS", fmt.Sprintf("nobody on duty for SME team %s at %s", t.Routing.SMETeam, istStamp(t.At))
+		for _, is := range plan.Issues {
+			if is.Reason == "RESOLVE_FAILED" {
+				return false, fmt.Errorf("escalation: resolve the SME on duty for %s: %s", t.IncidentID, is.Detail)
+			}
+			if is.Reason == "NO_NUMBER" || is.Reason == "NUMBER_NOT_ALLOWED" {
+				reason, detail = is.Reason, is.Detail
+			}
 		}
-		slog.ErrorContext(ctx, "escalation: SME page rejected by the provider; not retrying",
-			"incidentId", t.IncidentID, "smeTeam", t.Routing.SMETeam, "reason", permanentReason(err))
-		e.writeSMENote(ctx, t, p, &who, "CALL_FAILED", permanentReason(err))
+		slog.WarnContext(ctx, "escalation: nobody on the SME team's rota can be paged; no SME page",
+			"incidentId", t.IncidentID, "smeTeam", t.Routing.SMETeam, "reason", reason)
+		e.writeSMENote(ctx, t, p, nil, reason, detail)
 		return false, nil
 	}
+
+	key := smeLadderKey(t.IncidentID, t.Routing.SMETeam)
+	st := LadderState{Plan: plan, Placed: make([]bool, len(plan.Calls))}
+	created, err := e.store.Create(ctx, key, st)
+	if err != nil {
+		return false, fmt.Errorf("escalation: store the SME ladder for %s: %w", t.IncidentID, err)
+	}
+	if !created {
+		// A ladder for this team is still stored (a retry after a crash):
+		// make sure its calls are scheduled rather than planning another.
+		if st, _, err = e.store.Get(ctx, key); err != nil {
+			return false, fmt.Errorf("escalation: load the SME ladder for %s: %w", t.IncidentID, err)
+		}
+	}
+	if _, err := e.seedPendingWakes(ctx, key, st); err != nil {
+		return false, fmt.Errorf("escalation: schedule the SME ladder for %s: %w", t.IncidentID, err)
+	}
+	first := st.Plan.Calls[0].Recipient
 	slog.InfoContext(ctx, "escalation: SME paged",
-		"incidentId", t.IncidentID, "smeTeam", t.Routing.SMETeam, "recipient", who.Name,
-		"shift", who.ShiftCode, "channel", string(sme.Channel))
-	e.writeSMENote(ctx, t, p, &who, "", "")
+		"incidentId", t.IncidentID, "smeTeam", t.Routing.SMETeam, "recipient", first.Name,
+		"shift", first.ShiftCode, "channel", string(sme.Channel), "calls", len(st.Plan.Calls))
+	e.writeSMENote(ctx, t, p, &first, "", "")
 	return true, nil
+}
+
+// applySMESafety drops the calls sme.safety.allowedNumbers does not allow,
+// recording each as NUMBER_NOT_ALLOWED; a call channel also drops a recipient
+// with no number (NO_NUMBER). A chat card needs no number.
+func (e *Engine) applySMESafety(plan *Plan) {
+	sme := e.cfg.SME
+	if !sme.Channel.Uses(ChannelCall) {
+		return
+	}
+	kept := plan.Calls[:0]
+	for _, c := range plan.Calls {
+		switch {
+		case c.Recipient.Phone != "" && !sme.Dialable(c.Recipient.Phone):
+			plan.Issues = append(plan.Issues, PlanIssue{Level: c.Level, At: c.At, Reason: "NUMBER_NOT_ALLOWED", Detail: c.Recipient.Email})
+			if sme.Channel != ChannelCall {
+				c.Recipient.Phone = ""
+				kept = append(kept, c)
+			}
+		case c.Recipient.Phone == "" && sme.Channel == ChannelCall:
+			// BuildPlan has reported NO_NUMBER already.
+		default:
+			kept = append(kept, c)
+		}
+	}
+	plan.Calls = kept
 }
 
 // releaseSMEPage drops a page key that reached nobody. Best-effort: a key left
@@ -286,19 +348,34 @@ func (e *Engine) releaseSMEPage(ctx context.Context, incidentID, team string) {
 	}
 }
 
-// closeSMEPages closes every SME page open on the incident, on an assignment.
-func (e *Engine) closeSMEPages(ctx context.Context, incidentID string) error {
+// closeSMEPages answers the incident's SME pages raised at or before an
+// assignment made at answeredAt: it closes those open now, stops their
+// ladders (their summaries go onto the incident), and records the time, so
+// one still on its way pages nobody.
+func (e *Engine) closeSMEPages(ctx context.Context, incidentID string, answeredAt time.Time) error {
 	if e.cfg.Kind != LadderSRE || !e.cfg.SME.Enabled {
 		return nil
 	}
-	n, err := e.store.CloseSMEPages(ctx, incidentID)
+	teams, err := e.store.CloseSMEPages(ctx, incidentID, answeredAt)
 	if err != nil {
 		return fmt.Errorf("escalation: close SME pages for %s: %w", incidentID, err)
 	}
-	if n > 0 {
-		slog.InfoContext(ctx, "escalation: engineer assigned; SME pages closed", "incidentId", incidentID, "closed", n)
+	var errs []error
+	for _, team := range teams {
+		key := smeLadderKey(incidentID, team)
+		st, found, err := e.store.Get(ctx, key)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("escalation: load SME ladder %s: %w", key, err))
+			continue
+		}
+		if found {
+			errs = append(errs, e.stopLadder(ctx, key, st, cancelAssigned))
+		}
 	}
-	return nil
+	if len(teams) > 0 {
+		slog.InfoContext(ctx, "escalation: engineer assigned; SME pages closed", "incidentId", incidentID, "closed", len(teams))
+	}
+	return errors.Join(errs...)
 }
 
 // writeSMENote records the press on the incident: who was paged for which

@@ -214,7 +214,7 @@ func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolic
 		// the report instant; its rungs are ranks and rota pairs fixed by
 		// the shift the incident arrived in.
 		rc := t.Routing
-		if rc.Ladder == LadderSRE {
+		if rc.Ladder == LadderSRE || rc.Ladder == LadderSME {
 			rc.At = opensAt
 		}
 		recipients, err := r.Resolve(ctx, level, rc)

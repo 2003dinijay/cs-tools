@@ -35,7 +35,7 @@ var smeOn = SMEConfig{Enabled: true, Channel: ChannelChat, Teams: map[string]str
 func smeEngine(reader *stubScheduleReader, store *memStore, notes *fakeNotes, ladderChat, smeChat *fakeChat, sme SMEConfig) *Engine {
 	cfg := EngineConfig{CallSendingEnabled: true, Channel: ChannelChat, Kind: LadderSRE, SME: sme}
 	return &Engine{
-		policies:     withSREPolicy(DefaultPolicy, cfg.Ladder.Timing.Policy()),
+		policies:     withPolicy(withSREPolicy(DefaultPolicy, cfg.Ladder.Timing.Policy()), SMEPolicyKey, sme.Policy()),
 		resolver:     rotaResolver(reader, "").WithCallHistory(store),
 		notifiers:    []notifier{chatNotifier{chat: ladderChat, links: fakeLinks{}}},
 		smeNotifiers: []notifier{chatNotifier{chat: smeChat, links: fakeLinks{}, audience: "Special Ops"}},
@@ -64,10 +64,14 @@ func alertRecord(t *testing.T, p events.IncidentSpecialOpsAlertPayload) eventbus
 	return record(t, events.TypeIncidentSpecialOpsAlert, p)
 }
 
-// raise delivers an alert the way the dispatcher's sre-events consumer does.
+// raise delivers an alert the way the dispatcher's sre-events consumer does,
+// then ticks at the alert's time, which places the SME ladder's L1.
 func raise(t *testing.T, e *Engine, p events.IncidentSpecialOpsAlertPayload) {
 	t.Helper()
 	if err := e.HandleSpecialOpsAlert(context.Background(), p.IncidentID, p); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.Tick(context.Background(), reportedAt(p.ChangedOn)); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -121,7 +125,7 @@ func TestSME_StopsTheSaaSChainAndPagesOnePerson(t *testing.T) {
 		t.Fatalf("SME cards = %+v; want exactly one, for s-a", smeChat.posted)
 	}
 	card := smeChat.posted[0]
-	if card.RungRole != "Special Ops on duty" || card.Rule != "SME_HANDOFF" || !strings.Contains(card.Instruction, "Special Ops") {
+	if card.RungRole != "Special Ops L1 on duty" || card.Rule != "SME_HANDOFF" || !strings.Contains(card.Instruction, "Special Ops") {
 		t.Errorf("card = %+v", card)
 	}
 	sme := notesWith(notes, "Special Ops (SME) Page")
@@ -211,7 +215,8 @@ func TestSME_AssignmentAfterTheHandoffClosesThePage(t *testing.T) {
 
 	first := handoff("Apollo", "asgardeo", "asgardeo", testClock)
 	raise(t, e, first)
-	handle(t, e, assigned(t))
+	handle(t, e, record(t, events.TypeIncidentAssigned, events.IncidentAssignedPayload{
+		AssigneeID: "a-l2", AssigneeName: "a-l2", AssignedOn: testClock.Add(time.Minute).Format(time.RFC3339)}))
 	if len(store.smePages) != 0 {
 		t.Fatalf("open SME pages after an assignment: %v", store.smePages)
 	}
@@ -223,6 +228,46 @@ func TestSME_AssignmentAfterTheHandoffClosesThePage(t *testing.T) {
 	if len(smeChat.posted) != 2 {
 		t.Fatalf("%d SME cards; a press after the assignment should page again", len(smeChat.posted))
 	}
+}
+
+// The assignment and the alert travel on different topics. An assignment
+// made after the escalation but handled before its alert still answers it;
+// one made before the escalation does not.
+func TestSME_AssignmentHandledBeforeTheAlert(t *testing.T) {
+	assignedAt := func(at time.Time) eventbus.Record {
+		return record(t, events.TypeIncidentAssigned, events.IncidentAssignedPayload{
+			AssigneeID: "a-l2", AssigneeName: "a-l2", AssignedOn: at.UTC().Format(time.RFC3339)})
+	}
+
+	t.Run("assigned after the escalation, handled first: no page", func(t *testing.T) {
+		smeChat, store := &fakeChat{}, newMemStore()
+		e := smeEngine(rotaReader(true), store, &fakeNotes{}, &fakeChat{}, smeChat, smeOn)
+		handle(t, e, assignedAt(testClock.Add(time.Minute)))
+		raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock))
+		if len(smeChat.posted) != 0 || len(store.smePages) != 0 {
+			t.Fatalf("paged %d, open %v; the assignment already answered this alert", len(smeChat.posted), store.smePages)
+		}
+	})
+
+	t.Run("assigned before the escalation, handled first: pages", func(t *testing.T) {
+		smeChat, store := &fakeChat{}, newMemStore()
+		e := smeEngine(rotaReader(true), store, &fakeNotes{}, &fakeChat{}, smeChat, smeOn)
+		handle(t, e, assignedAt(testClock.Add(-time.Minute)))
+		raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock))
+		if len(smeChat.posted) != 1 {
+			t.Fatalf("paged %d; an assignment before the escalation must not silence it", len(smeChat.posted))
+		}
+	})
+
+	t.Run("assigned before the escalation, handled after it: the page stays open", func(t *testing.T) {
+		smeChat, store := &fakeChat{}, newMemStore()
+		e := smeEngine(rotaReader(true), store, &fakeNotes{}, &fakeChat{}, smeChat, smeOn)
+		raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock))
+		handle(t, e, assignedAt(testClock.Add(-time.Minute)))
+		if len(smeChat.posted) != 1 || len(store.smePages) != 1 {
+			t.Fatalf("paged %d, open %v; want one page, still open", len(smeChat.posted), store.smePages)
+		}
+	})
 }
 
 // Nobody on duty for the SME team: no page, NO_RECIPIENTS on the incident,
@@ -348,6 +393,19 @@ sme:
 	if err != nil || !cfg.SME.Enabled || cfg.SME.Channel != ChannelLog || cfg.SME.TeamFor(" asgardeo ") != "asgardeo" {
 		t.Fatalf("sme = %+v, %v", cfg.SME, err)
 	}
+	// No timing: L1 at once, L2 at +5 min, L3 at +10 min, and no L4.
+	if p := cfg.SME.Policy(); p.InitialWait != 0 || p.Levels[Level1].NotificationInterval != 5*time.Minute ||
+		p.Levels[Level2].NotificationCount != 1 || p.Levels[Level3].NotificationCount != 0 {
+		t.Errorf("default SME policy = %+v", p)
+	}
+	cfg, err = loadYAML(t, "sme:\n  enabled: true\n  timing: {initialWait: 1m, interval: 3m, includeL4: true}\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p := cfg.SME.Policy(); p.InitialWait != time.Minute || p.Levels[Level0].NotificationInterval != 3*time.Minute ||
+		p.Levels[Level3].NotificationCount != 0 {
+		t.Errorf("configured SME policy = %+v; want 1m wait, 3m steps, still no L4", p)
+	}
 	for name, body := range map[string]string{
 		"unknown key":      "sme:\n  maxCallsPerLadder: 1\n",
 		"unknown channel":  "sme:\n  channel: pager\n",
@@ -357,5 +415,86 @@ sme:
 		if _, err := loadYAML(t, body); err == nil {
 			t.Errorf("%s: loaded; want an error", name)
 		}
+	}
+}
+
+// smeTieredReader is rotaReader with the Asgardeo Day window holding an L2
+// and an L3 as well; s-a and s-b, rostered with no tier, count as L1.
+func smeTieredReader() *stubScheduleReader {
+	r := rotaReader(true)
+	r.onDuty = append(r.onDuty,
+		held("s-l2", "asgardeo", "SME_ASG_DAY", "L2"),
+		held("s-l3", "asgardeo", "SME_ASG_DAY", "L3"))
+	return r
+}
+
+// The SME page is a ladder: L1 at once, L2 at +5 min, L3 at +10 min, each the
+// holder of that tier on the SME team's window; an untiered SME counts as L1.
+// When nobody takes it, the whole ladder runs and its summary is written.
+func TestSME_LadderClimbsL1L2L3(t *testing.T) {
+	ctx := context.Background()
+	smeChat, store, notes := &fakeChat{}, newMemStore(), &fakeNotes{}
+	e := smeEngine(smeTieredReader(), store, notes, &fakeChat{}, smeChat, smeOn)
+
+	raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock))
+	if len(smeChat.posted) != 1 || smeChat.posted[0].RecipientName != "s-a" {
+		t.Fatalf("at once: SME cards %+v; want L1 (s-a, untiered, first by email)", smeChat.posted)
+	}
+	if err := e.Tick(ctx, testClock.Add(4*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(smeChat.posted) != 1 {
+		t.Fatalf("L2 called before its five minutes: %+v", smeChat.posted)
+	}
+	for _, at := range []time.Duration{5 * time.Minute, 10 * time.Minute} {
+		if err := e.Tick(ctx, testClock.Add(at)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got := []string{}
+	for _, c := range smeChat.posted {
+		got = append(got, c.RecipientName)
+	}
+	if strings.Join(got, ",") != "s-a,s-l2,s-l3" {
+		t.Fatalf("SME cards in order = %v; want s-a, s-l2, s-l3", got)
+	}
+	if _, found, _ := store.Get(ctx, smeLadderKey(testIncidentID, "asgardeo")); found {
+		t.Error("the finished SME ladder is still stored")
+	}
+	if sum := notesWith(notes, "Notification path: SME_HANDOFF"); len(sum) != 1 ||
+		!strings.Contains(sum[0], "s-l3@example.com") {
+		t.Errorf("SME ladder summary = %v; want one naming every rung", sum)
+	}
+}
+
+// An engineer assigned while the SME ladder climbs stops it: no later rung is
+// called, and the summary says why.
+func TestSME_AssignmentStopsTheLadder(t *testing.T) {
+	ctx := context.Background()
+	smeChat, store, notes := &fakeChat{}, newMemStore(), &fakeNotes{}
+	e := smeEngine(smeTieredReader(), store, notes, &fakeChat{}, smeChat, smeOn)
+
+	raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock))
+	raise(t, e, handoff("Apollo", "", "choreo", testClock.Add(time.Minute)))
+	if len(smeChat.posted) != 2 {
+		t.Fatalf("%d SME cards; want each team's L1", len(smeChat.posted))
+	}
+	handle(t, e, record(t, events.TypeIncidentAssigned, events.IncidentAssignedPayload{
+		AssigneeID: "s-a", AssigneeName: "s-a", AssignedOn: testClock.Add(2 * time.Minute).Format(time.RFC3339)}))
+	if err := e.Tick(ctx, testClock.Add(20*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	if len(smeChat.posted) != 2 {
+		t.Fatalf("%d SME cards; the assignment must stop both ladders before L2", len(smeChat.posted))
+	}
+	for _, team := range []string{"asgardeo", "choreo-sme"} {
+		if _, found, _ := store.Get(ctx, smeLadderKey(testIncidentID, team)); found {
+			t.Errorf("the %s SME ladder is still stored after the assignment", team)
+		}
+	}
+	// The Choreo team has only an L1, so its ladder had finished; only the
+	// Asgardeo one was still climbing.
+	if stopped := notesWith(notes, "Assignee set"); len(stopped) != 1 || !strings.Contains(stopped[0], "s-a@example.com") {
+		t.Errorf("summaries naming the assignment = %v; want the Asgardeo ladder's", stopped)
 	}
 }

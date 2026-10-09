@@ -293,9 +293,9 @@ func TestStore_SMEPages(t *testing.T) {
 	if got, _ := s.OpenSMEPage(ctx, id, "choreo", at.Add(time.Minute), time.Minute); !got {
 		t.Fatal("a released page could not be opened again")
 	}
-	n, err := s.CloseSMEPages(ctx, id)
-	if err != nil || n != 2 {
-		t.Fatalf("CloseSMEPages = %d, %v; want 2", n, err)
+	n, err := s.CloseSMEPages(ctx, id, at.Add(time.Minute))
+	if err != nil || len(n) != 2 {
+		t.Fatalf("CloseSMEPages = %v, %v; want 2 teams", n, err)
 	}
 	closed, err := s.SMEClosedThrough(ctx, id)
 	if err != nil || !closed.Equal(at.Add(time.Minute)) {
@@ -303,5 +303,49 @@ func TestStore_SMEPages(t *testing.T) {
 	}
 	if got, _ := s.OpenSMEPage(ctx, id, "asgardeo", at.Add(time.Hour), time.Minute); !got {
 		t.Fatal("a closed page could not be opened by a later press")
+	}
+}
+
+// The assignment and the alert are compared by time, whichever is handled
+// first: an assignment handled before the alert it answers still answers it,
+// and an assignment made before an escalation leaves that page open.
+func TestStore_SMEPagesAnsweredByTime(t *testing.T) {
+	s, closeFn := testStore(t)
+	defer closeFn()
+	ctx := context.Background()
+	id := "test-sme-order-" + time.Now().Format("150405.000000000")
+	alertAt := time.Date(2026, 10, 8, 4, 30, 0, 0, time.UTC)
+	defer func() {
+		_ = s.rdb.Del(ctx, smePageKey(id, "asgardeo"), smeOpenPrefix+id, smeClosedPrefix+id).Err()
+	}()
+
+	// Assigned before the escalation, but handled after its alert: the page stays open.
+	if ok, err := s.OpenSMEPage(ctx, id, "asgardeo", alertAt, time.Minute); err != nil || !ok {
+		t.Fatalf("OpenSMEPage = %v, %v", ok, err)
+	}
+	if n, err := s.CloseSMEPages(ctx, id, alertAt.Add(-time.Minute)); err != nil || len(n) != 0 {
+		t.Fatalf("an earlier assignment closed %v (%v); want none", n, err)
+	}
+	if again, _ := s.OpenSMEPage(ctx, id, "asgardeo", alertAt, time.Minute); again {
+		t.Fatal("the page raised after the assignment should still be open")
+	}
+
+	// Assigned after the escalation: closes it, and the time answers the alert.
+	if n, err := s.CloseSMEPages(ctx, id, alertAt.Add(time.Minute)); err != nil || len(n) != 1 || n[0] != "asgardeo" {
+		t.Fatalf("CloseSMEPages = %v, %v; want [asgardeo]", n, err)
+	}
+	closed, err := s.SMEClosedThrough(ctx, id)
+	if err != nil || !closed.Equal(alertAt.Add(time.Minute)) {
+		t.Fatalf("SMEClosedThrough = %v, %v; want the assignment's time", closed, err)
+	}
+
+	// An assignment with no page open still records its time.
+	other := id + "-first"
+	defer func() { _ = s.rdb.Del(ctx, smeClosedPrefix+other).Err() }()
+	if n, err := s.CloseSMEPages(ctx, other, alertAt.Add(time.Minute)); err != nil || len(n) != 0 {
+		t.Fatalf("CloseSMEPages with nothing open = %v, %v", n, err)
+	}
+	if closed, _ := s.SMEClosedThrough(ctx, other); !closed.Equal(alertAt.Add(time.Minute)) {
+		t.Fatalf("an assignment handled first left no time (%v): its alert would still page", closed)
 	}
 }

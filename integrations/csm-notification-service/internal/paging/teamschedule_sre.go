@@ -252,8 +252,27 @@ func (r TeamScheduleResolver) resolveSRE(ctx context.Context, level Level, rc Ro
 // tierHolder is one candidate for an SRE rung.
 type tierHolder struct {
 	Recipient
-	team string
-	zone string
+	team    string
+	zone    string
+	onLeave bool
+}
+
+// preferAvailable keeps only the holders who are not on leave when there are
+// any; otherwise it keeps them all. On-leave holders are only there at all
+// when the ladder's onLeave is call (the on-duty read leaves them out
+// otherwise), so this is "ring someone on leave only when nobody else holds
+// the tier".
+func preferAvailable(holders []tierHolder) []tierHolder {
+	var available []tierHolder
+	for _, h := range holders {
+		if !h.onLeave {
+			available = append(available, h)
+		}
+	}
+	if len(available) > 0 {
+		return available
+	}
+	return holders
 }
 
 // onCallTier picks the ONE person holding tier on an SRE window at that
@@ -289,7 +308,7 @@ func (r TeamScheduleResolver) onCallTier(ctx context.Context, at time.Time, ownT
 		}
 		sre[s.Code] = window{zone: deref(s.ZoneCode), tier: deref(s.Tier)}
 	}
-	onDuty, err := r.entity.OnDutyAt(ctx, at)
+	onDuty, err := r.entity.OnDutyAt(ctx, at, r.callOnLeave)
 	if err != nil {
 		return tierHolder{}, false, err
 	}
@@ -319,8 +338,10 @@ func (r TeamScheduleResolver) onCallTier(ctx context.Context, at time.Time, ownT
 			Recipient: Recipient{Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode},
 			team:      r.keyOf(a.TeamKey),
 			zone:      zone,
+			onLeave:   a.OnLeave,
 		})
 	}
+	holders = preferAvailable(holders)
 	if len(holders) == 0 {
 		return tierHolder{}, false, nil
 	}
@@ -368,10 +389,17 @@ func deref(s *string) string {
 // familySME is how the catalogue spells the Special Ops family.
 const familySME = "SME"
 
-// resolveSME answers the Special Ops page: ONE person on duty at rc.At on an
-// SME window of rc.SMETeam -- whoever has gone longest without a call, then
-// email, so a redelivery reaches the same person.
-func (r TeamScheduleResolver) resolveSME(ctx context.Context, rc RoutingContext) ([]Recipient, error) {
+// resolveSME answers one rung of an SME ladder: the ONE person holding its
+// tier (L1, L2, L3 for LEVEL_0..LEVEL_2) on an SME-family window of the SME
+// team at that instant -- several on the tier, the one longest since last
+// called, then by email. Someone rostered on the window with no tier counts
+// as L1: SME shifts had no tiers before, and nothing already rostered stops
+// being paged.
+func (r TeamScheduleResolver) resolveSME(ctx context.Context, level Level, rc RoutingContext) ([]Recipient, error) {
+	tier, ok := sreTier[level]
+	if !ok {
+		return nil, nil
+	}
 	team := r.keyOf(rc.SMETeam)
 	if team == "" {
 		return nil, nil
@@ -380,25 +408,46 @@ func (r TeamScheduleResolver) resolveSME(ctx context.Context, rc RoutingContext)
 	if err != nil {
 		return nil, err
 	}
-	sme := map[string]bool{}
+	sme := map[string]string{} // SME window code -> its fixed tier, if any
 	for _, s := range cat.Shifts {
 		if strings.EqualFold(s.Family, familySME) {
-			sme[s.Code] = true
+			sme[s.Code] = deref(s.Tier)
 		}
 	}
-	onDuty, err := r.entity.OnDutyAt(ctx, rc.At)
+	onDuty, err := r.entity.OnDutyAt(ctx, rc.At, rc.CallOnLeave)
 	if err != nil {
 		return nil, err
 	}
-	var pool []Recipient
+	var pool, away []Recipient
 	seen := map[string]bool{}
 	for _, a := range onDuty {
+		fixed, isSME := sme[a.ShiftCode]
 		email := strings.ToLower(strings.TrimSpace(a.Engineer.Email))
-		if !sme[a.ShiftCode] || email == "" || seen[email] || r.keyOf(a.TeamKey) != team {
+		if !isSME || email == "" || seen[email] || r.keyOf(a.TeamKey) != team {
+			continue
+		}
+		held := deref(a.Tier)
+		if held == "" {
+			held = fixed
+		}
+		if held == "" {
+			held = "L1"
+		}
+		if !strings.EqualFold(held, tier) {
 			continue
 		}
 		seen[email] = true
-		pool = append(pool, Recipient{Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode})
+		p := Recipient{Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode}
+		if a.OnLeave {
+			away = append(away, p)
+			continue
+		}
+		pool = append(pool, p)
+	}
+	if len(pool) == 0 {
+		// onLeave: call -- nobody available holds the tier, so ring whoever
+		// does although they are away.
+		pool = away
 	}
 	sort.SliceStable(pool, func(i, j int) bool { return pool[i].Email < pool[j].Email })
 	return r.takeLongestSinceCalled(ctx, pool, 1), nil

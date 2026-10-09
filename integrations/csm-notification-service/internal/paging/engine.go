@@ -64,7 +64,7 @@ type ladderStore interface {
 	// SME team, closed by an assignment.
 	OpenSMEPage(ctx context.Context, incidentID, team string, changedOn time.Time, ttl time.Duration) (bool, error)
 	CloseSMEPage(ctx context.Context, incidentID, team string) error
-	CloseSMEPages(ctx context.Context, incidentID string) (int, error)
+	CloseSMEPages(ctx context.Context, incidentID string, answeredAt time.Time) ([]string, error)
 	SMEClosedThrough(ctx context.Context, incidentID string) (time.Time, error)
 }
 
@@ -173,6 +173,8 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 	if cfg.Kind == LadderSRE {
 		// The SRE clock is the file's sre.timing, not section 7.0's table.
 		e.policies = withSREPolicy(policies, cfg.Ladder.Timing.Policy())
+		// The SME ladder runs in the SRE engine on its own clock.
+		e.policies = withPolicy(e.policies, SMEPolicyKey, cfg.SME.Policy())
 	}
 	if notes != nil {
 		e.notes = notes
@@ -315,10 +317,15 @@ func (e *Engine) Handle(ctx context.Context, record eventbus.Record) error {
 			// not yet seen it is not evidence it is being attended.
 			return nil
 		}
+		var p events.IncidentAssignedPayload
+		if err := json.Unmarshal(env.Payload, &p); err != nil {
+			return fmt.Errorf("escalation: decode incident.assigned payload: %w", err)
+		}
 		err := e.cancelBy(ctx, env.EntityID, cancelAssigned)
 		// An engineer taking the incident also answers any Special Ops page
-		// open on it, so a later press may page again.
-		return errors.Join(err, e.closeSMEPages(ctx, env.EntityID))
+		// raised before the assignment -- open now or still on its way -- so
+		// only a later press pages again.
+		return errors.Join(err, e.closeSMEPages(ctx, env.EntityID, reportedAt(p.AssignedOn)))
 	default:
 		return e.cancelBy(ctx, env.EntityID, cancelStateChange)
 	}
@@ -591,6 +598,7 @@ func (e *Engine) claims(ctx context.Context, t *Trigger) bool {
 		return false
 	}
 	t.Routing.Ladder = e.cfg.Kind
+	t.Routing.CallOnLeave = e.cfg.Ladder.OnLeave.Calls()
 	t.Routing.RouteRule = rule.Name
 	t.Routing.TeamOptional = rule.AdmitsNoTeam()
 	if e.cfg.Kind == LadderSRE {
@@ -998,6 +1006,11 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 // joined: a chat webhook being down must not stop the phone ringing, and a
 // phone failing must not cost the room its sight of the escalation.
 func (e *Engine) place(ctx context.Context, plan Plan, call PlannedCall) error {
+	if plan.Trigger.Routing.Ladder == LadderSME {
+		// An SME ladder rides the SRE engine's ticker but pages over the
+		// SME's own channel and Chat space.
+		return e.placeVia(ctx, plan, call, e.smeNotifiers, e.cfg.SME.Channel)
+	}
 	return e.placeVia(ctx, plan, call, e.notifiers, e.cfg.Channel)
 }
 

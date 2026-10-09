@@ -127,21 +127,22 @@ func (m *memStore) CloseSMEPage(_ context.Context, incidentID, team string) erro
 	return nil
 }
 
-func (m *memStore) CloseSMEPages(_ context.Context, incidentID string) (int, error) {
-	n := 0
+func (m *memStore) CloseSMEPages(_ context.Context, incidentID string, answeredAt time.Time) ([]string, error) {
+	if m.smeClosed == nil {
+		m.smeClosed = map[string]time.Time{}
+	}
+	if answeredAt.After(m.smeClosed[incidentID]) {
+		m.smeClosed[incidentID] = answeredAt
+	}
+	var teams []string
 	for k, at := range m.smePages {
-		if strings.HasPrefix(k, incidentID+"|") {
-			if m.smeClosed == nil {
-				m.smeClosed = map[string]time.Time{}
-			}
-			if at.After(m.smeClosed[incidentID]) {
-				m.smeClosed[incidentID] = at
-			}
+		if strings.HasPrefix(k, incidentID+"|") && !at.After(answeredAt) {
 			delete(m.smePages, k)
-			n++
+			teams = append(teams, strings.TrimPrefix(k, incidentID+"|"))
 		}
 	}
-	return n, nil
+	sort.Strings(teams)
+	return teams, nil
 }
 
 func (m *memStore) SMEClosedThrough(_ context.Context, incidentID string) (time.Time, error) {

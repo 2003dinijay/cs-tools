@@ -382,9 +382,10 @@ const (
 	// smeOpenPrefix + "<incidentId>" is the set of SME teams with an open
 	// page on the incident, so an assignment can close them all.
 	smeOpenPrefix = "incident:escalation:sme:open:"
-	// smeClosedPrefix + "<incidentId>" is the latest changedOn among the
-	// pages an assignment closed. An alert timed at or before it is a replay
-	// of one already answered, not a new alert.
+	// smeClosedPrefix + "<incidentId>" is when the latest assignment was
+	// made (or the latest changedOn among the pages it closed, if later). An
+	// alert timed at or before it has been answered, whichever was handled
+	// first.
 	smeClosedPrefix = "incident:escalation:sme:closed:"
 	// smeClosedTTL outlives any redelivery or dead-letter retry.
 	smeClosedTTL = 7 * 24 * time.Hour
@@ -414,48 +415,67 @@ func (s *Store) CloseSMEPage(ctx context.Context, incidentID, team string) error
 	return s.rdb.SRem(ctx, smeOpenPrefix+incidentID, team).Err()
 }
 
-// CloseSMEPages closes every open SME page on the incident -- an engineer has
-// been assigned -- and remembers the latest alert it closed, so a replay of
-// that alert cannot page again. Reports how many it closed.
-func (s *Store) CloseSMEPages(ctx context.Context, incidentID string) (int, error) {
-	open := smeOpenPrefix + incidentID
-	teams, err := s.rdb.SMembers(ctx, open).Result()
-	if err != nil || len(teams) == 0 {
-		return 0, err
-	}
+// CloseSMEPages records an assignment made at answeredAt: the SME pages on
+// the incident raised at or before it are answered. It closes those open now,
+// keeping any raised after it (an escalation after this assignment), and
+// remembers the time, so an alert raised before it but handled after it --
+// or a replay of a closed one -- pages nobody. Reports the SME teams whose
+// pages it closed, so their ladders can be stopped.
+func (s *Store) CloseSMEPages(ctx context.Context, incidentID string, answeredAt time.Time) ([]string, error) {
 	latest, err := s.SMEClosedThrough(ctx, incidentID)
 	if err != nil {
-		return 0, err
+		return nil, err
 	}
-	keys := make([]string, 0, len(teams)+1)
+	if answeredAt.After(latest) {
+		latest = answeredAt
+	}
+	open := smeOpenPrefix + incidentID
+	teams, err := s.rdb.SMembers(ctx, open).Result()
+	if err != nil {
+		return nil, err
+	}
+	var keys, closedTeams, answered []string
 	for _, team := range teams {
 		key := smePageKey(incidentID, team)
-		keys = append(keys, key)
 		raw, err := s.rdb.Get(ctx, key).Result()
 		if errors.Is(err, redis.Nil) {
+			closedTeams = append(closedTeams, team)
 			continue
 		}
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
-		if at, perr := time.Parse(time.RFC3339Nano, raw); perr == nil && at.After(latest) {
-			latest = at
+		if at, perr := time.Parse(time.RFC3339Nano, raw); perr == nil && at.After(answeredAt) {
+			continue // raised after this assignment: still open
 		}
+		keys = append(keys, key)
+		closedTeams = append(closedTeams, team)
+		answered = append(answered, team)
 	}
 	if !latest.IsZero() {
 		if err := s.rdb.Set(ctx, smeClosedPrefix+incidentID, latest.UTC().Format(time.RFC3339Nano), smeClosedTTL).Err(); err != nil {
-			return 0, err
+			return nil, err
 		}
 	}
-	keys = append(keys, open)
-	if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
-		return 0, err
+	if len(keys) > 0 {
+		if err := s.rdb.Del(ctx, keys...).Err(); err != nil {
+			return nil, err
+		}
 	}
-	return len(teams), nil
+	if len(closedTeams) > 0 {
+		members := make([]any, len(closedTeams))
+		for i, t := range closedTeams {
+			members[i] = t
+		}
+		if err := s.rdb.SRem(ctx, open, members...).Err(); err != nil {
+			return nil, err
+		}
+	}
+	return answered, nil
 }
 
-// SMEClosedThrough is the latest alert an assignment has closed on the
-// incident, zero when none.
+// SMEClosedThrough is the time through which the incident's SME alerts have
+// been answered by an assignment, zero when none.
 func (s *Store) SMEClosedThrough(ctx context.Context, incidentID string) (time.Time, error) {
 	raw, err := s.rdb.Get(ctx, smeClosedPrefix+incidentID).Result()
 	if errors.Is(err, redis.Nil) {

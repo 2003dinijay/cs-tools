@@ -240,9 +240,9 @@ type handoverReader struct {
 	after    []onDutyAssignment
 }
 
-func (h handoverReader) OnDutyAt(ctx context.Context, at time.Time) ([]onDutyAssignment, error) {
+func (h handoverReader) OnDutyAt(ctx context.Context, at time.Time, includeOnLeave bool) ([]onDutyAssignment, error) {
 	if at.Before(h.handover) {
-		return h.stubScheduleReader.OnDutyAt(ctx, at)
+		return h.stubScheduleReader.OnDutyAt(ctx, at, includeOnLeave)
 	}
 	return h.after, nil
 }

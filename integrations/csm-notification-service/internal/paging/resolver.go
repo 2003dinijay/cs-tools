@@ -142,6 +142,10 @@ type RoutingContext struct {
 	Rota string `json:",omitempty"`
 	// SMETeam is the Special Ops team an SME page reaches (LadderSME only).
 	SMETeam string `json:",omitempty"`
+	// CallOnLeave is the ladder's onLeave: true rings someone on leave who
+	// holds a rung (after anyone available on the same tier); false leaves
+	// them out. Stamped by the engine from the file.
+	CallOnLeave bool `json:",omitempty"`
 }
 
 // HasNotificationLevel reports whether LEVEL_0 exists for this incident.
@@ -167,7 +171,8 @@ type RoutingContext struct {
 func (rc RoutingContext) HasNotificationLevel() bool {
 	// The SRE ladder's LEVEL_0 is L1 support, the first responder on every
 	// shift, not a rotation-only notification level.
-	if rc.Ladder == LadderSRE {
+	if rc.Ladder == LadderSRE || rc.Ladder == LadderSME {
+		// The SME ladder's LEVEL_0 is the L1 of the SME team's window.
 		return true
 	}
 	if !rc.Shift.IsRotation() {

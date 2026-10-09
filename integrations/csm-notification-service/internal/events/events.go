@@ -523,6 +523,11 @@ type IncidentAssignedPayload struct {
 	// AssigneeName is for the execution summary, so the work note says who
 	// took the incident. Optional; a publisher that cannot resolve it omits it.
 	AssigneeName string `json:"assigneeName,omitempty"`
+	// AssignedOn is when the assignee was set, RFC3339. The Special Ops (SME)
+	// page compares an alert's changedOn against it, so an assignment that
+	// arrives before the alert it answers still answers it. Optional: without
+	// it the time the event is handled stands in.
+	AssignedOn string `json:"assignedOn,omitempty"`
 }
 
 // IncidentSpecialOpsAlertPayload is TypeIncidentSpecialOpsAlert's payload,

@@ -842,20 +842,28 @@ func main() {
 			// Phone numbers. The Team Schedule says who, never how to reach
 			// them, and a call plan drops anyone without a number. Each
 			// person keeps their mobile on their own CSM Portal profile,
-			// which the portal stores on their Asgardeo user; read it from
-			// there through the same SCIM operations service and OAuth2 app
-			// the onboarding flow uses. A number named in paging-alert.yaml
-			// (the heads) still wins.
+			// which the portal stores in CSM ("user".phone) as well as on
+			// their Asgardeo user. entity-service gives the number to call
+			// for a whole rung in one request: the profile number, else the
+			// paging-only number a lead or admin stored. A number named in
+			// paging-alert.yaml (the heads) still wins.
 			//
-			// When the profile has no number, the paging-only number a lead or
-			// admin stored in CSM (entity-service's paging contacts) is used
-			// instead -- never ahead of the profile.
+			// Asgardeo, through the SCIM operations service and the OAuth2 app
+			// the onboarding flow uses, is only the fallback for people CSM
+			// has no number for, until "user".phone has been filled from
+			// Asgardeo. PAGING_PHONE_SCIM_FALLBACK=false turns it off (the
+			// onboarding flow keeps its own use of SCIM).
 			if creCfg.PhoneSource() == paging.PhoneSourceProfile {
 				var profiles paging.PhoneLookup
-				if scimURL := strings.TrimSpace(os.Getenv("SCIM_BASE_URL")); scimURL == "" {
-					slog.Warn("incident escalation: phones.source is profile but SCIM_BASE_URL is not set; " +
-						"only numbers in paging-alert.yaml and paging numbers stored in CSM can be called")
-				} else {
+				scimURL := strings.TrimSpace(os.Getenv("SCIM_BASE_URL"))
+				switch {
+				case strings.TrimSpace(os.Getenv("PAGING_PHONE_SCIM_FALLBACK")) == "false":
+					slog.Info("incident escalation: PAGING_PHONE_SCIM_FALLBACK is false; recipients' numbers come from CSM only " +
+						"(and paging-alert.yaml)")
+				case scimURL == "":
+					slog.Warn("incident escalation: SCIM_BASE_URL is not set; recipients' numbers come from CSM only " +
+						"(and paging-alert.yaml)")
+				default:
 					profiles = scim.NewClient(scim.Config{
 						BaseURL:      scimURL,
 						TokenURL:     os.Getenv("OAUTH2_TOKEN_URL"),
@@ -863,14 +871,14 @@ func main() {
 						ClientSecret: os.Getenv("OAUTH2_CLIENT_SECRET"),
 						Scopes:       splitComma(os.Getenv("SCIM_SCOPES")),
 					})
-					slog.Info("incident escalation reads recipients' phone numbers from their CSM Portal profiles")
+					slog.Info("incident escalation falls back to recipients' Asgardeo profiles for numbers CSM does not have")
 				}
 				// Assigned only when present: a nil *EntityClient in the
 				// interface would not compare equal to nil.
 				var pagingContacts paging.PagingContactLookup
 				if escalationNotes != nil {
 					pagingContacts = escalationNotes
-					slog.Info("incident escalation falls back to paging numbers stored in CSM")
+					slog.Info("incident escalation reads recipients' numbers from CSM (profile, else paging number)")
 				}
 				if profiles != nil || pagingContacts != nil {
 					escalationResolver = paging.NewProfilePhoneResolver(escalationResolver, profiles).

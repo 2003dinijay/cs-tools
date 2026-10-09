@@ -242,6 +242,13 @@ cre:
     # incident up. Set false to accept either gesture on its own.
     requireBoth: true
 
+  # Someone who holds a rung but is on leave that day: skip (the default)
+  # leaves them out, so the rung goes to whoever else holds it or the ladder
+  # climbs past; call rings them anyway, after anyone available on the same
+  # tier. Responders, leads and heads are checked against the Team Schedule
+  # absences for the incident's date in IST.
+  onLeave: skip
+
   safety:
     # The most calls one ladder may place across every rung. A plan larger
     # than this is truncated and says so, so a rota that suddenly resolves to
@@ -347,6 +354,9 @@ sre:
     # case at S0, or a monitoring alert raised with no team. Absent is SRE_SAAS.
     defaultRota: SRE_SAAS
 
+  # As cre.onLeave: skip (the default) or call.
+  onLeave: skip
+
   safety:
     # L1 + L2 + L3 (+ L4) is at most four calls; anything above that means a
     # rung resolved to more than one person, which it never should.
@@ -384,6 +394,16 @@ sme:
   #   teams:
   #     choreo-runtime-team: choreo-sme
   teams: {}
+
+  # The SME ladder: L1 of the SME team's current Day/Night window at once, L2
+  # after one interval, L3 after two. Someone rostered on the window with no
+  # tier counts as L1. Same shape as sre.timing (includeL4 is ignored here).
+  timing:
+    initialWait: 0s
+    interval: 5m
+
+  # As cre.onLeave: skip (the default) or call.
+  onLeave: skip
 
   safety:
     # As a ladder's: when non-empty, the only numbers the page may ring.

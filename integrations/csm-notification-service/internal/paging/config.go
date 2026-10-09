@@ -75,6 +75,11 @@ type LadderConfig struct {
 	Channel Channel   `yaml:"channel"`
 	Start   StartWhen `yaml:"trigger"`
 	Safety  Safety    `yaml:"safety"`
+	// OnLeave is what a rung does with someone who holds it but is on leave
+	// that day: skip (the default) leaves them out, so the rung goes to
+	// whoever else holds it or the ladder climbs past; call rings them
+	// anyway, after anyone available on the same tier.
+	OnLeave OnLeave `yaml:"onLeave"`
 	// Teams names the teams the rules refer to by role rather than by name --
 	// the ABTs, the Americas team, the leadership team.
 	Teams TeamKeys `yaml:"teams"`
@@ -186,11 +191,51 @@ type SMEConfig struct {
 	// teamKey) to the rota team key of the SME team to page -- for an alert
 	// that does not name the SME team itself.
 	Teams map[string]string `yaml:"teams"`
-	// Safety is the one cap a single call needs.
+	// Safety is what the SME ladder may ring.
 	Safety SMESafety `yaml:"safety"`
+	// OnLeave is the ladders' onLeave for the SME ladder: skip (the default)
+	// or call.
+	OnLeave OnLeave `yaml:"onLeave"`
+	// Timing is the SME ladder's clock, the same shape and defaults as
+	// sre.timing: L1 at once, L2 after one interval, L3 after two (five
+	// minutes each by default). includeL4 is ignored: SME shifts stop at L3.
+	Timing SRETiming `yaml:"timing"`
 }
 
-// SMESafety is what the SME page may ring.
+// OnLeave is what a ladder does with someone on leave who holds a rung.
+type OnLeave string
+
+const (
+	// OnLeaveSkip leaves them out (the default, also when absent).
+	OnLeaveSkip OnLeave = "skip"
+	// OnLeaveCall rings them anyway, after anyone available on the same tier.
+	OnLeaveCall OnLeave = "call"
+)
+
+// Calls reports whether someone on leave is rung.
+func (o OnLeave) Calls() bool { return o == OnLeaveCall }
+
+func (o *OnLeave) validate(name string) error {
+	v := OnLeave(strings.ToLower(strings.TrimSpace(string(*o))))
+	switch v {
+	case "", OnLeaveSkip:
+		*o = OnLeaveSkip
+	case OnLeaveCall:
+		*o = OnLeaveCall
+	default:
+		return fmt.Errorf("%s: onLeave is %q; use skip or call", name, string(*o))
+	}
+	return nil
+}
+
+// Policy is the SME ladder's clock as the planner reads it: L1-L3 only.
+func (s SMEConfig) Policy() PriorityPolicy {
+	t := s.Timing
+	t.IncludeL4 = false
+	return t.Policy()
+}
+
+// SMESafety is what the SME ladder may ring.
 type SMESafety struct {
 	// AllowedNumbers, when non-empty, is the only set of numbers the page may
 	// call, as a ladder's safety.allowedNumbers.
@@ -222,6 +267,9 @@ func (s *SMEConfig) validate() error {
 		return fmt.Errorf("sme: %w", err)
 	}
 	s.Channel = ch
+	if err := s.OnLeave.validate("sme"); err != nil {
+		return err
+	}
 	if v := strings.TrimSpace(s.Chat.WebhookURLEnv); v != "" && !envVarName.MatchString(v) {
 		return fmt.Errorf("sme: chat.webhookUrlEnv must be the NAME of an environment variable " +
 			"that holds the webhook URL, not the URL itself -- this file is committed")
@@ -516,6 +564,9 @@ func (l *LadderConfig) validate(name string) error {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	l.Channel = ch
+	if err := l.OnLeave.validate(name); err != nil {
+		return err
+	}
 
 	if m := l.Safety.MaxLevel; m != nil && (*m < int(Level0) || *m > int(Level4)) {
 		return fmt.Errorf("%s: safety.maxLevel is %d; use %d..%d, or omit it for no cap",
