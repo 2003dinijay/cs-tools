@@ -90,7 +90,9 @@ func (s *organizationService) Patch(ctx context.Context, req domain.PatchOrganiz
 			return nil, err
 		}
 	}
-	if err := s.repo.Patch(ctx, req); err != nil {
+	err := s.repo.Patch(ctx, req)
+	plgAudit(ctx, "set owner", "", err, "organizationId", req.ID)
+	if err != nil {
 		return nil, err
 	}
 	// Returns the reloaded detail: the caller's response is the whole

@@ -47,6 +47,9 @@ func (s *playbookService) Create(ctx context.Context, req domain.CreatePlaybookR
 		}
 	}
 	id, err := s.repo.Create(ctx, req)
+	plgAudit(ctx, "create playbook", "", err,
+		"productCode", req.ProductCode, "lifecycleStage", string(req.LifecycleStage),
+		"playbookType", string(req.PlaybookType), "taskCount", len(req.Tasks), "playbookId", id)
 	if err != nil {
 		return domain.CreatePlaybookResult{}, err
 	}
@@ -57,7 +60,9 @@ func (s *playbookService) Patch(ctx context.Context, req domain.PatchPlaybookReq
 	if err := validateUUID("playbookId", req.ID); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := s.repo.Patch(ctx, req); err != nil {
+	err := s.repo.Patch(ctx, req)
+	plgAudit(ctx, "patch playbook", "", err, "playbookId", req.ID)
+	if err != nil {
 		return domain.WriteResult{}, err
 	}
 	return domain.WriteResult{RowsAffected: 1}, nil
@@ -72,7 +77,9 @@ func (s *playbookService) ReplaceTasks(ctx context.Context, req domain.ReplacePl
 			return domain.WriteResult{}, invalidEnum("tasks.valueType", string(req.Tasks[i].ValueType))
 		}
 	}
-	if err := s.repo.ReplaceTasks(ctx, req); err != nil {
+	err := s.repo.ReplaceTasks(ctx, req)
+	plgAudit(ctx, "replace tasks", "", err, "playbookId", req.PlaybookID, "taskCount", len(req.Tasks))
+	if err != nil {
 		return domain.WriteResult{}, err
 	}
 	return domain.WriteResult{RowsAffected: len(req.Tasks)}, nil
@@ -82,7 +89,9 @@ func (s *playbookService) Delete(ctx context.Context, id string) (domain.WriteRe
 	if err := validateUUID("playbookId", id); err != nil {
 		return domain.WriteResult{}, err
 	}
-	if err := s.repo.Delete(ctx, id); err != nil {
+	err := s.repo.Delete(ctx, id)
+	plgAudit(ctx, "delete playbook", "", err, "playbookId", id)
+	if err != nil {
 		return domain.WriteResult{}, err
 	}
 	return domain.WriteResult{RowsAffected: 1}, nil
