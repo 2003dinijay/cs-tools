@@ -54,7 +54,7 @@ type notifier interface {
 	NotifyChat(ctx context.Context, inc model.Incident) (ok bool)
 	NotifyChatAnnotation(ctx context.Context, inc model.Incident, text string) (ok bool)
 	PushWorkNote(ctx context.Context, incidentID, note string) error
-	IncidentState(ctx context.Context, incidentNumber string) (open bool, found bool, err error)
+	IncidentState(ctx context.Context, incidentID, incidentNumber string) (open bool, found bool, err error)
 }
 
 // CSMRetryConfig bounds CSM create retries: waits grow BaseDelay, BaseDelay*Multiplier, ..., capped at MaxDelay.
@@ -366,7 +366,7 @@ func (d *delivery) createInCSM() {
 		}
 		return
 	}
-	// If this write fails, the next attempt's dedup-by-tag search finds the CSM incident instead of duplicating it.
+	// If this write fails, the next attempt creates the CSM incident again: CSM is not searched for a prior create.
 	if !d.persist("csm confirmation", func(c context.Context) error {
 		return e.incidents.RecordCSMIncident(c, d.inc.ID, csmID, number)
 	}) {
@@ -477,7 +477,7 @@ func (d *delivery) refreshStatus() {
 		!inc.LastSeen.After(inc.StateCheckedAt) || now.Sub(inc.StateCheckedAt) < e.cfg.StateCheckInterval {
 		return
 	}
-	open, found, err := e.notifier.IncidentState(d.ctx, inc.IncidentNumber)
+	open, found, err := e.notifier.IncidentState(d.ctx, inc.IncidentID, inc.IncidentNumber)
 	if err != nil {
 		e.logger.Warn("csm incident state check failed, using last known state", "incident_number", inc.IncidentNumber, "error", err)
 		return

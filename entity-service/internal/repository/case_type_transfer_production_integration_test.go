@@ -215,7 +215,6 @@ func TestCaseTypeTransferIntegration_AttachmentsAreAvailableOnTheConvertedTicket
 	f := newCTFixture(t)
 	f.cleanupExtras(t)
 	cases := repository.NewCaseRepository(f.scoped)
-	now := time.Now().UTC()
 
 	portalKey := ctBulkMarker
 	fromPortal, err := cases.CreateCaseAttachment(f.ctx, domain.CreateAttachmentRequest{
@@ -227,7 +226,7 @@ func TestCaseTypeTransferIntegration_AttachmentsAreAvailableOnTheConvertedTicket
 	}
 	fromSN, err := cases.CreateCaseAttachmentFromServiceNow(f.ctx, domain.CreateAttachmentRequest{
 		ReferenceID: ctQueryID, ReferenceType: domain.ReferenceTypeCase, Name: "config.xml", Type: "text/xml",
-	}, "92000000-0000-0000-0000-0000000000b1", 512, f.userID, now)
+	}, "92000000-0000-0000-0000-0000000000b1", 512, f.userID)
 	if err != nil {
 		t.Fatalf("seed a ServiceNow attachment: %v", err)
 	}

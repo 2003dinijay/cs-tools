@@ -99,8 +99,8 @@ func (f *fakeUserRepoForEscalationService) GetUserGroups(context.Context, string
 func (f *fakeUserRepoForEscalationService) CreateUser(context.Context, domain.CreateUserRequest, string) (domain.User, error) {
 	panic("fakeUserRepoForEscalationService.CreateUser: not expected to be called by these tests")
 }
-func (f *fakeUserRepoForEscalationService) UpdateUserTimeZone(context.Context, string, string) (time.Time, error) {
-	panic("fakeUserRepoForEscalationService.UpdateUserTimeZone: not expected to be called by these tests")
+func (f *fakeUserRepoForEscalationService) UpdateUserProfile(context.Context, string, *string, *string) (domain.UserProfileUpdate, error) {
+	panic("fakeUserRepoForEscalationService.UpdateUserProfile: not expected to be called by these tests")
 }
 
 // caseFoundInScopeRepo is the default stubCaseRepo.GetCaseByID for tests

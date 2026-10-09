@@ -145,9 +145,11 @@ func (h *Handlers) PatchOrganization(w http.ResponseWriter, r *http.Request) {
 
 	org, err := h.orgs.Patch(r.Context(), req, actor(r))
 	if err != nil {
+		auditWrite(r, "set owner", err, "organizationId", req.ID)
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "set owner", nil, "organizationId", req.ID)
 	writeJSON(w, http.StatusOK, org)
 }
 
@@ -175,9 +177,15 @@ func (h *Handlers) PatchProduct(w http.ResponseWriter, r *http.Request) {
 
 	detail, err := h.pairings.Patch(r.Context(), req, actor(r))
 	if err != nil {
+		auditWrite(r, "patch pairing", err, "organizationId", req.OrganizationID, "productCode", req.ProductCode,
+			"lifecycleStage", enumPtr(req.LifecycleStage), "healthState", enumPtr(req.HealthState),
+			"subscriptionTier", enumPtr(req.SubscriptionTier))
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "patch pairing", nil, "organizationId", req.OrganizationID, "productCode", req.ProductCode,
+		"lifecycleStage", enumPtr(req.LifecycleStage), "healthState", enumPtr(req.HealthState),
+		"subscriptionTier", enumPtr(req.SubscriptionTier))
 	writeJSON(w, http.StatusOK, detail)
 }
 
@@ -191,9 +199,11 @@ func (h *Handlers) AttachPlaybook(w http.ResponseWriter, r *http.Request) {
 
 	detail, err := h.pairings.AttachPlaybook(r.Context(), req, actor(r))
 	if err != nil {
+		auditWrite(r, "attach playbook", err, "organizationId", req.OrganizationID, "productCode", req.ProductCode, "playbookId", req.PlaybookID)
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "attach playbook", nil, "organizationId", req.OrganizationID, "productCode", req.ProductCode, "playbookId", req.PlaybookID)
 	writeJSON(w, http.StatusCreated, detail)
 }
 
@@ -201,9 +211,11 @@ func (h *Handlers) AttachPlaybook(w http.ResponseWriter, r *http.Request) {
 func (h *Handlers) DetachRun(w http.ResponseWriter, r *http.Request) {
 	detail, err := h.pairings.DetachRun(r.Context(), r.PathValue("playbookRunId"), actor(r))
 	if err != nil {
+		auditWrite(r, "detach run", err, "playbookRunId", r.PathValue("playbookRunId"))
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "detach run", nil, "playbookRunId", r.PathValue("playbookRunId"))
 	writeJSON(w, http.StatusOK, detail)
 }
 
@@ -217,9 +229,11 @@ func (h *Handlers) PatchRunTask(w http.ResponseWriter, r *http.Request) {
 
 	detail, err := h.pairings.PatchRunTask(r.Context(), req, actor(r))
 	if err != nil {
+		auditWrite(r, "patch run task", err, "taskId", req.ID, "cleared", req.ClearValue)
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "patch run task", nil, "taskId", req.ID, "cleared", req.ClearValue)
 	writeJSON(w, http.StatusOK, detail)
 }
 
@@ -237,9 +251,11 @@ func (h *Handlers) PatchNote(w http.ResponseWriter, r *http.Request) {
 
 	detail, err := h.pairings.UpdateNote(r.Context(), req, actor(r))
 	if err != nil {
+		auditWrite(r, "patch note", err, "noteId", req.ID)
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "patch note", nil, "noteId", req.ID)
 	writeJSON(w, http.StatusOK, detail)
 }
 
@@ -253,9 +269,11 @@ func (h *Handlers) CreateNote(w http.ResponseWriter, r *http.Request) {
 
 	detail, err := h.pairings.CreateNote(r.Context(), req, actor(r))
 	if err != nil {
+		auditWrite(r, "create note", err, "organizationId", req.OrganizationID, "productCode", req.ProductCode)
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "create note", nil, "organizationId", req.OrganizationID, "productCode", req.ProductCode)
 	writeJSON(w, http.StatusCreated, detail)
 }
 
@@ -294,9 +312,11 @@ func (h *Handlers) Acknowledge(w http.ResponseWriter, r *http.Request) {
 
 	detail, err := h.pairings.Acknowledge(r.Context(), req, actor(r))
 	if err != nil {
+		auditWrite(r, "acknowledge", err, "orgPlatformId", req.OrgPlatformID)
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "acknowledge", nil, "orgPlatformId", req.OrgPlatformID)
 	writeJSON(w, http.StatusOK, detail)
 }
 
@@ -342,9 +362,13 @@ func (h *Handlers) CreatePlaybook(w http.ResponseWriter, r *http.Request) {
 
 	pb, err := h.playbooks.Create(r.Context(), req, actor(r))
 	if err != nil {
+		auditWrite(r, "create playbook", err, "productCode", req.ProductCode, "lifecycleStage", string(req.LifecycleStage),
+			"playbookType", string(req.PlaybookType), "taskCount", len(req.Tasks))
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "create playbook", nil, "productCode", req.ProductCode, "lifecycleStage", string(req.LifecycleStage),
+		"playbookType", string(req.PlaybookType), "taskCount", len(req.Tasks))
 	writeJSON(w, http.StatusCreated, pb)
 }
 
@@ -358,9 +382,11 @@ func (h *Handlers) PatchPlaybook(w http.ResponseWriter, r *http.Request) {
 
 	pb, err := h.playbooks.Patch(r.Context(), req, actor(r))
 	if err != nil {
+		auditWrite(r, "patch playbook", err, "playbookId", req.ID)
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "patch playbook", nil, "playbookId", req.ID)
 	writeJSON(w, http.StatusOK, pb)
 }
 
@@ -374,18 +400,23 @@ func (h *Handlers) ReplacePlaybookTasks(w http.ResponseWriter, r *http.Request) 
 
 	pb, err := h.playbooks.ReplaceTasks(r.Context(), req, actor(r))
 	if err != nil {
+		auditWrite(r, "replace tasks", err, "playbookId", req.PlaybookID, "taskCount", len(req.Tasks))
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "replace tasks", nil, "playbookId", req.PlaybookID, "taskCount", len(req.Tasks))
 	writeJSON(w, http.StatusOK, pb)
 }
 
 // DeletePlaybook serves DELETE /playbooks/{playbookId}.
 func (h *Handlers) DeletePlaybook(w http.ResponseWriter, r *http.Request) {
-	if err := h.playbooks.Delete(r.Context(), r.PathValue("playbookId")); err != nil {
+	playbookID := r.PathValue("playbookId")
+	if err := h.playbooks.Delete(r.Context(), playbookID); err != nil {
+		auditWrite(r, "delete playbook", err, "playbookId", playbookID)
 		writeServiceError(w, r, err)
 		return
 	}
+	auditWrite(r, "delete playbook", nil, "playbookId", playbookID)
 	w.WriteHeader(http.StatusNoContent)
 }
 

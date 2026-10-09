@@ -354,6 +354,8 @@ type GetUserMeResponse struct {
 	FirstName *string `json:"firstName,omitempty"`
 	LastName  string  `json:"lastName"`
 	TimeZone  *string `json:"timeZone,omitempty"`
+	// Phone is the user's phone number as populated by the data sync; omitted when NULL.
+	Phone *string `json:"phone,omitempty"`
 	// UserType distinguishes staff from customer/partner contacts, matching SNUser's own
 	// field. Exposed for the same reason it is on SNUser -- a caller may need to tell them
 	// apart -- and also drives whether Groups below is populated.
@@ -367,8 +369,23 @@ type GetUserMeResponse struct {
 }
 
 // PatchUserMeRequest is the request body for PATCH /users/me.
+//
+// Both fields are optional on the Postgres data source, but at least one must be
+// present. An absent (or null) field is left untouched; "absent" and null are not
+// distinguished. TimeZone cannot be cleared, so an empty value counts as absent.
+// Phone is trimmed, at most 32 characters, and an empty (after trimming) value
+// clears it. The alternate (non-Postgres) data source applies TimeZone and accepts but
+// ignores Phone (a phone-only request is a no-op there).
 type PatchUserMeRequest struct {
-	TimeZone string `json:"timeZone"`
+	TimeZone string  `json:"timeZone"`
+	Phone    *string `json:"phone"`
+}
+
+// UserProfileUpdate is the row state UpdateUserProfile returns after the write.
+type UserProfileUpdate struct {
+	UpdatedOn time.Time
+	Timezone  *string
+	Phone     *string
 }
 
 // PatchUserMeUpdated contains the key fields returned after a successful user update.
@@ -376,6 +393,10 @@ type PatchUserMeUpdated struct {
 	ID        string `json:"id"`
 	UpdatedBy string `json:"updatedBy"`
 	UpdatedOn string `json:"updatedOn"`
+	// TimeZone and Phone are the profile's values after the update, omitted when
+	// NULL. Filled by the Postgres data source only.
+	TimeZone *string `json:"timeZone,omitempty"`
+	Phone    *string `json:"phone,omitempty"`
 }
 
 // PatchUserMeResponse is the response for PATCH /users/me.

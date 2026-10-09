@@ -53,7 +53,9 @@ func (s *pairingService) Acknowledge(ctx context.Context, req domain.Acknowledge
 			return domain.AcknowledgeResult{}, err
 		}
 	}
-	return s.repo.Acknowledge(ctx, req, actorID)
+	res, err := s.repo.Acknowledge(ctx, req, actorID)
+	plgAudit(ctx, "acknowledge", actorID, err, "orgPlatformId", req.OrgPlatformID)
+	return res, err
 }
 
 func (s *pairingService) PatchPairing(ctx context.Context, req domain.PatchOrgPlatformRequest, actorID string) (domain.PatchPairingResult, error) {
@@ -102,7 +104,10 @@ func (s *pairingService) PatchPairing(ctx context.Context, req domain.PatchOrgPl
 		return domain.PatchPairingResult{}, invalidField(
 			"a lifecycle, health or subscription change needs a reason")
 	}
-	return s.repo.Patch(ctx, req, actorID)
+	res, err := s.repo.Patch(ctx, req, actorID)
+	plgAudit(ctx, "patch pairing", actorID, err,
+		"organizationId", req.OrganizationID, "productCode", req.ProductCode)
+	return res, err
 }
 
 func (s *pairingService) AttachPlaybook(ctx context.Context, req domain.AttachPlaybookRequest, actorID string) error {
@@ -115,14 +120,19 @@ func (s *pairingService) AttachPlaybook(ctx context.Context, req domain.AttachPl
 	if err := validateActor(actorID); err != nil {
 		return err
 	}
-	return s.repo.AttachPlaybook(ctx, req, actorID)
+	err := s.repo.AttachPlaybook(ctx, req, actorID)
+	plgAudit(ctx, "attach playbook", actorID, err,
+		"organizationId", req.OrganizationID, "playbookId", req.PlaybookID)
+	return err
 }
 
 func (s *pairingService) DetachRun(ctx context.Context, runID, actorID string) (domain.WriteResult, string, string, error) {
 	if err := validateUUID("playbookRunId", runID); err != nil {
 		return domain.WriteResult{}, "", "", err
 	}
-	return s.repo.DetachRun(ctx, runID, actorID)
+	res, orgID, code, err := s.repo.DetachRun(ctx, runID, actorID)
+	plgAudit(ctx, "detach run", actorID, err, "playbookRunId", runID)
+	return res, orgID, code, err
 }
 
 func (s *pairingService) PatchRunTask(ctx context.Context, req domain.PatchRunTaskRequest, actorID string) (string, string, error) {
@@ -135,7 +145,9 @@ func (s *pairingService) PatchRunTask(ctx context.Context, req domain.PatchRunTa
 	// No precondition: recording a value is last-writer-wins. The
 	// chk_plg_run_task_value_type constraint rejects a value that does not match
 	// the task's type, and is_completed recomputes itself.
-	return s.repo.PatchRunTask(ctx, req, actorID)
+	orgID, code, err := s.repo.PatchRunTask(ctx, req, actorID)
+	plgAudit(ctx, "patch run task", actorID, err, "taskId", req.ID, "cleared", req.ClearValue)
+	return orgID, code, err
 }
 
 func (s *pairingService) CreateNote(ctx context.Context, req domain.CreateNoteRequest, actorID string) error {
@@ -148,7 +160,10 @@ func (s *pairingService) CreateNote(ctx context.Context, req domain.CreateNoteRe
 	if req.Body == "" {
 		return invalidField("body must not be empty")
 	}
-	return s.repo.CreateNote(ctx, req, actorID)
+	err := s.repo.CreateNote(ctx, req, actorID)
+	plgAudit(ctx, "create note", actorID, err,
+		"organizationId", req.OrganizationID, "productCode", req.ProductCode)
+	return err
 }
 
 func (s *pairingService) UpdateNote(ctx context.Context, req domain.UpdateNoteRequest, actorID string) (domain.WriteResult, string, string, error) {
@@ -161,7 +176,9 @@ func (s *pairingService) UpdateNote(ctx context.Context, req domain.UpdateNoteRe
 	if req.Body == "" {
 		return domain.WriteResult{}, "", "", invalidField("body must not be empty")
 	}
-	return s.repo.UpdateNote(ctx, req, actorID)
+	res, orgID, code, err := s.repo.UpdateNote(ctx, req, actorID)
+	plgAudit(ctx, "patch note", actorID, err, "noteId", req.ID)
+	return res, orgID, code, err
 }
 
 // RunTaskShape returns a task instance's declared type and options.

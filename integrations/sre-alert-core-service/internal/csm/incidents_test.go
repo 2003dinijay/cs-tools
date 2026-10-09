@@ -19,30 +19,23 @@ package csm
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 )
 
-// newSearchTestClient serves searchResponse for every /incidents/search and records each request body.
-func newSearchTestClient(t *testing.T, searchResponse string) (*Client, func() []searchIncidentsRequest) {
+// newSearchTestClient serves searchResponse for every /incidents/search and keeps the last request body.
+func newSearchTestClient(t *testing.T, searchResponse string) (*Client, *searchIncidentsRequest) {
 	t.Helper()
-	var mu sync.Mutex
-	var searches []searchIncidentsRequest
+	var last searchIncidentsRequest
 	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch r.URL.Path {
 		case "/token":
 			_, _ = io.WriteString(w, `{"access_token":"t","token_type":"bearer","expires_in":3600}`)
 		case "/incidents/search":
-			var req searchIncidentsRequest
-			_ = json.NewDecoder(r.Body).Decode(&req)
-			mu.Lock()
-			searches = append(searches, req)
-			mu.Unlock()
+			_ = json.NewDecoder(r.Body).Decode(&last)
 			_, _ = io.WriteString(w, searchResponse)
 		default:
 			http.NotFound(w, r)
@@ -56,55 +49,48 @@ func newSearchTestClient(t *testing.T, searchResponse string) (*Client, func() [
 		http.DefaultTransport = saved
 		srv.Close()
 	})
-	client := NewClient(Config{BaseURL: srv.URL, TokenURL: srv.URL + "/token", ClientID: "c", ClientSecret: "s"})
-	return client, func() []searchIncidentsRequest {
-		mu.Lock()
-		defer mu.Unlock()
-		return append([]searchIncidentsRequest(nil), searches...)
+	return NewClient(Config{BaseURL: srv.URL, TokenURL: srv.URL + "/token", ClientID: "c", ClientSecret: "s"}), &last
+}
+
+const (
+	testID     = "8902587d-eb73-8b10-fcf5-f5dabad0cd60"
+	testNumber = "INC0100206"
+)
+
+func TestIncidentState_ReadsTheMatchingIncident(t *testing.T) {
+	client, last := newSearchTestClient(t, `{"incidents":[{"id":"`+testID+`","number":"`+testNumber+`","state":"CLOSED"}],"total":1}`)
+
+	open, found, err := client.IncidentState(context.Background(), testID, testNumber)
+	if err != nil || !found || open {
+		t.Fatalf("open=%v found=%v err=%v; want a found, closed incident", open, found, err)
+	}
+	if last.Filters.Number != testNumber {
+		t.Errorf("searched number %q, want %q", last.Filters.Number, testNumber)
 	}
 }
 
-const testTag = "[fp:eaf2da8f3139:1791462025881]"
+func TestIncidentState_NoRowIsNotFound(t *testing.T) {
+	client, _ := newSearchTestClient(t, `{"incidents":[],"total":0}`)
 
-// A tag with no incident is a miss, found in a single exact correlationId search and never a free-text one.
-func TestSearchIncidentByCorrelationID_NoMatchIsOneExactSearch(t *testing.T) {
-	client, searches := newSearchTestClient(t, `{"incidents":[],"total":0}`)
-
-	_, _, found, err := client.SearchIncidentByCorrelationID(context.Background(), testTag)
+	_, found, err := client.IncidentState(context.Background(), testID, testNumber)
 	if err != nil || found {
 		t.Fatalf("found=%v err=%v; want a clean miss", found, err)
 	}
-	got := searches()
-	if len(got) != 1 {
-		t.Fatalf("made %d searches, want 1 (no free-text fallback)", len(got))
-	}
-	if got[0].Filters.CorrelationID != testTag || got[0].Filters.Number != "" {
-		t.Errorf("filters = %+v, want correlationId only", got[0].Filters)
-	}
 }
 
-func TestSearchIncidentByCorrelationID_SingleMatchIsReused(t *testing.T) {
-	client, _ := newSearchTestClient(t, `{"incidents":[{"id":"inc-1","number":"INC0100206","state":"NEW"}],"total":1}`)
-
-	id, number, found, err := client.SearchIncidentByCorrelationID(context.Background(), testTag)
-	if err != nil || !found || id != "inc-1" || number != "INC0100206" {
-		t.Fatalf("got id=%q number=%q found=%v err=%v; want inc-1/INC0100206", id, number, found, err)
-	}
-}
-
-// A backend that drops the correlationId filter returns unrelated incidents; reusing the first one merged alerts into the wrong incident.
-func TestSearchIncidentByCorrelationID_SeveralMatchesAreAnError(t *testing.T) {
+// A backend that drops the number filter returns some other incident; its state must not be taken as this one's.
+func TestIncidentState_AnotherIncidentIsAnError(t *testing.T) {
 	cases := map[string]string{
-		"two rows":        `{"incidents":[{"id":"a","number":"INC0040603"},{"id":"b","number":"INC0054727"}],"total":2}`,
-		"one row of many": `{"incidents":[{"id":"a","number":"INC0040603"}],"total":90000}`,
+		"other number": `{"incidents":[{"id":"` + testID + `","number":"INC0040603","state":"CLOSED"}],"total":88257}`,
+		"other id":     `{"incidents":[{"id":"12e6082d-1b38-4710-a002-c9d3604bcbdf","number":"` + testNumber + `","state":"CLOSED"}],"total":1}`,
 	}
 	for name, resp := range cases {
 		t.Run(name, func(t *testing.T) {
 			client, _ := newSearchTestClient(t, resp)
 
-			_, number, found, err := client.SearchIncidentByCorrelationID(context.Background(), testTag)
-			if !errors.Is(err, ErrCorrelationFilterIgnored) || found {
-				t.Fatalf("number=%q found=%v err=%v; want ErrCorrelationFilterIgnored, not a reused incident", number, found, err)
+			_, found, err := client.IncidentState(context.Background(), testID, testNumber)
+			if err == nil || found {
+				t.Fatalf("found=%v err=%v; want an error, not another incident's state", found, err)
 			}
 		})
 	}
