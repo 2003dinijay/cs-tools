@@ -160,6 +160,10 @@ const PENDING_REQUEST: AnnouncementRequest = {
 };
 
 beforeEach(() => {
+  // Default to a caller who can create announcements, since most of this file
+  // exercises the creators' Requests tab; the visibility tests below sign in
+  // other roles explicitly.
+  mockRoles = ["cs_engineer", "announcement_creator"];
   mockedUseSearch.mockReset();
   mockedUseSearchRequests.mockReset();
   mockedUseSearchRequests.mockReturnValue({
@@ -206,10 +210,60 @@ describe("CsmAnnouncementsPage — New announcement button", () => {
   });
 });
 
-describe("CsmAnnouncementsPage — list states", () => {
+// The Requests tab (drafts and requests awaiting approval) is the creators'
+// workspace: everyone else sees only the published announcements, and the page
+// does not even ask the backend for the request list, which it refuses to them.
+describe("CsmAnnouncementsPage — Requests tab visibility", () => {
   beforeEach(() => {
-    mockRoles = [];
+    mockResult({ data: { rows: [ROW], total: 1, limit: 20, offset: 0, hasMore: false } });
   });
+
+  it("shows both tabs to a creator and runs the request search", () => {
+    mockRoles = ["cs_engineer", "announcement_creator"];
+    render(<CsmAnnouncementsPage />);
+    expect(screen.getByRole("tab", { name: "Announcements" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Requests" })).toBeInTheDocument();
+    expect(mockedUseSearchRequests.mock.calls.at(-1)?.[3]).toEqual({ enabled: true });
+  });
+
+  it("shows admin both tabs without the role", () => {
+    mockRoles = ["admin"];
+    render(<CsmAnnouncementsPage />);
+    expect(screen.getByRole("tab", { name: "Requests" })).toBeInTheDocument();
+  });
+
+  for (const [label, roles] of [
+    ["a CS engineer without the role", ["cs_engineer"]],
+    ["a view-only role", ["viewer"]],
+    ["a holder of the role who cannot write", ["viewer", "announcement_creator"]],
+  ] as const) {
+    it(`hides the tab bar from ${label}, who still sees the published announcements`, () => {
+      mockRoles = [...roles];
+      render(<CsmAnnouncementsPage />);
+      expect(screen.queryByRole("tab", { name: "Requests" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+      expect(screen.getByText("Scheduled maintenance on Choreo")).toBeInTheDocument();
+    });
+  }
+
+  it("does not ask the backend for the request list when the caller cannot see it", () => {
+    mockRoles = ["cs_engineer"];
+    render(<CsmAnnouncementsPage />);
+    expect(mockedUseSearchRequests.mock.calls.length).toBeGreaterThan(0);
+    for (const call of mockedUseSearchRequests.mock.calls) {
+      expect(call[3]).toEqual({ enabled: false });
+    }
+  });
+
+  it("keeps a ?tab=pending link on the Announcements tab for a caller without access", () => {
+    mockRoles = ["cs_engineer"];
+    render(<CsmAnnouncementsPage />, "/announcements?tab=pending");
+    expect(screen.getByText("Scheduled maintenance on Choreo")).toBeInTheDocument();
+    expect(screen.queryByText("Upcoming maintenance")).not.toBeInTheDocument();
+  });
+});
+
+describe("CsmAnnouncementsPage — list states", () => {
 
   it("renders a row from the search result", () => {
     mockResult({
