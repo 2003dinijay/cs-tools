@@ -18,14 +18,16 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
 )
 
-// SLAStatusRepository defines the read operation backing GET /sla-status —
+// SLAStatusRepository defines the read operations backing GET /sla-status —
 // see domain.SLAStatus's own doc comment for what it replaced and why.
 type SLAStatusRepository interface {
 	// SearchActiveSLAStatuses returns every currently-active (sla.is_active =
@@ -36,15 +38,28 @@ type SLAStatusRepository interface {
 	// csm-notification-service's own Redis-recovery reconciliation pass
 	// (source=CSM), which only ever needs this engine's own rows and would
 	// otherwise pay the cost of scanning the full, much larger
-	// ServiceNow-synced row set for nothing. workItemIDFilter, when
-	// non-empty, must be a well-formed UUID and narrows the result to just
-	// that work item's own clocks -- added so csm-notification-service can
-	// re-verify a single clock's real, current liveness (against this
-	// row's own is_active, now correctly cleared by CompleteClock/
-	// ReviseClocks -- see those methods' own doc comments) immediately
-	// before sending a breach alert for it, without paging the whole active
-	// set. Empty means no filter, the original, unscoped behavior.
-	SearchActiveSLAStatuses(ctx context.Context, pagination domain.Pagination, sourceFilter, workItemIDFilter string) ([]domain.SLAStatus, int, error)
+	// ServiceNow-synced row set for nothing. Empty means no filter, the
+	// original, unscoped behavior.
+	SearchActiveSLAStatuses(ctx context.Context, pagination domain.Pagination, sourceFilter string) ([]domain.SLAStatus, int, error)
+
+	// GetClockState returns the single most recently-started "sla" row for
+	// (workItemID, target) -- regardless of is_active -- so a caller can
+	// tell a genuinely resolved clock (a real row, in a terminal stage)
+	// apart from one that was simply never registered at all (no row
+	// found), which SearchActiveSLAStatuses's own is_active-filtered list
+	// can never distinguish between (both look like "not in the active
+	// list"). Added for csm-notification-service's own pre-alert
+	// verification -- see that repo's own CLAUDE.md, "SLA breach-alerting
+	// engine" -- which needs exactly that distinction to avoid either
+	// suppressing a genuine alert over an unrelated registration failure,
+	// or confirming the wrong clock incarnation after a severity revision.
+	// target must be a real sla_policy_target_enum label ("RESPONSE"/
+	// "WORKAROUND"/"RESOLUTION"); sourceFilter follows the same convention
+	// as SearchActiveSLAStatuses's own (empty/"CSM"/"SERVICENOW").
+	// domain.SLAClockState.Found is false, every other field at its zero
+	// value, when no row exists for this (workItemID, target, source) at
+	// all.
+	GetClockState(ctx context.Context, workItemID, target, sourceFilter string) (domain.SLAClockState, error)
 }
 
 type slaStatusRepo struct {
@@ -66,21 +81,16 @@ func NewSLAStatusRepository(db *Scoped) SLAStatusRepository {
 // whose policy has no target set at all -- nothing this endpoint could label
 // as a clock type.
 //
-// sourceArgIndex/workItemArgIndex, when > 0, add "AND s.source = $<n>"/
-// "AND s.work_item_id = $<n>" respectively -- each placeholder's position
-// differs between the count query (which otherwise binds nothing) and the
-// data query (which already binds limit/offset/the evaluation-subscription
-// project type name), so the caller passes whichever index is next free in
-// its own query rather than this function assuming one. 0 means no filter
-// at all, the original unscoped behavior.
-func activeSLAStatusCTE(sourceArgIndex, workItemArgIndex int) string {
+// sourceArgIndex, when > 0, adds "AND s.source = $<sourceArgIndex>" -- the
+// placeholder's position differs between the count query (which otherwise
+// binds nothing) and the data query (which already binds limit/offset/the
+// evaluation-subscription project type name), so the caller passes whichever
+// index is next free in its own query rather than this function assuming one.
+// 0 means no source filter at all, the original unscoped behavior.
+func activeSLAStatusCTE(sourceArgIndex int) string {
 	sourceFilter := ""
 	if sourceArgIndex > 0 {
 		sourceFilter = fmt.Sprintf(" AND s.source = $%d::sla_source_enum", sourceArgIndex)
-	}
-	workItemFilter := ""
-	if workItemArgIndex > 0 {
-		workItemFilter = fmt.Sprintf(" AND s.work_item_id = $%d::uuid", workItemArgIndex)
 	}
 	return `
 	WITH active_sla AS (
@@ -89,7 +99,7 @@ func activeSLAStatusCTE(sourceArgIndex, workItemArgIndex int) string {
 			s.live_has_breached AS has_breached, s.live_stage AS stage, s.start_on
 		FROM sla_live s
 		JOIN sla_policy sp ON sp.id = s.sla_policy_id
-		WHERE s.is_active AND sp.target IS NOT NULL` + sourceFilter + workItemFilter + `
+		WHERE s.is_active AND sp.target IS NOT NULL` + sourceFilter + `
 		ORDER BY s.work_item_id, sp.target, s.start_on DESC NULLS LAST, s.updated_on DESC
 	)`
 }
@@ -184,42 +194,31 @@ func scanSLAStatus(row interface{ Scan(...any) error }) (domain.SLAStatus, error
 }
 
 // SearchActiveSLAStatuses implements SLAStatusRepository.
-func (r *slaStatusRepo) SearchActiveSLAStatuses(ctx context.Context, pagination domain.Pagination, sourceFilter, workItemIDFilter string) ([]domain.SLAStatus, int, error) {
-	// Placeholder numbering: the count query binds only whichever of
-	// source/workItemID are present, in that order, starting at $1; the
-	// data query already binds limit/offset/the evaluation-subscription
-	// project type name as $1-$3, so either filter there starts at $4.
-	// activeSLAStatusCTE takes 0 for either index to omit that filter
-	// entirely, keeping both queries' SQL text byte-identical to before
-	// these parameters existed when both are "".
+func (r *slaStatusRepo) SearchActiveSLAStatuses(ctx context.Context, pagination domain.Pagination, sourceFilter string) ([]domain.SLAStatus, int, error) {
+	// Placeholder numbering: the count query binds only the source filter
+	// (if present, as $1); the data query already binds limit/offset/the
+	// evaluation-subscription project type name as $1-$3, so the source
+	// filter there is $4. activeSLAStatusCTE takes 0 to omit the filter
+	// entirely, keeping both queries' SQL text byte-identical to before this
+	// parameter existed when sourceFilter is "".
 	countArgs := []any{}
 	countSourceArg := 0
-	countWorkItemArg := 0
 	if sourceFilter != "" {
-		countSourceArg = len(countArgs) + 1
+		countSourceArg = 1
 		countArgs = append(countArgs, sourceFilter)
-	}
-	if workItemIDFilter != "" {
-		countWorkItemArg = len(countArgs) + 1
-		countArgs = append(countArgs, workItemIDFilter)
 	}
 	dataArgs := []any{pagination.Limit, pagination.Offset, evaluationSubscriptionProjectTypeName}
 	dataSourceArg := 0
-	dataWorkItemArg := 0
 	if sourceFilter != "" {
-		dataSourceArg = len(dataArgs) + 1
+		dataSourceArg = 4
 		dataArgs = append(dataArgs, sourceFilter)
 	}
-	if workItemIDFilter != "" {
-		dataWorkItemArg = len(dataArgs) + 1
-		dataArgs = append(dataArgs, workItemIDFilter)
-	}
 
-	countQuery := activeSLAStatusCTE(countSourceArg, countWorkItemArg) + `
+	countQuery := activeSLAStatusCTE(countSourceArg) + `
 		SELECT COUNT(*)
 		` + activeSLAStatusFromJoins
 
-	dataQuery := activeSLAStatusCTE(dataSourceArg, dataWorkItemArg) + `
+	dataQuery := activeSLAStatusCTE(dataSourceArg) + `
 		SELECT als.work_item_id::TEXT, als.target::TEXT, COALESCE(als.business_elapsed_percentage, 0), COALESCE(als.has_breached, FALSE), COALESCE(als.stage::TEXT, ''), als.start_on,
 		       wi.number, wi.wso2_id, wi.subject, wi.type::TEXT,
 		       prod.name || COALESCE(' ' || pv.version, ''), COALESCE(c.severity::TEXT, ''),
@@ -280,4 +279,49 @@ func (r *slaStatusRepo) SearchActiveSLAStatuses(ctx context.Context, pagination 
 	}
 
 	return statuses, total, nil
+}
+
+// GetClockState implements SLAStatusRepository. Deliberately reads
+// sla_live (not the raw "sla" table), matching SearchActiveSLAStatuses's
+// own convention, so a still-live clock's stage/has_breached reflect the
+// current, recomputed-at-read-time truth rather than whatever
+// RecomputeActive's last periodic pass happened to write. Reads directly
+// against "sla"/"sla_policy" with no work_item/case/announcement join at
+// all -- unlike SearchActiveSLAStatuses, this never needs to resolve any
+// case-like display data, so there's nothing here that depends on
+// row-level security (confirmed: the "sla" table itself carries none).
+func (r *slaStatusRepo) GetClockState(ctx context.Context, workItemID, target, sourceFilter string) (domain.SLAClockState, error) {
+	args := []any{workItemID, target}
+	sourceFilterSQL := ""
+	if sourceFilter != "" {
+		sourceFilterSQL = " AND s.source = $3::sla_source_enum"
+		args = append(args, sourceFilter)
+	}
+
+	query := `
+		SELECT s.is_active, s.live_stage::TEXT, s.live_has_breached, s.start_on
+		FROM sla_live s
+		JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = $2` + sourceFilterSQL + `
+		ORDER BY s.start_on DESC NULLS LAST, s.updated_on DESC
+		LIMIT 1`
+
+	// Scoped requires an identity on ctx even for a table with no RLS of its
+	// own (see NewSLAEngineRepository's own doc comment for the identical
+	// requirement) -- Unrestricted is correct here for the same reason
+	// SearchActiveSLAStatuses stamps it: this is an internal-caller-only
+	// read (SLAStatusService.requireInternalCaller) with no caller-scoped
+	// filtering of its own to fall back to instead.
+	ctx = WithCallerIdentity(ctx, SearchScope{Unrestricted: true})
+
+	var state domain.SLAClockState
+	err := r.db.QueryRow(ctx, query, args...).Scan(&state.IsActive, &state.Stage, &state.HasBreached, &state.StartedOn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.SLAClockState{}, nil
+	}
+	if err != nil {
+		return domain.SLAClockState{}, fmt.Errorf("get sla clock state: %w", err)
+	}
+	state.Found = true
+	return state, nil
 }

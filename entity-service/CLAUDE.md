@@ -1895,37 +1895,54 @@ scanning the full ServiceNow-synced table the old, abandoned poll design
 choked on. Omitted (the default, and every other caller's behavior)
 means no filter, identical to this endpoint's original, unscoped shape.
 
-**`workItemId` (query param) narrows the result to one work item's own
-clocks** — added for the same caller, for a different reason: a confirmed,
-reproduced incident had `csm-notification-service`'s own Redis-held
-completion state for a clock (its `alertedTier` cursor) silently fall out of
-sync with reality — the Redis write that should have recorded a clock
+**`is_active` is now actually cleared when a clock finishes — a real,
+reported bug.** `SLAEngineRepository.CompleteClock`/`ReviseClocks` used to
+only ever set `is_active = TRUE`, at `RegisterClock`'s own INSERT, and never
+touch it again — so a clock that had genuinely, cleanly completed
+(`ACHIEVED`) or been cancelled kept reporting as "currently active" to this
+endpoint forever, which is exactly backwards from what `GET /sla-status`'s
+own contract ("every *currently-active* clock") and
+`csm-notification-service`'s `Reconcile` (which trusts this list to decide
+what still needs tracking) both assume. `CompleteClock` now sets
+`is_active = FALSE` alongside `stage = 'ACHIEVED'`, and `ReviseClocks`'
+cancellation branch does the same alongside `stage = 'CANCELLED'` —
+`BREACHED` is deliberately left `is_active = TRUE` (a clock whose
+wall-clock duration ran out without yet being satisfied is not finished —
+see `slaEngineOpenStageFilter`'s own doc comment), so this stays additive
+to, not a relaxation of, the terminal-stage distinctions this engine
+already makes everywhere else. Migration `0218` backfills every
+already-terminal `source='CSM'` row this fix's own `UPDATE` statements
+never touch (they only fire on a FUTURE `CompleteClock`/`ReviseClocks`
+call) — without it, every clock that had already completed before this
+shipped would stay stuck reporting "active" forever, including the exact
+rows a real, reported false-alert incident traced back to.
+
+**`GET /sla-status/clock-state` is a separate, dedicated endpoint for
+checking ONE specific clock's real state — deliberately not a filter on
+`GET /sla-status` itself.** Added for `csm-notification-service`'s own
+pre-alert verification: a confirmed, reproduced incident had its Redis-held
+completion state for a clock (its `alertedTier` cursor) silently fall out
+of sync with reality — the Redis write that should have recorded a clock
 finishing (on a case closing, or a qualifying comment) can fail with no
 retry (see that repo's own `CLAUDE.md`, "ApplyStateEffects") — so a wake
 entry scheduled when the clock was first registered could still fire a
 breach alert for a clock that had, in truth, already completed cleanly.
-That engine now calls back here, filtered to the one case the wake entry is
-about (`source=csm&workItemId=<caseId>`), as a final check against this
-service's own durable record immediately before actually sending the Chat
-alert — an empty result for the clock's own target means it has already
-genuinely resolved, whatever Redis still believes.
-
-**That check only works because `is_active` is now actually cleared when a
-clock finishes — a real, reported bug fixed alongside it.**
-`SLAEngineRepository.CompleteClock`/`ReviseClocks` used to only ever set
-`is_active = TRUE`, at `RegisterClock`'s own INSERT, and never touch it
-again — so a clock that had genuinely, cleanly completed (`ACHIEVED`) or
-been cancelled kept reporting as "currently active" to this endpoint
-forever, which is exactly backwards from what `GET /sla-status`'s own
-contract ("every *currently-active* clock") and `csm-notification-service`'s
-`Reconcile` (which trusts this list to decide what still needs tracking)
-both assume. `CompleteClock` now sets `is_active = FALSE` alongside
-`stage = 'ACHIEVED'`, and `ReviseClocks`' cancellation branch does the same
-alongside `stage = 'CANCELLED'` — `BREACHED` is deliberately left
-`is_active = TRUE` (a clock whose wall-clock duration ran out without yet
-being satisfied is not finished — see `slaEngineOpenStageFilter`'s own doc
-comment), so this stays additive to, not a relaxation of, the terminal-stage
-distinctions this engine already makes everywhere else.
+An earlier version of this fix tried adding a `workItemId` filter to the
+existing active-only `GET /sla-status` instead, and a CodeRabbit review
+caught why that's insufficient: an **active-only** list can't tell "this
+clock genuinely, cleanly resolved" apart from "this clock was never
+registered here at all" (entity-service's own CSM registration is
+best-effort, on a different trigger than the Redis side) or "a severity
+revision replaced it with a brand new incarnation" — all three look
+identical to that caller ("not in the active list" / "some other active row
+of this type exists"), and treating either of the latter two as "resolved"
+would wrongly suppress a genuine alert. `domain.SLAClockState`
+(`Found`/`IsActive`/`Stage`/`HasBreached`/`StartedOn`) exists specifically
+to make those three distinguishable: `GetClockState` returns the single
+most recently-started row for `(workItemID, target[, source])`,
+**regardless of `is_active`**, with `Found=false` (every other field zero)
+when no row exists at all. `StartedOn` is what lets the caller compare
+clock *incarnations*, not just clock types, after a severity revision.
 
 **`GET /sla-status` is internal-caller-only** (`slaStatusService.
 requireInternalCaller`, mirroring `onboarding_step_service.go`'s own helper

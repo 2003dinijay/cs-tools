@@ -38,14 +38,13 @@ func NewSLAStatusHandler(svc service.SLAStatusService) *SLAStatusHandler {
 }
 
 // SearchActiveSLAStatuses handles GET /sla-status. A plain GET with
-// limit/offset/source/workItemId query params, not a POST /search:
-// filtering is a couple of optional scalar values, so a request body would
-// carry nothing a query string can't — same reasoning as the deprecated
-// GET /tags form (see CaseHandler.SearchTagsQuery's own doc comment) minus
-// that one's backward-compatibility concern, since this is a new endpoint.
-// source/workItemId are both optional; see
-// SLAStatusService.SearchActiveSLAStatuses's own doc comment for their
-// accepted values.
+// limit/offset/source query params, not a POST /search: filtering is a
+// single optional value (source), so a request body would carry nothing a
+// query string can't — same reasoning as the deprecated GET /tags form (see
+// CaseHandler.SearchTagsQuery's own doc comment) minus that one's
+// backward-compatibility concern, since this is a new endpoint. source is
+// optional; see SLAStatusService.SearchActiveSLAStatuses's own doc comment
+// for its accepted values.
 func (h *SLAStatusHandler) SearchActiveSLAStatuses(w http.ResponseWriter, r *http.Request) {
 	pagination := domain.Pagination{}
 	if raw := r.URL.Query().Get("limit"); raw != "" {
@@ -65,7 +64,32 @@ func (h *SLAStatusHandler) SearchActiveSLAStatuses(w http.ResponseWriter, r *htt
 		pagination.Offset = parsed
 	}
 
-	resp, err := h.svc.SearchActiveSLAStatuses(r.Context(), pagination, r.URL.Query().Get("source"), r.URL.Query().Get("workItemId"))
+	resp, err := h.svc.SearchActiveSLAStatuses(r.Context(), pagination, r.URL.Query().Get("source"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}
+
+// GetClockState handles GET /sla-status/clock-state. A plain GET with
+// workItemId/target/source query params — workItemId and target are
+// required, source is optional; see SLAStatusService.GetClockState's own
+// doc comment for their accepted values.
+func (h *SLAStatusHandler) GetClockState(w http.ResponseWriter, r *http.Request) {
+	workItemID := r.URL.Query().Get("workItemId")
+	if workItemID == "" {
+		writeServiceError(w, r, &apierror.ValidationError{Msg: "workItemId is required"})
+		return
+	}
+	target := r.URL.Query().Get("target")
+	if target == "" {
+		writeServiceError(w, r, &apierror.ValidationError{Msg: "target is required"})
+		return
+	}
+
+	resp, err := h.svc.GetClockState(r.Context(), workItemID, target, r.URL.Query().Get("source"))
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

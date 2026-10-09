@@ -94,8 +94,21 @@ var slaStatusSourceFilters = map[string]string{
 	"servicenow": "SERVICENOW",
 }
 
+// slaClockTargetFilters maps the lowercase, caller-facing target values
+// GetClockState accepts to sla_policy_target_enum's real labels -- same
+// explicit-allow-list reasoning as slaStatusSourceFilters above. Unlike
+// that map, there is no "" entry: target is required for GetClockState (a
+// single clock lookup needs to know which of a work item's up-to-three
+// clocks it's asking about), so an empty value is rejected the same way an
+// unrecognized one is.
+var slaClockTargetFilters = map[string]string{
+	"response":   "RESPONSE",
+	"workaround": "WORKAROUND",
+	"resolution": "RESOLUTION",
+}
+
 // SearchActiveSLAStatuses implements SLAStatusService.
-func (s *slaStatusService) SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination, sourceFilter, workItemIDFilter string) (domain.SearchSLAStatusResponse, error) {
+func (s *slaStatusService) SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination, sourceFilter string) (domain.SearchSLAStatusResponse, error) {
 	if err := s.requireInternalCaller(ctx); err != nil {
 		return domain.SearchSLAStatusResponse{}, err
 	}
@@ -106,10 +119,7 @@ func (s *slaStatusService) SearchActiveSLAStatuses(ctx context.Context, req doma
 	if !ok {
 		return domain.SearchSLAStatusResponse{}, &apierror.ValidationError{Msg: "source must be one of: csm, servicenow"}
 	}
-	if workItemIDFilter != "" && !validate.IsUUID(workItemIDFilter) {
-		return domain.SearchSLAStatusResponse{}, &apierror.ValidationError{Msg: "workItemId must be a valid UUID"}
-	}
-	statuses, total, err := s.repo.SearchActiveSLAStatuses(ctx, req, source, workItemIDFilter)
+	statuses, total, err := s.repo.SearchActiveSLAStatuses(ctx, req, source)
 	if err != nil {
 		return domain.SearchSLAStatusResponse{}, err
 	}
@@ -119,4 +129,23 @@ func (s *slaStatusService) SearchActiveSLAStatuses(ctx context.Context, req doma
 		Limit:    req.Limit,
 		Offset:   req.Offset,
 	}, nil
+}
+
+// GetClockState implements SLAStatusService.
+func (s *slaStatusService) GetClockState(ctx context.Context, workItemID, target, sourceFilter string) (domain.SLAClockState, error) {
+	if err := s.requireInternalCaller(ctx); err != nil {
+		return domain.SLAClockState{}, err
+	}
+	if !validate.IsUUID(workItemID) {
+		return domain.SLAClockState{}, &apierror.ValidationError{Msg: "workItemId must be a valid UUID"}
+	}
+	targetEnum, ok := slaClockTargetFilters[strings.ToLower(target)]
+	if !ok {
+		return domain.SLAClockState{}, &apierror.ValidationError{Msg: "target must be one of: response, workaround, resolution"}
+	}
+	source, ok := slaStatusSourceFilters[strings.ToLower(sourceFilter)]
+	if !ok {
+		return domain.SLAClockState{}, &apierror.ValidationError{Msg: "source must be one of: csm, servicenow"}
+	}
+	return s.repo.GetClockState(ctx, workItemID, targetEnum, source)
 }
