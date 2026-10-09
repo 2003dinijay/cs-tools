@@ -622,6 +622,7 @@ func upsertMembershipUser(ctx context.Context, tx querier, in domain.SalesforceM
 
 	// One copy per sf_id: active first, then oldest (an account_contact EXISTS has no index here).
 	var copies int64
+	var replacedContact bool
 	err = tx.QueryRow(ctx, `
 		SELECT id, user_name, count(*) OVER () FROM "user" WHERE sf_id = $1
 		ORDER BY is_active IS TRUE DESC, created_on, id LIMIT 1`, in.ContactSfID).Scan(&id, &userName, &copies)
@@ -630,18 +631,18 @@ func upsertMembershipUser(ctx context.Context, tx querier, in domain.SalesforceM
 	}
 	warnDuplicateSfID(ctx, "user", in.ContactSfID, id, copies)
 	if id == "" {
-		rows, qerr := tx.Query(ctx, `SELECT id, user_name FROM "user" WHERE LOWER(email) = $1 LIMIT 2`, email)
+		rows, qerr := tx.Query(ctx, `SELECT id, user_name, COALESCE(sf_id, '') FROM "user" WHERE LOWER(email) = $1 LIMIT 2`, email)
 		if qerr != nil {
 			return "", "", false, fmt.Errorf("upsert membership: resolve user by email: %w", qerr)
 		}
-		var matches [][2]string
+		var matches [][3]string
 		for rows.Next() {
-			var mid, mname string
-			if serr := rows.Scan(&mid, &mname); serr != nil {
+			var mid, mname, msf string
+			if serr := rows.Scan(&mid, &mname, &msf); serr != nil {
 				rows.Close()
 				return "", "", false, fmt.Errorf("upsert membership: scan user: %w", serr)
 			}
-			matches = append(matches, [2]string{mid, mname})
+			matches = append(matches, [3]string{mid, mname, msf})
 		}
 		rows.Close()
 		if err := rows.Err(); err != nil {
@@ -651,6 +652,8 @@ func upsertMembershipUser(ctx context.Context, tx querier, in domain.SalesforceM
 		case 0:
 		case 1:
 			id, userName = matches[0][0], matches[0][1]
+			// The person's earlier Salesforce contact was replaced by a new one.
+			replacedContact = matches[0][2] != "" && matches[0][2] != in.ContactSfID
 		default:
 			return "", "", false, &apierror.ConflictError{Msg: "more than one user matches the contact email; cannot resolve the membership"}
 		}
@@ -680,8 +683,8 @@ func upsertMembershipUser(ctx context.Context, tx querier, in domain.SalesforceM
 		WHERE id = $1`,
 		id, nullIfBlank(in.ContactName), nullIfBlank(in.ContactFirstName), nullIfBlank(in.ContactLastName),
 		email, in.IsCsIntegrationUser, in.ContactSfID, actor,
-		// A live membership reactivates a user whose earlier contact was deleted in Salesforce.
-		in.State != "" && in.State != domain.MembershipStateDeactivated); err != nil {
+		// Only a live membership on a replacement contact reactivates; the same contact never does.
+		replacedContact && in.State != "" && in.State != domain.MembershipStateDeactivated); err != nil {
 		return "", "", false, fmt.Errorf("upsert membership: update user: %w", err)
 	}
 	return id, userName, false, nil
