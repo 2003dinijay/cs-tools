@@ -270,6 +270,39 @@ func TestGetProjectConversationStats_ResolvedPastThirtyDays(t *testing.T) {
 	}
 }
 
+// The customer portal's change request list shows Authorize to a WSO2 staff user as well, so
+// the card counts it for a staff caller that came through the customer portal (and still not
+// for staff on any other path).
+func TestProjectChangeRequestStats_AuthorizeIsOutstandingForStaffOnTheCustomerPortal(t *testing.T) {
+	counts := []repository.StateCount{
+		{State: "AUTHORIZE", Count: 2},
+		{State: "CUSTOMER_APPROVAL", Count: 3},
+		{State: "SCHEDULED", Count: 4},
+	}
+	ref := statsEnums()
+	staffViaPortal := stubAccess{scope: AccessScope{Unrestricted: true, HasInternalAccess: true, ViaCustomerPortal: true}}
+	repo := &fakeProjectStatsRepo{changeRequests: counts, outstanding: map[string]int{}}
+	svc := NewProjectStatsService(repo, ref, staffViaPortal, NewProjectMetadataService(ref),
+		NewProjectCaseStatsService(&fakeCaseStatsRepo{}, ref, staffViaPortal))
+
+	resp, err := svc.GetProjectChangeRequestStats(context.Background(), testUUID)
+	if err != nil {
+		t.Fatalf("GetProjectChangeRequestStats: %v", err)
+	}
+	if resp.OutstandingCount != 9 {
+		t.Errorf("staff via the customer portal: outstandingCount = %d, want 9 (Authorize counted, as in the list they see)", resp.OutstandingCount)
+	}
+	if resp.ActionRequiredCount != 3 {
+		t.Errorf("actionRequiredCount = %d, want 3 -- Authorize is still not waiting on the customer", resp.ActionRequiredCount)
+	}
+	if _, err := svc.GetProjectStats(context.Background(), testUUID); err != nil {
+		t.Fatalf("GetProjectStats: %v", err)
+	}
+	if !containsString(repo.crStatesSeen, "AUTHORIZE") {
+		t.Errorf("the dashboard's outstanding states = %v, want AUTHORIZE among them", repo.crStatesSeen)
+	}
+}
+
 // A change request's active and outstanding sets genuinely differ, unlike a
 // case's: NEW/ASSESS/AUTHORIZE are active but not yet outstanding.
 func TestGetProjectChangeRequestStats_StateGroupings(t *testing.T) {

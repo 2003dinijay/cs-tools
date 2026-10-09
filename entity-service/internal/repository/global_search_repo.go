@@ -83,6 +83,14 @@ type SearchScope struct {
 	// check at all; callers that also want to treat such a caller as internal
 	// should check Unrestricted separately, as UpdateCase does.
 	HasInternalAccess bool
+	// ViaCustomerPortal is true when the request came from the customer portal's
+	// backend (AccessClientConfig.CustomerPortalBackendClientID), whoever the signed-in
+	// user is -- including WSO2 staff looking at a customer's project. The data scope
+	// is unchanged (a staff user is still Unrestricted); what it changes is which
+	// numbers a card shows: the customer portal's lists show every change request the
+	// caller can see, so its change-request counts use the customer grouping
+	// (crOutstandingStatesFor) for staff too, or a staff user's card and list disagree.
+	ViaCustomerPortal bool
 }
 
 // scopePredicate is the single place the "row belongs to one of the caller's
