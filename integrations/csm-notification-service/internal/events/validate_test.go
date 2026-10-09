@@ -297,7 +297,7 @@ func TestValidate_CaseEscalated(t *testing.T) {
 }
 
 func TestValidate_OutageStatusPageDue(t *testing.T) {
-	const ok = `{"webhookId":"W-1","outageId":"O-1","number":"OUT0010021","cloud":"choreo","event":"outage_begin","timestamp":"2026-10-09T06:54:00.000Z"}`
+	const ok = `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","number":"OUT0010021","cloud":"choreo","event":"outage_begin","timestamp":"2026-10-09T06:54:00.000Z"}`
 	cases := []struct {
 		name     string
 		entityID string
@@ -305,12 +305,13 @@ func TestValidate_OutageStatusPageDue(t *testing.T) {
 		wantErr  bool
 	}{
 		{"valid", "O-1", ok, false},
-		{"end", "O-1", `{"webhookId":"W-1","outageId":"O-1","cloud":"choreo","event":"outage_end","timestamp":"t"}`, false},
+		{"end, agent-manager", "O-1", `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","cloud":"agent-manager","event":"outage_end","timestamp":"2026-10-09T07:00:00.123Z"}`, false},
 		{"outageId/entityId mismatch", "O-2", ok, true},
-		{"unknown event", "O-1", `{"webhookId":"W-1","outageId":"O-1","cloud":"choreo","event":"OUTAGE_BEGIN","timestamp":"t"}`, true},
-		{"missing webhookId", "O-1", `{"outageId":"O-1","cloud":"choreo","event":"outage_begin","timestamp":"t"}`, true},
-		{"missing cloud", "O-1", `{"webhookId":"W-1","outageId":"O-1","event":"outage_begin","timestamp":"t"}`, true},
-		{"unknown field", "O-1", `{"webhookId":"W-1","outageId":"O-1","cloud":"choreo","event":"outage_begin","timestamp":"t","x":1}`, true},
+		{"unknown event", "O-1", `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","cloud":"choreo","event":"OUTAGE_BEGIN","timestamp":"2026-10-09T06:54:00.000Z"}`, true},
+		{"unknown cloud", "O-1", `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","cloud":"CHOREO","event":"outage_begin","timestamp":"2026-10-09T06:54:00.000Z"}`, true},
+		{"timestamp without millis", "O-1", `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","cloud":"choreo","event":"outage_begin","timestamp":"2026-10-09T06:54:00Z"}`, true},
+		{"missing claimToken", "O-1", `{"webhookId":"W-1","outageId":"O-1","cloud":"choreo","event":"outage_begin","timestamp":"2026-10-09T06:54:00.000Z"}`, true},
+		{"unknown field", "O-1", `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","cloud":"choreo","event":"outage_begin","timestamp":"2026-10-09T06:54:00.000Z","x":1}`, true},
 	}
 	for _, c := range cases {
 		err := Validate(c.entityID, TypeOutageStatusPageDue, json.RawMessage(c.payload))

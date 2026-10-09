@@ -24,6 +24,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 // The request is csm-scheduled-tasks': path, header and a three-field body.
@@ -93,5 +94,29 @@ func TestNew_RejectsBadConfig(t *testing.T) {
 	}
 	if _, err := New(map[string]string{"choreo": "http://127.0.0.1:9400"}, sec); err != nil {
 		t.Errorf("loopback http is allowed for local development: %v", err)
+	}
+}
+
+// A request that reached the dashboard but got no answer is an unknown
+// outcome; one that never left (nothing listening) is a definite failure.
+func TestPost_ClassifiesUnknownOutcome(t *testing.T) {
+	hang := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		// Read the request (so the server notices the client hanging up),
+		// then never answer within the client's timeout.
+		_, _ = io.ReadAll(r.Body)
+		select {
+		case <-r.Context().Done():
+		case <-time.After(2 * time.Second):
+		}
+	}))
+	defer hang.Close()
+	w, _ := New(map[string]string{"choreo": hang.URL, "devant": "http://127.0.0.1:1"}, map[string]string{"default": "Secret tok"})
+	w.http.Timeout = 300 * time.Millisecond
+
+	if err := w.Post(context.Background(), "choreo", "outage_begin", "x"); !IsUnknownOutcome(err) {
+		t.Errorf("a timeout after sending must be unknown, got %v", err)
+	}
+	if err := w.Post(context.Background(), "devant", "outage_begin", "x"); err == nil || IsUnknownOutcome(err) {
+		t.Errorf("a refused connection must be a definite failure, got %v", err)
 	}
 }

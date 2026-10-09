@@ -37,8 +37,10 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -99,9 +101,25 @@ func isLoopback(host string) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
+// UnknownOutcomeError is a post whose request reached the dashboard but got
+// no answer (a timeout, a reset). The dashboard may have taken it, so it must
+// not be sent again. Every other error from Post is definite: the request was
+// never sent, or the dashboard answered that it did not take it.
+type UnknownOutcomeError struct{ Err error }
+
+func (e *UnknownOutcomeError) Error() string { return "outcome unknown: " + e.Err.Error() }
+func (e *UnknownOutcomeError) Unwrap() error { return e.Err }
+
+// IsUnknownOutcome reports whether err is an UnknownOutcomeError.
+func IsUnknownOutcome(err error) bool {
+	var u *UnknownOutcomeError
+	return errors.As(err, &u)
+}
+
 // Post delivers one event. A non-2xx answer is an error carrying the status
 // code only: the dashboard's body is not copied into entity-service's
-// last_error.
+// last_error. A request that was written but got no answer is an
+// *UnknownOutcomeError.
 func (w *Webhook) Post(ctx context.Context, cloud, event, timestamp string) error {
 	base, ok := w.baseURL[cloud]
 	if !ok {
@@ -123,9 +141,23 @@ func (w *Webhook) Post(ctx context.Context, cloud, event, timestamp string) erro
 	if secret := w.secretFor(cloud); secret != "" {
 		req.Header.Set("X-Webhook-Signature", secret)
 	}
+	// Whether the request reached the wire decides whether a failure is safe
+	// to retry: one that never left cannot have been processed.
+	var wrote atomic.Bool
+	req = req.WithContext(httptrace.WithClientTrace(req.Context(), &httptrace.ClientTrace{
+		WroteRequest: func(info httptrace.WroteRequestInfo) {
+			if info.Err == nil {
+				wrote.Store(true)
+			}
+		},
+	}))
 	resp, err := w.http.Do(req)
 	if err != nil {
-		return fmt.Errorf("post webhook for %s: %w", cloud, err)
+		err = fmt.Errorf("post webhook for %s: %w", cloud, err)
+		if wrote.Load() {
+			return &UnknownOutcomeError{Err: err}
+		}
+		return err
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {

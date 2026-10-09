@@ -51,8 +51,11 @@ const TypeOutageStatusPageDue Type = "outage.status_page_due"
 // outcome is reported back to entity-service under WebhookID.
 type OutageStatusPageDuePayload struct {
 	WebhookID string `json:"webhookId"`
-	OutageID  string `json:"outageId"`
-	Number    string `json:"number,omitempty"`
+	// ClaimToken must win POST /internal/cloud-status/{id}/claim before the
+	// post, and is sent back with the outcome.
+	ClaimToken string `json:"claimToken"`
+	OutageID   string `json:"outageId"`
+	Number     string `json:"number,omitempty"`
 	// Cloud is the dashboard's slug: asgardeo, choreo, bijira, devant,
 	// moesif, choreo-eu or agent-manager.
 	Cloud string `json:"cloud"`
@@ -64,3 +67,13 @@ type OutageStatusPageDuePayload struct {
 
 // validStatusPageEvent are the only wire events the dashboards parse.
 var validStatusPageEvent = map[string]bool{"outage_begin": true, "outage_end": true}
+
+// validStatusPageCloud are the dashboards' cloud slugs.
+var validStatusPageCloud = map[string]bool{
+	"asgardeo": true, "choreo": true, "bijira": true, "devant": true,
+	"moesif": true, "choreo-eu": true, "agent-manager": true,
+}
+
+// statusPageTimestampLayout is the instant format the dashboards parse:
+// ISO-8601 UTC with exactly three decimals.
+const statusPageTimestampLayout = "2006-01-02T15:04:05.000Z"

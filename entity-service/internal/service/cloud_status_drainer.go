@@ -142,17 +142,18 @@ func outageIDOf(c repository.OutboxChange) string {
 	return ""
 }
 
-// publishDue publishes rows just recorded with a lease as
-// outage.status_page_due. csm-notification-service posts each and reports the
-// outcome, which ends the lease. A row that cannot be published has its lease
-// released at once -- without counting an attempt, since nothing was sent --
-// so the scheduled task posts it on its next tick.
-func (s *cloudStatusService) publishDue(ctx context.Context, ids []string) {
-	for _, id := range ids {
-		w, err := s.repo.PendingByID(ctx, id)
+// publishDue publishes rows just recorded and reserved as
+// outage.status_page_due, each carrying its claim token: the consumer must win
+// that claim (POST /internal/cloud-status/{id}/claim) before it posts, so a
+// redelivered or late event can never post twice. A row that cannot be
+// published has its reservation released at once -- nothing was sent -- so the
+// scheduled task posts it on its next tick.
+func (s *cloudStatusService) publishDue(ctx context.Context, due []reservedWebhook) {
+	for _, r := range due {
+		w, err := s.repo.PendingByID(ctx, r.id)
 		if err != nil {
-			// The lease expires and the scheduled task picks it up.
-			slog.ErrorContext(ctx, "cloudstatus: read webhook to publish failed", "webhookId", id, "err", err)
+			// The reservation runs out and the scheduled task picks it up.
+			slog.ErrorContext(ctx, "cloudstatus: read webhook to publish failed", "webhookId", r.id, "err", err)
 			continue
 		}
 		if w == nil {
@@ -161,12 +162,12 @@ func (s *cloudStatusService) publishDue(ctx context.Context, ids []string) {
 		slug, wire := domain.CloudOfferingSlug(w.Cloud), w.Event.WireValue()
 		if slug == "" || wire == "" {
 			// Cannot happen for a row recorded through process, which checks
-			// the slug; PendingWebhooks refuses the same rows.
-			s.releaseClaim(ctx, id)
+			// the slug. Released, so the scheduled task closes it visibly.
+			s.releaseReservation(ctx, r)
 			continue
 		}
 		raw, err := json.Marshal(events.OutageStatusPageDuePayload{
-			WebhookID: w.ID, OutageID: w.OutageID, Number: w.Number,
+			WebhookID: w.ID, ClaimToken: r.token, OutageID: w.OutageID, Number: w.Number,
 			Cloud: slug, Event: wire, Timestamp: w.Timestamp,
 		})
 		if err == nil {
@@ -177,18 +178,18 @@ func (s *cloudStatusService) publishDue(ctx context.Context, ids []string) {
 			// Not logging err: it can carry broker details, and Publish has
 			// already recorded it in event_publish_failures.
 			slog.ErrorContext(ctx, "cloudstatus: publish outage.status_page_due failed; left for the scheduled task",
-				"webhookId", id, "number", w.Number, "cloud", slug, "event", wire)
-			s.releaseClaim(ctx, id)
+				"webhookId", r.id, "number", w.Number, "cloud", slug, "event", wire)
+			s.releaseReservation(ctx, r)
 			continue
 		}
 		slog.InfoContext(ctx, "cloudstatus: published outage.status_page_due",
-			"webhookId", id, "number", w.Number, "cloud", slug, "event", wire)
+			"webhookId", r.id, "number", w.Number, "cloud", slug, "event", wire)
 	}
 }
 
-func (s *cloudStatusService) releaseClaim(ctx context.Context, id string) {
-	if err := s.repo.ReleaseClaim(ctx, id); err != nil {
-		slog.ErrorContext(ctx, "cloudstatus: release delivery lease failed", "webhookId", id, "err", err)
+func (s *cloudStatusService) releaseReservation(ctx context.Context, r reservedWebhook) {
+	if err := s.repo.ReleaseReservation(ctx, r.id, r.token); err != nil {
+		slog.ErrorContext(ctx, "cloudstatus: release reservation failed", "webhookId", r.id, "err", err)
 	}
 }
 
@@ -207,8 +208,8 @@ func (s *cloudStatusService) HandleOutages(ctx context.Context, outageIDs []stri
 		return err
 	}
 	var resp domain.CloudStatusSweepResponse
-	var due []string
-	var dueRef *[]string
+	var due []reservedWebhook
+	var dueRef *[]reservedWebhook
 	if s.publisher != nil {
 		dueRef = &due
 	}

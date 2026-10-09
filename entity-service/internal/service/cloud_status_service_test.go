@@ -54,6 +54,12 @@ type fakeCloudStatusRepo struct {
 	claimed  []string
 	released []string
 	rows     map[string]domain.PendingCloudStatusWebhook
+
+	unknown     []domain.PendingCloudStatusWebhook
+	attempts    []string // "id|token" StartAttempt was asked for
+	startOK     bool     // what StartAttempt answers
+	outcomes    []repository.DeliveryOutcome
+	recordStale bool // RecordDelivery finds no open attempt
 }
 
 func (f *fakeCloudStatusRepo) Candidates(_ context.Context, _ []string) ([]repository.CloudStatusCandidate, error) {
@@ -88,24 +94,25 @@ func (f *fakeCloudStatusRepo) Record(_ context.Context, c repository.CloudStatus
 	return true, nil
 }
 
-// RecordAndClaim records like Record, and remembers the row so PendingByID
-// can hand it back -- the instant-delivery path reads it straight after.
-func (f *fakeCloudStatusRepo) RecordAndClaim(ctx context.Context, c repository.CloudStatusCandidate, _ time.Duration) (string, bool, error) {
+// RecordAndReserve records like Record, and remembers the row so PendingByID
+// can hand it back -- the publish path reads it straight after.
+func (f *fakeCloudStatusRepo) RecordAndReserve(ctx context.Context, c repository.CloudStatusCandidate, _ time.Duration) (string, string, bool, error) {
 	recorded, err := f.Record(ctx, c)
 	if !recorded || err != nil {
-		return "", recorded, err
+		return "", "", recorded, err
 	}
 	id := "evt-" + c.OutageID + "-" + string(c.Event) + "-" + c.Cloud
+	token := "tok-" + id
 	f.claimed = append(f.claimed, id)
 	if f.rows == nil {
 		f.rows = map[string]domain.PendingCloudStatusWebhook{}
 	}
 	f.rows[id] = domain.PendingCloudStatusWebhook{ID: id, OutageID: c.OutageID, Number: c.Number,
-		Event: c.Event, Cloud: c.Cloud, Timestamp: c.Timestamp}
-	return id, true, nil
+		Event: c.Event, Cloud: c.Cloud, Timestamp: c.Timestamp, ClaimToken: token}
+	return id, token, true, nil
 }
 
-func (f *fakeCloudStatusRepo) ReleaseClaim(_ context.Context, id string) error {
+func (f *fakeCloudStatusRepo) ReleaseReservation(_ context.Context, id, _ string) error {
 	f.released = append(f.released, id)
 	return nil
 }
@@ -116,6 +123,11 @@ func (f *fakeCloudStatusRepo) PendingByID(_ context.Context, id string) (*domain
 		return nil, nil
 	}
 	return &w, nil
+}
+
+func (f *fakeCloudStatusRepo) StartAttempt(_ context.Context, id, token string, _ time.Duration) (bool, error) {
+	f.attempts = append(f.attempts, id+"|"+token)
+	return f.startOK, nil
 }
 
 func (f *fakeCloudStatusRepo) AffectedMonitors(_ context.Context, outageID string) ([]string, error) {
@@ -131,17 +143,22 @@ func (f *fakeCloudStatusRepo) SetMonitorStatus(_ context.Context, ids []string, 
 	return int64(len(ids)), nil
 }
 
-func (f *fakeCloudStatusRepo) Pending(_ context.Context, _, _ int) ([]domain.PendingCloudStatusWebhook, error) {
+func (f *fakeCloudStatusRepo) ClaimPending(_ context.Context, _, _ int, _ time.Duration) ([]domain.PendingCloudStatusWebhook, error) {
 	return f.pending, f.pendingErr
 }
 
-func (f *fakeCloudStatusRepo) RecordDelivery(_ context.Context, id string, delivered bool, errMsg string) error {
+func (f *fakeCloudStatusRepo) UnknownOutcomes(_ context.Context, _ int) ([]domain.PendingCloudStatusWebhook, error) {
+	return f.unknown, nil
+}
+
+func (f *fakeCloudStatusRepo) RecordDelivery(_ context.Context, id string, o repository.DeliveryOutcome) (bool, error) {
 	f.deliveries = append(f.deliveries, struct {
 		id        string
 		delivered bool
 		errMsg    string
-	}{id, delivered, errMsg})
-	return nil
+	}{id, o.Delivered, o.Error})
+	f.outcomes = append(f.outcomes, o)
+	return !f.recordStale, nil
 }
 
 type statusWrite struct {

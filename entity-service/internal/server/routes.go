@@ -1896,6 +1896,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)
 		mux.HandleFunc("GET /internal/cloud-status/pending", cloudStatusHandler.Pending)
 		mux.HandleFunc("POST /internal/cloud-status/{id}/delivery", cloudStatusHandler.RecordDelivery)
+		mux.HandleFunc("POST /internal/cloud-status/{id}/claim", cloudStatusHandler.Claim)
 	}
 
 	mux.HandleFunc("POST /problems", internalOnly(accessSvc, problemHandler.CreateProblem))

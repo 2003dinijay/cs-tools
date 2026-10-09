@@ -364,9 +364,10 @@ type statusPagePoster interface {
 }
 
 // cloudStatusDeliveryReporter is the slice of *entity.CustomerEntityClient
-// that records a status-page webhook's outcome.
+// that claims a status-page webhook and records its outcome.
 type cloudStatusDeliveryReporter interface {
-	RecordCloudStatusDelivery(ctx context.Context, webhookID string, delivered bool, errMsg string) error
+	ClaimCloudStatusWebhook(ctx context.Context, webhookID, claimToken string) error
+	RecordCloudStatusDelivery(ctx context.Context, webhookID, claimToken string, d entity.CloudStatusDelivery) error
 }
 
 // WithStatusPage configures handleStatusPageDue and returns d for chaining.

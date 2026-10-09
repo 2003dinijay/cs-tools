@@ -19,61 +19,64 @@ package dispatch
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/entity"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/statuspage"
 )
 
-// handleStatusPageDue posts one cloud status webhook to the public status
-// dashboard and reports the outcome to entity-service.
-//
-// ONE ATTEMPT, AND NEVER AN ERROR BACK TO THE CONSUMER. csm-scheduled-tasks
-// already retries undelivered webhooks (every five minutes, up to five
-// attempts) from entity-service's ledger. If this consumer retried too -- and
-// then the DLQ consumer replayed -- two retriers would race on one row and the
-// dashboard could be told the same thing twice. So a failed post is reported
-// as a failed attempt, which ends the row's lease and makes it the scheduled
-// task's to retry, and the record is acknowledged.
-//
-// A report that itself fails is logged and dropped: the row's lease then runs
-// out (15 minutes) and the scheduled task picks it up, posting it again if the
-// post had in fact succeeded. That is the one double-post window, and it needs
-// entity-service to be unreachable at the moment of the report.
+// handleStatusPageDue posts one cloud status webhook AT MOST ONCE and reports
+// the outcome. No duplicates by construction: it posts only after winning the
+// claim the event carried (a redelivered or late event loses it); one attempt,
+// never an error back to the consumer (no consumer retry or DLQ replay); a
+// post with no answer is reported unknown, which is never re-sent; a lost
+// report leaves the attempt to expire as unknown. csm-scheduled-tasks retries
+// only definite failures.
 func (d *Dispatcher) handleStatusPageDue(ctx context.Context, raw json.RawMessage) error {
 	var p events.OutageStatusPageDuePayload
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return fmt.Errorf("dispatch: decode %s payload: %w", events.TypeOutageStatusPageDue, err)
 	}
 	if d.statusPageReports == nil {
-		// Not configured at all: nothing can be posted or reported. The lease
-		// runs out and the scheduled task posts it.
 		slog.WarnContext(ctx, "dispatch: status page not configured; leaving outage.status_page_due to the scheduled task",
 			"webhookId", p.WebhookID, "outageId", p.OutageID)
 		return nil
 	}
-
-	var postErr error
+	if err := d.statusPageReports.ClaimCloudStatusWebhook(ctx, p.WebhookID, p.ClaimToken); err != nil {
+		if errors.Is(err, entity.ErrWebhookNotClaimable) {
+			slog.InfoContext(ctx, "dispatch: status page webhook already delivered or taken over; not posting",
+				"webhookId", p.WebhookID, "number", p.Number)
+			return nil
+		}
+		// Not claimed, so not posted: the reservation expires to the scheduled task.
+		slog.ErrorContext(ctx, "dispatch: claiming status page webhook failed; leaving it to the scheduled task",
+			"webhookId", p.WebhookID, "err", err)
+		return nil
+	}
+	outcome := entity.CloudStatusDelivery{Delivered: true}
 	if d.statusPage == nil {
-		postErr = fmt.Errorf("status page webhooks are not configured on csm-notification-service")
-	} else {
-		postErr = d.statusPage.Post(ctx, p.Cloud, p.Event, p.Timestamp)
+		outcome = entity.CloudStatusDelivery{Error: "status page webhooks are not configured on csm-notification-service"}
+	} else if err := d.statusPage.Post(ctx, p.Cloud, p.Event, p.Timestamp); err != nil {
+		outcome = entity.CloudStatusDelivery{Error: err.Error(), Unknown: statuspage.IsUnknownOutcome(err)}
 	}
-	errMsg := ""
-	if postErr != nil {
-		errMsg = postErr.Error()
-	}
-	if err := d.statusPageReports.RecordCloudStatusDelivery(ctx, p.WebhookID, postErr == nil, errMsg); err != nil {
-		slog.ErrorContext(ctx, "dispatch: reporting status page delivery failed; the lease will hand it to the scheduled task",
-			"webhookId", p.WebhookID, "outageId", p.OutageID, "delivered", postErr == nil, "err", err)
+	if err := d.statusPageReports.RecordCloudStatusDelivery(ctx, p.WebhookID, p.ClaimToken, outcome); err != nil {
+		slog.ErrorContext(ctx, "dispatch: reporting status page outcome failed; it will read as unknown and not be re-sent",
+			"webhookId", p.WebhookID, "delivered", outcome.Delivered, "err", err)
 		return nil
 	}
-	if postErr != nil {
+	switch {
+	case outcome.Delivered:
+		slog.InfoContext(ctx, "dispatch: status page webhook delivered",
+			"webhookId", p.WebhookID, "number", p.Number, "cloud", p.Cloud, "event", p.Event)
+	case outcome.Unknown:
+		slog.ErrorContext(ctx, "dispatch: status page webhook outcome unknown; not re-sent, check the status page",
+			"webhookId", p.WebhookID, "number", p.Number, "cloud", p.Cloud, "err", outcome.Error)
+	default:
 		slog.WarnContext(ctx, "dispatch: status page webhook failed; left for the scheduled task",
-			"webhookId", p.WebhookID, "number", p.Number, "cloud", p.Cloud, "event", p.Event, "err", errMsg)
-		return nil
+			"webhookId", p.WebhookID, "number", p.Number, "cloud", p.Cloud, "err", outcome.Error)
 	}
-	slog.InfoContext(ctx, "dispatch: status page webhook delivered",
-		"webhookId", p.WebhookID, "number", p.Number, "cloud", p.Cloud, "event", p.Event)
 	return nil
 }

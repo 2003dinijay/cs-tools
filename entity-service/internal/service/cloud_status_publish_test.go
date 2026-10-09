@@ -22,6 +22,7 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -54,8 +55,8 @@ func TestHandleOutages_PublishesStatusPageDue(t *testing.T) {
 	if err := json.Unmarshal(call.payload, &p); err != nil {
 		t.Fatal(err)
 	}
-	want := events.OutageStatusPageDuePayload{WebhookID: repo.claimed[0], OutageID: "o1", Number: "OUT0010021",
-		Cloud: "choreo", Event: "outage_begin", Timestamp: "2026-10-09T06:54:00.000Z"}
+	want := events.OutageStatusPageDuePayload{WebhookID: repo.claimed[0], ClaimToken: "tok-" + repo.claimed[0],
+		OutageID: "o1", Number: "OUT0010021", Cloud: "choreo", Event: "outage_begin", Timestamp: "2026-10-09T06:54:00.000Z"}
 	if p != want {
 		t.Errorf("payload = %+v, want %+v", p, want)
 	}
@@ -165,5 +166,77 @@ func TestOutageCloudStatus_WritesHandOverTheOutage(t *testing.T) {
 	}
 	if len(cs.handled) != 0 {
 		t.Errorf("a failed write must not reach the status page, got %v", cs.handled)
+	}
+}
+
+// The consumer may post only after winning the claim the event carried.
+func TestClaimWebhook(t *testing.T) {
+	const id, tok = "11111111-2222-3333-4444-555555555555", "66666666-7777-8888-9999-aaaaaaaaaaaa"
+	repo := &fakeCloudStatusRepo{startOK: true}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+
+	if err := svc.ClaimWebhook(context.Background(), domain.ClaimCloudStatusWebhookRequest{ID: id, ClaimToken: tok}); err != nil {
+		t.Fatalf("claim under the current reservation: %v", err)
+	}
+	if len(repo.attempts) != 1 || repo.attempts[0] != id+"|"+tok {
+		t.Errorf("attempts = %v", repo.attempts)
+	}
+
+	repo.startOK = false
+	var conflict *apierror.ConflictError
+	if err := svc.ClaimWebhook(context.Background(), domain.ClaimCloudStatusWebhookRequest{ID: id, ClaimToken: tok}); !errors.As(err, &conflict) {
+		t.Errorf("a delivered or taken-over webhook must be a conflict (do not post), got %v", err)
+	}
+	var invalid *apierror.ValidationError
+	if err := svc.ClaimWebhook(context.Background(), domain.ClaimCloudStatusWebhookRequest{ID: id}); !errors.As(err, &invalid) {
+		t.Errorf("a claim with no token must be rejected, got %v", err)
+	}
+}
+
+// A report with no open attempt -- a late one after a recorded success, or for
+// an attempt that is not current -- is refused, never applied.
+func TestRecordDelivery_Fenced(t *testing.T) {
+	const id, tok = "11111111-2222-3333-4444-555555555555", "66666666-7777-8888-9999-aaaaaaaaaaaa"
+	repo := &fakeCloudStatusRepo{recordStale: true}
+	svc := NewCloudStatusService(repo, []string{testServiceID})
+
+	var conflict *apierror.ConflictError
+	err := svc.RecordDelivery(context.Background(), domain.RecordCloudStatusDeliveryRequest{ID: id, Delivered: false, Error: "503", ClaimToken: tok})
+	if !errors.As(err, &conflict) {
+		t.Fatalf("a stale report must be a conflict, got %v", err)
+	}
+	if o := repo.outcomes[0]; o.ClaimToken != tok || o.Delivered || o.Error != "503" {
+		t.Errorf("outcome passed down = %+v", o)
+	}
+
+	var invalid *apierror.ValidationError
+	if err := svc.RecordDelivery(context.Background(), domain.RecordCloudStatusDeliveryRequest{ID: id, Delivered: true, Unknown: true}); !errors.As(err, &invalid) {
+		t.Errorf("delivered and unknown together must be rejected, got %v", err)
+	}
+	if err := svc.RecordDelivery(context.Background(), domain.RecordCloudStatusDeliveryRequest{ID: id, Unknown: true}); !errors.As(err, &invalid) {
+		t.Errorf("an unknown outcome needs its error, got %v", err)
+	}
+}
+
+// The pending read hands out claimed rows; one it cannot put on the wire has
+// its attempt closed as a definite failure (not left to read as unknown), and
+// rows with an unknown outcome are counted, not returned.
+func TestPendingWebhooks_ClosesUnpostableAndCountsUnknown(t *testing.T) {
+	repo := &fakeCloudStatusRepo{
+		pending: []domain.PendingCloudStatusWebhook{
+			{ID: "ok", Cloud: "CHOREO", Event: domain.CloudStatusEventOutageBegin, ClaimToken: "t1"},
+			{ID: "bad", Cloud: "NOT_A_CLOUD", Event: domain.CloudStatusEventOutageBegin, ClaimToken: "t2"},
+		},
+		unknown: []domain.PendingCloudStatusWebhook{{ID: "lost", Cloud: "CHOREO", Event: domain.CloudStatusEventOutageEnd}},
+	}
+	resp, err := NewCloudStatusService(repo, []string{testServiceID}).PendingWebhooks(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Count != 1 || resp.Webhooks[0].ID != "ok" || resp.Webhooks[0].ClaimToken != "t1" || resp.UnknownOutcome != 1 {
+		t.Errorf("resp = %+v", resp)
+	}
+	if len(repo.outcomes) != 1 || repo.deliveries[0].id != "bad" || repo.outcomes[0].ClaimToken != "t2" || repo.outcomes[0].Unknown {
+		t.Errorf("the unpostable row must be closed as a definite failure under its token, got %+v / %+v", repo.deliveries, repo.outcomes)
 	}
 }

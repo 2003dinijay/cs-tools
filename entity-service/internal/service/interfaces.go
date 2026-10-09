@@ -1441,8 +1441,13 @@ type CloudStatusService interface {
 	PendingWebhooks(ctx context.Context) (domain.PendingCloudStatusWebhooksResponse, error)
 
 	// RecordDelivery stamps the outcome of one attempt. A ValidationError is
-	// returned when a failure is reported without an error message.
+	// returned when a failure is reported without an error message, a
+	// ConflictError when there is no open attempt to record it against.
 	RecordDelivery(ctx context.Context, req domain.RecordCloudStatusDeliveryRequest) error
+
+	// ClaimWebhook starts the attempt to post one webhook under the claim
+	// token outage.status_page_due carried. A ConflictError means do not post.
+	ClaimWebhook(ctx context.Context, req domain.ClaimCloudStatusWebhookRequest) error
 
 	// HandleOutages re-derives the current transition for the named outages.
 	// The record-triggered counterpart to Sweep, reaching the same conclusions

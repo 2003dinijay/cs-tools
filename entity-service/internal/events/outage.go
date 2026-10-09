@@ -64,8 +64,12 @@ type OutageStatusPageDuePayload struct {
 	// WebhookID is the cloud_status_events row; the delivery is recorded
 	// against it.
 	WebhookID string `json:"webhookId"`
-	OutageID  string `json:"outageId"`
-	Number    string `json:"number,omitempty"`
+	// ClaimToken is the reservation this event was published under. The
+	// consumer must claim the webhook with it before posting
+	// (POST /internal/cloud-status/{id}/claim) and report the outcome with it.
+	ClaimToken string `json:"claimToken"`
+	OutageID   string `json:"outageId"`
+	Number     string `json:"number,omitempty"`
 	// Cloud is the dashboard's slug: asgardeo, choreo, bijira, devant,
 	// moesif, choreo-eu or agent-manager.
 	Cloud string `json:"cloud"`

@@ -14,20 +14,26 @@
 -- specific language governing permissions and limitations
 -- under the License.
 
--- A delivery lease on cloud status webhooks.
+-- Claims on cloud status webhooks, so no event reaches the status page twice.
 --
--- Until now one component sent them: csm-scheduled-tasks read the pending
--- rows on its five-minute tick and posted them, so an outage reached the
--- public status page up to five minutes (and one Choreo trigger interval)
--- after it was declared. entity-service now posts a transition the moment its
--- outbox drainer records it, and the scheduled task stays behind as the retry
--- path. Two senders need a way to keep out of each other's way.
+-- Two components now post these: csm-notification-service, the moment an
+-- outage is written (outage.status_page_due), and csm-scheduled-tasks, which
+-- retries. A duplicate on a public status page is not acceptable, so every
+-- post is made under a claim that only one sender can hold:
 --
--- The drainer records the row with claimed_until set, posts it, and clears it
--- with the outcome. While a lease is current the row is not pending, so the
--- scheduled task cannot post it a second time. A failed post clears the lease
--- too, handing the row to the scheduled task's next tick; a drainer that dies
--- mid-post leaves a lease that simply expires.
+--   claim_token        set when a row is reserved for, or attempted by, one
+--                      sender. The reporter must present it (fencing).
+--   claimed_until      how long that reservation or attempt is protected.
+--   attempt_started_on set once a sender has won the right to post. From then
+--                      on the row is NEVER claimed again: if no outcome is
+--                      reported before claimed_until, nobody knows whether the
+--                      dashboard got it, so it is left as "outcome unknown"
+--                      and flagged rather than risk a second post.
 --
--- NULL for every existing row: they are pending exactly as before.
+-- A reservation that expires with no attempt started (the event was never
+-- consumed) is safe to hand to the scheduled task: nothing was sent.
+--
+-- NULL on every existing row: they are pending exactly as before.
+ALTER TABLE cloud_status_events ADD COLUMN IF NOT EXISTS claim_token UUID;
 ALTER TABLE cloud_status_events ADD COLUMN IF NOT EXISTS claimed_until TIMESTAMPTZ;
+ALTER TABLE cloud_status_events ADD COLUMN IF NOT EXISTS attempt_started_on TIMESTAMPTZ;
