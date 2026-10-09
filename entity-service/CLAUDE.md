@@ -1895,6 +1895,38 @@ scanning the full ServiceNow-synced table the old, abandoned poll design
 choked on. Omitted (the default, and every other caller's behavior)
 means no filter, identical to this endpoint's original, unscoped shape.
 
+**`workItemId` (query param) narrows the result to one work item's own
+clocks** — added for the same caller, for a different reason: a confirmed,
+reproduced incident had `csm-notification-service`'s own Redis-held
+completion state for a clock (its `alertedTier` cursor) silently fall out of
+sync with reality — the Redis write that should have recorded a clock
+finishing (on a case closing, or a qualifying comment) can fail with no
+retry (see that repo's own `CLAUDE.md`, "ApplyStateEffects") — so a wake
+entry scheduled when the clock was first registered could still fire a
+breach alert for a clock that had, in truth, already completed cleanly.
+That engine now calls back here, filtered to the one case the wake entry is
+about (`source=csm&workItemId=<caseId>`), as a final check against this
+service's own durable record immediately before actually sending the Chat
+alert — an empty result for the clock's own target means it has already
+genuinely resolved, whatever Redis still believes.
+
+**That check only works because `is_active` is now actually cleared when a
+clock finishes — a real, reported bug fixed alongside it.**
+`SLAEngineRepository.CompleteClock`/`ReviseClocks` used to only ever set
+`is_active = TRUE`, at `RegisterClock`'s own INSERT, and never touch it
+again — so a clock that had genuinely, cleanly completed (`ACHIEVED`) or
+been cancelled kept reporting as "currently active" to this endpoint
+forever, which is exactly backwards from what `GET /sla-status`'s own
+contract ("every *currently-active* clock") and `csm-notification-service`'s
+`Reconcile` (which trusts this list to decide what still needs tracking)
+both assume. `CompleteClock` now sets `is_active = FALSE` alongside
+`stage = 'ACHIEVED'`, and `ReviseClocks`' cancellation branch does the same
+alongside `stage = 'CANCELLED'` — `BREACHED` is deliberately left
+`is_active = TRUE` (a clock whose wall-clock duration ran out without yet
+being satisfied is not finished — see `slaEngineOpenStageFilter`'s own doc
+comment), so this stays additive to, not a relaxation of, the terminal-stage
+distinctions this engine already makes everywhere else.
+
 **`GET /sla-status` is internal-caller-only** (`slaStatusService.
 requireInternalCaller`, mirroring `onboarding_step_service.go`'s own helper
 of the same name/reasoning) — `AccessService.ResolveScope`'s scope must be

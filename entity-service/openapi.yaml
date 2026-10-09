@@ -610,6 +610,19 @@ paths:
           schema:
             type: string
             enum: [csm, servicenow]
+        - name: workItemId
+          in: query
+          description: >-
+            Optional. Restricts the result to one work item's own clocks.
+            Paired with source=csm, this is what
+            integrations/csm-notification-service calls to re-verify a
+            single clock's real, current liveness immediately before
+            sending a breach alert for it — an empty result means that
+            clock has already genuinely completed (is_active is now
+            cleared by completion/cancellation, not left true forever).
+          schema:
+            type: string
+            format: uuid
       responses:
         "200":
           description: Every currently-active SLA clock, paginated.

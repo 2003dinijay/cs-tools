@@ -90,6 +90,18 @@ type linkResolver interface {
 	CSMLink(caseID string) string
 }
 
+// entityClockStatusClient abstracts EntityClient.IsClockActive for
+// testability — the final, authoritative check against entity-service's own
+// durable record, done right before a breach alert is actually sent (see
+// that method's own doc comment for why). A nil value (e.g. every existing
+// test's own Engine literal, which doesn't set this field) skips the check
+// entirely and behaves exactly as this engine always has — this is a
+// deliberate, additive safety net, not something every caller must now wire
+// up.
+type entityClockStatusClient interface {
+	IsClockActive(ctx context.Context, caseID, clockType string) (bool, error)
+}
+
 // Engine is the SLA breach-alerting engine — see this package's own doc
 // comment (client.go) for the full design and what it replaced.
 type Engine struct {
@@ -104,11 +116,17 @@ type Engine struct {
 	// change needs a restart to pick up, same as any other static
 	// at-startup config in this service.
 	durations map[string]map[string]time.Duration
+	// entity is used by sendBreachAlert only, as a last pre-send check
+	// against entity-service's own durable record — see
+	// entityClockStatusClient's own doc comment.
+	entity entityClockStatusClient
 }
 
-// NewEngine constructs an Engine.
-func NewEngine(store *Store, pub *eventbus.Producer, chat chatSender, links *recipientlinks.Resolver, durations map[string]map[string]time.Duration) *Engine {
-	return &Engine{store: store, pub: pub, chat: chat, links: links, durations: durations}
+// NewEngine constructs an Engine. entity is the same *EntityClient the
+// caller already constructs for GetDurationPolicy/Reconcile — see
+// entityClockStatusClient's own doc comment for what it's used for here.
+func NewEngine(store *Store, pub *eventbus.Producer, chat chatSender, links *recipientlinks.Resolver, durations map[string]map[string]time.Duration, entity entityClockStatusClient) *Engine {
+	return &Engine{store: store, pub: pub, chat: chat, links: links, durations: durations, entity: entity}
 }
 
 // avoidWeekend rolls due forward to the next Monday, same time-of-day, if
@@ -489,7 +507,36 @@ func (e *Engine) alertTier(ctx context.Context, meta ClockMeta, caseID, clockTyp
 // stopping a retry), and a single persistently broken Chat space would
 // otherwise turn into an unbounded stream of duplicate alerts to every
 // OTHER space that worked fine, repeating every tick, forever.
+//
+// Before building or sending anything, re-verifies this exact clock against
+// entity-service's own durable record (e.entity.IsClockActive) — a real,
+// reproduced incident showed this engine's own Redis copy of a clock's
+// completion can silently go stale (see entityClockStatusClient's own doc
+// comment), leaving a wake entry that fires here long after the clock had,
+// in truth, already finished cleanly. A confirmed-inactive clock is logged
+// and dropped with no Chat send and no Kafka publish — this is deliberately
+// checked here, inside sendBreachAlert, rather than earlier in
+// processDueMember: every other bookkeeping step there (the tier claim,
+// AdvanceAlertedTier, RemoveWake) still runs exactly as if the alert had
+// been sent, so a clock entity-service confirms is done also gets marked
+// done here, same as a real alert would, and never re-checked on a later
+// tier. A failed check (network error, entity-service briefly down) fails
+// open — sends anyway — since silently losing a genuine breach alert over a
+// transient lookup failure is worse than the occasional false positive this
+// whole check exists to reduce; e.entity is nil for every caller that
+// hasn't wired one up (every existing test), which also fails open the same
+// way, preserving this function's exact prior behavior for them.
 func (e *Engine) sendBreachAlert(ctx context.Context, meta ClockMeta, caseID, clockType string, tier int) {
+	if e.entity != nil {
+		active, err := e.entity.IsClockActive(ctx, caseID, clockType)
+		if err != nil {
+			slog.WarnContext(ctx, "slaengine: failed to verify clock is still active before sending breach alert, sending anyway", "caseId", caseID, "clockType", clockType, "tier", tier, "err", err)
+		} else if !active {
+			slog.InfoContext(ctx, "slaengine: clock already resolved in entity-service's own record, suppressing stale breach alert", "caseId", caseID, "clockType", clockType, "tier", tier)
+			return
+		}
+	}
+
 	caseNumber := meta.CaseNumber
 	if caseNumber == "" {
 		caseNumber = caseID

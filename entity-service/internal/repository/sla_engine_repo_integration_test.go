@@ -242,6 +242,20 @@ func TestSLAEngineIntegration_ReviseClocksReplacesBreachedClock(t *testing.T) {
 	if cancelled != 1 || active != 1 {
 		t.Errorf("WORKAROUND cancelled = %d, active = %d, want 1/1 -- a BREACHED clock must be cancelled and replaced by a severity revision, not left stuck", cancelled, active)
 	}
+
+	// Regression: ReviseClocks' cancellation used to leave is_active
+	// untouched at its RegisterClock-time TRUE forever, same bug as
+	// CompleteClock's (see that method's own doc comment) -- a cancelled
+	// row must stop reporting as "currently active" too.
+	var cancelledStillActive int
+	if err := scoped.QueryRow(ctx, `SELECT COUNT(*) FROM sla s JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = 'WORKAROUND' AND s.stage = 'CANCELLED' AND s.is_active`,
+		slaEngineIntegrationWorkItemID).Scan(&cancelledStillActive); err != nil {
+		t.Fatalf("count cancelled-but-still-active: %v", err)
+	}
+	if cancelledStillActive != 0 {
+		t.Errorf("cancelled rows still is_active = %d, want 0", cancelledStillActive)
+	}
 }
 
 // TestSLAEngineIntegration_ReviseClocksPreservesBreachedResponseClock is the
@@ -409,8 +423,9 @@ func TestSLAEngineIntegration_CompleteClockFinalizesBreachedClock(t *testing.T) 
 
 	var stage string
 	var percent float64
-	if err := scoped.QueryRow(ctx, `SELECT stage::TEXT, business_elapsed_percentage FROM sla WHERE work_item_id = $1::uuid`,
-		slaEngineIntegrationWorkItemID).Scan(&stage, &percent); err != nil {
+	var isActive bool
+	if err := scoped.QueryRow(ctx, `SELECT stage::TEXT, business_elapsed_percentage, is_active FROM sla WHERE work_item_id = $1::uuid`,
+		slaEngineIntegrationWorkItemID).Scan(&stage, &percent, &isActive); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 	if stage != "ACHIEVED" {
@@ -418,6 +433,14 @@ func TestSLAEngineIntegration_CompleteClockFinalizesBreachedClock(t *testing.T) 
 	}
 	if percent <= 100 {
 		t.Errorf("business_elapsed_percentage = %v, want > 100 -- completion must show the real overrun, not an artificial 100%% cap", percent)
+	}
+	// Regression: CompleteClock used to leave is_active untouched at its
+	// RegisterClock-time TRUE forever -- see this method's own doc comment.
+	// GET /sla-status (and csm-notification-service's own Reconcile/
+	// pre-alert verification, which both read it) must stop reporting a
+	// genuinely completed clock as "currently active".
+	if isActive {
+		t.Error("is_active = true, want false once the clock has genuinely completed")
 	}
 }
 

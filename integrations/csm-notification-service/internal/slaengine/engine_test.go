@@ -513,6 +513,115 @@ func TestTick_AlertsADueTierAndRemovesTheWakeEntry(t *testing.T) {
 	}
 }
 
+// fakeEntityClockStatus is an entityClockStatusClient test double.
+type fakeEntityClockStatus struct {
+	// active, keyed by "<caseID>|<clockType>", answers IsClockActive; a key
+	// this map doesn't mention defaults to true (still active), so a test
+	// only needs to name the clock it specifically cares about.
+	active map[string]bool
+	err    error
+	calls  []string // "<caseID>|<clockType>", in call order
+}
+
+func (f *fakeEntityClockStatus) IsClockActive(_ context.Context, caseID, clockType string) (bool, error) {
+	f.calls = append(f.calls, caseID+"|"+clockType)
+	if f.err != nil {
+		return true, f.err
+	}
+	if active, ok := f.active[caseID+"|"+clockType]; ok {
+		return active, nil
+	}
+	return true, nil
+}
+
+// TestTick_EntityServiceReportsClockAlreadyResolved_SuppressesTheAlert is the
+// regression guard for the real, reproduced incident this check exists for:
+// this engine's own Redis copy of a clock (AlertedTier still 0) disagreeing
+// with entity-service's own durable record (the clock has actually already
+// completed, e.g. a case closed or a qualifying comment landed, but the
+// Redis-side AdvanceAlertedTier write that should have recorded that was
+// lost) must not produce a false breach alert. The Kafka sla.tier_reached
+// publish still happens regardless (it has no consumer today, and the
+// wall-clock threshold genuinely was crossed) -- only the Chat send itself,
+// and the bookkeeping that follows it, are what entity-service's answer
+// changes.
+func TestTick_EntityServiceReportsClockAlreadyResolved_SuppressesTheAlert(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	pub := &fakePublisher{}
+	e := newTestEngine(st, chat, pub)
+	e.entity = &fakeEntityClockStatus{active: map[string]bool{"case-1|response": false}}
+
+	past := time.Now().Add(-time.Minute)
+	st.clocks["case-1|response"] = ClockMeta{CaseNumber: "CS0001", Team: "Team Nova", StartedAt: past}
+	st.wake[wakeMember("case-1", "response", 100)] = past
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+
+	if len(chat.calls) != 0 {
+		t.Errorf("chat calls = %+v, want none -- entity-service reports this clock already resolved", chat.calls)
+	}
+	if pub.calls != 1 {
+		t.Errorf("publish calls = %d, want 1 -- the sla.tier_reached event still publishes even when the chat send is suppressed", pub.calls)
+	}
+	if _, stillWaiting := st.wake[wakeMember("case-1", "response", 100)]; stillWaiting {
+		t.Error("wake entry not removed even though the alert was suppressed")
+	}
+	meta, _, _ := st.GetClock(context.Background(), "case-1", "response")
+	if meta.AlertedTier != 100 {
+		t.Errorf("AlertedTier = %d, want 100 -- a confirmed-resolved clock must still be marked done so a later tier for the same clock isn't re-checked and re-suppressed from scratch", meta.AlertedTier)
+	}
+}
+
+// TestTick_EntityServiceConfirmsClockStillActive_StillSendsTheAlert proves
+// the new check is not a blanket suppression -- a clock entity-service
+// still considers live (the overwhelmingly common case: a real, ongoing
+// SLA warning or breach) must alert exactly as before this check existed.
+func TestTick_EntityServiceConfirmsClockStillActive_StillSendsTheAlert(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	pub := &fakePublisher{}
+	e := newTestEngine(st, chat, pub)
+	e.entity = &fakeEntityClockStatus{active: map[string]bool{"case-1|response": true}}
+
+	past := time.Now().Add(-time.Minute)
+	st.clocks["case-1|response"] = ClockMeta{CaseNumber: "CS0001", StartedAt: past}
+	st.wake[wakeMember("case-1", "response", 50)] = past
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(chat.calls) != 1 {
+		t.Errorf("chat calls = %+v, want exactly one -- entity-service confirms this clock is still active", chat.calls)
+	}
+}
+
+// TestTick_EntityServiceCheckFails_SendsAnywayFailOpen proves a transient
+// failure of the new verification call (entity-service briefly unreachable,
+// a network error) does not suppress a real alert -- silently losing a
+// genuine breach notification over a failed double-check would be worse
+// than the occasional false positive this whole feature exists to reduce.
+func TestTick_EntityServiceCheckFails_SendsAnywayFailOpen(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	pub := &fakePublisher{}
+	e := newTestEngine(st, chat, pub)
+	e.entity = &fakeEntityClockStatus{err: errors.New("entity-service unreachable")}
+
+	past := time.Now().Add(-time.Minute)
+	st.clocks["case-1|response"] = ClockMeta{CaseNumber: "CS0001", StartedAt: past}
+	st.wake[wakeMember("case-1", "response", 50)] = past
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(chat.calls) != 1 {
+		t.Errorf("chat calls = %+v, want exactly one -- a failed verification must fail open, not silently drop a real alert", chat.calls)
+	}
+}
+
 func TestTick_PausedClock_DropsWakeEntryWithoutAlerting(t *testing.T) {
 	st := newFakeStore()
 	chat := &fakeChat{}

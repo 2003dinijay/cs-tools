@@ -594,7 +594,7 @@ func main() {
 		if err != nil {
 			slog.Error("slaengine: failed to fetch sla duration policy at startup, sla tracking is disabled for this run", "err", err)
 		} else {
-			slaEngine := slaengine.NewEngine(slaengine.NewStore(redisClient), slaProducer, googleChatClient, linkResolver, durations)
+			slaEngine := slaengine.NewEngine(slaengine.NewStore(redisClient), slaProducer, googleChatClient, linkResolver, durations, slaEntityClient)
 			dispatcher = dispatcher.WithSLAEngine(slaEngine)
 
 			// One-shot reconciliation: rebuilds every currently-open clock's

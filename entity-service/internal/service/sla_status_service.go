@@ -24,6 +24,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/validate"
 )
 
 const (
@@ -94,7 +95,7 @@ var slaStatusSourceFilters = map[string]string{
 }
 
 // SearchActiveSLAStatuses implements SLAStatusService.
-func (s *slaStatusService) SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination, sourceFilter string) (domain.SearchSLAStatusResponse, error) {
+func (s *slaStatusService) SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination, sourceFilter, workItemIDFilter string) (domain.SearchSLAStatusResponse, error) {
 	if err := s.requireInternalCaller(ctx); err != nil {
 		return domain.SearchSLAStatusResponse{}, err
 	}
@@ -105,7 +106,10 @@ func (s *slaStatusService) SearchActiveSLAStatuses(ctx context.Context, req doma
 	if !ok {
 		return domain.SearchSLAStatusResponse{}, &apierror.ValidationError{Msg: "source must be one of: csm, servicenow"}
 	}
-	statuses, total, err := s.repo.SearchActiveSLAStatuses(ctx, req, source)
+	if workItemIDFilter != "" && !validate.IsUUID(workItemIDFilter) {
+		return domain.SearchSLAStatusResponse{}, &apierror.ValidationError{Msg: "workItemId must be a valid UUID"}
+	}
+	statuses, total, err := s.repo.SearchActiveSLAStatuses(ctx, req, source, workItemIDFilter)
 	if err != nil {
 		return domain.SearchSLAStatusResponse{}, err
 	}

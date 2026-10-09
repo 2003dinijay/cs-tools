@@ -49,6 +49,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -232,4 +233,45 @@ func (c *EntityClient) GetActiveCSMSLAClocks(ctx context.Context) ([]activeSLACl
 		}
 	}
 	return all, nil
+}
+
+// IsClockActive calls GET /sla-status?source=csm&workItemId=<caseID> and
+// reports whether entity-service's own durable record still considers the
+// given clock live, right before a breach alert for it is actually sent
+// (Engine.sendBreachAlert) — a last, authoritative check against the real
+// source of truth, independent of whatever this engine's own Redis copy of
+// the clock's alertedTier cursor says. This exists because that Redis
+// cursor is not always reliably advanced: ApplyStateEffects'/
+// CompleteResponseClock's own AdvanceAlertedTier write on a case closing or
+// a qualifying comment landing is a separate, non-atomic Redis write from
+// whatever triggered it (a Kafka-consumed case.* event), and a confirmed,
+// reproduced incident showed it can be silently lost with no retry — see
+// this package's own CLAUDE.md, "ApplyStateEffects" — leaving stale wake
+// entries to fire a false breach alert later for a clock that had, in
+// truth, already completed cleanly in entity-service's own record.
+//
+// entity-service's own CompleteClock/ReviseClocks now clear is_active the
+// moment a clock genuinely finishes (ACHIEVED) or is cancelled — see that
+// repository's own doc comments — so a work item with no currently-active
+// row for this exact clockType there means it has already resolved, no
+// matter what Redis still believes. Returns true on a decode/lookup
+// failure that isn't itself conclusive either way (see the call site's own
+// doc comment for why this fails open rather than suppressing a real
+// alert over a transient entity-service hiccup).
+func (c *EntityClient) IsClockActive(ctx context.Context, caseID, clockType string) (bool, error) {
+	path := fmt.Sprintf("/sla-status?source=csm&workItemId=%s&limit=10", url.QueryEscape(caseID))
+	respBody, err := c.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return true, fmt.Errorf("slaengine: verify clock active (case %s, %s): %w", caseID, clockType, err)
+	}
+	var resp searchActiveSLAStatusResponse
+	if err := json.Unmarshal(respBody, &resp); err != nil {
+		return true, fmt.Errorf("slaengine: decode verify-clock-active response (case %s, %s): %w", caseID, clockType, err)
+	}
+	for _, status := range resp.Statuses {
+		if strings.EqualFold(status.ClockType, clockType) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

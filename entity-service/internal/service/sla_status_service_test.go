@@ -26,11 +26,11 @@ import (
 )
 
 type stubSLAStatusRepo struct {
-	search func(ctx context.Context, p domain.Pagination, source string) ([]domain.SLAStatus, int, error)
+	search func(ctx context.Context, p domain.Pagination, source, workItemID string) ([]domain.SLAStatus, int, error)
 }
 
-func (s stubSLAStatusRepo) SearchActiveSLAStatuses(ctx context.Context, p domain.Pagination, source string) ([]domain.SLAStatus, int, error) {
-	return s.search(ctx, p, source)
+func (s stubSLAStatusRepo) SearchActiveSLAStatuses(ctx context.Context, p domain.Pagination, source, workItemID string) ([]domain.SLAStatus, int, error) {
+	return s.search(ctx, p, source, workItemID)
 }
 
 // restrictedAccess is an AccessService stub whose scope is never Unrestricted
@@ -60,21 +60,21 @@ func (e erroringAccess) ResolveScope(context.Context) (AccessScope, error) {
 // correctly-authenticated but non-internal one, must both be refused before
 // the repository is ever reached.
 func TestSLAStatusService_SearchActiveSLAStatuses_RequiresInternalCaller(t *testing.T) {
-	repo := stubSLAStatusRepo{search: func(context.Context, domain.Pagination, string) ([]domain.SLAStatus, int, error) {
+	repo := stubSLAStatusRepo{search: func(context.Context, domain.Pagination, string, string) ([]domain.SLAStatus, int, error) {
 		t.Fatal("repository must not be reached for a non-internal caller")
 		return nil, 0, nil
 	}}
 
 	t.Run("no verified identity on the request is refused", func(t *testing.T) {
 		_, err := NewSLAStatusService(repo, erroringAccess{err: &apierror.ServiceUnavailableError{Msg: "no verified identity"}}).
-			SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, "")
+			SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, "", "")
 		if err == nil {
 			t.Fatal("err = nil, want the AccessService error propagated")
 		}
 	})
 
 	t.Run("an authenticated but non-internal caller is refused", func(t *testing.T) {
-		_, err := NewSLAStatusService(repo, restrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, "")
+		_, err := NewSLAStatusService(repo, restrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, "", "")
 		var fe *apierror.ForbiddenError
 		if !errors.As(err, &fe) {
 			t.Fatalf("err = %v, want *apierror.ForbiddenError", err)
@@ -89,11 +89,11 @@ func TestSLAStatusService_SearchActiveSLAStatuses_RequiresInternalCaller(t *test
 func TestSLAStatusService_SearchActiveSLAStatuses(t *testing.T) {
 	t.Run("no limit defaults to 500", func(t *testing.T) {
 		var got domain.Pagination
-		repo := stubSLAStatusRepo{search: func(_ context.Context, p domain.Pagination, _ string) ([]domain.SLAStatus, int, error) {
+		repo := stubSLAStatusRepo{search: func(_ context.Context, p domain.Pagination, _, _ string) ([]domain.SLAStatus, int, error) {
 			got = p
 			return nil, 0, nil
 		}}
-		if _, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, ""); err != nil {
+		if _, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, "", ""); err != nil {
 			t.Fatal(err)
 		}
 		if got.Limit != defaultSLAStatusLimit {
@@ -102,11 +102,11 @@ func TestSLAStatusService_SearchActiveSLAStatuses(t *testing.T) {
 	})
 
 	t.Run("limit above 2000 is rejected before reaching the repository", func(t *testing.T) {
-		repo := stubSLAStatusRepo{search: func(context.Context, domain.Pagination, string) ([]domain.SLAStatus, int, error) {
+		repo := stubSLAStatusRepo{search: func(context.Context, domain.Pagination, string, string) ([]domain.SLAStatus, int, error) {
 			t.Fatal("repository must not be reached for an invalid limit")
 			return nil, 0, nil
 		}}
-		_, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{Limit: 2001}, "")
+		_, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{Limit: 2001}, "", "")
 		var ve *apierror.ValidationError
 		if !asValidationError(err, &ve) {
 			t.Fatalf("err = %v, want *apierror.ValidationError", err)
@@ -115,11 +115,11 @@ func TestSLAStatusService_SearchActiveSLAStatuses(t *testing.T) {
 
 	t.Run("source=csm is normalized to the real enum label and reaches the repository", func(t *testing.T) {
 		var gotSource string
-		repo := stubSLAStatusRepo{search: func(_ context.Context, _ domain.Pagination, source string) ([]domain.SLAStatus, int, error) {
+		repo := stubSLAStatusRepo{search: func(_ context.Context, _ domain.Pagination, source, _ string) ([]domain.SLAStatus, int, error) {
 			gotSource = source
 			return nil, 0, nil
 		}}
-		if _, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, "CSM"); err != nil {
+		if _, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, "CSM", ""); err != nil {
 			t.Fatal(err)
 		}
 		if gotSource != "CSM" {
@@ -128,11 +128,38 @@ func TestSLAStatusService_SearchActiveSLAStatuses(t *testing.T) {
 	})
 
 	t.Run("an unrecognized source is rejected before reaching the repository", func(t *testing.T) {
-		repo := stubSLAStatusRepo{search: func(context.Context, domain.Pagination, string) ([]domain.SLAStatus, int, error) {
+		repo := stubSLAStatusRepo{search: func(context.Context, domain.Pagination, string, string) ([]domain.SLAStatus, int, error) {
 			t.Fatal("repository must not be reached for an invalid source")
 			return nil, 0, nil
 		}}
-		_, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, "bogus")
+		_, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, "bogus", "")
+		var ve *apierror.ValidationError
+		if !asValidationError(err, &ve) {
+			t.Fatalf("err = %v, want *apierror.ValidationError", err)
+		}
+	})
+
+	t.Run("workItemId reaches the repository untouched when it's a well-formed UUID", func(t *testing.T) {
+		var gotWorkItemID string
+		repo := stubSLAStatusRepo{search: func(_ context.Context, _ domain.Pagination, _, workItemID string) ([]domain.SLAStatus, int, error) {
+			gotWorkItemID = workItemID
+			return nil, 0, nil
+		}}
+		const id = "11111111-1111-1111-1111-111111111111"
+		if _, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, "", id); err != nil {
+			t.Fatal(err)
+		}
+		if gotWorkItemID != id {
+			t.Errorf("workItemId reaching repository = %q, want %q", gotWorkItemID, id)
+		}
+	})
+
+	t.Run("a malformed workItemId is rejected before reaching the repository", func(t *testing.T) {
+		repo := stubSLAStatusRepo{search: func(context.Context, domain.Pagination, string, string) ([]domain.SLAStatus, int, error) {
+			t.Fatal("repository must not be reached for an invalid workItemId")
+			return nil, 0, nil
+		}}
+		_, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{}, "", "not-a-uuid")
 		var ve *apierror.ValidationError
 		if !asValidationError(err, &ve) {
 			t.Fatalf("err = %v, want *apierror.ValidationError", err)
@@ -141,10 +168,10 @@ func TestSLAStatusService_SearchActiveSLAStatuses(t *testing.T) {
 
 	t.Run("result is passed through with the normalized pagination echoed back", func(t *testing.T) {
 		want := []domain.SLAStatus{{CaseID: "c1", ClockType: "response"}}
-		repo := stubSLAStatusRepo{search: func(_ context.Context, p domain.Pagination, _ string) ([]domain.SLAStatus, int, error) {
+		repo := stubSLAStatusRepo{search: func(_ context.Context, p domain.Pagination, _, _ string) ([]domain.SLAStatus, int, error) {
 			return want, 7, nil
 		}}
-		resp, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{Limit: 10, Offset: 20}, "")
+		resp, err := NewSLAStatusService(repo, alwaysUnrestrictedAccess{}).SearchActiveSLAStatuses(context.Background(), domain.Pagination{Limit: 10, Offset: 20}, "", "")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -36,9 +36,15 @@ type SLAStatusRepository interface {
 	// csm-notification-service's own Redis-recovery reconciliation pass
 	// (source=CSM), which only ever needs this engine's own rows and would
 	// otherwise pay the cost of scanning the full, much larger
-	// ServiceNow-synced row set for nothing. Empty means no filter, the
-	// original, unscoped behavior.
-	SearchActiveSLAStatuses(ctx context.Context, pagination domain.Pagination, sourceFilter string) ([]domain.SLAStatus, int, error)
+	// ServiceNow-synced row set for nothing. workItemIDFilter, when
+	// non-empty, must be a well-formed UUID and narrows the result to just
+	// that work item's own clocks -- added so csm-notification-service can
+	// re-verify a single clock's real, current liveness (against this
+	// row's own is_active, now correctly cleared by CompleteClock/
+	// ReviseClocks -- see those methods' own doc comments) immediately
+	// before sending a breach alert for it, without paging the whole active
+	// set. Empty means no filter, the original, unscoped behavior.
+	SearchActiveSLAStatuses(ctx context.Context, pagination domain.Pagination, sourceFilter, workItemIDFilter string) ([]domain.SLAStatus, int, error)
 }
 
 type slaStatusRepo struct {
@@ -60,16 +66,21 @@ func NewSLAStatusRepository(db *Scoped) SLAStatusRepository {
 // whose policy has no target set at all -- nothing this endpoint could label
 // as a clock type.
 //
-// sourceArgIndex, when > 0, adds "AND s.source = $<sourceArgIndex>" -- the
-// placeholder's position differs between the count query (which otherwise
-// binds nothing) and the data query (which already binds limit/offset/the
-// evaluation-subscription project type name), so the caller passes whichever
-// index is next free in its own query rather than this function assuming one.
-// 0 means no source filter at all, the original unscoped behavior.
-func activeSLAStatusCTE(sourceArgIndex int) string {
+// sourceArgIndex/workItemArgIndex, when > 0, add "AND s.source = $<n>"/
+// "AND s.work_item_id = $<n>" respectively -- each placeholder's position
+// differs between the count query (which otherwise binds nothing) and the
+// data query (which already binds limit/offset/the evaluation-subscription
+// project type name), so the caller passes whichever index is next free in
+// its own query rather than this function assuming one. 0 means no filter
+// at all, the original unscoped behavior.
+func activeSLAStatusCTE(sourceArgIndex, workItemArgIndex int) string {
 	sourceFilter := ""
 	if sourceArgIndex > 0 {
 		sourceFilter = fmt.Sprintf(" AND s.source = $%d::sla_source_enum", sourceArgIndex)
+	}
+	workItemFilter := ""
+	if workItemArgIndex > 0 {
+		workItemFilter = fmt.Sprintf(" AND s.work_item_id = $%d::uuid", workItemArgIndex)
 	}
 	return `
 	WITH active_sla AS (
@@ -78,7 +89,7 @@ func activeSLAStatusCTE(sourceArgIndex int) string {
 			s.live_has_breached AS has_breached, s.live_stage AS stage, s.start_on
 		FROM sla_live s
 		JOIN sla_policy sp ON sp.id = s.sla_policy_id
-		WHERE s.is_active AND sp.target IS NOT NULL` + sourceFilter + `
+		WHERE s.is_active AND sp.target IS NOT NULL` + sourceFilter + workItemFilter + `
 		ORDER BY s.work_item_id, sp.target, s.start_on DESC NULLS LAST, s.updated_on DESC
 	)`
 }
@@ -173,31 +184,42 @@ func scanSLAStatus(row interface{ Scan(...any) error }) (domain.SLAStatus, error
 }
 
 // SearchActiveSLAStatuses implements SLAStatusRepository.
-func (r *slaStatusRepo) SearchActiveSLAStatuses(ctx context.Context, pagination domain.Pagination, sourceFilter string) ([]domain.SLAStatus, int, error) {
-	// Placeholder numbering: the count query binds only the source filter
-	// (if present, as $1); the data query already binds limit/offset/the
-	// evaluation-subscription project type name as $1-$3, so the source
-	// filter there is $4. activeSLAStatusCTE takes 0 to omit the filter
-	// entirely, keeping both queries' SQL text byte-identical to before this
-	// parameter existed when sourceFilter is "".
+func (r *slaStatusRepo) SearchActiveSLAStatuses(ctx context.Context, pagination domain.Pagination, sourceFilter, workItemIDFilter string) ([]domain.SLAStatus, int, error) {
+	// Placeholder numbering: the count query binds only whichever of
+	// source/workItemID are present, in that order, starting at $1; the
+	// data query already binds limit/offset/the evaluation-subscription
+	// project type name as $1-$3, so either filter there starts at $4.
+	// activeSLAStatusCTE takes 0 for either index to omit that filter
+	// entirely, keeping both queries' SQL text byte-identical to before
+	// these parameters existed when both are "".
 	countArgs := []any{}
 	countSourceArg := 0
+	countWorkItemArg := 0
 	if sourceFilter != "" {
-		countSourceArg = 1
+		countSourceArg = len(countArgs) + 1
 		countArgs = append(countArgs, sourceFilter)
+	}
+	if workItemIDFilter != "" {
+		countWorkItemArg = len(countArgs) + 1
+		countArgs = append(countArgs, workItemIDFilter)
 	}
 	dataArgs := []any{pagination.Limit, pagination.Offset, evaluationSubscriptionProjectTypeName}
 	dataSourceArg := 0
+	dataWorkItemArg := 0
 	if sourceFilter != "" {
-		dataSourceArg = 4
+		dataSourceArg = len(dataArgs) + 1
 		dataArgs = append(dataArgs, sourceFilter)
 	}
+	if workItemIDFilter != "" {
+		dataWorkItemArg = len(dataArgs) + 1
+		dataArgs = append(dataArgs, workItemIDFilter)
+	}
 
-	countQuery := activeSLAStatusCTE(countSourceArg) + `
+	countQuery := activeSLAStatusCTE(countSourceArg, countWorkItemArg) + `
 		SELECT COUNT(*)
 		` + activeSLAStatusFromJoins
 
-	dataQuery := activeSLAStatusCTE(dataSourceArg) + `
+	dataQuery := activeSLAStatusCTE(dataSourceArg, dataWorkItemArg) + `
 		SELECT als.work_item_id::TEXT, als.target::TEXT, COALESCE(als.business_elapsed_percentage, 0), COALESCE(als.has_breached, FALSE), COALESCE(als.stage::TEXT, ''), als.start_on,
 		       wi.number, wi.wso2_id, wi.subject, wi.type::TEXT,
 		       prod.name || COALESCE(' ' || pv.version, ''), COALESCE(c.severity::TEXT, ''),
