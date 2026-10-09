@@ -78,8 +78,10 @@ func seedCardListParity(t *testing.T, pool *pgxpool.Pool) {
 		{"CASE", "case", "OPEN", "NULL"},
 		{"CASE", "case", "WORK_IN_PROGRESS", "NULL"},
 		{"CASE", "case", "CLOSED", "now() - INTERVAL '2 days'"},
-		{"CASE", "", "", "NULL"},               // no extension row at all
-		{"CASE", "engagement", "OPEN", "NULL"}, // typed CASE, an engagement's row
+		{"CASE", "", "", "NULL"}, // no extension row at all
+		// typed CASE, an engagement's row, with a closure time inside the window: it must not
+		// match a CASE closed-date search on the engagement's date
+		{"CASE", "engagement", "OPEN", "now() - INTERVAL '5 days'"},
 		{"SERVICE_REQUEST", "service_request", "OPEN", "NULL"},
 		{"SERVICE_REQUEST", "service_request", "CLOSED", "now() - INTERVAL '3 days'"},
 		{"SERVICE_REQUEST", "service_request", "CLOSED", "now() - INTERVAL '45 days'"},
@@ -196,6 +198,14 @@ func TestCardsAgreeWithTheirListsIntegration(t *testing.T) {
 			})
 			if closedList != tc.wantClosed {
 				t.Errorf("closed (30d) list = %d, want %d", closedList, tc.wantClosed)
+			}
+			// A closed-date search with no state filter at all reads the date of the item's own
+			// type only, so the CASE-typed item with an engagement's closure time is not found.
+			dateOnly := listTotal(t, domain.ParsedCaseFilters{
+				Types: []string{tc.typ}, ClosedStartDate: &windowStart, ClosedEndDate: &now,
+			})
+			if dateOnly != tc.wantClosed {
+				t.Errorf("closed-date-only list = %d, want %d", dateOnly, tc.wantClosed)
 			}
 		})
 	}

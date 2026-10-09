@@ -7748,9 +7748,12 @@ project of the dev database (Customer 3 Project) they disagreed three ways: Outs
   `activeCount` / `outstandingCount` (`State != "" && != CLOSED`), so the dashboard's Outstanding card, its
   Outstanding Support Cases chart (which has always skipped it: no severity) and the list agree. Not changed:
   `ClosedByCreatedWindow` (a change-rate figure with no list) and `SLAStatusInputs`.
-- **`closedOn` filter reads every extension table.** `buildCaseSearchWhere` used to match `"case".closed_on` only,
-  so the Closed (Last 30d) list never found a closed service request or engagement although the card
-  (`ResolvedBuckets`, `caseLikeClosedOnColumn`) counts them. It now uses `caseLikeClosedOnColumn`. `resolvedOn`
+- **`closedOn` filter reads the extension table of the item's own type.** `buildCaseSearchWhere` used to match
+  `"case".closed_on` only, so the Closed (Last 30d) list never found a closed service request or engagement although
+  the card (`ResolvedBuckets`) counts them. Both now use `caseLikeOwnClosedOnColumn` (the closure time of the table
+  of `wi.type`, like `caseLikeOwnStateColumn`), so a CASE-typed item whose only extension row is an engagement's does
+  not match on the engagement's date. `GetCaseByID` keeps `caseLikeClosedOnColumn` (it shows whatever closure time
+  the item has). `resolvedOn`
   is still `"case".resolved_on` only (nothing links a card to it). Same plan cost as before on the staging-like copy
   (the extension joins were already in the query): 55-69 ms for the heaviest project's closed-in-30-days count,
   either way.

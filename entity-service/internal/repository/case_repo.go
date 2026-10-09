@@ -266,6 +266,20 @@ const caseLikeCloseNotesColumn = `COALESCE(c.close_notes, eng.close_notes, sr.cl
 const caseLikeResolvedOnColumn = `COALESCE(c.resolved_on, eng.resolved_on, sr.resolved_on, sra.resolved_on, ann.resolved_on)`
 const caseLikeClosedOnColumn = `COALESCE(c.closed_on, eng.closed_on, sr.closed_on, sra.closed_on, ann.closed_on)`
 
+// caseLikeOwnClosedOnColumn is the closure time of a work item as read from the
+// extension table of its OWN type only (see caseLikeOwnStateColumn): NULL when
+// that table has no row for it. A closed-date filter and the Closed (Last 30d)
+// card use it so that a work item typed CASE whose only extension row is an
+// engagement's does not match on the engagement's closure time. The detail read
+// keeps caseLikeClosedOnColumn: it shows whatever closure time the item has.
+const caseLikeOwnClosedOnColumn = `CASE wi.type
+	WHEN 'CASE' THEN c.closed_on
+	WHEN 'ENGAGEMENT' THEN eng.closed_on
+	WHEN 'SERVICE_REQUEST' THEN sr.closed_on
+	WHEN 'SECURITY_REPORT_ANALYSIS' THEN sra.closed_on
+	WHEN 'ANNOUNCEMENT' THEN ann.closed_on
+END`
+
 // caseLikeClosedByUserIDColumn mirrors caseLikeClosedOnColumn for
 // closed_by_user_id -- a real column on all five case-like extension tables
 // (migrations 0023/0024), joined in GetCaseByID to resolve CaseView.ClosedBy.
@@ -3192,23 +3206,24 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 		argIdx++
 	}
 
-	// closedOn reads the closure time of whichever extension table the work item
-	// has (caseLikeClosedOnColumn), not "case".closed_on alone: engagements,
-	// service requests and security report analyses carry their own closed_on,
-	// and the dashboard's Closed (Last 30d) tile counts them
-	// (ResolvedBuckets), so a list behind that tile must be able to find them.
+	// closedOn reads the closure time of the extension table of the work item's
+	// own type (caseLikeOwnClosedOnColumn), not "case".closed_on alone:
+	// engagements, service requests and security report analyses carry their
+	// own closed_on, and the dashboard's Closed (Last 30d) tile counts them
+	// (ResolvedBuckets, same column), so a list behind that tile must be able
+	// to find them.
 	if req.Parsed.ClosedStartDate != nil {
-		where += fmt.Sprintf(" AND "+caseLikeClosedOnColumn+" >= $%d", argIdx)
+		where += fmt.Sprintf(" AND "+caseLikeOwnClosedOnColumn+" >= $%d", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.ClosedStartDate)
 		argIdx++
 	}
 	if req.Parsed.ClosedEndDate != nil {
-		where += fmt.Sprintf(" AND "+caseLikeClosedOnColumn+" <= $%d", argIdx)
+		where += fmt.Sprintf(" AND "+caseLikeOwnClosedOnColumn+" <= $%d", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.ClosedEndDate)
 		argIdx++
 	}
 	// resolvedOn: "case".resolved_on (migration 0023). Case-only (closedOn above
-	// reads every case-like extension table; this one has not been widened).
+	// reads the own-type extension table; this one has not been widened).
 	if req.Parsed.ResolvedStartDate != nil {
 		where += fmt.Sprintf(" AND c.resolved_on >= $%d", argIdx)
 		filterArgs = append(filterArgs, req.Parsed.ResolvedStartDate)

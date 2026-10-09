@@ -266,7 +266,7 @@ func (r *projectCaseStatsRepo) ResolvedBuckets(ctx context.Context, f ProjectCas
 			       COUNT(*) FILTER (WHERE closed_on >= now() - INTERVAL '30 days')
 			  FROM (
 			        SELECT `+caseLikeOwnStateColumn+` AS state,
-			               `+caseLikeClosedOnColumn+` AS closed_on`+caseStatsFrom+where+`
+			               `+caseLikeOwnClosedOnColumn+` AS closed_on`+caseStatsFrom+where+`
 			       ) resolved
 			 WHERE state = ANY(`+statePlaceholder+`) AND closed_on IS NOT NULL`, args...).
 			Scan(&currentMonth, &pastThirtyDays)
