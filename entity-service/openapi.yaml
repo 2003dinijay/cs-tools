@@ -1637,10 +1637,12 @@ paths:
   /internal/cloud-status/pending:
     get:
       summary: >-
-        Internal-caller-only. Returns the cloud status webhooks still owed to
-        the public dashboards and not yet past their attempt limit, oldest
-        first, with each cloud already translated to the slug the dashboards
-        are addressed by.
+        Internal-caller-only. Claims and returns the cloud status webhooks still
+        owed to the public dashboards and not yet past their attempt limit,
+        oldest first, with each cloud already translated to the slug the
+        dashboards are addressed by. Every returned webhook has an attempt
+        started under its claimToken: the caller must post it and report the
+        outcome; nobody else can post it meanwhile.
       operationId: listPendingCloudStatusWebhooks
       responses:
         "200":
@@ -1688,6 +1690,59 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: No such webhook.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >-
+            Conflict — no open attempt to record against: already delivered, or
+            the claimToken is not the current attempt's.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: InternalServerError.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /internal/cloud-status/{id}/claim:
+    post:
+      summary: >-
+        Internal-caller-only. Starts the attempt to post a webhook published as
+        outage.status_page_due, under the claimToken the event carried. Only a
+        204 allows the caller to post; after it, nobody else can post the
+        webhook, and an attempt that runs out without a reported outcome is
+        never re-sent automatically.
+      operationId: claimCloudStatusWebhook
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloudStatusClaim'
+      responses:
+        "204":
+          description: Claimed -- post it, then report the outcome with the same claimToken.
+        "400":
+          description: BadRequest — invalid id or claimToken.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >-
+            Conflict — do not post: already delivered, or no longer reserved
+            under this claimToken (the scheduled task has it).
           content:
             application/json:
               schema:
@@ -25193,6 +25248,10 @@ components:
           type: integer
         lastError:
           type: string
+        claimToken:
+          type: string
+          format: uuid
+          description: The attempt this webhook was handed out under; send it back with the outcome.
       required: [id, outageId, number, event, wireEvent, cloud, timestamp, attemptCount]
     PendingCloudStatusWebhooks:
       type: object
@@ -25203,6 +25262,12 @@ components:
           type: array
           items:
             $ref: '#/components/schemas/PendingCloudStatusWebhook'
+        unknownOutcome:
+          type: integer
+          description: >-
+            Webhooks whose last attempt ended with no known outcome (a timeout
+            after sending, or a sender that never reported). Never re-sent
+            automatically -- the dashboard may already have them.
       required: [count, webhooks]
     CloudStatusDeliveryReport:
       type: object
@@ -25212,7 +25277,27 @@ components:
         error:
           type: string
           description: Required when delivered is false.
+        unknown:
+          type: boolean
+          description: >-
+            The request was sent and no answer came back, so the dashboard may
+            have it. The webhook is then never posted again automatically.
+            Requires delivered=false.
+        claimToken:
+          type: string
+          format: uuid
+          description: >-
+            The token the webhook was handed out under (pending response or
+            outage.status_page_due). When given, the report is accepted only
+            for that attempt.
       required: [delivered]
+    CloudStatusClaim:
+      type: object
+      properties:
+        claimToken:
+          type: string
+          format: uuid
+      required: [claimToken]
     AnnouncementRequest:
       description: >
         A draft, in-review, or approved announcement that has not yet been
