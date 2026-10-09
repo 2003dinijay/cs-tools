@@ -281,6 +281,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// only in Postgres, so its routes are registered only when a pool is
 	// configured.
 	var scheduleHandler *handler.ScheduleHandler
+	// The SaaS SRE rota's "Generate month" action. Postgres-only, like the
+	// rest of the Team Schedule.
+	var rotaGenerateHandler *handler.RotaGenerateHandler
 	var teamMemberHandler *handler.TeamMemberHandler
 
 	accountRepo := repository.NewAccountRepository(repository.NewScoped(db))
@@ -948,6 +951,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		scheduleHandler = handler.NewScheduleHandler(
 			service.NewScheduleService(repository.NewScheduleRepository(db), accessSvc),
 		)
+		rotaGenerateHandler = handler.NewRotaGenerateHandler(
+			service.NewRotaGenerateService(repository.NewScheduleRepository(db), repository.NewRotaGenerateRepository(db), accessSvc),
+		)
 		// Postgres-only, and internal-staff-only like every other read in this
 		// module: it returns staff names, addresses and rank.
 		teamMemberHandler = handler.NewTeamMemberHandler(
@@ -1574,6 +1580,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("DELETE /team-schedule/absences/{id}", scheduleHandler.DeleteScheduleAbsence)
 		mux.HandleFunc("POST /team-schedule/absence-kinds", scheduleHandler.CreateScheduleAbsenceKind)
 		mux.HandleFunc("DELETE /team-schedule/absence-kinds/{code}", scheduleHandler.DeleteScheduleAbsenceKind)
+	}
+	if rotaGenerateHandler != nil {
+		// A lead of the rota (or its admin) works out a month from the
+		// availability marked on the roster; dryRun previews it.
+		mux.HandleFunc("POST /team-schedule/rotas/{code}/generate", rotaGenerateHandler.GenerateRotaMonth)
 	}
 	if announcementRequestHandler != nil {
 		mux.HandleFunc("POST /announcement-requests", announcementRequestHandler.CreateAnnouncementRequest)

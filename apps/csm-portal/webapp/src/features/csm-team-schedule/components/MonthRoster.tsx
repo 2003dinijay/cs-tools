@@ -84,6 +84,10 @@ interface MonthRosterProps {
   /** Each team's ordinary-weekday window, by team key, where it is not
    *  Regular hours -- Americas cover for the Americas team. */
   teamDefaultShift?: Readonly<Record<string, string>>;
+  /** Teams whose unmarked weekday draws nothing. LK is a CRE day across every
+   *  zone; an SRE SaaS engineer works TZ1 or TZ2 and nights, which the
+   *  generated SUP says, so drawing LK there would claim all three. */
+  teamsWithoutDefault?: ReadonlySet<string>;
   /** CRE and SRE in the order they should read -- the reader's own group
    *  first, because the first of a pair reads as the default. */
   families: readonly RotaFamily[];
@@ -210,6 +214,7 @@ export default function MonthRoster({
   teams,
   teamMembers,
   teamDefaultShift,
+  teamsWithoutDefault,
   families,
   rotas,
   rotaCode,
@@ -630,7 +635,8 @@ export default function MonthRoster({
    *  On a row a span moved someone to, the days outside the span are their
    *  own team's ordinary day. */
   const defaultFor = useMemo(() => {
-    const cellFor = (team: string): Cell => {
+    const cellFor = (team: string): Cell | undefined => {
+      if (teamsWithoutDefault?.has(team) || teamsWithoutDefault?.has(team.toLowerCase())) return undefined;
       const code = teamDefaultShift?.[team] ?? teamDefaultShift?.[team.toLowerCase()];
       const sh = code ? shifts.get(code) : undefined;
       return sh
@@ -647,7 +653,7 @@ export default function MonthRoster({
       }
       return row.isMember ? cellFor(row.teamKey) : undefined;
     };
-  }, [teamDefaultShift, shifts]);
+  }, [teamDefaultShift, teamsWithoutDefault, shifts]);
 
   /** Whether this reader may change this cell -- the same rule the server
    *  applies, so a cell never looks editable and then refuses the save:
