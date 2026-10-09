@@ -19,7 +19,9 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -51,6 +53,17 @@ type CloudStatusRepository interface {
 	CandidatesByOutage(ctx context.Context, parentServiceIDs, outageIDs []string) ([]CloudStatusCandidate, error)
 	ClaimChanges(ctx context.Context, entityTypes []string, limit int) ([]OutboxChange, error)
 	Record(ctx context.Context, c CloudStatusCandidate) (bool, error)
+	// RecordAndClaim is Record for a transition about to be posted by the
+	// caller: the new row carries a delivery lease (claimed_until), so the
+	// scheduled task does not see it as pending meanwhile. It returns the
+	// row's id when one was created.
+	RecordAndClaim(ctx context.Context, c CloudStatusCandidate, lease time.Duration) (id string, recorded bool, err error)
+	// ReleaseClaim ends a row's delivery lease without counting an attempt:
+	// nothing was sent, so the scheduled task should simply post it.
+	ReleaseClaim(ctx context.Context, id string) error
+	// PendingByID is Pending for one row, lease or not; nil when the row is
+	// already delivered or gone.
+	PendingByID(ctx context.Context, id string) (*domain.PendingCloudStatusWebhook, error)
 	AffectedMonitors(ctx context.Context, outageID string) ([]string, error)
 	AffectedClouds(ctx context.Context, outageID string, parentServiceIDs []string) ([]string, error)
 	SetMonitorStatus(ctx context.Context, monitorIDs []string, status domain.CloudMonitorStatus) (int64, error)
@@ -207,6 +220,27 @@ const recordSQL = `
     RETURNING id
 `
 
+// recordAndClaimSQL is recordSQL with the delivery lease (migration 0213).
+const recordAndClaimSQL = `
+    INSERT INTO cloud_status_events (outage_id, event, cloud, claimed_until)
+    VALUES ($1::uuid, $2::cloud_status_event_enum, $3, NOW() + make_interval(secs => $4))
+    ON CONFLICT (outage_id, event, cloud) DO NOTHING
+    RETURNING id::text
+`
+
+// RecordAndClaim implements CloudStatusRepository.
+func (r *cloudStatusRepository) RecordAndClaim(ctx context.Context, c CloudStatusCandidate, lease time.Duration) (string, bool, error) {
+	var id string
+	err := r.db.QueryRow(ctx, recordAndClaimSQL, c.OutageID, string(c.Event), c.Cloud, lease.Seconds()).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("record cloud status event: %w", err)
+	}
+	return id, true, nil
+}
+
 // Record inserts the transition if it is new. The bool reports whether a row
 // was created.
 func (r *cloudStatusRepository) Record(ctx context.Context, c CloudStatusCandidate) (bool, error) {
@@ -227,7 +261,7 @@ func (r *cloudStatusRepository) Record(ctx context.Context, c CloudStatusCandida
 // them onto the event row. The event row records the DECISION; the outage
 // remains the source of truth for the facts, and a corrected begin time should
 // be reported correctly by a webhook that has not gone out yet.
-const pendingSQL = `
+const pendingSelectSQL = `
     SELECT e.id::text,
            e.outage_id::text,
            COALESCE(o.number, ''),
@@ -242,10 +276,23 @@ const pendingSQL = `
            COALESCE(e.last_error, '')
       FROM cloud_status_events e
       JOIN outage o ON o.id = e.outage_id
+`
+
+// pendingSQL skips a row under a current delivery lease: entity-service is
+// posting it right now (RecordAndClaim), and a second post from the scheduled
+// task would reach the dashboard twice. An expired lease -- a sender that
+// died mid-post -- makes the row pending again.
+const pendingSQL = pendingSelectSQL + `
      WHERE e.delivered IS FALSE
        AND e.attempt_count < $2
+       AND (e.claimed_until IS NULL OR e.claimed_until <= NOW())
      ORDER BY e.created_on
      LIMIT $1
+`
+
+const pendingByIDSQL = pendingSelectSQL + `
+     WHERE e.id = $1::uuid
+       AND e.delivered IS FALSE
 `
 
 // Pending returns up to limit undelivered webhooks that have not yet exhausted
@@ -272,6 +319,29 @@ func (r *cloudStatusRepository) Pending(ctx context.Context, limit, maxAttempts 
 	return out, nil
 }
 
+// ReleaseClaim implements CloudStatusRepository.
+func (r *cloudStatusRepository) ReleaseClaim(ctx context.Context, id string) error {
+	if _, err := r.db.Exec(ctx, `UPDATE cloud_status_events SET claimed_until = NULL, updated_on = NOW()
+	                              WHERE id = $1::uuid AND delivered IS FALSE`, id); err != nil {
+		return fmt.Errorf("release cloud status delivery lease: %w", err)
+	}
+	return nil
+}
+
+// PendingByID implements CloudStatusRepository.
+func (r *cloudStatusRepository) PendingByID(ctx context.Context, id string) (*domain.PendingCloudStatusWebhook, error) {
+	var w domain.PendingCloudStatusWebhook
+	err := r.db.QueryRow(ctx, pendingByIDSQL, id).Scan(&w.ID, &w.OutageID, &w.Number, &w.Event, &w.Cloud,
+		&w.Timestamp, &w.AttemptCount, &w.LastError)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("read cloud status webhook %s: %w", id, err)
+	}
+	return &w, nil
+}
+
 // recordDeliverySQL stamps the outcome of one attempt.
 //
 // attempt_count increments on both outcomes, success included. It counts what
@@ -284,6 +354,9 @@ const recordDeliverySQL = `
            last_error      = CASE WHEN $2 THEN NULL ELSE NULLIF($3, '') END,
            last_attempt_on = NOW(),
            delivered_on    = CASE WHEN $2 THEN NOW() ELSE delivered_on END,
+           -- An outcome ends any lease: a failed instant post becomes the
+           -- scheduled task's to retry on its next tick (migration 0213).
+           claimed_until   = NULL,
            updated_on      = NOW()
      WHERE id = $1::uuid
 `

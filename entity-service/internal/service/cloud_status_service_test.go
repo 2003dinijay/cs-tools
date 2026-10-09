@@ -49,6 +49,11 @@ type fakeCloudStatusRepo struct {
 		delivered bool
 		errMsg    string
 	}
+
+	// claimed are the ids RecordAndClaim handed out; rows backs PendingByID.
+	claimed  []string
+	released []string
+	rows     map[string]domain.PendingCloudStatusWebhook
 }
 
 func (f *fakeCloudStatusRepo) Candidates(_ context.Context, _ []string) ([]repository.CloudStatusCandidate, error) {
@@ -81,6 +86,36 @@ func (f *fakeCloudStatusRepo) Record(_ context.Context, c repository.CloudStatus
 		return false, nil
 	}
 	return true, nil
+}
+
+// RecordAndClaim records like Record, and remembers the row so PendingByID
+// can hand it back -- the instant-delivery path reads it straight after.
+func (f *fakeCloudStatusRepo) RecordAndClaim(ctx context.Context, c repository.CloudStatusCandidate, _ time.Duration) (string, bool, error) {
+	recorded, err := f.Record(ctx, c)
+	if !recorded || err != nil {
+		return "", recorded, err
+	}
+	id := "evt-" + c.OutageID + "-" + string(c.Event) + "-" + c.Cloud
+	f.claimed = append(f.claimed, id)
+	if f.rows == nil {
+		f.rows = map[string]domain.PendingCloudStatusWebhook{}
+	}
+	f.rows[id] = domain.PendingCloudStatusWebhook{ID: id, OutageID: c.OutageID, Number: c.Number,
+		Event: c.Event, Cloud: c.Cloud, Timestamp: c.Timestamp}
+	return id, true, nil
+}
+
+func (f *fakeCloudStatusRepo) ReleaseClaim(_ context.Context, id string) error {
+	f.released = append(f.released, id)
+	return nil
+}
+
+func (f *fakeCloudStatusRepo) PendingByID(_ context.Context, id string) (*domain.PendingCloudStatusWebhook, error) {
+	w, ok := f.rows[id]
+	if !ok {
+		return nil, nil
+	}
+	return &w, nil
 }
 
 func (f *fakeCloudStatusRepo) AffectedMonitors(_ context.Context, outageID string) ([]string, error) {

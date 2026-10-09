@@ -18,10 +18,12 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"log/slog"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
@@ -140,6 +142,56 @@ func outageIDOf(c repository.OutboxChange) string {
 	return ""
 }
 
+// publishDue publishes rows just recorded with a lease as
+// outage.status_page_due. csm-notification-service posts each and reports the
+// outcome, which ends the lease. A row that cannot be published has its lease
+// released at once -- without counting an attempt, since nothing was sent --
+// so the scheduled task posts it on its next tick.
+func (s *cloudStatusService) publishDue(ctx context.Context, ids []string) {
+	for _, id := range ids {
+		w, err := s.repo.PendingByID(ctx, id)
+		if err != nil {
+			// The lease expires and the scheduled task picks it up.
+			slog.ErrorContext(ctx, "cloudstatus: read webhook to publish failed", "webhookId", id, "err", err)
+			continue
+		}
+		if w == nil {
+			continue
+		}
+		slug, wire := domain.CloudOfferingSlug(w.Cloud), w.Event.WireValue()
+		if slug == "" || wire == "" {
+			// Cannot happen for a row recorded through process, which checks
+			// the slug; PendingWebhooks refuses the same rows.
+			s.releaseClaim(ctx, id)
+			continue
+		}
+		raw, err := json.Marshal(events.OutageStatusPageDuePayload{
+			WebhookID: w.ID, OutageID: w.OutageID, Number: w.Number,
+			Cloud: slug, Event: wire, Timestamp: w.Timestamp,
+		})
+		if err == nil {
+			// Keyed by outage: its begin and end land on one partition, in order.
+			err = s.publisher.Publish(ctx, events.TypeOutageStatusPageDue, w.OutageID, raw)
+		}
+		if err != nil {
+			// Not logging err: it can carry broker details, and Publish has
+			// already recorded it in event_publish_failures.
+			slog.ErrorContext(ctx, "cloudstatus: publish outage.status_page_due failed; left for the scheduled task",
+				"webhookId", id, "number", w.Number, "cloud", slug, "event", wire)
+			s.releaseClaim(ctx, id)
+			continue
+		}
+		slog.InfoContext(ctx, "cloudstatus: published outage.status_page_due",
+			"webhookId", id, "number", w.Number, "cloud", slug, "event", wire)
+	}
+}
+
+func (s *cloudStatusService) releaseClaim(ctx context.Context, id string) {
+	if err := s.repo.ReleaseClaim(ctx, id); err != nil {
+		slog.ErrorContext(ctx, "cloudstatus: release delivery lease failed", "webhookId", id, "err", err)
+	}
+}
+
 // HandleOutages re-derives and records the current transition for the named
 // outages. It is the record-triggered counterpart to Sweep, and deliberately
 // shares its decision path.
@@ -155,7 +207,16 @@ func (s *cloudStatusService) HandleOutages(ctx context.Context, outageIDs []stri
 		return err
 	}
 	var resp domain.CloudStatusSweepResponse
-	if err := s.process(ctx, candidates, &resp); err != nil {
+	var due []string
+	var dueRef *[]string
+	if s.publisher != nil {
+		dueRef = &due
+	}
+	err = s.process(ctx, candidates, &resp, dueRef)
+	// Publish what was recorded even when a later candidate failed: those
+	// rows are leased, and leaving them would delay them by the whole lease.
+	s.publishDue(ctx, due)
+	if err != nil {
 		return err
 	}
 	if resp.Recorded > 0 || resp.MonitorsUpdated > 0 {

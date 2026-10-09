@@ -321,6 +321,20 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		if !validRecipients(p.Recipients) {
 			return fmt.Errorf("events: invalid recipients for %s", t)
 		}
+	case TypeOutageStatusPageDue:
+		var p OutageStatusPageDuePayload
+		if err := decodeStrict(raw, &p); err != nil {
+			return err
+		}
+		if p.WebhookID == "" || p.OutageID == "" || p.Cloud == "" || p.Timestamp == "" {
+			return fmt.Errorf("events: missing required field for %s", t)
+		}
+		if p.OutageID != entityID {
+			return fmt.Errorf("events: payload outageId %q does not match entityId %q", p.OutageID, entityID)
+		}
+		if !validStatusPageEvent[p.Event] {
+			return fmt.Errorf("events: %s has unknown event %q", t, p.Event)
+		}
 	case TypeCaseEscalated:
 		var p CaseEscalatedPayload
 		if err := decodeStrict(raw, &p); err != nil {

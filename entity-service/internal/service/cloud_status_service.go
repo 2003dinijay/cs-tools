@@ -20,6 +20,7 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -50,6 +51,38 @@ type cloudStatusService struct {
 	// most likely to change -- adding a cloud to the status page is a
 	// business decision, not a code change.
 	parentServiceIDs []string
+	// publisher puts each transition on the operations topic (sre-events) as
+	// outage.status_page_due the moment it is recorded, for
+	// csm-notification-service to post. Nil leaves every post to
+	// csm-scheduled-tasks' tick, as before. See WithCloudStatusPublisher.
+	publisher EventPublisherService
+}
+
+// cloudStatusDeliveryLease is how long a published transition is hidden from
+// the scheduled task, so it is not posted twice while the event is in flight.
+// The consumer's outcome report ends it sooner; a consumer that never reports
+// (down, or its report failed) hands the row back to the scheduled task when
+// it runs out.
+const cloudStatusDeliveryLease = 15 * time.Minute
+
+// WithCloudStatusPublisher makes the record-triggered path (HandleOutages,
+// called straight after an outage is written) publish each transition it
+// records as outage.status_page_due, instead of leaving it for
+// csm-scheduled-tasks' next tick -- up to five minutes, plus however often
+// Choreo fires that component. csm-notification-service posts it and reports
+// the outcome; the scheduled task stays the retry path for a failed post, and
+// its sweep still records anything never published.
+//
+// *** THE SAME DOUBLE-FIRE GUARD AS CLOUD_STATUS_ENABLED. *** While
+// ServiceNow's "Cloud Status Event Notification Flow" (and "- Affected CI")
+// is active, ServiceNow posts these too.
+//
+// svc is returned unchanged when it is not the service this package builds.
+func WithCloudStatusPublisher(svc CloudStatusService, publisher EventPublisherService) CloudStatusService {
+	if s, ok := svc.(*cloudStatusService); ok && publisher != nil {
+		s.publisher = publisher
+	}
+	return svc
 }
 
 // NewCloudStatusService constructs the cloud status webhook decision service.
@@ -104,7 +137,9 @@ func (s *cloudStatusService) Sweep(ctx context.Context) (domain.CloudStatusSweep
 	}
 
 	resp := domain.CloudStatusSweepResponse{Scanned: len(candidates)}
-	if err := s.process(ctx, candidates, &resp); err != nil {
+	// nil: the sweep only records. It is csm-scheduled-tasks that calls it,
+	// and that component posts the pending rows in the same run.
+	if err := s.process(ctx, candidates, &resp, nil); err != nil {
 		return domain.CloudStatusSweepResponse{}, err
 	}
 	return resp, nil
@@ -118,7 +153,11 @@ func (s *cloudStatusService) Sweep(ctx context.Context) (domain.CloudStatusSweep
 // transition handled by the trigger would behave differently from the same
 // transition handled by reconciliation, and the two are indistinguishable
 // after the fact.
-func (s *cloudStatusService) process(ctx context.Context, candidates []repository.CloudStatusCandidate, resp *domain.CloudStatusSweepResponse) error {
+//
+// due, when non-nil, collects the ids of rows recorded for instant delivery:
+// each is recorded with a lease (RecordAndClaim), and the caller publishes it
+// after this returns.
+func (s *cloudStatusService) process(ctx context.Context, candidates []repository.CloudStatusCandidate, resp *domain.CloudStatusSweepResponse, due *[]string) error {
 	for _, c := range candidates {
 		clouds, err := s.cloudsFor(ctx, c)
 		if err != nil {
@@ -143,7 +182,17 @@ func (s *cloudStatusService) process(ctx context.Context, candidates []repositor
 		for _, cloud := range clouds {
 			rec := c
 			rec.Cloud = cloud
-			recorded, err := s.repo.Record(ctx, rec)
+			var recorded bool
+			var err error
+			if due != nil && s.publisher != nil {
+				var id string
+				id, recorded, err = s.repo.RecordAndClaim(ctx, rec, cloudStatusDeliveryLease)
+				if recorded {
+					*due = append(*due, id)
+				}
+			} else {
+				recorded, err = s.repo.Record(ctx, rec)
+			}
 			if err != nil {
 				return err
 			}

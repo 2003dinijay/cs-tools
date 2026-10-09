@@ -38,3 +38,29 @@ type OutageNoticePayload struct {
 	Body       string   `json:"body"`
 	Recipients []string `json:"recipients"`
 }
+
+// TypeOutageStatusPageDue asks this service to post one cloud status webhook
+// to the public status dashboard: an outage began or ended on a cloud the
+// page shows. Published by entity-service on the operations topic
+// (sre-events) the moment the outage is written. Kept in sync by hand with
+// entity-service's internal/events copy.
+const TypeOutageStatusPageDue Type = "outage.status_page_due"
+
+// OutageStatusPageDuePayload is one webhook, already decided. Event,
+// Timestamp and Cloud are posted verbatim as the dashboard's body; the
+// outcome is reported back to entity-service under WebhookID.
+type OutageStatusPageDuePayload struct {
+	WebhookID string `json:"webhookId"`
+	OutageID  string `json:"outageId"`
+	Number    string `json:"number,omitempty"`
+	// Cloud is the dashboard's slug: asgardeo, choreo, bijira, devant,
+	// moesif, choreo-eu or agent-manager.
+	Cloud string `json:"cloud"`
+	// Event is outage_begin or outage_end.
+	Event string `json:"event"`
+	// Timestamp is ISO-8601 UTC with milliseconds.
+	Timestamp string `json:"timestamp"`
+}
+
+// validStatusPageEvent are the only wire events the dashboards parse.
+var validStatusPageEvent = map[string]bool{"outage_begin": true, "outage_end": true}

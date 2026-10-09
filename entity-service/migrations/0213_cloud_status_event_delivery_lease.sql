@@ -1,0 +1,33 @@
+-- Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+--
+-- WSO2 LLC. licenses this file to you under the Apache License,
+-- Version 2.0 (the "License"); you may not use this file except
+-- in compliance with the License.
+-- You may obtain a copy of the License at
+--
+-- http://www.apache.org/licenses/LICENSE-2.0
+--
+-- Unless required by applicable law or agreed to in writing,
+-- software distributed under the License is distributed on an
+-- "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+-- KIND, either express or implied.  See the License for the
+-- specific language governing permissions and limitations
+-- under the License.
+
+-- A delivery lease on cloud status webhooks.
+--
+-- Until now one component sent them: csm-scheduled-tasks read the pending
+-- rows on its five-minute tick and posted them, so an outage reached the
+-- public status page up to five minutes (and one Choreo trigger interval)
+-- after it was declared. entity-service now posts a transition the moment its
+-- outbox drainer records it, and the scheduled task stays behind as the retry
+-- path. Two senders need a way to keep out of each other's way.
+--
+-- The drainer records the row with claimed_until set, posts it, and clears it
+-- with the outcome. While a lease is current the row is not pending, so the
+-- scheduled task cannot post it a second time. A failed post clears the lease
+-- too, handing the row to the scheduled task's next tick; a drainer that dies
+-- mid-post leaves a lease that simply expires.
+--
+-- NULL for every existing row: they are pending exactly as before.
+ALTER TABLE cloud_status_events ADD COLUMN IF NOT EXISTS claimed_until TIMESTAMPTZ;
