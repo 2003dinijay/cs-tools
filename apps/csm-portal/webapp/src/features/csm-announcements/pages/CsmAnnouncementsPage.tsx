@@ -250,7 +250,7 @@ function renderRegistryCell(id: AnnouncementColumnId, row: AnnouncementRegistryR
  */
 export default function CsmAnnouncementsPage(): JSX.Element {
   const navigate = useNavTransition();
-  const { canWrite } = usePortalAccess();
+  const { canCreateAnnouncement } = usePortalAccess();
   const [searchParams] = useSearchParams();
   // Seeded once from `?tab=pending` (e.g. the create form's post-save
   // redirect landing straight on the request just saved), not kept in sync
@@ -332,7 +332,7 @@ export default function CsmAnnouncementsPage(): JSX.Element {
           </Typography>
         </Box>
         <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
-          {canWrite && (
+          {canCreateAnnouncement && (
             <Button
               variant="contained"
               color="primary"
