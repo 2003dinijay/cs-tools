@@ -57,16 +57,25 @@ export const getSeverityColor = (label?: string): string => {
   }
 };
 
+/** Matches a raw backend enum value: only upper-case letters, digits, and underscores. */
+const RAW_ENUM_LABEL_PATTERN = /^[A-Z0-9_]+$/;
+
 /**
- * Formats a case state label for display. Idempotent: a raw, Postgres-sourced
- * UPPER_SNAKE_CASE value ("WORK_IN_PROGRESS") becomes "Work In Progress"; an
- * already human-readable label ("Work In Progress") passes through unchanged,
- * since replacing underscores and re-title-casing is a no-op on it. Safe to
- * apply regardless of which data source produced the label.
+ * Formats a case state label for display. Only normalizes a raw,
+ * Postgres-sourced UPPER_SNAKE_CASE value ("WORK_IN_PROGRESS" -> "Work In
+ * Progress") -- anything else is returned exactly as given. This matters
+ * because a blind lower-case-then-title-case pass is NOT safe on an already
+ * human-readable label: it would capitalize a lowercase word that belongs
+ * lowercase ("Waiting On WSO2" -> "Waiting On Wso2", destroying the acronym),
+ * and it never capitalizes a word right after a non-whitespace character like
+ * "(" ("On Hold (Customer)" -> "On Hold (customer)"). Detecting a raw enum
+ * first and leaving everything else untouched avoids both.
  */
 export function formatCaseStatusLabel(label?: string | null): string {
   if (!label) return "--";
-  return label
+  const trimmed = label.trim();
+  if (!RAW_ENUM_LABEL_PATTERN.test(trimmed)) return trimmed;
+  return trimmed
     .replace(/_/g, " ")
     .toLowerCase()
     .replace(/(^|\s)([a-z])/g, (_m, sep: string, ch: string) => sep + ch.toUpperCase());

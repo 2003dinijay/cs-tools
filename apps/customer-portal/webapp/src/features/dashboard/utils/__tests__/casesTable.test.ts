@@ -80,9 +80,17 @@ describe("casesTable utils", () => {
       expect(formatCaseStatusLabel("AWAITING_INFO")).toBe("Awaiting Info");
     });
 
-    it("is idempotent for an already human-readable label", () => {
+    it("leaves an already human-readable label untouched", () => {
       expect(formatCaseStatusLabel("Work In Progress")).toBe("Work In Progress");
       expect(formatCaseStatusLabel("Open")).toBe("Open");
+    });
+
+    it("does not mangle a label that isn't a raw enum, even with an acronym or punctuation", () => {
+      // A blind lower-case/re-title-case pass would turn these into
+      // "Waiting On Wso2" and "On Hold (customer)" -- only a raw
+      // UPPER_SNAKE_CASE value should ever be normalized.
+      expect(formatCaseStatusLabel("Waiting On WSO2")).toBe("Waiting On WSO2");
+      expect(formatCaseStatusLabel("On Hold (Customer)")).toBe("On Hold (Customer)");
     });
 
     it("returns '--' for an absent label", () => {
