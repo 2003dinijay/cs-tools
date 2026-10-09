@@ -7757,6 +7757,14 @@ project of the dev database (Customer 3 Project) they disagreed three ways: Outs
   is still `"case".resolved_on` only (nothing links a card to it). Same plan cost as before on the staging-like copy
   (the extension joins were already in the query): 55-69 ms for the heaviest project's closed-in-30-days count,
   either way.
+- **Change requests for staff on the customer portal.** `crOutstandingStatesFor` counts Authorize as outstanding for
+  a customer only, but the customer portal's change request list shows Authorize to a staff user as well, so a staff
+  account saw 7 on the Outstanding card and 16 in the list. `AccessScope.ViaCustomerPortal` (set in `ResolveScope` for
+  the customer portal backend's client id, whoever the user is; the data scope is unchanged) makes the card count
+  Authorize for staff on that path too. Staff on the CSM portal, and machine clients, keep the ServiceNow grouping.
+  Without `CUSTOMER_PORTAL_BACKEND_CLIENT_ID` configured the flag is never set (no change). Tests:
+  `TestAccessService_ResolveScope_ViaCustomerPortal`,
+  `TestProjectChangeRequestStats_AuthorizeIsOutstandingForStaffOnTheCustomerPortal`.
 - **Test:** `TestCardsAgreeWithTheirListsIntegration` (real Postgres, `CASE_STATS_TEST_DSN`) seeds the three kinds of
   row and asserts card = list for case, service request and engagement; against the old code it fails on all three.
   `TestGetProjectCaseStats_RowsWithoutAStateAreNotOutstanding` is the service half.
