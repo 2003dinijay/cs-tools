@@ -57,6 +57,25 @@ func TestDefaultGroup_ClimbsTheSRELadderFromWhoeverIsOnDuty(t *testing.T) {
 		}
 	}
 
+	// An alias on the group still leaves it a default group, read from
+	// whoever is on duty rather than from the alias's team.
+	aliased := sreTeams
+	aliased.DefaultGroups = []string{"Default"}
+	aliased.Aliases = map[string]string{"Default": "default-sre"}
+	ar := NewTeamScheduleResolver(morningRota(), aliased, nil)
+	if l, err := ar.LadderFor(ctx, rc); err != nil || l != LadderSRE {
+		t.Errorf("LadderFor(aliased Default) = %q, %v; want the SRE ladder", l, err)
+	}
+	if f, err := ar.TeamFamily(ctx, rc); err != nil || f != TeamFamilySRE {
+		t.Errorf("TeamFamily(aliased Default) = %q, %v; want sre", f, err)
+	}
+	if own := ar.ownSRETeam(rc); own != "" {
+		t.Errorf("ownSRETeam(aliased Default) = %q; want none, so the on-duty rota answers", own)
+	}
+	if got := resolveSRE(t, ar, Level0, "Default"); len(got) != 1 || got[0] != "a-l1@example.com" {
+		t.Errorf("L1 for aliased Default = %v; want [a-l1@example.com]", got)
+	}
+
 	// Without the setting, "Default" is nobody's team, as before.
 	plain := sreResolver(morningRota())
 	if l, _ := plain.LadderFor(ctx, rc); l != LadderCRE {
@@ -209,6 +228,7 @@ sre:
 
 	for name, c := range map[string]struct{ body, want string }{
 		"a URL in teamChats":                  {strings.Replace(ok, "SRE_CHAT_WEBHOOK_URL_APOLLO", "https://chat.googleapis.com/x", 1), "NAME of an environment variable"},
+		"the same team twice in teamChats":    {strings.Replace(ok, "  teams:\n", "    Apollo: { webhookUrlEnv: SRE_CHAT_WEBHOOK_URL_APOLLO2, audience: \"Apollo 2\" }\n  teams:\n", 1), "lists team \"apollo\" twice"},
 		"a default group that is an SRE team": {strings.Replace(ok, "defaultGroups: [Default]", "defaultGroups: [apollo]", 1), "both teams.abts and teams.defaultGroups"},
 		"teamChats on CRE": {`
 enabled: true

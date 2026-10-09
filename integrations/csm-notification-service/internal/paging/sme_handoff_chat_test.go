@@ -40,7 +40,9 @@ func TestSMEHandoffChat_TellsTheSRETeamSpaceOnce(t *testing.T) {
 	shared, apollo := &fakeChat{}, &fakeChat{}
 	e := handoffEngine(shared, apollo, &fakeNotes{})
 
-	raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock))
+	p := handoff("Apollo", "asgardeo", "asgardeo", testClock)
+	p.Priority = "P1"
+	raise(t, e, p)
 	raise(t, e, handoff("Apollo", "asgardeo", "asgardeo", testClock.Add(time.Minute))) // same team again: ignored
 
 	if len(apollo.handoffs) != 1 || len(shared.handoffs) != 0 {
@@ -49,6 +51,9 @@ func TestSMEHandoffChat_TellsTheSRETeamSpaceOnce(t *testing.T) {
 	h := apollo.handoffs[0]
 	if h.Audience != "Apollo SRE" || !h.Paging || h.By != "lead@example.com" || h.IncidentRef != "INC0099001" {
 		t.Errorf("handoff = %+v", h)
+	}
+	if h.Priority != "P1" {
+		t.Errorf("priority = %q; want the incident's, P1", h.Priority)
 	}
 	if h.SMETeam != "Asgardeo" {
 		t.Errorf("SME team = %q; want the SME team's name, Asgardeo", h.SMETeam)

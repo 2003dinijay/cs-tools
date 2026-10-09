@@ -664,10 +664,16 @@ func (l *LadderConfig) validate(name string) error {
 		if v := strings.TrimSpace(l.Teams.DefaultRota); v != "" && !sreRotaCode.MatchString(strings.ToUpper(v)) {
 			return fmt.Errorf("sre: teams.defaultRota is %q; use an SRE rota code such as %s or %s", v, RotaSRESaaS, RotaSREIaaS)
 		}
+		seen := map[string]string{}
 		for k, c := range l.TeamChats {
-			if teamKeyFor(k) == "" {
+			key := teamKeyFor(k)
+			if key == "" {
 				return fmt.Errorf("sre: teamChats has an entry with no team key")
 			}
+			if prev, dup := seen[key]; dup {
+				return fmt.Errorf("sre: teamChats lists team %q twice (%q and %q)", key, prev, k)
+			}
+			seen[key] = k
 			if v := strings.TrimSpace(c.WebhookURLEnv); v != "" && !envVarName.MatchString(v) {
 				return fmt.Errorf("sre: teamChats.%s.webhookUrlEnv must be the NAME of an environment variable "+
 					"that holds the webhook URL, not the URL itself -- this file is committed", k)

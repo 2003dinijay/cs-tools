@@ -73,7 +73,7 @@ type SpecialistResolver interface {
 
 // specialOpsPress is one move into a Special Ops group, as the page needs it.
 type specialOpsPress struct {
-	IncidentID, Number, Title, Product string
+	IncidentID, Number, Title, Product, Priority string
 	// TeamKey/TeamLabel are the Special Ops team; SMETeam the rota team to
 	// page when the publisher names it.
 	TeamKey, TeamLabel, SMETeam string
@@ -98,7 +98,7 @@ func (e *Engine) HandleSpecialOpsAlert(ctx context.Context, incidentID string, p
 		group = p.AssignmentGroupID
 	}
 	return e.handleSpecialOps(ctx, specialOpsPress{
-		IncidentID: incidentID, Number: p.Number, Title: p.Subject, Product: p.Product,
+		IncidentID: incidentID, Number: p.Number, Title: p.Subject, Product: p.Product, Priority: p.Priority,
 		TeamKey: p.TeamKey, TeamLabel: p.TeamLabel, SMETeam: p.SMETeam,
 		PreviousGroup: p.PreviousAssignmentGroupName, PreviousGroupID: p.PreviousAssignmentGroupID,
 		AssignmentGroup: group, ChangedBy: p.ChangedBy, At: reportedAt(p.ChangedOn),
@@ -238,6 +238,7 @@ func (e *Engine) postSMEHandoff(ctx context.Context, pr specialOpsPress, team st
 		Paging:      started,
 		IncidentRef: pr.Number,
 		Title:       pr.Title,
+		Priority:    pr.Priority,
 		PortalURL:   e.links.IncidentLink(pr.IncidentID),
 		PortalLabel: "View incident",
 		ThreadKey:   "incident-escalation-" + pr.IncidentID,
