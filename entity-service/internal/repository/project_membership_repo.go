@@ -675,10 +675,13 @@ func upsertMembershipUser(ctx context.Context, tx querier, in domain.SalesforceM
 	if _, err = tx.Exec(ctx, `
 		UPDATE "user"
 		SET name = COALESCE($2, name), first_name = COALESCE($3, first_name), last_name = COALESCE($4, last_name),
-		    email = $5, is_system_user = $6, sf_id = $7, updated_on = NOW(), updated_by = $8
+		    email = $5, is_system_user = $6, sf_id = $7, updated_on = NOW(), updated_by = $8,
+		    is_active = CASE WHEN $9 THEN TRUE ELSE is_active END
 		WHERE id = $1`,
 		id, nullIfBlank(in.ContactName), nullIfBlank(in.ContactFirstName), nullIfBlank(in.ContactLastName),
-		email, in.IsCsIntegrationUser, in.ContactSfID, actor); err != nil {
+		email, in.IsCsIntegrationUser, in.ContactSfID, actor,
+		// A live membership reactivates a user whose earlier contact was deleted in Salesforce.
+		in.State != "" && in.State != domain.MembershipStateDeactivated); err != nil {
 		return "", "", false, fmt.Errorf("upsert membership: update user: %w", err)
 	}
 	return id, userName, false, nil
