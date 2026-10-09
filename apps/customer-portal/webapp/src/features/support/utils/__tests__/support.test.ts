@@ -24,6 +24,7 @@ import {
   deriveFilterLabels,
   extractInlineImageRefId,
   isInlineImageRefSrc,
+  isNoveraOrBotSender,
   hasSingleCodeWrapper,
   hasSubmittableEditorContent,
   linkifyBareUrls,
@@ -100,6 +101,30 @@ describe("normalizeCaseTypeOptions", () => {
   });
 });
 
+describe("isNoveraOrBotSender", () => {
+  it("still recognizes the literal name 'Novera'", () => {
+    expect(isNoveraOrBotSender("Novera", "comment")).toBe(true);
+  });
+
+  it("still recognizes an explicit bot type", () => {
+    expect(isNoveraOrBotSender("", "bot")).toBe(true);
+  });
+
+  // Regression: the real GET /conversations/{id}/messages response sends
+  // createdBy: "" for a Novera reply, not the literal name "Novera" -- every
+  // real human message in this feed has a non-empty createdBy, so an empty
+  // one is itself the bot signal.
+  it("treats an empty createdBy as Novera, even with an ordinary 'comment' type", () => {
+    expect(isNoveraOrBotSender("", "comment")).toBe(true);
+    expect(isNoveraOrBotSender(null, "comment")).toBe(true);
+    expect(isNoveraOrBotSender(undefined, undefined)).toBe(true);
+  });
+
+  it("does not flag a real person's message", () => {
+    expect(isNoveraOrBotSender("Alice", "comment")).toBe(false);
+  });
+});
+
 describe("compareByCreatedOnThenId", () => {
   it("orders human comment before bot when timestamps tie", () => {
     const rows = [
@@ -109,6 +134,27 @@ describe("compareByCreatedOnThenId", () => {
     rows.sort(compareByCreatedOnThenId);
 
     expect(rows.map((r) => r.id)).toEqual(["1", "2"]);
+  });
+
+  // Regression: the real conversation transcript stores a Novera reply with
+  // createdBy: "" (not the name "Novera") and only whole-second timestamp
+  // precision, so a user's question and Novera's answer often share an
+  // identical createdOn -- without isNoveraOrBotSender recognizing the empty
+  // createdBy, this tie fell through to an effectively arbitrary id compare,
+  // and the bot's reply could render above the question that caused it.
+  it("orders the user's question before Novera's empty-createdBy reply when timestamps tie", () => {
+    const rows = [
+      { id: "reply-1", createdOn: "2026-06-24T16:19:34Z", createdBy: "", type: "comment" },
+      {
+        id: "question-1",
+        createdOn: "2026-06-24T16:19:34Z",
+        createdBy: "Jane Doe",
+        type: "comment",
+      },
+    ];
+    rows.sort(compareByCreatedOnThenId);
+
+    expect(rows.map((r) => r.id)).toEqual(["question-1", "reply-1"]);
   });
 });
 

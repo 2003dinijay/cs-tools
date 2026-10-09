@@ -1747,7 +1747,14 @@ export function isNoveraOrBotSender(
 ): boolean {
   const by = (createdBy ?? "").trim().toLowerCase();
   const ty = (type ?? "").trim().toLowerCase();
-  return ty === "bot" || by === "novera";
+  // The conversations/{id}/messages API sends an empty createdBy for a
+  // Novera reply rather than the literal name "Novera" -- every real
+  // comment/message in this feed has a non-empty author, so an empty one
+  // is itself the bot signal. Without this, a bot reply that shares its
+  // triggering user message's timestamp (common -- the transcript only
+  // stores whole-second precision) had no tiebreak to fall back on and
+  // could render above the question that caused it.
+  return ty === "bot" || by === "novera" || by === "";
 }
 
 /** Shape accepted by {@link compareByCreatedOnThenId}. */
