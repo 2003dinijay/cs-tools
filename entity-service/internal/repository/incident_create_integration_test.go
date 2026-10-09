@@ -171,6 +171,46 @@ func TestIncidentCreate_PersistsEveryField(t *testing.T) {
 	}
 }
 
+// TestIncidentCreate_FromServiceNowStoresJournal: the dual-write create stores its work note and comment as the plain create does.
+func TestIncidentCreate_FromServiceNowStoresJournal(t *testing.T) {
+	pool := incidentCreatePool(t)
+	seedIncidentCreateFixture(t, pool)
+	scoped := repository.NewScoped(pool)
+	repo := repository.NewIncidentRepository(scoped)
+	ctx := repository.WithSystemIdentity(context.Background())
+
+	const snID = "d4000000-0000-0000-0000-000000000001"
+	req := icRequest()
+	req.Subcategory, req.ConfigurationItemID, req.AssignedEngineerID, req.WatchList = nil, nil, nil, nil
+	resp, err := repo.CreateIncidentFromServiceNow(ctx, req, snID, "INC-IC-SN-1", "sn.user@test.local")
+	if err != nil {
+		t.Fatalf("CreateIncidentFromServiceNow: %v", err)
+	}
+	if resp.Incident.ID != snID {
+		t.Fatalf("id = %s, want %s", resp.Incident.ID, snID)
+	}
+
+	rows, err := scoped.Query(ctx, `SELECT type::text, content, created_by FROM comment WHERE work_item_id = $1`, snID)
+	if err != nil {
+		t.Fatalf("read comments: %v", err)
+	}
+	defer rows.Close()
+	got := map[string]string{}
+	for rows.Next() {
+		var typ, content, by string
+		if err := rows.Scan(&typ, &content, &by); err != nil {
+			t.Fatalf("scan comment: %v", err)
+		}
+		if by != "sn.user@test.local" {
+			t.Errorf("comment %s created_by = %s", typ, by)
+		}
+		got[typ] = content
+	}
+	if got["COMMENT"] != "customer-visible description" || got["WORK_NOTE"] != "internal work note" || len(got) != 2 {
+		t.Errorf("journal rows = %v", got)
+	}
+}
+
 // TestIncidentCreate_WithoutSubcategory: subcategory is optional on create
 // (the webapp form no longer requires it), so a request with none must
 // insert with incident.subcategory_id NULL and the category still set --
