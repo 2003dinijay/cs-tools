@@ -534,7 +534,7 @@ func TestCaseTypeTransferIntegration_OnlyCaseLikeWorkItemsOwnAttachments(t *test
 	fromServiceNow := func(id string) error {
 		_, err := cases.CreateCaseAttachmentFromServiceNow(f.ctx, domain.CreateAttachmentRequest{
 			ReferenceID: id, ReferenceType: domain.ReferenceTypeCase, Name: "c.txt", Type: "text/plain",
-		}, "92000000-0000-0000-0000-0000000000b0", 1, f.userID, now)
+		}, "92000000-0000-0000-0000-0000000000b0", 1, f.userID)
 		return err
 	}
 
