@@ -58,6 +58,7 @@ import { resolveDisplayTimeZone } from "@utils/dateTime";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import useGetProjectContacts from "@features/settings/api/useGetProjectContacts";
 import {
+  filterDeploymentProductsByCategory,
   getBaseDeploymentOptions,
   getBaseProductOptions,
   getDeploymentProductDisplayLabel,
@@ -315,13 +316,16 @@ export default function CreateServiceRequestPage(): JSX.Element {
 
   const allDeploymentProducts = useMemo(
     () =>
-      (deploymentProductsData ?? []).filter((item) => {
-        const label = getDeploymentProductDisplayLabel(item);
-        return (
-          Boolean(label.trim()) && !isUnknownPlaceholderProductLabel(label)
-        );
-      }),
-    [deploymentProductsData],
+      filterDeploymentProductsByCategory(
+        (deploymentProductsData ?? []).filter((item) => {
+          const label = getDeploymentProductDisplayLabel(item);
+          return (
+            Boolean(label.trim()) && !isUnknownPlaceholderProductLabel(label)
+          );
+        }),
+        srProductCategories,
+      ),
+    [deploymentProductsData, srProductCategories],
   );
   const baseProductOptions = getBaseProductOptions(allDeploymentProducts);
   const sortedProductOptions = useMemo(
