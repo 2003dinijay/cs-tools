@@ -1610,15 +1610,25 @@ func (r *incidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req dom
 		outID, outNumber, outSubject, outCreatedBy string
 		outCreatedOn, outUpdatedOn                 time.Time
 	)
-	err := r.db.QueryRow(ctx, createIncidentFromServiceNowQuery,
-		id, createdBy,
-		number, req.Subject, req.ParentID, req.AssignmentGroupID,
-		req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
-		req.ServiceID, req.ServiceOfferingID, contactType,
-		req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
-		req.CorrelationID, req.Environment,
-	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
+	// The work note and additional comment sent with the create are stored with the record, as CreateIncident does.
+	_, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (struct{}, error) {
+		if err := tx.QueryRow(ctx, createIncidentFromServiceNowQuery,
+			id, createdBy,
+			number, req.Subject, req.ParentID, req.AssignmentGroupID,
+			req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
+			req.ServiceID, req.ServiceOfferingID, contactType,
+			req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
+			req.CorrelationID, req.Environment,
+		).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, insertIncidentNotesTx(ctx, tx, outID, req.WorkNotes, req.AdditionalComments, createdBy)
+	})
 	if err != nil {
+		var ve *apierror.ValidationError
+		if errors.As(err, &ve) {
+			return domain.CreateIncidentResponse{}, err
+		}
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
 			case "23505": // unique_violation on id/number -- see this method's own doc comment for why this "shouldn't" happen
