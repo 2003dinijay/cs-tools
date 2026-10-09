@@ -20772,10 +20772,10 @@ components:
             Where it is fixed: responders (the Case Paging tab), rota (the
             Team Schedule roster), profile, config (deployment configuration)
             or data (records synced from elsewhere).
-        teamKey: { type: string, description: The team concerned, where there is one. }
+        teamKey: { type: string, description: "The team concerned, where there is one." }
         date: { type: string, format: date }
         zoneCode: { type: string, example: TZ2 }
-        tier: { type: string, description: T1-T3 for a CRE responder, L1-L3 for an SRE tier. }
+        tier: { type: string, description: "T1-T3 for a CRE responder, L1-L3 for an SRE tier." }
         shiftCode: { type: string, example: SME_ASG_NIGHT }
     PagingReadinessPerson:
       type: object
