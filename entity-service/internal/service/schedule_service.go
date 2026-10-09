@@ -43,7 +43,7 @@ type ScheduleService interface {
 	Catalogue(ctx context.Context) (domain.ScheduleCatalogue, error)
 	SearchAssignments(ctx context.Context, req domain.SearchScheduleAssignmentsRequest) (domain.ScheduleAssignmentsResponse, error)
 	SearchAbsences(ctx context.Context, req domain.SearchScheduleAbsencesRequest) (domain.ScheduleAbsencesResponse, error)
-	OnDuty(ctx context.Context, at *time.Time) (domain.ScheduleAssignmentsResponse, error)
+	OnDuty(ctx context.Context, at *time.Time, includeOnLeave bool) (domain.ScheduleAssignmentsResponse, error)
 
 	// The lead edit path. Each checks that the caller leads the team the slot
 	// belongs to before it touches anything.
@@ -175,8 +175,9 @@ func (s *scheduleService) SearchAbsences(ctx context.Context, req domain.SearchS
 }
 
 // OnDuty answers who is responsible at an instant, defaulting to now. This is
-// the lookup an alert escalation needs before it decides who to ring.
-func (s *scheduleService) OnDuty(ctx context.Context, at *time.Time) (domain.ScheduleAssignmentsResponse, error) {
+// the lookup an alert escalation needs before it decides who to ring. People
+// on leave are left out unless includeOnLeave, which returns them marked.
+func (s *scheduleService) OnDuty(ctx context.Context, at *time.Time, includeOnLeave bool) (domain.ScheduleAssignmentsResponse, error) {
 	if err := s.requireInternalCaller(ctx); err != nil {
 		return domain.ScheduleAssignmentsResponse{}, err
 	}
@@ -184,7 +185,7 @@ func (s *scheduleService) OnDuty(ctx context.Context, at *time.Time) (domain.Sch
 	if at != nil {
 		moment = *at
 	}
-	rows, err := s.repo.OnDutyAt(ctx, moment)
+	rows, err := s.repo.OnDutyAt(ctx, moment, includeOnLeave)
 	if err != nil {
 		return domain.ScheduleAssignmentsResponse{}, err
 	}
@@ -550,7 +551,13 @@ func (s *scheduleService) DeleteAbsenceKind(ctx context.Context, code string) er
 	if err != nil {
 		return err
 	}
-	return s.repo.DeleteAbsenceKind(ctx, code, email)
+	// A rota admin deletes only their own family's tags; a lead who is none
+	// may delete any custom tag, as before.
+	admin, err := s.rotaAdminFamilies(ctx)
+	if err != nil {
+		return err
+	}
+	return s.repo.DeleteAbsenceKind(ctx, code, email, admin)
 }
 
 // requireAnyTeamLead is the gate for the shared tag catalogue: an internal
@@ -652,7 +659,17 @@ func (s *scheduleService) CreateAbsenceKind(ctx context.Context, req domain.Crea
 	if err != nil {
 		return domain.ScheduleAbsenceKind{}, err
 	}
-	return s.repo.CreateAbsenceKind(ctx, code, req, email)
+	// A rota admin's tag is their family's; a lead who is no rota admin adds
+	// a shared one, as before.
+	admin, err := s.rotaAdminFamilies(ctx)
+	if err != nil {
+		return domain.ScheduleAbsenceKind{}, err
+	}
+	family, err := kindFamilyFor(admin, req.Family)
+	if err != nil {
+		return domain.ScheduleAbsenceKind{}, err
+	}
+	return s.repo.CreateAbsenceKind(ctx, code, req, family, email)
 }
 
 // EditMarkers implements ScheduleService.

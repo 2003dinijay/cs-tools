@@ -7097,7 +7097,15 @@ assignment group **changes to** a Special Ops group -- every team's `groupId` in
 which already claims those rows, publishes the alert (`WithSpecialOpsAlerts`, main.go) and
 acknowledges any other group as a no-op. A failed publish is retried and parked like the report
 flows. Payload: `events.IncidentSpecialOpsAlertPayload` (incident, service, product/team, both
-groups, who and when), keyed by the incident id. Off without the topic; unknown to the consumer
+groups, who and when), keyed by the incident id. `smeTeam` is the matched team's `smeTeam` from
+`SPECIALIST_HANDOFF_CONFIG` (the Team Schedule key of the SME rota Case Paging pages), omitted when
+the team names none. The team is found by the group the incident moved into; when two teams share
+that group, the alert takes the one the handoff's reason note names (`escalationTeam`, written in
+the same transaction as the move, read back by `SpecialOpsAlertSource.HandoffNote`), so the SME rota
+of the team picked in the dialog is paged; with no note naming one of them, the first (logged).
+A handoff needs an assignee: an unassigned incident is a 409 `incident_handoff_needs_assignee`
+(the assignee answers for the page to the SME on duty). `incident.assigned` carries `assignedOn`,
+which the SME page compares alerts against. Off without the topic; unknown to the consumer
 until it adds the type (`HandleShared` skips unknown types on sre-events).
 
 **`UpdateProblem`/`UpdateIncident` are also not
@@ -8940,6 +8948,7 @@ All shared types live in `internal/domain/entity.go`. Conventions:
 | A registered contact holding no `REQUESTED` row on the customer stage that is LIVE (registered after the request went out, or a row of theirs cancelled directly): proposing, or answering on it. A request that was withdrawn (a sibling's answer settled the stage) leaves no live stage and is a 409 instead: `change_request_approval_not_pending` for an answer, `change_request_not_proposable` for a proposal | `change_request_not_asked` | 403 |
 | Not a registered PORTAL_USER contact of the change request's project, the change request's own creator, a user who may not decide an internal stage, a field a customer may not set, a caller with no user record | `change_request_forbidden` | 403 |
 | `POST /incidents` with an `assignmentGroupId` that is not an active support group of any service (a non-UUID value is a plain 400 with no code); nothing created | `incident_assignment_group_not_allowed` | 400 |
+| `POST /incidents/{id}/specialist-handoffs` on an incident nobody is assigned to; nothing written | `incident_handoff_needs_assignee` | 409 |
 
 `TestWriteServiceError_CarriesTheMachineReadableCode` (handler) and `TestChangeRequestErrorCodesIntegration_*` (repository, against a real database) pin each code to its refusal. customer-portal `backend-v2` and the CSM portal BFF pass the code through with the status they give it; the customer webapp classifies a refusal by it (`describeChangeRequestActionError`), and a 409 with a code it does not know, or none (an older entity-service), is "something went wrong, refresh", never "already answered".
 

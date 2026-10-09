@@ -132,17 +132,94 @@ func (r TeamScheduleResolver) TeamFamily(ctx context.Context, rc RoutingContext)
 // sreTier is the rota tier each SRE rung reads.
 var sreTier = map[Level]string{Level0: "L1", Level1: "L2", Level2: "L3"}
 
-// resolveSRE answers one SRE rung.
-func (r TeamScheduleResolver) resolveSRE(ctx context.Context, level Level, rc RoutingContext) ([]Recipient, error) {
+// ownSRETeam is the incident's own SRE team key, or "" for one that has none.
+func (r TeamScheduleResolver) ownSRETeam(rc RoutingContext) string {
 	own := r.keyOf(rc.AssignedCRETeam)
 	if !r.isSRETeam(own) && len(r.sreTeamKeys) > 0 {
 		// A CRE incident climbing the SRE ladder (a P0) belongs to no SRE
 		// team; every SRE team is then equally placed to answer.
-		own = ""
+		return ""
 	}
+	return own
+}
+
+// rotaFor decides which SRE rota pages an incident: its own team's, or
+// sre.teams.defaultRota for an incident with no SRE team of its own (a case at
+// S0, a monitoring alert raised with no team). "" when the catalogue names no
+// rotas at all: an entity-service from before rotas, where every SRE window
+// is read, as it always was.
+func (r TeamScheduleResolver) rotaFor(cat scheduleCatalogue, own string) string {
+	if !cat.hasRotas() {
+		return ""
+	}
+	if own != "" {
+		if rota := cat.teamRota(own); rota != "" {
+			return rota
+		}
+	}
+	return r.defaultRota
+}
+
+// SRERota implements SRERotaResolver.
+func (r TeamScheduleResolver) SRERota(ctx context.Context, rc RoutingContext) (string, error) {
+	cat, err := r.entity.ScheduleCatalogue(ctx)
+	if err != nil {
+		return "", err
+	}
+	return r.rotaFor(cat, r.ownSRETeam(rc)), nil
+}
+
+// SaaSSRETeam implements SpecialistResolver: whether an assignment group is a
+// SaaS SRE team, the only kind whose incidents may be escalated to an SME.
+//
+// The team's rota answers when the catalogue has rotas. Without them, a team
+// counts when it is an SRE team (sre.teams.abts, or the catalogue's SRE family
+// with no list configured) and not typed sre-iaas -- team.type is what the
+// rota is derived from, so the answer is the same one.
+func (r TeamScheduleResolver) SaaSSRETeam(ctx context.Context, group string) (bool, error) {
+	key := r.keyOf(group)
+	if key == "" {
+		return false, nil
+	}
+	cat, err := r.entity.ScheduleCatalogue(ctx)
+	if err != nil {
+		return false, err
+	}
+	if cat.hasRotas() {
+		return strings.EqualFold(cat.teamRota(key), RotaSRESaaS), nil
+	}
+	sre := r.isSRETeam(key)
+	if !sre && len(r.sreTeamKeys) == 0 {
+		for _, t := range cat.Teams {
+			if strings.EqualFold(t.Key, key) && strings.EqualFold(t.Family, familySRE) {
+				sre = true
+			}
+		}
+	}
+	if !sre {
+		return false, nil
+	}
+	members, err := r.entity.TeamMembers(ctx, []string{key}, nil, nil, nil)
+	if err != nil {
+		return false, err
+	}
+	for _, m := range members {
+		if strings.EqualFold(m.TeamType, teamTypeSREIaaS) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// teamTypeSREIaaS is the team.type of the IaaS SRE team (migration 0200).
+const teamTypeSREIaaS = "sre-iaas"
+
+// resolveSRE answers one SRE rung.
+func (r TeamScheduleResolver) resolveSRE(ctx context.Context, level Level, rc RoutingContext) ([]Recipient, error) {
+	own := r.ownSRETeam(rc)
 
 	if tier, ok := sreTier[level]; ok {
-		pick, found, err := r.onCallTier(ctx, rc.At, own, tier)
+		pick, found, err := r.onCallTier(ctx, rc.At, own, tier, rc.Rota)
 		if err != nil || !found {
 			return nil, err
 		}
@@ -156,7 +233,7 @@ func (r TeamScheduleResolver) resolveSRE(ctx context.Context, level Level, rc Ro
 	// an incident that has none -- the team of whoever took L1.
 	team := own
 	if team == "" {
-		pick, found, err := r.onCallTier(ctx, rc.At, "", "L1")
+		pick, found, err := r.onCallTier(ctx, rc.At, "", "L1", rc.Rota)
 		if err != nil || !found {
 			return nil, err
 		}
@@ -175,8 +252,27 @@ func (r TeamScheduleResolver) resolveSRE(ctx context.Context, level Level, rc Ro
 // tierHolder is one candidate for an SRE rung.
 type tierHolder struct {
 	Recipient
-	team string
-	zone string
+	team    string
+	zone    string
+	onLeave bool
+}
+
+// preferAvailable keeps only the holders who are not on leave when there are
+// any; otherwise it keeps them all. On-leave holders are only there at all
+// when the ladder's onLeave is call (the on-duty read leaves them out
+// otherwise), so this is "ring someone on leave only when nobody else holds
+// the tier".
+func preferAvailable(holders []tierHolder) []tierHolder {
+	var available []tierHolder
+	for _, h := range holders {
+		if !h.onLeave {
+			available = append(available, h)
+		}
+	}
+	if len(available) > 0 {
+		return available
+	}
+	return holders
 }
 
 // onCallTier picks the ONE person holding tier on an SRE window at that
@@ -187,19 +283,32 @@ type tierHolder struct {
 // block is live, which is the zone that owns the incident right now and is
 // what makes the 12:00-15:00 overlap call one person rather than two; then the
 // configured SRE team order; then email, so a retry reaches the same person.
-func (r TeamScheduleResolver) onCallTier(ctx context.Context, at time.Time, ownTeam, tier string) (tierHolder, bool, error) {
+//
+// Only the windows of one rota count -- SaaS SRE and IaaS SRE each run their
+// own chain, and a SaaS incident must never reach an IaaS engineer or the
+// other way round. rota is the one the engine stamped; empty asks rotaFor.
+// With no rotas in the catalogue at all every SRE window counts, as before.
+func (r TeamScheduleResolver) onCallTier(ctx context.Context, at time.Time, ownTeam, tier, rota string) (tierHolder, bool, error) {
 	cat, err := r.entity.ScheduleCatalogue(ctx)
 	if err != nil {
 		return tierHolder{}, false, err
 	}
+	if rota == "" {
+		rota = r.rotaFor(cat, ownTeam)
+	}
+	zoneRota := cat.zoneRotas()
 	type window struct{ zone, tier string }
 	sre := map[string]window{}
 	for _, s := range cat.Shifts {
-		if strings.EqualFold(s.Family, familySRE) {
-			sre[s.Code] = window{zone: deref(s.ZoneCode), tier: deref(s.Tier)}
+		if !strings.EqualFold(s.Family, familySRE) {
+			continue
 		}
+		if rota != "" && !strings.EqualFold(zoneRota[deref(s.ZoneCode)], rota) {
+			continue
+		}
+		sre[s.Code] = window{zone: deref(s.ZoneCode), tier: deref(s.Tier)}
 	}
-	onDuty, err := r.entity.OnDutyAt(ctx, at)
+	onDuty, err := r.entity.OnDutyAt(ctx, at, r.callOnLeave)
 	if err != nil {
 		return tierHolder{}, false, err
 	}
@@ -229,8 +338,10 @@ func (r TeamScheduleResolver) onCallTier(ctx context.Context, at time.Time, ownT
 			Recipient: Recipient{Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode},
 			team:      r.keyOf(a.TeamKey),
 			zone:      zone,
+			onLeave:   a.OnLeave,
 		})
 	}
+	holders = preferAvailable(holders)
 	if len(holders) == 0 {
 		return tierHolder{}, false, nil
 	}
@@ -273,4 +384,71 @@ func deref(s *string) string {
 		return ""
 	}
 	return *s
+}
+
+// familySME is how the catalogue spells the Special Ops family.
+const familySME = "SME"
+
+// resolveSME answers one rung of an SME ladder: the ONE person holding its
+// tier (L1, L2, L3 for LEVEL_0..LEVEL_2) on an SME-family window of the SME
+// team at that instant -- several on the tier, the one longest since last
+// called, then by email. Someone rostered on the window with no tier counts
+// as L1: SME shifts had no tiers before, and nothing already rostered stops
+// being paged.
+func (r TeamScheduleResolver) resolveSME(ctx context.Context, level Level, rc RoutingContext) ([]Recipient, error) {
+	tier, ok := sreTier[level]
+	if !ok {
+		return nil, nil
+	}
+	team := r.keyOf(rc.SMETeam)
+	if team == "" {
+		return nil, nil
+	}
+	cat, err := r.entity.ScheduleCatalogue(ctx)
+	if err != nil {
+		return nil, err
+	}
+	sme := map[string]string{} // SME window code -> its fixed tier, if any
+	for _, s := range cat.Shifts {
+		if strings.EqualFold(s.Family, familySME) {
+			sme[s.Code] = deref(s.Tier)
+		}
+	}
+	onDuty, err := r.entity.OnDutyAt(ctx, rc.At, rc.CallOnLeave)
+	if err != nil {
+		return nil, err
+	}
+	var pool, away []Recipient
+	seen := map[string]bool{}
+	for _, a := range onDuty {
+		fixed, isSME := sme[a.ShiftCode]
+		email := strings.ToLower(strings.TrimSpace(a.Engineer.Email))
+		if !isSME || email == "" || seen[email] || r.keyOf(a.TeamKey) != team {
+			continue
+		}
+		held := deref(a.Tier)
+		if held == "" {
+			held = fixed
+		}
+		if held == "" {
+			held = "L1"
+		}
+		if !strings.EqualFold(held, tier) {
+			continue
+		}
+		seen[email] = true
+		p := Recipient{Email: a.Engineer.Email, Name: a.Engineer.Name, ShiftCode: a.ShiftCode}
+		if a.OnLeave {
+			away = append(away, p)
+			continue
+		}
+		pool = append(pool, p)
+	}
+	if len(pool) == 0 {
+		// onLeave: call -- nobody available holds the tier, so ring whoever
+		// does although they are away.
+		pool = away
+	}
+	sort.SliceStable(pool, func(i, j int) bool { return pool[i].Email < pool[j].Email })
+	return r.takeLongestSinceCalled(ctx, pool, 1), nil
 }

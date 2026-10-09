@@ -273,6 +273,11 @@ type CreateScheduleAbsenceKindRequest struct {
 	Label       string `json:"label"`
 	Bucket      string `json:"bucket"`
 	ColourToken string `json:"colourToken"`
+	// Family is the rota family the kind is for (CRE, SRE or SME). Optional:
+	// a rota admin's kind is for their own family whatever is sent, and this
+	// only picks one for an admin of several families. A team lead who is no
+	// rota admin adds a kind shared by every family, as before.
+	Family string `json:"family,omitempty"`
 }
 
 // ApplyScheduleAbsenceResponse says what the span did to what was already
@@ -346,6 +351,9 @@ type ScheduleAssignment struct {
 	IsOnCall  bool             `json:"isOnCall"`
 	Source    string           `json:"source"`
 	Note      *string          `json:"note,omitempty"`
+	// OnLeave is set only on GET /team-schedule/on-duty?includeOnLeave=true,
+	// on a row whose engineer is away that day.
+	OnLeave bool `json:"onLeave,omitempty"`
 }
 
 // ScheduleAbsence is whole days an engineer is unavailable to the rota.

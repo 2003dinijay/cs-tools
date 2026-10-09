@@ -242,6 +242,13 @@ cre:
     # incident up. Set false to accept either gesture on its own.
     requireBoth: true
 
+  # Someone who holds a rung but is on leave that day: skip (the default)
+  # leaves them out, so the rung goes to whoever else holds it or the ladder
+  # climbs past; call rings them anyway, after anyone available on the same
+  # tier. Responders, leads and heads are checked against the Team Schedule
+  # absences for the incident's date in IST.
+  onLeave: skip
+
   safety:
     # The most calls one ladder may place across every rung. A plan larger
     # than this is truncated and says so, so a rota that suddenly resolves to
@@ -331,13 +338,24 @@ sre:
     # these climbs this ladder; the order breaks a tie when an incident belongs
     # to none of them (a CRE P0) and both have somebody on the tier. A team
     # must not also be in cre.teams.abts -- that is a configuration error.
-    abts: [apollo, artemis]
+    #
+    # SaaS SRE (apollo, artemis; rota SRE_SAAS) and IaaS SRE (iaas, type
+    # sre-iaas; rota SRE_IAAS) each run their own L1 -> L2 -> L3 chain: an
+    # incident pages only the windows of its own team's rota, never the other's.
+    abts: [apollo, artemis, iaas]
     # Assignment-group names that are not simply a team key. The alert flow
     # assigns the service's support group; if its name is not "Apollo" or
-    # "Artemis", map it here, or its incidents climb the CRE ladder. e.g.
-    #   aliases:
-    #     "SRE - Apollo": apollo
-    aliases: {}
+    # "Artemis", map it here, or its incidents climb the CRE ladder. Matched
+    # ignoring case and surrounding space, e.g.
+    #   "SRE - Apollo": apollo
+    aliases:
+      "SRE IaaS": iaas
+    # The rota that pages an incident with no SRE team of its own: a customer
+    # case at S0, or a monitoring alert raised with no team. Absent is SRE_SAAS.
+    defaultRota: SRE_SAAS
+
+  # As cre.onLeave: skip (the default) or call.
+  onLeave: skip
 
   safety:
     # L1 + L2 + L3 (+ L4) is at most four calls; anything above that means a
@@ -345,3 +363,59 @@ sre:
     maxCallsPerLadder: 4
     # maxLevel: 2
     allowedNumbers: []
+
+# The Special Ops (SME) page. Not a ladder: when a SaaS SRE incident moves into
+# a Special Ops group (entity-service's incident.special_ops_alert on
+# sre-events -- the "Escalate to Special Ops Team" button today), the SaaS SRE
+# chain stops and ONE call goes to the SME on duty for the current Day/Night
+# window of the SME team. The same team alerted again while its page is open is
+# ignored; a different team gets its own call; an engineer assigned afterwards
+# closes the page. IaaS SRE incidents and customer cases never page SME.
+# Needs SRE_EVENT_HUB_TOPIC set on both services.
+#
+# Absent (or enabled: false) ignores the alert entirely.
+sme:
+  enabled: true
+
+  # log | chat | call | both -- see cre.channel above. `log` names who would
+  # have been paged and reaches nobody.
+  channel: log
+
+  # The SME page's own Google Chat space, the same mechanism as cre.chat:
+  # webhookUrlEnv is the NAME of the variable holding the webhook URL, never
+  # the URL itself. Used when channel is chat or both.
+  chat:
+    webhookUrlEnv: SME_CHAT_WEBHOOK_URL
+    audience: "Special Ops"
+
+  # Special Ops team key (the alert's teamKey) -> the SME team's rota key, for
+  # an alert that does not name the SME team itself. A team in neither is
+  # written on the incident as NO_SME_TEAM. e.g.
+  #   teams:
+  #     choreo-runtime-team: choreo-sme
+  teams: {}
+
+  # The SME ladder: L1 of the SME team's current Day/Night window at once, L2
+  # after one interval, L3 after two. Someone rostered on the window with no
+  # tier counts as L1. Same shape as sre.timing (includeL4 is ignored here).
+  timing:
+    initialWait: 0s
+    interval: 5m
+
+  # As cre.onLeave: skip (the default) or call.
+  onLeave: skip
+
+  safety:
+    # As a ladder's: when non-empty, the only numbers the page may ring.
+    allowedNumbers: []
+
+# Paging-number test calls. A lead or admin can store a paging-only number for
+# somebody in CSM (used only when their profile has no number) and press "Test
+# call": ONE short call says "This is a Case Paging test call for <name>", and
+# how it ended (completed / no-answer / busy / failed) is written back to CSM.
+# Absent is on, to any number; CALL_SENDING_ENABLED=false still stops it.
+testCall:
+  enabled: true
+  # When non-empty, the only numbers a test call may ring; anything else is
+  # reported "failed" without dialling.
+  allowedNumbers: []

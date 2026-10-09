@@ -53,6 +53,14 @@ type Config struct {
 	CRE LadderConfig `yaml:"cre"`
 	SRE LadderConfig `yaml:"sre"`
 
+	// SME is the Special Ops page the SRE engine places when an incident is
+	// escalated to a Special Ops team. Absent is off.
+	SME SMEConfig `yaml:"sme"`
+
+	// TestCall governs the "Test call" a lead or admin places to verify a
+	// person's paging-only number (testcall.go). Absent is on, any number.
+	TestCall TestCallConfig `yaml:"testCall"`
+
 	// Which ladders a case or an incident climbs is deliberately NOT here:
 	// it is DefaultRouting, in code. Those rules (case S0 -> CRE + SRE, S1-S4
 	// -> CRE, SRE incident -> SRE) are the Case Paging design, and changing
@@ -67,6 +75,11 @@ type LadderConfig struct {
 	Channel Channel   `yaml:"channel"`
 	Start   StartWhen `yaml:"trigger"`
 	Safety  Safety    `yaml:"safety"`
+	// OnLeave is what a rung does with someone who holds it but is on leave
+	// that day: skip (the default) leaves them out, so the rung goes to
+	// whoever else holds it or the ladder climbs past; call rings them
+	// anyway, after anyone available on the same tier.
+	OnLeave OnLeave `yaml:"onLeave"`
 	// Teams names the teams the rules refer to by role rather than by name --
 	// the ABTs, the Americas team, the leadership team.
 	Teams TeamKeys `yaml:"teams"`
@@ -158,6 +171,137 @@ func (d *Duration) UnmarshalYAML(n *yaml.Node) error {
 	*d = Duration(v)
 	return nil
 }
+
+// SMEConfig is the Special Ops (Subject Matter Specialist) page: when a SaaS
+// SRE incident moves into a Special Ops group (incident.special_ops_alert), the
+// SaaS SRE chain stops and ONE call goes to the SME on duty for that team's
+// current Day/Night window. It is not a ladder -- no rungs, no clock -- so it has none
+// of a ladder's trigger, timing or caps; only where the page goes, and which
+// numbers it may ring. See sme.go.
+type SMEConfig struct {
+	// Enabled turns the page on. Absent is off: a deployment that has not
+	// opted in ignores the alert, as it did before the page existed.
+	Enabled bool `yaml:"enabled"`
+	// Channel is log, chat, call or both, as for a ladder. Empty is call.
+	Channel Channel `yaml:"channel"`
+	// Chat is the SME page's own Google Chat space, the same shape as a
+	// ladder's chat section.
+	Chat Chat `yaml:"chat"`
+	// Teams maps a Special Ops team key (incident.special_ops_alert's
+	// teamKey) to the rota team key of the SME team to page -- for an alert
+	// that does not name the SME team itself.
+	Teams map[string]string `yaml:"teams"`
+	// Safety is what the SME ladder may ring.
+	Safety SMESafety `yaml:"safety"`
+	// OnLeave is the ladders' onLeave for the SME ladder: skip (the default)
+	// or call.
+	OnLeave OnLeave `yaml:"onLeave"`
+	// Timing is the SME ladder's clock, the same shape and defaults as
+	// sre.timing: L1 at once, L2 after one interval, L3 after two (five
+	// minutes each by default). includeL4 is ignored: SME shifts stop at L3.
+	Timing SRETiming `yaml:"timing"`
+}
+
+// OnLeave is what a ladder does with someone on leave who holds a rung.
+type OnLeave string
+
+const (
+	// OnLeaveSkip leaves them out (the default, also when absent).
+	OnLeaveSkip OnLeave = "skip"
+	// OnLeaveCall rings them anyway, after anyone available on the same tier.
+	OnLeaveCall OnLeave = "call"
+)
+
+// Calls reports whether someone on leave is rung.
+func (o OnLeave) Calls() bool { return o == OnLeaveCall }
+
+func (o *OnLeave) validate(name string) error {
+	v := OnLeave(strings.ToLower(strings.TrimSpace(string(*o))))
+	switch v {
+	case "", OnLeaveSkip:
+		*o = OnLeaveSkip
+	case OnLeaveCall:
+		*o = OnLeaveCall
+	default:
+		return fmt.Errorf("%s: onLeave is %q; use skip or call", name, string(*o))
+	}
+	return nil
+}
+
+// Policy is the SME ladder's clock as the planner reads it: L1-L3 only.
+func (s SMEConfig) Policy() PriorityPolicy {
+	t := s.Timing
+	t.IncludeL4 = false
+	return t.Policy()
+}
+
+// SMESafety is what the SME ladder may ring.
+type SMESafety struct {
+	// AllowedNumbers, when non-empty, is the only set of numbers the page may
+	// call, as a ladder's safety.allowedNumbers.
+	AllowedNumbers []string `yaml:"allowedNumbers"`
+}
+
+// Dialable reports whether the SME page may call this number.
+func (s SMEConfig) Dialable(number string) bool {
+	return len(s.Safety.AllowedNumbers) == 0 || contains(s.Safety.AllowedNumbers, number)
+}
+
+// TeamFor is the SME team key sme.teams maps a Special Ops team to, or "".
+func (s SMEConfig) TeamFor(specialOpsTeam string) string {
+	want := teamKeyFor(specialOpsTeam)
+	if want == "" {
+		return ""
+	}
+	for k, v := range s.Teams {
+		if teamKeyFor(k) == want {
+			return teamKeyFor(v)
+		}
+	}
+	return ""
+}
+
+func (s *SMEConfig) validate() error {
+	ch, err := ParseChannel(string(s.Channel))
+	if err != nil {
+		return fmt.Errorf("sme: %w", err)
+	}
+	s.Channel = ch
+	if err := s.OnLeave.validate("sme"); err != nil {
+		return err
+	}
+	if v := strings.TrimSpace(s.Chat.WebhookURLEnv); v != "" && !envVarName.MatchString(v) {
+		return fmt.Errorf("sme: chat.webhookUrlEnv must be the NAME of an environment variable " +
+			"that holds the webhook URL, not the URL itself -- this file is committed")
+	}
+	for k, v := range s.Teams {
+		if teamKeyFor(k) == "" || teamKeyFor(v) == "" {
+			return fmt.Errorf("sme: teams maps %q to %q; both the escalation team and the SME team key are required", k, v)
+		}
+	}
+	return nil
+}
+
+// TestCallConfig is what a paging-number test call may do.
+type TestCallConfig struct {
+	// Enabled is a pointer so absent and false differ: absent is on. A test
+	// call is one short call a person asked for, to their own number.
+	Enabled *bool `yaml:"enabled"`
+	// AllowedNumbers, when non-empty, is the only set of numbers a test call
+	// may ring; anything else is reported "failed".
+	AllowedNumbers []string `yaml:"allowedNumbers"`
+}
+
+// On reports whether test calls are placed at all.
+func (t TestCallConfig) On() bool { return t.Enabled == nil || *t.Enabled }
+
+// Dialable reports whether a test call may ring this number.
+func (t TestCallConfig) Dialable(number string) bool {
+	return len(t.AllowedNumbers) == 0 || contains(t.AllowedNumbers, number)
+}
+
+// sreRotaCode is what sre.teams.defaultRota must look like: an SRE rota code.
+var sreRotaCode = regexp.MustCompile(`^SRE_[A-Z0-9_]+$`)
 
 // Chat is where a ladder's rung cards are posted.
 type Chat struct {
@@ -400,6 +544,9 @@ func (c *Config) validate() error {
 	if err := c.SRE.validate("sre"); err != nil {
 		return err
 	}
+	if err := c.SME.validate(); err != nil {
+		return err
+	}
 	// A team is an ABT or an SRE team, never both. Listed as both, its
 	// incidents would climb the SRE ladder while its lead was still being
 	// called on every CRE ladder's all_team_leads rung.
@@ -417,6 +564,9 @@ func (l *LadderConfig) validate(name string) error {
 		return fmt.Errorf("%s: %w", name, err)
 	}
 	l.Channel = ch
+	if err := l.OnLeave.validate(name); err != nil {
+		return err
+	}
 
 	if m := l.Safety.MaxLevel; m != nil && (*m < int(Level0) || *m > int(Level4)) {
 		return fmt.Errorf("%s: safety.maxLevel is %d; use %d..%d, or omit it for no cap",
@@ -470,9 +620,15 @@ func (l *LadderConfig) validate(name string) error {
 		if l.Timing.Interval < 0 || l.Timing.InitialWait < 0 {
 			return fmt.Errorf("sre: timing durations must not be negative")
 		}
+		if v := strings.TrimSpace(l.Teams.DefaultRota); v != "" && !sreRotaCode.MatchString(strings.ToUpper(v)) {
+			return fmt.Errorf("sre: teams.defaultRota is %q; use an SRE rota code such as %s or %s", v, RotaSRESaaS, RotaSREIaaS)
+		}
 	} else {
 		if l.Timing != (SRETiming{}) {
 			return fmt.Errorf("%s: timing is an SRE setting; the CRE clock is the per-priority policy", name)
+		}
+		if strings.TrimSpace(l.Teams.DefaultRota) != "" {
+			return fmt.Errorf("%s: teams.defaultRota is an SRE setting", name)
 		}
 	}
 	return nil

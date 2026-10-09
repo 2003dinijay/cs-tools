@@ -91,6 +91,14 @@ const (
 	// calls. Like the other incident.* signals above it belongs to
 	// internal/paging, and dispatch.Handle no-ops on it.
 	TypeIncidentAssigned Type = "incident.assigned"
+	// TypeIncidentSpecialOpsAlert is published by entity-service on the
+	// operations topic (SRE_EVENT_HUB_TOPIC, sre-events) whenever an
+	// incident's assignment group changes to a Special Ops team's group -- in
+	// practice the "Escalate to Special Ops Team" button. dispatch hands it to
+	// the SRE engine's SME page (internal/paging, sme.go), which stops the
+	// SaaS SRE chain and places ONE call to the SME on duty. Only that
+	// dispatcher path acts on it; the paging engines' own consumers ignore it.
+	TypeIncidentSpecialOpsAlert Type = "incident.special_ops_alert"
 
 	// TypeSLATierReached belongs to internal/slaengine, not internal/dispatch
 	// — see SLATierReachedPayload below. Not an email trigger (no
@@ -122,6 +130,12 @@ const (
 	// membership Id — see ProjectContactInvitedPayload.
 	TypeProjectContactInvited Type = "project_contact.invited"
 
+	// TypePagingTestCallRequested is published by entity-service, on the
+	// main shared topic, when a lead or admin presses "Test call" on a
+	// person's paging-only phone number. internal/paging's TestCaller places
+	// one short call and PUTs the outcome back to entity-service.
+	TypePagingTestCallRequested Type = "paging.test_call_requested"
+
 	// TypeProjectContactRegistered is published by entity-service when a
 	// membership moves into REGISTERED; dispatch sends the Welcome email.
 	TypeProjectContactRegistered Type = "project_contact.registered"
@@ -133,6 +147,8 @@ const (
 var KnownTypes = []Type{
 	TypeCaseCreated, TypeCommentAdded, TypeStatusChanged, TypeCaseAssigned, TypeCaseAcknowledged, TypeSeverityChanged, TypeWorkaroundProvided, TypeIncidentCreated,
 	TypeIncidentAcknowledged, TypeIncidentPriorityElevated, TypeIncidentCommentAdded, TypeIncidentAssigned,
+	TypeIncidentSpecialOpsAlert,
+	TypePagingTestCallRequested,
 	TypeSLATierReached,
 	TypeCRApprovalRequested, TypeCRPlanDateNotice,
 	TypeOutageNotificationDue, TypeOutageCommunicationDue, TypeOutageStatusPageDue,
@@ -507,6 +523,63 @@ type IncidentAssignedPayload struct {
 	// AssigneeName is for the execution summary, so the work note says who
 	// took the incident. Optional; a publisher that cannot resolve it omits it.
 	AssigneeName string `json:"assigneeName,omitempty"`
+	// AssignedOn is when the assignee was set, RFC3339. The Special Ops (SME)
+	// page compares an alert's changedOn against it, so an assignment that
+	// arrives before the alert it answers still answers it. Optional: without
+	// it the time the event is handled stands in.
+	AssignedOn string `json:"assignedOn,omitempty"`
+}
+
+// IncidentSpecialOpsAlertPayload is TypeIncidentSpecialOpsAlert's payload,
+// mirroring entity-service's internal/events/incident_special_ops.go field for
+// field (this package decodes strictly; keep the two in step). The envelope's
+// entityId is the incident id. Incident fields are as they stand when the
+// alert is published; the group fields are the change that raised it.
+type IncidentSpecialOpsAlertPayload struct {
+	IncidentID  string `json:"incidentId"`
+	Number      string `json:"number"`
+	Subject     string `json:"subject"`
+	Description string `json:"description,omitempty"`
+	State       string `json:"state,omitempty"`
+	Priority    string `json:"priority,omitempty"`
+	Impact      string `json:"impact,omitempty"`
+	Urgency     string `json:"urgency,omitempty"`
+	ServiceID   string `json:"serviceId,omitempty"`
+	ServiceName string `json:"serviceName,omitempty"`
+	// Product, TeamKey and TeamLabel name the Special Ops team the new group
+	// belongs to (entity-service's SPECIALIST_HANDOFF_CONFIG).
+	Product   string `json:"product"`
+	TeamKey   string `json:"teamKey"`
+	TeamLabel string `json:"teamLabel"`
+	// AssignmentGroupID/Name is the Special Ops group the incident moved to;
+	// PreviousAssignmentGroupID/Name the group it left -- what decides
+	// whether it was a SaaS SRE incident at all.
+	AssignmentGroupID           string `json:"assignmentGroupId"`
+	AssignmentGroupName         string `json:"assignmentGroupName,omitempty"`
+	PreviousAssignmentGroupID   string `json:"previousAssignmentGroupId,omitempty"`
+	PreviousAssignmentGroupName string `json:"previousAssignmentGroupName,omitempty"`
+	// ChangedBy is who changed the group (an email, or "system"); ChangedOn
+	// when, RFC3339 -- the instant the SME on duty is looked up at.
+	ChangedBy string `json:"changedBy,omitempty"`
+	ChangedOn string `json:"changedOn"`
+	// SMETeam is the rota team key of the SME team to page, when the
+	// publisher's configuration names one; empty falls back to the paging
+	// configuration's sme.teams.
+	SMETeam string `json:"smeTeam,omitempty"`
+}
+
+// PagingTestCallRequestedPayload is TypePagingTestCallRequested's payload,
+// mirroring entity-service's field for field. The envelope's entityId is the
+// person's userId.
+type PagingTestCallRequestedPayload struct {
+	UserID string `json:"userId"`
+	Email  string `json:"email"`
+	// Name is spoken in the call ("a Case Paging test call for <name>").
+	Name string `json:"name"`
+	// Phone is the paging-only number under test, E.164.
+	Phone       string `json:"phone"`
+	RequestedBy string `json:"requestedBy"`
+	RequestedAt string `json:"requestedAt"`
 }
 
 // SLATierReachedPayload is TypeSLATierReached's payload — published by

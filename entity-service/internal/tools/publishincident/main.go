@@ -64,7 +64,10 @@ func main() {
 	product := flag.String("product", "", "product; the consumer routes the Chat space by it")
 	reportedAt := flag.String("reported-at", "", "RFC3339 report time; decides the shift. Defaults to now")
 	contactType := flag.String("contact-type", "", "how the incident was raised: AZURE, SITE_247, SENTINEL (monitoring) or EMAIL, PHONE ...; routing reads it")
-	event := flag.String("event", "created", "what to publish: created, or a stop gesture for an existing -incident-id: assigned, acknowledged (left NEW), comment (public)")
+	event := flag.String("event", "created", "what to publish: created, or for an existing -incident-id: assigned, acknowledged (left NEW), comment (public), special-ops (moved to a Special Ops team: the SME page)")
+	smeTeam := flag.String("sme-team", "asgardeo", "with -event special-ops: the SME rota team to page (the alert's smeTeam; empty leaves it to sme.teams)")
+	soTeam := flag.String("so-team", "asgardeo-special-ops", "with -event special-ops: the Special Ops team key the dialog picked")
+	previousGroup := flag.String("previous-group", "Apollo", "with -event special-ops: the group the incident left (a SaaS SRE team pages SME)")
 	record := flag.String("record", "incident", "incident, or case: a customer case, which is what CRE paging starts from")
 	caseEvent := flag.String("case-event", "created", "with -record case: created, severity (-from/-priority), assigned (-assignee), comment (-author), closed")
 	from := flag.String("from", "HIGH", "with -case-event severity: the old severity")
@@ -119,13 +122,26 @@ func main() {
 		)
 		switch *event {
 		case "assigned":
-			typ, body = events.TypeIncidentAssigned, events.IncidentAssignedPayload{AssigneeID: "local-engineer", AssigneeName: "Local Engineer"}
+			typ, body = events.TypeIncidentAssigned, events.IncidentAssignedPayload{AssigneeID: "local-engineer", AssigneeName: "Local Engineer",
+				AssignedOn: time.Now().UTC().Format(time.RFC3339)}
+		case "special-ops":
+			prod := *product
+			if prod == "" {
+				prod = "Asgardeo"
+			}
+			typ, body = events.TypeIncidentSpecialOpsAlert, events.IncidentSpecialOpsAlertPayload{
+				IncidentID: incidentID, Number: "INC" + lastN(incidentID, 7), Subject: *title, State: "IN_PROGRESS",
+				Priority: *priority, Product: prod, TeamKey: *soTeam, TeamLabel: *soTeam, SMETeam: *smeTeam,
+				AssignmentGroupID: "local-special-ops-group", AssignmentGroupName: *soTeam,
+				PreviousAssignmentGroupName: *previousGroup, ChangedBy: "local.engineer@wso2.com",
+				ChangedOn: time.Now().UTC().Format(time.RFC3339),
+			}
 		case "acknowledged":
 			typ, body = events.TypeIncidentAcknowledged, events.IncidentAcknowledgedPayload{PreviousState: "NEW", NewState: "IN_PROGRESS"}
 		case "comment":
 			typ, body = events.TypeIncidentCommentAdded, events.IncidentCommentAddedPayload{CommentID: fmt.Sprintf("local-comment-%d", time.Now().Unix()), IsPublic: true}
 		default:
-			fmt.Fprintln(os.Stderr, "-event must be created, assigned, acknowledged or comment")
+			fmt.Fprintln(os.Stderr, "-event must be created, assigned, acknowledged, comment or special-ops")
 			os.Exit(1)
 		}
 		publishOne(*broker, *topic, incidentID, typ, body)

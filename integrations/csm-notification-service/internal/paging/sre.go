@@ -18,6 +18,7 @@ package paging
 
 import (
 	"context"
+	"strings"
 	"time"
 )
 
@@ -54,7 +55,42 @@ const (
 	// ladder existed has no Ladder field and must keep reading as CRE.
 	LadderCRE Ladder = ""
 	LadderSRE Ladder = "SRE"
+	// LadderSME is the Special Ops page (sme.go): ONE call to the SME on duty
+	// when an SRE incident is escalated to Special Ops. Not a ladder of its
+	// own -- it has no engine, no clock and no stored state -- but the plan
+	// that carries its one call names it, so the card and the voice message
+	// say what the call is.
+	LadderSME Ladder = "SME"
 )
+
+// SRE rotas, as entity-service's team_schedule_rota spells them.
+const (
+	RotaSRESaaS = "SRE_SAAS"
+	RotaSREIaaS = "SRE_IAAS"
+)
+
+// SREChain names the SRE chain an incident pages, for the people who read
+// about it: "SaaS SRE" or "IaaS SRE", "SRE" for a rota with no name here, and
+// "" when the rota is unknown -- a catalogue with no rotas -- which keeps every
+// card, voice message and work note exactly as it read before rotas existed.
+func (rc RoutingContext) SREChain() string {
+	switch strings.ToUpper(strings.TrimSpace(rc.Rota)) {
+	case "":
+		return ""
+	case RotaSRESaaS:
+		return "SaaS SRE"
+	case RotaSREIaaS:
+		return "IaaS SRE"
+	}
+	return "SRE"
+}
+
+// SRERotaResolver is implemented by a Resolver that can tell which SRE rota
+// pages an incident. The engine stamps the answer on the routing context so
+// the chain is named in what people read; see TeamScheduleResolver.SRERota.
+type SRERotaResolver interface {
+	SRERota(ctx context.Context, rc RoutingContext) (string, error)
+}
 
 // TeamFamilyResolver is implemented by a Resolver that can tell the family of
 // an incident's team (sre, cre or none), which routing decides on. A resolver
@@ -97,6 +133,13 @@ func SREPolicy(includeL4 bool) PriorityPolicy {
 // most SRE incidents arrive by the alert flow, and the SRE team's clock does
 // not depend on priority -- so it always gets its fixed clock.
 func PolicyFor(policies map[string]PriorityPolicy, t Trigger) (PriorityPolicy, bool) {
+	if t.Routing.Ladder == LadderSME {
+		// The SME ladder runs on sme.timing, whatever the priority.
+		if sme, found := policies[SMEPolicyKey]; found {
+			return sme, true
+		}
+		return SREPolicy(false), true
+	}
 	if t.Routing.Ladder != LadderSRE {
 		return Lookup(policies, t.Priority)
 	}
@@ -109,16 +152,31 @@ func PolicyFor(policies map[string]PriorityPolicy, t Trigger) (PriorityPolicy, b
 // withSREPolicy returns policies with the SRE entry set, copying rather than
 // writing into the caller's map (DefaultPolicy is shared).
 func withSREPolicy(policies map[string]PriorityPolicy, sre PriorityPolicy) map[string]PriorityPolicy {
+	return withPolicy(policies, SREPolicyKey, sre)
+}
+
+// withPolicy returns policies with key set to p, copying the map.
+func withPolicy(policies map[string]PriorityPolicy, key string, p PriorityPolicy) map[string]PriorityPolicy {
 	out := make(map[string]PriorityPolicy, len(policies)+1)
 	for k, v := range policies {
 		out[k] = v
 	}
-	out[SREPolicyKey] = sre
+	out[key] = p
 	return out
 }
 
+// SMEPolicyKey is the SME ladder's entry in the engine's policies: its clock
+// is sme.timing.
+const SMEPolicyKey = "SME"
+
 // RoleIn names who a rung is on the given ladder, for a reader in a chat space.
 func (l Level) RoleIn(ladder Ladder) string {
+	if ladder == LadderSME {
+		if tier, ok := sreTier[l]; ok {
+			return "Special Ops " + tier + " on duty"
+		}
+		return "Special Ops on duty"
+	}
 	if ladder != LadderSRE {
 		return l.Role()
 	}
@@ -133,4 +191,15 @@ func (l Level) RoleIn(ladder Ladder) string {
 		return "L4 support"
 	}
 	return "Unknown rung"
+}
+
+// rungRole is RoleIn with the SRE chain's name in front when it is known
+// ("SaaS SRE L1 support"), so a card in a room that sees both chains says
+// which one is climbing.
+func rungRole(level Level, rc RoutingContext) string {
+	role := level.RoleIn(rc.Ladder)
+	if chain := rc.SREChain(); rc.Ladder == LadderSRE && chain != "" {
+		return chain + " " + role
+	}
+	return role
 }

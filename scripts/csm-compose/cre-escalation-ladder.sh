@@ -62,7 +62,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "${here}/../.." && pwd)"
-config_file="${here}/escalation.yaml"
+config_file="${here}/paging-alert.yaml"
 log_dir="${here}/.run/cre-escalation-ladder"
 
 die() { echo "error: $*" >&2; exit 1; }

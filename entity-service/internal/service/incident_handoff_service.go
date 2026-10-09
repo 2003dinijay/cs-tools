@@ -99,6 +99,12 @@ func specialistHandoffConflict(detail string) error {
 	return &apierror.ConflictError{Msg: "Incident is not eligible for a specialist handoff: " + detail}
 }
 
+// SpecialistHandoffNeedsAssigneeMsg is the refusal of a handoff on an
+// incident nobody is assigned to. The assignee takes responsibility for the
+// page to the SME on duty, so the escalation needs one (a CSM decision; the
+// ServiceNow UI action has no such rule).
+const SpecialistHandoffNeedsAssigneeMsg = "Assign the incident to an engineer before escalating it to Special Ops: the assignee is responsible for the page to the SME on duty."
+
 // planSpecialistHandoff is IncidentHandoffUtils.checkEligibility plus the
 // writes handOff makes, decided on the locked incident: the incident's
 // service must belong to a configured product, the incident must be In
@@ -124,6 +130,9 @@ func planSpecialistHandoff(cfg *SpecialistHandoffConfig, req domain.HandOffIncid
 	}
 	if product.holdsGroup(snap.AssignmentGroupID) {
 		return fail(specialistHandoffConflict("The incident already sits with a " + product.Name + " specialist group."))
+	}
+	if snap.AssignedToID == nil || strings.TrimSpace(*snap.AssignedToID) == "" {
+		return fail(&apierror.ConflictError{Msg: SpecialistHandoffNeedsAssigneeMsg, Code: apierror.CodeIncidentHandoffNeedsAssignee})
 	}
 
 	var team *SpecialistHandoffConfigTeam

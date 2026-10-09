@@ -218,6 +218,8 @@ services:
       - |
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic case-events --partitions 1 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic case-events-dlq --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic sre-events --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic sre-events-dlq --partitions 1 --replication-factor 1
 
   # Mock OpenID Connect provider. LOCAL DEV ONLY -- see
   # scripts/csm-compose/mock-oidc/main.go. Issues real RS256-signed JWTs so
@@ -273,6 +275,14 @@ services:
       EVENT_HUB_CONNECTION_STRING: local-dev-shared-secret
       EVENT_HUB_TOPIC: case-events
       EVENT_PUBLISHING_ENABLED: "true"
+      # The operations topic, as on DEV: incident.special_ops_alert (the SME
+      # page), service request, change request and outage events go here, and
+      # csm-notification-service reads it with the same name.
+      SRE_EVENT_HUB_TOPIC: sre-events
+      # Where "Escalate to specialist team" sends an incident (one line of
+      # JSON, see entity-service's specialist_handoff_config.go). Empty: the
+      # button is not offered. Set it in the shell or .env to try the SME page.
+      SPECIALIST_HANDOFF_CONFIG: ${SPECIALIST_HANDOFF_CONFIG:-}
       # A customer sees only the change requests designated to them (the customer's
       # approval or review was asked of them); a change request created BEFORE this
       # instant is "legacy" and keeps being visible to its project's registered
@@ -534,6 +544,9 @@ services:
       EVENT_HUB_CONNECTION_STRING: local-dev-shared-secret
       EVENT_HUB_TOPIC: case-events
       EVENT_HUB_DLQ_TOPIC: case-events-dlq
+      # Read with the same name entity-service publishes to (the SME page's
+      # incident.special_ops_alert among others).
+      SRE_EVENT_HUB_TOPIC: sre-events
       SSL_CERT_FILE: /certs/ca.crt
       CUSTOMER_ENTITY_BASE_URL: http://entity-service:8080
       OAUTH2_CLIENT_ID: csm-notification-service-dev-client
@@ -563,7 +576,7 @@ services:
       # `log`, so `docker compose up` runs the whole ladder for real and
       # reaches nobody. INCIDENT_ESCALATION_CHANNEL below is the pre-file
       # fallback and is ignored whenever this path is set.
-      INCIDENT_ESCALATION_CONFIG: /config/escalation.yaml
+      INCIDENT_ESCALATION_CONFIG: /config/paging-alert.yaml
       INCIDENT_ESCALATION_CHANNEL: chat
       # Both of these are yours, not the repository's. GOOGLE_CHAT_SPACES
       # carries a webhook URL, which is a credential: anyone holding it can
@@ -571,15 +584,15 @@ services:
       # compose passes them through. Unset, the ladder is built but reaches
       # nobody, and says so at startup.
       GOOGLE_CHAT_SPACES: ${GOOGLE_CHAT_SPACES:-}
-      # The CRE ladder's own room, named by escalation.yaml cre.chat.webhookUrlEnv.
+      # The CRE ladder's own room, named by paging-alert.yaml cre.chat.webhookUrlEnv.
       # Supplied by trigger-escalation.sh from the service's .env; never committed.
       CRE_CHAT_WEBHOOK_URL: ${CRE_CHAT_WEBHOOK_URL:-}
-      # The SRE ladder's room, named by escalation.yaml sre.chat.webhookUrlEnv.
+      # The SRE ladder's room, named by paging-alert.yaml sre.chat.webhookUrlEnv.
       # Kept in scripts/csm-compose/.env (git-ignored); export it before
       # `docker compose up`. Never committed.
       SRE_CHAT_WEBHOOK_URL: ${SRE_CHAT_WEBHOOK_URL:-}
       INCIDENT_ESCALATION_ROSTER: ${INCIDENT_ESCALATION_ROSTER:-}
-      # Resolve rungs from the Team Schedule -- the rule table escalation.yaml
+      # Resolve rungs from the Team Schedule -- the rule table paging-alert.yaml
       # and rules.go describe. Unset, the server falls back to the stand-in
       # roster above, which routes by the retired fourteen-row table: a local
       # run then reported rule=R13 for an incident R5 should have routed.
@@ -589,7 +602,7 @@ services:
       - csm-dev-certs:/certs:ro
       # ESCALATION_CONFIG_FILE lets trigger-escalation.sh mount a per-run copy
       # (a different channel, your own number); unset, the committed file.
-      - ${ESCALATION_CONFIG_FILE:-./scripts/csm-compose/escalation.yaml}:/config/escalation.yaml:ro
+      - ${ESCALATION_CONFIG_FILE:-./scripts/csm-compose/paging-alert.yaml}:/config/paging-alert.yaml:ro
     ports:
       - "127.0.0.1:8083:8080"
 

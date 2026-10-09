@@ -2194,6 +2194,118 @@
   background: var(--accent-soft);
 }
 
+/* ── Case Paging tab ──────────────────────────────────────────────────────
+   Who is on each tier of the paging chain: a matrix, a column per team and
+   a row per tier (see .cp-mx below). */
+.csm-ts .cp-pick { width: 100%; min-width: 150px; max-width: 240px; height: 34px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--ink); padding: 0 8px; }
+.csm-ts .cp-pick:disabled { background: transparent; border-color: transparent; color: var(--ink); opacity: 1; appearance: none; -webkit-appearance: none; padding-left: 0; cursor: default; }
+.csm-ts .cp-pick.chg { box-shadow: 0 0 0 2px var(--accent); }
+.csm-ts .cp-add { width: auto; min-width: 170px; }
+.csm-ts .cp-note { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.csm-ts .cp-lock { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--faint); margin-top: 2px; }
+.csm-ts .cp-st { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.csm-ts .cp-st.ok { background: color-mix(in srgb, #2e7d32 14%, var(--surface-solid)); color: color-mix(in srgb, #2e7d32 80%, var(--ink)); }
+.csm-ts .cp-st.gap { background: color-mix(in srgb, #ed6c02 18%, var(--surface-solid)); color: color-mix(in srgb, #ed6c02 70%, var(--ink)); }
+.csm-ts .cp-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.csm-ts .cp-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); font-size: 13px; }
+.csm-ts .cp-chip button { border: 0; background: transparent; color: var(--muted); font-size: 15px; line-height: 1; padding: 0 2px; }
+
+/* The chain picker's PaaS: shown, not pickable. aria-disabled rather than
+   disabled, so its reason (title) still shows and the keyboard still reaches it. */
+.csm-ts .seg button.off, .csm-ts .seg button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
+
+/* Readiness strip: whether the chain on screen has someone to page on every
+   day ahead. Status is in the words; the edge colour only repeats it. */
+.csm-ts .cp-ready { margin: 10px 16px 4px; padding: 10px 14px; border: 1px solid var(--line); border-left: 4px solid var(--line-2); border-radius: 10px; background: var(--surface); }
+.csm-ts .cp-ready.ok { border-left-color: var(--ok); }
+.csm-ts .cp-ready.gap { border-left-color: var(--warn); }
+.csm-ts .cp-ready-head { margin: 0; font-size: 13px; color: var(--ink-2); }
+.csm-ts .cp-gaps { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.csm-ts .cp-gap { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13px; }
+.csm-ts .cp-sev { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; }
+.csm-ts .cp-gap.error .cp-sev { color: var(--crit); }
+.csm-ts .cp-gap.warning .cp-sev { color: var(--warn); }
+.csm-ts .cp-msg { flex: 1 1 260px; min-width: 0; color: var(--ink); }
+.csm-ts .cp-fix .btn.sm { height: 26px; }
+.csm-ts .cp-fixnote { font-size: 12px; color: var(--muted); }
+.csm-ts .cp-more { margin-top: 6px; }
+.csm-ts .cp-from { margin: 10px 16px 16px; font-size: 13px; color: var(--ink-2); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* Paging phone: the number Case Paging would call for a person, in words
+   ("Profile ✓", "No number", ...) with an icon; the tone only repeats them. */
+.csm-ts .cp-phone { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin-top: 4px; }
+.csm-ts .cp-chip .cp-phone { margin-top: 0; }
+.csm-ts .cp-ph { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; color: var(--muted); white-space: nowrap; }
+.csm-ts .cp-ph.ok { color: var(--ok); }
+.csm-ts .cp-ph.warn { color: var(--warn); }
+.csm-ts .cp-ph.err, .csm-ts .cp-ph.none { color: var(--crit); }
+.csm-ts .cp-mask { color: var(--ink-2); }
+.csm-ts .cp-phact { display: inline-flex; flex-wrap: wrap; gap: 2px; }
+.csm-ts .cp-phact .btn.sm { height: 24px; padding: 0 6px; font-size: 12px; }
+.csm-ts .btn[aria-disabled="true"] { opacity: .65; cursor: progress; }
+
+/* The paging-number dialog. Inside .csm-ts, so it keeps the page's tokens. */
+.csm-ts .cp-modal-back { position: fixed; inset: 0; z-index: 1300; background: rgba(15, 20, 35, .45); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.csm-ts .cp-modal { width: min(440px, 100%); background: var(--surface); color: var(--ink); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow); padding: 18px 20px; }
+.csm-ts .cp-modal h3 { margin: 0 0 12px; font-size: 16px; }
+.csm-ts .cp-lbl { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
+.csm-ts .cp-input { width: 100%; height: 36px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--ink); padding: 0 10px; font-size: 14px; }
+.csm-ts .cp-input:focus { outline: none; box-shadow: var(--focus); border-color: var(--accent); }
+.csm-ts .cp-input[aria-invalid="true"] { border-color: var(--crit); }
+.csm-ts .cp-help { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.csm-ts .cp-err { margin: 6px 0 0; font-size: 12.5px; color: var(--crit); }
+.csm-ts .cp-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* The CRE paging chain as a matrix: a column per team, a row per level. It
+   scrolls inside its own box, never the page; the level column and the team
+   header row stay put while it does.
+
+   Every cell paints an OPAQUE background. --surface is the portal's paper
+   colour, which carries alpha (#ffffffc5 in the light themes), and --surface-2
+   is the action-hover overlay, which is all alpha: on a pinned cell either one
+   let the team columns scrolling underneath show through, which read as a grey
+   band washing out the first team column. So the base is --surface-solid, and
+   a band or tint is layered on top of it rather than used alone. */
+.csm-ts .cp-mx-wrap { margin: 4px 16px 16px; overflow: auto; max-height: min(78vh, 960px); border: 1px solid var(--line); border-radius: 10px; background: var(--surface-solid); }
+.csm-ts table.cp-mx { --cp-bg: var(--surface-solid); --cp-band: linear-gradient(var(--surface-2), var(--surface-2)); --cp-night: color-mix(in srgb, var(--accent) 6%, var(--surface-solid)); border-collapse: separate; border-spacing: 0; min-width: 100%; font-size: 13px; }
+.csm-ts .cp-mx th, .csm-ts .cp-mx td { padding: 10px 12px; text-align: left; vertical-align: top; background: var(--cp-bg); border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
+.csm-ts .cp-mx tr > :last-child { border-right: 0; }
+.csm-ts .cp-mx tbody tr:last-child > * { border-bottom: 0; }
+/* Team columns: a steady width, so a picker or a chip never squeezes another. */
+.csm-ts .cp-mx thead th:not(.cp-corner) { width: 210px; min-width: 210px; }
+.csm-ts .cp-mx thead th.am { width: 250px; min-width: 250px; }
+/* The header row: pinned to the top, above the body. */
+.csm-ts .cp-mx thead th { position: sticky; top: 0; z-index: 2; vertical-align: bottom; font-weight: 600; color: var(--ink); border-bottom: 1px solid var(--line-2); }
+.csm-ts .cp-mx thead th small { display: block; font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.csm-ts .cp-mx .cp-tn { display: block; font-size: 13.5px; }
+.csm-ts .cp-mx thead .cp-st { margin-top: 6px; font-size: 11.5px; }
+/* The level column: pinned to the left, exactly its own width, its text
+   wrapping inside it, above the body cells and with a clean right edge. */
+.csm-ts .cp-mx th[scope="row"], .csm-ts .cp-mx .cp-corner { position: sticky; left: 0; z-index: 3; box-sizing: border-box; width: 200px; min-width: 200px; max-width: 200px; white-space: normal; overflow-wrap: anywhere; overflow: hidden; font-weight: 600; color: var(--ink); border-right: 1px solid var(--line-2); box-shadow: 4px 0 6px -4px rgba(0, 0, 0, .18); }
+.csm-ts .cp-mx .cp-corner { top: 0; z-index: 4; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.csm-ts .cp-mx th[scope="row"] small { display: block; font-weight: 500; color: var(--muted); margin-top: 2px; }
+.csm-ts .cp-mx .cp-opt { font-style: italic; }
+/* Level groups: alternate bands, and a firmer line where a level starts. */
+.csm-ts .cp-mx tbody.band > tr > * { background: var(--cp-band), var(--cp-bg); }
+.csm-ts .cp-mx tbody + tbody > tr:first-child > * { border-top: 1px solid var(--line-2); }
+/* Americas, the night cover: a faint tint down its column, still opaque. */
+.csm-ts .cp-mx .am { background: var(--cp-night); }
+.csm-ts .cp-mx tbody.band > tr > .am { background: var(--cp-band), var(--cp-night); }
+.csm-ts .cp-mx .cp-pool, .csm-ts .cp-mx .cp-span { text-align: left; }
+.csm-ts .cp-mx .cp-span .cp-pick { max-width: 320px; }
+.csm-ts .cp-mx td:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.csm-ts .cp-name { display: block; font-weight: 500; color: var(--ink); }
+.csm-ts .cp-name.unset { font-weight: 400; color: var(--faint); }
+/* Americas' Team leads: a lead a line, the number inline beside the name. */
+.csm-ts .cp-leads { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.csm-ts .cp-leads li { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; line-height: 1.3; }
+.csm-ts .cp-leads .cp-lname { font-weight: 500; color: var(--ink); }
+.csm-ts .cp-leads .cp-phone { margin-top: 0; }
+.csm-ts .cp-leads .cp-x { border: 0; background: transparent; color: var(--muted); font-size: 15px; line-height: 1; padding: 0 4px; cursor: pointer; }
+.csm-ts .cp-leads .cp-x:hover, .csm-ts .cp-leads .cp-x:focus-visible { color: var(--crit); }
+.csm-ts .cp-leadcell .cp-add { margin-top: 6px; }
+.csm-ts .cp-vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
 /* The weekday under each date ("7" over "Wed"), so a reader need not count
    from the weekend shading. A split (SRE/SME) day keeps its date row at the
    height the zone row is pinned beneath, so there it sits beside the date. */

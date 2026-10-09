@@ -407,6 +407,81 @@ per-plan check). An elevation never restarts an SRE team's ladder: its clock
 does not depend on priority. The voice message and card say "assign the
 incident to yourself", and the rule is reported as `SRE_TIERS`.
 
+**SaaS and IaaS SRE are separate chains.** SRE has three sub-teams, each with
+its own L1 -> L2 -> L3: SaaS SRE (apollo, artemis; rota `SRE_SAAS`; zones
+TZ1-TZ3), IaaS SRE (`iaas`, type `sre-iaas`, assignment group "SRE IaaS";
+rota `SRE_IAAS`; Day/Night zones) and PaaS (none yet). The catalogue carries
+`rotaCode` on teams and zones; the engine stamps the incident's rota on the
+routing context (`RoutingContext.Rota`, from `TeamScheduleResolver.SRERota`):
+its own SRE team's rota, or `sre.teams.defaultRota` (default `SRE_SAAS`) for an
+incident with no SRE team (a case S0, a team-less monitoring alert). Only SRE
+windows whose zone is on that rota are read, so a SaaS incident never reaches
+an IaaS engineer or the other way round. A catalogue with no rota codes at all
+(an entity-service from before rotas) reads every SRE window, as before. The
+card's rung, the voice message and the work note name the chain ("SaaS SRE",
+"IaaS SRE"); with no rota they read exactly as before.
+
+### The Special Ops (SME) page (`sme.go`)
+
+entity-service publishes `incident.special_ops_alert` on the operations topic
+(`sre-events`) whenever an incident's assignment group changes **into** a
+Special Ops group, however it changed -- the "Escalate to Special Ops Team"
+button today -- and only when it has `SRE_EVENT_HUB_TOPIC` set. Here it arrives
+through the dispatcher's sre-events consumer (`HandleShared`), which hands it
+to the SRE engine (`Dispatcher.WithSpecialOpsPage` -> `Engine.HandleSpecialOpsAlert`);
+the paging engines' own consumers ignore the type, even when
+`INCIDENT_EVENT_HUB_TOPIC` is the same topic, so one alert pages once. The
+engine is built after the consumers start, so `main.go` calls
+`DeferSpecialOpsPage` first and an early alert waits for it. Off unless the
+file's `sme.enabled`:
+
+- **Gate**: the group the incident left (`previousAssignmentGroupName`, else
+  its id, through `sre.teams.aliases`) must be a SaaS SRE team (`SaaSSRETeam`:
+  its rota is `SRE_SAAS`; without rota codes, an SRE team not typed
+  `sre-iaas`). IaaS, CRE and unknown groups are logged and ignored.
+- The running SRE chain is stopped (`Escalated to SME`, the usual summary).
+- The SME team is the payload's `smeTeam`, else `sme.teams[teamKey]`; neither
+  is `NO_SME_TEAM` on the work note.
+- **The SME ladder** (since 2026-10-09; it was one call before): L1 of the
+  SME team's current Day/Night window at once, L2 after `sme.timing.interval`,
+  L3 after two (five minutes each by default; `sme.timing` has the shape of
+  `sre.timing`, `includeL4` ignored). Each rung asks for its tier at the moment
+  it opens (`resolveSME`): the holder of that tier on an SME-family window of
+  the team, longest since last called, then email; someone rostered there with
+  no tier counts as L1. It runs on the SRE engine's ticker under its own key,
+  `smeLadderKey` (`<incidentId>:sme:<team>`), so several SME teams can climb on
+  one incident; its work notes and summary still go to the incident. Calls go
+  over `sme.channel` (log/chat/call/both, `sme.chat`, `sme.safety.allowedNumbers`)
+  -- `Engine.place` picks the SME notifiers for an SME plan -- and the card
+  names the rung ("Special Ops L2 on duty"). At the start a work note says who
+  L1 is, or why nobody can be paged (`NO_RECIPIENTS`, `NO_NUMBER`,
+  `NUMBER_NOT_ALLOWED`, `NO_CHANNEL`); a rung with nobody is logged ("SME rung
+  cannot be called") and skipped; the usual execution summary is written when
+  the ladder finishes or is stopped.
+- **Dedup**: a SETNX key per (incident, SME team), 24 h: the same team alerted
+  again while open is ignored, another team gets its own ladder. A page that
+  reaches nobody is released.
+- **Answered by an assignment, compared by time**: `incident.assigned`
+  (incident topic, SRE engine) carries `assignedOn` (entity-service stamps it;
+  the handling time stands in when absent). It closes the pages raised at or
+  before it (`changedOn`) and stops their ladders ("Assignee set"), keeps any
+  raised after it, and records the time (`Store.CloseSMEPages`). An alert raised at or before that time pages nobody,
+  so it does not matter which topic is read first; the alert reads the time
+  again after opening its page, so the two cannot cross. A later escalation
+  pages again. `assignedOn` is a new field and this service decodes strictly:
+  deploy it before the entity-service that sends it.
+- **Needs an assignee**: entity-service refuses a handoff on an unassigned
+  incident (409 `incident_handoff_needs_assignee`) and the CSM portal disables
+  the button with the reason: the assignee answers for the page.
+- **Try it locally**: `scripts/csm-compose/sre-e2e.sh create`, then
+  `sre-e2e.sh sme -s choreo-runtime -k choreo-runtime-team` (rosters L1-L3 on
+  the live SME window, publishes the alert on `sre-events`, follows the ladder;
+  mount a copy of the config with a shorter `sme.timing.interval` through
+  `ESCALATION_CONFIG_FILE` to watch it climb in minutes).
+- **Known edge**: the escalation and `incident.created` come on different
+  topics. If the alert is handled first (a restart or backlog), the SRE chain
+  starts after the escalation and runs until an assignment stops it.
+
 ### Case Paging from customer cases (`cases.go`)
 
 The rules are `task-call-alert-flow/Case Paging Rules.xlsx` (agreed 2026-10-07),
@@ -484,16 +559,55 @@ immediate call predates the ladder and is **not** in the specification (its
 initial reaction is the Chat alert and an email); unset it once the ladder
 covers an environment, or an incident gets both.
 
+**On leave** (`cre.onLeave`, `sre.onLeave`, `sme.onLeave`: `skip`, the
+default, or `call`). Someone who holds a rung but is on leave that day is left
+out under `skip` -- the rung goes to whoever else holds it, or the ladder
+climbs past -- and rung under `call`, after anyone available on the same tier
+(`preferAvailable`). The rota rungs (CRE rota pairs, SRE tiers, SME tiers) ask
+`GET /team-schedule/on-duty` for people on leave only under `call`
+(`includeOnLeave=true`; they come back marked `onLeave`). The CRE responder,
+lead and head rungs come from membership, which knows nothing of leave, so
+under `skip` they are filtered by `POST /team-schedule/absences/search` for the
+incident's date in IST (`withoutAway`; a span that moves someone to another
+team is work, not leave); if that read fails the rung is rung as it is. The
+engine stamps the ladder's setting on `RoutingContext.CallOnLeave`. Before
+2026-10-09 the CRE membership rungs rang people on leave regardless.
+
 **Phone numbers** come from each person's own CSM Portal profile. The Team
 Schedule names who to call but holds no numbers, and a call plan drops anyone
 without one (`NO_NUMBER`). `ProfilePhoneResolver` wraps whichever resolver is
-in use and fills a missing number from the person's Asgardeo user (the
-portal's profile dialog writes the `mobile` phone there; `scim.Client.MobileNumber`
-reads it back), once per person per two minutes, 3 s per lookup. A number
-named in `escalation.yaml` is never replaced; a lookup that fails, times out
-or is not E.164 leaves that one person `NO_NUMBER` and never fails the tier.
-`phones.source: none` turns it off. Nothing is persisted outside the plan, and
-the number is never logged.
+in use and fills a missing number. **CSM answers first**: one batched
+`GET /team-schedule/paging-contacts?emails=` per rung (3 s) returns, per person,
+`dialPhone` -- the number on their profile (`"user".phone`, which the portals
+write since the "store the user's phone" change) when it is E.164, else the
+paging-only number a lead or admin stored (`paging_contact`) -- and `dialSource`
+(`profile` / `paging`). **Asgardeo is the fallback** for people CSM has no
+callable number for (`scim.Client.MobileNumber` reads the `mobile` phone the
+portal's profile dialog writes there), once per person per two minutes, 3 s per
+lookup; it exists until `"user".phone` has been filled from Asgardeo, and
+`PAGING_PHONE_SCIM_FALLBACK=false` turns it off (paging then never calls
+Asgardeo; the onboarding flow keeps its own use of `SCIM_BASE_URL`). The CSM
+portal backend reads the same variable for the Case Paging readiness strip. A CSM lookup that fails falls back to Asgardeo for
+everyone. An older entity-service sends only the paging-only number (no
+`dialSource`); it is then used after the Asgardeo profile, as before. Order: a
+number in `paging-alert.yaml`, then the phone book, then CSM's number, then
+Asgardeo's. A lookup that fails, times out or is not E.164 leaves that one
+person `NO_NUMBER` and never fails the tier. `phones.source: none` turns it all
+off. Applies to the CRE and SRE ladders and the SME page alike. Nothing is
+persisted outside the plan, and the number is never logged.
+
+**Test calls** (`testcall.go`): `paging.test_call_requested` (entity-service,
+on the main topic, `entityId` = userId) reaches `dispatch` and is handed to
+`paging.TestCaller` (wired in `main.go` when Redis and `CUSTOMER_ENTITY_BASE_URL`
+are set). One request per person per 2 minutes (Redis SETNX); the file's
+`testCall` section (`enabled`, default on; `allowedNumbers`, empty = any) and
+`CALL_SENDING_ENABLED` gate it, and a refusal is reported `failed`. One short
+call is placed and the event acknowledged; a goroutine on the server context
+asks Twilio for the call's status (`TwilioClient.GetCall`) after 60 s, then
+every 20 s up to 3 min (still in progress at the end is `completed`, anything
+else `no-answer`), and PUTs `completed`/`no-answer`/`busy`/`failed` to
+`/team-schedule/paging-contacts/{userId}/test-result` (three attempts). A
+restart during the wait leaves the status `pending` (accepted for phase 1).
 
 **Calls switch on when the ABT lead pool is verified.** Before any call is
 placed, `applySafety` asks the resolver for its whole lead pool

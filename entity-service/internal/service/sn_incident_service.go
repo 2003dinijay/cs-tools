@@ -1744,7 +1744,8 @@ func publishIncidentAssignedEvent(ctx context.Context, publisher EventPublisherS
 	ctx, cancel := context.WithTimeout(ctx, publishIncidentEscalationSignalTimeout)
 	defer cancel()
 
-	payload, err := json.Marshal(events.IncidentAssignedPayload{AssigneeID: assignee.ID, AssigneeName: assignee.Name})
+	payload, err := json.Marshal(events.IncidentAssignedPayload{AssigneeID: assignee.ID, AssigneeName: assignee.Name,
+		AssignedOn: time.Now().UTC().Format(time.RFC3339)})
 	if err != nil {
 		slog.ErrorContext(ctx, "update incident: encode incident.assigned payload failed", "incidentId", incidentID, "error", err)
 		return

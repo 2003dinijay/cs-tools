@@ -36,7 +36,9 @@ type ScheduleRepository interface {
 	Catalogue(ctx context.Context) (domain.ScheduleCatalogue, error)
 	SearchAssignments(ctx context.Context, req domain.SearchScheduleAssignmentsRequest) ([]domain.ScheduleAssignment, error)
 	SearchAbsences(ctx context.Context, req domain.SearchScheduleAbsencesRequest) ([]domain.ScheduleAbsence, error)
-	OnDutyAt(ctx context.Context, at time.Time) ([]domain.ScheduleAssignment, error)
+	// OnDutyAt is who is on duty at the instant, leaving out anyone on leave;
+	// with includeOnLeave they are returned too, marked OnLeave.
+	OnDutyAt(ctx context.Context, at time.Time, includeOnLeave bool) ([]domain.ScheduleAssignment, error)
 
 	// AssignmentByID is what the service checks before it lets a lead touch a
 	// row: which team the slot belongs to, so the lead's own team can be
@@ -78,14 +80,20 @@ type ScheduleRepository interface {
 	// recording it in the absence history inside the same transaction.
 	DeleteAbsence(ctx context.Context, id, actorEmail string, note *string) error
 	// DeleteAbsenceKind removes a kind a lead added. The catalogue's own kinds
-	// are refused, and so is one still in use.
-	DeleteAbsenceKind(ctx context.Context, code, actorEmail string) error
-	// CreateAbsenceKind adds a kind to the shared catalogue under the given
-	// code. A code already taken is a ConflictError.
-	CreateAbsenceKind(ctx context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, actorEmail string) (domain.ScheduleAbsenceKind, error)
+	// are refused, and so is one still in use. With allowedFamilies, only a
+	// kind of one of those families may go: a shared kind (no family) or
+	// another family's is refused.
+	DeleteAbsenceKind(ctx context.Context, code, actorEmail string, allowedFamilies []string) error
+	// CreateAbsenceKind adds a kind to the catalogue under the given code: for
+	// one family when family is set, else shared by all. A code already taken
+	// is a ConflictError.
+	CreateAbsenceKind(ctx context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, family *string, actorEmail string) (domain.ScheduleAbsenceKind, error)
 	// RotaAdminTeamsFor is every team this caller may edit by virtue of
 	// holding a rota admin role, rather than by leading the team.
 	RotaAdminTeamsFor(ctx context.Context, userEmail string) ([]string, error)
+	// RotaAdminFamilies is the families of the rota admin roles the caller
+	// holds: CRE, SRE and/or SME. Empty for anyone who holds none.
+	RotaAdminFamilies(ctx context.Context, userEmail string) ([]string, error)
 
 	// ApplyRange sets one engineer to one window across a span of days, which
 	// is how the roster's picker edits.
@@ -452,7 +460,7 @@ func (r *scheduleRepository) SearchAssignments(ctx context.Context, req domain.S
 // OnDutyAt answers "who is responsible at this instant" -- the question an
 // alert escalation asks. Matched against the resolved window as a range, so
 // it is an index scan rather than a comparison over every row.
-func (r *scheduleRepository) OnDutyAt(ctx context.Context, at time.Time) ([]domain.ScheduleAssignment, error) {
+func (r *scheduleRepository) OnDutyAt(ctx context.Context, at time.Time, includeOnLeave bool) ([]domain.ScheduleAssignment, error) {
 	// Somebody on leave is not on duty, whatever their assignment row says.
 	//
 	// The two facts are stored independently -- a rotation is generated weeks
@@ -471,9 +479,30 @@ func (r *scheduleRepository) OnDutyAt(ctx context.Context, at time.Time) ([]doma
 	// it is compared against the date in the shift's own authoring zone: leave
 	// is granted as a calendar day by someone in that office, not as an
 	// instant.
+	//
+	// includeOnLeave is for a caller that decides for itself what to do with
+	// somebody on leave (Case Paging's onLeave: call): the excluded rows come
+	// back too, after the available ones, marked OnLeave.
+	onDuty, err := r.onDutyRows(ctx, at, "NOT EXISTS")
+	if err != nil || !includeOnLeave {
+		return onDuty, err
+	}
+	away, err := r.onDutyRows(ctx, at, "EXISTS")
+	if err != nil {
+		return nil, err
+	}
+	for i := range away {
+		away[i].OnLeave = true
+	}
+	return append(onDuty, away...), nil
+}
+
+// onDutyRows is the assignments live at the instant whose engineer is (exists
+// "EXISTS") or is not ("NOT EXISTS") away that day.
+func (r *scheduleRepository) onDutyRows(ctx context.Context, at time.Time, exists string) ([]domain.ScheduleAssignment, error) {
 	rows, err := r.db.Query(ctx, `SELECT `+assignmentColumns+assignmentFrom+`
 		WHERE tstzrange(a.starts_at, a.ends_at, '[)') @> $1::timestamptz
-		  AND NOT EXISTS (
+		  AND `+exists+` (
 		        SELECT 1 FROM team_schedule_absence ab
 		        JOIN team_schedule_absence_kind k ON k.id = ab.kind_id
 		        WHERE ab.user_id = a.user_id
@@ -1081,6 +1110,50 @@ func (r *scheduleRepository) RotaAdminTeamsFor(ctx context.Context, userEmail st
 	return out, rows.Err()
 }
 
+// rotaAdminFamilyOfRole is which family each rota admin role runs.
+const rotaAdminFamilyOfRole = `CASE ro.name WHEN 'sre_rota_admin' THEN 'SRE' WHEN 'sme_rota_admin' THEN 'SME' ELSE 'CRE' END`
+
+// RotaAdminFamilies implements ScheduleRepository. Only an INTERNAL holder's
+// roles count, as in RotaAdminTeamsFor.
+func (r *scheduleRepository) RotaAdminFamilies(ctx context.Context, userEmail string) ([]string, error) {
+	return r.distinctStrings(ctx, `
+		SELECT DISTINCT `+rotaAdminFamilyOfRole+`
+		  FROM "user" u
+		  JOIN user_role ur ON ur.user_id = u.id
+		  JOIN role ro      ON ro.id = ur.role_id
+		 WHERE lower(u.email) = lower($1)
+		   AND u.user_type = 'INTERNAL'::user_type_enum
+		   AND ro.name IN ('cre_rota_admin', 'sre_rota_admin', 'sme_rota_admin')`, userEmail)
+}
+
+// hasFold is a case-insensitive membership test.
+func hasFold(list []string, want string) bool {
+	for _, v := range list {
+		if strings.EqualFold(v, want) {
+			return true
+		}
+	}
+	return false
+}
+
+// distinctStrings runs a one-column query and returns its values.
+func (r *scheduleRepository) distinctStrings(ctx context.Context, sql string, args ...any) ([]string, error) {
+	rows, err := r.db.Query(ctx, sql, args...)
+	if err != nil {
+		return nil, fmt.Errorf("query: %w", err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			return nil, fmt.Errorf("scan: %w", err)
+		}
+		out = append(out, v)
+	}
+	return out, rows.Err()
+}
+
 // ApplyRange sets one engineer to one window across a span of days.
 //
 // One transaction for the whole span: a picker that says "Mon to Fri" and
@@ -1646,7 +1719,7 @@ func (r *scheduleRepository) DeleteAbsence(ctx context.Context, id, actorEmail s
 // many absences use it, rather than retired quietly: a retired kind drops out
 // of the catalogue, and the absences marked with it would lose their label
 // and colour on every page that draws them.
-func (r *scheduleRepository) DeleteAbsenceKind(ctx context.Context, code, actorEmail string) error {
+func (r *scheduleRepository) DeleteAbsenceKind(ctx context.Context, code, actorEmail string, allowedFamilies []string) error {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return fmt.Errorf("begin delete absence kind: %w", err)
@@ -1659,9 +1732,10 @@ func (r *scheduleRepository) DeleteAbsenceKind(ctx context.Context, code, actorE
 
 	var id string
 	var builtIn bool
+	var family *string
 	err = tx.QueryRow(ctx, `
-		SELECT id::text, created_by IS NOT DISTINCT FROM 'migration'
-		  FROM team_schedule_absence_kind WHERE code = $1 FOR UPDATE`, code).Scan(&id, &builtIn)
+		SELECT id::text, created_by IS NOT DISTINCT FROM 'migration', family::text
+		  FROM team_schedule_absence_kind WHERE code = $1 FOR UPDATE`, code).Scan(&id, &builtIn, &family)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &apierror.NotFoundError{Msg: "no such tag"}
 	}
@@ -1670,6 +1744,9 @@ func (r *scheduleRepository) DeleteAbsenceKind(ctx context.Context, code, actorE
 	}
 	if builtIn {
 		return &apierror.ForbiddenError{Msg: "a built-in tag cannot be deleted; only tags added from the portal can"}
+	}
+	if allowedFamilies != nil && (family == nil || !hasFold(allowedFamilies, *family)) {
+		return &apierror.ForbiddenError{Msg: "a rota admin can only delete their own family's tags; this tag is shared or another family's"}
 	}
 	var inUse int
 	if err := tx.QueryRow(ctx,
@@ -1695,7 +1772,7 @@ func (r *scheduleRepository) DeleteAbsenceKind(ctx context.Context, code, actorE
 // A new kind sorts after the existing kinds in its own bucket, so it lands at
 // the end of the right group in the picker and the legend rather than in the
 // middle of another.
-func (r *scheduleRepository) CreateAbsenceKind(ctx context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, actorEmail string) (domain.ScheduleAbsenceKind, error) {
+func (r *scheduleRepository) CreateAbsenceKind(ctx context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, family *string, actorEmail string) (domain.ScheduleAbsenceKind, error) {
 	tx, err := r.db.Begin(ctx)
 	if err != nil {
 		return domain.ScheduleAbsenceKind{}, fmt.Errorf("begin create absence kind: %w", err)
@@ -1720,17 +1797,17 @@ func (r *scheduleRepository) CreateAbsenceKind(ctx context.Context, code string,
 		}
 	}
 
-	k := domain.ScheduleAbsenceKind{Code: code, ShortCode: req.ShortCode, Label: req.Label, Bucket: req.Bucket, ColourToken: req.ColourToken, Custom: true}
+	k := domain.ScheduleAbsenceKind{Code: code, ShortCode: req.ShortCode, Label: req.Label, Bucket: req.Bucket, ColourToken: req.ColourToken, Custom: true, Family: family}
 	err = tx.QueryRow(ctx, `
 		INSERT INTO team_schedule_absence_kind
-		  (code, short_code, label, bucket, colour_token, sort_order, created_by, updated_by)
-		SELECT $1, $2, $3, $4::team_schedule_absence_bucket_enum, $5,
+		  (code, short_code, label, bucket, colour_token, family, sort_order, created_by, updated_by)
+		SELECT $1, $2, $3, $4::team_schedule_absence_bucket_enum, $5, $7::team_schedule_shift_family_enum,
 		       COALESCE(MAX(sort_order), 0) + 1, $6, $6
 		  FROM team_schedule_absence_kind
 		 WHERE bucket = $4::team_schedule_absence_bucket_enum
 		ON CONFLICT (code) DO NOTHING
 		RETURNING id::text, sort_order`,
-		code, req.ShortCode, req.Label, req.Bucket, req.ColourToken, actorEmail).Scan(&k.ID, &k.SortOrder)
+		code, req.ShortCode, req.Label, req.Bucket, req.ColourToken, actorEmail, family).Scan(&k.ID, &k.SortOrder)
 	if errors.Is(err, pgx.ErrNoRows) {
 		// The clash is on code, which is derived from the label (normalised
 		// and cut to length), so two different labels can land on one code.

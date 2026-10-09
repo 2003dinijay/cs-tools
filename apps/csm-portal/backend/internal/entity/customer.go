@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"strconv"
 )
 
 // CreateCase calls POST /cases on the entity service.
@@ -1088,6 +1089,46 @@ func (c *CustomerEntityClient) GetScheduleActivity(ctx context.Context, teamKey,
 	q.Set("from", from)
 	q.Set("to", to)
 	return c.do(ctx, http.MethodGet, "/team-schedule/activity?"+q.Encode(), nil)
+}
+
+// GetPagingChain calls GET /team-schedule/paging-chain: who is on each tier of
+// a family's Case Paging chain, and what the caller may change.
+func (c *CustomerEntityClient) GetPagingChain(ctx context.Context, family string) ([]byte, error) {
+	path := "/team-schedule/paging-chain"
+	if family != "" {
+		path += "?family=" + url.QueryEscape(family)
+	}
+	return c.do(ctx, http.MethodGet, path, nil)
+}
+
+// UpdatePagingMember calls PATCH /team-schedule/paging-chain/members/{id}.
+func (c *CustomerEntityClient) UpdatePagingMember(ctx context.Context, id string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPatch, "/team-schedule/paging-chain/members/"+url.PathEscape(id), body)
+}
+
+// PutPagingContact calls PUT /team-schedule/paging-contacts/{userId}: set the
+// paging-only phone number entity-service keeps for a person.
+func (c *CustomerEntityClient) PutPagingContact(ctx context.Context, userID string, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/paging-contacts/"+url.PathEscape(userID), body)
+}
+
+// DeletePagingContact calls DELETE /team-schedule/paging-contacts/{userId}.
+func (c *CustomerEntityClient) DeletePagingContact(ctx context.Context, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/paging-contacts/"+url.PathEscape(userID), nil)
+}
+
+// TestPagingContact calls POST /team-schedule/paging-contacts/{userId}/test:
+// a test call to the person's paging number.
+func (c *CustomerEntityClient) TestPagingContact(ctx context.Context, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/team-schedule/paging-contacts/"+url.PathEscape(userID)+"/test", nil)
+}
+
+// GetPagingReadiness calls GET /team-schedule/paging-readiness: whether each
+// Case Paging chain has someone to page on every day of the next `days`.
+func (c *CustomerEntityClient) GetPagingReadiness(ctx context.Context, days int) ([]byte, error) {
+	q := url.Values{}
+	q.Set("days", strconv.Itoa(days))
+	return c.do(ctx, http.MethodGet, "/team-schedule/paging-readiness?"+q.Encode(), nil)
 }
 
 // GetMyLeadTeams calls GET /team-schedule/my-lead-teams on the entity service.

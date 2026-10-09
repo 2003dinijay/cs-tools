@@ -372,3 +372,40 @@ func TestMakeCall_MapsUpstreamError(t *testing.T) {
 		t.Errorf("StatusCode = %d, want %d", apiErr.StatusCode, http.StatusBadRequest)
 	}
 }
+
+// GetCall reads one call's status with a GET on the call resource.
+func TestGetCall_ReadsTheStatus(t *testing.T) {
+	var gotMethod, gotPath, gotUser string
+	srv := newTwilioTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		gotUser, _, _ = r.BasicAuth()
+		_, _ = w.Write([]byte(`{"sid":"CA123","status":"no-answer","to":"+94770000000"}`))
+	})
+	c := NewTwilioClient(TwilioConfig{AccountSID: "AC1", AuthToken: "tok", APIBaseURL: srv.URL})
+	got, err := c.GetCall(context.Background(), "CA123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotMethod != http.MethodGet || gotPath != "/Accounts/AC1/Calls/CA123.json" || gotUser != "AC1" {
+		t.Errorf("request = %s %s as %q", gotMethod, gotPath, gotUser)
+	}
+	if got.SID != "CA123" || got.Status != "no-answer" {
+		t.Errorf("call = %+v", got)
+	}
+}
+
+func TestGetCall_MapsUpstreamError(t *testing.T) {
+	srv := newTwilioTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"code":20404}`))
+	})
+	c := NewTwilioClient(TwilioConfig{AccountSID: "AC1", AuthToken: "tok", APIBaseURL: srv.URL})
+	_, err := c.GetCall(context.Background(), "CA404")
+	var upstream *apierror.Error
+	if !errors.As(err, &upstream) || upstream.StatusCode != http.StatusNotFound {
+		t.Fatalf("err = %v; want a 404 apierror", err)
+	}
+	if _, err := c.GetCall(context.Background(), " "); err == nil {
+		t.Error("an empty sid was sent upstream")
+	}
+}

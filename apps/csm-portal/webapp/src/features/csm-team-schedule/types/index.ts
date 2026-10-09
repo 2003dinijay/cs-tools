@@ -267,3 +267,106 @@ export interface ScheduleEditMarkersResponse {
   markers: ScheduleEditMarker[];
   count: number;
 }
+
+/* ── Case Paging ────────────────────────────────────────────────────────────
+ * The system pages people about an incident tier by tier until someone
+ * acknowledges. Every person on a tier is an existing team membership. */
+
+/** How a paging number's last test call went. */
+export type PagingTestStatus = "pending" | "completed" | "no-answer" | "busy" | "failed";
+
+/** A person's paging-only phone number: kept by entity-service, used only
+ *  when their profile has none, never written to their profile. */
+export interface PagingPhone {
+  /** "+94•••••123" -- the only form the page shows. */
+  masked: string;
+  /** The full number, sent only to a reader who may edit it (to prefill). */
+  phone?: string;
+  setBy: string;
+  setAt: string;
+  lastTestAt?: string;
+  lastTestStatus?: PagingTestStatus;
+}
+
+/** One membership as the Case Paging tab shows it. */
+export interface PagingChainMember {
+  membershipId: string;
+  teamKey: string;
+  teamName: string;
+  teamType: string;
+  family: string;
+  userId: string;
+  name: string;
+  email: string;
+  /** engineer, lead, americas_team_lead (the America lead), cre_head or cs_head. */
+  role: string;
+  /** 1, 2 or 3 for the team's 1st, 2nd or 3rd responder (Tier 1); 0 for none. */
+  responderRank: number;
+  /** Whether the reader may add, change, remove or test this person's paging number. */
+  canEditPhone?: boolean;
+  pagingPhone?: PagingPhone | null;
+  /** Whether their profile has a mobile number; absent when it could not be checked. */
+  hasProfilePhone?: boolean;
+}
+
+/** What the reader may change; the server checks every edit again. */
+export interface PagingChainPermissions {
+  responderTeams: string[];
+  teamLeadTeams: string[];
+  americasTeamLead: boolean;
+  heads: boolean;
+}
+
+export interface PagingChainResponse {
+  family: string;
+  members: PagingChainMember[];
+  count: number;
+  canEdit: PagingChainPermissions;
+}
+
+/** The roles a paging change may give a membership. */
+export type PagingRole = "lead" | "engineer" | "americas_team_lead" | "cre_head" | "cs_head";
+
+/** Exactly one change to one membership. */
+export type PagingMemberChange =
+  | { membershipId: string; responderRank: number }
+  | { membershipId: string; role: PagingRole };
+
+/** The paging chains the readiness check answers for. */
+export type PagingChainCode = "CRE" | "SRE_SAAS" | "SRE_IAAS" | "SME";
+
+/** What it takes to close a readiness gap, which decides the action offered. */
+export type PagingGapFix = "responders" | "rota" | "profile" | "config" | "data";
+
+/** One thing standing between a chain and being ready. */
+export interface PagingReadinessGap {
+  code: string;
+  severity: "error" | "warning";
+  message: string;
+  fix: PagingGapFix;
+  teamKey?: string;
+  /** The day the gap is on, YYYY-MM-DD, where it is on one. */
+  date?: string;
+  zoneCode?: string;
+  tier?: string;
+  shiftCode?: string;
+  /** The person a phone gap (NO_PHONE, PHONE_UNTESTED, PHONE_TEST_FAILED) is about. */
+  userId?: string;
+  /** On a phone gap: the Case Paging tier that first calls the person
+   *  (1 = first). The server lists phone gaps in this order. */
+  pagingTier?: number;
+}
+
+export interface PagingReadinessChain {
+  chain: PagingChainCode;
+  label: string;
+  ready: boolean;
+  gaps: PagingReadinessGap[];
+}
+
+export interface PagingReadinessResponse {
+  generatedAt: string;
+  from: string;
+  to: string;
+  chains: PagingReadinessChain[];
+}
