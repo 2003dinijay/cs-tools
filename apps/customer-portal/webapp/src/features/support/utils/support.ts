@@ -1168,6 +1168,98 @@ export function stripAllCodeBlocks(content: string): string {
     .replace(/\[\/?code\]/gi, "\n");
 }
 
+// Block-level and line-break elements. Whitespace next to one of these is never
+// content: a block starts its own line whatever surrounds it.
+const BLOCK_TAGS =
+  "p|div|ul|ol|li|dl|dt|dd|table|thead|tbody|tfoot|tr|th|td|caption|h[1-6]|blockquote|pre|br|hr";
+const HTML_STRUCTURE_TAG = new RegExp(`<(?:${BLOCK_TAGS})\\b[^<>]*>`, "i");
+// A newline with the indentation and blank space around it.
+const NEWLINE_WHITESPACE = "[ \\t]*[\\r\\n][ \\t\\r\\n]*";
+// `<pre>`/`<code>` content is whitespace-sensitive by design (a snippet's own
+// line breaks and indentation), so it is matched whole and left untouched.
+const PRESERVED_ELEMENT = "(?<kept><(?<tag>pre|code)\\b[\\s\\S]*?<\\/\\k<tag>\\s*>)";
+const NEWLINE_AROUND_BLOCK = new RegExp(
+  `${PRESERVED_ELEMENT}|${NEWLINE_WHITESPACE}(?=<\\/?(?:${BLOCK_TAGS})\\b)|(?<=<\\/?(?:${BLOCK_TAGS})\\b[^<>]*>)${NEWLINE_WHITESPACE}`,
+  "gi",
+);
+const NEWLINE_IN_TEXT = new RegExp(`${PRESERVED_ELEMENT}|${NEWLINE_WHITESPACE}`, "gi");
+
+/**
+ * Removes the whitespace that only exists because HTML *source* was laid out
+ * for reading: the newlines and indentation between `<ul>`, `<li>`, `<p>` and
+ * `<br>`, and the line wraps inside a paragraph, so it is not printed.
+ *
+ * Paragraphs are `white-space: pre-wrap` in the comment card (editor-authored
+ * text relies on it), which prints a newline inside a hand-wrapped `<p>` as a
+ * line break plus its indentation. A browser, and ServiceNow, treat a newline
+ * in HTML source as an ordinary space.
+ *
+ * Deliberately narrow, so nothing else changes:
+ * - Only content with real block/`<br>` markup is touched; plain text is left alone.
+ * - Only whitespace that contains a newline is touched; runs of spaces typed in
+ *   the editor are kept.
+ * - `<pre>` and `<code>` content is never touched, so code snippets keep their
+ *   line breaks and indentation.
+ * - A newline inside text becomes a space only when the source also has a
+ *   newline next to a block tag (the sign of laid-out source), so a note that
+ *   mixes a stray `<br>` with intentional line breaks keeps them.
+ *
+ * @param html - HTML string.
+ * @returns {string} HTML without the layout newlines and indentation.
+ */
+export function collapseHtmlSourceWhitespace(html: string): string {
+  if (!html || !HTML_STRUCTURE_TAG.test(html)) return html;
+  let sawLaidOutSource = false;
+  const withoutEdgeNewlines = html
+    .replace(/^[ \t]*[\r\n][ \t\r\n]*/, "")
+    .replace(/[ \t\r\n]*[\r\n][ \t]*$/, "")
+    .replace(NEWLINE_AROUND_BLOCK, (match, ...args) => {
+      const groups = args[args.length - 1] as { kept?: string };
+      if (groups.kept !== undefined) return match;
+      sawLaidOutSource = true;
+      return "";
+    });
+  if (!sawLaidOutSource) return withoutEdgeNewlines;
+  return withoutEdgeNewlines.replace(NEWLINE_IN_TEXT, (match, ...args) => {
+    const groups = args[args.length - 1] as { kept?: string };
+    return groups.kept !== undefined ? match : " ";
+  });
+}
+
+/**
+ * {@link collapseHtmlSourceWhitespace} applied to the inside of each
+ * `[code]...[/code]` block, leaving the text between blocks and the markers
+ * themselves exactly as they were. ServiceNow's `[code]` marks a stretch as raw
+ * HTML; everything outside it is plain text. Legacy escaped markers (`[\code]`,
+ * `[\/code]`) are matched and kept as written so the unwrapping functions see the
+ * same input they always did.
+ *
+ * @param content - Raw content with `[code]...[/code]` blocks.
+ * @returns {string} Content with each block's HTML source whitespace removed.
+ */
+export function collapseCodeBlockWhitespace(content: string): string {
+  return content.replace(
+    /(\[\\?code\])([\s\S]*?)(\[\\?\/code\])/gi,
+    (_match, open: string, inner: string, close: string) =>
+      `${open}${collapseHtmlSourceWhitespace(inner)}${close}`,
+  );
+}
+
+/**
+ * Cleans the layout whitespace out of a raw comment body before its `[code]`
+ * markers are unwrapped: inside each `[code]` block when the body has any, else
+ * across the whole body. See {@link collapseHtmlSourceWhitespace}.
+ *
+ * @param content - Raw comment content.
+ * @returns {string} Content ready for the `[code]` unwrapping functions.
+ */
+export function collapseCommentSourceWhitespace(content: string): string {
+  if (!content || typeof content !== "string") return "";
+  return /\[\\?\/?code\]/i.test(content)
+    ? collapseCodeBlockWhitespace(content)
+    : collapseHtmlSourceWhitespace(content);
+}
+
 /**
  * Removes leading <br>, <br/>, <br /> and whitespace from HTML.
  * Fixes extra blank first line from content like "[code]<br><b>...</b>[/code]".

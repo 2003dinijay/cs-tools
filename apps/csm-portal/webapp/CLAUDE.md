@@ -316,6 +316,20 @@ In `ChangeRequestApprovals`, each row's **Assignment group** is a link-button (`
 - Under 68px per stage the row scrolls **inside its own container** (centred on the current stage), never the page. Test helpers that read a stage's label must drop the hidden status suffix (`stepLabel` in `CsmChangeRequestDetailPage.test.tsx`; the e2e specs match `^<label>, `).
 - e2e: `change-request-lifecycle.spec.ts` asserts the stepper through the page object's `stage(label)` and the spec's `expectStages(detail, columns, flags)`, which takes the eleven columns as one letter each (`d` done, `c` current, `p` upcoming, `n` not taken, `u` history not recorded, `r` rejected by the customer) and compares them with the words the stepper reads (", done", ", current", ", upcoming", ", not taken", ", history not recorded", ", rejected by the customer"), dropping Customer Approval / Customer Review when their checkbox is off. "the stepper and the action bar in every state" (fake API) walks a Normal change through every state with the customer checkboxes on and off, asserting all eleven stages *and* the action bar (primary button, Re-schedule, "Change state" entries in order) at each; the Rollback and Canceled screens (rolled back from Review with and without customer contacts, from the customer's rejection; canceled with no approvals, in Review after Peer / CAB, in Review after the Review stage was approved, at Customer Approval, after the customer's approval (their APPROVED stage and `hasCustomerApproved`), and by the customer's rejection) and the checkbox-off line are separate tests; the seeded-fixture describes assert CHG-FIXED-007 / -008 and the stage statuses after each customer answer.
 
+## Comment bodies: laid-out HTML source vs. `white-space: pre-wrap`
+
+`CsmCaseCommentBubble.tsx`'s body container is `white-space: pre-wrap` on purpose: comments authored in the rich-text editor no longer carry a per-run `pre-wrap` (see `stripWhitespaceStyleAndUnwrapSpans` in `richTextEditor.tsx`), and plain-text notes rely on it for their line breaks. The catch is HTML *source* that was laid out for reading — the shape ServiceNow stores and an engineer pastes, with a newline and indentation between every `<ul>`/`<li>`/`<p>`/`<br>` and hard wraps inside the text. `pre-wrap` prints every one of those newlines (reported live: blank gaps between bullets, ragged indented continuation lines), where a browser and ServiceNow treat them as a space.
+
+The fix is not to change the container but to clean the body before it is rendered. `preprocessCommentBodyHtml` (`csm-cases/utils/commentContent.ts`, shared by the bubble and the PDF export) runs `collapseCommentSourceWhitespace` first: inside each `[code]…[/code]` block when the body has any (ServiceNow's marker for raw HTML, so the plain text *between* blocks keeps its newlines), otherwise across the whole body. It is deliberately narrow:
+
+- Only bodies with real block/`<br>` markup are touched; plain text is returned as is.
+- Only whitespace that contains a newline is touched; spaces typed in the editor are kept.
+- **`<pre>` and `<code>` content is never touched**, so a snippet keeps its line breaks and indentation — don't "simplify" this by switching the container to `normal`, which collapses a multi-line `<code>` snippet too.
+- A newline inside text becomes a space only when the source also has a newline next to a block tag, so a note that mixes a stray `<br>` with intentional line breaks keeps them.
+- Markdown bodies (Novera, GitHub-raised descriptions) never go through it.
+
+`apps/customer-portal/webapp`'s comment cards (case Activity tab, service request comments, announcement comments) have the same helper in `features/support/utils/support.ts`, copied rather than shared because the two apps don't share a package; its card makes `<p>` `pre-wrap`, so a hand-wrapped paragraph printed its source line breaks there. Keep the two copies in step.
+
 ## Testing
 
 - Runner: Vitest (`jsdom` environment), configured inline in `vite.config.ts` — no separate `vitest.config.ts`.

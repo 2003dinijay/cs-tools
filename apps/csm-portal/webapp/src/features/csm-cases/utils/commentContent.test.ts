@@ -16,6 +16,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  collapseCodeBlockWhitespace,
+  collapseCommentSourceWhitespace,
+  collapseHtmlSourceWhitespace,
   convertCodeTagsToHtml,
   hasDisplayableContent,
   hasPublicComment,
@@ -203,5 +206,166 @@ describe("isMarkdownComment / preprocessCommentBodyHtml", () => {
     const comment = makeComment(issueBody);
     expect(isMarkdownComment(comment)).toBe(false);
     expect(preprocessCommentBodyHtml(comment)).toContain("### Request Details");
+  });
+});
+
+describe("collapseHtmlSourceWhitespace", () => {
+  it("drops the newlines between laid-out block elements, \\r\\n included", () => {
+    expect(collapseHtmlSourceWhitespace("<p>One</p>\r\n<p>Two</p>\r\n<p>Three</p>")).toBe(
+      "<p>One</p><p>Two</p><p>Three</p>",
+    );
+  });
+
+  it("joins hard-wrapped list items and drops the indentation", () => {
+    const source =
+      "<ul>\n  <li>First point\n    continues here.<br>\n    Second line.\n  </li>\n</ul>";
+    expect(collapseHtmlSourceWhitespace(source)).toBe(
+      "<ul><li>First point continues here.<br>Second line.</li></ul>",
+    );
+  });
+
+  it("keeps a single space between inline elements that were on separate lines", () => {
+    expect(collapseHtmlSourceWhitespace("<p>\n  Use <b>one</b>\n  <i>two</i> now\n</p>")).toBe(
+      "<p>Use <b>one</b> <i>two</i> now</p>",
+    );
+  });
+
+  it("leaves a <pre> block and a <code> snippet exactly as written", () => {
+    const source =
+      "<p>Run:</p>\n<pre>line one\n  line two</pre>\n<p>Then <code>a\nb</code> done</p>";
+    expect(collapseHtmlSourceWhitespace(source)).toBe(
+      "<p>Run:</p><pre>line one\n  line two</pre><p>Then <code>a\nb</code> done</p>",
+    );
+  });
+
+  it("keeps a space either side of inline code that sat on its own lines", () => {
+    expect(collapseHtmlSourceWhitespace("<p>\n  Set <code>x=1</code>\n  then restart\n</p>")).toBe(
+      "<p>Set <code>x=1</code> then restart</p>",
+    );
+  });
+
+  it("does not touch a <pre> block that holds markup-looking text and blank lines", () => {
+    const source = "<div>\n<pre><b>\n\n  keep</b>\n</pre>\n</div>";
+    expect(collapseHtmlSourceWhitespace(source)).toBe("<div><pre><b>\n\n  keep</b>\n</pre></div>");
+  });
+
+  it("trims a newline at the very start and end of the body", () => {
+    expect(collapseHtmlSourceWhitespace("\r\n<p>One</p>\r\n")).toBe("<p>One</p>");
+  });
+
+  it("leaves plain text alone: its newlines are its line breaks", () => {
+    const text = "Line one\nLine two\n\nLine four";
+    expect(collapseHtmlSourceWhitespace(text)).toBe(text);
+  });
+
+  it("leaves editor output alone: no newlines, and its runs of spaces are content", () => {
+    const html = "<p>Two  spaces</p><p>Next<br>line</p>";
+    expect(collapseHtmlSourceWhitespace(html)).toBe(html);
+  });
+
+  it("keeps the line breaks of a note that only mixes in a stray <br>", () => {
+    const note = "Line one\nLine two<br>Line three";
+    expect(collapseHtmlSourceWhitespace(note)).toBe(note);
+  });
+
+  it("does not treat <pre>, <link> or <track> as p, li or tr", () => {
+    const html = '<link rel="x">\n<track src="y">\ntext';
+    expect(collapseHtmlSourceWhitespace(html)).toBe(html);
+  });
+
+  it("handles upper-case tags", () => {
+    expect(collapseHtmlSourceWhitespace("<P>One</P>\n<P>Two</P>")).toBe("<P>One</P><P>Two</P>");
+  });
+});
+
+describe("collapseCodeBlockWhitespace", () => {
+  it("collapses only inside the [code] block and leaves the text around it alone", () => {
+    const source =
+      "Intro line\nnext line\n[code]<ul>\n  <li>One</li>\n</ul>[/code]\nTail text\nmore";
+    expect(collapseCodeBlockWhitespace(source)).toBe(
+      "Intro line\nnext line\n[code]<ul><li>One</li></ul>[/code]\nTail text\nmore",
+    );
+  });
+
+  it("collapses each of several [code] blocks on its own", () => {
+    const source = "[code]<p>a</p>\n<p>b</p>[/code]\n[code]<p>c</p>\n<p>d</p>[/code]";
+    expect(collapseCodeBlockWhitespace(source)).toBe(
+      "[code]<p>a</p><p>b</p>[/code]\n[code]<p>c</p><p>d</p>[/code]",
+    );
+  });
+
+  it("keeps the legacy escaped markers as written", () => {
+    expect(collapseCodeBlockWhitespace("[\\code]<p>a</p>\n<p>b</p>[\\/code]")).toBe(
+      "[\\code]<p>a</p><p>b</p>[\\/code]",
+    );
+  });
+
+  it("leaves an inline [code] snippet that holds no markup alone", () => {
+    const source = "Case Task [code]CSTASK1[/code] has been created\nsecond line";
+    expect(collapseCodeBlockWhitespace(source)).toBe(source);
+  });
+
+  it("leaves the newlines of a [code] block that holds a plain snippet alone", () => {
+    const source = "Run [code]line one\nline two[/code] now";
+    expect(collapseCodeBlockWhitespace(source)).toBe(source);
+  });
+});
+
+describe("collapseCommentSourceWhitespace", () => {
+  it("collapses inside [code] blocks when the body has any, and the whole body otherwise", () => {
+    expect(collapseCommentSourceWhitespace("[code]<p>a</p>\n<p>b</p>[/code]\nplain\ntext")).toBe(
+      "[code]<p>a</p><p>b</p>[/code]\nplain\ntext",
+    );
+    expect(collapseCommentSourceWhitespace("<p>a</p>\n<p>b</p>")).toBe("<p>a</p><p>b</p>");
+  });
+
+  it("returns an empty string for an empty or missing body", () => {
+    expect(collapseCommentSourceWhitespace("")).toBe("");
+  });
+});
+
+describe("preprocessCommentBodyHtml: laid-out HTML source", () => {
+  const laidOut = "<p>Summary:</p>\r\n<ol>\r\n  <li>First\r\n    wrapped</li>\r\n</ol>";
+  const flat = "<p>Summary:</p><ol><li>First wrapped</li></ol>";
+
+  it("cleans a body written as plain HTML", () => {
+    expect(preprocessCommentBodyHtml(makeComment(laidOut))).toBe(flat);
+  });
+
+  it("cleans a body inside a single [code] wrapper", () => {
+    expect(preprocessCommentBodyHtml(makeComment(`[code]${laidOut}[/code]`))).toBe(flat);
+  });
+
+  it("cleans the HTML inside several [code] blocks but keeps the newline between them", () => {
+    const body = `[code]${laidOut}[/code]\n[code]<p>Next:</p>\n<p>Done</p>[/code]`;
+    const html = preprocessCommentBodyHtml(makeComment(body));
+    expect(html).toContain(flat);
+    expect(html).toContain("<p>Next:</p><p>Done</p>");
+    expect(html).toMatch(/<\/ol>\n+<p>Next:<\/p>/);
+  });
+
+  it("keeps the newlines of the plain text around a [code] block", () => {
+    const html = preprocessCommentBodyHtml(
+      makeComment("Before\nthe block\n[code]<p>a</p>\n<p>b</p>[/code]\nAfter\nit"),
+    );
+    expect(html).toContain("Before\nthe block\n");
+    expect(html).toContain("\nAfter\nit");
+    expect(html).toContain("<p>a</p><p>b</p>");
+  });
+
+  it("keeps a code snippet's own line breaks", () => {
+    const body = "<p>Run:</p>\n<pre>one\n  two</pre>\n<p>or <code>x\ny</code></p>";
+    expect(preprocessCommentBodyHtml(makeComment(body))).toBe(
+      "<p>Run:</p><pre>one\n  two</pre><p>or <code>x\ny</code></p>",
+    );
+  });
+
+  it("leaves a Markdown body to the Markdown renderer", () => {
+    const html = preprocessCommentBodyHtml({
+      ...makeComment("- one\n- two\n\ntext"),
+      bodyFormat: "markdown",
+    });
+    expect(html).toContain("<li>one</li>");
+    expect(html).toContain("\n");
   });
 });
