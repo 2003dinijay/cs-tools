@@ -343,6 +343,9 @@ type PagingReadinessFacts struct {
 	// PagingPhones is every stored paging-only number's last test status, by
 	// user id ("" when never tested). The numbers themselves are not read.
 	PagingPhones map[string]string
+	// ProfilePhones is the team members who have a callable number on their
+	// own profile ("user".phone), by user id. The numbers are not read.
+	ProfilePhones map[string]bool
 }
 
 // PagingReadinessAbsence is one absence: the dates it covers (EndsOn empty
@@ -557,7 +560,27 @@ func (r *pagingChainRepository) ReadinessFacts(ctx context.Context, from, to str
 		}
 		f.PagingPhones[id] = status
 	}
-	return f, rows.Err()
+	if err := rows.Err(); err != nil {
+		return f, fmt.Errorf("read paging readiness phones: %w", err)
+	}
+
+	f.ProfilePhones = map[string]bool{}
+	prow, err := r.db.Query(ctx, `
+		SELECT u.id::text FROM "user" u
+		 WHERE btrim(u.phone) ~ $1
+		   AND EXISTS (SELECT 1 FROM team_member m WHERE m.user_id = u.id)`, CallablePhonePattern)
+	if err != nil {
+		return f, fmt.Errorf("query paging readiness profile phones: %w", err)
+	}
+	defer prow.Close()
+	for prow.Next() {
+		var id string
+		if err := prow.Scan(&id); err != nil {
+			return f, fmt.Errorf("scan paging readiness profile phone: %w", err)
+		}
+		f.ProfilePhones[id] = true
+	}
+	return f, prow.Err()
 }
 
 // collectPagingRows runs query and appends one scanned T per row to out, which is

@@ -185,8 +185,8 @@ func (a *specialOpsAlerts) alert(ctx context.Context, tx repository.IncidentRepo
 	if a == nil {
 		return nil
 	}
-	product, team := a.teams.teamForGroup(group)
-	if team == nil {
+	product, teams := a.teams.teamsForGroup(group)
+	if len(teams) == 0 {
 		return nil
 	}
 	previous, _ := c.Changes["assignment_group_id"]["from"].(string)
@@ -196,6 +196,11 @@ func (a *specialOpsAlerts) alert(ctx context.Context, tx repository.IncidentRepo
 	}
 	if err != nil {
 		return err
+	}
+	team := pickedTeam(teams, src.HandoffNote)
+	if len(teams) > 1 && team == teams[0] && handoffNoteTeam(src.HandoffNote) != team.Key {
+		slog.WarnContext(ctx, "specialops: several Special Ops teams share this group and the handoff note names none of them; alerting the first",
+			"incidentId", c.IncidentID, "group", group, "team", team.Key)
 	}
 	changedBy, _ := c.Snapshot["updated_by"].(string)
 	raw, err := json.Marshal(events.IncidentSpecialOpsAlertPayload{
@@ -217,6 +222,37 @@ func (a *specialOpsAlerts) alert(ctx context.Context, tx repository.IncidentRepo
 	slog.InfoContext(ctx, "specialops: published incident.special_ops_alert",
 		"incidentId", c.IncidentID, "number", src.Number, "team", team.Key)
 	return nil
+}
+
+// pickedTeam is the team the alert is for: the only team on the group, or,
+// when several share it, the one the handoff's reason note names (the team
+// picked in the dialog). With no note naming one of them, the first.
+func pickedTeam(teams []*SpecialistHandoffConfigTeam, note *string) *SpecialistHandoffConfigTeam {
+	if len(teams) > 1 {
+		if key := handoffNoteTeam(note); key != "" {
+			for _, t := range teams {
+				if t.Key == key {
+					return t
+				}
+			}
+		}
+	}
+	return teams[0]
+}
+
+// handoffNoteTeam is the escalationTeam a handoff reason note names, "" when
+// there is no note, it is not the handoff's JSON or it names no team.
+func handoffNoteTeam(note *string) string {
+	if note == nil {
+		return ""
+	}
+	var blob struct {
+		EscalationTeam *string `json:"escalationTeam"`
+	}
+	if json.Unmarshal([]byte(*note), &blob) != nil || blob.EscalationTeam == nil {
+		return ""
+	}
+	return strings.TrimSpace(*blob.EscalationTeam)
 }
 
 // reportTaskFor is the Create Record step of "Create Incident Report Task".

@@ -7324,6 +7324,14 @@ paths:
             type: string
             format: date-time
           description: RFC3339 instant. Defaults to now.
+        - name: includeOnLeave
+          in: query
+          required: false
+          schema: { type: boolean, default: false }
+          description: >-
+            Also return the people away that day, marked onLeave, after the
+            ones available. Without it they are left out. Case Paging asks for
+            them when a ladder's onLeave is call.
       responses:
         "200":
           description: Everyone whose window covers that instant.
@@ -9235,7 +9243,9 @@ paths:
         "409":
           description: >-
             Incident not eligible for a specialist handoff (wrong business service, not in
-            progress, or already with the specialist group for this service).
+            progress, or already with the specialist group for this service), or assigned to
+            nobody (errorCode `incident_handoff_needs_assignee`: the assignee answers for the
+            page to the SME on duty).
           content:
             application/json:
               schema:
@@ -20301,6 +20311,9 @@ components:
         isOnCall: { type: boolean }
         source: { type: string, enum: [GENERATED, MANUAL, SWAP, IMPORTED] }
         note: { type: string }
+        onLeave:
+          type: boolean
+          description: Set only on GET /team-schedule/on-duty?includeOnLeave=true, on a row whose engineer is away that day.
     ScheduleAbsence:
       type: object
       properties:
@@ -20425,6 +20438,9 @@ components:
           allOf:
             - $ref: '#/components/schemas/PagingPhone'
           description: The person's paging-only number; null when none is stored.
+        hasProfilePhone:
+          type: boolean
+          description: Whether the person has a callable (E.164) number on their own profile ("user".phone), which paging calls ahead of the paging-only number. Absent when paging numbers are not configured.
     PagingChainPermissions:
       type: object
       required: [responderTeams, teamLeadTeams, americasTeamLead, heads]
@@ -20501,7 +20517,11 @@ components:
             (someone holding a position is away: an error for a responder, a
             warning for a lead or head; teamKey and date set),
             ACCOUNT_TEAM_NOT_ABT (CRE); ROTA_INACTIVE, TIER_UNCOVERED (SRE);
-            SHIFT_UNCOVERED, HANDOFF_TEAM_UNMAPPED (SME).
+            TIER_UNCOVERED (SME: an SME window with no L1 -- an error -- or no
+            L2 / L3 -- a warning; someone rostered with no tier counts as L1;
+            teamKey, date, shiftCode and tier set), HANDOFF_TEAM_UNMAPPED (SME).
+            SHIFT_UNCOVERED, the SME check before its windows had tiers, is no
+            longer sent.
           example: TIER_UNCOVERED
         severity: { type: string, enum: [error, warning] }
         message: { type: string, description: One sentence for a person; wording may change. }
@@ -20525,6 +20545,9 @@ components:
         hasPagingPhone:
           type: boolean
           description: Whether a paging-only number is stored for them. The number is never part of readiness.
+        hasProfilePhone:
+          type: boolean
+          description: Whether they have a callable (E.164) number on their own profile ("user".phone). The number is never part of readiness.
         pagingPhoneLastTestStatus:
           type: string
           enum: [pending, completed, no-answer, busy, failed]
@@ -20591,11 +20614,26 @@ components:
         testedAt: { type: string, format: date-time }
     PagingContact:
       type: object
-      required: [userId, email, phone, setBy, setAt]
+      description: One person's numbers. A person with neither a profile number nor a paging-only number is not listed.
+      required: [userId, email, dialPhone, dialSource, phone]
       properties:
         userId: { type: string, format: uuid }
         email: { type: string }
-        phone: { type: string, example: "+94771234123" }
+        dialPhone:
+          type: string
+          example: "+94771234123"
+          description: The number to call. The profile number when it is a callable E.164 number, else the paging-only number; empty when neither.
+        dialSource:
+          type: string
+          enum: [profile, paging, ""]
+          description: Where dialPhone comes from; empty when there is no number to call.
+        profilePhone:
+          type: string
+          description: The number on the person's own profile ("user".phone), as stored. Omitted when blank.
+        phone:
+          type: string
+          example: "+94771234123"
+          description: The paging-only number; empty when none is stored. setBy, setAt and the test fields describe it and are omitted with it.
         setBy: { type: string }
         setAt: { type: string, format: date-time }
         lastTestAt: { type: string, format: date-time }
@@ -21186,7 +21224,9 @@ components:
             request's project, its own creator, a user who may not decide an internal
             stage, or a field a customer may not set), and, on POST /incidents,
             `incident_assignment_group_not_allowed` (400: an assignmentGroupId that is
-            not an active support group of any service; nothing created). The list grows, so this is
+            not an active support group of any service; nothing created), and, on POST
+            /incidents/{id}/specialist-handoffs, `incident_handoff_needs_assignee` (409:
+            the incident is assigned to nobody). The list grows, so this is
             deliberately not a closed enum: a value not listed here is a newer server's.
           example: change_request_on_hold
 

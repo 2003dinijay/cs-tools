@@ -65,6 +65,11 @@ type SpecialOpsAlertSource struct {
 	Impact, Urgency              *string
 	ServiceID, ServiceName       *string
 	GroupName, PreviousGroupName *string
+	// HandoffNote is the newest specialist handoff reason work note on the
+	// incident (the JSON {"reasonCode":...,"escalationTeam":...} the
+	// handoff writes in the transaction that moves the group), nil when
+	// there is none. It names the team picked in the dialog.
+	HandoffNote *string
 }
 
 // IncidentReportSource is what the incident Resolved/In Progress flows read
@@ -316,13 +321,18 @@ func (t incidentReportTx) SpecialOpsAlertSource(ctx context.Context, incidentID,
 		SELECT wi.number, wi.subject, wi.description, i.state::text, i.priority::text,
 		       i.impact::text, i.urgency::text, i.service_id::text, svc.name,
 		       (SELECT g.name FROM "group" g WHERE g.id = NULLIF($2, '')::uuid),
-		       (SELECT g.name FROM "group" g WHERE g.id = NULLIF($3, '')::uuid)
+		       (SELECT g.name FROM "group" g WHERE g.id = NULLIF($3, '')::uuid),
+		       (SELECT c.content FROM comment c
+		         WHERE c.work_item_id = i.id AND c.type = 'WORK_NOTE'::comment_type_enum
+		           AND c.content LIKE '%"reasonCode"%'
+		         ORDER BY c.created_on DESC, c.id DESC LIMIT 1)
 		FROM incident i
 		JOIN work_item wi ON wi.id = i.id
 		LEFT JOIN service svc ON svc.id = i.service_id
 		WHERE i.id = $1`, incidentID, groupID, previousGroupID).
 		Scan(&s.Number, &s.Subject, &s.Description, &s.State, &s.Priority,
-			&s.Impact, &s.Urgency, &s.ServiceID, &s.ServiceName, &s.GroupName, &s.PreviousGroupName)
+			&s.Impact, &s.Urgency, &s.ServiceID, &s.ServiceName, &s.GroupName, &s.PreviousGroupName,
+			&s.HandoffNote)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return SpecialOpsAlertSource{}, ErrIncidentNotFound
 	}

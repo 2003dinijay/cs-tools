@@ -35,10 +35,12 @@ import (
 // the whole of the rule, a pure function over what the repository gathered,
 // so it is tested without a database.
 //
-// What it does not check: whether a person can actually be called (a phone
-// number, a Chat account) -- that lives outside this service -- and whether a
-// night window's small hours, which fall on the next calendar day, are
-// covered by someone away that next day. Absence is matched by rota date.
+// It reports, per person, whether they have a callable number on their own
+// profile and a paging-only number (and how its last test went), but raises
+// no phone gap: the CSM portal backend turns those flags into gaps. What it
+// does not check: a Chat account, and whether a night window's small hours,
+// which fall on the next calendar day, are covered by someone away that next
+// day. Absence is matched by rota date.
 
 const (
 	pagingReadinessDefaultDays = 7
@@ -110,11 +112,12 @@ func computePagingReadiness(f repository.PagingReadinessFacts, handoff *Speciali
 			finishChain(smeReadiness(f, handoff, dates)),
 		},
 	}
-	// Whether each person has a paging-only number, and how its last test
-	// went. Never the number.
+	// Whether each person has a number on their own profile, a paging-only
+	// number, and how the latter's last test went. Never the numbers.
 	for ci := range resp.Chains {
 		for pi := range resp.Chains[ci].People {
 			p := &resp.Chains[ci].People[pi]
+			p.HasProfilePhone = p.UserID != "" && f.ProfilePhones[p.UserID]
 			if status, ok := f.PagingPhones[p.UserID]; ok && p.UserID != "" {
 				p.HasPagingPhone = true
 				if status != "" {
@@ -494,9 +497,12 @@ func sreReadiness(f repository.PagingReadinessFacts, rotaCode, label string, dat
 	return c
 }
 
-// smeReadiness checks the SME page: every SME team on an SME rota has
-// somebody rostered on each of its windows worked each day, and every team
-// the specialist handoff dialog offers names an SME team that exists.
+// smeReadiness checks the SME ladder: every SME team on an SME rota has an
+// L1, an L2 and an L3 on each of its windows worked each day -- someone
+// rostered there with no tier counts as L1, as the ladder pages them -- and
+// every team the specialist handoff dialog offers names an SME team that
+// exists. A missing L1 is an error (the ladder reaches nobody); a missing L2
+// or L3 is a warning (it stops climbing early).
 func smeReadiness(f repository.PagingReadinessFacts, handoff *SpecialistHandoffConfig, dates []time.Time) domain.PagingReadinessChain {
 	c := domain.PagingReadinessChain{Chain: familySME, Label: "SME page"}
 	smeRota := map[string]bool{}
@@ -512,31 +518,37 @@ func smeReadiness(f repository.PagingReadinessFacts, handoff *SpecialistHandoffC
 		teamName[strings.ToLower(t.Key)] = t.Name
 	}
 
-	covered := map[string]bool{} // team|date|shift
-	teamsOf := map[string]map[string]bool{}
+	covered := map[string]bool{} // team|date|shift|tier
+	rolesOf := map[string]map[string]bool{}
+	tiersOf := map[string]map[string]bool{}
 	var order []repository.PagingReadinessAssignment
 	for _, a := range f.Assignments {
 		if !smeRota[a.RotaCode] {
 			continue
 		}
 		team := strings.ToLower(a.TeamKey)
-		covered[team+"|"+a.RotaDate+"|"+a.ShiftCode] = true
+		tier := a.Tier
+		if tier == "" {
+			tier = "L1"
+		}
+		covered[team+"|"+a.RotaDate+"|"+a.ShiftCode+"|"+tier] = true
 		key := personKey(a.Email, a.Name)
-		if teamsOf[key] == nil {
-			teamsOf[key] = map[string]bool{}
+		if rolesOf[key] == nil {
+			rolesOf[key], tiersOf[key] = map[string]bool{}, map[string]bool{}
 			order = append(order, a)
 		}
 		name := teamName[team]
 		if name == "" {
 			name = a.TeamKey
 		}
-		teamsOf[key][name] = true
+		rolesOf[key][name+" "+tier] = true
+		tiersOf[key][tier] = true
 	}
 	for _, a := range order {
+		key := personKey(a.Email, a.Name)
 		c.People = append(c.People, domain.PagingReadinessPerson{
-			UserID: a.UserID, Email: a.Email, Name: a.Name, Role: strings.Join(sortedKeys(teamsOf[personKey(a.Email, a.Name)]), ", "),
-			// The SME page is one call to the person on duty.
-			PagingTier: 1,
+			UserID: a.UserID, Email: a.Email, Name: a.Name, Role: strings.Join(sortedKeys(rolesOf[key]), ", "),
+			PagingTier: sreFirstTier(tiersOf[key]),
 		})
 	}
 
@@ -554,14 +566,20 @@ func smeReadiness(f repository.PagingReadinessFacts, handoff *SpecialistHandoffC
 				if w.RotaCode != t.RotaCode || !appliesOn(w.DayScope, d) {
 					continue
 				}
-				if covered[strings.ToLower(t.Key)+"|"+day+"|"+w.ShiftCode] {
-					continue
+				for _, tier := range []string{"L1", "L2", "L3"} {
+					if covered[strings.ToLower(t.Key)+"|"+day+"|"+w.ShiftCode+"|"+tier] {
+						continue
+					}
+					severity := readinessWarning
+					if tier == "L1" {
+						severity = readinessError
+					}
+					c.Gaps = append(c.Gaps, domain.PagingReadinessGap{
+						Code: "TIER_UNCOVERED", Severity: severity, Fix: fixRota,
+						TeamKey: t.Key, Date: day, ShiftCode: w.ShiftCode, Tier: tier,
+						Message: fmt.Sprintf("%s has no %s rostered for %s on %s.", name, tier, w.ShiftLabel, day),
+					})
 				}
-				c.Gaps = append(c.Gaps, domain.PagingReadinessGap{
-					Code: "SHIFT_UNCOVERED", Severity: readinessError, Fix: fixRota,
-					TeamKey: t.Key, Date: day, ShiftCode: w.ShiftCode,
-					Message: fmt.Sprintf("%s has nobody rostered for %s on %s.", name, w.ShiftLabel, day),
-				})
 			}
 		}
 	}

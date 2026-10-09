@@ -92,17 +92,22 @@ type SpecialistHandoffConfigTeam struct {
 // the paging readiness check says.
 var teamKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
 
-// teamForGroup is the product and team whose Special Ops group groupID is,
-// or nil, nil for any other group.
-func (c *SpecialistHandoffConfig) teamForGroup(groupID string) (*SpecialistHandoffProduct, *SpecialistHandoffConfigTeam) {
+// teamsForGroup is the product and the teams whose Special Ops group groupID
+// is, or nil, nil for any other group. Two teams of one product may share a
+// group; the caller then needs the team the handoff picked.
+func (c *SpecialistHandoffConfig) teamsForGroup(groupID string) (*SpecialistHandoffProduct, []*SpecialistHandoffConfigTeam) {
 	if c == nil || groupID == "" {
 		return nil, nil
 	}
 	for i := range c.Products {
+		var teams []*SpecialistHandoffConfigTeam
 		for j := range c.Products[i].Teams {
 			if strings.EqualFold(c.Products[i].Teams[j].GroupID, groupID) {
-				return &c.Products[i], &c.Products[i].Teams[j]
+				teams = append(teams, &c.Products[i].Teams[j])
 			}
+		}
+		if len(teams) > 0 {
+			return &c.Products[i], teams
 		}
 	}
 	return nil, nil

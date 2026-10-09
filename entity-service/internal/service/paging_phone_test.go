@@ -45,9 +45,11 @@ const (
 
 // stubContacts is paging_contact in memory, with the same rules the SQL has.
 type stubContacts struct {
-	users     map[string]repository.PagingUser
-	teams     map[string][]repository.PagingTeamRef
-	rows      map[string]repository.PagingContactRow
+	users map[string]repository.PagingUser
+	teams map[string][]repository.PagingTeamRef
+	rows  map[string]repository.PagingContactRow
+	// profiles is "user".phone, by user id.
+	profiles  map[string]string
 	lastActor string
 }
 
@@ -60,7 +62,8 @@ func newStubContacts() *stubContacts {
 			uidAsgardeo: {{TeamKey: "asgardeo", Family: "SME"}},
 			uidAmericas: {{TeamKey: "americas", Family: "CRE"}},
 		},
-		rows: map[string]repository.PagingContactRow{},
+		rows:     map[string]repository.PagingContactRow{},
+		profiles: map[string]string{},
 	}
 	for id, name := range map[string]string{uidVega: "Vic", uidApollo: "Abe", uidAsgardeo: "Ama", uidAmericas: "Ana", uidNoTeam: "Nia"} {
 		c.users[id] = repository.PagingUser{ID: id, Email: strings.ToLower(name) + "@wso2.com", Name: name}
@@ -104,13 +107,30 @@ func (c *stubContacts) ByUserIDs(_ context.Context, ids []string) (map[string]re
 	return out, nil
 }
 
-func (c *stubContacts) ByEmails(_ context.Context, emails []string) ([]repository.PagingContactRow, error) {
-	out := []repository.PagingContactRow{}
+func (c *stubContacts) DialNumbersByEmails(_ context.Context, emails []string) ([]repository.PagingDialRow, error) {
+	out := []repository.PagingDialRow{}
 	for _, e := range emails {
-		for _, r := range c.rows {
-			if strings.EqualFold(r.Email, e) {
-				out = append(out, r)
+		for id, u := range c.users {
+			if !strings.EqualFold(u.Email, strings.TrimSpace(e)) {
+				continue
 			}
+			d := repository.PagingDialRow{UserID: id, Email: u.Email, ProfilePhone: strings.TrimSpace(c.profiles[id])}
+			if r, ok := c.rows[id]; ok {
+				d.Paging = &r
+			}
+			if d.ProfilePhone != "" || d.Paging != nil {
+				out = append(out, d)
+			}
+		}
+	}
+	return out, nil
+}
+
+func (c *stubContacts) ProfilePhoneUserIDs(_ context.Context, ids []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	for _, id := range ids {
+		if e164.MatchString(strings.TrimSpace(c.profiles[id])) {
+			out[id] = true
 		}
 	}
 	return out, nil
@@ -381,7 +401,8 @@ func TestListPagingContacts(t *testing.T) {
 	if err != nil || len(resp.Contacts) != 1 {
 		t.Fatalf("%+v %v", resp, err)
 	}
-	if c := resp.Contacts[0]; c.UserID != uidVega || c.Phone != "+94771234123" || c.SetBy != "lead@wso2.com" || c.SetAt != "2026-10-08T10:00:00Z" {
+	if c := resp.Contacts[0]; c.UserID != uidVega || c.Phone != "+94771234123" || c.SetBy != "lead@wso2.com" || c.SetAt != "2026-10-08T10:00:00Z" ||
+		c.DialPhone != "+94771234123" || c.DialSource != "paging" || c.ProfilePhone != "" {
 		t.Errorf("contact %+v", c)
 	}
 	if resp, err := svc.ListPagingContacts(context.Background(), nil); err != nil || resp.Contacts == nil || len(resp.Contacts) != 0 {
@@ -399,6 +420,53 @@ func TestListPagingContacts(t *testing.T) {
 	denied := NewPagingChainService(repo, contacts, deniedAccess{}, nil, nil)
 	if _, err := denied.ListPagingContacts(context.Background(), []string{"vic@wso2.com"}); !errors.As(err, &forbidden) {
 		t.Errorf("customer: %v", err)
+	}
+}
+
+// The number to call is the one on the person's own profile when it can be
+// called, else the paging-only number; someone with neither is left out.
+func TestListPagingContacts_DialNumber(t *testing.T) {
+	repo, contacts := phoneFixture()
+	ctx := context.Background()
+	_, _ = contacts.Upsert(ctx, "lead@wso2.com", uidVega, "+94771234123")
+	_, _ = contacts.Upsert(ctx, "lead@wso2.com", uidApollo, "+94771234124")
+	contacts.profiles[uidVega] = " +94770000001 "   // both: the profile wins
+	contacts.profiles[uidApollo] = "077 000 0002"   // not callable: the paging number
+	contacts.profiles[uidAsgardeo] = "+94770000003" // profile only
+	contacts.profiles[uidNoTeam] = "0770000005"     // neither callable, no paging number
+	svc := phoneService(repo, contacts, nil, time.Now())
+
+	resp, err := svc.ListPagingContacts(ctx, []string{"vic@wso2.com", "abe@wso2.com", "ama@wso2.com", "ana@wso2.com", "nia@wso2.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := map[string]domain.PagingContact{}
+	for _, c := range resp.Contacts {
+		got[c.UserID] = c
+	}
+	for id, want := range map[string][3]string{ // dial number, source, paging-only number
+		uidVega:     {"+94770000001", "profile", "+94771234123"},
+		uidApollo:   {"+94771234124", "paging", "+94771234124"},
+		uidAsgardeo: {"+94770000003", "profile", ""},
+		uidNoTeam:   {"", "", ""},
+	} {
+		c, ok := got[id]
+		if !ok {
+			t.Errorf("%s missing", id)
+			continue
+		}
+		if c.DialPhone != want[0] || c.DialSource != want[1] || c.Phone != want[2] {
+			t.Errorf("%s = dial %q (%s), paging %q; want %v", id, c.DialPhone, c.DialSource, c.Phone, want)
+		}
+	}
+	if _, ok := got[uidAmericas]; ok {
+		t.Error("a person with neither number must be left out")
+	}
+	raw, _ := json.Marshal(got[uidAsgardeo])
+	for _, absent := range []string{`"setBy"`, `"setAt"`, `"lastTestStatus"`} {
+		if strings.Contains(string(raw), absent) {
+			t.Errorf("profile-only contact carries %s: %s", absent, raw)
+		}
 	}
 }
 
@@ -481,6 +549,16 @@ func TestGetPagingChain_PagingPhones(t *testing.T) {
 	for _, m := range view(context.Background()) {
 		if m.CanEditPhone || (m.PagingPhone != nil && m.PagingPhone.Phone != "") {
 			t.Errorf("service credential got %+v %+v", m, m.PagingPhone)
+		}
+	}
+
+	// Whether each member has a callable number on their own profile.
+	contacts.profiles[uidVega] = "+94770000001"
+	contacts.profiles[uidAmericas] = "not a number"
+	got = view(pagingCaller("vegalead@wso2.com"))
+	for id, want := range map[string]bool{idVegaEng: true, idAmEng: false, idVegaLead: false} {
+		if m := got[id]; m.HasProfilePhone == nil || *m.HasProfilePhone != want {
+			t.Errorf("%s hasProfilePhone = %v, want %v", id, m.HasProfilePhone, want)
 		}
 	}
 }

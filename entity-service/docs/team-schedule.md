@@ -324,7 +324,7 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
 A **rota** is a named rotation inside a family. SRE runs SaaS (Apollo & Artemis)
 and IaaS. **SME**, a third family added in 0199, runs one rota per product:
 Asgardeo, Choreo Runtime, Bijira, Devant, WSO2 Cloud · Agent platform,
-WSO2 Cloud · Core and Moesif. The source is the "CSM SRE + SME on call" doc.
+WSO2 Cloud · Core and Moesif, plus U2 and B-Central (0214). The source is the "CSM SRE + SME on call" doc.
 PaaS SRE is N/A there, so it has no rota until it has a schedule.
 
 | Rota | Family | Team type | Zones (LK time) | Duty rotates | Escalation |
@@ -338,6 +338,10 @@ PaaS SRE is N/A there, so it has no rota until it has a schedule.
 | `SME_CLOUD_AGENT` | SME | `sme-cloud-agent` | `WCA_D` 06:00–18:00 · `WCA_N` 18:00–06:00 | weekly | 5 min |
 | `SME_CLOUD_CORE` | SME | `sme-cloud-core` | `WCC_D` / `WCC_N`, as Agent platform | weekly | 5 min |
 | `SME_MOESIF` | SME | `sme-moesif` | `MOE_D` 10:00–22:00 · `MOE_N` 22:00–10:00 | weekly | 30 min |
+| `SME_U2` | SME | `sme-u2` | `U2_D` / `U2_N`, as Moesif | weekly | 5 min |
+| `SME_B_CENTRAL` | SME | `sme-b-central` | `BCN_D` / `BCN_N`, as Moesif | weekly | 5 min |
+
+U2 and B-Central were added by migration 0214, data only, with the windows their rota sheet gives. Unlike the other SME rotations it also inserts their two team rows (keys `u2`, `b-central`), only when no team has that key, so every environment gets them from one script.
 
 **How it hangs together:**
 - **Teams join a rota by type.** A team is on the rota whose `team_type` matches
@@ -379,6 +383,27 @@ them by.
 - **The notification service only runs the CRE ladder.** Its rota rungs are
   scoped by team type and key, so the new teams never reach it. An SRE or SME
   ladder is separate work.
+
+## Who may read and change each family
+
+There are three rota admins, one per family: `cre_rota_admin`, `sre_rota_admin`
+and `sme_rota_admin`. No schema change: the family of a team is read from
+`team.type`, as everywhere else.
+
+| Role (in CRE, SRE or SME) | Reads | Writes, updates, deletes |
+|---|---|---|
+| Engineer | every family | nothing |
+| Team lead | every family | their own team |
+| Rota admin | every family | their own family's teams |
+
+- **Reads are not limited by family**, for anyone: the catalogue, turns, leave,
+  on-duty, edit markers and every Case Paging chain.
+- **Writes** go through `requireRotaWriter`: a lead edits their own team, a rota
+  admin the teams of their family.
+- **Absence kinds** (`schedule_tag_family.go`): a kind a rota admin adds is
+  stored for their family (`team_schedule_absence_kind.family`), and they may
+  delete only their own family's custom kinds. A team lead who is no rota admin
+  adds shared kinds, as before.
 
 ## 5. Known gaps
 

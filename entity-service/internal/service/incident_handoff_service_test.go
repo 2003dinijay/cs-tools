@@ -71,7 +71,7 @@ func hoTeam(t domain.IncidentSpecialistHandoffEscalationTeam) *domain.IncidentSp
 func hoSnapshot(service, group, state string) repository.SpecialistHandoffSnapshot {
 	snap := repository.SpecialistHandoffSnapshot{
 		IncidentID: hoIncidentID, Number: "INC0099001", Subject: "Gateway 502s", State: state,
-		Description: hoStr("All gateways return 502."),
+		Description: hoStr("All gateways return 502."), AssignedToID: hoStr("33333333-3333-4333-8333-333333333333"),
 	}
 	if service != "" {
 		snap.ServiceID = &service
@@ -152,6 +152,26 @@ func TestPlanSpecialistHandoff_Eligibility(t *testing.T) {
 	}
 	if _, _, _, err := planSpecialistHandoff(nil, req, hoSnapshot(hoChoreoService, "", "IN_PROGRESS")); err == nil {
 		t.Error("no config: want a ConflictError")
+	}
+}
+
+// An incident nobody is assigned to cannot be escalated: the assignee is
+// responsible for the page to the SME on duty. The refusal is a 409 with its
+// own errorCode and a message the dialog shows as it is.
+func TestPlanSpecialistHandoff_NeedsAnAssignee(t *testing.T) {
+	cfg := hoConfig(t)
+	req := domain.HandOffIncidentToSpecialistRequest{IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook,
+		EscalationTeam: hoTeam(domain.IncidentSpecialistHandoffTeamChoreoRuntime)}
+	for name, assignee := range map[string]*string{"nobody": nil, "blank": hoStr("  ")} {
+		t.Run(name, func(t *testing.T) {
+			snap := hoSnapshot(hoChoreoService, "", "IN_PROGRESS")
+			snap.AssignedToID = assignee
+			_, _, _, err := planSpecialistHandoff(cfg, req, snap)
+			var ce *apierror.ConflictError
+			if !errors.As(err, &ce) || ce.Code != apierror.CodeIncidentHandoffNeedsAssignee || ce.Msg != SpecialistHandoffNeedsAssigneeMsg {
+				t.Fatalf("err = %#v, want the needs-an-assignee 409", err)
+			}
+		})
 	}
 }
 

@@ -61,8 +61,9 @@ const (
 	pagingTestPending = "pending"
 )
 
-// e164 is the number shape paging_contact's CHECK enforces.
-var e164 = regexp.MustCompile(`^\+[1-9][0-9]{6,14}$`)
+// e164 is the number shape paging_contact's CHECK enforces, and the shape a
+// profile number must have to be called.
+var e164 = regexp.MustCompile(repository.CallablePhonePattern)
 
 // validPagingTestResult are the outcomes the calling service may report.
 var validPagingTestResult = map[string]bool{"completed": true, "no-answer": true, "busy": true, "failed": true}
@@ -274,9 +275,11 @@ func (s *pagingChainService) RequestTestCall(ctx context.Context, userID string)
 	return domain.PagingTestCallResponse{LastTestStatus: pagingTestPending}, nil
 }
 
-// ListPagingContacts implements PagingChainService: the stored numbers of
-// the people with the given emails, for the service that pages and for
-// internal staff.
+// ListPagingContacts implements PagingChainService: for the service that
+// pages and for internal staff, the numbers of the people with the given
+// emails -- the one on their own profile ("user".phone), their paging-only
+// one, and which of the two to call: the profile number when it is callable,
+// else the paging-only number. Someone with neither is left out.
 func (s *pagingChainService) ListPagingContacts(ctx context.Context, emails []string) (domain.PagingContactsResponse, error) {
 	if err := RequireInternalCaller(ctx, s.access, "paging numbers are only available to internal callers"); err != nil {
 		return domain.PagingContactsResponse{}, err
@@ -289,19 +292,39 @@ func (s *pagingChainService) ListPagingContacts(ctx context.Context, emails []st
 	if len(emails) == 0 || s.contacts == nil {
 		return resp, nil
 	}
-	rows, err := s.contacts.ByEmails(ctx, emails)
+	rows, err := s.contacts.DialNumbersByEmails(ctx, emails)
 	if err != nil {
 		return domain.PagingContactsResponse{}, err
 	}
-	for _, c := range rows {
-		v := pagingPhoneView(c, true)
-		resp.Contacts = append(resp.Contacts, domain.PagingContact{
-			UserID: c.UserID, Email: c.Email, Phone: c.Phone, SetBy: v.SetBy, SetAt: v.SetAt,
-			LastTestAt: v.LastTestAt, LastTestStatus: v.LastTestStatus,
-		})
+	for _, d := range rows {
+		c := domain.PagingContact{UserID: d.UserID, Email: d.Email, ProfilePhone: d.ProfilePhone}
+		if d.Paging != nil {
+			v := pagingPhoneView(*d.Paging, true)
+			c.Phone, c.SetBy, c.SetAt = d.Paging.Phone, v.SetBy, v.SetAt
+			c.LastTestAt, c.LastTestStatus = v.LastTestAt, v.LastTestStatus
+		}
+		c.DialPhone, c.DialSource = dialNumber(d.ProfilePhone, c.Phone)
+		resp.Contacts = append(resp.Contacts, c)
 	}
 	return resp, nil
 }
+
+// dialNumber is the number paging calls and where it comes from: the
+// profile number when it is callable, else the paging-only number.
+func dialNumber(profile, paging string) (number, source string) {
+	if profile = strings.TrimSpace(profile); e164.MatchString(profile) {
+		return profile, dialSourceProfile
+	}
+	if paging = strings.TrimSpace(paging); paging != "" {
+		return paging, dialSourcePaging
+	}
+	return "", ""
+}
+
+const (
+	dialSourceProfile = "profile"
+	dialSourcePaging  = "paging"
+)
 
 // RecordTestResult implements PagingChainService: the outcome of a test
 // call, from the service that placed it. A person's token is refused: only
@@ -366,12 +389,18 @@ func (s *pagingChainService) withPhones(ctx context.Context, a *pagingAuthority,
 			return err
 		}
 	}
+	profiles, err := s.contacts.ProfilePhoneUserIDs(ctx, ids)
+	if err != nil {
+		return err
+	}
 	for i := range members {
 		m := &members[i]
 		m.CanEditPhone = a != nil && a.canEditPhone(teams[m.UserID])
 		if c, ok := contacts[m.UserID]; ok {
 			m.PagingPhone = pagingPhoneView(c, m.CanEditPhone)
 		}
+		has := profiles[m.UserID]
+		m.HasProfilePhone = &has
 	}
 	return nil
 }

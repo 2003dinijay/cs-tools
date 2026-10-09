@@ -358,23 +358,38 @@ func TestComputePagingReadiness_SREInactiveWindowsOnly(t *testing.T) {
 
 func TestComputePagingReadiness_SME(t *testing.T) {
 	c := chainOf(t, computePagingReadiness(readinessFixture(), readinessHandoff(t), readinessFrom, 3, time.Now()), "SME")
-	want := []string{
-		gk("SHIFT_UNCOVERED", "error", "rota", "asgardeo", "2026-10-10", "", "", "SME_ASG_NIGHT"),
-		gk("HANDOFF_TEAM_UNMAPPED", "error", "config", "", "", "", "", ""),
-		gk("HANDOFF_TEAM_UNMAPPED", "error", "config", "choreo-runtime", "", "", "", ""),
+	// Each Day and Night window needs an L1, an L2 and an L3: only L1s are
+	// rostered, and nobody on the night of the 10th. A missing L1 is an
+	// error; a missing L2 or L3 a warning.
+	var want []string
+	for _, day := range []string{"2026-10-09", "2026-10-10", "2026-10-11"} {
+		for _, shift := range []string{"SME_ASG_DAY", "SME_ASG_NIGHT"} {
+			if day == "2026-10-10" && shift == "SME_ASG_NIGHT" {
+				want = append(want, gk("TIER_UNCOVERED", "error", "rota", "asgardeo", day, "", "L1", shift))
+			}
+			want = append(want,
+				gk("TIER_UNCOVERED", "warning", "rota", "asgardeo", day, "", "L2", shift),
+				gk("TIER_UNCOVERED", "warning", "rota", "asgardeo", day, "", "L3", shift))
+		}
 	}
+	want = append(want,
+		gk("HANDOFF_TEAM_UNMAPPED", "error", "config", "", "", "", "", ""),
+		gk("HANDOFF_TEAM_UNMAPPED", "error", "config", "choreo-runtime", "", "", "", ""))
 	if got := gapKeys(c.Gaps); !reflect.DeepEqual(got, want) {
 		t.Errorf("gaps\n got %v\nwant %v", got, want)
 	}
-	if !strings.Contains(c.Gaps[1].Message, "choreo-special-ops") {
-		t.Errorf("unmapped team message %q does not name the dialog team", c.Gaps[1].Message)
+	if c.Ready {
+		t.Error("ready with an L1 missing")
+	}
+	if m := c.Gaps[len(c.Gaps)-2].Message; !strings.Contains(m, "choreo-special-ops") {
+		t.Errorf("unmapped team message %q does not name the dialog team", m)
 	}
 	var emails []string
 	for _, p := range c.People {
 		emails = append(emails, p.Email+"="+p.Role)
 	}
 	sort.Strings(emails)
-	if !reflect.DeepEqual(emails, []string{"ama@wso2.com=Asgardeo", "ash@wso2.com=Asgardeo"}) {
+	if !reflect.DeepEqual(emails, []string{"ama@wso2.com=Asgardeo L1", "ash@wso2.com=Asgardeo L1"}) {
 		t.Errorf("SME people %v", emails)
 	}
 }
@@ -517,11 +532,13 @@ func TestComputePagingReadiness_PeoplePagingPhones(t *testing.T) {
 		f.Assignments[i].UserID = "u-" + f.Assignments[i].Name
 	}
 	f.PagingPhones = map[string]string{"u-Vic": "completed", "u-Sam": "", "u-Ama": "no-answer"}
+	f.ProfilePhones = map[string]bool{"u-Val": true, "u-Vic": true}
 	resp := computePagingReadiness(f, nil, readinessFrom, 3, time.Now())
 
 	type view struct {
-		has    bool
-		status string
+		has     bool
+		status  string
+		profile bool
 	}
 	seen := map[string]view{}
 	for _, c := range resp.Chains {
@@ -529,7 +546,7 @@ func TestComputePagingReadiness_PeoplePagingPhones(t *testing.T) {
 			if p.UserID == "" {
 				t.Errorf("%s: %s has no userId", c.Chain, p.Email)
 			}
-			v := view{has: p.HasPagingPhone}
+			v := view{has: p.HasPagingPhone, profile: p.HasProfilePhone}
 			if p.PagingPhoneLastTestStatus != nil {
 				v.status = *p.PagingPhoneLastTestStatus
 			}
@@ -537,17 +554,17 @@ func TestComputePagingReadiness_PeoplePagingPhones(t *testing.T) {
 		}
 	}
 	for id, want := range map[string]view{
-		"u-Vic": {true, "completed"}, // CRE responder
-		"u-Sam": {true, ""},          // SRE engineer, never tested
-		"u-Ama": {true, "no-answer"}, // SME engineer
-		"u-Val": {false, ""},
+		"u-Vic": {true, "completed", true},  // CRE responder, both numbers
+		"u-Sam": {true, "", false},          // SRE engineer, never tested
+		"u-Ama": {true, "no-answer", false}, // SME engineer
+		"u-Val": {false, "", true},          // a profile number only
 	} {
 		if seen[id] != want {
 			t.Errorf("%s: %+v, want %+v", id, seen[id], want)
 		}
 	}
 	raw, _ := json.Marshal(resp.Chains[0].People[0])
-	for _, field := range []string{`"userId"`, `"hasPagingPhone"`} {
+	for _, field := range []string{`"userId"`, `"hasPagingPhone"`, `"hasProfilePhone"`} {
 		if !strings.Contains(string(raw), field) {
 			t.Errorf("person %s lacks %s", raw, field)
 		}

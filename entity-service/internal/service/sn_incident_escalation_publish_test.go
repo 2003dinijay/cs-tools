@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
@@ -497,6 +498,10 @@ func TestPublishIncidentAssigned_OnANewAssignee(t *testing.T) {
 	}
 	if p.AssigneeID != assignee || p.AssigneeName != "Ana" {
 		t.Errorf("payload = %+v, want the new assignee", p)
+	}
+	// When it was set, for the SME page to compare an alert against.
+	if at, err := time.Parse(time.RFC3339, p.AssignedOn); err != nil || time.Since(at) > time.Minute {
+		t.Errorf("assignedOn = %q, want the time of the assignment", p.AssignedOn)
 	}
 }
 

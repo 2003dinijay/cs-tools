@@ -45,9 +45,14 @@ type PagingContactRepository interface {
 	Get(ctx context.Context, userID string) (*PagingContactRow, error)
 	// ByUserIDs is the stored numbers of the given users, by user id.
 	ByUserIDs(ctx context.Context, userIDs []string) (map[string]PagingContactRow, error)
-	// ByEmails is the stored numbers of the users with the given emails
-	// (compared case-insensitively; an email held by two users yields both).
-	ByEmails(ctx context.Context, emails []string) ([]PagingContactRow, error)
+	// DialNumbersByEmails is, for the users with the given emails (compared
+	// case-insensitively; an email held by two users yields both), the
+	// number on their own profile ("user".phone) and their stored paging-only
+	// number. A user with neither is left out.
+	DialNumbersByEmails(ctx context.Context, emails []string) ([]PagingDialRow, error)
+	// ProfilePhoneUserIDs is which of the given users have a callable number
+	// on their own profile ("user".phone matching CallablePhonePattern).
+	ProfilePhoneUserIDs(ctx context.Context, userIDs []string) (map[string]bool, error)
 
 	// Upsert stores phone for the user. Changing the number clears the last
 	// test, which was of another number; restating it keeps it.
@@ -74,6 +79,20 @@ type PagingUser struct {
 type PagingTeamRef struct {
 	TeamKey string
 	Family  string
+}
+
+// CallablePhonePattern is the E.164 shape a number must have to be called:
+// the shape paging_contact's CHECK enforces, applied to "user".phone too.
+const CallablePhonePattern = `^\+[1-9][0-9]{6,14}$`
+
+// PagingDialRow is one person's two numbers: the one on their own profile
+// ("user".phone, migration 0141; "" when blank) and their paging-only number
+// (nil when none is stored).
+type PagingDialRow struct {
+	UserID       string
+	Email        string
+	ProfilePhone string
+	Paging       *PagingContactRow
 }
 
 // PagingContactRow is one paging_contact row, with the user's email.
@@ -193,11 +212,66 @@ func (r *pagingContactRepository) ByUserIDs(ctx context.Context, userIDs []strin
 	return out, nil
 }
 
-func (r *pagingContactRepository) ByEmails(ctx context.Context, emails []string) ([]PagingContactRow, error) {
+func (r *pagingContactRepository) DialNumbersByEmails(ctx context.Context, emails []string) ([]PagingDialRow, error) {
+	out := []PagingDialRow{}
 	if len(emails) == 0 {
-		return []PagingContactRow{}, nil
+		return out, nil
 	}
-	return r.list(ctx, `lower(u.email) = ANY(SELECT lower(e) FROM unnest($1::text[]) e)`, emails)
+	rows, err := r.db.Query(ctx, `
+		SELECT u.id::text, COALESCE(u.email, ''), COALESCE(btrim(u.phone), ''),
+		       pc.phone, pc.set_by, pc.set_at, pc.last_test_at, pc.last_test_status
+		  FROM "user" u
+		  LEFT JOIN paging_contact pc ON pc.user_id = u.id
+		 WHERE lower(u.email) = ANY(SELECT lower(e) FROM unnest($1::text[]) e)
+		   AND (COALESCE(btrim(u.phone), '') <> '' OR pc.user_id IS NOT NULL)
+		 ORDER BY 2, 1`, emails)
+	if err != nil {
+		return nil, fmt.Errorf("query paging dial numbers: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var d PagingDialRow
+		var phone, setBy *string
+		var setAt *time.Time
+		var c PagingContactRow
+		if err := rows.Scan(&d.UserID, &d.Email, &d.ProfilePhone, &phone, &setBy, &setAt, &c.LastTestAt, &c.LastTestStatus); err != nil {
+			return nil, fmt.Errorf("scan paging dial number: %w", err)
+		}
+		if phone != nil {
+			c.UserID, c.Email, c.Phone = d.UserID, d.Email, *phone
+			if setBy != nil {
+				c.SetBy = *setBy
+			}
+			if setAt != nil {
+				c.SetAt = *setAt
+			}
+			d.Paging = &c
+		}
+		out = append(out, d)
+	}
+	return out, rows.Err()
+}
+
+func (r *pagingContactRepository) ProfilePhoneUserIDs(ctx context.Context, userIDs []string) (map[string]bool, error) {
+	out := map[string]bool{}
+	if len(userIDs) == 0 {
+		return out, nil
+	}
+	rows, err := r.db.Query(ctx, `
+		SELECT id::text FROM "user"
+		 WHERE id = ANY($1::uuid[]) AND btrim(phone) ~ $2`, userIDs, CallablePhonePattern)
+	if err != nil {
+		return nil, fmt.Errorf("query profile phones: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, fmt.Errorf("scan profile phone: %w", err)
+		}
+		out[id] = true
+	}
+	return out, rows.Err()
 }
 
 // inTx runs fn in one transaction with the actor named for the audit trigger.

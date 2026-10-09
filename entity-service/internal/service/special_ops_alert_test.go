@@ -109,6 +109,48 @@ func TestSpecialOpsAlert_PublishedForATeamGroup(t *testing.T) {
 	}
 }
 
+// Two Special Ops teams sharing one group: the alert is for the team the
+// dialog picked, as the handoff's reason note names it, so the right SME rota
+// is paged. With no note naming one of them, the first.
+func TestSpecialOpsAlert_SharedGroupFollowsTheDialog(t *testing.T) {
+	cfg, err := ParseSpecialistHandoffConfig(`{"products":[
+		{"name":"Choreo","serviceIds":["b9c999f8-1b86-a010-00ae-86acdd4bcb61"],"teams":[
+			{"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"` + soChoreoRuntimeGroup + `","smeTeam":"choreo-runtime"},
+			{"key":"choreo-cloud-team","label":"Choreo Cloud Team","groupId":"` + soChoreoRuntimeGroup + `","smeTeam":"cloud-core"}]}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		note     *string
+		wantTeam string
+		wantSME  string
+	}{
+		"the dialog picked the second team": {strPtr(`{"reasonCode":"runbook_failed","reasonDescription":"x","escalationTeam":"choreo-cloud-team"}`), "choreo-cloud-team", "cloud-core"},
+		"the dialog picked the first team":  {strPtr(`{"reasonCode":"runbook_failed","reasonDescription":"x","escalationTeam":"choreo-runtime-team"}`), "choreo-runtime-team", "choreo-runtime"},
+		"no handoff note (moved by hand)":   {nil, "choreo-runtime-team", "choreo-runtime"},
+		"a note naming another team":        {strPtr(`{"reasonCode":"x","escalationTeam":"asgardeo"}`), "choreo-runtime-team", "choreo-runtime"},
+		"a note that is not the JSON":       {strPtr(`"reasonCode" mentioned in prose`), "choreo-runtime-team", "choreo-runtime"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pub := &alertPublisher{}
+			tx := alertTx()
+			tx.alertSrc.HandoffNote = c.note
+			svc := WithSpecialOpsAlerts(NewIncidentReportService(), pub, cfg)
+			if err := svc.HandleChange(context.Background(), tx, groupChange(soOtherGroup, soChoreoRuntimeGroup, "jane.doe@wso2.com")); err != nil {
+				t.Fatal(err)
+			}
+			if len(pub.sent) != 1 {
+				t.Fatalf("sent %d alerts, want 1", len(pub.sent))
+			}
+			var got events.IncidentSpecialOpsAlertPayload
+			_ = json.Unmarshal(pub.sent[0].Payload, &got)
+			if got.TeamKey != c.wantTeam || got.SMETeam != c.wantSME {
+				t.Errorf("team %q smeTeam %q, want %q %q", got.TeamKey, got.SMETeam, c.wantTeam, c.wantSME)
+			}
+		})
+	}
+}
+
 // Group ids match case-insensitively, and an incident with no previous group
 // still alerts.
 func TestSpecialOpsAlert_CaseInsensitiveAndNoPreviousGroup(t *testing.T) {

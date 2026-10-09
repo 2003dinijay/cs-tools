@@ -50,6 +50,10 @@ type PagingChainMember struct {
 	CanEditPhone bool `json:"canEditPhone"`
 	// PagingPhone is the person's paging-only number; null when none is set.
 	PagingPhone *PagingPhone `json:"pagingPhone"`
+	// HasProfilePhone is whether the person has a callable number on their
+	// own profile ("user".phone), which paging calls ahead of PagingPhone.
+	// Absent when the paging numbers are not configured.
+	HasProfilePhone *bool `json:"hasProfilePhone,omitempty"`
 }
 
 // PagingPhone is a paging-only phone number: the one paging calls when the
@@ -91,14 +95,25 @@ type PagingTestResultRequest struct {
 	TestedAt string `json:"testedAt"`
 }
 
-// PagingContact is one stored paging-only number, as the service that pages
-// reads it: the full number, for the person's email.
+// PagingContact is one person's numbers, as the service that pages reads
+// them, for their email: the number to call (DialPhone), the number on their
+// own profile and their paging-only number.
 type PagingContact struct {
-	UserID         string  `json:"userId"`
-	Email          string  `json:"email"`
+	UserID string `json:"userId"`
+	Email  string `json:"email"`
+	// DialPhone is the number to call: the profile number when it is a
+	// callable E.164 number, else the paging-only number; "" when neither.
+	// DialSource says which: "profile" or "paging" ("" with no number).
+	DialPhone  string `json:"dialPhone"`
+	DialSource string `json:"dialSource"`
+	// ProfilePhone is the number on the person's own profile ("user".phone),
+	// as stored; omitted when blank.
+	ProfilePhone string `json:"profilePhone,omitempty"`
+	// Phone is the paging-only number; "" when none is stored. SetBy, SetAt
+	// and the test fields are about it, and omitted with it.
 	Phone          string  `json:"phone"`
-	SetBy          string  `json:"setBy"`
-	SetAt          string  `json:"setAt"`
+	SetBy          string  `json:"setBy,omitempty"`
+	SetAt          string  `json:"setAt,omitempty"`
 	LastTestAt     *string `json:"lastTestAt,omitempty"`
 	LastTestStatus *string `json:"lastTestStatus,omitempty"`
 }
@@ -196,6 +211,9 @@ type PagingReadinessPerson struct {
 	// The number itself is never part of readiness.
 	HasPagingPhone            bool    `json:"hasPagingPhone"`
 	PagingPhoneLastTestStatus *string `json:"pagingPhoneLastTestStatus,omitempty"`
+	// HasProfilePhone is whether they have a callable number on their own
+	// profile ("user".phone), which paging calls ahead of the paging-only one.
+	HasProfilePhone bool `json:"hasProfilePhone"`
 	// PagingTier is the Case Paging tier at which the chain first calls this
 	// person (1 = first called), so missing phone numbers can be listed in
 	// the order they would be needed. Zero when unknown.
