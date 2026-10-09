@@ -556,6 +556,12 @@ type Playbook struct {
 	ActiveRuns     int            `json:"activeRuns"`
 	CreatedOn      time.Time      `json:"createdOn"`
 	UpdatedOn      time.Time      `json:"updatedOn"`
+	// AuthoredBy and UpdatedBy are nil for playbooks written before attribution
+	// existed, and UpdatedBy need not be the author: any admin may edit any
+	// playbook. Both are UserRef rather than a bare id so the manager can show a
+	// name without a second lookup, matching every other actor PLG returns.
+	AuthoredBy *UserRef `json:"authoredBy"`
+	UpdatedBy  *UserRef `json:"updatedBy"`
 }
 
 // PlaybookTaskInput is one desired task in a submitted task list.

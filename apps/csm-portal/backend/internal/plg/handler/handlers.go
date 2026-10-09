@@ -34,7 +34,14 @@ func NewHandlers(
 	}
 }
 
-// actor returns the calling engineer's email, as resolved by Identity.
+// actor returns the calling engineer's `"user".id`, as resolved by Identity.
+//
+// The id, NOT the email: every attributed write sends this as actorId, and the
+// columns it lands in are UUID REFERENCES "user" (id). Identity takes the
+// email off the validated token, resolves it through GetCSUser, and puts the
+// resulting id here — which is also why a caller with no ACTIVE INTERNAL user
+// row is refused before any handler runs, rather than writing a row that
+// records nobody.
 func actor(r *http.Request) string { return middleware.UserIDFromContext(r.Context()) }
 
 // ---------------------------------------------------------------------------
@@ -136,7 +143,7 @@ func (h *Handlers) PatchOrganization(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ID = r.PathValue("organizationId")
 
-	org, err := h.orgs.Patch(r.Context(), req)
+	org, err := h.orgs.Patch(r.Context(), req, actor(r))
 	if err != nil {
 		auditWrite(r, "set owner", err, "organizationId", req.ID)
 		writeServiceError(w, r, err)
@@ -202,7 +209,7 @@ func (h *Handlers) AttachPlaybook(w http.ResponseWriter, r *http.Request) {
 
 // DetachRun serves DELETE /playbook-runs/{playbookRunId}.
 func (h *Handlers) DetachRun(w http.ResponseWriter, r *http.Request) {
-	detail, err := h.pairings.DetachRun(r.Context(), r.PathValue("playbookRunId"))
+	detail, err := h.pairings.DetachRun(r.Context(), r.PathValue("playbookRunId"), actor(r))
 	if err != nil {
 		auditWrite(r, "detach run", err, "playbookRunId", r.PathValue("playbookRunId"))
 		writeServiceError(w, r, err)
@@ -353,7 +360,7 @@ func (h *Handlers) CreatePlaybook(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ProductCode = r.PathValue("product")
 
-	pb, err := h.playbooks.Create(r.Context(), req)
+	pb, err := h.playbooks.Create(r.Context(), req, actor(r))
 	if err != nil {
 		auditWrite(r, "create playbook", err, "productCode", req.ProductCode, "lifecycleStage", string(req.LifecycleStage),
 			"playbookType", string(req.PlaybookType), "taskCount", len(req.Tasks))
@@ -373,7 +380,7 @@ func (h *Handlers) PatchPlaybook(w http.ResponseWriter, r *http.Request) {
 	}
 	req.ID = r.PathValue("playbookId")
 
-	pb, err := h.playbooks.Patch(r.Context(), req)
+	pb, err := h.playbooks.Patch(r.Context(), req, actor(r))
 	if err != nil {
 		auditWrite(r, "patch playbook", err, "playbookId", req.ID)
 		writeServiceError(w, r, err)
@@ -391,7 +398,7 @@ func (h *Handlers) ReplacePlaybookTasks(w http.ResponseWriter, r *http.Request) 
 	}
 	req.PlaybookID = r.PathValue("playbookId")
 
-	pb, err := h.playbooks.ReplaceTasks(r.Context(), req)
+	pb, err := h.playbooks.ReplaceTasks(r.Context(), req, actor(r))
 	if err != nil {
 		auditWrite(r, "replace tasks", err, "playbookId", req.PlaybookID, "taskCount", len(req.Tasks))
 		writeServiceError(w, r, err)
