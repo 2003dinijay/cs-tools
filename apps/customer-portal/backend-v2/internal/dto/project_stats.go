@@ -433,7 +433,15 @@ func BuildProjectSupportStats(caseStats *entity.ProjectCaseStatsResponse, conver
 	if conversationStats != nil {
 		mapped := MapConversationStats(*conversationStats)
 		out.ActiveChats = mapped.ActiveCount
+		// Resolved via Chat (Last 30d): the 30-day figure when entity-service sends one,
+		// else the Resolved count of the state breakdown (not limited to any period),
+		// which is what a build that predates the 30-day figure, and the ServiceNow data
+		// source, still send.
 		out.ResolvedChats = mapped.ResolvedCount
+		if conversationStats.ResolvedPastThirtyDays != nil {
+			resolved := *conversationStats.ResolvedPastThirtyDays
+			out.ResolvedChats = &resolved
+		}
 	}
 	return out
 }

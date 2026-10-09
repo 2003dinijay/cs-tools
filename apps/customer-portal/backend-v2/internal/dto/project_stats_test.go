@@ -17,6 +17,7 @@
 package dto
 
 import (
+	"errors"
 	"strconv"
 	"strings"
 	"testing"
@@ -438,5 +439,67 @@ func TestBuildProjectSupportStats_ChatCardsFromPostgresLabels(t *testing.T) {
 	}
 	if got.ResolvedChats == nil || *got.ResolvedChats != 10 {
 		t.Errorf("resolvedChats = %v, want 10", got.ResolvedChats)
+	}
+}
+
+// Resolved via Chat (Last 30d) is the 30-day figure when entity-service sends one, and
+// falls back to the Resolved entry of the state breakdown (not limited to any period) when it does
+// not: a build that predates the figure, and the ServiceNow data source.
+func TestBuildProjectSupportStats_ResolvedChatsIsTheThirtyDayFigure(t *testing.T) {
+	states := []entity.ChoiceListItem{
+		{ID: "ACTIVE", Label: "ACTIVE", Count: intPtr(281)},
+		{ID: "RESOLVED", Label: "RESOLVED", Count: intPtr(10)},
+	}
+
+	got := BuildProjectSupportStats(nil, &entity.ProjectConversationStatsResponse{StateCount: states, ResolvedPastThirtyDays: intPtr(3)})
+	if got.ResolvedChats == nil || *got.ResolvedChats != 3 {
+		t.Errorf("resolvedChats = %v, want the 30-day figure 3", got.ResolvedChats)
+	}
+	if got.ActiveChats == nil || *got.ActiveChats != 281 {
+		t.Errorf("activeChats = %v, want 281", got.ActiveChats)
+	}
+
+	// Zero is a real answer, not "absent".
+	got = BuildProjectSupportStats(nil, &entity.ProjectConversationStatsResponse{StateCount: states, ResolvedPastThirtyDays: intPtr(0)})
+	if got.ResolvedChats == nil || *got.ResolvedChats != 0 {
+		t.Errorf("resolvedChats = %v, want 0 when nothing was resolved in the window", got.ResolvedChats)
+	}
+
+	got = BuildProjectSupportStats(nil, &entity.ProjectConversationStatsResponse{StateCount: states})
+	if got.ResolvedChats == nil || *got.ResolvedChats != 10 {
+		t.Errorf("resolvedChats = %v, want the breakdown's 10 when no 30-day figure is sent", got.ResolvedChats)
+	}
+}
+
+// The "Resolved via Chat (Last 30d)" list sends its window as RFC 3339 updated-date bounds; they reach
+// entity-service as sent, a missing bound stays absent, and a bound that is not a date is refused.
+func TestBuildEntitySearchConversationsRequest_UpdatedDateWindow(t *testing.T) {
+	const projectID = "11111111-1111-4111-8111-111111111111"
+
+	req := ConversationSearchRequest{Filters: ConversationSearchFilters{
+		StateKeys:        []int{3},
+		StartUpdatedDate: "2026-09-09T10:00:00Z",
+		EndUpdatedDate:   "2026-10-09T10:00:00Z",
+	}}
+	got, err := BuildEntitySearchConversationsRequest(projectID, req)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Filters.StartUpdatedDate == nil || *got.Filters.StartUpdatedDate != "2026-09-09T10:00:00Z" ||
+		got.Filters.EndUpdatedDate == nil || *got.Filters.EndUpdatedDate != "2026-10-09T10:00:00Z" {
+		t.Errorf("window = %v .. %v, want it passed through", got.Filters.StartUpdatedDate, got.Filters.EndUpdatedDate)
+	}
+
+	got, err = BuildEntitySearchConversationsRequest(projectID, ConversationSearchRequest{Filters: ConversationSearchFilters{StateKeys: []int{3}}})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.Filters.StartUpdatedDate != nil || got.Filters.EndUpdatedDate != nil {
+		t.Errorf("window = %v .. %v, want none when none was sent", got.Filters.StartUpdatedDate, got.Filters.EndUpdatedDate)
+	}
+
+	_, err = BuildEntitySearchConversationsRequest(projectID, ConversationSearchRequest{Filters: ConversationSearchFilters{StartUpdatedDate: "last week"}})
+	if !errors.Is(err, ErrInvalidConversationDate) {
+		t.Errorf("a bound that is not a date = %v, want ErrInvalidConversationDate", err)
 	}
 }

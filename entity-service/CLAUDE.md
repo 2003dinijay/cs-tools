@@ -7764,8 +7764,17 @@ project of the dev database (Customer 3 Project) they disagreed three ways: Outs
   state breakdown whose ids are raw enum labels on this data source, so the card was absent/0 (see
   `apps/customer-portal/backend-v2/CLAUDE.md`). entity-service's `activeCount` here is Open + Active; the portal
   card and its list use the Active state alone.
-- **Deploy:** entity-service first (card counts and the closed-date filter), then the customer portal backend
-  (Active Chats). Neither needs a migration.
+- **Resolved via Chat (Last 30d) is really 30 days.** A conversation has no resolved-on column, so "resolved in the
+  last 30 days" is state `RESOLVED` and `work_item.updated_on` within 30 days (a resolved chat is rarely touched
+  again). The card is `ProjectConversationStatsResponse.ResolvedPastThirtyDays` (`ResolvedConversationsPastThirtyDays`,
+  Postgres only; a pointer, absent on ServiceNow and on older builds, where the portal backend falls back to the
+  Resolved entry of `stateCount`, which has no period). The list is `SearchConversations` with
+  `filters.startUpdatedDate` / `endUpdatedDate` (inclusive; an end before the start is a 400; the ServiceNow-backed
+  search does not forward them). The customer portal's list sends only the start. Test:
+  `TestConversationResolvedWindowIntegration`.
+- **Deploy:** entity-service first (card counts, the closed-date filter, the 30-day figure and filter), then the
+  customer portal backend (Active Chats, Resolved via Chat), then the webapp (the list's window). Entity-service
+  rejects unknown request fields, so the backend must not go out before it. No migration.
 
 ## Call requests and the service-request catalog (migrations 000067-000072)
 

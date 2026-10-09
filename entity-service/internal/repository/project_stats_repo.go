@@ -100,6 +100,12 @@ type ProjectStatsRepository interface {
 	// state. createdBy is an optional creator email filter.
 	ConversationStateCounts(ctx context.Context, projectID, createdBy string) ([]StateCount, error)
 
+	// ResolvedConversationsPastThirtyDays returns how many of the project's
+	// conversations are Resolved and were last updated in the past 30 days (a
+	// conversation has no resolved-on column). createdBy is an optional creator
+	// email filter, as for ConversationStateCounts.
+	ResolvedConversationsPastThirtyDays(ctx context.Context, projectID, createdBy string) (int, error)
+
 	// ChangeRequestStateCounts returns the project's change requests grouped
 	// by state.
 	ChangeRequestStateCounts(ctx context.Context, projectID string) ([]StateCount, error)
@@ -336,6 +342,29 @@ func (r *projectStatsRepo) ConversationStateCounts(ctx context.Context, projectI
 	}
 	defer rows.Close()
 	return scanStateCounts(rows, "conversation")
+}
+
+// ResolvedConversationsPastThirtyDays implements ProjectStatsRepository.
+func (r *projectStatsRepo) ResolvedConversationsPastThirtyDays(ctx context.Context, projectID, createdBy string) (int, error) {
+	args := []any{projectID}
+	createdByClause := ""
+	if createdBy != "" {
+		args = append(args, createdBy)
+		createdByClause = fmt.Sprintf(" AND LOWER(wi.created_by) = LOWER($%d)", len(args))
+	}
+
+	var n int
+	err := r.db.QueryRow(ctx, `
+		SELECT COUNT(*)
+		  FROM work_item wi
+		  JOIN conversation conv ON conv.id = wi.id
+		 WHERE wi.project_id = $1::uuid`+createdByClause+`
+		   AND conv.state = 'RESOLVED'::conversation_state_enum
+		   AND wi.updated_on >= now() - INTERVAL '30 days'`, args...).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("project stats: resolved conversations past thirty days: %w", err)
+	}
+	return n, nil
 }
 
 // ChangeRequestStateCounts implements ProjectStatsRepository.

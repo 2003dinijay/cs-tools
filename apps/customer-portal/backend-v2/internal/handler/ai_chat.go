@@ -19,6 +19,7 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"log/slog"
 	"net/http"
 	"strconv"
@@ -174,6 +175,10 @@ func (h *AIChatHandler) SearchConversations(w http.ResponseWriter, r *http.Reque
 		// A state id this backend cannot map is refused rather than answered.
 		// Dropping it would leave the search unfiltered, which returns every
 		// conversation in the project and looks like a working filter.
+		if errors.Is(err, dto.ErrInvalidConversationDate) {
+			writeError(w, http.StatusBadRequest, "Invalid conversation date filter.")
+			return
+		}
 		writeError(w, http.StatusBadRequest, "Unsupported conversation state filter.")
 		return
 	}

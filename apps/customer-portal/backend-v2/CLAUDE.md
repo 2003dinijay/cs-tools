@@ -405,6 +405,10 @@ responses are fanned out into eight differently-shaped, purpose-built views rath
   lists behind them, which filter on the same numeric state keys, held hundreds of conversations
   (digiops-cs#3390). Active Chats is the Active state alone (ServiceNow's meaning, and what its list
   shows), not entity-service's `activeCount` (Open + Active), which `GET /projects/{id}/stats` still passes through.
+  Resolved via Chat (Last 30d) is entity-service's `resolvedPastThirtyDays` (Resolved and updated in the past 30
+  days; a pointer, so an older entity-service or the ServiceNow data source, which send none, fall back to the
+  Resolved entry of the breakdown). Its list sends `filters.startUpdatedDate` (RFC 3339; anything else is a 400,
+  `ErrInvalidConversationDate`) on `POST /projects/{id}/conversations/search`, forwarded to entity-service.
 
 ## Middleware chain
 
