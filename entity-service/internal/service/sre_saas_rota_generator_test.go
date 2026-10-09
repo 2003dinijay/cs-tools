@@ -675,6 +675,36 @@ func TestSRESaaSRota_AChosenTZ3CrewTakesEveryTierInTurn(t *testing.T) {
 	}
 }
 
+// Lieu leave is only the days the on-call is not already away: with leave on
+// the Tuesday after their weekend, the lieu is the Monday alone -- written as
+// a span that overlaps nothing, so the write cannot drop it.
+func TestSRESaaSRota_LieuSkipsOnlyTheDayAlreadyAway(t *testing.T) {
+	month := saasMonth(2026, time.November)
+	plan := generateSRESaaSRota(saasTestInput(month))
+	var l saasPlannedLieu
+	for _, x := range plan.Lieu {
+		if x.From != x.To && x.Weekend >= "2026-11-07" {
+			l = x
+			break
+		}
+	}
+	if l.UserID == "" {
+		t.Fatalf("no two-day lieu to test with: %v", plan.Lieu)
+	}
+	in := saasTestInput(month)
+	in.Unavailable[l.UserID] = map[string]bool{l.To: true}
+	again := generateSRESaaSRota(in)
+	for _, x := range again.Lieu {
+		if x.UserID == l.UserID && x.Weekend == l.Weekend {
+			if x.From != l.From || x.To != l.From {
+				t.Fatalf("lieu for %s after %s: want %s only, got %s to %s", l.UserID, l.Weekend, l.From, x.From, x.To)
+			}
+			return
+		}
+	}
+	t.Fatalf("the weekend's lieu went missing for %s: %v", l.UserID, again.Lieu)
+}
+
 // A weekend that starts in the month before (Saturday 31 October, Sunday 1
 // November): November's run writes the Sunday, so it writes that weekend's
 // lieu too -- the on-call is kept off the Monday and Tuesday either way.

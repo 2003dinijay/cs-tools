@@ -129,6 +129,14 @@ func (r *rotaGenerateRepository) ReplaceGeneratedMonth(ctx context.Context, w Ro
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
+	// One generation of a rota at a time. Two leads pressing Generate together
+	// would otherwise each delete only the rows committed before they began,
+	// and the month would come out as a mix of both runs. The second waits
+	// here, then replaces what the first wrote.
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, w.Owner); err != nil {
+		return out, fmt.Errorf("lock generated month: %w", err)
+	}
+
 	if err := nameTheActor(ctx, tx, w.ActorEmail); err != nil {
 		return out, err
 	}

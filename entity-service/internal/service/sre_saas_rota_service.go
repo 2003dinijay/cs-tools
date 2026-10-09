@@ -19,9 +19,13 @@ package service
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
+	// The zone database, embedded: "today" is counted in Asia/Colombo, and a
+	// slim image with no zoneinfo would otherwise make it UTC's day.
+	_ "time/tzdata"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
@@ -381,6 +385,8 @@ func (s *rotaGenerateService) today() time.Time {
 	now := s.now()
 	if loc, err := time.LoadLocation(rotaAuthoringZone); err == nil {
 		now = now.In(loc)
+	} else {
+		slog.Warn("rota generator: zone not found, counting today in UTC", "zone", rotaAuthoringZone, "error", err)
 	}
 	return time.Date(now.Year(), now.Month(), now.Day(), 0, 0, 0, 0, time.UTC)
 }

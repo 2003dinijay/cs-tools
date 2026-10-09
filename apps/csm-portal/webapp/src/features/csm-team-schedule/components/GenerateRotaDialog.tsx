@@ -31,6 +31,7 @@ import {
 } from "@wso2/oxygen-ui";
 import { useMemo, useState, type JSX } from "react";
 import { useGenerateRota, type GenerateRotaResult } from "../api/useGenerateRota";
+import GeneratedRotaPreview from "./GeneratedRotaPreview";
 import { monthKey, monthLabel } from "../utils/rotaMonth";
 
 /** How many of the generator's notes are listed before the rest are counted. */
@@ -96,6 +97,11 @@ export default function GenerateRotaDialog({
   const [written, setWritten] = useState<GenerateRotaResult | null>(null);
   const generate = useGenerateRota();
   const [crew, setCrew] = useState<Record<string, string[]>>(loadCrew);
+  const [showRota, setShowRota] = useState(false);
+  /** A real write is in flight. The request cannot be called back, so the
+   *  dialog stays open until it lands: closing now would only hide a month
+   *  that is still being written. A preview writes nothing and may be left. */
+  const writing = generate.isPending && generate.variables?.dryRun !== true;
 
   /** The chosen TZ3 people still on their team, by team; teams with nobody
    *  chosen are left out, so they keep the usual nights. */
@@ -111,9 +117,11 @@ export default function GenerateRotaDialog({
   const reset = (): void => {
     setPreview(null);
     setWritten(null);
+    setShowRota(false);
     generate.reset();
   };
   const close = (): void => {
+    if (writing) return;
     reset();
     onClose();
   };
@@ -134,7 +142,14 @@ export default function GenerateRotaDialog({
   const warnings = shown?.warnings ?? [];
 
   return (
-    <Dialog open={open} onClose={close} maxWidth="sm" fullWidth aria-labelledby="generate-rota-title">
+    <Dialog
+      open={open}
+      onClose={close}
+      disableEscapeKeyDown={writing}
+      maxWidth="md"
+      fullWidth
+      aria-labelledby="generate-rota-title"
+    >
       <DialogTitle id="generate-rota-title">Generate SaaS rota</DialogTitle>
       <DialogContent>
         <Typography variant="body2" sx={{ mb: 2 }}>
@@ -242,6 +257,15 @@ export default function GenerateRotaDialog({
                     from {shown.from} on; turns set by hand are kept.
                   </Alert>
                 ) : null}
+                <Button size="small" sx={{ mt: 1, px: 0 }} onClick={() => setShowRota((v) => !v)} aria-expanded={showRota}>
+                  {showRota ? "Hide who works when" : "Show who works when"}
+                </Button>
+                {showRota ? (
+                  <GeneratedRotaPreview
+                    result={shown}
+                    teamNames={Object.fromEntries(teams.map((t) => [t.key, t.name]))}
+                  />
+                ) : null}
               </>
             )}
             {warnings.length > 0 ? (
@@ -266,7 +290,14 @@ export default function GenerateRotaDialog({
         ) : null}
       </DialogContent>
       <DialogActions>
-        <Button onClick={close}>{written ? "Done" : "Cancel"}</Button>
+        {writing ? (
+          <Typography variant="body2" color="text.secondary" role="status" sx={{ mr: "auto", pl: 1 }}>
+            Writing the month&hellip;
+          </Typography>
+        ) : null}
+        <Button onClick={close} disabled={writing}>
+          {written ? "Done" : "Cancel"}
+        </Button>
         {written ? null : preview ? (
           <Button variant="contained" onClick={runGenerate} disabled={generate.isPending}>
             {preview.alreadyGenerated ? "Regenerate" : "Generate"}

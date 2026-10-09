@@ -172,6 +172,47 @@ describe("GenerateRotaDialog", () => {
     });
   });
 
+  it("stays open while the month is being written", async () => {
+    postMock.mockResolvedValueOnce(result());
+    const { onClose } = renderDialog();
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    await screen.findByText(/turns and SUP from/);
+
+    let finish: (r: GenerateRotaResult) => void = () => {};
+    postMock.mockReturnValueOnce(new Promise<GenerateRotaResult>((res) => (finish = res)));
+    fireEvent.click(screen.getByRole("button", { name: "Generate" }));
+    await screen.findByText(/Writing the month/);
+    expect(screen.getByRole("button", { name: "Cancel" })).toBeDisabled();
+    fireEvent.keyDown(screen.getByRole("dialog"), { key: "Escape" });
+    expect(onClose).not.toHaveBeenCalled();
+
+    finish(result({ dryRun: false, summary: { planned: 120, keptByHand: 4, written: 116, replaced: 0, lieuPlanned: 6, lieuWritten: 6 } }));
+    fireEvent.click(await screen.findByRole("button", { name: "Done" }));
+    expect(onClose).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows who would work each zone, and the lieu leave, before writing", async () => {
+    postMock.mockResolvedValueOnce(
+      result({
+        turns: [
+          { userId: "u-ann", name: "Ann Perera", teamKey: "apollo", shiftCode: "SRE_TZ1_L1", tier: "L1", rotaDate: "2026-11-02" },
+          { userId: "u-ben", name: "Ben Silva", teamKey: "apollo", shiftCode: "SRE_TZ1", tier: "L2", rotaDate: "2026-11-02" },
+          { userId: "u-cal", name: "Cal Fernando", teamKey: "apollo", shiftCode: "SRE_TZ3", tier: "L3", rotaDate: "2026-11-02" },
+          { userId: "u-ann", name: "Ann Perera", teamKey: "apollo", shiftCode: "SRE_TZ1_REGULAR", tier: "", rotaDate: "2026-11-02" },
+        ],
+        lieuLeave: [{ userId: "u-ben", name: "Ben Silva", teamKey: "apollo", startsOn: "2026-11-09", endsOn: "2026-11-10" }],
+      }),
+    );
+    renderDialog(vi.fn(), TEAMS);
+    fireEvent.click(screen.getByRole("button", { name: "Preview" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Show who works when" }));
+    const table = screen.getByRole("table", { name: "Who works when" });
+    expect(table).toHaveTextContent("Apollo");
+    expect(table).toHaveTextContent("L1 Ann Perera · L2 Ben Silva");
+    expect(table).toHaveTextContent("L3 Cal Fernando");
+    expect(screen.getByText(/Ben Silva \(Apollo\):/)).toBeInTheDocument();
+  });
+
   it("starts again when another month is picked", async () => {
     postMock.mockResolvedValueOnce(result());
     renderDialog();
