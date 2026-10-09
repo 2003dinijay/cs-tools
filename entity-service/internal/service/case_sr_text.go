@@ -98,10 +98,25 @@ func fillServiceRequestText(ctx context.Context, srCatalog srCatalogReader, req 
 		}
 	}
 
+	catalogID := req.CatalogID
+	resolvedCatalogID, itemName := findCatalogItem(ctx, srCatalog, req)
+	if resolvedCatalogID != "" {
+		catalogID = resolvedCatalogID
+	}
+
 	var questions []domain.CatalogItemVariable
-	if vars, err := srCatalog.GetCatalogItemVariables(ctx, req.CatalogID, req.CatalogItemID); err != nil {
-		slog.WarnContext(ctx, "create service request: catalog variables lookup failed; title/description not derived",
-			"catalogId", req.CatalogID, "catalogItemId", req.CatalogItemID, "error", err)
+	if vars, err := srCatalog.GetCatalogItemVariables(ctx, catalogID, req.CatalogItemID); err != nil {
+		if resolvedCatalogID != "" && req.CatalogID != "" && req.CatalogID != resolvedCatalogID {
+			if fallbackVars, fallbackErr := srCatalog.GetCatalogItemVariables(ctx, req.CatalogID, req.CatalogItemID); fallbackErr == nil {
+				questions = fallbackVars.Variables
+			} else {
+				slog.WarnContext(ctx, "create service request: catalog variables lookup failed; title/description not derived",
+					"catalogId", catalogID, "catalogItemId", req.CatalogItemID, "error", err)
+			}
+		} else {
+			slog.WarnContext(ctx, "create service request: catalog variables lookup failed; title/description not derived",
+				"catalogId", catalogID, "catalogItemId", req.CatalogItemID, "error", err)
+		}
 	} else {
 		questions = vars.Variables
 	}
@@ -142,7 +157,7 @@ func fillServiceRequestText(ctx context.Context, srCatalog srCatalogReader, req 
 
 	if needSubject {
 		if title == "" {
-			title = serviceRequestItemName(ctx, srCatalog, req)
+			title = itemName
 		}
 		req.Subject = title
 	}
@@ -155,25 +170,37 @@ func (s *caseService) fillServiceRequestText(ctx context.Context, req *domain.Cr
 	fillServiceRequestText(ctx, s.srCatalog, req)
 }
 
-// serviceRequestItemName is the catalog item's name, the subject of last
-// resort for a service request whose form has no title-like question. "" when it
-// cannot be found.
-func serviceRequestItemName(ctx context.Context, srCatalog srCatalogReader, req *domain.CreateCaseRequest) string {
-	res, err := srCatalog.SearchCatalogs(ctx, domain.SearchCatalogsRequest{
-		DeployedProductID: req.DeployedProductID,
-		Pagination:        domain.Pagination{Limit: 50},
-	})
-	if err != nil {
-		slog.WarnContext(ctx, "create service request: catalog lookup failed; no subject derived",
-			"catalogItemId", req.CatalogItemID, "error", err)
-		return ""
+// findCatalogItem searches catalogs for the request's deployed product to locate
+// the catalog item. It returns the enclosing catalog's ID (for ServiceNow, the
+// sc_catalog sys_id rather than the category ID in req.CatalogID) and the item's
+// name. Both return values are "" if not found.
+func findCatalogItem(ctx context.Context, srCatalog srCatalogReader, req *domain.CreateCaseRequest) (catalogID string, itemName string) {
+	if req.DeployedProductID == "" || req.CatalogItemID == "" {
+		return "", ""
 	}
-	for _, c := range res.Catalogs {
-		for _, item := range c.CatalogItems {
-			if item.ID == req.CatalogItemID {
-				return item.Name
+	limit := 50
+	offset := 0
+	for {
+		res, err := srCatalog.SearchCatalogs(ctx, domain.SearchCatalogsRequest{
+			DeployedProductID: req.DeployedProductID,
+			Pagination:        domain.Pagination{Limit: limit, Offset: offset},
+		})
+		if err != nil {
+			slog.WarnContext(ctx, "create service request: catalog lookup failed",
+				"catalogItemId", req.CatalogItemID, "error", err)
+			return "", ""
+		}
+		for _, c := range res.Catalogs {
+			for _, item := range c.CatalogItems {
+				if item.ID == req.CatalogItemID {
+					return c.ID, item.Name
+				}
 			}
 		}
+		offset += len(res.Catalogs)
+		if offset >= res.Total || len(res.Catalogs) == 0 {
+			break
+		}
 	}
-	return ""
+	return "", ""
 }
