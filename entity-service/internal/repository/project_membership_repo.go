@@ -683,8 +683,8 @@ func upsertMembershipUser(ctx context.Context, tx querier, in domain.SalesforceM
 		WHERE id = $1`,
 		id, nullIfBlank(in.ContactName), nullIfBlank(in.ContactFirstName), nullIfBlank(in.ContactLastName),
 		email, in.IsCsIntegrationUser, in.ContactSfID, actor,
-		// Only a live membership on a replacement contact reactivates; the same contact never does.
-		replacedContact && in.State != "" && in.State != domain.MembershipStateDeactivated); err != nil {
+		// Only a replacement contact reactivates (either writer); the same contact never does.
+		replacedContact && in.State != domain.MembershipStateDeactivated); err != nil {
 		return "", "", false, fmt.Errorf("upsert membership: update user: %w", err)
 	}
 	return id, userName, false, nil
