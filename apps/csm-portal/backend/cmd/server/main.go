@@ -493,7 +493,12 @@ func main() {
 	route("GET /announcements/audience/excluded-project-keys", handler.PermView, announcementHandler.GetExcludedProjectKeys)
 	routeAll("POST /announcement-requests", announcementRequestHandler.CreateAnnouncementRequest, handler.PermWrite, handler.PermCreateAnnouncement)
 	route("GET /announcement-requests/{id}", handler.PermView, announcementRequestHandler.GetAnnouncementRequest)
-	route("POST /announcement-requests/search", handler.PermView, announcementRequestHandler.SearchAnnouncementRequests)
+	// The request list (drafts and requests awaiting approval) is the creators'
+	// workspace, so unlike the single-request reads below it needs both
+	// PermWrite and PermCreateAnnouncement. GET /announcement-requests/{id} and
+	// its updates/deliveries stay PermView: a published announcement in the main
+	// list opens the same request dialog for its "delivered to" summary.
+	routeAll("POST /announcement-requests/search", announcementRequestHandler.SearchAnnouncementRequests, handler.PermWrite, handler.PermCreateAnnouncement)
 	route("POST /announcements/registry/search", handler.PermView, announcementRegistryHandler.SearchAnnouncementRegistry)
 	routeAll("PATCH /announcement-requests/{id}", announcementRequestHandler.UpdateAnnouncementRequest, handler.PermWrite, handler.PermCreateAnnouncement)
 	routeAll("POST /announcement-requests/{id}/dry-run", announcementRequestHandler.RecordAnnouncementRequestDryRun, handler.PermWrite, handler.PermCreateAnnouncement)

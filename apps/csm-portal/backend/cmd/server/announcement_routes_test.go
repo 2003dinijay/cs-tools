@@ -27,9 +27,12 @@ import (
 // route is registered in main.go, because the registration is the only thing
 // that makes the announcement-creator role bite on them: a write route put
 // back on a plain route(..., PermWrite, ...) would let any CS engineer create or
-// publish an announcement again, and nothing else would notice. Reads stay
-// PermView, and approving stays PermWrite on purpose (it only records a
-// decision taken over email, see handler.PermCreateAnnouncement).
+// publish an announcement again, and nothing else would notice. Reading one
+// request (and its updates and deliveries) stays PermView, because a published
+// announcement in the main list opens the same request dialog; the request LIST
+// (the Requests tab: drafts and requests awaiting approval) is the creators'
+// workspace and needs both permissions. Approving stays PermWrite on purpose (it
+// only records a decision taken over email, see handler.PermCreateAnnouncement).
 func TestAnnouncementRequestRoutePermissions(t *testing.T) {
 	src, err := os.ReadFile("main.go")
 	if err != nil {
@@ -50,7 +53,7 @@ func TestAnnouncementRequestRoutePermissions(t *testing.T) {
 		var wantKind string
 		var wantPerms []string
 		switch {
-		case method == "GET", method == "POST" && path == "/announcement-requests/search":
+		case method == "GET":
 			wantKind, wantPerms = "route", []string{"PermView"}
 		case method == "POST" && strings.HasSuffix(path, "/approve"):
 			wantKind, wantPerms = "route", []string{"PermWrite"}

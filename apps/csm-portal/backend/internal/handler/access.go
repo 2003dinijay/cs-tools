@@ -178,7 +178,9 @@ const (
 	PermManagePlaybooks
 	// PermCreateAnnouncement is creating and sending a customer announcement:
 	// every write on the announcement-request workflow (create, edit, dry run,
-	// submit, schedule, publish, add an update, record deliveries) and creating a
+	// submit, schedule, publish, add an update, record deliveries), listing the
+	// requests (the Requests tab: drafts and requests awaiting approval, which is
+	// the creators' workspace) and creating a
 	// work item of type announcement through POST /cases, which is how the
 	// dry-run case and the per-project cases of a publish are made. Held by the
 	// announcement_creator role and admin.
