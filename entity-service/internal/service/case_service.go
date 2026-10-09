@@ -625,10 +625,9 @@ func (s *caseService) CreateCase(ctx context.Context, req domain.CreateCaseReque
 	if err := s.validateDeployedProductCategoryForType(ctx, req); err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
-	// Before both create paths: the dual-write path's Postgres copy
-	// (CreateCaseFromServiceNow) stores req.Subject too, and the ServiceNow
-	// payload for a service request never carries it, so ServiceNow still
-	// derives its own.
+	// Before both create paths: derive subject and description for a service
+	// request if not already provided, and forward both onto ServiceNow and
+	// Postgres.
 	s.fillServiceRequestText(ctx, &req)
 
 	if s.snMirror != nil {
