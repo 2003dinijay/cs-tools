@@ -161,7 +161,7 @@ func (s *caseService) fillServiceRequestText(ctx context.Context, req *domain.Cr
 func serviceRequestItemName(ctx context.Context, srCatalog srCatalogReader, req *domain.CreateCaseRequest) string {
 	res, err := srCatalog.SearchCatalogs(ctx, domain.SearchCatalogsRequest{
 		DeployedProductID: req.DeployedProductID,
-		Pagination:        domain.Pagination{Limit: 100},
+		Pagination:        domain.Pagination{Limit: 50},
 	})
 	if err != nil {
 		slog.WarnContext(ctx, "create service request: catalog lookup failed; no subject derived",
