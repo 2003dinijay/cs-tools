@@ -1705,6 +1705,13 @@ type ProjectConversationStatsResponse struct {
 	TotalCount  int              `json:"totalCount"`
 	ActiveCount int              `json:"activeCount"`
 	StateCount  []ChoiceListItem `json:"stateCount"`
+	// ResolvedPastThirtyDays is the number of conversations in the Resolved
+	// state that were last updated in the past 30 days: a conversation has no
+	// resolved-on column, so the last update stands in for it (a resolved chat
+	// is rarely touched again). Present on the Postgres data source only; absent
+	// on ServiceNow, whose callers then fall back to the Resolved entry of
+	// StateCount, which is not limited to any period.
+	ResolvedPastThirtyDays *int `json:"resolvedPastThirtyDays,omitempty"`
 }
 
 // ProjectDeploymentStatsResponse is the response for GET /projects/{id}/deployments/stats.
@@ -6709,6 +6716,15 @@ type SearchConversationsFilters struct {
 	// addresses (optional). Independent of CreatedByMe, which always scopes
 	// to the caller.
 	CreatedBy []string `json:"createdBy,omitempty"`
+	// StartUpdatedDate / EndUpdatedDate bound the conversation's last update
+	// time, inclusive (optional). A conversation has no resolved-on column, so
+	// "resolved in the last 30 days" is States [resolved] with a
+	// StartUpdatedDate 30 days back, the same definition
+	// ProjectConversationStatsResponse.ResolvedPastThirtyDays counts. Applied by
+	// the Postgres data source only; the ServiceNow-backed search does not
+	// forward them.
+	StartUpdatedDate *time.Time `json:"startUpdatedDate,omitempty"`
+	EndUpdatedDate   *time.Time `json:"endUpdatedDate,omitempty"`
 }
 
 // TotalNotComputed is the total a search response reports when the request set
