@@ -360,7 +360,7 @@ export default function CreateServiceRequestPage(): JSX.Element {
     [contactsData],
   );
 
-  const { mutate: postCase, isPending: isCreatePending } = usePostCase();
+  const { mutateAsync: postCase, isPending: isCreatePending } = usePostCase();
 
   const isInitialLoading = getCreateServiceRequestLoadingState(
     isProjectLoading,
@@ -468,6 +468,7 @@ export default function CreateServiceRequestPage(): JSX.Element {
   };
 
   const handleBack = () => {
+    if (isCreatePending || isNavigatingAfterCreate) return;
     const returnTo = (location.state as { returnTo?: string } | null)?.returnTo;
     if (returnTo) {
       navigate(returnTo);
@@ -550,74 +551,73 @@ export default function CreateServiceRequestPage(): JSX.Element {
       ...(watchList.length > 0 && { watchList }),
     };
 
-    postCase(payload, {
-      onSuccess: async (data) => {
-        setIsNavigatingAfterCreate(true);
-        const srNumber = (data as { number?: string }).number;
+    setIsNavigatingAfterCreate(true);
+    try {
+      const data = await postCase(payload);
+      const srNumber = (data as { number?: string }).number;
 
-        if (attachments.length > 0) {
-          const uploadPromise = uploadServiceRequestAttachments({
-            caseId: data.id,
-            attachments,
-            attachmentNames: attachmentNamesRef.current,
-            uploadAttachment: postAttachments.mutateAsync,
-            encodeFile: fileToBase64,
-            logger,
-          });
-          const timedOut = await Promise.race([
-            uploadPromise.then(() => false),
-            new Promise<boolean>((resolve) =>
-              setTimeout(() => resolve(true), ATTACHMENT_UPLOAD_WAIT_MS),
-            ),
-          ]);
-          if (timedOut) {
-            void uploadPromise.then((failed) => {
-              if (failed.length > 0) {
-                showError(
-                  `Failed to upload: ${failed.join(", ")}. You can retry from the Attachments tab.`,
-                );
-              }
-            });
-          } else {
-            const failed = await uploadPromise;
+      if (attachments.length > 0) {
+        const uploadPromise = uploadServiceRequestAttachments({
+          caseId: data.id,
+          attachments,
+          attachmentNames: attachmentNamesRef.current,
+          uploadAttachment: postAttachments.mutateAsync,
+          encodeFile: fileToBase64,
+          logger,
+        });
+        const timedOut = await Promise.race([
+          uploadPromise.then(() => false),
+          new Promise<boolean>((resolve) =>
+            setTimeout(() => resolve(true), ATTACHMENT_UPLOAD_WAIT_MS),
+          ),
+        ]);
+        if (timedOut) {
+          void uploadPromise.then((failed) => {
             if (failed.length > 0) {
               showError(
-                `The service request was created, but ${failed.length} attachment${failed.length === 1 ? "" : "s"} failed to upload. You can retry from the Attachments tab.`,
+                `Failed to upload: ${failed.join(", ")}. You can retry from the Attachments tab.`,
               );
             }
+          });
+        } else {
+          const failed = await uploadPromise;
+          if (failed.length > 0) {
+            showError(
+              `The service request was created, but ${failed.length} attachment${failed.length === 1 ? "" : "s"} failed to upload. You can retry from the Attachments tab.`,
+            );
           }
         }
+      }
 
-        if (projectId) {
-          await triggerPostCreationApiCalls(
-            authFetch,
-            projectId,
-            CaseType.SERVICE_REQUEST,
-          );
-          await refreshCaseQueriesAfterCreation(
-            queryClient,
-            projectId,
-            CaseType.SERVICE_REQUEST,
-          );
-        }
+      if (projectId) {
+        await triggerPostCreationApiCalls(
+          authFetch,
+          projectId,
+          CaseType.SERVICE_REQUEST,
+        );
+        await refreshCaseQueriesAfterCreation(
+          queryClient,
+          projectId,
+          CaseType.SERVICE_REQUEST,
+        );
+      }
 
-        navigate(
-          `/projects/${projectId}/${basePath}/service-requests/${data.id}`,
-        );
-        showSuccess(
-          srNumber
-            ? `Service request ${srNumber} created successfully`
-            : "Service request created successfully",
-        );
-      },
-      onError: (error) => {
-        setIsNavigatingAfterCreate(false);
-        const msg =
-          error?.message?.trim() ||
-          "We couldn't create your service request. Please try again.";
-        showError(msg);
-      },
-    });
+      navigate(
+        `/projects/${projectId}/${basePath}/service-requests/${data.id}`,
+      );
+      showSuccess(
+        srNumber
+          ? `Service request ${srNumber} created successfully`
+          : "Service request created successfully",
+      );
+    } catch (error) {
+      setIsNavigatingAfterCreate(false);
+      const msg =
+        error instanceof Error && error.message.trim()
+          ? error.message.trim()
+          : "We couldn't create your service request. Please try again.";
+      showError(msg);
+    }
   };
 
   const projectDisplay = projectDetails?.name ?? "";
@@ -777,7 +777,12 @@ export default function CreateServiceRequestPage(): JSX.Element {
         />
 
         <Box sx={{ display: "flex", justifyContent: "flex-end", gap: 1.5 }}>
-          <Button variant="outlined" color="inherit" onClick={handleBack}>
+          <Button
+            variant="outlined"
+            color="inherit"
+            onClick={handleBack}
+            disabled={isCreatePending || isNavigatingAfterCreate}
+          >
             Cancel
           </Button>
           <Button
