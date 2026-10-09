@@ -1544,6 +1544,7 @@ func resolverTeams(cre, sre paging.LadderConfig) paging.TeamKeys {
 	teams.SRE = sre.Teams.ABTs
 	// Which SRE rota pages an incident with no SRE team of its own.
 	teams.DefaultRota = sre.Teams.DefaultRota
+	teams.DefaultGroups = sre.Teams.DefaultGroups
 	if len(sre.Teams.Aliases) > 0 {
 		merged := make(map[string]string, len(cre.Teams.Aliases)+len(sre.Teams.Aliases))
 		for k, v := range cre.Teams.Aliases {

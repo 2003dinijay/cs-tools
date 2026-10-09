@@ -52,6 +52,12 @@ func (r TeamScheduleResolver) keyOf(team string) string {
 	return key
 }
 
+// isDefaultGroup reports whether key is one of sre.teams.defaultGroups: a
+// group holding incidents that have no SRE team of their own.
+func (r TeamScheduleResolver) isDefaultGroup(key string) bool {
+	return key != "" && contains(r.defaultGroups, key)
+}
+
 func (r TeamScheduleResolver) isSRETeam(key string) bool {
 	for _, k := range r.sreTeamKeys {
 		if k == key {
@@ -73,6 +79,9 @@ func (r TeamScheduleResolver) LadderFor(ctx context.Context, rc RoutingContext) 
 	key := r.keyOf(rc.AssignedCRETeam)
 	if key == "" {
 		return LadderCRE, nil
+	}
+	if r.isDefaultGroup(key) {
+		return LadderSRE, nil
 	}
 	if len(r.sreTeamKeys) > 0 {
 		if r.isSRETeam(key) {
@@ -108,7 +117,7 @@ func (r TeamScheduleResolver) TeamFamily(ctx context.Context, rc RoutingContext)
 	if key == "" {
 		return TeamFamilyNone, nil
 	}
-	if r.isSRETeam(key) {
+	if r.isSRETeam(key) || r.isDefaultGroup(key) {
 		return TeamFamilySRE, nil
 	}
 	if contains(r.abtTeamKeys, key) || key == r.americasTeamKey {
@@ -135,6 +144,10 @@ var sreTier = map[Level]string{Level0: "L1", Level1: "L2", Level2: "L3"}
 // ownSRETeam is the incident's own SRE team key, or "" for one that has none.
 func (r TeamScheduleResolver) ownSRETeam(rc RoutingContext) string {
 	own := r.keyOf(rc.AssignedCRETeam)
+	if r.isDefaultGroup(own) {
+		// A "Default" incident has no SRE team: whoever is on duty answers.
+		return ""
+	}
 	if !r.isSRETeam(own) && len(r.sreTeamKeys) > 0 {
 		// A CRE incident climbing the SRE ladder (a P0) belongs to no SRE
 		// team; every SRE team is then equally placed to answer.

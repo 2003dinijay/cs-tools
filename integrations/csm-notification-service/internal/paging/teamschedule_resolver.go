@@ -109,6 +109,9 @@ type TeamScheduleResolver struct {
 	// defaultRota is the SRE rota an incident with no SRE team of its own
 	// pages (a customer case at S0, a monitoring alert). See TeamKeys.
 	defaultRota string
+	// defaultGroups are the assignment groups (keys) whose incidents climb
+	// the SRE ladder as if they had no team. See TeamKeys.DefaultGroups.
+	defaultGroups []string
 	// phones supplies a number for each recipient. The rota holds none, so
 	// without it a rung can be reached over chat but not dialled.
 	phones PhoneBook
@@ -202,6 +205,7 @@ func NewTeamScheduleResolver(entity teamScheduleReader, teams TeamKeys, rules []
 		sreTeamKeys:               teamKeysFor(teams.SRE),
 		aliases:                   aliases,
 		defaultRota:               defaultRotaOf(teams.DefaultRota),
+		defaultGroups:             teamKeysFor(teams.DefaultGroups),
 	}
 }
 
@@ -353,6 +357,11 @@ type TeamKeys struct {
 	// monitoring alert raised with no team. Empty is SRE_SAAS. An SRE team's
 	// own incident always pages its team's rota, whatever this says.
 	DefaultRota string `yaml:"defaultRota"`
+	// DefaultGroups (sre.teams.defaultGroups) are assignment groups that hold
+	// incidents with no SRE team of their own ("Default"). Such an incident
+	// climbs the SRE ladder on DefaultRota, each rung reaching whoever holds
+	// that tier there now, as an incident with no team does. Empty: none.
+	DefaultGroups []string `yaml:"defaultGroups"`
 }
 
 // DefaultSRERota is the rota a team-less SRE page goes to when

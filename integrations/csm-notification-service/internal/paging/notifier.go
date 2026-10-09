@@ -196,6 +196,12 @@ func (v voiceNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall)
 // chatSender abstracts the Google Chat client for testability.
 type chatSender interface {
 	SendEscalationAlert(ctx context.Context, a notifications.EscalationAlert) error
+	// SendEscalationUnanswered posts the closing message of a ladder nobody
+	// acknowledged (sre.unansweredChat).
+	SendEscalationUnanswered(ctx context.Context, u notifications.EscalationUnanswered) error
+	// SendEscalationHandoff tells an SRE space its incident went to the SMEs
+	// (sre.smeHandoffChat).
+	SendEscalationHandoff(ctx context.Context, h notifications.EscalationHandoff) error
 	// HasAudienceSpace reports whether GOOGLE_CHAT_SPACES has a room for the
 	// audience. Asked before every rung, because the client itself treats an
 	// unknown audience as a quiet success.

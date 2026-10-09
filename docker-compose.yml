@@ -591,6 +591,8 @@ services:
       # Kept in scripts/csm-compose/.env (git-ignored); export it before
       # `docker compose up`. Never committed.
       SRE_CHAT_WEBHOOK_URL: ${SRE_CHAT_WEBHOOK_URL:-}
+      # The SME page's room, named by paging-alert.yaml sme.chat.webhookUrlEnv.
+      SME_CHAT_WEBHOOK_URL: ${SME_CHAT_WEBHOOK_URL:-}
       INCIDENT_ESCALATION_ROSTER: ${INCIDENT_ESCALATION_ROSTER:-}
       # Resolve rungs from the Team Schedule -- the rule table paging-alert.yaml
       # and rules.go describe. Unset, the server falls back to the stand-in

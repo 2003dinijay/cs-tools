@@ -331,6 +331,27 @@ sre:
     webhookUrlEnv: SRE_CHAT_WEBHOOK_URL
     audience: "SRE"
 
+  # Each SRE team's own Google Chat space, by team key, the same shape as
+  # chat: its rung cards and its closing message go there. A team not listed,
+  # or an incident with no team, uses chat above. e.g.
+  #   teamChats:
+  #     apollo:  { webhookUrlEnv: SRE_CHAT_WEBHOOK_URL_APOLLO,  audience: "Apollo SRE" }
+  #     artemis: { webhookUrlEnv: SRE_CHAT_WEBHOOK_URL_ARTEMIS, audience: "Artemis SRE" }
+  teamChats: {}
+
+  # When L1, L2 and L3 have all been called and nobody acknowledged, post a
+  # closing message to the team's space (teamChats, else chat) saying the
+  # calls have ended. Posted whatever channel is, so a call-only ladder still
+  # tells the room. Off here: SRE_CHAT_WEBHOOK_URL in .env is a real room, and
+  # every local ladder nobody answers would post into it.
+  unansweredChat: false
+
+  # When a SaaS SRE incident is escalated to an SME team ("Escalate to
+  # specialist team"), post one message to the incident's SRE team space
+  # (teamChats, else chat): who escalated it, that SRE paging stopped, and
+  # that the SMEs are being paged. Off here for the same reason as above.
+  smeHandoffChat: false
+
   teams:
     # The other ABT, as team.type spells it: sre-abt holds two teams.
     abtType: sre-abt
@@ -353,6 +374,11 @@ sre:
     # The rota that pages an incident with no SRE team of its own: a customer
     # case at S0, or a monitoring alert raised with no team. Absent is SRE_SAAS.
     defaultRota: SRE_SAAS
+    # Assignment groups that hold incidents with no SRE team of their own.
+    # Such an incident climbs this ladder on defaultRota: each rung reaches
+    # whoever holds that tier on the live window (Apollo before Artemis when
+    # both do). Matched as team keys are, ignoring case.
+    defaultGroups: [Default]
 
   # As cre.onLeave: skip (the default) or call.
   onLeave: skip
@@ -387,6 +413,28 @@ sme:
   chat:
     webhookUrlEnv: SME_CHAT_WEBHOOK_URL
     audience: "Special Ops"
+
+  # Each SME team's own Google Chat space, by SME team key, the same shape as
+  # chat. Empty or absent: every team's cards go to chat above. Set: a listed
+  # team's cards go to its own space, and a team not listed gets no card (its
+  # calls still go out when channel includes calls). webhookUrlEnv is the
+  # NAME of the variable holding the URL, never the URL. e.g.
+  #   teamChats:
+  #     asgardeo:        { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_ASGARDEO,       audience: "Asgardeo SME" }
+  #     choreo-runtime:  { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_CHOREO_RUNTIME, audience: "Choreo Runtime SME" }
+  #     bijira:          { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_BIJIRA,         audience: "Bijira SME" }
+  #     devant:          { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_DEVANT,         audience: "Devant SME" }
+  #     cloud-agent:     { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_CLOUD_AGENT,    audience: "WSO2 Cloud Agent platform SME" }
+  #     cloud-core:      { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_CLOUD_CORE,     audience: "WSO2 Cloud Core SME" }
+  #     moesif:          { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_MOESIF,         audience: "Moesif SME" }
+  #     u2:              { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_U2,             audience: "U2 SME" }
+  #     b-central:       { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_B_CENTRAL,      audience: "B-Central SME" }
+  teamChats: {}
+
+  # When the SME ladder has called L1 to L3 and nobody was assigned, post a
+  # closing message to the SME team's own space (teamChats), or to chat when
+  # teamChats is empty; a team teamChats leaves out gets none.
+  unansweredChat: false
 
   # Special Ops team key (the alert's teamKey) -> the SME team's rota key, for
   # an alert that does not name the SME team itself. A team in neither is
