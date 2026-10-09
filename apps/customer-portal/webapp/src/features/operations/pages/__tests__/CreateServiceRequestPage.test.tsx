@@ -58,7 +58,11 @@ vi.mock("@features/operations/api/useGetCatalogItemVariables", () => ({
 }));
 
 vi.mock("@features/operations/api/usePostCase", () => ({
-  usePostCase: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  usePostCase: () => ({ mutate: vi.fn(), mutateAsync: vi.fn(), isPending: false }),
+}));
+
+vi.mock("@features/support/api/usePostAttachments", () => ({
+  usePostAttachments: () => ({ mutate: vi.fn(), mutateAsync: vi.fn() }),
 }));
 
 vi.mock("@context/error-banner/ErrorBannerContext", () => ({

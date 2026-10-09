@@ -65,6 +65,7 @@ describe("useWidgetPieData", () => {
       {
         filters: { states: ["open"], severities: "critical" },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -73,6 +74,7 @@ describe("useWidgetPieData", () => {
       {
         filters: { states: ["open"], severities: "high" },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -154,6 +156,7 @@ describe("useWidgetPieData", () => {
           ],
         },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -200,6 +203,7 @@ describe("useWidgetPieData", () => {
           ],
         },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -239,6 +243,7 @@ describe("useWidgetPieData", () => {
           filters: [{ field: "state", op: "in", values: ["open"] }],
         },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
@@ -286,6 +291,7 @@ describe("useWidgetPieData", () => {
           ],
         },
         pagination: { offset: 0, limit: 1 },
+        countOnly: true,
       },
       { signal: expect.any(AbortSignal) },
     );
