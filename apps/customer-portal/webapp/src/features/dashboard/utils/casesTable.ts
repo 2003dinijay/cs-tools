@@ -58,12 +58,27 @@ export const getSeverityColor = (label?: string): string => {
 };
 
 /**
+ * Formats a case state label for display. Idempotent: a raw, Postgres-sourced
+ * UPPER_SNAKE_CASE value ("WORK_IN_PROGRESS") becomes "Work In Progress"; an
+ * already human-readable label ("Work In Progress") passes through unchanged,
+ * since replacing underscores and re-title-casing is a no-op on it. Safe to
+ * apply regardless of which data source produced the label.
+ */
+export function formatCaseStatusLabel(label?: string | null): string {
+  if (!label) return "--";
+  return label
+    .replace(/_/g, " ")
+    .toLowerCase()
+    .replace(/(^|\s)([a-z])/g, (_m, sep: string, ch: string) => sep + ch.toUpperCase());
+}
+
+/**
  * Get status color based on label.
  * @param label - Status label
  * @returns Color string
  */
 export const getStatusColor = (label?: string): string => {
-  const normalized = label?.toLowerCase() || "";
+  const normalized = formatCaseStatusLabel(label).toLowerCase();
   switch (true) {
     case normalized.includes(CaseStatus.OPEN.toLowerCase()):
     case normalized.includes(CaseStatus.REOPENED.toLowerCase()):
