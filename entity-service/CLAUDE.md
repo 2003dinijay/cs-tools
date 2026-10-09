@@ -3053,6 +3053,37 @@ old refusal still applies; `DATA_SOURCE=servicenow` is unchanged.
   change requests / child cases / watchers / tags / comments untouched, a ticket with thousands
   of comments and time cards, a transferred Migration ticket through its normal life).
 
+## Attachment `created_on` under dual-write is the database's clock, not ServiceNow's
+
+`DATA_SOURCE=postgres-servicenow-dual-write` mirrors an uploaded attachment into
+`case_attachment` after ServiceNow accepts it (`caseAttachmentDualWriteService.CreateCaseAttachment`).
+The ServiceNow create reply carries `createdOn` as a zone-less `YYYY-MM-DD HH:MM:SS`, and that
+value is **not UTC** -- it is rendered in a ServiceNow-side timezone. `snCaseService` parses it with
+`snCreatedOnLayout`, which has no zone and so reads it as UTC. The mirror used to store that value
+unchanged, so an upload from Colombo (UTC+5:30) landed 5h30 in the future and the portal showed
+"uploaded 5h from now" (found on csm-dev, ticket CS0450306: stored 19:42:05 against a real
+14:12 UTC; the same skew also puts the row at the top of the case Activity feed, which orders by
+`created_on`).
+
+`CaseRepository.CreateCaseAttachmentFromServiceNow` therefore takes **no timestamp**: the insert
+leaves `created_on` to the column default (`NOW()`), the same clock the plain-Postgres
+`CreateCaseAttachment` uses, a network round trip after ServiceNow accepted the file. The response's
+`createdOn` is the stored value. Do not put a ServiceNow-supplied time back into this insert; if a
+ServiceNow instant is ever needed it has to come from a source that states its zone (the Table API's
+`sys_created_on` is UTC) and be converted explicitly.
+
+Tests: `TestCaseAttachmentDualWriteService_CreateCaseAttachment_IgnoresZonelessServiceNowCreatedOn`
+(real `snCaseService` against a fake ServiceNow answering with a zone-less createdOn),
+`TestCaseAttachmentSNIntegration_CreateAndReadBackWithNullStorageKey` (real Postgres, asserts
+`created_on` falls inside the database clock's own window around the insert).
+
+**Not verified, same shape:** `CreateDeploymentFromServiceNow`, `CreateDeployedProductFromServiceNow`
+and `CreateCallRequestFromServiceNow` also store a `createdOn` that `time.Parse(snCreatedOnLayout, ...)`
+read from a ServiceNow reply (the call request writes the same value into `updated_on` as well, so
+that column cannot serve as an independent clock there). Whether those replies are zone-skewed too has
+not been checked; compare a freshly created row's `created_on` with the real time of the request on a
+dual-write database before assuming either way.
+
 ## Auto-closure hold (`autocloseHoldUntil`) on the Postgres data sources
 
 `PATCH /cases/{id} {autocloseHoldUntil}` is the CSM portal's "Hold auto-closure"

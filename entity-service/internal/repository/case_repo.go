@@ -392,7 +392,16 @@ type CaseRepository interface {
 	// ServiceNow identity string) -- unlike deployment.created_by/
 	// deployment_product.created_by, case_attachment.uploaded_by is a real
 	// FK to "user"(id).
-	CreateCaseAttachmentFromServiceNow(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string, createdOn time.Time) (domain.Attachment, error)
+	//
+	// created_on is deliberately NOT a parameter: it takes the column default,
+	// the database's own clock. ServiceNow's attachment-create reply carries a
+	// zone-less "YYYY-MM-DD HH:MM:SS" createdOn that is not UTC (it is rendered
+	// in a ServiceNow-side timezone), so storing it -- as this method used to --
+	// wrote local wall-clock time into a timestamptz as if it were UTC and put
+	// the row hours in the future. The clock here is the same one the plain
+	// CreateCaseAttachment path uses, and sits within the create call's latency
+	// of the moment ServiceNow accepted the file.
+	CreateCaseAttachmentFromServiceNow(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string) (domain.Attachment, error)
 	// SearchCaseAttachments returns a paginated slice of attachments for the given
 	// case, most recently created first, together with the total matching count.
 	SearchCaseAttachments(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error)
@@ -2618,11 +2627,13 @@ func (r *caseRepo) CreateCaseAttachment(ctx context.Context, req domain.CreateAt
 // interface doc comment for the identity/storage_key/status conventions this
 // follows -- id is supplied by the caller (ServiceNow's own attachment
 // sys_id, converted), not generated, and storage_key is always NULL.
-func (r *caseRepo) CreateCaseAttachmentFromServiceNow(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string, createdOn time.Time) (domain.Attachment, error) {
+func (r *caseRepo) CreateCaseAttachmentFromServiceNow(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string) (domain.Attachment, error) {
 	// Same case-like-only rule as CreateCaseAttachment, for the same reason.
+	// created_on is left out so the column default (NOW()) applies -- see the
+	// interface doc comment for why ServiceNow's own createdOn is not used.
 	const query = `
-		INSERT INTO case_attachment (id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status, created_on)
-		SELECT $1::uuid, $2::uuid, NULL, $3::text, $4::text, $5::bigint, $6::text, $7::uuid, 'complete', $8::timestamptz
+		INSERT INTO case_attachment (id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status)
+		SELECT $1::uuid, $2::uuid, NULL, $3::text, $4::text, $5::bigint, $6::text, $7::uuid, 'complete'
 		WHERE EXISTS (SELECT 1 FROM work_item w WHERE w.id = $2::uuid AND w.type = ANY(` + caseLikeNonAnnouncementTypes + `))
 		RETURNING id, case_id, filename, mime_type, size_bytes, description, uploaded_by, created_on, status`
 
@@ -2631,7 +2642,7 @@ func (r *caseRepo) CreateCaseAttachmentFromServiceNow(ctx context.Context, req d
 		uploadedByID string
 	)
 	err := r.db.QueryRow(ctx, query,
-		id, req.ReferenceID, req.Name, req.Type, sizeBytes, req.Description, uploadedBy, createdOn,
+		id, req.ReferenceID, req.Name, req.Type, sizeBytes, req.Description, uploadedBy,
 	).Scan(
 		&a.ID, &a.ReferenceID, &a.Name, &a.Type, &a.SizeBytes, &a.Description,
 		&uploadedByID, &a.CreatedOn, &a.Status,

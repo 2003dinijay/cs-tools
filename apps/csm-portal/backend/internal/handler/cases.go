@@ -404,6 +404,18 @@ func (h *CaseHandler) CreateCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// POST /cases is the one generic create route, and it creates an
+	// announcement (the dry-run case and every per-project case of a publish)
+	// just as readily as a support case, so the announcement-creator gate has to
+	// be applied to the body rather than the route. It is checked on top of the
+	// route's own PermWrite; a nil guard fails closed, like the Security Center
+	// check in SearchCases.
+	if caseCreateTargetsAnnouncement(body) && !(h.access != nil && h.access.Permits(PermCreateAnnouncement, user.Roles)) {
+		slog.WarnContext(r.Context(), "access denied: creating an announcement needs the announcement creator role", "userID", user.UserID)
+		writeError(w, http.StatusForbidden, ErrMsgForbidden)
+		return
+	}
+
 	// Strip any client-supplied createdBy to prevent identity spoofing.
 	body, err = stripField(body, "createdBy")
 	if err != nil {
@@ -718,6 +730,47 @@ const securityReportCaseType = "security_report_analysis"
 type caseFieldFilterFragment struct {
 	Field  string   `json:"field"`
 	Values []string `json:"values"`
+}
+
+// announcementCaseType is the case type entity-service creates an announcement
+// work item for. Compared case-insensitively below, which is wider than
+// entity-service's own exact-lowercase match on purpose: a guard may deny
+// too much, never too little.
+const announcementCaseType = "announcement"
+
+// caseCreateTargetsAnnouncement reports whether a POST /cases body asks for a
+// work item of type announcement. It reads the top-level keys as a token
+// stream, so EVERY "type" in the body is judged, not just the one a map would
+// keep: entity-service's decoder (encoding/json) matches a key to a field
+// without regard to case and reads a repeated one as the last reached, so a
+// guard that looked at one spelling, or only the winning one, could be walked
+// around by a body that names the field twice. Any of them being announcement
+// counts. A body that is not a JSON object, or a "type" that is not a string,
+// is left to entity-service to reject: neither can create an announcement there.
+func caseCreateTargetsAnnouncement(body []byte) bool {
+	dec := json.NewDecoder(bytes.NewReader(body))
+	if tok, err := dec.Token(); err != nil || tok != json.Delim('{') {
+		return false
+	}
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return false
+		}
+		key, _ := keyTok.(string)
+		var raw json.RawMessage
+		if err := dec.Decode(&raw); err != nil {
+			return false
+		}
+		if !strings.EqualFold(key, "type") {
+			continue
+		}
+		var t string
+		if json.Unmarshal(raw, &t) == nil && strings.EqualFold(strings.TrimSpace(t), announcementCaseType) {
+			return true
+		}
+	}
+	return false
 }
 
 // caseSearchTargetsSecurityReports reports whether body's type filter --
