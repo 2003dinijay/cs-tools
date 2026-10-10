@@ -4864,13 +4864,56 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   /comments/{id}:
+    get:
+      summary: Get a single comment by id.
+      description: >-
+        Performs no author/role check: any authenticated internal caller may fetch any
+        comment this way, the same exposure POST /comments/search already allows (row-level
+        security -- project membership, work-note visibility -- is unaffected). Exists for
+        csm-portal-backend to learn a comment's author before deciding whether to allow an
+        edit or delete; that decision is made entirely on the BFF side, not here.
+      operationId: getComment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Comment UUID.
+      responses:
+        "200":
+          description: The comment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Comment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Not supported by the configured data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     patch:
       summary: Edit an existing comment's content.
       description: >-
         Postgres data source only (returns 503 on ServiceNow -- its journal entries are
-        append-only). Only the comment's original author or a caller holding the admin role
-        may edit it. The pre-edit content is preserved as a comment_edit_history row for audit;
-        GET /comments/{id}/history lists them.
+        append-only). Performs no author/role check of its own: csm-portal-backend, the
+        sole caller of this route, decides whether this caller may edit this particular
+        comment before ever calling it. The pre-edit content is preserved as a
+        comment_edit_history row for audit; GET /comments/{id}/history lists them.
       operationId: updateComment
       parameters:
         - name: id
@@ -4905,12 +4948,6 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
-        "403":
-          description: Caller is neither the comment's author nor an admin.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Comment not found.
           content:
@@ -4929,8 +4966,9 @@ paths:
         Postgres data source only (returns 503 on ServiceNow). Content is retained in the
         database but hidden from non-admin visibility: excluded entirely from a customer
         caller's results, shown as "[deleted]" to a non-admin internal caller, and shown
-        unredacted to an admin caller. Only the comment's original author or an admin may
-        delete it.
+        unredacted to an admin caller. Performs no author/role check of its own, same as
+        PATCH on this comment -- csm-portal-backend decides whether this caller may
+        delete this particular comment before ever calling it.
       operationId: deleteComment
       parameters:
         - name: id
@@ -4945,12 +4983,6 @@ paths:
           description: Comment soft-deleted.
         "401":
           description: Unauthorized.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "403":
-          description: Caller is neither the comment's author nor an admin.
           content:
             application/json:
               schema:
@@ -4978,10 +5010,10 @@ paths:
     get:
       summary: List a comment's edit history.
       description: >-
-        Postgres data source only (returns 503 on ServiceNow). Newest first. Only the comment's
-        original author or a caller holding the admin role may view its edit history -- the same
-        restriction as PATCH/DELETE on this comment, since a prior comment body can carry the
-        same sensitive content the current body does.
+        Postgres data source only (returns 503 on ServiceNow). Newest first. Performs no
+        author/role check of its own -- csm-portal-backend currently has no UI consumer for
+        this route at all, but like PATCH/DELETE on this comment, if it ever does, that
+        decision belongs there, not here.
       operationId: getCommentEditHistory
       parameters:
         - name: id
@@ -5000,12 +5032,6 @@ paths:
                 $ref: '#/components/schemas/GetCommentEditHistoryResponse'
         "401":
           description: Unauthorized.
-          content:
-            application/json:
-              schema:
-                $ref: '#/components/schemas/ErrorResponse'
-        "403":
-          description: Caller is neither the comment's author nor an admin.
           content:
             application/json:
               schema:

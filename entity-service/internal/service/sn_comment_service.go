@@ -237,6 +237,16 @@ func (s *snCommentSearchService) publishIncidentCommentAdded(ctx context.Context
 // SyncProductVulnerabilities elsewhere in this codebase.
 const commentEditDeleteUnsupportedOnSNMsg = "editing or deleting a comment is not supported by the ServiceNow data source"
 
+// GetComment implements CommentService. Always rejected -- see
+// commentEditDeleteUnsupportedOnSNMsg. (This data source has no single-comment
+// fetch at all today, edit/delete or otherwise -- rejecting rather than
+// silently returning nothing keeps this service's behavior uniform with
+// UpdateComment/DeleteComment below, the only other callers of this method's
+// purpose.)
+func (s *snCommentSearchService) GetComment(_ context.Context, _ string) (domain.Comment, error) {
+	return domain.Comment{}, &apierror.ServiceUnavailableError{Msg: commentEditDeleteUnsupportedOnSNMsg}
+}
+
 // UpdateComment implements CommentService. Always rejected -- see
 // commentEditDeleteUnsupportedOnSNMsg.
 func (s *snCommentSearchService) UpdateComment(_ context.Context, _ domain.UpdateCommentRequest) (domain.UpdateCommentResponse, error) {

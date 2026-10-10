@@ -359,6 +359,7 @@ func main() {
 	timeCardHandler = timeCardHandler.WithAccessGuard(accessGuard)
 	incidentHandler = incidentHandler.WithAccessGuard(accessGuard)
 	changeRequestHandler = changeRequestHandler.WithAccessGuard(accessGuard)
+	commentHandler = commentHandler.WithAccessGuard(accessGuard)
 
 	authCfg := middleware.Config{
 		JWKSEndpoint:          mustEnv("AUTH_JWKS_ENDPOINT"),
@@ -405,11 +406,12 @@ func main() {
 	route("POST /cases/{id}/comments/search", handler.PermViewSharedEntity, caseHandler.SearchCaseComments)
 	// Generic comment edit/delete — applies to a comment by id regardless of
 	// which aggregate (case, change request, incident, ...) it was created
-	// under. Case, incident and change-request comments are PermWrite (see
-	// backend CLAUDE.md's Access control section); this is the same
-	// underlying resource.
-	route("PATCH /comments/{id}", handler.PermWrite, commentHandler.UpdateComment)
-	route("DELETE /comments/{id}", handler.PermWrite, commentHandler.DeleteComment)
+	// under. Gated by PermUpdateDeleteComment, not plain PermWrite (see that
+	// permission's own doc comment in access.go): comment_updater, cs_engineer
+	// and admin all reach the handler; entity-service's own author-or-admin
+	// check still decides which specific comment they may actually touch.
+	route("PATCH /comments/{id}", handler.PermUpdateDeleteComment, commentHandler.UpdateComment)
+	route("DELETE /comments/{id}", handler.PermUpdateDeleteComment, commentHandler.DeleteComment)
 	route("POST /cases/{id}/activities/search", handler.PermView, caseHandler.SearchCaseActivities)
 	route("GET /cases/{id}/escalations", handler.PermView, caseHandler.GetCaseEscalations)
 	route("POST /cases/{id}/escalations", handler.PermEscalate, caseHandler.CreateCaseEscalation)
@@ -977,7 +979,7 @@ func loadDirectory() *directory.Directory {
 //	AUTH_ATTACHMENT_DOWNLOADER_ROLES, AUTH_USAGE_METRICS_VIEWER_ROLES,
 //	AUTH_SUPPORT_ENGINEER_ROLES, AUTH_ADMIN_ROLES, AUTH_TIMECARD_APPROVER_ROLES,
 //	AUTH_DASHBOARD_DESIGNER_ROLES, AUTH_SALES_SOLUTIONS_ROLES,
-//	AUTH_WORKNOTE_CREATOR_ROLES
+//	AUTH_WORKNOTE_CREATOR_ROLES, AUTH_COMMENT_UPDATER_ROLES
 //	    Each is a comma-separated list of role names; a caller whose token's
 //	    "roles" claim holds any one of them has that role.
 //
@@ -987,15 +989,17 @@ func loadDirectory() *directory.Directory {
 // nobody, and startup warns naming each one, since with none configured at all
 // nobody can use the portal.
 //
-// AUTH_SALES_SOLUTIONS_ROLES and AUTH_WORKNOTE_CREATOR_ROLES are unlike the
-// rest: leaving either unset does not warn. sales_solutions is a normal,
-// expected unconfigured state (CS Portal alone still works fine) rather than
-// a misconfiguration nobody can use the portal at all without — see
-// AccessConfig.SalesSolutions's own doc comment. worknote_creator is
-// unconfigured-safe for a different reason: CsEngineer/Admin already hold
-// PermCreateWorkNote regardless (see AccessConfig.WorknoteCreator's own doc
-// comment), so leaving it empty is purely "this extra role isn't provisioned
-// yet," never a state that locks anyone out of work notes.
+// AUTH_SALES_SOLUTIONS_ROLES, AUTH_WORKNOTE_CREATOR_ROLES and
+// AUTH_COMMENT_UPDATER_ROLES are unlike the rest: leaving any of them unset
+// does not warn. sales_solutions is a normal, expected unconfigured state (CS
+// Portal alone still works fine) rather than a misconfiguration nobody can
+// use the portal at all without — see AccessConfig.SalesSolutions's own doc
+// comment. worknote_creator and comment_updater are unconfigured-safe for the
+// same reason as each other: CsEngineer/Admin already hold
+// PermCreateWorkNote/PermUpdateDeleteComment regardless (see
+// AccessConfig.WorknoteCreator's/CommentUpdater's own doc comments), so
+// leaving either empty is purely "this extra role isn't provisioned yet,"
+// never a state that locks anyone out.
 func loadAccessConfig() handler.AccessConfig {
 	var unset []string
 	roles := func(name string) []string {
@@ -1020,13 +1024,14 @@ func loadAccessConfig() handler.AccessConfig {
 		// Warns when unset (via roles()) on purpose, unlike the two optional
 		// roles below: unset means only admin can create announcements.
 		AnnouncementCreator: roles("AUTH_ANNOUNCEMENT_CREATOR_ROLES"),
-		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES or
-		// AUTH_WORKNOTE_CREATOR_ROLES is a normal, supported state (see this
-		// function's own doc comment for why each is), so both deliberately
-		// bypass the roles() helper to avoid adding themselves to the
-		// unset-variable warning below.
+		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES,
+		// AUTH_WORKNOTE_CREATOR_ROLES or AUTH_COMMENT_UPDATER_ROLES is a
+		// normal, supported state (see this function's own doc comment for
+		// why each is), so all three deliberately bypass the roles() helper
+		// to avoid adding themselves to the unset-variable warning below.
 		SalesSolutions:  splitComma(os.Getenv("AUTH_SALES_SOLUTIONS_ROLES")),
 		WorknoteCreator: splitComma(os.Getenv("AUTH_WORKNOTE_CREATOR_ROLES")),
+		CommentUpdater:  splitComma(os.Getenv("AUTH_COMMENT_UPDATER_ROLES")),
 	}
 	if len(unset) > 0 {
 		slog.Warn("access-control role variables are unset, so no token role grants them", "variables", unset)

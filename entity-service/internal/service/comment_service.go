@@ -53,13 +53,17 @@ const commentCreatedByAgent = "agent"
 const commentAgentDisplayName = "Novera"
 
 // commentAdminRoleName is the role.name (migration 0008's seed data, joined
-// through user_role) that grants a caller admin-level access to comment
-// edit/delete/visibility decisions on this data source -- confirmed against
-// this service's own existing role checks (migration 0011's
-// recompute_user_type trigger and user_repo_test.go both use the literal
-// "admin"), not the CSM portal backend's own DefaultRoles vocabulary (a
-// different layer, apps/csm-portal/backend/internal/directory/roles.go),
-// which happens to use the same spelling but is not the source of truth here.
+// through user_role) that grants a caller admin-level visibility into a
+// soft-deleted comment's real content -- see resolveCommentCallerVisibility,
+// the one remaining user of this constant. Not used for the
+// UpdateComment/DeleteComment/GetCommentEditHistory authorization decision --
+// that path performs no authorization of its own at all (see GetComment's
+// own doc comment for why) -- confirmed against this service's own existing
+// role checks elsewhere (migration 0011's recompute_user_type trigger and
+// user_repo_test.go both use the literal "admin"), not the CSM portal
+// backend's own DefaultRoles vocabulary (a different layer,
+// apps/csm-portal/backend/internal/directory/roles.go), which happens to use
+// the same spelling but is not the source of truth here.
 const commentAdminRoleName = "admin"
 
 // commentDeletedPlaceholder replaces a soft-deleted comment's real content
@@ -328,48 +332,61 @@ func (s *commentService) CreateComment(ctx context.Context, req domain.CreateCom
 	}, nil
 }
 
-// resolveCommentActor resolves the authenticated caller's email and whether
-// they hold the admin role, for the UpdateComment/DeleteComment authorization
-// check. Unlike resolveCommentCallerVisibility (SearchComments' best-effort,
-// never-fails resolution), a write operation requires a real identity: a
-// missing token is an UnauthorizedError, a malformed one a ValidationError,
-// and an email with no matching "user" row propagates GetUserByEmail's own
-// NotFoundError -- the same posture CreateComment already takes for its own
-// token resolution above.
-func (s *commentService) resolveCommentActor(ctx context.Context) (email string, isAdmin bool, err error) {
+// resolveCommentActor resolves the authenticated caller's email, recorded as
+// the editor/deleter of record on UpdateComment/DeleteComment (and read back
+// unauthorized on GetCommentEditHistory -- see that method's own doc
+// comment). Unlike resolveCommentCallerVisibility (SearchComments'
+// best-effort, never-fails resolution), a write operation requires a real
+// identity: a missing token is an UnauthorizedError, a malformed one a
+// ValidationError, and an email with no matching "user" row propagates
+// GetUserByEmail's own NotFoundError -- the same posture CreateComment
+// already takes for its own token resolution above.
+//
+// This service performs no author-or-role authorization check of its own for
+// UpdateComment/DeleteComment/GetCommentEditHistory -- see GetComment's own
+// doc comment for why that decision now belongs entirely to csm-portal-backend,
+// the sole caller of this path (customer-portal-backend-v2 only ever creates
+// comments, never edits/deletes/reads history). This function's only job is
+// attribution, not authorization.
+func (s *commentService) resolveCommentActor(ctx context.Context) (email string, err error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 	if token == "" {
-		return "", false, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+		return "", &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
 	}
 	email, err = emailFromJWT(token)
 	if err != nil {
-		return "", false, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
+		return "", &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
 	}
 	user, err := s.userRepo.GetUserByEmail(ctx, email)
 	if err != nil {
-		return "", false, err
+		return "", err
 	}
-	roles, err := s.userRepo.GetUserRoles(ctx, user.ID)
-	if err != nil {
-		return "", false, err
-	}
-	for _, r := range roles {
-		if r == commentAdminRoleName {
-			isAdmin = true
-			break
-		}
-	}
-	return user.Email, isAdmin, nil
+	return user.Email, nil
 }
 
-// authorizeCommentActor is the shared UpdateComment/DeleteComment rule:
-// allowed when the caller's resolved email case-insensitively matches the
-// comment's own created_by, or the caller holds the admin role.
-func authorizeCommentActor(actorEmail string, isAdmin bool, comment repository.CommentRow) error {
-	if isAdmin || strings.EqualFold(actorEmail, comment.CreatedBy) {
-		return nil
+// GetComment returns a single comment by id, with no author/role check of
+// its own, on purpose: this exists for csm-portal-backend to call before
+// deciding whether to allow an edit/delete -- it needs to know the comment's
+// author (CreatedBy) to enforce "cs_engineer may only touch their own
+// comment, admin/comment_updater may touch any", and this service has no way
+// to express that decision itself (it doesn't know csm-portal-backend's own
+// Asgardeo role vocabulary, and dropped its own separate Postgres "admin"
+// role check from this path as redundant and a source of confusion against
+// it -- see resolveCommentActor's own doc comment). Exposing one comment's
+// content this way is not a new disclosure: any internal caller who can see
+// this comment at all already sees its full content via
+// POST /comments/search, which this service already serves with no stricter
+// per-comment gate than row-level security already provides (project
+// membership, WORK_NOTE visibility -- migrations 0147/0175/0191).
+func (s *commentService) GetComment(ctx context.Context, id string) (domain.Comment, error) {
+	if err := validateUUIDs("id", []string{id}); err != nil {
+		return domain.Comment{}, err
 	}
-	return &apierror.ForbiddenError{Msg: "only the comment's author or an admin may modify it"}
+	row, err := s.repo.GetCommentByID(ctx, id)
+	if err != nil {
+		return domain.Comment{}, err
+	}
+	return commentRowToDomain(row), nil
 }
 
 // UpdateComment implements CommentService. Deliberately NOT mirrored to
@@ -394,16 +411,8 @@ func (s *commentService) UpdateComment(ctx context.Context, req domain.UpdateCom
 		return domain.UpdateCommentResponse{}, &apierror.ValidationError{Msg: "content is required"}
 	}
 
-	actorEmail, isAdmin, err := s.resolveCommentActor(ctx)
+	actorEmail, err := s.resolveCommentActor(ctx)
 	if err != nil {
-		return domain.UpdateCommentResponse{}, err
-	}
-
-	existing, err := s.repo.GetCommentByID(ctx, req.ID)
-	if err != nil {
-		return domain.UpdateCommentResponse{}, err
-	}
-	if err := authorizeCommentActor(actorEmail, isAdmin, existing); err != nil {
 		return domain.UpdateCommentResponse{}, err
 	}
 
@@ -426,48 +435,32 @@ func (s *commentService) DeleteComment(ctx context.Context, id string) error {
 		return err
 	}
 
-	actorEmail, isAdmin, err := s.resolveCommentActor(ctx)
+	actorEmail, err := s.resolveCommentActor(ctx)
 	if err != nil {
-		return err
-	}
-
-	existing, err := s.repo.GetCommentByID(ctx, id)
-	if err != nil {
-		return err
-	}
-	if err := authorizeCommentActor(actorEmail, isAdmin, existing); err != nil {
 		return err
 	}
 
 	return s.repo.SoftDeleteComment(ctx, id, actorEmail)
 }
 
-// GetCommentEditHistory implements CommentService. Gated by the same
-// author-or-admin rule as UpdateComment/DeleteComment: only the comment's
-// author or an admin may view its edit history. Prior comment bodies can
-// carry the same sensitive content the current body does. Row-level security
-// already limits comments and their edit history to project members and hides
-// WORK_NOTE rows from external callers (migrations 0147, 0175, 0191); this
-// author-or-admin rule is the narrower check on top, so that a member cannot
-// read another author's earlier bodies just by knowing or enumerating a
-// comment UUID.
+// GetCommentEditHistory implements CommentService. Performs no author/role
+// check of its own, same as UpdateComment/DeleteComment -- see GetComment's
+// own doc comment for why that decision belongs to csm-portal-backend now.
+// Row-level security still limits comments and their edit history to project
+// members and hides WORK_NOTE rows from external callers (migrations 0147,
+// 0175, 0191); that boundary is unaffected by this change.
 func (s *commentService) GetCommentEditHistory(ctx context.Context, id string) (domain.GetCommentEditHistoryResponse, error) {
 	if err := validateUUIDs("id", []string{id}); err != nil {
 		return domain.GetCommentEditHistoryResponse{}, err
 	}
 
-	actorEmail, isAdmin, err := s.resolveCommentActor(ctx)
-	if err != nil {
+	if _, err := s.resolveCommentActor(ctx); err != nil {
 		return domain.GetCommentEditHistoryResponse{}, err
 	}
 
-	// Also confirms the comment exists at all, so a bad id is a 404 rather
-	// than a silently empty history list.
-	existing, err := s.repo.GetCommentByID(ctx, id)
-	if err != nil {
-		return domain.GetCommentEditHistoryResponse{}, err
-	}
-	if err := authorizeCommentActor(actorEmail, isAdmin, existing); err != nil {
+	// Confirms the comment exists at all, so a bad id is a 404 rather than a
+	// silently empty history list.
+	if _, err := s.repo.GetCommentByID(ctx, id); err != nil {
 		return domain.GetCommentEditHistoryResponse{}, err
 	}
 

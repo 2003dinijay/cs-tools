@@ -199,6 +199,41 @@ const (
 	// that step only records a decision taken over email, outside this portal,
 	// and may be recorded by someone other than the creator.
 	PermCreateAnnouncement
+	// PermUpdateDeleteComment is the route-level floor for PATCH/DELETE
+	// /comments/{id} -- CommentUpdater ∪ CsEngineer ∪ Admin, the same
+	// "specialised role, or a CS Portal role that already dominates it"
+	// shape as PermCreateWorkNote, not PermCreateAnnouncement's narrowing
+	// shape: a comment_updater-only caller must be able to reach the
+	// handler at all (today only cs_engineer/admin can), and cs_engineer
+	// must keep its existing ability to edit/delete its own comments.
+	//
+	// This permission only decides who may REACH the handler, not which
+	// specific comment they may act on -- entity-service performs NO
+	// authorization check of its own for this path any more (it has no way
+	// to see this backend's Asgardeo role vocabulary, and its own separate
+	// Postgres "admin" role was dropped as redundant and confusing). The
+	// finer-grained decision -- author, or PermUpdateDeleteAnyComment below
+	// -- is made entirely in CommentHandler itself (see its
+	// authorizeCommentActor), which calls entity-service's GetComment first
+	// purely to learn the comment's author. A plain cs_engineer holds this
+	// permission (reaches the handler) but not PermUpdateDeleteAnyComment,
+	// so they can still only successfully edit/delete a comment THEY
+	// authored.
+	PermUpdateDeleteComment
+	// PermUpdateDeleteAnyComment is held by Admin and CommentUpdater ONLY --
+	// deliberately NOT CsEngineer, unlike PermUpdateDeleteComment above. It
+	// does not gate a route directly: CommentHandler.authorizeCommentActor
+	// checks it in-handler (mirroring PermCreateAnnouncement/
+	// PermViewSecurityCenter's own in-handler-check shape), alongside an
+	// explicit author check against the comment it fetches via GetComment,
+	// to decide whether THIS caller may act on THIS comment -- a decision
+	// made entirely here, not forwarded to or re-checked by entity-service
+	// in any way. A cs_engineer must NOT hold this permission:
+	// PermUpdateDeleteComment above already lets them reach the handler for
+	// their OWN comment, and authorizeCommentActor's own author check is
+	// what keeps that scoped to authorship -- granting this one too would
+	// let them act on EVERY comment, erasing that distinction.
+	PermUpdateDeleteAnyComment
 )
 
 // AccessConfig names, per portal role, the role names on the token that grant
@@ -243,6 +278,13 @@ type AccessConfig struct {
 	// not an "everyone" or a "nobody-can-use-the-portal" state: it means only
 	// admin can create announcements, so deploy it with the variable set.
 	AnnouncementCreator []string
+	// CommentUpdater grants PermUpdateDeleteComment (see that permission's
+	// own doc comment) -- reaching PATCH/DELETE /comments/{id} at all, on
+	// top of cs_engineer/admin's own existing access. Unlike most roles
+	// here an unset variable is not a lockout: cs_engineer/admin already
+	// hold this permission regardless (same "unconfigured is a normal
+	// state" reasoning as WorknoteCreator's own doc comment).
+	CommentUpdater []string
 }
 
 // AccessGuard authorises a request from the roles on the caller's validated
@@ -296,7 +338,13 @@ type portalRole struct {
 // only -- see that permission's own doc comment. announcement_creator is
 // narrower in a different way: it implies nothing, not even View, and
 // PermCreateAnnouncement is only ever checked alongside PermWrite, so it
-// removes an ability from cs_engineer rather than adding one.
+// removes an ability from cs_engineer rather than adding one. comment_updater
+// is the same added-floor shape as worknote_creator for PermUpdateDeleteComment
+// (implies nothing else, and cs_engineer/admin keep holding that permission
+// too), but ALSO implies PermUpdateDeleteAnyComment alongside admin only --
+// cs_engineer deliberately does not hold that second one. See
+// PermUpdateDeleteComment's and PermUpdateDeleteAnyComment's own doc comments
+// for what each actually controls.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	build := func(lists ...[]string) map[string]struct{} {
 		set := make(map[string]struct{})
@@ -320,6 +368,7 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			{"sales_solutions", build(cfg.SalesSolutions)},
 			{"worknote_creator", build(cfg.WorknoteCreator)},
 			{"announcement_creator", build(cfg.AnnouncementCreator)},
+			{"comment_updater", build(cfg.CommentUpdater)},
 		},
 		allowed: map[Permission]map[string]struct{}{
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
@@ -360,6 +409,16 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			// does NOT hold it, which is the whole point of the role. Always
 			// checked together with PermWrite (see its doc comment).
 			PermCreateAnnouncement: build(cfg.AnnouncementCreator, cfg.Admin),
+			// The route-level floor for PATCH/DELETE /comments/{id} -- see
+			// PermUpdateDeleteComment's own doc comment for why cs_engineer
+			// stays in this set (unlike PermCreateAnnouncement's) and for
+			// what entity-service still separately enforces per comment.
+			PermUpdateDeleteComment: build(cfg.CommentUpdater, cfg.CsEngineer, cfg.Admin),
+			// Deliberately excludes cs_engineer -- see
+			// PermUpdateDeleteAnyComment's own doc comment for why granting
+			// it to them would erase entity-service's authorship scoping
+			// rather than just widen who can reach the handler.
+			PermUpdateDeleteAnyComment: build(cfg.CommentUpdater, cfg.Admin),
 		},
 	}
 }
