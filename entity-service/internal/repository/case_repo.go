@@ -3147,7 +3147,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	// Fields shared with anyOf branches are built by one function so the two
 	// cannot drift apart (see caseFieldPredicates for the column notes).
 	fieldPreds, fieldArgs, nextIdx, err := caseFieldPredicates(caseFieldSet{
-		Types: req.Parsed.Types, ProjectIDs: req.Parsed.ProjectIDs, DeploymentIDs: req.Parsed.DeploymentIDs,
+		Types: req.Parsed.Types, ProjectIDs: req.Parsed.ProjectIDs, AccountIDs: req.Parsed.AccountIDs, DeploymentIDs: req.Parsed.DeploymentIDs,
 		AssignedUserIDs: req.Parsed.AssignedUserIDs, States: req.Parsed.States, Severities: req.Parsed.Severities,
 		IssueTypes: req.Parsed.IssueTypes, EngagementTypes: req.Parsed.EngagementTypes, WorkStates: req.Parsed.WorkStates,
 		EscalationLevels: req.Parsed.EscalationLevels, Tags: req.Parsed.Tags, ExcludeTags: req.Parsed.ExcludeTags,

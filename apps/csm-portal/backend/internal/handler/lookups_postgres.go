@@ -25,9 +25,10 @@ import (
 )
 
 // entityProductsClient is the subset of internal/entity.CustomerEntityClient
-// needed to list products from Postgres.
+// needed to list products and ABT teams from Postgres.
 type entityProductsClient interface {
 	SearchProducts(ctx context.Context, body []byte) ([]byte, error)
+	SearchTeams(ctx context.Context, body []byte) ([]byte, error)
 }
 
 type entitySearchProductsRequest struct {
@@ -43,21 +44,25 @@ type entitySearchProductsResponse struct {
 	Total    int             `json:"total"`
 }
 
-// postgresLookupsClient implements lookupsClient: GetProductList reads
-// from entity-service (Postgres) — entity-service's productService already
-// exists natively. GetABTTeamList is NOT migrated: it comes off ServiceNow's
-// sys_user_group table, and entity-service has no team/group domain object
-// yet, so it still delegates to the wrapped ServiceNow client.
+// postgresLookupsClient implements lookupsClient entirely against
+// entity-service (Postgres) — no ServiceNow dependency at all. GetProductList
+// reads entity-service's own productService. GetABTTeamList used to delegate
+// to ServiceNow's sys_user_group table (children of a "CS_INT_CRT_LK" group),
+// but that hierarchy was never mirrored into entity-service's "group" table
+// (checked directly: every row's parent_id is NULL). The equivalent data
+// does exist, just under a different shape: entity-service's own `team`
+// table (the hand-curated CSM_TEAM_REGISTRY, already exposed via
+// POST /teams/search) tags each ABT team's own row with a `type` ending in
+// "-abt" (e.g. "Apollo sre-abt", "Atlas cre-abt") rather than a separate
+// name/hierarchy -- see GetABTTeamList below for the exact filter.
 type postgresLookupsClient struct {
 	entity entityProductsClient
-	sn     lookupsClient
 }
 
 // NewPostgresLookupsClient builds a postgresLookupsClient. entity is
-// the same *entity.CustomerEntityClient every other CS Portal handler uses;
-// sn is the existing ServiceNow client, kept only for ABT team names.
-func NewPostgresLookupsClient(entity entityProductsClient, sn lookupsClient) *postgresLookupsClient {
-	return &postgresLookupsClient{entity: entity, sn: sn}
+// the same *entity.CustomerEntityClient every other CS Portal handler uses.
+func NewPostgresLookupsClient(entity entityProductsClient) *postgresLookupsClient {
+	return &postgresLookupsClient{entity: entity}
 }
 
 // entityProductsPageLimit is entity-service's own hard cap (confirmed
@@ -114,8 +119,76 @@ func (c *postgresLookupsClient) GetProductList(ctx context.Context) ([]string, e
 	return products, nil
 }
 
-// GetABTTeamList implements lookupsClient by delegating to the wrapped
-// ServiceNow client — see this type's own doc comment for why.
+type entitySearchTeamsRequest struct {
+	Pagination entityPagination `json:"pagination"`
+}
+
+type entityTeam struct {
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+type entitySearchTeamsResponse struct {
+	Teams []entityTeam `json:"teams"`
+	Total int          `json:"total"`
+}
+
+// entityTeamsPageLimit mirrors entityProductsPageLimit -- entity-service
+// caps every search's limit at 50, and the team registry is small (17 rows
+// in the environment this was checked against), so one page covers it in
+// practice; the loop below still pages through properly rather than
+// assuming that stays true.
+const (
+	entityTeamsPageLimit = 50
+	teamListPageCap      = 25
+)
+
+// GetABTTeamList implements lookupsClient. "ABT team" has no name or
+// hierarchy of its own in entity-service's `team` table -- it's a `type`
+// value ending in "-abt" (checked directly: "Apollo sre-abt", "Atlas
+// cre-abt", "Castor cre-abt", "Draco cre-abt", "Phoenix cre-abt", "Rigel
+// cre-abt", "Sirius cre-abt", "Vega cre-abt" were the ABT rows in the
+// environment this was checked against, alongside plain "cre"/
+// "cre-leadership" rows that are not). Returns each team's bare name (e.g.
+// "Apollo"), stripping the trailing " <type>" suffix the `name` column
+// itself does not carry on its own -- confirmed: `name` is already just
+// "Apollo", `type` is the separate "sre-abt"/"cre-abt" column.
 func (c *postgresLookupsClient) GetABTTeamList(ctx context.Context) ([]string, error) {
-	return c.sn.GetABTTeamList(ctx)
+	seen := make(map[string]bool)
+	teams := make([]string, 0, entityTeamsPageLimit)
+
+	for page := 0; page < teamListPageCap; page++ {
+		body, err := json.Marshal(entitySearchTeamsRequest{
+			Pagination: entityPagination{Limit: entityTeamsPageLimit, Offset: page * entityTeamsPageLimit},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal entity-service teams request: %w", err)
+		}
+		raw, err := c.entity.SearchTeams(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		var resp entitySearchTeamsResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("unmarshal entity-service teams response: %w", err)
+		}
+
+		for _, t := range resp.Teams {
+			if !strings.HasSuffix(strings.ToLower(t.Type), "-abt") {
+				continue
+			}
+			name := strings.TrimSpace(t.Name)
+			if name != "" && !seen[name] {
+				seen[name] = true
+				teams = append(teams, name)
+			}
+		}
+
+		if len(resp.Teams) < entityTeamsPageLimit || (page+1)*entityTeamsPageLimit >= resp.Total {
+			break
+		}
+	}
+
+	sort.Strings(teams)
+	return teams, nil
 }

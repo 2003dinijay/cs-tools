@@ -6269,6 +6269,29 @@ Fixed by matching `SearchCases`'s join type; `CaseView.DeploymentDetails`/
 `DeployedProductDetails` are already pointer fields, so this needed no
 domain/contract change, only nil-checks in the scan.
 
+## case search accountId filter: accepted by the parser, silently never applied by the repository
+
+Found live, from `apps/csm-portal/backend`, while verifying a new feature that filters
+`POST /cases/search` by `accountId`/`in` against this service running locally against a
+real copy of the database: the filter was accepted by `case_filters.go`'s parser (no
+400, a clean 200) but the result set was every case-like work item in the system
+(22,361 rows) rather than the one account's own (1,585, confirmed directly by SQL) —
+the filter was silently a no-op. Root cause: `caseFieldPredicates`
+(`internal/repository/case_field_predicates.go`) builds a SQL predicate for every field
+`case_filters.go` accepts except `accountId` — unlike the structurally identical
+`ProjectIDs`, there was never an `AccountIDs` case in that function at all, so parsing
+an `accountId` filter produced a `caseFieldSet` whose `AccountIDs` had nowhere to go.
+Fixed by adding an `AccountIDs []string` field plus its own predicate
+(`wi.account_id = ANY($N::uuid[])`, mirroring `ProjectIDs`'s exact shape) and wiring it
+into `caseFieldSet{...}`'s one production construction site in `case_repo.go`.
+
+This is a real, pre-existing data-isolation bug, not something the new feature
+introduced: any caller filtering a case search by `accountId` got every account's
+cases back, not just the one asked for. It was only caught because the new feature was
+verified against a real, locally-run instance of this service and real data, not a
+hand-rolled fake test double — a fake proves a caller's HTTP request is shaped
+correctly, never that the service receiving it actually applies the filter.
+
 ## Fixing user_repo.go's NULL-scan crash and user_type-casing bug
 
 `POST /users/search` failed on every call whose results included a user with
