@@ -2808,13 +2808,17 @@ func prepareCaseSearchFilters(ctx context.Context, req domain.SearchCasesRequest
 	// Predicates the repository does not express are rejected below rather
 	// than dropped silently, which would widen the result set. resolvedOn,
 	// state (in and notIn), projectType, slaBreached and the tag,
-	// projectOnboardingStatus, taskSLABusinessElapsedPercent, parentId, product
-	// and creTeam/sreTeam predicates are implemented by caseRepo.SearchCases
-	// and are absent from these guards.
-	// accountId+in has no repository query support today either (see
-	// domain.ParsedCaseFilters.AccountIDs); accountId+notIn is rejected the
-	// same way rather than silently dropping the exclusion and widening the
-	// result set.
+	// projectOnboardingStatus, taskSLABusinessElapsedPercent, parentId, product,
+	// creTeam/sreTeam, and now accountId+in (wi.account_id = ANY(...),
+	// caseFieldPredicates) predicates are implemented by caseRepo.SearchCases
+	// and are absent from these guards. accountId+in used to be accepted by
+	// the parser but silently dropped by the repository -- never guarded here,
+	// so a caller's accountId+in filter widened to every case regardless of
+	// account instead of erroring (found live: a Postgres-backed account-
+	// escalations lookup returned every case in the system). Fixed by wiring
+	// it into caseFieldPredicates like ProjectIDs' own identical shape;
+	// accountId+notIn stays rejected below rather than silently dropping the
+	// exclusion and widening the result set -- nothing has asked for it yet.
 	if len(parsed.ExcludeAccountIDs) > 0 {
 		return domain.SearchCasesRequest{}, &apierror.ValidationError{Msg: `field "accountId" (notIn) is not supported by this data source`}
 	}

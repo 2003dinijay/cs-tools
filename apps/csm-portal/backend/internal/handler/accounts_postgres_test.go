@@ -49,8 +49,8 @@ func TestPostgresViewerAccountClient_GetEscalationsByAccount(t *testing.T) {
 		},
 		escalations: entitySearchEscalationsResponse{
 			Escalations: []entityEscalation{
-				{ID: "esc-1", CurrentLevel: entityChoiceListItem{ID: "EL3", Label: "EL3"}, CreatedOn: "2026-01-01T00:00:00Z"},
-				{ID: "esc-2", CurrentLevel: entityChoiceListItem{ID: "EL0", Label: "EL0"}, CreatedOn: "2026-01-02T00:00:00Z"},
+				{ID: "esc-1", CurrentLevel: entityChoiceListItem{ID: "3", Label: "3"}, CreatedOn: "2026-01-01T00:00:00Z"},
+				{ID: "esc-2", CurrentLevel: entityChoiceListItem{ID: "0", Label: "0"}, CreatedOn: "2026-01-02T00:00:00Z"},
 			},
 			Total: 2,
 		},
@@ -64,10 +64,10 @@ func TestPostgresViewerAccountClient_GetEscalationsByAccount(t *testing.T) {
 	if len(got) != 2 {
 		t.Fatalf("got %d escalations, want 2", len(got))
 	}
-	if got[0].ID != "esc-1" || got[0].Severity != "EL3" || got[0].State != "Escalated" {
+	if got[0].ID != "esc-1" || got[0].Severity != "3" || got[0].State != "Escalated" {
 		t.Errorf("got[0] = %+v", got[0])
 	}
-	if got[1].ID != "esc-2" || got[1].Severity != "EL0" || got[1].State != "De-escalated" {
+	if got[1].ID != "esc-2" || got[1].Severity != "0" || got[1].State != "De-escalated" {
 		t.Errorf("got[1] = %+v", got[1])
 	}
 	if len(fake.gotCaseIDs) != 2 {
@@ -91,10 +91,10 @@ func TestPostgresViewerAccountClient_GetEscalationsByAccount_NoCases(t *testing.
 }
 
 func TestEscalationState(t *testing.T) {
-	if got := escalationState("EL0"); got != "De-escalated" {
-		t.Errorf("escalationState(EL0) = %q, want De-escalated", got)
+	if got := escalationState("0"); got != "De-escalated" {
+		t.Errorf("escalationState(0) = %q, want De-escalated", got)
 	}
-	for _, level := range []string{"EL1", "EL2", "EL3", "EL4", "EL5"} {
+	for _, level := range []string{"1", "2", "3", "4", "5"} {
 		if got := escalationState(level); got != "Escalated" {
 			t.Errorf("escalationState(%s) = %q, want Escalated", level, got)
 		}

@@ -80,7 +80,7 @@ func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_NoRiskAccount(t *
 			Total:    1,
 		},
 		projects: entitySearchProjectsResponse{
-			Projects: []entityProjectView{{ID: "proj-1", Name: "Acme Platform", OnboardingStatus: strPtr("COMPLETED")}},
+			Projects: []entityProjectView{{ID: "proj-1", Name: "Acme Platform", OnboardingStatus: strPtr("Completed")}},
 			Total:    1,
 		},
 		deployments:      entityDeploymentsSearchResponse{},
@@ -102,7 +102,7 @@ func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_NoRiskAccount(t *
 		t.Errorf("account identity wrong: %+v", acc)
 	}
 	if acc.HasNoGoLive.IsRisk {
-		t.Errorf("expected no go-live risk for a COMPLETED project, got %+v", acc.HasNoGoLive)
+		t.Errorf("expected no go-live risk for a Completed project, got %+v", acc.HasNoGoLive)
 	}
 	if !acc.HasRecentCases || acc.NoSupportCases6mo {
 		t.Errorf("expected recent cases true / no-support false, got recent=%v noSupport=%v", acc.HasRecentCases, acc.NoSupportCases6mo)
@@ -119,7 +119,7 @@ func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_NoGoLiveAndNoCase
 			Total:    1,
 		},
 		projects: entitySearchProjectsResponse{
-			Projects: []entityProjectView{{ID: "proj-2", Name: "Beta Platform", OnboardingStatus: strPtr("IN_PROGRESS")}},
+			Projects: []entityProjectView{{ID: "proj-2", Name: "Beta Platform", OnboardingStatus: strPtr("In-Progress")}},
 			Total:    1,
 		},
 		caseResponses: []entitySearchCasesResponse{{Total: 0}, {Total: 0}, {Total: 0}},
@@ -132,7 +132,7 @@ func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_NoGoLiveAndNoCase
 	}
 	acc := resp.Data[0]
 	if !acc.HasNoGoLive.IsRisk {
-		t.Errorf("expected no-go-live risk for an IN_PROGRESS project, got %+v", acc.HasNoGoLive)
+		t.Errorf("expected no-go-live risk for an In-Progress project, got %+v", acc.HasNoGoLive)
 	}
 	if acc.HasRecentCases || !acc.NoSupportCases6mo {
 		t.Errorf("expected no recent cases / noSupportCases6mo true, got recent=%v noSupport=%v", acc.HasRecentCases, acc.NoSupportCases6mo)

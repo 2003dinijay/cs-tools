@@ -82,6 +82,8 @@ type entitySearchCaseView struct {
 	Description      *string              `json:"description"`
 	State            *string              `json:"state"`
 	Severity         *string              `json:"severity"`
+	Type             string               `json:"type"`
+	EngagementType   *string              `json:"engagementType"`
 	Product          *entityRef           `json:"product"`
 	Project          *entityRef           `json:"project"`
 	ProjectKey       *string              `json:"projectKey"`

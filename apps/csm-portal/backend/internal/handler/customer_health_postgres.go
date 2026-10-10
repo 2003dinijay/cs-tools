@@ -162,9 +162,45 @@ func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Conte
 		return nil, err
 	}
 
+	// Fetched ONCE for the whole account and grouped by project client-side
+	// below, rather than once per project per flag -- a real, found
+	// performance bug: the original per-project-per-flag design ran up to
+	// customerHealthCasePageCap pages of case search PER PROJECT PER FLAG
+	// (recent/abandoned/delayed/escalated-cases each re-fetched the
+	// project's own cases from scratch), which for a real account with 21
+	// projects and 1,585 cases took minutes and was still running when
+	// manually verified against the live database -- confirmed hung,
+	// not merely slow. One bounded account-wide fetch plus in-memory
+	// grouping/filtering is both correct and fast regardless of how many
+	// projects an account has.
+	allCases, err := c.accountCasesFull(ctx, accountID)
+	if err != nil {
+		return nil, err
+	}
+	casesByProject := make(map[string][]entitySearchCaseView, len(projects))
+	caseByID := make(map[string]entitySearchCaseView, len(allCases))
+	allCaseIDs := make([]string, len(allCases))
+	for i, cv := range allCases {
+		allCaseIDs[i] = cv.ID
+		caseByID[cv.ID] = cv
+		if cv.Project != nil {
+			casesByProject[cv.Project.ID] = append(casesByProject[cv.Project.ID], cv)
+		}
+	}
+	escalations, err := c.searchEscalationsForCaseIDs(ctx, allCaseIDs)
+	if err != nil {
+		return nil, err
+	}
+	escalationsByProject := make(map[string][]entityEscalation, len(projects))
+	for _, e := range escalations {
+		if cv, ok := caseByID[e.Case.ID]; ok && cv.Project != nil {
+			escalationsByProject[cv.Project.ID] = append(escalationsByProject[cv.Project.ID], e)
+		}
+	}
+
 	details := make([]servicenow.ProjectDetail, 0, len(projects))
 	for _, p := range projects {
-		detail, err := c.projectDetail(ctx, accountID, p)
+		detail, err := c.projectDetail(ctx, p, casesByProject[p.ID], escalationsByProject[p.ID])
 		if err != nil {
 			return nil, err
 		}
@@ -172,6 +208,88 @@ func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Conte
 	}
 
 	return &servicenow.AccountDetail{AccountName: accountName, CustomerProjects: details}, nil
+}
+
+// customerHealthAccountCasePageLimit/customerHealthAccountCasePageCap bound
+// accountCasesFull's own pagination -- a real account can have well over a
+// thousand cases (1,585, checked directly against staging), so this is sized
+// larger than the old per-project bound it replaces, and still finite.
+const (
+	customerHealthAccountCasePageLimit = 50
+	customerHealthAccountCasePageCap   = 40 // 40 * 50 = 2000 cases per account
+)
+
+// accountCasesFull pages through every case-like work item belonging to
+// accountID, with the fields GetCustomerHealthDetail needs to group and
+// filter them per project client-side (type, engagementType, severity,
+// state, createdOn, project) -- replaces what used to be a fresh,
+// re-fetched-per-flag query per project (see GetCustomerHealthDetail's own
+// doc comment on the performance bug this fixes).
+func (c *postgresCustomerHealthClient) accountCasesFull(ctx context.Context, accountID string) ([]entitySearchCaseView, error) {
+	var cases []entitySearchCaseView
+	for page := 0; page < customerHealthAccountCasePageCap; page++ {
+		body, err := json.Marshal(entitySearchCasesRequest{
+			Filters:    entitySearchCasesFilters{Filters: []entityCaseFieldFilter{{Field: "accountId", Op: "in", Values: []string{accountID}}}},
+			Pagination: entityPagination{Limit: customerHealthAccountCasePageLimit, Offset: page * customerHealthAccountCasePageLimit},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal entity-service cases request: %w", err)
+		}
+		raw, err := c.entity.SearchCases(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		var resp entitySearchCasesResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("unmarshal entity-service cases response: %w", err)
+		}
+		cases = append(cases, resp.Cases...)
+		if len(resp.Cases) < customerHealthAccountCasePageLimit || (page+1)*customerHealthAccountCasePageLimit >= resp.Total {
+			break
+		}
+	}
+	return cases, nil
+}
+
+// searchEscalationsForCaseIDs is a thin wrapper over POST /escalations/search
+// for an explicit case-id list, shared by GetCustomerHealthDetail (one
+// account-wide call) and accountHasRecentEscalations (the summary flag).
+func (c *postgresCustomerHealthClient) searchEscalationsForCaseIDs(ctx context.Context, caseIDs []string) ([]entityEscalation, error) {
+	if len(caseIDs) == 0 {
+		return nil, nil
+	}
+	// entity-service rejects a limit above 50 (confirmed directly: "limit
+	// cannot exceed 50") -- paginate like every other search in this file
+	// rather than assuming one page covers an account's escalations (one
+	// real account had 257 of them).
+	const (
+		pageLimit = 50
+		pageCap   = 20 // 20 * 50 = 1000 escalations per account
+	)
+	var escalations []entityEscalation
+	for page := 0; page < pageCap; page++ {
+		body, err := json.Marshal(entitySearchEscalationsRequest{
+			Filters:    entitySearchEscalationsFilters{CaseIDs: caseIDs},
+			SortBy:     entityEscalationSort{Field: "createdOn", Order: "desc"},
+			Pagination: entityPagination{Limit: pageLimit, Offset: page * pageLimit},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal entity-service escalations request: %w", err)
+		}
+		raw, err := c.entity.SearchEscalations(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		var resp entitySearchEscalationsResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("unmarshal entity-service escalations response: %w", err)
+		}
+		escalations = append(escalations, resp.Escalations...)
+		if len(resp.Escalations) < pageLimit || (page+1)*pageLimit >= resp.Total {
+			break
+		}
+	}
+	return escalations, nil
 }
 
 // customerHealthAccountFlags is the per-account summary-level result of
@@ -293,6 +411,19 @@ func (c *postgresCustomerHealthClient) accountProjects(ctx context.Context, acco
 	return projects, nil
 }
 
+// projectNeedsGoLive reports whether a project's onboarding status means it
+// has not gone live yet. entity-service's own wire shape for OnboardingStatus
+// is NOT the raw onboarding_status_enum label ("NOT_STARTED"/"IN_PROGRESS") --
+// confirmed directly against real data (project_repo.go's own
+// INITCAP(REPLACE(..., '_', '-')) SQL): the four possible values are
+// "Not-Started", "In-Progress", "Completed", "Not-Applicable" (hyphenated,
+// title-case). A project with no onboarding tracked at all ("Not-Applicable",
+// or no project at all) is not treated as a go-live risk -- only a project
+// actively mid-onboarding is.
+func projectNeedsGoLive(status *string) bool {
+	return status != nil && (*status == "Not-Started" || *status == "In-Progress")
+}
+
 // accountFlags computes the seven summary-level flags for one account,
 // aggregating across every one of its projects (any project flagged ->
 // the account is flagged) for the project-scoped signals (go-live,
@@ -306,7 +437,7 @@ func (c *postgresCustomerHealthClient) accountFlags(ctx context.Context, account
 
 	noGoLive := false
 	for _, p := range projects {
-		if p.OnboardingStatus != nil && (*p.OnboardingStatus == "NOT_STARTED" || *p.OnboardingStatus == "IN_PROGRESS") {
+		if projectNeedsGoLive(p.OnboardingStatus) {
 			noGoLive = true
 			break
 		}
@@ -357,15 +488,25 @@ func (c *postgresCustomerHealthClient) accountFlags(ctx context.Context, account
 // projectHasEolProduct checks whether any deployed product under projectID's
 // own deployments is running a product version past its support_eol_date.
 func (c *postgresCustomerHealthClient) projectHasEolProduct(ctx context.Context, projectID string) (bool, error) {
-	deploymentIDs, err := c.projectDeploymentIDs(ctx, projectID)
-	if err != nil || len(deploymentIDs) == 0 {
+	deployments, err := c.projectDeployments(ctx, projectID)
+	if err != nil || len(deployments) == 0 {
 		return false, err
 	}
-	eol, _, err := c.deployedEolProducts(ctx, deploymentIDs)
+	eol, _, err := c.deployedEolProducts(ctx, deploymentIDsOf(deployments))
 	return len(eol) > 0, err
 }
 
-func (c *postgresCustomerHealthClient) projectDeploymentIDs(ctx context.Context, projectID string) ([]string, error) {
+// deploymentIDsOf extracts just the ids from a deployment list, for the
+// SearchDeployedProducts DeploymentIDs filter.
+func deploymentIDsOf(deployments []entityDeploymentView) []string {
+	ids := make([]string, len(deployments))
+	for i, d := range deployments {
+		ids[i] = d.ID
+	}
+	return ids
+}
+
+func (c *postgresCustomerHealthClient) projectDeployments(ctx context.Context, projectID string) ([]entityDeploymentView, error) {
 	body, err := json.Marshal(entityDeploymentsSearchRequest{
 		Pagination: entityPagination{Limit: 50, Offset: 0},
 		ProjectIDs: []string{projectID},
@@ -381,11 +522,7 @@ func (c *postgresCustomerHealthClient) projectDeploymentIDs(ctx context.Context,
 	if err := json.Unmarshal(raw, &resp); err != nil {
 		return nil, fmt.Errorf("unmarshal entity-service deployments response: %w", err)
 	}
-	ids := make([]string, len(resp.Deployments))
-	for i, d := range resp.Deployments {
-		ids[i] = d.ID
-	}
-	return ids, nil
+	return resp.Deployments, nil
 }
 
 // deployedEolProducts returns the deployed products under deploymentIDs whose
@@ -434,7 +571,7 @@ func (c *postgresCustomerHealthClient) accountHasCasesSince(ctx context.Context,
 func (c *postgresCustomerHealthClient) accountMigrationFlags(ctx context.Context, accountID string) (abandoned, delayed bool, err error) {
 	now := time.Now()
 	abandonedCount, err := c.caseCount(ctx, accountID, "engagement", []entityCaseFieldFilter{
-		{Field: "engagementType", Op: "eq", Values: []string{"migration"}},
+		{Field: "engagementType", Op: "in", Values: []string{"migration"}},
 		{Field: "state", Op: "notIn", Values: []string{"closed"}},
 		{Field: "createdOn", Op: "lte", Values: []string{now.Add(-customerHealthAbandonedWindow).UTC().Format(time.RFC3339)}},
 	})
@@ -442,7 +579,7 @@ func (c *postgresCustomerHealthClient) accountMigrationFlags(ctx context.Context
 		return false, false, err
 	}
 	delayedCount, err := c.caseCount(ctx, accountID, "engagement", []entityCaseFieldFilter{
-		{Field: "engagementType", Op: "eq", Values: []string{"migration"}},
+		{Field: "engagementType", Op: "in", Values: []string{"migration"}},
 		{Field: "state", Op: "notIn", Values: []string{"closed"}},
 		{Field: "createdOn", Op: "lte", Values: []string{now.Add(-customerHealthDelayWindow).UTC().Format(time.RFC3339)}},
 	})
@@ -457,9 +594,9 @@ func (c *postgresCustomerHealthClient) accountMigrationFlags(ctx context.Context
 // -- a limit:1 request, reading only the response's own Total rather than
 // fetching the matching rows.
 func (c *postgresCustomerHealthClient) caseCount(ctx context.Context, accountID, caseType string, extra []entityCaseFieldFilter) (int, error) {
-	filters := []entityCaseFieldFilter{{Field: "accountId", Op: "eq", Values: []string{accountID}}}
+	filters := []entityCaseFieldFilter{{Field: "accountId", Op: "in", Values: []string{accountID}}}
 	if caseType != "" {
-		filters = append(filters, entityCaseFieldFilter{Field: "type", Op: "eq", Values: []string{caseType}})
+		filters = append(filters, entityCaseFieldFilter{Field: "type", Op: "in", Values: []string{caseType}})
 	}
 	filters = append(filters, extra...)
 
@@ -490,7 +627,7 @@ func (c *postgresCustomerHealthClient) accountCaseIDsForHealth(ctx context.Conte
 	var ids []string
 	for page := 0; page < customerHealthCasePageCap; page++ {
 		body, err := json.Marshal(entitySearchCasesRequest{
-			Filters:    entitySearchCasesFilters{Filters: []entityCaseFieldFilter{{Field: "accountId", Op: "eq", Values: []string{accountID}}}},
+			Filters:    entitySearchCasesFilters{Filters: []entityCaseFieldFilter{{Field: "accountId", Op: "in", Values: []string{accountID}}}},
 			Pagination: entityPagination{Limit: customerHealthCasePageLimit, Offset: page * customerHealthCasePageLimit},
 		})
 		if err != nil {
@@ -521,24 +658,12 @@ func (c *postgresCustomerHealthClient) accountHasRecentEscalations(ctx context.C
 	if err != nil || len(caseIDs) == 0 {
 		return false, err
 	}
-	body, err := json.Marshal(entitySearchEscalationsRequest{
-		Filters:    entitySearchEscalationsFilters{CaseIDs: caseIDs},
-		SortBy:     entityEscalationSort{Field: "createdOn", Order: "desc"},
-		Pagination: entityPagination{Limit: 50, Offset: 0},
-	})
-	if err != nil {
-		return false, fmt.Errorf("marshal entity-service escalations request: %w", err)
-	}
-	raw, err := c.entity.SearchEscalations(ctx, body)
+	escalations, err := c.searchEscalationsForCaseIDs(ctx, caseIDs)
 	if err != nil {
 		return false, err
 	}
-	var resp entitySearchEscalationsResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return false, fmt.Errorf("unmarshal entity-service escalations response: %w", err)
-	}
 	cutoff := time.Now().Add(-customerHealthEscalationWindow)
-	for _, e := range resp.Escalations {
+	for _, e := range escalations {
 		if t, err := time.Parse(time.RFC3339, e.CreatedOn); err == nil && t.After(cutoff) {
 			return true, nil
 		}
@@ -548,43 +673,38 @@ func (c *postgresCustomerHealthClient) accountHasRecentEscalations(ctx context.C
 
 // projectDetail builds one project's ProjectDetail row for GetCustomerHealthDetail,
 // including the drill-down lists (recent cases by priority, abandoned/delayed
-// migration case links, EOL software models, escalated case links).
-func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, accountID string, p entityProjectView) (servicenow.ProjectDetail, error) {
-	since := time.Now().Add(-customerHealthRecentWindow)
-	recentCases, err := c.projectCases(ctx, p.ID, "", []entityCaseFieldFilter{
-		{Field: "createdOn", Op: "gte", Values: []string{since.UTC().Format(time.RFC3339)}},
+// migration case links, EOL software models, escalated case links). cases/
+// escalations are the ones GetCustomerHealthDetail already fetched once for
+// the whole account and grouped by project -- this function does no case or
+// escalation search of its own, only the (bounded, per-project) deployment/
+// deployed-product lookups.
+func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, p entityProjectView, cases []entitySearchCaseView, escalations []entityEscalation) (servicenow.ProjectDetail, error) {
+	since := time.Now().Add(-customerHealthRecentWindow).UTC()
+	recentCases := filterCases(cases, func(cv entitySearchCaseView) bool {
+		t, err := time.Parse(time.RFC3339, cv.CreatedOn)
+		return err == nil && !t.Before(since)
 	})
-	if err != nil {
-		return servicenow.ProjectDetail{}, err
-	}
 	recentGroups := groupCasesByPriority(recentCases)
 
-	now := time.Now()
-	abandonedCases, err := c.projectCases(ctx, p.ID, "engagement", []entityCaseFieldFilter{
-		{Field: "engagementType", Op: "eq", Values: []string{"migration"}},
-		{Field: "state", Op: "notIn", Values: []string{"closed"}},
-		{Field: "createdOn", Op: "lte", Values: []string{now.Add(-customerHealthAbandonedWindow).UTC().Format(time.RFC3339)}},
+	now := time.Now().UTC()
+	abandonedCutoff := now.Add(-customerHealthAbandonedWindow)
+	delayedCutoff := now.Add(-customerHealthDelayWindow)
+	abandonedCases := filterCases(cases, func(cv entitySearchCaseView) bool {
+		return isOpenMigrationBefore(cv, abandonedCutoff)
 	})
-	if err != nil {
-		return servicenow.ProjectDetail{}, err
-	}
-	delayedCases, err := c.projectCases(ctx, p.ID, "engagement", []entityCaseFieldFilter{
-		{Field: "engagementType", Op: "eq", Values: []string{"migration"}},
-		{Field: "state", Op: "notIn", Values: []string{"closed"}},
-		{Field: "createdOn", Op: "lte", Values: []string{now.Add(-customerHealthDelayWindow).UTC().Format(time.RFC3339)}},
+	delayedCases := filterCases(cases, func(cv entitySearchCaseView) bool {
+		return isOpenMigrationBefore(cv, delayedCutoff)
 	})
-	if err != nil {
-		return servicenow.ProjectDetail{}, err
-	}
 
-	deploymentIDs, err := c.projectDeploymentIDs(ctx, p.ID)
+	deps, err := c.projectDeployments(ctx, p.ID)
 	if err != nil {
 		return servicenow.ProjectDetail{}, err
 	}
+	deploymentIDs := deploymentIDsOf(deps)
 	var eolDeployments []entityDeployedProductEolView
-	var deployments []entityDeployedProductEolView
+	var deployedProducts []entityDeployedProductEolView
 	if len(deploymentIDs) > 0 {
-		eolDeployments, deployments, err = c.deployedEolProducts(ctx, deploymentIDs)
+		eolDeployments, deployedProducts, err = c.deployedEolProducts(ctx, deploymentIDs)
 		if err != nil {
 			return servicenow.ProjectDetail{}, err
 		}
@@ -600,18 +720,15 @@ func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, accoun
 			EolDate: eolDate,
 		})
 	}
-	deploymentRefs := make([]servicenow.Deployment, 0, len(deploymentIDs))
-	for _, id := range deploymentIDs {
-		deploymentRefs = append(deploymentRefs, servicenow.Deployment{SysID: id})
+	deploymentRefs := make([]servicenow.Deployment, 0, len(deps))
+	for _, d := range deps {
+		deploymentRefs = append(deploymentRefs, servicenow.Deployment{SysID: d.ID, Name: d.Name})
 	}
-	_ = deployments // every deployed product under the project; not surfaced beyond the EOL subset today
+	_ = deployedProducts // every deployed product under the project; not surfaced beyond the EOL subset today
 
-	escalatedCases, err := c.projectEscalatedCases(ctx, p.ID)
-	if err != nil {
-		return servicenow.ProjectDetail{}, err
-	}
+	escalatedCases := escalationLinks(escalations, cases)
 
-	noGoLive := p.OnboardingStatus != nil && (*p.OnboardingStatus == "NOT_STARTED" || *p.OnboardingStatus == "IN_PROGRESS")
+	noGoLive := projectNeedsGoLive(p.OnboardingStatus)
 	status := servicenow.GoLiveStatus{Status: "Live", IsRisk: false, State: "healthy"}
 	if noGoLive {
 		status = servicenow.GoLiveStatus{Status: "No Go-Live", IsRisk: true, State: "risk"}
@@ -636,74 +753,47 @@ func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, accoun
 	}, nil
 }
 
-// projectCases returns every case-like work item (optionally narrowed to one
-// type) matching the given extra filters for projectID, up to
-// customerHealthCasePageCap pages.
-func (c *postgresCustomerHealthClient) projectCases(ctx context.Context, projectID, caseType string, extra []entityCaseFieldFilter) ([]entitySearchCaseView, error) {
-	filters := []entityCaseFieldFilter{{Field: "projectId", Op: "eq", Values: []string{projectID}}}
-	if caseType != "" {
-		filters = append(filters, entityCaseFieldFilter{Field: "type", Op: "eq", Values: []string{caseType}})
-	}
-	filters = append(filters, extra...)
-
-	var cases []entitySearchCaseView
-	for page := 0; page < customerHealthCasePageCap; page++ {
-		body, err := json.Marshal(entitySearchCasesRequest{
-			Filters:    entitySearchCasesFilters{Filters: filters},
-			Pagination: entityPagination{Limit: customerHealthCasePageLimit, Offset: page * customerHealthCasePageLimit},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("marshal entity-service cases request: %w", err)
-		}
-		raw, err := c.entity.SearchCases(ctx, body)
-		if err != nil {
-			return nil, err
-		}
-		var resp entitySearchCasesResponse
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return nil, fmt.Errorf("unmarshal entity-service cases response: %w", err)
-		}
-		cases = append(cases, resp.Cases...)
-		if len(resp.Cases) < customerHealthCasePageLimit || (page+1)*customerHealthCasePageLimit >= resp.Total {
-			break
+// filterCases returns the subset of cases for which keep returns true --
+// the client-side replacement for what used to be a separate, re-fetched
+// entity-service query per flag per project (see GetCustomerHealthDetail's
+// own doc comment on the performance bug this fixes).
+func filterCases(cases []entitySearchCaseView, keep func(entitySearchCaseView) bool) []entitySearchCaseView {
+	out := make([]entitySearchCaseView, 0, len(cases))
+	for _, cv := range cases {
+		if keep(cv) {
+			out = append(out, cv)
 		}
 	}
-	return cases, nil
+	return out
 }
 
-// projectEscalatedCases returns a CaseLink per escalation raised against one
-// of projectID's own cases.
-func (c *postgresCustomerHealthClient) projectEscalatedCases(ctx context.Context, projectID string) ([]servicenow.CaseLink, error) {
-	cases, err := c.projectCases(ctx, projectID, "", nil)
-	if err != nil || len(cases) == 0 {
-		return nil, err
+// isOpenMigrationBefore reports whether cv is a still-open (state != closed)
+// MIGRATION-type engagement created at or before cutoff -- the shared test
+// behind both hasAbandonedMigrations (cutoff = customerHealthAbandonedWindow
+// ago) and hasMigrationDelays (cutoff = customerHealthDelayWindow ago, a
+// shorter/easier-to-trip window over the identical underlying signal).
+func isOpenMigrationBefore(cv entitySearchCaseView, cutoff time.Time) bool {
+	if cv.Type != "engagement" || cv.EngagementType == nil || *cv.EngagementType != "migration" {
+		return false
 	}
-	caseIDs := make([]string, len(cases))
+	if cv.State != nil && *cv.State == "closed" {
+		return false
+	}
+	t, err := time.Parse(time.RFC3339, cv.CreatedOn)
+	return err == nil && !t.After(cutoff)
+}
+
+// escalationLinks converts the account-wide escalations list already fetched
+// by GetCustomerHealthDetail into CaseLink drill-down entries for one
+// project's own cases (cases is that project's own case subset, used only
+// to resolve a case's display number).
+func escalationLinks(escalations []entityEscalation, cases []entitySearchCaseView) []servicenow.CaseLink {
 	caseByID := make(map[string]entitySearchCaseView, len(cases))
-	for i, cv := range cases {
-		caseIDs[i] = cv.ID
+	for _, cv := range cases {
 		caseByID[cv.ID] = cv
 	}
-
-	body, err := json.Marshal(entitySearchEscalationsRequest{
-		Filters:    entitySearchEscalationsFilters{CaseIDs: caseIDs},
-		SortBy:     entityEscalationSort{Field: "createdOn", Order: "desc"},
-		Pagination: entityPagination{Limit: 50, Offset: 0},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal entity-service escalations request: %w", err)
-	}
-	raw, err := c.entity.SearchEscalations(ctx, body)
-	if err != nil {
-		return nil, err
-	}
-	var resp entitySearchEscalationsResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("unmarshal entity-service escalations response: %w", err)
-	}
-
-	links := make([]servicenow.CaseLink, 0, len(resp.Escalations))
-	for _, e := range resp.Escalations {
+	links := make([]servicenow.CaseLink, 0, len(escalations))
+	for _, e := range escalations {
 		link := servicenow.CaseLink{EscalationSysID: e.ID}
 		if cv, ok := caseByID[e.Case.ID]; ok {
 			link.Number = cv.Number
@@ -711,7 +801,7 @@ func (c *postgresCustomerHealthClient) projectEscalatedCases(ctx context.Context
 		}
 		links = append(links, link)
 	}
-	return links, nil
+	return links
 }
 
 // groupCasesByPriority buckets cases by their severity label for the

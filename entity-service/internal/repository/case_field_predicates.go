@@ -31,6 +31,7 @@ import (
 type caseFieldSet struct {
 	Types            []string
 	ProjectIDs       []string
+	AccountIDs       []string
 	DeploymentIDs    []string
 	AssignedUserIDs  []string
 	States           []domain.CaseState
@@ -206,6 +207,9 @@ func caseFieldPredicates(f caseFieldSet, argIdx int) ([]string, []any, int, erro
 	}
 	if len(f.ProjectIDs) > 0 {
 		add("wi.project_id = ANY($%d::uuid[])", f.ProjectIDs)
+	}
+	if len(f.AccountIDs) > 0 {
+		add("wi.account_id = ANY($%d::uuid[])", f.AccountIDs)
 	}
 	if len(f.DeploymentIDs) > 0 {
 		add("wi.deployment_id = ANY($%d::uuid[])", f.DeploymentIDs)

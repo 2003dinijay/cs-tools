@@ -112,6 +112,14 @@ func NewPostgresViewerAccountClient(entity entityEscalationsClient, sn viewerAcc
 	return &postgresViewerAccountClient{entity: entity, sn: sn}
 }
 
+// entityEscalationsSearchMaxLimit is entity-service's own hard cap on
+// POST /escalations/search's pagination.limit (confirmed directly: a value
+// above it is a 400 "limit cannot exceed 50") -- GetEscalationsByAccount's
+// own caller-facing limit can be up to maxPaginationLimit (100, accounts.go),
+// so a request for more than 50 rows has to be satisfied by more than one
+// entity-service page.
+const entityEscalationsSearchMaxLimit = 50
+
 // GetEscalationsByAccount implements viewerAccountClient.
 func (c *postgresViewerAccountClient) GetEscalationsByAccount(ctx context.Context, accountID string, offset, limit int) ([]servicenow.EscalationDetail, error) {
 	caseIDs, err := c.accountCaseIDs(ctx, accountID)
@@ -122,41 +130,56 @@ func (c *postgresViewerAccountClient) GetEscalationsByAccount(ctx context.Contex
 		return []servicenow.EscalationDetail{}, nil
 	}
 
-	body, err := json.Marshal(entitySearchEscalationsRequest{
-		Filters:    entitySearchEscalationsFilters{CaseIDs: caseIDs},
-		SortBy:     entityEscalationSort{Field: "createdOn", Order: "desc"},
-		Pagination: entityPagination{Limit: limit, Offset: offset},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal entity-service escalations request: %w", err)
-	}
-	raw, err := c.entity.SearchEscalations(ctx, body)
-	if err != nil {
-		return nil, err
-	}
-	var resp entitySearchEscalationsResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("unmarshal entity-service escalations response: %w", err)
-	}
-
-	results := make([]servicenow.EscalationDetail, 0, len(resp.Escalations))
-	for _, e := range resp.Escalations {
-		results = append(results, servicenow.EscalationDetail{
-			ID:          e.ID,
-			EscalatedOn: e.CreatedOn,
-			State:       escalationState(e.CurrentLevel.ID),
-			Severity:    e.CurrentLevel.Label,
+	results := make([]servicenow.EscalationDetail, 0, limit)
+	for fetched, pageOffset := 0, offset; fetched < limit; {
+		pageLimit := limit - fetched
+		if pageLimit > entityEscalationsSearchMaxLimit {
+			pageLimit = entityEscalationsSearchMaxLimit
+		}
+		body, err := json.Marshal(entitySearchEscalationsRequest{
+			Filters:    entitySearchEscalationsFilters{CaseIDs: caseIDs},
+			SortBy:     entityEscalationSort{Field: "createdOn", Order: "desc"},
+			Pagination: entityPagination{Limit: pageLimit, Offset: pageOffset},
 		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal entity-service escalations request: %w", err)
+		}
+		raw, err := c.entity.SearchEscalations(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		var resp entitySearchEscalationsResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("unmarshal entity-service escalations response: %w", err)
+		}
+		for _, e := range resp.Escalations {
+			results = append(results, servicenow.EscalationDetail{
+				ID:          e.ID,
+				EscalatedOn: e.CreatedOn,
+				State:       escalationState(e.CurrentLevel.ID),
+				Severity:    e.CurrentLevel.Label,
+			})
+		}
+		fetched += len(resp.Escalations)
+		pageOffset += len(resp.Escalations)
+		if len(resp.Escalations) < pageLimit || pageOffset >= resp.Total {
+			break
+		}
 	}
 	return results, nil
 }
 
 // escalationState derives a state label from the current escalation level --
 // case_escalation has no open/closed column of its own (see this file's own
-// doc comment): "EL0" is the baseline a case starts at and returns to once
+// doc comment). entity-service's own wire shape for CurrentLevel.ID is the
+// bare level number ("0".."5"), NOT the raw case_escalation_level_enum label
+// ("EL0".."EL5") the database column itself stores -- confirmed directly
+// against a real escalation (currentLevel: {id: "1", label: "1"}), the same
+// "EL" prefix stripped" convention GetCaseByID's own EscalationLevel field
+// already uses. "0" is the baseline a case starts at and returns to once
 // de-escalated, anything else means it is still actively escalated.
 func escalationState(currentLevelID string) string {
-	if currentLevelID == "EL0" {
+	if currentLevelID == "0" {
 		return "De-escalated"
 	}
 	return "Escalated"
@@ -170,7 +193,7 @@ func (c *postgresViewerAccountClient) accountCaseIDs(ctx context.Context, accoun
 	for page := 0; page < accountEscalationCasePageCap; page++ {
 		body, err := json.Marshal(entitySearchCasesRequest{
 			Filters: entitySearchCasesFilters{
-				Filters: []entityCaseFieldFilter{{Field: "accountId", Op: "eq", Values: []string{accountID}}},
+				Filters: []entityCaseFieldFilter{{Field: "accountId", Op: "in", Values: []string{accountID}}},
 			},
 			Pagination: entityPagination{Limit: accountEscalationCasePageLimit, Offset: page * accountEscalationCasePageLimit},
 		})
