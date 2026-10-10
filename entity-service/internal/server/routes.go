@@ -213,7 +213,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// table.
 	var (
 		githubSyncRepo repository.GithubSyncRepository
-		githubClient   *github.Client
+		githubClient   *github.Router
 		githubLabelSet service.GithubLabels
 		// githubSync is the issue sync, kept for the SR automation set up
 		// further down (WithGithubSRNotices).
@@ -238,10 +238,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			// The outbound worker is started by cmd/api, which owns process
 			// lifetime; routes.go only builds what the HTTP surface needs.
 			githubSyncRepo = repository.NewGithubSyncRepository(repository.NewScoped(db))
-			githubClient = github.NewClient(github.Config{
-				BaseURL: cfg.GithubBaseURL,
-				Token:   cfg.GithubToken,
-			})
+			// Per repository: GITHUB_REPO_TOKENS, then GITHUB_TOKEN. Validated at
+			// startup (Config.Validate); checked again here so a bad value can
+			// never silently leave the sync with no token.
+			repoTokens, tokErr := github.ParseRepoTokens(cfg.GithubRepoTokens)
+			if tokErr != nil {
+				log.Fatalf("invalid GitHub tokens: %v", tokErr)
+			}
+			githubClient = github.NewRouter(github.Config{BaseURL: cfg.GithubBaseURL}, cfg.GithubToken, repoTokens)
 			githubLabelSet = githubLabels
 			githubSyncSvc := service.NewGithubSyncServiceWriting(
 				githubSyncRepo,

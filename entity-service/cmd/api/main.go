@@ -78,10 +78,15 @@ func main() {
 		if pool == nil {
 			log.Printf("GITHUB_INTEGRATION_ENABLED is set but there is no database pool (DATA_SOURCE=%s): the outbound worker is disabled", cfg.DataSource)
 		} else {
+			// Each repository's own token (GITHUB_REPO_TOKENS), else GITHUB_TOKEN.
+			repoTokens, tokErr := github.ParseRepoTokens(cfg.GithubRepoTokens)
+			if tokErr != nil {
+				log.Fatalf("invalid GitHub tokens: %v", tokErr)
+			}
 			worker := service.NewGithubOutboundWorker(
 				repository.NewGithubOutboundRepository(pool),
 				service.NewGithubOutboundService(
-					github.NewClient(github.Config{BaseURL: cfg.GithubBaseURL, Token: cfg.GithubToken}),
+					github.NewRouter(github.Config{BaseURL: cfg.GithubBaseURL}, cfg.GithubToken, repoTokens),
 				),
 				cfg.GithubOutboundInterval,
 			)
