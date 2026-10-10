@@ -80,13 +80,17 @@ const (
 	SLADataSourceServiceNow SLADataSource = "servicenow"
 )
 
-// AttachmentDataSource identifies which backend case attachment reads (GET
-// /attachments/{id}, GET /attachments/{id}/content, POST /attachments/search)
-// and the case activity feed (POST /cases/{id}/activities/search) use.
-// Independent of DataSource and SLADataSource, same reasoning as
-// SLADataSource: a deployment can run DataSource=postgres for every other
-// entity while pointing attachment/activity reads specifically at
-// ServiceNow. This is a stopgap for while Postgres-synced attachment content
+// AttachmentDataSource identifies which backend two case attachment reads
+// (POST /attachments/search, GET /attachments/{id}/content) and the case
+// activity feed (POST /cases/{id}/activities/search) use. It does NOT affect
+// GET /attachments/{id}, PATCH/DELETE /attachments/{id}, POST /attachments,
+// or POST /attachments/{id}/confirm -- those always follow DataSource,
+// because the ServiceNow-backed implementation this switches to is
+// read-only and cannot serve those writes. Independent of DataSource and
+// SLADataSource, same reasoning as SLADataSource: a deployment can run
+// DataSource=postgres for every other entity while pointing these two
+// attachment reads and the activity feed specifically at ServiceNow. This is
+// a stopgap for while Postgres-synced attachment content
 // and activity history aren't reliable yet, meant to go away once that
 // migration lands -- see routes.go for the wiring.
 type AttachmentDataSource string
@@ -159,9 +163,10 @@ type Config struct {
 	// independent of DataSource. Defaults to "postgres" -- see
 	// SLADataSource's own doc comment.
 	SLADataSource SLADataSource
-	// AttachmentDataSource controls which backend case attachment and
-	// activity-feed reads use, independent of DataSource and SLADataSource.
-	// Defaults to "postgres" -- see AttachmentDataSource's own doc comment.
+	// AttachmentDataSource controls which backend two case attachment reads
+	// and the activity feed use, independent of DataSource and
+	// SLADataSource. Defaults to "postgres" -- see AttachmentDataSource's
+	// own doc comment.
 	AttachmentDataSource AttachmentDataSource
 	// ServiceNowIntegrationServiceBaseURL is the base URL for the ServiceNow integration service API.
 	// Required when DataSource is "servicenow" (or SLADataSource is "servicenow" -- see Validate).
