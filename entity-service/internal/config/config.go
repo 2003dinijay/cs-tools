@@ -63,7 +63,9 @@ const (
 
 // SLADataSource identifies which backend SLA-related reads use -- task SLAs
 // (GET /slas/{id}, POST /slas/search, what backs a case's SLA display) and
-// the slaBreached/taskSLABusinessElapsedPercent case-search filters.
+// the slaBreached/taskSLABusinessElapsedPercent case-search filters, and the
+// averageResponseTime figure of GET /projects/{id}/cases/stats (internal
+// callers only; the rest of that response stays on DataSource).
 // Independent of DataSource: a deployment can run DataSource=postgres for
 // every other entity while still pointing SLA reads specifically at
 // ServiceNow, or vice versa. GET /sla-status and GET /sla-status/clock-state

@@ -77,6 +77,36 @@ type projectCaseStatsService struct {
 	repo    repository.ProjectCaseStatsRepository
 	refRepo repository.ReferenceDataRepository
 	access  AccessService
+	// avgResponse, when non-nil, supplies averageResponseTime for internal
+	// callers instead of the local SLA table. See AverageResponseSource.
+	avgResponse AverageResponseSource
+}
+
+// AverageResponseSource supplies a project's average response time, in hours,
+// from somewhere other than this data source's own SLA table. It is wired when
+// SLA_DATA_SOURCE points SLA reads at the external backing system while the
+// rest of the entities stay on Postgres: a deployment whose SLA rows are not
+// synced locally (or are in a state the local query does not count) would
+// otherwise report 0.
+//
+// The figure must match what the local query would have produced, i.e. it
+// ignores the caseTypes and createdBy filters. An error is propagated to the
+// caller as is: a failing source fails the request rather than silently
+// reporting 0, which would read as "no SLA data" on the dashboard.
+type AverageResponseSource interface {
+	AverageResponseTime(ctx context.Context, projectID string) (hours float64, err error)
+}
+
+// ProjectCaseStatsOption customises NewProjectCaseStatsService.
+type ProjectCaseStatsOption func(*projectCaseStatsService)
+
+// WithAverageResponseSource makes averageResponseTime come from src instead of
+// the local SLA table, and skips the local AverageResponseSeconds query.
+// Applies only to internal (unrestricted) callers, the same carve-out as the
+// SLA case-search delegate: a customer-scoped caller keeps this data source's
+// own row-level security and numbers. A nil src is a no-op.
+func WithAverageResponseSource(src AverageResponseSource) ProjectCaseStatsOption {
+	return func(s *projectCaseStatsService) { s.avgResponse = src }
 }
 
 // NewProjectCaseStatsService constructs a Postgres-backed ProjectCaseStatsService.
@@ -84,8 +114,13 @@ func NewProjectCaseStatsService(
 	repo repository.ProjectCaseStatsRepository,
 	refRepo repository.ReferenceDataRepository,
 	access AccessService,
+	opts ...ProjectCaseStatsOption,
 ) ProjectCaseStatsService {
-	return &projectCaseStatsService{repo: repo, refRepo: refRepo, access: access}
+	s := &projectCaseStatsService{repo: repo, refRepo: refRepo, access: access}
+	for _, opt := range opts {
+		opt(s)
+	}
+	return s
 }
 
 // GetProjectCaseStats implements ProjectCaseStatsService.
@@ -111,9 +146,11 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 
 	// Scope before existence: the id is caller-controlled, so a project the
 	// caller may not see must be indistinguishable from one that is not there.
-	if _, err := authorizeProject(ctx, s.access, projectID); err != nil {
+	scope, err := authorizeProject(ctx, s.access, projectID)
+	if err != nil {
 		return domain.ProjectCaseStatsResponse{}, err
 	}
+	useExternalAvg := s.avgResponse != nil && scope.Unrestricted
 
 	found, _, err := s.refRepo.GetProjectByID(ctx, projectID)
 	if err != nil {
@@ -150,6 +187,7 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 		previous        int
 		avgSeconds      float64
 		slaCount        int
+		avgHours        float64
 		caseTypeCounts  map[string]int
 	)
 
@@ -187,6 +225,10 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 	})
 	g.Go(func() error {
 		var err error
+		if useExternalAvg {
+			avgHours, err = s.avgResponse.AverageResponseTime(gctx, projectID)
+			return err
+		}
 		avgSeconds, slaCount, err = s.repo.AverageResponseSeconds(gctx, projectID)
 		return err
 	})
@@ -253,7 +295,10 @@ func (s *projectCaseStatsService) GetProjectCaseStats(
 
 	resp.ChangeRate.ResolvedEngagements = percentChange(current, previous)
 
-	if slaCount > 0 {
+	if useExternalAvg {
+		// Already in hours and already rounded by the source.
+		resp.AverageResponseTime = avgHours
+	} else if slaCount > 0 {
 		// ServiceNow floors the per-SLA mean to whole seconds before
 		// converting, so the same input yields the same hours figure here.
 		resp.AverageResponseTime = roundToTwoDecimals(math.Floor(avgSeconds) / 3600)
