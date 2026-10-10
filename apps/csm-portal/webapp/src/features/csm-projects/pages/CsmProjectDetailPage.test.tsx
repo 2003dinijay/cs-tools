@@ -50,10 +50,14 @@ vi.mock("@api/backend/client", () => ({
 vi.mock("@config/apiConfig", () => ({
   apiConfig: { backendUrl: "https://example.test" },
 }));
-// This page now reads usePortalAccess (to gate the "Create" split-button),
-// which transitively imports the real backend client/config -- mocked
-// above. Default to full write access; the gating test below overrides it.
+// This page now reads usePortalAccess (to gate the "Create" split-button and
+// the ex-Support-Portal-Lite report buttons), which transitively imports the
+// real backend client/config -- mocked above. Default to full write access,
+// no SPL audience, and non-viewer-only (staff) access; the gating tests
+// below override each independently.
 let mockCanWrite = true;
+let mockIsSplAudience = false;
+let mockCanViewStaffSections = true;
 vi.mock("@context/current-user/usePortalAccess", () => ({
   usePortalAccess: () => ({
     hasAnyRole: true,
@@ -62,6 +66,8 @@ vi.mock("@context/current-user/usePortalAccess", () => ({
     canUseOperations: true,
     canUseTimeCardsAndUpdates: true,
     canWrite: mockCanWrite,
+    isSplAudience: mockIsSplAudience,
+    canViewStaffSections: mockCanViewStaffSections,
   }),
 }));
 
@@ -127,6 +133,8 @@ function renderPage(initialEntry = "/customers/projects/proj-1") {
 describe("CsmProjectDetailPage — tab state", () => {
   beforeEach(() => {
     mockCanWrite = true;
+    mockIsSplAudience = false;
+    mockCanViewStaffSections = true;
     mockUseGetProject.mockReturnValue({
       data: PROJECT,
       isLoading: false,
@@ -187,6 +195,51 @@ describe("CsmProjectDetailPage — tab state", () => {
     mockCanWrite = false;
     renderPage();
     expect(screen.queryByRole("button", { name: /create/i })).not.toBeInTheDocument();
+  });
+
+  // Regression: a viewer-only caller (role set exactly {viewer}) never sees
+  // Chats inside this tab (WorkItemsTab's own canViewStaffSections gate), so
+  // for them it's relabelled "Cases" rather than "Work items".
+  it("relabels the Work items tab as Cases for a viewer-only caller", () => {
+    mockCanViewStaffSections = false;
+    renderPage();
+    expect(screen.queryByRole("tab", { name: "Work items" })).not.toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Cases" })).toBeInTheDocument();
+  });
+});
+
+// Regression: the ex-Support Portal Lite SLA/Time/CS report buttons have no
+// modern equivalent and must stay limited to the same audience they always
+// had (isSplAudience), independently of canWrite -- they must never appear
+// for an ordinary cs_engineer/admin session that doesn't separately hold the
+// viewer role, and must appear for one that does, even without write access.
+describe("CsmProjectDetailPage — ex-SPL report buttons", () => {
+  beforeEach(() => {
+    mockCanViewStaffSections = true;
+    mockUseGetProject.mockReturnValue({
+      data: PROJECT,
+      isLoading: false,
+      isError: false,
+    });
+  });
+
+  it("hides the SLA/Time/CS report buttons for a caller without the viewer role", () => {
+    mockIsSplAudience = false;
+    renderPage();
+    expect(screen.queryByRole("link", { name: "SLA Report" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "Time Report" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("link", { name: "CS Report" })).not.toBeInTheDocument();
+  });
+
+  // Rendered via component={RouterLink} (an in-app navigation, not a
+  // dialog/menu trigger), so each is an <a>, accessible role "link".
+  it("shows the SLA/Time/CS report buttons for a caller holding the viewer role, even without write access", () => {
+    mockIsSplAudience = true;
+    mockCanWrite = false;
+    renderPage();
+    expect(screen.getByRole("link", { name: "SLA Report" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Time Report" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "CS Report" })).toBeInTheDocument();
   });
 });
 

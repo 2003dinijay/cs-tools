@@ -107,13 +107,19 @@ const (
 	// useAccess.ts for the matching frontend halves of this split;
 	// keep all three in sync on which role each one checks.
 	PermViewerAccess
-	// PermUsageMetricsViewer is the SPL Usage Metrics domain
-	// (/usage-metrics/*), layered on top of PermViewerAccess the same way
-	// PermEscalate/PermDownloadAttachment layer on top of PermView —
-	// replacing the old SPL_USAGE_METRICS_GROUPS sub-group check. Unlike
-	// AccessConfig.UsageMetricsViewer's original CS-Portal-side grant (View
-	// only, since this backend had no usage-metrics route of its own before
-	// SPL), this is the real permission those SPL routes now check.
+	// PermUsageMetricsViewer is the Usage Metrics domain (/usage-metrics/*).
+	// Unlike every other ex-"Support Portal Lite" domain (Customer Health,
+	// User Scan, the SLA/Time/CS project reports — all still gated by
+	// PermViewerAccess, Viewer only), Usage Metrics is registered directly
+	// on THIS permission at the route level, not layered on top of
+	// PermViewerAccess: it was reported live as needing a broader audience
+	// than "holds the Viewer role" once Support Portal Lite's separate
+	// app/nav was folded into the main portal — a cs_engineer, admin or
+	// dedicated usage_metrics_viewer holder must reach it even without
+	// separately holding Viewer too. Viewer itself does NOT hold this
+	// (confirmed live, correcting an earlier pass that added it): a
+	// Viewer-only caller must not see Usage Metrics at all, unlike its ex-SPL
+	// siblings.
 	PermUsageMetricsViewer
 	// PermViewSharedEntity is read access to exactly the routes SupportPortalLite's
 	// merged accounts/projects/cases/team-members screens call: GET /accounts/{id},
@@ -393,10 +399,10 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			PermViewSharedEntity: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
 				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner,
 				cfg.SalesSolutions),
-			// Same population as PermEscalate/PermDownloadAttachment's own
-			// "the specialised role, or a CS Portal role that already
-			// dominates it" shape -- see PermUsageMetricsViewer's own doc
-			// comment.
+			// CsEngineer, Admin, and the dedicated role grant this directly
+			// (no separate PermViewerAccess layer, and Viewer itself is
+			// deliberately NOT included) -- see PermUsageMetricsViewer's own
+			// doc comment.
 			PermUsageMetricsViewer: build(cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin),
 			PermUsePlg:             build(cfg.CsEngineer, cfg.Admin),
 			PermManagePlaybooks:    build(cfg.Admin),

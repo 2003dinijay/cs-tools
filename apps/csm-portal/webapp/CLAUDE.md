@@ -85,6 +85,43 @@ no second, redundant permission check was added inside the dialog itself.
 
 Feature-based: each `src/features/<name>/` folder owns its own `api/` (React Query hooks), `components/`, `pages/`, `types/`, `utils/`. Tests are colocated as `<File>.test.tsx` next to the file under test, not in a separate `__tests__` tree.
 
+## There is one app, not two — `viewer` uses the same pages as everyone else
+
+This app used to ship a second, separately-routed app-in-an-app (`features/sales-sa`, mounted at
+`/spl/*`, its own nav/shell/auth-gate) that a `viewer`-role caller landed on instead of the shared
+`csm-*` pages admin/cs_engineer use — same backend data, different frontend, different look. That
+split is gone: `features/sales-sa` has been deleted entirely (no "spl"/"sales-sa" naming survives
+anywhere in this codebase) and every caller, `viewer` included, now lands on the same nav, the same
+`/dashboard`, `/customers/accounts`, `/customers/projects` pages, and the same `CsmIssuesView`-backed
+Cases list. A `viewer`'s lack of write access already renders correctly on these shared pages via the
+existing `canWrite`-gated controls — no parallel read-only clone was needed.
+
+A handful of features from that old app have no equivalent on the shared side and were relocated
+(not rewritten) into their own properly-named `csm-*` feature folders, restyled to this app's table/
+page conventions, but still calling the exact same backend routes they always did (`/customer-health/*`,
+`/usage-metrics/*`, `/user-scan`, the SLA/CS/Time-log report endpoints — all still gated backend-side by
+`PermViewerAccess`/`PermUsageMetricsViewer`, see `apps/csm-portal/backend`'s own `CLAUDE.md`):
+`csm-customer-health`, `csm-usage-metrics`, `csm-user-scan`, `csm-reports`. Three gating flags on
+`usePortalAccess()` (`portalAccess.ts`) control who sees what in this merged app, and are NOT
+interchangeable:
+
+- **`isSplAudience`** — true for anyone holding the `viewer` role, regardless of what else they hold.
+  Gates the four relocated ex-only-for-viewer features above, plus the Escalations/Artifacts-Repository/
+  Projects-under-account tabs added to `CsmAccountDetailPage.tsx` and the SLA/Time/CS report buttons
+  added to `CsmProjectDetailPage.tsx` — all of it invisible to a caller who has never held `viewer`.
+- **`canViewUsageMetrics`** — the one deliberate exception: `cs_engineer`/`admin`/`usage_metrics_viewer`
+  as well as `viewer`. A plain `viewer` with none of those does NOT get this (reported live, correcting
+  an earlier pass that granted it to every `viewer`) — don't conflate it with `isSplAudience`.
+- **`canViewStaffSections`** — false only when a caller's role set is *exactly* `{viewer}` (no other
+  role at all). Gates Team Schedule, Knowledge, Settings, and the Chats sub-tab inside a project's Work
+  Items tab (which itself relabels to "Cases" for such a caller, since there's only one sub-tab left).
+  A `viewer` who also holds any other role is unaffected by this flag — it targets the narrower
+  "viewer-only, nothing else" audience, not "holds viewer" in general.
+
+Every new section/control these flags gate must default to visible for anyone who isn't newly excluded
+— the standing constraint on this whole consolidation is that admin/cs_engineer's existing pages stay
+byte-identical to before it.
+
 ## Routing (`src/App.tsx`)
 
 - Route page components are statically imported (eager), not `React.lazy`-loaded — deliberate, to ship as one JS bundle instead of one chunk per route. Per-route `React.lazy()` caused a real UX bug: navigating to a route not yet visited that session fetched a fresh chunk on the critical path, freezing the UI mid-navigation. See `index.html`'s boot loader (shown until the single bundle finishes loading) for the tradeoff this enables. One dynamic `import()` remains outside routing — the click-triggered PDF export in the Updates feature — since it's not on any navigation path and inlining it would grow the main bundle for a rarely-used feature.

@@ -18,6 +18,7 @@ import { Box, Tab, Tabs } from "@wso2/oxygen-ui";
 import { type JSX } from "react";
 import CsmIssuesView from "@features/csm-cases/components/CsmIssuesView";
 import ConversationsTab from "@features/csm-projects/components/ConversationsTab";
+import { usePortalAccess } from "@context/current-user/usePortalAccess";
 import { useQueryParamTabs } from "@hooks/useSectionTabs";
 
 // Conversations (chat sessions) aren't a case type (`BeCaseType`) — they're a
@@ -71,6 +72,12 @@ interface WorkItemsTabProps {
  * top-level project tab — it was already nested here before this revamp.
  */
 export default function WorkItemsTab({ projectId }: WorkItemsTabProps): JSX.Element {
+  // Chats (the project's pre-case Novera conversations) is hidden for a
+  // viewer-only caller (role set exactly {viewer}) -- reported live, see
+  // canViewStaffSections's own doc comment. With only one sub-tab left for
+  // that caller, the sub-tab strip itself is skipped too: a single-option
+  // tab switcher is clutter, not a real choice.
+  const { canViewStaffSections } = usePortalAccess();
   // Kept in the URL (`?subTab=`), not local state, alongside the parent
   // page's own `?tab=` -- see CsmProjectDetailPage.tsx's `projectPath` -- so
   // a create-flow round trip back to this project restores the exact sub-tab
@@ -80,15 +87,20 @@ export default function WorkItemsTab({ projectId }: WorkItemsTabProps): JSX.Elem
     "issues",
     { paramName: "subTab" },
   );
+  // A viewer-only caller never reaches "conversations" at all (no tab strip
+  // to pick it from), regardless of what a stale ?subTab= in the URL claims.
+  const effectiveSubTab = canViewStaffSections ? subTab : "issues";
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      <Tabs value={subTab} onChange={(_, v) => setSubTab(v as WorkItemSubTab)}>
-        <Tab value="issues" label="Work items" />
-        <Tab value="conversations" label="Chats" />
-      </Tabs>
+      {canViewStaffSections && (
+        <Tabs value={effectiveSubTab} onChange={(_, v) => setSubTab(v as WorkItemSubTab)}>
+          <Tab value="issues" label="Work items" />
+          <Tab value="conversations" label="Chats" />
+        </Tabs>
+      )}
 
-      {subTab === "issues" && (
+      {effectiveSubTab === "issues" && (
         <CsmIssuesView
           entityNoun="work items"
           lockedFilters={{ projects: [projectId] }}
@@ -102,7 +114,7 @@ export default function WorkItemsTab({ projectId }: WorkItemsTabProps): JSX.Elem
         />
       )}
 
-      {subTab === "conversations" && <ConversationsTab projectId={projectId} />}
+      {effectiveSubTab === "conversations" && <ConversationsTab projectId={projectId} />}
     </Box>
   );
 }
