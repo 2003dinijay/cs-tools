@@ -55,8 +55,9 @@ func TestPostgresLookupsClient_GetABTTeamList_FiltersByTypeSuffix(t *testing.T) 
 			{Name: "Americas", Type: "cre"},
 			{Name: "Atlas", Type: "cre-abt"},
 			{Name: "CRE Leadership", Type: "cre-leadership"},
+			{Name: "Near Miss", Type: "abt-support"},
 		}},
-		teamsTotal: 4,
+		teamsTotal: 5,
 	}
 	c := NewPostgresLookupsClient(fake)
 

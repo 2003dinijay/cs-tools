@@ -70,10 +70,15 @@ type entitySearchEscalationsResponse struct {
 // SearchEscalations is then filtered by -- entity-service's own per-request
 // cap (SearchCases rejects a limit above 50, same as every other search in
 // that service), so this pages through like GetProductList/GetABTTeamList
-// do, up to a safety bound rather than assuming one page covers it.
+// do, up to a safety bound rather than assuming one page covers it. Sized to
+// match customer_health_postgres.go's own accountCasesFull bound (2000, not
+// this file's original 1000): a real account checked directly against
+// staging has 1,585 cases, which the original 1000-case cap would have
+// silently truncated, missing that account's own escalations on any case
+// past the cutoff.
 const (
 	accountEscalationCasePageLimit = 50
-	accountEscalationCasePageCap   = 20 // 20 * 50 = 1000 cases
+	accountEscalationCasePageCap   = 40 // 40 * 50 = 2000 cases
 )
 
 // postgresViewerAccountClient implements viewerAccountClient.

@@ -234,11 +234,14 @@ func main() {
 	// The ServiceNow host/credentials/escalation-template config this used
 	// to read (SERVICENOW_HOST/USERNAME/PASSWORD/ESCALATION_TEMPLATE_ID) is
 	// gone -- this integration is being phased out, not just made optional,
-	// so there's no deployment this should ever read real values for. Every
-	// route still wired to snClient (abt-teams, case attachments, account
-	// escalations, the ServiceNow-sourced half of customer-health) always
-	// fails its own call now, the same mapped-upstream-error path as any
-	// other upstream failure -- see loadViewerConfig's own doc comment.
+	// so there's no deployment this should ever read real values for.
+	// abt-teams, account escalations (the read) and customer-health
+	// summary/detail have all since moved onto entity-service (Postgres) --
+	// see lookups_postgres.go/accounts_postgres.go/customer_health_postgres.go's
+	// own doc comments. What's still wired to snClient (case attachments,
+	// EscalateCase's own submission) always fails its own call now, the
+	// same mapped-upstream-error path as any other upstream failure -- see
+	// loadViewerConfig's own doc comment.
 	snClient := servicenow.NewClient(servicenow.Config{
 		TeamScheduleURL: viewerCfg.teamScheduleURL,
 	})
@@ -264,10 +267,11 @@ func main() {
 	// entity-service data those routes already serve raw, with no
 	// ServiceNow-shape translation left to justify a second, parallel
 	// /spl/* contract. Only attachments (no entity-service storage path
-	// with real data yet) and account escalations (CreateEscalation is an
-	// explicit stub on this data source) remain ServiceNow-backed and
-	// SPL-specific. GetABTTeamList no longer does -- see
-	// lookups_postgres.go's own doc comment.
+	// with real data yet) and EscalateCase's own submission (confirmed dead
+	// code -- no real caller, see accounts_postgres.go's own doc comment)
+	// remain ServiceNow-backed and SPL-specific. GetABTTeamList and
+	// GetEscalationsByAccount no longer do -- see lookups_postgres.go's and
+	// accounts_postgres.go's own doc comments.
 	postgresLookups := handler.NewPostgresLookupsClient(customerEntityClient)
 	postgresReports := handler.NewPostgresReportsClient(customerEntityClient, snClient)
 	postgresUsageMetrics := handler.NewPostgresUsageMetricsClient(customerEntityClient)

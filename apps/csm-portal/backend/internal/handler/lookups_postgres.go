@@ -174,7 +174,7 @@ func (c *postgresLookupsClient) GetABTTeamList(ctx context.Context) ([]string, e
 		}
 
 		for _, t := range resp.Teams {
-			if !strings.Contains(strings.ToLower(t.Type), "abt") {
+			if !strings.HasSuffix(strings.ToLower(t.Type), "-abt") {
 				continue
 			}
 			name := strings.TrimSpace(t.Name)

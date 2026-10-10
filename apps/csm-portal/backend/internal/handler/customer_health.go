@@ -155,6 +155,15 @@ func (h *CustomerHealthHandler) GetSummary(w http.ResponseWriter, r *http.Reques
 	if payload.Limit <= 0 {
 		payload.Limit = 10
 	}
+	// maxPaginationLimit (accounts.go) bounds this the same way it bounds
+	// every other SPL-paginated route: GetCustomerHealthSummary computes all
+	// seven flags per account, each its own handful of entity-service calls
+	// (up to several per project for an account with many projects), so an
+	// uncapped positive limit let a caller force an unbounded, serial
+	// per-account fan-out with no route-level ceiling.
+	if payload.Limit > maxPaginationLimit {
+		payload.Limit = maxPaginationLimit
+	}
 
 	healthStatus := ""
 	if payload.HealthStatus != nil {

@@ -57,15 +57,6 @@ const (
 	customerHealthAbandonedWindow  = 180 * 24 * time.Hour // a still-open MIGRATION engagement older than this is "abandoned"
 )
 
-// customerHealthCasePageCap/customerHealthCasePageLimit bound the per-account/
-// per-project case-id pagination this file does for drill-down lists and
-// escalation lookups, mirroring the identical pattern in
-// accounts_postgres.go's accountCaseIDs.
-const (
-	customerHealthCasePageLimit = 50
-	customerHealthCasePageCap   = 10 // 10 * 50 = 500 cases per account/project
-)
-
 // postgresCustomerHealthClient implements customerHealthSNClient entirely
 // against entity-service (Postgres) -- no ServiceNow dependency at all. The
 // original ServiceNow implementation computed these seven account/project
@@ -144,17 +135,25 @@ func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Conte
 	if err != nil {
 		return nil, fmt.Errorf("marshal entity-service account request: %w", err)
 	}
+	raw, err := c.entity.SearchAccounts(ctx, accountBody)
+	if err != nil {
+		return nil, err
+	}
+	var accountResp entitySearchAccountsResponse
+	if err := json.Unmarshal(raw, &accountResp); err != nil {
+		return nil, fmt.Errorf("unmarshal entity-service account response: %w", err)
+	}
 	accountName := ""
-	if raw, err := c.entity.SearchAccounts(ctx, accountBody); err == nil {
-		var resp entitySearchAccountsResponse
-		if json.Unmarshal(raw, &resp) == nil {
-			for _, a := range resp.Accounts {
-				if a.ID == accountID {
-					accountName = a.Name
-					break
-				}
-			}
+	found := false
+	for _, a := range accountResp.Accounts {
+		if a.ID == accountID {
+			accountName = a.Name
+			found = true
+			break
 		}
+	}
+	if !found {
+		return nil, servicenow.ErrAccountNotFound
 	}
 
 	projects, err := c.accountProjects(ctx, accountID)
@@ -165,7 +164,7 @@ func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Conte
 	// Fetched ONCE for the whole account and grouped by project client-side
 	// below, rather than once per project per flag -- a real, found
 	// performance bug: the original per-project-per-flag design ran up to
-	// customerHealthCasePageCap pages of case search PER PROJECT PER FLAG
+	// several pages of case search PER PROJECT PER FLAG
 	// (recent/abandoned/delayed/escalated-cases each re-fetched the
 	// project's own cases from scratch), which for a real account with 21
 	// projects and 1,585 cases took minutes and was still running when
@@ -342,9 +341,15 @@ func (c *postgresCustomerHealthClient) filteredAccounts(ctx context.Context, ema
 		wantRegion[r] = true
 	}
 	var matched []entityAccountView
+	// accountScanPageCap is a runaway-loop backstop, not an expected real
+	// limit (10,000 accounts is far beyond any real account count this
+	// portal manages, the same posture customer_health.go's own maxBatches
+	// documents) -- a smaller cap here previously stopped the scan before
+	// reaching every account, silently under-reporting both the matched set
+	// and TotalCount for a region filter once the account list grew past it.
 	const (
 		accountScanPageLimit = 50
-		accountScanPageCap   = 40 // 40 * 50 = 2000 accounts scanned
+		accountScanPageCap   = 200 // 200 * 50 = 10,000 accounts scanned
 	)
 	for page := 0; page < accountScanPageCap; page++ {
 		body, err := json.Marshal(entitySearchAccountsRequest{
@@ -506,54 +511,81 @@ func deploymentIDsOf(deployments []entityDeploymentView) []string {
 	return ids
 }
 
+// customerHealthDeploymentPageLimit/customerHealthDeploymentPageCap bound
+// projectDeployments'/deployedEolProducts' own pagination -- entity-service's
+// 50-per-page cap applies to the total, not just the first page (confirmed:
+// both searches report their own Total alongside LIMIT/OFFSET results), so a
+// project with more than 50 active deployments, or more than 50 deployed
+// products under the deployments being checked, silently evaluated only its
+// first page until this was fixed -- projectHasEolProduct could then miss a
+// later EOL product and report a false negative.
+const (
+	customerHealthDeploymentPageLimit = 50
+	customerHealthDeploymentPageCap   = 20 // 20 * 50 = 1000 deployments/products per project
+)
+
 func (c *postgresCustomerHealthClient) projectDeployments(ctx context.Context, projectID string) ([]entityDeploymentView, error) {
-	body, err := json.Marshal(entityDeploymentsSearchRequest{
-		Pagination: entityPagination{Limit: 50, Offset: 0},
-		ProjectIDs: []string{projectID},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal entity-service deployments request: %w", err)
+	var deployments []entityDeploymentView
+	for page := 0; page < customerHealthDeploymentPageCap; page++ {
+		body, err := json.Marshal(entityDeploymentsSearchRequest{
+			Pagination: entityPagination{Limit: customerHealthDeploymentPageLimit, Offset: page * customerHealthDeploymentPageLimit},
+			ProjectIDs: []string{projectID},
+		})
+		if err != nil {
+			return nil, fmt.Errorf("marshal entity-service deployments request: %w", err)
+		}
+		raw, err := c.entity.SearchDeployments(ctx, body)
+		if err != nil {
+			return nil, err
+		}
+		var resp entityDeploymentsSearchResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, fmt.Errorf("unmarshal entity-service deployments response: %w", err)
+		}
+		deployments = append(deployments, resp.Deployments...)
+		if len(resp.Deployments) < customerHealthDeploymentPageLimit || (page+1)*customerHealthDeploymentPageLimit >= resp.Total {
+			break
+		}
 	}
-	raw, err := c.entity.SearchDeployments(ctx, body)
-	if err != nil {
-		return nil, err
-	}
-	var resp entityDeploymentsSearchResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, fmt.Errorf("unmarshal entity-service deployments response: %w", err)
-	}
-	return resp.Deployments, nil
+	return deployments, nil
 }
 
 // deployedEolProducts returns the deployed products under deploymentIDs whose
 // product version is past its support_eol_date, alongside every deployed
 // product (used by projectDetail to build the "softwareModel" drill-down).
 func (c *postgresCustomerHealthClient) deployedEolProducts(ctx context.Context, deploymentIDs []string) ([]entityDeployedProductEolView, []entityDeployedProductEolView, error) {
-	body, err := json.Marshal(entitySearchDeployedProductsEolRequest{
-		Pagination:    entityPagination{Limit: 50, Offset: 0},
-		DeploymentIDs: deploymentIDs,
-	})
-	if err != nil {
-		return nil, nil, fmt.Errorf("marshal entity-service deployed-products request: %w", err)
-	}
-	raw, err := c.entity.SearchDeployedProducts(ctx, body)
-	if err != nil {
-		return nil, nil, err
-	}
-	var resp entitySearchDeployedProductsEolResponse
-	if err := json.Unmarshal(raw, &resp); err != nil {
-		return nil, nil, fmt.Errorf("unmarshal entity-service deployed-products response: %w", err)
+	var all []entityDeployedProductEolView
+	for page := 0; page < customerHealthDeploymentPageCap; page++ {
+		body, err := json.Marshal(entitySearchDeployedProductsEolRequest{
+			Pagination:    entityPagination{Limit: customerHealthDeploymentPageLimit, Offset: page * customerHealthDeploymentPageLimit},
+			DeploymentIDs: deploymentIDs,
+		})
+		if err != nil {
+			return nil, nil, fmt.Errorf("marshal entity-service deployed-products request: %w", err)
+		}
+		raw, err := c.entity.SearchDeployedProducts(ctx, body)
+		if err != nil {
+			return nil, nil, err
+		}
+		var resp entitySearchDeployedProductsEolResponse
+		if err := json.Unmarshal(raw, &resp); err != nil {
+			return nil, nil, fmt.Errorf("unmarshal entity-service deployed-products response: %w", err)
+		}
+		all = append(all, resp.DeployedProducts...)
+		if len(resp.DeployedProducts) < customerHealthDeploymentPageLimit || (page+1)*customerHealthDeploymentPageLimit >= resp.Total {
+			break
+		}
 	}
 	now := time.Now()
 	var eol []entityDeployedProductEolView
-	for _, dp := range resp.DeployedProducts {
+	for _, dp := range all {
 		if dp.Version != nil && dp.Version.SupportEoLDate != nil {
 			if t, err := time.Parse(time.RFC3339, *dp.Version.SupportEoLDate); err == nil && t.Before(now) {
 				eol = append(eol, dp)
 			}
 		}
 	}
-	return eol, resp.DeployedProducts, nil
+	return eol, all, nil
 }
 
 // accountHasCasesSince reports whether the account has any case-like work
@@ -618,45 +650,23 @@ func (c *postgresCustomerHealthClient) caseCount(ctx context.Context, accountID,
 	return resp.Total, nil
 }
 
-// accountCaseIDsForHealth pages through every case-like work item belonging
-// to accountID, up to customerHealthCasePageCap pages -- the same shape as
-// accounts_postgres.go's accountCaseIDs, duplicated locally rather than
-// shared since the two files' pagination bounds are tuned independently and
-// there is no third caller yet to justify extracting a shared helper.
-func (c *postgresCustomerHealthClient) accountCaseIDsForHealth(ctx context.Context, accountID string) ([]string, error) {
-	var ids []string
-	for page := 0; page < customerHealthCasePageCap; page++ {
-		body, err := json.Marshal(entitySearchCasesRequest{
-			Filters:    entitySearchCasesFilters{Filters: []entityCaseFieldFilter{{Field: "accountId", Op: "in", Values: []string{accountID}}}},
-			Pagination: entityPagination{Limit: customerHealthCasePageLimit, Offset: page * customerHealthCasePageLimit},
-		})
-		if err != nil {
-			return nil, fmt.Errorf("marshal entity-service cases request: %w", err)
-		}
-		raw, err := c.entity.SearchCases(ctx, body)
-		if err != nil {
-			return nil, err
-		}
-		var resp entitySearchCasesResponse
-		if err := json.Unmarshal(raw, &resp); err != nil {
-			return nil, fmt.Errorf("unmarshal entity-service cases response: %w", err)
-		}
-		for _, cv := range resp.Cases {
-			ids = append(ids, cv.ID)
-		}
-		if len(resp.Cases) < customerHealthCasePageLimit || (page+1)*customerHealthCasePageLimit >= resp.Total {
-			break
-		}
-	}
-	return ids, nil
-}
-
 // accountHasRecentEscalations reports whether any of the account's cases has
-// an escalation created within customerHealthEscalationWindow.
+// an escalation created within customerHealthEscalationWindow. Reuses
+// accountCasesFull's own (wider: customerHealthAccountCasePageCap, 2000
+// cases) pagination bound rather than a separately-tuned, narrower one -- an
+// earlier version here (accountCaseIDsForHealth, 500-case cap) could miss an
+// escalation on a case beyond that cap for a real account with more than 500
+// cases (one real account checked has 1,585), silently under-reporting this
+// flag. There is no reason for this flag's own case-id lookup to be any less
+// complete than GetCustomerHealthDetail's identical one.
 func (c *postgresCustomerHealthClient) accountHasRecentEscalations(ctx context.Context, accountID string) (bool, error) {
-	caseIDs, err := c.accountCaseIDsForHealth(ctx, accountID)
-	if err != nil || len(caseIDs) == 0 {
+	cases, err := c.accountCasesFull(ctx, accountID)
+	if err != nil || len(cases) == 0 {
 		return false, err
+	}
+	caseIDs := make([]string, len(cases))
+	for i, cv := range cases {
+		caseIDs[i] = cv.ID
 	}
 	escalations, err := c.searchEscalationsForCaseIDs(ctx, caseIDs)
 	if err != nil {

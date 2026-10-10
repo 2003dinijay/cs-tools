@@ -19,8 +19,11 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 	"time"
+
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
 // fakeEntityCustomerHealthClient is a scriptable entityCustomerHealthClient
@@ -207,5 +210,35 @@ func TestDeployedEolProducts_FiltersPastEolDate(t *testing.T) {
 	}
 	if len(eol) != 1 || eol[0].Product.Name != "WSO2 API Manager" {
 		t.Fatalf("got %+v, want only the past-EOL product", eol)
+	}
+}
+
+func TestGetCustomerHealthDetail_AccountNotFound(t *testing.T) {
+	fake := &fakeEntityCustomerHealthClient{
+		accounts: entitySearchAccountsResponse{Accounts: []entityAccountView{}, Total: 0},
+	}
+	c := NewPostgresCustomerHealthClient(fake)
+
+	_, err := c.GetCustomerHealthDetail(context.Background(), "acc-missing")
+	if !errors.Is(err, servicenow.ErrAccountNotFound) {
+		t.Fatalf("got err=%v, want servicenow.ErrAccountNotFound", err)
+	}
+}
+
+func TestGetCustomerHealthDetail_AccountFound(t *testing.T) {
+	fake := &fakeEntityCustomerHealthClient{
+		accounts: entitySearchAccountsResponse{
+			Accounts: []entityAccountView{{ID: "acc-1", Name: "Acme Corp"}},
+			Total:    1,
+		},
+	}
+	c := NewPostgresCustomerHealthClient(fake)
+
+	detail, err := c.GetCustomerHealthDetail(context.Background(), "acc-1")
+	if err != nil {
+		t.Fatalf("GetCustomerHealthDetail: %v", err)
+	}
+	if detail.AccountName != "Acme Corp" {
+		t.Errorf("got AccountName=%q, want %q", detail.AccountName, "Acme Corp")
 	}
 }
