@@ -206,7 +206,7 @@ describe("ConversationDetailsPage", () => {
             comments: [
               {
                 id: "msg-user-1",
-                createdBy: "Rashmika Silva",
+                createdBy: "Jane Doe",
                 content: "[code]Asgardeo role adding drop down is not letting to add groups[/code]",
                 type: "comment",
                 createdOn: "2026-09-20T20:56:00Z",
@@ -244,7 +244,7 @@ describe("ConversationDetailsPage", () => {
     expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
 
     // Human user is recognized
-    expect(screen.getByText("Rashmika Silva")).toBeInTheDocument();
+    expect(screen.getByText("Jane Doe")).toBeInTheDocument();
 
     // [code] tags are stripped
     expect(screen.queryByText(/\[code\]/)).not.toBeInTheDocument();
@@ -280,7 +280,7 @@ describe("ConversationDetailsPage", () => {
               },
               {
                 id: "1-human",
-                createdBy: "Sasmitha Ekanayaka",
+                createdBy: "Alex Smith",
                 content: "[code]hi[/code]",
                 type: "comment",
                 createdOn: "2026-10-05T10:00:51Z",
@@ -355,7 +355,7 @@ describe("ConversationDetailsPage", () => {
             comments: [
               {
                 id: "case-escaped-code",
-                createdBy: "Rashmika Silva",
+                createdBy: "Jane Doe",
                 content: "[CODE]Part 1[/CODE][\\code]Part 2[/code]",
                 type: "comment",
                 createdOn: "2026-10-05T10:00:51Z",
@@ -391,7 +391,7 @@ describe("ConversationDetailsPage", () => {
             comments: [
               {
                 id: "prose-comment",
-                createdBy: "Rashmika Silva",
+                createdBy: "Jane Doe",
                 content:
                   "<p>Customer comment added</p>Please note: Customer comment added should not be stripped from prose.",
                 type: "comment",
@@ -421,5 +421,3 @@ describe("ConversationDetailsPage", () => {
     ).toBeInTheDocument();
   });
 });
-
-
