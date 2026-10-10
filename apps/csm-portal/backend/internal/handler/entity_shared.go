@@ -81,6 +81,7 @@ type entitySearchCaseView struct {
 	Subject          *string              `json:"subject"`
 	Description      *string              `json:"description"`
 	State            *string              `json:"state"`
+	Severity         *string              `json:"severity"`
 	Product          *entityRef           `json:"product"`
 	Project          *entityRef           `json:"project"`
 	ProjectKey       *string              `json:"projectKey"`
@@ -103,6 +104,10 @@ type entityProjectView struct {
 	// ProjectClosureFields) -- project.wso2_closure_state, populated on
 	// both its data sources.
 	ClosureState *string `json:"closureState"`
+	// OnboardingStatus mirrors entity-service's own ProjectView.OnboardingStatus
+	// (project.onboarding_status) -- nil when onboarding isn't tracked for
+	// this project.
+	OnboardingStatus *string `json:"onboardingStatus"`
 }
 
 type entitySearchProjectsRequest struct {
@@ -133,6 +138,56 @@ type entityProjectDetailsView struct {
 	ClosureState        *string                 `json:"closureState"`
 	TotalQueryHours     *float64                `json:"totalQueryHours"`
 	RemainingQueryHours *float64                `json:"remainingQueryHours"`
+}
+
+// entitySearchDeployedProductsEolRequest mirrors entityDeployedProductsSearchRequest
+// (usage_metrics_postgres.go) -- a separate, narrower request type isn't
+// needed; this file only ever needs DeploymentIDs/Pagination, both already on
+// that shared shape. Kept here as a type alias-by-field-match is not possible
+// in Go, so the two request builders stay independent but wire-identical.
+type entitySearchDeployedProductsEolRequest struct {
+	Pagination    entityPagination `json:"pagination"`
+	DeploymentIDs []string         `json:"deploymentIds"`
+}
+
+// entityDeployedProductVersionEolRef is a narrower view of entity-service's
+// DeployedProductVersionRef than usage_metrics_postgres.go's own
+// entityDeployedProductView.Version (*entityRef, id/name only) -- this one
+// specifically needs SupportEoLDate, which that file's shape doesn't carry.
+type entityDeployedProductVersionEolRef struct {
+	Name           string  `json:"name"`
+	SupportEoLDate *string `json:"supportEoLDate"`
+}
+
+type entityDeployedProductEolView struct {
+	Product entityRef                           `json:"product"`
+	Version *entityDeployedProductVersionEolRef `json:"version"`
+}
+
+type entitySearchDeployedProductsEolResponse struct {
+	DeployedProducts []entityDeployedProductEolView `json:"deployedProducts"`
+	Total            int                            `json:"total"`
+}
+
+type entitySearchAccountsFilters struct {
+	SearchQuery string `json:"searchQuery,omitempty"`
+	OwnerEmail  string `json:"ownerEmail,omitempty"`
+}
+
+type entitySearchAccountsRequest struct {
+	Pagination entityPagination            `json:"pagination"`
+	Filters    entitySearchAccountsFilters `json:"filters,omitempty"`
+}
+
+type entityAccountView struct {
+	ID     string  `json:"id"`
+	Name   string  `json:"name"`
+	Region *string `json:"region"`
+}
+
+type entitySearchAccountsResponse struct {
+	Accounts []entityAccountView `json:"accounts"`
+	Total    int                 `json:"total"`
 }
 
 // caseStateToDisplay translates entity-service's domain.CaseState wire

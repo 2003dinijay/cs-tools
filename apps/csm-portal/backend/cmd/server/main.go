@@ -263,10 +263,12 @@ func main() {
 	// now that SPL's data source for them is the exact same
 	// entity-service data those routes already serve raw, with no
 	// ServiceNow-shape translation left to justify a second, parallel
-	// /spl/* contract. Only attachments (no entity-service storage path)
-	// and account escalations (CreateEscalation is an explicit stub on
-	// this data source) remain ServiceNow-backed and SPL-specific.
-	postgresLookups := handler.NewPostgresLookupsClient(customerEntityClient, snClient)
+	// /spl/* contract. Only attachments (no entity-service storage path
+	// with real data yet) and account escalations (CreateEscalation is an
+	// explicit stub on this data source) remain ServiceNow-backed and
+	// SPL-specific. GetABTTeamList no longer does -- see
+	// lookups_postgres.go's own doc comment.
+	postgresLookups := handler.NewPostgresLookupsClient(customerEntityClient)
 	postgresReports := handler.NewPostgresReportsClient(customerEntityClient, snClient)
 	postgresUsageMetrics := handler.NewPostgresUsageMetricsClient(customerEntityClient)
 
@@ -278,10 +280,10 @@ func main() {
 		lookups:        handler.NewLookupsHandler(postgresLookups, accessGuard),
 		usageMetrics:   handler.NewUsageMetricsHandler(postgresUsageMetrics, accessGuard),
 		files:          handler.NewFilesHandler(driveClient, accessGuard),
-		customerHealth: handler.NewCustomerHealthHandler(riskClient, snClient, accessGuard),
+		customerHealth: handler.NewCustomerHealthHandler(riskClient, handler.NewPostgresCustomerHealthClient(customerEntityClient), accessGuard),
 		userInfo:       handler.NewUserInfoHandler(customerEntityClient, accessGuard),
 		userScan:       handler.NewSplUserScanHandler(salesEntityClient, customerEntityClient, accessGuard),
-		accountEsc:     handler.NewViewerAccountHandler(snClient, accessGuard),
+		accountEsc:     handler.NewViewerAccountHandler(handler.NewPostgresViewerAccountClient(customerEntityClient, snClient), accessGuard),
 	}
 	slog.Info("viewer-access endpoints registered",
 		"googleDriveConfigured", viewerCfg.driveClientID != "",
