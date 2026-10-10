@@ -190,7 +190,7 @@ func testDurations() map[string]map[string]time.Duration {
 }
 
 func newTestEngine(st *fakeStore, chat *fakeChat, pub *fakePublisher) *Engine {
-	return &Engine{store: st, pub: pub, chat: chat, links: fakeLinks{}, durations: testDurations()}
+	return &Engine{store: st, pub: pub, chat: chat, links: fakeLinks{}, durations: testDurations(), slaEmailSendingEnabled: true}
 }
 
 // --- RegisterClocks ---
@@ -510,6 +510,44 @@ func TestTick_AlertsADueTierAndRemovesTheWakeEntry(t *testing.T) {
 	meta, _, _ := st.GetClock(context.Background(), "case-1", "response")
 	if meta.AlertedTier != 50 {
 		t.Errorf("AlertedTier = %d, want 50 after alerting", meta.AlertedTier)
+	}
+}
+
+// TestTick_SLANotificationsDisabled_SkipsChatButKeepsPublishAndCursor guards
+// SLA_EMAIL_SENDING_ENABLED=false: no Chat card (and no entity-service
+// lookup), but the event is still published and the tier is still marked
+// alerted and removed from the wake index, so re-enabling cannot replay it.
+func TestTick_SLANotificationsDisabled_SkipsChatButKeepsPublishAndCursor(t *testing.T) {
+	st := newFakeStore()
+	chat := &fakeChat{}
+	pub := &fakePublisher{}
+	ent := &fakeEntityClockStatus{}
+	e := newTestEngine(st, chat, pub)
+	e.slaEmailSendingEnabled = false
+	e.entity = ent
+
+	past := time.Now().Add(-time.Minute)
+	st.clocks["case-1|response"] = ClockMeta{CaseNumber: "CS0001", Team: "Team Nova", StartedAt: past}
+	st.wake[wakeMember("case-1", "response", 50)] = past
+
+	if err := e.Tick(context.Background(), time.Now()); err != nil {
+		t.Fatalf("Tick() error = %v, want nil", err)
+	}
+	if len(chat.calls) != 0 {
+		t.Errorf("chat calls = %+v, want none when SLA notifications are disabled", chat.calls)
+	}
+	if len(ent.calls) != 0 {
+		t.Errorf("entity lookups = %v, want none when disabled", ent.calls)
+	}
+	if pub.calls != 1 {
+		t.Errorf("publish calls = %d, want 1 (event still published)", pub.calls)
+	}
+	if _, stillWaiting := st.wake[wakeMember("case-1", "response", 50)]; stillWaiting {
+		t.Error("wake entry not removed")
+	}
+	meta, _, _ := st.GetClock(context.Background(), "case-1", "response")
+	if meta.AlertedTier != 50 {
+		t.Errorf("AlertedTier = %d, want 50 (cursor advances so re-enable does not flood)", meta.AlertedTier)
 	}
 }
 
@@ -1112,7 +1150,7 @@ func TestEngine_ProcessDueMember_IncarnationChangedMidFlight_DoesNotClobberNewCl
 		replacement:       ClockMeta{StartedAt: newStartedAt, Priority: "HIGH"},
 		replacementWakeAt: newWakeAt,
 	}
-	e := &Engine{store: raceStore, pub: &fakePublisher{}, chat: &fakeChat{}, links: fakeLinks{}, durations: testDurations()}
+	e := &Engine{store: raceStore, pub: &fakePublisher{}, chat: &fakeChat{}, links: fakeLinks{}, durations: testDurations(), slaEmailSendingEnabled: true}
 
 	if err := e.Tick(context.Background(), time.Now()); err != nil {
 		t.Fatalf("Tick() error = %v", err)

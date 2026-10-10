@@ -335,18 +335,15 @@ func main() {
 		slog.Warn("CALL_SENDING_ENABLED=false; incident.created calls will be logged, not placed")
 	}
 
-	// SLA-breach-email-specific killswitch, same disable-entirely convention
-	// as EMAIL_SENDING_ENABLED/CALL_SENDING_ENABLED above. Currently a
-	// no-op: this service's own SLA breach-alert email reaction was
-	// deliberately removed rather than ported when internal/slaengine was
-	// redesigned (see that package's own doc comment) — a breach today
-	// sends only the Google Chat card. Wired through to slaengine.Engine now
-	// as a placeholder for when that email reaction is rebuilt, so the
-	// config already exists and is already threaded to the one place it
-	// would be checked.
+	// SLA notification killswitch, same disable-entirely convention as
+	// EMAIL_SENDING_ENABLED/CALL_SENDING_ENABLED above. When false, NO
+	// SLA-related message is sent: the SLA breach Google Chat card (and any
+	// SLA breach email, which this service does not send today). The
+	// sla.tier_reached event is still published and tier tracking still
+	// advances. Non-SLA alerts are unaffected.
 	slaEmailSendingEnabled := envBool("SLA_EMAIL_SENDING_ENABLED", true)
 	if !slaEmailSendingEnabled {
-		slog.Warn("SLA_EMAIL_SENDING_ENABLED=false; has no effect today -- this service sends no SLA breach email yet, only the existing Google Chat card")
+		slog.Warn("SLA_EMAIL_SENDING_ENABLED=false; SLA breach Google Chat alerts (and SLA emails) are suppressed")
 	}
 
 	// Fallback on-call number (incident.created's call only) for when a
