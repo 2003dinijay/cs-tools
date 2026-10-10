@@ -3120,11 +3120,16 @@ old refusal still applies; `DATA_SOURCE=servicenow` is unchanged.
   Engagement") and the SLA clocks above. No event is published (there is no `case.type_changed`).
   A GitHub-linked service request still gets the one "record created" notice its insert
   trigger always sends.
-- **Known gap, not caused by the transfer:** `GetCaseByID` does not return `engagementType`
-  for any engagement on this data source (only the list search selects `eng.type`), so
-  anything keyed on it from the detail read, such as the Migration reminder wording of "Request
-  update", sees nothing for native and transferred Migration tickets alike. The stored type and
-  payment type are correct.
+- **`GetCaseByID` now returns `engagementType` too** (fixed; previously a known gap, not caused
+  by the transfer itself) — it used to select only the list search's own `eng.type` and leave
+  the detail read's `CaseView.EngagementType` nil, so anything keyed on it from the detail read
+  (the Migration reminder wording of "Request update") saw nothing for native and transferred
+  Migration tickets alike, even though the stored type and payment type were always correct.
+  `GetCaseByID` now joins `eng.type::TEXT` the same way `SearchCases` already did and lower-cases
+  it into `CaseView.EngagementType` identically (`"migration"`, not the raw `MIGRATION` enum
+  label) — `customer-portal`'s backend-v2 already maps that lowercase value through its own
+  `caseEngagementTypeRef` into a human `{id: "1", label: "Migration"}`, so no change was needed
+  on that side, only here.
 - Tests: `case_type_transfer_service_test.go` (validation rules, internal-only, ServiceNow
   inside the transaction and its refusal leaving nothing, ambiguous ServiceNow failures, SLA per
   direction), `case_type_transfer_repo_integration_test.go` (real Postgres as a non-superuser,

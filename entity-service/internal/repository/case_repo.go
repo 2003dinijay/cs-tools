@@ -1568,7 +1568,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		convID, convSubject                      *string
 		accountID, accountName, accountTier      *string
 		severity, issueType, workState, caseType *string
-		announcementType                         *string
+		announcementType, engagementType         *string
 		state, cause, closeNotes, resolutionCode *string
 		escalationLevel                          *string
 		isEscalated                              *bool
@@ -1598,7 +1598,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	scopeArgs := []any{id}
 
 	err := r.db.QueryRow(ctx,
-		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT, ann.announcement_type::TEXT,
+		`SELECT wi.id, wi.number, wi.wso2_id, wi.type::TEXT, ann.announcement_type::TEXT, eng.type::TEXT,
 		        wi.description, c.severity::TEXT, c.issue_type::TEXT, `+caseLikeWorkStateColumn+`,
 		        `+caseLikeStateColumn+`, `+caseLikeCauseColumn+`, `+caseLikeCloseNotesColumn+`,
 		        `+caseLikeResolutionCodeColumn+`, c.current_escalation_level::TEXT, c.is_escalated,
@@ -1641,7 +1641,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		 WHERE wi.id = $1 AND wi.type = ANY(`+caseLikeWorkItemTypes+`)
 		   AND `+announcementVisibilityLeakGuard+``, scopeArgs...,
 	).Scan(
-		&cv.ID, &cv.Number, &internalID, &caseType, &announcementType,
+		&cv.ID, &cv.Number, &internalID, &caseType, &announcementType, &engagementType,
 		&description, &severity, &issueType, &workState,
 		&state, &cause, &closeNotes,
 		&resolutionCode, &escalationLevel, &isEscalated,
@@ -1767,6 +1767,16 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 	if caseType != nil {
 		lower := strings.ToLower(*caseType)
 		cv.Type = &lower
+	}
+	// engagement_type_enum is UPPER_SNAKE_CASE ("MIGRATION"); CaseView.EngagementType
+	// carries the lowercase domain value ("migration"), matching SearchCases' own
+	// identical conversion (this column, this same lower-casing) and what
+	// customer-portal's backend-v2 expects to map through its own
+	// caseEngagementTypeRef into a human "Migration"-style display label -- nil for
+	// every case-like type but engagement, where eng's LEFT JOIN never matches.
+	if engagementType != nil {
+		lower := strings.ToLower(*engagementType)
+		cv.EngagementType = &lower
 	}
 	// project_id/deployment_id/deployed_product_id (and deployed_product.
 	// product_id) are all nullable on work_item (migration 0021) -- a case
