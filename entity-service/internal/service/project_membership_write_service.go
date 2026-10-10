@@ -240,6 +240,18 @@ func (s *projectMembershipWriteService) Invite(ctx context.Context, projectID st
 	if err != nil {
 		return domain.ProjectMembership{}, err
 	}
+	if len(roles) == 0 && !req.IsCsIntegrationUser {
+		// Cheap early reject, before any Salesforce call: a roleless invite
+		// for a brand-new address with the integration flag off is always a
+		// mistake, and ValidateContactType (below) only runs after
+		// CreateContact -- too late to stop a real Salesforce contact (and
+		// its downstream sync into ServiceNow/CSM) from being created for a
+		// request that was going to be rejected anyway. ValidateContactType
+		// still runs later for the one case this can't catch: an existing
+		// contact whose *resolved* Salesforce classification disagrees with
+		// the caller's own IsCsIntegrationUser claim.
+		return domain.ProjectMembership{}, &apierror.ValidationError{Msg: "roles must contain at least one role"}
+	}
 
 	var written salesforceWriteRecord
 	res, err := s.deps.Memberships.UpsertWithin(ctx, projectID, email, func(ctx context.Context, wc repository.MembershipWriteContext) (domain.SalesforceMembershipUpsert, domain.UpsertOnboardingStepRequest, error) {
