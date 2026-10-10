@@ -80,6 +80,30 @@ const (
 	SLADataSourceServiceNow SLADataSource = "servicenow"
 )
 
+// AttachmentDataSource identifies which backend two case attachment reads
+// (POST /attachments/search, GET /attachments/{id}/content) and the case
+// activity feed (POST /cases/{id}/activities/search) use. It does NOT affect
+// GET /attachments/{id}, PATCH/DELETE /attachments/{id}, POST /attachments,
+// or POST /attachments/{id}/confirm -- those always follow DataSource,
+// because the ServiceNow-backed implementation this switches to is
+// read-only and cannot serve those writes. Independent of DataSource and
+// SLADataSource, same reasoning as SLADataSource: a deployment can run
+// DataSource=postgres for every other entity while pointing these two
+// attachment reads and the activity feed specifically at ServiceNow. This is
+// a stopgap for while Postgres-synced attachment content
+// and activity history aren't reliable yet, meant to go away once that
+// migration lands -- see routes.go for the wiring.
+type AttachmentDataSource string
+
+const (
+	// AttachmentDataSourcePostgres reads case attachments and the activity
+	// feed from this service's own Postgres tables. The default.
+	AttachmentDataSourcePostgres AttachmentDataSource = "postgres"
+	// AttachmentDataSourceServiceNow reads case attachments and the activity
+	// feed live from the ServiceNow integration service instead.
+	AttachmentDataSourceServiceNow AttachmentDataSource = "servicenow"
+)
+
 // Config holds all environment-driven settings for the service.
 type Config struct {
 	DBHost string
@@ -139,6 +163,11 @@ type Config struct {
 	// independent of DataSource. Defaults to "postgres" -- see
 	// SLADataSource's own doc comment.
 	SLADataSource SLADataSource
+	// AttachmentDataSource controls which backend two case attachment reads
+	// and the activity feed use, independent of DataSource and
+	// SLADataSource. Defaults to "postgres" -- see AttachmentDataSource's
+	// own doc comment.
+	AttachmentDataSource AttachmentDataSource
 	// ServiceNowIntegrationServiceBaseURL is the base URL for the ServiceNow integration service API.
 	// Required when DataSource is "servicenow" (or SLADataSource is "servicenow" -- see Validate).
 	ServiceNowIntegrationServiceBaseURL string
@@ -667,6 +696,7 @@ func Load() *Config {
 		HealthPort:                               getEnvOrDefault("HEALTH_PORT", "8081"),
 		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
 		SLADataSource:                            SLADataSource(getEnvOrDefault("SLA_DATA_SOURCE", string(SLADataSourcePostgres))),
+		AttachmentDataSource:                     AttachmentDataSource(getEnvOrDefault("ATTACHMENT_DATA_SOURCE", string(AttachmentDataSourcePostgres))),
 		ServiceNowIntegrationServiceBaseURL:      os.Getenv("SERVICENOW_INTEGRATION_SERVICE_BASE_URL"),
 		ServiceNowIntegrationServiceTokenURL:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL"),
 		ServiceNowIntegrationServiceClientID:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID"),
@@ -954,6 +984,12 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid SLA_DATA_SOURCE %q: must be %q or %q", c.SLADataSource, SLADataSourcePostgres, SLADataSourceServiceNow)
 	}
+	switch c.AttachmentDataSource {
+	case AttachmentDataSourcePostgres, AttachmentDataSourceServiceNow:
+		// valid
+	default:
+		return fmt.Errorf("invalid ATTACHMENT_DATA_SOURCE %q: must be %q or %q", c.AttachmentDataSource, AttachmentDataSourcePostgres, AttachmentDataSourceServiceNow)
+	}
 	// Postgres credentials are required for DATA_SOURCE=postgres and
 	// DATA_SOURCE=postgres-servicenow-dual-write — both serve every entity read
 	// and write from the pool (the fallback mode's ServiceNow leg is a
@@ -994,23 +1030,25 @@ func (c *Config) Validate() error {
 	// ServiceNow integration service credentials are required for
 	// DATA_SOURCE=servicenow (reads go there), for
 	// DATA_SOURCE=postgres-servicenow-dual-write (the best-effort mirror write
-	// goes there, via the same client — see SNWritebackDispatcher), and for
-	// SLA_DATA_SOURCE=servicenow (SLA reads go there instead), independent of
-	// DATA_SOURCE — a plain DATA_SOURCE=postgres deployment that points SLA
-	// reads at ServiceNow still needs real credentials for that client.
-	snRequired := c.DataSource == DataSourceServiceNow || c.DataSource == DataSourcePostgresServiceNowDualWrite || c.SLADataSource == SLADataSourceServiceNow
+	// goes there, via the same client — see SNWritebackDispatcher), for
+	// SLA_DATA_SOURCE=servicenow (SLA reads go there instead), and for
+	// ATTACHMENT_DATA_SOURCE=servicenow (attachment/activity-feed reads go
+	// there instead) -- all independent of DATA_SOURCE: a plain
+	// DATA_SOURCE=postgres deployment that points SLA or attachment reads at
+	// ServiceNow still needs real credentials for that client.
+	snRequired := c.DataSource == DataSourceServiceNow || c.DataSource == DataSourcePostgresServiceNowDualWrite || c.SLADataSource == SLADataSourceServiceNow || c.AttachmentDataSource == AttachmentDataSourceServiceNow
 	if snRequired {
 		if c.ServiceNowIntegrationServiceBaseURL == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_BASE_URL is required when DATA_SOURCE=%s or SLA_DATA_SOURCE=%s", c.DataSource, c.SLADataSource)
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_BASE_URL is required when DATA_SOURCE=%s, SLA_DATA_SOURCE=%s, or ATTACHMENT_DATA_SOURCE=%s", c.DataSource, c.SLADataSource, c.AttachmentDataSource)
 		}
 		if c.ServiceNowIntegrationServiceTokenURL == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL is required when DATA_SOURCE=%s or SLA_DATA_SOURCE=%s", c.DataSource, c.SLADataSource)
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL is required when DATA_SOURCE=%s, SLA_DATA_SOURCE=%s, or ATTACHMENT_DATA_SOURCE=%s", c.DataSource, c.SLADataSource, c.AttachmentDataSource)
 		}
 		if c.ServiceNowIntegrationServiceClientID == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID is required when DATA_SOURCE=%s or SLA_DATA_SOURCE=%s", c.DataSource, c.SLADataSource)
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID is required when DATA_SOURCE=%s, SLA_DATA_SOURCE=%s, or ATTACHMENT_DATA_SOURCE=%s", c.DataSource, c.SLADataSource, c.AttachmentDataSource)
 		}
 		if c.ServiceNowIntegrationServiceClientSecret == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET is required when DATA_SOURCE=%s or SLA_DATA_SOURCE=%s", c.DataSource, c.SLADataSource)
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET is required when DATA_SOURCE=%s, SLA_DATA_SOURCE=%s, or ATTACHMENT_DATA_SOURCE=%s", c.DataSource, c.SLADataSource, c.AttachmentDataSource)
 		}
 	}
 	// EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/EVENT_HUB_TOPIC are

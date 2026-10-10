@@ -556,10 +556,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// constructed when SLADataSource is servicenow, independent of
 	// DataSource: a plain DataSourcePostgres deployment that points SLA
 	// reads at ServiceNow still needs this client for the task-SLA and
-	// case-search-SLA-filter wiring below. config.Validate requires the same
-	// four credentials in every one of these cases.
+	// case-search-SLA-filter wiring below. Also constructed when
+	// AttachmentDataSource is servicenow, for the same reason: the
+	// snAttachmentDelegate wiring below needs it too. config.Validate
+	// requires the same four credentials in every one of these cases.
 	var serviceNowIntegrationServiceClient *integrationservice.Client
-	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite || cfg.SLADataSource == config.SLADataSourceServiceNow {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite || cfg.SLADataSource == config.SLADataSourceServiceNow || cfg.AttachmentDataSource == config.AttachmentDataSourceServiceNow {
 		serviceNowIntegrationServiceClient = integrationservice.New(cfg.ServiceNowIntegrationServiceBaseURL, integrationservice.ClientCredentialsConfig{
 			TokenURL:     cfg.ServiceNowIntegrationServiceTokenURL,
 			ClientID:     cfg.ServiceNowIntegrationServiceClientID,
@@ -792,9 +794,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// SN-mirror snCaseService instance below needs it too. Also constructed
 	// when SLADataSource is servicenow, for the same reason: the SLA
 	// search-delegate snCaseService instance (see below) is itself a
-	// NewServiceNowCaseService and needs one too.
+	// NewServiceNowCaseService and needs one too. Also constructed when
+	// AttachmentDataSource is servicenow, for the same reason: the
+	// snAttachmentDelegate snCaseService instance below needs one too.
 	var snUserService service.SNUserService
-	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite || cfg.SLADataSource == config.SLADataSourceServiceNow {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite || cfg.SLADataSource == config.SLADataSourceServiceNow || cfg.AttachmentDataSource == config.AttachmentDataSourceServiceNow {
 		snUserService = service.NewServiceNowUserService(serviceNowIntegrationServiceClient)
 	}
 
@@ -809,6 +813,25 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var snSLASearchDelegate service.CaseService
 	if cfg.SLADataSource == config.SLADataSourceServiceNow {
 		snSLASearchDelegate = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
+	}
+
+	// snAttachmentDelegate, when non-nil, backs two attachment reads (POST
+	// /attachments/search, GET /attachments/{id}/content) instead of
+	// activeAttachmentSvc, and the case activity feed (POST
+	// /cases/{id}/activities/search) instead of activeCaseSvc -- see
+	// attachmentReadHandler and activitiesHandler below. A stopgap for while
+	// Postgres-synced attachment content and activity history aren't
+	// reliable yet (AttachmentDataSource's own doc comment), independent of
+	// DataSource and SLADataSource. Same read-only shape as
+	// snSLASearchDelegate above: nil publisher/pgFallback/slaEngine. It must
+	// never back CreateCaseAttachment/ConfirmCaseAttachment/
+	// GetAttachmentByID/UpdateAttachment/DeleteCaseAttachment -- those need
+	// activeAttachmentSvc's real write/fallback behavior, which this
+	// read-only delegate doesn't have (see attachmentReadHandler's own doc
+	// comment for what breaks if it did).
+	var snAttachmentDelegate service.CaseService
+	if cfg.AttachmentDataSource == config.AttachmentDataSourceServiceNow {
+		snAttachmentDelegate = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
 	}
 
 	// The CSM-native SLA engine (internal/service/sla_engine_service.go)
@@ -826,8 +849,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// caseAttachmentOverrideSvc, when non-nil, is the CaseService case
 	// attachment routes (registered further below) use INSTEAD of
 	// activeCaseSvc -- see its assignment in the DataSourcePostgresServiceNowDualWrite
-	// case for why. nil in every other mode: attachments follow activeCaseSvc
-	// exactly as before this override existed.
+	// case below for why. nil in every other mode: attachments follow
+	// activeCaseSvc exactly as before this override existed. Unrelated to
+	// AttachmentDataSource=servicenow, which only ever affects the narrower
+	// attachmentReadHandler below (search/content), never the create/
+	// confirm/update/delete routes this override also covers.
 	var caseAttachmentOverrideSvc service.CaseService
 	switch cfg.DataSource {
 	case config.DataSourceServiceNow:
@@ -986,6 +1012,15 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		slog.Info("service request events enabled", "topic", cfg.SREEventHubTopic, "automatedTeams", len(cfg.SRAlertSRETeamIDs))
 	}
 	caseHandler := handler.NewCaseHandler(activeCaseSvc, cfg.M2MClientIDs)
+	// activitiesHandler backs POST /cases/{id}/activities/search
+	// specifically -- see AttachmentDataSource's own doc comment for why
+	// this one route can differ from the rest of caseHandler's
+	// activeCaseSvc (GetCase, PatchCase, CreateCase, comments, tags, ...),
+	// which are deliberately left on activeCaseSvc/DataSource.
+	activitiesHandler := caseHandler
+	if snAttachmentDelegate != nil {
+		activitiesHandler = handler.NewCaseHandler(snAttachmentDelegate, cfg.M2MClientIDs)
+	}
 	if db != nil {
 		announcementRequestHandler = handler.NewAnnouncementRequestHandler(
 			service.NewAnnouncementRequestService(repository.NewAnnouncementRequestRepository(db), activeCaseSvc, accessSvc),
@@ -1004,12 +1039,26 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	// activeAttachmentSvc backs the case-attachment routes registered below
 	// (POST/GET/PATCH/DELETE /attachments...) — see caseAttachmentOverrideSvc's
-	// own doc comment above for when and why it differs from activeCaseSvc.
+	// own doc comment above for when and why it differs from activeCaseSvc
+	// (DataSourcePostgresServiceNowDualWrite's pilot).
 	activeAttachmentSvc := activeCaseSvc
 	if caseAttachmentOverrideSvc != nil {
 		activeAttachmentSvc = caseAttachmentOverrideSvc
 	}
 	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc, cfg.M2MClientIDs)
+	// attachmentReadHandler backs only the two attachment routes
+	// AttachmentDataSource=servicenow is meant to affect: POST
+	// /attachments/search and GET /attachments/{id}/content. It must NOT
+	// back CreateCaseAttachment/ConfirmCaseAttachment (snAttachmentDelegate
+	// is the same read-only, nil-pgFallback shape as snSLASearchDelegate --
+	// snCaseService.CreateCaseAttachment would skip the normal Postgres/
+	// SFTPGo upload path entirely, and its ConfirmCaseAttachment always
+	// 503s), nor GetAttachmentByID/UpdateAttachment/DeleteCaseAttachment,
+	// which stay on attachmentHandler/activeAttachmentSvc unchanged.
+	attachmentReadHandler := attachmentHandler
+	if snAttachmentDelegate != nil {
+		attachmentReadHandler = handler.NewCaseHandler(snAttachmentDelegate, cfg.M2MClientIDs)
+	}
 
 	// customer_call (migration 0073) backs call requests on the Postgres
 	// data source, so these routes are registered for both data sources.
@@ -1821,11 +1870,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /cases/feedback/aggregate", feedbackHandler.AggregateFeedback)
 	mux.HandleFunc("POST /cases/{id}/comments", caseHandler.CreateCaseComment)
 	mux.HandleFunc("POST /cases/{id}/comments/search", caseHandler.SearchCaseComments)
-	mux.HandleFunc("POST /cases/{id}/activities/search", caseHandler.SearchCaseActivities)
+	mux.HandleFunc("POST /cases/{id}/activities/search", activitiesHandler.SearchCaseActivities)
 	mux.HandleFunc("POST /attachments", attachmentHandler.CreateCaseAttachment)
 	mux.HandleFunc("POST /attachments/{id}/confirm", attachmentHandler.ConfirmCaseAttachment)
-	mux.HandleFunc("POST /attachments/search", attachmentHandler.SearchCaseAttachments)
-	mux.HandleFunc("GET /attachments/{id}/content", attachmentHandler.GetCaseAttachmentContent)
+	mux.HandleFunc("POST /attachments/search", attachmentReadHandler.SearchCaseAttachments)
+	mux.HandleFunc("GET /attachments/{id}/content", attachmentReadHandler.GetCaseAttachmentContent)
 	mux.HandleFunc("GET /attachments/{id}", attachmentHandler.GetAttachmentByID)
 	mux.HandleFunc("PATCH /attachments/{id}", attachmentHandler.UpdateAttachment)
 	mux.HandleFunc("DELETE /attachments/{id}", attachmentHandler.DeleteCaseAttachment)

@@ -27,9 +27,10 @@ import (
 // test only needs to override the field(s) under test.
 func baseValidConfig() Config {
 	return Config{
-		DataSource:    DataSourcePostgres,
-		SLADataSource: SLADataSourcePostgres,
-		DBUser:        "user",
+		DataSource:           DataSourcePostgres,
+		SLADataSource:        SLADataSourcePostgres,
+		AttachmentDataSource: AttachmentDataSourcePostgres,
+		DBUser:               "user",
 		DBPassword:    "password",
 		DBName:        "db",
 		// Both ports carry their real defaults: Load always populates them,
@@ -390,6 +391,7 @@ func baseValidServiceNowConfig() Config {
 	return Config{
 		DataSource:                               DataSourceServiceNow,
 		SLADataSource:                            SLADataSourcePostgres,
+		AttachmentDataSource:                     AttachmentDataSourcePostgres,
 		ServiceNowIntegrationServiceBaseURL:      "https://example.com",
 		ServiceNowIntegrationServiceTokenURL:     "https://example.com/token",
 		ServiceNowIntegrationServiceClientID:     "client-id",
