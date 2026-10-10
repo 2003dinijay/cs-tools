@@ -82,19 +82,25 @@ const (
 	SLADataSourceServiceNow SLADataSource = "servicenow"
 )
 
-// AttachmentDataSource identifies which backend two case attachment reads
-// (POST /attachments/search, GET /attachments/{id}/content) and the case
-// activity feed (POST /cases/{id}/activities/search) use. It does NOT affect
-// GET /attachments/{id}, PATCH/DELETE /attachments/{id}, POST /attachments,
-// or POST /attachments/{id}/confirm -- those always follow DataSource,
-// because the ServiceNow-backed implementation this switches to is
-// read-only and cannot serve those writes. Independent of DataSource and
-// SLADataSource, same reasoning as SLADataSource: a deployment can run
-// DataSource=postgres for every other entity while pointing these two
-// attachment reads and the activity feed specifically at ServiceNow. This is
-// a stopgap for while Postgres-synced attachment content
-// and activity history aren't reliable yet, meant to go away once that
-// migration lands -- see routes.go for the wiring.
+// AttachmentDataSource identifies which backend three case attachment reads
+// (GET /attachments/{id}, POST /attachments/search, GET
+// /attachments/{id}/content) and the case activity feed (POST
+// /cases/{id}/activities/search) use. GetAttachmentByID (GET
+// /attachments/{id}) is included even though it is metadata, not content:
+// backend-v2's content-download route resolves an attachment's owning case
+// through it first, purely for its own authorization check, before ever
+// calling the content route -- leaving it on DataSource would silently
+// reintroduce a 404 in front of the content route this flag exists to fix.
+// It does NOT affect PATCH/DELETE /attachments/{id}, POST /attachments, or
+// POST /attachments/{id}/confirm -- those always follow DataSource, because
+// the ServiceNow-backed implementation this switches to is read-only and
+// cannot serve those writes. Independent of DataSource and SLADataSource,
+// same reasoning as SLADataSource: a deployment can run DataSource=postgres
+// for every other entity while pointing these three attachment reads and the
+// activity feed specifically at ServiceNow. This is a stopgap for while
+// Postgres-synced attachment content and activity history aren't reliable
+// yet, meant to go away once that migration lands -- see routes.go for the
+// wiring.
 type AttachmentDataSource string
 
 const (
