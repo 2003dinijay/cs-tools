@@ -180,13 +180,38 @@ export interface PortalAccess {
   canViewUsageMetrics: boolean;
   /**
    * Sections that exist for staff generally, not for the former Support
-   * Portal Lite (viewer-only) audience specifically — Team Schedule,
-   * Knowledge and Settings so far. False only for a caller whose role set is
-   * *exactly* `{viewer}` (no other role at all) — everyone else, including a
-   * plain `cs_engineer`, keeps seeing these sections exactly as before. A
-   * viewer who also holds any other role is unaffected by this flag.
+   * Portal Lite (viewer-only) audience specifically — Knowledge and Settings
+   * so far. False only for a caller whose role set is *exactly* `{viewer}`
+   * (no other role at all) — everyone else, including a plain `cs_engineer`,
+   * keeps seeing these sections exactly as before. A viewer who also holds
+   * any other role is unaffected by this flag.
+   *
+   * Team Schedule and the project Work items tab's staff framing are each
+   * gated by their OWN, narrower flag below ({@link canViewTeamSchedule},
+   * {@link canViewWorkItemsStaffView}) rather than this one — reported live:
+   * a caller holding `viewer` plus one unrelated role (so not caught by this
+   * flag's exactly-`{viewer}` check) could still reach both, which is wider
+   * than intended for either.
    */
   canViewStaffSections: boolean;
+  /**
+   * The Team Schedule section. `cs_engineer`/`admin` (full access), or the
+   * `comment_updater` role — an explicit allow-list, independent of whether
+   * the caller holds `viewer` at all (unlike {@link canViewStaffSections}):
+   * reported live, a `viewer` who also held `attachment_downloader` could
+   * still see Team Schedule under the old exactly-`{viewer}` check.
+   */
+  canViewTeamSchedule: boolean;
+  /**
+   * Whether a project's Work items tab shows its staff framing: the "Work
+   * items" label (vs. plain "Cases"), the Chats sub-tab, and the sub-tab
+   * strip itself. `cs_engineer`/`admin` (full access), or the
+   * `timecard_approver` role — an explicit allow-list, independent of
+   * `viewer`, the same shape as {@link canViewTeamSchedule} and for the same
+   * reason: a caller holding `viewer` plus one unrelated role used to still
+   * see this under the old exactly-`{viewer}` check.
+   */
+  canViewWorkItemsStaffView: boolean;
 }
 
 /**
@@ -230,6 +255,8 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
       isSplAudience: true,
       canViewUsageMetrics: true,
       canViewStaffSections: true,
+      canViewTeamSchedule: true,
+      canViewWorkItemsStaffView: true,
     };
   }
   const held = new Set((roles ?? []).map((r) => r.toLowerCase()));
@@ -255,5 +282,7 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     isSplAudience: has(PORTAL_ROLE.viewer),
     canViewUsageMetrics: full || has(PORTAL_ROLE.usageMetricsViewer),
     canViewStaffSections: !(held.size === 1 && has(PORTAL_ROLE.viewer)),
+    canViewTeamSchedule: full || has(PORTAL_ROLE.commentUpdater),
+    canViewWorkItemsStaffView: full || has(PORTAL_ROLE.timecardApprover),
   };
 }

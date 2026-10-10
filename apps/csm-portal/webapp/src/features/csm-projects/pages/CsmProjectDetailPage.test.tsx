@@ -53,11 +53,11 @@ vi.mock("@config/apiConfig", () => ({
 // This page now reads usePortalAccess (to gate the "Create" split-button and
 // the ex-Support-Portal-Lite report buttons), which transitively imports the
 // real backend client/config -- mocked above. Default to full write access,
-// no SPL audience, and non-viewer-only (staff) access; the gating tests
-// below override each independently.
+// no SPL audience, and the Work items staff view; the gating tests below
+// override each independently.
 let mockCanWrite = true;
 let mockIsSplAudience = false;
-let mockCanViewStaffSections = true;
+let mockCanViewWorkItemsStaffView = true;
 vi.mock("@context/current-user/usePortalAccess", () => ({
   usePortalAccess: () => ({
     hasAnyRole: true,
@@ -67,7 +67,7 @@ vi.mock("@context/current-user/usePortalAccess", () => ({
     canUseTimeCardsAndUpdates: true,
     canWrite: mockCanWrite,
     isSplAudience: mockIsSplAudience,
-    canViewStaffSections: mockCanViewStaffSections,
+    canViewWorkItemsStaffView: mockCanViewWorkItemsStaffView,
   }),
 }));
 
@@ -134,7 +134,7 @@ describe("CsmProjectDetailPage — tab state", () => {
   beforeEach(() => {
     mockCanWrite = true;
     mockIsSplAudience = false;
-    mockCanViewStaffSections = true;
+    mockCanViewWorkItemsStaffView = true;
     mockUseGetProject.mockReturnValue({
       data: PROJECT,
       isLoading: false,
@@ -197,11 +197,12 @@ describe("CsmProjectDetailPage — tab state", () => {
     expect(screen.queryByRole("button", { name: /create/i })).not.toBeInTheDocument();
   });
 
-  // Regression: a viewer-only caller (role set exactly {viewer}) never sees
-  // Chats inside this tab (WorkItemsTab's own canViewStaffSections gate), so
-  // for them it's relabelled "Cases" rather than "Work items".
-  it("relabels the Work items tab as Cases for a viewer-only caller", () => {
-    mockCanViewStaffSections = false;
+  // Regression: a caller without the Work items staff view (cs_engineer/
+  // admin/timecard_approver) never sees Chats inside this tab (WorkItemsTab's
+  // own canViewWorkItemsStaffView gate), so for them it's relabelled "Cases"
+  // rather than "Work items".
+  it("relabels the Work items tab as Cases for a caller without the staff view", () => {
+    mockCanViewWorkItemsStaffView = false;
     renderPage();
     expect(screen.queryByRole("tab", { name: "Work items" })).not.toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "Cases" })).toBeInTheDocument();
@@ -215,7 +216,7 @@ describe("CsmProjectDetailPage — tab state", () => {
 // viewer role, and must appear for one that does, even without write access.
 describe("CsmProjectDetailPage — ex-SPL report buttons", () => {
   beforeEach(() => {
-    mockCanViewStaffSections = true;
+    mockCanViewWorkItemsStaffView = true;
     mockUseGetProject.mockReturnValue({
       data: PROJECT,
       isLoading: false,

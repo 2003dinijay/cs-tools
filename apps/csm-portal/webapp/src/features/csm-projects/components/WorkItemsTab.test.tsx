@@ -68,16 +68,17 @@ vi.mock("@features/csm-projects/components/ConversationsTab", () => ({
 
 // usePortalAccess transitively imports the real backend client/config, which
 // read window.config at module load (absent under vitest) -- mocked
-// directly instead. Default to a staff (non-viewer-only) caller; the
-// dedicated describe block below overrides it to exercise the Chats gate.
-let mockCanViewStaffSections = true;
+// directly instead. Default to a caller holding the staff view (e.g.
+// cs_engineer); the dedicated describe block below overrides it to exercise
+// the Chats gate.
+let mockCanViewWorkItemsStaffView = true;
 vi.mock("@context/current-user/usePortalAccess", () => ({
-  usePortalAccess: () => ({ canViewStaffSections: mockCanViewStaffSections }),
+  usePortalAccess: () => ({ canViewWorkItemsStaffView: mockCanViewWorkItemsStaffView }),
 }));
 
 describe("WorkItemsTab", () => {
   beforeEach(() => {
-    mockCanViewStaffSections = true;
+    mockCanViewWorkItemsStaffView = true;
   });
 
   it("defaults to a single flat work-items list, locked to this project but unlocked on type", () => {
@@ -145,11 +146,12 @@ describe("WorkItemsTab", () => {
 });
 
 // Regression: Chats (the project's pre-case Novera conversations) must be
-// hidden for a viewer-only caller (role set exactly {viewer}) -- reported
-// live. With only one sub-tab left, the sub-tab strip itself disappears too.
-describe("WorkItemsTab — viewer-only caller", () => {
+// hidden for a caller without the Work items staff view (cs_engineer/admin/
+// timecard_approver) -- reported live. With only one sub-tab left, the
+// sub-tab strip itself disappears too.
+describe("WorkItemsTab — caller without the staff view", () => {
   beforeEach(() => {
-    mockCanViewStaffSections = false;
+    mockCanViewWorkItemsStaffView = false;
   });
 
   it("shows the issues list directly, with no Chats tab and no sub-tab strip at all", () => {

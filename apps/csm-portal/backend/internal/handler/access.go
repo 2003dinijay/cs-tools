@@ -82,10 +82,13 @@ const (
 	// cases (POST /cases/search and GET /cases/{id}, type-checked inside
 	// CaseHandler itself — see its own doc comment for why a route-level
 	// permission alone can't express this) and both /products/vulnerabilities
-	// routes. Admin and cs_engineer only — every other role, including plain
-	// viewer/escalator/attachment_downloader, is denied even though they hold
-	// PermView, since this is deliberately narrower than the general case/
-	// product-data access PermView otherwise grants.
+	// routes. Admin, cs_engineer and comment_updater only — every other
+	// role, including plain viewer/escalator/attachment_downloader, is
+	// denied even though they hold PermView, since this is deliberately
+	// narrower than the general case/product-data access PermView otherwise
+	// grants. comment_updater holds it because that role is also used for
+	// staff who triage security reports but don't otherwise hold
+	// cs_engineer.
 	PermViewSecurityCenter
 	// PermViewerAccess is the blanket audience gate for every SupportPortalLite
 	// (Sales/Solutions-Architecture) route — replacing the old
@@ -346,9 +349,10 @@ type portalRole struct {
 // PermCreateAnnouncement is only ever checked alongside PermWrite, so it
 // removes an ability from cs_engineer rather than adding one. comment_updater
 // is the same added-floor shape as worknote_creator for PermUpdateDeleteComment
-// (implies nothing else, and cs_engineer/admin keep holding that permission
-// too), but ALSO implies PermUpdateDeleteAnyComment alongside admin only --
-// cs_engineer deliberately does not hold that second one. See
+// (cs_engineer/admin keep holding that permission too), but ALSO implies
+// PermUpdateDeleteAnyComment alongside admin only -- cs_engineer deliberately
+// does not hold that second one -- and PermViewSecurityCenter, which
+// cs_engineer and admin both already hold anyway. See
 // PermUpdateDeleteComment's and PermUpdateDeleteAnyComment's own doc comments
 // for what each actually controls.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
@@ -386,7 +390,7 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			PermWrite:               build(cfg.CsEngineer, cfg.Admin),
 			PermViewAllDashboards:   build(cfg.CsEngineer, cfg.Admin),
 			PermAdmin:               build(cfg.Admin),
-			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin),
+			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin, cfg.CommentUpdater),
 			PermApproveTimeCard:     build(cfg.TimecardApprover, cfg.Admin),
 			// Viewer, unconditionally (no cs_engineer exclusion) -- see
 			// PermViewerAccess's own doc comment for why.

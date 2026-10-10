@@ -42,11 +42,14 @@ describe("feature visibility by portal access", () => {
 
   // A plain `viewer` role set is exactly {viewer}, so this also exercises
   // canViewStaffSections's one false case (see that flag's own doc comment)
-  // -- Team Schedule, Knowledge and Settings are hidden here alongside PLG
-  // (which a view-only role has never had access to). Usage Metrics is also
-  // hidden: canViewUsageMetrics needs full access or usage_metrics_viewer,
-  // which a plain viewer holds neither of (reported live). Customer
-  // Health/User Scan stay visible: isSplAudience holds for a plain viewer.
+  // -- Knowledge and Settings are hidden here alongside PLG (which a
+  // view-only role has never had access to). Team Schedule is hidden too,
+  // via the separate canViewTeamSchedule allow-list (cs_engineer/admin/
+  // comment_updater), which a plain viewer holds none of. Usage Metrics is
+  // also hidden: canViewUsageMetrics needs full access or
+  // usage_metrics_viewer, which a plain viewer holds neither of (reported
+  // live). Customer Health/User Scan stay visible: isSplAudience holds for a
+  // plain viewer.
   //
   // Asserted as an explicit allowlist rather than
   // `visibleNavSections().length - N`: that form silently drifted stale
