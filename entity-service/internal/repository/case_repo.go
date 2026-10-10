@@ -4674,6 +4674,12 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 		countQuery += ` + (SELECT COUNT(*) FROM work_item_activity WHERE work_item_id = $1)`
 	}
 
+	// An attachment entry's content is never empty: a client that hides
+	// entries with no displayable text (the customer portal's activity tab
+	// does) would otherwise drop every attachment from the feed. It falls back
+	// to the file name, and to a fixed label when a synced row has no name.
+	// Clients render attachment entries from fileName, not from content.
+	//
 	// UNION ALL merges the tables into one timeline. Comment/field-change
 	// rows resolve their (free-text VARCHAR) author by email match against
 	// "user"; case_attachment rows join it directly, since uploaded_by is a
@@ -4707,7 +4713,7 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 			UNION ALL
 
 			SELECT
-				a.id, 'attachment' AS kind, COALESCE(a.description, '') AS content, a.created_on AS created_on,
+				a.id, 'attachment' AS kind, COALESCE(NULLIF(TRIM(a.description), ''), a.filename) AS content, a.created_on AS created_on,
 				u2.email, u2.first_name, u2.last_name,
 				COALESCE(u2.name, NULLIF(TRIM(CONCAT_WS(' ', u2.first_name, u2.last_name)), '')) AS name,
 				NULL::text AS comment_type,
@@ -4720,7 +4726,7 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 			UNION ALL
 
 			SELECT
-				wa.id, 'attachment' AS kind, '' AS content, wa.created_on AS created_on,
+				wa.id, 'attachment' AS kind, COALESCE(NULLIF(TRIM(wa.name), ''), 'Attachment') AS content, wa.created_on AS created_on,
 				COALESCE(u4.email, wa.created_by), u4.first_name, u4.last_name,
 				COALESCE(u4.name, NULLIF(TRIM(CONCAT_WS(' ', u4.first_name, u4.last_name)), '')) AS name,
 				NULL::text AS comment_type,

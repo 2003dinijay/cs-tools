@@ -101,6 +101,8 @@ func TestCaseActivitySyncedAttachmentsIntegration(t *testing.T) {
 		syncedPending = "5a000000-0000-0000-0000-0000000000a2"
 		inBothTables  = "5a000000-0000-0000-0000-0000000000a3"
 		syncedGhost   = "5a000000-0000-0000-0000-0000000000a4"
+		nativeWithDsc = "5a000000-0000-0000-0000-0000000000a5"
+		syncedNoName  = "5a000000-0000-0000-0000-0000000000a6"
 	)
 	comment(commentOne, at(0), "first")
 	synced(syncedOnly, at(1), "synced.txt", activityAttUploader, "AVAILABLE")
@@ -113,6 +115,12 @@ func TestCaseActivitySyncedAttachmentsIntegration(t *testing.T) {
 	synced(inBothTables, at(4), "both.txt", activityAttUploader, "AVAILABLE")
 	// Uploader with no user row at all.
 	synced(syncedGhost, at(5), "ghost.txt", "nobody@example.com", "AVAILABLE")
+	// A native upload that carries a description, and a synced row with a
+	// blank name.
+	mustExec(`INSERT INTO case_attachment (id, case_id, storage_key, filename, mime_type, size_bytes, description, uploaded_by, status, created_on)
+	          VALUES ($1, $2, 'cases/native/log.txt', 'log.txt', 'text/plain', 7, 'build log', $3, 'complete', $4)`,
+		nativeWithDsc, activityAttCaseID, activityAttUserID1, at(6))
+	synced(syncedNoName, at(7), " ", activityAttUploader, "AVAILABLE")
 
 	repo := repository.NewCaseRepository(scoped)
 	activity, total, err := repo.SearchCaseActivities(ctx, domain.SearchCaseActivitiesRequest{
@@ -125,7 +133,7 @@ func TestCaseActivitySyncedAttachmentsIntegration(t *testing.T) {
 
 	// Newest first. The PENDING row is absent, the both-tables file shows
 	// once, and the unresolved uploader's row is still returned.
-	wantIDs := []string{syncedGhost, inBothTables, commentTwo, syncedOnly, commentOne}
+	wantIDs := []string{syncedNoName, nativeWithDsc, syncedGhost, inBothTables, commentTwo, syncedOnly, commentOne}
 	if total != len(wantIDs) {
 		t.Errorf("total = %d, want %d", total, len(wantIDs))
 	}
@@ -157,6 +165,20 @@ func TestCaseActivitySyncedAttachmentsIntegration(t *testing.T) {
 		t.Errorf("unresolved-uploader attachment = %+v", g)
 	}
 
+	// Attachment entries never come back with empty content: the customer
+	// portal's activity tab hides any entry with no displayable text.
+	for id, want := range map[string]string{
+		syncedOnly:    "synced.txt",
+		inBothTables:  "both.txt",  // case_attachment, empty description: the file name
+		nativeWithDsc: "build log", // description wins over the file name
+		syncedGhost:   "ghost.txt",
+		syncedNoName:  "Attachment", // blank name: the fixed label
+	} {
+		if got := byID[id].Content; got != want {
+			t.Errorf("content of %s = %q, want %q", id, got, want)
+		}
+	}
+
 	// A page smaller than the feed still reports the full total.
 	page, pageTotal, err := repo.SearchCaseActivities(ctx, domain.SearchCaseActivitiesRequest{
 		CaseID:     activityAttCaseID,
@@ -165,7 +187,7 @@ func TestCaseActivitySyncedAttachmentsIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SearchCaseActivities (paged): %v", err)
 	}
-	if pageTotal != len(wantIDs) || len(page) != 2 || page[0].ID != inBothTables {
+	if pageTotal != len(wantIDs) || len(page) != 2 || page[0].ID != nativeWithDsc {
 		t.Errorf("paged: total=%d rows=%d first=%v", pageTotal, len(page), page)
 	}
 }
