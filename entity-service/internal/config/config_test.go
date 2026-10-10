@@ -1201,3 +1201,42 @@ func TestConfig_Validate_CaseEscalationNotices(t *testing.T) {
 		t.Error(`"yes": want a startup error`)
 	}
 }
+
+// TestConfig_HasGithubIntegration_RepoTokens: per-repository tokens alone are
+// enough to run the sync -- GITHUB_TOKEN becomes the optional fallback.
+func TestConfig_HasGithubIntegration_RepoTokens(t *testing.T) {
+	for _, tc := range []struct {
+		name              string
+		token, repoTokens string
+		want              bool
+	}{
+		{"GITHUB_TOKEN only", "pat", "", true},
+		{"GITHUB_REPO_TOKENS only", "", `{"wso2-enterprise/choreo":"pat"}`, true},
+		{"both", "pat", `{"wso2-enterprise/choreo":"pat"}`, true},
+		{"neither", "", "", false},
+	} {
+		c := Config{GithubIntegrationEnabled: true, GithubIntegrationLogin: "csm-bot", GithubToken: tc.token, GithubRepoTokens: tc.repoTokens}
+		if got := c.HasGithubIntegration(); got != tc.want {
+			t.Errorf("%s: HasGithubIntegration = %v, want %v", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestConfig_Validate_GithubRepoTokens: a malformed GITHUB_REPO_TOKENS refuses
+// to start rather than leaving repositories without their token.
+func TestConfig_Validate_GithubRepoTokens(t *testing.T) {
+	for _, v := range []string{"", `{"wso2-enterprise/choreo":"pat","asgardeo-org":"pat2"}`} {
+		c := baseValidConfig()
+		c.GithubRepoTokens = v
+		if err := c.Validate(); err != nil {
+			t.Errorf("%q: unexpected error %v", v, err)
+		}
+	}
+	for _, v := range []string{`not json`, `{"a/b/c":"pat"}`, `{"wso2-enterprise/choreo":""}`} {
+		c := baseValidConfig()
+		c.GithubRepoTokens = v
+		if err := c.Validate(); err == nil {
+			t.Errorf("%q: want a startup error", v)
+		}
+	}
+}

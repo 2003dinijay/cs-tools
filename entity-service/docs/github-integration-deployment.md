@@ -44,7 +44,8 @@ an error, which is the single most confusing failure mode here.
 |---|---|---|
 | `GITHUB_INTEGRATION_ENABLED` | yes | Exactly `true`. |
 | `GITHUB_WEBHOOK_SECRET` | yes | `openssl rand -hex 32`. This *is* the endpoint's authentication. The same value goes in every repository's webhook settings. |
-| `GITHUB_TOKEN` | yes | Needs **`repo` scope** — outbound calls `POST /repos/{owner}/{repo}/dispatches`, and inbound reads each repository's mapping file (fine-grained: **Contents: read**). |
+| `GITHUB_TOKEN` | yes* | Needs **`repo` scope** — outbound calls `POST /repos/{owner}/{repo}/dispatches`, and inbound reads each repository's mapping file (fine-grained: **Contents: read**). |
+| `GITHUB_REPO_TOKENS` | yes* | Secret. JSON `{"owner/repository":"<PAT>"}` (or `"owner"` for all of an owner's repositories): each repository's own token, as ServiceNow kept a credential per repository. A fine-grained PAT reaches one owner's repositories only. Unlisted repositories use `GITHUB_TOKEN`. *One of the two is required. A repository with no token fails loudly; before this, a repository the single token could not see answered 404, read as "no config file", and its issues were skipped as unmapped. Malformed refuses to start. |
 | `GITHUB_REPO_CONFIG_PATH` | no | The mapping file in each repository, default **`.github/servicenow-config.yml`** (§6). |
 | `GITHUB_INTEGRATION_LOGIN` | yes | The login this service raises issues under, from a case. **Not** `github-actions[bot]` — see §3. |
 | `CSM_PORTAL_BASE_URL` | yes | **Must be the Postgres-backed portal.** Every outbound comment embeds a link built from this; a host backed by another database cannot resolve the record id. |
@@ -255,6 +256,9 @@ Against a real repository and database, with GitHub delivering over a webhook:
 
 Keep this list current — it is how the next deploy knows what changed.
 
+- **2026-10-10** — Per-repository tokens: `GITHUB_REPO_TOKENS` maps each
+  repository (or owner) to its own PAT; `GITHUB_TOKEN` is the fallback.
+  A repository no token covers now errors instead of being skipped.
 - **2026-09-25** — Identity rule split by event type (#2000): the validation
   label from `github-actions[bot]` is no longer discarded. Found on a live
   delivery; without it a validated issue never becomes a record.
