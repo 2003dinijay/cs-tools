@@ -49,8 +49,9 @@ class ResizeObserverMock {
   }
 }
 
+const mockUseDeployments = vi.fn(() => ({ data: deployments }));
 vi.mock("@api/usePostProjectDeploymentsSearch", () => ({
-  usePostProjectDeploymentsSearchAll: () => ({ data: deployments }),
+  usePostProjectDeploymentsSearchAll: () => mockUseDeployments(),
 }));
 
 vi.mock("@features/usage-metrics/components/UsageEnvironmentProductsPanel", () => ({
@@ -76,6 +77,7 @@ describe("UsageAndMetricsTabContent deployment tab scroll affordance", () => {
     resizeObserverCallback = undefined;
     resizeObserverObserve.mockClear();
     resizeObserverDisconnect.mockClear();
+    mockUseDeployments.mockReturnValue({ data: deployments });
     vi.stubGlobal("ResizeObserver", ResizeObserverMock);
   });
 
@@ -185,5 +187,50 @@ describe("UsageAndMetricsTabContent deployment tab scroll affordance", () => {
 
     expect(getComputedStyle(leftMask).background).toContain("var(--oxygen-palette-background-paper");
     expect(getComputedStyle(rightMask).background).toContain("var(--oxygen-palette-background-paper");
+  });
+});
+
+// A deployment with no deployed products is hidden from the tab strip
+// entirely (product decision, 2026-10-10) rather than shown as a dead-end
+// tab leading to an empty products panel.
+describe("UsageAndMetricsTabContent hides deployments with no deployed products", () => {
+  beforeEach(() => {
+    vi.stubGlobal("ResizeObserver", ResizeObserverMock);
+  });
+
+  function renderContent() {
+    return render(
+      <ThemeProvider theme={createTheme()}>
+        <UsageAndMetricsTabContent />
+      </ThemeProvider>,
+    );
+  }
+
+  it("omits a tab for a deployment whose productCount is 0", () => {
+    mockUseDeployments.mockReturnValue({
+      data: [
+        { id: "dep-a", name: "Production", type: { id: "t1", label: "Primary Production" }, instanceCount: 2, productCount: 3 },
+        { id: "dep-b", name: "QA Testing", type: { id: "t1", label: "Primary Production" }, instanceCount: 1, productCount: 0 },
+      ],
+    });
+
+    renderContent();
+
+    expect(screen.getByRole("tab", { name: /Production/i })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /QA Testing/i })).not.toBeInTheDocument();
+  });
+
+  it("omits a tab for a deployment with no productCount field at all", () => {
+    mockUseDeployments.mockReturnValue({
+      data: [
+        { id: "dep-a", name: "Production", type: { id: "t1", label: "Primary Production" }, instanceCount: 2, productCount: 3 },
+        { id: "dep-c", name: "Untracked", type: { id: "t1", label: "Primary Production" }, instanceCount: 0 },
+      ],
+    });
+
+    renderContent();
+
+    expect(screen.getByRole("tab", { name: /Production/i })).toBeInTheDocument();
+    expect(screen.queryByRole("tab", { name: /Untracked/i })).not.toBeInTheDocument();
   });
 });
