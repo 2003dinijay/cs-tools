@@ -515,6 +515,12 @@ Two boundary conversions live entirely inside `internal/risk` (never in the hand
 
 The actor is no longer passed as an explicit `email` parameter either: entity-service resolves it server-side from the `x-user-id-token` this backend's own `Auth` middleware already attaches to every request context, forwarded automatically by `entity.CustomerEntityClient.do()` — the same mechanism every other entity-service write in this backend already relies on. Error handling also moved onto this backend's standard `mapUpstreamError`/`mapUpstreamErrorGeneric` convention (see "Handler conventions" below) instead of a bespoke `*risk.ValidationError` type the handler had to explicitly check for.
 
+## Viewer-access (SupportPortalLite) routes are always registered; each upstream is independently optional
+
+`viewerHandlerSet` (`cmd/server/main.go`) used to be gated behind one blanket `SPL_ENABLED` flag: off (the default) meant none of its routes were registered at all, and on meant every one of ServiceNow/Google Drive/the sales-side entity service's credentials became required (`mustEnv`) or the process refused to start. That all-or-nothing shape meant a deployment with no real credentials for those three upstreams (a dev environment, for instance) couldn't register even the sub-features that don't need any of them — customer-health's own risk-tracking writes (`internal/risk`, entity-service-backed, see above), usage metrics, user-info, and the product list (`internal/handler/lookups_postgres.go`'s `GetProductList`) are all entity-service-only.
+
+`SPL_ENABLED` is gone. `loadViewerConfig` now reads every upstream's config with plain `os.Getenv` (not `mustEnv`) and every route in `viewerHandlerSet` is registered unconditionally. An endpoint whose upstream is genuinely unconfigured in a given deployment (e.g. `GET /abt-teams`, or the ServiceNow-sourced half of `POST /customer-health/summary`/`GET /customer-health/accounts/{id}`, which — unlike the rest of that domain — reads account-level flags ServiceNow computes, not entity-service) fails that one call with a normal mapped upstream error instead of the whole route being a bare Go 404. A value that *is* set is still validated the same as before (`optionalHTTPSBaseURL` still exits on a malformed URL) — only "unset" stopped being fatal. See `loadViewerConfig`'s own doc comment for exactly which endpoints depend on which upstream.
+
 ## Running locally
 
 ```bash
