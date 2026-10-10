@@ -197,5 +197,120 @@ describe("ConversationDetailsPage", () => {
       { state: { fromBack: true } },
     );
   });
+
+  it("strips [code] wrappers and recognizes empty createdBy as Novera bot with Markdown rendering", () => {
+    mockUseGetConversationMessages.mockReturnValue({
+      data: {
+        pages: [
+          {
+            comments: [
+              {
+                id: "msg-user-1",
+                createdBy: "Rashmika Silva",
+                content: "[code]Asgardeo role adding drop down is not letting to add groups[/code]",
+                type: "comment",
+                createdOn: "2026-09-20T20:56:00Z",
+                isEscalated: false,
+                hasInlineAttachments: false,
+                inlineAttachments: [],
+              },
+              {
+                id: "msg-bot-1",
+                createdBy: "",
+                content:
+                  "[code]I couldn't find a specific known bug. Clarify:\n1. **What exactly happens with the dropdown?**\n- Ensure groups have already been created under **User Management**[/code]",
+                type: "comment",
+                createdOn: "2026-09-20T20:56:01Z",
+                isEscalated: false,
+                hasInlineAttachments: false,
+                inlineAttachments: [],
+              },
+            ],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: undefined,
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    });
+
+    render(<ConversationDetailsPage />);
+
+    // Novera bot is recognized (not "Unknown")
+    expect(screen.getByText("Novera")).toBeInTheDocument();
+    expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+
+    // Human user is recognized
+    expect(screen.getByText("Rashmika Silva")).toBeInTheDocument();
+
+    // [code] tags are stripped
+    expect(screen.queryByText(/\[code\]/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\[\/code\]/)).not.toBeInTheDocument();
+
+    // Markdown rendered (bold text)
+    expect(
+      screen.getByText("What exactly happens with the dropdown?"),
+    ).toBeInTheDocument();
+    expect(screen.getByText("User Management")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "Asgardeo role adding drop down is not letting to add groups",
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("places human message before bot message when timestamps tie even if bot createdBy is empty", () => {
+    mockUseGetConversationMessages.mockReturnValue({
+      data: {
+        pages: [
+          {
+            comments: [
+              {
+                id: "2-bot",
+                createdBy: "",
+                content: "[code]Hi! How can I help you today?[/code]",
+                type: "comment",
+                createdOn: "2026-10-05T10:00:51Z",
+                isEscalated: false,
+                hasInlineAttachments: false,
+                inlineAttachments: [],
+              },
+              {
+                id: "1-human",
+                createdBy: "Sasmitha Ekanayaka",
+                content: "[code]hi[/code]",
+                type: "comment",
+                createdOn: "2026-10-05T10:00:51Z",
+                isEscalated: false,
+                hasInlineAttachments: false,
+                inlineAttachments: [],
+              },
+            ],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: undefined,
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    });
+
+    render(<ConversationDetailsPage />);
+
+    const userMsg = screen.getByText("hi");
+    const botMsg = screen.getByText("Hi! How can I help you today?");
+
+    // Check DOM order: user message must precede bot message
+    expect(
+      userMsg.compareDocumentPosition(botMsg) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
 });
+
 
