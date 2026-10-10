@@ -4864,12 +4864,75 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
   /comments/{id}:
+    get:
+      summary: Get a single comment by id.
+      description: >-
+        Internal callers only (403 otherwise) -- no customer-facing caller needs this.
+        Performs no author/role check beyond that: any internal caller may fetch any
+        comment this way, the same exposure POST /comments/search already allows (row-level
+        security -- project membership, work-note visibility -- is unaffected). Exists for
+        csm-portal-backend to learn a comment's author before deciding whether to allow an
+        edit or delete; that decision is made entirely on the BFF side, not here.
+      operationId: getComment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Comment UUID.
+      responses:
+        "200":
+          description: The comment.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Comment'
+        "400":
+          description: Malformed comment UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Caller is not internal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Comment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: Not supported by the configured data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
     patch:
       summary: Edit an existing comment's content.
       description: >-
-        Postgres data source only (returns 503 on ServiceNow -- its journal entries are
-        append-only). Only the comment's original author or a caller holding the admin role
-        may edit it. The pre-edit content is preserved as a comment_edit_history row for audit;
+        Internal callers only (403 otherwise). Postgres data source only (returns 503 on
+        ServiceNow -- its journal entries are append-only). Performs no author/role check
+        beyond that: csm-portal-backend, the sole caller of this route, decides whether
+        this caller may edit this particular comment before ever calling it. The pre-edit
+        content is preserved as a comment_edit_history row for audit;
         GET /comments/{id}/history lists them.
       operationId: updateComment
       parameters:
@@ -4906,7 +4969,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "403":
-          description: Caller is neither the comment's author nor an admin.
+          description: Caller is not internal.
           content:
             application/json:
               schema:
@@ -4926,11 +4989,13 @@ paths:
     delete:
       summary: Soft-delete a comment.
       description: >-
-        Postgres data source only (returns 503 on ServiceNow). Content is retained in the
-        database but hidden from non-admin visibility: excluded entirely from a customer
-        caller's results, shown as "[deleted]" to a non-admin internal caller, and shown
-        unredacted to an admin caller. Only the comment's original author or an admin may
-        delete it.
+        Internal callers only (403 otherwise). Postgres data source only (returns 503 on
+        ServiceNow). Content is retained in the database but hidden from non-admin
+        visibility: excluded entirely from a customer caller's results, shown as
+        "[deleted]" to a non-admin internal caller, and shown unredacted to an admin
+        caller. Performs no author/role check beyond that, same as PATCH on this comment
+        -- csm-portal-backend decides whether this caller may delete this particular
+        comment before ever calling it.
       operationId: deleteComment
       parameters:
         - name: id
@@ -4950,7 +5015,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "403":
-          description: Caller is neither the comment's author nor an admin.
+          description: Caller is not internal.
           content:
             application/json:
               schema:
@@ -4978,10 +5043,11 @@ paths:
     get:
       summary: List a comment's edit history.
       description: >-
-        Postgres data source only (returns 503 on ServiceNow). Newest first. Only the comment's
-        original author or a caller holding the admin role may view its edit history -- the same
-        restriction as PATCH/DELETE on this comment, since a prior comment body can carry the
-        same sensitive content the current body does.
+        Internal callers only (403 otherwise). Postgres data source only (returns 503 on
+        ServiceNow). Newest first. Performs no author/role check beyond that --
+        csm-portal-backend currently has no UI consumer for this route at all, but like
+        PATCH/DELETE on this comment, if it ever does, that decision belongs there, not
+        here.
       operationId: getCommentEditHistory
       parameters:
         - name: id
@@ -5005,7 +5071,7 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
         "403":
-          description: Caller is neither the comment's author nor an admin.
+          description: Caller is not internal.
           content:
             application/json:
               schema:

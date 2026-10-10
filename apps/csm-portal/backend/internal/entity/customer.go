@@ -757,17 +757,28 @@ func (c *CustomerEntityClient) CreateComment(ctx context.Context, body []byte) (
 	return c.do(ctx, http.MethodPost, "/comments", body)
 }
 
+// GetComment calls GET /comments/{id} on the entity service -- performs no
+// author/role check itself (see entity-service's own comment_service.go,
+// GetComment's doc comment). CommentHandler calls this before UpdateComment/
+// DeleteComment purely to learn the comment's author, since this backend is
+// the one that decides whether this caller may act on it.
+func (c *CustomerEntityClient) GetComment(ctx context.Context, id string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, fmt.Sprintf("/comments/%s", url.PathEscape(id)), nil)
+}
+
 // UpdateComment calls PATCH /comments/{id} on the entity service — the generic
 // edit path for any comment regardless of the aggregate (case, change request,
-// incident, ...) it belongs to. Author-or-admin gated upstream.
+// incident, ...) it belongs to. Not gated upstream at all: CommentHandler
+// decides whether this caller may edit this comment (via GetComment, above)
+// before ever calling this.
 func (c *CustomerEntityClient) UpdateComment(ctx context.Context, id string, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPatch, fmt.Sprintf("/comments/%s", url.PathEscape(id)), body)
 }
 
 // DeleteComment calls DELETE /comments/{id} on the entity service — a soft
-// delete, same author-or-admin gate as UpdateComment. The entity service
-// returns 204 No Content on success, so the returned byte slice is always
-// empty; the caller only needs the error.
+// delete, same "not gated upstream, CommentHandler decides" posture as
+// UpdateComment. The entity service returns 204 No Content on success, so the
+// returned byte slice is always empty; the caller only needs the error.
 func (c *CustomerEntityClient) DeleteComment(ctx context.Context, id string) ([]byte, error) {
 	return c.do(ctx, http.MethodDelete, fmt.Sprintf("/comments/%s", url.PathEscape(id)), nil)
 }

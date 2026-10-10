@@ -1380,8 +1380,20 @@ func (m *mockEntityScanClient) ResendProjectContactInvitation(ctx context.Contex
 // ----- mock entity comment client -----
 
 type mockEntityCommentClient struct {
+	getCommentFn    func(ctx context.Context, id string) ([]byte, error)
 	updateCommentFn func(ctx context.Context, id string, body []byte) ([]byte, error)
 	deleteCommentFn func(ctx context.Context, id string) ([]byte, error)
+}
+
+// GetComment defaults to an author matching testUser.Email ("agent@example.com")
+// so every existing UpdateComment/DeleteComment test, which authenticates as
+// testUser via withUser and doesn't care about authorization specifically,
+// passes CommentHandler's author check without having to set this up itself.
+func (m *mockEntityCommentClient) GetComment(ctx context.Context, id string) ([]byte, error) {
+	if m.getCommentFn != nil {
+		return m.getCommentFn(ctx, id)
+	}
+	return []byte(`{"id":"` + id + `","createdBy":{"email":"agent@example.com"}}`), nil
 }
 
 func (m *mockEntityCommentClient) UpdateComment(ctx context.Context, id string, body []byte) ([]byte, error) {

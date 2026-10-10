@@ -1039,17 +1039,21 @@ type CommentService interface {
 	SearchComments(ctx context.Context, req domain.SearchCommentsRequest) (domain.SearchCommentsResponse, error)
 	// CreateComment creates a new comment on the given reference entity.
 	CreateComment(ctx context.Context, req domain.CreateCommentRequest) (domain.CreateCommentResponse, error)
-	// UpdateComment edits an existing comment's content. Only the comment's
-	// original author or a caller holding the "admin" role may call this; see
-	// commentService.UpdateComment's own doc comment for the authorization
-	// rule. Returns a ForbiddenError if the caller may not edit this comment,
-	// a NotFoundError if it doesn't exist, and a ValidationError if it is
-	// already soft-deleted.
+	// GetComment returns a single comment by id, with no author/role check of
+	// its own -- see commentService.GetComment's own doc comment for why.
+	// csm-portal-backend calls this to learn a comment's author before
+	// deciding whether to allow an edit/delete. Returns a NotFoundError if it
+	// doesn't exist.
+	GetComment(ctx context.Context, id string) (domain.Comment, error)
+	// UpdateComment edits an existing comment's content. Performs no
+	// author/role check of its own -- see commentService.UpdateComment's own
+	// doc comment for why. Returns a NotFoundError if it doesn't exist, and a
+	// ValidationError if it is already soft-deleted.
 	UpdateComment(ctx context.Context, req domain.UpdateCommentRequest) (domain.UpdateCommentResponse, error)
 	// DeleteComment soft-deletes a comment (content is retained but no longer
 	// generally visible -- see commentService's own visibility rule doc
-	// comment). Same author-or-admin authorization rule as UpdateComment.
-	// Returns a ConflictError if the comment is already deleted.
+	// comment). Performs no author/role check of its own, same as
+	// UpdateComment. Returns a ConflictError if the comment is already deleted.
 	DeleteComment(ctx context.Context, id string) error
 	// GetCommentEditHistory returns a comment's prior versions, newest first.
 	GetCommentEditHistory(ctx context.Context, id string) (domain.GetCommentEditHistoryResponse, error)

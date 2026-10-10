@@ -333,7 +333,11 @@ paths:
     patch:
       summary: >
         Edit a comment (generic — applies to a comment on any aggregate: case,
-        change request, incident, ...) by id. Author-or-admin only.
+        change request, incident, ...) by id. Reachable by cs_engineer,
+        comment_updater or admin; this backend itself then enforces
+        author-or-comment_updater-or-admin per comment (entity-service performs
+        no check of its own here): a plain cs_engineer may only edit their OWN
+        comment, while comment_updater/admin may edit any.
       operationId: patchCommentsId
       parameters:
         - name: id
@@ -378,7 +382,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller is neither the comment's author nor an admin.
+          description: >-
+            Forbidden — caller is neither the comment's author nor a
+            comment_updater/admin.
           content:
             application/json:
               schema:
@@ -405,7 +411,11 @@ paths:
       summary: >
         Soft-delete a comment (generic — applies to a comment on any
         aggregate: case, change request, incident, ...) by id. Content is
-        never destroyed. Author-or-admin only.
+        never destroyed. Reachable by cs_engineer, comment_updater or admin;
+        this backend itself then enforces author-or-comment_updater-or-admin
+        per comment (entity-service performs no check of its own here): a
+        plain cs_engineer may only delete their OWN comment, while
+        comment_updater/admin may delete any.
       operationId: deleteCommentsId
       parameters:
         - name: id
@@ -431,7 +441,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller is neither the comment's author nor an admin.
+          description: >-
+            Forbidden — caller is neither the comment's author nor a
+            comment_updater/admin.
           content:
             application/json:
               schema:

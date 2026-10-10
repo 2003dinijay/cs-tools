@@ -29,6 +29,7 @@ const NONE = {
   canUsePlg: false,
   canManagePlaybooks: false,
   canCreateAnnouncement: false,
+  canUpdateDeleteAnyComment: false,
 };
 
 describe("getPortalAccess", () => {
@@ -123,6 +124,7 @@ describe("getPortalAccess", () => {
       canEscalate: true,
       canManagePlaybooks: false,
       canCreateAnnouncement: false,
+      canUpdateDeleteAnyComment: false,
     });
     expect(getPortalAccess(["admin"])).toEqual({
       ...all,
@@ -130,6 +132,7 @@ describe("getPortalAccess", () => {
       canEscalate: true,
       canManagePlaybooks: true,
       canCreateAnnouncement: true,
+      canUpdateDeleteAnyComment: true,
     });
   });
 
@@ -286,6 +289,52 @@ describe("getPortalAccess", () => {
 
     it("is false while roles are not loaded, so the controls fail closed", () => {
       expect(getPortalAccess(undefined).canCreateAnnouncement).toBe(false);
+    });
+  });
+
+  // Mirrors the backend's PermUpdateDeleteComment: unlike announcement_creator,
+  // this role grants the ability on its own -- it does not also require
+  // cs_engineer/admin's write access, since editing/deleting a comment the
+  // caller didn't author is the one thing this role is for.
+  describe("canUpdateDeleteAnyComment", () => {
+    it("a CS engineer without comment_updater cannot touch someone else's comment, but still writes", () => {
+      expect(getPortalAccess(["cs_engineer"])).toMatchObject({ canWrite: true, canUpdateDeleteAnyComment: false });
+    });
+
+    it("a CS engineer who also holds comment_updater can", () => {
+      expect(getPortalAccess(["cs_engineer", "comment_updater"])).toMatchObject({
+        canWrite: true,
+        canUpdateDeleteAnyComment: true,
+      });
+    });
+
+    it("admin can without the role, like every other capability", () => {
+      expect(getPortalAccess(["admin"]).canUpdateDeleteAnyComment).toBe(true);
+    });
+
+    it("the role on its own grants the ability, but nothing else, not even entry past the no-access screen", () => {
+      expect(getPortalAccess(["comment_updater"])).toEqual({
+        ...NONE,
+        canUpdateDeleteAnyComment: true,
+      });
+    });
+
+    it("alongside any role that does grant access, hasAnyRole is true as before", () => {
+      expect(getPortalAccess(["viewer", "comment_updater"]).hasAnyRole).toBe(true);
+    });
+
+    it("no role other than admin or comment_updater grants it", () => {
+      for (const role of ["viewer", "escalator", "attachment_downloader", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "worknote_creator", "sales_solutions"]) {
+        expect(getPortalAccess([role]).canUpdateDeleteAnyComment).toBe(false);
+      }
+    });
+
+    it("matches the role key case-insensitively, like every other role", () => {
+      expect(getPortalAccess(["Comment_Updater"]).canUpdateDeleteAnyComment).toBe(true);
+    });
+
+    it("is false while roles are not loaded, so the controls fail closed", () => {
+      expect(getPortalAccess(undefined).canUpdateDeleteAnyComment).toBe(false);
     });
   });
 });
