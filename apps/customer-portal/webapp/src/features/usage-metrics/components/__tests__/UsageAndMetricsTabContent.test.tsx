@@ -23,7 +23,20 @@ vi.mock("react-router", () => ({
   useParams: () => ({ projectId: "p1" }),
 }));
 
-const deployments = Array.from({ length: 8 }, (_, i) => ({
+// productCount is declared optional here (unlike a plain inferred literal
+// type, where every field in the initial fixture would read as required) so
+// mockUseDeployments' own inferred generic return type -- taken from this
+// array -- still accepts a deployment payload that omits productCount
+// entirely, matching the real ProjectDeploymentItem type's own optionality.
+type MockDeployment = {
+  id: string;
+  name: string;
+  type: { id: string; label: string };
+  instanceCount: number;
+  productCount?: number;
+};
+
+const deployments: MockDeployment[] = Array.from({ length: 8 }, (_, i) => ({
   id: `dep-${i}`,
   name: `deployment-${i}`,
   type: { id: "t1", label: "Primary Production" },
