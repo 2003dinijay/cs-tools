@@ -1859,12 +1859,29 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /configuration-items/search", configurationItemHandler.SearchConfigurationItems)
 	}
 
+	// CreateComment/SearchComments stay open to any validated caller --
+	// customer-portal-backend-v2 calls both so customers can post and read
+	// comments on their own cases (SearchComments' own row-level security,
+	// migrations 0147/0175/0191, is what scopes a customer to comments they
+	// may see). GetComment/UpdateComment/DeleteComment/GetCommentEditHistory
+	// are internalOnly: unlike create/search, no customer-facing caller uses
+	// any of the four (confirmed: customer-portal-backend-v2's own entity
+	// client only ever calls CreateComment/SearchComments), and -- now that
+	// none of the four performs its own author/role check any more, that
+	// decision having moved entirely to csm-portal-backend (see
+	// comment_service.go's own doc comments) -- leaving them open would let
+	// any caller with a merely-valid token edit, delete, or read any
+	// comment/its history directly, bypassing csm-portal-backend's checks
+	// entirely. This does not reintroduce any per-comment author/role check
+	// here; it only restricts WHO may reach these four routes at all, back to
+	// the same "internal caller" boundary nearly every other mutating route
+	// in this file already uses.
 	mux.HandleFunc("POST /comments", commentHandler.CreateComment)
 	mux.HandleFunc("POST /comments/search", commentHandler.SearchComments)
-	mux.HandleFunc("GET /comments/{id}", commentHandler.GetComment)
-	mux.HandleFunc("PATCH /comments/{id}", commentHandler.UpdateComment)
-	mux.HandleFunc("DELETE /comments/{id}", commentHandler.DeleteComment)
-	mux.HandleFunc("GET /comments/{id}/history", commentHandler.GetCommentEditHistory)
+	mux.HandleFunc("GET /comments/{id}", internalOnly(accessSvc, commentHandler.GetComment))
+	mux.HandleFunc("PATCH /comments/{id}", internalOnly(accessSvc, commentHandler.UpdateComment))
+	mux.HandleFunc("DELETE /comments/{id}", internalOnly(accessSvc, commentHandler.DeleteComment))
+	mux.HandleFunc("GET /comments/{id}/history", internalOnly(accessSvc, commentHandler.GetCommentEditHistory))
 
 	mux.HandleFunc("GET /slas/{id}", internalOnly(accessSvc, taskSlaHandler.GetTaskSla))
 	mux.HandleFunc("POST /slas/search", internalOnly(accessSvc, taskSlaHandler.SearchTaskSlas))

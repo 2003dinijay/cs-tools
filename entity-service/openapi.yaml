@@ -4867,7 +4867,8 @@ paths:
     get:
       summary: Get a single comment by id.
       description: >-
-        Performs no author/role check: any authenticated internal caller may fetch any
+        Internal callers only (403 otherwise) -- no customer-facing caller needs this.
+        Performs no author/role check beyond that: any internal caller may fetch any
         comment this way, the same exposure POST /comments/search already allows (row-level
         security -- project membership, work-note visibility -- is unaffected). Exists for
         csm-portal-backend to learn a comment's author before deciding whether to allow an
@@ -4894,6 +4895,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Caller is not internal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Comment not found.
           content:
@@ -4909,11 +4916,12 @@ paths:
     patch:
       summary: Edit an existing comment's content.
       description: >-
-        Postgres data source only (returns 503 on ServiceNow -- its journal entries are
-        append-only). Performs no author/role check of its own: csm-portal-backend, the
-        sole caller of this route, decides whether this caller may edit this particular
-        comment before ever calling it. The pre-edit content is preserved as a
-        comment_edit_history row for audit; GET /comments/{id}/history lists them.
+        Internal callers only (403 otherwise). Postgres data source only (returns 503 on
+        ServiceNow -- its journal entries are append-only). Performs no author/role check
+        beyond that: csm-portal-backend, the sole caller of this route, decides whether
+        this caller may edit this particular comment before ever calling it. The pre-edit
+        content is preserved as a comment_edit_history row for audit;
+        GET /comments/{id}/history lists them.
       operationId: updateComment
       parameters:
         - name: id
@@ -4948,6 +4956,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Caller is not internal.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Comment not found.
           content:
@@ -4963,12 +4977,13 @@ paths:
     delete:
       summary: Soft-delete a comment.
       description: >-
-        Postgres data source only (returns 503 on ServiceNow). Content is retained in the
-        database but hidden from non-admin visibility: excluded entirely from a customer
-        caller's results, shown as "[deleted]" to a non-admin internal caller, and shown
-        unredacted to an admin caller. Performs no author/role check of its own, same as
-        PATCH on this comment -- csm-portal-backend decides whether this caller may
-        delete this particular comment before ever calling it.
+        Internal callers only (403 otherwise). Postgres data source only (returns 503 on
+        ServiceNow). Content is retained in the database but hidden from non-admin
+        visibility: excluded entirely from a customer caller's results, shown as
+        "[deleted]" to a non-admin internal caller, and shown unredacted to an admin
+        caller. Performs no author/role check beyond that, same as PATCH on this comment
+        -- csm-portal-backend decides whether this caller may delete this particular
+        comment before ever calling it.
       operationId: deleteComment
       parameters:
         - name: id
@@ -4983,6 +4998,12 @@ paths:
           description: Comment soft-deleted.
         "401":
           description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Caller is not internal.
           content:
             application/json:
               schema:
@@ -5010,10 +5031,11 @@ paths:
     get:
       summary: List a comment's edit history.
       description: >-
-        Postgres data source only (returns 503 on ServiceNow). Newest first. Performs no
-        author/role check of its own -- csm-portal-backend currently has no UI consumer for
-        this route at all, but like PATCH/DELETE on this comment, if it ever does, that
-        decision belongs there, not here.
+        Internal callers only (403 otherwise). Postgres data source only (returns 503 on
+        ServiceNow). Newest first. Performs no author/role check beyond that --
+        csm-portal-backend currently has no UI consumer for this route at all, but like
+        PATCH/DELETE on this comment, if it ever does, that decision belongs there, not
+        here.
       operationId: getCommentEditHistory
       parameters:
         - name: id
@@ -5032,6 +5054,12 @@ paths:
                 $ref: '#/components/schemas/GetCommentEditHistoryResponse'
         "401":
           description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Caller is not internal.
           content:
             application/json:
               schema:
