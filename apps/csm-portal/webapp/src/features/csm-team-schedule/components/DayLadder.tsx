@@ -17,7 +17,8 @@
  */
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from "react";
-import type { ScheduleAbsence, ScheduleAbsenceKind, ScheduleAssignment, ScheduleShift, ScheduleZone } from "../types";
+import RotaPicker, { type RotaOption } from "./RotaPicker";
+import type { ScheduleAbsence, ScheduleAbsenceKind, ScheduleAssignment, ScheduleShift, ScheduleZone, RotaFamily } from "../types";
 import {
   dayLabel,
   groupBy,
@@ -28,7 +29,7 @@ import {
   toIsoDate,
 } from "../utils/rota";
 import { accentOf } from "../utils/rotaHues";
-import { useTeamColour } from "../utils/teamColourContext";
+import { useTeamColour, useTeamName } from "../utils/teamColourContext";
 
 /** Pixels per hour, as the prototype draws it. */
 const HOUR_PX = 38;
@@ -98,16 +99,25 @@ interface DayLadderProps {
   zones: ScheduleZone[];
   absences: ScheduleAbsence[];
   absenceKinds: ScheduleAbsenceKind[];
+  /** Each team's own window, by team key (Americas: Americas cover). Someone
+   *  on their team's own window works it every day, so a card lists them
+   *  first, ahead of those taking their turn on it. */
+  teamDefaultShift?: Readonly<Record<string, string>>;
   /** The page's own group and team state. Rendered here as well as in the
    *  toolbar -- one control in two places, as the prototype has it. */
-  family: "CRE" | "SRE";
-  onFamilyChange: (family: "CRE" | "SRE") => void;
+  family: RotaFamily;
+  onFamilyChange: (family: RotaFamily) => void;
   teamKey: string;
   onTeamKeyChange: (teamKey: string) => void;
   teams: string[];
   /** CRE and SRE in the order they should read -- the reader's own group
    *  first, because the first of a pair reads as the default. */
-  families: readonly ("CRE" | "SRE")[];
+  families: readonly RotaFamily[];
+  /** The rotas of the family on screen, the one shown, and the change; the
+   *  picker appears only when there is more than one. */
+  rotas?: readonly RotaOption[];
+  rotaCode?: string;
+  onRotaChange?: (code: string) => void;
 }
 
 interface BlockRow {
@@ -195,6 +205,7 @@ export default function DayLadder({
   shifts,
   absences,
   absenceKinds,
+  teamDefaultShift,
   tz,
   zoneLabel,
   family,
@@ -203,7 +214,21 @@ export default function DayLadder({
   onTeamKeyChange,
   teams,
   families,
+  rotas,
+  rotaCode,
+  onRotaChange,
 }: DayLadderProps): JSX.Element {
+  const teamNameOf = useTeamName();
+  // Who is off the rota. Two kinds of span are left out:
+  //  - a stint that is rota work on another team -- the Brazil rotation,
+  //    worked on the Americas rota -- which is not time off it;
+  //  - a retired tag, such as Onboarding: no longer a reason anybody is away
+  //    today. Its old days keep their label on the month roster, which is
+  //    the record; this column answers who to plan around now.
+  const offRota = useMemo(() => {
+    const leaveOut = new Set(absenceKinds.filter((k) => k.worksRotaThere || k.retired).map((k) => k.code));
+    return absences.filter((a) => !leaveOut.has(a.kindCode));
+  }, [absences, absenceKinds]);
   const wrapRef = useRef<HTMLDivElement | null>(null);
   const touched = useRef(false);
 
@@ -288,6 +313,18 @@ export default function DayLadder({
           (a, b) => Number(a.shift?.isOnCall ?? false) - Number(b.shift?.isOnCall ?? false),
         );
         const lead = ordered[0];
+        // A window and its own on-call are one rotation, not two: the card
+        // takes the window's name ("Morning 6-9am", not "Morning 6-9am ·
+        // Morning 6-9am on-call") and lists everyone together, the on-call
+        // person tagged as such on their own row.
+        if (ordered.filter((c) => !c.shift?.isOnCall).length === 1) {
+          out.push({
+            ...lead,
+            key: ordered.map((c) => c.key).join("+"),
+            rows: ordered.flatMap((c) => c.rows),
+          });
+          continue;
+        }
         out.push({
           ...lead,
           key: ordered.map((c) => c.key).join("+"),
@@ -448,7 +485,7 @@ export default function DayLadder({
         {/* One group means nothing to switch to: only Today, or a manager,
             can look at the other group. */}
         {families.length > 1 ? (
-          <div className="seg teamseg" role="tablist" aria-label="Show CRE or SRE">
+          <div className="seg teamseg" role="tablist" aria-label={`Show ${families.join(" or ")}`}>
             {families.map((f) => (
               <button
                 key={f}
@@ -462,6 +499,8 @@ export default function DayLadder({
             ))}
           </div>
         ) : null}
+
+        <RotaPicker rotas={rotas} rotaCode={rotaCode} onRotaChange={onRotaChange} />
 
         <h2>
           On the rota <span className="count">{headcount}</span>
@@ -484,7 +523,7 @@ export default function DayLadder({
             <option value="">All teams</option>
             {teams.map((t) => (
               <option key={t} value={t}>
-                {t.charAt(0).toUpperCase() + t.slice(1)}
+                {teamNameOf(t)}
               </option>
             ))}
           </select>
@@ -524,7 +563,7 @@ export default function DayLadder({
         ))}
         <div className="lnh offhd" style={{ ["--zc" as string]: "var(--muted)" }}>
           <span className="zchip off">Off rota</span>
-          <span className="lnt">{absences.length} not available</span>
+          <span className="lnt">{offRota.length} not available</span>
         </div>
       </div>
 
@@ -562,7 +601,7 @@ export default function DayLadder({
                   {lane.columns.map((column, columnIndex) => (
                     <div className="lncol" key={columnIndex}>
                       {column.map((block) => (
-                        <LadderBlock key={block.key} block={block} tz={tz} />
+                        <LadderBlock key={block.key} block={block} tz={tz} teamDefaultShift={teamDefaultShift} />
                       ))}
                     </div>
                   ))}
@@ -588,10 +627,10 @@ export default function DayLadder({
                 // one does not list its holder as away on the Saturday.
                 absences={
                   day.getDay() === 0 || day.getDay() === 6
-                    ? absences.filter(
+                    ? offRota.filter(
                         (a) => absenceKinds.find((k) => k.code === a.kindCode)?.bucket !== "LEAVE",
                       )
-                    : absences
+                    : offRota
                 }
                 kinds={absenceKinds}
               />
@@ -604,15 +643,34 @@ export default function DayLadder({
 }
 
 /** One card on the ladder: its hours as a chip, its label, and who is on it. */
-function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
+function LadderBlock({
+  block,
+  tz,
+  teamDefaultShift,
+}: {
+  block: Block;
+  tz: string;
+  teamDefaultShift?: Readonly<Record<string, string>>;
+}): JSX.Element {
   const token = block.chipToken ?? block.shift?.colourToken ?? "";
   const first = block.rows[0];
-  const shown = block.rows.slice(0, NAME_LIMIT);
-  const hidden = block.rows.length - shown.length;
+  // Who works the hours, then who is only on call for them. Among those who
+  // work them, anyone on their team's own window (always there) comes first,
+  // ahead of those taking their turn; the sort is stable, so the rest keep
+  // their order.
+  const always = (a: ScheduleAssignment) => teamDefaultShift?.[a.teamKey] === a.shiftCode;
+  const working = block.rows
+    .filter((a) => !a.isOnCall)
+    .sort((a, b) => Number(always(b)) - Number(always(a)));
+  const onCall = block.rows.filter((a) => a.isOnCall);
+  const shown = working.slice(0, NAME_LIMIT);
+  const hidden = working.length - shown.length;
   // A card with more people than it can list is not a list -- seventy names is
   // nothing anyone reads. The teams become the list, and a team hands over its
-  // own people when the cursor rests on it.
-  const crowded = block.rows.length > NAME_LIMIT;
+  // own people when the cursor rests on it. Counted on who works the hours:
+  // whoever is on call keeps their own column either way, so a big shift's
+  // team list never takes them in as one more person working it.
+  const crowded = working.length > NAME_LIMIT;
 
   // A card is as tall as its hours, and some hours are short: the Americas
   // weekend night shows only 21:00-24:00 on the Sunday it starts, three hours
@@ -690,17 +748,40 @@ function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
               {section.list.length === 0 ? <span className="gap">Nobody rostered</span> : null}
             </div>
           ))
-        ) : crowded ? (
-          <TeamSplit rows={block.rows} />
+        ) : crowded && onCall.length === 0 ? (
+          <TeamSplit rows={working} />
         ) : (
-          <>
-            <div className="zsec">
-              {shown.map((a) => (
-                <NameRow key={a.id} assignment={a} hideTag={block.hideTags} />
-              ))}
-            </div>
-            {hidden > 0 ? <span className="lmore">+{hidden} more</span> : null}
-          </>
+          // Who works the hours on the left, side by side; who is only on call
+          // for them in a column of their own on the right, behind a dashed
+          // rule. On call is not working these hours -- reachable if an
+          // emergency comes up -- so it never reads as one more on the shift.
+          <div className={`zsplit${onCall.length > 0 ? " hasoc" : ""}${crowded ? " crowd" : ""}`}>
+            {crowded ? (
+              <div className="zwork">
+                <TeamSplit rows={working} />
+              </div>
+            ) : shown.length > 0 ? (
+              <div className="zwork">
+                {/* Names in columns that share the card's width, each whole on one line. */}
+                <div className="zsec zflow">
+                  {shown.map((a) => (
+                    <NameRow key={a.id} assignment={a} hideTag={block.hideTags} />
+                  ))}
+                </div>
+                {hidden > 0 ? <span className="lmore">+{hidden} more</span> : null}
+              </div>
+            ) : null}
+            {onCall.length > 0 ? (
+              <div className="zoc">
+                <span className="zocl" title="Not working these hours: on call only if an emergency comes up">
+                  On-call
+                </span>
+                {onCall.map((a) => (
+                  <NameRow key={a.id} assignment={a} hideTag />
+                ))}
+              </div>
+            ) : null}
+          </div>
         )}
       </div>
       {clipped && !isOpen ? (
@@ -714,30 +795,53 @@ function LadderBlock({ block, tz }: { block: Block; tz: string }): JSX.Element {
 
 /**
  * The teams down the side, and the team the cursor is on filling the rest of
- * the card. The first team is open at rest, so the card is never a wall of
- * nothing, and hovering only swaps which pane is shown -- nothing re-renders
- * underneath the cursor.
+ * the card. At rest no team is open: with the first one's members showing,
+ * the card read as if that one team were the whole rotation. Hovering or
+ * focusing a team shows it while the cursor stays on the card; a click (or
+ * Enter) keeps it open, for touch screens too, and a second click closes it.
  */
 function TeamSplit({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
   const teamColourOf = useTeamColour();
+  const teamNameOf = useTeamName();
   const byTeam = useMemo(() => [...groupBy(rows, (r) => r.teamKey).entries()], [rows]);
-  const [active, setActive] = useState<string>(() => byTeam[0]?.[0] ?? "");
-  const current = byTeam.find(([team]) => team === active) ?? byTeam[0];
+  const [hovered, setHovered] = useState<string | null>(null);
+  const [pinned, setPinned] = useState<string | null>(null);
+  const shownKey = hovered ?? pinned;
+  const current = byTeam.find(([team]) => team === shownKey);
+  const togglePin = (team: string) => setPinned((p) => (p === team ? null : team));
 
   return (
-    <div className="teamsplit">
+    <div className="teamsplit" onMouseLeave={() => setHovered(null)}>
       <div className="teamlist">
         {byTeam.map(([team, teamRows]) => (
           <span
             key={team}
             className={`tl${team === current?.[0] ? " on" : ""}`}
+            role="button"
+            aria-pressed={pinned === team}
             tabIndex={0}
-            onMouseEnter={() => setActive(team)}
-            onFocus={() => setActive(team)}
-            onClick={() => setActive(team)}
+            onMouseEnter={() => setHovered(team)}
+            onFocus={() => setHovered(team)}
+            onBlur={() => setHovered(null)}
+            // The card itself opens and closes on a click when it is holding
+            // more than it shows; picking a team is not that click, or the
+            // card could close just as the team opens.
+            onClick={(e) => {
+              e.stopPropagation();
+              togglePin(team);
+            }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                e.stopPropagation();
+                togglePin(team);
+              }
+            }}
           >
             <i style={{ background: teamColourOf(team) }} />
-            <span className="tn">{team}</span>
+            <span className="tn" title={teamNameOf(team)}>
+              {teamNameOf(team)}
+            </span>
             <b>{teamRows.length}</b>
           </span>
         ))}
@@ -747,7 +851,9 @@ function TeamSplit({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
           <div className="tlp on">
             <div className="tlph">
               <i style={{ background: teamColourOf(current[0]) }} />
-              {current[0]}
+              {/* By name, like the list beside it: the key is the directory's
+                  identifier ("phoenix_abt_cre_team"), not a heading. */}
+              {teamNameOf(current[0])} team
               <b>{current[1].length}</b>
             </div>
             <div className="tlpn">
@@ -756,7 +862,9 @@ function TeamSplit({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
               ))}
             </div>
           </div>
-        ) : null}
+        ) : (
+          <div className="tlhint">Hover over a team to see who is on it.</div>
+        )}
       </div>
     </div>
   );
@@ -773,14 +881,15 @@ function NameRow({
   hideTag?: boolean;
 }): JSX.Element {
   const teamColourOf = useTeamColour();
+  const teamNameOf = useTeamName();
   /* Only what the row does not already say. A tier ("L2") and on-call status
      are not readable anywhere else on the card; the team is -- it is the
      avatar's colour, and the row's own tooltip. Spelling it out a third time
      cost about a quarter of the width the name needed, so the name was the
      thing that got cut. */
-  const tag = assignment.tier ?? (assignment.isOnCall ? "OC" : null);
+  const tag = assignment.tier ?? (assignment.isOnCall ? "On-call" : null);
   return (
-    <span className="lnm" title={`${assignment.engineer.name} · ${assignment.teamKey}`}>
+    <span className="lnm" title={`${assignment.engineer.name} · ${teamNameOf(assignment.teamKey)}`}>
       <span className="av" style={{ background: teamColourOf(assignment.teamKey) }}>
         {initialsOf(assignment.engineer.name)}
       </span>
@@ -793,7 +902,8 @@ function NameRow({
   );
 }
 
-/** The off-rota column: one card per reason, leave grouped by team. */
+/** The off-rota column: one card for everyone on leave, grouped by team, then
+ *  one card per other reason. */
 function OffRotaStack({
   absences,
   kinds,
@@ -802,6 +912,7 @@ function OffRotaStack({
   kinds: ScheduleAbsenceKind[];
 }): JSX.Element {
   const teamColourOf = useTeamColour();
+  const teamNameOf = useTeamName();
   const byKind = groupBy(absences, (a) => a.kindCode);
 
   // Leave first, then allocations.
@@ -812,23 +923,45 @@ function OffRotaStack({
   // instead; useful to know, but it is not a gap. The catalogue's own order
   // decides the rest, so two kinds in the same bucket keep their usual
   // sequence.
+  //
+  // Every kind of leave shares one card. Which kind it is changes nothing
+  // about the gap it leaves, a card per kind split one question ("who is
+  // away?") across several, and the kind -- maternity, sick -- is the
+  // person's own business on a view the whole team reads.
   const BUCKET_ORDER: Record<string, number> = { LEAVE: 0, ALLOCATION: 1, EXCLUDED: 2 };
-  const cards = kinds
-    .map((kind) => ({ kind, rows: byKind.get(kind.code) ?? [] }))
-    .filter((c) => c.rows.length > 0)
-    .sort((a, b) => (BUCKET_ORDER[a.kind.bucket] ?? 9) - (BUCKET_ORDER[b.kind.bucket] ?? 9));
+  const leaveCodes = new Set(kinds.filter((k) => k.bucket === "LEAVE").map((k) => k.code));
+  const leaveRows = absences.filter((a) => leaveCodes.has(a.kindCode));
+  const cards = [
+    ...(leaveRows.length > 0
+      ? [{ key: "LEAVE", label: "Leave", token: "AL", isLeave: true, rows: leaveRows }]
+      : []),
+    ...kinds
+      .filter((kind) => kind.bucket !== "LEAVE")
+      .map((kind) => ({
+        key: kind.code,
+        label: kind.label,
+        shortCode: kind.shortCode,
+        token: kind.colourToken,
+        isLeave: false,
+        rows: byKind.get(kind.code) ?? [],
+        order: BUCKET_ORDER[kind.bucket] ?? 9,
+      }))
+      .filter((c) => c.rows.length > 0)
+      .sort((a, b) => a.order - b.order),
+  ];
 
   return (
     <div className="offstack">
       {cards.length === 0 ? <div className="offnone">nobody today</div> : null}
-      {cards.map(({ kind, rows }) => {
-        const byTeam = kind.bucket === "LEAVE" ? groupBy(rows, (r) => r.teamKey) : null;
+      {cards.map((card) => {
+        const { rows } = card;
+        const byTeam = card.isLeave ? groupBy(rows, (r) => r.teamKey) : null;
         return (
-          <div key={kind.code} className={`offcard ${kind.colourToken}`}>
+          <div key={card.key} className={`offcard ${card.token}`}>
             <div className="offh">
-              <span className={`chip sm ${kind.colourToken}`}>{kind.shortCode}</span>
-              <span className="offl" title={kind.label}>
-                {kind.label}
+              {"shortCode" in card ? <span className={`chip sm ${card.token}`}>{card.shortCode}</span> : null}
+              <span className="offl" title={card.label}>
+                {card.label}
               </span>
               <b>{rows.length}</b>
             </div>
@@ -836,7 +969,7 @@ function OffRotaStack({
               [...byTeam.entries()].map(([team, teamRows]) => (
                 <div key={team}>
                   <div className="offgh">
-                    {team}
+                    {teamNameOf(team)}
                     <b>{teamRows.length}</b>
                   </div>
                   <div className="offp">
@@ -857,7 +990,7 @@ function OffRotaStack({
                   <span
                     className="lnm"
                     key={r.id}
-                    title={[r.engineer.name, r.teamKey, r.allocatedTo].filter(Boolean).join(" · ")}
+                    title={[r.engineer.name, teamNameOf(r.teamKey), r.allocatedTo].filter(Boolean).join(" · ")}
                   >
                     <span className="av" style={{ background: teamColourOf(r.teamKey) }}>
                       {initialsOf(r.engineer.name)}
@@ -865,7 +998,7 @@ function OffRotaStack({
                     <span className="who">{r.engineer.name}</span>
                     {/* Who the time is for, where it is known -- the answer to
                         "can I reach them" more often than their team is. */}
-                    <i className="tier-t">{r.allocatedTo ?? r.teamKey}</i>
+                    <i className="tier-t">{r.allocatedTo ?? teamNameOf(r.teamKey)}</i>
                   </span>
                 ))}
               </div>

@@ -40,7 +40,13 @@ export default function CsmCasesPage(): JSX.Element {
   const navigate = useNavTransition();
   const [searchParams] = useSearchParams();
   const title = readWidgetTitleParam(searchParams) ?? "Cases";
-  const { canWrite } = usePortalAccess();
+  const { canWrite, canUseOperations, canUseSecurityCenter } = usePortalAccess();
+  // A caller who can't open Operations (service requests) or Security Center
+  // (security reports) records is held to plain support cases: an "every type"
+  // search includes security reports, which the backend rejects with a 403 for
+  // them, and the other types' detail pages are hidden from their nav anyway.
+  // cs_engineer/admin hold both, so their unlocked, multi-type list is unchanged.
+  const lockToCases = !(canUseOperations && canUseSecurityCenter);
 
   return (
     <CsmIssuesView
@@ -54,14 +60,15 @@ export default function CsmCasesPage(): JSX.Element {
       // changeable — `defaultCaseTypes` only seeds the initial selection
       // when the URL carries no `types` param at all; picking a different
       // type (or clearing back to no selection, which falls through to
-      // "every type" via `CsmIssuesView`'s own `ALL_CASE_TYPES` fallback)
-      // genuinely narrows/broadens the results, per digiops-cs#2907.
+      // every type this caller can see, via `CsmIssuesView`'s own
+      // `visibleCaseTypes` fallback) genuinely narrows/broadens the results.
       // `lockedFilters.caseTypes` is kept in lockstep purely so the severity
       // filter/column stay visible (that hint is keyed off `lockedFilters`,
       // not the live selection or `defaultCaseTypes` — see
       // `CsmIssuesView`'s own `showSeverityFilter`).
       defaultCaseTypes={["case"]}
       lockedFilters={{ caseTypes: ["case"] }}
+      hideTypeFilter={lockToCases ? true : undefined}
       enableColumnCustomization
       columnsViewId="cases"
       actions={

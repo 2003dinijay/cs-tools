@@ -40,13 +40,47 @@ describe("feature visibility by portal access", () => {
     expect(visibleNavSections(csEngineer).map((s) => s.id)).toContain("operations");
   });
 
-  it("hides Operations, Security Center, Updates and Time cards from a view-only role, and keeps the other sections", () => {
+  // A plain `viewer` role set is exactly {viewer}, so this also exercises
+  // canViewStaffSections's one false case (see that flag's own doc comment)
+  // -- Knowledge and Settings are hidden here alongside PLG (which a
+  // view-only role has never had access to). Team Schedule is hidden too,
+  // via the separate canViewTeamSchedule allow-list (cs_engineer/admin/
+  // comment_updater), which a plain viewer holds none of. Usage Metrics is
+  // also hidden: canViewUsageMetrics needs full access or
+  // usage_metrics_viewer, which a plain viewer holds neither of (reported
+  // live). Customer Health/User Scan stay visible: isSplAudience holds for a
+  // plain viewer.
+  //
+  // Asserted as an explicit allowlist rather than
+  // `visibleNavSections().length - N`: that form silently drifted stale
+  // (by 1, then by 3 more) every time an unrelated section was added to the
+  // nav tree without this test being updated alongside it -- exactly the
+  // kind of break a plain content comparison can't hide.
+  it("hides Operations, Security Center, PLG, Updates, Time cards, Team Schedule, Knowledge, Usage Metrics and Settings from a view-only role, and keeps the other sections", () => {
     const ids = visibleNavSections(viewer).map((s) => s.id);
-    expect(ids).not.toContain("operations");
-    expect(ids).not.toContain("security-center");
-    expect(ids).not.toContain("updates");
-    expect(ids).not.toContain("time-cards");
-    expect(ids.length).toBe(visibleNavSections().length - 4);
+    for (const hidden of [
+      "operations",
+      "security-center",
+      "plg",
+      "updates",
+      "time-cards",
+      "team-schedule",
+      "kb-articles",
+      "usage-metrics",
+      "admin",
+    ]) {
+      expect(ids).not.toContain(hidden);
+    }
+    expect(ids).toEqual([
+      "dashboard",
+      "support",
+      "engagements",
+      "announcements",
+      "customers",
+      "customer-health",
+      "user-scan",
+      "help",
+    ]);
   });
 
   it("hides every Operations tab and route along with the section", () => {
@@ -127,7 +161,7 @@ describe("feature visibility by portal access", () => {
       expect.arrayContaining(["help.operations", "help.security-center", "help.updates", "help.time-cards"]),
     );
     const viewerTopics = topics(getPortalAccess(["viewer"]));
-    for (const id of ["help.operations", "help.security-center", "help.updates", "help.time-cards"]) {
+    for (const id of ["help.operations", "help.security-center", "help.updates", "help.time-cards", "help.settings"]) {
       expect(viewerTopics).not.toContain(id);
     }
     expect(viewerTopics).toContain("help.overview");
@@ -138,7 +172,13 @@ describe("feature visibility by portal access", () => {
     expect(approverTopics).not.toContain("help.operations");
     expect(approverTopics).not.toContain("help.security-center");
     expect(topics(getPortalAccess(["cs_engineer"]))).toEqual(
-      expect.arrayContaining(["help.operations", "help.security-center", "help.updates", "help.time-cards"]),
+      expect.arrayContaining([
+        "help.operations",
+        "help.security-center",
+        "help.updates",
+        "help.time-cards",
+        "help.settings",
+      ]),
     );
   });
 });

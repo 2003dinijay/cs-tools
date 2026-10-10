@@ -18,6 +18,7 @@ package service
 
 import (
 	"context"
+	"log/slog"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -40,9 +41,7 @@ func NewGlobalService(repo repository.ReferenceDataRepository, search repository
 	return &globalService{repo: repo, search: search, access: access}
 }
 
-// GetSystemMetadata implements GlobalService. FeedbackEmojis is left empty:
-// it's static ServiceNow-side configuration (feedback emoji image assets),
-// not data backed by any Postgres table.
+// GetSystemMetadata implements GlobalService.
 func (s *globalService) GetSystemMetadata(ctx context.Context) (domain.SystemMetadataResponse, error) {
 	projectTypes, err := s.repo.ListProjectTypes(ctx)
 	if err != nil {
@@ -63,7 +62,27 @@ func (s *globalService) GetSystemMetadata(ctx context.Context) (domain.SystemMet
 		tzItems = append(tzItems, domain.ChoiceListItem{ID: tz.Value, Label: tz.Label})
 	}
 
-	return domain.SystemMetadataResponse{ProjectTypes: items, TimeZones: tzItems}, nil
+	feedbackEmojis, err := s.repo.ListFeedbackEmojis(ctx)
+	if err != nil {
+		return domain.SystemMetadataResponse{}, err
+	}
+	emojiItems := make([]domain.FeedbackEmoji, 0, len(feedbackEmojis))
+	for _, e := range feedbackEmojis {
+		chips := make([]domain.FeedbackEmojiChip, 0, len(e.Chips))
+		for _, c := range e.Chips {
+			chips = append(chips, domain.FeedbackEmojiChip{ID: c.ID, Name: c.Name, Value: c.Value})
+		}
+		emojiItems = append(emojiItems, domain.FeedbackEmoji{
+			ID:              e.ID,
+			Name:            e.Name,
+			Value:           e.Value,
+			UnselectedImage: e.UnselectedImage,
+			SelectedImage:   e.SelectedImage,
+			Chips:           chips,
+		})
+	}
+
+	return domain.SystemMetadataResponse{ProjectTypes: items, TimeZones: tzItems, FeedbackEmojis: emojiItems}, nil
 }
 
 // globalSearchSortFields maps the accepted sortBy.field values to the
@@ -86,8 +105,8 @@ var globalSearchSortFields = map[string]repository.SearchSortField{
 // a default order of ascending for "name" and descending for the date fields.
 // projectsPagination/casesPagination default to the standard page size.
 //
-// activeChatsCount/actionRequiredCount/outstandingCount on each project are 0:
-// see globalSearchRepo.SearchProjects.
+// activeChatsCount/actionRequiredCount/outstandingCount on each project are
+// the figures the project's own dashboard shows -- see fillProjectActivityCounts.
 func (s *globalService) GlobalSearch(ctx context.Context, req domain.GlobalSearchRequest) (domain.GlobalSearchResponse, error) {
 	scope, err := s.access.ResolveScope(ctx)
 	if err != nil {
@@ -144,8 +163,14 @@ func (s *globalService) GlobalSearch(ctx context.Context, req domain.GlobalSearc
 		eg.Go(func() error {
 			field, d := projectSort(req.SortBy, sortField, desc)
 			projects, total, err := s.search.SearchProjects(egCtx, scope, query, field, d, projectsPage)
+			if err != nil {
+				return err
+			}
+			if err := s.fillProjectActivityCounts(egCtx, scope, projects); err != nil {
+				return err
+			}
 			resp.Projects, resp.ProjectsTotal = projects, total
-			return err
+			return nil
 		})
 	}
 	if wantCases {
@@ -160,6 +185,66 @@ func (s *globalService) GlobalSearch(ctx context.Context, req domain.GlobalSearc
 		return domain.GlobalSearchResponse{}, err
 	}
 	return resp, nil
+}
+
+// fillProjectActivityCounts sets activeChatsCount, actionRequiredCount and
+// outstandingCount on each project of a result page, for the project list.
+// They are the numbers the project's own dashboard shows, from the same state
+// groupings the project stats use, so the two cannot drift:
+//
+//   - outstanding: cases, service requests, engagements and security report
+//     analyses that are not closed (an item with no state of its own type is
+//     not counted, as on the dashboard: no list can show it), plus the change
+//     requests that are in motion for this caller (crOutstandingStatesFor).
+//   - action required: those waiting on the customer -- cases in Awaiting
+//     Info or Solution Proposed, change requests in Customer Approval or
+//     Customer Review.
+//   - active chats: conversations in an active state.
+//
+// One caveat the dashboard does not have: it also narrows by what the caller's
+// role may see (hasSR, hasCR, ...), which is not known per project here, so a
+// user without access to a type still has its items in the totals.
+//
+// A failure leaves the three at zero and is logged, never returned: the list
+// is the portal's way into a project, and a lookup that decorates it must not
+// be able to take it down (the same posture as GetProjectStats' instance
+// count). The one exception is the request itself running out of time or being
+// cancelled: that is returned, so the request fails as it would have had the
+// search itself run into the deadline. Swallowing it would answer 200 with
+// every count at zero and nothing in the log, indistinguishable from a real
+// zero.
+func (s *globalService) fillProjectActivityCounts(ctx context.Context, scope AccessScope, projects []domain.GlobalSearchProject) error {
+	if len(projects) == 0 {
+		return nil
+	}
+	ids := make([]string, len(projects))
+	for i, p := range projects {
+		ids[i] = p.ID
+	}
+	counts, err := s.search.ProjectActivityCounts(ctx, scope, ids, repository.ProjectActivityStates{
+		CaseClosed:         []string{caseStateClosed},
+		CaseActionRequired: caseStatsActionRequiredStates,
+		CROutstanding:      crOutstandingStatesFor(scope),
+		CRActionRequired:   crActionRequiredStates,
+		ChatActive:         conversationActiveStates,
+	})
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			// The request is over (deadline, cancelled, or a sibling of the
+			// search failed): let it fail rather than answer with zeros.
+			return ctxErr
+		}
+		slog.WarnContext(ctx, "global search: project counts degraded to zero",
+			"projects", len(ids), "error", err)
+		return nil
+	}
+	for i := range projects {
+		c := counts[projects[i].ID]
+		projects[i].ActiveChatsCount = c.ActiveChats
+		projects[i].ActionRequiredCount = c.ActionRequired
+		projects[i].OutstandingCount = c.Outstanding
+	}
+	return nil
 }
 
 // resolveGlobalSearchSort validates sortBy and returns the chosen field and

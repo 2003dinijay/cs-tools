@@ -171,12 +171,24 @@ func parseActualDurationMin(raw *string) *int {
 //     request that supplies one rather than silently dropping it.
 //   - closed_on/closed_by_id are never set by UpdateCallRequest: which states
 //     count as "closed" isn't specified anywhere.
-//   - State transitions are not validated against the current state.
+//   - State transitions are not validated against the current state, except that
+//     concluding without notes needs a scheduled or notes-pending call (see
+//     UpdateCallRequest).
 type CallRequestRepository interface {
 	// CreateCallRequest inserts a call request for req.CaseID in state
 	// pending_on_wso2, opened by callerID/callerEmail. Returns a NotFoundError
 	// if req.CaseID is not an existing case-like work item.
 	CreateCallRequest(ctx context.Context, req domain.CreateCallRequestRequest, callerID, callerEmail string) (domain.CreateCallRequestResponse, error)
+	// CreateCallRequestFromServiceNow inserts a call request using id/createdBy/
+	// createdOn exactly as ServiceNow assigned them (DATA_SOURCE=postgres-servicenow-dual-write's
+	// ServiceNow-first CREATE path, callRequestService.createCallRequestSNFirst)
+	// rather than generating its own id -- see that method's own doc comment
+	// for why. callerID still attributes customer_call.opened_by_id to the
+	// resolved caller, matching CreateCallRequest's own attribution; number
+	// is left NULL, matching CreateCallRequest (ServiceNow's call-request
+	// create response carries no number at all). Returns a NotFoundError if
+	// req.CaseID is not an existing case-like work item.
+	CreateCallRequestFromServiceNow(ctx context.Context, req domain.CreateCallRequestRequest, id, createdBy string, createdOn time.Time, callerID string) (domain.CreateCallRequestResponse, error)
 	// SearchCallRequests returns the call requests of one case, newest first,
 	// optionally narrowed to states, with the total before pagination.
 	SearchCallRequests(ctx context.Context, caseID string, states []domain.CallRequestStateType, pagination domain.Pagination) ([]domain.CallRequestView, int, error)
@@ -386,8 +398,26 @@ func (r *callRequestRepo) SearchAllCallRequests(ctx context.Context, f domain.Se
 		where += fmt.Sprintf(" AND "+clause, len(args))
 	}
 
+	// "Assigned to" means the PARENT CASE's assignee (the documented contract:
+	// csm-portal's SearchAllCallRequestsPayload.assignedUserIds), so a
+	// dashboard's "My Call Requests" lists the calls on the cases I own. The
+	// call's own assignee -- the engineer who agreed to attend, set only once
+	// the call is scheduled and optional even then -- is OR'd in so a call
+	// handed to someone other than the case owner still reaches them. Matching
+	// only cc.assigned_to_id (what this did before) left every
+	// pending_on_wso2 call out: nothing assigns one until it is scheduled.
+	// $%[1]d is reused for both columns so the array is bound once.
 	if len(f.AssignedUserIDs) > 0 {
-		add(`cc.assigned_to_id = ANY($%d::text[]::uuid[])`, f.AssignedUserIDs)
+		add(`(wi.assigned_to_id = ANY($%[1]d::text[]::uuid[]) OR cc.assigned_to_id = ANY($%[1]d::text[]::uuid[]))`, f.AssignedUserIDs)
+	}
+	// A case's team here is its account's CRE team (account.cre_team_id) -- the
+	// same path the case search's creTeam filter takes, and the id the
+	// dashboards' team selector hands over (BeTeam.creGroupId). The case's own
+	// work_item.assignment_group_id is not used: it is unpopulated on synced
+	// data (a case's assignedTeam comes back null). EXISTS rather than another
+	// JOIN keeps the shared FROM, and so the count/page query pair, unchanged.
+	if len(f.AssignmentTeamIDs) > 0 {
+		add(`EXISTS (SELECT 1 FROM account ta WHERE ta.id = wi.account_id AND ta.cre_team_id = ANY($%d::text[]::uuid[]))`, f.AssignmentTeamIDs)
 	}
 	if len(f.States) > 0 {
 		add(`cc.state = ANY($%d::text[]::customer_call_state_enum[])`, callRequestStatesToEnums(f.States))
@@ -464,10 +494,75 @@ func (r *callRequestRepo) CreateCallRequest(ctx context.Context, req domain.Crea
 	return resp, nil
 }
 
+// CreateCallRequestFromServiceNow implements CallRequestRepository. Same
+// shape as CreateCallRequest's own INSERT ... SELECT ... FROM work_item
+// (so a nonexistent, or non-case-like, req.CaseID still yields a
+// NotFoundError rather than a bare foreign-key violation, and the
+// announcement visibility leak guard still applies) -- the only difference
+// is id/created_on/created_by/updated_by come from the already-SUCCESSFUL
+// ServiceNow create (id, createdBy, createdOn) rather than being generated
+// here.
+func (r *callRequestRepo) CreateCallRequestFromServiceNow(ctx context.Context, req domain.CreateCallRequestRequest, id, createdBy string, createdOn time.Time, callerID string) (domain.CreateCallRequestResponse, error) {
+	times, err := json.Marshal(req.UTCTimes)
+	if err != nil {
+		return domain.CreateCallRequestResponse{}, fmt.Errorf("encode utcTimes: %w", err)
+	}
+
+	query := `
+		INSERT INTO customer_call (
+			id, created_on, updated_on, created_by, updated_by,
+			work_item_id, opened_by_id, opened_on, is_active, state,
+			duration, reason, final_times
+		)
+		SELECT $1::text::uuid, $2, $2, $3, $3,
+		       wi.id, $4::text::uuid, $2, TRUE, 'PENDING_ON_WSO2'::customer_call_state_enum,
+		       make_interval(mins => $5::int), $6::text, $7::text::jsonb
+		FROM work_item wi
+		WHERE wi.id = $8::text::uuid AND wi.type = ANY(` + caseLikeWorkItemTypes + `)
+		  AND ` + announcementVisibilityLeakGuard + `
+		RETURNING id, created_on`
+
+	var gotID string
+	var gotCreatedOn time.Time
+	err = r.db.QueryRow(ctx, query,
+		id, createdOn, createdBy, callerID, req.DurationMinutes, req.Reason, string(times), req.CaseID,
+	).Scan(&gotID, &gotCreatedOn)
+	if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {
+		return domain.CreateCallRequestResponse{}, &apierror.NotFoundError{Msg: "case not found"}
+	}
+	if err != nil {
+		return domain.CreateCallRequestResponse{}, fmt.Errorf("create call request from servicenow: %w", err)
+	}
+
+	var resp domain.CreateCallRequestResponse
+	resp.Message = "Call request created successfully."
+	resp.CallRequest.ID = gotID
+	resp.CallRequest.CreatedOn = gotCreatedOn.UTC().Format(time.RFC3339)
+	resp.CallRequest.CreatedBy = createdBy
+	resp.CallRequest.State = CallRequestStateFromEnum(callRequestStateToEnum(domain.CallRequestStatePendingOnWSO2))
+	return resp, nil
+}
+
 // UpdateCallRequest implements CallRequestRepository.
 //
 // Every optional field is applied with COALESCE, so an absent field leaves the
 // stored value untouched. The state is always written.
+//
+// One transition is guarded: concluding a call WITHOUT post-call notes ("Mark as
+// completed", digiops-cs#3350) only applies to a call that is scheduled or notes
+// pending. Nothing else here validates the current state, so without the guard a
+// stale screen (or a direct caller) could turn a cancelled, rejected or
+// never-scheduled call into a completed one. The check is part of the UPDATE's own
+// WHERE clause, so it is atomic with the write; a call that fails it comes back as
+// a ConflictError naming its current state, not as a misleading not-found.
+// Concluding WITH notes ("Send call notes") is unchanged and not guarded.
+//
+// That same transition is also staff-only. Before notes became optional the notes
+// requirement was the only thing stopping an external caller from concluding a
+// call: the customer portal's backend forwards any state key it is given, cannot
+// send notes, and RLS lets a project member update their own project's calls. So a
+// notes-less conclude from anyone but an internal (Unrestricted) caller is a
+// ForbiddenError, answered before any lookup so it says nothing about the call.
 func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.UpdateCallRequestRequest, assigneeID *string, callerEmail string) (domain.UpdateCallRequestResponse, error) {
 	var finalTimes *string
 	if req.UTCTimes != nil {
@@ -499,6 +594,24 @@ func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.Upda
 		caseID = &req.CaseID
 	}
 
+	// nil (SQL NULL) means "any current state"; set only for a notes-less conclude.
+	// That path also never writes the notes column (blank notes included), so
+	// completing a call cannot erase what is already recorded on it.
+	notes := req.Notes
+	completableFrom := []string{
+		callRequestStateToEnum(domain.CallRequestStateScheduled),
+		callRequestStateToEnum(domain.CallRequestStateNotesPending),
+	}
+	var onlyFromStates any
+	if req.State == domain.CallRequestStateConcluded && (req.Notes == nil || strings.TrimSpace(*req.Notes) == "") {
+		scope, ok := CallerIdentityFromContext(ctx)
+		if !ok || !scope.Unrestricted {
+			return domain.UpdateCallRequestResponse{}, &apierror.ForbiddenError{Msg: "only WSO2 staff can mark a call request as completed"}
+		}
+		notes = nil
+		onlyFromStates = completableFrom
+	}
+
 	const query = `
 		UPDATE customer_call SET
 			state = $2::text::customer_call_state_enum,
@@ -515,6 +628,7 @@ func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.Upda
 			actual_call_duration = COALESCE($12::text, actual_call_duration)
 		WHERE id = $1::text::uuid
 		  AND ($13::text::uuid IS NULL OR work_item_id = $13::text::uuid)
+		  AND ($14::text[] IS NULL OR state::text = ANY($14::text[]))
 		RETURNING id, updated_on`
 
 	var id string
@@ -522,8 +636,36 @@ func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.Upda
 	err := r.db.QueryRow(ctx, query,
 		req.ID, callRequestStateToEnum(req.State), callerEmail,
 		finalTimes, req.DurationMinutes, scheduledOn, assigneeID,
-		req.Notes, req.Plan, req.Attendees, req.ActionItems, actual, caseID,
+		notes, req.Plan, req.Attendees, req.ActionItems, actual, caseID, onlyFromStates,
 	).Scan(&id, &updatedOn)
+	if errors.Is(err, pgx.ErrNoRows) && onlyFromStates != nil {
+		// No row matched. Either the call does not exist (not found), or it is in a state
+		// this conclude is not allowed from (conflict): look it up to tell which, so a
+		// stale "Mark as completed" gets an accurate answer instead of "not found".
+		var current *string
+		lookup := r.db.QueryRow(ctx,
+			`SELECT state::text FROM customer_call
+			 WHERE id = $1::text::uuid AND ($2::text::uuid IS NULL OR work_item_id = $2::text::uuid)`,
+			req.ID, caseID).Scan(&current)
+		switch {
+		case lookup == nil:
+			if current != nil && (*current == completableFrom[0] || *current == completableFrom[1]) {
+				// It became completable between the UPDATE and this lookup (a concurrent
+				// reschedule, say): saying "not allowed from <state>" would be wrong.
+				return domain.UpdateCallRequestResponse{}, &apierror.ConflictError{Msg: "the call request changed while this was being applied; please try again"}
+			}
+			label := "in an unknown state"
+			if current != nil {
+				label = "currently " + CallRequestStateFromEnum(*current).Label
+			}
+			return domain.UpdateCallRequestResponse{}, &apierror.ConflictError{Msg: "a call request can only be marked completed while it is scheduled or notes pending (this one is " + label + ")"}
+		case errors.Is(lookup, pgx.ErrNoRows):
+			// Not visible or not there: fall through to not found below.
+		default:
+			// A failed lookup is a failure, not a missing call.
+			return domain.UpdateCallRequestResponse{}, fmt.Errorf("look up call request after refused conclude: %w", lookup)
+		}
+	}
 	if errors.Is(err, pgx.ErrNoRows) || IsRLSPolicyViolation(err) {
 		if caseID != nil {
 			return domain.UpdateCallRequestResponse{}, &apierror.NotFoundError{Msg: "call request not found for this case"}

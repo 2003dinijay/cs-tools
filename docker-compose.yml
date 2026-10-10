@@ -72,6 +72,24 @@ services:
       timeout: 5s
       retries: 20
 
+  # The call-escalation ladder's wake index and per-incident state. Nothing
+  # else in this stack needs Redis, which is why it was absent: the ladder is
+  # the first thing here that has to remember something between ticks.
+  #
+  # Unpersisted on purpose. A ladder is a few minutes of state about an
+  # incident happening right now; there is nothing worth surviving a
+  # `docker compose down`, and plenty of confusion in a half-finished ladder
+  # resuming days later against a database reseeded underneath it.
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
   # One-shot: applies entity-service's raw SQL migrations (it doesn't wire
   # up a migration tool) and loads dummy seed data. Every service that reads
   # from Postgres waits on this completing.
@@ -90,6 +108,7 @@ services:
       - ./entity-service/migrations:/migrations/entity-service:ro
       - ./scripts/csm-compose/seed-entity-service.sql:/migrations/seed-entity-service.sql:ro
       - ./scripts/csm-compose/seed-team-schedule.sql:/migrations/seed-team-schedule.sql:ro
+      - ./scripts/csm-compose/seed-escalation-roles.sql:/migrations/seed-escalation-roles.sql:ro
       - ./scripts/csm-compose/fixtures:/migrations/fixtures:ro
       - ./scripts/csm-compose/migrate-and-seed.sh:/migrate.sh:ro
     entrypoint: ["sh", "/migrate.sh"]
@@ -199,6 +218,8 @@ services:
       - |
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic case-events --partitions 1 --replication-factor 1
         /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic case-events-dlq --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic sre-events --partitions 1 --replication-factor 1
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --create --if-not-exists --topic sre-events-dlq --partitions 1 --replication-factor 1
 
   # Mock OpenID Connect provider. LOCAL DEV ONLY -- see
   # scripts/csm-compose/mock-oidc/main.go. Issues real RS256-signed JWTs so
@@ -241,7 +262,12 @@ services:
       DATA_SOURCE: postgres
       DB_HOST: postgres
       DB_PORT: "5432"
-      DB_USER: postgres
+      # Not `postgres`: a superuser skips every row-level-security policy, so as
+      # `postgres` any signed-in customer could read another project's change
+      # request or case by id (production's non-superuser role answers 404).
+      # The migrate service creates csm_app (scripts/csm-compose/migrate-and-seed.sh)
+      # and re-grants it on every pass, before this service starts.
+      DB_USER: csm_app
       DB_PASSWORD: devpassword
       DB_NAME: csm_platform
       DB_SSLMODE: disable
@@ -249,6 +275,23 @@ services:
       EVENT_HUB_CONNECTION_STRING: local-dev-shared-secret
       EVENT_HUB_TOPIC: case-events
       EVENT_PUBLISHING_ENABLED: "true"
+      # The operations topic, as on DEV: incident.special_ops_alert (the SME
+      # page), service request, change request and outage events go here, and
+      # csm-notification-service reads it with the same name.
+      SRE_EVENT_HUB_TOPIC: sre-events
+      # Where "Escalate to specialist team" sends an incident (one line of
+      # JSON, see entity-service's specialist_handoff_config.go). Empty: the
+      # button is not offered. Set it in the shell or .env to try the SME page.
+      SPECIALIST_HANDOFF_CONFIG: ${SPECIALIST_HANDOFF_CONFIG:-}
+      # A customer sees only the change requests designated to them (the customer's
+      # approval or review was asked of them); a change request created BEFORE this
+      # instant is "legacy" and keeps being visible to its project's registered
+      # contacts past Authorize. Unset = every change request is legacy, which would
+      # leave this stack NOT strict. Far in the past on purpose: every change request
+      # the local seed and the specs create is strict, as production's will be after
+      # its own cutover. See entity-service/CLAUDE.md, "Customer visibility and the
+      # cutover".
+      CR_STRICT_VISIBILITY_FROM: "2000-01-01T00:00:00Z"
       SSL_CERT_FILE: /certs/ca.crt
       # Token validation is always on (see internal/config/config.go), so this
       # stack needs a real issuer to start at all -- mock-oidc, the same one
@@ -258,7 +301,32 @@ services:
       AUTH_ISSUER: http://localhost:9100/oauth2/token
       AUTH_JWKS_URL: http://mock-oidc:9100/oauth2/jwks
       AUTH_USER_TOKEN_AUDIENCES: csm-portal-webapp,customer-portal-webapp
-      AUTH_INTERNAL_CLIENT_IDS: csm-portal-backend-dev-client,csm-integration-service-dev-client
+      # How entity-service classifies a caller that arrives with a client-credentials token
+      # (x-jwt-assertion): internal/service/access_service.go ResolveScope, entity-service/README.md.
+      # (This file used to set AUTH_INTERNAL_CLIENT_IDS, which nothing reads any more -- it was renamed
+      # M2M_CLIENT_IDS -- so it had no effect, and its csm-portal-backend entry would have been wrong
+      # anyway: a client id in the M2M list is unrestricted whatever user token it forwards.)
+      #
+      # customer-portal-backend-v2: its calls are ALWAYS scoped by the x-user-id-token it forwards, so
+      # each customer sees only the projects they are a registered contact of -- never unrestricted,
+      # even if this id were also listed in M2M_CLIENT_IDS by mistake. It resolves this way without
+      # the line below (an unlisted client falls through to the user token); the line makes it a
+      # guarantee rather than a side effect.
+      CUSTOMER_PORTAL_BACKEND_CLIENT_ID: customer-portal-backend-dev-client
+      # Pure machine-to-machine callers, no signed-in person: unrestricted. Without an entry these get
+      # no caller identity and a 500 on every scoped endpoint. Not listed on purpose: the portal
+      # backends and both activity-stream services, which forward a person's token and must resolve
+      # to that person's own scope.
+      # csm-notification-service is here for the call-escalation ladder: it reads the rota and the
+      # ranks behind it to decide who each rung reaches, machine to machine, with no user to carry a
+      # token. Both of those reads are internal-staff-only, so without it every rung resolves to
+      # nobody and the ladder silently reaches no one.
+      M2M_CLIENT_IDS: csm-integration-service-dev-client,csm-notification-service-dev-client
+      # CSM_PORTAL_BACKEND_CLIENT_ID / CSM_PORTAL_USER_DOMAIN are deliberately NOT set. They make the
+      # CSM BFF unrestricted for any user whose email is in that domain (and refuse everyone else),
+      # but this stack's staff and customer personas share example.com, so the domain cannot tell them
+      # apart. Unset, each CSM portal user resolves from their own user record: internal sees
+      # everything, a customer only their registered projects.
     volumes:
       - csm-dev-certs:/certs:ro
     ports:
@@ -382,6 +450,12 @@ services:
       PRODUCT_CONSUMPTION_SUBSCRIPTION_URL: https://product-consumption.local.invalid
       REGISTRY_BASE_URL: https://registry.local.invalid
       USER_MANAGEMENT_BASE_URL: https://usermanagement.local.invalid
+      # There is no pre-cutover user-management service in this stack (the URL
+      # above is a placeholder that never resolves), so with this off
+      # GET /projects/{id}/contacts answers 500 and the portal's contact list
+      # and admin check fail. On, contacts are read from the CSM database
+      # through entity-service, which is what this stack seeds.
+      CSM_MIGRATION_PORTAL_CONTACTS_ENABLED: "true"
       AUTH_ADMIN_ROLE: cs_admin
       AUTH_JWKS_ENDPOINT: http://mock-oidc:9100/oauth2/jwks
       AUTH_ISSUER: http://localhost:9100/oauth2/token
@@ -457,6 +531,8 @@ services:
       context: ./integrations/csm-notification-service
       dockerfile: ../../docker/local/csm-notification-service.Dockerfile
     depends_on:
+      redis:
+        condition: service_healthy
       kafka:
         condition: service_healthy
       kafka-topics-init:
@@ -468,6 +544,9 @@ services:
       EVENT_HUB_CONNECTION_STRING: local-dev-shared-secret
       EVENT_HUB_TOPIC: case-events
       EVENT_HUB_DLQ_TOPIC: case-events-dlq
+      # Read with the same name entity-service publishes to (the SME page's
+      # incident.special_ops_alert among others).
+      SRE_EVENT_HUB_TOPIC: sre-events
       SSL_CERT_FILE: /certs/ca.crt
       CUSTOMER_ENTITY_BASE_URL: http://entity-service:8080
       OAUTH2_CLIENT_ID: csm-notification-service-dev-client
@@ -478,10 +557,54 @@ services:
       # apps/csm-portal/README.md), which is what the verification checks
       # for.
       EMAIL_SENDING_ENABLED: "false"
-      CALL_SENDING_ENABLED: "false"
+      # Off unless trigger-escalation.sh -c call|both turns it on for one run.
+      CALL_SENDING_ENABLED: ${CALL_SENDING_ENABLED:-false}
+      # Twilio, only used when a call channel is chosen. Supplied by
+      # trigger-escalation.sh from the service's own .env, never committed.
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+      # The escalation ladder. REDIS_ADDR is what makes the engine exist at
+      # all: without it cmd/server never builds one, and an incident.created
+      # is consumed and ignored.
+      REDIS_ADDR: redis:6379
+      # chat, not call: CALL_SENDING_ENABLED above is false and there is no
+      # telephony account here, so a voice rung would reach nobody and prove
+      # nothing.
+      # The configuration file decides what actually gets dialled: which
+      # incidents escalate, how far, and over which channel. It ships set to
+      # `log`, so `docker compose up` runs the whole ladder for real and
+      # reaches nobody. INCIDENT_ESCALATION_CHANNEL below is the pre-file
+      # fallback and is ignored whenever this path is set.
+      INCIDENT_ESCALATION_CONFIG: /config/paging-alert.yaml
+      INCIDENT_ESCALATION_CHANNEL: chat
+      # Both of these are yours, not the repository's. GOOGLE_CHAT_SPACES
+      # carries a webhook URL, which is a credential: anyone holding it can
+      # post into the space as the app. Export them in your own shell and
+      # compose passes them through. Unset, the ladder is built but reaches
+      # nobody, and says so at startup.
+      GOOGLE_CHAT_SPACES: ${GOOGLE_CHAT_SPACES:-}
+      # The CRE ladder's own room, named by paging-alert.yaml cre.chat.webhookUrlEnv.
+      # Supplied by trigger-escalation.sh from the service's .env; never committed.
+      CRE_CHAT_WEBHOOK_URL: ${CRE_CHAT_WEBHOOK_URL:-}
+      # The SRE ladder's room, named by paging-alert.yaml sre.chat.webhookUrlEnv.
+      # Kept in scripts/csm-compose/.env (git-ignored); export it before
+      # `docker compose up`. Never committed.
+      SRE_CHAT_WEBHOOK_URL: ${SRE_CHAT_WEBHOOK_URL:-}
+      # The SME page's room, named by paging-alert.yaml sme.chat.webhookUrlEnv.
+      SME_CHAT_WEBHOOK_URL: ${SME_CHAT_WEBHOOK_URL:-}
+      INCIDENT_ESCALATION_ROSTER: ${INCIDENT_ESCALATION_ROSTER:-}
+      # Resolve rungs from the Team Schedule -- the rule table paging-alert.yaml
+      # and rules.go describe. Unset, the server falls back to the stand-in
+      # roster above, which routes by the retired fourteen-row table: a local
+      # run then reported rule=R13 for an incident R5 should have routed.
+      INCIDENT_ESCALATION_RESOLVER: ${INCIDENT_ESCALATION_RESOLVER:-team-schedule}
       PORT: "8080"
     volumes:
       - csm-dev-certs:/certs:ro
+      # ESCALATION_CONFIG_FILE lets trigger-escalation.sh mount a per-run copy
+      # (a different channel, your own number); unset, the committed file.
+      - ${ESCALATION_CONFIG_FILE:-./scripts/csm-compose/paging-alert.yaml}:/config/paging-alert.yaml:ro
     ports:
       - "127.0.0.1:8083:8080"
 

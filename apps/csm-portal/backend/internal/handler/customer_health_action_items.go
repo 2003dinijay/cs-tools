@@ -17,7 +17,6 @@
 package handler
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
 
@@ -31,7 +30,7 @@ func (h *CustomerHealthHandler) CreateActionItem(w http.ResponseWriter, r *http.
 	if !ok {
 		return
 	}
-	riskID, ok := parseIntPathValue(w, r, "riskId")
+	riskID, ok := requireUUIDPathValue(w, r, "riskId")
 	if !ok {
 		return
 	}
@@ -41,15 +40,10 @@ func (h *CustomerHealthHandler) CreateActionItem(w http.ResponseWriter, r *http.
 		return
 	}
 
-	result, err := h.risk.CreateActionItem(r.Context(), riskID, payload, user.Email)
+	result, err := h.risk.CreateActionItem(r.Context(), riskID, payload)
 	if err != nil {
-		var valErr *risk.ValidationError
-		if errors.As(err, &valErr) {
-			writeError(w, http.StatusBadRequest, valErr.Message)
-			return
-		}
 		slog.ErrorContext(r.Context(), "risk CreateActionItem failed", "userID", user.UserID, "riskId", riskID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to create action item.")
+		mapUpstreamError(w, err, "Failed to create action item.")
 		return
 	}
 	writeJSONValue(w, http.StatusOK, result)
@@ -62,7 +56,7 @@ func (h *CustomerHealthHandler) UpdateActionItemStatus(w http.ResponseWriter, r 
 	if !ok {
 		return
 	}
-	actionItemID, ok := parseIntPathValue(w, r, "actionItemId")
+	actionItemID, ok := requireUUIDPathValue(w, r, "actionItemId")
 	if !ok {
 		return
 	}
@@ -72,15 +66,10 @@ func (h *CustomerHealthHandler) UpdateActionItemStatus(w http.ResponseWriter, r 
 		return
 	}
 
-	result, err := h.risk.UpdateActionItemStatus(r.Context(), actionItemID, payload.Status, payload.ResolutionComment, user.Email)
+	result, err := h.risk.UpdateActionItemStatus(r.Context(), actionItemID, payload.Status, payload.ResolutionComment)
 	if err != nil {
-		var valErr *risk.ValidationError
-		if errors.As(err, &valErr) {
-			writeError(w, http.StatusBadRequest, valErr.Message)
-			return
-		}
 		slog.ErrorContext(r.Context(), "risk UpdateActionItemStatus failed", "userID", user.UserID, "actionItemId", actionItemID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to update action item status.")
+		mapUpstreamError(w, err, "Failed to update action item status.")
 		return
 	}
 	writeJSONValue(w, http.StatusOK, result)
@@ -93,7 +82,7 @@ func (h *CustomerHealthHandler) UpdateActionItem(w http.ResponseWriter, r *http.
 	if !ok {
 		return
 	}
-	actionItemID, ok := parseIntPathValue(w, r, "actionItemId")
+	actionItemID, ok := requireUUIDPathValue(w, r, "actionItemId")
 	if !ok {
 		return
 	}
@@ -105,13 +94,8 @@ func (h *CustomerHealthHandler) UpdateActionItem(w http.ResponseWriter, r *http.
 
 	result, err := h.risk.UpdateActionItem(r.Context(), actionItemID, payload)
 	if err != nil {
-		var valErr *risk.ValidationError
-		if errors.As(err, &valErr) {
-			writeError(w, http.StatusBadRequest, valErr.Message)
-			return
-		}
 		slog.ErrorContext(r.Context(), "risk UpdateActionItem failed", "userID", user.UserID, "actionItemId", actionItemID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to update action item.")
+		mapUpstreamError(w, err, "Failed to update action item.")
 		return
 	}
 	writeJSONValue(w, http.StatusOK, result)
@@ -124,7 +108,7 @@ func (h *CustomerHealthHandler) GetActionItemsByRisk(w http.ResponseWriter, r *h
 	if !ok {
 		return
 	}
-	riskID, ok := parseIntPathValue(w, r, "riskId")
+	riskID, ok := requireUUIDPathValue(w, r, "riskId")
 	if !ok {
 		return
 	}
@@ -170,7 +154,7 @@ func (h *CustomerHealthHandler) CreateActionItemComment(w http.ResponseWriter, r
 	if !ok {
 		return
 	}
-	actionItemID, ok := parseIntPathValue(w, r, "actionItemId")
+	actionItemID, ok := requireUUIDPathValue(w, r, "actionItemId")
 	if !ok {
 		return
 	}
@@ -180,15 +164,10 @@ func (h *CustomerHealthHandler) CreateActionItemComment(w http.ResponseWriter, r
 		return
 	}
 
-	result, err := h.risk.CreateActionItemComment(r.Context(), actionItemID, payload.Comment, user.Email)
+	result, err := h.risk.CreateActionItemComment(r.Context(), actionItemID, payload.Comment)
 	if err != nil {
-		var valErr *risk.ValidationError
-		if errors.As(err, &valErr) {
-			writeError(w, http.StatusBadRequest, valErr.Message)
-			return
-		}
 		slog.ErrorContext(r.Context(), "risk CreateActionItemComment failed", "userID", user.UserID, "actionItemId", actionItemID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to post comment.")
+		mapUpstreamError(w, err, "Failed to post comment.")
 		return
 	}
 	writeJSONValue(w, http.StatusOK, result)
@@ -201,7 +180,7 @@ func (h *CustomerHealthHandler) GetActionItemComments(w http.ResponseWriter, r *
 	if !ok {
 		return
 	}
-	actionItemID, ok := parseIntPathValue(w, r, "actionItemId")
+	actionItemID, ok := requireUUIDPathValue(w, r, "actionItemId")
 	if !ok {
 		return
 	}

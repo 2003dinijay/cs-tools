@@ -78,8 +78,12 @@ vi.mock("@features/csm-cases/components/AsyncProjectMultiSelect", () => ({
 // The signed-in user's profile/id-token claims aren't relevant to this page's
 // own behavior — only the column picker's storage key derives from them
 // (see useColumnPreferences.test.ts for that logic).
+// Mutable so the "New announcement" tests below can sign in with different
+// portal roles; the page derives its capabilities from these through the real
+// usePortalAccess.
+let mockRoles: string[] = [];
 vi.mock("@context/current-user/CurrentUserContext", () => ({
-  useCurrentUser: () => ({ user: { id: "user-1" }, isLoading: false, isError: false }),
+  useCurrentUser: () => ({ user: { id: "user-1", roles: mockRoles }, isLoading: false, isError: false }),
 }));
 vi.mock("@hooks/useIdTokenClaims", () => ({
   useIdTokenClaims: () => ({ email: "user@example.test" }),
@@ -156,6 +160,10 @@ const PENDING_REQUEST: AnnouncementRequest = {
 };
 
 beforeEach(() => {
+  // Default to a caller who can create announcements, since most of this file
+  // exercises the creators' Requests tab; the visibility tests below sign in
+  // other roles explicitly.
+  mockRoles = ["cs_engineer", "announcement_creator"];
   mockedUseSearch.mockReset();
   mockedUseSearchRequests.mockReset();
   mockedUseSearchRequests.mockReturnValue({
@@ -168,7 +176,95 @@ beforeEach(() => {
   window.localStorage.clear();
 });
 
+// Creating an announcement needs the announcement_creator role on top of write
+// access (the backend refuses it with a 403 otherwise), so the entry point is
+// only offered to callers who can actually use it.
+describe("CsmAnnouncementsPage — New announcement button", () => {
+  beforeEach(() => {
+    mockResult({ data: { rows: [], total: 0, limit: 20, offset: 0, hasMore: false } });
+  });
+
+  it("is offered to a CS engineer who holds the announcement creator role", () => {
+    mockRoles = ["cs_engineer", "announcement_creator"];
+    render(<CsmAnnouncementsPage />);
+    expect(screen.getByRole("button", { name: /new announcement/i })).toBeInTheDocument();
+  });
+
+  it("is offered to admin without the role", () => {
+    mockRoles = ["admin"];
+    render(<CsmAnnouncementsPage />);
+    expect(screen.getByRole("button", { name: /new announcement/i })).toBeInTheDocument();
+  });
+
+  it("is hidden from a CS engineer without the role, who can still read the list", () => {
+    mockRoles = ["cs_engineer"];
+    render(<CsmAnnouncementsPage />);
+    expect(screen.queryByRole("button", { name: /new announcement/i })).not.toBeInTheDocument();
+    expect(screen.getByText(/no announcements found/i)).toBeInTheDocument();
+  });
+
+  it("is hidden from a holder of the role who cannot write", () => {
+    mockRoles = ["viewer", "announcement_creator"];
+    render(<CsmAnnouncementsPage />);
+    expect(screen.queryByRole("button", { name: /new announcement/i })).not.toBeInTheDocument();
+  });
+});
+
+// The Requests tab (drafts and requests awaiting approval) is the creators'
+// workspace: everyone else sees only the published announcements, and the page
+// does not even ask the backend for the request list, which it refuses to them.
+describe("CsmAnnouncementsPage — Requests tab visibility", () => {
+  beforeEach(() => {
+    mockResult({ data: { rows: [ROW], total: 1, limit: 20, offset: 0, hasMore: false } });
+  });
+
+  it("shows both tabs to a creator and runs the request search", () => {
+    mockRoles = ["cs_engineer", "announcement_creator"];
+    render(<CsmAnnouncementsPage />);
+    expect(screen.getByRole("tab", { name: "Announcements" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Requests" })).toBeInTheDocument();
+    expect(mockedUseSearchRequests.mock.calls.at(-1)?.[3]).toEqual({ enabled: true });
+  });
+
+  it("shows admin both tabs without the role", () => {
+    mockRoles = ["admin"];
+    render(<CsmAnnouncementsPage />);
+    expect(screen.getByRole("tab", { name: "Requests" })).toBeInTheDocument();
+  });
+
+  for (const [label, roles] of [
+    ["a CS engineer without the role", ["cs_engineer"]],
+    ["a view-only role", ["viewer"]],
+    ["a holder of the role who cannot write", ["viewer", "announcement_creator"]],
+  ] as const) {
+    it(`hides the tab bar from ${label}, who still sees the published announcements`, () => {
+      mockRoles = [...roles];
+      render(<CsmAnnouncementsPage />);
+      expect(screen.queryByRole("tab", { name: "Requests" })).not.toBeInTheDocument();
+      expect(screen.queryByRole("tablist")).not.toBeInTheDocument();
+      expect(screen.getByText("Scheduled maintenance on Choreo")).toBeInTheDocument();
+    });
+  }
+
+  it("does not ask the backend for the request list when the caller cannot see it", () => {
+    mockRoles = ["cs_engineer"];
+    render(<CsmAnnouncementsPage />);
+    expect(mockedUseSearchRequests.mock.calls.length).toBeGreaterThan(0);
+    for (const call of mockedUseSearchRequests.mock.calls) {
+      expect(call[3]).toEqual({ enabled: false });
+    }
+  });
+
+  it("keeps a ?tab=pending link on the Announcements tab for a caller without access", () => {
+    mockRoles = ["cs_engineer"];
+    render(<CsmAnnouncementsPage />, "/announcements?tab=pending");
+    expect(screen.getByText("Scheduled maintenance on Choreo")).toBeInTheDocument();
+    expect(screen.queryByText("Upcoming maintenance")).not.toBeInTheDocument();
+  });
+});
+
 describe("CsmAnnouncementsPage — list states", () => {
+
   it("renders a row from the search result", () => {
     mockResult({
       data: { rows: [ROW], total: 1, limit: 20, offset: 0, hasMore: false },
@@ -381,9 +477,9 @@ describe("CsmAnnouncementsPage — Pending tab", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Requests" }));
 
     expect(screen.getByText("Upcoming maintenance")).toBeInTheDocument();
-    // state is the 1st arg of useSearchAnnouncementRequests(state, page, pageSize).
+    // states is the 1st arg of useSearchAnnouncementRequests(states, page, pageSize).
     const lastCall = mockedUseSearchRequests.mock.calls.at(-1)!;
-    expect(lastCall[0]).toBe("pending_approval");
+    expect(lastCall[0]).toEqual(["pending_approval"]);
   });
 
   it("shows a Security chip next to the subject for a security pending request, not for a non-security one", () => {
@@ -471,14 +567,132 @@ describe("CsmAnnouncementsPage — Pending tab", () => {
 
     fireEvent.click(screen.getByRole("tab", { name: "Requests" }));
     fireEvent.mouseDown(screen.getByRole("combobox", { name: /state/i }));
-    fireEvent.click(within(screen.getByRole("listbox")).getByRole("option", { name: "Published" }));
+    const listbox = screen.getByRole("listbox");
+    // Multi-select: Published is added to the default Pending approval, so
+    // narrowing to Published alone means unticking Pending approval too.
+    fireEvent.click(within(listbox).getByRole("option", { name: "Pending approval" }));
+    fireEvent.click(within(listbox).getByRole("option", { name: "Published" }));
 
     const lastCall = mockedUseSearchRequests.mock.calls.at(-1)!;
-    expect(lastCall[0]).toBe("published");
+    expect(lastCall[0]).toEqual(["published"]);
     expect(screen.getByText("Already sent maintenance notice")).toBeInTheDocument();
 
     fireEvent.click(screen.getByText("Already sent maintenance notice"));
     expect(screen.getByText(`request dialog: ${publishedRequest.id}`)).toBeInTheDocument();
+  });
+
+  describe("multi-select state filter", () => {
+    const openStateFilter = (): HTMLElement => {
+      fireEvent.click(screen.getByRole("tab", { name: "Requests" }));
+      fireEvent.mouseDown(screen.getByRole("combobox", { name: /state/i }));
+      return screen.getByRole("listbox");
+    };
+
+    beforeEach(() => {
+      mockResult({ data: { rows: [], total: 0, limit: 20, offset: 0, hasMore: false } });
+    });
+
+    it("lets a second state be added to the selection instead of swapping it", () => {
+      render(<CsmAnnouncementsPage />);
+      const listbox = openStateFilter();
+
+      fireEvent.click(within(listbox).getByRole("option", { name: "Approved" }));
+      expect(mockedUseSearchRequests.mock.calls.at(-1)![0]).toEqual(["pending_approval", "approved"]);
+
+      fireEvent.click(within(listbox).getByRole("option", { name: "Draft" }));
+      expect(mockedUseSearchRequests.mock.calls.at(-1)![0]).toEqual([
+        "pending_approval",
+        "approved",
+        "draft",
+      ]);
+    });
+
+    it("can untick a state while others stay selected", () => {
+      render(<CsmAnnouncementsPage />);
+      const listbox = openStateFilter();
+
+      fireEvent.click(within(listbox).getByRole("option", { name: "Approved" }));
+      fireEvent.click(within(listbox).getByRole("option", { name: "Pending approval" }));
+
+      expect(mockedUseSearchRequests.mock.calls.at(-1)![0]).toEqual(["approved"]);
+    });
+
+    it("treats an empty selection as every state, like the Announcements tab filter", () => {
+      render(<CsmAnnouncementsPage />);
+      const listbox = openStateFilter();
+
+      fireEvent.click(within(listbox).getByRole("option", { name: "Pending approval" }));
+
+      expect(mockedUseSearchRequests.mock.calls.at(-1)![0]).toEqual([]);
+      expect(screen.getByText("No requests.")).toBeInTheDocument();
+    });
+
+    it("words the empty state for a multi-state selection", () => {
+      render(<CsmAnnouncementsPage />);
+      const listbox = openStateFilter();
+
+      fireEvent.click(within(listbox).getByRole("option", { name: "Draft" }));
+
+      expect(screen.getByText("No requests in the selected states.")).toBeInTheDocument();
+    });
+
+    it("returns to the first page whenever the selection changes", () => {
+      mockedUseSearchRequests.mockReturnValue({
+        data: { requests: [PENDING_REQUEST], total: 25, limit: 10, offset: 0, hasMore: true },
+        isLoading: false,
+        isFetching: false,
+        isError: false,
+        error: null,
+      } as unknown as ReturnType<typeof useSearchAnnouncementRequests>);
+      render(<CsmAnnouncementsPage />);
+      fireEvent.click(screen.getByRole("tab", { name: "Requests" }));
+
+      fireEvent.click(screen.getByRole("button", { name: /go to next page/i }));
+      // useSearchAnnouncementRequests(states, page, pageSize) -- page is the 2nd arg.
+      expect(mockedUseSearchRequests.mock.calls.at(-1)![1]).toBe(1);
+
+      fireEvent.mouseDown(screen.getByRole("combobox", { name: /state/i }));
+      fireEvent.click(
+        within(screen.getByRole("listbox")).getByRole("option", { name: "Approved" }),
+      );
+
+      expect(mockedUseSearchRequests.mock.calls.at(-1)![1]).toBe(0);
+    });
+
+    it("shows each row's own state, since a merged list mixes states", () => {
+      mockedUseSearchRequests.mockReturnValue({
+        data: {
+          requests: [
+            PENDING_REQUEST,
+            { ...PENDING_REQUEST, id: "req-d", state: "draft", subject: "A draft notice" },
+            { ...PENDING_REQUEST, id: "req-a", state: "approved", subject: "An approved notice" },
+            { ...PENDING_REQUEST, id: "req-p", state: "published", subject: "A published notice" },
+          ],
+          total: 4,
+          limit: 10,
+          offset: 0,
+          hasMore: false,
+        },
+        isLoading: false,
+        isFetching: false,
+        isError: false,
+        error: null,
+      } as unknown as ReturnType<typeof useSearchAnnouncementRequests>);
+      render(<CsmAnnouncementsPage />);
+      fireEvent.click(screen.getByRole("tab", { name: "Requests" }));
+
+      const table = within(screen.getByRole("table"));
+      expect(table.getByRole("columnheader", { name: "State" })).toBeInTheDocument();
+      for (const [subject, chip] of [
+        ["Upcoming maintenance", "Pending approval"],
+        ["A draft notice", "Draft"],
+        ["An approved notice", "Approved"],
+        ["A published notice", "Published"],
+      ]) {
+        const row = table.getByRole("row", { name: new RegExp(`View announcement request: ${subject}`) });
+        expect(within(row).getByText(chip)).toBeInTheDocument();
+      }
+    });
   });
 
   it("lands directly on the Pending tab when opened with ?tab=pending", () => {

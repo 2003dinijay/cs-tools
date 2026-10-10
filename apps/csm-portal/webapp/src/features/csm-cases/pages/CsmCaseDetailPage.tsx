@@ -15,6 +15,8 @@
 // under the License.
 
 import {
+  Alert,
+  AlertTitle,
   Box,
   Button,
   Card,
@@ -100,7 +102,10 @@ import ChangeSeverityDialog from "@features/csm-cases/components/ChangeSeverityD
 import ChangeCaseTypeDialog, {
   type CaseTypeTransferSubmission,
 } from "@features/csm-cases/components/ChangeCaseTypeDialog";
-import { hasPublicComment } from "@features/csm-cases/utils/commentContent";
+import {
+  hasPublicComment,
+  isGithubRaisedCaseNumber,
+} from "@features/csm-cases/utils/commentContent";
 import { caseTypeTransferLabel } from "@features/csm-cases/utils/caseTypeTransfer";
 import SetAutocloseHoldDialog from "@features/csm-cases/components/SetAutocloseHoldDialog";
 import EditCaseDetailsDialog, {
@@ -174,8 +179,9 @@ import { useReportCaseTabDraft } from "@features/case-tabs/hooks/useReportCaseTa
 import { useReportCaseTabMeta } from "@features/case-tabs/hooks/useReportCaseTabMeta";
 import { useCaseRouteOverride } from "@context/case-tabs/CaseRouteOverrideContext";
 import { replaceUuids } from "@utils/redactIds";
-import { formatAbsoluteForUser } from "@utils/dateTime";
+import { formatUtcDateForDisplay } from "@utils/dateTime";
 import {
+  escapeHtml,
   isBlankHtml,
   isDescriptionEchoedInComment,
   stripHtmlTags,
@@ -316,6 +322,10 @@ type CaseTabId =
 // true to restore; nothing else needs to change.
 const TASKS_FEATURE_ENABLED = false;
 
+// Shown in the composer for a caller who can add internal work notes but has no
+// full write access (a worknote_creator).
+const WORK_NOTE_ONLY_REASON = "You can only add internal work notes on this case.";
+
 const TAB_DEFS: Array<{
   id: CaseTabId;
   label: string;
@@ -354,6 +364,44 @@ const CASE_TAB_IDS: readonly CaseTabId[] = TAB_DEFS.filter(
   (t) => !t.hidden,
 ).map((t) => t.id);
 
+/**
+ * Composes the customer-visible comment posted for "Share fix ETA with
+ * customer" — matches the real wording ServiceNow production's own "Share
+ * Fix ETA" CWF action uses verbatim, so the comment reads identically
+ * regardless of which data source actually posted it. Posted directly via
+ * POST /cases/{id}/comments instead of ServiceNow's own addPublicComment
+ * PATCH field, which works on every data source. Only the ETA fields
+ * actually set are included, matching the dialog's own "all three
+ * independently optional" behavior.
+ */
+function buildFixEtaShareComment(fields: {
+  bestCaseFixEta?: string;
+  mostLikelyFixEta?: string;
+  worstCaseFixEta?: string;
+  product?: string;
+  publicTicket?: string;
+}): string {
+  // product/publicTicket are free-text form input that ends up in a
+  // customer-visible comment — escape before interpolating, same as any
+  // other user-entered text embedded in markup. The ETA dates are not user
+  // free-text (picker-produced "YYYY-MM-DD" strings) and need no escaping.
+  const lines: string[] = [];
+  if (fields.product) lines.push(`Product: ${escapeHtml(fields.product)}`);
+  if (fields.publicTicket) {
+    lines.push(`Public git issue: ${escapeHtml(fields.publicTicket)}`);
+  }
+  if (fields.bestCaseFixEta) {
+    lines.push(`Best Case Estimate: ${fields.bestCaseFixEta}`);
+  }
+  if (fields.mostLikelyFixEta) {
+    lines.push(`Most Likely Estimate: ${fields.mostLikelyFixEta}`);
+  }
+  if (fields.worstCaseFixEta) {
+    lines.push(`Worst Case Estimate: ${fields.worstCaseFixEta}`);
+  }
+  return `<p>ETA information for the fix will be as follows.</p><p>${lines.join("<br>")}</p>`;
+}
+
 export default function CsmCaseDetailPage(): JSX.Element {
   // Real router hooks — called unconditionally regardless of `routeOverride`
   // below (rules of hooks), but their VALUES are only actually used when
@@ -374,8 +422,18 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const { user: currentUser } = useCurrentUser();
   // What this user's roles let them do. UX only — the backend 403s the same
   // actions regardless, so hiding a control here is never the enforcement.
-  const { canEscalate, canDownloadAttachment, canWrite, canUseTimeCardsAndUpdates } =
-    usePortalAccess();
+  const {
+    canEscalate,
+    canDownloadAttachment,
+    canWrite,
+    canAddWorkNotes,
+    canUseOperations,
+    canUseTimeCardsAndUpdates,
+  } = usePortalAccess();
+  // A worknote_creator without full write may still add an internal work
+  // note -- and nothing else on this page. The composer is locked to
+  // internal notes for them, the same lock a not-yet-started case gets.
+  const workNoteOnly = !canWrite && canAddWorkNotes;
   const routedCaseId = useNormalizedIdParam("caseId");
   const routedNavigate = useNavTransition();
   const routedLocation = useLocation();
@@ -599,8 +657,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const { data: caseTimeCards } = useCaseTimeCards(
     isAnnouncement || !canUseTimeCardsAndUpdates ? undefined : caseId,
   );
+  // Incidents are an Operations feature the backend only serves to roles that
+  // can use it, so the query is skipped for everyone else rather than left to 403.
   const { data: linkedIncidents } = useSearchLinkedIncidents(
-    isAnnouncement ? undefined : caseId,
+    isAnnouncement || !canUseOperations ? undefined : caseId,
   );
   // Live deployment lookup for the Details tab's "Deployment info" widget —
   // only runs when the case actually has a deployment link (SN-sourced cases
@@ -650,25 +710,25 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const findMyOngoingCases = useFindMyOngoingCases();
   const recordView = useRecordRecentView();
   const claims = useIdTokenClaims();
-  // De-escalating is restricted to whoever was notified on the case's
-  // current escalation level (the backend enforces the same check -- this is
-  // a client-side affordance only, matching every other role/permission
-  // check in this app). Matched by platform id first (currentUser.id against
-  // a notified user's own id, the same identity space the backend's own
-  // check uses), falling back to a case-insensitive email match against the
-  // signed-in user's ID token claim when either id is unavailable -- mirrors
-  // the BFF's own callerIsNotifiedOnCurrentEscalation exactly.
+  // De-escalating is restricted to the case's ABT team leads (the backend
+  // enforces the same check -- this is a client-side affordance only,
+  // matching every other role/permission check in this app). Matched by
+  // platform id first (currentUser.id against a lead's own id, the same
+  // identity space the backend's own check uses), falling back to a
+  // case-insensitive email match against the signed-in user's ID token claim
+  // when either id is unavailable -- mirrors the BFF's own
+  // callerIsCaseTeamLead exactly.
   const callerId = currentUser?.id;
   const callerEmail = claims?.email?.toLowerCase();
-  const callerIsNotifiedOnCurrentEscalation = (
-    escalationHistory?.currentNotifiedUsers ?? []
-  ).some((u) => {
-    if (callerId && u.id && callerId === u.id) return true;
-    if ((!callerId || !u.id) && callerEmail && u.email) {
-      return u.email.toLowerCase() === callerEmail;
-    }
-    return false;
-  });
+  const callerIsCaseTeamLead = (escalationHistory?.teamLeads ?? []).some(
+    (u) => {
+      if (callerId && u.id && callerId === u.id) return true;
+      if ((!callerId || !u.id) && callerEmail && u.email) {
+        return u.email.toLowerCase() === callerEmail;
+      }
+      return false;
+    },
+  );
   // Display name for comments authored in this session, resolved from the
   // signed-in user's ID token. Falls back to the email local part so a token
   // without name claims still attributes the comment to the right person.
@@ -1686,7 +1746,19 @@ export default function CsmCaseDetailPage(): JSX.Element {
               sticky: true,
             });
           },
-          onError: (err) => showError("Could not change the case type.", err),
+          onError: (err) => {
+            // A refused transfer carries its reason (ServiceNow turning down a
+            // missing catalog answer, a case that cannot move to another type
+            // yet, a caller who may not do it) -- surface a 4xx message verbatim
+            // rather than the generic fallback, same treatment as every other
+            // 4xx on this page. Without it the engineer only ever saw "Could
+            // not change the case type." whatever the cause.
+            const msg =
+              err instanceof BackendApiError && err.status < 500 && err.message
+                ? err.message
+                : "Could not change the case type.";
+            showError(msg, err);
+          },
         },
       );
     },
@@ -1866,26 +1938,71 @@ export default function CsmCaseDetailPage(): JSX.Element {
       // case is on screen. Closing the dialog on a stale success would shut
       // the *new* case's dialog and throw away whatever was typed into it.
       const submittedViewToken = caseViewTokenRef.current;
-      patchCase.mutate(patch as BeCaseUpdatePayload, {
+      const isStale = (): boolean => caseViewTokenRef.current !== submittedViewToken;
+
+      // The ETA save and the "share with customer" step are sent separately,
+      // not bundled into one PATCH: addPublicComment (ServiceNow's own way
+      // of doing the share) is ServiceNow-only, and the backend used to
+      // reject the *entire* request when it was present on another data
+      // source — silently blocking the ETA save too. The share step itself
+      // no longer goes through that field at all: it posts a real,
+      // customer-visible comment via POST /cases/{id}/comments instead,
+      // which works on every data source.
+      const { addPublicComment, product, publicTicket, ...etaOnly } = patch;
+
+      const shareWithCustomer = (): void => {
+        if (!addPublicComment || !caseId) return;
+        void postComment
+          .mutateAsync({
+            caseId,
+            bodyHtml: buildFixEtaShareComment({ ...etaOnly, product, publicTicket }),
+            authorName: engineerName,
+            internal: false,
+          })
+          .then(
+            () => {
+              if (isStale()) return;
+              setFeedback({
+                message: "Fix ETA shared with the customer.",
+                severity: "success",
+                sticky: false,
+              });
+            },
+            (err: unknown) => {
+              if (isStale()) return;
+              showError("Fix ETA saved, but could not share it with the customer.", err);
+            },
+          );
+      };
+
+      patchCase.mutate(etaOnly as BeCaseUpdatePayload, {
         onSuccess: () => {
-          if (caseViewTokenRef.current !== submittedViewToken) return;
-          // Close on success, same as every other dialog on this page. The
-          // PATCH lands either way, so leaving it open reads as a failed save
-          // and invites a second submit of an estimate that's already stored.
-          setFixEtaOpen(false);
-          setFeedback({
-            message: "Fix ETA updated.",
-            severity: "success",
-            sticky: false,
-          });
+          // The share request is a real side effect the engineer asked for —
+          // it must still run even if the case view has since gone stale
+          // (navigated away mid-request); only the UI feedback below is
+          // skipped for a stale view, same as every other guarded callback
+          // on this page.
+          if (!isStale()) {
+            // Close on success, same as every other dialog on this page. The
+            // PATCH lands either way, so leaving it open reads as a failed
+            // save and invites a second submit of an estimate that's
+            // already stored.
+            setFixEtaOpen(false);
+            setFeedback({
+              message: "Fix ETA updated.",
+              severity: "success",
+              sticky: false,
+            });
+          }
+          shareWithCustomer();
         },
         onError: (err) => {
-          if (caseViewTokenRef.current !== submittedViewToken) return;
+          if (isStale()) return;
           showError("Could not set the fix ETA.", err);
         },
       });
     },
-    [patchCase, showError],
+    [patchCase, postComment, caseId, engineerName, showError],
   );
 
   const onRequestUpdate = useCallback(
@@ -2071,6 +2188,10 @@ export default function CsmCaseDetailPage(): JSX.Element {
       createdAt: data?.createdAt ?? "",
       internal: false,
       synthetic: true,
+      // A record raised from a GitHub issue has the issue body as its
+      // description: GitHub Markdown, not HTML. Without this its "### Heading"
+      // template sections render as literal text.
+      ...(isGithubRaisedCaseNumber(data?.caseNumber) && { bodyFormat: "markdown" as const }),
     };
     return [...mergedComments, synthetic];
   }, [data, descriptionEchoedInOriginComment, mergedComments]);
@@ -2210,9 +2331,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
   // prop below) already covers — so skip the state/ownership gate here rather
   // than have it report a reason ("...actively in progress"/"...assigned
   // engineer...") that would never resolve for an announcement.
-  const publicReplyGateReason = isAnnouncement
+  const stateGateReason = isAnnouncement
     ? null
     : publicCommentGateReason(c.state, c.workState, c.assigneeIsMe);
+  // A work-note-only caller can never send a customer-visible reply, whatever
+  // the case state, so the composer locks to internal notes for them too.
+  const publicReplyGateReason = workNoteOnly ? WORK_NOTE_ONLY_REASON : stateGateReason;
   // The composer's inline "Resume work" quick-fix only applies to this one
   // lock reason — the case is already work_in_progress and assigned to the
   // signed-in engineer, just paused, so resuming is the single-field PATCH
@@ -2373,9 +2497,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
                 are singular facts (never more than one each), so a compact
                 "Cell" fits better than a chip crowding this row, especially
                 once both are present on the same case at once. */}
+            {/* Only ON_HOLD is a hold. FIRST_COMMENT / SECOND_COMMENT are the
+                other stages of the same auto-closure sequence (the case is
+                counting down to closure, not paused), and their state time is
+                when the next stage fires, so "On hold until" would be wrong. */}
             {!isAnnouncement &&
-              c.autoclosureStep &&
-              c.autoclosureStep !== "DEFAULT" && (
+              c.autoclosureStep === "ON_HOLD" && (
                 <Chip
                   size="small"
                   variant="outlined"
@@ -2383,7 +2510,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   icon={<PauseCircle size={14} />}
                   label={
                     c.autoclosureStateTime
-                      ? `On hold until ${formatAbsoluteForUser(c.autoclosureStateTime) ?? "—"}`
+                      ? `On hold until ${formatUtcDateForDisplay(c.autoclosureStateTime) ?? "—"}`
                       : "On auto-closure hold"
                   }
                   sx={{ fontWeight: 600 }}
@@ -2453,6 +2580,28 @@ export default function CsmCaseDetailPage(): JSX.Element {
           </Box>
         )}
       </Box>
+
+      {/* Always-on guidance while the case's project is Managed Cloud and/or
+          has onboarding in progress. The two conditions are independent, so
+          both can show. Not dismissible; nothing renders until the project
+          fetch resolves. */}
+      {!isAnnouncement && caseProject?.subscriptionType === "managed_cloud_subscription" && (
+        <Alert severity="warning" role="status" data-testid="case-managed-cloud-banner">
+          <AlertTitle>This is a WSO2 Managed Cloud deployment</AlertTitle>
+          Do not ask the customer for logs, configuration files, deployment artefacts or
+          other deployment-related information. Check with the WSO2 MS team instead. Do not
+          move the case to Awaiting info when you request these from the MS team.
+        </Alert>
+      )}
+      {!isAnnouncement && caseProject?.onboardingStatus === "In-Progress" && (
+        <Alert severity="info" role="status" data-testid="case-onboarding-banner">
+          <AlertTitle>Customer onboarding in progress</AlertTitle>
+          This is an ongoing customer onboarding account. Make sure you have the account
+          context before answering or requesting information. First check with the
+          onboarding owner ({caseProject.onboardingOwner?.name || "Unassigned"}) whether they
+          are available; if not, review the customer's solution context before responding.
+        </Alert>
+      )}
 
       <CaseMetaBand
         detail={c}
@@ -2561,7 +2710,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               comment types there), despite the hidden CaseActionBar above —
               that hides case-lifecycle patch actions, which don't apply to an
               announcement, not the ability to reply to one. */}
-          {!canWrite ? null : composerOpen ? (
+          {!canWrite && !canAddWorkNotes ? null : composerOpen ? (
             <Card
               className="csm-print-hide"
               sx={{ p: 2.5, display: "flex", flexDirection: "column", gap: 1.5 }}
@@ -2753,8 +2902,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
                         }
                       : undefined
                   }
-                  onEditComment={onEditComment}
-                  onDeleteComment={onDeleteComment}
+                  onEditComment={canWrite ? onEditComment : undefined}
+                  onDeleteComment={canWrite ? onDeleteComment : undefined}
                 />
               </>
             )}
@@ -2861,7 +3010,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             onDeescalate={
               canEscalate &&
               canDeescalate(c.escalationLevel) &&
-              callerIsNotifiedOnCurrentEscalation
+              callerIsCaseTeamLead
                 ? () => setEscalationDialogAction("DEESCALATE")
                 : undefined
             }
@@ -2925,7 +3074,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
               onLinkIncident={() => setLinkIncidentOpen(true)}
               linkDisabled={isClosed || !canWrite}
             />
-            <LinkedIncidentsListWidget caseId={c.id} />
+            {canUseOperations && <LinkedIncidentsListWidget caseId={c.id} />}
             {/* Change requests are only ever raised from a service request,
                 never directly from a plain case — gate solely on
                 `isServiceRequest` rather than falling back to
@@ -3041,6 +3190,7 @@ export default function CsmCaseDetailPage(): JSX.Element {
             severity={c.severity}
             caseState={c.state}
             isClosed={isClosed}
+            readOnly={!canWrite}
           />
         </Box>
       )}
@@ -3149,7 +3299,9 @@ export default function CsmCaseDetailPage(): JSX.Element {
 
       {autocloseHoldOpen && (
         <SetAutocloseHoldDialog
-          currentHoldUntil={c.autoclosureStateTime}
+          currentHoldUntil={
+            c.autoclosureStep === "ON_HOLD" ? c.autoclosureStateTime : undefined
+          }
           isSaving={patchCase.isPending}
           onClose={() => setAutocloseHoldOpen(false)}
           onSave={onSetAutocloseHold}
@@ -3214,6 +3366,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
 
       {fixEtaOpen && (
         <SetFixEtaDialog
+          // Sharing now posts through the same comment endpoint
+          // CsmCaseCommentInput's own public-reply composer uses, so it's
+          // gated by the identical backend rule — reusing
+          // publicReplyGateReason rather than a second, possibly-drifting
+          // copy of the same check.
+          publicCommentDisabledReason={publicReplyGateReason}
           currentBestCaseFixEta={c.bestCaseFixEta}
           currentMostLikelyFixEta={c.mostLikelyFixEta}
           currentWorstCaseFixEta={c.worstCaseFixEta}

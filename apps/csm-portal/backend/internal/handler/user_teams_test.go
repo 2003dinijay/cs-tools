@@ -36,7 +36,7 @@ func capturedSearch(t *testing.T, body string) (string, *httptest.ResponseRecord
 			captured = string(b)
 			return []byte(`{"users":[],"total":0,"limit":10,"offset":0}`), nil
 		},
-	}, testDirectory(t), false, "")
+	}, testDirectory(t), false, nil)
 	w := httptest.NewRecorder()
 	h.SearchUsers(w, withUser(httptest.NewRequest(http.MethodPost, "/users/search", strings.NewReader(body))))
 	return captured, w
@@ -118,24 +118,36 @@ func TestSearchUsers_TeamFilterAcceptsUUIDForm(t *testing.T) {
 	}
 }
 
-// A UUID-shaped teamIds entry that matches no configured team's group id is
-// still the same caller-facing "unknown team" error as an unknown teamKey.
-func TestSearchUsers_UnknownTeamUUIDIsRejectedWithoutCallingUpstream(t *testing.T) {
-	called := false
+// A UUID-shaped teamIds entry that matches no configured team's group id is a
+// `team` table id (a team the registry does not know), so it is forwarded as
+// teamIds rather than rejected.
+func TestSearchUsers_UnknownTeamUUIDIsForwardedAsTeamTableID(t *testing.T) {
+	var forwarded []byte
 	h := NewUsersHandler(&mockSCIMClient{}, &mockEntityUserClient{
-		searchUsersFn: func(_ context.Context, _ []byte) ([]byte, error) {
-			called = true
+		searchUsersFn: func(_ context.Context, body []byte) ([]byte, error) {
+			forwarded = body
 			return []byte(`{}`), nil
 		},
-	}, testDirectory(t), false, "")
+	}, testDirectory(t), false, nil)
 	w := httptest.NewRecorder()
 	h.SearchUsers(w, withUser(httptest.NewRequest(http.MethodPost, "/users/search",
 		strings.NewReader(`{"filters":{"teamIds":["ffffffff-ffff-ffff-ffff-ffffffffffff"]}}`))))
 
-	assertStatus(t, w, http.StatusBadRequest)
-	assertErrorMessage(t, w, "teamIds contains unknown team: ffffffff-ffff-ffff-ffff-ffffffffffff")
-	if called {
-		t.Error("the entity service was called with an unresolvable team UUID")
+	assertStatus(t, w, http.StatusOK)
+	var got struct {
+		Filters struct {
+			TeamIDs    []string `json:"teamIds"`
+			GroupNames []string `json:"groupNames"`
+		} `json:"filters"`
+	}
+	if err := json.Unmarshal(forwarded, &got); err != nil {
+		t.Fatalf("forwarded body %s: %v", forwarded, err)
+	}
+	if len(got.Filters.TeamIDs) != 1 || got.Filters.TeamIDs[0] != "ffffffff-ffff-ffff-ffff-ffffffffffff" {
+		t.Errorf("teamIds = %v, want the UUID forwarded", got.Filters.TeamIDs)
+	}
+	if len(got.Filters.GroupNames) != 0 {
+		t.Errorf("groupNames = %v, want none", got.Filters.GroupNames)
 	}
 }
 
@@ -148,7 +160,7 @@ func TestSearchUsers_UnknownTeamKeyIsRejectedWithoutCallingUpstream(t *testing.T
 			called = true
 			return []byte(`{}`), nil
 		},
-	}, testDirectory(t), false, "")
+	}, testDirectory(t), false, nil)
 	w := httptest.NewRecorder()
 	h.SearchUsers(w, withUser(httptest.NewRequest(http.MethodPost, "/users/search",
 		strings.NewReader(`{"filters":{"teamIds":["no-such-team"]}}`))))
@@ -168,7 +180,7 @@ func TestSearchUsers_RejectsARoleOutsideTheAllowList(t *testing.T) {
 			called = true
 			return []byte(`{"users":[],"total":0}`), nil
 		},
-	}, testDirectory(t), false, "")
+	}, testDirectory(t), false, nil)
 
 	w := httptest.NewRecorder()
 	h.SearchUsers(w, withUser(httptest.NewRequest(http.MethodPost, "/users/search",
@@ -209,7 +221,7 @@ func TestSearchUsers_TeamResolutionMakesNoEntityCalls(t *testing.T) {
 			calls++
 			return []byte(`{"users":[],"total":0}`), nil
 		},
-	}, testDirectory(t), false, "")
+	}, testDirectory(t), false, nil)
 
 	const iterations = 20
 	for i := 0; i < iterations; i++ {
@@ -232,7 +244,7 @@ func TestGetUser_DerivesTeamsFromGroups(t *testing.T) {
 			return []byte(`{"id":"` + id + `","email":"staff@example.com","lockedOut":true,"groups":[` +
 				`{"id":"g-1","name":"ABT One"},{"id":"g-2","name":"Some Other Group"}]}`), nil
 		},
-	}, testDirectory(t), false, "")
+	}, testDirectory(t), false, nil)
 
 	r := withUser(httptest.NewRequest(http.MethodGet, "/users/"+id, nil))
 	r.SetPathValue("id", id)
@@ -280,7 +292,7 @@ func TestGetUser_EmptyTeamsWhenNoneMatch(t *testing.T) {
 		getUserFn: func(_ context.Context, _ string) ([]byte, error) {
 			return []byte(`{"id":"` + id + `","groups":[{"id":"g-2","name":"Some Other Group"}]}`), nil
 		},
-	}, testDirectory(t), false, "")
+	}, testDirectory(t), false, nil)
 
 	r := withUser(httptest.NewRequest(http.MethodGet, "/users/"+id, nil))
 	r.SetPathValue("id", id)

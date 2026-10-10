@@ -111,8 +111,8 @@ func TestCommentService_CreateComment_MirrorsToServiceNow(t *testing.T) {
 		if got.ReferenceID != req.ReferenceID || got.Content != req.Content {
 			t.Errorf("mirror got %+v, want referenceId/content to match %+v", got, req)
 		}
-		if got.CreatedBy != "jane.doe@example.com" {
-			t.Errorf("mirror got createdBy %q, want the resolved caller email", got.CreatedBy)
+		if got.CreatedBy != "" {
+			t.Errorf("mirror got createdBy %q, want it omitted so ServiceNow resolves the author from the token", got.CreatedBy)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("mirror.CreateComment was never called")
@@ -155,40 +155,15 @@ func TestCommentService_CreateComment_MirrorFailureRecordsWritebackFailure(t *te
 	waitFor(t, func() bool { return failures.count() == 1 })
 }
 
-// TestCommentService_GetCommentEditHistory_AuthorMayView covers the allowed
-// case: the comment's own author (case-insensitive email match) may fetch
-// its edit history.
-func TestCommentService_GetCommentEditHistory_AuthorMayView(t *testing.T) {
-	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
-	repo := &stubCommentRepo{
-		getCommentByID: func(context.Context, string) (repository.CommentRow, error) {
-			return repository.CommentRow{ID: testUUID, CreatedBy: "Jane.Doe@example.com"}, nil
-		},
-		getCommentEditHistory: func(context.Context, string) ([]repository.CommentEditHistoryRow, error) {
-			return []repository.CommentEditHistoryRow{{ID: "h-1", CommentID: testUUID, Body: "old body", EditedBy: "jane.doe@example.com"}}, nil
-		},
-	}
-	userRepo := stubUserRepo{
-		getUserByEmail: func(context.Context, string) (domain.User, error) {
-			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
-		},
-		getUserRoles: func(context.Context, string) ([]string, error) { return nil, nil },
-	}
-	svc := NewCommentService(repo, userRepo)
-
-	resp, err := svc.GetCommentEditHistory(ctx, testUUID)
-	if err != nil {
-		t.Fatalf("expected the author to view the history, got error: %v", err)
-	}
-	if len(resp.History) != 1 {
-		t.Fatalf("History = %+v, want 1 entry", resp.History)
-	}
-}
-
-// TestCommentService_GetCommentEditHistory_AdminMayView covers the other
-// allowed case: a caller holding the admin role, regardless of authorship.
-func TestCommentService_GetCommentEditHistory_AdminMayView(t *testing.T) {
-	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "admin.user@example.com"))
+// TestCommentService_GetCommentEditHistory_NoAuthorizationCheck pins the
+// current design: this service performs no author/role gate of its own any
+// more (that decision moved entirely to csm-portal-backend, the sole caller
+// of this path -- see GetComment's own doc comment for why). A caller who is
+// neither the comment's author nor anything special may still read its
+// history; only the comment's own existence (via GetCommentByID) and a valid
+// actor identity (via resolveCommentActor) are required.
+func TestCommentService_GetCommentEditHistory_NoAuthorizationCheck(t *testing.T) {
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "stranger@example.com"))
 	repo := &stubCommentRepo{
 		getCommentByID: func(context.Context, string) (repository.CommentRow, error) {
 			return repository.CommentRow{ID: testUUID, CreatedBy: "someone.else@example.com"}, nil
@@ -199,47 +174,79 @@ func TestCommentService_GetCommentEditHistory_AdminMayView(t *testing.T) {
 	}
 	userRepo := stubUserRepo{
 		getUserByEmail: func(context.Context, string) (domain.User, error) {
-			return domain.User{ID: testUUID, Email: "admin.user@example.com"}, nil
+			return domain.User{ID: testUUID, Email: "stranger@example.com"}, nil
 		},
-		getUserRoles: func(context.Context, string) ([]string, error) { return []string{"admin"}, nil },
 	}
 	svc := NewCommentService(repo, userRepo)
 
 	resp, err := svc.GetCommentEditHistory(ctx, testUUID)
 	if err != nil {
-		t.Fatalf("expected an admin to view the history, got error: %v", err)
+		t.Fatalf("expected no author/role gate at this layer, got error: %v", err)
 	}
 	if len(resp.History) != 1 {
 		t.Fatalf("History = %+v, want 1 entry", resp.History)
 	}
 }
 
-// TestCommentService_GetCommentEditHistory_NonAuthorNonAdminForbidden is the
-// real data-exposure bug this closes: a caller who is neither the comment's
-// author nor an admin must not be able to read its edit history just by
-// knowing the comment's UUID.
-func TestCommentService_GetCommentEditHistory_NonAuthorNonAdminForbidden(t *testing.T) {
-	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "stranger@example.com"))
+// TestCommentService_GetCommentEditHistory_UnknownIDIs404 covers the one
+// check this method still performs: GetCommentByID's own existence check, so
+// a bad id is a 404 rather than a silently empty history list.
+func TestCommentService_GetCommentEditHistory_UnknownIDIs404(t *testing.T) {
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
 	repo := &stubCommentRepo{
 		getCommentByID: func(context.Context, string) (repository.CommentRow, error) {
-			return repository.CommentRow{ID: testUUID, CreatedBy: "someone.else@example.com"}, nil
+			return repository.CommentRow{}, &apierror.NotFoundError{Msg: "comment not found"}
 		},
 	}
 	userRepo := stubUserRepo{
 		getUserByEmail: func(context.Context, string) (domain.User, error) {
-			return domain.User{ID: testUUID, Email: "stranger@example.com"}, nil
+			return domain.User{ID: testUUID, Email: "jane.doe@example.com"}, nil
 		},
-		getUserRoles: func(context.Context, string) ([]string, error) { return nil, nil },
 	}
 	svc := NewCommentService(repo, userRepo)
 
 	_, err := svc.GetCommentEditHistory(ctx, testUUID)
-	if err == nil {
-		t.Fatal("expected a ForbiddenError, got nil")
+	var notFound *apierror.NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v (%T), want *apierror.NotFoundError", err, err)
 	}
-	var forbidden *apierror.ForbiddenError
-	if !errors.As(err, &forbidden) {
-		t.Fatalf("err = %v (%T), want *apierror.ForbiddenError", err, err)
+}
+
+// TestCommentService_GetComment covers the method csm-portal-backend calls to
+// learn a comment's author before deciding whether to allow an edit/delete --
+// see GetComment's own doc comment. No author/role check here either: the
+// caller's own identity is irrelevant to this read.
+func TestCommentService_GetComment(t *testing.T) {
+	repo := &stubCommentRepo{
+		getCommentByID: func(context.Context, string) (repository.CommentRow, error) {
+			return repository.CommentRow{ID: testUUID, Content: "hello", CreatedBy: "jane.doe@example.com", CreatedByName: "Jane Doe"}, nil
+		},
+	}
+	svc := NewCommentService(repo, stubUserRepo{})
+
+	got, err := svc.GetComment(context.Background(), testUUID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if got.CreatedBy == nil || got.CreatedBy.Email != "jane.doe@example.com" {
+		t.Errorf("CreatedBy = %+v, want email jane.doe@example.com", got.CreatedBy)
+	}
+}
+
+// TestCommentService_GetComment_UnknownIDIs404 mirrors
+// TestCommentService_GetCommentEditHistory_UnknownIDIs404 for this method.
+func TestCommentService_GetComment_UnknownIDIs404(t *testing.T) {
+	repo := &stubCommentRepo{
+		getCommentByID: func(context.Context, string) (repository.CommentRow, error) {
+			return repository.CommentRow{}, &apierror.NotFoundError{Msg: "comment not found"}
+		},
+	}
+	svc := NewCommentService(repo, stubUserRepo{})
+
+	_, err := svc.GetComment(context.Background(), testUUID)
+	var notFound *apierror.NotFoundError
+	if !errors.As(err, &notFound) {
+		t.Fatalf("err = %v (%T), want *apierror.NotFoundError", err, err)
 	}
 }
 
@@ -298,5 +305,30 @@ func TestCommentRowToDomain_NoMatchingUserLeavesNameEmpty(t *testing.T) {
 	}
 	if got.CreatedBy.Email != "github_pipeline" {
 		t.Errorf("CreatedBy.Email = %q, want %q", got.CreatedBy.Email, "github_pipeline")
+	}
+}
+
+// TestCommentRowToDomain_AgentReadsBackAsNovera covers Novera chat history on
+// Postgres: the assistant's replies are stored with created_by "agent", which
+// has no "user" row, and the customer portal only treats a message as the
+// assistant's when its author name is "Novera" -- the name ServiceNow gave it.
+func TestCommentRowToDomain_AgentReadsBackAsNovera(t *testing.T) {
+	row := repository.CommentRow{
+		ID:         "c-3",
+		WorkItemID: "wi-1",
+		Content:    "Try restarting the gateway.",
+		CreatedBy:  "agent",
+	}
+
+	got := commentRowToDomain(row)
+
+	if got.CreatedBy == nil {
+		t.Fatal("CreatedBy is nil, want a reference")
+	}
+	if got.CreatedBy.Name != "Novera" {
+		t.Errorf("CreatedBy.Name = %q, want %q", got.CreatedBy.Name, "Novera")
+	}
+	if got.CreatedBy.Email != "agent" {
+		t.Errorf("CreatedBy.Email = %q, want %q", got.CreatedBy.Email, "agent")
 	}
 }

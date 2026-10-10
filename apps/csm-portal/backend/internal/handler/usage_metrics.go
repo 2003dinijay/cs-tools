@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
@@ -42,13 +43,13 @@ type usageMetricsServiceNowClient interface {
 	GetDeployedProductUsageCounts(ctx context.Context, deployedProductID string, payload []byte) ([]byte, error)
 }
 
-// UsageMetricsHandler handles HTTP requests for the SupportPortalLite
-// usage-metrics domain (/usage-metrics/*), delegating to ServiceNow's
-// custom scoped-app API. Every endpoint in this domain requires both the
-// blanket PermViewerAccess gate and the narrower PermUsageMetricsViewer gate —
-// mirrors Ballerina operations:checkUsageMetricsAccess, which every
-// usage-metrics resource function in service.bal calls before anything
-// else.
+// UsageMetricsHandler handles HTTP requests for the usage-metrics domain
+// (/usage-metrics/*), delegating to ServiceNow's custom scoped-app API.
+// Every endpoint in this domain requires PermUsageMetricsViewer directly —
+// unlike this domain's former siblings (Customer Health, User Scan, the
+// SLA/Time/CS project reports), it is NOT layered on top of the narrower
+// PermViewerAccess (Viewer-only) gate; see PermUsageMetricsViewer's own doc
+// comment for why.
 type UsageMetricsHandler struct {
 	client      usageMetricsServiceNowClient
 	accessGuard *AccessGuard
@@ -59,14 +60,19 @@ func NewUsageMetricsHandler(client usageMetricsServiceNowClient, accessGuard *Ac
 	return &UsageMetricsHandler{client: client, accessGuard: accessGuard}
 }
 
-// authorize runs both SPL permission gates common to every handler in this
-// file. Returns false (response already written) if either check fails.
+// authorize is the permission gate common to every handler in this file.
+// Returns false (response already written) if it fails.
 func (h *UsageMetricsHandler) authorize(w http.ResponseWriter, r *http.Request) bool {
-	user, ok := requireViewerAccess(w, r, h.accessGuard)
-	if !ok {
+	user := middleware.UserInfoFromContext(r.Context())
+	if user == nil {
+		writeError(w, http.StatusUnauthorized, ErrMsgUnauthorized)
 		return false
 	}
-	return requireViewerPermission(w, user, h.accessGuard, PermUsageMetricsViewer)
+	if !h.accessGuard.Permits(PermUsageMetricsViewer, user.Roles) {
+		writeError(w, http.StatusForbidden, ErrMsgForbidden)
+		return false
+	}
+	return true
 }
 
 // readUsageMetricsBody caps, reads, and JSON-validates a request body, matching the

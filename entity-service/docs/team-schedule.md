@@ -319,6 +319,92 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
 -- team.key is shared; leave it unless nothing else has started using it.
 ```
 
+## Rotas: IaaS SRE and the SME rotations (0199–0200)
+
+A **rota** is a named rotation inside a family. SRE runs SaaS (Apollo & Artemis)
+and IaaS. **SME**, a third family added in 0199, runs one rota per product:
+Asgardeo, Choreo Runtime, Bijira, Devant, WSO2 Cloud · Agent platform,
+WSO2 Cloud · Core and Moesif, plus U2 and B-Central (0217). The source is the "CSM SRE + SME on call" doc.
+PaaS SRE is N/A there, so it has no rota until it has a schedule.
+
+| Rota | Family | Team type | Zones (LK time) | Duty rotates | Escalation |
+|---|---|---|---|---|---|
+| `SRE_SAAS` | SRE | `sre-abt` | TZ1, TZ2, TZ3 (unchanged) | irregular | 5 min |
+| `SRE_IAAS` | SRE | `sre-iaas` | `IAAS_D` 08:00–20:00 · `IAAS_N` 20:00–08:00 | daily | 5 min |
+| `SME_ASGARDEO` | SME | `sme-asgardeo` | `ASG_D` 09:30–18:30 · `ASG_N` 18:30–09:30 | daily | 5 min |
+| `SME_CHOREO` | SME | `sme-choreo-runtime` | `CRT_D` 06:00–18:00 · `CRT_N` 18:00–06:00 | weekly | — |
+| `SME_BIJIRA` | SME | `sme-bijira` | `BIJ_D` / `BIJ_N`, as Choreo Runtime | weekly | — |
+| `SME_DEVANT` | SME | `sme-devant` | `DVT_D` / `DVT_N`, as Choreo Runtime | weekly | — |
+| `SME_CLOUD_AGENT` | SME | `sme-cloud-agent` | `WCA_D` 06:00–18:00 · `WCA_N` 18:00–06:00 | weekly | 5 min |
+| `SME_CLOUD_CORE` | SME | `sme-cloud-core` | `WCC_D` / `WCC_N`, as Agent platform | weekly | 5 min |
+| `SME_MOESIF` | SME | `sme-moesif` | `MOE_D` 10:00–22:00 · `MOE_N` 22:00–10:00 | weekly | 30 min |
+| `SME_U2` | SME | `sme-u2` | `U2_D` / `U2_N`, as Moesif | weekly | 5 min |
+| `SME_B_CENTRAL` | SME | `sme-b-central` | `BCN_D` / `BCN_N`, as Moesif | weekly | 5 min |
+
+U2 and B-Central were added by migration 0217, data only, with the windows their rota sheet gives. Unlike the other SME rotations it also inserts their two team rows (keys `u2`, `b-central`), only when no team has that key, so every environment gets them from one script.
+
+**How it hangs together:**
+- **Teams join a rota by type.** A team is on the rota whose `team_type` matches
+  `team.type`, read the same way the family always has been
+  (`sme…` → SME, `sre…` → SRE). No column is added to `team`, so the ServiceNow
+  sync stays the only writer of team rows: to put a team on a rota, give it the
+  rota's type. On a local stack, `scripts/csm-compose/seed-team-schedule-rotas.sql`
+  adds one team per new rota.
+- **Zones belong to rotas.** `team_schedule_zone.rota_id` (nullable) ties each
+  zone to its rota. TZ1–TZ3 are backfilled to `SRE_SAAS`; a zone without a rota
+  still works as before.
+- **Windows.** Each new zone has one escalation window, worked every day
+  (`ANY`), with the tier (L1, L2 or L3) on the assignment, as `SRE_TZ3` does.
+  The weekend is the same as the weekdays.
+- **Who may edit.** `sme_rota_admin` does for SME what `cre_rota_admin` and
+  `sre_rota_admin` do for their families. Granting it stays a deployment step.
+- **The catalogue** gains `rotas[]`, `zone.rotaCode` and `team.rotaCode`. All are
+  additive; a client that ignores them sees what it saw before. The webapp
+  scopes every view to one rota and offers a rota picker only where a family
+  has more than one rota with teams, so CRE and SaaS-only SRE read as before.
+
+**IaaS windows start inactive.** The portal before this change reads every
+zoned SRE window as part of SaaS's day, week and roster. `0200` therefore
+seeds `SRE_IAAS_DAY` and `SRE_IAAS_NIGHT` with `is_active = FALSE`, so an older
+webapp still running during the deploy never sees them. Once the rota-aware
+webapp is live, switch them on together with giving the IaaS teams their type:
+
+```sql
+UPDATE team_schedule_shift SET is_active = TRUE, updated_on = NOW()
+ WHERE code IN ('SRE_IAAS_DAY', 'SRE_IAAS_NIGHT');
+```
+
+SME's windows ship active: the older portal knows only CRE and SRE and passes
+them by.
+
+**Not changed, on purpose:**
+- **`rota.escalation_minutes` is informational.** The escalation ladder
+  (csm-notification-service) keeps its own timing.
+- **The notification service only runs the CRE ladder.** Its rota rungs are
+  scoped by team type and key, so the new teams never reach it. An SRE or SME
+  ladder is separate work.
+
+## Who may read and change each family
+
+There are three rota admins, one per family: `cre_rota_admin`, `sre_rota_admin`
+and `sme_rota_admin`. No schema change: the family of a team is read from
+`team.type`, as everywhere else.
+
+| Role (in CRE, SRE or SME) | Reads | Writes, updates, deletes |
+|---|---|---|
+| Engineer | every family | nothing |
+| Team lead | every family | their own team |
+| Rota admin | every family | their own family's teams |
+
+- **Reads are not limited by family**, for anyone: the catalogue, turns, leave,
+  on-duty, edit markers and every Case Paging chain.
+- **Writes** go through `requireRotaWriter`: a lead edits their own team, a rota
+  admin the teams of their family.
+- **Absence kinds** (`schedule_tag_family.go`): a kind a rota admin adds is
+  stored for their family (`team_schedule_absence_kind.family`), and they may
+  delete only their own family's custom kinds. A team lead who is no rota admin
+  adds shared kinds, as before.
+
 ## 5. Known gaps
 
 - **Why 0152–0156.** 0141–0150 are claimed by the open RLS work in #2094, and
@@ -335,6 +421,7 @@ DROP FUNCTION IF EXISTS team_schedule_assignment_matches_shift(), team_schedule_
 
 ## Change log
 
+- **0199–0200 rotas.** The SME family; `team_schedule_rota`; `zone.rota_id` (TZ1–TZ3 on `SRE_SAAS`); the zone-family check widened from SRE to SRE or SME; IaaS and seven SME rotas, each with a Day and a Night zone and window; the `sme_rota_admin` role. Nothing is removed, renamed or re-typed, but existing objects do change: 0199 adds a value to `team_schedule_shift_family_enum`; 0200 adds the nullable column `team_schedule_zone.rota_id` and sets it on the existing TZ1–TZ3 rows, and replaces the zone-family CHECK with a wider one (every existing row satisfies it). IaaS's two windows are seeded inactive until the new webapp is deployed.
 - **0152–0155** replace `000088`–`000107`, which were written in the old
   up/down format. They reproduce the schema and catalogue that chain ended in
   exactly (compared with `pg_dump` against a server built from the old chain).

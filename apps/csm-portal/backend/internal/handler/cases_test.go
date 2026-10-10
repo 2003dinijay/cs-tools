@@ -312,6 +312,34 @@ func TestCreateCaseComment(t *testing.T) {
 		}
 	})
 
+	t.Run("worknote_creator-only caller can only ever post type=work_note", func(t *testing.T) {
+		for _, payload := range []string{
+			`{"content":"no type"}`,
+			`{"type":"activity","content":"x"}`,
+			`{"type":"Work_Note","content":"x"}`,
+			`{"type":" work_note","content":"x"}`,
+			`{"type":["work_note"],"content":"x"}`,
+			`{"type":"work_note","type":"comment","content":"x"}`,
+		} {
+			called := false
+			client := &mockEntityCaseClient{
+				createCaseCommentFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					called = true
+					return []byte(`{}`), nil
+				},
+			}
+			h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
+			r := withWorknoteCreatorUser(httptest.NewRequest(http.MethodPost, "/cases/case-1/comments", strings.NewReader(payload)))
+			r.SetPathValue("id", "case-1")
+			w := httptest.NewRecorder()
+			h.CreateCaseComment(w, r)
+			assertStatus(t, w, http.StatusForbidden)
+			if called {
+				t.Errorf("payload %s: entity CreateCaseComment must not be called for a worknote_creator-only caller", payload)
+			}
+		}
+	})
+
 	t.Run("worknote_creator-only caller with no user row yet is provisioned before the comment is posted", func(t *testing.T) {
 		var createUserCalled, createCommentCalled bool
 		client := &mockEntityCaseClient{
@@ -1789,6 +1817,109 @@ func TestPatchCase(t *testing.T) {
 			})
 		}
 	})
+
+	// Close-ownership guard (digiops-cs#3321): closing a case is restricted
+	// to its own assigned engineer, unless the caller is admin. Mirrors the
+	// public-comment ownership guard's own test shape (see "rejects public
+	// comment when requester is not the assigned engineer" above).
+	t.Run("close-ownership guard", func(t *testing.T) {
+		const closePayload = `{"state":"closed"}`
+
+		t.Run("succeeds when caller is the assignee", func(t *testing.T) {
+			client := &mockEntityCaseClient{
+				getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + testCaseID + `","state":"work_in_progress","assignedEngineer":{"id":"` + testPlatformUserID + `"}}`), nil
+				},
+				patchCaseFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					return []byte(`{"id":"` + testCaseID + `","state":"closed"}`), nil
+				},
+			}
+			h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
+			r := withCsEngineerUser(httptest.NewRequest(http.MethodPatch, "/cases/"+testCaseID, strings.NewReader(closePayload)))
+			r.SetPathValue("id", testCaseID)
+			w := httptest.NewRecorder()
+			h.PatchCase(w, r)
+			assertStatus(t, w, http.StatusOK)
+		})
+
+		t.Run("rejects when caller is a different cs_engineer", func(t *testing.T) {
+			client := &mockEntityCaseClient{
+				getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + testCaseID + `","state":"work_in_progress","assignedEngineer":{"id":"someone-else"}}`), nil
+				},
+			}
+			h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
+			r := withCsEngineerUser(httptest.NewRequest(http.MethodPatch, "/cases/"+testCaseID, strings.NewReader(closePayload)))
+			r.SetPathValue("id", testCaseID)
+			w := httptest.NewRecorder()
+			h.PatchCase(w, r)
+			assertStatus(t, w, http.StatusForbidden)
+			assertErrorMessage(t, w, ErrMsgCaseCloseNotOwnCase)
+		})
+
+		t.Run("rejects closing an unassigned case as cs_engineer", func(t *testing.T) {
+			client := &mockEntityCaseClient{
+				getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + testCaseID + `","state":"work_in_progress"}`), nil
+				},
+			}
+			h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
+			r := withCsEngineerUser(httptest.NewRequest(http.MethodPatch, "/cases/"+testCaseID, strings.NewReader(closePayload)))
+			r.SetPathValue("id", testCaseID)
+			w := httptest.NewRecorder()
+			h.PatchCase(w, r)
+			assertStatus(t, w, http.StatusForbidden)
+			assertErrorMessage(t, w, ErrMsgCaseCloseNotOwnCase)
+		})
+
+		t.Run("admin may close regardless of assignee", func(t *testing.T) {
+			client := &mockEntityCaseClient{
+				getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + testCaseID + `","state":"work_in_progress","assignedEngineer":{"id":"someone-else"}}`), nil
+				},
+				patchCaseFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					return []byte(`{"id":"` + testCaseID + `","state":"closed"}`), nil
+				},
+			}
+			h := NewCaseHandler(client).WithAccessGuard(NewAccessGuard(testAccessConfig()))
+			r := httptest.NewRequest(http.MethodPatch, "/cases/"+testCaseID, strings.NewReader(closePayload))
+			r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "admin@example.com", UserID: "admin-1", Roles: []string{"test-admin"}}))
+			r.SetPathValue("id", testCaseID)
+			w := httptest.NewRecorder()
+			h.PatchCase(w, r)
+			assertStatus(t, w, http.StatusOK)
+		})
+
+		// Regression guard: a non-state PATCH (e.g. workState alone) must
+		// never trigger the close-ownership fetch/check — only pin this
+		// behavior for the transition/workState code path already covered
+		// above; the GetCase call here is the existing transition-validation
+		// fetch (patch.State == nil, so no GetUserMe call follows it).
+		t.Run("a non-state PATCH is unaffected", func(t *testing.T) {
+			var getUserMeCalls int
+			client := &mockEntityCaseClient{
+				getCaseFn: func(_ context.Context, _ string) ([]byte, error) {
+					return []byte(`{"id":"` + testCaseID + `","state":"work_in_progress"}`), nil
+				},
+				getUserMeFn: func(ctx context.Context) ([]byte, error) {
+					getUserMeCalls++
+					return []byte(`{"id":"` + testPlatformUserID + `"}`), nil
+				},
+				patchCaseFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+					return []byte(`{"id":"` + testCaseID + `","state":"work_in_progress","workState":"paused"}`), nil
+				},
+			}
+			h := NewCaseHandler(client).WithAccessGuard(viewerAccessGuard)
+			r := withCsEngineerUser(httptest.NewRequest(http.MethodPatch, "/cases/"+testCaseID, strings.NewReader(`{"workState":"paused"}`)))
+			r.SetPathValue("id", testCaseID)
+			w := httptest.NewRecorder()
+			h.PatchCase(w, r)
+			assertStatus(t, w, http.StatusOK)
+			if getUserMeCalls != 0 {
+				t.Errorf("GetUserMe calls = %d, want 0: a non-state PATCH must never trigger the close-ownership check", getUserMeCalls)
+			}
+		})
+	})
 }
 
 // ----- GetCase -----
@@ -2267,7 +2398,7 @@ func TestCreateCaseEscalation(t *testing.T) {
 		}
 	})
 
-	t.Run("de-escalation is rejected when the case has no escalation history", func(t *testing.T) {
+	t.Run("de-escalation is rejected when the case's team has no lead", func(t *testing.T) {
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
 				return []byte(`{"escalations":[],"total":0}`), nil
@@ -2287,16 +2418,16 @@ func TestCreateCaseEscalation(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
-	t.Run("de-escalation is rejected for a caller not notified on the current escalation", func(t *testing.T) {
+	t.Run("de-escalation is rejected for a caller who is not one of the case's team leads", func(t *testing.T) {
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-2","email":"lead@example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"u-2","email":"lead@example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
 			},
 			createCaseEscalationFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
-				t.Fatal("upstream CreateCaseEscalation should not be called when the caller wasn't notified")
+				t.Fatal("upstream CreateCaseEscalation should not be called when the caller isn't a team lead")
 				return nil, nil
 			},
 		}
@@ -2310,11 +2441,11 @@ func TestCreateCaseEscalation(t *testing.T) {
 		assertContentType(t, w, "application/json")
 	})
 
-	t.Run("de-escalation is allowed for a caller notified on the current escalation, matched by id", func(t *testing.T) {
+	t.Run("de-escalation is allowed for one of the case's team leads, matched by id", func(t *testing.T) {
 		var upstreamCalled bool
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-1","email":"someone-else@example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"u-1","email":"someone-else@example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
@@ -2335,11 +2466,11 @@ func TestCreateCaseEscalation(t *testing.T) {
 		}
 	})
 
-	t.Run("de-escalation is allowed for a caller notified on the current escalation, matched by email when id is empty", func(t *testing.T) {
+	t.Run("de-escalation is allowed for one of the case's team leads, matched by email when id is empty", func(t *testing.T) {
 		var upstreamCalled bool
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"","email":"Agent@Example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"","email":"Agent@Example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
@@ -2363,7 +2494,7 @@ func TestCreateCaseEscalation(t *testing.T) {
 	t.Run("de-escalation is rejected when ids differ, even if emails happen to match", func(t *testing.T) {
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-2","email":"agent@example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"u-2","email":"agent@example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
@@ -2540,7 +2671,7 @@ func TestCreateCaseEscalation(t *testing.T) {
 		var upstreamCalled bool
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-1","email":"agent@example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"u-1","email":"agent@example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
@@ -2598,7 +2729,7 @@ func TestCreateCaseEscalation(t *testing.T) {
 		var upstreamCalled bool
 		client := &mockEntityCaseClient{
 			searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
-				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-1","email":"agent@example.com"}]}`), nil
+				return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[],"teamLeads":[{"id":"u-1","email":"agent@example.com"}]}`), nil
 			},
 			getUserMeFn: func(_ context.Context) ([]byte, error) {
 				return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
@@ -4299,4 +4430,149 @@ func TestSplGetAttachmentsInfo_MissingCaseIDIs400(t *testing.T) {
 	w := httptest.NewRecorder()
 	h.GetAttachmentsInfo(w, r)
 	assertStatus(t, w, http.StatusBadRequest)
+}
+
+// TestCaseHandler_CreateCaseEscalation_NotifiedButNotTeamLeadCannotDeescalate:
+// being on the escalation's notification list (Americas TL, account owner,
+// CSM, ...) is no longer enough -- only the case's ABT team leads may
+// de-escalate.
+func TestCaseHandler_CreateCaseEscalation_NotifiedButNotTeamLeadCannotDeescalate(t *testing.T) {
+	const testCaseID = "11111111-1111-1111-1111-111111111111"
+	client := &mockEntityCaseClient{
+		searchCaseEscalationsFn: func(_ context.Context, _ string) ([]byte, error) {
+			return []byte(`{"escalations":[{"id":"e-0"}],"total":1,"currentNotifiedUsers":[{"id":"u-1","email":"agent@example.com"}],"teamLeads":[{"id":"u-2","email":"lead@example.com"}]}`), nil
+		},
+		getUserMeFn: func(_ context.Context) ([]byte, error) {
+			return []byte(`{"id":"u-1","email":"agent@example.com"}`), nil
+		},
+		createCaseEscalationFn: func(_ context.Context, _ string, _ []byte) ([]byte, error) {
+			t.Fatal("upstream CreateCaseEscalation should not be called for a notified non-lead")
+			return nil, nil
+		},
+	}
+	h := NewCaseHandler(client)
+	r := withUser(httptest.NewRequest(http.MethodPost, "/cases/"+testCaseID+"/escalations", strings.NewReader(`{"action":"DEESCALATE"}`)))
+	r.SetPathValue("id", testCaseID)
+	w := httptest.NewRecorder()
+	h.CreateCaseEscalation(w, r)
+	assertStatus(t, w, http.StatusForbidden)
+}
+
+// TestCreateCase_AnnouncementNeedsAnnouncementCreator pins the body-level half of
+// the announcement-creator gate. POST /cases is the one generic create route and
+// it creates an announcement (the dry-run case and every per-project case of a
+// publish) as readily as a support case, so a route permission alone could not
+// stop a CS engineer without the role from sending customers an announcement.
+func TestCreateCase_AnnouncementNeedsAnnouncementCreator(t *testing.T) {
+	const announcement = `{"type":"announcement","projectId":"proj-1","subject":"Planned maintenance","description":"d"}`
+	const supportCase = `{"type":"case","projectId":"proj-1","subject":"Login failure","description":"d","severity":"high","issueType":"error"}`
+
+	create := func(t *testing.T, guarded bool, roles []string, body string) (status int, upstreamCalled bool) {
+		t.Helper()
+		client := &mockEntityCaseClient{
+			createCaseFn: func(context.Context, []byte) ([]byte, error) {
+				upstreamCalled = true
+				return []byte(`{"id":"case-1"}`), nil
+			},
+		}
+		h := NewCaseHandler(client)
+		if guarded {
+			h = h.WithAccessGuard(NewAccessGuard(testAccessConfig()))
+		}
+		r := httptest.NewRequest(http.MethodPost, "/cases", strings.NewReader(body))
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &middleware.UserInfo{Email: "staff@example.com", UserID: "u1", Roles: roles}))
+		w := httptest.NewRecorder()
+		h.CreateCase(w, r)
+		return w.Code, upstreamCalled
+	}
+
+	t.Run("an announcement is refused for a CS engineer without the role, and never reaches the upstream", func(t *testing.T) {
+		status, called := create(t, true, []string{"test-cs-engineer"}, announcement)
+		if status != http.StatusForbidden || called {
+			t.Errorf("status = %d upstreamCalled = %v, want 403 and no upstream call", status, called)
+		}
+	})
+
+	t.Run("an announcement is allowed for a CS engineer who also holds the role", func(t *testing.T) {
+		status, called := create(t, true, []string{"test-cs-engineer", "test-announcement-creator"}, announcement)
+		if status != http.StatusCreated || !called {
+			t.Errorf("status = %d upstreamCalled = %v, want 201 and an upstream call", status, called)
+		}
+	})
+
+	t.Run("an announcement is allowed for admin", func(t *testing.T) {
+		if status, _ := create(t, true, []string{"test-admin"}, announcement); status != http.StatusCreated {
+			t.Errorf("status = %d, want 201", status)
+		}
+	})
+
+	t.Run("an announcement is refused when no guard is wired: it fails closed", func(t *testing.T) {
+		status, called := create(t, false, []string{"test-cs-engineer", "test-announcement-creator"}, announcement)
+		if status != http.StatusForbidden || called {
+			t.Errorf("status = %d upstreamCalled = %v, want 403 and no upstream call", status, called)
+		}
+	})
+
+	t.Run("every other case type is unaffected for a CS engineer without the role", func(t *testing.T) {
+		for _, typ := range []string{"case", "engagement", "service_request", "security_report_analysis", "default_case"} {
+			body := strings.Replace(supportCase, `"type":"case"`, `"type":"`+typ+`"`, 1)
+			if status, _ := create(t, true, []string{"test-cs-engineer"}, body); status != http.StatusCreated {
+				t.Errorf("type %q: status = %d, want 201", typ, status)
+			}
+		}
+	})
+
+	t.Run("a body with no type, or a non-string type, is left to the upstream", func(t *testing.T) {
+		for _, body := range []string{`{"subject":"x"}`, `{"type":null,"subject":"x"}`, `{"type":7,"subject":"x"}`, `{"type":["announcement"],"subject":"x"}`} {
+			if status, called := create(t, true, []string{"test-cs-engineer"}, body); status != http.StatusCreated || !called {
+				t.Errorf("body %s: status = %d upstreamCalled = %v, want 201 and an upstream call", body, status, called)
+			}
+		}
+	})
+
+	// entity-service decodes with encoding/json, which matches a key to a field
+	// without regard to case and reads a repeated field as the last spelling
+	// reached, so a guard that looked up one exact "type" would be walked around.
+	t.Run("every spelling of the key and value is judged", func(t *testing.T) {
+		bodies := map[string]string{
+			"upper-case key":               `{"TYPE":"announcement","subject":"x"}`,
+			"mixed-case key":               `{"Type":"announcement","subject":"x"}`,
+			"capitalised value":            `{"type":"Announcement","subject":"x"}`,
+			"padded value":                 `{"type":" announcement ","subject":"x"}`,
+			"escaped key":                  `{"type":"announcement","subject":"x"}`,
+			"escaped value":                `{"type":"announcement","subject":"x"}`,
+			"repeated, announcement last":  `{"type":"case","type":"announcement","subject":"x"}`,
+			"repeated, announcement first": `{"type":"announcement","type":"case","subject":"x"}`,
+			"repeated across spellings":    `{"type":"announcement","TYPE":"case","subject":"x"}`,
+		}
+		for name, body := range bodies {
+			t.Run(name, func(t *testing.T) {
+				status, called := create(t, true, []string{"test-cs-engineer"}, body)
+				if status != http.StatusForbidden || called {
+					t.Errorf("status = %d upstreamCalled = %v, want 403 and no upstream call", status, called)
+				}
+			})
+		}
+	})
+}
+
+func TestCaseCreateTargetsAnnouncement(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want bool
+	}{
+		{`{"type":"announcement"}`, true},
+		{`{"type":"ANNOUNCEMENT"}`, true},
+		{`{"type":"case"}`, false},
+		{`{"type":"announcements"}`, false},
+		{`{"subject":"announcement"}`, false},
+		{`{"type":{"x":"announcement"}}`, false},
+		{`[{"type":"announcement"}]`, false},
+		{`not json`, false},
+		{``, false},
+	} {
+		if got := caseCreateTargetsAnnouncement([]byte(tc.body)); got != tc.want {
+			t.Errorf("caseCreateTargetsAnnouncement(%q) = %v, want %v", tc.body, got, tc.want)
+		}
+	}
 }

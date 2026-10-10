@@ -26,16 +26,28 @@ import (
 )
 
 // ErrorResponse is the JSON body returned for all error responses.
+//
+// Code is the HTTP status, Message the human-readable reason (caller-safe, and
+// worded for people: it may change, so no client may branch on it).
+//
+// ErrorCode is the stable, machine-readable name of the refusal, for the few
+// refusals a client has to tell apart from the others of the same status (see
+// codes.go). It is omitted when the refusal has none, so a body without it is
+// exactly the body this API has always returned and a client must treat its
+// absence as "no more specific than the status".
 type ErrorResponse struct {
-	Code    int    `json:"code"`
-	Message string `json:"message"`
+	Code      int    `json:"code"`
+	Message   string `json:"message"`
+	ErrorCode string `json:"errorCode,omitempty"`
 }
 
 // ValidationError signals a caller-side input problem that should be
 // reported as HTTP 400. Use errors.As in handlers to distinguish it from
-// infrastructure errors.
+// infrastructure errors. Code, when set, is the refusal's machine-readable
+// errorCode (codes.go); most 400s have none, and their body is unchanged.
 type ValidationError struct {
-	Msg string
+	Msg  string
+	Code string
 }
 
 // Error implements the error interface.
@@ -81,8 +93,12 @@ func (e *UnauthorizedError) Error() string { return e.Msg }
 
 // ForbiddenError signals that the caller is authenticated but not permitted to
 // access the resource and should be reported as HTTP 403.
+//
+// Code, when set, is the refusal's machine-readable name (see codes.go),
+// returned beside the message as the body's errorCode.
 type ForbiddenError struct {
-	Msg string
+	Msg  string
+	Code string
 }
 
 // Error implements the error interface.
@@ -90,8 +106,12 @@ func (e *ForbiddenError) Error() string { return e.Msg }
 
 // ConflictError signals that the request conflicts with the current state of
 // the resource and should be reported as HTTP 409.
+//
+// Code, when set, is the refusal's machine-readable name (see codes.go),
+// returned beside the message as the body's errorCode.
 type ConflictError struct {
-	Msg string
+	Msg  string
+	Code string
 }
 
 // Error implements the error interface.
@@ -126,7 +146,13 @@ func (e *DownstreamError) Error() string { return e.Msg }
 
 // WriteJSON writes an ErrorResponse JSON body with the given HTTP status code.
 func WriteJSON(w http.ResponseWriter, status int, msg string) {
+	WriteJSONWithCode(w, status, msg, "")
+}
+
+// WriteJSONWithCode is WriteJSON for a refusal that has a machine-readable
+// name: errorCode is written as the body's errorCode, and left out when empty.
+func WriteJSONWithCode(w http.ResponseWriter, status int, msg, errorCode string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(ErrorResponse{Code: status, Message: msg})
+	_ = json.NewEncoder(w).Encode(ErrorResponse{Code: status, Message: msg, ErrorCode: errorCode})
 }

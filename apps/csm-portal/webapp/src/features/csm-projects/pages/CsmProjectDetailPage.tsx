@@ -68,8 +68,9 @@ function formatDate(value?: string | null): string {
       });
 }
 
+/** "managed_cloud_subscription" -> "Managed Cloud Subscription". */
 function formatSubscriptionType(value: string): string {
-  return value.replace(/_/g, " ");
+  return value.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
 function MetaCell({
@@ -150,7 +151,7 @@ export default function CsmProjectDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
   const location = useLocation();
-  const { canWrite } = usePortalAccess();
+  const { canWrite, isSplAudience, canViewWorkItemsStaffView } = usePortalAccess();
   // Prefer wherever the caller came from (e.g. a case's Overview panel) over
   // the hardcoded projects list, so Back returns to that page instead of
   // skipping past it — same convention as CsmCaseDetailPage's own back path.
@@ -245,11 +246,48 @@ export default function CsmProjectDetailPage(): JSX.Element {
             variant="outlined"
           />
         </Box>
-        {/* File any issue type already scoped to this project — every create
-            form below locks the project field, so it can't be filed against
-            the wrong one. */}
-        {canWrite && (
-          <>
+        <Box sx={{ display: "flex", gap: 1, flexWrap: "wrap", flexShrink: 0 }}>
+          {/* Ex-Support Portal Lite reports, no modern equivalent -- kept
+              limited to the same audience they always had (a caller holding
+              the viewer role, regardless of what else they hold). See
+              isSplAudience's own doc comment. Outlined, not contained: the
+              single contained CTA on this page is Create, below. */}
+          {isSplAudience && (
+            <>
+              <Button
+                variant="outlined"
+                size="small"
+                className="csm-print-hide"
+                component={RouterLink}
+                to={`/customers/projects/${p.id}/sla-report/${p.id}`}
+              >
+                SLA Report
+              </Button>
+              <Button
+                variant="outlined"
+                size="small"
+                className="csm-print-hide"
+                component={RouterLink}
+                to={`/customers/projects/${p.id}/timelogs-report`}
+              >
+                Time Report
+              </Button>
+              <Button
+                variant="outlined"
+                size="small"
+                className="csm-print-hide"
+                component={RouterLink}
+                to={`/customers/projects/${p.id}/cs-report/${p.id}`}
+              >
+                CS Report
+              </Button>
+            </>
+          )}
+          {/* File any issue type already scoped to this project — every create
+              form below locks the project field, so it can't be filed against
+              the wrong one. */}
+          {canWrite && (
+            <>
             <Button
               variant="contained"
               className="csm-print-hide"
@@ -310,8 +348,9 @@ export default function CsmProjectDetailPage(): JSX.Element {
                 Create security report
               </MenuItem>
             </Menu>
-          </>
-        )}
+            </>
+          )}
+        </Box>
       </Box>
 
       <Box className="csm-print-hide" sx={{ borderBottom: 1, borderColor: "divider" }}>
@@ -319,7 +358,10 @@ export default function CsmProjectDetailPage(): JSX.Element {
           <Tab value="overview" label="Overview" />
           <Tab value="deployments" label="Deployments" />
           <Tab value="contacts" label="Project contacts" />
-          <Tab value="workItems" label="Work items" />
+          {/* A caller without the staff view never sees Chats inside this tab
+              (see WorkItemsTab's own canViewWorkItemsStaffView gate), so for
+              them it's just the case list -- labelled accordingly. */}
+          <Tab value="workItems" label={canViewWorkItemsStaffView ? "Work items" : "Cases"} />
         </Tabs>
       </Box>
 

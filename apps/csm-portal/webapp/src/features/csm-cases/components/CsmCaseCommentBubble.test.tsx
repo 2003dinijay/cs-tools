@@ -22,6 +22,11 @@ import type { ReactElement } from "react";
 import { MemoryRouter } from "react-router";
 import CsmCaseCommentBubble from "@features/csm-cases/components/CsmCaseCommentBubble";
 import type { CsmCaseComment } from "@features/csm-cases/types/csmCases";
+import { useResolvedInlineImageHtml } from "@features/csm-cases/api/useResolvedInlineImageHtml";
+import {
+  extractIixAttachmentIds,
+  replaceInlineImageSrcs,
+} from "@features/csm-cases/utils/inlineImages";
 
 vi.mock("@features/csm-cases/api/useResolvedInlineImageHtml", () => ({
   // Pass the sanitized HTML straight through — no attachment resolution in
@@ -110,11 +115,81 @@ describe("CsmCaseCommentBubble", () => {
     expect(screen.getByText("Jane Doe")).toBeInTheDocument();
   });
 
+  it("resolves a bare-uuid inline image inside a [code] wrapper (migrated content)", () => {
+    const uuid = "0f15cbcc-c36b-8310-af2f-404599013196";
+    const dataUrl = "data:image/png;base64,AAAA";
+    // Use the real extract/replace helpers behind the mocked hook, so the
+    // sanitized HTML the bubble hands over is what actually gets resolved.
+    vi.mocked(useResolvedInlineImageHtml).mockImplementationOnce((html) => {
+      const ids = extractIixAttachmentIds(html);
+      return {
+        resolvedHtml: replaceInlineImageSrcs(
+          html,
+          new Map(ids.map((id) => [id, dataUrl])),
+        ),
+        isLoading: false,
+      };
+    });
+    const { container } = renderWithProviders(
+      <CsmCaseCommentBubble
+        comment={makeComment({
+          bodyHtml: `[code]<p><img src="/${uuid}"><br></p>[/code]`,
+        })}
+      />,
+    );
+    const img = container.querySelector("img");
+    expect(img).not.toBeNull();
+    expect(img?.getAttribute("src")).toBe(dataUrl);
+  });
+
   it("returns null for a comment with no displayable content", () => {
     const { container } = renderWithProviders(
       <CsmCaseCommentBubble comment={makeComment({ bodyHtml: "<p></p>" })} />,
     );
     expect(container).toBeEmptyDOMElement();
+  });
+
+  describe("laid-out HTML source", () => {
+    const laidOut =
+      "<p>Findings:</p>\r\n<ul>\r\n  <li>First point\r\n    continues here.<br>\r\n    Second line.</li>\r\n</ul>";
+
+    it("renders no newline between or inside the blocks, so pre-wrap does not print them", () => {
+      const { container } = renderWithProviders(
+        <CsmCaseCommentBubble comment={makeComment({ bodyHtml: laidOut })} />,
+      );
+      const list = container.querySelector("ul");
+      expect(list).not.toBeNull();
+      expect(list?.textContent).toBe("First point continues here.Second line.");
+      expect(container.querySelector("ul")?.parentElement?.innerHTML).not.toMatch(/[\r\n]/);
+    });
+
+    it("renders a body inside a [code] wrapper the same way", () => {
+      const { container } = renderWithProviders(
+        <CsmCaseCommentBubble comment={makeComment({ bodyHtml: `[code]${laidOut}[/code]` })} />,
+      );
+      expect(container.querySelector("ul")?.parentElement?.innerHTML).not.toMatch(/[\r\n]/);
+    });
+
+    it("keeps the line breaks inside a <pre> block and an inline <code> snippet", () => {
+      const { container } = renderWithProviders(
+        <CsmCaseCommentBubble
+          comment={makeComment({
+            bodyHtml: "<p>Run:</p>\n<pre>one\n  two</pre>\n<p>or <code>x\ny</code></p>",
+          })}
+        />,
+      );
+      expect(container.querySelector("pre")?.textContent).toBe("one\n  two");
+      expect(container.querySelector("code")?.textContent).toBe("x\ny");
+    });
+
+    it("keeps the container's pre-wrap, so editor spacing and plain-text newlines are unchanged", () => {
+      renderWithProviders(
+        <CsmCaseCommentBubble comment={makeComment({ bodyHtml: "Line one\nLine two" })} />,
+      );
+      const body = screen.getByText("Line one", { exact: false }).closest("div");
+      expect(getComputedStyle(body?.parentElement as HTMLElement).whiteSpace).toBe("pre-wrap");
+      expect(body?.textContent).toBe("Line one\nLine two");
+    });
   });
 
   it("strips a single [code]...[/code] wrapper before rendering", () => {
@@ -183,6 +258,20 @@ describe("CsmCaseCommentBubble", () => {
       />,
     );
     expect(screen.getByText("bold answer")).toBeInTheDocument();
+  });
+
+  it("renders a markdown-marked description (a GitHub issue body) as headings", () => {
+    renderWithProviders(
+      <CsmCaseCommentBubble
+        comment={makeComment({
+          synthetic: true,
+          bodyFormat: "markdown",
+          bodyHtml: "### Request Details\n\ntesting",
+        })}
+      />,
+    );
+    expect(screen.getByRole("heading", { level: 3, name: "Request Details" })).toBeInTheDocument();
+    expect(screen.queryByText(/###/)).not.toBeInTheDocument();
   });
 
   it("resolves the author link from the canonical email when there is no legacy email and no id", async () => {
@@ -491,6 +580,23 @@ describe("CsmCaseCommentBubble", () => {
       expect(
         screen.queryByRole("button", { name: "Comment actions" }),
       ).not.toBeInTheDocument();
+    });
+
+    it("shows the comment-actions menu for a comment_updater who isn't the author", () => {
+      mockCurrentUser.mockReturnValue({
+        email: "updater@example.com",
+        roles: ["comment_updater"],
+      });
+      renderWithProviders(
+        <CsmCaseCommentBubble
+          comment={makeComment({ authorEmail: "jane.doe@example.com" })}
+          onEditComment={vi.fn()}
+          onDeleteComment={vi.fn()}
+        />,
+      );
+      expect(
+        screen.getByRole("button", { name: "Comment actions" }),
+      ).toBeInTheDocument();
     });
 
     it("hides the comment-actions menu when no signed-in user is available", () => {

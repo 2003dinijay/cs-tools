@@ -25,7 +25,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -47,6 +46,9 @@ type UserRepository interface {
 	// GetUserByEmail returns the user with the given email address, or a
 	// NotFoundError if no matching user exists.
 	GetUserByEmail(ctx context.Context, email string) (domain.User, error)
+	// GetUsersByIDs returns every user matching the given ids. Unlike
+	// SearchUsers, this is not gated to the ServiceNow data source.
+	GetUsersByIDs(ctx context.Context, ids []string) ([]domain.User, error)
 	// GetUserRoles returns the role names assigned to userID via user_role
 	// (migration 0010), empty if none.
 	GetUserRoles(ctx context.Context, userID string) ([]string, error)
@@ -67,13 +69,13 @@ type UserRepository interface {
 	// use (user_name is UNIQUE), a ServiceUnavailableError naming any
 	// requested role not seeded in the role table.
 	CreateUser(ctx context.Context, req domain.CreateUserRequest, actor string) (domain.User, error)
-	// UpdateUserTimeZone sets "user".timezone for userID (PATCH /users/me's
-	// own write) and returns the new updated_on. A free-text column (no
-	// FK/enum constraint tying it to the timezone reference table), so any
-	// non-empty value is accepted as-is -- validated against that table only
-	// if a caller ever asks for it. Returns a NotFoundError if userID does
-	// not exist.
-	UpdateUserTimeZone(ctx context.Context, userID, timezone string) (time.Time, error)
+	// UpdateUserProfile is PATCH /users/me's own write for userID. A nil
+	// timezone or phone leaves that column untouched; a non-nil timezone is
+	// stored as-is (the column's FK to the timezone reference table, where
+	// present, rejects an unknown value); a non-nil phone is stored, and an
+	// empty one clears it to NULL. Returns the row's resulting updated_on,
+	// timezone and phone, or a NotFoundError if userID does not exist.
+	UpdateUserProfile(ctx context.Context, userID string, timezone, phone *string) (domain.UserProfileUpdate, error)
 }
 
 type userRepo struct {
@@ -86,9 +88,8 @@ func NewUserRepository(db *pgxpool.Pool) UserRepository {
 }
 
 // userColumns is the column list shared by GetUserByEmail and SearchUsers.
-// The "user" table (migration 0002) has no phone column -- unlike
-// account.phone, there is nothing to select for domain.User's Phone field,
-// so it is simply left nil (Go's pointer zero value) rather than queried.
+// phone (migration 0141) is NOT part of it: only GetUserByEmail appends it
+// (GET /users/me), so domain.User.Phone stays nil for the by-id and list reads.
 // timezone (not declared in this repo's own migrations/ -- confirmed
 // directly against the live database, same "built outside this directory"
 // class as the timezone reference table CLAUDE.md's "GET /metadata and
@@ -143,9 +144,16 @@ var userTypeFromEnum = map[string]domain.UserType{
 }
 
 func scanUser(row interface{ Scan(...any) error }) (domain.User, error) {
+	return scanUserExtra(row)
+}
+
+// scanUserExtra is scanUser plus extra destinations for columns appended after
+// userColumns/prefixUserColumns (GetUserByEmail's phone).
+func scanUserExtra(row interface{ Scan(...any) error }, extra ...any) (domain.User, error) {
 	var u domain.User
 	var firstName, lastName, email, userType *string
-	err := row.Scan(&u.ID, &u.UserName, &firstName, &lastName, &email, &userType, &u.CreatedOn, &u.UpdatedOn, &u.Timezone)
+	dest := append([]any{&u.ID, &u.UserName, &firstName, &lastName, &email, &userType, &u.CreatedOn, &u.UpdatedOn, &u.Timezone}, extra...)
+	err := row.Scan(dest...)
 	if err != nil {
 		return domain.User{}, err
 	}
@@ -165,18 +173,39 @@ func scanUser(row interface{ Scan(...any) error }) (domain.User, error) {
 
 // GetUserByEmail implements UserRepository.
 func (r *userRepo) GetUserByEmail(ctx context.Context, email string) (domain.User, error) {
-	u, err := scanUser(r.db.QueryRow(ctx, `SELECT `+userColumns+` FROM "user" WHERE email = $1`, email))
-	if errors.Is(err, pgx.ErrNoRows) {
-		// Msg never carries the email — writeServiceError (internal/handler/
-		// decode.go) logs every NotFoundError's Msg verbatim, so this is the
-		// one place that decides whether it leaks into logs for every caller
-		// of this method, not just GetMe.
-		return domain.User{}, &apierror.NotFoundError{Msg: "no user found with that email"}
-	}
+	// An exact match wins; otherwise only a single ASCII case-insensitive match counts, so a
+	// Unicode case fold or two rows differing in case can never resolve to another user.
+	// phone is selected here only (GET /users/me); the by-id and list reads share
+	// userColumns and deliberately do not carry it.
+	rows, err := r.db.Query(ctx, `SELECT `+userColumns+`, phone FROM "user"
+		WHERE email = $1 OR ($2 AND lower(email) = lower($1) AND email !~ '[^[:ascii:]]')
+		ORDER BY (email = $1) DESC LIMIT 2`, email, isASCII(email))
 	if err != nil {
 		return domain.User{}, fmt.Errorf("get user by email: %w", err)
 	}
-	return u, nil
+	var matches []domain.User
+	for rows.Next() {
+		var phone *string
+		u, err := scanUserExtra(rows, &phone)
+		if err != nil {
+			rows.Close()
+			return domain.User{}, fmt.Errorf("get user by email: %w", err)
+		}
+		u.Phone = phone
+		matches = append(matches, u)
+	}
+	rows.Close()
+	if err := rows.Err(); err != nil {
+		return domain.User{}, fmt.Errorf("get user by email: %w", err)
+	}
+	if len(matches) > 0 && (matches[0].Email == email || len(matches) == 1) {
+		return matches[0], nil
+	}
+	// Msg never carries the email — writeServiceError (internal/handler/
+	// decode.go) logs every NotFoundError's Msg verbatim, so this is the
+	// one place that decides whether it leaks into logs for every caller
+	// of this method, not just GetMe.
+	return domain.User{}, &apierror.NotFoundError{Msg: "no user found with that email"}
 }
 
 // SearchUsers implements UserRepository.
@@ -246,19 +275,37 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 	}
 
 	if len(req.Filters.GroupIDs) > 0 {
+		// GroupIDs are "group" ids (what POST /groups/search returns); a member
+		// is a group_member row.
+		where += fmt.Sprintf(` AND EXISTS (
+			SELECT 1 FROM group_member gm WHERE gm.user_id = u.id AND gm.group_id = ANY($%d::uuid[])
+		)`, argIdx)
+		filterArgs = append(filterArgs, req.Filters.GroupIDs)
+		argIdx++
+	}
+
+	if len(req.Filters.TeamIDs) > 0 {
+		// TeamIDs are `team` ids (what POST /teams/search returns); a member is
+		// a team_member row.
 		where += fmt.Sprintf(` AND EXISTS (
 			SELECT 1 FROM team_member tm WHERE tm.user_id = u.id AND tm.team_id = ANY($%d::uuid[])
 		)`, argIdx)
-		filterArgs = append(filterArgs, req.Filters.GroupIDs)
+		filterArgs = append(filterArgs, req.Filters.TeamIDs)
 		argIdx++
 	}
 
 	if len(req.Filters.GroupNames) > 0 {
 		where += fmt.Sprintf(` AND EXISTS (
 			SELECT 1 FROM team_member tm JOIN team t ON t.id = tm.team_id
-			WHERE tm.user_id = u.id AND t.name = ANY($%d::text[])
+			WHERE tm.user_id = u.id AND LOWER(t.name) = ANY($%d::text[])
 		)`, argIdx)
-		filterArgs = append(filterArgs, req.Filters.GroupNames)
+		// Compared case-insensitively: the portal's registry names ("Rigel")
+		// and the team table's ("rigel") differ in case.
+		lowered := make([]string, len(req.Filters.GroupNames))
+		for i, n := range req.Filters.GroupNames {
+			lowered[i] = strings.ToLower(n)
+		}
+		filterArgs = append(filterArgs, lowered)
 		argIdx++
 	}
 
@@ -331,6 +378,35 @@ func (r *userRepo) SearchUsers(ctx context.Context, req domain.SearchUsersReques
 	return users, total, nil
 }
 
+// GetUsersByIDs returns every user matching the given ids, in Postgres
+// mode. Unlike SearchUsers, this is not gated to ServiceNow -- ids are
+// this platform's own identifiers, so an id-based lookup is always safe
+// regardless of data source.
+func (r *userRepo) GetUsersByIDs(ctx context.Context, ids []string) ([]domain.User, error) {
+	// userColumns + scanUser rather than a hand-written projection: the
+	// "user" table has no phone/timezone columns, and first_name,
+	// last_name, email and user_type are all nullable -- scanning them
+	// into non-pointer fields fails the whole batch on one NULL.
+	rows, err := r.db.Query(ctx,
+		fmt.Sprintf(`SELECT %s FROM "user" WHERE id = ANY($1)`, userColumns),
+		ids,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("get users by ids: %w", err)
+	}
+	defer rows.Close()
+
+	users := make([]domain.User, 0, len(ids))
+	for rows.Next() {
+		u, err := scanUser(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan user: %w", err)
+		}
+		users = append(users, u)
+	}
+	return users, rows.Err()
+}
+
 // attachRoles fills in each user's Roles from user_role in ONE query for the
 // whole page (not one per user), so the search stays a fixed number of round
 // trips whatever the page size. DISTINCT because user_role has no unique
@@ -381,6 +457,7 @@ func assignRoles(users []domain.User, byUser map[string][]string) {
 		users[i].Roles = []string{}
 	}
 }
+
 
 // GetUserRoles implements UserRepository.
 func (r *userRepo) GetUserRoles(ctx context.Context, userID string) ([]string, error) {
@@ -546,20 +623,25 @@ func (r *userRepo) CreateUser(ctx context.Context, req domain.CreateUserRequest,
 	return u, nil
 }
 
-// UpdateUserTimeZone implements UserRepository.
-func (r *userRepo) UpdateUserTimeZone(ctx context.Context, userID, timezone string) (time.Time, error) {
-	var updatedOn time.Time
+// UpdateUserProfile implements UserRepository.
+func (r *userRepo) UpdateUserProfile(ctx context.Context, userID string, timezone, phone *string) (domain.UserProfileUpdate, error) {
+	var out domain.UserProfileUpdate
 	err := r.db.QueryRow(ctx,
-		`UPDATE "user" SET timezone = $1, updated_on = NOW() WHERE id = $2 RETURNING updated_on`,
-		timezone, userID,
-	).Scan(&updatedOn)
+		`UPDATE "user"
+		    SET timezone = COALESCE($1::varchar, timezone),
+		        phone = CASE WHEN $2::varchar IS NULL THEN phone ELSE NULLIF($2::varchar, '') END,
+		        updated_on = NOW()
+		  WHERE id = $3
+		RETURNING updated_on, timezone, phone`,
+		timezone, phone, userID,
+	).Scan(&out.UpdatedOn, &out.Timezone, &out.Phone)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return time.Time{}, &apierror.NotFoundError{Msg: "user not found"}
+		return domain.UserProfileUpdate{}, &apierror.NotFoundError{Msg: "user not found"}
 	}
 	if err != nil {
-		return time.Time{}, fmt.Errorf("update user timezone: %w", err)
+		return domain.UserProfileUpdate{}, fmt.Errorf("update user profile: %w", err)
 	}
-	return updatedOn, nil
+	return out, nil
 }
 
 // grantRoles resolves each of names (role.name, migration 0008) to its id
@@ -642,4 +724,14 @@ func (r *userRepo) GetUserGroups(ctx context.Context, userID string) ([]domain.U
 		return nil, fmt.Errorf("iterate user groups: %w", err)
 	}
 	return groups, nil
+}
+
+// isASCII reports whether s has only ASCII characters.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= 0x80 {
+			return false
+		}
+	}
+	return true
 }

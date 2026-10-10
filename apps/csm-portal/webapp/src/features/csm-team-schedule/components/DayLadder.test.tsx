@@ -16,12 +16,14 @@
  * under the License.
  */
 
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import DayLadder, { type LadderLane } from "./DayLadder";
 import {
   ANNUAL_LEAVE,
+  LIEU_LEAVE,
+  RND,
   EVENING,
   REGULAR,
   REGULAR_IND,
@@ -110,22 +112,79 @@ function nineToFive(name: string, shiftCode: string, teamKey = "alpha") {
 }
 
 describe("DayLadder: cards that share their hours", () => {
-  it("holds a window and its on-call variant in one card, each naming its own people", () => {
+  it("holds a window and its on-call variant as one rotation, tagging only the on-call person", () => {
     // Placed by time alone, two windows with the same hours drew on top of
-    // each other and printed through one another.
-    renderLadder([
+    // each other and printed through one another. Held together they are one
+    // rotation: its name once, one list, and "On-call" on the person who is.
+    const { container } = renderLadder([
       assignment({
         name: "Asela", rotaDate: ISO, shiftCode: MORNING.code,
         startsAt: `${ISO}T00:30:00.000Z`, endsAt: `${ISO}T03:30:00.000Z`,
       }),
       assignment({
-        name: "Nuwan", rotaDate: ISO, shiftCode: MORNING_OC.code,
+        name: "Nuwan", rotaDate: ISO, shiftCode: MORNING_OC.code, isOnCall: true,
         startsAt: `${ISO}T00:30:00.000Z`, endsAt: `${ISO}T03:30:00.000Z`,
       }),
     ]);
-    expect(screen.getByText(/Morning 6-9am · Morning 6-9am on-call/)).toBeInTheDocument();
-    expect(screen.getByText("Asela")).toBeInTheDocument();
-    expect(screen.getByText("Nuwan")).toBeInTheDocument();
+    const card = [...container.querySelectorAll(".zblk")].find((c) => c.textContent?.includes("Asela"))!;
+    expect(card.querySelector(".zbt")).toHaveTextContent(/^Morning 6-9am$/);
+    expect(card.querySelectorAll(".zsl")).toHaveLength(0);
+    // On call is not working the hours: a column of its own, under a heading
+    // whose tooltip says what on call means.
+    const onCall = card.querySelector(".zoc")!;
+    expect(onCall.querySelector(".zocl")).toHaveTextContent("On-call");
+    expect(onCall.querySelector(".zocl")).toHaveAttribute("title", expect.stringContaining("emergency"));
+    expect(onCall).toHaveTextContent("Nuwan");
+    expect(onCall).not.toHaveTextContent("Asela");
+    expect(card.querySelector(".zflow")).toHaveTextContent("Asela");
+  });
+
+  it("keeps the on-call column when a full shift and its on-call share a card", () => {
+    // Twelve on the window and one on call is thirteen rows -- over the limit
+    // that turns a card into a team list, which would take the on-call person
+    // in as one more working. Counted on who works, it stays a list of names
+    // with the on-call person in their own column.
+    const working = Array.from({ length: 12 }, (_, i) =>
+      assignment({
+        name: `Morn${i}`, rotaDate: ISO, shiftCode: MORNING.code,
+        startsAt: `${ISO}T00:30:00.000Z`, endsAt: `${ISO}T03:30:00.000Z`,
+      }),
+    );
+    const { container } = renderLadder([
+      ...working,
+      assignment({
+        name: "Nuwan", rotaDate: ISO, shiftCode: MORNING_OC.code, isOnCall: true,
+        startsAt: `${ISO}T00:30:00.000Z`, endsAt: `${ISO}T03:30:00.000Z`,
+      }),
+    ]);
+    const card = [...container.querySelectorAll(".zblk")].find((c) => c.textContent?.includes("Morn0"))!;
+    expect(card.querySelector(".teamsplit")).toBeNull();
+    expect(card.querySelectorAll(".zflow .lnm")).toHaveLength(12);
+    expect(card.querySelector(".zoc")).toHaveTextContent("Nuwan");
+  });
+
+  it("lists whoever is on their team's own window first, ahead of those taking a turn", () => {
+    const morning = (name: string, teamKey: string) =>
+      assignment({
+        name, rotaDate: ISO, shiftCode: MORNING.code, teamKey,
+        startsAt: `${ISO}T00:30:00.000Z`, endsAt: `${ISO}T03:30:00.000Z`,
+      });
+    const { container } = render(
+      <DayLadder
+        day={WEDNESDAY}
+        tz={TZ}
+        zoneLabel="IST"
+        lanes={[lane([morning("Asela", "alpha"), morning("Zara", "southern")])]}
+        shifts={SHIFTS}
+        zones={ZONES}
+        absences={[]}
+        absenceKinds={[ANNUAL_LEAVE]}
+        teamDefaultShift={{ southern: MORNING.code }}
+        {...scopeControls()}
+      />,
+    );
+    const names = [...container.querySelectorAll(".zflow .lnm .who")].map((n) => n.textContent);
+    expect(names).toEqual(["Zara", "Asela"]);
   });
 
   it("folds a window that differs only by team into the crowded card", () => {
@@ -137,7 +196,8 @@ describe("DayLadder: cards that share their hours", () => {
 
     expect(screen.getByText("Regular hours")).toBeInTheDocument();
     expect(screen.queryByText("India region shift")).not.toBeInTheDocument();
-    expect(screen.getByText(/bravo/)).toBeInTheDocument();
+    // The card's own team row, not the team picker's option of the same name.
+    expect(screen.getByText(/Bravo/, { ignore: "option" })).toBeInTheDocument();
   });
 
   it("never folds an on-call window into a crowded card", () => {
@@ -166,8 +226,38 @@ describe("DayLadder: who is not on the rota", () => {
       [nineToFive("Asela", REGULAR.code)],
       [absence({ name: "Nuwan", startsOn: ISO, endsOn: ISO })],
     );
-    expect(screen.getByText("Annual leave")).toBeInTheDocument();
+    expect(screen.getByText("Leave")).toBeInTheDocument();
     expect(screen.getByText("Nuwan")).toBeInTheDocument();
+  });
+
+  it("keeps every kind of leave in one card, without naming the kind, and allocations apart", () => {
+    const { container } = render(
+      <DayLadder
+        day={WEDNESDAY}
+        tz={TZ}
+        zoneLabel="IST"
+        lanes={[lane([nineToFive("Asela", REGULAR.code)])]}
+        shifts={SHIFTS}
+        zones={ZONES}
+        absences={[
+          absence({ name: "Nuwan", startsOn: ISO, endsOn: ISO }),
+          absence({ name: "Lena", startsOn: ISO, endsOn: ISO, kindCode: LIEU_LEAVE.code }),
+          absence({ name: "Omar", startsOn: ISO, endsOn: ISO, kindCode: RND.code }),
+        ]}
+        absenceKinds={[ANNUAL_LEAVE, LIEU_LEAVE, RND]}
+        {...scopeControls()}
+      />,
+    );
+    const cards = [...container.querySelectorAll(".offcard")];
+    expect(cards).toHaveLength(2);
+    expect(cards[0].querySelector(".offl")).toHaveTextContent("Leave");
+    expect(cards[0].querySelector(".offh b")).toHaveTextContent("2");
+    expect(cards[0]).toHaveTextContent("Nuwan");
+    expect(cards[0]).toHaveTextContent("Lena");
+    expect(screen.queryByText("Annual leave")).not.toBeInTheDocument();
+    expect(screen.queryByText("Lieu leave")).not.toBeInTheDocument();
+    expect(cards[1]).toHaveTextContent("R&D");
+    expect(cards[1]).toHaveTextContent("Omar");
   });
 });
 
@@ -248,5 +338,110 @@ describe("DayLadder: TZ3 is one card", () => {
     expect(labels).toEqual(["L1 escalation", "L2 escalation", "L3 escalation", "Regular hours"]);
     expect(screen.getByText("Nimal")).toBeInTheDocument();
     expect(container.textContent).not.toContain("Others in TZ3");
+  });
+});
+
+describe("DayLadder: a stint worked on another team's rota", () => {
+  const BRAZIL = {
+    id: "k-br", code: "ALLO_BR", shortCode: "BR", label: "Brazil rotation", bucket: "ALLOCATION" as const,
+    colourToken: "BR", sortOrder: 70, movesToTeamKey: "americas", worksRotaThere: true,
+  };
+  const MIGRATION = {
+    id: "k-mig", code: "MIGRATION", shortCode: "Mig", label: "Migration", bucket: "ALLOCATION" as const,
+    colourToken: "MIG", sortOrder: 90, movesToTeamKey: "migration",
+  };
+
+  it("is not listed as off the rota, while other time away still is", () => {
+    render(
+      <DayLadder
+        day={WEDNESDAY}
+        tz={TZ}
+        zoneLabel="IST"
+        lanes={[lane([])]}
+        shifts={SHIFTS}
+        zones={ZONES}
+        absences={[
+          absence({ name: "Bruna", startsOn: "2026-09-01", endsOn: "2026-12-31", kindCode: "ALLO_BR", teamKey: "americas" }),
+          absence({ name: "Milan", startsOn: "2026-09-01", endsOn: "2026-12-31", kindCode: "MIGRATION", teamKey: "migration" }),
+          absence({ name: "Lena", startsOn: "2026-09-23", endsOn: "2026-09-23" }),
+        ]}
+        absenceKinds={[ANNUAL_LEAVE, BRAZIL, MIGRATION]}
+        {...scopeControls()}
+      />,
+    );
+    expect(screen.queryByText("Bruna")).not.toBeInTheDocument();
+    expect(screen.getByText("Milan")).toBeInTheDocument();
+    expect(screen.getByText("Lena")).toBeInTheDocument();
+    expect(screen.getByText("2 not available")).toBeInTheDocument();
+  });
+
+  it("leaves a retired tag's entries out of who is off today", () => {
+    const ONBOARDING = {
+      id: "k-onb", code: "ONBOARDING", shortCode: "ONB", label: "Onboarding", bucket: "ALLOCATION" as const,
+      colourToken: "ONB", sortOrder: 100, retired: true,
+    };
+    render(
+      <DayLadder
+        day={WEDNESDAY}
+        tz={TZ}
+        zoneLabel="IST"
+        lanes={[lane([])]}
+        shifts={SHIFTS}
+        zones={ZONES}
+        absences={[
+          absence({ name: "Omar", startsOn: "2026-09-01", endsOn: "2026-12-31", kindCode: "ONBOARDING" }),
+          absence({ name: "Lena", startsOn: "2026-09-23", endsOn: "2026-09-23" }),
+        ]}
+        absenceKinds={[ANNUAL_LEAVE, ONBOARDING]}
+        {...scopeControls()}
+      />,
+    );
+    expect(screen.queryByText("Omar")).not.toBeInTheDocument();
+    expect(screen.getByText("Lena")).toBeInTheDocument();
+    expect(screen.getByText("1 not available")).toBeInTheDocument();
+  });
+});
+
+describe("DayLadder: a crowded card's team pane", () => {
+  const twoTeams = () => [
+    ...Array.from({ length: 8 }, (_, i) => nineToFive(`Orion${i}`, REGULAR.code, "orion_abt_cre_team")),
+    ...Array.from({ length: 7 }, (_, i) => nineToFive(`Lyra${i}`, REGULAR.code, "lyra_abt_cre_team")),
+  ];
+  const teamButton = (container: HTMLElement, name: string) =>
+    [...container.querySelectorAll<HTMLElement>(".teamsplit .tl")].find((el) => el.textContent?.includes(name))!;
+
+  it("opens on the team list alone, so no one team reads as the whole rotation", () => {
+    const { container } = renderLadder(twoTeams());
+    expect(container.querySelectorAll(".teamsplit .tl")).toHaveLength(2);
+    expect(container.querySelector(".teampane .tlph")).toBeNull();
+    expect(screen.queryByText("Orion0")).not.toBeInTheDocument();
+    expect(screen.getByText("Hover over a team to see who is on it.")).toBeInTheDocument();
+  });
+
+  it("shows a team while it is hovered, and closes it when the cursor leaves", () => {
+    const { container } = renderLadder(twoTeams());
+    fireEvent.mouseEnter(teamButton(container, "Orion"));
+    expect(screen.getByText("Orion0")).toBeInTheDocument();
+    fireEvent.mouseLeave(container.querySelector(".teamsplit")!);
+    expect(screen.queryByText("Orion0")).not.toBeInTheDocument();
+  });
+
+  it("keeps a clicked team open until it is clicked again", () => {
+    const { container } = renderLadder(twoTeams());
+    const orion = teamButton(container, "Orion");
+    fireEvent.click(orion);
+    fireEvent.mouseLeave(container.querySelector(".teamsplit")!);
+    expect(screen.getByText("Orion0")).toBeInTheDocument();
+    expect(orion).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(orion);
+    expect(screen.queryByText("Orion0")).not.toBeInTheDocument();
+  });
+
+  it("heads the team by name, not by its directory key", () => {
+    const { container } = renderLadder(twoTeams());
+    fireEvent.mouseEnter(teamButton(container, "Orion"));
+    const heading = container.querySelector(".teampane .tlph");
+    expect(heading).toHaveTextContent("Orion team");
+    expect(heading).not.toHaveTextContent("orion_abt_cre_team");
   });
 });

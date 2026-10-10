@@ -184,6 +184,12 @@ type githubSyncService struct {
 	// is how it behaved before the mutation layer existed and is still useful
 	// for a dry run against a live repository.
 	mutate repository.GithubMutationRepository
+	// srNotices runs the service-request automation for an SR created from an
+	// issue, exactly as caseService does for one created in the portal:
+	// assignment and acknowledgement for an automated SRE team, and sr.created
+	// for the Chat card. Nil (no SRE_EVENT_HUB_TOPIC) runs none. Set with
+	// WithGithubSRNotices.
+	srNotices srNotifier
 	// integrationLogin is our own GitHub account. Events it sent are our own
 	// writes coming back and are dropped -- identity, not string-matching the
 	// comment body the way the case webhook does.
@@ -192,6 +198,9 @@ type githubSyncService struct {
 	// (GITHUB_INTEGRATION_LOGIN). Distinct from github-actions[bot], which runs
 	// the repository's workflows and only ever labels and comments.
 	issueAuthorLogin string
+	// repoConfigs reads each repository's own mapping file. Nil (the
+	// default) leaves account_github_repo the only source, as before.
+	repoConfigs *githubRepoConfigs
 }
 
 // githubIssueClient is the slice of *github.Client this service needs.
@@ -219,6 +228,17 @@ func NewGithubSyncServiceWithLabels(repo repository.GithubSyncRepository, gh git
 func (s *githubSyncService) WithMutations(m repository.GithubMutationRepository) GithubSyncService {
 	s.mutate = m
 	return s
+}
+
+// WithGithubSRNotices gives the sync the service-request automation the
+// portal's create path runs (caseService's srNotices), so an SR created from a
+// GitHub issue is assigned, acknowledged and announced in Chat the same way.
+// A no-op if svc is not a *githubSyncService or n is nil.
+func WithGithubSRNotices(svc GithubSyncService, n *SRNoticeService) GithubSyncService {
+	if s, ok := svc.(*githubSyncService); ok && n != nil {
+		s.srNotices = n
+	}
+	return svc
 }
 
 // NewGithubSyncServiceWriting is the full service: recognises, writes, and
@@ -309,21 +329,20 @@ func (s *githubSyncService) HandleWebhook(ctx context.Context, d Delivery) (Outc
 func (s *githubSyncService) handleClaimed(ctx context.Context, d Delivery) (Outcome, error) {
 	p := d.Payload
 
-	// An unmapped repository is not ours. The mapping table IS the allow-list,
-	// so routing and permission cannot drift apart.
-	mapping, err := s.repo.RepoMapping(ctx, p.Repository.Owner.Login, p.Repository.Name)
+	// An unmapped repository is not ours: one with neither its own mapping
+	// file nor an account_github_repo row is skipped (resolveMapping).
+	mapping, reason, err := s.resolveMapping(ctx, p.Repository.Owner.Login, p.Repository.Name)
 	if err != nil {
 		return Outcome{}, err
 	}
-	if mapping == nil {
-		return skip(fmt.Sprintf("repository %s/%s is not mapped to an account",
-			p.Repository.Owner.Login, p.Repository.Name))
+	if reason != "" {
+		return skip(reason)
 	}
 
 	// What this issue already produced, if anything. Looked up by issue number
-	// within the account rather than by git_reference: the record is a service
-	// request now, and service_request has no git_reference column.
-	existing, err := s.repo.CaseByIssueNumber(ctx, mapping.AccountID, p.Issue.Number)
+	// within the repository rather than by git_reference: the record is a
+	// service request now, and service_request has no git_reference column.
+	existing, err := s.repo.CaseByIssue(ctx, mapping.AccountID, p.Repository.Owner.Login, p.Repository.Name, p.Issue.Number)
 	if err != nil {
 		return Outcome{}, err
 	}
@@ -382,6 +401,9 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, map
 		GitReference: p.Issue.HTMLURL,
 		IssueNumber:  p.Issue.Number,
 		AccountID:    mapping.AccountID,
+		ProjectID:    mapping.ProjectID,
+		Owner:        p.Repository.Owner.Login,
+		Repository:   p.Repository.Name,
 		Catalog:      catalog,
 		SRType:       srType,
 		Fields:       ExtractTemplateFields(p.Issue.Body),
@@ -399,6 +421,11 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, map
 	}
 	slog.InfoContext(ctx, "github: service request created from issue",
 		"serviceRequestId", id, "number", number, "issue", p.Issue.Number, "catalog", catalog)
+	// Only for a new record: an issue that already had one ("exists" above)
+	// was announced when that record was created.
+	if s.srNotices != nil {
+		s.srNotices.OnCreated(ctx, id)
+	}
 	return Outcome{Action: "created", ChangeRequestID: id, Number: number}, nil
 }
 
@@ -552,20 +579,18 @@ func (s *githubSyncService) CreateServiceRequestFromIssue(ctx context.Context, r
 		return domain.CreateServiceRequestFromIssueResponse{}, &apierror.ValidationError{Msg: "title is required"}
 	}
 
-	mapping, err := s.repo.RepoMapping(ctx, req.Owner, req.Repository)
+	mapping, reason, err := s.resolveMapping(ctx, req.Owner, req.Repository)
 	if err != nil {
 		return domain.CreateServiceRequestFromIssueResponse{}, err
 	}
-	if mapping == nil {
-		return domain.CreateServiceRequestFromIssueResponse{}, &apierror.ConflictError{
-			Msg: "repository " + req.Owner + "/" + req.Repository + " is not mapped to an account",
-		}
+	if reason != "" {
+		return domain.CreateServiceRequestFromIssueResponse{}, &apierror.ConflictError{Msg: reason}
 	}
 
 	// Already created is success, not a conflict: the caller's retry after a
 	// timeout must not produce a second record, and servicenow_create_case.yml
 	// answers its own repeat with "Case Already Exists" for the same reason.
-	existing, err := s.repo.CaseByIssueNumber(ctx, mapping.AccountID, req.IssueNumber)
+	existing, err := s.repo.CaseByIssue(ctx, mapping.AccountID, req.Owner, req.Repository, req.IssueNumber)
 	if err != nil {
 		return domain.CreateServiceRequestFromIssueResponse{}, err
 	}
@@ -581,6 +606,8 @@ func (s *githubSyncService) CreateServiceRequestFromIssue(ctx context.Context, r
 	p.Issue.Body = req.Body
 	p.Issue.HTMLURL = "https://github.com/" + req.Owner + "/" + req.Repository + "/issues/" + strconv.Itoa(req.IssueNumber)
 	p.Issue.User.Login = req.Author
+	p.Repository.Owner.Login = req.Owner
+	p.Repository.Name = req.Repository
 	for _, l := range req.Labels {
 		p.Issue.Labels = append(p.Issue.Labels, struct {
 			Name string `json:"name"`

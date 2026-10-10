@@ -26,12 +26,15 @@
  */
 
 import type {
+  PagingChainMember,
+  PagingChainResponse,
+  PagingReadinessChain,
+  PagingReadinessGap,
   ScheduleAbsence,
   ScheduleAbsenceKind,
   ScheduleAssignment,
   ScheduleShift,
-  ScheduleZone,
-} from "../types";
+  ScheduleZone, ScheduleTier } from "../types";
 
 export const MONDAY = new Date(2026, 8, 21);
 export const SATURDAY_ISO = "2026-09-26";
@@ -56,6 +59,19 @@ export function shift(over: Partial<ScheduleShift> & { code: string }): Schedule
     ...over,
   } as ScheduleShift;
 }
+
+/** An SME rotation's two windows, as migration 0200 seeds Moesif's: a Day and
+ *  a Night zone each, every day of the week, the tier left to the turn. */
+export const MOE_DAY = shift({
+  code: "SME_MOE_DAY", shortCode: "Day", label: "Moesif day escalation", family: "SME",
+  zoneCode: "MOE_D", dayScope: "ANY", startMinute: 600, endMinute: 1320,
+  isEscalation: true, colourToken: "TZ1", sortOrder: 910,
+});
+export const MOE_NIGHT = shift({
+  code: "SME_MOE_NIGHT", shortCode: "Night", label: "Moesif night escalation", family: "SME",
+  zoneCode: "MOE_N", dayScope: "ANY", startMinute: 1320, endMinute: 2040, crossesMidnight: true,
+  isEscalation: true, colourToken: "TZ3", sortOrder: 920,
+});
 
 /** The windows these tests lean on, as the catalogue actually has them. */
 export const REGULAR = shift({
@@ -167,6 +183,7 @@ export function assignment(over: {
   startsAt?: string;
   endsAt?: string;
   isOnCall?: boolean;
+  tier?: ScheduleTier;
 }): ScheduleAssignment {
   seq += 1;
   const id = `a${seq}`;
@@ -186,6 +203,7 @@ export function assignment(over: {
     endsAt: over.endsAt ?? `${over.rotaDate}T12:30:00.000Z`,
     isOnCall: over.isOnCall ?? false,
     source: "SEED",
+    ...(over.tier ? { tier: over.tier } : {}),
   };
 }
 
@@ -256,4 +274,50 @@ export function scopeControls() {
     teams: ["alpha", "bravo"],
     families: ["CRE", "SRE"] as const,
   };
+}
+
+/* ── Case Paging ── */
+
+/** One membership on the paging chain; made-up people, as every fixture. */
+export function pagingMember(over: Partial<PagingChainMember> & { membershipId: string }): PagingChainMember {
+  return {
+    teamKey: "alpha",
+    teamName: "Alpha_abt_cre_team",
+    teamType: "cre-abt",
+    family: "CRE",
+    userId: `u-${over.membershipId}`,
+    name: `Person ${over.membershipId}`,
+    email: `${over.membershipId}@example.com`,
+    role: "engineer",
+    responderRank: 0,
+    ...over,
+  };
+}
+
+/** The CRE chain: Alpha with a lead and one responder of three, and the
+ *  leadership team holding the heads. */
+export function pagingChain(over: Partial<PagingChainResponse> = {}): PagingChainResponse {
+  return {
+    family: "CRE",
+    members: [
+      pagingMember({ membershipId: "a1", name: "Jane Doe", role: "lead" }),
+      pagingMember({ membershipId: "a2", name: "John Roe", responderRank: 1 }),
+      pagingMember({ membershipId: "a3", name: "Ann Poe" }),
+      pagingMember({
+        membershipId: "h1", name: "Head One", role: "cre_head",
+        teamKey: "leadership", teamName: "CRE Leadership", teamType: "leadership",
+      }),
+    ],
+    count: 4,
+    canEdit: { responderTeams: ["alpha"], teamLeadTeams: [], americasTeamLead: false, heads: false },
+    ...over,
+  };
+}
+
+export function readinessGap(over: Partial<PagingReadinessGap> & { code: string }): PagingReadinessGap {
+  return { severity: "error", message: over.code, fix: "data", ...over };
+}
+
+export function readinessChain(over: Partial<PagingReadinessChain> & { chain: PagingReadinessChain["chain"] }): PagingReadinessChain {
+  return { label: over.chain, ready: true, gaps: [], ...over };
 }

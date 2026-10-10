@@ -33,10 +33,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/cenkalti/backoff/v4"
+	"github.com/cenkalti/backoff/v5"
 	"golang.org/x/sync/singleflight"
 
-	"alert-core-service/internal/apierror"
 	"alert-core-service/internal/csm"
 	"alert-core-service/internal/model"
 )
@@ -47,38 +46,40 @@ type Notifier struct {
 	client           *http.Client
 	csm              *csm.Client
 	callerID         string
-	unknownServiceID string
+	defaultServiceID string
 	services         *serviceCache
 	// serviceResolveGroup collapses concurrent cache misses for the same unresolved label into one CSM search.
 	serviceResolveGroup     singleflight.Group
 	fallbackChatWebhookURLs []string
 	maxAttempts             int
 	retryBaseDelay          time.Duration
-	// chatThreadingEnabled threads every Chat fallback message for the same incident's fingerprint into one Google Chat thread, instead of a new top-level message each time.
+	// chatThreadingEnabled threads each incident's fallback card and Duplicate/OK replies into one Google Chat thread keyed by chatThreadKey.
 	chatThreadingEnabled bool
 }
 
 // Config groups New's dependencies to avoid a growing positional-argument list.
 type Config struct {
 	CallerID string
-	// UnknownServiceID is used when a Service label has no CMDB match.
-	UnknownServiceID string
+	// DefaultServiceID is the Default service, used when an alert has no Service label or the label has no
+	// CMDB match; entity-service assigns that service's support group (the default team).
+	DefaultServiceID string
 	// ServiceCacheTTL bounds reuse of a resolved label->serviceId mapping.
 	ServiceCacheTTL time.Duration
 	MaxAttempts     int
 	RetryBaseDelay  time.Duration
 	HTTPTimeout     time.Duration
-	// ChatThreadingEnabled threads Chat fallback messages by incident fingerprint; see Notifier.chatThreadingEnabled.
+	// ChatThreadingEnabled threads Chat fallback messages per incident; see Notifier.chatThreadingEnabled.
 	ChatThreadingEnabled bool
 }
 
+// New wires the notifier; a nil csm client disables CSM delivery so incidents only reach Chat.
 func New(logger *slog.Logger, csm *csm.Client, cfg Config) *Notifier {
 	n := &Notifier{
 		logger:                  logger,
 		client:                  &http.Client{Timeout: cfg.HTTPTimeout},
 		csm:                     csm,
 		callerID:                cfg.CallerID,
-		unknownServiceID:        cfg.UnknownServiceID,
+		defaultServiceID:        cfg.DefaultServiceID,
 		services:                newServiceCache(cfg.ServiceCacheTTL),
 		fallbackChatWebhookURLs: splitURLs(os.Getenv("FALLBACK_CHAT_WEBHOOK_URLS")),
 		maxAttempts:             cfg.MaxAttempts,
@@ -102,48 +103,29 @@ func splitURLs(raw string) []string {
 	return urls
 }
 
-// DedupTag includes FirstSeen for uniqueness; millisecond precision ensures same-second recurrences get distinct tags.
-func DedupTag(fingerprint string, firstSeen time.Time) string {
+// CSMEnabled reports whether a CSM client is configured.
+func (n *Notifier) CSMEnabled() bool {
+	return n.csm != nil
+}
+
+// CorrelationTag includes FirstSeen for uniqueness; millisecond precision ensures same-second recurrences get distinct tags.
+func CorrelationTag(fingerprint string, firstSeen time.Time) string {
 	return fmt.Sprintf("[fp:%s:%d]", fingerprint[:12], firstSeen.UnixMilli())
 }
 
-// NotifyCSM returns permanent=true for non-retryable rejections (non-429 4xx). CSMAttempts >= 1 already counts current attempt; only first attempts fail open on search errors.
-func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident) (incidentID, incidentNumber string, ok bool, permanent bool) {
-	tag := DedupTag(inc.Fingerprint, inc.FirstSeen)
-	if id, number, found, err := n.csm.SearchIncidentByCorrelationID(ctx, tag); err != nil {
-		if inc.CSMAttempts > 1 {
-			n.logger.Warn("csm dedup search failed on retry, deferring to avoid a duplicate create", "incident_number", inc.IncidentNumber, "error", err)
-			return "", "", false, false
-		}
-		// Fail open: first attempt, so no prior create possible; search error doesn't prove no incident exists.
-		n.logger.Warn("csm dedup search failed, proceeding to create", "incident_number", inc.IncidentNumber, "error", err)
-	} else if found {
-		n.logger.Info("found existing csm incident via dedup search, reusing", "incident_id", id, "incident_number", number)
-		return id, number, true, false
-	}
-
-	serviceID, err := n.resolveServiceID(ctx, inc.Service)
+// NotifyCSM returns permanent=true for non-retryable rejections (non-429 4xx); it never searches CSM for a prior create, so a lost create response means a second create on retry.
+func (n *Notifier) NotifyCSM(ctx context.Context, inc model.Incident, creationNote string) (incidentID, incidentNumber string, ok bool, permanent bool) {
+	svc, err := n.resolveService(ctx, inc.Service)
 	if err != nil {
 		n.logger.Error("service id resolution failed, will retry", "incident_number", inc.IncidentNumber, "service", inc.Service, "error", err)
 		return "", "", false, false
 	}
 
-	req := csm.CreateIncidentRequest{
-		CallerID:      n.callerID,
-		Category:      csmCategory(inc.Category),
-		ServiceID:     serviceID,
-		Impact:        inc.Impact,
-		Urgency:       inc.Urgency,
-		Subject:       incidentSubject(inc),
-		CorrelationID: &tag,
-	}
-	if inc.Description != "" {
-		req.WorkNotes = &inc.Description
-	}
+	req := n.createRequest(inc, svc, CorrelationTag(inc.Fingerprint, inc.FirstSeen), creationNote)
 
-	res, err := n.createIncidentWithRetry(ctx, tag, req)
+	res, err := n.createIncidentWithRetry(ctx, req)
 	if err != nil {
-		var apiErr *apierror.Error
+		var apiErr *csm.Error
 		perm := errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != http.StatusTooManyRequests
 		n.logger.Error("csm create incident failed", "incident_number", inc.IncidentNumber, "permanent", perm, "error", err)
 		return "", "", false, perm
@@ -162,80 +144,118 @@ func (n *Notifier) PushWorkNote(ctx context.Context, incidentID, note string) er
 }
 
 // IncidentState returns found=false when CSM has no matching incident yet.
-func (n *Notifier) IncidentState(ctx context.Context, incidentNumber string) (open bool, found bool, err error) {
-	return n.csm.IncidentState(ctx, incidentNumber)
+func (n *Notifier) IncidentState(ctx context.Context, incidentID, incidentNumber string) (open bool, found bool, err error) {
+	return n.csm.IncidentState(ctx, incidentID, incidentNumber)
 }
 
-// createIncidentWithRetry re-checks dedup on each retry, since a lost response could mean CSM already created it.
-func (n *Notifier) createIncidentWithRetry(ctx context.Context, tag string, req csm.CreateIncidentRequest) (*csm.CreateIncidentResult, error) {
+// createIncidentWithRetry retries transient CreateIncident failures with backoff; 4xx other than 429 is permanent.
+func (n *Notifier) createIncidentWithRetry(ctx context.Context, req csm.CreateIncidentRequest) (*csm.CreateIncidentResult, error) {
 	eb := backoff.NewExponentialBackOff()
 	eb.InitialInterval = n.retryBaseDelay
-	b := backoff.WithContext(backoff.WithMaxRetries(eb, uint64(n.maxAttempts-1)), ctx)
 
-	var result *csm.CreateIncidentResult
-	attempt := 0
-	err := backoff.Retry(func() error {
-		attempt++
-		if attempt > 1 {
-			// Recheck dedup on retry: prior attempt may have succeeded but lost response; CreateIncident isn't idempotent.
-			id, number, found, err := n.csm.SearchIncidentByCorrelationID(ctx, tag)
-			if err != nil {
-				return fmt.Errorf("dedup search before retry: %w", err)
-			}
-			if found {
-				n.logger.Info("found existing csm incident via dedup search on retry, reusing", "incident_id", id, "incident_number", number)
-				result = &csm.CreateIncidentResult{IncidentID: id, IncidentNumber: number}
-				return nil
-			}
-		}
+	return backoff.Retry(ctx, func() (*csm.CreateIncidentResult, error) {
 		res, err := n.csm.CreateIncident(ctx, req)
 		if err == nil {
-			result = res
-			return nil
+			return res, nil
 		}
-		var apiErr *apierror.Error
+		var apiErr *csm.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 && apiErr.StatusCode != http.StatusTooManyRequests {
-			return backoff.Permanent(err)
+			return nil, backoff.Permanent(err)
 		}
-		return err
-	}, b)
-	if err != nil {
 		return nil, err
-	}
-	return result, nil
+	}, backoff.WithBackOff(eb), backoff.WithMaxTries(uint(n.maxAttempts)))
 }
 
-// resolveServiceID returns a search error as-is, never falling back to UnknownServiceID, so callers retry.
-func (n *Notifier) resolveServiceID(ctx context.Context, label string) (string, error) {
-	if label == "" {
-		return n.unknownServiceID, nil
+// resolvedService is the CMDB service an incident is raised against.
+type resolvedService struct {
+	id string
+}
+
+// createRequest builds the POST /incidents body. It never names an assignment group: entity-service sets it
+// from the service's support group, which with the contact type is what puts an alert-born incident on the
+// SRE escalation ladder.
+func (n *Notifier) createRequest(inc model.Incident, svc resolvedService, tag, creationNote string) csm.CreateIncidentRequest {
+	req := csm.CreateIncidentRequest{
+		CallerID:      n.callerID,
+		Category:      csmCategory(inc.Category),
+		ServiceID:     svc.id,
+		Impact:        inc.Impact,
+		Urgency:       inc.Urgency,
+		Subject:       incidentSubject(inc),
+		CorrelationID: &tag,
 	}
-	if id, ok := n.services.get(label, time.Now()); ok {
-		return id, nil
+	if creationNote != "" {
+		req.WorkNotes = &creationNote
+	}
+	if ct := contactTypeForSource(inc.Source); ct != "" {
+		req.ContactType = &ct
+	}
+	return req
+}
+
+// contactTypes maps an alert's Source (normalised by normaliseSource) to entity-service's IncidentContactType.
+// Only sources that enum names are listed; any other source (AWS, Grafana, ...) sends no contact type and
+// relies alone on the assignment group entity-service sets from its service.
+var contactTypes = map[string]string{
+	"azure":             "AZURE",
+	"azuremonitor":      "AZURE",
+	"site24x7":          "SITE_247",
+	"site247":           "SITE_247",
+	"sentinel":          "SENTINEL",
+	"azuresentinel":     "SENTINEL",
+	"microsoftsentinel": "SENTINEL",
+}
+
+// contactTypeForSource returns the contact type for an alert source, or "" when the enum has none for it.
+func contactTypeForSource(source string) string {
+	return contactTypes[normaliseSource(source)]
+}
+
+// normaliseSource lower-cases a source and drops everything but letters and digits, so "Site 24x7" and "site24x7" match.
+func normaliseSource(source string) string {
+	var b strings.Builder
+	for _, r := range strings.ToLower(source) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// resolveService falls back to the Default service when label is empty or has no CMDB match. A search error is
+// returned as-is, never falling back to the Default service, so callers retry.
+func (n *Notifier) resolveService(ctx context.Context, label string) (resolvedService, error) {
+	if label == "" {
+		return resolvedService{id: n.defaultServiceID}, nil
+	}
+	if svc, ok := n.services.get(label, time.Now()); ok {
+		return svc, nil
 	}
 	// Collapses concurrent same-label lookups into one CSM search on its own context (not any single caller's), so one caller's cancellation can't fail it for the others still waiting.
 	resultCh := n.serviceResolveGroup.DoChan(label, func() (any, error) {
-		id, err := n.csm.SearchServiceID(context.WithoutCancel(ctx), label)
+		hit, found, err := n.csm.SearchService(context.WithoutCancel(ctx), label)
 		if err != nil {
-			return "", err
+			return resolvedService{}, err
 		}
-		if id != "" {
-			n.services.set(label, id, time.Now())
+		if !found {
+			return resolvedService{}, nil
 		}
-		return id, nil
+		svc := resolvedService{id: hit.ID}
+		n.services.set(label, svc, time.Now())
+		return svc, nil
 	})
 	select {
 	case <-ctx.Done():
-		return "", ctx.Err()
+		return resolvedService{}, ctx.Err()
 	case res := <-resultCh:
 		if res.Err != nil {
-			return "", res.Err
+			return resolvedService{}, res.Err
 		}
-		id := res.Val.(string)
-		if id == "" {
-			return n.unknownServiceID, nil
+		svc := res.Val.(resolvedService)
+		if svc.id == "" {
+			return resolvedService{id: n.defaultServiceID}, nil
 		}
-		return id, nil
+		return svc, nil
 	}
 }
 
@@ -252,7 +272,7 @@ func csmCategory(category string) string {
 	return "SERVICE_INTERRUPTION"
 }
 
-// incidentSubject is the metric name alone; the dedup tag and other alert context live in WorkNotes instead of the title.
+// incidentSubject is the metric name alone; the correlation tag and other alert context live outside the title.
 func incidentSubject(inc model.Incident) string {
 	subject := inc.MetricName
 	if subject == "" {
@@ -270,9 +290,9 @@ func (n *Notifier) NotifyChat(ctx context.Context, inc model.Incident) (ok bool)
 	return n.postCardToChat(ctx, inc.IncidentNumber, fallbackGoogleChatCard(inc, n.chatThreadingEnabled))
 }
 
-// NotifyChatAnnotation threads a Duplicate/OK annotation into the incident's existing Chat thread, rendering kind and note so it reads as an update rather than a repeat of the original "Priority Incident Reported" card.
-func (n *Notifier) NotifyChatAnnotation(ctx context.Context, inc model.Incident, kind, note string) (ok bool) {
-	return n.postCardToChat(ctx, inc.IncidentNumber, annotationGoogleChatCard(inc, kind, note, n.chatThreadingEnabled))
+// NotifyChatAnnotation threads a Duplicate/OK digest into the incident's Chat thread, so it reads as an update rather than a repeat of the "Priority Incident Reported" card.
+func (n *Notifier) NotifyChatAnnotation(ctx context.Context, inc model.Incident, text string) (ok bool) {
+	return n.postCardToChat(ctx, inc.IncidentNumber, annotationGoogleChatCard(inc, text, n.chatThreadingEnabled))
 }
 
 // postCardToChat posts card to every configured webhook, threading it when enabled, and returns true only if every target confirms, or if none are configured.
@@ -337,24 +357,17 @@ func (n *Notifier) postWithRetry(ctx context.Context, url string, payload any) (
 
 	eb := backoff.NewExponentialBackOff()
 	eb.InitialInterval = n.retryBaseDelay
-	b := backoff.WithContext(backoff.WithMaxRetries(eb, uint64(n.maxAttempts-1)), ctx)
 
-	var respBody []byte
-	err = backoff.Retry(func() error {
+	return backoff.Retry(ctx, func() ([]byte, error) {
 		status, rb, err := n.post(ctx, url, body)
 		if err == nil {
-			respBody = rb
-			return nil
+			return rb, nil
 		}
 		if status >= 400 && status < 500 && status != http.StatusTooManyRequests {
-			return backoff.Permanent(err)
+			return nil, backoff.Permanent(err)
 		}
-		return err
-	}, b)
-	if err != nil {
 		return nil, err
-	}
-	return respBody, nil
+	}, backoff.WithBackOff(eb), backoff.WithMaxTries(uint(n.maxAttempts)))
 }
 
 // post returns status 0 when the request never got a response.
@@ -407,7 +420,12 @@ func priorityLabel(severity int) string {
 	return fmt.Sprintf("P%d - %s", severity, severityLabel(severity))
 }
 
-// fallbackGoogleChatCard is titled FALLBACK since this path has no team-specific routing info. When threaded is true, the card carries inc.Fingerprint as the Chat thread key, so every message for this alert (across incident generations, and Duplicate/OK annotations) lands in one thread instead of a new top-level message each time.
+// chatThreadKey is unique per incident generation, so a recurrence after the dedup window starts a new thread while its Duplicate/OK replies join it.
+func chatThreadKey(inc model.Incident) string {
+	return fmt.Sprintf("%s-%d", inc.Fingerprint, inc.FirstSeen.UnixMilli())
+}
+
+// fallbackGoogleChatCard is titled FALLBACK since this path has no team-specific routing info; when threaded, the card carries chatThreadKey so the incident's annotations reply into it.
 func fallbackGoogleChatCard(inc model.Incident, threaded bool) map[string]any {
 	word := severityLabel(inc.Severity)
 	subtitle := "#" + inc.IncidentNumber + " | " + inc.Service
@@ -453,13 +471,13 @@ func fallbackGoogleChatCard(inc model.Incident, threaded bool) map[string]any {
 		},
 	}
 	if threaded {
-		card["thread"] = map[string]any{"threadKey": inc.Fingerprint}
+		card["thread"] = map[string]any{"threadKey": chatThreadKey(inc)}
 	}
 	return card
 }
 
-// annotationGoogleChatCard renders a Duplicate/OK annotation as a reply distinct from fallbackGoogleChatCard's "Priority Incident Reported" header, so a threaded Duplicate or OK doesn't look like a brand new page. note is model.BuildChatAnnotationText's HTML output, already naming the kind in bold.
-func annotationGoogleChatCard(inc model.Incident, _, note string, threaded bool) map[string]any {
+// annotationGoogleChatCard renders a Duplicate/OK digest as a reply without fallbackGoogleChatCard's header, so it doesn't look like a new page; note is model.BuildChatDigest's HTML.
+func annotationGoogleChatCard(inc model.Incident, note string, threaded bool) map[string]any {
 	card := map[string]any{
 		"cardsV2": []map[string]any{
 			{
@@ -477,7 +495,7 @@ func annotationGoogleChatCard(inc model.Incident, _, note string, threaded bool)
 		},
 	}
 	if threaded {
-		card["thread"] = map[string]any{"threadKey": inc.Fingerprint}
+		card["thread"] = map[string]any{"threadKey": chatThreadKey(inc)}
 	}
 	return card
 }

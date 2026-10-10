@@ -322,8 +322,14 @@
   /* Above the day cells it has to cover, and above the header row's own
      cells where the two sticky axes cross. */
   z-index: 3;
-  width: 210px;
-  min-width: 210px;
+  /* Wide enough for the longest real name plus its avatar, the watcher badge
+     and the padding -- 210px cut "Yasiru Nimantha Welagedara" short, and
+     because the name sits in a flex row beside the avatar it wrapped rather
+     than clipped, making that one row taller than every other and breaking
+     the grid's alignment. A name longer than this still degrades to an
+     ellipsis (.nm .who), so the row height stays fixed either way. */
+  width: 252px;
+  min-width: 252px;
   text-align: left;
   /* Opaque: with the portal's semi-transparent paper colour, thirty days of
      cells scrolled visibly through this column. */
@@ -2087,4 +2093,444 @@
 .csm-ts .tw.roster tbody tr.me:last-child > td.today.sel {
   box-shadow: none;
   background: color-mix(in srgb, var(--accent) 26%, transparent);
+}
+
+/* Page header: two rows on purpose. The view tabs take the first row on their
+   own, with room for the tabs still to come; the toolbar takes the second,
+   right-aligned: the date navigator, then the page's actions. As one wrapping row, the toolbar dropped to a line of its own
+   whenever the tabs grew, flush right and lined up with nothing. */
+.csm-ts .tabrow{flex-direction:column;align-items:stretch;row-gap:10px}
+.csm-ts .tabrow>.tabs{align-self:flex-start}
+.csm-ts .tabright{width:100%;margin-left:0;justify-content:flex-start}
+/* Right-aligned by an auto margin, not justify-content: flex-end -- that
+   pushes a row wider than the screen off its start, and on a phone it cut the
+   date navigator's first buttons away. An auto margin never goes negative. */
+.csm-ts .tabright>.controls{margin-left:auto;width:auto;max-width:100%}
+@media (max-width:600px){.csm-ts .tabright>.controls{margin-left:0}}
+@media (max-width:820px){.csm-ts .tabrow>.tabs{align-self:stretch}}
+
+/* ── Each team's rows in the team's own colour ─────────────────────────────
+   A faint wash of the team colour (--rc, set per row) over its members'
+   rows, and a bar of it at the start of the name, so where one team ends and
+   the next begins reads at a glance. Same zero specificity as the banding
+   above (:where adds none) and written after it, so it replaces the plain
+   and banded fill only: weekend, today, the selected day, your own row,
+   hover and a found row all still mark a cell over it. */
+.csm-ts .roster :where(tbody tr.tinted) > td {
+  background: color-mix(in srgb, var(--rc) 5%, var(--surface));
+}
+.csm-ts .roster :where(tbody tr.tinted.alt) > td {
+  background: color-mix(in srgb, var(--rc) 9%, var(--surface));
+}
+.csm-ts .tw.roster :where(tbody tr.tinted) > th.lab {
+  background: linear-gradient(color-mix(in srgb, var(--rc) 7%, transparent), color-mix(in srgb, var(--rc) 7%, transparent)), var(--surface-solid);
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--rc) 75%, transparent), 1px 0 0 var(--line);
+}
+.csm-ts .tw.roster :where(tbody tr.tinted.alt) > th.lab {
+  background: linear-gradient(color-mix(in srgb, var(--rc) 11%, transparent), color-mix(in srgb, var(--rc) 11%, transparent)), var(--surface-solid);
+}
+:root[data-color-scheme="dark"] .csm-ts .roster :where(tbody tr.tinted) > td {
+  background: color-mix(in srgb, var(--rc) 9%, var(--surface));
+}
+:root[data-color-scheme="dark"] .csm-ts .roster :where(tbody tr.tinted.alt) > td {
+  background: color-mix(in srgb, var(--rc) 14%, var(--surface));
+}
+:root[data-color-scheme="dark"] .csm-ts .tw.roster :where(tbody tr.tinted) > th.lab {
+  background: linear-gradient(color-mix(in srgb, var(--rc) 12%, transparent), color-mix(in srgb, var(--rc) 12%, transparent)), var(--surface-solid);
+}
+:root[data-color-scheme="dark"] .csm-ts .tw.roster :where(tbody tr.tinted.alt) > th.lab {
+  background: linear-gradient(color-mix(in srgb, var(--rc) 17%, transparent), color-mix(in srgb, var(--rc) 17%, transparent)), var(--surface-solid);
+}
+
+/* The team lead, first in each team: tagged in the team's colour, beside
+   the You tag's shape so the two read as the same kind of mark. */
+.csm-ts .tw.roster tbody tr > th.lab .leadtag {
+  font-style: normal;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--rc, var(--muted)) 18%, var(--surface));
+  color: color-mix(in srgb, var(--rc, var(--muted)) 70%, var(--ink));
+  border: 1px solid color-mix(in srgb, var(--rc, var(--muted)) 40%, transparent);
+  font-size: 9.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  flex: none;
+}
+
+/* ── Off-rota cards, each in its own kind's colour ─────────────────────────
+   A card is washed with --cc, its kind's colour. That was the chip's text
+   colour, which is white for the filled chips (AL, LL, EXT, EXC), so those
+   cards washed with white and every card read the same. Those take their
+   chip's fill instead; the pastel chips' text colour was already the strong
+   one. A bar of the colour down the card's edge separates one reason from
+   the next even where two washes are close. */
+.csm-ts .offcard.AL { --cc: var(--al-bg); }
+.csm-ts .offcard.LL { --cc: var(--ll-bg); }
+.csm-ts .offcard.EXT { --cc: var(--ext-bg); }
+.csm-ts .offcard.EXC { --cc: var(--exc-bg); }
+.csm-ts .ladder .offcard {
+  background: color-mix(in srgb, var(--cc, var(--muted)) 9%, var(--surface));
+  box-shadow: inset 3px 0 0 color-mix(in srgb, var(--cc, var(--muted)) 80%, transparent);
+}
+:root[data-color-scheme="dark"] .csm-ts .ladder .offcard {
+  background: color-mix(in srgb, var(--cc, var(--muted)) 16%, var(--surface));
+}
+.csm-ts .ladder .offcard .offh .offl {
+  color: color-mix(in srgb, var(--cc, var(--muted)) 55%, var(--ink-2));
+  font-weight: 600;
+}
+
+/* "Back to <team> from <day>" -- the end of a move, beside Remove. Not a
+   deletion, so it is the accent, not the warning red; it wraps under the span
+   on a narrow picker rather than squeezing the label. */
+.csm-ts .pk-remove { flex-wrap: wrap; }
+.csm-ts .pk-remove .pkrm-b.back {
+  border-color: var(--accent);
+  color: var(--accent-ink);
+}
+.csm-ts .pk-remove .pkrm-b.back:hover:not(:disabled) {
+  background: var(--accent-soft);
+}
+
+/* ── Case Paging tab ──────────────────────────────────────────────────────
+   Who is on each tier of the paging chain: a matrix, a column per team and
+   a row per tier (see .cp-mx below). */
+.csm-ts .cp-pick { width: 100%; min-width: 150px; max-width: 240px; height: 34px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--ink); padding: 0 8px; }
+.csm-ts .cp-pick:disabled { background: transparent; border-color: transparent; color: var(--ink); opacity: 1; appearance: none; -webkit-appearance: none; padding-left: 0; cursor: default; }
+.csm-ts .cp-pick.chg { box-shadow: 0 0 0 2px var(--accent); }
+.csm-ts .cp-add { width: auto; min-width: 170px; }
+.csm-ts .cp-note { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.csm-ts .cp-lock { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--faint); margin-top: 2px; }
+.csm-ts .cp-st { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 600; padding: 3px 9px; border-radius: 999px; white-space: nowrap; }
+.csm-ts .cp-st.ok { background: color-mix(in srgb, #2e7d32 14%, var(--surface-solid)); color: color-mix(in srgb, #2e7d32 80%, var(--ink)); }
+.csm-ts .cp-st.gap { background: color-mix(in srgb, #ed6c02 18%, var(--surface-solid)); color: color-mix(in srgb, #ed6c02 70%, var(--ink)); }
+.csm-ts .cp-chips { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.csm-ts .cp-chip { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--line-2); background: var(--surface); font-size: 13px; }
+.csm-ts .cp-chip button { border: 0; background: transparent; color: var(--muted); font-size: 15px; line-height: 1; padding: 0 2px; }
+
+/* The chain picker's PaaS: shown, not pickable. aria-disabled rather than
+   disabled, so its reason (title) still shows and the keyboard still reaches it. */
+.csm-ts .seg button.off, .csm-ts .seg button[aria-disabled="true"] { opacity: .55; cursor: not-allowed; }
+
+/* Readiness strip: whether the chain on screen has someone to page on every
+   day ahead. Status is in the words; the edge colour only repeats it. */
+.csm-ts .cp-ready { margin: 10px 16px 4px; padding: 10px 14px; border: 1px solid var(--line); border-left: 4px solid var(--line-2); border-radius: 10px; background: var(--surface); }
+.csm-ts .cp-ready.ok { border-left-color: var(--ok); }
+.csm-ts .cp-ready.gap { border-left-color: var(--warn); }
+.csm-ts .cp-ready-head { margin: 0; font-size: 13px; color: var(--ink-2); }
+.csm-ts .cp-gaps { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 6px; }
+.csm-ts .cp-gap { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13px; }
+.csm-ts .cp-sev { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .05em; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; }
+.csm-ts .cp-gap.error .cp-sev { color: var(--crit); }
+.csm-ts .cp-gap.warning .cp-sev { color: var(--warn); }
+.csm-ts .cp-msg { flex: 1 1 260px; min-width: 0; color: var(--ink); }
+.csm-ts .cp-fix .btn.sm { height: 26px; }
+.csm-ts .cp-fixnote { font-size: 12px; color: var(--muted); }
+.csm-ts .cp-more { margin-top: 6px; }
+.csm-ts .cp-from { margin: 10px 16px 16px; font-size: 13px; color: var(--ink-2); display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+
+/* Paging phone: the number Case Paging would call for a person, in words
+   ("Profile ✓", "No number", ...) with an icon; the tone only repeats them. */
+.csm-ts .cp-phone { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; margin-top: 4px; }
+.csm-ts .cp-chip .cp-phone { margin-top: 0; }
+.csm-ts .cp-ph { display: inline-flex; align-items: center; gap: 4px; font-size: 11.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid currentColor; color: var(--muted); white-space: nowrap; }
+.csm-ts .cp-ph.ok { color: var(--ok); }
+.csm-ts .cp-ph.warn { color: var(--warn); }
+.csm-ts .cp-ph.err, .csm-ts .cp-ph.none { color: var(--crit); }
+.csm-ts .cp-mask { color: var(--ink-2); }
+.csm-ts .cp-phact { display: inline-flex; flex-wrap: wrap; gap: 2px; }
+.csm-ts .cp-phact .btn.sm { height: 24px; padding: 0 6px; font-size: 12px; }
+.csm-ts .btn[aria-disabled="true"] { opacity: .65; cursor: progress; }
+
+/* The paging-number dialog. Inside .csm-ts, so it keeps the page's tokens. */
+.csm-ts .cp-modal-back { position: fixed; inset: 0; z-index: 1300; background: rgba(15, 20, 35, .45); display: flex; align-items: center; justify-content: center; padding: 16px; }
+.csm-ts .cp-modal { width: min(440px, 100%); background: var(--surface); color: var(--ink); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow); padding: 18px 20px; }
+.csm-ts .cp-modal h3 { margin: 0 0 12px; font-size: 16px; }
+.csm-ts .cp-lbl { display: block; font-size: 12.5px; font-weight: 600; color: var(--ink-2); margin-bottom: 4px; }
+.csm-ts .cp-input { width: 100%; height: 36px; border: 1px solid var(--line-2); border-radius: 8px; background: var(--surface); color: var(--ink); padding: 0 10px; font-size: 14px; }
+.csm-ts .cp-input:focus { outline: none; box-shadow: var(--focus); border-color: var(--accent); }
+.csm-ts .cp-input[aria-invalid="true"] { border-color: var(--crit); }
+.csm-ts .cp-help { margin: 6px 0 0; font-size: 12px; color: var(--muted); }
+.csm-ts .cp-err { margin: 6px 0 0; font-size: 12.5px; color: var(--crit); }
+.csm-ts .cp-modal-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 16px; }
+
+/* The CRE paging chain as a matrix: a column per team, a row per level. It
+   scrolls inside its own box, never the page; the level column and the team
+   header row stay put while it does.
+
+   Every cell paints an OPAQUE background. --surface is the portal's paper
+   colour, which carries alpha (#ffffffc5 in the light themes), and --surface-2
+   is the action-hover overlay, which is all alpha: on a pinned cell either one
+   let the team columns scrolling underneath show through, which read as a grey
+   band washing out the first team column. So the base is --surface-solid, and
+   a band or tint is layered on top of it rather than used alone. */
+.csm-ts .cp-mx-wrap { margin: 4px 16px 16px; overflow: auto; max-height: min(78vh, 960px); border: 1px solid var(--line); border-radius: 10px; background: var(--surface-solid); }
+.csm-ts table.cp-mx { --cp-bg: var(--surface-solid); --cp-band: linear-gradient(var(--surface-2), var(--surface-2)); --cp-night: color-mix(in srgb, var(--accent) 6%, var(--surface-solid)); border-collapse: separate; border-spacing: 0; min-width: 100%; font-size: 13px; }
+.csm-ts .cp-mx th, .csm-ts .cp-mx td { padding: 10px 12px; text-align: left; vertical-align: top; background: var(--cp-bg); border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
+.csm-ts .cp-mx tr > :last-child { border-right: 0; }
+.csm-ts .cp-mx tbody tr:last-child > * { border-bottom: 0; }
+/* Team columns: a steady width, so a picker or a chip never squeezes another. */
+.csm-ts .cp-mx thead th:not(.cp-corner) { width: 210px; min-width: 210px; }
+.csm-ts .cp-mx thead th.am { width: 250px; min-width: 250px; }
+/* The header row: pinned to the top, above the body. */
+.csm-ts .cp-mx thead th { position: sticky; top: 0; z-index: 2; vertical-align: bottom; font-weight: 600; color: var(--ink); border-bottom: 1px solid var(--line-2); }
+.csm-ts .cp-mx thead th small { display: block; font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.csm-ts .cp-mx .cp-tn { display: block; font-size: 13.5px; }
+.csm-ts .cp-mx thead .cp-st { margin-top: 6px; font-size: 11.5px; }
+/* The level column: pinned to the left, exactly its own width, its text
+   wrapping inside it, above the body cells and with a clean right edge. */
+.csm-ts .cp-mx th[scope="row"], .csm-ts .cp-mx .cp-corner { position: sticky; left: 0; z-index: 3; box-sizing: border-box; width: 200px; min-width: 200px; max-width: 200px; white-space: normal; overflow-wrap: anywhere; overflow: hidden; font-weight: 600; color: var(--ink); border-right: 1px solid var(--line-2); box-shadow: 4px 0 6px -4px rgba(0, 0, 0, .18); }
+.csm-ts .cp-mx .cp-corner { top: 0; z-index: 4; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.csm-ts .cp-mx th[scope="row"] small { display: block; font-weight: 500; color: var(--muted); margin-top: 2px; }
+.csm-ts .cp-mx .cp-opt { font-style: italic; }
+/* Level groups: alternate bands, and a firmer line where a level starts. */
+.csm-ts .cp-mx tbody.band > tr > * { background: var(--cp-band), var(--cp-bg); }
+.csm-ts .cp-mx tbody + tbody > tr:first-child > * { border-top: 1px solid var(--line-2); }
+/* Americas, the night cover: a faint tint down its column, still opaque. */
+.csm-ts .cp-mx .am { background: var(--cp-night); }
+.csm-ts .cp-mx tbody.band > tr > .am { background: var(--cp-band), var(--cp-night); }
+.csm-ts .cp-mx .cp-pool, .csm-ts .cp-mx .cp-span { text-align: left; }
+.csm-ts .cp-mx .cp-span .cp-pick { max-width: 320px; }
+.csm-ts .cp-mx td:focus { outline: 2px solid var(--accent); outline-offset: -2px; }
+.csm-ts .cp-name { display: block; font-weight: 500; color: var(--ink); }
+.csm-ts .cp-name.unset { font-weight: 400; color: var(--faint); }
+/* Americas' Team leads: a lead a line, the number inline beside the name. */
+.csm-ts .cp-leads { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.csm-ts .cp-leads li { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 6px; line-height: 1.3; }
+.csm-ts .cp-leads .cp-lname { font-weight: 500; color: var(--ink); }
+.csm-ts .cp-leads .cp-phone { margin-top: 0; }
+.csm-ts .cp-leads .cp-x { border: 0; background: transparent; color: var(--muted); font-size: 15px; line-height: 1; padding: 0 4px; cursor: pointer; }
+.csm-ts .cp-leads .cp-x:hover, .csm-ts .cp-leads .cp-x:focus-visible { color: var(--crit); }
+.csm-ts .cp-leadcell .cp-add { margin-top: 6px; }
+.csm-ts .cp-vh { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+/* The weekday under each date ("7" over "Wed"), so a reader need not count
+   from the weekend shading. A split (SRE/SME) day keeps its date row at the
+   height the zone row is pinned beneath, so there it sits beside the date. */
+.csm-ts .tw.roster thead th.day .w {
+  margin-top: 1px;
+  font-size: 9.5px;
+  font-weight: 500;
+  line-height: 1;
+  color: var(--muted);
+}
+.csm-ts .tw.roster.split thead tr:first-child th.day .w {
+  display: inline;
+  margin: 0 0 0 4px;
+}
+.csm-ts .tw.roster.split thead tr:first-child th.day:not(.today) .d {
+  display: inline;
+}
+
+/* ── Day view: the rotation reads before the people on it ─────────────────
+   A card's heading -- its hours, its name and how many are on it -- was set
+   smaller and greyer than the names under it, so a glance found people first
+   and had to hunt for which rotation they were on. The heading is now the
+   largest, darkest line on the card, and the other headings of the day view
+   (a tier row, a crowded card's team list, an off-rota card's kind) step up
+   with it, each still above the names it heads. */
+.csm-ts .ladder .zbh {
+  font-size: 13px;
+  column-gap: 8px;
+}
+.csm-ts .ladder .zbh .chip.sm {
+  height: 22px;
+  padding: 0 7px;
+  font-size: 12px;
+  font-weight: 700;
+}
+.csm-ts .ladder .zbh > b.zbt {
+  font-size: 13.5px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.csm-ts .ladder .zbh .zbn {
+  font-size: 13.5px;
+  font-weight: 800;
+  color: var(--ink);
+}
+.csm-ts .ladder .zsl {
+  font-size: 11px;
+  line-height: 15px;
+}
+.csm-ts .ladder .zsl b {
+  font-size: 11.5px;
+  color: var(--ink);
+}
+.csm-ts .ladder .zblk .teamlist .tl {
+  font-size: 12.5px;
+}
+.csm-ts .ladder .zblk .teamlist .tl b {
+  font-weight: 800;
+}
+.csm-ts .ladder .zblk .tlph {
+  font-size: 11px;
+}
+.csm-ts .ladder .offh .offl {
+  font-size: 12px;
+  font-weight: 700;
+}
+.csm-ts .ladder .offh b {
+  font-size: 12.5px;
+}
+
+/* A crowded card opens on its team list alone; the pane says how to see a
+   team instead of standing empty. */
+.csm-ts .ladder .zblk .tlhint {
+  display: flex;
+  align-items: center;
+  height: 100%;
+  min-height: 24px;
+  font-size: 11.5px;
+  font-style: italic;
+  color: var(--muted);
+}
+.csm-ts .ladder .zblk .teamsplit .tl {
+  cursor: pointer;
+}
+
+/* ── Day view: a card's names along its width, on call set apart ──────────
+   A small card laid its names out in 150px columns, so a two-word name broke
+   onto a second line while the rest of the card stood empty. The columns are
+   now wide enough for a whole name and share the card's width between them,
+   so names stay lined up in columns down a full card and spread across a
+   small one. Only a name wider than its column is cut (its tooltip has it in
+   full). */
+.csm-ts .ladder .zsec.zflow {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
+  gap: 2px 16px;
+}
+.csm-ts .ladder .zsec.zflow .lnm {
+  max-width: 100%;
+}
+.csm-ts .ladder .lane .zblk .zsec.zflow .lnm .who {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Someone on call is not working the hours, only reachable if an emergency
+   comes up. They get a column of their own at the card's right, behind a
+   dashed rule and under an "On-call" heading (its tooltip says what that
+   means), with the avatar ringed in dashes like the on-call chip; those who
+   work the hours sit side by side on the left. */
+.csm-ts .ladder .zblk .zsplit {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  min-height: 0;
+}
+.csm-ts .ladder .zblk .zsplit .zwork {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.csm-ts .ladder .zblk .zoc {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 50%;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding-left: 14px;
+  border-left: 1px dashed color-mix(in srgb, var(--oc-fg) 45%, var(--line));
+}
+.csm-ts .ladder .zblk .zoc .zocl {
+  font-size: 10.5px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--oc-fg);
+  white-space: nowrap;
+  cursor: help;
+}
+.csm-ts .ladder .zblk .zoc .lnm .who {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink-2);
+}
+.csm-ts .ladder .zblk .zoc .av {
+  outline: 1.5px dashed var(--oc-fg);
+  outline-offset: 1px;
+}
+/* A card with someone on call reads like the other cards' columns: the people
+   working the hours fill a column downwards first -- the morning's two stacked
+   one above the other -- three to a column (what a three-hour card has room
+   for) before starting the next, each column as wide as a column of names
+   anywhere else; the on-call column follows straight after them, not pushed
+   out to the card's far edge. */
+.csm-ts .ladder .zblk .zsplit.hasoc .zwork {
+  flex: 0 0 auto;
+}
+.csm-ts .ladder .zblk .zsplit.hasoc .zsec.zflow {
+  grid-template-columns: none;
+  grid-template-rows: repeat(3, auto);
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(min(200px, 40cqi), max-content);
+}
+
+/* Room between a card's heading and the people under it: at 4px the names
+   pressed up against the heading and the card read as stuffed. */
+.csm-ts .ladder .zblk .zbp {
+  margin-top: 10px;
+}
+
+/* A name sits level with its avatar. The day view's rows were aligned to the
+   avatar's top so a name that wrapped onto a second line started beside it;
+   but most names fit on one line, and top-aligned they rode about 4px above
+   the avatar's middle. Centred, a one-line name is level with it and a
+   two-line one is balanced on either side of it. */
+.csm-ts .ladder .lane .zblk .lnm,
+.csm-ts .ladder .offlane .lnm {
+  align-items: center;
+}
+.csm-ts .ladder .lane .zblk .zsec.zflow .lnm .who,
+.csm-ts .ladder .lane .zblk .zoc .lnm .who {
+  line-height: 1.2;
+}
+
+/* A big shift with someone on call: its team list takes the room that is
+   left, and the on-call column keeps its place beside it. */
+.csm-ts .ladder .zblk .zsplit.hasoc.crowd {
+  flex: 1;
+  min-height: 0;
+}
+.csm-ts .ladder .zblk .zsplit.hasoc.crowd .zwork {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+
+/* A narrow card -- a lane split between several cards, or a small screen --
+   has no room for name columns side by side with an on-call column. A column
+   of names never asks for more than the card's own width, and below 420px the
+   on-call column moves under the people working, behind a dashed rule on top
+   instead of at its side. */
+.csm-ts .ladder .zblk {
+  container-type: inline-size;
+}
+@container (max-width: 420px) {
+  .csm-ts .ladder .zblk .zsplit.hasoc {
+    flex-direction: column;
+    gap: 6px;
+  }
+  .csm-ts .ladder .zblk .zsplit.hasoc .zwork {
+    flex: 0 0 auto;
+    width: 100%;
+  }
+  .csm-ts .ladder .zblk .zsplit.hasoc .zsec.zflow {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+    grid-auto-flow: row;
+  }
+  .csm-ts .ladder .zblk .zoc {
+    max-width: none;
+    padding-left: 0;
+    padding-top: 4px;
+    border-left: 0;
+    border-top: 1px dashed color-mix(in srgb, var(--oc-fg) 45%, var(--line));
+  }
 }

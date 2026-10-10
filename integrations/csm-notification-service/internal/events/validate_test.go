@@ -39,13 +39,27 @@ func TestValidate_Valid(t *testing.T) {
 		"case.assigned":                         {"CASE-1", TypeCaseAssigned, `{"assigneeName":"n","assigneeEmail":"e@x.com","projectId":"PROJ-1","caseId":"CASE-1","recipients":["r@x.com"]}`},
 		"case.acknowledged":                     {"CASE-1", TypeCaseAcknowledged, `{"caseId":"CASE-1","acknowledgerName":"n"}`},
 		"case.severity_changed":                 {"CASE-1", TypeSeverityChanged, `{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"HIGH","newSeverity":"LOW","recipients":["r@x.com"]}`},
+		"case.workaround_provided":              {"CASE-1", TypeWorkaroundProvided, `{"caseId":"CASE-1"}`},
 		"incident.created":                      {"INC-1", TypeIncidentCreated, `{"product":"api-manager","title":"P1 outage","shortDescription":"Everything is down","callTo":"+15551234567"}`},
 		"incident.created omits product/callTo": {"INC-1", TypeIncidentCreated, `{"title":"P1 outage","shortDescription":"Everything is down"}`},
-		"sla.tier_reached":                      {"CASE-1", TypeSLATierReached, `{"caseId":"CASE-1","clockType":"response","tier":"50"}`},
-		"project_contact.invited":               {"a0e000000000001AAA", TypeProjectContactInvited, `{"membershipSfId":"a0e000000000001AAA","contactSfId":"003000000000001AAA","email":"jane@acme.com","givenName":"Jane","familyName":"Doe","projectName":"Acme Cloud","projectKey":"ACMECLOUD","roles":["Admin","Portal user"],"isIntegrationUser":false,"type":"OWN CONTACT"}`},
-		"project_contact.invited resend":        {"a0e000000000001AAA", TypeProjectContactInvited, `{"membershipSfId":"a0e000000000001AAA","contactSfId":"003000000000001AAA","email":"jane@acme.com","givenName":"Jane","familyName":"Doe","projectName":"Acme Cloud","projectKey":"ACMECLOUD","roles":["Admin"],"isIntegrationUser":false,"type":"OWN CONTACT","isResend":true}`},
-		"project_contact.registered":            {"a0e000000000001AAA", TypeProjectContactRegistered, `{"membershipSfId":"a0e000000000001AAA","contactSfId":"003000000000001AAA","email":"jane@acme.com","givenName":"Jane","familyName":"Doe","projectName":"Acme Cloud","projectKey":"ACMECLOUD","eventModifiedOn":"2026-09-18T06:37:07Z"}`},
-		"project_contact.invited without names": {"a0e000000000001AAA", TypeProjectContactInvited, `{"membershipSfId":"a0e000000000001AAA","contactSfId":"","email":"svc@acme.com","givenName":"","familyName":"","projectName":"Acme Cloud","projectKey":"ACMECLOUD","roles":null,"isIntegrationUser":true,"type":"OWN CONTACT"}`},
+		"incident.acknowledged":                 {"INC-1", TypeIncidentAcknowledged, `{"previousState":"NEW","newState":"IN_PROGRESS"}`},
+		"incident.priority_elevated":            {"INC-1", TypeIncidentPriorityElevated, `{"oldPriority":"MODERATE","newPriority":"HIGH","title":"Gateway 500s"}`},
+		// entity-service builds title from a nilable ServiceNow field, so it
+		// can genuinely publish this. It must not be rejected: an invalid
+		// payload is retried, dead-lettered and dropped.
+		"incident.priority_elevated without a title": {"INC-1", TypeIncidentPriorityElevated, `{"oldPriority":"MODERATE","newPriority":"HIGH"}`},
+		"incident.comment_added (public)":            {"INC-1", TypeIncidentCommentAdded, `{"commentId":"c-1","isPublic":true}`},
+		"incident.comment_added (work note)":         {"INC-1", TypeIncidentCommentAdded, `{"commentId":"c-1","isPublic":false}`},
+		"incident.assigned":                          {"INC-1", TypeIncidentAssigned, `{"assigneeId":"u-1","assigneeName":"Ana"}`},
+		"incident.assigned without a name":           {"INC-1", TypeIncidentAssigned, `{"assigneeId":"u-1"}`},
+		"incident.special_ops_alert":                 {"INC-1", TypeIncidentSpecialOpsAlert, `{"incidentId":"INC-1","number":"INC0099001","subject":"Latency","description":"<p>d</p>","state":"IN_PROGRESS","priority":"HIGH","impact":"HIGH","urgency":"HIGH","serviceId":"s-1","serviceName":"Gateway","product":"Choreo","teamKey":"choreo-runtime-team","teamLabel":"Choreo Runtime Team","assignmentGroupId":"g-2","assignmentGroupName":"Choreo Runtime","previousAssignmentGroupId":"g-1","previousAssignmentGroupName":"SRE - Apollo","changedBy":"lead@wso2.com","changedOn":"2026-10-08T10:00:00Z","smeTeam":"choreo-sme"}`},
+		"incident.special_ops_alert, minimal":        {"INC-1", TypeIncidentSpecialOpsAlert, `{"incidentId":"INC-1","number":"INC0099001","subject":"Latency","product":"Choreo","teamKey":"choreo-runtime-team","teamLabel":"Choreo Runtime Team","assignmentGroupId":"g-2","changedOn":"2026-10-08T10:00:00Z"}`},
+		"paging.test_call_requested":                 {"u-1", TypePagingTestCallRequested, `{"userId":"u-1","email":"a@wso2.com","name":"Ana","phone":"+94771234567","requestedBy":"lead@wso2.com","requestedAt":"2026-10-08T10:00:00Z"}`},
+		"sla.tier_reached":                           {"CASE-1", TypeSLATierReached, `{"caseId":"CASE-1","clockType":"response","tier":"50"}`},
+		"project_contact.invited":                    {"a0e000000000001AAA", TypeProjectContactInvited, `{"membershipSfId":"a0e000000000001AAA","contactSfId":"003000000000001AAA","email":"jane@acme.com","givenName":"Jane","familyName":"Doe","projectName":"Acme Cloud","projectKey":"ACMECLOUD","roles":["Admin","Portal user"],"isIntegrationUser":false,"type":"OWN CONTACT"}`},
+		"project_contact.invited resend":             {"a0e000000000001AAA", TypeProjectContactInvited, `{"membershipSfId":"a0e000000000001AAA","contactSfId":"003000000000001AAA","email":"jane@acme.com","givenName":"Jane","familyName":"Doe","projectName":"Acme Cloud","projectKey":"ACMECLOUD","roles":["Admin"],"isIntegrationUser":false,"type":"OWN CONTACT","isResend":true}`},
+		"project_contact.registered":                 {"a0e000000000001AAA", TypeProjectContactRegistered, `{"membershipSfId":"a0e000000000001AAA","contactSfId":"003000000000001AAA","email":"jane@acme.com","givenName":"Jane","familyName":"Doe","projectName":"Acme Cloud","projectKey":"ACMECLOUD","eventModifiedOn":"2026-09-18T06:37:07Z"}`},
+		"project_contact.invited without names":      {"a0e000000000001AAA", TypeProjectContactInvited, `{"membershipSfId":"a0e000000000001AAA","contactSfId":"","email":"svc@acme.com","givenName":"","familyName":"","projectName":"Acme Cloud","projectKey":"ACMECLOUD","roles":null,"isIntegrationUser":true,"type":"OWN CONTACT"}`},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -87,6 +101,8 @@ func TestValidate_RequiresFields(t *testing.T) {
 		"acknowledged missing acknowledgerName":                    {"CASE-1", TypeCaseAcknowledged, `{"caseId":"CASE-1"}`},
 		"acknowledged missing caseId":                              {"CASE-1", TypeCaseAcknowledged, `{"acknowledgerName":"n"}`},
 		"acknowledged caseId/entityId mismatch":                    {"CASE-1", TypeCaseAcknowledged, `{"caseId":"CASE-2","acknowledgerName":"n"}`},
+		"workaround_provided missing caseId":                       {"CASE-1", TypeWorkaroundProvided, `{}`},
+		"workaround_provided caseId/entityId mismatch":             {"CASE-1", TypeWorkaroundProvided, `{"caseId":"CASE-2"}`},
 		"severity_changed missing oldSeverity":                     {"CASE-1", TypeSeverityChanged, `{"projectId":"PROJ-1","caseId":"CASE-1","newSeverity":"LOW","recipients":["r@x.com"]}`},
 		"severity_changed missing newSeverity":                     {"CASE-1", TypeSeverityChanged, `{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"HIGH","recipients":["r@x.com"]}`},
 		"severity_changed missing projectId":                       {"CASE-1", TypeSeverityChanged, `{"caseId":"CASE-1","oldSeverity":"HIGH","newSeverity":"LOW","recipients":["r@x.com"]}`},
@@ -112,6 +128,21 @@ func TestValidate_RequiresFields(t *testing.T) {
 		"project_contact.registered unknown field":                 {"a0e000000000001AAA", TypeProjectContactRegistered, `{"membershipSfId":"a0e000000000001AAA","email":"jane@acme.com","roles":[]}`},
 		"project_contact.registered bad eventModifiedOn":           {"a0e000000000001AAA", TypeProjectContactRegistered, `{"membershipSfId":"a0e000000000001AAA","email":"jane@acme.com","eventModifiedOn":"yesterday"}`},
 		"project_contact.invited unknown field":                    {"a0e000000000001AAA", TypeProjectContactInvited, `{"membershipSfId":"a0e000000000001AAA","email":"jane@acme.com","password":"x"}`},
+		"incident.acknowledged without entityId":                   {"", TypeIncidentAcknowledged, `{"previousState":"NEW","newState":"IN_PROGRESS"}`},
+		"incident.acknowledged without newState":                   {"INC-1", TypeIncidentAcknowledged, `{"previousState":"NEW"}`},
+		"incident.priority_elevated without newP":                  {"INC-1", TypeIncidentPriorityElevated, `{"oldPriority":"MODERATE","title":"t"}`},
+		"incident.priority_elevated without oldP":                  {"INC-1", TypeIncidentPriorityElevated, `{"newPriority":"HIGH","title":"t"}`},
+		"incident.comment_added without commentId":                 {"INC-1", TypeIncidentCommentAdded, `{"isPublic":true}`},
+		"incident.assigned without assigneeId":                     {"INC-1", TypeIncidentAssigned, `{"assigneeName":"Ana"}`},
+		"incident.assigned without an incident":                    {"", TypeIncidentAssigned, `{"assigneeId":"u-1"}`},
+		"incident.special_ops_alert without incidentId":            {"INC-1", TypeIncidentSpecialOpsAlert, `{"incidentId":"","number":"INC0099001","subject":"Latency","product":"Choreo","teamKey":"choreo-runtime-team","teamLabel":"Choreo Runtime Team","assignmentGroupId":"g-2","changedOn":"2026-10-08T10:00:00Z"}`},
+		"incident.special_ops_alert for another incident":          {"INC-2", TypeIncidentSpecialOpsAlert, `{"incidentId":"INC-1","number":"INC0099001","subject":"Latency","product":"Choreo","teamKey":"choreo-runtime-team","teamLabel":"Choreo Runtime Team","assignmentGroupId":"g-2","changedOn":"2026-10-08T10:00:00Z"}`},
+		"incident.special_ops_alert without teamKey":               {"INC-1", TypeIncidentSpecialOpsAlert, `{"incidentId":"INC-1","number":"INC0099001","subject":"Latency","product":"Choreo","teamKey":"","teamLabel":"Choreo Runtime Team","assignmentGroupId":"g-2","changedOn":"2026-10-08T10:00:00Z"}`},
+		"incident.special_ops_alert with a bad changedOn":          {"INC-1", TypeIncidentSpecialOpsAlert, `{"incidentId":"INC-1","number":"INC0099001","subject":"Latency","product":"Choreo","teamKey":"choreo-runtime-team","teamLabel":"Choreo Runtime Team","assignmentGroupId":"g-2","changedOn":"yesterday"}`},
+		"incident.special_ops_alert with an unknown field":         {"INC-1", TypeIncidentSpecialOpsAlert, `{"incidentId":"INC-1","number":"INC0099001","subject":"Latency","product":"Choreo","teamKey":"choreo-runtime-team","teamLabel":"Choreo Runtime Team","assignmentGroupId":"g-2","changedOn":"2026-10-08T10:00:00Z","surprise":1}`},
+		"paging.test_call_requested without phone":                 {"u-1", TypePagingTestCallRequested, `{"userId":"u-1","email":"a@wso2.com","name":"Ana","phone":"","requestedBy":"l@wso2.com","requestedAt":"2026-10-08T10:00:00Z"}`},
+		"paging.test_call_requested with a bad phone":              {"u-1", TypePagingTestCallRequested, `{"userId":"u-1","email":"a@wso2.com","name":"Ana","phone":"0771234567","requestedBy":"l@wso2.com","requestedAt":"2026-10-08T10:00:00Z"}`},
+		"paging.test_call_requested for another user":              {"u-2", TypePagingTestCallRequested, `{"userId":"u-1","email":"a@wso2.com","name":"Ana","phone":"+94771234567","requestedBy":"lead@wso2.com","requestedAt":"2026-10-08T10:00:00Z"}`},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -176,5 +207,127 @@ func TestValidate_ChangeRequestRules(t *testing.T) {
 				t.Fatalf("Validate() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// TestValidate_ServiceRequest covers the three sr.* types: their required
+// fields, commentType's closed set, the caseId/entityId match, and that the
+// optional parts (sreTeamName, tags, description, ...) may be absent.
+func TestValidate_ServiceRequest(t *testing.T) {
+	const (
+		created     = `{"caseId":"SR-1","number":"SR0001001","wso2CaseId":"WSO2-1","subject":"Open port 443","sreTeamId":"T-1","sreTeamName":"MS/PC SRE Group","assignmentGroupName":"MS/PC SRE Group","description":"<p>Please</p>","state":"Open","projectId":"P-1","projectName":"Acme","createdBy":"Jane","createdOn":"2026-10-07T10:00:00Z"}`
+		acked       = `{"caseId":"SR-1","number":"SR0001001","subject":"Open port 443","sreTeamName":"MS/PC SRE Group","commentId":"C-1"}`
+		commentBase = `"caseId":"SR-1","number":"SR0001001","subject":"Open port 443","sreTeamName":"MS/PC SRE Group","commentId":"C-2","content":"hi","authorEmail":"jane@acme.com","authorName":"Jane","createdOn":"2026-10-07T10:05:00Z"`
+	)
+	cases := []struct {
+		name     string
+		entityID string
+		typ      Type
+		payload  string
+		wantErr  bool
+	}{
+		{"created", "SR-1", TypeSRCreated, created, false},
+		{"created minimal", "SR-1", TypeSRCreated, `{"caseId":"SR-1","number":"SR0001001","subject":"s","state":"","createdOn":"2026-10-07T10:00:00Z"}`, false},
+		{"created without subject (catalog form SR)", "SR-1", TypeSRCreated, `{"caseId":"SR-1","number":"SR0001001","subject":"","state":"Open","createdOn":"2026-10-07T10:00:00Z"}`, false},
+		{"created missing number", "SR-1", TypeSRCreated, `{"caseId":"SR-1","subject":"s","state":"Open","createdOn":"2026-10-07T10:00:00Z"}`, true},
+		{"created missing createdOn", "SR-1", TypeSRCreated, `{"caseId":"SR-1","number":"SR0001001","subject":"s","state":"Open"}`, true},
+		{"created caseId/entityId mismatch", "SR-2", TypeSRCreated, created, true},
+		{"created unknown field", "SR-1", TypeSRCreated, `{"caseId":"SR-1","number":"SR0001001","subject":"s","state":"Open","createdOn":"2026-10-07T10:00:00Z","extra":1}`, true},
+
+		{"acknowledged", "SR-1", TypeSRAcknowledged, acked, false},
+		{"acknowledged without subject", "SR-1", TypeSRAcknowledged, `{"caseId":"SR-1","number":"SR0001001","subject":"","commentId":"C-1"}`, false},
+		{"acknowledged missing commentId", "SR-1", TypeSRAcknowledged, `{"caseId":"SR-1","number":"SR0001001","subject":"s"}`, true},
+		{"acknowledged missing number", "SR-1", TypeSRAcknowledged, `{"caseId":"SR-1","subject":"s","commentId":"C-1"}`, true},
+		{"acknowledged caseId/entityId mismatch", "SR-2", TypeSRAcknowledged, acked, true},
+
+		{"comment_added comment", "SR-1", TypeSRCommentAdded, `{` + commentBase + `,"commentType":"comment","tags":["devops-sm"]}`, false},
+		{"comment_added work note, no tags", "SR-1", TypeSRCommentAdded, `{` + commentBase + `,"commentType":"work_note","tags":[]}`, false},
+		{"comment_added null tags", "SR-1", TypeSRCommentAdded, `{` + commentBase + `,"commentType":"comment","tags":null}`, false},
+		{"comment_added unknown commentType", "SR-1", TypeSRCommentAdded, `{` + commentBase + `,"commentType":"note","tags":[]}`, true},
+		{"comment_added missing commentType", "SR-1", TypeSRCommentAdded, `{` + commentBase + `,"tags":[]}`, true},
+		{"comment_added missing authorEmail", "SR-1", TypeSRCommentAdded, `{"caseId":"SR-1","number":"SR0001001","subject":"s","commentId":"C-2","commentType":"comment","content":"hi","createdOn":"2026-10-07T10:05:00Z","tags":[]}`, true},
+		{"comment_added missing commentId", "SR-1", TypeSRCommentAdded, `{"caseId":"SR-1","number":"SR0001001","subject":"s","commentType":"comment","content":"hi","authorEmail":"jane@acme.com","createdOn":"2026-10-07T10:05:00Z","tags":[]}`, true},
+		{"comment_added missing createdOn", "SR-1", TypeSRCommentAdded, `{"caseId":"SR-1","number":"SR0001001","subject":"s","commentId":"C-2","commentType":"comment","content":"hi","authorEmail":"jane@acme.com","tags":[]}`, true},
+		{"comment_added caseId/entityId mismatch", "SR-2", TypeSRCommentAdded, `{` + commentBase + `,"commentType":"comment","tags":[]}`, true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if !c.typ.IsKnown() {
+				t.Fatalf("%s is not in KnownTypes", c.typ)
+			}
+			err := Validate(c.entityID, c.typ, rawJSON(t, c.payload))
+			if (err != nil) != c.wantErr {
+				t.Errorf("Validate() = %v, wantErr %v", err, c.wantErr)
+			}
+		})
+	}
+}
+
+// TestValidate_CaseEscalated covers case.escalated: required fields, the
+// levels being an escalation (never a de-escalation, which is not
+// published), the caseId/entityId match, and that an escalation with nobody
+// to mail is rejected.
+func TestValidate_CaseEscalated(t *testing.T) {
+	const id = "11111111-1111-1111-1111-111111111111"
+	payload := func(mod func(p map[string]any)) json.RawMessage {
+		p := map[string]any{
+			"caseId": id, "caseNumber": "CS0012345", "caseTitle": "Gateway down",
+			"escalationId": "e1", "previousLevel": 1, "currentLevel": 2,
+			"actorEmail": "a@x.com", "escalatedOn": "2026-10-08T09:03:17Z", "recipients": []string{"r@x.com"},
+		}
+		if mod != nil {
+			mod(p)
+		}
+		raw, _ := json.Marshal(p)
+		return raw
+	}
+
+	if err := Validate(id, TypeCaseEscalated, payload(nil)); err != nil {
+		t.Fatalf("a well-formed escalation: Validate() = %v, want nil", err)
+	}
+
+	for name, mod := range map[string]func(p map[string]any){
+		"no case number":      func(p map[string]any) { delete(p, "caseNumber") },
+		"no escalation id":    func(p map[string]any) { delete(p, "escalationId") },
+		"no actor":            func(p map[string]any) { delete(p, "actorEmail") },
+		"no time":             func(p map[string]any) { delete(p, "escalatedOn") },
+		"de-escalation":       func(p map[string]any) { p["previousLevel"], p["currentLevel"] = 2, 0 },
+		"level above EL5":     func(p map[string]any) { p["currentLevel"] = 6 },
+		"same level":          func(p map[string]any) { p["previousLevel"] = 2 },
+		"no recipients":       func(p map[string]any) { p["recipients"] = []string{} },
+		"malformed recipient": func(p map[string]any) { p["recipients"] = []string{"not-an-email"} },
+		"other case's id":     func(p map[string]any) { p["caseId"] = "22222222-2222-2222-2222-222222222222" },
+		"unknown field":       func(p map[string]any) { p["action"] = "ESCALATE" },
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := Validate(id, TypeCaseEscalated, payload(mod)); err == nil {
+				t.Fatal("Validate() = nil, want an error")
+			}
+		})
+	}
+}
+
+func TestValidate_OutageStatusPageDue(t *testing.T) {
+	const ok = `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","number":"OUT0010021","cloud":"choreo","event":"outage_begin","timestamp":"2026-10-09T06:54:00.000Z"}`
+	cases := []struct {
+		name     string
+		entityID string
+		payload  string
+		wantErr  bool
+	}{
+		{"valid", "O-1", ok, false},
+		{"end, agent-manager", "O-1", `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","cloud":"agent-manager","event":"outage_end","timestamp":"2026-10-09T07:00:00.123Z"}`, false},
+		{"outageId/entityId mismatch", "O-2", ok, true},
+		{"unknown event", "O-1", `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","cloud":"choreo","event":"OUTAGE_BEGIN","timestamp":"2026-10-09T06:54:00.000Z"}`, true},
+		{"unknown cloud", "O-1", `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","cloud":"CHOREO","event":"outage_begin","timestamp":"2026-10-09T06:54:00.000Z"}`, true},
+		{"timestamp without millis", "O-1", `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","cloud":"choreo","event":"outage_begin","timestamp":"2026-10-09T06:54:00Z"}`, true},
+		{"missing claimToken", "O-1", `{"webhookId":"W-1","outageId":"O-1","cloud":"choreo","event":"outage_begin","timestamp":"2026-10-09T06:54:00.000Z"}`, true},
+		{"unknown field", "O-1", `{"webhookId":"W-1","claimToken":"T-1","outageId":"O-1","cloud":"choreo","event":"outage_begin","timestamp":"2026-10-09T06:54:00.000Z","x":1}`, true},
+	}
+	for _, c := range cases {
+		err := Validate(c.entityID, TypeOutageStatusPageDue, json.RawMessage(c.payload))
+		if (err != nil) != c.wantErr {
+			t.Errorf("%s: err = %v, wantErr %v", c.name, err, c.wantErr)
+		}
 	}
 }

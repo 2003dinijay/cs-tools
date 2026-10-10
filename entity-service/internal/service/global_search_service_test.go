@@ -43,8 +43,32 @@ type recordedSearch struct {
 	offset int
 }
 
+type recordedCounts struct {
+	scope  repository.SearchScope
+	ids    []string
+	states repository.ProjectActivityStates
+}
+
 type fakeSearchRepo struct {
 	projects, cases *recordedSearch
+	// counts is what ProjectActivityCounts answers; countsCall records the
+	// last call (nil when none was made).
+	counts      map[string]repository.ProjectActivityCounts
+	countsErr   error
+	countsCall  *recordedCounts
+	countsCalls int
+	// onCounts, when set, runs inside ProjectActivityCounts before it answers (a test cancels the
+	// request's context from it, as a deadline expiring mid-lookup would).
+	onCounts func()
+}
+
+func (f *fakeSearchRepo) ProjectActivityCounts(_ context.Context, sc repository.SearchScope, ids []string, st repository.ProjectActivityStates) (map[string]repository.ProjectActivityCounts, error) {
+	f.countsCall = &recordedCounts{sc, ids, st}
+	f.countsCalls++
+	if f.onCounts != nil {
+		f.onCounts()
+	}
+	return f.counts, f.countsErr
 }
 
 func (f *fakeSearchRepo) SearchProjects(_ context.Context, sc repository.SearchScope, q string, s repository.SearchSortField, d bool, p domain.Pagination) ([]domain.GlobalSearchProject, int, error) {
@@ -73,6 +97,12 @@ func (unusedReferenceDataRepo) EnumLabels(context.Context, []string) (map[string
 func (unusedReferenceDataRepo) ListTimeZones(context.Context) ([]repository.TimeZoneRow, error) {
 	return nil, nil
 }
+func (unusedReferenceDataRepo) ListSLADurationPolicy(context.Context) ([]repository.SLADurationPolicyRow, error) {
+	return nil, nil
+}
+func (unusedReferenceDataRepo) ListFeedbackEmojis(context.Context) ([]repository.FeedbackEmojiRow, error) {
+	return nil, nil
+}
 
 // fakeTimeZoneRepo backs TestGlobalService_GetSystemMetadata_MapsTimeZones --
 // a configurable ListTimeZones alongside the same fixed-empty everything
@@ -92,6 +122,12 @@ func (fakeTimeZoneRepo) EnumLabels(context.Context, []string) (map[string][]stri
 }
 func (f fakeTimeZoneRepo) ListTimeZones(context.Context) ([]repository.TimeZoneRow, error) {
 	return f.timeZones, nil
+}
+func (fakeTimeZoneRepo) ListSLADurationPolicy(context.Context) ([]repository.SLADurationPolicyRow, error) {
+	return nil, nil
+}
+func (fakeTimeZoneRepo) ListFeedbackEmojis(context.Context) ([]repository.FeedbackEmojiRow, error) {
+	return nil, nil
 }
 
 // TestGlobalService_GetSystemMetadata_MapsTimeZones is the regression guard
@@ -117,6 +153,69 @@ func TestGlobalService_GetSystemMetadata_MapsTimeZones(t *testing.T) {
 	}
 	if resp.TimeZones[1].ID != "America/New_York" || resp.TimeZones[1].Label != "Eastern Time (US/Canada)" {
 		t.Errorf("unexpected second time zone: %+v", resp.TimeZones[1])
+	}
+}
+
+// fakeFeedbackEmojiRepo backs TestGlobalService_GetSystemMetadata_MapsFeedbackEmojis --
+// a configurable ListFeedbackEmojis alongside the same fixed-empty
+// everything else unusedReferenceDataRepo provides.
+type fakeFeedbackEmojiRepo struct {
+	emojis []repository.FeedbackEmojiRow
+}
+
+func (fakeFeedbackEmojiRepo) ListProjectTypes(context.Context) ([]repository.ProjectTypeRow, error) {
+	return nil, nil
+}
+func (fakeFeedbackEmojiRepo) GetProjectByID(context.Context, string) (bool, *repository.ProjectTypeRow, error) {
+	return false, nil, nil
+}
+func (fakeFeedbackEmojiRepo) EnumLabels(context.Context, []string) (map[string][]string, error) {
+	return nil, nil
+}
+func (fakeFeedbackEmojiRepo) ListTimeZones(context.Context) ([]repository.TimeZoneRow, error) {
+	return nil, nil
+}
+func (fakeFeedbackEmojiRepo) ListSLADurationPolicy(context.Context) ([]repository.SLADurationPolicyRow, error) {
+	return nil, nil
+}
+func (f fakeFeedbackEmojiRepo) ListFeedbackEmojis(context.Context) ([]repository.FeedbackEmojiRow, error) {
+	return f.emojis, nil
+}
+
+// TestGlobalService_GetSystemMetadata_MapsFeedbackEmojis is the regression
+// guard for GET /metadata's feedbackEmojies field actually being populated
+// from work_item_feedback_metric/work_item_feedback_metric_option instead of
+// always coming back empty.
+func TestGlobalService_GetSystemMetadata_MapsFeedbackEmojis(t *testing.T) {
+	repo := fakeFeedbackEmojiRepo{emojis: []repository.FeedbackEmojiRow{
+		{
+			ID:              "emoji-1",
+			Name:            "Very Satisfied",
+			Value:           "5",
+			UnselectedImage: "/assets/feedback/very-satisfied.svg",
+			SelectedImage:   "/assets/feedback/very-satisfied-selected.svg",
+			Chips: []repository.FeedbackEmojiChipRow{
+				{ID: "chip-1", Name: "Fast response", Value: "1"},
+			},
+		},
+	}}
+	svc := NewGlobalService(repo, nil, nil)
+
+	resp, err := svc.GetSystemMetadata(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.FeedbackEmojis) != 1 {
+		t.Fatalf("got %d feedback emojis, want 1", len(resp.FeedbackEmojis))
+	}
+	emoji := resp.FeedbackEmojis[0]
+	if emoji.ID != "emoji-1" || emoji.Name != "Very Satisfied" || emoji.Value != "5" ||
+		emoji.UnselectedImage != "/assets/feedback/very-satisfied.svg" ||
+		emoji.SelectedImage != "/assets/feedback/very-satisfied-selected.svg" {
+		t.Errorf("unexpected emoji: %+v", emoji)
+	}
+	if len(emoji.Chips) != 1 || emoji.Chips[0].ID != "chip-1" || emoji.Chips[0].Name != "Fast response" || emoji.Chips[0].Value != "1" {
+		t.Errorf("unexpected chips: %+v", emoji.Chips)
 	}
 }
 
@@ -236,5 +335,109 @@ func TestGlobalSearch_Validation(t *testing.T) {
 		if repo.projects != nil || repo.cases != nil {
 			t.Errorf("%s: a search ran despite invalid input", name)
 		}
+	}
+}
+
+// The project list's Action Required / Outstanding / Active Chats columns used
+// to be zero on Postgres; they come from ProjectActivityCounts now.
+
+func TestGlobalSearch_FillsTheProjectCounts(t *testing.T) {
+	repo := &fakeSearchRepo{counts: map[string]repository.ProjectActivityCounts{
+		"p": {ActiveChats: 2, ActionRequired: 3, Outstanding: 5},
+	}}
+	resp, err := newGlobal(customerScope, repo).GlobalSearch(context.Background(), domain.GlobalSearchRequest{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := resp.Projects[0]
+	if got.ActiveChatsCount != 2 || got.ActionRequiredCount != 3 || got.OutstandingCount != 5 {
+		t.Fatalf("counts = chats %d / action %d / outstanding %d, want 2 / 3 / 5",
+			got.ActiveChatsCount, got.ActionRequiredCount, got.OutstandingCount)
+	}
+	if repo.countsCalls != 1 || strings.Join(repo.countsCall.ids, ",") != "p" {
+		t.Fatalf("counts asked %d times for %v, want once for exactly the returned page", repo.countsCalls, repo.countsCall)
+	}
+}
+
+func TestGlobalSearch_CountsAreTheDashboardsStates(t *testing.T) {
+	// The list must count what the dashboard counts, so the state groupings are
+	// the stats service's own, not a second copy that can drift.
+	repo := &fakeSearchRepo{}
+	if _, err := newGlobal(customerScope, repo).GlobalSearch(context.Background(), domain.GlobalSearchRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	st := repo.countsCall.states
+	// Outstanding is "any state but closed", as the dashboard's tile counts it: it must not
+	// become a list of open states again, which leaves out an item with no state.
+	if strings.Join(st.CaseClosed, ",") != "CLOSED" {
+		t.Errorf("case closed states = %v, want CLOSED only", st.CaseClosed)
+	}
+	if strings.Join(st.CaseActionRequired, ",") != "AWAITING_INFO,SOLUTION_PROPOSED" {
+		t.Errorf("case action-required states = %v, want AWAITING_INFO,SOLUTION_PROPOSED", st.CaseActionRequired)
+	}
+	if strings.Join(st.CRActionRequired, ",") != "CUSTOMER_APPROVAL,CUSTOMER_REVIEW" {
+		t.Errorf("change request action-required states = %v", st.CRActionRequired)
+	}
+	if strings.Join(st.ChatActive, ",") != "OPEN,ACTIVE" {
+		t.Errorf("active chat states = %v, want OPEN,ACTIVE", st.ChatActive)
+	}
+}
+
+func TestGlobalSearch_CountsFollowTheCallersChangeRequestStates(t *testing.T) {
+	// A customer's Authorize is outstanding (a re-schedule is back with the
+	// board and still theirs), staff's is not: the same rule the stat cards use.
+	customerRepo, staffRepo := &fakeSearchRepo{}, &fakeSearchRepo{}
+	if _, err := newGlobal(customerScope, customerRepo).GlobalSearch(context.Background(), domain.GlobalSearchRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := newGlobal(stubAccess{scope: AccessScope{Unrestricted: true}}, staffRepo).GlobalSearch(context.Background(), domain.GlobalSearchRequest{}); err != nil {
+		t.Fatal(err)
+	}
+	if !containsString(customerRepo.countsCall.states.CROutstanding, "AUTHORIZE") {
+		t.Errorf("customer change request outstanding states = %v, want AUTHORIZE included", customerRepo.countsCall.states.CROutstanding)
+	}
+	if containsString(staffRepo.countsCall.states.CROutstanding, "AUTHORIZE") {
+		t.Errorf("staff change request outstanding states = %v, want AUTHORIZE left out", staffRepo.countsCall.states.CROutstanding)
+	}
+	if customerRepo.countsCall.scope.Unrestricted || !staffRepo.countsCall.scope.Unrestricted {
+		t.Error("the caller's own scope must reach the counts, or row-level security would see another identity")
+	}
+}
+
+func TestGlobalSearch_CountsAreOnlyAskedForWhenProjectsAre(t *testing.T) {
+	repo := &fakeSearchRepo{}
+	if _, err := newGlobal(customerScope, repo).GlobalSearch(context.Background(), domain.GlobalSearchRequest{
+		Filters: &domain.GlobalSearchFilters{Tables: []string{"cases"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if repo.countsCalls != 0 {
+		t.Fatalf("project counts were queried %d times for a cases-only search", repo.countsCalls)
+	}
+}
+
+func TestGlobalSearch_AFailedCountLeavesTheListIntact(t *testing.T) {
+	repo := &fakeSearchRepo{countsErr: errors.New("conversation table missing")}
+	resp, err := newGlobal(customerScope, repo).GlobalSearch(context.Background(), domain.GlobalSearchRequest{})
+	if err != nil {
+		t.Fatalf("a failed count must not fail the search, got %v", err)
+	}
+	if len(resp.Projects) != 1 || resp.ProjectsTotal != 7 {
+		t.Fatalf("the project list was lost: %+v", resp)
+	}
+	if p := resp.Projects[0]; p.ActiveChatsCount != 0 || p.ActionRequiredCount != 0 || p.OutstandingCount != 0 {
+		t.Fatalf("counts = %+v, want zeros after a failed lookup", p)
+	}
+}
+
+func TestGlobalSearch_ARequestThatRunsOutOfTimeDuringTheCountsFailsInsteadOfAnsweringZeros(t *testing.T) {
+	// Swallowing it would answer 200 with every count at 0 and nothing in the log, which is
+	// indistinguishable from a real zero: the one failure of the lookup that must not degrade.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	repo := &fakeSearchRepo{countsErr: context.Canceled, onCounts: cancel}
+	_, err := newGlobal(customerScope, repo).GlobalSearch(ctx, domain.GlobalSearchRequest{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("err = %v, want the request's own cancellation", err)
 	}
 }

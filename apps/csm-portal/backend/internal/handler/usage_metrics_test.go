@@ -97,10 +97,9 @@ func TestUsageMetricsHandler_GetProjects_RequiresAuth(t *testing.T) {
 func TestUsageMetricsHandler_GetProjects_RequiresUsageMetricsPermission(t *testing.T) {
 	h := NewUsageMetricsHandler(&mockUsageMetricsClient{}, viewerAccessGuard)
 
-	// SPL access (sales_solutions) but no usage_metrics_viewer/cs_engineer/
-	// admin — passes PermViewerAccess, fails the additional
-	// PermUsageMetricsViewer check.
-	req := httptest.NewRequest(http.MethodGet, "/spl/usage-metrics/projects", nil)
+	// sales_solutions holds none of viewer/usage_metrics_viewer/cs_engineer/
+	// admin, so it fails the direct PermUsageMetricsViewer check.
+	req := httptest.NewRequest(http.MethodGet, "/usage-metrics/projects", nil)
 	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{
 		Email: "sales@example.com", UserID: "u-sales", Roles: []string{"test-sales-solutions"},
 	}))
@@ -108,6 +107,61 @@ func TestUsageMetricsHandler_GetProjects_RequiresUsageMetricsPermission(t *testi
 	h.GetProjects(w, req)
 
 	assertStatus(t, w, http.StatusForbidden)
+}
+
+// Regression: Usage Metrics used to be reachable only by a caller who ALSO
+// held the viewer role (PermViewerAccess layered underneath), regardless of
+// also being cs_engineer/admin/usage_metrics_viewer -- reported live once
+// Support Portal Lite's separate app/nav was folded into the main portal, a
+// plain cs_engineer (no viewer role at all) could not open this page. Fixed
+// by registering these routes directly on PermUsageMetricsViewer instead of
+// layering on PermViewerAccess.
+func TestUsageMetricsHandler_GetProjects_CsEngineerWithoutViewerCanReach(t *testing.T) {
+	client := &mockUsageMetricsClient{response: []byte(`[]`)}
+	h := NewUsageMetricsHandler(client, viewerAccessGuard)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage-metrics/projects", nil)
+	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{
+		Email: "engineer@example.com", UserID: "u-eng", Roles: []string{"test-cs-engineer"},
+	}))
+	w := httptest.NewRecorder()
+	h.GetProjects(w, req)
+
+	assertStatus(t, w, http.StatusOK)
+}
+
+// A plain viewer (no cs_engineer/admin/usage_metrics_viewer) must NOT reach
+// this domain at all -- confirmed live, correcting an earlier pass that
+// mistakenly granted Viewer this permission. Unlike its ex-SPL siblings
+// (Customer Health, User Scan), Usage Metrics is not part of what a
+// Viewer-only account gets.
+func TestUsageMetricsHandler_GetProjects_PlainViewerIsDenied(t *testing.T) {
+	h := NewUsageMetricsHandler(&mockUsageMetricsClient{}, viewerAccessGuard)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage-metrics/projects", nil)
+	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{
+		Email: "viewer@example.com", UserID: "u-viewer", Roles: []string{"test-viewer"},
+	}))
+	w := httptest.NewRecorder()
+	h.GetProjects(w, req)
+
+	assertStatus(t, w, http.StatusForbidden)
+}
+
+// A viewer who ALSO holds usage_metrics_viewer, cs_engineer or admin does
+// reach it, same as holding that role alone.
+func TestUsageMetricsHandler_GetProjects_ViewerWithQualifyingRoleHasAccess(t *testing.T) {
+	client := &mockUsageMetricsClient{response: []byte(`[]`)}
+	h := NewUsageMetricsHandler(client, viewerAccessGuard)
+
+	req := httptest.NewRequest(http.MethodGet, "/usage-metrics/projects", nil)
+	req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{
+		Email: "viewer@example.com", UserID: "u-viewer", Roles: []string{"test-viewer", "test-usage-metrics-viewer"},
+	}))
+	w := httptest.NewRecorder()
+	h.GetProjects(w, req)
+
+	assertStatus(t, w, http.StatusOK)
 }
 
 func TestUsageMetricsHandler_GetProjects_Success(t *testing.T) {

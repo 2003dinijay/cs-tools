@@ -149,7 +149,9 @@ vi.mock("@api/useSearchUsersByName", () => ({
 
 // Imported after the mocks above so the module picks them up.
 import { BackendApiError } from "@api/backend/client";
-import CsmIncidentDetailPage from "@features/csm-operations/pages/CsmIncidentDetailPage";
+import CsmIncidentDetailPage, {
+  HANDOFF_NEEDS_ASSIGNEE_REASON,
+} from "@features/csm-operations/pages/CsmIncidentDetailPage";
 
 const WATCHER_ID = "00000000-0000-0000-0000-000000000001";
 const NEW_WATCHER_ID = "00000000-0000-0000-0000-000000000002";
@@ -287,6 +289,94 @@ function renderPageWithOpenTab(
 // call instead of its own.
 afterEach(() => {
   vi.clearAllMocks();
+});
+
+describe("CsmIncidentDetailPage — description", () => {
+  it("renders an HTML description (a monitoring webhook's payload table) as content, not as its source", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_INCIDENT,
+        description:
+          '<table border="1" style="width:100%;"><tbody><tr>' +
+          '<td style="font-weight:bold;background:#f5f5f5;width:30%;">alertRule</td>' +
+          "<td>pods-not-ready-001</td></tr><tr>" +
+          '<td style="font-weight:bold;">severity</td><td>Sev0</td></tr></tbody></table>',
+      },
+    });
+    renderPage();
+
+    const html = screen.getByTestId("incident-description-html");
+    expect(within(html).getByRole("table")).toBeInTheDocument();
+    expect(within(html).getByText("alertRule")).toBeInTheDocument();
+    expect(within(html).getByText("pods-not-ready-001")).toBeInTheDocument();
+    expect(within(html).getByText("Sev0")).toBeInTheDocument();
+    expect(html.textContent).not.toContain("<td");
+    // Emphasis and width survive; the webhook's background does not (theme-neutral).
+    const style = within(html).getByText("alertRule").getAttribute("style") ?? "";
+    expect(style).toContain("font-weight");
+    expect(style).not.toContain("background");
+  });
+
+  it("removes scripts, javascript: links, styles and images from an HTML description", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_INCIDENT,
+        description:
+          "<table><tbody><tr><td>k</td><td>v</td></tr></tbody></table>" +
+          "<style>body{display:none}</style><script>window.__pwned = true</script>" +
+          '<img src="https://tracker.example.com/p.png"><a href="javascript:alert(1)">x</a>',
+      },
+    });
+    renderPage();
+
+    const html = screen.getByTestId("incident-description-html");
+    expect(html.querySelector("script")).toBeNull();
+    expect(html.querySelector("style")).toBeNull();
+    expect(html.querySelector("img")).toBeNull();
+    expect(html.textContent).not.toContain("display:none");
+    expect(html.querySelector("a")?.getAttribute("href")).toBeNull();
+  });
+
+  it("opens links in a new tab and linkifies bare URLs", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_INCIDENT,
+        description:
+          '<table><tbody><tr><td><a href="https://runbook.example.com/a">runbook</a></td>' +
+          "<td>https://portal.example.com/x</td></tr></tbody></table>",
+      },
+    });
+    renderPage();
+
+    const links = screen.getByTestId("incident-description-html").querySelectorAll("a");
+    expect(links).toHaveLength(2);
+    links.forEach((a) => {
+      expect(a.getAttribute("target")).toBe("_blank");
+      expect(a.getAttribute("rel")).toBe("noopener noreferrer");
+    });
+  });
+
+  it("keeps a plain-text description as text with its line breaks (no HTML container)", () => {
+    mockQueryResult({
+      data: { ...BASE_INCIDENT, description: "Gateway returns 502\nsince 09:00 UTC. 1 < 2 and a & b." },
+    });
+    renderPage();
+
+    expect(screen.queryByTestId("incident-description-html")).toBeNull();
+    const text = screen.getByText(/Gateway returns 502/);
+    expect(text).toHaveStyle({ whiteSpace: "pre-wrap" });
+    expect(text.textContent).toBe("Gateway returns 502\nsince 09:00 UTC. 1 < 2 and a & b.");
+  });
+
+  it("keeps literal angle-bracket placeholders in a plain-text description", () => {
+    mockQueryResult({
+      data: { ...BASE_INCIDENT, description: "Run kubectl get pod <pod-name> -n <namespace>" },
+    });
+    renderPage();
+
+    expect(screen.queryByTestId("incident-description-html")).toBeNull();
+    expect(screen.getByText(/<pod-name>/).textContent).toBe("Run kubectl get pod <pod-name> -n <namespace>");
+  });
 });
 
 describe("CsmIncidentDetailPage — tabs", () => {
@@ -609,6 +699,46 @@ describe("CsmIncidentDetailPage — state-transition action bar", () => {
   });
 });
 
+describe("CsmIncidentDetailPage — Escalate to specialist team", () => {
+  // Mirrors ServiceNow, which shows "Escalate to Special Ops" only while
+  // canEscalateToSpecialOps holds; the backend sends that as the flag.
+  const button = (): HTMLElement | null =>
+    screen.queryByRole("button", { name: /escalate to specialist team/i });
+
+  it("is offered when the backend says the incident can be handed off", () => {
+    mockQueryResult({
+      data: {
+        ...BASE_INCIDENT,
+        canHandOffToSpecialist: true,
+        assignedTo: { id: "u-1", name: "Jane Doe" },
+      },
+    });
+    renderPage();
+    expect(button()).toBeEnabled();
+  });
+
+  it("is hidden when the backend says it cannot (not In Progress, unrouted service, or already with Special Ops)", () => {
+    mockQueryResult({ data: { ...BASE_INCIDENT, canHandOffToSpecialist: false } });
+    renderPage();
+    expect(button()).not.toBeInTheDocument();
+  });
+
+  it("stays offered when the backend does not say (ServiceNow data source)", () => {
+    mockQueryResult({ data: BASE_INCIDENT });
+    renderPage();
+    expect(button()).toBeInTheDocument();
+  });
+
+  it("is disabled, saying why, while nobody is assigned: the assignee answers for the SME page", () => {
+    mockQueryResult({ data: { ...BASE_INCIDENT, canHandOffToSpecialist: true, assignedTo: null } });
+    renderPage();
+    expect(button()).toBeDisabled();
+    expect(
+      screen.getByLabelText(`Escalate to specialist team: ${HANDOFF_NEEDS_ASSIGNEE_REASON}`),
+    ).toBeInTheDocument();
+  });
+});
+
 describe("CsmIncidentDetailPage — Create change request entry point", () => {
   // Regression/new-feature test: this action used to not exist at all on the
   // incident detail page (unlike the service request's own "Create change
@@ -658,5 +788,97 @@ describe("CsmIncidentDetailPage — reports its own draft state to the tab strip
     fireEvent.click(screen.getByText("open-tab"));
     fireEvent.click(screen.getByText("close-tab"));
     expect(screen.queryByText("Close this case tab?")).not.toBeInTheDocument();
+  });
+});
+
+describe("CsmIncidentDetailPage — Channel through the incident lifecycle", () => {
+  const ME_ID = "00000000-0000-0000-0000-00000000000c";
+  const RESOLUTION = {
+    resolutionCode: "SOLVED_PERMANENTLY",
+    resolutionNotes: "Rolled back the bad gateway config.",
+  } as const;
+  // Same record at each lifecycle stage, as GET /incidents/{id} returns it
+  // after the previous transition: Channel (wire field `contactType`) set at
+  // create time, no subcategory.
+  const atStage = (state: BeIncidentDetail["state"]): BeIncidentDetail => ({
+    ...BASE_INCIDENT,
+    state,
+    category: "SERVICE_INTERRUPTION",
+    subcategory: null,
+    contactType: "PHONE",
+    assignedTo: state === "NEW" ? null : { id: ME_ID, name: "Jane Doe" },
+  });
+
+  /** The Details tab's Channel cell: its label and the value beside it. */
+  const expectChannelShown = (stage: string): void => {
+    goToTab(/details/i);
+    expect(screen.queryByText(/contact type/i), stage).not.toBeInTheDocument();
+    const label = screen.getByText("Channel");
+    expect(label.parentElement, stage).toHaveTextContent(/^Channel\s*PHONE$/);
+  };
+
+  const transition = (menuItem: RegExp): void => {
+    fireEvent.click(screen.getByRole("button", { name: /change state/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: menuItem }));
+  };
+
+  const submitResolutionDialog = (submit: RegExp): void => {
+    fireEvent.mouseDown(
+      document
+        .getElementById("incident-resolution-code-label")!
+        .parentElement!.querySelector('[role="combobox"]')!,
+    );
+    fireEvent.click(within(screen.getByRole("listbox")).getByText(/^solved \(permanently\)$/i));
+    fireEvent.change(screen.getByLabelText(/resolution notes/i), {
+      target: { value: RESOLUTION.resolutionNotes },
+    });
+    fireEvent.click(screen.getByRole("button", { name: submit }));
+  };
+
+  const lastPatch = (): Record<string, unknown> => {
+    const calls = patchMutateMock.mock.calls;
+    expect(calls.length).toBeGreaterThan(0);
+    return (calls[calls.length - 1][0] as { patch: Record<string, unknown> }).patch;
+  };
+
+  it("labels the field Channel and keeps its value at every stage, New -> In Progress -> Resolved -> Closed", () => {
+    // New: start work (claims the unassigned incident).
+    mockQueryResult({ data: atStage("NEW") });
+    const newStage = renderPage();
+    expectChannelShown("NEW");
+    transition(/in progress/i);
+    expect(lastPatch()).toEqual({ state: "IN_PROGRESS", assignedEngineerId: ME_ID });
+    newStage.unmount();
+
+    // In Progress: resolve through the resolution dialog.
+    mockQueryResult({ data: atStage("IN_PROGRESS") });
+    const inProgress = renderPage();
+    expectChannelShown("IN_PROGRESS");
+    transition(/resolved/i);
+    submitResolutionDialog(/^move to resolved$/i);
+    expect(lastPatch()).toEqual({ state: "RESOLVED", ...RESOLUTION });
+    inProgress.unmount();
+
+    // Resolved: close, which also goes through the resolution dialog.
+    mockQueryResult({ data: atStage("RESOLVED") });
+    const resolved = renderPage();
+    expectChannelShown("RESOLVED");
+    transition(/closed/i);
+    submitResolutionDialog(/^move to closed$/i);
+    expect(lastPatch()).toMatchObject({ state: "CLOSED" });
+    resolved.unmount();
+
+    // Closed: terminal, and Channel is still shown.
+    mockQueryResult({ data: atStage("CLOSED") });
+    renderPage();
+    expectChannelShown("CLOSED");
+    expect(screen.queryByRole("button", { name: /change state/i })).not.toBeInTheDocument();
+
+    // No transition re-sent (or cleared) the channel or the subcategory.
+    expect(patchMutateMock).toHaveBeenCalledTimes(3);
+    for (const [{ patch }] of patchMutateMock.mock.calls as Array<[{ patch: Record<string, unknown> }]>) {
+      expect(patch).not.toHaveProperty("contactType");
+      expect(patch).not.toHaveProperty("subcategory");
+    }
   });
 });

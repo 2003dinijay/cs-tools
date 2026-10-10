@@ -73,6 +73,11 @@ const publishCaseAcknowledgedTimeout = 5 * time.Second
 // needs.
 const publishSeverityChangedTimeout = 5 * time.Second
 
+// publishWorkaroundProvidedTimeout bounds publishWorkaroundProvidedEvent's
+// own publish call — see publishStatusChangedTimeout's doc comment for why.
+// No GetCaseByID enrichment is needed: the payload carries only the case id.
+const publishWorkaroundProvidedTimeout = 5 * time.Second
+
 // applyResponseSLATimeout bounds registerCaseSLAClocks'/
 // applyResponseSLAOnComment's own GetCaseByID/author resolution
 // (SearchCaseComments) + role lookup (SearchUsers) + SLAEngineService calls
@@ -874,6 +879,10 @@ type snCaseService struct {
 	// registerCaseSLAClocks), applyResponseSLAOnComment, and
 	// applyCaseStateSLAEffects. See internal/service/sla_engine_service.go.
 	slaEngine SLAEngineService
+	// srCatalog derives a service request's subject and description from its
+	// catalog answers when the caller sent none (fillServiceRequestText). nil
+	// unless wired via WithServiceRequestCatalog.
+	srCatalog srCatalogReader
 }
 
 // NewSNCaseService constructs a CaseService that delegates SearchCases to the
@@ -978,6 +987,10 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 		DeployedProductID: uuidToSysid(req.DeployedProductID),
 	}
 
+	if req.Type == "service_request" && s.srCatalog != nil {
+		fillServiceRequestText(ctx, s.srCatalog, &req)
+	}
+
 	switch req.Type {
 	case "case":
 		payload.Title = req.Subject
@@ -991,6 +1004,8 @@ func (s *snCaseService) CreateCase(ctx context.Context, req domain.CreateCaseReq
 		if err := validateUUIDs("catalogItemId", []string{req.CatalogItemID}); err != nil {
 			return domain.CreateCaseResponse{}, err
 		}
+		payload.Title = req.Subject
+		payload.Description = req.Description
 		payload.CatalogID = uuidToSysid(req.CatalogID)
 		payload.CatalogItemID = uuidToSysid(req.CatalogItemID)
 		if len(req.Variables) > 0 {
@@ -1256,6 +1271,15 @@ func publishCaseCreatedEvent(
 		return
 	}
 
+	// A case with no project (on the Postgres data source, a service request
+	// raised from a GitHub issue) has no projectId, which every case.* payload
+	// requires -- csm-notification-service rejects the event (validate.go)
+	// and it would only be retried into the dead-letter topic.
+	if cv.ProjectDetails == nil {
+		slog.InfoContext(ctx, "create case: case.created not published, case has no project", "caseId", caseID)
+		return
+	}
+
 	if req.Type == "case" && cv.Severity == nil {
 		slog.InfoContext(ctx, "create case: case.created not published, case has no severity", "caseId", caseID)
 		return
@@ -1428,7 +1452,8 @@ func (s *snCaseService) publishCommentAdded(ctx context.Context, req domain.Crea
 		slog.InfoContext(ctx, "sn create comment: case.comment_added not published, could not resolve comment author's display name", "caseId", req.CaseID)
 		return
 	}
-	publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, cv, req, commentID, author.Name)
+	isSupportEngineerResponse := req.Type == domain.CommentTypeComment && s.isSupportEngineerAuthorSN(ctx, req.CaseID, author.Email)
+	publishCommentAddedEvent(ctx, s.publisher, s.AccountDefaultWatcherEmails, s.ProjectOnboardingInfo, cv, req, commentID, author.Name, author.Email, isSupportEngineerResponse)
 }
 
 // publishCommentAddedEvent is publishCommentAdded's actual body, factored
@@ -1443,13 +1468,26 @@ func (s *snCaseService) publishCommentAdded(ctx context.Context, req domain.Crea
 // getCaseByID callback: every caller now needs the fetched case before this
 // function even runs (to decide whether there are recipients worth an
 // author lookup for — see publishCommentAdded's own doc comment), so a
-// callback here would only risk double-fetching.
-func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherService, resolveAccountDefaultWatcherEmails func(context.Context, string) ([]string, error), cv domain.CaseView, req domain.CreateCaseCommentRequest, commentID, authorName string) {
+// callback here would only risk double-fetching. isSupportEngineerResponse
+// is likewise resolved by each caller (isSupportEngineerAuthorSN here,
+// caseService.isSupportEngineerAuthor on the Postgres side) rather than
+// looked up here, since "is this author a support engineer" is answered via
+// a different mechanism on each data source.
+func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherService, resolveAccountDefaultWatcherEmails func(context.Context, string) ([]string, error), resolveProjectOnboardingInfo func(context.Context, string) (string, bool, error), cv domain.CaseView, req domain.CreateCaseCommentRequest, commentID, authorName, authorEmail string, isSupportEngineerResponse bool) {
 	if publisher == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, publishCommentAddedTimeout)
 	defer cancel()
+
+	// A case with no project (on the Postgres data source, a service request
+	// raised from a GitHub issue) has no projectId, which every case.* payload
+	// requires -- csm-notification-service rejects the event (validate.go)
+	// and it would only be retried into the dead-letter topic.
+	if cv.ProjectDetails == nil {
+		slog.InfoContext(ctx, "create comment: case.comment_added not published, case has no project", "caseId", req.CaseID)
+		return
+	}
 
 	defaultWatchers := resolveCaseDefaultWatcherEmails(ctx, resolveAccountDefaultWatcherEmails, cv, "create comment")
 	recipients := mergeUnique(watchListUserEmails(cv.WatchList), defaultWatchers)
@@ -1461,17 +1499,38 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		return
 	}
 
+	// Best-effort, same posture as resolveCaseDefaultWatcherEmails just
+	// above: a lookup failure must not block the email reaction this
+	// function primarily exists for -- the Chat alert this enriches is
+	// itself a secondary, best-effort reaction on the consuming side (see
+	// csm-notification-service's own checkFrustration).
+	var onboardingStatus string
+	var isEvaluationAccount bool
+	if resolveProjectOnboardingInfo != nil && cv.ProjectDetails != nil {
+		var err error
+		onboardingStatus, isEvaluationAccount, err = resolveProjectOnboardingInfo(ctx, cv.ProjectDetails.ID)
+		if err != nil {
+			slog.WarnContext(ctx, "create comment: resolve project onboarding info for case.comment_added failed", "caseId", req.CaseID, "error", err)
+		}
+	}
+
 	payload, err := json.Marshal(events.CommentAddedPayload{
-		Name:           authorName,
-		ProjectID:      cv.ProjectDetails.ID,
-		CaseID:         req.CaseID,
-		CaseNumber:     cv.Number,
-		WSO2CaseID:     cv.InternalID,
-		CaseTitle:      cv.Subject,
-		CaseComment:    req.Content,
-		CommentID:      commentID,
-		IsInternalNote: req.Type == domain.CommentTypeWorkNote,
-		Recipients:     recipients,
+		Name:                      authorName,
+		ProjectID:                 cv.ProjectDetails.ID,
+		CaseID:                    req.CaseID,
+		CaseNumber:                cv.Number,
+		WSO2CaseID:                cv.InternalID,
+		CaseTitle:                 cv.Subject,
+		CaseComment:               req.Content,
+		CommentID:                 commentID,
+		IsInternalNote:            req.Type == domain.CommentTypeWorkNote,
+		Recipients:                recipients,
+		AuthorEmail:               authorEmail,
+		Product:                   caseProductName(cv),
+		Team:                      caseTeamName(cv),
+		IsEvaluationAccount:       isEvaluationAccount,
+		ProjectOnboardingStatus:   onboardingStatus,
+		IsSupportEngineerResponse: isSupportEngineerResponse,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "create comment: encode case.comment_added payload failed", "caseId", req.CaseID, "error", err)
@@ -1559,28 +1618,38 @@ func (s *snCaseService) applyResponseSLAOnComment(ctx context.Context, req domai
 		slog.InfoContext(ctx, "sn create comment: response SLA not evaluated, could not resolve comment author's email", "caseId", req.CaseID)
 		return
 	}
-
-	usersResp, err := s.userSvc.SearchUsers(ctx, domain.SearchUsersRequest{
-		Pagination: domain.Pagination{Limit: 1},
-		Filters:    domain.SearchUsersFilters{Emails: []string{author.Email}},
-	})
-	if err != nil {
-		slog.ErrorContext(ctx, "sn create comment: response SLA not evaluated, user role lookup failed", "caseId", req.CaseID)
-		return
-	}
-
-	isSupportEngineer := false
-	for _, u := range usersResp.Users {
-		if slices.Contains(u.Roles, s.csEngineerRole) {
-			isSupportEngineer = true
-			break
-		}
-	}
-	if !isSupportEngineer {
+	if !s.isSupportEngineerAuthorSN(ctx, req.CaseID, author.Email) {
 		return
 	}
 
 	s.slaEngine.CompleteResponseClock(ctx, req.CaseID)
+}
+
+// isSupportEngineerAuthorSN resolves whether authorEmail belongs to a user
+// holding s.csEngineerRole, via s.userSvc.SearchUsers — shared by
+// applyResponseSLAOnComment (the CSM-native SLA engine's own response-clock
+// completion, above) and publishCommentAdded's own
+// IsSupportEngineerResponse flag on the published case.comment_added event.
+// s.csEngineerRole being "" (unconfigured), an empty authorEmail, or a
+// failed role lookup all answer false — can't confirm, not an error.
+func (s *snCaseService) isSupportEngineerAuthorSN(ctx context.Context, caseID, authorEmail string) bool {
+	if s.csEngineerRole == "" || authorEmail == "" {
+		return false
+	}
+	usersResp, err := s.userSvc.SearchUsers(ctx, domain.SearchUsersRequest{
+		Pagination: domain.Pagination{Limit: 1},
+		Filters:    domain.SearchUsersFilters{Emails: []string{authorEmail}},
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "sn create comment: support-engineer role lookup failed", "caseId", caseID)
+		return false
+	}
+	for _, u := range usersResp.Users {
+		if slices.Contains(u.Roles, s.csEngineerRole) {
+			return true
+		}
+	}
+	return false
 }
 
 // applyCaseStateSLAEffects best-effort applies the CSM-native SLA engine's
@@ -1745,6 +1814,15 @@ func publishStatusChangedEvent(ctx context.Context, publisher EventPublisherServ
 	ctx, cancel := context.WithTimeout(ctx, publishStatusChangedTimeout)
 	defer cancel()
 
+	// A case with no project (on the Postgres data source, a service request
+	// raised from a GitHub issue) has no projectId, which every case.* payload
+	// requires -- csm-notification-service rejects the event (validate.go)
+	// and it would only be retried into the dead-letter topic.
+	if before.ProjectDetails == nil {
+		slog.InfoContext(ctx, "update case: case.status_changed not published, case has no project", "caseId", caseID)
+		return
+	}
+
 	defaultWatchers := resolveCaseDefaultWatcherEmails(ctx, resolveAccountDefaultWatcherEmails, before, "update case")
 	recipients := mergeUnique(watchListUserEmails(before.WatchList), defaultWatchers)
 	if len(recipients) == 0 {
@@ -1858,6 +1936,35 @@ func publishSeverityChangedEvent(ctx context.Context, publisher EventPublisherSe
 		return
 	}
 	slog.InfoContext(ctx, "update case: case.severity_changed published", "caseId", caseID)
+}
+
+// publishWorkaroundProvidedEvent publishes case.workaround_provided — see
+// events.WorkaroundProvidedPayload's own doc comment for why this exists.
+// Factored out to a package-level function, same "follow the write, not
+// DATA_SOURCE" reasoning as publishSeverityChangedEvent's own doc comment,
+// so both caseService.updateCaseFields and snCaseService.UpdateCase can
+// call it without duplicating it. The payload carries only the case id —
+// there's no recipient audience and no display enrichment to resolve for a
+// pure tracking signal, so this needs no CaseView at all.
+func publishWorkaroundProvidedEvent(ctx context.Context, publisher EventPublisherService, caseID string) {
+	if publisher == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, publishWorkaroundProvidedTimeout)
+	defer cancel()
+
+	payload, err := json.Marshal(events.WorkaroundProvidedPayload{CaseID: caseID})
+	if err != nil {
+		slog.ErrorContext(ctx, "update case: encode case.workaround_provided payload failed", "caseId", caseID, "error", err)
+		return
+	}
+	if err := publisher.Publish(ctx, events.TypeWorkaroundProvided, caseID, payload); err != nil {
+		// Not logging err itself — see publishCaseCreatedEvent's matching
+		// log line for why.
+		slog.ErrorContext(ctx, "update case: publish case.workaround_provided failed", "caseId", caseID)
+		return
+	}
+	slog.InfoContext(ctx, "update case: case.workaround_provided published", "caseId", caseID)
 }
 
 // publishCaseAssigned best-effort publishes a case.assigned event after
@@ -1985,6 +2092,16 @@ func (s *snCaseService) ProjectContactEmailsByRole(ctx context.Context, projectI
 		return nil, nil
 	}
 	return s.pgFallback.ProjectContactEmailsByRole(ctx, projectID, role)
+}
+
+// ProjectOnboardingInfo implements CaseService. account/project are
+// Postgres-only concepts, same reasoning as ProjectContactEmailsByRole just
+// above — delegates to pgFallback when configured, empty/no-error otherwise.
+func (s *snCaseService) ProjectOnboardingInfo(ctx context.Context, projectID string) (string, bool, error) {
+	if s.pgFallback == nil {
+		return "", false, nil
+	}
+	return s.pgFallback.ProjectOnboardingInfo(ctx, projectID)
 }
 
 // AccountDefaultWatcherEmails implements CaseService. account/project are
@@ -2331,6 +2448,12 @@ func (s *snCaseService) CreateCaseCommentAs(ctx context.Context, req domain.Crea
 	return s.CreateCaseComment(ctx, req)
 }
 
+// CreateInternalCaseComment implements CaseService. ServiceNow applies its own
+// rules to who may write what, so this is the same call as CreateCaseComment.
+func (s *snCaseService) CreateInternalCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
+	return s.CreateCaseComment(ctx, req)
+}
+
 func (s *snCaseService) CreateCaseComment(ctx context.Context, req domain.CreateCaseCommentRequest) (domain.CreateCaseCommentResponse, error) {
 	if !validCommentType[req.Type] {
 		return domain.CreateCaseCommentResponse{}, &apierror.ValidationError{Msg: "type contains invalid value: " + string(req.Type)}
@@ -2649,9 +2772,8 @@ type snUpdateCasePayload struct {
 	RelatedCaseID *string `json:"relatedCaseId,omitempty"`
 	// AutocloseHoldUntil places the case on hold in ServiceNow's staged auto-closure
 	// sequence, internally setting u_autoclosure_step = ON_HOLD and
-	// u_autoclosure_state_time = this date together. A matching field on the backing
-	// service's case-update payload exists, but is not yet available in the backing
-	// service.
+	// u_autoclosure_state_time = this date together. Date only (YYYY-MM-DD): the
+	// integration service constrains it to that shape.
 	AutocloseHoldUntil *string `json:"autocloseHoldUntil,omitempty"`
 	// Title/DeploymentID/DeployedProductID as PATCH-time fields (previously the backing
 	// service's case-update payload only supported these at create time, via the
@@ -3484,6 +3606,16 @@ func (s *snCaseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReq
 	if s.slaEngine != nil && req.WorkaroundProvided != nil && *req.WorkaroundProvided {
 		s.slaEngine.CompleteWorkaroundClock(ctx, req.ID)
 	}
+	// Deliberately independent of s.slaEngine above and of s.publisher's
+	// usual EVENT_PUBLISHING_ENABLED gate (publishWorkaroundProvidedEvent
+	// checks s.publisher itself) -- this is the signal
+	// csm-notification-service's own Redis-based SLA engine needs to
+	// complete ITS OWN workaround clock; see
+	// events.WorkaroundProvidedPayload's own doc comment for why nothing
+	// published this before.
+	if req.WorkaroundProvided != nil && *req.WorkaroundProvided {
+		publishWorkaroundProvidedEvent(ctx, s.publisher, req.ID)
+	}
 	// Independent of the WorkaroundProvided check above, same "no Event Hub
 	// dependency" reasoning -- a caller can set workaroundProvided and
 	// addPublicComment together (CompleteWorkaroundClock would then simply
@@ -3799,8 +3931,8 @@ func (s *snCaseService) patchCaseParent(ctx context.Context, caseID, parentID st
 // patchCaseFieldsBundle performs a bare ServiceNow PATCH covering the part
 // of UpdateCase's combinable "plain field" bundle the backing service
 // actually implements today -- Subject/DeploymentID/DeployedProductID/
-// RelatedCaseID/BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta/
-// WorkaroundProvided -- with none of UpdateCase's enrichment reads, no-op
+// RelatedCaseID/AutocloseHoldUntil/BestCaseFixEta/MostLikelyFixEta/
+// WorstCaseFixEta/WorkaroundProvided -- with none of UpdateCase's enrichment reads, no-op
 // detection, or event publishing -- same reasoning as patchCaseFields's own
 // doc comment, extended to this bundle for
 // DATA_SOURCE=postgres-servicenow-dual-write's async mirror (see
@@ -3825,9 +3957,10 @@ func (s *snCaseService) patchCaseParent(ctx context.Context, caseID, parentID st
 // GlideRecordSecure, which does enforce it) -- sending it would be silently
 // dropped by that ACL, leaving ServiceNow's copy no better off than not
 // mirroring it at all. Returns nil without a PATCH call when req sets none
-// of the eight supported fields, rather than sending an empty no-op request.
+// of the nine supported fields, rather than sending an empty no-op request.
 func (s *snCaseService) patchCaseFieldsBundle(ctx context.Context, caseID string, req domain.UpdateCaseRequest) error {
 	if req.Subject == nil && req.DeploymentID == nil && req.DeployedProductID == nil && req.RelatedCaseID == nil &&
+		req.AutocloseHoldUntil == nil &&
 		req.BestCaseFixEta == nil && req.MostLikelyFixEta == nil && req.WorstCaseFixEta == nil && req.WorkaroundProvided == nil {
 		return nil
 	}
@@ -3850,6 +3983,15 @@ func (s *snCaseService) patchCaseFieldsBundle(ctx context.Context, caseID string
 	if req.RelatedCaseID != nil {
 		sysid := uuidToSysid(*req.RelatedCaseID)
 		payload.RelatedCaseID = &sysid
+	}
+	// The hold is what ServiceNow's own auto-closure flow reads (it sets
+	// u_autoclosure_step = ON_HOLD and u_autoclosure_state_time together), so
+	// unlike the display-only fields it is the one write here that decides
+	// whether the case is actually closed. Same date-only wire format as
+	// UpdateCase's own AutocloseHoldUntil handling.
+	if req.AutocloseHoldUntil != nil {
+		holdUntil := formatSNDateOnly(req.AutocloseHoldUntil)
+		payload.AutocloseHoldUntil = &holdUntil
 	}
 	_, err := s.client.Patch(ctx, "/cases/"+uuidToSysid(caseID), token, payload)
 	return err
