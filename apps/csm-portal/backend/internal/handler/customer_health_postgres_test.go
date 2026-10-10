@@ -242,3 +242,26 @@ func TestGetCustomerHealthDetail_AccountFound(t *testing.T) {
 		t.Errorf("got AccountName=%q, want %q", detail.AccountName, "Acme Corp")
 	}
 }
+
+// TestAccountCasesFull_ErrorsPastItsSafetyBound pins the fix for a review
+// finding: accountCasesFull must fail loudly, not silently return a
+// truncated case list, when an account has more cases than its own
+// customerHealthAccountCasePageCap*customerHealthAccountCasePageLimit
+// backstop can fetch. A full, never-ending page (every response as large as
+// the limit, Total far beyond what's ever fetched) forces the loop to run
+// out its page cap without ever observing completion.
+func TestAccountCasesFull_ErrorsPastItsSafetyBound(t *testing.T) {
+	fullPage := make([]entitySearchCaseView, customerHealthAccountCasePageLimit)
+	for i := range fullPage {
+		fullPage[i] = entitySearchCaseView{ID: "case"}
+	}
+	fake := &fakeEntityCustomerHealthClient{
+		caseResponses: []entitySearchCasesResponse{{Cases: fullPage, Total: 1_000_000}},
+	}
+	c := NewPostgresCustomerHealthClient(fake)
+
+	_, err := c.accountCasesFull(context.Background(), "acc-huge")
+	if err == nil {
+		t.Fatal("expected an error once the page-cap backstop is reached, got nil")
+	}
+}

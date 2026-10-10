@@ -210,12 +210,21 @@ func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Conte
 }
 
 // customerHealthAccountCasePageLimit/customerHealthAccountCasePageCap bound
-// accountCasesFull's own pagination -- a real account can have well over a
-// thousand cases (1,585, checked directly against staging), so this is sized
-// larger than the old per-project bound it replaces, and still finite.
+// accountCasesFull's own pagination. customerHealthAccountCasePageCap is a
+// runaway-loop backstop, not an expected real limit (20,000 cases is far
+// beyond any real account's case count this portal manages today -- one
+// real account, checked directly against staging, has 1,585 -- the same
+// posture customer_health.go's own maxBatches and filteredAccounts' own
+// accountScanPageCap already document): an earlier, smaller cap here (2,000)
+// was itself still a silent-truncation risk for a sufficiently large
+// account, flagged live by review. If the backstop is ever actually reached,
+// that means the real data has grown far beyond what was ever sized for, so
+// this now fails loudly (an error) rather than silently returning an
+// incomplete case list to GetCustomerHealthDetail's drill-down lists and the
+// 90-day escalation flag.
 const (
 	customerHealthAccountCasePageLimit = 50
-	customerHealthAccountCasePageCap   = 40 // 40 * 50 = 2000 cases per account
+	customerHealthAccountCasePageCap   = 400 // 400 * 50 = 20,000 cases per account
 )
 
 // accountCasesFull pages through every case-like work item belonging to
@@ -226,6 +235,7 @@ const (
 // doc comment on the performance bug this fixes).
 func (c *postgresCustomerHealthClient) accountCasesFull(ctx context.Context, accountID string) ([]entitySearchCaseView, error) {
 	var cases []entitySearchCaseView
+	complete := false
 	for page := 0; page < customerHealthAccountCasePageCap; page++ {
 		body, err := json.Marshal(entitySearchCasesRequest{
 			Filters:    entitySearchCasesFilters{Filters: []entityCaseFieldFilter{{Field: "accountId", Op: "in", Values: []string{accountID}}}},
@@ -244,8 +254,12 @@ func (c *postgresCustomerHealthClient) accountCasesFull(ctx context.Context, acc
 		}
 		cases = append(cases, resp.Cases...)
 		if len(resp.Cases) < customerHealthAccountCasePageLimit || (page+1)*customerHealthAccountCasePageLimit >= resp.Total {
+			complete = true
 			break
 		}
+	}
+	if !complete {
+		return nil, fmt.Errorf("account %s has more cases than this lookup's %d-case safety bound can fetch", accountID, customerHealthAccountCasePageCap*customerHealthAccountCasePageLimit)
 	}
 	return cases, nil
 }
@@ -652,8 +666,9 @@ func (c *postgresCustomerHealthClient) caseCount(ctx context.Context, accountID,
 
 // accountHasRecentEscalations reports whether any of the account's cases has
 // an escalation created within customerHealthEscalationWindow. Reuses
-// accountCasesFull's own (wider: customerHealthAccountCasePageCap, 2000
-// cases) pagination bound rather than a separately-tuned, narrower one -- an
+// accountCasesFull's own (wider, and now a loud failure rather than a silent
+// truncation past its backstop -- see accountCasesFull's own doc comment)
+// pagination bound rather than a separately-tuned, narrower one -- an
 // earlier version here (accountCaseIDsForHealth, 500-case cap) could miss an
 // escalation on a case beyond that cap for a real account with more than 500
 // cases (one real account checked has 1,585), silently under-reporting this
