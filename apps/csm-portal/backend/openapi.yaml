@@ -9944,9 +9944,14 @@ paths:
   # Account/project/case list-search-detail (which used to collide, and so
   # used to live here under /spl/accounts, /spl/projects, /spl/cases) are
   # gone entirely -- consolidated onto the shared /accounts, /projects, and
-  # /cases search/detail routes above. Off by default (SPL_ENABLED); see
-  # cmd/server/main.go. Path parameters here are ServiceNow sys_ids or
-  # case/account/project numbers, not UUIDs.
+  # /cases search/detail routes above. Always registered. Google Drive/the
+  # sales-side entity service are independently optional -- an endpoint
+  # needing one that isn't configured in a given deployment fails at call
+  # time instead of the route not existing. ServiceNow's own host/
+  # credential config is gone entirely (that integration is being phased
+  # out), so every ServiceNow-backed endpoint here always fails its own
+  # call now -- see cmd/server/main.go's loadViewerConfig. Path parameters
+  # here are ServiceNow sys_ids or case/account/project numbers, not UUIDs.
   # ---------------------------------------------------------------------
 
   /accounts/{accountId}/escalations:
