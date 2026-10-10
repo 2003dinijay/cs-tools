@@ -823,20 +823,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		snSLASearchDelegate = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
 	}
 
-	// snAttachmentDelegate, when non-nil, backs two attachment reads (POST
-	// /attachments/search, GET /attachments/{id}/content) instead of
-	// activeAttachmentSvc, and the case activity feed (POST
-	// /cases/{id}/activities/search) instead of activeCaseSvc -- see
-	// attachmentReadHandler and activitiesHandler below. A stopgap for while
-	// Postgres-synced attachment content and activity history aren't
-	// reliable yet (AttachmentDataSource's own doc comment), independent of
-	// DataSource and SLADataSource. Same read-only shape as
-	// snSLASearchDelegate above: nil publisher/pgFallback/slaEngine. It must
-	// never back CreateCaseAttachment/ConfirmCaseAttachment/
-	// GetAttachmentByID/UpdateAttachment/DeleteCaseAttachment -- those need
-	// activeAttachmentSvc's real write/fallback behavior, which this
-	// read-only delegate doesn't have (see attachmentReadHandler's own doc
-	// comment for what breaks if it did).
+	// snAttachmentDelegate, when non-nil, backs three attachment reads (GET
+	// /attachments/{id}, POST /attachments/search, GET
+	// /attachments/{id}/content) instead of activeAttachmentSvc, and the
+	// case activity feed (POST /cases/{id}/activities/search) instead of
+	// activeCaseSvc -- see attachmentReadHandler and activitiesHandler
+	// below. A stopgap for while Postgres-synced attachment content and
+	// activity history aren't reliable yet (AttachmentDataSource's own doc
+	// comment), independent of DataSource and SLADataSource. Same read-only
+	// shape as snSLASearchDelegate above: nil publisher/pgFallback/slaEngine.
+	// It must never back CreateCaseAttachment/ConfirmCaseAttachment/
+	// UpdateAttachment/DeleteCaseAttachment -- those need activeAttachmentSvc's
+	// real write/fallback behavior, which this read-only delegate doesn't
+	// have (see attachmentReadHandler's own doc comment for what breaks if
+	// it did).
 	var snAttachmentDelegate service.CaseService
 	if cfg.AttachmentDataSource == config.AttachmentDataSourceServiceNow {
 		snAttachmentDelegate = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
