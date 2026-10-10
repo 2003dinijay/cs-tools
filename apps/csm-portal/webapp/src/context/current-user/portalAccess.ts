@@ -158,6 +158,35 @@ export interface PortalAccess {
    * the route — see the backend's own CLAUDE.md.
    */
   canUpdateDeleteAnyComment: boolean;
+  /**
+   * The small set of sections that used to live in the separate, now-removed
+   * "Support Portal Lite" app (Customer Health, User scan, SLA/Time/CS
+   * project reports, and the extra Account detail tabs they added): `viewer`
+   * only, regardless of what other roles the caller also holds — mirrors the
+   * backend's `PermViewerAccess` (`access.go`), which is built only from the
+   * viewer role, not folded into the usual "full access" `cs_engineer`/`admin`
+   * bundle the way every other flag above is. A `cs_engineer` who does not
+   * also separately hold `viewer` does not get these sections; one who holds
+   * both does, same as before this app was merged into the main portal.
+   */
+  isSplAudience: boolean;
+  /**
+   * Usage metrics requires `cs_engineer`/`admin` (full access) or the
+   * dedicated `usage_metrics_viewer` role. Unlike {@link isSplAudience},
+   * holding plain `viewer` does NOT grant this on its own — reported live:
+   * a viewer-only account must not see this section at all, even though it
+   * (like Customer Health/User Scan) is an ex-Support-Portal-Lite feature.
+   */
+  canViewUsageMetrics: boolean;
+  /**
+   * Sections that exist for staff generally, not for the former Support
+   * Portal Lite (viewer-only) audience specifically — Team Schedule,
+   * Knowledge and Settings so far. False only for a caller whose role set is
+   * *exactly* `{viewer}` (no other role at all) — everyone else, including a
+   * plain `cs_engineer`, keeps seeing these sections exactly as before. A
+   * viewer who also holds any other role is unaffected by this flag.
+   */
+  canViewStaffSections: boolean;
 }
 
 /**
@@ -198,6 +227,9 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
       canManagePlaybooks: true,
       canCreateAnnouncement: true,
       canUpdateDeleteAnyComment: true,
+      isSplAudience: true,
+      canViewUsageMetrics: true,
+      canViewStaffSections: true,
     };
   }
   const held = new Set((roles ?? []).map((r) => r.toLowerCase()));
@@ -220,5 +252,8 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     canManagePlaybooks: isAdmin,
     canCreateAnnouncement: full && (isAdmin || has(PORTAL_ROLE.announcementCreator)),
     canUpdateDeleteAnyComment: isAdmin || has(PORTAL_ROLE.commentUpdater),
+    isSplAudience: has(PORTAL_ROLE.viewer),
+    canViewUsageMetrics: full || has(PORTAL_ROLE.usageMetricsViewer),
+    canViewStaffSections: !(held.size === 1 && has(PORTAL_ROLE.viewer)),
   };
 }

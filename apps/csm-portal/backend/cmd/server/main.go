@@ -692,17 +692,18 @@ func main() {
 	// Case attachments are unmerged for the same no-entity-service-equivalent
 	// reason.
 	//
-	// Every route below is registered with PermViewerAccess, the blanket SPL
-	// audience gate (formerly SPL_ALLOWED_GROUPS's raw-Asgardeo-groups
-	// check -- see PermViewerAccess's own doc comment). EscalateCase,
-	// DownloadAttachment, and every usage-metrics route additionally check
-	// a narrower permission (PermEscalate/PermDownloadAttachment/
-	// PermUsageMetricsViewer) inside the handler itself, the same layered
-	// shape SPL_ADD_ESCALATION_GROUPS/SPL_DOWNLOAD_ATTACHMENT_GROUPS/
-	// SPL_USAGE_METRICS_GROUPS enforced on top of SPL_ALLOWED_GROUPS
-	// before -- see requireViewerPermission's own doc comment for why that
-	// second check couldn't just move to route-level registration like
-	// every other route in this file.
+	// Every route below is registered with PermViewerAccess (Viewer only),
+	// EXCEPT the /usage-metrics/* routes further down, which are registered
+	// directly on the broader PermUsageMetricsViewer instead -- see that
+	// permission's own doc comment for why this one domain's audience is
+	// wider than its siblings'. EscalateCase and DownloadAttachment
+	// additionally check a narrower permission (PermEscalate/
+	// PermDownloadAttachment) inside the handler itself, the same layered
+	// shape SPL_ADD_ESCALATION_GROUPS/SPL_DOWNLOAD_ATTACHMENT_GROUPS
+	// enforced on top of SPL_ALLOWED_GROUPS before -- see
+	// requireViewerPermission's own doc comment for why that second check
+	// couldn't just move to route-level registration like every other route
+	// in this file.
 	if viewerHandlers != nil {
 		route("GET /accounts/{accountId}/escalations", handler.PermViewerAccess, viewerHandlers.accountEsc.GetAccountEscalations)
 		route("POST /accounts/{accountId}/cases/{caseId}/escalate", handler.PermViewerAccess, viewerHandlers.accountEsc.EscalateCase)
@@ -718,17 +719,17 @@ func main() {
 		route("POST /scan-user", handler.PermViewerAccess, viewerHandlers.userScan.ScanUser)
 		route("GET /files", handler.PermViewerAccess, viewerHandlers.files.ListFiles)
 		route("GET /files/search", handler.PermViewerAccess, viewerHandlers.files.SearchFolder)
-		route("GET /usage-metrics/projects", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetProjects)
-		route("POST /usage-metrics/instances/metrics/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchInstanceMetrics)
-		route("POST /usage-metrics/instances/metrics/stats", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetInstanceMetricsStats)
-		route("POST /usage-metrics/instances/usages/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchInstanceUsages)
-		route("POST /usage-metrics/instances/usages/stats", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetInstanceUsagesStats)
-		route("POST /usage-metrics/deployments/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchDeployments)
-		route("POST /usage-metrics/projects/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchProjects)
-		route("POST /usage-metrics/deployed-products/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchDeployedProducts)
-		route("POST /usage-metrics/instances/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.SearchInstances)
-		route("POST /usage-metrics/deployed-products/{id}/metrics/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetDeployedProductMetrics)
-		route("POST /usage-metrics/deployed-products/{id}/metrics/usage-counts/search", handler.PermViewerAccess, viewerHandlers.usageMetrics.GetDeployedProductUsageCounts)
+		route("GET /usage-metrics/projects", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetProjects)
+		route("POST /usage-metrics/instances/metrics/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchInstanceMetrics)
+		route("POST /usage-metrics/instances/metrics/stats", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetInstanceMetricsStats)
+		route("POST /usage-metrics/instances/usages/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchInstanceUsages)
+		route("POST /usage-metrics/instances/usages/stats", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetInstanceUsagesStats)
+		route("POST /usage-metrics/deployments/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchDeployments)
+		route("POST /usage-metrics/projects/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchProjects)
+		route("POST /usage-metrics/deployed-products/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchDeployedProducts)
+		route("POST /usage-metrics/instances/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchInstances)
+		route("POST /usage-metrics/deployed-products/{id}/metrics/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetDeployedProductMetrics)
+		route("POST /usage-metrics/deployed-products/{id}/metrics/usage-counts/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetDeployedProductUsageCounts)
 		route("POST /customer-health/summary", handler.PermViewerAccess, viewerHandlers.customerHealth.GetSummary)
 		route("POST /customer-health/accounts/{accountSysId}/init-health-tracking", handler.PermViewerAccess, viewerHandlers.customerHealth.InitHealthTracking)
 		route("GET /customer-health/accounts/{accountId}", handler.PermViewerAccess, viewerHandlers.customerHealth.GetAccountDetail)

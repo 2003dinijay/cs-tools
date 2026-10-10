@@ -30,6 +30,14 @@ const NONE = {
   canManagePlaybooks: false,
   canCreateAnnouncement: false,
   canUpdateDeleteAnyComment: false,
+  isSplAudience: false,
+  canViewUsageMetrics: false,
+  // NONE represents "no roles at all" everywhere it's used directly, and a
+  // caller with no roles can't reach the portal to begin with -- but every
+  // single-role test below spreads NONE then overrides just its own role's
+  // flags, so this must default true (role set is NOT exactly {viewer}) for
+  // every one of those single-other-role cases to stay correct unchanged.
+  canViewStaffSections: true,
 };
 
 describe("getPortalAccess", () => {
@@ -43,7 +51,14 @@ describe("getPortalAccess", () => {
   });
 
   it("viewer can use the portal and read, but do nothing else (no work notes)", () => {
-    expect(getPortalAccess(["viewer"])).toEqual({ ...NONE, hasAnyRole: true });
+    expect(getPortalAccess(["viewer"])).toEqual({
+      ...NONE,
+      hasAnyRole: true,
+      isSplAudience: true,
+      // A viewer-only role set (exactly {viewer}) is the one case this flag
+      // is false for -- see the dedicated canViewStaffSections describe block.
+      canViewStaffSections: false,
+    });
   });
 
   it("worknote_creator adds internal work notes and nothing else", () => {
@@ -88,9 +103,14 @@ describe("getPortalAccess", () => {
   });
 
   it("the feature roles are view-only for these controls", () => {
-    for (const role of ["usage_metrics_viewer", "dashboard_designer"]) {
-      expect(getPortalAccess([role])).toEqual({ ...NONE, hasAnyRole: true });
-    }
+    expect(getPortalAccess(["dashboard_designer"])).toEqual({ ...NONE, hasAnyRole: true });
+    // usage_metrics_viewer is view-only for everything EXCEPT the one section
+    // it names -- see the dedicated canViewUsageMetrics describe block below.
+    expect(getPortalAccess(["usage_metrics_viewer"])).toEqual({
+      ...NONE,
+      hasAnyRole: true,
+      canViewUsageMetrics: true,
+    });
   });
 
   it("the time-card approver also gets Time cards and Updates, and nothing else", () => {
@@ -111,6 +131,12 @@ describe("getPortalAccess", () => {
       canAddWorkNotes: true,
       canUseSecurityCenter: true,
       canUsePlg: true,
+      // Full access grants canViewUsageMetrics too, but neither role holds
+      // the viewer role itself, so isSplAudience stays false for both.
+      isSplAudience: false,
+      canViewUsageMetrics: true,
+      // Role set is {cs_engineer}/{admin}, not exactly {viewer}.
+      canViewStaffSections: true,
     };
     // Both hold canEscalate (any internal engineer may escalate, as in
     // ServiceNow). canManagePlaybooks is the further exception beyond
@@ -242,6 +268,7 @@ describe("getPortalAccess", () => {
       hasAnyRole: true,
       canEscalate: true,
       canDownloadAttachment: true,
+      isSplAudience: true,
     });
   });
 
@@ -335,6 +362,102 @@ describe("getPortalAccess", () => {
 
     it("is false while roles are not loaded, so the controls fail closed", () => {
       expect(getPortalAccess(undefined).canUpdateDeleteAnyComment).toBe(false);
+    });
+  });
+
+  // Mirrors the backend's PermViewerAccess (access.go), which is built only
+  // from the viewer role -- unlike every other flag above, holding
+  // cs_engineer/admin does NOT grant this on its own.
+  describe("isSplAudience", () => {
+    it("viewer holds it alone", () => {
+      expect(getPortalAccess(["viewer"]).isSplAudience).toBe(true);
+    });
+
+    it("cs_engineer and admin do not hold it unless they also separately hold viewer", () => {
+      expect(getPortalAccess(["cs_engineer"]).isSplAudience).toBe(false);
+      expect(getPortalAccess(["admin"]).isSplAudience).toBe(false);
+      expect(getPortalAccess(["cs_engineer", "viewer"]).isSplAudience).toBe(true);
+      expect(getPortalAccess(["admin", "viewer"]).isSplAudience).toBe(true);
+    });
+
+    it("no other role grants it on its own", () => {
+      for (const role of [
+        "escalator",
+        "attachment_downloader",
+        "usage_metrics_viewer",
+        "timecard_approver",
+        "dashboard_designer",
+        "worknote_creator",
+        "announcement_creator",
+      ]) {
+        expect(getPortalAccess([role]).isSplAudience).toBe(false);
+      }
+    });
+  });
+
+  // Requires full access or the dedicated usage_metrics_viewer role.
+  // Reported live: a plain viewer-only account must NOT see this section,
+  // unlike its ex-Support-Portal-Lite siblings (isSplAudience-gated) --
+  // holding viewer grants nothing here on its own.
+  describe("canViewUsageMetrics", () => {
+    it("usage_metrics_viewer, cs_engineer and admin all hold it", () => {
+      expect(getPortalAccess(["usage_metrics_viewer"]).canViewUsageMetrics).toBe(true);
+      expect(getPortalAccess(["cs_engineer"]).canViewUsageMetrics).toBe(true);
+      expect(getPortalAccess(["admin"]).canViewUsageMetrics).toBe(true);
+    });
+
+    it("a plain viewer does not hold it, even combined with other non-qualifying roles", () => {
+      expect(getPortalAccess(["viewer"]).canViewUsageMetrics).toBe(false);
+      expect(getPortalAccess(["viewer", "escalator"]).canViewUsageMetrics).toBe(false);
+    });
+
+    it("a viewer who also holds usage_metrics_viewer or full access does hold it", () => {
+      expect(getPortalAccess(["viewer", "usage_metrics_viewer"]).canViewUsageMetrics).toBe(true);
+      expect(getPortalAccess(["viewer", "cs_engineer"]).canViewUsageMetrics).toBe(true);
+    });
+
+    it("no other role grants it", () => {
+      for (const role of [
+        "escalator",
+        "attachment_downloader",
+        "timecard_approver",
+        "dashboard_designer",
+        "worknote_creator",
+        "announcement_creator",
+      ]) {
+        expect(getPortalAccess([role]).canViewUsageMetrics).toBe(false);
+      }
+    });
+  });
+
+  describe("canViewStaffSections", () => {
+    it("is false only when the role set is exactly {viewer}", () => {
+      expect(getPortalAccess(["viewer"]).canViewStaffSections).toBe(false);
+    });
+
+    it("stays true for a viewer who also holds any other role", () => {
+      expect(getPortalAccess(["viewer", "cs_engineer"]).canViewStaffSections).toBe(true);
+      expect(getPortalAccess(["viewer", "escalator"]).canViewStaffSections).toBe(true);
+      expect(getPortalAccess(["viewer", "attachment_downloader"]).canViewStaffSections).toBe(true);
+    });
+
+    it("is true for every non-viewer role on its own", () => {
+      for (const role of [
+        "cs_engineer",
+        "admin",
+        "escalator",
+        "attachment_downloader",
+        "usage_metrics_viewer",
+        "timecard_approver",
+        "dashboard_designer",
+      ]) {
+        expect(getPortalAccess([role]).canViewStaffSections).toBe(true);
+      }
+    });
+
+    it("is true when no roles are held at all (nothing to specifically hide it from)", () => {
+      expect(getPortalAccess(undefined).canViewStaffSections).toBe(true);
+      expect(getPortalAccess([]).canViewStaffSections).toBe(true);
     });
   });
 });

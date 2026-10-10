@@ -175,14 +175,14 @@ function AuthorizedAppShell(): JSX.Element {
   // other endpoint 403s them. `roles` absent means an older backend or a
   // profile that failed to parse, which must not lock anyone out.
   //
-  // No separate "sales_solutions" exemption here (there used to be one):
-  // usePortalView/useAccess gate the Sales/SA (SPL) audience on plain
-  // "viewer" instead (see usePortalView.ts), and "viewer" is already one of
-  // getPortalAccess's own 8 checked roles, so a Sales/SA user holding it
-  // already passes via hasAnyRole below with no special case needed. A
-  // caller holding ONLY "sales_solutions" (no viewer, no other portal
-  // role) correctly fails this gate: under the current audience check they
-  // can't reach SPL either, so there's nowhere left for them to land.
+  // No separate "sales_solutions" exemption here (there used to be one,
+  // and there used to be a separate Sales/SA "SPL" portal view gated on
+  // "viewer" too -- both are gone, viewer is just another portal role now,
+  // sharing the same routes/pages as everyone else). "viewer" is one of
+  // getPortalAccess's own checked roles, so any caller holding it already
+  // passes via hasAnyRole below with no special case needed. A caller
+  // holding ONLY "sales_solutions" (no viewer, no other portal role)
+  // correctly fails this gate: it grants nothing on its own.
   const holdsNoPortalRole =
     !!user && Array.isArray(user.roles) && !getPortalAccess(user.roles).hasAnyRole;
   // TEMPORARY / LOCAL DEV ONLY — see authConfig.ts's devBypassAccessCheck.

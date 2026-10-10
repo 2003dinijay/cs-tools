@@ -36,7 +36,6 @@ import {
   firstEnabledDestination,
 } from "@config/featureFlags";
 import { usePortalAccess } from "@context/current-user/usePortalAccess";
-import { usePortalView } from "@context/current-user/usePortalView";
 import {
   POST_LOGIN_REDIRECT_KEY,
   PostLoginRedirectConsumer,
@@ -116,19 +115,18 @@ import CsmKBArticleEditorPage from "@features/csm-kb-articles/pages/CsmKBArticle
 import CsmKBArticleHistoryDetailPage from "@features/csm-kb-articles/pages/CsmKBArticleHistoryDetailPage";
 import CsmKBReviewQueuePage from "@features/csm-kb-articles/pages/CsmKBReviewQueuePage";
 import CsmKBAdminPage from "@features/csm-kb-articles/pages/CsmKBAdminPage";
-import RouteGuard from "@features/sales-sa/pages/RouteGuard";
-import AccountsPage from "@features/sales-sa/accounts/pages/AccountsPage";
-import AccountDetailPage from "@features/sales-sa/accounts/pages/AccountDetailPage";
-import ProjectsPage from "@features/sales-sa/projects/pages/ProjectsPage";
-import ProjectDetailPage from "@features/sales-sa/projects/pages/ProjectDetailPage";
-import SlaReportPage from "@features/sales-sa/reports/pages/SlaReportPage";
-import CsReportPage from "@features/sales-sa/reports/pages/CsReportPage";
-import TimelogsReportPage from "@features/sales-sa/reports/pages/TimelogsReportPage";
-import TeamSchedulePage from "@features/sales-sa/schedule/pages/TeamSchedulePage";
-import UserScanPage from "@features/sales-sa/user-scan/pages/UserScanPage";
-import UsageMetricsPage from "@features/sales-sa/usage-metrics/pages/UsageMetricsPage";
-import CustomerHealthDashboardPage from "@features/sales-sa/customer-health/pages/CustomerHealthDashboardPage";
-import CustomerHealthDetailPage from "@features/sales-sa/customer-health/pages/CustomerHealthDetailPage";
+// The four pages below (SLA/CS/Time project reports, User Scan, Usage
+// Metrics, Customer Health) have no modern/entity-service-backed equivalent.
+// Relocated out of the former "sales-sa"/"Support Portal Lite" tree (now
+// deleted); routing/audience-gating for each is isSplAudience, except Usage
+// Metrics, which is canViewUsageMetrics — see both flags' own doc comments.
+import SlaReportPage from "@features/csm-reports/pages/SlaReportPage";
+import CsReportPage from "@features/csm-reports/pages/CsReportPage";
+import TimelogsReportPage from "@features/csm-reports/pages/TimelogsReportPage";
+import UserScanPage from "@features/csm-user-scan/pages/UserScanPage";
+import UsageMetricsPage from "@features/csm-usage-metrics/pages/UsageMetricsPage";
+import CustomerHealthDashboardPage from "@features/csm-customer-health/pages/CustomerHealthDashboardPage";
+import CustomerHealthDetailPage from "@features/csm-customer-health/pages/CustomerHealthDetailPage";
 
 /**
  * Landing for `/`. Defers to AuthGuard's post-login deep-link restore when a
@@ -160,12 +158,7 @@ function RootLanding(): JSX.Element | null {
   const hasDeepLinkSearch = ["goto", "q"].some((key) =>
     Boolean(searchParams.get(key)?.trim()),
   );
-  // The Sales/SA view has no dashboard (SPL never had one) — its landing
-  // page is Cases, same as the standalone app's own index redirect. See
-  // usePortalView.ts.
-  const view = usePortalView();
-  const landing = view === "sales-sa" ? "/cases" : "/dashboard";
-  return pending || hasDeepLinkSearch ? null : <Navigate to={landing} replace />;
+  return pending || hasDeepLinkSearch ? null : <Navigate to="/dashboard" replace />;
 }
 
 /**
@@ -241,17 +234,6 @@ function LegacyDetailRedirect({ to }: { to: string }): JSX.Element {
 function LegacySettingsRedirect({ to }: { to: string }): JSX.Element {
   const { state } = useLocation();
   return <Navigate to={to} state={state} replace />;
-}
-
-/**
- * Redirects the SPL case routes to the normal CSM case pages: `/spl/cases` to
- * the cases list at `/cases`, and `/spl/cases/:caseId` to the case view at
- * `/cases/:caseId`. Preserves query, hash and `location.state`.
- */
-function SplCaseRedirect(): JSX.Element {
-  const { caseId } = useParams();
-  const { search, hash, state } = useLocation();
-  return <Navigate to={`${caseId ? `/cases/${caseId}` : "/cases"}${search}${hash}`} state={state} replace />;
 }
 
 export default function App(): JSX.Element {
@@ -661,73 +643,48 @@ export default function App(): JSX.Element {
                     <Route path="admin" element={<CsmKBAdminPage />} />
                   </Route>
 
-                  {/* Support Portal Lite — ported from the former standalone
-                      apps/support-portal-lite/webapp. RouteGuard is the
-                      real enforcement point (an audience-gate 403, not just
-                      a hidden nav entry) and also mounts
-                      PermissionProvider for every screen below it. */}
-                  <Route path="spl" element={<RouteGuard />}>
-                    {/* SPL no longer has a cases list of its own: its "Cases"
-                        item opens the normal CSM cases list at /cases. This
-                        redirect keeps the nav item's /spl/cases href and old
-                        links working (the nav href stays /spl/cases on
-                        purpose -- pointing it at /cases would make it win the
-                        path match for every user, see csmNavItems.ts). */}
-                    <Route path="cases" element={<SplCaseRedirect />} />
-                    {/* SPL has no case-detail page of its own any more: every
-                        case opens in the normal CSM case view at
-                        /cases/:caseId (write actions there are gated by the
-                        caller's roles). This redirect only keeps old
-                        /spl/cases/:id links and bookmarks working. */}
-                    <Route path="cases/:caseId" element={<SplCaseRedirect />} />
+                  {/* The following sections have no modern/entity-service-backed
+                      equivalent and so stay limited to their original
+                      audience (a caller holding the viewer role) via
+                      isSplAudience — see that flag's own doc comment. They
+                      used to live under the separate "/spl" prefix/app
+                      (former standalone apps/support-portal-lite/webapp);
+                      that split is gone, so these mount as normal routes
+                      like everything else, enforced the normal way: a hidden
+                      nav entry (csmNavItems.ts's `requires`) plus the page
+                      itself failing closed should it ever be reached
+                      directly. */}
+                  <Route path="user-scan" element={<UserScanPage />} />
 
-                    {/* AccountsPage reads the path leaf itself to decide
-                        all-accounts vs my-accounts — same component, two
-                        routes. Only "accounts" has a csmNavItems.ts entry;
-                        "my-accounts" is reachable from within the page
-                        itself (a toggle), same as the source app. */}
-                    <Route path="accounts" element={<AccountsPage />} />
-                    <Route path="my-accounts" element={<AccountsPage />} />
-                    <Route path="accounts/:accountId" element={<AccountDetailPage />} />
+                  {/* Usage Metrics is the one exception: NOT limited to
+                      isSplAudience — cs_engineer/admin and the dedicated
+                      usage_metrics_viewer role see it too, see
+                      canViewUsageMetrics's own doc comment. */}
+                  <Route path="usage-metrics" element={<UsageMetricsPage />} />
 
-                    <Route path="projects" element={<ProjectsPage />} />
-                    {/* ProjectDetailPage only reads :projectId — reachable
-                        both directly and nested under its account, matching
-                        both links the source app's own components use. */}
-                    <Route path="projects/:projectId" element={<ProjectDetailPage />} />
-                    <Route
-                      path="accounts/:accountId/projects/:projectId"
-                      element={<ProjectDetailPage />}
-                    />
-                    <Route
-                      path="projects/:projectId/sla-report/:sysId"
-                      element={<SlaReportPage />}
-                    />
-                    <Route
-                      path="projects/:projectId/cs-report/:sysId"
-                      element={<CsReportPage />}
-                    />
-                    <Route
-                      path="projects/:projectId/timelogs-report"
-                      element={<TimelogsReportPage />}
-                    />
+                  <Route
+                    path="customer-health"
+                    element={<CustomerHealthDashboardPage />}
+                  />
+                  <Route
+                    path="customer-health/account/:accountId"
+                    element={<CustomerHealthDetailPage />}
+                  />
 
-                    <Route path="team-schedule" element={<TeamSchedulePage />} />
-                    <Route path="team-schedule/:sysId" element={<TeamSchedulePage />} />
-
-                    <Route path="user-scan" element={<UserScanPage />} />
-
-                    <Route path="usage-metrics" element={<UsageMetricsPage />} />
-
-                    <Route
-                      path="customer-health"
-                      element={<CustomerHealthDashboardPage />}
-                    />
-                    <Route
-                      path="customer-health/account/:accountId"
-                      element={<CustomerHealthDetailPage />}
-                    />
-                  </Route>
+                  {/* SLA/CS/Time project reports, launched from a project's
+                      own detail page — same isSplAudience audience as above. */}
+                  <Route
+                    path="customers/projects/:projectId/sla-report/:sysId"
+                    element={<SlaReportPage />}
+                  />
+                  <Route
+                    path="customers/projects/:projectId/cs-report/:sysId"
+                    element={<CsReportPage />}
+                  />
+                  <Route
+                    path="customers/projects/:projectId/timelogs-report"
+                    element={<TimelogsReportPage />}
+                  />
                 </Route>
               </Route>
 
