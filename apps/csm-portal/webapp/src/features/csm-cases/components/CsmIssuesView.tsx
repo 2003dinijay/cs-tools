@@ -59,7 +59,7 @@ import {
 } from "@features/csm-cases/utils/caseSearchPayload";
 import { useDirectoryUsers } from "@api/useDirectoryUsers";
 import { BE_MAX_PAGE_LIMIT } from "@constants/apiConstants";
-import { ALL_CASE_TYPES } from "@features/csm-cases/utils/caseType";
+import { visibleCaseTypes } from "@features/csm-cases/utils/caseType";
 import {
   DEFAULT_CASES_FILTERS,
   readCasesFiltersFromUrl,
@@ -306,6 +306,11 @@ export default function CsmIssuesView({
     [searchParams, setSearchParams],
   );
 
+  const { canWrite, canUseSecurityCenter, canUpdateDeleteAnyComment } = usePortalAccess();
+  // See visibleCaseTypes's own doc comment: must mirror PermViewSecurityCenter
+  // exactly, which comment_updater also holds.
+  const canSeeSecurityReports = canUseSecurityCenter || canUpdateDeleteAnyComment;
+
   // Severity (S1-S4) is a support-case concept, so the severity filter is by
   // default only shown on the support-cases list — i.e. when the surrounding
   // view locks the record type to `case`. Every other list (service
@@ -356,13 +361,23 @@ export default function CsmIssuesView({
       // filter to support cases only (`default_case`) rather than "no
       // restriction" — so an omitted filter silently narrows the result to
       // one type instead of returning all of them. Send every known type
-      // explicitly in that case so the BE default can't kick in.
+      // explicitly in that case so the BE default can't kick in. Narrowed to
+      // this caller's visible types (see visibleCaseTypes's own doc comment)
+      // so a caller without security-report access doesn't get the whole
+      // search 403'd by asking for a type they can't see.
       if (merged.caseTypes.length === 0) {
-        merged.caseTypes = ALL_CASE_TYPES;
+        merged.caseTypes = visibleCaseTypes(canSeeSecurityReports);
       }
       return merged;
     },
-    [filters, debouncedSearch, showSeverityFilter, lockedFilters, hideTypeFilter],
+    [
+      filters,
+      debouncedSearch,
+      showSeverityFilter,
+      lockedFilters,
+      hideTypeFilter,
+      canSeeSecurityReports,
+    ],
   );
 
   const {
@@ -398,7 +413,6 @@ export default function CsmIssuesView({
   const api = useBackendApi();
   const currentUserEmail = useIdTokenClaims()?.email;
   const currentUserId = useCurrentUser().user?.id;
-  const { canWrite } = usePortalAccess();
   const [isFiltersOpen, setIsFiltersOpen] = useFilterBarCollapsed(
     "cases",
     getColumnPreferencesUserKey({ id: currentUserId, email: currentUserEmail }),

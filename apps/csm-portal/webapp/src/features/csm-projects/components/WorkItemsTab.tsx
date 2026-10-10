@@ -36,12 +36,14 @@ interface WorkItemsTabProps {
 }
 
 /**
- * A project's work items: a single flat list spanning every case type (Case /
- * Service request / Security report / Engagement / Announcement), filtered by
- * a "Work item type" multi-select rather than one sub-tab per type — matching
- * `caseType.ts`'s `ALL_CASE_TYPES` (all 5; the backend already returns
- * announcements for a project, so hiding that type here would be a silent
- * regression). Detail links resolve per-row to each type's own detail page via
+ * A project's work items: a single flat list spanning every case type this
+ * caller can see (Case / Service request / Security report / Engagement /
+ * Announcement — `caseType.ts`'s `visibleCaseTypes`, which drops Security
+ * report for a caller without security-report access (Security Center or
+ * comment_updater); the backend already
+ * returns announcements for a project, so hiding that type here would be a
+ * silent regression), filtered by a "Work item type" multi-select rather than
+ * one sub-tab per type. Detail links resolve per-row to each type's own detail page via
  * `CasesList`'s `caseTypeDetailBasePath` fallback (no `detailBasePath` is
  * passed here, unlike the old single-type sub-tabs, since a mixed list can't
  * point every row at one fixed base path).
@@ -72,12 +74,12 @@ interface WorkItemsTabProps {
  * top-level project tab — it was already nested here before this revamp.
  */
 export default function WorkItemsTab({ projectId }: WorkItemsTabProps): JSX.Element {
-  // Chats (the project's pre-case Novera conversations) is hidden for a
-  // viewer-only caller (role set exactly {viewer}) -- reported live, see
-  // canViewStaffSections's own doc comment. With only one sub-tab left for
-  // that caller, the sub-tab strip itself is skipped too: a single-option
-  // tab switcher is clutter, not a real choice.
-  const { canViewStaffSections } = usePortalAccess();
+  // Chats (the project's pre-case Novera conversations) is shown only to
+  // cs_engineer/admin/timecard_approver -- see canViewWorkItemsStaffView's
+  // own doc comment. Everyone else gets only the flat issues list, with the
+  // sub-tab strip itself skipped too: a single-option tab switcher is
+  // clutter, not a real choice.
+  const { canViewWorkItemsStaffView } = usePortalAccess();
   // Kept in the URL (`?subTab=`), not local state, alongside the parent
   // page's own `?tab=` -- see CsmProjectDetailPage.tsx's `projectPath` -- so
   // a create-flow round trip back to this project restores the exact sub-tab
@@ -87,13 +89,14 @@ export default function WorkItemsTab({ projectId }: WorkItemsTabProps): JSX.Elem
     "issues",
     { paramName: "subTab" },
   );
-  // A viewer-only caller never reaches "conversations" at all (no tab strip
-  // to pick it from), regardless of what a stale ?subTab= in the URL claims.
-  const effectiveSubTab = canViewStaffSections ? subTab : "issues";
+  // A caller without the staff view never reaches "conversations" at all (no
+  // tab strip to pick it from), regardless of what a stale ?subTab= in the
+  // URL claims.
+  const effectiveSubTab = canViewWorkItemsStaffView ? subTab : "issues";
 
   return (
     <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
-      {canViewStaffSections && (
+      {canViewWorkItemsStaffView && (
         <Tabs value={effectiveSubTab} onChange={(_, v) => setSubTab(v as WorkItemSubTab)}>
           <Tab value="issues" label="Work items" />
           <Tab value="conversations" label="Chats" />

@@ -231,23 +231,13 @@ func main() {
 			ClientSecret: viewerCfg.driveClientSecret,
 			RefreshToken: viewerCfg.driveRefreshToken,
 		})
-		// A live DB ping happens here, unlike every other client above —
-		// this backend's standing convention (see loadDashboards,
-		// loadDirectory) is that a broken required integration fails startup
-		// loudly rather than serving traffic it cannot actually handle.
-		// risk.NewClient returns a typed-nil client on a failed ping if this
-		// were ignored, and NewCustomerHealthHandler would then store that
-		// nil client in its risk interface -- Customer Health routes would
-		// dispatch to a nil receiver instead of failing at startup where the
-		// cause is obvious. A 30s deadline bounds the ping so a hung network
-		// doesn't hang startup forever.
-		riskCtx, riskCancel := context.WithTimeout(context.Background(), 30*time.Second)
-		riskClient, err := risk.NewClient(riskCtx, risk.Config{DSN: viewerCfg.riskMySQLDSN})
-		riskCancel()
-		if err != nil {
-			slog.Error("failed to connect to SPL_RISK_MYSQL_DSN", "err", err)
-			os.Exit(1)
-		}
+		// Customer-health risk tracking used to be its own standalone MySQL
+		// database (risk.NewClient opened and ping-checked a *sql.DB here);
+		// that database has been migrated into entity-service's own Postgres
+		// (migration 0219), so this is now just a thin wrapper over the
+		// already-constructed, already-shared customerEntityClient -- no
+		// connection of its own to open or fail.
+		riskClient := risk.NewClient(customerEntityClient)
 
 		// Accounts/projects/cases/team-members read/search/comment paths used
 		// to have their own Postgres translation layer here, wrapping
@@ -1415,7 +1405,6 @@ type viewerConfig struct {
 	driveClientID          string
 	driveClientSecret      string
 	driveRefreshToken      string
-	riskMySQLDSN           string
 	salesEntityBaseURL     string
 }
 
@@ -1436,10 +1425,12 @@ type viewerConfig struct {
 // SPL is on: they aren't SPL-specific concepts (ServiceNow, Google Drive,
 // and the sales-side entity service are just this feature's own upstreams)
 // so they follow this file's existing convention of naming a service's own
-// credentials after the service, not the caller -- SPL_RISK_MYSQL_DSN
-// below is the one exception, since "risk" isn't a distinct upstream
-// service name to key on. See .env.example for what each variable
-// configures.
+// credentials after the service, not the caller. See .env.example for what
+// each variable configures. Customer-health risk tracking used to need its
+// own SPL_RISK_MYSQL_DSN here (a standalone MySQL database); that's gone
+// now that migration 0219 moved those tables into entity-service's own
+// Postgres, so risk.NewClient just wraps the already-constructed
+// customerEntityClient instead.
 //
 // Returns (false, zero viewerConfig) when the flag is off, so the caller never
 // touches the returned viewerConfig in that case.
@@ -1466,7 +1457,6 @@ func loadViewerConfig() (bool, viewerConfig) {
 		driveClientID:          mustEnv("GOOGLE_DRIVE_CLIENT_ID"),
 		driveClientSecret:      mustEnv("GOOGLE_DRIVE_CLIENT_SECRET"),
 		driveRefreshToken:      mustEnv("GOOGLE_DRIVE_REFRESH_TOKEN"),
-		riskMySQLDSN:           mustEnv("SPL_RISK_MYSQL_DSN"),
 		salesEntityBaseURL:     mustHTTPSBaseURL("SALES_ENTITY_BASE_URL", mustEnv("SALES_ENTITY_BASE_URL")),
 	}
 }

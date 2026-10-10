@@ -280,11 +280,11 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     id: "team-schedule",
     label: "Team Schedule",
     href: "/team-schedule",
-    // Readable by everyone who can open the portal EXCEPT a viewer-only
-    // caller (role set exactly {viewer}) -- see canViewStaffSections's own
-    // doc comment. Editing it is a lead's job and will gate on its own flag
-    // when the write routes land.
-    requires: "canViewStaffSections",
+    // An explicit allow-list (cs_engineer/admin/comment_updater), not just
+    // "not a plain viewer" -- see canViewTeamSchedule's own doc comment.
+    // Editing it is a lead's job and will gate on its own flag when the
+    // write routes land.
+    requires: "canViewTeamSchedule",
     icon: CalendarDays,
   },
   {

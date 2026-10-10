@@ -38,6 +38,11 @@ const NONE = {
   // flags, so this must default true (role set is NOT exactly {viewer}) for
   // every one of those single-other-role cases to stay correct unchanged.
   canViewStaffSections: true,
+  // Unlike canViewStaffSections, these two are explicit allow-lists (false
+  // by default, true only for a qualifying role) -- see each flag's own doc
+  // comment.
+  canViewTeamSchedule: false,
+  canViewWorkItemsStaffView: false,
 };
 
 describe("getPortalAccess", () => {
@@ -113,11 +118,12 @@ describe("getPortalAccess", () => {
     });
   });
 
-  it("the time-card approver also gets Time cards and Updates, and nothing else", () => {
+  it("the time-card approver also gets Time cards and Updates and the Work items staff view, and nothing else", () => {
     expect(getPortalAccess(["timecard_approver"])).toEqual({
       ...NONE,
       hasAnyRole: true,
       canUseTimeCardsAndUpdates: true,
+      canViewWorkItemsStaffView: true,
     });
   });
 
@@ -137,6 +143,9 @@ describe("getPortalAccess", () => {
       canViewUsageMetrics: true,
       // Role set is {cs_engineer}/{admin}, not exactly {viewer}.
       canViewStaffSections: true,
+      // Both are full access -- qualify for both allow-list flags too.
+      canViewTeamSchedule: true,
+      canViewWorkItemsStaffView: true,
     };
     // Both hold canEscalate (any internal engineer may escalate, as in
     // ServiceNow). canManagePlaybooks is the further exception beyond
@@ -339,10 +348,13 @@ describe("getPortalAccess", () => {
       expect(getPortalAccess(["admin"]).canUpdateDeleteAnyComment).toBe(true);
     });
 
-    it("the role on its own grants the ability, but nothing else, not even entry past the no-access screen", () => {
+    it("the role on its own grants the ability and Team Schedule, but nothing else, not even entry past the no-access screen", () => {
       expect(getPortalAccess(["comment_updater"])).toEqual({
         ...NONE,
         canUpdateDeleteAnyComment: true,
+        // comment_updater is also one of canViewTeamSchedule's allow-listed
+        // roles -- see that flag's own doc comment.
+        canViewTeamSchedule: true,
       });
     });
 
@@ -458,6 +470,87 @@ describe("getPortalAccess", () => {
     it("is true when no roles are held at all (nothing to specifically hide it from)", () => {
       expect(getPortalAccess(undefined).canViewStaffSections).toBe(true);
       expect(getPortalAccess([]).canViewStaffSections).toBe(true);
+    });
+  });
+
+  // An explicit allow-list, independent of viewer -- reported live: a viewer
+  // who also held attachment_downloader was not exactly {viewer}, so the old
+  // canViewStaffSections check let Team Schedule through for them too.
+  describe("canViewTeamSchedule", () => {
+    it("cs_engineer, admin and comment_updater each hold it on their own", () => {
+      expect(getPortalAccess(["cs_engineer"]).canViewTeamSchedule).toBe(true);
+      expect(getPortalAccess(["admin"]).canViewTeamSchedule).toBe(true);
+      expect(getPortalAccess(["comment_updater"]).canViewTeamSchedule).toBe(true);
+    });
+
+    it("a viewer combined with an unrelated role does not qualify", () => {
+      expect(getPortalAccess(["viewer"]).canViewTeamSchedule).toBe(false);
+      expect(getPortalAccess(["viewer", "attachment_downloader"]).canViewTeamSchedule).toBe(false);
+      expect(getPortalAccess(["viewer", "escalator"]).canViewTeamSchedule).toBe(false);
+    });
+
+    it("a viewer who also holds a qualifying role does qualify", () => {
+      expect(getPortalAccess(["viewer", "cs_engineer"]).canViewTeamSchedule).toBe(true);
+      expect(getPortalAccess(["viewer", "comment_updater"]).canViewTeamSchedule).toBe(true);
+    });
+
+    it("no other role grants it", () => {
+      for (const role of [
+        "escalator",
+        "attachment_downloader",
+        "usage_metrics_viewer",
+        "timecard_approver",
+        "dashboard_designer",
+        "worknote_creator",
+        "announcement_creator",
+      ]) {
+        expect(getPortalAccess([role]).canViewTeamSchedule).toBe(false);
+      }
+    });
+
+    it("is false while roles are not loaded, so the controls fail closed", () => {
+      expect(getPortalAccess(undefined).canViewTeamSchedule).toBe(false);
+    });
+  });
+
+  // The project Work items tab's staff framing (the "Work items" label, the
+  // Chats sub-tab) -- same explicit-allow-list shape as canViewTeamSchedule,
+  // for the same reported-live reason, with timecard_approver as the one
+  // extra qualifying role instead of comment_updater.
+  describe("canViewWorkItemsStaffView", () => {
+    it("cs_engineer, admin and timecard_approver each hold it on their own", () => {
+      expect(getPortalAccess(["cs_engineer"]).canViewWorkItemsStaffView).toBe(true);
+      expect(getPortalAccess(["admin"]).canViewWorkItemsStaffView).toBe(true);
+      expect(getPortalAccess(["timecard_approver"]).canViewWorkItemsStaffView).toBe(true);
+    });
+
+    it("a viewer combined with an unrelated role does not qualify", () => {
+      expect(getPortalAccess(["viewer"]).canViewWorkItemsStaffView).toBe(false);
+      expect(getPortalAccess(["viewer", "attachment_downloader"]).canViewWorkItemsStaffView).toBe(false);
+      expect(getPortalAccess(["viewer", "escalator"]).canViewWorkItemsStaffView).toBe(false);
+    });
+
+    it("a viewer who also holds a qualifying role does qualify", () => {
+      expect(getPortalAccess(["viewer", "cs_engineer"]).canViewWorkItemsStaffView).toBe(true);
+      expect(getPortalAccess(["viewer", "timecard_approver"]).canViewWorkItemsStaffView).toBe(true);
+    });
+
+    it("no other role grants it", () => {
+      for (const role of [
+        "escalator",
+        "attachment_downloader",
+        "usage_metrics_viewer",
+        "dashboard_designer",
+        "worknote_creator",
+        "announcement_creator",
+        "comment_updater",
+      ]) {
+        expect(getPortalAccess([role]).canViewWorkItemsStaffView).toBe(false);
+      }
+    });
+
+    it("is false while roles are not loaded, so the controls fail closed", () => {
+      expect(getPortalAccess(undefined).canViewWorkItemsStaffView).toBe(false);
     });
   });
 });

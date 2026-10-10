@@ -18,16 +18,14 @@ import { useState, useEffect, type ReactNode } from "react";
 import {
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography, Box,
   List, ListItem, ListItemText, Collapse, IconButton, Card, CardContent,
-  Accordion, AccordionSummary, AccordionDetails, Chip, CircularProgress,
+  Accordion, AccordionSummary, AccordionDetails, Chip, Skeleton,
 } from "@wso2/oxygen-ui";
 import { TriangleAlertIcon, ChevronDownIcon, ChevronUpIcon, CircleCheckIcon, CircleXIcon } from "@wso2/oxygen-ui-icons-react";
-import { colors, alpha, useTheme } from "@wso2/oxygen-ui";
+import { alpha, useTheme } from "@wso2/oxygen-ui";
 import { useAccountHealthDetail, useAccountHealthStatus, useInitHealthTracking, isNotFoundError } from "../api/useAccountHealthDetail";
 import ReviewStatusCell from "./ReviewStatusCell";
 import ActionItemsSection from "./ActionItemsSection";
 import type { ProjectDetail, CaseGroup, CaseLink, EolProduct } from "../api/customerHealthTypes";
-
-const { green, red } = colors;
 
 interface RiskCellProps {
   project: ProjectDetail;
@@ -161,7 +159,25 @@ export default function CustomerHealthDetailTable({ accountId, onAccountNameLoad
     if (accountData?.accountName && onAccountNameLoaded) onAccountNameLoaded(accountData.accountName);
   }, [accountData, onAccountNameLoaded]);
 
-  if (loading) return <CircularProgress size={20} sx={{ mt: 3 }} />;
+  // The project count (and so the detail table's own column count) isn't
+  // known until accountData loads, so this approximates the final layout's
+  // shape -- a row of project cards above a table -- rather than a fixed
+  // column skeleton like a table whose columns are known up front.
+  if (loading) {
+    return (
+      <Box sx={{ mt: 3 }}>
+        <Box sx={{ display: "flex", gap: 2, mb: 3, overflowX: "hidden" }}>
+          {Array.from({ length: 3 }).map((_, i) => (
+            <Skeleton key={i} variant="rounded" width={320} height={140} sx={{ flexShrink: 0 }} />
+          ))}
+        </Box>
+        <Skeleton variant="rounded" height={40} sx={{ mb: 1 }} />
+        {Array.from({ length: 6 }).map((_, i) => (
+          <Skeleton key={i} variant="rounded" height={44} sx={{ mb: 0.5 }} />
+        ))}
+      </Box>
+    );
+  }
 
   // FIXED (was `error.status === 500`, matching the OLD Ballerina backend's
   // behavior of 500-ing on an unknown account — the new Go backend
@@ -396,9 +412,8 @@ export default function CustomerHealthDetailTable({ accountId, onAccountNameLoad
 }
 
 function StatusIndicator({ isRisk }: { isRisk: boolean }) {
-  const color = isRisk ? red[700] : green[700];
   return (
-    <Box sx={{ color, display: "inline-flex" }}>
+    <Box sx={{ color: isRisk ? "error.main" : "success.main", display: "inline-flex" }}>
       {isRisk ? <CircleXIcon size={22} /> : <CircleCheckIcon size={22} />}
     </Box>
   );

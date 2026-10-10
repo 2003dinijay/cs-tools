@@ -14,14 +14,16 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Ported verbatim — no backend call, static option list.
+// No backend call, static option list. Matches the plain displayEmpty style
+// every sibling filter in this bar uses (Region/Product/ABT Team/Health
+// Status) -- this used to be the one filter styled with a floating
+// InputLabel + OutlinedInput instead, which rendered its closed-state text
+// at a different position than every other filter next to it.
 import {
   Select,
   MenuItem,
   Checkbox,
   ListItemText,
-  OutlinedInput,
-  InputLabel,
   FormControl,
   Divider,
   type SelectChangeEvent,
@@ -57,13 +59,12 @@ export default function RiskIndicatorSelect({ selectedRisks, onRiskChange }: Ris
   };
 
   return (
-    <FormControl sx={{ m: 1, width: 300 }} size="small">
-      <InputLabel>Risk Indicator</InputLabel>
+    <FormControl sx={{ m: 1, width: 220 }} size="small">
       <Select
         multiple
         value={selectedRisks}
         onChange={handleChange}
-        input={<OutlinedInput label="Risk Indicator" />}
+        displayEmpty
         renderValue={(selected) => {
           if (selected.length === 0) return "All Indicators";
           if (selected.length === riskOptions.length) return "All Indicators";

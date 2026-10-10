@@ -295,12 +295,12 @@ func TestAccessGuard_ViewAllDashboardsIsForCsEngineersAndAdmins(t *testing.T) {
 	}
 }
 
-// TestAccessGuard_SecurityCenterIsForCsEngineersAndAdmins covers
-// PermViewSecurityCenter, which — unlike PermView — plain viewer/escalator/
-// attachment_downloader/usage_metrics_viewer/timecard_approver/
+// TestAccessGuard_SecurityCenterIsForCsEngineersAdminsAndCommentUpdaters
+// covers PermViewSecurityCenter, which — unlike PermView — plain viewer/
+// escalator/attachment_downloader/usage_metrics_viewer/timecard_approver/
 // dashboard_designer do NOT hold, even though every one of them holds
 // PermView itself.
-func TestAccessGuard_SecurityCenterIsForCsEngineersAndAdmins(t *testing.T) {
+func TestAccessGuard_SecurityCenterIsForCsEngineersAdminsAndCommentUpdaters(t *testing.T) {
 	g := NewAccessGuard(testAccessConfig())
 	for _, role := range []string{
 		"test-viewer", "test-escalator",
@@ -314,7 +314,7 @@ func TestAccessGuard_SecurityCenterIsForCsEngineersAndAdmins(t *testing.T) {
 			t.Errorf("%s reading cases and customers: status = %d, want 204", role, status)
 		}
 	}
-	for _, role := range []string{"test-cs-engineer", "test-admin"} {
+	for _, role := range []string{"test-cs-engineer", "test-admin", "test-comment-updater"} {
 		if status, _ := serveWithRoles(g, PermViewSecurityCenter, []string{role}); status != http.StatusNoContent {
 			t.Errorf("%s reading Security Center: status = %d, want 204", role, status)
 		}

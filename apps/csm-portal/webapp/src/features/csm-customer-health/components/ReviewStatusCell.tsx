@@ -165,13 +165,13 @@ export default function ReviewStatusCell({
             <Typography variant="caption" color="text.secondary">To Be Reviewed</Typography>
             <Box sx={{ mt: 2, maxWidth: 200, mx: "auto" }}>
               <Stack spacing={1}>
-                <Button size="small" fullWidth variant="contained" sx={{ backgroundColor: "#EF5350", "&:hover": { backgroundColor: "#D32F2F" }, color: "#fff", fontWeight: 600, textTransform: "none", py: 0.75 }} onClick={() => setMarkAtRiskOpen(true)}>
+                <Button size="small" fullWidth variant="contained" color="error" sx={{ fontWeight: 600, textTransform: "none", py: 0.75 }} onClick={() => setMarkAtRiskOpen(true)}>
                   Mark At Risk
                 </Button>
-                <Button size="small" fullWidth variant="contained" sx={{ backgroundColor: "#66BB6A", "&:hover": { backgroundColor: "#43A047" }, color: "#fff", fontWeight: 600, textTransform: "none", py: 0.75 }} onClick={() => setMarkHealthyOpen(true)}>
+                <Button size="small" fullWidth variant="contained" color="success" sx={{ fontWeight: 600, textTransform: "none", py: 0.75 }} onClick={() => setMarkHealthyOpen(true)}>
                   Mark Healthy
                 </Button>
-                <Button size="small" fullWidth variant="outlined" onClick={handleOpenHistory} sx={{ textTransform: "none", borderColor: "#e96900", color: "#e96900", "&:hover": { backgroundColor: alpha("#e96900", 0.12), borderColor: "#e96900" } }}>
+                <Button size="small" fullWidth variant="outlined" onClick={handleOpenHistory} sx={{ textTransform: "none" }}>
                   View Health History
                 </Button>
               </Stack>
@@ -180,7 +180,7 @@ export default function ReviewStatusCell({
         )}
         {status === "at_risk" && (
           <>
-            <Chip label="At Risk" size="small" sx={{ fontWeight: 600, borderRadius: "16px", backgroundColor: "transparent", border: `2px solid ${theme.palette.error.main}`, color: theme.palette.error.main, boxShadow: `0 0 8px ${alpha(theme.palette.error.main, 0.3)}`, "&:hover": { backgroundColor: "transparent" } }} />
+            <Chip label="At Risk" size="small" color="error" variant="outlined" sx={{ fontWeight: 600 }} />
             {openRisk && (
               <>
                 <Box sx={{ mt: 2, p: 1.5, borderLeft: `3px solid ${theme.palette.error.main}`, backgroundColor: alpha(theme.palette.error.main, 0.08), borderRadius: "0 4px 4px 0", overflow: "hidden", minWidth: 0 }}>
@@ -205,7 +205,7 @@ export default function ReviewStatusCell({
                 <Box sx={{ maxWidth: 200, mx: "auto" }}>
                   <Stack spacing={1}>
                     {onAddActionItem && (
-                      <Button size="small" fullWidth variant="outlined" sx={{ textTransform: "none", color: "#e96900", borderColor: "#e96900", "&:hover": { backgroundColor: alpha("#e96900", 0.12), borderColor: "#e96900" } }} onClick={onAddActionItem}>
+                      <Button size="small" fullWidth variant="outlined" sx={{ textTransform: "none" }} onClick={onAddActionItem}>
                         + Add Action Item
                       </Button>
                     )}
@@ -219,7 +219,7 @@ export default function ReviewStatusCell({
                         </Button>
                       </span>
                     </Tooltip>
-                    <Button size="small" fullWidth variant="outlined" onClick={handleOpenHistory} sx={{ textTransform: "none", borderColor: "#e96900", color: "#e96900", "&:hover": { backgroundColor: alpha("#e96900", 0.12), borderColor: "#e96900" } }}>
+                    <Button size="small" fullWidth variant="outlined" onClick={handleOpenHistory} sx={{ textTransform: "none" }}>
                       View Health History
                     </Button>
                   </Stack>
@@ -231,7 +231,7 @@ export default function ReviewStatusCell({
 
         {status === "healthy" && (
           <>
-            <Chip label="Healthy" size="small" sx={{ fontWeight: 600, borderRadius: "16px", backgroundColor: "transparent", border: `2px solid ${theme.palette.success.main}`, color: theme.palette.success.main, boxShadow: `0 0 8px ${alpha(theme.palette.success.main, 0.3)}`, "&:hover": { backgroundColor: "transparent" } }} />
+            <Chip label="Healthy" size="small" color="success" variant="outlined" sx={{ fontWeight: 600 }} />
             {healthStatus?.healthStatus && (
               <Typography variant="caption" display="block" mt={2} color="text.secondary">
                 {healthStatus.healthStatus.reviewedByEmail} · {formatDate(healthStatus.healthStatus.reviewedOn)}
@@ -239,10 +239,10 @@ export default function ReviewStatusCell({
             )}
             <Box sx={{ mt: 2, maxWidth: 200, mx: "auto" }}>
               <Stack spacing={1}>
-                <Button size="small" fullWidth variant="contained" sx={{ backgroundColor: "#EF5350", "&:hover": { backgroundColor: "#D32F2F" }, color: "#fff", fontWeight: 600, textTransform: "none", py: 0.75 }} onClick={() => setMarkAtRiskOpen(true)}>
+                <Button size="small" fullWidth variant="contained" color="error" sx={{ fontWeight: 600, textTransform: "none", py: 0.75 }} onClick={() => setMarkAtRiskOpen(true)}>
                   Mark At Risk
                 </Button>
-                <Button size="small" fullWidth variant="outlined" onClick={handleOpenHistory} sx={{ textTransform: "none", borderColor: "#e96900", color: "#e96900", "&:hover": { backgroundColor: alpha("#e96900", 0.12), borderColor: "#e96900" } }}>
+                <Button size="small" fullWidth variant="outlined" onClick={handleOpenHistory} sx={{ textTransform: "none" }}>
                   View Health History
                 </Button>
               </Stack>
@@ -336,7 +336,7 @@ export default function ReviewStatusCell({
                       {isHealthyRecord ? (
                         <Box sx={{ border: `1px solid ${alpha(theme.palette.success.main, 0.3)}`, borderLeft: `3px solid ${theme.palette.success.main}`, borderRadius: 1, backgroundColor: alpha(theme.palette.success.main, 0.08), p: 2 }}>
                           <Stack direction="row" spacing={1} alignItems="center" mb={0.5}>
-                            <Chip label="Healthy" size="small" sx={{ bgcolor: theme.palette.success.main, color: "#fff", fontWeight: 700 }} />
+                            <Chip label="Healthy" size="small" color="success" sx={{ fontWeight: 700 }} />
                             <Typography variant="body2" color="text.secondary">{formatDate(risk.openedOn)}</Typography>
                           </Stack>
                           <Typography variant="body2">
@@ -358,13 +358,13 @@ export default function ReviewStatusCell({
                             </Typography>
                             {risk.status === "open" && (
                               <Box sx={{ mb: 0.75 }}>
-                                <Chip label="Currently Open" size="small" sx={{
-                                  bgcolor: theme.palette.error.main, color: "#fff", fontWeight: 700,
+                                <Chip label="Currently Open" size="small" color="error" sx={{
+                                  fontWeight: 700,
                                   animation: "riskPulse 1.5s ease-in-out infinite",
                                   "@keyframes riskPulse": {
-                                    "0%": { boxShadow: "0 0 0 0 rgba(211,47,47,0.5)" },
-                                    "70%": { boxShadow: "0 0 0 7px rgba(211,47,47,0)" },
-                                    "100%": { boxShadow: "0 0 0 0 rgba(211,47,47,0)" },
+                                    "0%": { boxShadow: `0 0 0 0 ${alpha(theme.palette.error.main, 0.5)}` },
+                                    "70%": { boxShadow: `0 0 0 7px ${alpha(theme.palette.error.main, 0)}` },
+                                    "100%": { boxShadow: `0 0 0 0 ${alpha(theme.palette.error.main, 0)}` },
                                   },
                                 }} />
                               </Box>

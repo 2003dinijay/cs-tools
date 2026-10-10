@@ -151,7 +151,7 @@ export default function CsmProjectDetailPage(): JSX.Element {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavTransition();
   const location = useLocation();
-  const { canWrite, isSplAudience, canViewStaffSections } = usePortalAccess();
+  const { canWrite, isSplAudience, canViewWorkItemsStaffView } = usePortalAccess();
   // Prefer wherever the caller came from (e.g. a case's Overview panel) over
   // the hardcoded projects list, so Back returns to that page instead of
   // skipping past it — same convention as CsmCaseDetailPage's own back path.
@@ -358,10 +358,10 @@ export default function CsmProjectDetailPage(): JSX.Element {
           <Tab value="overview" label="Overview" />
           <Tab value="deployments" label="Deployments" />
           <Tab value="contacts" label="Project contacts" />
-          {/* A viewer-only caller never sees Chats inside this tab (see
-              WorkItemsTab's own canViewStaffSections gate), so for them it's
-              just the case list -- labelled accordingly. */}
-          <Tab value="workItems" label={canViewStaffSections ? "Work items" : "Cases"} />
+          {/* A caller without the staff view never sees Chats inside this tab
+              (see WorkItemsTab's own canViewWorkItemsStaffView gate), so for
+              them it's just the case list -- labelled accordingly. */}
+          <Tab value="workItems" label={canViewWorkItemsStaffView ? "Work items" : "Cases"} />
         </Tabs>
       </Box>
 

@@ -11253,6 +11253,703 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /projects/{id}/risk:
+    post:
+      summary: Open a new risk record for a project, setting its health status to AT_RISK.
+      operationId: openProjectRisk
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/OpenProjectRiskRequest'
+      responses:
+        "201":
+          description: Risk opened successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRisk'
+        "400":
+          description: Bad request — missing comment, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The project already has an open risk.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /risks/{id}/close:
+    put:
+      summary: Close an open risk and reset the project's health status to TO_BE_REVIEWED.
+      operationId: closeProjectRisk
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CloseProjectRiskRequest'
+      responses:
+        "200":
+          description: Risk closed successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectRisk'
+        "400":
+          description: Bad request — missing comment, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Risk not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: The risk is not open, or still has open/in-progress action items.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{id}/mark-healthy:
+    post:
+      summary: Mark a project healthy and record a closed risk entry for audit history.
+      operationId: markProjectHealthy
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MarkProjectHealthyRequest'
+      responses:
+        "200":
+          description: Project marked healthy successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectHealthStatus'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{id}/revert-health:
+    post:
+      summary: Revert a project's health status back to TO_BE_REVIEWED.
+      operationId: revertProjectHealth
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: Project health reverted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectHealthStatus'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Project has no health status record.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /projects/{id}/risk-history:
+    get:
+      summary: Return a project's full risk history, newest first, each with its action items.
+      operationId: getProjectRiskHistory
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The project's risk history.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetProjectRiskHistoryResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{id}/project-health-statuses:
+    get:
+      summary: Return the health status of every project under an account, each with its currently open risk.
+      operationId: getAccountProjectHealthStatuses
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The account's project health statuses.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetAccountProjectHealthStatusesResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{id}/health-summary:
+    get:
+      summary: Return an account's aggregated overall health status.
+      operationId: getAccountHealthSummary
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The account's overall health status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountHealthSummary'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/health-summaries/search:
+    post:
+      summary: Return GetAccountHealthSummary for many accounts in one query, keyed by account id.
+      operationId: getBatchAccountHealthSummaries
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BatchAccountHealthSummariesRequest'
+      responses:
+        "200":
+          description: Overall health status per requested account id.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BatchAccountHealthSummariesResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/by-health-status/search:
+    post:
+      summary: Return the ids of accounts matching the given overall health status.
+      operationId: getAccountsByHealthStatus
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/AccountsByHealthStatusRequest'
+      responses:
+        "200":
+          description: Account ids matching the requested status.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AccountsByHealthStatusResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{id}/init-health-tracking:
+    post:
+      summary: Seed a TO_BE_REVIEWED health-status row for every listed project id that doesn't already have one.
+      operationId: initProjectHealthTracking
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InitProjectHealthTrackingRequest'
+      responses:
+        "204":
+          description: Health tracking initialized successfully.
+        "400":
+          description: Bad request — a project id doesn't belong to the account, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /risks/{id}/action-items:
+    post:
+      summary: Create a new action item on a risk.
+      operationId: createRiskActionItem
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateRiskActionItemRequest'
+      responses:
+        "201":
+          description: Action item created successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RiskActionItem'
+        "400":
+          description: Bad request — missing title, invalid priority or due date, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Risk not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Action items can only be added to open risks.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: Return a risk's action items, newest first, each enriched with its comment count.
+      operationId: getActionItemsByRisk
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RiskActionItemStatus'
+      responses:
+        "200":
+          description: The risk's action items.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRiskActionItemsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /action-items/{id}/status:
+    put:
+      summary: Update an action item's status.
+      operationId: updateRiskActionItemStatus
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRiskActionItemStatusRequest'
+      responses:
+        "200":
+          description: Action item status updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RiskActionItem'
+        "400":
+          description: >-
+            Bad request — resolutionComment is required when status is RESOLVED or
+            CANCELLED, invalid status, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Action item not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Reopening this action item would leave an active item on a risk that isn't open.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /action-items/{id}:
+    put:
+      summary: Update an action item's details.
+      operationId: updateRiskActionItem
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/UpdateRiskActionItemRequest'
+      responses:
+        "200":
+          description: Action item updated successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RiskActionItem'
+        "400":
+          description: Bad request — missing title, invalid priority or due date, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Action item not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: Only OPEN or IN_PROGRESS items can be edited.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /accounts/{id}/action-items:
+    get:
+      summary: Return the action items belonging to open risks under an account, newest first.
+      operationId: getActionItemsByAccount
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: projectId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: status
+          in: query
+          required: false
+          schema:
+            $ref: '#/components/schemas/RiskActionItemStatus'
+      responses:
+        "200":
+          description: The account's open-risk action items.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetRiskActionItemsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /action-items/{id}/comments:
+    post:
+      summary: Post a comment on an action item.
+      operationId: createActionItemComment
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateActionItemCommentRequest'
+      responses:
+        "201":
+          description: Comment posted successfully.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ActionItemComment'
+        "400":
+          description: Bad request — blank comment, or other invalid field.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Missing or invalid x-user-id-token header.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Action item not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    get:
+      summary: Return an action item's comments, oldest first.
+      operationId: getActionItemComments
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "200":
+          description: The action item's comments.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GetActionItemCommentsResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /cases/time-cards/search:
     post:
       summary: Search time cards rolled up by case (ServiceNow data source only).
@@ -25411,6 +26108,362 @@ components:
           type: string
         escalation:
           $ref: '#/components/schemas/CreatedEscalation'
+
+    ProjectHealthStatusValue:
+      type: string
+      description: A project's health-review status.
+      enum: [TO_BE_REVIEWED, HEALTHY, AT_RISK]
+
+    ProjectRiskStatus:
+      type: string
+      description: A project risk record's lifecycle state.
+      enum: [OPEN, CLOSED]
+
+    RiskActionItemPriority:
+      type: string
+      description: A risk action item's priority.
+      enum: [HIGH, MEDIUM, LOW]
+
+    RiskActionItemStatus:
+      type: string
+      description: A risk action item's lifecycle state.
+      enum: [OPEN, IN_PROGRESS, RESOLVED, CANCELLED]
+
+    ProjectHealthStatus:
+      type: object
+      description: A project's current health-review status.
+      required: [id, projectId, accountId, status, reviewedByEmail, reviewedOn]
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ProjectHealthStatusValue'
+        reviewedByEmail:
+          type: string
+          nullable: true
+        reviewedOn:
+          type: string
+          nullable: true
+
+    RiskActionItem:
+      type: object
+      description: An action item attached to a project risk.
+      required:
+        - id
+        - riskId
+        - projectId
+        - accountId
+        - title
+        - description
+        - priority
+        - status
+        - assignedToEmail
+        - dueDate
+        - resolutionComment
+        - resolvedByEmail
+        - resolvedOn
+        - createdByEmail
+        - createdOn
+        - updatedOn
+        - commentCount
+      properties:
+        id:
+          type: string
+          format: uuid
+        riskId:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        title:
+          type: string
+        description:
+          type: string
+          nullable: true
+        priority:
+          $ref: '#/components/schemas/RiskActionItemPriority'
+        status:
+          $ref: '#/components/schemas/RiskActionItemStatus'
+        assignedToEmail:
+          type: string
+          nullable: true
+        dueDate:
+          type: string
+          nullable: true
+        resolutionComment:
+          type: string
+          nullable: true
+        resolvedByEmail:
+          type: string
+          nullable: true
+        resolvedOn:
+          type: string
+          nullable: true
+        createdByEmail:
+          type: string
+        createdOn:
+          type: string
+        updatedOn:
+          type: string
+        commentCount:
+          type: integer
+
+    ProjectRisk:
+      type: object
+      description: A project's risk record, open or closed, together with its action items.
+      required:
+        - id
+        - projectId
+        - accountId
+        - status
+        - openedComment
+        - openedByEmail
+        - openedOn
+        - closedComment
+        - closedByEmail
+        - closedOn
+        - actionItems
+      properties:
+        id:
+          type: string
+          format: uuid
+        projectId:
+          type: string
+          format: uuid
+        accountId:
+          type: string
+          format: uuid
+        status:
+          $ref: '#/components/schemas/ProjectRiskStatus'
+        openedComment:
+          type: string
+        openedByEmail:
+          type: string
+        openedOn:
+          type: string
+        closedComment:
+          type: string
+          nullable: true
+        closedByEmail:
+          type: string
+          nullable: true
+        closedOn:
+          type: string
+          nullable: true
+        actionItems:
+          type: array
+          items:
+            $ref: '#/components/schemas/RiskActionItem'
+
+    ProjectHealthWithOpenRisk:
+      type: object
+      description: A project's health status paired with its currently open risk, if any.
+      required: [projectId, healthStatus, openRisk]
+      properties:
+        projectId:
+          type: string
+          format: uuid
+        healthStatus:
+          $ref: '#/components/schemas/ProjectHealthStatus'
+        openRisk:
+          $ref: '#/components/schemas/ProjectRisk'
+          nullable: true
+
+    AccountHealthSummary:
+      type: object
+      description: An account's aggregated overall health status, derived from its projects' individual health statuses.
+      required: [accountId, overallStatus]
+      properties:
+        accountId:
+          type: string
+          format: uuid
+        overallStatus:
+          $ref: '#/components/schemas/ProjectHealthStatusValue'
+
+    ActionItemComment:
+      type: object
+      description: A comment posted on a risk action item.
+      required: [id, actionItemId, comment, createdByEmail, createdOn]
+      properties:
+        id:
+          type: string
+          format: uuid
+        actionItemId:
+          type: string
+          format: uuid
+        comment:
+          type: string
+        createdByEmail:
+          type: string
+        createdOn:
+          type: string
+
+    OpenProjectRiskRequest:
+      type: object
+      required: [comment]
+      properties:
+        comment:
+          type: string
+          minLength: 1
+
+    CloseProjectRiskRequest:
+      type: object
+      required: [comment]
+      properties:
+        comment:
+          type: string
+          minLength: 1
+
+    MarkProjectHealthyRequest:
+      type: object
+      properties:
+        comment:
+          type: string
+
+    CreateRiskActionItemRequest:
+      type: object
+      required: [title, priority, dueDate]
+      properties:
+        title:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        priority:
+          $ref: '#/components/schemas/RiskActionItemPriority'
+        assignedToEmail:
+          type: string
+        dueDate:
+          type: string
+          description: YYYY-MM-DD. May be blank.
+
+    UpdateRiskActionItemStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/RiskActionItemStatus'
+        resolutionComment:
+          type: string
+          description: Required when status is RESOLVED or CANCELLED.
+
+    UpdateRiskActionItemRequest:
+      type: object
+      required: [title, priority]
+      properties:
+        title:
+          type: string
+          minLength: 1
+        description:
+          type: string
+        priority:
+          $ref: '#/components/schemas/RiskActionItemPriority'
+        assignedToEmail:
+          type: string
+        dueDate:
+          type: string
+          description: YYYY-MM-DD.
+
+    CreateActionItemCommentRequest:
+      type: object
+      required: [comment]
+      properties:
+        comment:
+          type: string
+          minLength: 1
+
+    InitProjectHealthTrackingRequest:
+      type: object
+      required: [projectIds]
+      properties:
+        projectIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    BatchAccountHealthSummariesRequest:
+      type: object
+      required: [accountIds]
+      properties:
+        accountIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    BatchAccountHealthSummariesResponse:
+      type: object
+      required: [summaries]
+      properties:
+        summaries:
+          type: object
+          additionalProperties:
+            $ref: '#/components/schemas/ProjectHealthStatusValue'
+
+    AccountsByHealthStatusRequest:
+      type: object
+      required: [status]
+      properties:
+        status:
+          $ref: '#/components/schemas/ProjectHealthStatusValue'
+
+    AccountsByHealthStatusResponse:
+      type: object
+      required: [accountIds]
+      properties:
+        accountIds:
+          type: array
+          items:
+            type: string
+            format: uuid
+
+    GetAccountProjectHealthStatusesResponse:
+      type: object
+      required: [projects]
+      properties:
+        projects:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectHealthWithOpenRisk'
+
+    GetProjectRiskHistoryResponse:
+      type: object
+      required: [risks]
+      properties:
+        risks:
+          type: array
+          items:
+            $ref: '#/components/schemas/ProjectRisk'
+
+    GetRiskActionItemsResponse:
+      type: object
+      required: [actionItems]
+      properties:
+        actionItems:
+          type: array
+          items:
+            $ref: '#/components/schemas/RiskActionItem'
+
+    GetActionItemCommentsResponse:
+      type: object
+      required: [comments]
+      properties:
+        comments:
+          type: array
+          items:
+            $ref: '#/components/schemas/ActionItemComment'
 
     CaseTimeCardBillingInfo:
       type: object
