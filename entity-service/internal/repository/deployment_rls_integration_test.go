@@ -293,6 +293,45 @@ func TestDeploymentRLSIntegration_OrphanDeploymentIsInternalOnly(t *testing.T) {
 	}
 }
 
+// TestDeploymentRLSIntegration_ProductCountExcludesInactiveProducts pins the
+// fix for a dead-end tab: SearchDeployments' own productCount subquery used
+// to count every deployed_product row under a deployment regardless of
+// `active`, while SearchDeployedProducts (what the products panel actually
+// lists) only ever shows active ones. A deployment whose only product had
+// been soft-deleted (active = FALSE) therefore reported productCount > 0,
+// survived the customer portal's "hide empty deployment tabs" filter, and
+// still showed "No products found" the moment it was opened.
+func TestDeploymentRLSIntegration_ProductCountExcludesInactiveProducts(t *testing.T) {
+	pool := caseStatsPool(t)
+	seedDeploymentRLSFixture(t, pool)
+	scoped := repository.NewScoped(pool)
+	ctx := repository.WithSystemIdentity(context.Background())
+	now := time.Now().UTC()
+
+	inactiveID := "a5000000-0000-0000-0000-00000000009a"
+	if _, err := scoped.Exec(ctx, `INSERT INTO deployed_product (id, created_on, updated_on, created_by, updated_by, number, active, project_id, deployment_id, product_id)
+		VALUES ($1, $2, $2, $3, $3, 'DEPP-INACTIVE', FALSE, $4, $5, $6)`,
+		inactiveID, now, depCreatedBy, depProjectOne, depDeployOrphn, depProductID); err != nil {
+		t.Fatalf("seed inactive deployed_product: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = scoped.Exec(ctx, `DELETE FROM deployed_product WHERE id = $1`, inactiveID)
+	})
+
+	repo := repository.NewDeploymentRepository(scoped)
+	views, _, err := repo.SearchDeployments(depCtx(repository.SearchScope{Unrestricted: true}),
+		domain.SearchDeploymentsRequest{Pagination: domain.Pagination{Limit: 50}, IDs: []string{depDeployOrphn}})
+	if err != nil {
+		t.Fatalf("SearchDeployments: %v", err)
+	}
+	if len(views) != 1 {
+		t.Fatalf("want exactly the orphan deployment, got %d rows", len(views))
+	}
+	if views[0].DeployedProductCount != 0 {
+		t.Errorf("a deployment whose only product is soft-deleted must report productCount 0, got %d", views[0].DeployedProductCount)
+	}
+}
+
 func TestDeploymentRLSIntegration_WritePolicies(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedDeploymentRLSFixture(t, pool)

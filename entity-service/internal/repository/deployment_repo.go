@@ -128,11 +128,21 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	// deployed_product rows actually existed under it. A correlated
 	// subquery, not a JOIN + GROUP BY, since every other selected column
 	// here is per-deployment and a join would multiply rows.
+	//
+	// The subquery must match SearchDeployedProducts' own WHERE clause
+	// exactly (active IS NULL OR active = TRUE, deployment/product both
+	// set) -- counting every deployed_product row regardless of active
+	// let a deployment whose only products were all soft-deleted keep a
+	// non-zero productCount, survive the tab-hiding filter, and still
+	// dead-end into "No products found" once opened: the very case that
+	// filter exists to eliminate.
 	dataQuery := fmt.Sprintf(
 		`SELECT d.id, d.number, d.name, d.type::TEXT, d.description,
 		        d.created_on, d.updated_on,
 		        p.id, p.name,
-		        (SELECT COUNT(*) FROM deployed_product dp WHERE dp.deployment_id = d.id)
+		        (SELECT COUNT(*) FROM deployed_product dp
+		          WHERE dp.deployment_id = d.id AND dp.product_id IS NOT NULL
+		            AND (dp.active IS NULL OR dp.active = TRUE))
 		 FROM deployment d
 		 JOIN project p ON d.project_id = p.id
 		 %s
