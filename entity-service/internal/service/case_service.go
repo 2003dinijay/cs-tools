@@ -104,6 +104,19 @@ type caseService struct {
 	// unless wired via WithCaseTypeTransfer, in which case a request carrying a
 	// type is refused as it was before the transfer existed.
 	typeTransfer repository.CaseTypeTransferRepository
+	// slaSearchDelegate, when non-nil, is a ServiceNow-backed CaseService
+	// SearchCases forwards an entire search to -- instead of running its own
+	// Postgres sla_live-backed query -- whenever the request carries an
+	// SLA-shaped filter (taskSLABusinessElapsedPercent/slaBreached) and the
+	// caller is internal. Wired via WithSLASearchDelegate only when
+	// config.SLADataSource is servicenow; nil otherwise, in which case
+	// SearchCases behaves exactly as before this field existed. Deliberately
+	// a separate field from snMirror above, not a reuse of it: snMirror
+	// carries dual-write's write-mirroring semantics (nil publisher/slaEngine
+	// to avoid side effects, asynchronous PATCH/comment mirroring) that must
+	// not apply here, and this is wanted under plain DATA_SOURCE=postgres too,
+	// where snMirror is never set at all.
+	slaSearchDelegate CaseService
 }
 
 // srNotifier is what caseService needs from SRNoticeService; an interface so
@@ -120,6 +133,25 @@ type srNotifier interface {
 func WithSRNotices(svc CaseService, n *SRNoticeService) CaseService {
 	if cs, ok := svc.(*caseService); ok && n != nil {
 		cs.srNotices = n
+	}
+	return svc
+}
+
+// WithSLASearchDelegate attaches a ServiceNow-backed CaseService that
+// SearchCases forwards to for SLA-filtered searches -- see
+// caseService.slaSearchDelegate's own doc comment for the full reasoning.
+// There is no narrower ServiceNow endpoint that answers "which case ids
+// match this SLA condition alone" (only the full case-search endpoint
+// already forwards taskSLAFilter/slaBreached to ServiceNow's own CaseUtils),
+// so the whole search is delegated wholesale rather than merging partial
+// result sets; snDelegate's own SearchCases already converts every id back
+// to the same UUID shape the Postgres path returns (every sn_*.go response
+// does this), so the response is indistinguishable in shape from the
+// Postgres path's own. A no-op if svc is not a *caseService -- defensive;
+// every real construction path is.
+func WithSLASearchDelegate(svc CaseService, snDelegate CaseService) CaseService {
+	if cs, ok := svc.(*caseService); ok {
+		cs.slaSearchDelegate = snDelegate
 	}
 	return svc
 }
@@ -2874,6 +2906,17 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 	scope, err := s.access.ResolveScope(ctx)
 	if err != nil {
 		return domain.SearchCasesResponse{}, err
+	}
+
+	// SLA_DATA_SOURCE=servicenow (slaSearchDelegate wired in routes.go): an
+	// SLA-shaped filter is answered by ServiceNow's own live case search
+	// instead of this data source's own sla_live-backed query -- internal
+	// callers only, so a customer-portal-scoped caller keeps this data
+	// source's own row-level security regardless of the SLA toggle. See
+	// WithSLASearchDelegate's own doc comment.
+	if s.slaSearchDelegate != nil && scope.Unrestricted &&
+		(req.Parsed.TaskSLAFilter != nil || req.Parsed.HasBreachedSLA != nil) {
+		return s.slaSearchDelegate.SearchCases(ctx, req)
 	}
 
 	cases, total, err := s.repo.SearchCases(ctx, req, scope)

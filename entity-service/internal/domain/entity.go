@@ -2815,8 +2815,11 @@ type ParsedCaseFilters struct {
 	ResolutionNotesEmpty bool
 	// TaskSLAFilter filters cases by Task SLA businessElapsedPercent range (optional).
 	// Populated from the "taskSLABusinessElapsedPercent" filter field's gte/lte bounds.
-	// Requires ServiceNow data source (not available via PostgreSQL-only path).
-	// Filtering logic is confined to the SN adapter per vendor-neutral boundary.
+	// Implemented on both data sources: an EXISTS over sla_live on Postgres
+	// (case_repo.go), forwarded to ServiceNow's own CaseUtils on that data
+	// source. When config.SLADataSource is servicenow, a plain-Postgres
+	// caseService forwards the whole search to a ServiceNow delegate instead
+	// of running the Postgres query itself -- see WithSLASearchDelegate.
 	TaskSLAFilter *TaskSLAFilter
 	// EscalationLevels filters cases to one of these escalation level ids ("0"-"5"),
 	// from the "escalationLevel" filter field's in values (optional).
@@ -2828,7 +2831,9 @@ type ParsedCaseFilters struct {
 	// HasBreachedSLA filters cases to those with a currently-breached SLA
 	// against the 10 named SLA definitions, from the "slaBreached" filter
 	// field's eq value (optional; nil means no filter on this field). Wire
-	// field on the SN payload: "slaBreached". Requires ServiceNow data source.
+	// field on the SN payload: "slaBreached". Implemented on both data
+	// sources -- same EXISTS-over-sla_live/forwarded-to-ServiceNow and
+	// SLADataSource-driven delegation as TaskSLAFilter above.
 	HasBreachedSLA *bool
 	// HasActiveAccountEscalation filters cases to those whose parent ACCOUNT
 	// has an active escalation (active_account_escalation.state IN 100,101),

@@ -496,6 +496,65 @@ func TestCaseService_SearchCases_CountOnlyReachesRepository(t *testing.T) {
 	}
 }
 
+// fakeSLASearchDelegate is a CaseService stand-in that only records whether
+// SearchCases was called on it -- WithSLASearchDelegate's own delegate.
+type fakeSLASearchDelegate struct {
+	CaseService
+	called bool
+}
+
+func (f *fakeSLASearchDelegate) SearchCases(context.Context, domain.SearchCasesRequest) (domain.SearchCasesResponse, error) {
+	f.called = true
+	return domain.SearchCasesResponse{Total: 99}, nil
+}
+
+// TestCaseService_SearchCases_SLADelegate_InternalCallerOnly proves
+// WithSLASearchDelegate's own documented contract: an SLA-shaped filter
+// (taskSLABusinessElapsedPercent or slaBreached) is forwarded to the
+// delegate only for an internal (Unrestricted) caller -- an external,
+// customer-portal-scoped caller keeps this data source's own Postgres path
+// and row-level security regardless, and a search with neither SLA filter
+// never delegates even for an internal caller.
+func TestCaseService_SearchCases_SLADelegate_InternalCallerOnly(t *testing.T) {
+	slaFilterReq := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+		Filters: []domain.CaseFieldFilter{{Field: "taskSLABusinessElapsedPercent", Op: "lte", Values: []string{"90"}}},
+	}}
+
+	tests := []struct {
+		name         string
+		scope        AccessScope
+		req          domain.SearchCasesRequest
+		wantDelegate bool
+	}{
+		{name: "internal caller with SLA filter delegates", scope: AccessScope{Unrestricted: true}, req: slaFilterReq, wantDelegate: true},
+		{name: "external caller with SLA filter does not delegate", scope: AccessScope{Unrestricted: false}, req: slaFilterReq, wantDelegate: false},
+		{name: "internal caller with no SLA filter does not delegate", scope: AccessScope{Unrestricted: true}, req: domain.SearchCasesRequest{}, wantDelegate: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &stubCaseRepo{
+				searchCases: func(context.Context, domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error) {
+					return nil, 0, nil
+				},
+			}
+			delegate := &fakeSLASearchDelegate{}
+			svc := WithSLASearchDelegate(NewCaseService(repo, stubUserRepo{}, nil, stubAccess{scope: tt.scope}, nil), delegate)
+			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+			resp, err := svc.SearchCases(ctx, tt.req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if delegate.called != tt.wantDelegate {
+				t.Errorf("delegate called = %v, want %v", delegate.called, tt.wantDelegate)
+			}
+			if tt.wantDelegate && resp.Total != 99 {
+				t.Errorf("expected the delegate's own response (Total=99) to be returned, got %d", resp.Total)
+			}
+		})
+	}
+}
+
 // TestCaseService_SearchCases_SupportedFieldsStillReachRepository proves the
 // fields the Postgres repository does support are not caught by the
 // unsupported-field rejection: each reaches repo.SearchCases unchanged.

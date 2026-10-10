@@ -548,10 +548,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// Also constructed for DataSourcePostgresServiceNowDualWrite: that mode's
 	// active services stay Postgres-backed (see the case wiring below), but
-	// its best-effort ServiceNow mirror writes still need this client.
-	// config.Validate requires the same four credentials for both modes.
+	// its best-effort ServiceNow mirror writes still need this client. Also
+	// constructed when SLADataSource is servicenow, independent of
+	// DataSource: a plain DataSourcePostgres deployment that points SLA
+	// reads at ServiceNow still needs this client for the task-SLA and
+	// case-search-SLA-filter wiring below. config.Validate requires the same
+	// four credentials in every one of these cases.
 	var serviceNowIntegrationServiceClient *integrationservice.Client
-	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite || cfg.SLADataSource == config.SLADataSourceServiceNow {
 		serviceNowIntegrationServiceClient = integrationservice.New(cfg.ServiceNowIntegrationServiceBaseURL, integrationservice.ClientCredentialsConfig{
 			TokenURL:     cfg.ServiceNowIntegrationServiceTokenURL,
 			ClientID:     cfg.ServiceNowIntegrationServiceClientID,
@@ -781,10 +785,26 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// lookup backing applyResponseSLAOnComment, not routed through HTTP).
 	// Also constructed for DataSourcePostgresServiceNowDualWrite, for the same
 	// reason serviceNowIntegrationServiceClient above is: the case pilot's
-	// SN-mirror snCaseService instance below needs it too.
+	// SN-mirror snCaseService instance below needs it too. Also constructed
+	// when SLADataSource is servicenow, for the same reason: the SLA
+	// search-delegate snCaseService instance (see below) is itself a
+	// NewServiceNowCaseService and needs one too.
 	var snUserService service.SNUserService
-	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite || cfg.SLADataSource == config.SLADataSourceServiceNow {
 		snUserService = service.NewServiceNowUserService(serviceNowIntegrationServiceClient)
+	}
+
+	// snSLASearchDelegate, when non-nil, is passed to WithSLASearchDelegate
+	// below for whichever DataSource branch builds a Postgres-backed
+	// activeCaseSvc (default and DataSourcePostgresServiceNowDualWrite) --
+	// not DataSourceServiceNow, where the whole case service is already
+	// ServiceNow and there is nothing to delegate SLA-filtered searches to.
+	// Built once, shared by both branches, the same nil-publisher/
+	// nil-pgFallback/nil-slaEngine shape already used for snCaseMirrorSvc
+	// below: a read-only search delegate needs none of those.
+	var snSLASearchDelegate service.CaseService
+	if cfg.SLADataSource == config.SLADataSourceServiceNow {
+		snSLASearchDelegate = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
 	}
 
 	// The CSM-native SLA engine (internal/service/sla_engine_service.go)
@@ -877,6 +897,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// below), not for DataSourceServiceNow: that mode's CreateCase never
 		// reaches this service's Postgres data at all.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		if snSLASearchDelegate != nil {
+			activeCaseSvc = service.WithSLASearchDelegate(activeCaseSvc, snSLASearchDelegate)
+		}
 		// PATCH /cases/{id} with a "type" (the CSM portal's "Change case type"):
 		// moves the case between extension tables, asking ServiceNow first from
 		// inside the same Postgres transaction -- see caseService.transferCaseType.
@@ -917,6 +940,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// See the matching comment in the DataSourcePostgresServiceNowDualWrite
 		// case above.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		if snSLASearchDelegate != nil {
+			activeCaseSvc = service.WithSLASearchDelegate(activeCaseSvc, snSLASearchDelegate)
+		}
 		// Same transfer as in the dual-write branch above, with no ServiceNow step.
 		activeCaseSvc = service.WithCaseTypeTransfer(activeCaseSvc, caseRepo)
 		// Without this, isSupportEngineerAuthor always returns false on this
@@ -1502,7 +1528,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	taskSlaRepo := repository.NewTaskSlaRepository(repository.NewScoped(db))
 	var activeTaskSlaSvc service.TaskSlaService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	// Selected by SLADataSource, not DataSource -- this is what backs a
+	// case's SLA display (GET /slas/{id}, POST /slas/search), and can be
+	// switched to ServiceNow independent of which data source every other
+	// entity reads from. See config.SLADataSource's own doc comment.
+	if cfg.SLADataSource == config.SLADataSourceServiceNow {
 		activeTaskSlaSvc = service.NewServiceNowTaskSlaService(serviceNowIntegrationServiceClient)
 	} else {
 		activeTaskSlaSvc = service.NewTaskSlaService(taskSlaRepo)

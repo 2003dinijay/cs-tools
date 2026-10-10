@@ -27,10 +27,11 @@ import (
 // test only needs to override the field(s) under test.
 func baseValidConfig() Config {
 	return Config{
-		DataSource: DataSourcePostgres,
-		DBUser:     "user",
-		DBPassword: "password",
-		DBName:     "db",
+		DataSource:    DataSourcePostgres,
+		SLADataSource: SLADataSourcePostgres,
+		DBUser:        "user",
+		DBPassword:    "password",
+		DBName:        "db",
 		// Both ports carry their real defaults: Load always populates them,
 		// and Validate rejects the two being equal — which a zero-value
 		// Config would be.
@@ -295,6 +296,67 @@ func TestConfig_Validate_ServiceNowRequiresIntegrationServiceFields(t *testing.T
 	}
 }
 
+func TestConfig_Validate_SLADataSource(t *testing.T) {
+	t.Run("invalid value is rejected", func(t *testing.T) {
+		c := baseValidConfig()
+		c.SLADataSource = SLADataSource("bogus")
+		if err := c.Validate(); err == nil {
+			t.Error("Validate() = nil, want an error for an invalid SLA_DATA_SOURCE")
+		}
+	})
+
+	// SLADataSource is independent of DataSource: a plain DATA_SOURCE=postgres
+	// deployment must still be able to require servicenow for SLA reads
+	// specifically, and must then require the same ServiceNow integration
+	// service credentials DATA_SOURCE=servicenow itself requires.
+	t.Run("servicenow requires integration service credentials even under DATA_SOURCE=postgres", func(t *testing.T) {
+		base := func() Config {
+			c := baseValidConfig()
+			c.SLADataSource = SLADataSourceServiceNow
+			c.ServiceNowIntegrationServiceBaseURL = "https://example.com"
+			c.ServiceNowIntegrationServiceTokenURL = "https://example.com/token"
+			c.ServiceNowIntegrationServiceClientID = "client-id"
+			c.ServiceNowIntegrationServiceClientSecret = "client-secret"
+			return c
+		}
+
+		valid := base()
+		if err := valid.Validate(); err != nil {
+			t.Fatalf("unexpected error for DATA_SOURCE=postgres + SLA_DATA_SOURCE=servicenow, fully configured: %v", err)
+		}
+		if valid.DataSource != DataSourcePostgres {
+			t.Fatalf("test setup error: expected DataSource to stay postgres, got %q", valid.DataSource)
+		}
+
+		tests := []struct {
+			name   string
+			mutate func(c *Config)
+		}{
+			{"missing base URL", func(c *Config) { c.ServiceNowIntegrationServiceBaseURL = "" }},
+			{"missing token URL", func(c *Config) { c.ServiceNowIntegrationServiceTokenURL = "" }},
+			{"missing client ID", func(c *Config) { c.ServiceNowIntegrationServiceClientID = "" }},
+			{"missing client secret", func(c *Config) { c.ServiceNowIntegrationServiceClientSecret = "" }},
+		}
+		for _, tt := range tests {
+			t.Run(tt.name, func(t *testing.T) {
+				c := base()
+				tt.mutate(&c)
+				if err := c.Validate(); err == nil {
+					t.Errorf("Validate() = nil, want an error when %s", tt.name)
+				}
+			})
+		}
+	})
+
+	t.Run("postgres needs no ServiceNow credentials", func(t *testing.T) {
+		c := baseValidConfig()
+		c.SLADataSource = SLADataSourcePostgres
+		if err := c.Validate(); err != nil {
+			t.Errorf("unexpected error for SLA_DATA_SOURCE=postgres with no ServiceNow credentials: %v", err)
+		}
+	})
+}
+
 func TestConfig_Validate_RejectsPortsThatResolveToTheSameNumber(t *testing.T) {
 	// A string comparison would wave "8080"/"08080" through: different
 	// strings, same TCP port, so both listeners race for one port and the
@@ -327,6 +389,7 @@ func TestConfig_Validate_RejectsUnbindablePort(t *testing.T) {
 func baseValidServiceNowConfig() Config {
 	return Config{
 		DataSource:                               DataSourceServiceNow,
+		SLADataSource:                            SLADataSourcePostgres,
 		ServiceNowIntegrationServiceBaseURL:      "https://example.com",
 		ServiceNowIntegrationServiceTokenURL:     "https://example.com/token",
 		ServiceNowIntegrationServiceClientID:     "client-id",
