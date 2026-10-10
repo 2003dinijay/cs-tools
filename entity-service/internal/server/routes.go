@@ -694,8 +694,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// caller may see. Unlike the scoped list endpoints, which fold the
 		// scope into their WHERE clause, the project id here comes from the
 		// path and needs an explicit check.
+		// SLA_DATA_SOURCE=servicenow: averageResponseTime alone is read from
+		// the integration service (the local SLA table may be unsynced);
+		// every other figure stays on Postgres.
+		var caseStatsOpts []service.ProjectCaseStatsOption
+		if cfg.SLADataSource == config.SLADataSourceServiceNow {
+			caseStatsOpts = append(caseStatsOpts,
+				service.WithAverageResponseSource(service.NewServiceNowAverageResponseSource(serviceNowIntegrationServiceClient)))
+		}
 		projectCaseStatsSvc = service.NewProjectCaseStatsService(
-			repository.NewProjectCaseStatsRepository(repository.NewScoped(db)), referenceDataRepo, accessSvc)
+			repository.NewProjectCaseStatsRepository(repository.NewScoped(db)), referenceDataRepo, accessSvc, caseStatsOpts...)
 		projectStatsSvc = service.NewProjectStatsService(
 			repository.NewProjectStatsRepository(repository.NewScoped(db), crVisibility), referenceDataRepo, accessSvc,
 			projectMetadataSvc, projectCaseStatsSvc)
