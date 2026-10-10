@@ -67,7 +67,6 @@ import {
   stripCodeWrapper,
   stripAllCodeBlocks,
   trimLeadingBr,
-  stripCustomerCommentAddedLabel,
   parseApiLocalDateTimeMs,
 } from "@features/support/utils/support";
 import { ROUTE_PREVIOUS_PAGE } from "@features/project-hub/constants/navigationConstants";
@@ -100,6 +99,10 @@ import ChatInput from "@features/support/components/novera-ai-assistant/novera-c
 import ChatMessageBubble from "@features/support/components/novera-ai-assistant/novera-chat-page/ChatMessageBubble";
 import LoadingDotsBubble from "@features/support/components/novera-ai-assistant/novera-chat-page/LoadingDotsBubble";
 
+const CODE_WRAPPER_PATTERN = /\[\\?\/?code\]/i;
+const LEADING_CUSTOMER_COMMENT_LABEL_PATTERN =
+  /^\s*(?:<p>\s*)?Customer comment added(?:\s*<\/p>)?\s*/i;
+
 /**
  * Distinguishes Novera/bot messages from human user messages in a conversation.
  * In a conversation session, assistant replies may arrive with type="bot",
@@ -112,15 +115,16 @@ function isConversationBot(msg: {
   createdByFirstName?: string | null;
   createdByLastName?: string | null;
 }): boolean {
+  const ty = (msg.type ?? "").trim().toLowerCase();
+  if (ty === "bot") return true;
+
   const hasHumanName = Boolean(
     (msg.createdByFirstName && msg.createdByFirstName.trim()) ||
       (msg.createdByLastName && msg.createdByLastName.trim()),
   );
   if (hasHumanName) return false;
-  const ty = (msg.type ?? "").trim().toLowerCase();
   const by = (msg.createdBy ?? "").trim().toLowerCase();
   return (
-    ty === "bot" ||
     by === "novera" ||
     by === "agent" ||
     by === "system" ||
@@ -137,10 +141,11 @@ function cleanConversationContent(rawContent: string, isBot: boolean): string {
   let text = rawContent;
   if (hasSingleCodeWrapper(text)) {
     text = stripCodeWrapper(text);
-  } else if (text.includes("[code]")) {
+  } else if (CODE_WRAPPER_PATTERN.test(text)) {
     text = stripAllCodeBlocks(text);
   }
-  text = stripCustomerCommentAddedLabel(trimLeadingBr(text));
+  text = trimLeadingBr(text);
+  text = text.replace(LEADING_CUSTOMER_COMMENT_LABEL_PATTERN, "").trimStart();
   return displayTextFromConversationContent(text.trim(), isBot);
 }
 
