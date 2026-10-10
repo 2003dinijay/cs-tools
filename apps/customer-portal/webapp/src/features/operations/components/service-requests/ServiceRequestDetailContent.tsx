@@ -61,6 +61,7 @@ import {
   resolveColorFromTheme,
   hasSubmittableEditorContent,
   collapseCommentSourceWhitespace,
+  plainTextCommentToHtml,
   hasSingleCodeWrapper,
   stripCodeWrapper,
   stripAllCodeBlocks,
@@ -607,8 +608,10 @@ export default function ServiceRequestDetailContent({
                             }}
                             dangerouslySetInnerHTML={{
                               __html: (() => {
-                                const raw = collapseCommentSourceWhitespace(
-                                  comment.content ?? "",
+                                const raw = plainTextCommentToHtml(
+                                  collapseCommentSourceWhitespace(
+                                    comment.content ?? "",
+                                  ),
                                 );
                                 const isFullCodeWrap =
                                   hasSingleCodeWrapper(raw);

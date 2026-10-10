@@ -43,6 +43,7 @@ import {
   getAttachmentFileCategory,
   getInitials,
   collapseCommentSourceWhitespace,
+  plainTextCommentToHtml,
   hasSingleCodeWrapper,
   stripCodeWrapper,
   stripAllCodeBlocks,
@@ -101,7 +102,9 @@ export default function CommentBubble({
   const isNoveraComment = isNoveraOrBotSender(comment.createdBy, comment.type);
   const rawContent = isNoveraComment
     ? stripThinkingBlocks(comment.content ?? "")
-    : collapseCommentSourceWhitespace(comment.content ?? "");
+    : plainTextCommentToHtml(
+        collapseCommentSourceWhitespace(comment.content ?? ""),
+      );
   const isFullCodeWrap = hasSingleCodeWrapper(rawContent);
   const codeBlockCount = rawContent.match(/\[code\]/gi)?.length ?? 0;
   const afterCode = isFullCodeWrap
