@@ -2176,6 +2176,7 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 			); err != nil {
 				return fmt.Errorf("scan case comment: %w", err)
 			}
+			c.Content = domain.StripCommentCodeMarkers(c.Content)
 			c.Type = caseCommentEnumType[typeRaw]
 			if authorID != nil {
 				name := ""
@@ -4583,6 +4584,7 @@ func scanCaseActivity(row interface{ Scan(...any) error }) (domain.CaseActivity,
 	switch kind {
 	case "comment":
 		a.Type = domain.ActivityTypeComment
+		a.Content = domain.StripCommentCodeMarkers(a.Content)
 		if commentTypeRaw != nil {
 			if ct, ok := caseCommentEnumType[*commentTypeRaw]; ok {
 				a.CommentType = &ct
