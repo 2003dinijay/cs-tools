@@ -39,6 +39,7 @@ import {
   hasDisplayableContent,
   hasSingleCodeWrapper,
   INLINE_COMMENT_HTML_PURIFY,
+  plainTextCommentToHtml,
   stripAllCodeBlocks,
   stripCodeWrapper,
   stripCustomerCommentAddedLabel,
@@ -66,7 +67,9 @@ function commentAuthorDisplayName(comment: CaseComment): string {
 }
 
 function sanitizeCommentContent(content: string, isDarkMode: boolean): string {
-  const rawContent = collapseCommentSourceWhitespace(content ?? "");
+  const rawContent = plainTextCommentToHtml(
+    collapseCommentSourceWhitespace(content ?? ""),
+  );
   const isFullCodeWrap = hasSingleCodeWrapper(rawContent);
   const codeBlockCount = (rawContent.match(/\[code\]/gi) ?? []).length;
   const afterCode = isFullCodeWrap

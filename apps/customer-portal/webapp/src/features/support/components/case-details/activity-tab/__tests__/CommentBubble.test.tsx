@@ -133,6 +133,23 @@ describe("CommentBubble", () => {
     });
   });
 
+  describe("plain-text comment (no HTML markup at all)", () => {
+    it("renders a system-generated notice's real line breaks instead of one run-on line", () => {
+      const { container } = renderBubble({
+        comment: {
+          ...mockComment,
+          id: "plain-text-1",
+          createdBy: "system",
+          content:
+            "Hello,\n\nPlease let us know whether you need further support for this case. Please note that if you are unable to respond, the case will be closed off after one week.\n\nThanks,\nWSO2 Team",
+        },
+      });
+      expect(container.querySelectorAll("br").length).toBe(5);
+      expect(screen.getByText(/Thanks,/)).toBeInTheDocument();
+      expect(screen.getByText(/WSO2 Team/)).toBeInTheDocument();
+    });
+  });
+
   it("should render comment content", () => {
     renderBubble();
     expect(
