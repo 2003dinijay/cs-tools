@@ -59,12 +59,16 @@ import type { Message } from "@features/support/types/conversations";
 import ConversationKnowledgeRecommendations from "@features/support/components/knowledge-base/ConversationKnowledgeRecommendations";
 import { useTheme } from "@wso2/oxygen-ui";
 import {
-  compareByCreatedOnThenId,
   dateFromApiCreatedOn,
   formatDateOnly,
   formatCommentDate,
   getInitials,
-  isNoveraOrBotSender,
+  hasSingleCodeWrapper,
+  stripCodeWrapper,
+  stripAllCodeBlocks,
+  trimLeadingBr,
+  stripCustomerCommentAddedLabel,
+  parseApiLocalDateTimeMs,
 } from "@features/support/utils/support";
 import { ROUTE_PREVIOUS_PAGE } from "@features/project-hub/constants/navigationConstants";
 import { ConversationListRowAction } from "@features/support/types/conversations";
@@ -86,6 +90,7 @@ import useGetProjectDetails from "@api/useGetProjectDetails";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
 import { htmlToPlainText } from "@features/support/utils/richTextEditor";
 import {
+  displayTextFromConversationContent,
   getFinalMessageFromPayload,
   sanitizeStreamToken,
   splitTokenForTyping,
@@ -94,6 +99,50 @@ import {
 import ChatInput from "@features/support/components/novera-ai-assistant/novera-chat-page/ChatInput";
 import ChatMessageBubble from "@features/support/components/novera-ai-assistant/novera-chat-page/ChatMessageBubble";
 import LoadingDotsBubble from "@features/support/components/novera-ai-assistant/novera-chat-page/LoadingDotsBubble";
+
+/**
+ * Distinguishes Novera/bot messages from human user messages in a conversation.
+ * In a conversation session, assistant replies may arrive with type="bot",
+ * createdBy="novera", createdBy="agent", createdBy="system", or with an empty
+ * or missing createdBy from ServiceNow.
+ */
+function isConversationBot(msg: {
+  type?: string | null;
+  createdBy?: string | null;
+  createdByFirstName?: string | null;
+  createdByLastName?: string | null;
+}): boolean {
+  const hasHumanName = Boolean(
+    (msg.createdByFirstName && msg.createdByFirstName.trim()) ||
+      (msg.createdByLastName && msg.createdByLastName.trim()),
+  );
+  if (hasHumanName) return false;
+  const ty = (msg.type ?? "").trim().toLowerCase();
+  const by = (msg.createdBy ?? "").trim().toLowerCase();
+  return (
+    ty === "bot" ||
+    by === "novera" ||
+    by === "agent" ||
+    by === "system" ||
+    by === "" ||
+    by === "unknown"
+  );
+}
+
+/**
+ * Strips [code]...[/code] wrappers and cleans message content for presentation.
+ */
+function cleanConversationContent(rawContent: string, isBot: boolean): string {
+  if (!rawContent) return "";
+  let text = rawContent;
+  if (hasSingleCodeWrapper(text)) {
+    text = stripCodeWrapper(text);
+  } else if (text.includes("[code]")) {
+    text = stripAllCodeBlocks(text);
+  }
+  text = stripCustomerCommentAddedLabel(trimLeadingBr(text));
+  return displayTextFromConversationContent(text.trim(), isBot);
+}
 
 function ConversationMsgBubble({
   message,
@@ -304,13 +353,29 @@ export default function ConversationDetailsPage(): JSX.Element {
 
   const messages: ConversationMessage[] = useMemo(() => {
     const raw = data?.pages?.flatMap((p) => p.comments) ?? [];
-    return [...raw].sort(compareByCreatedOnThenId);
+    return [...raw].sort((a, b) => {
+      const aT = parseApiLocalDateTimeMs(a.createdOn ?? undefined);
+      const bT = parseApiLocalDateTimeMs(b.createdOn ?? undefined);
+      const aOk = !Number.isNaN(aT);
+      const bOk = !Number.isNaN(bT);
+      if (aOk && bOk && aT !== bT) return aT - bT;
+      if (aOk && !bOk) return -1;
+      if (!aOk && bOk) return 1;
+      if (aOk && bOk && aT === bT) {
+        const aBot = isConversationBot(a);
+        const bBot = isConversationBot(b);
+        if (aBot !== bBot) {
+          return aBot ? 1 : -1;
+        }
+      }
+      return (a.id ?? "").localeCompare(b.id ?? "");
+    });
   }, [data]);
 
   const chatMessages: Message[] = useMemo(
     () =>
       messages.map((msg) => {
-        const isBot = isNoveraOrBotSender(msg.createdBy, msg.type);
+        const isBot = isConversationBot(msg);
         const createdByDisplayName = [
           msg.createdByFirstName,
           msg.createdByLastName,
@@ -318,15 +383,15 @@ export default function ConversationDetailsPage(): JSX.Element {
           .filter((name) => Boolean(name && name.trim()))
           .join(" ")
           .trim();
+        const cleanedText = cleanConversationContent(msg.content || "", isBot);
         return {
           id: msg.id,
-          text: msg.content,
+          text: cleanedText,
           sender: isBot ? ChatSender.BOT : ChatSender.USER,
           timestamp: dateFromApiCreatedOn(msg.createdOn),
-          createdBy:
-            createdByDisplayName ||
-            msg.createdBy ||
-            (isBot ? NOVERA_DISPLAY_NAME : "Unknown"),
+          createdBy: isBot
+            ? NOVERA_DISPLAY_NAME
+            : createdByDisplayName || msg.createdBy || "Unknown",
           createdOnRaw: msg.createdOn ?? "--",
           showFeedbackActions: false,
         };
