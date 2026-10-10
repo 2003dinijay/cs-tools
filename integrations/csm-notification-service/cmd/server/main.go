@@ -335,6 +335,20 @@ func main() {
 		slog.Warn("CALL_SENDING_ENABLED=false; incident.created calls will be logged, not placed")
 	}
 
+	// SLA-breach-email-specific killswitch, same disable-entirely convention
+	// as EMAIL_SENDING_ENABLED/CALL_SENDING_ENABLED above. Currently a
+	// no-op: this service's own SLA breach-alert email reaction was
+	// deliberately removed rather than ported when internal/slaengine was
+	// redesigned (see that package's own doc comment) — a breach today
+	// sends only the Google Chat card. Wired through to slaengine.Engine now
+	// as a placeholder for when that email reaction is rebuilt, so the
+	// config already exists and is already threaded to the one place it
+	// would be checked.
+	slaEmailSendingEnabled := envBool("SLA_EMAIL_SENDING_ENABLED", true)
+	if !slaEmailSendingEnabled {
+		slog.Warn("SLA_EMAIL_SENDING_ENABLED=false; has no effect today -- this service sends no SLA breach email yet, only the existing Google Chat card")
+	}
+
 	// Fallback on-call number (incident.created's call only) for when a
 	// publisher (e.g. entity-service) can't determine which on-call number
 	// applies and omits it from the payload — see
@@ -594,7 +608,7 @@ func main() {
 		if err != nil {
 			slog.Error("slaengine: failed to fetch sla duration policy at startup, sla tracking is disabled for this run", "err", err)
 		} else {
-			slaEngine := slaengine.NewEngine(slaengine.NewStore(redisClient), slaProducer, googleChatClient, linkResolver, durations, slaEntityClient)
+			slaEngine := slaengine.NewEngine(slaengine.NewStore(redisClient), slaProducer, googleChatClient, linkResolver, durations, slaEntityClient, slaEmailSendingEnabled)
 			dispatcher = dispatcher.WithSLAEngine(slaEngine)
 
 			// One-shot reconciliation: rebuilds every currently-open clock's

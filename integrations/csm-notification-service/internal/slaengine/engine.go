@@ -166,13 +166,30 @@ type Engine struct {
 	// against entity-service's own durable record — see
 	// entityClockStatusClient's own doc comment.
 	entity entityClockStatusClient
+	// slaEmailSendingEnabled mirrors cmd/server/main.go's existing
+	// EMAIL_SENDING_ENABLED/CALL_SENDING_ENABLED disable-entirely
+	// convention, but for SLA-breach emails specifically
+	// (SLA_EMAIL_SENDING_ENABLED, default true). It currently gates
+	// nothing: this engine's own SLA breach-alert EMAIL reaction
+	// (sendBreachEmails) was deliberately removed rather than ported when
+	// this package was redesigned (see this package's own doc comment, "The
+	// poll-engine's own SLA breach-alert EMAIL reaction... is gone, not
+	// ported") — today a breach alert sends only the Google Chat card in
+	// sendBreachAlert below. This field is wired through now as a
+	// placeholder for when that email reaction is rebuilt: the intended
+	// call site is inside sendBreachAlert, alongside the existing
+	// e.chat.SendSLABreachAlert call, guarded by
+	// `if e.slaEmailSendingEnabled { ... }`.
+	slaEmailSendingEnabled bool
 }
 
 // NewEngine constructs an Engine. entity is the same *EntityClient the
 // caller already constructs for GetDurationPolicy/Reconcile — see
 // entityClockStatusClient's own doc comment for what it's used for here.
-func NewEngine(store *Store, pub *eventbus.Producer, chat chatSender, links *recipientlinks.Resolver, durations map[string]map[string]time.Duration, entity entityClockStatusClient) *Engine {
-	return &Engine{store: store, pub: pub, chat: chat, links: links, durations: durations, entity: entity}
+// slaEmailSendingEnabled is a currently-inert placeholder — see that field's
+// own doc comment.
+func NewEngine(store *Store, pub *eventbus.Producer, chat chatSender, links *recipientlinks.Resolver, durations map[string]map[string]time.Duration, entity entityClockStatusClient, slaEmailSendingEnabled bool) *Engine {
+	return &Engine{store: store, pub: pub, chat: chat, links: links, durations: durations, entity: entity, slaEmailSendingEnabled: slaEmailSendingEnabled}
 }
 
 // avoidWeekend rolls due forward to the next Monday, same time-of-day, if
