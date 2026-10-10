@@ -311,6 +311,115 @@ describe("ConversationDetailsPage", () => {
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
+
+  it("classifies message with explicit type bot as bot even if creator carries human names", () => {
+    mockUseGetConversationMessages.mockReturnValue({
+      data: {
+        pages: [
+          {
+            comments: [
+              {
+                id: "bot-with-name",
+                createdByFirstName: "AI",
+                createdByLastName: "Assistant",
+                content: "**Hello from bot**",
+                type: "bot",
+                createdOn: "2026-10-05T10:00:51Z",
+                isEscalated: false,
+                hasInlineAttachments: false,
+                inlineAttachments: [],
+              },
+            ],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: undefined,
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    });
+
+    render(<ConversationDetailsPage />);
+
+    expect(screen.getByText("Novera")).toBeInTheDocument();
+    expect(screen.getByText("Hello from bot")).toBeInTheDocument();
+  });
+
+  it("strips case-insensitive and escaped code block tags", () => {
+    mockUseGetConversationMessages.mockReturnValue({
+      data: {
+        pages: [
+          {
+            comments: [
+              {
+                id: "case-escaped-code",
+                createdBy: "Rashmika Silva",
+                content: "[CODE]Part 1[/CODE][\\code]Part 2[/code]",
+                type: "comment",
+                createdOn: "2026-10-05T10:00:51Z",
+                isEscalated: false,
+                hasInlineAttachments: false,
+                inlineAttachments: [],
+              },
+            ],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: undefined,
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    });
+
+    render(<ConversationDetailsPage />);
+
+    expect(screen.queryByText(/\[CODE\]/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/\[\\code\]/)).not.toBeInTheDocument();
+    expect(screen.getByText(/Part 1/)).toBeInTheDocument();
+    expect(screen.getByText(/Part 2/)).toBeInTheDocument();
+  });
+
+  it("preserves Customer comment added in message prose while removing leading label", () => {
+    mockUseGetConversationMessages.mockReturnValue({
+      data: {
+        pages: [
+          {
+            comments: [
+              {
+                id: "prose-comment",
+                createdBy: "Rashmika Silva",
+                content:
+                  "<p>Customer comment added</p>Please note: Customer comment added should not be stripped from prose.",
+                type: "comment",
+                createdOn: "2026-10-05T10:00:51Z",
+                isEscalated: false,
+                hasInlineAttachments: false,
+                inlineAttachments: [],
+              },
+            ],
+          },
+        ],
+      },
+      isLoading: false,
+      isError: false,
+      error: undefined,
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+    });
+
+    render(<ConversationDetailsPage />);
+
+    expect(
+      screen.getByText(
+        "Please note: Customer comment added should not be stripped from prose.",
+      ),
+    ).toBeInTheDocument();
+  });
 });
 
 
