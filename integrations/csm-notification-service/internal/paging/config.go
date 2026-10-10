@@ -99,6 +99,21 @@ type LadderConfig struct {
 	Timing SRETiming `yaml:"timing"`
 
 	Chat Chat `yaml:"chat"`
+	// TeamChats gives SRE teams Google Chat spaces of their own, by team key
+	// (apollo, artemis, iaas), each the same shape as chat: a team's rung
+	// cards and closing message go there, and an incident whose team is not
+	// listed (or has none) uses chat above. SRE only.
+	TeamChats map[string]Chat `yaml:"teamChats"`
+	// UnansweredChat posts a closing message when the ladder has called every
+	// rung and nobody acknowledged the incident, to the team's own space
+	// (teamChats), else chat. It is posted whatever channel says, so a
+	// call-only ladder still tells the room the calls have ended. SRE only.
+	UnansweredChat bool `yaml:"unansweredChat"`
+	// SMEHandoffChat posts one message to the incident's SRE team space
+	// (teamChats, else chat) when it is escalated to an SME team: who
+	// escalated it, that SRE paging stopped, and that the SMEs are being
+	// paged. Posted whatever channel says. SRE only.
+	SMEHandoffChat bool `yaml:"smeHandoffChat"`
 
 	// Phones is where a recipient's phone number comes from when the rung's
 	// resolver does not supply one (the Team Schedule never does).
@@ -187,6 +202,17 @@ type SMEConfig struct {
 	// Chat is the SME page's own Google Chat space, the same shape as a
 	// ladder's chat section.
 	Chat Chat `yaml:"chat"`
+	// TeamChats gives SME teams Google Chat spaces of their own, by SME team
+	// key (the rota team key: asgardeo, b-central, ...), each the same shape
+	// as chat. Empty, every team's cards go to chat above, as before. Set, a
+	// listed team's cards go to its own space and a team not listed gets no
+	// card; its calls still go out when the channel includes calls.
+	TeamChats map[string]Chat `yaml:"teamChats"`
+	// UnansweredChat posts a closing message when the SME ladder has called
+	// L1 to L3 and nobody was assigned: to the SME team's own space when
+	// teamChats lists it, to chat when teamChats is unset, and nowhere for a
+	// team teamChats leaves out. Posted whatever channel says.
+	UnansweredChat bool `yaml:"unansweredChat"`
 	// Teams maps a Special Ops team key (incident.special_ops_alert's
 	// teamKey) to the rota team key of the SME team to page -- for an alert
 	// that does not name the SME team itself.
@@ -273,6 +299,21 @@ func (s *SMEConfig) validate() error {
 	if v := strings.TrimSpace(s.Chat.WebhookURLEnv); v != "" && !envVarName.MatchString(v) {
 		return fmt.Errorf("sme: chat.webhookUrlEnv must be the NAME of an environment variable " +
 			"that holds the webhook URL, not the URL itself -- this file is committed")
+	}
+	seen := map[string]string{}
+	for k, c := range s.TeamChats {
+		key := teamKeyFor(k)
+		if key == "" {
+			return fmt.Errorf("sme: teamChats has an entry with no SME team key")
+		}
+		if prev, dup := seen[key]; dup {
+			return fmt.Errorf("sme: teamChats lists SME team %q twice (%q and %q)", key, prev, k)
+		}
+		seen[key] = k
+		if v := strings.TrimSpace(c.WebhookURLEnv); v != "" && !envVarName.MatchString(v) {
+			return fmt.Errorf("sme: teamChats.%s.webhookUrlEnv must be the NAME of an environment variable "+
+				"that holds the webhook URL, not the URL itself -- this file is committed", k)
+		}
 	}
 	for k, v := range s.Teams {
 		if teamKeyFor(k) == "" || teamKeyFor(v) == "" {
@@ -623,12 +664,43 @@ func (l *LadderConfig) validate(name string) error {
 		if v := strings.TrimSpace(l.Teams.DefaultRota); v != "" && !sreRotaCode.MatchString(strings.ToUpper(v)) {
 			return fmt.Errorf("sre: teams.defaultRota is %q; use an SRE rota code such as %s or %s", v, RotaSRESaaS, RotaSREIaaS)
 		}
+		seen := map[string]string{}
+		for k, c := range l.TeamChats {
+			key := teamKeyFor(k)
+			if key == "" {
+				return fmt.Errorf("sre: teamChats has an entry with no team key")
+			}
+			if prev, dup := seen[key]; dup {
+				return fmt.Errorf("sre: teamChats lists team %q twice (%q and %q)", key, prev, k)
+			}
+			seen[key] = k
+			if v := strings.TrimSpace(c.WebhookURLEnv); v != "" && !envVarName.MatchString(v) {
+				return fmt.Errorf("sre: teamChats.%s.webhookUrlEnv must be the NAME of an environment variable "+
+					"that holds the webhook URL, not the URL itself -- this file is committed", k)
+			}
+		}
+		for _, g := range l.Teams.DefaultGroups {
+			if teamKeyFor(g) == "" {
+				return fmt.Errorf("sre: teams.defaultGroups has an empty group name")
+			}
+			for _, t := range l.Teams.ABTs {
+				if teamKeyFor(t) == teamKeyFor(g) {
+					return fmt.Errorf("sre: %q is in both teams.abts and teams.defaultGroups; a group is an SRE team or a default group, not both", g)
+				}
+			}
+		}
 	} else {
 		if l.Timing != (SRETiming{}) {
 			return fmt.Errorf("%s: timing is an SRE setting; the CRE clock is the per-priority policy", name)
 		}
 		if strings.TrimSpace(l.Teams.DefaultRota) != "" {
 			return fmt.Errorf("%s: teams.defaultRota is an SRE setting", name)
+		}
+		if len(l.Teams.DefaultGroups) > 0 {
+			return fmt.Errorf("%s: teams.defaultGroups is an SRE setting", name)
+		}
+		if len(l.TeamChats) > 0 || l.UnansweredChat || l.SMEHandoffChat {
+			return fmt.Errorf("%s: teamChats, unansweredChat and smeHandoffChat are SRE settings", name)
 		}
 	}
 	return nil

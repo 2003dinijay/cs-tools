@@ -25,6 +25,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/events"
+	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/notifications"
 )
 
 // The Special Ops (SME) page.
@@ -72,7 +73,7 @@ type SpecialistResolver interface {
 
 // specialOpsPress is one move into a Special Ops group, as the page needs it.
 type specialOpsPress struct {
-	IncidentID, Number, Title, Product string
+	IncidentID, Number, Title, Product, Priority string
 	// TeamKey/TeamLabel are the Special Ops team; SMETeam the rota team to
 	// page when the publisher names it.
 	TeamKey, TeamLabel, SMETeam string
@@ -97,7 +98,7 @@ func (e *Engine) HandleSpecialOpsAlert(ctx context.Context, incidentID string, p
 		group = p.AssignmentGroupID
 	}
 	return e.handleSpecialOps(ctx, specialOpsPress{
-		IncidentID: incidentID, Number: p.Number, Title: p.Subject, Product: p.Product,
+		IncidentID: incidentID, Number: p.Number, Title: p.Subject, Product: p.Product, Priority: p.Priority,
 		TeamKey: p.TeamKey, TeamLabel: p.TeamLabel, SMETeam: p.SMETeam,
 		PreviousGroup: p.PreviousAssignmentGroupName, PreviousGroupID: p.PreviousAssignmentGroupID,
 		AssignmentGroup: group, ChangedBy: p.ChangedBy, At: reportedAt(p.ChangedOn),
@@ -206,7 +207,47 @@ func (e *Engine) handleSpecialOps(ctx context.Context, pr specialOpsPress) error
 		// alert, tries again.
 		e.releaseSMEPage(ctx, incidentID, team)
 	}
+	if err == nil {
+		e.postSMEHandoff(ctx, pr, team, started)
+	}
 	return err
+}
+
+// postSMEHandoff tells the incident's SRE team space, once per press, that
+// the incident went to an SME team (sre.smeHandoffChat). Best effort: a
+// failure is logged, never retried -- the SME page matters, this message
+// does not hold it up.
+func (e *Engine) postSMEHandoff(ctx context.Context, pr specialOpsPress, team string, started bool) {
+	if !e.cfg.Ladder.SMEHandoffChat {
+		return
+	}
+	target, ok := e.sreRoomFor(pr.PreviousGroup)
+	if !ok {
+		return
+	}
+	if !target.chat.HasAudienceSpace(target.room) {
+		slog.WarnContext(ctx, "escalation: no Google Chat space for the SME handoff message", "incidentId", pr.IncidentID, "audience", target.room)
+		return
+	}
+	// The SME team paged, named as the SME cards and closing message name it.
+	smeTeam := smeTeamLabel(team)
+	err := target.chat.SendEscalationHandoff(ctx, notifications.EscalationHandoff{
+		Audience:    target.room,
+		SMETeam:     smeTeam,
+		By:          pr.ChangedBy,
+		Paging:      started,
+		IncidentRef: pr.Number,
+		Title:       pr.Title,
+		Priority:    pr.Priority,
+		PortalURL:   e.links.IncidentLink(pr.IncidentID),
+		PortalLabel: "View incident",
+		ThreadKey:   "incident-escalation-" + pr.IncidentID,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "escalation: the SME handoff message was not posted", "incidentId", pr.IncidentID, "audience", target.room, "err", err)
+		return
+	}
+	slog.InfoContext(ctx, "escalation: SME handoff message posted", "incidentId", pr.IncidentID, "audience", target.room, "smeTeam", team)
 }
 
 // smeLadderKey is the store key of the incident's SME ladder for one team.
@@ -256,7 +297,16 @@ func smeTrigger(pr specialOpsPress, team string) Trigger {
 // a retry may do better.
 func (e *Engine) startSMELadder(ctx context.Context, t Trigger, p specialOpsPress) (bool, error) {
 	sme := e.cfg.SME
-	if len(e.smeNotifiers) == 0 && e.cfg.CallSendingEnabled {
+	if len(e.smeNotifiersFor(t.Routing.SMETeam)) == 0 && e.cfg.CallSendingEnabled {
+		if e.smeTeamHasNoChat(t.Routing.SMETeam) {
+			// sme.teamChats is set and does not list this team, and the
+			// channel is chat only: nothing to post and nobody to call.
+			slog.WarnContext(ctx, "escalation: the SME team has no Chat space of its own (sme.teamChats); nobody was contacted",
+				"incidentId", t.IncidentID, "smeTeam", t.Routing.SMETeam)
+			e.writeSMENote(ctx, t, p, nil, "NO_CHAT_SPACE",
+				fmt.Sprintf("SME team %s has no Chat space of its own (sme.teamChats)", t.Routing.SMETeam))
+			return false, nil
+		}
 		// sme.channel names a channel with no client (logged at startup).
 		slog.ErrorContext(ctx, "escalation: no notifier for the SME page's channel; nobody was contacted",
 			"incidentId", t.IncidentID, "channel", string(sme.Channel))

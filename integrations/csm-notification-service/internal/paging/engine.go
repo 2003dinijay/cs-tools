@@ -138,9 +138,28 @@ type Engine struct {
 	// smeNotifiers is how the Special Ops page reaches the SME, from the
 	// file's sme section; nil on an engine that does not place it.
 	smeNotifiers []notifier
-	store        ladderStore
-	notes        incidentNotes
-	cfg          EngineConfig
+	// smeTeamNotifiers is set only when sme.teamChats is: each listed SME
+	// team's notifiers, posting to its own Chat space. A team not listed
+	// gets smeNoChatNotifiers, the SME channel without chat.
+	smeTeamNotifiers   map[string][]notifier
+	smeNoChatNotifiers []notifier
+	// teamNotifiers is set only when the SRE ladder's teamChats is: each
+	// listed team's notifiers, posting its rung cards to its own space.
+	teamNotifiers map[string][]notifier
+	// teamRooms and sharedRoom are where the closing message of an
+	// unanswered ladder goes (sre.unansweredChat): the team's own space, else
+	// the ladder's chat space. Built whatever the channel is.
+	teamRooms  map[string]chatRoom
+	sharedRoom *chatRoom
+	// smeRooms and smeSharedRoom are where an SME ladder's closing message
+	// goes (sme.unansweredChat): the SME team's own space, else sme.chat
+	// when sme.teamChats is unset.
+	smeRooms      map[string]chatRoom
+	smeSharedRoom *chatRoom
+	links         PortalLinks
+	store         ladderStore
+	notes         incidentNotes
+	cfg           EngineConfig
 	// clock is time.Now unless a test substitutes one; the staleness check
 	// in start is the only thing that reads it, and it has to be testable
 	// against a trigger that is genuinely old.
@@ -189,6 +208,10 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 		slog.Error("escalation: configured for a channel with no client; nothing will be sent over it",
 			"missingChannel", string(ch), "configuredChannel", string(cfg.Channel))
 	}
+	e.links = links
+	if cfg.Kind == LadderSRE {
+		e.buildTeamChats(cfg, calls, chat, links, defaultChatProduct)
+	}
 	if cfg.Kind == LadderSRE && cfg.SME.Enabled {
 		var missing []Channel
 		e.smeNotifiers, missing = buildNotifiers(cfg.SME.Channel, cfg.SME.Chat, cfg.UseSSML, calls, chat, links, defaultChatProduct)
@@ -196,8 +219,228 @@ func NewEngine(policies map[string]PriorityPolicy, resolver Resolver, calls *not
 			slog.Error("escalation: the SME page is configured for a channel with no client; nothing will be sent over it",
 				"missingChannel", string(ch), "configuredChannel", string(cfg.SME.Channel))
 		}
+		if len(cfg.SME.TeamChats) > 0 {
+			e.smeTeamNotifiers = map[string][]notifier{}
+			for team, c := range cfg.SME.TeamChats {
+				e.smeTeamNotifiers[teamKeyFor(team)], _ = buildNotifiers(cfg.SME.Channel, c, cfg.UseSSML, calls, chat, links, defaultChatProduct)
+			}
+			e.smeNoChatNotifiers = withoutChat(e.smeNotifiers)
+		}
 	}
 	return e
+}
+
+// chatRoom is one Google Chat space a message can be posted to.
+type chatRoom struct {
+	chat chatSender
+	room string
+}
+
+// buildTeamChats wires the SRE ladder's per-team spaces (teamChats) and the
+// rooms its closing message goes to (unansweredChat).
+func (e *Engine) buildTeamChats(cfg EngineConfig, calls *notifications.TwilioClient, chat *notifications.GoogleChatClient, links PortalLinks, defaultChatProduct string) {
+	if len(cfg.Ladder.TeamChats) > 0 {
+		e.teamNotifiers = map[string][]notifier{}
+		for team, c := range cfg.Ladder.TeamChats {
+			e.teamNotifiers[teamKeyFor(team)], _ = buildNotifiers(cfg.Channel, c, cfg.UseSSML, calls, chat, links, defaultChatProduct)
+		}
+	}
+	if cfg.SME.Enabled && cfg.SME.UnansweredChat {
+		e.smeRooms = map[string]chatRoom{}
+		for team, c := range cfg.SME.TeamChats {
+			if client, room := ladderChat(c, chat, defaultChatProduct, os.Getenv); client != nil {
+				e.smeRooms[teamKeyFor(team)] = chatRoom{chat: client, room: room}
+			}
+		}
+		if len(cfg.SME.TeamChats) == 0 {
+			if client, room := ladderChat(cfg.SME.Chat, chat, defaultChatProduct, os.Getenv); client != nil {
+				e.smeSharedRoom = &chatRoom{chat: client, room: room}
+			}
+		}
+	}
+	if !cfg.Ladder.UnansweredChat && !cfg.Ladder.SMEHandoffChat {
+		return
+	}
+	e.teamRooms = map[string]chatRoom{}
+	for team, c := range cfg.Ladder.TeamChats {
+		if client, room := ladderChat(c, chat, defaultChatProduct, os.Getenv); client != nil {
+			e.teamRooms[teamKeyFor(team)] = chatRoom{chat: client, room: room}
+		}
+	}
+	if client, room := ladderChat(cfg.Ladder.Chat, chat, defaultChatProduct, os.Getenv); client != nil {
+		e.sharedRoom = &chatRoom{chat: client, room: room}
+	} else if len(e.teamRooms) == 0 {
+		slog.Error("escalation: sre.unansweredChat or sre.smeHandoffChat is on but no Google Chat space is configured; nothing will be posted")
+	}
+}
+
+// sreTeamKey is the SRE team an incident is assigned to, as a teamChats key:
+// its assignment group through sre.teams.aliases, lower case.
+func (e *Engine) sreTeamKey(team string) string {
+	key := teamKeyFor(team)
+	for group, alias := range e.cfg.Ladder.Teams.Aliases {
+		if teamKeyFor(group) == key {
+			return teamKeyFor(alias)
+		}
+	}
+	return key
+}
+
+// notifiersFor is how one plan's rungs reach people: its team's own space
+// when the SRE ladder's teamChats lists the team, else the ladder's own.
+func (e *Engine) notifiersFor(plan Plan) []notifier {
+	if e.teamNotifiers != nil {
+		if n, ok := e.teamNotifiers[e.sreTeamKey(plan.Trigger.Team)]; ok {
+			return n
+		}
+	}
+	return e.notifiers
+}
+
+// postUnanswered tells the team's space that a ladder called every rung and
+// nobody acknowledged the incident. Best effort: a failure is logged, never
+// retried -- the ladder is over either way.
+func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
+	t := st.Plan.Trigger
+	if e.cfg.Kind != LadderSRE {
+		return
+	}
+	target, ok, chain := e.unansweredRoom(t)
+	if !ok {
+		return
+	}
+	if !target.chat.HasAudienceSpace(target.room) {
+		slog.WarnContext(ctx, "escalation: no Google Chat space for the closing message", "incidentId", t.IncidentID, "audience", target.room)
+		return
+	}
+	var called []string
+	for i, done := range st.Placed {
+		if done && i < len(st.Plan.Calls) && st.Plan.Calls[i].Recipient.Name != "" {
+			c := st.Plan.Calls[i]
+			label := c.Level.String()
+			if tier, ok := sreTier[c.Level]; ok {
+				label = tier
+			}
+			called = append(called, label+" "+c.Recipient.Name)
+		}
+	}
+	portal, label := e.links.IncidentLink(t.IncidentID), "View incident"
+	if t.isCase() {
+		portal, label = e.links.CaseLink(t.IncidentID), "View case"
+	}
+	err := target.chat.SendEscalationUnanswered(ctx, notifications.EscalationUnanswered{
+		Audience:    target.room,
+		Chain:       chain,
+		IncidentRef: t.caseRef(),
+		Title:       t.Title,
+		Priority:    t.Priority,
+		Team:        t.Team,
+		Called:      called,
+		Instruction: t.instruction(false),
+		PortalURL:   portal,
+		PortalLabel: label,
+		ThreadKey:   "incident-escalation-" + t.IncidentID,
+	})
+	if err != nil {
+		slog.ErrorContext(ctx, "escalation: the closing message was not posted", "incidentId", t.IncidentID, "audience", target.room, "err", err)
+		return
+	}
+	slog.InfoContext(ctx, "escalation: closing message posted", "incidentId", t.IncidentID, "audience", target.room)
+}
+
+// unansweredRoom is where a finished, unanswered ladder's closing message
+// goes, and the chain it names; ok is false when it goes nowhere.
+func (e *Engine) unansweredRoom(t Trigger) (chatRoom, bool, string) {
+	if t.Routing.Ladder == LadderSME {
+		if !e.cfg.SME.UnansweredChat {
+			return chatRoom{}, false, ""
+		}
+		chain := smeTeamLabel(t.Routing.SMETeam) + " SME"
+		if r, ok := e.smeRooms[teamKeyFor(t.Routing.SMETeam)]; ok {
+			return r, true, chain
+		}
+		if e.smeSharedRoom != nil {
+			return *e.smeSharedRoom, true, chain
+		}
+		return chatRoom{}, false, ""
+	}
+	if !e.cfg.Ladder.UnansweredChat {
+		return chatRoom{}, false, ""
+	}
+	if r, ok := e.teamRooms[e.sreTeamKey(t.Team)]; ok {
+		return r, true, t.Routing.SREChain()
+	}
+	if e.sharedRoom != nil {
+		return *e.sharedRoom, true, t.Routing.SREChain()
+	}
+	return chatRoom{}, false, ""
+}
+
+// sreRoomFor is the SRE space for a team: its own (sre.teamChats), else the
+// shared one; ok is false when neither is configured.
+func (e *Engine) sreRoomFor(team string) (chatRoom, bool) {
+	if r, ok := e.teamRooms[e.sreTeamKey(team)]; ok {
+		return r, true
+	}
+	if e.sharedRoom != nil {
+		return *e.sharedRoom, true
+	}
+	return chatRoom{}, false
+}
+
+// smeTeamLabel is an SME team key as a reader would write it: "b-central" is
+// "B-Central", "choreo-runtime" is "Choreo Runtime".
+func smeTeamLabel(key string) string {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return ""
+	}
+	if strings.EqualFold(key, "b-central") {
+		return "B-Central"
+	}
+	words := strings.FieldsFunc(key, func(r rune) bool { return r == '-' || r == '_' || r == ' ' })
+	for i, w := range words {
+		if len(w) <= 2 {
+			words[i] = strings.ToUpper(w)
+			continue
+		}
+		words[i] = strings.ToUpper(w[:1]) + w[1:]
+	}
+	return strings.Join(words, " ")
+}
+
+// smeNotifiersFor is how the SME page reaches one SME team: its own Chat
+// space when sme.teamChats lists it, no chat card when sme.teamChats is set
+// but does not list it, and the shared SME space when sme.teamChats is unset.
+func (e *Engine) smeNotifiersFor(team string) []notifier {
+	if e.smeTeamNotifiers == nil {
+		return e.smeNotifiers
+	}
+	if n, ok := e.smeTeamNotifiers[teamKeyFor(team)]; ok {
+		return n
+	}
+	return e.smeNoChatNotifiers
+}
+
+// smeTeamHasNoChat reports whether a team's page posts no card only because
+// sme.teamChats does not list it.
+func (e *Engine) smeTeamHasNoChat(team string) bool {
+	if e.smeTeamNotifiers == nil || !e.cfg.SME.Channel.Uses(ChannelChat) {
+		return false
+	}
+	_, ok := e.smeTeamNotifiers[teamKeyFor(team)]
+	return !ok
+}
+
+// withoutChat is notifiers with the chat ones left out.
+func withoutChat(notifiers []notifier) []notifier {
+	out := []notifier{}
+	for _, n := range notifiers {
+		if _, isChat := n.(chatNotifier); !isChat {
+			out = append(out, n)
+		}
+	}
+	return out
 }
 
 // buildNotifiers wires one notifier per channel selected, and names every
@@ -983,6 +1226,7 @@ func (e *Engine) processDue(ctx context.Context, member string) error {
 		// The ladder ran to its end without anyone acknowledging. Record what
 		// happened and stop tracking it.
 		e.writeNote(ctx, st.Plan, st.Placed, st.Failed, nil, "")
+		e.postUnanswered(ctx, st)
 		slog.WarnContext(ctx, "escalation: ladder exhausted without acknowledgement",
 			"incidentId", incidentID, "priority", st.Plan.Trigger.Priority,
 			"rule", st.Plan.Trigger.Routing.Rule(), "reachedLevel", st.ReachedLevel(),
@@ -1009,9 +1253,9 @@ func (e *Engine) place(ctx context.Context, plan Plan, call PlannedCall) error {
 	if plan.Trigger.Routing.Ladder == LadderSME {
 		// An SME ladder rides the SRE engine's ticker but pages over the
 		// SME's own channel and Chat space.
-		return e.placeVia(ctx, plan, call, e.smeNotifiers, e.cfg.SME.Channel)
+		return e.placeVia(ctx, plan, call, e.smeNotifiersFor(plan.Trigger.Routing.SMETeam), e.cfg.SME.Channel)
 	}
-	return e.placeVia(ctx, plan, call, e.notifiers, e.cfg.Channel)
+	return e.placeVia(ctx, plan, call, e.notifiersFor(plan), e.cfg.Channel)
 }
 
 // placeVia is place over the given notifiers; the SME page has its own.

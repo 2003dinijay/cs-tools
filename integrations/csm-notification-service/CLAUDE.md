@@ -399,6 +399,32 @@ team confirmed only one person is called; then `sre.teams.abts` order; then
 email. The rota has no L4 tier, so L4 is the lead of the answering team -- the
 incident's own, or for a CRE P0 the team of whoever took L1. An assumption.
 
+**"Default" group** (`sre.teams.defaultGroups`, opt-in): an incident whose
+assignment group is listed (the alert flow's "Default") is an SRE incident
+with no team of its own: it climbs the SRE ladder on `defaultRota`, each rung
+reaching whoever holds that tier on the live window, as a team-less monitoring
+alert does -- whatever its contact type. A group may not also be in
+`teams.abts`.
+
+**Each team's own space** (`sre.teamChats`, opt-in): team key -> a `chat`
+section. A listed team's rung cards go to its own space; an incident of an
+unlisted team, or with none, uses `sre.chat`. `Engine.notifiersFor` picks by
+the incident's team through `sre.teams.aliases`.
+
+**Closing message** (`sre.unansweredChat`, opt-in): when every rung has been
+called and nobody acknowledged, `postUnanswered` posts "Unanswered: <chain>
+paging ended" with who each rung reached, to the team's own space, else
+`sre.chat` -- whatever `sre.channel` is, so a call-only ladder still tells the
+room. Best effort (logged, never retried). An SME ladder has its own,
+`sme.unansweredChat`: the SME team's own space (`sme.teamChats`), else
+`sme.chat` when `sme.teamChats` is empty, else nothing.
+
+**Escalated-to-SME message** (`sre.smeHandoffChat`, opt-in): when a SaaS SRE
+incident's escalation starts an SME page, `postSMEHandoff` posts one message
+to the incident's SRE team space (the group it left, through `sre.teamChats`,
+else `sre.chat`): who escalated it, SRE paging stopped, and whether the SMEs
+are being paged. Once per SME page (the page's dedup), best effort.
+
 **Stops on** (an SRE incident): `incident.assigned` (an engineer set as the
 assignee, published by entity-service) or `incident.acknowledged` (leaving NEW,
 whatever the new state -- confirmed 2026-10-07). A public comment
@@ -454,7 +480,13 @@ file's `sme.enabled`:
   one incident; its work notes and summary still go to the incident. Calls go
   over `sme.channel` (log/chat/call/both, `sme.chat`, `sme.safety.allowedNumbers`)
   -- `Engine.place` picks the SME notifiers for an SME plan -- and the card
-  names the rung ("Special Ops L2 on duty"). At the start a work note says who
+  names the rung ("Special Ops L2 on duty").
+- **Each team's own Chat space** (`sme.teamChats`, opt-in): SME team key ->
+  a `chat` section (`webhookUrlEnv`, `audience`). Unset, every team's cards go
+  to `sme.chat`, as before. Set, a listed team's cards go to its own space and
+  a team not listed gets no card -- its calls still go out when `sme.channel`
+  includes calls; with `channel: chat` it reaches nobody and the work note says
+  `NO_CHAT_SPACE`. `Engine.smeNotifiersFor` picks by `Routing.SMETeam`. At the start a work note says who
   L1 is, or why nobody can be paged (`NO_RECIPIENTS`, `NO_NUMBER`,
   `NUMBER_NOT_ALLOWED`, `NO_CHANNEL`); a rung with nobody is logged ("SME rung
   cannot be called") and skipped; the usual execution summary is written when
