@@ -4651,19 +4651,32 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 		commentWorkNoteDataFilter = ` AND cm.type IS DISTINCT FROM 'WORK_NOTE'::comment_type_enum`
 	}
 
+	// Synced attachments live in work_item_attachment, not case_attachment. A
+	// row is skipped while PENDING, and when case_attachment already holds the
+	// same id: a dual-write upload is mirrored into case_attachment under the
+	// backing data source's own attachment identity, which is also the id the
+	// sync gives its work_item_attachment row, so the two tables describe one
+	// file and it must show once. Shared by both queries so total and rows agree.
+	const syncedAttachmentFilter = `
+			  AND wa.state IS DISTINCT FROM 'PENDING'
+			  AND NOT EXISTS (SELECT 1 FROM case_attachment ca WHERE ca.id = wa.id)`
+
 	countQuery := `
 		SELECT
 			(SELECT COUNT(*) FROM comment WHERE work_item_id = $1` + commentWorkNoteFilter + `) +
-			(SELECT COUNT(*) FROM case_attachment WHERE case_id = $1 AND status = 'complete')`
+			(SELECT COUNT(*) FROM case_attachment WHERE case_id = $1 AND status = 'complete') +
+			(SELECT COUNT(*) FROM work_item_attachment wa JOIN work_item wi ON wi.id = wa.work_item_id
+			 WHERE wa.work_item_id = $1` + syncedAttachmentFilter + `)`
 	if includeFieldChanges {
 		countQuery += ` + (SELECT COUNT(*) FROM work_item_activity WHERE work_item_id = $1)`
 	}
 
 	// UNION ALL merges the tables into one timeline. Comment/field-change
 	// rows resolve their (free-text VARCHAR) author by email match against
-	// "user"; attachment rows join it directly, since case_attachment.
-	// uploaded_by is a real UUID FK (migration 0106) -- see this file's
-	// other created_by fixes for why they differ.
+	// "user"; case_attachment rows join it directly, since uploaded_by is a
+	// real UUID FK (migration 0106), while synced work_item_attachment rows
+	// carry a free-text created_by and match by email like comments -- see
+	// this file's other created_by fixes for why they differ.
 	//
 	// The comment/field-change branches' email joins are each wrapped in
 	// their own DISTINCT ON subquery: "user".email has no unique constraint
@@ -4701,7 +4714,27 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 				NULL::text AS field_name, NULL::text AS old_value, NULL::text AS new_value
 			FROM case_attachment a
 			JOIN "user" u2 ON u2.id = a.uploaded_by
-			WHERE a.case_id = $1 AND a.status = 'complete'`
+			WHERE a.case_id = $1 AND a.status = 'complete'
+
+			UNION ALL
+
+			SELECT
+				wa.id, 'attachment' AS kind, '' AS content, wa.created_on AS created_on,
+				COALESCE(u4.email, wa.created_by), u4.first_name, u4.last_name,
+				COALESCE(u4.name, NULLIF(TRIM(CONCAT_WS(' ', u4.first_name, u4.last_name)), '')) AS name,
+				NULL::text AS comment_type,
+				COALESCE(wa.name, '')::text, COALESCE(wa.content_type, '')::text, COALESCE(wa.size_bytes, 0)::bigint,
+				NULL::text AS field_name, NULL::text AS old_value, NULL::text AS new_value
+			FROM work_item_attachment wa
+			JOIN work_item wi ON wi.id = wa.work_item_id
+			LEFT JOIN LATERAL (
+				SELECT u.email, u.first_name, u.last_name, u.name
+				FROM "user" u
+				WHERE LOWER(u.email) = LOWER(wa.created_by)
+				ORDER BY u.id
+				LIMIT 1
+			) u4 ON TRUE
+			WHERE wa.work_item_id = $1` + syncedAttachmentFilter
 	if includeFieldChanges {
 		dataQuery += `
 
