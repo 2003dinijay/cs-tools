@@ -1754,8 +1754,9 @@ export function isNoveraOrBotSender(
   // triggering user message's timestamp (common -- the transcript only
   // stores whole-second precision) had no tiebreak to fall back on and
   // could render above the question that caused it.
-  return ty === "bot" || by === "novera" || by === "";
+  return ty === "bot" || by === "novera" || by === "agent" || by === "";
 }
+
 
 /** Shape accepted by {@link compareByCreatedOnThenId}. */
 export type CreatedOnSortable = {
