@@ -22,6 +22,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"unicode"
 )
 
 // ErrNoToken is returned for a call to a repository that no configured token
@@ -57,13 +58,18 @@ func ParseRepoTokens(raw string) (map[string]string, error) {
 		return out, nil
 	}
 	var in map[string]string
-	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+	// JSON null unmarshals into a nil map without error; it is no more an
+	// object than any other non-object, so refuse it the same way.
+	if err := json.Unmarshal([]byte(raw), &in); err != nil || in == nil {
 		return nil, errors.New(`GITHUB_REPO_TOKENS: not a JSON object of "owner/repository" to token`)
 	}
 	for key, tok := range in {
 		k := strings.ToLower(strings.TrimSpace(key))
 		parts := strings.Split(k, "/")
-		if k == "" || len(parts) > 2 || parts[0] == "" || (len(parts) == 2 && parts[1] == "") {
+		if k == "" || len(parts) > 2 || parts[0] == "" || (len(parts) == 2 && parts[1] == "") || strings.ContainsFunc(k, unicode.IsSpace) {
+			// Whitespace inside a key ("org/ repo") would be stored as given
+			// and never match the repository GitHub names: the repository
+			// would silently use the fallback token. GitHub names contain none.
 			return nil, fmt.Errorf(`GITHUB_REPO_TOKENS: key %q is not "owner/repository" or "owner"`, key)
 		}
 		if strings.TrimSpace(tok) == "" {

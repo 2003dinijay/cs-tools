@@ -1245,8 +1245,17 @@ func (c *Config) DSN() string {
 // GITHUB_REPO_TOKENS -- and the login whose own events must be ignored as ours.
 func (c *Config) HasGithubIntegration() bool {
 	return c.GithubIntegrationEnabled &&
-		(c.GithubToken != "" || strings.TrimSpace(c.GithubRepoTokens) != "") &&
+		(c.GithubToken != "" || c.hasRepoTokens()) &&
 		c.GithubIntegrationLogin != ""
+}
+
+// hasRepoTokens reports whether GITHUB_REPO_TOKENS names at least one token.
+// A set but empty value ("{}") is not a token: enabling on it would start a
+// sync whose every call fails with github.ErrNoToken. A malformed value counts
+// as none here; Validate refuses it at startup.
+func (c *Config) hasRepoTokens() bool {
+	tokens, err := github.ParseRepoTokens(c.GithubRepoTokens)
+	return err == nil && len(tokens) > 0
 }
 
 // envFlagOn is true unless the value is "false" (case-insensitive).

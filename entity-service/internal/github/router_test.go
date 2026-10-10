@@ -131,14 +131,18 @@ func TestParseRepoTokens(t *testing.T) {
 		t.Errorf("parsed %v, want trimmed, lower-cased keys", got)
 	}
 	for name, raw := range map[string]string{
-		"not JSON":          `acme/one=t1`,
-		"array":             `["t1"]`,
-		"too many segments": `{"a/b/c":"t1"}`,
-		"empty owner":       `{"/repo":"t1"}`,
-		"empty repository":  `{"owner/":"t1"}`,
-		"empty key":         `{" ":"t1"}`,
-		"empty token":       `{"acme/one":"  "}`,
-		"duplicate by case": `{"Acme/One":"t1","acme/one":"t2"}`,
+		"not JSON":            `acme/one=t1`,
+		"array":               `["t1"]`,
+		"too many segments":   `{"a/b/c":"t1"}`,
+		"empty owner":         `{"/repo":"t1"}`,
+		"empty repository":    `{"owner/":"t1"}`,
+		"empty key":           `{" ":"t1"}`,
+		"empty token":         `{"acme/one":"  "}`,
+		"JSON null":           `null`,
+		"space in repository": `{"org/ repo":"t1"}`,
+		"space in owner":      `{"org /repo":"t1"}`,
+		"tab in key":          "{\"org/re\tpo\":\"t1\"}",
+		"duplicate by case":   `{"Acme/One":"t1","acme/one":"t2"}`,
 	} {
 		if _, err := ParseRepoTokens(raw); err == nil {
 			t.Errorf("%s: want an error", name)

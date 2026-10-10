@@ -1214,6 +1214,9 @@ func TestConfig_HasGithubIntegration_RepoTokens(t *testing.T) {
 		{"GITHUB_REPO_TOKENS only", "", `{"wso2-enterprise/choreo":"pat"}`, true},
 		{"both", "pat", `{"wso2-enterprise/choreo":"pat"}`, true},
 		{"neither", "", "", false},
+		{"GITHUB_REPO_TOKENS set but empty", "", `{}`, false},
+		{"GITHUB_REPO_TOKENS null", "", `null`, false},
+		{"GITHUB_REPO_TOKENS malformed", "", `{"org/ repo":"pat"}`, false},
 	} {
 		c := Config{GithubIntegrationEnabled: true, GithubIntegrationLogin: "csm-bot", GithubToken: tc.token, GithubRepoTokens: tc.repoTokens}
 		if got := c.HasGithubIntegration(); got != tc.want {
@@ -1232,7 +1235,7 @@ func TestConfig_Validate_GithubRepoTokens(t *testing.T) {
 			t.Errorf("%q: unexpected error %v", v, err)
 		}
 	}
-	for _, v := range []string{`not json`, `{"a/b/c":"pat"}`, `{"wso2-enterprise/choreo":""}`} {
+	for _, v := range []string{`not json`, `null`, `{"a/b/c":"pat"}`, `{"org/ repo":"pat"}`, `{"wso2-enterprise/choreo":""}`} {
 		c := baseValidConfig()
 		c.GithubRepoTokens = v
 		if err := c.Validate(); err == nil {
