@@ -6334,15 +6334,12 @@ product, account, deployment, deployed_product, split across
 - **`product_version_repo.go`**: pure rename (`product_versions` →
   `product_version`, `created_at`/`updated_at` → `created_on`/`updated_on`).
   No other column was wrong.
-- **`deployment_repo.go`**: same rename, plus one semantic bug beyond
-  naming: `deployment.created_by` is a plain `VARCHAR` audit string (an
-  email, this codebase's own convention — see e.g. `commentService` writing
-  the caller's email into `comment.created_by`), never a UUID FK, so
-  `JOIN "user" u ON d.created_by = u.id` would either fail to type-check or
-  silently match nothing even after the table rename. Fixed by resolving
-  the creator via `LEFT JOIN "user" u ON LOWER(u.email) = LOWER(d.created_by)`
-  — `CreatedBy` comes back `nil` (not a fabricated `EntityRef` with an empty
-  id) when the email doesn't resolve to a known user.
+- **`deployment_repo.go`**: same rename. `DeploymentView` no longer carries
+  `createdBy`: `deployment.created_by` is a plain `VARCHAR` audit string (an
+  email) and `"user".email` is not unique, so the old
+  `LEFT JOIN "user" ON LOWER(email) = LOWER(created_by)` returned one row per
+  matching user and duplicated deployments in the list. The join and the field
+  were removed; no consumer read it.
 - **`deployed_product_repo.go`**: rename, plus `dp.product_version_id` →
   the real column `dp.version_id`. Also newly populates `Cores`/`TPS`/
   `Category` from `core_count`/`tps_count`/`product_category` — real columns

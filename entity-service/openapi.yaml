@@ -15895,10 +15895,6 @@ components:
         description:
           type: string
           nullable: true
-        createdBy:
-          nullable: true
-          allOf:
-            - $ref: '#/components/schemas/EntityRef'
         project:
           $ref: '#/components/schemas/EntityRef'
         createdOn:

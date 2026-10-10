@@ -78,7 +78,7 @@ func TestConversationSearchQueries(t *testing.T) {
 		"ORDER BY wi.updated_on ASC, wi.id\n\t\t       LIMIT $2 OFFSET $3) page",
 		"JOIN work_item wi ON wi.id = page.id",
 		"LEFT JOIN LATERAL (",
-		"ORDER BY u2.id\n\t\t     LIMIT 1",
+		"ORDER BY u2.is_active DESC NULLS LAST, u2.created_on DESC, u2.id\n\t\t     LIMIT 1",
 	} {
 		if !strings.Contains(data, want) {
 			t.Errorf("page query is missing %q:\n%s", want, data)
