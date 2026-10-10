@@ -1645,23 +1645,30 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /announcement-requests/{id}/deliveries", announcementRequestHandler.ListAnnouncementRequestDeliveries)
 	}
 	if customerHealthHandler != nil {
-		mux.HandleFunc("POST /projects/{id}/risk", customerHealthHandler.OpenProjectRisk)
-		mux.HandleFunc("PUT /risks/{id}/close", customerHealthHandler.CloseProjectRisk)
-		mux.HandleFunc("POST /projects/{id}/mark-healthy", customerHealthHandler.MarkProjectHealthy)
-		mux.HandleFunc("POST /projects/{id}/revert-health", customerHealthHandler.RevertProjectHealth)
-		mux.HandleFunc("GET /projects/{id}/risk-history", customerHealthHandler.GetProjectRiskHistory)
-		mux.HandleFunc("GET /accounts/{id}/project-health-statuses", customerHealthHandler.GetAccountProjectHealthStatuses)
-		mux.HandleFunc("GET /accounts/{id}/health-summary", customerHealthHandler.GetAccountHealthSummary)
-		mux.HandleFunc("POST /accounts/health-summaries/search", customerHealthHandler.GetBatchAccountHealthSummaries)
-		mux.HandleFunc("POST /accounts/by-health-status/search", customerHealthHandler.GetAccountsByHealthStatus)
-		mux.HandleFunc("POST /accounts/{id}/init-health-tracking", customerHealthHandler.InitProjectHealthTracking)
-		mux.HandleFunc("POST /risks/{id}/action-items", customerHealthHandler.CreateRiskActionItem)
-		mux.HandleFunc("GET /risks/{id}/action-items", customerHealthHandler.GetActionItemsByRisk)
-		mux.HandleFunc("PUT /action-items/{id}/status", customerHealthHandler.UpdateRiskActionItemStatus)
-		mux.HandleFunc("PUT /action-items/{id}", customerHealthHandler.UpdateRiskActionItem)
-		mux.HandleFunc("GET /accounts/{id}/action-items", customerHealthHandler.GetActionItemsByAccount)
-		mux.HandleFunc("POST /action-items/{id}/comments", customerHealthHandler.CreateActionItemComment)
-		mux.HandleFunc("GET /action-items/{id}/comments", customerHealthHandler.GetActionItemComments)
+		// internalOnly: this is internal CSM risk-tracking data with no
+		// row-level security of its own (customerHealthService holds no
+		// accessSvc) and no customer-portal caller, the same posture as
+		// sla/incident/incident_task/problem above -- see internalOnly's own
+		// doc comment. Without it, any caller with a valid token (a
+		// customer's included) could read or mutate another account's risks,
+		// action items and comments by id.
+		mux.HandleFunc("POST /projects/{id}/risk", internalOnly(accessSvc, customerHealthHandler.OpenProjectRisk))
+		mux.HandleFunc("PUT /risks/{id}/close", internalOnly(accessSvc, customerHealthHandler.CloseProjectRisk))
+		mux.HandleFunc("POST /projects/{id}/mark-healthy", internalOnly(accessSvc, customerHealthHandler.MarkProjectHealthy))
+		mux.HandleFunc("POST /projects/{id}/revert-health", internalOnly(accessSvc, customerHealthHandler.RevertProjectHealth))
+		mux.HandleFunc("GET /projects/{id}/risk-history", internalOnly(accessSvc, customerHealthHandler.GetProjectRiskHistory))
+		mux.HandleFunc("GET /accounts/{id}/project-health-statuses", internalOnly(accessSvc, customerHealthHandler.GetAccountProjectHealthStatuses))
+		mux.HandleFunc("GET /accounts/{id}/health-summary", internalOnly(accessSvc, customerHealthHandler.GetAccountHealthSummary))
+		mux.HandleFunc("POST /accounts/health-summaries/search", internalOnly(accessSvc, customerHealthHandler.GetBatchAccountHealthSummaries))
+		mux.HandleFunc("POST /accounts/by-health-status/search", internalOnly(accessSvc, customerHealthHandler.GetAccountsByHealthStatus))
+		mux.HandleFunc("POST /accounts/{id}/init-health-tracking", internalOnly(accessSvc, customerHealthHandler.InitProjectHealthTracking))
+		mux.HandleFunc("POST /risks/{id}/action-items", internalOnly(accessSvc, customerHealthHandler.CreateRiskActionItem))
+		mux.HandleFunc("GET /risks/{id}/action-items", internalOnly(accessSvc, customerHealthHandler.GetActionItemsByRisk))
+		mux.HandleFunc("PUT /action-items/{id}/status", internalOnly(accessSvc, customerHealthHandler.UpdateRiskActionItemStatus))
+		mux.HandleFunc("PUT /action-items/{id}", internalOnly(accessSvc, customerHealthHandler.UpdateRiskActionItem))
+		mux.HandleFunc("GET /accounts/{id}/action-items", internalOnly(accessSvc, customerHealthHandler.GetActionItemsByAccount))
+		mux.HandleFunc("POST /action-items/{id}/comments", internalOnly(accessSvc, customerHealthHandler.CreateActionItemComment))
+		mux.HandleFunc("GET /action-items/{id}/comments", internalOnly(accessSvc, customerHealthHandler.GetActionItemComments))
 	}
 	if savedFilterViewHandler != nil {
 		mux.HandleFunc("GET /users/me/saved-filter-views", savedFilterViewHandler.List)

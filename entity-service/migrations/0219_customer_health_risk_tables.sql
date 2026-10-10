@@ -31,6 +31,8 @@
 -- reviewed_on/reviewed_by_email, ...), and that quartet isn't optional
 -- metadata elsewhere in this schema, so it isn't force-fitted here.
 
+BEGIN;
+
 DO $$ BEGIN
     CREATE TYPE project_health_status_enum AS ENUM ('TO_BE_REVIEWED', 'HEALTHY', 'AT_RISK');
 EXCEPTION WHEN duplicate_object THEN NULL; END $$;
@@ -110,3 +112,5 @@ CREATE TABLE IF NOT EXISTS action_item_comment (
 );
 
 CREATE INDEX IF NOT EXISTS idx_action_item_comment_action_item_id ON action_item_comment (action_item_id);
+
+COMMIT;

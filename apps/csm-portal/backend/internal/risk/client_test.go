@@ -200,3 +200,30 @@ func TestCreateActionItem_UppercasesPriorityOnTheWayIn(t *testing.T) {
 		t.Errorf("result Status = %q, want lowercase %q", result.Status, "open")
 	}
 }
+
+// Regression: GetAccountsByHealthStatus's own doc comment promises an empty
+// list for any health status other than "at_risk"/"healthy" -- but
+// entity-service 400s on a value outside its own domain (anything but
+// AT_RISK/HEALTHY/TO_BE_REVIEWED), so without filtering before the call, an
+// arbitrary/malformed status broke that contract by surfacing an upstream
+// validation error instead of the promised empty list.
+func TestGetAccountsByHealthStatus_UnsupportedStatusReturnsEmptyWithoutCallingUpstream(t *testing.T) {
+	called := false
+	client := newRiskTestClient(t, "/accounts/", func(w http.ResponseWriter, r *http.Request) {
+		called = true
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"message":"invalid status: BOGUS"}`))
+	})
+
+	ids, err := client.GetAccountsByHealthStatus(context.Background(), "bogus")
+	if err != nil {
+		t.Fatalf("GetAccountsByHealthStatus: %v", err)
+	}
+	if len(ids) != 0 {
+		t.Errorf("ids = %v, want empty", ids)
+	}
+	if called {
+		t.Error("entity-service was called for an unsupported status; want no round trip")
+	}
+}

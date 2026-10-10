@@ -130,8 +130,16 @@ func (c *Client) GetBatchHealthSummaries(ctx context.Context, accountSysIDs []st
 
 // GetAccountsByHealthStatus retrieves the account sys_ids matching a given
 // health status ("at_risk" or "healthy"); any other value returns an empty
-// list.
+// list, without a round trip to entity-service. Needed because entity-service
+// accepts every value this package's domain actually has a status for
+// (including "to_be_reviewed") but 400s on one outside that set entirely --
+// filtering here first is what makes this wrapper's own "any other value
+// returns an empty list" contract hold for an arbitrary/malformed value too,
+// not just the one entity-service happens to already treat as "empty".
 func (c *Client) GetAccountsByHealthStatus(ctx context.Context, healthStatus string) ([]string, error) {
+	if healthStatus != "at_risk" && healthStatus != "healthy" {
+		return []string{}, nil
+	}
 	resp, err := c.entity.GetAccountsByHealthStatus(ctx, upperEnum(healthStatus))
 	if err != nil {
 		return nil, err

@@ -288,8 +288,14 @@ func (r *customerHealthRepo) OpenProjectRisk(ctx context.Context, projectID, com
 }
 
 func openProjectRiskTx(ctx context.Context, tx pgx.Tx, projectID, comment, actorEmail string) (domain.ProjectRisk, error) {
+	// Lock the parent project row first -- it always exists (unlike the
+	// open-risk row below, which usually doesn't yet), so this is what
+	// actually serializes two concurrent OpenProjectRisk calls for the same
+	// project against each other. A `FOR UPDATE` query that returns no rows
+	// locks nothing, so locking only the (likely absent) open-risk row would
+	// let both calls pass the check below and both insert an OPEN risk.
 	var accountID string
-	err := tx.QueryRow(ctx, `SELECT account_id FROM project WHERE id = $1`, projectID).Scan(&accountID)
+	err := tx.QueryRow(ctx, `SELECT account_id FROM project WHERE id = $1 FOR UPDATE`, projectID).Scan(&accountID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProjectRisk{}, &apierror.NotFoundError{Msg: "project not found"}
 	}
@@ -297,12 +303,9 @@ func openProjectRiskTx(ctx context.Context, tx pgx.Tx, projectID, comment, actor
 		return domain.ProjectRisk{}, fmt.Errorf("resolve project account: %w", err)
 	}
 
-	// Locked so two concurrent calls (or a double click) can't both open a
-	// risk for the same project -- the second call's lookup blocks until the
-	// first's transaction commits, then sees the row it just inserted.
 	var existingID string
 	err = tx.QueryRow(ctx,
-		`SELECT id FROM project_risk WHERE project_id = $1 AND status = 'OPEN' FOR UPDATE`,
+		`SELECT id FROM project_risk WHERE project_id = $1 AND status = 'OPEN'`,
 		projectID).Scan(&existingID)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return domain.ProjectRisk{}, fmt.Errorf("check existing open risk: %w", err)
@@ -732,6 +735,14 @@ func (r *customerHealthRepo) CreateRiskActionItem(ctx context.Context, riskID st
 			return domain.RiskActionItem{}, &apierror.ConflictError{Msg: "action items can only be added to open risks"}
 		}
 
+		// due_date is a DATE column; an omitted dueDate arrives here as "" (the
+		// request field is a non-pointer string -- see validateDueDate's own
+		// doc comment, which accepts an empty value), and Postgres rejects ''
+		// as invalid date input. nil binds a real SQL NULL instead.
+		var dueDate *string
+		if req.DueDate != "" {
+			dueDate = &req.DueDate
+		}
 		var itemID string
 		if err := tx.QueryRow(ctx, `
 			INSERT INTO risk_action_item
@@ -740,7 +751,7 @@ func (r *customerHealthRepo) CreateRiskActionItem(ctx context.Context, riskID st
 			VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, $6, 'OPEN', $7, $8, $9, NOW(), NOW())
 			RETURNING id`,
 			riskID, riskRow.ProjectID, riskRow.AccountID, req.Title, req.Description, req.Priority,
-			req.AssignedToEmail, req.DueDate, actorEmail,
+			req.AssignedToEmail, dueDate, actorEmail,
 		).Scan(&itemID); err != nil {
 			return domain.RiskActionItem{}, fmt.Errorf("insert risk_action_item: %w", err)
 		}
@@ -807,13 +818,29 @@ func (r *customerHealthRepo) UpdateRiskActionItem(ctx context.Context, actionIte
 			"cannot edit action item with status %q; only OPEN or IN_PROGRESS items can be edited", row.Status)}
 	}
 
-	if _, err := r.db.Exec(ctx, `
+	// due_date is a DATE column; see CreateRiskActionItem's own comment on why
+	// "" / a pointer to "" must become nil rather than bind a literal empty
+	// string.
+	var dueDate *string
+	if req.DueDate != nil && *req.DueDate != "" {
+		dueDate = req.DueDate
+	}
+
+	// The editable-status condition is repeated in the UPDATE's own WHERE
+	// clause (not just the read above) so a concurrent
+	// UpdateRiskActionItemStatus resolving/cancelling the item between the
+	// read and this write can't have this edit silently apply to it anyway.
+	ct, err := r.db.Exec(ctx, `
 		UPDATE risk_action_item
 		SET title = $1, description = $2, priority = $3, assigned_to_email = $4, due_date = $5, updated_on = NOW()
-		WHERE id = $6`,
-		req.Title, req.Description, req.Priority, req.AssignedToEmail, req.DueDate, actionItemID,
-	); err != nil {
+		WHERE id = $6 AND status IN ('OPEN', 'IN_PROGRESS')`,
+		req.Title, req.Description, req.Priority, req.AssignedToEmail, dueDate, actionItemID,
+	)
+	if err != nil {
 		return domain.RiskActionItem{}, fmt.Errorf("update action item: %w", err)
+	}
+	if ct.RowsAffected() == 0 {
+		return domain.RiskActionItem{}, &apierror.ConflictError{Msg: "action item is no longer OPEN or IN_PROGRESS"}
 	}
 	return getActionItemByID(ctx, r.db, actionItemID)
 }
