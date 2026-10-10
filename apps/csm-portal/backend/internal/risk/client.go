@@ -14,76 +14,64 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Package risk is a MySQL-backed client for SupportPortalLite's
-// customer-health/risk tracking: four tables (project_risk,
-// project_health_status, risk_action_item, action_item_comment) recording a
-// project's health review state, its open/closed risk history, and the
-// action items and comments attached to each risk. Ported from the
-// Ballerina backend's modules/risk package (client.bal, risk.bal,
-// types.bal), which used ballerinax/mysql; this package uses
-// database/sql + github.com/go-sql-driver/mysql, this monorepo's first
-// MySQL consumer.
+// Package risk is an entity-service-backed client for customer-health/
+// risk-tracking: project health review state, risk open/close history, and
+// the action items and comments attached to each risk. Until this was
+// rewired, this package talked directly to a standalone MySQL database
+// (apps/csm-portal/backend's own former modules/risk-equivalent); that
+// database has been migrated into entity-service's own Postgres (migration
+// 0219 in that repo), and this package's job is now purely to call
+// entity-service's REST endpoints and reshape the result, not to run SQL of
+// its own. Every exported type/method signature here is unchanged or
+// minimally adjusted (see types.go's own doc comment on ID types) from the
+// MySQL-backed version, so internal/handler/customer_health*.go needed no
+// restructuring beyond the id-type change.
 package risk
 
 import (
-	"context"
-	"database/sql"
-	"fmt"
-	"time"
+	"regexp"
+	"strings"
 
-	_ "github.com/go-sql-driver/mysql" // MySQL driver, registered via side effect
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
 )
 
-// Connection pool bounds for the risk MySQL database. Without these,
-// database/sql's defaults are unlimited open connections and connections
-// that are never recycled, so a burst of requests can open far more
-// connections than the MySQL server allows and a connection can go stale
-// (e.g. outlive a load balancer's idle timeout) without ever being
-// refreshed. No env var for these: this is a bound on the pool's own
-// resource use, not a per-deployment tunable like the DSN itself.
-const (
-	riskMaxOpenConns    = 25
-	riskMaxIdleConns    = 5
-	riskConnMaxLifetime = 5 * time.Minute
-)
-
-// Config holds the configuration for the risk MySQL client.
-type Config struct {
-	// DSN is a github.com/go-sql-driver/mysql data source name, e.g.
-	// "user:password@tcp(host:3306)/dbname?parseTime=true". parseTime=true
-	// is required — this package scans DATETIME/DATE columns directly into
-	// time.Time.
-	DSN string
-}
-
-// Client wraps a MySQL connection pool for the risk-tracking tables.
+// Client wraps entity-service's customer-health endpoints.
 type Client struct {
-	db *sql.DB
+	entity *entity.CustomerEntityClient
 }
 
-// NewClient opens a connection pool to the risk-tracking MySQL database and
-// verifies it is reachable with a Ping. Unlike this codebase's other
-// NewXClient constructors (which build lazily and never fail), a database
-// connection can genuinely be unreachable or misconfigured at startup, so
-// this one returns an error — callers should treat that as fatal
-// configuration, the same way this backend already treats a bad
-// DASHBOARDS_DIR or CSM_TEAM_REGISTRY as fatal at startup.
-func NewClient(ctx context.Context, cfg Config) (*Client, error) {
-	db, err := sql.Open("mysql", cfg.DSN)
-	if err != nil {
-		return nil, fmt.Errorf("risk: open database: %w", err)
-	}
-	db.SetMaxOpenConns(riskMaxOpenConns)
-	db.SetMaxIdleConns(riskMaxIdleConns)
-	db.SetConnMaxLifetime(riskConnMaxLifetime)
-	if err := db.PingContext(ctx); err != nil {
-		_ = db.Close()
-		return nil, fmt.Errorf("risk: ping database: %w", err)
-	}
-	return &Client{db: db}, nil
+// NewClient constructs a Client backed by the given entity-service client.
+// Unlike the old MySQL-backed constructor, this never fails or makes a
+// network call of its own -- entityClient is already a live, shared
+// dependency constructed (and health-checked implicitly by every other
+// route that uses it) elsewhere in main.go.
+func NewClient(entityClient *entity.CustomerEntityClient) *Client {
+	return &Client{entity: entityClient}
 }
 
-// Close closes the underlying connection pool.
-func (c *Client) Close() error {
-	return c.db.Close()
+// hexSysIDRe matches a 32-character lowercase/uppercase hex upstream sys_id
+// with no dashes -- the shape every projectSysId/accountSysId this package
+// receives from the portal frontend has.
+var hexSysIDRe = regexp.MustCompile(`^[0-9a-fA-F]{32}$`)
+
+// sysIDToUUID reformats a 32-character upstream sys_id into the dashed UUID
+// syntax entity-service's Postgres actually stores it as -- confirmed in
+// entity-service's own CLAUDE.md: "The services and groups are SN sys_ids as
+// Postgres UUIDs", and true of every upstream-sourced row in that schema,
+// project and account included. A value that isn't a well-formed 32-hex
+// sys_id is returned unchanged (entity-service's own UUID validation will
+// reject it with a clear 400 rather than this silently mangling it).
+func sysIDToUUID(sysID string) string {
+	if !hexSysIDRe.MatchString(sysID) {
+		return sysID
+	}
+	return sysID[0:8] + "-" + sysID[8:12] + "-" + sysID[12:16] + "-" + sysID[16:20] + "-" + sysID[20:32]
+}
+
+// uuidToSysID is sysIDToUUID's inverse: strips the dashes out of a UUID to
+// recover the original 32-character sys_id shape the portal frontend (and
+// every other customer-health response field) expects. A value with no
+// dashes is returned unchanged.
+func uuidToSysID(uuid string) string {
+	return strings.ReplaceAll(uuid, "-", "")
 }

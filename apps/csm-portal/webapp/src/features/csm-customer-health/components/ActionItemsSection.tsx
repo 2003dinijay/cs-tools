@@ -24,7 +24,7 @@ import {
   Dialog, DialogTitle, DialogContent, DialogActions, TextField, Tooltip,
 } from "@wso2/oxygen-ui";
 import { ClipboardListIcon, PlusIcon, MessageSquareIcon, ChevronDownIcon, ChevronUpIcon } from "@wso2/oxygen-ui-icons-react";
-import { alpha, useTheme } from "@mui/material/styles";
+import { useTheme, type Theme } from "@mui/material/styles";
 import { useSuccessBanner } from "@context/success-banner/SuccessBannerContext";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import {
@@ -37,7 +37,6 @@ import {
 import CircularLoading from "./CircularLoading";
 import type { ProjectDetail, ProjectHealthStatus, RiskActionItem } from "../api/customerHealthTypes";
 
-const PRIORITY_BORDER: Record<string, string> = { high: "#d32f2f", medium: "#ed6c02", low: "#1976d2" };
 const STATUS_LABELS: Record<string, string> = { open: "Open", in_progress: "In Progress", resolved: "Resolved", cancelled: "Cancelled" };
 
 function getPriorityLabel(priority: string): string {
@@ -61,6 +60,19 @@ function getStatusChipColor(status: string): "warning" | "info" | "success" | "d
     case "resolved": return "success";
     case "cancelled": return "default";
     default: return "default";
+  }
+}
+
+// Mirrors getPriorityChipColor's own error/warning/info mapping, so the
+// card's left-border accent can never disagree with its priority chip's
+// color -- resolved from the theme (not a hardcoded hex) so it adapts
+// correctly between light and dark mode.
+function getPriorityBorderColor(theme: Theme, priority: string): string {
+  switch (getPriorityChipColor(priority)) {
+    case "error": return theme.palette.error.main;
+    case "warning": return theme.palette.warning.main;
+    case "info": return theme.palette.info.main;
+    default: return theme.palette.text.disabled;
   }
 }
 
@@ -183,7 +195,7 @@ function AddActionItemDialog({ open, onClose, accountId, projectsWithOpenRisks, 
         </DialogContent>
         <DialogActions>
           <Button onClick={onClose}>Cancel</Button>
-          <Button onClick={handleCreate} disabled={!canCreate} sx={{ color: "#e96900" }}>Create</Button>
+          <Button onClick={handleCreate} disabled={!canCreate}>Create</Button>
         </DialogActions>
       </Dialog>
     </>
@@ -255,7 +267,7 @@ function InlineCommentThread({ itemId, onCommentPosted }: InlineCommentThreadPro
           value={newComment} onChange={(e) => setNewComment(e.target.value)}
           onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void handlePost(); } }}
         />
-        <Button variant="contained" disabled={!newComment.trim() || createComment.isPending} onClick={handlePost} sx={{ minWidth: 64, flexShrink: 0, bgcolor: "#e96900", "&:hover": { bgcolor: "#c85a00" } }}>
+        <Button variant="contained" disabled={!newComment.trim() || createComment.isPending} onClick={handlePost} sx={{ minWidth: 64, flexShrink: 0 }}>
           {createComment.isPending ? "..." : "Post"}
         </Button>
       </Box>
@@ -387,7 +399,7 @@ export default function ActionItemsSection({
 
       <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1.5 }} flexWrap="wrap">
         <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
-          <Box sx={{ color: "#e96900", display: "inline-flex" }}>
+          <Box sx={{ color: "primary.main", display: "inline-flex" }}>
             <ClipboardListIcon size={20} />
           </Box>
           <Typography variant="h6" fontWeight="bold">Risk Mitigation Action Items</Typography>
@@ -400,7 +412,6 @@ export default function ActionItemsSection({
             <Button
               variant="outlined" startIcon={<PlusIcon size={16} />} onClick={() => setAddOpen(true)}
               disabled={projectsWithOpenRisks.length === 0}
-              sx={{ color: "#e96900", borderColor: "#e96900", ":hover": { bgcolor: alpha("#e96900", 0.12), borderColor: "#e96900" } }}
             >
               Add Action Item
             </Button>
@@ -440,7 +451,7 @@ export default function ActionItemsSection({
       <Stack spacing={1.5}>
         {displayedItems.map((item) => {
           const isMuted = item.status === "resolved" || item.status === "cancelled";
-          const borderColor = PRIORITY_BORDER[item.priority.toLowerCase()] ?? "#9e9e9e";
+          const borderColor = getPriorityBorderColor(theme, item.priority);
 
           return (
             <Paper key={item.id} elevation={1} sx={{ borderLeft: `4px solid ${borderColor}`, overflow: "hidden", opacity: isMuted ? 0.65 : 1 }}>

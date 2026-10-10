@@ -23,6 +23,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/risk"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
@@ -31,38 +32,41 @@ import (
 // fakeRiskClient is a hand-rolled riskClient test double: only the
 // methods a given test needs are set; every other call panics via a nil
 // func, which surfaces immediately as a test failure rather than a silent
-// zero value.
+// zero value. riskID/actionItemID are UUID strings -- entity-service's own
+// primary keys -- not the auto-increment ints the old MySQL-backed client
+// used, and there is no longer an explicit email parameter: entity-service
+// resolves the actor itself from the forwarded x-user-id-token.
 type fakeRiskClient struct {
-	openProjectRisk           func(ctx context.Context, projectSysID, accountSysID, comment, email string) (*risk.ProjectRisk, error)
-	closeProjectRisk          func(ctx context.Context, riskID int, comment, email string) (*risk.ProjectRisk, error)
-	markProjectHealthy        func(ctx context.Context, projectSysID, accountSysID, email string, comment *string) (*risk.HealthStatusRecord, error)
-	revertProjectHealth       func(ctx context.Context, projectSysID, accountSysID string) (*risk.HealthStatusRecord, error)
+	openProjectRisk           func(ctx context.Context, projectSysID, comment string) (*risk.ProjectRisk, error)
+	closeProjectRisk          func(ctx context.Context, riskID, comment string) (*risk.ProjectRisk, error)
+	markProjectHealthy        func(ctx context.Context, projectSysID string, comment *string) (*risk.HealthStatusRecord, error)
+	revertProjectHealth       func(ctx context.Context, projectSysID string) (*risk.HealthStatusRecord, error)
 	getAccountHealthStatus    func(ctx context.Context, accountSysID string) ([]risk.ProjectHealthStatus, error)
 	getAccountHealthSummary   func(ctx context.Context, accountSysID string) (*risk.HealthSummary, error)
 	getProjectRiskHistory     func(ctx context.Context, projectSysID string) ([]risk.ProjectRisk, error)
 	getBatchHealthSummaries   func(ctx context.Context, accountSysIDs []string) (map[string]string, error)
 	getAccountsByHealthStatus func(ctx context.Context, healthStatus string) ([]string, error)
 	initProjectHealthRows     func(ctx context.Context, projectSysIDs []string, accountSysID string) error
-	createActionItem          func(ctx context.Context, riskID int, payload risk.CreateActionItemRequest, email string) (*risk.RiskActionItem, error)
-	updateActionItemStatus    func(ctx context.Context, actionItemID int, newStatus string, resolutionComment *string, email string) (*risk.RiskActionItem, error)
-	updateActionItem          func(ctx context.Context, actionItemID int, payload risk.UpdateActionItemRequest) (*risk.RiskActionItem, error)
-	getActionItemsByRisk      func(ctx context.Context, riskID int, statusFilter *string) ([]risk.RiskActionItem, error)
+	createActionItem          func(ctx context.Context, riskID string, payload risk.CreateActionItemRequest) (*risk.RiskActionItem, error)
+	updateActionItemStatus    func(ctx context.Context, actionItemID, newStatus string, resolutionComment *string) (*risk.RiskActionItem, error)
+	updateActionItem          func(ctx context.Context, actionItemID string, payload risk.UpdateActionItemRequest) (*risk.RiskActionItem, error)
+	getActionItemsByRisk      func(ctx context.Context, riskID string, statusFilter *string) ([]risk.RiskActionItem, error)
 	getActionItemsByAccount   func(ctx context.Context, accountSysID string, projectSysID, statusFilter *string) ([]risk.RiskActionItem, error)
-	createActionItemComment   func(ctx context.Context, actionItemID int, comment, email string) (*risk.ActionItemComment, error)
-	getActionItemComments     func(ctx context.Context, actionItemID int) ([]risk.ActionItemComment, error)
+	createActionItemComment   func(ctx context.Context, actionItemID, comment string) (*risk.ActionItemComment, error)
+	getActionItemComments     func(ctx context.Context, actionItemID string) ([]risk.ActionItemComment, error)
 }
 
-func (f *fakeRiskClient) OpenProjectRisk(ctx context.Context, projectSysID, accountSysID, comment, email string) (*risk.ProjectRisk, error) {
-	return f.openProjectRisk(ctx, projectSysID, accountSysID, comment, email)
+func (f *fakeRiskClient) OpenProjectRisk(ctx context.Context, projectSysID, comment string) (*risk.ProjectRisk, error) {
+	return f.openProjectRisk(ctx, projectSysID, comment)
 }
-func (f *fakeRiskClient) CloseProjectRisk(ctx context.Context, riskID int, comment, email string) (*risk.ProjectRisk, error) {
-	return f.closeProjectRisk(ctx, riskID, comment, email)
+func (f *fakeRiskClient) CloseProjectRisk(ctx context.Context, riskID, comment string) (*risk.ProjectRisk, error) {
+	return f.closeProjectRisk(ctx, riskID, comment)
 }
-func (f *fakeRiskClient) MarkProjectHealthy(ctx context.Context, projectSysID, accountSysID, email string, comment *string) (*risk.HealthStatusRecord, error) {
-	return f.markProjectHealthy(ctx, projectSysID, accountSysID, email, comment)
+func (f *fakeRiskClient) MarkProjectHealthy(ctx context.Context, projectSysID string, comment *string) (*risk.HealthStatusRecord, error) {
+	return f.markProjectHealthy(ctx, projectSysID, comment)
 }
-func (f *fakeRiskClient) RevertProjectHealth(ctx context.Context, projectSysID, accountSysID string) (*risk.HealthStatusRecord, error) {
-	return f.revertProjectHealth(ctx, projectSysID, accountSysID)
+func (f *fakeRiskClient) RevertProjectHealth(ctx context.Context, projectSysID string) (*risk.HealthStatusRecord, error) {
+	return f.revertProjectHealth(ctx, projectSysID)
 }
 func (f *fakeRiskClient) GetAccountHealthStatus(ctx context.Context, accountSysID string) ([]risk.ProjectHealthStatus, error) {
 	return f.getAccountHealthStatus(ctx, accountSysID)
@@ -82,25 +86,25 @@ func (f *fakeRiskClient) GetAccountsByHealthStatus(ctx context.Context, healthSt
 func (f *fakeRiskClient) InitProjectHealthRows(ctx context.Context, projectSysIDs []string, accountSysID string) error {
 	return f.initProjectHealthRows(ctx, projectSysIDs, accountSysID)
 }
-func (f *fakeRiskClient) CreateActionItem(ctx context.Context, riskID int, payload risk.CreateActionItemRequest, email string) (*risk.RiskActionItem, error) {
-	return f.createActionItem(ctx, riskID, payload, email)
+func (f *fakeRiskClient) CreateActionItem(ctx context.Context, riskID string, payload risk.CreateActionItemRequest) (*risk.RiskActionItem, error) {
+	return f.createActionItem(ctx, riskID, payload)
 }
-func (f *fakeRiskClient) UpdateActionItemStatus(ctx context.Context, actionItemID int, newStatus string, resolutionComment *string, email string) (*risk.RiskActionItem, error) {
-	return f.updateActionItemStatus(ctx, actionItemID, newStatus, resolutionComment, email)
+func (f *fakeRiskClient) UpdateActionItemStatus(ctx context.Context, actionItemID, newStatus string, resolutionComment *string) (*risk.RiskActionItem, error) {
+	return f.updateActionItemStatus(ctx, actionItemID, newStatus, resolutionComment)
 }
-func (f *fakeRiskClient) UpdateActionItem(ctx context.Context, actionItemID int, payload risk.UpdateActionItemRequest) (*risk.RiskActionItem, error) {
+func (f *fakeRiskClient) UpdateActionItem(ctx context.Context, actionItemID string, payload risk.UpdateActionItemRequest) (*risk.RiskActionItem, error) {
 	return f.updateActionItem(ctx, actionItemID, payload)
 }
-func (f *fakeRiskClient) GetActionItemsByRisk(ctx context.Context, riskID int, statusFilter *string) ([]risk.RiskActionItem, error) {
+func (f *fakeRiskClient) GetActionItemsByRisk(ctx context.Context, riskID string, statusFilter *string) ([]risk.RiskActionItem, error) {
 	return f.getActionItemsByRisk(ctx, riskID, statusFilter)
 }
 func (f *fakeRiskClient) GetActionItemsByAccount(ctx context.Context, accountSysID string, projectSysID, statusFilter *string) ([]risk.RiskActionItem, error) {
 	return f.getActionItemsByAccount(ctx, accountSysID, projectSysID, statusFilter)
 }
-func (f *fakeRiskClient) CreateActionItemComment(ctx context.Context, actionItemID int, comment, email string) (*risk.ActionItemComment, error) {
-	return f.createActionItemComment(ctx, actionItemID, comment, email)
+func (f *fakeRiskClient) CreateActionItemComment(ctx context.Context, actionItemID, comment string) (*risk.ActionItemComment, error) {
+	return f.createActionItemComment(ctx, actionItemID, comment)
 }
-func (f *fakeRiskClient) GetActionItemComments(ctx context.Context, actionItemID int) ([]risk.ActionItemComment, error) {
+func (f *fakeRiskClient) GetActionItemComments(ctx context.Context, actionItemID string) ([]risk.ActionItemComment, error) {
 	return f.getActionItemComments(ctx, actionItemID)
 }
 
@@ -115,6 +119,20 @@ func (f *fakeSNCustomerHealthClient) GetCustomerHealthSummary(ctx context.Contex
 func (f *fakeSNCustomerHealthClient) GetCustomerHealthDetail(ctx context.Context, accountID string) (*servicenow.AccountDetail, error) {
 	return f.getCustomerHealthDetail(ctx, accountID)
 }
+
+// upstreamErr builds the *apierror.Error a risk.Client method would return
+// for an entity-service refusal: a JSON {"message": "..."} body (the same
+// envelope entity-service's apierror.WriteJSON writes) at the given status.
+func upstreamErr(status int, message string) error {
+	return &apierror.Error{StatusCode: status, Body: `{"message":"` + message + `"}`}
+}
+
+// testRiskID/testActionItemID are well-formed UUIDs for path params that
+// now require uuidRe to match -- entity-service's own primary key shape.
+const (
+	testRiskID       = "11111111-1111-1111-1111-111111111111"
+	testActionItemID = "22222222-2222-2222-2222-222222222222"
+)
 
 func TestCustomerHealthHandler_GetSummary_NoFilterEnrichesFromRisk(t *testing.T) {
 	sn := &fakeSNCustomerHealthClient{
@@ -235,27 +253,27 @@ func TestCustomerHealthHandler_OpenRisk_RejectsMissingSPLAccess(t *testing.T) {
 	assertStatus(t, w, http.StatusForbidden)
 }
 
-func TestCustomerHealthHandler_CloseRisk_ValidationErrorMapsTo400(t *testing.T) {
+func TestCustomerHealthHandler_CloseRisk_UpstreamConflictMapsTo409(t *testing.T) {
 	rc := &fakeRiskClient{
-		closeProjectRisk: func(ctx context.Context, riskID int, comment, email string) (*risk.ProjectRisk, error) {
-			return nil, &risk.ValidationError{Message: "Cannot close risk: 1 action item(s) are still open."}
+		closeProjectRisk: func(ctx context.Context, riskID, comment string) (*risk.ProjectRisk, error) {
+			return nil, upstreamErr(http.StatusConflict, "Cannot close risk: 1 action item(s) are still open.")
 		},
 	}
 	h := NewCustomerHealthHandler(rc, &fakeSNCustomerHealthClient{}, viewerAccessGuard)
 
-	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/risks/7/close", bytes.NewReader([]byte(`{"comment":"done"}`))))
-	req.SetPathValue("riskId", "7")
+	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/risks/"+testRiskID+"/close", bytes.NewReader([]byte(`{"comment":"done"}`))))
+	req.SetPathValue("riskId", testRiskID)
 	w := httptest.NewRecorder()
 	h.CloseRisk(w, req)
 
-	assertStatus(t, w, http.StatusBadRequest)
+	assertStatus(t, w, http.StatusConflict)
 	assertErrorMessage(t, w, "Cannot close risk: 1 action item(s) are still open.")
 }
 
 func TestCustomerHealthHandler_CloseRisk_InvalidRiskIDIs400(t *testing.T) {
 	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, viewerAccessGuard)
-	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/risks/not-a-number/close", bytes.NewReader([]byte(`{}`))))
-	req.SetPathValue("riskId", "not-a-number")
+	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/risks/not-a-uuid/close", bytes.NewReader([]byte(`{}`))))
+	req.SetPathValue("riskId", "not-a-uuid")
 	w := httptest.NewRecorder()
 	h.CloseRisk(w, req)
 	assertStatus(t, w, http.StatusBadRequest)
@@ -279,19 +297,19 @@ func TestCustomerHealthHandler_GetAccountDetail_NotFoundMapsTo404(t *testing.T) 
 
 func TestCustomerHealthHandler_UpdateActionItemStatus_RequiresResolutionComment(t *testing.T) {
 	rc := &fakeRiskClient{
-		updateActionItemStatus: func(ctx context.Context, actionItemID int, newStatus string, resolutionComment *string, email string) (*risk.RiskActionItem, error) {
-			return nil, &risk.ValidationError{Message: "resolutionComment is required when status is 'resolved' or 'cancelled'"}
+		updateActionItemStatus: func(ctx context.Context, actionItemID, newStatus string, resolutionComment *string) (*risk.RiskActionItem, error) {
+			return nil, upstreamErr(http.StatusBadRequest, "resolutionComment is required when status is RESOLVED or CANCELLED")
 		},
 	}
 	h := NewCustomerHealthHandler(rc, &fakeSNCustomerHealthClient{}, viewerAccessGuard)
 
-	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/action-items/5/status", bytes.NewReader([]byte(`{"status":"resolved"}`))))
-	req.SetPathValue("actionItemId", "5")
+	req := withUser(httptest.NewRequest(http.MethodPut, "/spl/customer-health/action-items/"+testActionItemID+"/status", bytes.NewReader([]byte(`{"status":"resolved"}`))))
+	req.SetPathValue("actionItemId", testActionItemID)
 	w := httptest.NewRecorder()
 	h.UpdateActionItemStatus(w, req)
 
 	assertStatus(t, w, http.StatusBadRequest)
-	assertErrorMessage(t, w, "resolutionComment is required when status is 'resolved' or 'cancelled'")
+	assertErrorMessage(t, w, "resolutionComment is required when status is RESOLVED or CANCELLED")
 }
 
 func TestCustomerHealthHandler_InitHealthTracking_Returns202(t *testing.T) {

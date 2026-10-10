@@ -8889,3 +8889,229 @@ type TeamMember struct {
 type GetTeamMembersResponse struct {
 	Members []TeamMember `json:"members"`
 }
+
+// --- customer health risk tracking ---
+//
+// Migrated off a standalone MySQL database (apps/csm-portal/backend's own
+// internal/risk package) -- see migrations/0219_customer_health_risk_tables.sql.
+// project_id/account_id are real foreign keys into project(id)/account(id),
+// resolved server-side from the project/risk record itself rather than
+// accepted from the caller, unlike the old MySQL version's request bodies
+// (which carried an independently-supplied account identifier since the two
+// systems had no real join available).
+
+// ProjectHealthStatusValue enumerates a project's health-review status.
+type ProjectHealthStatusValue string
+
+const (
+	ProjectHealthStatusToBeReviewed ProjectHealthStatusValue = "TO_BE_REVIEWED"
+	ProjectHealthStatusHealthy      ProjectHealthStatusValue = "HEALTHY"
+	ProjectHealthStatusAtRisk       ProjectHealthStatusValue = "AT_RISK"
+)
+
+// ProjectRiskStatus enumerates a project risk record's lifecycle state.
+type ProjectRiskStatus string
+
+const (
+	ProjectRiskStatusOpen   ProjectRiskStatus = "OPEN"
+	ProjectRiskStatusClosed ProjectRiskStatus = "CLOSED"
+)
+
+// RiskActionItemPriority enumerates a risk action item's priority.
+type RiskActionItemPriority string
+
+const (
+	RiskActionItemPriorityHigh   RiskActionItemPriority = "HIGH"
+	RiskActionItemPriorityMedium RiskActionItemPriority = "MEDIUM"
+	RiskActionItemPriorityLow    RiskActionItemPriority = "LOW"
+)
+
+// RiskActionItemStatus enumerates a risk action item's lifecycle state.
+type RiskActionItemStatus string
+
+const (
+	RiskActionItemStatusOpen       RiskActionItemStatus = "OPEN"
+	RiskActionItemStatusInProgress RiskActionItemStatus = "IN_PROGRESS"
+	RiskActionItemStatusResolved   RiskActionItemStatus = "RESOLVED"
+	RiskActionItemStatusCancelled  RiskActionItemStatus = "CANCELLED"
+)
+
+// ProjectHealthStatus is a project's current health-review status (table
+// project_health_status, one row per project).
+type ProjectHealthStatus struct {
+	ID              string                   `json:"id"`
+	ProjectID       string                   `json:"projectId"`
+	AccountID       string                   `json:"accountId"`
+	Status          ProjectHealthStatusValue `json:"status"`
+	ReviewedByEmail *string                  `json:"reviewedByEmail"`
+	ReviewedOn      *string                  `json:"reviewedOn"`
+}
+
+// ProjectRisk is a project's risk record, open or closed, together with its
+// action items (table project_risk).
+type ProjectRisk struct {
+	ID            string            `json:"id"`
+	ProjectID     string            `json:"projectId"`
+	AccountID     string            `json:"accountId"`
+	Status        ProjectRiskStatus `json:"status"`
+	OpenedComment string            `json:"openedComment"`
+	OpenedByEmail string            `json:"openedByEmail"`
+	OpenedOn      string            `json:"openedOn"`
+	ClosedComment *string           `json:"closedComment"`
+	ClosedByEmail *string           `json:"closedByEmail"`
+	ClosedOn      *string           `json:"closedOn"`
+	ActionItems   []RiskActionItem  `json:"actionItems"`
+}
+
+// ProjectHealthWithOpenRisk pairs a project's health status with its
+// currently open risk, if any -- the shape GET
+// /accounts/{id}/project-health-statuses returns one of per project.
+type ProjectHealthWithOpenRisk struct {
+	ProjectID    string              `json:"projectId"`
+	HealthStatus ProjectHealthStatus `json:"healthStatus"`
+	OpenRisk     *ProjectRisk        `json:"openRisk"`
+}
+
+// AccountHealthSummary is an account's aggregated overall health status,
+// derived from its projects' individual health statuses.
+type AccountHealthSummary struct {
+	AccountID     string                   `json:"accountId"`
+	OverallStatus ProjectHealthStatusValue `json:"overallStatus"`
+}
+
+// RiskActionItem is an action item attached to a project risk (table
+// risk_action_item).
+type RiskActionItem struct {
+	ID                string                 `json:"id"`
+	RiskID            string                 `json:"riskId"`
+	ProjectID         string                 `json:"projectId"`
+	AccountID         string                 `json:"accountId"`
+	Title             string                 `json:"title"`
+	Description       *string                `json:"description"`
+	Priority          RiskActionItemPriority `json:"priority"`
+	Status            RiskActionItemStatus   `json:"status"`
+	AssignedToEmail   *string                `json:"assignedToEmail"`
+	DueDate           *string                `json:"dueDate"`
+	ResolutionComment *string                `json:"resolutionComment"`
+	ResolvedByEmail   *string                `json:"resolvedByEmail"`
+	ResolvedOn        *string                `json:"resolvedOn"`
+	CreatedByEmail    string                 `json:"createdByEmail"`
+	CreatedOn         string                 `json:"createdOn"`
+	UpdatedOn         string                 `json:"updatedOn"`
+	CommentCount      int                    `json:"commentCount"`
+}
+
+// ActionItemComment is a comment posted on a risk action item (table
+// action_item_comment).
+type ActionItemComment struct {
+	ID             string `json:"id"`
+	ActionItemID   string `json:"actionItemId"`
+	Comment        string `json:"comment"`
+	CreatedByEmail string `json:"createdByEmail"`
+	CreatedOn      string `json:"createdOn"`
+}
+
+// OpenProjectRiskRequest is the request body for POST /projects/{id}/risk.
+type OpenProjectRiskRequest struct {
+	Comment string `json:"comment"`
+}
+
+// CloseProjectRiskRequest is the request body for PUT /risks/{id}/close.
+type CloseProjectRiskRequest struct {
+	Comment string `json:"comment"`
+}
+
+// MarkProjectHealthyRequest is the request body for POST
+// /projects/{id}/mark-healthy.
+type MarkProjectHealthyRequest struct {
+	Comment *string `json:"comment,omitempty"`
+}
+
+// CreateRiskActionItemRequest is the request body for POST
+// /risks/{id}/action-items. The item's project/account are taken from the
+// risk record itself, not accepted from the caller.
+type CreateRiskActionItemRequest struct {
+	Title           string                 `json:"title"`
+	Description     *string                `json:"description,omitempty"`
+	Priority        RiskActionItemPriority `json:"priority"`
+	AssignedToEmail *string                `json:"assignedToEmail,omitempty"`
+	DueDate         string                 `json:"dueDate"`
+}
+
+// UpdateRiskActionItemStatusRequest is the request body for PUT
+// /action-items/{id}/status.
+type UpdateRiskActionItemStatusRequest struct {
+	Status            RiskActionItemStatus `json:"status"`
+	ResolutionComment *string              `json:"resolutionComment,omitempty"`
+}
+
+// UpdateRiskActionItemRequest is the request body for PUT /action-items/{id}.
+type UpdateRiskActionItemRequest struct {
+	Title           string                 `json:"title"`
+	Description     *string                `json:"description,omitempty"`
+	Priority        RiskActionItemPriority `json:"priority"`
+	AssignedToEmail *string                `json:"assignedToEmail,omitempty"`
+	DueDate         *string                `json:"dueDate,omitempty"`
+}
+
+// CreateActionItemCommentRequest is the request body for POST
+// /action-items/{id}/comments.
+type CreateActionItemCommentRequest struct {
+	Comment string `json:"comment"`
+}
+
+// InitProjectHealthTrackingRequest is the request body for POST
+// /accounts/{id}/init-health-tracking. Seeds a TO_BE_REVIEWED health-status
+// row for every listed project id that doesn't already have one; existing
+// rows are left untouched.
+type InitProjectHealthTrackingRequest struct {
+	ProjectIDs []string `json:"projectIds"`
+}
+
+// BatchAccountHealthSummariesRequest is the request body for POST
+// /accounts/health-summaries/search.
+type BatchAccountHealthSummariesRequest struct {
+	AccountIDs []string `json:"accountIds"`
+}
+
+// BatchAccountHealthSummariesResponse maps each requested account id to its
+// overall health status.
+type BatchAccountHealthSummariesResponse struct {
+	Summaries map[string]ProjectHealthStatusValue `json:"summaries"`
+}
+
+// AccountsByHealthStatusRequest is the request body for POST
+// /accounts/by-health-status/search.
+type AccountsByHealthStatusRequest struct {
+	Status ProjectHealthStatusValue `json:"status"`
+}
+
+// AccountsByHealthStatusResponse lists the account ids matching the
+// requested health status.
+type AccountsByHealthStatusResponse struct {
+	AccountIDs []string `json:"accountIds"`
+}
+
+// GetAccountProjectHealthStatusesResponse is the response for GET
+// /accounts/{id}/project-health-statuses.
+type GetAccountProjectHealthStatusesResponse struct {
+	Projects []ProjectHealthWithOpenRisk `json:"projects"`
+}
+
+// GetProjectRiskHistoryResponse is the response for GET
+// /projects/{id}/risk-history.
+type GetProjectRiskHistoryResponse struct {
+	Risks []ProjectRisk `json:"risks"`
+}
+
+// GetRiskActionItemsResponse is the response for GET
+// /risks/{id}/action-items and GET /accounts/{id}/action-items.
+type GetRiskActionItemsResponse struct {
+	ActionItems []RiskActionItem `json:"actionItems"`
+}
+
+// GetActionItemCommentsResponse is the response for GET
+// /action-items/{id}/comments.
+type GetActionItemCommentsResponse struct {
+	Comments []ActionItemComment `json:"comments"`
+}

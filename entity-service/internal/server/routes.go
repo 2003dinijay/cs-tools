@@ -287,6 +287,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	var teamMemberHandler *handler.TeamMemberHandler
 	var pagingChainHandler *handler.PagingChainHandler
 
+	// Customer-health risk tracking (migration 0219) has no upstream
+	// equivalent either -- it replaces a standalone MySQL database
+	// apps/csm-portal/backend's own internal/risk package used to own. Gated
+	// on db != nil like every other Postgres-only handler here.
+	var customerHealthHandler *handler.CustomerHealthHandler
+
 	accountRepo := repository.NewAccountRepository(repository.NewScoped(db))
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
 
@@ -309,6 +315,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if db != nil {
 		groupDetailHandler = handler.NewGroupDetailHandler(
 			service.NewGroupDetailService(repository.NewGroupDetailRepository(db), accessSvc))
+	}
+
+	if db != nil {
+		customerHealthHandler = handler.NewCustomerHealthHandler(
+			service.NewCustomerHealthService(repository.NewCustomerHealthRepository(db), userRepo))
 	}
 
 	var salesforceEventHandler *handler.SalesforceEventHandler
@@ -1632,6 +1643,25 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /announcement-requests/{id}/updates", announcementRequestHandler.ListAnnouncementRequestUpdates)
 		mux.HandleFunc("POST /announcement-requests/{id}/deliveries", announcementRequestHandler.RecordAnnouncementRequestDeliveries)
 		mux.HandleFunc("GET /announcement-requests/{id}/deliveries", announcementRequestHandler.ListAnnouncementRequestDeliveries)
+	}
+	if customerHealthHandler != nil {
+		mux.HandleFunc("POST /projects/{id}/risk", customerHealthHandler.OpenProjectRisk)
+		mux.HandleFunc("PUT /risks/{id}/close", customerHealthHandler.CloseProjectRisk)
+		mux.HandleFunc("POST /projects/{id}/mark-healthy", customerHealthHandler.MarkProjectHealthy)
+		mux.HandleFunc("POST /projects/{id}/revert-health", customerHealthHandler.RevertProjectHealth)
+		mux.HandleFunc("GET /projects/{id}/risk-history", customerHealthHandler.GetProjectRiskHistory)
+		mux.HandleFunc("GET /accounts/{id}/project-health-statuses", customerHealthHandler.GetAccountProjectHealthStatuses)
+		mux.HandleFunc("GET /accounts/{id}/health-summary", customerHealthHandler.GetAccountHealthSummary)
+		mux.HandleFunc("POST /accounts/health-summaries/search", customerHealthHandler.GetBatchAccountHealthSummaries)
+		mux.HandleFunc("POST /accounts/by-health-status/search", customerHealthHandler.GetAccountsByHealthStatus)
+		mux.HandleFunc("POST /accounts/{id}/init-health-tracking", customerHealthHandler.InitProjectHealthTracking)
+		mux.HandleFunc("POST /risks/{id}/action-items", customerHealthHandler.CreateRiskActionItem)
+		mux.HandleFunc("GET /risks/{id}/action-items", customerHealthHandler.GetActionItemsByRisk)
+		mux.HandleFunc("PUT /action-items/{id}/status", customerHealthHandler.UpdateRiskActionItemStatus)
+		mux.HandleFunc("PUT /action-items/{id}", customerHealthHandler.UpdateRiskActionItem)
+		mux.HandleFunc("GET /accounts/{id}/action-items", customerHealthHandler.GetActionItemsByAccount)
+		mux.HandleFunc("POST /action-items/{id}/comments", customerHealthHandler.CreateActionItemComment)
+		mux.HandleFunc("GET /action-items/{id}/comments", customerHealthHandler.GetActionItemComments)
 	}
 	if savedFilterViewHandler != nil {
 		mux.HandleFunc("GET /users/me/saved-filter-views", savedFilterViewHandler.List)

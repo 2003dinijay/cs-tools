@@ -18,14 +18,13 @@ import { type ChangeEvent, type ReactElement } from "react";
 import { useNavigate } from "react-router";
 import {
   Table, TableBody, TableCell, TableContainer, TableHead, TableRow, Typography, Box,
-  TablePagination, Chip, Button, CircularProgress, Tooltip,
+  TablePagination, Chip, Button, CircularProgress, Skeleton, Tooltip,
 } from "@wso2/oxygen-ui";
-import { DownloadIcon, InfoIcon, CircleAlertIcon } from "@wso2/oxygen-ui-icons-react";
-import { colors, useTheme } from "@wso2/oxygen-ui";
+import { DownloadIcon, InfoIcon } from "@wso2/oxygen-ui-icons-react";
+import { useTheme } from "@wso2/oxygen-ui";
+import QueryErrorState from "@components/QueryErrorState";
 import { useCustomerHealthSummary } from "../api/useCustomerHealthSummary";
 import { TOOLTIP_TEXT, type AccountSummary, type RiskFilterKey } from "../api/customerHealthTypes";
-
-const { green, red, amber } = colors;
 
 type CustomerHealthTableProps = {
   accountScope: "my-accounts" | "all-accounts";
@@ -44,11 +43,13 @@ type CustomerHealthTableProps = {
   exporting: boolean;
 };
 
+const COLUMN_COUNT = 8;
+
 export default function CustomerHealthTable(props: CustomerHealthTableProps): ReactElement {
   const theme = useTheme();
   const navigate = useNavigate();
 
-  const { data, isLoading: loading, isError: error } = useCustomerHealthSummary({
+  const { data, isLoading: loading, isError, error, refetch } = useCustomerHealthSummary({
     offset: props.page * props.rowsPerPage,
     limit: props.rowsPerPage,
     email: props.accountScope === "my-accounts" && props.userEmail ? props.userEmail : "",
@@ -92,15 +93,13 @@ export default function CustomerHealthTable(props: CustomerHealthTableProps): Re
     });
   };
 
-  if (loading) return <CircularProgress size={20} sx={{ mt: 2 }} />;
-
   return (
     <>
       <Box sx={{ my: 2 }}>
         <Typography variant="h6">Accounts Overview</Typography>
       </Box>
       <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1 }}>
-        <Typography variant="caption">
+        <Typography variant="caption" color="text.secondary">
           {totalCount} accounts found
           {props.healthStatus === "at_risk" && " · Filtered by: At Risk"}
           {props.healthStatus === "healthy" && " · Filtered by: Healthy"}
@@ -118,96 +117,96 @@ export default function CustomerHealthTable(props: CustomerHealthTableProps): Re
       </Box>
 
       <Box sx={{ border: 1, borderColor: "divider", borderRadius: 1, overflow: "hidden" }}>
-        <TableContainer sx={{ overflowX: "auto" }}>
-          <Table stickyHeader size="small" aria-label="customer health summary table" sx={{ minWidth: 1200, "& .MuiTableCell-root": { borderColor: "divider" } }}>
+        <TableContainer>
+          <Table size="small" aria-label="customer health summary table" sx={{ tableLayout: "fixed", "& .MuiTableCell-root": { borderColor: "divider" } }}>
             <TableHead>
-              <TableRow>
-                <TableCell
-                  rowSpan={2}
-                  sx={{
-                    verticalAlign: "middle", whiteSpace: "nowrap", position: "sticky", left: 0, zIndex: 4,
-                    backgroundColor: "action.hover", "&.MuiTableCell-stickyHeader": { backgroundColor: theme.palette.action.hover, zIndex: 4 },
-                    borderBottom: `1px solid ${theme.palette.divider}`, boxShadow: "2px 0 4px rgba(0,0,0,0.06)", py: 1.5, px: 2,
-                  }}
-                >
+              <TableRow sx={{ bgcolor: "action.hover" }}>
+                <TableCell rowSpan={2} sx={{ verticalAlign: "middle", width: "15%" }}>
                   Account Name
                 </TableCell>
-                <TableCell
-                  rowSpan={2}
-                  align="center"
-                  sx={{ verticalAlign: "middle", backgroundColor: "action.hover", "&.MuiTableCell-stickyHeader": { backgroundColor: theme.palette.action.hover }, borderBottom: `1px solid ${theme.palette.divider}`, py: 1.5, px: 2 }}
-                >
+                <TableCell rowSpan={2} align="center" sx={{ verticalAlign: "middle", width: "10%" }}>
                   <HeaderTooltip label="Health Status" text={TOOLTIP_TEXT.healthStatus} />
                 </TableCell>
                 <TableCell
                   colSpan={6}
                   align="center"
-                  sx={{ backgroundColor: "action.hover", "&.MuiTableCell-stickyHeader": { backgroundColor: theme.palette.action.hover }, color: "text.secondary", fontWeight: 500, fontSize: "0.72rem", letterSpacing: "1px", textTransform: "uppercase", borderBottom: `1px solid ${theme.palette.divider}`, py: 0.75, px: 2 }}
+                  sx={{ color: "text.secondary", fontWeight: 600, fontSize: "0.72rem", letterSpacing: "1px", textTransform: "uppercase", borderBottom: `1px solid ${theme.palette.divider}` }}
                 >
                   Risk Indicators
                 </TableCell>
               </TableRow>
-              <TableRow>
+              <TableRow sx={{ bgcolor: "action.hover" }}>
                 {[
                   { label: "Has Gone Live", tip: TOOLTIP_TEXT.goLive },
                   { label: "Support Activity (Last 6 Mo)", tip: TOOLTIP_TEXT.support },
                   { label: "Using EOL Products", tip: TOOLTIP_TEXT.eol },
                   { label: "Abandoned Migrations", tip: TOOLTIP_TEXT.abandoned },
                   { label: "Migration Delays", tip: TOOLTIP_TEXT.delays },
-                  { label: "Escalations (Last 3 Mo)", tip: TOOLTIP_TEXT.escalations },
+                  { label: "Escalations\n(Last 3 Mo)", tip: TOOLTIP_TEXT.escalations },
                 ].map(({ label, tip }) => (
-                  <TableCell key={label} align="center" sx={{ whiteSpace: "nowrap", backgroundColor: "action.hover", "&.MuiTableCell-stickyHeader": { backgroundColor: theme.palette.action.hover }, borderBottom: `1px solid ${theme.palette.divider}`, py: 1.5, px: 3 }}>
+                  <TableCell key={label} align="center" sx={{ width: "12.5%" }}>
                     <HeaderTooltip label={label} text={tip} />
                   </TableCell>
                 ))}
               </TableRow>
             </TableHead>
             <TableBody>
-              {error ? (
+              {loading ? (
+                Array.from({ length: props.rowsPerPage }).map((_, i) => (
+                  <TableRow key={i}>
+                    <TableCell>
+                      <Skeleton variant="rounded" width="80%" height={18} />
+                    </TableCell>
+                    <TableCell align="center">
+                      <Skeleton variant="rounded" width={120} height={28} sx={{ mx: "auto" }} />
+                    </TableCell>
+                    {Array.from({ length: 6 }).map((__, c) => (
+                      <TableCell key={c} align="center">
+                        <Skeleton variant="rounded" width={32} height={24} sx={{ mx: "auto" }} />
+                      </TableCell>
+                    ))}
+                  </TableRow>
+                ))
+              ) : isError ? (
                 <TableRow>
-                  <TableCell colSpan={8} sx={{ textAlign: "center", py: 5 }}>
-                    <Box sx={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 1 }}>
-                      <Box sx={{ color: "text.disabled", display: "inline-flex" }}>
-                        <CircleAlertIcon size={40} />
-                      </Box>
-                      <Typography variant="subtitle1" color="textSecondary" fontWeight="bold">
-                        Something happened while fetching the accounts.
-                      </Typography>
-                      <Typography variant="body2" color="textSecondary">
-                        Please refresh the page and try again later.
-                      </Typography>
-                    </Box>
+                  <TableCell colSpan={COLUMN_COUNT} align="center">
+                    <QueryErrorState
+                      message={error instanceof Error && error.message.trim() ? error.message : "Failed to load accounts."}
+                      error={error}
+                      onRetry={() => void refetch()}
+                    />
+                  </TableCell>
+                </TableRow>
+              ) : accounts.length === 0 ? (
+                <TableRow>
+                  <TableCell colSpan={COLUMN_COUNT} align="center" sx={{ py: 4 }}>
+                    <Typography variant="body2" color="text.secondary">
+                      No accounts found matching the criteria.
+                    </Typography>
                   </TableCell>
                 </TableRow>
               ) : (
-                accounts?.map((acc) => (
+                accounts.map((acc) => (
                   <TableRow
                     key={acc.accountSysId}
-                    sx={{ "&:last-child td, &:last-child th": { border: 0 }, cursor: "pointer", "&:hover": { backgroundColor: "action.hover" } }}
+                    hover
+                    sx={{ cursor: "pointer" }}
                     onClick={() => handleAccountTableRowClick(acc)}
                   >
-                    <TableCell component="th" scope="row" sx={{ position: "sticky", left: 0, zIndex: 1, backgroundColor: "background.paper", boxShadow: "2px 0 4px rgba(0,0,0,0.06)", whiteSpace: "nowrap" }}>
-                      <Box
-                        component="span"
-                        sx={(t) => ({
-                          color: t.palette.primary.dark,
-                          ...t.applyStyles("dark", { color: t.palette.primary.main }),
-                          textDecoration: "none",
-                          "&:hover": { textDecoration: "underline" },
-                        })}
-                      >
+                    <TableCell component="th" scope="row" sx={{ maxWidth: 320 }}>
+                      <Typography variant="body2" noWrap color="primary" title={acc.accountName ?? undefined}>
                         {acc.accountName || `Account ID: ${acc.accountSysId.substring(0, 8)}...`}
-                      </Box>
+                      </Typography>
                     </TableCell>
                     <TableCell align="center">
                       <ReviewStatusBadge status={acc.healthStatus} />
                     </TableCell>
-                    <TableCell align="center" sx={{ px: 3 }}><StatusIndicator isRisk={acc.hasNoGoLive.isRisk} state={acc.hasNoGoLive.state} /></TableCell>
-                    <TableCell align="center" sx={{ px: 3 }}><StatusIndicator isRisk={acc.noSupportCases6mo} /></TableCell>
-                    <TableCell align="center" sx={{ px: 3 }}><StatusIndicator isRisk={acc.hasEolProduct} riskShowsYes /></TableCell>
-                    <TableCell align="center" sx={{ px: 3 }}><StatusIndicator isRisk={acc.hasAbandonedMigrations} riskShowsYes /></TableCell>
-                    <TableCell align="center" sx={{ px: 3 }}><StatusIndicator isRisk={acc.hasMigrationDelays} riskShowsYes /></TableCell>
-                    <TableCell align="center" sx={{ px: 3 }}><StatusIndicator isRisk={acc.hasRecentEscalations} riskShowsYes /></TableCell>
+                    <TableCell align="center"><StatusIndicator isRisk={acc.hasNoGoLive.isRisk} state={acc.hasNoGoLive.state} /></TableCell>
+                    <TableCell align="center"><StatusIndicator isRisk={acc.noSupportCases6mo} /></TableCell>
+                    <TableCell align="center"><StatusIndicator isRisk={acc.hasEolProduct} riskShowsYes /></TableCell>
+                    <TableCell align="center"><StatusIndicator isRisk={acc.hasAbandonedMigrations} riskShowsYes /></TableCell>
+                    <TableCell align="center"><StatusIndicator isRisk={acc.hasMigrationDelays} riskShowsYes /></TableCell>
+                    <TableCell align="center"><StatusIndicator isRisk={acc.hasRecentEscalations} riskShowsYes /></TableCell>
                   </TableRow>
                 ))
               )}
@@ -225,37 +224,21 @@ export default function CustomerHealthTable(props: CustomerHealthTableProps): Re
           onRowsPerPageChange={handleChangeRowsPerPage}
           showFirstButton
           showLastButton
-          sx={{
-            borderTop: `1px solid ${theme.palette.divider}`,
-            "& .MuiTablePagination-toolbar": { alignItems: "center", justifyContent: "flex-start", paddingLeft: "16px" },
-            "& .MuiTablePagination-spacer": { display: "none" },
-            "& .MuiTablePagination-selectLabel": { fontSize: "0.875rem", fontWeight: 500, color: "text.primary", margin: "0 8px 0 0" },
-            "& .MuiTablePagination-select": { fontSize: "0.875rem", margin: "0 6px 0 2px", border: "none", borderRadius: "4px", padding: "4px 8px", minWidth: "50px" },
-            "& .MuiTablePagination-displayedRows": { fontSize: "0.875rem", fontWeight: 500, color: "text.primary", margin: "0 12px 0 0" },
-            "& .MuiTablePagination-actions": { marginLeft: "4px" },
-          }}
         />
-        {accounts?.length === 0 && !loading && (
-          <Typography sx={{ p: 3, textAlign: "center" }}>No accounts found matching the criteria.</Typography>
-        )}
       </Box>
     </>
   );
 }
 
 function ReviewStatusBadge({ status }: { status?: string }) {
-  const chipSx = {
-    fontWeight: 600, fontSize: "0.8rem", borderRadius: "16px", backgroundColor: "transparent",
-    border: "2px solid", minWidth: 120, height: 28, "& .MuiChip-label": { px: 1.5, textAlign: "center", width: "100%" },
-  };
   if (!status || status === "to_be_reviewed") {
-    return <Chip label="To Be Reviewed" sx={{ ...chipSx, borderColor: "#E65100", color: "#E65100", "&:hover": { backgroundColor: "transparent" } }} />;
+    return <Chip label="To Be Reviewed" size="small" color="warning" variant="outlined" sx={{ fontWeight: 600, minWidth: 120 }} />;
   }
   if (status === "at_risk") {
-    return <Chip label="At Risk" sx={{ ...chipSx, borderColor: "#C62828", color: "#C62828", "&:hover": { backgroundColor: "transparent" } }} />;
+    return <Chip label="At Risk" size="small" color="error" variant="outlined" sx={{ fontWeight: 600, minWidth: 120 }} />;
   }
   if (status === "healthy") {
-    return <Chip label="Healthy" sx={{ ...chipSx, borderColor: "#2E7D32", color: "#2E7D32", "&:hover": { backgroundColor: "transparent" } }} />;
+    return <Chip label="Healthy" size="small" color="success" variant="outlined" sx={{ fontWeight: 600, minWidth: 120 }} />;
   }
   return null;
 }
@@ -263,34 +246,45 @@ function ReviewStatusBadge({ status }: { status?: string }) {
 // By default the letter answers the positively-phrased column label (e.g. "Has Gone
 // Live"): a risk shows "N". For columns phrased as the risk condition itself (e.g.
 // "Using EOL Products"), pass riskShowsYes so a risk shows "Y" instead - the color
-// (red on risk, green otherwise) never changes, only which letter reflects that state.
+// (error on risk, success otherwise) never changes, only which letter reflects that state.
 function StatusIndicator({ isRisk, state, riskShowsYes = false }: { isRisk: boolean; state?: string; riskShowsYes?: boolean }) {
   if (!isRisk && state === "pending") {
     return (
       <Tooltip title="Not Live Yet" arrow placement="top">
-        <Chip label="P" size="small" sx={{ backgroundColor: amber[600], color: "#fff", fontWeight: 700, minWidth: 32 }} />
+        <Chip label="P" size="small" color="warning" sx={{ fontWeight: 700, minWidth: 32 }} />
       </Tooltip>
     );
   }
 
   if (state === "failure" || isRisk === true) {
-    return <Chip label={riskShowsYes ? "Y" : "N"} size="small" sx={{ backgroundColor: red[500], color: "#fff", fontWeight: 700, minWidth: 32 }} />;
+    return <Chip label={riskShowsYes ? "Y" : "N"} size="small" color="error" sx={{ fontWeight: 700, minWidth: 32 }} />;
   }
 
-  return <Chip label={riskShowsYes ? "N" : "Y"} size="small" sx={{ backgroundColor: green[500], color: "#fff", fontWeight: 700, minWidth: 32 }} />;
+  return <Chip label={riskShowsYes ? "N" : "Y"} size="small" color="success" sx={{ fontWeight: 700, minWidth: 32 }} />;
 }
 
+// Renders as plain inline content (no flex row) so the label can wrap onto a
+// second line within a narrow column instead of forcing the table to scroll
+// horizontally -- the info icon is just the last inline "word", so it wraps
+// along with the label text rather than pinning the column to one line. A
+// "\n" in label forces a break at that exact point (e.g. "Escalations" /
+// "(Last 3 Mo)") rather than leaving it to the browser's own word-wrap.
 function HeaderTooltip({ label, text }: { label: string; text: string }) {
+  const lines = label.split("\n");
   return (
-    <Box component="span" sx={{ display: "inline-flex", alignItems: "center", gap: "4px", verticalAlign: "middle", whiteSpace: "nowrap" }}>
-      <Typography component="span" sx={{ fontWeight: 600, fontSize: "0.85rem", color: "text.primary" }}>
-        {label}
-      </Typography>
+    <Typography component="span" variant="body2" sx={{ fontWeight: 600, whiteSpace: "normal", lineHeight: 1.3 }}>
+      {lines.map((line, i) => (
+        <span key={i}>
+          {i > 0 && <br />}
+          {line}
+          {i === lines.length - 1 && " "}
+        </span>
+      ))}
       <Tooltip title={text} arrow placement="top">
-        <Box component="span" sx={{ display: "inline-flex", color: "text.secondary", cursor: "help", "&:hover": { color: "text.primary" } }}>
-          <InfoIcon size={16} />
+        <Box component="span" sx={{ display: "inline-flex", verticalAlign: "middle", color: "text.secondary", cursor: "help", "&:hover": { color: "text.primary" } }}>
+          <InfoIcon size={14} />
         </Box>
       </Tooltip>
-    </Box>
+    </Typography>
   );
 }
