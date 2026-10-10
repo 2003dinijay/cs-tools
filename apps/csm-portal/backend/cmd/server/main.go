@@ -231,12 +231,16 @@ func main() {
 		ClientID:     oauth2ClientID,
 		ClientSecret: oauth2ClientSecret,
 	})
+	// The ServiceNow host/credentials/escalation-template config this used
+	// to read (SERVICENOW_HOST/USERNAME/PASSWORD/ESCALATION_TEMPLATE_ID) is
+	// gone -- this integration is being phased out, not just made optional,
+	// so there's no deployment this should ever read real values for. Every
+	// route still wired to snClient (abt-teams, case attachments, account
+	// escalations, the ServiceNow-sourced half of customer-health) always
+	// fails its own call now, the same mapped-upstream-error path as any
+	// other upstream failure -- see loadViewerConfig's own doc comment.
 	snClient := servicenow.NewClient(servicenow.Config{
-		BaseURL:              viewerCfg.snHost,
-		Username:             viewerCfg.snUsername,
-		Password:             viewerCfg.snPassword,
-		EscalationTemplateID: viewerCfg.snEscalationTemplateID,
-		TeamScheduleURL:      viewerCfg.teamScheduleURL,
+		TeamScheduleURL: viewerCfg.teamScheduleURL,
 	})
 	driveClient := googledrive.NewClient(googledrive.Config{
 		ClientID:     viewerCfg.driveClientID,
@@ -280,7 +284,6 @@ func main() {
 		accountEsc:     handler.NewViewerAccountHandler(snClient, accessGuard),
 	}
 	slog.Info("viewer-access endpoints registered",
-		"serviceNowConfigured", viewerCfg.snHost != "",
 		"googleDriveConfigured", viewerCfg.driveClientID != "",
 		"salesEntityConfigured", viewerCfg.salesEntityBaseURL != "")
 
@@ -1410,28 +1413,28 @@ type viewerHandlerSet struct {
 }
 
 // viewerConfig holds every environment value SupportPortalLite's /spl/*
-// endpoints need, resolved by loadViewerConfig.
+// endpoints need, resolved by loadViewerConfig. There is deliberately no
+// ServiceNow host/credential/escalation-template config here any more (see
+// loadViewerConfig) -- snClient is always constructed with none of those
+// set, so every route still backed by it fails its own call at request
+// time rather than this file ever reading real ServiceNow credentials.
 type viewerConfig struct {
-	snHost                 string
-	snUsername             string
-	snPassword             string
-	snEscalationTemplateID string
-	teamScheduleURL        string
-	driveClientID          string
-	driveClientSecret      string
-	driveRefreshToken      string
-	salesEntityBaseURL     string
+	teamScheduleURL    string
+	driveClientID      string
+	driveClientSecret  string
+	driveRefreshToken  string
+	salesEntityBaseURL string
 }
 
 // loadViewerConfig resolves SupportPortalLite's upstream configuration.
 // Every value is independently optional (os.Getenv, not mustEnv) -- there
 // used to be a single SPL_ENABLED flag that made every value below required
 // (mustEnv) and gated this whole handler bundle on or off together, which
-// meant a deployment with no real ServiceNow/Google Drive/sales-entity
-// credentials (e.g. a dev environment) couldn't register even the
-// endpoints that don't need any of them (customer-health's risk-tracking
-// writes, usage metrics, user-info, the product list -- all entity-service
-// only). An explicitly-set value is still validated the same as before
+// meant a deployment with no real Google Drive/sales-entity credentials
+// (e.g. a dev environment) couldn't register even the endpoints that don't
+// need any of them (customer-health's risk-tracking writes, usage metrics,
+// user-info, the product list -- all entity-service only). An
+// explicitly-set value is still validated the same as before
 // (mustHTTPSBaseURL still exits on a malformed URL -- that's a real
 // misconfiguration, not "feature absent"); only unset values now default to
 // empty instead of failing startup. A handler whose upstream is left empty
@@ -1439,27 +1442,33 @@ type viewerConfig struct {
 // same way any other upstream failure is handled (mapUpstreamErrorGeneric),
 // rather than making the whole route 404.
 //
-// SERVICENOW_*, GOOGLE_DRIVE_*, and the entity vars below have no SPL_
-// prefix: they aren't SPL-specific concepts (ServiceNow, Google Drive, and
-// the sales-side entity service are just this feature's own upstreams) so
-// they follow this file's existing convention of naming a service's own
-// credentials after the service, not the caller. See .env.example for what
-// each variable configures. Customer-health risk tracking used to need its
-// own SPL_RISK_MYSQL_DSN here (a standalone MySQL database); that's gone
-// now that migration 0219 moved those tables into entity-service's own
+// ServiceNow host/username/password/escalation-template config
+// (SERVICENOW_HOST/USERNAME/PASSWORD/ESCALATION_TEMPLATE_ID) is gone
+// entirely, not just made optional: that integration is being phased out,
+// so there's no deployment this should ever read real values for --
+// snClient (main) is always constructed with none of it set, and every
+// route still wired to it (abt-teams, case attachments, account
+// escalations, the ServiceNow-sourced half of customer-health) always
+// fails its own call now. TEAM_SCHEDULE_URL is kept (it's a plain display
+// URL, not a ServiceNow credential, and is still read independently).
+//
+// GOOGLE_DRIVE_* and the entity vars below have no SPL_ prefix: they
+// aren't SPL-specific concepts (Google Drive and the sales-side entity
+// service are just this feature's own upstreams) so they follow this
+// file's existing convention of naming a service's own credentials after
+// the service, not the caller. See .env.example for what each variable
+// configures. Customer-health risk tracking used to need its own
+// SPL_RISK_MYSQL_DSN here (a standalone MySQL database); that's gone now
+// that migration 0219 moved those tables into entity-service's own
 // Postgres, so risk.NewClient just wraps the already-constructed
 // customerEntityClient instead.
 func loadViewerConfig() viewerConfig {
 	return viewerConfig{
-		snHost:                 optionalHTTPSBaseURL("SERVICENOW_HOST"),
-		snUsername:             os.Getenv("SERVICENOW_USERNAME"),
-		snPassword:             os.Getenv("SERVICENOW_PASSWORD"),
-		snEscalationTemplateID: os.Getenv("SERVICENOW_ESCALATION_TEMPLATE_ID"),
-		teamScheduleURL:        os.Getenv("TEAM_SCHEDULE_URL"),
-		driveClientID:          os.Getenv("GOOGLE_DRIVE_CLIENT_ID"),
-		driveClientSecret:      os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET"),
-		driveRefreshToken:      os.Getenv("GOOGLE_DRIVE_REFRESH_TOKEN"),
-		salesEntityBaseURL:     optionalHTTPSBaseURL("SALES_ENTITY_BASE_URL"),
+		teamScheduleURL:    os.Getenv("TEAM_SCHEDULE_URL"),
+		driveClientID:      os.Getenv("GOOGLE_DRIVE_CLIENT_ID"),
+		driveClientSecret:  os.Getenv("GOOGLE_DRIVE_CLIENT_SECRET"),
+		driveRefreshToken:  os.Getenv("GOOGLE_DRIVE_REFRESH_TOKEN"),
+		salesEntityBaseURL: optionalHTTPSBaseURL("SALES_ENTITY_BASE_URL"),
 	}
 }
 
