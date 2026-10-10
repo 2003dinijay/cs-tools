@@ -8401,19 +8401,26 @@ Rules the query implements (all in `announcement_registry_repo.go`):
 - Batch fields come from the request (creator email, else creator id; the request's timestamps;
   `resolved_project_count`, else the number of published ids; security flag from
   `announcement_type`). Case rows carry the case's own fields with the state lower-cased.
-- An offset past the last row runs one extra COUNT, since no returned row can carry the total.
+- The total comes from the same statement (a `tot` CTE left-joined to the page), so an empty page, from an offset past the end or a search with no hits, still returns one row that carries the total and no extra query runs. `hasMore` is never true for an empty page.
+- The repository refuses any scope that is not `Unrestricted` with a `ForbiddenError`, in addition to the service and route checks.
 
 Cost: the statement reads every matching case and every published request's id list once, so it
 is linear in announcements plus published members and does not depend on the offset. Measured on
-75,000 announcement cases and 1,200 published requests of 50 members (16,200 rows) it took about
-230 ms for page 0 and for offset 20,000 alike, with `work_mem` at 4 MB and the two sorts
-spilling about 3 to 5 MB. No index is needed or added: the one dominant step is the sort over
-the member list, which no index on these tables can avoid.
+75,000 announcement cases and 1,200 published requests of 50 members (16,200 rows), as a role
+without BYPASSRLS and `work_mem` at 4 MB, it takes about 210 ms for page 0 and for deep or past-the-end
+offsets alike. The `OFFSET 0` inside the `owners` lateral subquery is a deliberate planner fence: it makes
+the strict UUID check (regex plus cast) run once per published id instead of for the filter and again for
+the sort key (about 310 ms before). The strict regex stays on purpose: `pg_input_is_valid` would also
+accept braced and hyphen-less ids and change which cases group. No index is needed or added: what is
+left is the sort over the unnested member ids, which no index on these tables avoids.
 
 Tests: `announcement_registry_rows_integration_test.go` (needs
 `ANNOUNCEMENT_VISIBILITY_TEST_DSN`, skipped without it) ports the old client-side grouping as an
 oracle and requires identical rows, order, total and members across filters and pages, plus the
-member rule, the two-owners rule, a 12,500-announcement volume case and the 403.
+member rule, the two-owners rule, a 12,500-announcement volume case, an empty-page total check and the 403. Assertions are scoped to
+the tests' own seeded projects, so they hold on a database that already holds other announcements
+(only the pre-existing paged-search equivalence test depends on the total announcement count staying
+under the old 10,000 cap).
 
 ## POST /users/search sortBy on the Postgres data source
 

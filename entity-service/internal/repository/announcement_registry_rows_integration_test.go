@@ -48,6 +48,10 @@ const (
 	rrMarker    = "registry-rows-test"
 )
 
+// rrMixProjects scopes assertions to the mix seed's own cases, so they hold on a
+// database that already holds other announcements.
+var rrMixProjects = []string{rrProjectA, rrProjectB, rrProjectC}
+
 func rrCaseID(i int) string { return fmt.Sprintf("7e1%05d-0000-4000-8000-%012d", i, i) }
 func rrReqID(i int) string  { return fmt.Sprintf("7e2%05d-0000-4000-8000-%012d", i, i) }
 
@@ -368,7 +372,7 @@ func TestAnnouncementRegistryRowsParityWithGoGroupingIntegration(t *testing.T) {
 		kinds := map[string]int{}
 		total := 0
 		for offset := 0; offset < 60; offset += 30 {
-			got, err := repo.SearchAnnouncementRegistryRows(ctx, rrRequestFor("", nil, nil, offset, 30), scope)
+			got, err := repo.SearchAnnouncementRegistryRows(ctx, rrRequestFor("", nil, rrMixProjects, offset, 30), scope)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -424,7 +428,7 @@ func TestAnnouncementRegistryRowsFilterKeepsAllMembersIntegration(t *testing.T) 
 	}
 
 	// The gaps request: missing and malformed ids are skipped, order kept.
-	all, err := repo.SearchAnnouncementRegistryRows(ctx, rrRequestFor("", nil, nil, 0, 50), scope)
+	all, err := repo.SearchAnnouncementRegistryRows(ctx, rrRequestFor("", nil, rrMixProjects, 0, 50), scope)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -456,7 +460,7 @@ func TestAnnouncementRegistryRowsCaseInTwoPublishedRequestsIntegration(t *testin
 
 	// Case 4 is listed by request 1 (newer) and request 6 (older). A search
 	// matching ONLY case 4 returns exactly one row, owned by request 6.
-	req := rrRequestFor("announcement 04", nil, nil, 0, 50)
+	req := rrRequestFor("announcement 04", nil, rrMixProjects, 0, 50)
 	for run := 0; run < 3; run++ {
 		got, err := repo.SearchAnnouncementRegistryRows(ctx, req, scope)
 		if err != nil {
@@ -472,14 +476,14 @@ func TestAnnouncementRegistryRowsCaseInTwoPublishedRequestsIntegration(t *testin
 	for _, id := range []string{rrReqID(11), rrReqID(12)} {
 		rrInsertRequest(t, pool, rrRequest{id: id, state: "published", subject: "regtest tie " + id, createdAt: tie, updatedAt: tie, members: []string{rrCaseID(50)}})
 	}
-	got, err := repo.SearchAnnouncementRegistryRows(ctx, rrRequestFor("announcement 50", nil, nil, 0, 50), scope)
+	got, err := repo.SearchAnnouncementRegistryRows(ctx, rrRequestFor("announcement 50", nil, rrMixProjects, 0, 50), scope)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got.Total != 1 || got.Rows[0].AnnouncementRequestID != rrReqID(12) {
 		t.Fatalf("created_on tie: want request %s (greater id) to own the case, got %s", rrReqID(12), rrJSON(t, got))
 	}
-	want := rrOracle(t, pool, rrRequestFor("announcement 50", nil, nil, 0, 50), 0, 50)
+	want := rrOracle(t, pool, rrRequestFor("announcement 50", nil, rrMixProjects, 0, 50), 0, 50)
 	if g, w := rrJSON(t, got), rrJSON(t, want); g != w {
 		t.Fatalf("tie rule differs from the Go grouping\n--- got\n%s\n--- want\n%s", g, w)
 	}
@@ -497,7 +501,7 @@ func TestAnnouncementRegistryRowsVolumeIntegration(t *testing.T) {
 
 	const cases, requests, perRequest = 12500, 500, 20 // 10,000 batched cases in 500 batches, 2,500 bare
 	vid := func(expr string) string {
-		return fmt.Sprintf(`('7f' || lpad(to_hex(%[1]s), 6, '0') || '-0000-4000-8000-' || lpad(to_hex(%[1]s), 12, '0'))::uuid`, expr)
+		return fmt.Sprintf(`('7d' || lpad(to_hex(%[1]s), 6, '0') || '-0000-4000-8000-' || lpad(to_hex(%[1]s), 12, '0'))::uuid`, expr)
 	}
 	if _, err := scoped.Exec(ctx, fmt.Sprintf(`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type, project_id)
 		SELECT %s, now() - interval '30 days', now() - ((i * 7919) %% 100000) * interval '1 second', 'jane.doe@example.com', 'test',
@@ -511,7 +515,7 @@ func TestAnnouncementRegistryRowsVolumeIntegration(t *testing.T) {
 		t.Fatalf("seed volume announcement: %v", err)
 	}
 	if _, err := pool.Exec(ctx, fmt.Sprintf(`INSERT INTO announcement_requests (id, kind, state, subject, created_by, created_on, updated_on, published_case_ids)
-		SELECT ('7e3' || lpad(to_hex(r), 5, '0') || '-0000-4000-8000-' || lpad(to_hex(r), 12, '0'))::uuid, 'customer', 'published',
+		SELECT ('7d3' || lpad(to_hex(r), 5, '0') || '-0000-4000-8000-' || lpad(to_hex(r), 12, '0'))::uuid, 'customer', 'published',
 		       'regtest volume batch ' || r, $1, now() - r * interval '1 minute', now() - r * interval '1 minute',
 		       (SELECT jsonb_agg(%s ORDER BY k) FROM generate_series(0, $3 - 1) AS k)
 		FROM generate_series(0, $2 - 1) AS r`, vid("(r * $3 + k)")), rrMarker, requests, perRequest); err != nil {
@@ -568,7 +572,7 @@ func TestAnnouncementRegistryRowsWireShapeIntegration(t *testing.T) {
 	repo := repository.NewAnnouncementRegistryRepository(repository.NewScoped(pool))
 	h := handler.NewAnnouncementRegistryHandler(service.NewAnnouncementRegistryService(repo, rrUnrestrictedAccess{}))
 
-	body := `{"filters":{"searchQuery":"announcement 0"},"pagination":{"offset":0,"limit":3}}`
+	body := `{"filters":{"searchQuery":"announcement 0","filters":[{"field":"projectId","op":"in","values":["` + strings.Join(rrMixProjects, `","`) + `"]}]},"pagination":{"offset":0,"limit":3}}`
 	rec := httptest.NewRecorder()
 	h.SearchRegistryRows(rec, httptest.NewRequest(http.MethodPost, "/announcements/registry/rows", strings.NewReader(body)))
 	if rec.Code != http.StatusOK {
@@ -624,4 +628,40 @@ type rrUnrestrictedAccess struct{}
 
 func (rrUnrestrictedAccess) ResolveScope(context.Context) (service.AccessScope, error) {
 	return service.AccessScope{Unrestricted: true}, nil
+}
+
+// An empty page (offset past the end, or a search with no hits) still carries
+// the total from the same statement, and hasMore is never true with no rows.
+func TestAnnouncementRegistryRowsEmptyPageCarriesTotalIntegration(t *testing.T) {
+	pool := announcementVisibilityPool(t)
+	rrSeedBase(t, pool)
+	rrSeedMix(t, pool)
+	ctx := repository.WithSystemIdentity(context.Background())
+	repo := repository.NewAnnouncementRegistryRepository(repository.NewScoped(pool))
+	scope := repository.SearchScope{Unrestricted: true}
+
+	for _, offset := range []int{51, 52, 500, 100000} {
+		got, err := repo.SearchAnnouncementRegistryRows(ctx, rrRequestFor("", nil, rrMixProjects, offset, 20), scope)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(got.Rows) != 0 || got.Total != 51 || got.HasMore || got.Offset != offset || got.Limit != 20 {
+			t.Fatalf("offset %d: want no rows, total 51, hasMore false; got %s", offset, rrJSON(t, got))
+		}
+	}
+	got, err := repo.SearchAnnouncementRegistryRows(ctx, rrRequestFor("no-such-registry-text", nil, rrMixProjects, 0, 20), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Rows) != 0 || got.Total != 0 || got.HasMore {
+		t.Fatalf("zero-hit search: %s", rrJSON(t, got))
+	}
+	// Last page: exactly at the boundary, hasMore flips to false.
+	got, err = repo.SearchAnnouncementRegistryRows(ctx, rrRequestFor("", nil, rrMixProjects, 50, 20), scope)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Rows) != 1 || got.Total != 51 || got.HasMore {
+		t.Fatalf("last page: %s", rrJSON(t, got))
+	}
 }

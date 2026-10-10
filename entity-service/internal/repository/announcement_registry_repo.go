@@ -23,6 +23,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
@@ -158,8 +159,7 @@ const registryUUIDPattern = `^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a
 // raises on a non-array).
 const registryPublishedCaseIDsArray = `CASE WHEN jsonb_typeof(ar.published_case_ids) = 'array' THEN ar.published_case_ids ELSE '[]'::jsonb END`
 
-// registryGroupsCTE is the shared head of the page and count queries. Its
-// final CTE, firsts, holds one row per registry row (id and updated_on of the
+// registryGroupsCTE is the head of the page query. Its final CTE, firsts, holds one row per registry row (id and updated_on of the
 // group's first matching case, request_id when the group is a batch).
 // %[1]s is caseSearchJoins and %[2]s the WHERE of the matching cases.
 //
@@ -176,6 +176,11 @@ const registryPublishedCaseIDsArray = `CASE WHEN jsonb_typeof(ar.published_case_
 // exactly that case per group and the page query orders by it. Same order,
 // stated without a loop.
 //
+// The OFFSET 0 in owners is an optimisation fence, not a limit: it stops the
+// planner pulling the subquery up, so the regex check and uuid cast run once
+// per published id. Without it the CASE is inlined and evaluated again for the
+// IS NOT NULL filter and for the sort key.
+//
 // matched stays narrow (id, updated_on): it is the only part that scales with
 // the number of announcements, and the page's display columns are joined back
 // for the few rows returned.
@@ -189,6 +194,7 @@ WITH matched AS (
 	CROSS JOIN LATERAL (
 		SELECT CASE WHEN e.cid ~ '` + registryUUIDPattern + `' THEN e.cid::uuid END AS case_id
 		FROM jsonb_array_elements_text(` + registryPublishedCaseIDsArray + `) AS e(cid)
+		OFFSET 0
 	) m
 	WHERE ar.state = 'published' AND m.case_id IS NOT NULL
 	ORDER BY m.case_id, ar.created_on, ar.id DESC
@@ -207,6 +213,12 @@ func (r *announcementRegistryRepo) SearchAnnouncementRegistryRows(ctx context.Co
 	if len(req.Parsed.Types) != 1 || !strings.EqualFold(req.Parsed.Types[0], "announcement") {
 		return domain.SearchAnnouncementRegistryRowsResponse{}, fmt.Errorf("announcement registry search requires a type filter of exactly announcement, got %v", req.Parsed.Types)
 	}
+	// Internal callers only. The service already enforces this; the repository
+	// refuses on its own too, so a future caller that skips the service cannot
+	// read the registry with a customer scope.
+	if !scope.Unrestricted {
+		return domain.SearchAnnouncementRegistryRowsResponse{}, &apierror.ForbiddenError{Msg: "the announcement registry is only available to internal callers"}
+	}
 	ctx = WithCallerIdentity(ctx, scope)
 	where, args, argIdx, err := buildCaseSearchWhere(req, scope)
 	if err != nil {
@@ -214,20 +226,23 @@ func (r *announcementRegistryRepo) SearchAnnouncementRegistryRows(ctx context.Co
 	}
 	head := fmt.Sprintf(registryGroupsCTE, caseSearchJoins, where)
 
-	pageQuery := head + fmt.Sprintf(`, page AS (
-	SELECT id, updated_on, request_id, COUNT(*) OVER () AS total
+	pageQuery := head + fmt.Sprintf(`, tot AS (
+	SELECT COUNT(*) AS total FROM firsts
+), page AS (
+	SELECT id, updated_on, request_id
 	FROM firsts
 	ORDER BY updated_on DESC NULLS LAST, id
 	LIMIT $%d OFFSET $%d
 )
-SELECT page.total, page.request_id,
+SELECT tot.total, page.id, page.request_id,
        req.subject, req.created_by, req.created_by_email, req.created_on, req.updated_on,
        req.resolved_project_count, req.announcement_type::TEXT,
        jsonb_array_length(CASE WHEN jsonb_typeof(req.published_case_ids) = 'array' THEN req.published_case_ids ELSE '[]'::jsonb END),
        wi.id, wi.number, wi.wso2_id, wi.subject, `+caseLikeStateColumn+`,
        wi.created_on, wi.updated_on, wi.created_by, p.name
-FROM page
-JOIN work_item wi ON wi.id = page.id
+FROM tot
+LEFT JOIN page ON TRUE
+LEFT JOIN work_item wi ON wi.id = page.id
 %s
 LEFT JOIN announcement_requests req ON req.id = page.request_id
 ORDER BY page.updated_on DESC NULLS LAST, page.id`, argIdx, argIdx+1, caseSearchJoins)
@@ -249,21 +264,21 @@ ORDER BY page.updated_on DESC NULLS LAST, page.id`, argIdx, argIdx+1, caseSearch
 	for rows.Next() {
 		var (
 			total                              int
-			requestID                          *string
+			pageID, requestID                  *string
 			reqSubject, reqCreatedBy, reqEmail *string
 			reqCreatedOn, reqUpdatedOn         *time.Time
 			reqProjectCount                    *int
 			reqType                            *string
 			reqMemberCount                     *int
-			caseID, number                     string
+			caseID, number                     *string
 			wso2ID                             *string
 			subject                            *string
 			state                              *string
-			createdOn, updatedOn               time.Time
-			creator                            string
+			createdOn, updatedOn               *time.Time
+			creator                            *string
 			projectName                        *string
 		)
-		if err := rows.Scan(&total, &requestID,
+		if err := rows.Scan(&total, &pageID, &requestID,
 			&reqSubject, &reqCreatedBy, &reqEmail, &reqCreatedOn, &reqUpdatedOn,
 			&reqProjectCount, &reqType, &reqMemberCount,
 			&caseID, &number, &wso2ID, &subject, &state,
@@ -271,6 +286,10 @@ ORDER BY page.updated_on DESC NULLS LAST, page.id`, argIdx, argIdx+1, caseSearch
 			return resp, fmt.Errorf("scan announcement registry row: %w", err)
 		}
 		resp.Total = total
+		// An empty page still yields one row, carrying only the total.
+		if pageID == nil {
+			continue
+		}
 		if requestID != nil {
 			row := domain.AnnouncementRegistryRow{
 				Kind:                   domain.AnnouncementRegistryRowKindBatch,
@@ -301,11 +320,11 @@ ORDER BY page.updated_on DESC NULLS LAST, page.id`, argIdx, argIdx+1, caseSearch
 		row := domain.AnnouncementRegistryRow{
 			Kind:        domain.AnnouncementRegistryRowKindCase,
 			Subject:     stringOrEmpty(subject),
-			CreatedBy:   creator,
-			CreatedOn:   createdOn.UTC().Format(time.RFC3339),
-			UpdatedOn:   updatedOn.UTC().Format(time.RFC3339),
-			CaseID:      caseID,
-			CaseNumber:  number,
+			CreatedBy:   stringOrEmpty(creator),
+			CreatedOn:   timeOrEmpty(createdOn),
+			UpdatedOn:   timeOrEmpty(updatedOn),
+			CaseID:      *pageID,
+			CaseNumber:  stringOrEmpty(number),
 			WSO2CaseID:  stringOrEmpty(wso2ID),
 			ProjectName: stringOrEmpty(projectName),
 		}
@@ -319,14 +338,8 @@ ORDER BY page.updated_on DESC NULLS LAST, page.id`, argIdx, argIdx+1, caseSearch
 	}
 	rows.Close()
 
-	// An offset past the last row returns no row to carry the window total.
-	if len(resp.Rows) == 0 {
-		countQuery := head + ` SELECT COUNT(*) FROM firsts`
-		if err := r.db.QueryRow(ctx, countQuery, args...).Scan(&resp.Total); err != nil {
-			return resp, fmt.Errorf("count announcement registry rows: %w", err)
-		}
-	}
-	resp.HasMore = resp.Offset+len(resp.Rows) < resp.Total
+	// Never true for an empty page, whatever the offset and total.
+	resp.HasMore = len(resp.Rows) > 0 && resp.Offset+len(resp.Rows) < resp.Total
 
 	if len(batchIDs) > 0 {
 		if err := r.fillBatchMembers(ctx, scope, batchIDs, batchIdx, resp.Rows); err != nil {
@@ -379,4 +392,12 @@ ORDER BY ar.id, mem.ord`
 		return fmt.Errorf("iterate announcement registry batch members: %w", err)
 	}
 	return nil
+}
+
+// timeOrEmpty formats t as RFC 3339 UTC, or "" for a NULL.
+func timeOrEmpty(t *time.Time) string {
+	if t == nil {
+		return ""
+	}
+	return t.UTC().Format(time.RFC3339)
 }
