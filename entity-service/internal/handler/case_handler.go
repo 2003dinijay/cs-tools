@@ -348,6 +348,28 @@ func (h *CaseHandler) GetAttachmentByID(w http.ResponseWriter, r *http.Request) 
 	_ = json.NewEncoder(w).Encode(resp)
 }
 
+// GetAttachmentParentCase handles GET /attachments/{id}/case: resolves an
+// attachment to its own parent case, via the same h.svc both calls below
+// share -- so when this is attachmentReadHandler (AttachmentDataSource's
+// read-only ServiceNow delegate, see routes.go), the attachment lookup and
+// its case lookup are always sourced consistently with each other, unlike a
+// caller doing the two lookups itself against two separately-data-sourced
+// routes (GET /attachments/{id} here vs the general GET /cases/{id}).
+func (h *CaseHandler) GetAttachmentParentCase(w http.ResponseWriter, r *http.Request) {
+	attachment, err := h.svc.GetAttachmentByID(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	c, err := h.svc.GetCaseByID(r.Context(), attachment.ReferenceID)
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(c)
+}
+
 // UpdateAttachment handles PATCH /attachments/{id}.
 func (h *CaseHandler) UpdateAttachment(w http.ResponseWriter, r *http.Request) {
 	var req domain.UpdateAttachmentRequest

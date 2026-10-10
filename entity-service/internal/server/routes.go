@@ -823,12 +823,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		snSLASearchDelegate = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
 	}
 
-	// snAttachmentDelegate, when non-nil, backs three attachment reads (GET
+	// snAttachmentDelegate, when non-nil, backs four attachment reads (GET
 	// /attachments/{id}, POST /attachments/search, GET
-	// /attachments/{id}/content) instead of activeAttachmentSvc, and the
-	// case activity feed (POST /cases/{id}/activities/search) instead of
-	// activeCaseSvc -- see attachmentReadHandler and activitiesHandler
-	// below. A stopgap for while Postgres-synced attachment content and
+	// /attachments/{id}/content, GET /attachments/{id}/case) instead of
+	// activeAttachmentSvc, and the case activity feed (POST
+	// /cases/{id}/activities/search) instead of activeCaseSvc -- see
+	// attachmentReadHandler and activitiesHandler below. A stopgap for while Postgres-synced attachment content and
 	// activity history aren't reliable yet (AttachmentDataSource's own doc
 	// comment), independent of DataSource and SLADataSource. Same read-only
 	// shape as snSLASearchDelegate above: nil publisher/pgFallback/slaEngine.
@@ -1058,21 +1058,30 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		activeAttachmentSvc = caseAttachmentOverrideSvc
 	}
 	attachmentHandler := handler.NewCaseHandler(activeAttachmentSvc, cfg.M2MClientIDs)
-	// attachmentReadHandler backs the three READ attachment routes
+	// attachmentReadHandler backs the READ attachment routes
 	// AttachmentDataSource=servicenow is meant to affect: POST
-	// /attachments/search, GET /attachments/{id}, and GET
-	// /attachments/{id}/content. GetAttachmentByID is included despite not
-	// being part of AttachmentDataSource's original, narrower doc comment --
-	// backend-v2's GetAttachmentContent handler calls GetAttachment first,
-	// unconditionally, purely to resolve the attachment's ReferenceID for its
-	// own authorization check, and only then calls GetAttachmentContent; if
-	// GetAttachmentByID stayed on activeAttachmentSvc (Postgres) while only
-	// content moved to ServiceNow, that pre-check 404s on every
-	// ServiceNow-only attachment and GetAttachmentContent is never reached at
-	// all -- the fix this flag exists for would be silently inert end to end.
-	// Safe to include: GetAttachmentByID is a plain read
-	// (s.client.Get(".../attachments/"+sysid, token), see its own doc
-	// comment) with no dependency on the nil pgFallback/publisher/slaEngine
+	// /attachments/search, GET /attachments/{id}, GET
+	// /attachments/{id}/content, and GET /attachments/{id}/case (the
+	// attachment-scoped parent-case lookup registered alongside the other
+	// three, used only by backend-v2's attachment authorization check -- see
+	// that route's own doc comment). GetAttachmentByID is included despite
+	// not being part of AttachmentDataSource's original, narrower doc
+	// comment -- backend-v2's GetAttachmentContent handler calls GetAttachment
+	// first, unconditionally, purely to resolve the attachment's ReferenceID
+	// for its own authorization check, and only then calls
+	// GetAttachmentContent; if GetAttachmentByID stayed on activeAttachmentSvc
+	// (Postgres) while only content moved to ServiceNow, that pre-check 404s
+	// on every ServiceNow-only attachment and GetAttachmentContent is never
+	// reached at all -- the fix this flag exists for would be silently inert
+	// end to end. GET /attachments/{id}/case closes the matching gap one
+	// level further in: without it, GetAttachmentByID resolves fine but the
+	// authorization check's own case lookup still fell back to
+	// activeCaseSvc/DataSource, 404ing on a ServiceNow-only attachment's
+	// parent case and rejecting access to content that
+	// GetCaseAttachmentContent could otherwise serve. Safe to include:
+	// GetAttachmentByID and GetCaseByID (what GetAttachmentParentCase calls
+	// internally) are both plain reads (s.client.Get(...), see their own doc
+	// comments) with no dependency on the nil pgFallback/publisher/slaEngine
 	// this read-only delegate lacks, same as SearchCaseAttachments and
 	// GetCaseAttachmentContent. It must still NOT back
 	// CreateCaseAttachment/ConfirmCaseAttachment (snCaseService.
@@ -1901,6 +1910,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	mux.HandleFunc("POST /attachments/search", attachmentReadHandler.SearchCaseAttachments)
 	mux.HandleFunc("GET /attachments/{id}/content", attachmentReadHandler.GetCaseAttachmentContent)
 	mux.HandleFunc("GET /attachments/{id}", attachmentReadHandler.GetAttachmentByID)
+	// GetAttachmentParentCase resolves an attachment's own parent case,
+	// backed by attachmentReadHandler (so AttachmentDataSource, not
+	// DataSource, decides where both the attachment and its case are read
+	// from). Exists for backend-v2's attachment authorization check
+	// (authorizeAttachmentAccess): it needs to verify the caller may see the
+	// attachment's case, and under AttachmentDataSource=servicenow that case
+	// can live only in ServiceNow, never synced to Postgres -- looking it up
+	// via the plain GET /cases/{id} (always DataSource-scoped, used
+	// everywhere else) would 404 even though the attachment's own content is
+	// reachable. {id} is the attachment id, matching every other
+	// /attachments/{id}... route; GetAttachmentParentCase resolves it to a
+	// case id internally via the same CaseService GetAttachmentByID already
+	// uses, so the caller never needs to pass a case id of its own.
+	mux.HandleFunc("GET /attachments/{id}/case", attachmentReadHandler.GetAttachmentParentCase)
 	mux.HandleFunc("PATCH /attachments/{id}", attachmentHandler.UpdateAttachment)
 	mux.HandleFunc("DELETE /attachments/{id}", attachmentHandler.DeleteCaseAttachment)
 	mux.HandleFunc("GET /cases/{id}/feedback", caseHandler.GetCaseFeedback)

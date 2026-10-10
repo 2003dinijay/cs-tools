@@ -5569,6 +5569,56 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /attachments/{id}/case:
+    get:
+      summary: Get the case an attachment belongs to, sourced consistently with ATTACHMENT_DATA_SOURCE.
+      description: >
+        Resolves an attachment to its own parent case: looks the attachment up (the same
+        way GET /attachments/{id} does), then its referenceId (the same way GET
+        /cases/{id} does), both through whichever CaseService backs attachment reads (see
+        ATTACHMENT_DATA_SOURCE) rather than the general DATA_SOURCE-selected one. Intended
+        for a caller's own attachment-authorization check, so the attachment and its case
+        are always resolved from the same data source as each other. Exists because
+        ATTACHMENT_DATA_SOURCE=servicenow attachments can have a parent case that only
+        exists in ServiceNow, never synced to Postgres -- looking that case up via the
+        plain GET /cases/{id} (always DATA_SOURCE-scoped) would 404 even though the
+        attachment's own content is reachable. id here is an attachment UUID, matching
+        every other /attachments/{id}... route.
+      operationId: getAttachmentParentCase
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: Attachment UUID.
+      responses:
+        "200":
+          description: The case the attachment belongs to.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseView'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Attachment not found, or its parent case not found/not visible under the active attachment data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /attachments/{id}:
     get:
       summary: Get an attachment's metadata and base64-encoded content (ServiceNow data source only).
