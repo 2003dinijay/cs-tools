@@ -1895,6 +1895,55 @@ scanning the full ServiceNow-synced table the old, abandoned poll design
 choked on. Omitted (the default, and every other caller's behavior)
 means no filter, identical to this endpoint's original, unscoped shape.
 
+**`is_active` is now actually cleared when a clock finishes — a real,
+reported bug.** `SLAEngineRepository.CompleteClock`/`ReviseClocks` used to
+only ever set `is_active = TRUE`, at `RegisterClock`'s own INSERT, and never
+touch it again — so a clock that had genuinely, cleanly completed
+(`ACHIEVED`) or been cancelled kept reporting as "currently active" to this
+endpoint forever, which is exactly backwards from what `GET /sla-status`'s
+own contract ("every *currently-active* clock") and
+`csm-notification-service`'s `Reconcile` (which trusts this list to decide
+what still needs tracking) both assume. `CompleteClock` now sets
+`is_active = FALSE` alongside `stage = 'ACHIEVED'`, and `ReviseClocks`'
+cancellation branch does the same alongside `stage = 'CANCELLED'` —
+`BREACHED` is deliberately left `is_active = TRUE` (a clock whose
+wall-clock duration ran out without yet being satisfied is not finished —
+see `slaEngineOpenStageFilter`'s own doc comment), so this stays additive
+to, not a relaxation of, the terminal-stage distinctions this engine
+already makes everywhere else. Migration `0218` backfills every
+already-terminal `source='CSM'` row this fix's own `UPDATE` statements
+never touch (they only fire on a FUTURE `CompleteClock`/`ReviseClocks`
+call) — without it, every clock that had already completed before this
+shipped would stay stuck reporting "active" forever, including the exact
+rows a real, reported false-alert incident traced back to.
+
+**`GET /sla-status/clock-state` is a separate, dedicated endpoint for
+checking ONE specific clock's real state — deliberately not a filter on
+`GET /sla-status` itself.** Added for `csm-notification-service`'s own
+pre-alert verification: a confirmed, reproduced incident had its Redis-held
+completion state for a clock (its `alertedTier` cursor) silently fall out
+of sync with reality — the Redis write that should have recorded a clock
+finishing (on a case closing, or a qualifying comment) can fail with no
+retry (see that repo's own `CLAUDE.md`, "ApplyStateEffects") — so a wake
+entry scheduled when the clock was first registered could still fire a
+breach alert for a clock that had, in truth, already completed cleanly.
+An earlier version of this fix tried adding a `workItemId` filter to the
+existing active-only `GET /sla-status` instead, and a CodeRabbit review
+caught why that's insufficient: an **active-only** list can't tell "this
+clock genuinely, cleanly resolved" apart from "this clock was never
+registered here at all" (entity-service's own CSM registration is
+best-effort, on a different trigger than the Redis side) or "a severity
+revision replaced it with a brand new incarnation" — all three look
+identical to that caller ("not in the active list" / "some other active row
+of this type exists"), and treating either of the latter two as "resolved"
+would wrongly suppress a genuine alert. `domain.SLAClockState`
+(`Found`/`IsActive`/`Stage`/`HasBreached`/`StartedOn`) exists specifically
+to make those three distinguishable: `GetClockState` returns the single
+most recently-started row for `(workItemID, target[, source])`,
+**regardless of `is_active`**, with `Found=false` (every other field zero)
+when no row exists at all. `StartedOn` is what lets the caller compare
+clock *incarnations*, not just clock types, after a severity revision.
+
 **`GET /sla-status` is internal-caller-only** (`slaStatusService.
 requireInternalCaller`, mirroring `onboarding_step_service.go`'s own helper
 of the same name/reasoning) — `AccessService.ResolveScope`'s scope must be
@@ -2414,6 +2463,38 @@ already use — no route path, request, or response shape changed.
   string with no name field on its wire contract at all — deliberately left
   as-is; the webapp only reads a comment's display name from `SearchComments`
   once the list is (re)fetched, never from the create response.
+- **Editing/deleting a comment, or viewing its edit history**
+  (`UpdateComment`, `DeleteComment`, `GetCommentEditHistory`) performs **no
+  author or role check of its own at all**. This service keeps no role table
+  for this decision — it used to additionally allow its own Postgres
+  `role.name = 'admin'` holders (the same mechanism "Time cards" above still
+  uses for `TransitionTimeCardState`), and after that a short-lived design
+  trusted a `csm-portal-backend`-asserted header, but both were dropped: the
+  decision belongs entirely to `csm-portal-backend`, which already resolves
+  the caller's real Asgardeo portal roles (`admin`, `comment_updater`) once
+  per request and now also calls `GetComment` (see below) to learn a
+  comment's author before deciding whether to proceed — a plain `cs_engineer`
+  may only touch their own comment, `admin`/`comment_updater` may touch any,
+  enforced entirely on that side. `resolveCommentActor` still runs on every
+  one of these calls, but only to resolve the caller's email for attribution
+  (`edited_by`/`deleted_by`), not for authorization. `commentAdminRoleName`'s
+  own Postgres `admin`-role lookup still exists and is unchanged, but only
+  backs `resolveCommentCallerVisibility` (`SearchComments`' soft-deleted-comment
+  display logic) — a separate, read-time concern from this write/history
+  path. **The route itself is `internalOnly`** (`routes.go`), unlike
+  `POST /comments`/`POST /comments/search` (open to any validated caller,
+  since customers post and read comments on their own cases): with no
+  check left inside the service, an external/customer caller could otherwise
+  reach any of these three directly with nothing but a valid token and act on
+  a comment they don't own, bypassing `csm-portal-backend` entirely —
+  `customer-portal-backend-v2` is confirmed to never call any of the three
+  (only create/search), so this closes that gap for free.
+- **`GET /comments/{id}`** returns a single comment by id, also with no
+  author/role check and also `internalOnly` for the same reason — it exists
+  purely so `csm-portal-backend` can look up a comment's author before
+  deciding whether to allow an edit/delete (see above); nothing it returns
+  isn't already visible to any internal caller who can see this comment at
+  all via `POST /comments/search`.
 - **Product vulnerabilities**: `SearchProductVulnerabilities`/
   `GetProductVulnerability`/`GetVulnerabilityMeta` are read-only queries
   against `product_vulnerability`, which mirrors ServiceNow's own
@@ -3039,11 +3120,16 @@ old refusal still applies; `DATA_SOURCE=servicenow` is unchanged.
   Engagement") and the SLA clocks above. No event is published (there is no `case.type_changed`).
   A GitHub-linked service request still gets the one "record created" notice its insert
   trigger always sends.
-- **Known gap, not caused by the transfer:** `GetCaseByID` does not return `engagementType`
-  for any engagement on this data source (only the list search selects `eng.type`), so
-  anything keyed on it from the detail read, such as the Migration reminder wording of "Request
-  update", sees nothing for native and transferred Migration tickets alike. The stored type and
-  payment type are correct.
+- **`GetCaseByID` now returns `engagementType` too** (fixed; previously a known gap, not caused
+  by the transfer itself) — it used to select only the list search's own `eng.type` and leave
+  the detail read's `CaseView.EngagementType` nil, so anything keyed on it from the detail read
+  (the Migration reminder wording of "Request update") saw nothing for native and transferred
+  Migration tickets alike, even though the stored type and payment type were always correct.
+  `GetCaseByID` now joins `eng.type::TEXT` the same way `SearchCases` already did and lower-cases
+  it into `CaseView.EngagementType` identically (`"migration"`, not the raw `MIGRATION` enum
+  label) — `customer-portal`'s backend-v2 already maps that lowercase value through its own
+  `caseEngagementTypeRef` into a human `{id: "1", label: "Migration"}`, so no change was needed
+  on that side, only here.
 - Tests: `case_type_transfer_service_test.go` (validation rules, internal-only, ServiceNow
   inside the transaction and its refusal leaving nothing, ambiguous ServiceNow failures, SLA per
   direction), `case_type_transfer_repo_integration_test.go` (real Postgres as a non-superuser,
@@ -7097,7 +7183,15 @@ assignment group **changes to** a Special Ops group -- every team's `groupId` in
 which already claims those rows, publishes the alert (`WithSpecialOpsAlerts`, main.go) and
 acknowledges any other group as a no-op. A failed publish is retried and parked like the report
 flows. Payload: `events.IncidentSpecialOpsAlertPayload` (incident, service, product/team, both
-groups, who and when), keyed by the incident id. Off without the topic; unknown to the consumer
+groups, who and when), keyed by the incident id. `smeTeam` is the matched team's `smeTeam` from
+`SPECIALIST_HANDOFF_CONFIG` (the Team Schedule key of the SME rota Case Paging pages), omitted when
+the team names none. The team is found by the group the incident moved into; when two teams share
+that group, the alert takes the one the handoff's reason note names (`escalationTeam`, written in
+the same transaction as the move, read back by `SpecialOpsAlertSource.HandoffNote`), so the SME rota
+of the team picked in the dialog is paged; with no note naming one of them, the first (logged).
+A handoff needs an assignee: an unassigned incident is a 409 `incident_handoff_needs_assignee`
+(the assignee answers for the page to the SME on duty). `incident.assigned` carries `assignedOn`,
+which the SME page compares alerts against. Off without the topic; unknown to the consumer
 until it adds the type (`HandleShared` skips unknown types on sre-events).
 
 **`UpdateProblem`/`UpdateIncident` are also not
@@ -7663,7 +7757,7 @@ cannot drift:
 
 | Count | Made of | States (the project stats constants, passed in) |
 |---|---|---|
-| Outstanding | cases, service requests, engagements, security report analyses + change requests | cases: every state **but `CLOSED`**, an item with no state of its own type left out (`caseStateClosed`; the dashboard tile's rule, `projectCaseStatsService`; see "Cards count what their lists show"); change requests `crOutstandingStatesFor(scope)` (a customer's Authorize counts, staff's does not) |
+| Outstanding | cases, service requests, engagements, security report analyses + change requests | cases: every state **but `CLOSED`**, an item with no state of its own type left out (`caseStateClosed`; the dashboard tile's rule, `projectCaseStatsService`; see "Cards count what their lists show"); change requests `crOutstandingStatesFor(scope)` (a customer's Authorize counts, and so does a staff user's on the customer portal; staff anywhere else do not) |
 | Action Required | the same items waiting on the customer | `caseStatsActionRequiredStates` (Awaiting Info, Solution Proposed); change requests Customer Approval, Customer Review |
 | Active Chats | conversations | `conversationActiveStates` (OPEN, ACTIVE) |
 
@@ -7757,6 +7851,14 @@ project of the dev database (Customer 3 Project) they disagreed three ways: Outs
   is still `"case".resolved_on` only (nothing links a card to it). Same plan cost as before on the staging-like copy
   (the extension joins were already in the query): 55-69 ms for the heaviest project's closed-in-30-days count,
   either way.
+- **Change requests for staff on the customer portal.** `crOutstandingStatesFor` counts Authorize as outstanding for
+  a customer only, but the customer portal's change request list shows Authorize to a staff user as well, so a staff
+  account saw 7 on the Outstanding card and 16 in the list. `AccessScope.ViaCustomerPortal` (set in `ResolveScope` for
+  the customer portal backend's client id, whoever the user is; the data scope is unchanged) makes the card count
+  Authorize for staff on that path too. Staff on the CSM portal, and machine clients, keep the ServiceNow grouping.
+  Without `CUSTOMER_PORTAL_BACKEND_CLIENT_ID` configured the flag is never set (no change). Tests:
+  `TestAccessService_ResolveScope_ViaCustomerPortal`,
+  `TestProjectChangeRequestStats_AuthorizeIsOutstandingForStaffOnTheCustomerPortal`.
 - **Test:** `TestCardsAgreeWithTheirListsIntegration` (real Postgres, `CASE_STATS_TEST_DSN`) seeds the three kinds of
   row and asserts card = list for case, service request and engagement; against the old code it fails on all three.
   `TestGetProjectCaseStats_RowsWithoutAStateAreNotOutstanding` is the service half.
@@ -8932,6 +9034,7 @@ All shared types live in `internal/domain/entity.go`. Conventions:
 | A registered contact holding no `REQUESTED` row on the customer stage that is LIVE (registered after the request went out, or a row of theirs cancelled directly): proposing, or answering on it. A request that was withdrawn (a sibling's answer settled the stage) leaves no live stage and is a 409 instead: `change_request_approval_not_pending` for an answer, `change_request_not_proposable` for a proposal | `change_request_not_asked` | 403 |
 | Not a registered PORTAL_USER contact of the change request's project, the change request's own creator, a user who may not decide an internal stage, a field a customer may not set, a caller with no user record | `change_request_forbidden` | 403 |
 | `POST /incidents` with an `assignmentGroupId` that is not an active support group of any service (a non-UUID value is a plain 400 with no code); nothing created | `incident_assignment_group_not_allowed` | 400 |
+| `POST /incidents/{id}/specialist-handoffs` on an incident nobody is assigned to; nothing written | `incident_handoff_needs_assignee` | 409 |
 
 `TestWriteServiceError_CarriesTheMachineReadableCode` (handler) and `TestChangeRequestErrorCodesIntegration_*` (repository, against a real database) pin each code to its refusal. customer-portal `backend-v2` and the CSM portal BFF pass the code through with the status they give it; the customer webapp classifies a refusal by it (`describeChangeRequestActionError`), and a 409 with a code it does not know, or none (an older entity-service), is "something went wrong, refresh", never "already answered".
 

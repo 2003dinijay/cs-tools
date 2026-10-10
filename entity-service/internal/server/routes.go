@@ -281,7 +281,17 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// only in Postgres, so its routes are registered only when a pool is
 	// configured.
 	var scheduleHandler *handler.ScheduleHandler
+	// The SaaS SRE rota's "Generate month" action. Postgres-only, like the
+	// rest of the Team Schedule.
+	var rotaGenerateHandler *handler.RotaGenerateHandler
 	var teamMemberHandler *handler.TeamMemberHandler
+	var pagingChainHandler *handler.PagingChainHandler
+
+	// Customer-health risk tracking (migration 0219) has no upstream
+	// equivalent either -- it replaces a standalone MySQL database
+	// apps/csm-portal/backend's own internal/risk package used to own. Gated
+	// on db != nil like every other Postgres-only handler here.
+	var customerHealthHandler *handler.CustomerHealthHandler
 
 	accountRepo := repository.NewAccountRepository(repository.NewScoped(db))
 	accountHandler := handler.NewAccountHandler(service.NewAccountService(accountRepo))
@@ -305,6 +315,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if db != nil {
 		groupDetailHandler = handler.NewGroupDetailHandler(
 			service.NewGroupDetailService(repository.NewGroupDetailRepository(db), accessSvc))
+	}
+
+	if db != nil {
+		customerHealthHandler = handler.NewCustomerHealthHandler(
+			service.NewCustomerHealthService(repository.NewCustomerHealthRepository(db), userRepo))
 	}
 
 	var salesforceEventHandler *handler.SalesforceEventHandler
@@ -533,10 +548,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	// Also constructed for DataSourcePostgresServiceNowDualWrite: that mode's
 	// active services stay Postgres-backed (see the case wiring below), but
-	// its best-effort ServiceNow mirror writes still need this client.
-	// config.Validate requires the same four credentials for both modes.
+	// its best-effort ServiceNow mirror writes still need this client. Also
+	// constructed when SLADataSource is servicenow, independent of
+	// DataSource: a plain DataSourcePostgres deployment that points SLA
+	// reads at ServiceNow still needs this client for the task-SLA and
+	// case-search-SLA-filter wiring below. config.Validate requires the same
+	// four credentials in every one of these cases.
 	var serviceNowIntegrationServiceClient *integrationservice.Client
-	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite || cfg.SLADataSource == config.SLADataSourceServiceNow {
 		serviceNowIntegrationServiceClient = integrationservice.New(cfg.ServiceNowIntegrationServiceBaseURL, integrationservice.ClientCredentialsConfig{
 			TokenURL:     cfg.ServiceNowIntegrationServiceTokenURL,
 			ClientID:     cfg.ServiceNowIntegrationServiceClientID,
@@ -766,10 +785,26 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// lookup backing applyResponseSLAOnComment, not routed through HTTP).
 	// Also constructed for DataSourcePostgresServiceNowDualWrite, for the same
 	// reason serviceNowIntegrationServiceClient above is: the case pilot's
-	// SN-mirror snCaseService instance below needs it too.
+	// SN-mirror snCaseService instance below needs it too. Also constructed
+	// when SLADataSource is servicenow, for the same reason: the SLA
+	// search-delegate snCaseService instance (see below) is itself a
+	// NewServiceNowCaseService and needs one too.
 	var snUserService service.SNUserService
-	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
+	if cfg.DataSource == config.DataSourceServiceNow || cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite || cfg.SLADataSource == config.SLADataSourceServiceNow {
 		snUserService = service.NewServiceNowUserService(serviceNowIntegrationServiceClient)
+	}
+
+	// snSLASearchDelegate, when non-nil, is passed to WithSLASearchDelegate
+	// below for whichever DataSource branch builds a Postgres-backed
+	// activeCaseSvc (default and DataSourcePostgresServiceNowDualWrite) --
+	// not DataSourceServiceNow, where the whole case service is already
+	// ServiceNow and there is nothing to delegate SLA-filtered searches to.
+	// Built once, shared by both branches, the same nil-publisher/
+	// nil-pgFallback/nil-slaEngine shape already used for snCaseMirrorSvc
+	// below: a read-only search delegate needs none of those.
+	var snSLASearchDelegate service.CaseService
+	if cfg.SLADataSource == config.SLADataSourceServiceNow {
+		snSLASearchDelegate = service.NewServiceNowCaseService(serviceNowIntegrationServiceClient, nil, nil, snUserService, cfg.CustomerRoles, cfg.CSEngineerRole, nil)
 	}
 
 	// The CSM-native SLA engine (internal/service/sla_engine_service.go)
@@ -862,6 +897,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// below), not for DataSourceServiceNow: that mode's CreateCase never
 		// reaches this service's Postgres data at all.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		if snSLASearchDelegate != nil {
+			activeCaseSvc = service.WithSLASearchDelegate(activeCaseSvc, snSLASearchDelegate)
+		}
 		// PATCH /cases/{id} with a "type" (the CSM portal's "Change case type"):
 		// moves the case between extension tables, asking ServiceNow first from
 		// inside the same Postgres transaction -- see caseService.transferCaseType.
@@ -902,6 +940,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// See the matching comment in the DataSourcePostgresServiceNowDualWrite
 		// case above.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		if snSLASearchDelegate != nil {
+			activeCaseSvc = service.WithSLASearchDelegate(activeCaseSvc, snSLASearchDelegate)
+		}
 		// Same transfer as in the dual-write branch above, with no ServiceNow step.
 		activeCaseSvc = service.WithCaseTypeTransfer(activeCaseSvc, caseRepo)
 		// Without this, isSupportEngineerAuthor always returns false on this
@@ -947,6 +988,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		)
 		scheduleHandler = handler.NewScheduleHandler(
 			service.NewScheduleService(repository.NewScheduleRepository(db), accessSvc),
+		)
+		rotaGenerateHandler = handler.NewRotaGenerateHandler(
+			service.NewRotaGenerateService(repository.NewScheduleRepository(db), repository.NewRotaGenerateRepository(db), accessSvc),
 		)
 		// Postgres-only, and internal-staff-only like every other read in this
 		// module: it returns staff names, addresses and rank.
@@ -1191,6 +1235,20 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		log.Fatalf("invalid specialist handoff configuration: %v", handoffErr)
 	}
 	activeIncidentSvc = service.WithSpecialistHandoffConfig(activeIncidentSvc, handoffConfig)
+	if db != nil {
+		// Case Paging: who is on each tier of a team's paging chain, picked on
+		// the Team Schedule's Case Paging tab, and whether each chain would
+		// reach someone over the next days. Postgres-only, like the
+		// memberships and the rota it reads. Built here, after the handoff
+		// routing, because the readiness check reads which SME team each
+		// handoff dialog team pages.
+		pagingChainHandler = handler.NewPagingChainHandler(
+			// Test calls go out on the main shared topic (eventPublisher), not
+			// the incident one: a test call belongs to no incident.
+			service.NewPagingChainService(repository.NewPagingChainRepository(db), repository.NewPagingContactRepository(db),
+				accessSvc, handoffConfig, eventPublisher),
+		)
+	}
 	// One GitHub client per credential the products name, independent of the
 	// change-request sync. A credential with no token is logged, not fatal:
 	// its handoffs still go through and report that no issue was filed.
@@ -1310,8 +1368,19 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	if cfg.DataSource == config.DataSourceServiceNow {
 		outageHandler = handler.NewOutageHandler(service.NewServiceNowOutageService(serviceNowIntegrationServiceClient))
 	} else if cfg.HasDatabase() {
-		outageHandler = handler.NewOutageHandler(
-			service.NewOutageService(repository.NewOutageRepository(repository.NewScoped(db))))
+		outageSvc := service.NewOutageService(repository.NewOutageRepository(repository.NewScoped(db)))
+		// The status page hears about a declared or ended outage from the
+		// write itself: outage.status_page_due on sre-events, posted by
+		// csm-notification-service. Needs the operations topic and the
+		// status-page scope; without either, csm-scheduled-tasks posts on
+		// its tick as before.
+		if srEventPublisher != nil && len(cfg.CloudStatusServiceIDs) > 0 {
+			outageSvc = service.WithOutageCloudStatus(outageSvc, service.WithCloudStatusPublisher(
+				service.NewCloudStatusService(repository.NewCloudStatusRepository(db), cfg.CloudStatusServiceIDs),
+				srEventPublisher))
+			slog.Info("cloud status: outage writes publish outage.status_page_due", "topic", cfg.SREEventHubTopic)
+		}
+		outageHandler = handler.NewOutageHandler(outageSvc)
 	}
 
 	// cloudStatusHandler is Postgres-only, and unconditionally so even though
@@ -1459,7 +1528,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 
 	taskSlaRepo := repository.NewTaskSlaRepository(repository.NewScoped(db))
 	var activeTaskSlaSvc service.TaskSlaService
-	if cfg.DataSource == config.DataSourceServiceNow {
+	// Selected by SLADataSource, not DataSource -- this is what backs a
+	// case's SLA display (GET /slas/{id}, POST /slas/search), and can be
+	// switched to ServiceNow independent of which data source every other
+	// entity reads from. See config.SLADataSource's own doc comment.
+	if cfg.SLADataSource == config.SLADataSourceServiceNow {
 		activeTaskSlaSvc = service.NewServiceNowTaskSlaService(serviceNowIntegrationServiceClient)
 	} else {
 		activeTaskSlaSvc = service.NewTaskSlaService(taskSlaRepo)
@@ -1516,6 +1589,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	}
 	if slaStatusHandler != nil {
 		mux.HandleFunc("GET /sla-status", slaStatusHandler.SearchActiveSLAStatuses)
+		mux.HandleFunc("GET /sla-status/clock-state", slaStatusHandler.GetClockState)
 	}
 	if slaDurationPolicyHandler != nil {
 		mux.HandleFunc("GET /sla-duration-policy", slaDurationPolicyHandler.ListSLADurationPolicy)
@@ -1547,6 +1621,21 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// above.
 		mux.HandleFunc("GET /team-schedule/members", teamMemberHandler.GetTeamMembers)
 	}
+	if pagingChainHandler != nil {
+		// Who is on each tier of the CRE and SRE paging chains, what the caller
+		// may change, and changing one membership. The service reads the team
+		// from the row being changed, never from the request.
+		mux.HandleFunc("GET /team-schedule/paging-chain", pagingChainHandler.GetPagingChain)
+		mux.HandleFunc("PATCH /team-schedule/paging-chain/members/{membershipId}", pagingChainHandler.UpdatePagingMember)
+		mux.HandleFunc("GET /team-schedule/paging-readiness", pagingChainHandler.GetPagingReadiness)
+		// Paging-only phone numbers. The reads and the test-result report are
+		// for csm-notification-service too; the service checks who may do what.
+		mux.HandleFunc("GET /team-schedule/paging-contacts", pagingChainHandler.ListPagingContacts)
+		mux.HandleFunc("PUT /team-schedule/paging-contacts/{userId}", pagingChainHandler.SetPagingPhone)
+		mux.HandleFunc("DELETE /team-schedule/paging-contacts/{userId}", pagingChainHandler.DeletePagingPhone)
+		mux.HandleFunc("POST /team-schedule/paging-contacts/{userId}/test", pagingChainHandler.RequestTestCall)
+		mux.HandleFunc("PUT /team-schedule/paging-contacts/{userId}/test-result", pagingChainHandler.RecordTestResult)
+	}
 	if scheduleHandler != nil {
 
 		// Lead edit. Own team only -- the service reads the team from the row
@@ -1564,6 +1653,11 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /team-schedule/absence-kinds", scheduleHandler.CreateScheduleAbsenceKind)
 		mux.HandleFunc("DELETE /team-schedule/absence-kinds/{code}", scheduleHandler.DeleteScheduleAbsenceKind)
 	}
+	if rotaGenerateHandler != nil {
+		// A lead of the rota (or its admin) works out a month from the
+		// availability marked on the roster; dryRun previews it.
+		mux.HandleFunc("POST /team-schedule/rotas/{code}/generate", rotaGenerateHandler.GenerateRotaMonth)
+	}
 	if announcementRequestHandler != nil {
 		mux.HandleFunc("POST /announcement-requests", announcementRequestHandler.CreateAnnouncementRequest)
 		mux.HandleFunc("GET /announcement-requests/{id}", announcementRequestHandler.GetAnnouncementRequest)
@@ -1579,6 +1673,32 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("GET /announcement-requests/{id}/updates", announcementRequestHandler.ListAnnouncementRequestUpdates)
 		mux.HandleFunc("POST /announcement-requests/{id}/deliveries", announcementRequestHandler.RecordAnnouncementRequestDeliveries)
 		mux.HandleFunc("GET /announcement-requests/{id}/deliveries", announcementRequestHandler.ListAnnouncementRequestDeliveries)
+	}
+	if customerHealthHandler != nil {
+		// internalOnly: this is internal CSM risk-tracking data with no
+		// row-level security of its own (customerHealthService holds no
+		// accessSvc) and no customer-portal caller, the same posture as
+		// sla/incident/incident_task/problem above -- see internalOnly's own
+		// doc comment. Without it, any caller with a valid token (a
+		// customer's included) could read or mutate another account's risks,
+		// action items and comments by id.
+		mux.HandleFunc("POST /projects/{id}/risk", internalOnly(accessSvc, customerHealthHandler.OpenProjectRisk))
+		mux.HandleFunc("PUT /risks/{id}/close", internalOnly(accessSvc, customerHealthHandler.CloseProjectRisk))
+		mux.HandleFunc("POST /projects/{id}/mark-healthy", internalOnly(accessSvc, customerHealthHandler.MarkProjectHealthy))
+		mux.HandleFunc("POST /projects/{id}/revert-health", internalOnly(accessSvc, customerHealthHandler.RevertProjectHealth))
+		mux.HandleFunc("GET /projects/{id}/risk-history", internalOnly(accessSvc, customerHealthHandler.GetProjectRiskHistory))
+		mux.HandleFunc("GET /accounts/{id}/project-health-statuses", internalOnly(accessSvc, customerHealthHandler.GetAccountProjectHealthStatuses))
+		mux.HandleFunc("GET /accounts/{id}/health-summary", internalOnly(accessSvc, customerHealthHandler.GetAccountHealthSummary))
+		mux.HandleFunc("POST /accounts/health-summaries/search", internalOnly(accessSvc, customerHealthHandler.GetBatchAccountHealthSummaries))
+		mux.HandleFunc("POST /accounts/by-health-status/search", internalOnly(accessSvc, customerHealthHandler.GetAccountsByHealthStatus))
+		mux.HandleFunc("POST /accounts/{id}/init-health-tracking", internalOnly(accessSvc, customerHealthHandler.InitProjectHealthTracking))
+		mux.HandleFunc("POST /risks/{id}/action-items", internalOnly(accessSvc, customerHealthHandler.CreateRiskActionItem))
+		mux.HandleFunc("GET /risks/{id}/action-items", internalOnly(accessSvc, customerHealthHandler.GetActionItemsByRisk))
+		mux.HandleFunc("PUT /action-items/{id}/status", internalOnly(accessSvc, customerHealthHandler.UpdateRiskActionItemStatus))
+		mux.HandleFunc("PUT /action-items/{id}", internalOnly(accessSvc, customerHealthHandler.UpdateRiskActionItem))
+		mux.HandleFunc("GET /accounts/{id}/action-items", internalOnly(accessSvc, customerHealthHandler.GetActionItemsByAccount))
+		mux.HandleFunc("POST /action-items/{id}/comments", internalOnly(accessSvc, customerHealthHandler.CreateActionItemComment))
+		mux.HandleFunc("GET /action-items/{id}/comments", internalOnly(accessSvc, customerHealthHandler.GetActionItemComments))
 	}
 	if savedFilterViewHandler != nil {
 		mux.HandleFunc("GET /users/me/saved-filter-views", savedFilterViewHandler.List)
@@ -1806,11 +1926,29 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /configuration-items/search", configurationItemHandler.SearchConfigurationItems)
 	}
 
+	// CreateComment/SearchComments stay open to any validated caller --
+	// customer-portal-backend-v2 calls both so customers can post and read
+	// comments on their own cases (SearchComments' own row-level security,
+	// migrations 0147/0175/0191, is what scopes a customer to comments they
+	// may see). GetComment/UpdateComment/DeleteComment/GetCommentEditHistory
+	// are internalOnly: unlike create/search, no customer-facing caller uses
+	// any of the four (confirmed: customer-portal-backend-v2's own entity
+	// client only ever calls CreateComment/SearchComments), and -- now that
+	// none of the four performs its own author/role check any more, that
+	// decision having moved entirely to csm-portal-backend (see
+	// comment_service.go's own doc comments) -- leaving them open would let
+	// any caller with a merely-valid token edit, delete, or read any
+	// comment/its history directly, bypassing csm-portal-backend's checks
+	// entirely. This does not reintroduce any per-comment author/role check
+	// here; it only restricts WHO may reach these four routes at all, back to
+	// the same "internal caller" boundary nearly every other mutating route
+	// in this file already uses.
 	mux.HandleFunc("POST /comments", commentHandler.CreateComment)
 	mux.HandleFunc("POST /comments/search", commentHandler.SearchComments)
-	mux.HandleFunc("PATCH /comments/{id}", commentHandler.UpdateComment)
-	mux.HandleFunc("DELETE /comments/{id}", commentHandler.DeleteComment)
-	mux.HandleFunc("GET /comments/{id}/history", commentHandler.GetCommentEditHistory)
+	mux.HandleFunc("GET /comments/{id}", internalOnly(accessSvc, commentHandler.GetComment))
+	mux.HandleFunc("PATCH /comments/{id}", internalOnly(accessSvc, commentHandler.UpdateComment))
+	mux.HandleFunc("DELETE /comments/{id}", internalOnly(accessSvc, commentHandler.DeleteComment))
+	mux.HandleFunc("GET /comments/{id}/history", internalOnly(accessSvc, commentHandler.GetCommentEditHistory))
 
 	mux.HandleFunc("GET /slas/{id}", internalOnly(accessSvc, taskSlaHandler.GetTaskSla))
 	mux.HandleFunc("POST /slas/search", internalOnly(accessSvc, taskSlaHandler.SearchTaskSlas))
@@ -1885,6 +2023,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /internal/cloud-status/sweep", cloudStatusHandler.Sweep)
 		mux.HandleFunc("GET /internal/cloud-status/pending", cloudStatusHandler.Pending)
 		mux.HandleFunc("POST /internal/cloud-status/{id}/delivery", cloudStatusHandler.RecordDelivery)
+		mux.HandleFunc("POST /internal/cloud-status/{id}/claim", cloudStatusHandler.Claim)
 	}
 
 	mux.HandleFunc("POST /problems", internalOnly(accessSvc, problemHandler.CreateProblem))

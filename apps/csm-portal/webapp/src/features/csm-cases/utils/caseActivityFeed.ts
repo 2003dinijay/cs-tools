@@ -58,6 +58,25 @@ export function compareFeedEntries(a: FeedEntry, b: FeedEntry): number {
   return feedEntryId(a).localeCompare(feedEntryId(b));
 }
 
+/**
+ * Same ordering/tie-break as {@link compareFeedEntries}, for call sites that
+ * only ever have a flat `CsmCaseComment[]` to sort (no `FeedEntry` wrapper) —
+ * the standalone conversation transcript views (`ConversationDetailPage.tsx`,
+ * `ConversationPreviewContent.tsx`), which never go through the case activity
+ * feed's merge step. The backend returns conversation messages
+ * `created_on DESC` with a random-UUID tie-break (`comment.id`, unrelated to
+ * insertion order), so without this sort a Novera reply and the user message
+ * that triggered it can render in either order when they share a timestamp.
+ */
+export function compareCommentsChronologically(a: CsmCaseComment, b: CsmCaseComment): number {
+  const t = a.createdAt.localeCompare(b.createdAt);
+  if (t !== 0) return t;
+  const aBot = a.authorRole === "chatbot";
+  const bBot = b.authorRole === "chatbot";
+  if (aBot !== bBot) return aBot ? 1 : -1;
+  return a.id.localeCompare(b.id);
+}
+
 // Matches the handful of backend timestamp shapes `parseBackendTimestamp`
 // understands (space-separated, "M/D/YYYY h:m:s", ISO "T"-separated). Plain
 // text values ("High", "3", "2026") must NOT match — `new Date(...)` parses

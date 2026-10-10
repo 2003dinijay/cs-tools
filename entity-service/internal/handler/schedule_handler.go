@@ -19,6 +19,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
@@ -81,8 +82,9 @@ func (h *ScheduleHandler) SearchScheduleAbsences(w http.ResponseWriter, r *http.
 	writeScheduleJSON(w, http.StatusOK, resp)
 }
 
-// GetScheduleOnDuty handles GET /team-schedule/on-duty[?at=RFC3339] -- who is
-// responsible right now, or at the instant asked for.
+// GetScheduleOnDuty handles GET /team-schedule/on-duty[?at=RFC3339][&includeOnLeave=true]
+// -- who is responsible right now, or at the instant asked for; with
+// includeOnLeave, people away that day too, marked onLeave.
 func (h *ScheduleHandler) GetScheduleOnDuty(w http.ResponseWriter, r *http.Request) {
 	var at *time.Time
 	if raw := r.URL.Query().Get("at"); raw != "" {
@@ -93,7 +95,16 @@ func (h *ScheduleHandler) GetScheduleOnDuty(w http.ResponseWriter, r *http.Reque
 		}
 		at = &parsed
 	}
-	resp, err := h.svc.OnDuty(r.Context(), at)
+	includeOnLeave := false
+	if raw := r.URL.Query().Get("includeOnLeave"); raw != "" {
+		v, err := strconv.ParseBool(raw)
+		if err != nil {
+			writeServiceError(w, r, &apierror.ValidationError{Msg: "includeOnLeave must be true or false"})
+			return
+		}
+		includeOnLeave = v
+	}
+	resp, err := h.svc.OnDuty(r.Context(), at, includeOnLeave)
 	if err != nil {
 		writeServiceError(w, r, err)
 		return

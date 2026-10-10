@@ -60,6 +60,25 @@ const (
 	DataSourcePostgresServiceNowDualWrite DataSource = "postgres-servicenow-dual-write"
 )
 
+// SLADataSource identifies which backend SLA-related reads use -- task SLAs
+// (GET /slas/{id}, POST /slas/search, what backs a case's SLA display) and
+// the slaBreached/taskSLABusinessElapsedPercent case-search filters.
+// Independent of DataSource: a deployment can run DataSource=postgres for
+// every other entity while still pointing SLA reads specifically at
+// ServiceNow, or vice versa. GET /sla-status and GET /sla-status/clock-state
+// are NOT affected by this setting -- they have no ServiceNow equivalent at
+// all (see that handler's own doc comment) and always read Postgres.
+type SLADataSource string
+
+const (
+	// SLADataSourcePostgres reads SLA data from this service's own Postgres
+	// tables (sla_live). The default.
+	SLADataSourcePostgres SLADataSource = "postgres"
+	// SLADataSourceServiceNow reads SLA data live from the ServiceNow
+	// integration service instead.
+	SLADataSourceServiceNow SLADataSource = "servicenow"
+)
+
 // Config holds all environment-driven settings for the service.
 type Config struct {
 	DBHost string
@@ -115,11 +134,16 @@ type Config struct {
 	HealthPort string
 	// DataSource controls which backend is used. Defaults to "postgres".
 	DataSource DataSource
+	// SLADataSource controls which backend SLA-related reads use,
+	// independent of DataSource. Defaults to "postgres" -- see
+	// SLADataSource's own doc comment.
+	SLADataSource SLADataSource
 	// ServiceNowIntegrationServiceBaseURL is the base URL for the ServiceNow integration service API.
-	// Required when DataSource is "servicenow".
+	// Required when DataSource is "servicenow" (or SLADataSource is "servicenow" -- see Validate).
 	ServiceNowIntegrationServiceBaseURL string
 	// OAuth2 client credentials for the ServiceNow integration service.
-	// All four fields are required when DataSource is "servicenow".
+	// All four fields are required when DataSource is "servicenow" (or
+	// SLADataSource is "servicenow" -- see Validate).
 	ServiceNowIntegrationServiceTokenURL     string
 	ServiceNowIntegrationServiceClientID     string
 	ServiceNowIntegrationServiceClientSecret string
@@ -636,6 +660,7 @@ func Load() *Config {
 		ServerPort:                               getEnvOrDefault("SERVER_PORT", "8080"),
 		HealthPort:                               getEnvOrDefault("HEALTH_PORT", "8081"),
 		DataSource:                               DataSource(getEnvOrDefault("DATA_SOURCE", string(DataSourcePostgres))),
+		SLADataSource:                            SLADataSource(getEnvOrDefault("SLA_DATA_SOURCE", string(SLADataSourcePostgres))),
 		ServiceNowIntegrationServiceBaseURL:      os.Getenv("SERVICENOW_INTEGRATION_SERVICE_BASE_URL"),
 		ServiceNowIntegrationServiceTokenURL:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL"),
 		ServiceNowIntegrationServiceClientID:     os.Getenv("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID"),
@@ -916,6 +941,12 @@ func (c *Config) Validate() error {
 	default:
 		return fmt.Errorf("invalid DATA_SOURCE %q: must be %q, %q, or %q", c.DataSource, DataSourcePostgres, DataSourceServiceNow, DataSourcePostgresServiceNowDualWrite)
 	}
+	switch c.SLADataSource {
+	case SLADataSourcePostgres, SLADataSourceServiceNow:
+		// valid
+	default:
+		return fmt.Errorf("invalid SLA_DATA_SOURCE %q: must be %q or %q", c.SLADataSource, SLADataSourcePostgres, SLADataSourceServiceNow)
+	}
 	// Postgres credentials are required for DATA_SOURCE=postgres and
 	// DATA_SOURCE=postgres-servicenow-dual-write — both serve every entity read
 	// and write from the pool (the fallback mode's ServiceNow leg is a
@@ -954,22 +985,25 @@ func (c *Config) Validate() error {
 		return fmt.Errorf("DB_USER, DB_PASSWORD, and DB_NAME must be set together or not at all")
 	}
 	// ServiceNow integration service credentials are required for
-	// DATA_SOURCE=servicenow (reads go there) and also for
+	// DATA_SOURCE=servicenow (reads go there), for
 	// DATA_SOURCE=postgres-servicenow-dual-write (the best-effort mirror write
-	// goes there, via the same client — see SNWritebackDispatcher).
-	snRequired := c.DataSource == DataSourceServiceNow || c.DataSource == DataSourcePostgresServiceNowDualWrite
+	// goes there, via the same client — see SNWritebackDispatcher), and for
+	// SLA_DATA_SOURCE=servicenow (SLA reads go there instead), independent of
+	// DATA_SOURCE — a plain DATA_SOURCE=postgres deployment that points SLA
+	// reads at ServiceNow still needs real credentials for that client.
+	snRequired := c.DataSource == DataSourceServiceNow || c.DataSource == DataSourcePostgresServiceNowDualWrite || c.SLADataSource == SLADataSourceServiceNow
 	if snRequired {
 		if c.ServiceNowIntegrationServiceBaseURL == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_BASE_URL is required when DATA_SOURCE=%s", c.DataSource)
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_BASE_URL is required when DATA_SOURCE=%s or SLA_DATA_SOURCE=%s", c.DataSource, c.SLADataSource)
 		}
 		if c.ServiceNowIntegrationServiceTokenURL == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL is required when DATA_SOURCE=%s", c.DataSource)
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_TOKEN_URL is required when DATA_SOURCE=%s or SLA_DATA_SOURCE=%s", c.DataSource, c.SLADataSource)
 		}
 		if c.ServiceNowIntegrationServiceClientID == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID is required when DATA_SOURCE=%s", c.DataSource)
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_ID is required when DATA_SOURCE=%s or SLA_DATA_SOURCE=%s", c.DataSource, c.SLADataSource)
 		}
 		if c.ServiceNowIntegrationServiceClientSecret == "" {
-			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET is required when DATA_SOURCE=%s", c.DataSource)
+			return fmt.Errorf("SERVICENOW_INTEGRATION_SERVICE_CLIENT_SECRET is required when DATA_SOURCE=%s or SLA_DATA_SOURCE=%s", c.DataSource, c.SLADataSource)
 		}
 	}
 	// EVENT_HUB_BROKER/EVENT_HUB_CONNECTION_STRING/EVENT_HUB_TOPIC are

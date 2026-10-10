@@ -10,34 +10,14 @@ topic below covers one part of the portal in more detail than this page does.
 
 ## The portal at a glance
 
-The sections below appear in the left sidebar in this order:
-
-- **Dashboard**: your landing page: configurable widgets summarizing cases, requests, and
-  other work.
-- **Support**: cases: the core case list, case detail, and comment trail.
-- **Team Schedule**: who is on duty right now, the team rota, and who is away. Team leads can
-  edit their own team's rota.
-- **Operations**: five tabs: Service requests, Change requests, Incidents, Problem
-  management, and Outages.
-- **Engagements**: professional-services work such as migrations, implementations,
-  onboarding, and training.
-- **Announcements**: portal-wide announcements.
-- **Security Center**: two tabs: Security reports and Vulnerabilities.
-- **Customers**: two tabs: Accounts and Projects.
-- **PLG**: the PLG Customer Success Portal pages.
-- **Updates**: product/version update tracking.
-- **Time cards**: engineer time logged against a case, with an approval flow.
-- **Team Schedule**: the team rota.
-- **Settings**: user management: users, roles, groups, teams, and permissions.
-- **Help**: this section.
-- **PLG**: the PLG Customer Success Portal, with six tabs: Leadership Dashboard, Dashboard,
-  My Work, Organisations, New Registrations, and Manage Playbooks.
-
-Accounts set up for the Sales and Solutions Architecture view see a different sidebar in place
-of the one above: **Sales / Solutions Architecture**, with seven tabs: Cases, Accounts, Projects,
-Team schedule, User scan, Usage metrics, and Customer health.
-
-Most of these sections have their own topic further down this page with the specifics.
+The left sidebar is personalized: it only ever lists the sections your account has access to,
+in the same order for everyone. **Dashboard** and **Support** (the core case list and case
+detail) are there for every signed-in user; which of the others also appear — Operations,
+Engagements, Announcements, Security Center, Customers, Knowledge, PLG, Updates, Time cards,
+Team Schedule, Usage Metrics, Customer Health, User Scan, and Settings — depends on your role.
+Whatever you see in your own sidebar is what you have; several of the topics further down this
+page cover one specific section in more detail, and are themselves only listed here when that
+section is one you can open.
 
 ## Jumping to a person's profile
 

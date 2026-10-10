@@ -33,10 +33,11 @@ import (
 // the request reached the repository unchanged — and returns fixed rows, since
 // what the repository does with them is SQL's business, not the service's.
 type fakeScheduleRepo struct {
-	gotAssignmentReq domain.SearchScheduleAssignmentsRequest
-	gotAbsenceReq    domain.SearchScheduleAbsencesRequest
-	gotOnDutyAt      time.Time
-	called           bool
+	gotAssignmentReq  domain.SearchScheduleAssignmentsRequest
+	gotAbsenceReq     domain.SearchScheduleAbsencesRequest
+	gotOnDutyAt       time.Time
+	gotIncludeOnLeave bool
+	called            bool
 
 	assignments []domain.ScheduleAssignment
 	absences    []domain.ScheduleAbsence
@@ -63,6 +64,13 @@ type fakeScheduleRepo struct {
 	movedTo    string
 	movedHome  string
 	gotAbsence domain.ApplyScheduleAbsenceRequest
+
+	// The families of the rota admin roles held (nil = none), and what the
+	// absence tag writes were given.
+	adminFamilies  []string
+	gotKindFamily  *string
+	gotKindAllowed []string
+	markers        []domain.ScheduleEditMarker
 }
 
 func (f *fakeScheduleRepo) AssignmentByID(context.Context, string) (domain.ScheduleAssignment, error) {
@@ -127,18 +135,22 @@ func (f *fakeScheduleRepo) DeleteAbsence(_ context.Context, id, actor string, _ 
 	return f.err
 }
 
-func (f *fakeScheduleRepo) CreateAbsenceKind(_ context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, actor string) (domain.ScheduleAbsenceKind, error) {
-	f.called, f.gotKindCode, f.gotActorEml = true, code, actor
+func (f *fakeScheduleRepo) CreateAbsenceKind(_ context.Context, code string, req domain.CreateScheduleAbsenceKindRequest, family *string, actor string) (domain.ScheduleAbsenceKind, error) {
+	f.called, f.gotKindCode, f.gotActorEml, f.gotKindFamily = true, code, actor, family
 	return domain.ScheduleAbsenceKind{Code: code, ShortCode: req.ShortCode, Label: req.Label, Bucket: req.Bucket, ColourToken: req.ColourToken}, f.err
 }
 
-func (f *fakeScheduleRepo) DeleteAbsenceKind(_ context.Context, code, actor string) error {
-	f.called, f.gotKindCode, f.gotActorEml = true, code, actor
+func (f *fakeScheduleRepo) DeleteAbsenceKind(_ context.Context, code, actor string, allowed []string) error {
+	f.called, f.gotKindCode, f.gotActorEml, f.gotKindAllowed = true, code, actor, allowed
 	return f.err
 }
 
 func (f *fakeScheduleRepo) EditMarkers(context.Context, string, string) ([]domain.ScheduleEditMarker, error) {
-	return nil, f.err
+	return f.markers, f.err
+}
+
+func (f *fakeScheduleRepo) RotaAdminFamilies(context.Context, string) ([]string, error) {
+	return f.adminFamilies, f.err
 }
 
 func (f *fakeScheduleRepo) UserInTeam(_ context.Context, _ string, teamKey string) (bool, error) {
@@ -189,9 +201,10 @@ func (f *fakeScheduleRepo) SearchAbsences(_ context.Context, req domain.SearchSc
 	return f.absences, f.err
 }
 
-func (f *fakeScheduleRepo) OnDutyAt(_ context.Context, at time.Time) ([]domain.ScheduleAssignment, error) {
+func (f *fakeScheduleRepo) OnDutyAt(_ context.Context, at time.Time, includeOnLeave bool) ([]domain.ScheduleAssignment, error) {
 	f.called = true
 	f.gotOnDutyAt = at
+	f.gotIncludeOnLeave = includeOnLeave
 	return f.assignments, f.err
 }
 
@@ -319,7 +332,7 @@ func TestOnDutyDefaultsToNow(t *testing.T) {
 
 	repo := &fakeScheduleRepo{}
 	before := time.Now()
-	if _, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).OnDuty(context.Background(), nil); err != nil {
+	if _, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).OnDuty(context.Background(), nil, false); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if repo.gotOnDutyAt.Before(before) || repo.gotOnDutyAt.After(time.Now()) {
@@ -332,11 +345,14 @@ func TestOnDutyUsesTheInstantAskedFor(t *testing.T) {
 
 	repo := &fakeScheduleRepo{}
 	at := time.Date(2026, 9, 21, 22, 15, 0, 0, time.UTC)
-	if _, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).OnDuty(context.Background(), &at); err != nil {
+	if _, err := NewScheduleService(repo, alwaysUnrestrictedAccess{}).OnDuty(context.Background(), &at, true); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
 	if !repo.gotOnDutyAt.Equal(at) {
 		t.Fatalf("want %v, got %v", at, repo.gotOnDutyAt)
+	}
+	if !repo.gotIncludeOnLeave {
+		t.Fatal("includeOnLeave was not passed to the repository")
 	}
 }
 
@@ -378,7 +394,7 @@ func TestScheduleReadsRequireInternalCaller(t *testing.T) {
 			return err
 		},
 		"on-duty": func(s ScheduleService) error {
-			_, err := s.OnDuty(context.Background(), nil)
+			_, err := s.OnDuty(context.Background(), nil, false)
 			return err
 		},
 	}

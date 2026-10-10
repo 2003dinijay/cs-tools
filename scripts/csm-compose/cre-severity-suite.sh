@@ -208,7 +208,7 @@ psql_q() { docker compose -f "${repo_root}/docker-compose.yml" exec -T postgres 
           order by t.type, t.key, tm.role, tm.alert_tier nulls last, u.email;"
 } > "${out}/ground-truth/roster.tsv" 2>&1
 git -C "$repo_root" log -1 --format='commit %h %s' > "${out}/ground-truth/commit.txt"
-cp "${repo_root}/scripts/csm-compose/escalation.yaml" "${out}/ground-truth/escalation.yaml"
+cp "${repo_root}/scripts/csm-compose/paging-alert.yaml" "${out}/ground-truth/paging-alert.yaml"
 
 # ---------------------------------------------------------------------------
 # Run the pool.

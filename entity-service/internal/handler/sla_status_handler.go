@@ -72,3 +72,28 @@ func (h *SLAStatusHandler) SearchActiveSLAStatuses(w http.ResponseWriter, r *htt
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(resp)
 }
+
+// GetClockState handles GET /sla-status/clock-state. A plain GET with
+// workItemId/target/source query params — workItemId and target are
+// required, source is optional; see SLAStatusService.GetClockState's own
+// doc comment for their accepted values.
+func (h *SLAStatusHandler) GetClockState(w http.ResponseWriter, r *http.Request) {
+	workItemID := r.URL.Query().Get("workItemId")
+	if workItemID == "" {
+		writeServiceError(w, r, &apierror.ValidationError{Msg: "workItemId is required"})
+		return
+	}
+	target := r.URL.Query().Get("target")
+	if target == "" {
+		writeServiceError(w, r, &apierror.ValidationError{Msg: "target is required"})
+		return
+	}
+
+	resp, err := h.svc.GetClockState(r.Context(), workItemID, target, r.URL.Query().Get("source"))
+	if err != nil {
+		writeServiceError(w, r, err)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(resp)
+}

@@ -1114,7 +1114,7 @@ func TestScheduleIntegration_CreateAbsenceKindJoinsTheEndOfItsBucket(t *testing.
 	}
 
 	req := domain.CreateScheduleAbsenceKindRequest{ShortCode: "ITT", Label: "Integration test tag", Bucket: "ALLOCATION", ColourToken: "INT"}
-	k, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_TEST_TAG", req, schedLeadEmail)
+	k, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_TEST_TAG", req, nil, schedLeadEmail)
 	if err != nil {
 		t.Fatalf("CreateAbsenceKind: %v", err)
 	}
@@ -1131,12 +1131,12 @@ func TestScheduleIntegration_CreateAbsenceKindJoinsTheEndOfItsBucket(t *testing.
 	var conflict *apierror.ConflictError
 	if _, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_TEST_TAG", domain.CreateScheduleAbsenceKindRequest{
 		ShortCode: "IT2", Label: "Integration test tag", Bucket: "ALLOCATION", ColourToken: "INT",
-	}, schedLeadEmail); !errors.As(err, &conflict) {
+	}, nil, schedLeadEmail); !errors.As(err, &conflict) {
 		t.Fatalf("the same label again: want ConflictError, got %v", err)
 	}
 	if _, err := repo.CreateAbsenceKind(ctx, "SOMETHING_ELSE", domain.CreateScheduleAbsenceKindRequest{
 		ShortCode: "al", Label: "Something else", Bucket: "LEAVE", ColourToken: "AL",
-	}, schedLeadEmail); !errors.As(err, &conflict) {
+	}, nil, schedLeadEmail); !errors.As(err, &conflict) {
 		t.Fatalf("annual leave's short code: want ConflictError, got %v", err)
 	}
 }
@@ -1198,13 +1198,13 @@ func TestScheduleIntegration_DeleteAbsenceKindOnlyRemovesAnUnusedCustomTag(t *te
 	})
 
 	var forbidden *apierror.ForbiddenError
-	if err := repo.DeleteAbsenceKind(ctx, "ANNUAL_LEAVE", schedLeadEmail); !errors.As(err, &forbidden) {
+	if err := repo.DeleteAbsenceKind(ctx, "ANNUAL_LEAVE", schedLeadEmail, nil); !errors.As(err, &forbidden) {
 		t.Fatalf("deleting annual leave: want ForbiddenError, got %v", err)
 	}
 
 	k, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_DELETE_TAG", domain.CreateScheduleAbsenceKindRequest{
 		ShortCode: "IDT", Label: "Integration delete tag", Bucket: "ALLOCATION", ColourToken: "INT",
-	}, schedLeadEmail)
+	}, nil, schedLeadEmail)
 	if err != nil {
 		t.Fatalf("CreateAbsenceKind: %v", err)
 	}
@@ -1217,7 +1217,7 @@ func TestScheduleIntegration_DeleteAbsenceKindOnlyRemovesAnUnusedCustomTag(t *te
 		t.Fatalf("marking the tag: %v", err)
 	}
 	var conflict *apierror.ConflictError
-	if err := repo.DeleteAbsenceKind(ctx, k.Code, schedLeadEmail); !errors.As(err, &conflict) {
+	if err := repo.DeleteAbsenceKind(ctx, k.Code, schedLeadEmail, nil); !errors.As(err, &conflict) {
 		t.Fatalf("deleting a tag in use: want ConflictError, got %v", err)
 	}
 
@@ -1226,7 +1226,7 @@ func TestScheduleIntegration_DeleteAbsenceKindOnlyRemovesAnUnusedCustomTag(t *te
 	}, schedLeadEmail); err != nil {
 		t.Fatalf("clearing the day: %v", err)
 	}
-	if err := repo.DeleteAbsenceKind(ctx, k.Code, schedLeadEmail); err != nil {
+	if err := repo.DeleteAbsenceKind(ctx, k.Code, schedLeadEmail, nil); err != nil {
 		t.Fatalf("deleting the unused tag: %v", err)
 	}
 	cat, err := repo.Catalogue(ctx)
@@ -1469,7 +1469,7 @@ func TestScheduleIntegration_AMovingSpanIsFiledUnderItsTeamAndPagedThere(t *test
 			schedMemberID, team).Scan(&startsAt, &endsAt); err != nil {
 			t.Fatalf("read the %s window back: %v", team, err)
 		}
-		rows, err := repo.OnDutyAt(ctx, startsAt.Add(endsAt.Sub(startsAt)/2))
+		rows, err := repo.OnDutyAt(ctx, startsAt.Add(endsAt.Sub(startsAt)/2), false)
 		if err != nil {
 			t.Fatalf("OnDutyAt: %v", err)
 		}
@@ -1679,7 +1679,7 @@ func TestScheduleIntegration_OnDutyAtExcludesSomebodyOnLeave(t *testing.T) {
 	middle := startsAt.Add(endsAt.Sub(startsAt) / 2)
 
 	onDuty := func() bool {
-		rows, err := repo.OnDutyAt(ctx, middle)
+		rows, err := repo.OnDutyAt(ctx, middle, false)
 		if err != nil {
 			t.Fatalf("OnDutyAt: %v", err)
 		}
@@ -1696,7 +1696,7 @@ func TestScheduleIntegration_OnDutyAtExcludesSomebodyOnLeave(t *testing.T) {
 	}
 
 	// Just outside it, they are not.
-	if rows, err := repo.OnDutyAt(ctx, endsAt.Add(time.Hour)); err != nil {
+	if rows, err := repo.OnDutyAt(ctx, endsAt.Add(time.Hour), false); err != nil {
 		t.Fatalf("OnDutyAt(after): %v", err)
 	} else {
 		for _, a := range rows {
@@ -2108,11 +2108,11 @@ func TestScheduleIntegration_CreateAbsenceKindConflictNamesTheExistingTag(t *tes
 	_, _ = pool.Exec(ctx, `DELETE FROM team_schedule_absence_kind WHERE code = 'INTEGRATION_CLASH_TAG'`)
 
 	first := domain.CreateScheduleAbsenceKindRequest{Label: "Integration clash tag", ShortCode: "ICT1", Bucket: "ALLOCATION", ColourToken: "INT"}
-	if _, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_CLASH_TAG", first, schedLeadEmail); err != nil {
+	if _, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_CLASH_TAG", first, nil, schedLeadEmail); err != nil {
 		t.Fatalf("first create: %v", err)
 	}
 	second := domain.CreateScheduleAbsenceKindRequest{Label: "Integration-clash tag!", ShortCode: "ICT2", Bucket: "ALLOCATION", ColourToken: "INT"}
-	_, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_CLASH_TAG", second, schedLeadEmail)
+	_, err := repo.CreateAbsenceKind(ctx, "INTEGRATION_CLASH_TAG", second, nil, schedLeadEmail)
 	var conflict *apierror.ConflictError
 	if !errors.As(err, &conflict) {
 		t.Fatalf("want a ConflictError, got %v", err)

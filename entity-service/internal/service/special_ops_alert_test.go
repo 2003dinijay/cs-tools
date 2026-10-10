@@ -52,7 +52,7 @@ func soTeams(t *testing.T) *SpecialistHandoffConfig {
 	cfg, err := ParseSpecialistHandoffConfig(`{"products":[
 		{"name":"Choreo","serviceIds":["b9c999f8-1b86-a010-00ae-86acdd4bcb61"],"teams":[
 			{"key":"choreo-special-ops","label":"Choreo Special Ops","groupId":"fe0d8868-1b0b-3010-d64e-64a2604bcb3c"},
-			{"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"` + soChoreoRuntimeGroup + `"}]},
+			{"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"` + soChoreoRuntimeGroup + `","smeTeam":"choreo-runtime"}]},
 		{"name":"Asgardeo","serviceIds":["97ed1b8b-1ba2-6c10-00ae-86acdd4bcbd3"],"teams":[
 			{"key":"asgardeo-special-ops","label":"Asgardeo Special Ops","groupId":"7fb4f4c6-1b4b-3810-aea4-a936604bcb90"}]}]}`)
 	if err != nil {
@@ -99,13 +99,55 @@ func TestSpecialOpsAlert_PublishedForATeamGroup(t *testing.T) {
 		IncidentID: incidentReportTestID, Number: "INC0099990", Subject: "Choreo runtime degradation",
 		Description: "<p>pods restarting</p>", State: "IN_PROGRESS", Priority: "HIGH", Impact: "HIGH", Urgency: "MEDIUM",
 		ServiceID: "b9c999f8-1b86-a010-00ae-86acdd4bcb61", ServiceName: "Choreo",
-		Product: "Choreo", TeamKey: "choreo-runtime-team", TeamLabel: "Choreo Runtime Team",
+		Product: "Choreo", TeamKey: "choreo-runtime-team", TeamLabel: "Choreo Runtime Team", SMETeam: "choreo-runtime",
 		AssignmentGroupID: soChoreoRuntimeGroup, AssignmentGroupName: "Choreo Runtime Team",
 		PreviousAssignmentGroupID: soOtherGroup, PreviousAssignmentGroupName: "Choreo SRE",
 		ChangedBy: "jane.doe@wso2.com", ChangedOn: "2026-10-08T09:30:00Z",
 	}
 	if got != want {
 		t.Errorf("payload =\n%+v\nwant\n%+v", got, want)
+	}
+}
+
+// Two Special Ops teams sharing one group: the alert is for the team the
+// dialog picked, as the handoff's reason note names it, so the right SME rota
+// is paged. With no note naming one of them, the first.
+func TestSpecialOpsAlert_SharedGroupFollowsTheDialog(t *testing.T) {
+	cfg, err := ParseSpecialistHandoffConfig(`{"products":[
+		{"name":"Choreo","serviceIds":["b9c999f8-1b86-a010-00ae-86acdd4bcb61"],"teams":[
+			{"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"` + soChoreoRuntimeGroup + `","smeTeam":"choreo-runtime"},
+			{"key":"choreo-cloud-team","label":"Choreo Cloud Team","groupId":"` + soChoreoRuntimeGroup + `","smeTeam":"cloud-core"}]}]}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, c := range map[string]struct {
+		note     *string
+		wantTeam string
+		wantSME  string
+	}{
+		"the dialog picked the second team": {strPtr(`{"reasonCode":"runbook_failed","reasonDescription":"x","escalationTeam":"choreo-cloud-team"}`), "choreo-cloud-team", "cloud-core"},
+		"the dialog picked the first team":  {strPtr(`{"reasonCode":"runbook_failed","reasonDescription":"x","escalationTeam":"choreo-runtime-team"}`), "choreo-runtime-team", "choreo-runtime"},
+		"no handoff note (moved by hand)":   {nil, "choreo-runtime-team", "choreo-runtime"},
+		"a note naming another team":        {strPtr(`{"reasonCode":"x","escalationTeam":"asgardeo"}`), "choreo-runtime-team", "choreo-runtime"},
+		"a note that is not the JSON":       {strPtr(`"reasonCode" mentioned in prose`), "choreo-runtime-team", "choreo-runtime"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			pub := &alertPublisher{}
+			tx := alertTx()
+			tx.alertSrc.HandoffNote = c.note
+			svc := WithSpecialOpsAlerts(NewIncidentReportService(), pub, cfg)
+			if err := svc.HandleChange(context.Background(), tx, groupChange(soOtherGroup, soChoreoRuntimeGroup, "jane.doe@wso2.com")); err != nil {
+				t.Fatal(err)
+			}
+			if len(pub.sent) != 1 {
+				t.Fatalf("sent %d alerts, want 1", len(pub.sent))
+			}
+			var got events.IncidentSpecialOpsAlertPayload
+			_ = json.Unmarshal(pub.sent[0].Payload, &got)
+			if got.TeamKey != c.wantTeam || got.SMETeam != c.wantSME {
+				t.Errorf("team %q smeTeam %q, want %q %q", got.TeamKey, got.SMETeam, c.wantTeam, c.wantSME)
+			}
+		})
 	}
 }
 
@@ -124,6 +166,12 @@ func TestSpecialOpsAlert_CaseInsensitiveAndNoPreviousGroup(t *testing.T) {
 	_ = json.Unmarshal(pub.sent[0].Payload, &got)
 	if got.TeamKey != "asgardeo-special-ops" || got.Product != "Asgardeo" || got.PreviousAssignmentGroupID != "" {
 		t.Errorf("payload = %+v", got)
+	}
+	// A team whose configuration names no SME team leaves smeTeam out.
+	var raw map[string]any
+	_ = json.Unmarshal(pub.sent[0].Payload, &raw)
+	if _, present := raw["smeTeam"]; present {
+		t.Errorf("smeTeam present in %s, want it omitted", pub.sent[0].Payload)
 	}
 }
 

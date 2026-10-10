@@ -506,6 +506,12 @@ type IncidentAssignedPayload struct {
 	// AssigneeName is for the escalation's execution summary; omitted when
 	// ServiceNow returned no display name.
 	AssigneeName string `json:"assigneeName,omitempty"`
+	// AssignedOn is when the assignee was set, RFC3339 UTC. Case Paging's
+	// Special Ops (SME) page compares an alert's changedOn against it, so an
+	// assignment handled before the alert it answers still answers it.
+	// csm-notification-service decodes strictly: deploy the version that
+	// knows the field first.
+	AssignedOn string `json:"assignedOn,omitempty"`
 }
 
 // IncidentAcknowledgedPayload is the Payload shape for

@@ -51,7 +51,7 @@ func TestEntityClient_SendsTheClientAssertion(t *testing.T) {
 		BaseURL: srv.URL, TokenURL: tokenSrv.URL,
 		ClientID: "csm-notification-service-dev-client", ClientSecret: "s",
 	})
-	if _, err := c.OnDutyAt(context.Background(), time.Now()); err != nil {
+	if _, err := c.OnDutyAt(context.Background(), time.Now(), false); err != nil {
 		t.Fatalf("OnDutyAt: %v", err)
 	}
 	if gotAssertion != "test-assertion-token" {
@@ -61,5 +61,46 @@ func TestEntityClient_SendsTheClientAssertion(t *testing.T) {
 	// other caller expect.
 	if gotAuth == "" {
 		t.Error("Authorization was dropped; the OAuth2 transport must still set it")
+	}
+}
+
+// DialNumbers reads the number to call and its source; from an older
+// entity-service, which sends only the paging-only number, it reads that with
+// no source, so the resolver still puts the profile first.
+func TestEntityClient_DialNumbers(t *testing.T) {
+	var gotQuery string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotQuery = r.URL.Query().Get("emails")
+		_, _ = w.Write([]byte(`{"contacts":[
+		  {"userId":"u1","email":"A@example.com","dialPhone":"+94770000001","dialSource":"profile","profilePhone":"+94770000001","phone":"+94770000011"},
+		  {"userId":"u2","email":"b@example.com","dialPhone":"","dialSource":"","profilePhone":"077","phone":""},
+		  {"userId":"u3","email":"c@example.com","phone":"+94770000013","setBy":"lead@example.com"}]}`))
+	}))
+	defer srv.Close()
+	tokenSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"access_token":"t","token_type":"Bearer","expires_in":3600}`))
+	}))
+	defer tokenSrv.Close()
+
+	c := NewEntityClient(EntityConfig{BaseURL: srv.URL, TokenURL: tokenSrv.URL, ClientID: "c", ClientSecret: "s"})
+	got, err := c.DialNumbers(context.Background(), []string{"a@example.com", "b@example.com", "c@example.com"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotQuery != "a@example.com,b@example.com,c@example.com" {
+		t.Errorf("emails = %q", gotQuery)
+	}
+	want := map[string]DialNumber{
+		"a@example.com": {Number: "+94770000001", Source: DialSourceProfile},
+		"c@example.com": {Number: "+94770000013"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for e, w := range want {
+		if got[e] != w {
+			t.Errorf("%s = %+v, want %+v", e, got[e], w)
+		}
 	}
 }

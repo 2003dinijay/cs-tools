@@ -145,6 +145,18 @@ describe("CommentBubble", () => {
     expect(screen.getByText("support-engineer@wso2.com")).toBeInTheDocument();
   });
 
+  // Regression: the real GET /conversations/{id}/messages response sends
+  // createdBy: "" for a Novera reply, which used to fall through
+  // commentAuthorDisplayName's final `|| "Unknown"` and render the literal
+  // word "Unknown" as the author name instead of identifying it as Novera.
+  it("shows 'Novera' rather than 'Unknown' for a comment with no createdBy", () => {
+    renderBubble({
+      comment: { ...mockComment, id: "novera-empty-createdby", createdBy: "" },
+    });
+    expect(screen.getByText("Novera")).toBeInTheDocument();
+    expect(screen.queryByText("Unknown")).not.toBeInTheDocument();
+  });
+
   it("should render formatted date", () => {
     renderBubble();
     expect(screen.getByText(/Feb 12, 2026/)).toBeInTheDocument();

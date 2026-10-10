@@ -19,6 +19,7 @@ package service
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
@@ -32,7 +33,8 @@ import (
 //	{"products":[
 //	  {"name":"Choreo","serviceIds":["b9c999f8-..."],
 //	   "github":{"owner":"wso2-enterprise","repo":"choreo","credential":"wso2-enterprise"},
-//	   "teams":[{"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"80dade5d-..."}, ...]},
+//	   "teams":[{"key":"choreo-runtime-team","label":"Choreo Runtime Team","groupId":"80dade5d-...",
+//	             "smeTeam":"choreo-runtime"}, ...]},
 //	  {"name":"Asgardeo", ...}]}
 //
 // ServiceNow hard-codes the same routing in the "Escalate to Special Ops" UI
@@ -73,23 +75,39 @@ func (g *SpecialistHandoffGithub) credential() string {
 // SpecialistHandoffConfigTeam is one Special Ops team: Key is what the
 // handoff names it by (escalationTeam), Label what the dialog shows, GroupID
 // the assignment group a handed-off incident and its runbook task go to.
+// SMETeam is the Team Schedule team key of the SME rota that answers a
+// handoff to it ("asgardeo", "choreo-runtime"): Case Paging pages whoever
+// that rota has on duty. Empty means no SME team is named yet; the handoff
+// still goes through, and the paging readiness check reports the gap.
 type SpecialistHandoffConfigTeam struct {
 	Key     string `json:"key"`
 	Label   string `json:"label"`
 	GroupID string `json:"groupId"`
+	SMETeam string `json:"smeTeam,omitempty"`
 }
 
-// teamForGroup is the product and team whose Special Ops group groupID is,
-// or nil, nil for any other group.
-func (c *SpecialistHandoffConfig) teamForGroup(groupID string) (*SpecialistHandoffProduct, *SpecialistHandoffConfigTeam) {
+// teamKeyPattern is the shape of a Team Schedule team key as the SME rota
+// teams are keyed: lower-case letters, digits, '-' and '_', at most 64
+// (team.key is VARCHAR(64)). Whether the team exists is not known at startup;
+// the paging readiness check says.
+var teamKeyPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,63}$`)
+
+// teamsForGroup is the product and the teams whose Special Ops group groupID
+// is, or nil, nil for any other group. Two teams of one product may share a
+// group; the caller then needs the team the handoff picked.
+func (c *SpecialistHandoffConfig) teamsForGroup(groupID string) (*SpecialistHandoffProduct, []*SpecialistHandoffConfigTeam) {
 	if c == nil || groupID == "" {
 		return nil, nil
 	}
 	for i := range c.Products {
+		var teams []*SpecialistHandoffConfigTeam
 		for j := range c.Products[i].Teams {
 			if strings.EqualFold(c.Products[i].Teams[j].GroupID, groupID) {
-				return &c.Products[i], &c.Products[i].Teams[j]
+				teams = append(teams, &c.Products[i].Teams[j])
 			}
+		}
+		if len(teams) > 0 {
+			return &c.Products[i], teams
 		}
 	}
 	return nil, nil
@@ -153,6 +171,10 @@ func ParseSpecialistHandoffConfig(raw string) (*SpecialistHandoffConfig, error) 
 			seenKey[t.Key] = true
 			if !isCanonicalUUID(t.GroupID) {
 				return nil, fmt.Errorf("%s: team %q groupId %q is not a UUID", where, t.Key, t.GroupID)
+			}
+			t.SMETeam = strings.TrimSpace(t.SMETeam)
+			if t.SMETeam != "" && !teamKeyPattern.MatchString(t.SMETeam) {
+				return nil, fmt.Errorf("%s: team %q smeTeam %q is not a team key (lower-case letters, digits, '-' and '_', at most 64)", where, t.Key, t.SMETeam)
 			}
 		}
 	}

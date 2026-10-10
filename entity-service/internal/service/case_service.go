@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/middleware"
@@ -103,6 +104,19 @@ type caseService struct {
 	// unless wired via WithCaseTypeTransfer, in which case a request carrying a
 	// type is refused as it was before the transfer existed.
 	typeTransfer repository.CaseTypeTransferRepository
+	// slaSearchDelegate, when non-nil, is a ServiceNow-backed CaseService
+	// SearchCases forwards an entire search to -- instead of running its own
+	// Postgres sla_live-backed query -- whenever the request carries an
+	// SLA-shaped filter (taskSLABusinessElapsedPercent/slaBreached) and the
+	// caller is internal. Wired via WithSLASearchDelegate only when
+	// config.SLADataSource is servicenow; nil otherwise, in which case
+	// SearchCases behaves exactly as before this field existed. Deliberately
+	// a separate field from snMirror above, not a reuse of it: snMirror
+	// carries dual-write's write-mirroring semantics (nil publisher/slaEngine
+	// to avoid side effects, asynchronous PATCH/comment mirroring) that must
+	// not apply here, and this is wanted under plain DATA_SOURCE=postgres too,
+	// where snMirror is never set at all.
+	slaSearchDelegate CaseService
 }
 
 // srNotifier is what caseService needs from SRNoticeService; an interface so
@@ -119,6 +133,25 @@ type srNotifier interface {
 func WithSRNotices(svc CaseService, n *SRNoticeService) CaseService {
 	if cs, ok := svc.(*caseService); ok && n != nil {
 		cs.srNotices = n
+	}
+	return svc
+}
+
+// WithSLASearchDelegate attaches a ServiceNow-backed CaseService that
+// SearchCases forwards to for SLA-filtered searches -- see
+// caseService.slaSearchDelegate's own doc comment for the full reasoning.
+// There is no narrower ServiceNow endpoint that answers "which case ids
+// match this SLA condition alone" (only the full case-search endpoint
+// already forwards taskSLAFilter/slaBreached to ServiceNow's own CaseUtils),
+// so the whole search is delegated wholesale rather than merging partial
+// result sets; snDelegate's own SearchCases already converts every id back
+// to the same UUID shape the Postgres path returns (every sn_*.go response
+// does this), so the response is indistinguishable in shape from the
+// Postgres path's own. A no-op if svc is not a *caseService -- defensive;
+// every real construction path is.
+func WithSLASearchDelegate(svc CaseService, snDelegate CaseService) CaseService {
+	if cs, ok := svc.(*caseService); ok {
+		cs.slaSearchDelegate = snDelegate
 	}
 	return svc
 }
@@ -2574,10 +2607,16 @@ func (s *caseService) updateCaseFields(ctx context.Context, req domain.UpdateCas
 
 	// The actor is only needed to stamp workaround_provided_by_user_id and
 	// work_item.updated_by -- resolved once regardless, since updated_by is
-	// always written.
-	actor, err := s.resolveActor(ctx)
+	// always written. resolveActorOrM2M (not resolveActor) so a pure M2M
+	// caller with no end-user token -- e.g. csm-integration-service setting
+	// a fix-ETA -- can still PATCH these fields; see that method's own doc
+	// comment.
+	actor, err := s.resolveActorOrM2M(ctx)
 	if err != nil {
 		return domain.UpdateCaseResponse{}, err
+	}
+	if req.WorkaroundProvided != nil && *req.WorkaroundProvided && actor.ID == "" {
+		return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "workaroundProvided requires an authenticated end-user caller: a pure M2M caller has no user record to attribute it to"}
 	}
 
 	updatedOn, err := s.repo.UpdateCaseFields(ctx, req, actor.ID, actor.Email)
@@ -2869,6 +2908,17 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, err
 	}
 
+	// SLA_DATA_SOURCE=servicenow (slaSearchDelegate wired in routes.go): an
+	// SLA-shaped filter is answered by ServiceNow's own live case search
+	// instead of this data source's own sla_live-backed query -- internal
+	// callers only, so a customer-portal-scoped caller keeps this data
+	// source's own row-level security regardless of the SLA toggle. See
+	// WithSLASearchDelegate's own doc comment.
+	if s.slaSearchDelegate != nil && scope.Unrestricted &&
+		(req.Parsed.TaskSLAFilter != nil || req.Parsed.HasBreachedSLA != nil) {
+		return s.slaSearchDelegate.SearchCases(ctx, req)
+	}
+
 	cases, total, err := s.repo.SearchCases(ctx, req, scope)
 	if err != nil {
 		return domain.SearchCasesResponse{}, err
@@ -2980,6 +3030,48 @@ func (s *caseService) resolveActor(ctx context.Context) (domain.User, error) {
 		return domain.User{}, &apierror.ValidationError{Msg: "x-user-id-token: " + err.Error()}
 	}
 	return s.userRepo.GetUserByEmail(ctx, email)
+}
+
+// resolveActorOrM2M is resolveActor plus an M2M fallback, mirroring
+// pgProjectUpdateService.resolveUpdatedBy: with no x-user-id-token, a caller
+// whose AccessScope is Unrestricted (an M2M_CLIENT_IDS client, or the CSM
+// portal backend) is resolved to its own client id instead of being
+// rejected outright. Used only by updateCaseFields, whose combinable-field
+// bundle (bestCaseFixEta/mostLikelyFixEta/worstCaseFixEta/subject/
+// description/deploymentId/deployedProductId/relatedCaseId/
+// workaroundProvided) a pure M2M caller -- e.g. csm-integration-service,
+// which forwards no end-user identity at all -- must be able to PATCH.
+// Every other resolveActor call site (assign, acknowledge, watch list, add
+// a tag, add a comment, close a case) keeps requiring a real end-user
+// token: those actions' actor is meant to be a real person, not a service
+// account, so they are deliberately not widened here.
+//
+// The returned domain.User.ID is empty on the M2M fallback (there is no
+// real "user" row to attribute to) -- updateCaseFields itself rejects
+// WorkaroundProvided:true in that case, since that field needs a real user
+// id to stamp workaround_provided_by_user_id with. Email is used
+// unconditionally to stamp work_item.updated_by, a free-text audit column
+// that already accepts a client id just as well as a real email (see that
+// column's own doc comment elsewhere in this codebase).
+func (s *caseService) resolveActorOrM2M(ctx context.Context) (domain.User, error) {
+	if middleware.UserIDTokenFromContext(ctx) != "" {
+		return s.resolveActor(ctx)
+	}
+	if s.access == nil {
+		return domain.User{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.User{}, err
+	}
+	if !scope.Unrestricted {
+		return domain.User{}, &apierror.UnauthorizedError{Msg: "x-user-id-token header is required"}
+	}
+	clientID := auth.IdentityFromContext(ctx).ClientID
+	if clientID == "" {
+		clientID = "internal-client"
+	}
+	return domain.User{Email: clientID}, nil
 }
 
 // recordFieldChangeActivity is a best-effort wrapper around

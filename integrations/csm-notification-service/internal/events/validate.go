@@ -231,6 +231,39 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		if entityID == "" || p.AssigneeID == "" {
 			return fmt.Errorf("events: missing required field for %s", t)
 		}
+	case TypeIncidentSpecialOpsAlert:
+		var p IncidentSpecialOpsAlertPayload
+		if err := decodeStrict(raw, &p); err != nil {
+			return err
+		}
+		// The incident is the page's key and the work note's target; the
+		// team says who to page; changedOn is when to look the SME up, and
+		// how a replay is recognised.
+		if p.IncidentID == "" || p.TeamKey == "" || p.ChangedOn == "" {
+			return fmt.Errorf("events: missing required field for %s", t)
+		}
+		if entityID != "" && entityID != p.IncidentID {
+			return fmt.Errorf("events: %s entityId does not match payload incidentId", t)
+		}
+		if _, err := time.Parse(time.RFC3339, p.ChangedOn); err != nil {
+			return fmt.Errorf("events: %s changedOn %q is not RFC3339", t, p.ChangedOn)
+		}
+	case TypePagingTestCallRequested:
+		var p PagingTestCallRequestedPayload
+		if err := decodeStrict(raw, &p); err != nil {
+			return err
+		}
+		// The result is written back against userId, and the call goes to
+		// phone; neither is optional. The envelope is keyed by the same user.
+		if p.UserID == "" || p.Phone == "" {
+			return fmt.Errorf("events: missing required field for %s", t)
+		}
+		if entityID != "" && entityID != p.UserID {
+			return fmt.Errorf("events: %s entityId does not match payload userId", t)
+		}
+		if !e164Pattern.MatchString(p.Phone) {
+			return fmt.Errorf("events: %s phone is not a valid E.164 phone number", t)
+		}
 	case TypeIncidentCommentAdded:
 		var p IncidentCommentAddedPayload
 		if err := decodeStrict(raw, &p); err != nil {
@@ -320,6 +353,26 @@ func Validate(entityID string, t Type, raw json.RawMessage) error {
 		}
 		if !validRecipients(p.Recipients) {
 			return fmt.Errorf("events: invalid recipients for %s", t)
+		}
+	case TypeOutageStatusPageDue:
+		var p OutageStatusPageDuePayload
+		if err := decodeStrict(raw, &p); err != nil {
+			return err
+		}
+		if p.WebhookID == "" || p.ClaimToken == "" || p.OutageID == "" || p.Cloud == "" || p.Timestamp == "" {
+			return fmt.Errorf("events: missing required field for %s", t)
+		}
+		if !validStatusPageCloud[p.Cloud] {
+			return fmt.Errorf("events: %s has unknown cloud %q", t, p.Cloud)
+		}
+		if _, err := time.Parse(statusPageTimestampLayout, p.Timestamp); err != nil {
+			return fmt.Errorf("events: %s timestamp %q is not ISO-8601 UTC with milliseconds", t, p.Timestamp)
+		}
+		if p.OutageID != entityID {
+			return fmt.Errorf("events: payload outageId %q does not match entityId %q", p.OutageID, entityID)
+		}
+		if !validStatusPageEvent[p.Event] {
+			return fmt.Errorf("events: %s has unknown event %q", t, p.Event)
 		}
 	case TypeCaseEscalated:
 		var p CaseEscalatedPayload

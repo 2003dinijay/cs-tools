@@ -85,6 +85,9 @@ const (
 	// down: the running chain stops and a new one starts for the new
 	// severity, from the first tier.
 	TriggerSeverityChanged TriggerKind = "Severity Change"
+	// TriggerSpecialOps is an incident escalated to a Special Ops
+	// team: the one-call SME page (sme.go).
+	TriggerSpecialOps TriggerKind = "Special Ops Escalation"
 )
 
 // PlannedCall is one concrete call: who, when, at which level.
@@ -211,7 +214,7 @@ func BuildPlan(ctx context.Context, t Trigger, policies map[string]PriorityPolic
 		// the report instant; its rungs are ranks and rota pairs fixed by
 		// the shift the incident arrived in.
 		rc := t.Routing
-		if rc.Ladder == LadderSRE {
+		if rc.Ladder == LadderSRE || rc.Ladder == LadderSME {
 			rc.At = opensAt
 		}
 		recipients, err := r.Resolve(ctx, level, rc)
@@ -380,6 +383,22 @@ func (t Trigger) caseRef() string {
 // differ by exactly these two characters, which is why this takes a flag
 // rather than the callers sharing one string.
 func (t Trigger) instruction(quoted bool) string {
+	line := t.stopInstruction(quoted)
+	// Which SRE chain is calling, when the rota is known: SaaS and IaaS SRE
+	// share one engine, and the person answering should know which they are
+	// on call for.
+	if chain := t.Routing.SREChain(); t.Routing.Ladder == LadderSRE && chain != "" {
+		return "Paged by the " + chain + " chain. " + line
+	}
+	return line
+}
+
+// stopInstruction is what stops further calls; see instruction.
+func (t Trigger) stopInstruction(quoted bool) string {
+	// One call, nothing to stop: the SME is told what is being asked of them.
+	if t.Routing.Ladder == LadderSME {
+		return "This incident was escalated to the Special Ops team. Assign it to yourself to take it."
+	}
 	// A customer case stops on the assigned engineer's public comment (the
 	// SRE chain on an S0 case also stops on the assignment itself), so both
 	// ladders ask for the same two things.
@@ -616,6 +635,9 @@ func (p Plan) WorkNote(placed []bool, failed []string, cancelledAt *time.Time, r
 	// Which section 5.0 row selected these recipients, in the permanent
 	// record rather than only in a log line that ages out. "Why did this page
 	// the Americas leads and not ours" is answerable from the incident itself.
+	if chain := p.Trigger.Routing.SREChain(); p.Trigger.Routing.Ladder == LadderSRE && chain != "" {
+		b.WriteString(fmt.Sprintf("Paging chain: %s (rota %s)\n", chain, p.Trigger.Routing.Rota))
+	}
 	b.WriteString(fmt.Sprintf("Notification path: %s (shift %s, product %s, team %s, ABT-eligible %s)\n\n",
 		p.Trigger.Routing.Rule(),
 		orNone(string(p.Trigger.Routing.Shift)),

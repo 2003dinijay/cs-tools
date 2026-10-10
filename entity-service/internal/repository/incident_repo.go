@@ -198,6 +198,9 @@ type SpecialistHandoffSnapshot struct {
 	ServiceID           *string
 	AssignmentGroupID   *string
 	AssignmentGroupName *string
+	// AssignedToID is the engineer the incident is assigned to; nil when
+	// nobody is. A handoff needs one.
+	AssignedToID *string
 }
 
 // SpecialistHandoffPlan is what a handoff writes: the group the incident
@@ -722,14 +725,14 @@ func (r *incidentRepo) ApplySpecialistHandoff(ctx context.Context, id, actorEmai
 		var snap SpecialistHandoffSnapshot
 		err := tx.QueryRow(ctx, `
 			SELECT wi.id::text, wi.number, wi.subject, wi.description, inc.state::text,
-			       inc.service_id::text, wi.assignment_group_id::text, g.name
+			       inc.service_id::text, wi.assignment_group_id::text, g.name, wi.assigned_to_id::text
 			FROM incident inc
 			JOIN work_item wi ON wi.id = inc.id
 			LEFT JOIN "group" g ON g.id = wi.assignment_group_id
 			WHERE inc.id = $1 AND wi.type = 'INCIDENT'
 			FOR UPDATE OF inc, wi`, id).Scan(
 			&snap.IncidentID, &snap.Number, &snap.Subject, &snap.Description, &snap.State,
-			&snap.ServiceID, &snap.AssignmentGroupID, &snap.AssignmentGroupName)
+			&snap.ServiceID, &snap.AssignmentGroupID, &snap.AssignmentGroupName, &snap.AssignedToID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return SpecialistHandoffWritten{}, &apierror.NotFoundError{Msg: "incident not found"}
 		}
@@ -1607,15 +1610,25 @@ func (r *incidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req dom
 		outID, outNumber, outSubject, outCreatedBy string
 		outCreatedOn, outUpdatedOn                 time.Time
 	)
-	err := r.db.QueryRow(ctx, createIncidentFromServiceNowQuery,
-		id, createdBy,
-		number, req.Subject, req.ParentID, req.AssignmentGroupID,
-		req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
-		req.ServiceID, req.ServiceOfferingID, contactType,
-		req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
-		req.CorrelationID, req.Environment,
-	).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy)
+	// The work note and additional comment sent with the create are stored with the record, as CreateIncident does.
+	_, err := InTxReturning(ctx, r.db, func(tx pgx.Tx) (struct{}, error) {
+		if err := tx.QueryRow(ctx, createIncidentFromServiceNowQuery,
+			id, createdBy,
+			number, req.Subject, req.ParentID, req.AssignmentGroupID,
+			req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
+			req.ServiceID, req.ServiceOfferingID, contactType,
+			req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
+			req.CorrelationID, req.Environment,
+		).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy); err != nil {
+			return struct{}{}, err
+		}
+		return struct{}{}, insertIncidentNotesTx(ctx, tx, outID, req.WorkNotes, req.AdditionalComments, createdBy)
+	})
 	if err != nil {
+		var ve *apierror.ValidationError
+		if errors.As(err, &ve) {
+			return domain.CreateIncidentResponse{}, err
+		}
 		if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) {
 			switch pgErr.Code {
 			case "23505": // unique_violation on id/number -- see this method's own doc comment for why this "shouldn't" happen

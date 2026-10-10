@@ -82,10 +82,13 @@ const (
 	// cases (POST /cases/search and GET /cases/{id}, type-checked inside
 	// CaseHandler itself — see its own doc comment for why a route-level
 	// permission alone can't express this) and both /products/vulnerabilities
-	// routes. Admin and cs_engineer only — every other role, including plain
-	// viewer/escalator/attachment_downloader, is denied even though they hold
-	// PermView, since this is deliberately narrower than the general case/
-	// product-data access PermView otherwise grants.
+	// routes. Admin, cs_engineer and comment_updater only — every other
+	// role, including plain viewer/escalator/attachment_downloader, is
+	// denied even though they hold PermView, since this is deliberately
+	// narrower than the general case/product-data access PermView otherwise
+	// grants. comment_updater holds it because that role is also used for
+	// staff who triage security reports but don't otherwise hold
+	// cs_engineer.
 	PermViewSecurityCenter
 	// PermViewerAccess is the blanket audience gate for every SupportPortalLite
 	// (Sales/Solutions-Architecture) route — replacing the old
@@ -107,13 +110,19 @@ const (
 	// useAccess.ts for the matching frontend halves of this split;
 	// keep all three in sync on which role each one checks.
 	PermViewerAccess
-	// PermUsageMetricsViewer is the SPL Usage Metrics domain
-	// (/usage-metrics/*), layered on top of PermViewerAccess the same way
-	// PermEscalate/PermDownloadAttachment layer on top of PermView —
-	// replacing the old SPL_USAGE_METRICS_GROUPS sub-group check. Unlike
-	// AccessConfig.UsageMetricsViewer's original CS-Portal-side grant (View
-	// only, since this backend had no usage-metrics route of its own before
-	// SPL), this is the real permission those SPL routes now check.
+	// PermUsageMetricsViewer is the Usage Metrics domain (/usage-metrics/*).
+	// Unlike every other ex-"Support Portal Lite" domain (Customer Health,
+	// User Scan, the SLA/Time/CS project reports — all still gated by
+	// PermViewerAccess, Viewer only), Usage Metrics is registered directly
+	// on THIS permission at the route level, not layered on top of
+	// PermViewerAccess: it was reported live as needing a broader audience
+	// than "holds the Viewer role" once Support Portal Lite's separate
+	// app/nav was folded into the main portal — a cs_engineer, admin or
+	// dedicated usage_metrics_viewer holder must reach it even without
+	// separately holding Viewer too. Viewer itself does NOT hold this
+	// (confirmed live, correcting an earlier pass that added it): a
+	// Viewer-only caller must not see Usage Metrics at all, unlike its ex-SPL
+	// siblings.
 	PermUsageMetricsViewer
 	// PermViewSharedEntity is read access to exactly the routes SupportPortalLite's
 	// merged accounts/projects/cases/team-members screens call: GET /accounts/{id},
@@ -199,6 +208,41 @@ const (
 	// that step only records a decision taken over email, outside this portal,
 	// and may be recorded by someone other than the creator.
 	PermCreateAnnouncement
+	// PermUpdateDeleteComment is the route-level floor for PATCH/DELETE
+	// /comments/{id} -- CommentUpdater ∪ CsEngineer ∪ Admin, the same
+	// "specialised role, or a CS Portal role that already dominates it"
+	// shape as PermCreateWorkNote, not PermCreateAnnouncement's narrowing
+	// shape: a comment_updater-only caller must be able to reach the
+	// handler at all (today only cs_engineer/admin can), and cs_engineer
+	// must keep its existing ability to edit/delete its own comments.
+	//
+	// This permission only decides who may REACH the handler, not which
+	// specific comment they may act on -- entity-service performs NO
+	// authorization check of its own for this path any more (it has no way
+	// to see this backend's Asgardeo role vocabulary, and its own separate
+	// Postgres "admin" role was dropped as redundant and confusing). The
+	// finer-grained decision -- author, or PermUpdateDeleteAnyComment below
+	// -- is made entirely in CommentHandler itself (see its
+	// authorizeCommentActor), which calls entity-service's GetComment first
+	// purely to learn the comment's author. A plain cs_engineer holds this
+	// permission (reaches the handler) but not PermUpdateDeleteAnyComment,
+	// so they can still only successfully edit/delete a comment THEY
+	// authored.
+	PermUpdateDeleteComment
+	// PermUpdateDeleteAnyComment is held by Admin and CommentUpdater ONLY --
+	// deliberately NOT CsEngineer, unlike PermUpdateDeleteComment above. It
+	// does not gate a route directly: CommentHandler.authorizeCommentActor
+	// checks it in-handler (mirroring PermCreateAnnouncement/
+	// PermViewSecurityCenter's own in-handler-check shape), alongside an
+	// explicit author check against the comment it fetches via GetComment,
+	// to decide whether THIS caller may act on THIS comment -- a decision
+	// made entirely here, not forwarded to or re-checked by entity-service
+	// in any way. A cs_engineer must NOT hold this permission:
+	// PermUpdateDeleteComment above already lets them reach the handler for
+	// their OWN comment, and authorizeCommentActor's own author check is
+	// what keeps that scoped to authorship -- granting this one too would
+	// let them act on EVERY comment, erasing that distinction.
+	PermUpdateDeleteAnyComment
 )
 
 // AccessConfig names, per portal role, the role names on the token that grant
@@ -243,6 +287,13 @@ type AccessConfig struct {
 	// not an "everyone" or a "nobody-can-use-the-portal" state: it means only
 	// admin can create announcements, so deploy it with the variable set.
 	AnnouncementCreator []string
+	// CommentUpdater grants PermUpdateDeleteComment (see that permission's
+	// own doc comment) -- reaching PATCH/DELETE /comments/{id} at all, on
+	// top of cs_engineer/admin's own existing access. Unlike most roles
+	// here an unset variable is not a lockout: cs_engineer/admin already
+	// hold this permission regardless (same "unconfigured is a normal
+	// state" reasoning as WorknoteCreator's own doc comment).
+	CommentUpdater []string
 }
 
 // AccessGuard authorises a request from the roles on the caller's validated
@@ -296,7 +347,14 @@ type portalRole struct {
 // only -- see that permission's own doc comment. announcement_creator is
 // narrower in a different way: it implies nothing, not even View, and
 // PermCreateAnnouncement is only ever checked alongside PermWrite, so it
-// removes an ability from cs_engineer rather than adding one.
+// removes an ability from cs_engineer rather than adding one. comment_updater
+// is the same added-floor shape as worknote_creator for PermUpdateDeleteComment
+// (cs_engineer/admin keep holding that permission too), but ALSO implies
+// PermUpdateDeleteAnyComment alongside admin only -- cs_engineer deliberately
+// does not hold that second one -- and PermViewSecurityCenter, which
+// cs_engineer and admin both already hold anyway. See
+// PermUpdateDeleteComment's and PermUpdateDeleteAnyComment's own doc comments
+// for what each actually controls.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	build := func(lists ...[]string) map[string]struct{} {
 		set := make(map[string]struct{})
@@ -320,6 +378,7 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			{"sales_solutions", build(cfg.SalesSolutions)},
 			{"worknote_creator", build(cfg.WorknoteCreator)},
 			{"announcement_creator", build(cfg.AnnouncementCreator)},
+			{"comment_updater", build(cfg.CommentUpdater)},
 		},
 		allowed: map[Permission]map[string]struct{}{
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
@@ -331,7 +390,7 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			PermWrite:               build(cfg.CsEngineer, cfg.Admin),
 			PermViewAllDashboards:   build(cfg.CsEngineer, cfg.Admin),
 			PermAdmin:               build(cfg.Admin),
-			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin),
+			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin, cfg.CommentUpdater),
 			PermApproveTimeCard:     build(cfg.TimecardApprover, cfg.Admin),
 			// Viewer, unconditionally (no cs_engineer exclusion) -- see
 			// PermViewerAccess's own doc comment for why.
@@ -344,10 +403,10 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			PermViewSharedEntity: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
 				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner,
 				cfg.SalesSolutions),
-			// Same population as PermEscalate/PermDownloadAttachment's own
-			// "the specialised role, or a CS Portal role that already
-			// dominates it" shape -- see PermUsageMetricsViewer's own doc
-			// comment.
+			// CsEngineer, Admin, and the dedicated role grant this directly
+			// (no separate PermViewerAccess layer, and Viewer itself is
+			// deliberately NOT included) -- see PermUsageMetricsViewer's own
+			// doc comment.
 			PermUsageMetricsViewer: build(cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin),
 			PermUsePlg:             build(cfg.CsEngineer, cfg.Admin),
 			PermManagePlaybooks:    build(cfg.Admin),
@@ -360,6 +419,16 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			// does NOT hold it, which is the whole point of the role. Always
 			// checked together with PermWrite (see its doc comment).
 			PermCreateAnnouncement: build(cfg.AnnouncementCreator, cfg.Admin),
+			// The route-level floor for PATCH/DELETE /comments/{id} -- see
+			// PermUpdateDeleteComment's own doc comment for why cs_engineer
+			// stays in this set (unlike PermCreateAnnouncement's) and for
+			// what entity-service still separately enforces per comment.
+			PermUpdateDeleteComment: build(cfg.CommentUpdater, cfg.CsEngineer, cfg.Admin),
+			// Deliberately excludes cs_engineer -- see
+			// PermUpdateDeleteAnyComment's own doc comment for why granting
+			// it to them would erase entity-service's authorship scoping
+			// rather than just widen who can reach the handler.
+			PermUpdateDeleteAnyComment: build(cfg.CommentUpdater, cfg.Admin),
 		},
 	}
 }

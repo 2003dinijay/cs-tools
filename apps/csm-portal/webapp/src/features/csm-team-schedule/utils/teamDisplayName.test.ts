@@ -27,6 +27,9 @@ describe("teamDisplayName", () => {
     ["acme_sre_team", "Acme"],
     ["customer_onboarding_team", "Customer Onboarding"],
     ["Cre-leadership", "CRE Leadership"],
+    ["choreo-runtime", "Choreo Runtime"],
+    // A hyphen before a capital is part of the name.
+    ["B-Central", "B-Central"],
     ["CRE Leadership", "CRE Leadership"],
     ["Orion", "Orion"],
     ["orion", "Orion"],

@@ -215,6 +215,17 @@ type SLAStatusService interface {
 	// engine's own (much smaller) row set rather than the full
 	// ServiceNow-synced table.
 	SearchActiveSLAStatuses(ctx context.Context, req domain.Pagination, sourceFilter string) (domain.SearchSLAStatusResponse, error)
+
+	// GetClockState returns the full, current state of one (work item,
+	// clock target) "sla" row, regardless of whether it's currently
+	// "active" -- unlike SearchActiveSLAStatuses, which only ever lists
+	// active rows. See domain.SLAClockState's own doc comment for why this
+	// distinction exists and who needs it. A ValidationError is returned
+	// for a malformed workItemId, an unrecognized target (must be
+	// "response"/"workaround"/"resolution", case-insensitive), or an
+	// unrecognized sourceFilter (same accepted values as
+	// SearchActiveSLAStatuses's own).
+	GetClockState(ctx context.Context, workItemID, target, sourceFilter string) (domain.SLAClockState, error)
 }
 
 // SLADurationPolicyService backs GET /sla-duration-policy — see
@@ -1028,17 +1039,21 @@ type CommentService interface {
 	SearchComments(ctx context.Context, req domain.SearchCommentsRequest) (domain.SearchCommentsResponse, error)
 	// CreateComment creates a new comment on the given reference entity.
 	CreateComment(ctx context.Context, req domain.CreateCommentRequest) (domain.CreateCommentResponse, error)
-	// UpdateComment edits an existing comment's content. Only the comment's
-	// original author or a caller holding the "admin" role may call this; see
-	// commentService.UpdateComment's own doc comment for the authorization
-	// rule. Returns a ForbiddenError if the caller may not edit this comment,
-	// a NotFoundError if it doesn't exist, and a ValidationError if it is
-	// already soft-deleted.
+	// GetComment returns a single comment by id, with no author/role check of
+	// its own -- see commentService.GetComment's own doc comment for why.
+	// csm-portal-backend calls this to learn a comment's author before
+	// deciding whether to allow an edit/delete. Returns a NotFoundError if it
+	// doesn't exist.
+	GetComment(ctx context.Context, id string) (domain.Comment, error)
+	// UpdateComment edits an existing comment's content. Performs no
+	// author/role check of its own -- see commentService.UpdateComment's own
+	// doc comment for why. Returns a NotFoundError if it doesn't exist, and a
+	// ValidationError if it is already soft-deleted.
 	UpdateComment(ctx context.Context, req domain.UpdateCommentRequest) (domain.UpdateCommentResponse, error)
 	// DeleteComment soft-deletes a comment (content is retained but no longer
 	// generally visible -- see commentService's own visibility rule doc
-	// comment). Same author-or-admin authorization rule as UpdateComment.
-	// Returns a ConflictError if the comment is already deleted.
+	// comment). Performs no author/role check of its own, same as
+	// UpdateComment. Returns a ConflictError if the comment is already deleted.
 	DeleteComment(ctx context.Context, id string) error
 	// GetCommentEditHistory returns a comment's prior versions, newest first.
 	GetCommentEditHistory(ctx context.Context, id string) (domain.GetCommentEditHistoryResponse, error)
@@ -1441,8 +1456,13 @@ type CloudStatusService interface {
 	PendingWebhooks(ctx context.Context) (domain.PendingCloudStatusWebhooksResponse, error)
 
 	// RecordDelivery stamps the outcome of one attempt. A ValidationError is
-	// returned when a failure is reported without an error message.
+	// returned when a failure is reported without an error message, a
+	// ConflictError when there is no open attempt to record it against.
 	RecordDelivery(ctx context.Context, req domain.RecordCloudStatusDeliveryRequest) error
+
+	// ClaimWebhook starts the attempt to post one webhook under the claim
+	// token outage.status_page_due carried. A ConflictError means do not post.
+	ClaimWebhook(ctx context.Context, req domain.ClaimCloudStatusWebhookRequest) error
 
 	// HandleOutages re-derives the current transition for the named outages.
 	// The record-triggered counterpart to Sweep, reaching the same conclusions

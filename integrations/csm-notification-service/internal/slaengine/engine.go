@@ -90,6 +90,64 @@ type linkResolver interface {
 	CSMLink(caseID string) string
 }
 
+// entityClockStatusClient abstracts EntityClient.GetClockState for
+// testability — the final, authoritative check against entity-service's own
+// durable record, done right before a breach alert is actually sent (see
+// that method's own doc comment for why). A nil value (e.g. every existing
+// test's own Engine literal, which doesn't set this field) skips the check
+// entirely and behaves exactly as this engine always has — this is a
+// deliberate, additive safety net, not something every caller must now wire
+// up.
+type entityClockStatusClient interface {
+	GetClockState(ctx context.Context, caseID, clockType string) (clockState, error)
+}
+
+// clockIncarnationTolerance is how far apart entity-service's own
+// sla.start_on and this engine's own Redis-held ClockMeta.StartedAt may be
+// while still being treated as the SAME clock incarnation — the two are set
+// independently, by two different services, reacting to (normally) the same
+// case.created moment a few milliseconds apart, so exact equality is too
+// strict. A genuinely NEW incarnation (a severity revision cancels the old
+// clock and registers a fresh one) starts at a point at least as far apart
+// as however long it took a human to act — realistically minutes to days,
+// never mere seconds — so this stays comfortably below that while easily
+// covering ordinary processing lag. See isSameClockIncarnation's own call
+// site (sendBreachAlert) for why this distinction matters at all.
+const clockIncarnationTolerance = 5 * time.Minute
+
+// isSameClockIncarnation reports whether entityStartedOn (entity-service's
+// own record) and redisStartedAt (this engine's own ClockMeta.StartedAt)
+// are close enough to be the same registration rather than two different
+// ones for the same (case, clockType) pair. A zero redisStartedAt (should
+// never happen for a real wake entry, but defensively handled) can't be
+// compared against anything, so this reports true rather than refusing to
+// ever trust entity-service's answer for such a clock.
+func isSameClockIncarnation(entityStartedOn *time.Time, redisStartedAt time.Time) bool {
+	if entityStartedOn == nil || redisStartedAt.IsZero() {
+		return true
+	}
+	diff := entityStartedOn.Sub(redisStartedAt)
+	if diff < 0 {
+		diff = -diff
+	}
+	return diff <= clockIncarnationTolerance
+}
+
+// isTerminalSLAStage reports whether stage is one of this engine's
+// terminal, genuinely-finished sla.stage values — mirrors entity-service's
+// own slaEngineOpenStageFilter (sla_engine_repo.go): ACHIEVED/CANCELLED/
+// COMPLETED are real completions, BREACHED deliberately is not (a clock
+// whose wall-clock duration ran out without yet being satisfied is still
+// live, still completable by its own later real event).
+func isTerminalSLAStage(stage string) bool {
+	switch strings.ToUpper(stage) {
+	case "ACHIEVED", "CANCELLED", "COMPLETED":
+		return true
+	default:
+		return false
+	}
+}
+
 // Engine is the SLA breach-alerting engine — see this package's own doc
 // comment (client.go) for the full design and what it replaced.
 type Engine struct {
@@ -104,11 +162,34 @@ type Engine struct {
 	// change needs a restart to pick up, same as any other static
 	// at-startup config in this service.
 	durations map[string]map[string]time.Duration
+	// entity is used by sendBreachAlert only, as a last pre-send check
+	// against entity-service's own durable record — see
+	// entityClockStatusClient's own doc comment.
+	entity entityClockStatusClient
+	// slaEmailSendingEnabled mirrors cmd/server/main.go's existing
+	// EMAIL_SENDING_ENABLED/CALL_SENDING_ENABLED disable-entirely
+	// convention, but for SLA-breach emails specifically
+	// (SLA_EMAIL_SENDING_ENABLED, default true). It currently gates
+	// nothing: this engine's own SLA breach-alert EMAIL reaction
+	// (sendBreachEmails) was deliberately removed rather than ported when
+	// this package was redesigned (see this package's own doc comment, "The
+	// poll-engine's own SLA breach-alert EMAIL reaction... is gone, not
+	// ported") — today a breach alert sends only the Google Chat card in
+	// sendBreachAlert below. This field is wired through now as a
+	// placeholder for when that email reaction is rebuilt: the intended
+	// call site is inside sendBreachAlert, alongside the existing
+	// e.chat.SendSLABreachAlert call, guarded by
+	// `if e.slaEmailSendingEnabled { ... }`.
+	slaEmailSendingEnabled bool
 }
 
-// NewEngine constructs an Engine.
-func NewEngine(store *Store, pub *eventbus.Producer, chat chatSender, links *recipientlinks.Resolver, durations map[string]map[string]time.Duration) *Engine {
-	return &Engine{store: store, pub: pub, chat: chat, links: links, durations: durations}
+// NewEngine constructs an Engine. entity is the same *EntityClient the
+// caller already constructs for GetDurationPolicy/Reconcile — see
+// entityClockStatusClient's own doc comment for what it's used for here.
+// slaEmailSendingEnabled is a currently-inert placeholder — see that field's
+// own doc comment.
+func NewEngine(store *Store, pub *eventbus.Producer, chat chatSender, links *recipientlinks.Resolver, durations map[string]map[string]time.Duration, entity entityClockStatusClient, slaEmailSendingEnabled bool) *Engine {
+	return &Engine{store: store, pub: pub, chat: chat, links: links, durations: durations, entity: entity, slaEmailSendingEnabled: slaEmailSendingEnabled}
 }
 
 // avoidWeekend rolls due forward to the next Monday, same time-of-day, if
@@ -489,7 +570,67 @@ func (e *Engine) alertTier(ctx context.Context, meta ClockMeta, caseID, clockTyp
 // stopping a retry), and a single persistently broken Chat space would
 // otherwise turn into an unbounded stream of duplicate alerts to every
 // OTHER space that worked fine, repeating every tick, forever.
+//
+// Before building or sending anything, re-verifies this exact clock against
+// entity-service's own durable record (e.entity.GetClockState) — a real,
+// reproduced incident showed this engine's own Redis copy of a clock's
+// completion can silently go stale (see entityClockStatusClient's own doc
+// comment), leaving a wake entry that fires here long after the clock had,
+// in truth, already finished cleanly. The alert is suppressed — logged and
+// dropped with no Chat send and no Kafka publish — only when ALL of the
+// following hold, each closing a gap a CodeRabbit review caught in an
+// earlier, simpler ("is any row of this clock type still active") version
+// of this check:
+//   - the lookup itself succeeded (a network error/timeout is unconfirmed,
+//     not evidence of anything — see the fail-open reasoning below);
+//   - entity-service actually has a row for this clock at all (Found) —
+//     entity-service's own CSM clock registration is itself best-effort and
+//     runs on a different trigger than this engine's own Redis
+//     registration, so "no row" can just as easily mean "never registered
+//     there" as "resolved", and must not be read as the latter;
+//   - that row is the SAME incarnation of the clock this wake entry is
+//     about (isSameClockIncarnation, comparing StartedOn) — a severity
+//     revision cancels the old clock and registers a fresh one for the same
+//     (case, clockType) pair, and a stale wake entry for the OLD
+//     incarnation must not be waved through just because entity-service now
+//     has an unrelated, currently-active NEW one;
+//   - that row's stage is genuinely terminal (isTerminalSLAStage) — a clock
+//     entity-service still considers IN_PROGRESS/BREACHED/PAUSED is still
+//     live, exactly the ordinary case this check must never interfere with;
+//   - and it resolved WITHOUT a real breach ever being recorded
+//     (!HasBreached) — a clock that did genuinely breach before it was
+//     later completed is a real violation worth reporting, not a false
+//     alarm, so this check only suppresses the specific "completed cleanly,
+//     the alert is simply stale" case this whole feature exists for.
+//
+// This is deliberately checked here, inside sendBreachAlert, rather than
+// earlier in processDueMember: every other bookkeeping step there (the tier
+// claim, AdvanceAlertedTier, RemoveWake) still runs exactly as if the alert
+// had been sent, so a clock entity-service confirms is done also gets
+// marked done here, same as a real alert would, and never re-checked on a
+// later tier. Any failure to positively confirm suppression — a lookup
+// error, no row found, a mismatched incarnation — fails open (sends
+// anyway, logged): silently losing a genuine breach alert over an
+// inconclusive double-check is worse than the occasional false positive
+// this whole feature exists to reduce. e.entity is nil for every caller
+// that hasn't wired one up (every existing test), which also fails open
+// the same way, preserving this function's exact prior behavior for them.
 func (e *Engine) sendBreachAlert(ctx context.Context, meta ClockMeta, caseID, clockType string, tier int) {
+	if e.entity != nil {
+		state, err := e.entity.GetClockState(ctx, caseID, clockType)
+		switch {
+		case err != nil:
+			slog.WarnContext(ctx, "slaengine: failed to verify clock state before sending breach alert, sending anyway", "caseId", caseID, "clockType", clockType, "tier", tier, "err", err)
+		case !state.Found:
+			slog.WarnContext(ctx, "slaengine: entity-service has no record of this clock, sending anyway", "caseId", caseID, "clockType", clockType, "tier", tier)
+		case !isSameClockIncarnation(state.StartedOn, meta.StartedAt):
+			slog.WarnContext(ctx, "slaengine: entity-service is tracking a different clock incarnation than this wake entry, sending anyway", "caseId", caseID, "clockType", clockType, "tier", tier)
+		case isTerminalSLAStage(state.Stage) && !state.HasBreached:
+			slog.InfoContext(ctx, "slaengine: clock already resolved in entity-service's own record with no breach, suppressing stale breach alert", "caseId", caseID, "clockType", clockType, "tier", tier, "stage", state.Stage)
+			return
+		}
+	}
+
 	caseNumber := meta.CaseNumber
 	if caseNumber == "" {
 		caseNumber = caseID

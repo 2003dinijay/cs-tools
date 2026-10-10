@@ -30,13 +30,33 @@ import (
 // fakeChat records the cards a run would have posted.
 type fakeChat struct {
 	posted []notifications.EscalationAlert
-	err    error
+	// unanswered is every closing message posted (sre.unansweredChat).
+	unanswered []notifications.EscalationUnanswered
+	// handoffs is every escalated-to-SME message posted (sre.smeHandoffChat).
+	handoffs []notifications.EscalationHandoff
+	err      error
 	// noRoom lists audiences GOOGLE_CHAT_SPACES has no space for. Empty means
 	// every audience has one, which is what the older tests assume.
 	noRoom map[string]bool
 }
 
 func (f *fakeChat) HasAudienceSpace(audience string) bool { return !f.noRoom[audience] }
+
+func (f *fakeChat) SendEscalationHandoff(_ context.Context, h notifications.EscalationHandoff) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.handoffs = append(f.handoffs, h)
+	return nil
+}
+
+func (f *fakeChat) SendEscalationUnanswered(_ context.Context, u notifications.EscalationUnanswered) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.unanswered = append(f.unanswered, u)
+	return nil
+}
 
 func (f *fakeChat) SendEscalationAlert(_ context.Context, a notifications.EscalationAlert) error {
 	if f.err != nil {

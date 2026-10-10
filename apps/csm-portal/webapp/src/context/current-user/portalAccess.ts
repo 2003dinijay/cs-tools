@@ -41,6 +41,10 @@ export const PORTAL_ROLE = {
   // -- creating and sending a customer announcement, ON TOP OF write access.
   // See canCreateAnnouncement below.
   announcementCreator: "announcement_creator",
+  // Grants PermUpdateDeleteComment on the backend (internal/handler/access.go)
+  // -- reaching PATCH/DELETE /comments/{id} for a comment the holder did NOT
+  // author. See canUpdateDeleteAnyComment below.
+  commentUpdater: "comment_updater",
 } as const;
 
 // Roles that, held alone, let someone use the portal at all. announcement_creator
@@ -48,8 +52,12 @@ export const PORTAL_ROLE = {
 // write may send an announcement (see canCreateAnnouncement), so on its own it
 // grants nothing, and counting it would let a caller holding nothing else in
 // past the "no access" screen into a portal where every call is a 403.
+// comment_updater is excluded for the identical reason: on its own it grants
+// only editing/deleting someone else's comment (canUpdateDeleteAnyComment),
+// and reaching a comment at all first requires being able to view the case
+// it's on -- a comment_updater-only caller has no view access of any kind.
 const ROLES_THAT_GRANT_ACCESS: readonly string[] = Object.values(PORTAL_ROLE).filter(
-  (role) => role !== PORTAL_ROLE.announcementCreator,
+  (role) => role !== PORTAL_ROLE.announcementCreator && role !== PORTAL_ROLE.commentUpdater,
 );
 
 export interface PortalAccess {
@@ -136,6 +144,74 @@ export interface PortalAccess {
    * stays under {@link canWrite}.
    */
   canCreateAnnouncement: boolean;
+  /**
+   * Editing or deleting a comment the caller did NOT author. `admin`, or the
+   * `comment_updater` role — mirrors the backend's `PermUpdateDeleteAnyComment`
+   * (not `PermUpdateDeleteComment`, the broader route-level floor that also
+   * includes `cs_engineer`). Deliberately NOT `full`/{@link canWrite}: a plain
+   * `cs_engineer` keeps editing/deleting only their OWN comments (the existing
+   * author check in `CsmCaseCommentBubble`, unaffected by this flag) — this
+   * flag is only for touching someone else's. The backend makes the same
+   * author-or-this-role decision itself before ever calling entity-service
+   * (which performs no author/role check of its own for this path at all), so
+   * a holder of this role can act on any comment end-to-end, not just reach
+   * the route — see the backend's own CLAUDE.md.
+   */
+  canUpdateDeleteAnyComment: boolean;
+  /**
+   * The small set of sections that used to live in the separate, now-removed
+   * "Support Portal Lite" app (Customer Health, User scan, SLA/Time/CS
+   * project reports, and the extra Account detail tabs they added): `viewer`
+   * only, regardless of what other roles the caller also holds — mirrors the
+   * backend's `PermViewerAccess` (`access.go`), which is built only from the
+   * viewer role, not folded into the usual "full access" `cs_engineer`/`admin`
+   * bundle the way every other flag above is. A `cs_engineer` who does not
+   * also separately hold `viewer` does not get these sections; one who holds
+   * both does, same as before this app was merged into the main portal.
+   */
+  isSplAudience: boolean;
+  /**
+   * Usage metrics requires `cs_engineer`/`admin` (full access) or the
+   * dedicated `usage_metrics_viewer` role. Unlike {@link isSplAudience},
+   * holding plain `viewer` does NOT grant this on its own — reported live:
+   * a viewer-only account must not see this section at all, even though it
+   * (like Customer Health/User Scan) is an ex-Support-Portal-Lite feature.
+   */
+  canViewUsageMetrics: boolean;
+  /**
+   * Sections that exist for staff generally, not for the former Support
+   * Portal Lite (viewer-only) audience specifically — Knowledge and Settings
+   * so far. False only for a caller whose role set is *exactly* `{viewer}`
+   * (no other role at all) — everyone else, including a plain `cs_engineer`,
+   * keeps seeing these sections exactly as before. A viewer who also holds
+   * any other role is unaffected by this flag.
+   *
+   * Team Schedule and the project Work items tab's staff framing are each
+   * gated by their OWN, narrower flag below ({@link canViewTeamSchedule},
+   * {@link canViewWorkItemsStaffView}) rather than this one — reported live:
+   * a caller holding `viewer` plus one unrelated role (so not caught by this
+   * flag's exactly-`{viewer}` check) could still reach both, which is wider
+   * than intended for either.
+   */
+  canViewStaffSections: boolean;
+  /**
+   * The Team Schedule section. `cs_engineer`/`admin` (full access), or the
+   * `comment_updater` role — an explicit allow-list, independent of whether
+   * the caller holds `viewer` at all (unlike {@link canViewStaffSections}):
+   * reported live, a `viewer` who also held `attachment_downloader` could
+   * still see Team Schedule under the old exactly-`{viewer}` check.
+   */
+  canViewTeamSchedule: boolean;
+  /**
+   * Whether a project's Work items tab shows its staff framing: the "Work
+   * items" label (vs. plain "Cases"), the Chats sub-tab, and the sub-tab
+   * strip itself. `cs_engineer`/`admin` (full access), or the
+   * `timecard_approver` role — an explicit allow-list, independent of
+   * `viewer`, the same shape as {@link canViewTeamSchedule} and for the same
+   * reason: a caller holding `viewer` plus one unrelated role used to still
+   * see this under the old exactly-`{viewer}` check.
+   */
+  canViewWorkItemsStaffView: boolean;
 }
 
 /**
@@ -147,7 +223,9 @@ export interface PortalAccess {
  * isn't a flag on this type at all, see `canUseTimeCardsAndUpdates`'s own
  * doc comment for why; `attachment_downloader` adds just that one ability;
  * `worknote_creator` also adds internal work notes (see `canAddWorkNotes`);
- * every other role, `viewer` included, is view-only here.
+ * `comment_updater` adds editing/deleting someone else's comment (see
+ * `canUpdateDeleteAnyComment`); every other role, `viewer` included, is
+ * view-only here.
  *
  * Mirrors the backend's `AccessGuard` policy so controls can be hidden up
  * front — but it is a UX affordance only. The backend's 403 is the real gate,
@@ -173,6 +251,12 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
       canUsePlg: true,
       canManagePlaybooks: true,
       canCreateAnnouncement: true,
+      canUpdateDeleteAnyComment: true,
+      isSplAudience: true,
+      canViewUsageMetrics: true,
+      canViewStaffSections: true,
+      canViewTeamSchedule: true,
+      canViewWorkItemsStaffView: true,
     };
   }
   const held = new Set((roles ?? []).map((r) => r.toLowerCase()));
@@ -194,5 +278,11 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     canUsePlg: full,
     canManagePlaybooks: isAdmin,
     canCreateAnnouncement: full && (isAdmin || has(PORTAL_ROLE.announcementCreator)),
+    canUpdateDeleteAnyComment: isAdmin || has(PORTAL_ROLE.commentUpdater),
+    isSplAudience: has(PORTAL_ROLE.viewer),
+    canViewUsageMetrics: full || has(PORTAL_ROLE.usageMetricsViewer),
+    canViewStaffSections: !(held.size === 1 && has(PORTAL_ROLE.viewer)),
+    canViewTeamSchedule: full || has(PORTAL_ROLE.commentUpdater),
+    canViewWorkItemsStaffView: full || has(PORTAL_ROLE.timecardApprover),
   };
 }

@@ -45,7 +45,7 @@ type EscalationAlert struct {
 	// be the incident's product, from when Chat routed by product; routing is
 	// by audience now, and no audience is ever named after a product, so every
 	// card was dropped. The escalation ladder sets it from its own
-	// configuration (escalation.yaml chat.audience).
+	// configuration (paging-alert.yaml chat.audience).
 	Audience string
 	// Rung is the level being contacted, e.g. "LEVEL_2".
 	Rung string
@@ -295,5 +295,184 @@ func escalationSeverityMark(priority string) string {
 		return "\U0001F534" // red circle
 	default:
 		return "\U0001F7E0" // orange circle
+	}
+}
+
+// EscalationUnanswered is the closing message of a ladder that ran past its
+// last rung with nobody acknowledging the incident: the calls are over, and
+// the team's space is told so.
+type EscalationUnanswered struct {
+	// Audience is the GOOGLE_CHAT_SPACES key the card is posted to.
+	Audience string
+	// Chain names the chain that was paged, e.g. "SaaS SRE"; empty is "SRE".
+	Chain string
+	// IncidentRef, Title, Priority and Team describe the incident.
+	IncidentRef string
+	Title       string
+	Priority    string
+	Team        string
+	// Called is who each rung reached, in order, e.g. "L1 Jane Doe".
+	Called []string
+	// Instruction is what still stops the paging gesture-wise, for whoever
+	// picks the incident up now.
+	Instruction string
+	// PortalURL opens the incident; PortalLabel is its text ("View incident"
+	// when empty).
+	PortalURL   string
+	PortalLabel string
+	// ThreadKey puts the message in the ladder's own thread, under its rung
+	// cards when the ladder posted any.
+	ThreadKey string
+}
+
+// SendEscalationUnanswered posts the closing message of an unanswered ladder.
+func (c *GoogleChatClient) SendEscalationUnanswered(ctx context.Context, u EscalationUnanswered) error {
+	if u.IncidentRef == "" {
+		return fmt.Errorf("notifications: incidentRef is required")
+	}
+	if strings.TrimSpace(u.Audience) == "" {
+		return fmt.Errorf("notifications: audience is required")
+	}
+	return c.sendCardToAudience(ctx, u.Audience, buildEscalationUnansweredCard(u))
+}
+
+// buildEscalationUnansweredCard assembles the closing card, split from the
+// send so its shape can be asserted on without a webhook.
+func buildEscalationUnansweredCard(u EscalationUnanswered) chatCardMessage {
+	chain := strings.TrimSpace(u.Chain)
+	if chain == "" {
+		chain = "SRE"
+	}
+	subtitle := u.IncidentRef
+	if u.Title != "" {
+		subtitle = u.IncidentRef + " - " + u.Title
+	}
+
+	var body strings.Builder
+	body.WriteString(caseAlertLine(`<font color="#B3261E"><b>Nobody acknowledged this incident.</b></font>`))
+	body.WriteString("<br>")
+	body.WriteString(caseAlertLine("The %s paging calls have ended; no further calls will be made.", chain))
+	if len(u.Called) > 0 {
+		body.WriteString("<br>")
+		body.WriteString(caseAlertLine("Called: %s", strings.Join(u.Called, ", ")))
+	}
+	body.WriteString("<br>")
+	body.WriteString(caseAlertLine(`<font color="#5F6368">Priority %s</font>`, u.Priority))
+	if u.Team != "" {
+		body.WriteString(caseAlertLine(`<font color="#5F6368"> - team %s</font>`, u.Team))
+	}
+	if u.Instruction != "" {
+		body.WriteString("<br><br>")
+		body.WriteString(caseAlertLine("<b>%s</b>", u.Instruction))
+	}
+	if u.PortalURL != "" {
+		body.WriteString("<br>")
+		label := strings.TrimSpace(u.PortalLabel)
+		if label == "" {
+			label = "View incident"
+		}
+		body.WriteString(fmt.Sprintf(`<a href="%s">%s</a>`, u.PortalURL, html.EscapeString(label)))
+	}
+
+	return chatCardMessage{
+		Thread: threadFor(u.ThreadKey),
+		CardsV2: []chatCardWrapper{{
+			CardID: "incident-escalation-unanswered",
+			Card: chatCard{
+				Header: &chatCardHeader{
+					Title:    fmt.Sprintf("%s Unanswered: %s paging ended", escalationSeverityMark(u.Priority), chain),
+					Subtitle: subtitle,
+				},
+				Sections: []chatCardSection{{
+					Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: body.String()}}},
+				}},
+			},
+		}},
+	}
+}
+
+// EscalationHandoff is the one message an SRE space gets when an incident of
+// its team is escalated to an SME team: the SRE calls have stopped, and who
+// is paged now.
+type EscalationHandoff struct {
+	// Audience is the GOOGLE_CHAT_SPACES key the card is posted to.
+	Audience string
+	// SMETeam names the SME team paged now, e.g. "Choreo Runtime".
+	SMETeam string
+	// By is who escalated it (the incident's changedBy).
+	By string
+	// Paging is true when the SME ladder started; false when nobody on the
+	// SME team could be paged (the incident's work notes say why).
+	Paging bool
+	// IncidentRef, Title and Priority describe the incident.
+	IncidentRef string
+	Title       string
+	Priority    string
+	// PortalURL opens the incident; PortalLabel is its text.
+	PortalURL   string
+	PortalLabel string
+	// ThreadKey puts the message in the incident's ladder thread.
+	ThreadKey string
+}
+
+// SendEscalationHandoff posts the escalated-to-SME message.
+func (c *GoogleChatClient) SendEscalationHandoff(ctx context.Context, h EscalationHandoff) error {
+	if h.IncidentRef == "" {
+		return fmt.Errorf("notifications: incidentRef is required")
+	}
+	if strings.TrimSpace(h.Audience) == "" {
+		return fmt.Errorf("notifications: audience is required")
+	}
+	return c.sendCardToAudience(ctx, h.Audience, buildEscalationHandoffCard(h))
+}
+
+// buildEscalationHandoffCard assembles the escalated-to-SME card.
+func buildEscalationHandoffCard(h EscalationHandoff) chatCardMessage {
+	team := strings.TrimSpace(h.SMETeam)
+	if team == "" {
+		team = "the specialist team"
+	}
+	subtitle := h.IncidentRef
+	if h.Title != "" {
+		subtitle = h.IncidentRef + " - " + h.Title
+	}
+	var body strings.Builder
+	if h.By != "" {
+		body.WriteString(caseAlertLine("Escalated by %s. SRE paging stopped.", h.By))
+	} else {
+		body.WriteString(caseAlertLine("SRE paging stopped."))
+	}
+	body.WriteString("<br>")
+	if h.Paging {
+		body.WriteString(caseAlertLine("Paging the on-duty %s SMEs now: L1, then L2 and L3, until someone is assigned.", team))
+	} else {
+		body.WriteString(caseAlertLine(`<font color="#B3261E">No %s SME could be paged; see the incident's work notes.</font>`, team))
+	}
+	if h.Priority != "" {
+		body.WriteString("<br>")
+		body.WriteString(caseAlertLine(`<font color="#5F6368">Priority %s</font>`, h.Priority))
+	}
+	if h.PortalURL != "" {
+		body.WriteString("<br>")
+		label := strings.TrimSpace(h.PortalLabel)
+		if label == "" {
+			label = "View incident"
+		}
+		body.WriteString(fmt.Sprintf(`<a href="%s">%s</a>`, h.PortalURL, html.EscapeString(label)))
+	}
+	return chatCardMessage{
+		Thread: threadFor(h.ThreadKey),
+		CardsV2: []chatCardWrapper{{
+			CardID: "incident-escalation-handoff",
+			Card: chatCard{
+				Header: &chatCardHeader{
+					Title:    fmt.Sprintf("%s Escalated to %s SMEs", escalationSeverityMark(h.Priority), team),
+					Subtitle: subtitle,
+				},
+				Sections: []chatCardSection{{
+					Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: body.String()}}},
+				}},
+			},
+		}},
 	}
 }

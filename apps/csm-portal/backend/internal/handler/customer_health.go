@@ -23,32 +23,38 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"strconv"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/risk"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
-// riskClient abstracts the risk-tracking MySQL operations used by
-// CustomerHealthHandler.
+// riskClient abstracts the entity-service-backed customer-health risk
+// operations used by CustomerHealthHandler. riskID/actionItemID are UUID
+// strings (entity-service's own primary keys), not the auto-increment ints
+// the old MySQL-backed tables used -- see internal/risk/types.go's own doc
+// comment. The actor is no longer passed explicitly (email parameters
+// removed): entity-service resolves it server-side from the
+// x-user-id-token this backend's own Auth middleware already attached to
+// the request context, the same way every other entity-service write in
+// this backend works.
 type riskClient interface {
-	OpenProjectRisk(ctx context.Context, projectSysID, accountSysID, comment, email string) (*risk.ProjectRisk, error)
-	CloseProjectRisk(ctx context.Context, riskID int, comment, email string) (*risk.ProjectRisk, error)
-	MarkProjectHealthy(ctx context.Context, projectSysID, accountSysID, email string, comment *string) (*risk.HealthStatusRecord, error)
-	RevertProjectHealth(ctx context.Context, projectSysID, accountSysID string) (*risk.HealthStatusRecord, error)
+	OpenProjectRisk(ctx context.Context, projectSysID, comment string) (*risk.ProjectRisk, error)
+	CloseProjectRisk(ctx context.Context, riskID, comment string) (*risk.ProjectRisk, error)
+	MarkProjectHealthy(ctx context.Context, projectSysID string, comment *string) (*risk.HealthStatusRecord, error)
+	RevertProjectHealth(ctx context.Context, projectSysID string) (*risk.HealthStatusRecord, error)
 	GetAccountHealthStatus(ctx context.Context, accountSysID string) ([]risk.ProjectHealthStatus, error)
 	GetAccountHealthSummary(ctx context.Context, accountSysID string) (*risk.HealthSummary, error)
 	GetProjectRiskHistory(ctx context.Context, projectSysID string) ([]risk.ProjectRisk, error)
 	GetBatchHealthSummaries(ctx context.Context, accountSysIDs []string) (map[string]string, error)
 	GetAccountsByHealthStatus(ctx context.Context, healthStatus string) ([]string, error)
 	InitProjectHealthRows(ctx context.Context, projectSysIDs []string, accountSysID string) error
-	CreateActionItem(ctx context.Context, riskID int, payload risk.CreateActionItemRequest, email string) (*risk.RiskActionItem, error)
-	UpdateActionItemStatus(ctx context.Context, actionItemID int, newStatus string, resolutionComment *string, email string) (*risk.RiskActionItem, error)
-	UpdateActionItem(ctx context.Context, actionItemID int, payload risk.UpdateActionItemRequest) (*risk.RiskActionItem, error)
-	GetActionItemsByRisk(ctx context.Context, riskID int, statusFilter *string) ([]risk.RiskActionItem, error)
+	CreateActionItem(ctx context.Context, riskID string, payload risk.CreateActionItemRequest) (*risk.RiskActionItem, error)
+	UpdateActionItemStatus(ctx context.Context, actionItemID, newStatus string, resolutionComment *string) (*risk.RiskActionItem, error)
+	UpdateActionItem(ctx context.Context, actionItemID string, payload risk.UpdateActionItemRequest) (*risk.RiskActionItem, error)
+	GetActionItemsByRisk(ctx context.Context, riskID string, statusFilter *string) ([]risk.RiskActionItem, error)
 	GetActionItemsByAccount(ctx context.Context, accountSysID string, projectSysID, statusFilter *string) ([]risk.RiskActionItem, error)
-	CreateActionItemComment(ctx context.Context, actionItemID int, comment, email string) (*risk.ActionItemComment, error)
-	GetActionItemComments(ctx context.Context, actionItemID int) ([]risk.ActionItemComment, error)
+	CreateActionItemComment(ctx context.Context, actionItemID, comment string) (*risk.ActionItemComment, error)
+	GetActionItemComments(ctx context.Context, actionItemID string) ([]risk.ActionItemComment, error)
 }
 
 // customerHealthSNClient abstracts the two ServiceNow-backed
@@ -359,10 +365,10 @@ func (h *CustomerHealthHandler) OpenRisk(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	result, err := h.risk.OpenProjectRisk(r.Context(), projectSysID, payload.AccountSysID, payload.Comment, user.Email)
+	result, err := h.risk.OpenProjectRisk(r.Context(), projectSysID, payload.Comment)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "risk OpenProjectRisk failed", "userID", user.UserID, "projectSysId", projectSysID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to open project risk.")
+		mapUpstreamError(w, err, "Failed to open project risk.")
 		return
 	}
 	writeJSONValue(w, http.StatusOK, result)
@@ -374,7 +380,7 @@ func (h *CustomerHealthHandler) CloseRisk(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	riskID, ok := parseIntPathValue(w, r, "riskId")
+	riskID, ok := requireUUIDPathValue(w, r, "riskId")
 	if !ok {
 		return
 	}
@@ -384,15 +390,10 @@ func (h *CustomerHealthHandler) CloseRisk(w http.ResponseWriter, r *http.Request
 		return
 	}
 
-	result, err := h.risk.CloseProjectRisk(r.Context(), riskID, payload.Comment, user.Email)
+	result, err := h.risk.CloseProjectRisk(r.Context(), riskID, payload.Comment)
 	if err != nil {
-		var valErr *risk.ValidationError
-		if errors.As(err, &valErr) {
-			writeError(w, http.StatusBadRequest, valErr.Message)
-			return
-		}
 		slog.ErrorContext(r.Context(), "risk CloseProjectRisk failed", "userID", user.UserID, "riskId", riskID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to close project risk.")
+		mapUpstreamError(w, err, "Failed to close project risk.")
 		return
 	}
 	writeJSONValue(w, http.StatusOK, result)
@@ -416,10 +417,10 @@ func (h *CustomerHealthHandler) MarkHealthy(w http.ResponseWriter, r *http.Reque
 		return
 	}
 
-	result, err := h.risk.MarkProjectHealthy(r.Context(), projectSysID, payload.AccountSysID, user.Email, payload.Comment)
+	result, err := h.risk.MarkProjectHealthy(r.Context(), projectSysID, payload.Comment)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "risk MarkProjectHealthy failed", "userID", user.UserID, "projectSysId", projectSysID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to mark project healthy.")
+		mapUpstreamError(w, err, "Failed to mark project healthy.")
 		return
 	}
 	writeJSONValue(w, http.StatusOK, result)
@@ -443,10 +444,10 @@ func (h *CustomerHealthHandler) RevertReview(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	result, err := h.risk.RevertProjectHealth(r.Context(), projectSysID, payload.AccountSysID)
+	result, err := h.risk.RevertProjectHealth(r.Context(), projectSysID)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "risk RevertProjectHealth failed", "userID", user.UserID, "projectSysId", projectSysID, "err", err)
-		mapUpstreamErrorGeneric(w, err, "Failed to revert project health review.")
+		mapUpstreamError(w, err, "Failed to revert project health review.")
 		return
 	}
 	writeJSONValue(w, http.StatusOK, result)
@@ -518,16 +519,17 @@ func (h *CustomerHealthHandler) GetProjectRiskHistory(w http.ResponseWriter, r *
 	writeJSONValue(w, http.StatusOK, result)
 }
 
-// parseIntPathValue reads and parses r.PathValue(name) as an int, writing a
-// 400 response and returning ok=false on a missing or non-numeric value.
-func parseIntPathValue(w http.ResponseWriter, r *http.Request, name string) (value int, ok bool) {
-	raw := r.PathValue(name)
-	n, err := strconv.Atoi(raw)
-	if raw == "" || err != nil {
+// requireUUIDPathValue reads r.PathValue(name), writing a 400 response and
+// returning ok=false unless it's a well-formed UUID -- entity-service's own
+// primary key shape for risks/action items (see internal/risk/types.go's
+// own doc comment on why these are UUIDs now, not auto-increment ints).
+func requireUUIDPathValue(w http.ResponseWriter, r *http.Request, name string) (value string, ok bool) {
+	v := r.PathValue(name)
+	if v == "" || !uuidRe.MatchString(v) {
 		writeError(w, http.StatusBadRequest, ErrMsgBadRequest)
-		return 0, false
+		return "", false
 	}
-	return n, true
+	return v, true
 }
 
 // decodeJSONBody reads r.Body (capped at maxRequestBodyBytes) and decodes it

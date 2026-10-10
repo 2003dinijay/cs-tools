@@ -40,6 +40,7 @@ func testAccessConfig() AccessConfig {
 		SalesSolutions:       []string{"test-sales-solutions"},
 		WorknoteCreator:      []string{"test-worknote-creator"},
 		AnnouncementCreator:  []string{"test-announcement-creator"},
+		CommentUpdater:       []string{"test-comment-updater"},
 	}
 }
 
@@ -217,8 +218,10 @@ func TestAccessGuard_RolesFor(t *testing.T) {
 			"test-viewer", "test-escalator", "test-attachment-downloader",
 			"test-cs-engineer", "test-usage-metrics-viewer", "test-timecard-approver",
 			"test-dashboard-designer", "test-admin", "test-sales-solutions", "test-worknote-creator", "test-announcement-creator",
-		}, []string{"viewer", "escalator", "attachment_downloader", "cs_engineer", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "admin", "sales_solutions", "worknote_creator", "announcement_creator"}},
+			"test-comment-updater",
+		}, []string{"viewer", "escalator", "attachment_downloader", "cs_engineer", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "admin", "sales_solutions", "worknote_creator", "announcement_creator", "comment_updater"}},
 		{"announcement creator is reported like any other portal role", []string{"test-cs-engineer", "test-announcement-creator"}, []string{"cs_engineer", "announcement_creator"}},
+		{"comment updater is reported like any other portal role", []string{"test-cs-engineer", "test-comment-updater"}, []string{"cs_engineer", "comment_updater"}},
 		{"unrelated roles are ignored", []string{"wso2-everyone", "agent"}, []string{}},
 		{"a duplicated held role is reported once", []string{"test-viewer", "test-viewer"}, []string{"viewer"}},
 		{"sales solutions is reported like any other portal role, alongside a real capability", []string{"test-viewer", "test-sales-solutions"}, []string{"viewer", "sales_solutions"}},
@@ -292,12 +295,12 @@ func TestAccessGuard_ViewAllDashboardsIsForCsEngineersAndAdmins(t *testing.T) {
 	}
 }
 
-// TestAccessGuard_SecurityCenterIsForCsEngineersAndAdmins covers
-// PermViewSecurityCenter, which — unlike PermView — plain viewer/escalator/
-// attachment_downloader/usage_metrics_viewer/timecard_approver/
+// TestAccessGuard_SecurityCenterIsForCsEngineersAdminsAndCommentUpdaters
+// covers PermViewSecurityCenter, which — unlike PermView — plain viewer/
+// escalator/attachment_downloader/usage_metrics_viewer/timecard_approver/
 // dashboard_designer do NOT hold, even though every one of them holds
 // PermView itself.
-func TestAccessGuard_SecurityCenterIsForCsEngineersAndAdmins(t *testing.T) {
+func TestAccessGuard_SecurityCenterIsForCsEngineersAdminsAndCommentUpdaters(t *testing.T) {
 	g := NewAccessGuard(testAccessConfig())
 	for _, role := range []string{
 		"test-viewer", "test-escalator",
@@ -311,7 +314,7 @@ func TestAccessGuard_SecurityCenterIsForCsEngineersAndAdmins(t *testing.T) {
 			t.Errorf("%s reading cases and customers: status = %d, want 204", role, status)
 		}
 	}
-	for _, role := range []string{"test-cs-engineer", "test-admin"} {
+	for _, role := range []string{"test-cs-engineer", "test-admin", "test-comment-updater"} {
 		if status, _ := serveWithRoles(g, PermViewSecurityCenter, []string{role}); status != http.StatusNoContent {
 			t.Errorf("%s reading Security Center: status = %d, want 204", role, status)
 		}
@@ -320,7 +323,7 @@ func TestAccessGuard_SecurityCenterIsForCsEngineersAndAdmins(t *testing.T) {
 
 func TestAccessGuard_UnconfiguredRolesAreHeldByNobody(t *testing.T) {
 	g := NewAccessGuard(AccessConfig{})
-	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermApproveTimeCard, PermUsePlg, PermManagePlaybooks, PermCreateWorkNote, PermCreateAnnouncement} {
+	for _, perm := range []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermAdmin, PermViewSecurityCenter, PermApproveTimeCard, PermUsePlg, PermManagePlaybooks, PermCreateWorkNote, PermCreateAnnouncement, PermUpdateDeleteComment} {
 		if status, _ := serveWithRoles(g, perm, []string{"test-admin", "test-viewer", ""}); status != http.StatusForbidden {
 			t.Errorf("permission %d with no roles configured: status = %d, want 403", perm, status)
 		}
@@ -464,6 +467,34 @@ func TestAccessGuard_ViewerWithWorknoteCreatorRoleSet(t *testing.T) {
 	}
 	if status, _ := serveWithRoles(g, PermWrite, withNotes); status != http.StatusForbidden {
 		t.Errorf("with worknote_creator: PermWrite status = %d, want 403 (a work note is not a write)", status)
+	}
+}
+
+// TestAccessGuard_UpdateDeleteCommentIsForCommentUpdatersCsEngineersAndAdmins
+// pins PermUpdateDeleteComment's deliberately wider holder set than a
+// narrowing permission's would be (see the constant's own doc comment): it's
+// the route-level floor for PATCH/DELETE /comments/{id}, with entity-service
+// itself deciding which specific comment a cs_engineer/comment_updater may
+// actually touch. Viewer is read-only and does NOT hold it.
+func TestAccessGuard_UpdateDeleteCommentIsForCommentUpdatersCsEngineersAndAdmins(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	for _, role := range []string{"test-comment-updater", "test-cs-engineer", "test-admin"} {
+		if status, _ := serveWithRoles(g, PermUpdateDeleteComment, []string{role}); status != http.StatusNoContent {
+			t.Errorf("%s: status = %d, want 204", role, status)
+		}
+	}
+	for _, role := range []string{
+		"test-viewer", "test-escalator", "test-attachment-downloader",
+		"test-usage-metrics-viewer", "test-timecard-approver", "test-dashboard-designer",
+	} {
+		if status, _ := serveWithRoles(g, PermUpdateDeleteComment, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s must not hold PermUpdateDeleteComment: status = %d, want 403", role, status)
+		}
+	}
+	// comment_updater holds ONLY this -- not the broader PermWrite every
+	// other write action needs.
+	if status, _ := serveWithRoles(g, PermWrite, []string{"test-comment-updater"}); status != http.StatusForbidden {
+		t.Errorf("comment_updater must not hold PermWrite: status = %d, want 403", status)
 	}
 }
 

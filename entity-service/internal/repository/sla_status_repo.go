@@ -18,14 +18,16 @@ package repository
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"golang.org/x/sync/errgroup"
 )
 
-// SLAStatusRepository defines the read operation backing GET /sla-status —
+// SLAStatusRepository defines the read operations backing GET /sla-status —
 // see domain.SLAStatus's own doc comment for what it replaced and why.
 type SLAStatusRepository interface {
 	// SearchActiveSLAStatuses returns every currently-active (sla.is_active =
@@ -39,6 +41,25 @@ type SLAStatusRepository interface {
 	// ServiceNow-synced row set for nothing. Empty means no filter, the
 	// original, unscoped behavior.
 	SearchActiveSLAStatuses(ctx context.Context, pagination domain.Pagination, sourceFilter string) ([]domain.SLAStatus, int, error)
+
+	// GetClockState returns the single most recently-started "sla" row for
+	// (workItemID, target) -- regardless of is_active -- so a caller can
+	// tell a genuinely resolved clock (a real row, in a terminal stage)
+	// apart from one that was simply never registered at all (no row
+	// found), which SearchActiveSLAStatuses's own is_active-filtered list
+	// can never distinguish between (both look like "not in the active
+	// list"). Added for csm-notification-service's own pre-alert
+	// verification -- see that repo's own CLAUDE.md, "SLA breach-alerting
+	// engine" -- which needs exactly that distinction to avoid either
+	// suppressing a genuine alert over an unrelated registration failure,
+	// or confirming the wrong clock incarnation after a severity revision.
+	// target must be a real sla_policy_target_enum label ("RESPONSE"/
+	// "WORKAROUND"/"RESOLUTION"); sourceFilter follows the same convention
+	// as SearchActiveSLAStatuses's own (empty/"CSM"/"SERVICENOW").
+	// domain.SLAClockState.Found is false, every other field at its zero
+	// value, when no row exists for this (workItemID, target, source) at
+	// all.
+	GetClockState(ctx context.Context, workItemID, target, sourceFilter string) (domain.SLAClockState, error)
 }
 
 type slaStatusRepo struct {
@@ -258,4 +279,49 @@ func (r *slaStatusRepo) SearchActiveSLAStatuses(ctx context.Context, pagination 
 	}
 
 	return statuses, total, nil
+}
+
+// GetClockState implements SLAStatusRepository. Deliberately reads
+// sla_live (not the raw "sla" table), matching SearchActiveSLAStatuses's
+// own convention, so a still-live clock's stage/has_breached reflect the
+// current, recomputed-at-read-time truth rather than whatever
+// RecomputeActive's last periodic pass happened to write. Reads directly
+// against "sla"/"sla_policy" with no work_item/case/announcement join at
+// all -- unlike SearchActiveSLAStatuses, this never needs to resolve any
+// case-like display data, so there's nothing here that depends on
+// row-level security (confirmed: the "sla" table itself carries none).
+func (r *slaStatusRepo) GetClockState(ctx context.Context, workItemID, target, sourceFilter string) (domain.SLAClockState, error) {
+	args := []any{workItemID, target}
+	sourceFilterSQL := ""
+	if sourceFilter != "" {
+		sourceFilterSQL = " AND s.source = $3::sla_source_enum"
+		args = append(args, sourceFilter)
+	}
+
+	query := `
+		SELECT s.is_active, s.live_stage::TEXT, s.live_has_breached, s.start_on
+		FROM sla_live s
+		JOIN sla_policy sp ON sp.id = s.sla_policy_id
+		WHERE s.work_item_id = $1::uuid AND sp.target::TEXT = $2` + sourceFilterSQL + `
+		ORDER BY s.start_on DESC NULLS LAST, s.updated_on DESC
+		LIMIT 1`
+
+	// Scoped requires an identity on ctx even for a table with no RLS of its
+	// own (see NewSLAEngineRepository's own doc comment for the identical
+	// requirement) -- Unrestricted is correct here for the same reason
+	// SearchActiveSLAStatuses stamps it: this is an internal-caller-only
+	// read (SLAStatusService.requireInternalCaller) with no caller-scoped
+	// filtering of its own to fall back to instead.
+	ctx = WithCallerIdentity(ctx, SearchScope{Unrestricted: true})
+
+	var state domain.SLAClockState
+	err := r.db.QueryRow(ctx, query, args...).Scan(&state.IsActive, &state.Stage, &state.HasBreached, &state.StartedOn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return domain.SLAClockState{}, nil
+	}
+	if err != nil {
+		return domain.SLAClockState{}, fmt.Errorf("get sla clock state: %w", err)
+	}
+	state.Found = true
+	return state, nil
 }

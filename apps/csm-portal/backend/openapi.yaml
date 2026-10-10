@@ -333,7 +333,11 @@ paths:
     patch:
       summary: >
         Edit a comment (generic — applies to a comment on any aggregate: case,
-        change request, incident, ...) by id. Author-or-admin only.
+        change request, incident, ...) by id. Reachable by cs_engineer,
+        comment_updater or admin; this backend itself then enforces
+        author-or-comment_updater-or-admin per comment (entity-service performs
+        no check of its own here): a plain cs_engineer may only edit their OWN
+        comment, while comment_updater/admin may edit any.
       operationId: patchCommentsId
       parameters:
         - name: id
@@ -378,7 +382,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller is neither the comment's author nor an admin.
+          description: >-
+            Forbidden — caller is neither the comment's author nor a
+            comment_updater/admin.
           content:
             application/json:
               schema:
@@ -405,7 +411,11 @@ paths:
       summary: >
         Soft-delete a comment (generic — applies to a comment on any
         aggregate: case, change request, incident, ...) by id. Content is
-        never destroyed. Author-or-admin only.
+        never destroyed. Reachable by cs_engineer, comment_updater or admin;
+        this backend itself then enforces author-or-comment_updater-or-admin
+        per comment (entity-service performs no check of its own here): a
+        plain cs_engineer may only delete their OWN comment, while
+        comment_updater/admin may delete any.
       operationId: deleteCommentsId
       parameters:
         - name: id
@@ -431,7 +441,9 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
         "403":
-          description: Forbidden — caller is neither the comment's author nor an admin.
+          description: >-
+            Forbidden — caller is neither the comment's author nor a
+            comment_updater/admin.
           content:
             application/json:
               schema:
@@ -9932,9 +9944,14 @@ paths:
   # Account/project/case list-search-detail (which used to collide, and so
   # used to live here under /spl/accounts, /spl/projects, /spl/cases) are
   # gone entirely -- consolidated onto the shared /accounts, /projects, and
-  # /cases search/detail routes above. Off by default (SPL_ENABLED); see
-  # cmd/server/main.go. Path parameters here are ServiceNow sys_ids or
-  # case/account/project numbers, not UUIDs.
+  # /cases search/detail routes above. Always registered. Google Drive/the
+  # sales-side entity service are independently optional -- an endpoint
+  # needing one that isn't configured in a given deployment fails at call
+  # time instead of the route not existing. ServiceNow's own host/
+  # credential config is gone entirely (that integration is being phased
+  # out), so every ServiceNow-backed endpoint here always fails its own
+  # call now -- see cmd/server/main.go's loadViewerConfig. Path parameters
+  # here are ServiceNow sys_ids or case/account/project numbers, not UUIDs.
   # ---------------------------------------------------------------------
 
   /accounts/{accountId}/escalations:
@@ -12374,6 +12391,386 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /team-schedule/paging-chain:
+    get:
+      summary: Who is on each tier of the Case Paging chain, and what the caller may change.
+      operationId: getTeamSchedulePagingChain
+      description: >
+        The entity service's payload: `members[]` (one team membership each, with its role,
+        responderRank, userId, canEditPhone and pagingPhone -- `{masked, phone?, setBy, setAt,
+        lastTestAt?, lastTestStatus?}` or null, the full `phone` only for a caller who canEditPhone)
+        and `canEdit` ({responderTeams[], teamLeadTeams[], americasTeamLead, heads}). The portal adds
+        `hasProfilePhone` (boolean) to each member: whether their Asgardeo profile has a mobile number,
+        from SCIM (cached 10 minutes). A member whose lookup failed has no `hasProfilePhone`; the
+        response never fails for it. Every other field is forwarded unchanged. The entity service
+        decides what the caller may change.
+      parameters:
+        - name: family
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [CRE, SRE]
+      responses:
+        "200":
+          description: Ok.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+  /team-schedule/paging-chain/members/{id}:
+    patch:
+      summary: Change one membership on the Case Paging chain.
+      operationId: updateTeamSchedulePagingMember
+      description: >
+        Body and response are forwarded unchanged. The body is exactly one of `{"responderRank": 0..3}`
+        or `{"role": "lead"|"engineer"|"americas_team_lead"|"cre_head"|"cs_head"}`. The entity service
+        checks who may make the change; its reason is kept on a 403 or 409.
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                responderRank:
+                  type: integer
+                  minimum: 0
+                  maximum: 3
+                role:
+                  type: string
+                  enum: [lead, engineer, americas_team_lead, cre_head, cs_head]
+      responses:
+        "200":
+          description: Ok.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: Conflict.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: Request body too large.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+  /team-schedule/paging-contacts/{userId}:
+    put:
+      summary: Set a person's paging-only phone number.
+      operationId: putTeamSchedulePagingContact
+      description: >
+        A number used only for Case Paging calls when the person has no number on their profile. Kept
+        by the entity service; never written to Asgardeo. The BFF refuses a number that is not E.164
+        (400) and forwards only `phone`. The entity service checks who may set it; its 403/409 reason
+        is kept.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [phone]
+              properties:
+                phone:
+                  type: string
+                  pattern: '^\+[1-9][0-9]{6,14}$'
+                  example: "+94771234567"
+      responses:
+        "200":
+          description: The person's paging phone.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingPhone'
+        "400":
+          description: Bad request (not a UUID, or not an E.164 number).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: Conflict.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: Request body too large.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    delete:
+      summary: Remove a person's paging-only phone number.
+      operationId: deleteTeamSchedulePagingContact
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Removed.
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+  /team-schedule/paging-contacts/{userId}/test:
+    post:
+      summary: Place a test call to a person's paging-only number.
+      operationId: testTeamSchedulePagingContact
+      description: >
+        Accepted while the call is placed; the result lands on the paging chain's member as
+        `pagingPhone.lastTestStatus`. 409 when the person has no paging number; 429 when it was tested
+        less than 2 minutes ago.
+      parameters:
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "202":
+          description: Test call placed.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  lastTestStatus:
+                    type: string
+                    enum: [pending]
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: The person has no paging number.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "429":
+          description: Tested less than 2 minutes ago.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+  /team-schedule/paging-readiness:
+    get:
+      summary: Whether each Case Paging chain has someone to page over the coming days.
+      operationId: getTeamSchedulePagingReadiness
+      description: >
+        The entity service answers the rota, responder, leave (`ON_LEAVE`) and paging-number questions.
+        The portal adds the phone check: everyone a chain would page is looked up in SCIM (at most 8 at
+        a time, answers cached for 10 minutes). Per person, a profile number is enough; else a paging
+        number whose last test call completed. A paging number never tested or still pending is a
+        `PHONE_UNTESTED` warning; one whose test was no-answer, busy or failed is a `PHONE_TEST_FAILED`
+        error; no number at all is a `NO_PHONE` error. These gaps carry the person's `userId`, fix
+        `profile`, and an error makes the chain not ready. A profile lookup that fails, where the
+        paging number does not settle it, is skipped and its chains carry one
+        `PHONE_CHECK_UNAVAILABLE` warning. The people lists are not returned.
+      parameters:
+        - name: days
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 31
+            default: 7
+      responses:
+        "200":
+          description: Ok.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PagingReadiness'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "502":
+          description: The entity service's answer could not be read.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /team-schedule/assignments/search:
     post:
       summary: Search rota assignments.
@@ -13019,6 +13416,99 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /team-schedule/rotas/{code}/generate:
+    post:
+      summary: Generate (or preview) a month of a rota from the availability marked on it.
+      description: >
+        The Team Schedule's "Generate month" action, proxied to entity-service.
+        Only SRE_SAAS (Apollo and Artemis) can be generated. Entity-service
+        decides who may: a lead of one of the rota's teams, or an SRE rota
+        admin. `dryRun` returns the month without writing it; a month that
+        already holds generated turns needs `regenerate`. Turns set by hand
+        are never replaced. Refusals carry entity-service's reason.
+      operationId: generateTeamScheduleRotaMonth
+      parameters:
+        - name: code
+          in: path
+          required: true
+          description: Rota code
+          schema:
+            type: string
+            example: SRE_SAAS
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [month]
+              properties:
+                month:
+                  type: string
+                  description: YYYY-MM, the current month or a later one.
+                dryRun:
+                  type: boolean
+                regenerate:
+                  type: boolean
+                from:
+                  type: string
+                  format: date
+                nightCrew:
+                  type: object
+                  description: Team key -> the people chosen to work that team's TZ3 for the month; L1, L2 and L3 go round them.
+                  additionalProperties:
+                    type: array
+                    items: {type: string}
+      responses:
+        "200":
+          description: The month, previewed (dryRun). Entity-service's GenerateRotaMonthResponse, passed through.
+          content:
+            application/json:
+              schema:
+                type: object
+        "201":
+          description: The month, written. Entity-service's GenerateRotaMonthResponse, passed through.
+          content:
+            application/json:
+              schema:
+                type: object
+        "400":
+          description: A bad month or from, a month that is over, or from in the past.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Not a lead or admin of the rota.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: The rota cannot be generated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "409":
+          description: The month is already generated; send regenerate.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /team-schedule/absence-kinds/{code}:
     delete:
       summary: Delete a leave or allocation tag once nothing uses it.
@@ -13626,6 +14116,97 @@ components:
       scheme: bearer
       bearerFormat: JWT
   schemas:
+    PagingPhone:
+      type: object
+      description: A person's paging-only phone number. `phone` is present only for a caller who may edit it.
+      required: [masked, setBy, setAt]
+      properties:
+        masked:
+          type: string
+          example: "+94•••••123"
+        phone:
+          type: string
+        setBy:
+          type: string
+        setAt:
+          type: string
+          format: date-time
+        lastTestAt:
+          type: string
+          format: date-time
+        lastTestStatus:
+          type: string
+          enum: [pending, completed, no-answer, busy, failed]
+    PagingReadiness:
+      type: object
+      required: [generatedAt, from, to, chains]
+      properties:
+        generatedAt:
+          type: string
+          format: date-time
+        from:
+          type: string
+          format: date
+        to:
+          type: string
+          format: date
+        chains:
+          type: array
+          items:
+            $ref: '#/components/schemas/PagingReadinessChain'
+    PagingReadinessChain:
+      type: object
+      required: [chain, label, ready, gaps]
+      properties:
+        chain:
+          type: string
+          enum: [CRE, SRE_SAAS, SRE_IAAS, SME]
+        label:
+          type: string
+        ready:
+          type: boolean
+        gaps:
+          type: array
+          items:
+            $ref: '#/components/schemas/PagingReadinessGap'
+    PagingReadinessGap:
+      type: object
+      required: [code, severity, message, fix]
+      properties:
+        code:
+          type: string
+          description: Stable name of the gap, e.g. NO_PHONE or PHONE_CHECK_UNAVAILABLE. Not a closed list.
+        severity:
+          type: string
+          enum: [error, warning]
+        message:
+          type: string
+        fix:
+          type: string
+          enum: [responders, rota, profile, config, data]
+        teamKey:
+          type: string
+        date:
+          type: string
+          format: date
+        zoneCode:
+          type: string
+        tier:
+          type: string
+        shiftCode:
+          type: string
+        userId:
+          type: string
+          description: The person a phone gap (NO_PHONE, PHONE_UNTESTED, PHONE_TEST_FAILED) is about.
+        pagingTier:
+          type: integer
+          minimum: 1
+          maximum: 5
+          description: >-
+            On a phone gap, the Case Paging tier that first calls the person (1 = first). A chain's
+            phone gaps are listed errors first, then by this tier. A missing number is an error
+            except for the 2nd and 3rd responders (called together with the 1st), where it is a
+            warning.
     ErrorPayload:
       type: object
       description: >-

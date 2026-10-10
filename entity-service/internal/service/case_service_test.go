@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/auth"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/events"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -492,6 +493,65 @@ func TestCaseService_SearchCases_CountOnlyReachesRepository(t *testing.T) {
 	}
 	if resp.Total != 42 {
 		t.Fatalf("expected Total 42, got %d", resp.Total)
+	}
+}
+
+// fakeSLASearchDelegate is a CaseService stand-in that only records whether
+// SearchCases was called on it -- WithSLASearchDelegate's own delegate.
+type fakeSLASearchDelegate struct {
+	CaseService
+	called bool
+}
+
+func (f *fakeSLASearchDelegate) SearchCases(context.Context, domain.SearchCasesRequest) (domain.SearchCasesResponse, error) {
+	f.called = true
+	return domain.SearchCasesResponse{Total: 99}, nil
+}
+
+// TestCaseService_SearchCases_SLADelegate_InternalCallerOnly proves
+// WithSLASearchDelegate's own documented contract: an SLA-shaped filter
+// (taskSLABusinessElapsedPercent or slaBreached) is forwarded to the
+// delegate only for an internal (Unrestricted) caller -- an external,
+// customer-portal-scoped caller keeps this data source's own Postgres path
+// and row-level security regardless, and a search with neither SLA filter
+// never delegates even for an internal caller.
+func TestCaseService_SearchCases_SLADelegate_InternalCallerOnly(t *testing.T) {
+	slaFilterReq := domain.SearchCasesRequest{Filters: domain.SearchCasesFilters{
+		Filters: []domain.CaseFieldFilter{{Field: "taskSLABusinessElapsedPercent", Op: "lte", Values: []string{"90"}}},
+	}}
+
+	tests := []struct {
+		name         string
+		scope        AccessScope
+		req          domain.SearchCasesRequest
+		wantDelegate bool
+	}{
+		{name: "internal caller with SLA filter delegates", scope: AccessScope{Unrestricted: true}, req: slaFilterReq, wantDelegate: true},
+		{name: "external caller with SLA filter does not delegate", scope: AccessScope{Unrestricted: false}, req: slaFilterReq, wantDelegate: false},
+		{name: "internal caller with no SLA filter does not delegate", scope: AccessScope{Unrestricted: true}, req: domain.SearchCasesRequest{}, wantDelegate: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &stubCaseRepo{
+				searchCases: func(context.Context, domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error) {
+					return nil, 0, nil
+				},
+			}
+			delegate := &fakeSLASearchDelegate{}
+			svc := WithSLASearchDelegate(NewCaseService(repo, stubUserRepo{}, nil, stubAccess{scope: tt.scope}, nil), delegate)
+			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+			resp, err := svc.SearchCases(ctx, tt.req)
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if delegate.called != tt.wantDelegate {
+				t.Errorf("delegate called = %v, want %v", delegate.called, tt.wantDelegate)
+			}
+			if tt.wantDelegate && resp.Total != 99 {
+				t.Errorf("expected the delegate's own response (Total=99) to be returned, got %d", resp.Total)
+			}
+		})
 	}
 }
 
@@ -1421,6 +1481,70 @@ func TestCaseService_UpdateCase_AutocloseHoldReachesServiceNowOverHTTP(t *testin
 	time.Sleep(50 * time.Millisecond)
 	if n := failures.count(); n != 0 {
 		t.Errorf("recorded %d writeback failures for a mirror ServiceNow accepted", n)
+	}
+}
+
+// TestCaseService_UpdateCase_M2MCallerCanSetCombinableFields is the
+// regression guard for a real, live-confirmed bug: a pure M2M caller (e.g.
+// csm-integration-service, which forwards no x-user-id-token at all) got a
+// hard 401 setting bestCaseFixEta/etc, because updateCaseFields' actor
+// resolution required a real user token with no fallback -- unlike
+// pgProjectUpdateService.resolveUpdatedBy, which already tolerated this for
+// PATCH /projects/{id}. An Unrestricted-scope caller (M2M_CLIENT_IDS) with no
+// token must now succeed, stamping work_item.updated_by with its own client
+// id instead of being rejected.
+func TestCaseService_UpdateCase_M2MCallerCanSetCombinableFields(t *testing.T) {
+	bestCaseFixEta := "2026-10-15"
+	var gotActorID, gotActorEmail string
+	repo := &stubCaseRepo{
+		updateCaseFields: func(_ context.Context, req domain.UpdateCaseRequest, actorID, actorEmail string) (time.Time, error) {
+			gotActorID, gotActorEmail = actorID, actorEmail
+			return time.Date(2026, 10, 9, 12, 0, 0, 0, time.UTC), nil
+		},
+	}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{ClientID: "csm-integration-service"})
+	if _, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, BestCaseFixEta: &bestCaseFixEta}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if gotActorID != "" {
+		t.Errorf("actorID = %q, want empty (no real user record for an M2M caller)", gotActorID)
+	}
+	if gotActorEmail != "csm-integration-service" {
+		t.Errorf("actorEmail (stamped as work_item.updated_by) = %q, want the caller's client id", gotActorEmail)
+	}
+}
+
+// TestCaseService_UpdateCase_M2MCallerWithRestrictedScopeStillRejected proves
+// the M2M fallback above only applies to an Unrestricted caller -- a request
+// with no token and no Unrestricted scope still gets the original 401,
+// rather than the fallback silently widening who may PATCH these fields.
+func TestCaseService_UpdateCase_M2MCallerWithRestrictedScopeStillRejected(t *testing.T) {
+	bestCaseFixEta := "2026-10-15"
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil, stubAccess{scope: AccessScope{Unrestricted: false}}, nil)
+
+	_, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, BestCaseFixEta: &bestCaseFixEta})
+	var unauthorized *apierror.UnauthorizedError
+	if !errors.As(err, &unauthorized) {
+		t.Fatalf("expected UnauthorizedError, got %v", err)
+	}
+}
+
+// TestCaseService_UpdateCase_M2MCallerCannotProvideWorkaround proves the one
+// deliberate carve-out: workaroundProvided needs a real "user" row to stamp
+// workaround_provided_by_user_id with, which an M2M caller (empty actor ID)
+// cannot supply -- it must be rejected with a clear ValidationError, not sent
+// to the repository as an empty-string UUID cast.
+func TestCaseService_UpdateCase_M2MCallerCannotProvideWorkaround(t *testing.T) {
+	workaroundProvided := true
+	svc := NewCaseService(&stubCaseRepo{}, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+
+	ctx := auth.WithIdentity(context.Background(), auth.Identity{ClientID: "csm-integration-service"})
+	_, err := svc.UpdateCase(ctx, domain.UpdateCaseRequest{ID: testDeploymentUUID, WorkaroundProvided: &workaroundProvided})
+	var validation *apierror.ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("expected ValidationError, got %v", err)
 	}
 }
 

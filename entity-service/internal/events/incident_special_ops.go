@@ -51,6 +51,11 @@ type IncidentSpecialOpsAlertPayload struct {
 	Product   string `json:"product"`
 	TeamKey   string `json:"teamKey"`
 	TeamLabel string `json:"teamLabel"`
+	// SMETeam is the Team Schedule key of the SME rota team that answers for
+	// that Special Ops team (its smeTeam in SPECIALIST_HANDOFF_CONFIG, e.g.
+	// "choreo-runtime"), whose on-duty people Case Paging pages; omitted when
+	// the configuration names none.
+	SMETeam string `json:"smeTeam,omitempty"`
 
 	// AssignmentGroupID/Name is the Special Ops group the incident moved to;
 	// PreviousAssignmentGroupID/Name the group it left (empty if none).

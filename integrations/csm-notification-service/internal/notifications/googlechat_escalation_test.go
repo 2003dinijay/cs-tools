@@ -293,3 +293,53 @@ func TestBuildEscalationCard_OmitsContextItDoesNotHave(t *testing.T) {
 		}
 	}
 }
+
+func TestBuildEscalationUnansweredCard(t *testing.T) {
+	msg := buildEscalationUnansweredCard(EscalationUnanswered{
+		Audience: "Apollo SRE", Chain: "SaaS SRE", IncidentRef: "INC0099001", Title: "Latency <alert>",
+		Priority: "HIGH", Team: "Apollo", Called: []string{"L1 Jane", "L2 Ravi", "L3 Mia"},
+		Instruction: "Assign the incident to yourself.", PortalURL: "https://csm.example/incidents/1", ThreadKey: "incident-escalation-1",
+	})
+	card := msg.CardsV2[0].Card
+	if !strings.Contains(card.Header.Title, "Unanswered: SaaS SRE paging ended") {
+		t.Errorf("title = %q", card.Header.Title)
+	}
+	if card.Header.Subtitle != "INC0099001 - Latency <alert>" {
+		t.Errorf("subtitle = %q", card.Header.Subtitle)
+	}
+	body := card.Sections[0].Widgets[0].TextParagraph.Text
+	for _, want := range []string{"Nobody acknowledged", "no further calls", "Called: L1 Jane, L2 Ravi, L3 Mia", "team Apollo", "View incident"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("body has no %q: %s", want, body)
+		}
+	}
+	if msg.Thread == nil || msg.Thread.ThreadKey != "incident-escalation-1" {
+		t.Errorf("thread = %+v; want the ladder's own", msg.Thread)
+	}
+}
+
+func TestBuildEscalationHandoffCard(t *testing.T) {
+	for _, paging := range []bool{true, false} {
+		msg := buildEscalationHandoffCard(EscalationHandoff{
+			Audience: "Apollo SRE", SMETeam: "Choreo Runtime", By: "lead@example.com", Paging: paging,
+			IncidentRef: "INC1", Title: "Latency", PortalURL: "https://csm.example/incidents/1", ThreadKey: "incident-escalation-1",
+		})
+		card := msg.CardsV2[0].Card
+		if !strings.Contains(card.Header.Title, "Escalated to Choreo Runtime SMEs") {
+			t.Errorf("title = %q", card.Header.Title)
+		}
+		body := card.Sections[0].Widgets[0].TextParagraph.Text
+		want := "Paging the on-duty Choreo Runtime SMEs now"
+		if !paging {
+			want = "No Choreo Runtime SME could be paged"
+		}
+		for _, w := range []string{"Escalated by lead@example.com. SRE paging stopped.", want, "View incident"} {
+			if !strings.Contains(body, w) {
+				t.Errorf("paging=%v: body has no %q: %s", paging, w, body)
+			}
+		}
+		if msg.Thread == nil || msg.Thread.ThreadKey != "incident-escalation-1" {
+			t.Errorf("thread = %+v", msg.Thread)
+		}
+	}
+}
