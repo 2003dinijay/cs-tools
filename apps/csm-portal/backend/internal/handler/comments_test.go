@@ -197,6 +197,27 @@ func commentAuthoredBy(authorEmail string) func(context.Context, string) ([]byte
 	}
 }
 
+// TestAuthorizeCommentActor_EmptyAuthorEmailDoesNotMatchEmptyCallerEmail
+// covers a real bug: strings.EqualFold("", "") returns true, so without an
+// explicit non-empty guard, a comment with no resolved author email (e.g. an
+// integration account with only an id or name, see domain.NewUserReference)
+// would match a caller whose own email failed to resolve to anything,
+// treating a complete stranger as "the author". Neither has any role to fall
+// back on either, so this must be Forbidden, not an accidental match.
+func TestAuthorizeCommentActor_EmptyAuthorEmailDoesNotMatchEmptyCallerEmail(t *testing.T) {
+	client := &mockEntityCommentClient{
+		getCommentFn: commentAuthoredBy(""),
+	}
+	h := NewCommentHandler(client)
+	r := requestWithUser(httptest.NewRequest(http.MethodPatch, "/comments/"+testCommentID, strings.NewReader(`{"content":"edited"}`)), "", nil)
+	r.SetPathValue("id", testCommentID)
+	w := httptest.NewRecorder()
+	h.UpdateComment(w, r)
+
+	assertStatus(t, w, http.StatusForbidden)
+	assertErrorMessage(t, w, ErrMsgForbidden)
+}
+
 // TestUpdateComment_AuthorizeCommentActor covers CommentHandler's own
 // authorization decision (entity-service performs none of its own any more --
 // see comments.go's authorizeCommentActor and PermUpdateDeleteAnyComment's own

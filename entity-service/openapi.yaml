@@ -4889,6 +4889,12 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/Comment'
+        "400":
+          description: Malformed comment UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
         "401":
           description: Unauthorized.
           content:
@@ -4903,6 +4909,12 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Comment not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
           content:
             application/json:
               schema:

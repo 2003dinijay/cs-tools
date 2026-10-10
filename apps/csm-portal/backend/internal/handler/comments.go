@@ -115,7 +115,7 @@ func (h *CommentHandler) authorizeCommentActor(w http.ResponseWriter, r *http.Re
 		return false
 	}
 
-	isAuthor := comment.CreatedBy != nil && strings.EqualFold(comment.CreatedBy.Email, user.Email)
+	isAuthor := comment.CreatedBy != nil && user.Email != "" && strings.EqualFold(comment.CreatedBy.Email, user.Email)
 	canActOnAny := h.access != nil && h.access.Permits(PermUpdateDeleteAnyComment, user.Roles)
 	if !isAuthor && !canActOnAny {
 		writeError(w, http.StatusForbidden, ErrMsgForbidden)
