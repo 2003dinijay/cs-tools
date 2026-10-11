@@ -21,6 +21,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -124,5 +125,21 @@ func TestErrorKind_NamesWhereTheCallStopped(t *testing.T) {
 		return out
 	}(), ","), "redirect_location,https://login.example/") {
 		t.Errorf("attrs = %v, want the redirect location", attrs)
+	}
+}
+
+// A body that fails to read after the endpoint answered still reached CSM and keeps its status.
+func TestErrorAttrs_ResponseReadFailureReachedCSM(t *testing.T) {
+	err := fmt.Errorf("%w: %w", errCallerDone, &ResponseReadError{StatusCode: http.StatusOK, Err: errors.New("csm: read response body: unexpected EOF")})
+	attrs := ErrorAttrs(err)
+	got := map[string]any{}
+	for i := 0; i+1 < len(attrs); i += 2 {
+		got[attrs[i].(string)] = attrs[i+1]
+	}
+	if got["reached_csm"] != true || got["status_code"] != http.StatusOK {
+		t.Errorf("attrs = %v, want reached_csm=true and status_code=200", got)
+	}
+	if k := ErrorKind(&ResponseReadError{StatusCode: 502, Err: errors.New("x")}); k != KindResponseRead {
+		t.Errorf("kind = %q, want %q", k, KindResponseRead)
 	}
 }

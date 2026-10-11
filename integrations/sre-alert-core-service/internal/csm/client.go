@@ -187,14 +187,14 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 			const maxErrBody = 256
 			excerpt, err := io.ReadAll(io.LimitReader(resp.Body, maxErrBody))
 			if err != nil {
-				return nil, wrapCallerDone(ctx, fmt.Errorf("csm: read error response body: %w", err))
+				return nil, wrapCallerDone(ctx, &ResponseReadError{StatusCode: resp.StatusCode, Err: fmt.Errorf("csm: read error response body: %w", err)})
 			}
 			return nil, &Error{StatusCode: resp.StatusCode, Body: string(excerpt), Location: redirectLocation(resp)}
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return nil, wrapCallerDone(ctx, fmt.Errorf("csm: read response body: %w", err))
+			return nil, wrapCallerDone(ctx, &ResponseReadError{StatusCode: resp.StatusCode, Err: fmt.Errorf("csm: read response body: %w", err)})
 		}
 
 		return respBody, nil

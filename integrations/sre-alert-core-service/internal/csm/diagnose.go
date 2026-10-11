@@ -29,7 +29,7 @@ import (
 	"golang.org/x/oauth2"
 )
 
-// Error kinds name where a call to csm-integration-service failed; only http_status and response_decode_failed reached it.
+// Error kinds name where a call to csm-integration-service failed; http_status, response_read_failed and response_decode_failed reached it.
 const (
 	KindHTTPStatus     = "http_status"
 	KindTokenFailed    = "token_request_failed"
@@ -41,8 +41,19 @@ const (
 	KindBreakerOpen    = "circuit_breaker_open"
 	KindCallerCanceled = "caller_canceled"
 	KindDecode         = "response_decode_failed"
+	KindResponseRead   = "response_read_failed"
 	KindOther          = "transport_error"
 )
+
+// ResponseReadError is a body that failed to read after csm-integration-service answered with StatusCode.
+type ResponseReadError struct {
+	StatusCode int
+	Err        error
+}
+
+func (e *ResponseReadError) Error() string { return e.Err.Error() }
+
+func (e *ResponseReadError) Unwrap() error { return e.Err }
 
 // ErrorKind classifies err by where the call failed; "" for nil.
 func ErrorKind(err error) string {
@@ -50,6 +61,7 @@ func ErrorKind(err error) string {
 		return ""
 	}
 	var apiErr *Error
+	var readErr *ResponseReadError
 	var retrieveErr *oauth2.RetrieveError
 	var dnsErr *net.DNSError
 	var opErr *net.OpError
@@ -60,6 +72,8 @@ func ErrorKind(err error) string {
 	switch {
 	case errors.As(err, &apiErr):
 		return KindHTTPStatus
+	case errors.As(err, &readErr):
+		return KindResponseRead
 	case errors.Is(err, gobreaker.ErrOpenState), errors.Is(err, gobreaker.ErrTooManyRequests):
 		return KindBreakerOpen
 	case errors.Is(err, errCallerDone), errors.Is(err, context.Canceled):
@@ -91,7 +105,12 @@ func isTimeout(err error) bool {
 // ErrorAttrs are the slog attributes that say whether a failed call reached csm-integration-service and what came back.
 func ErrorAttrs(err error) []any {
 	kind := ErrorKind(err)
-	attrs := []any{"error_kind", kind, "reached_csm", kind == KindHTTPStatus || kind == KindDecode}
+	var readErr *ResponseReadError
+	read := errors.As(err, &readErr)
+	attrs := []any{"error_kind", kind, "reached_csm", kind == KindHTTPStatus || kind == KindDecode || read}
+	if read {
+		attrs = append(attrs, "status_code", readErr.StatusCode)
+	}
 	var apiErr *Error
 	if errors.As(err, &apiErr) {
 		attrs = append(attrs, "status_code", apiErr.StatusCode)
