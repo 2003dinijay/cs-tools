@@ -418,6 +418,11 @@ type CaseRepository interface {
 	// ServiceNow only just generated these, but is reported precisely rather
 	// than as an opaque infrastructure error if it ever does.
 	CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error)
+	// ResolveRelatedCaseID returns the id to store in "case".related_case_id.
+	// An empty id, or one that does not name a case-like work item in Postgres
+	// yet, returns (nil, nil) so the insert binds NULL. A query error is
+	// returned so the caller can stop before creating a ServiceNow case.
+	ResolveRelatedCaseID(ctx context.Context, relatedCaseID string) (*string, error)
 	// GetCaseByID returns the enriched case view for the given UUID, or a
 	// NotFoundError if no matching row exists OR it exists but scope excludes
 	// it (existence is never revealed to a caller who can't see it).
@@ -1487,11 +1492,8 @@ func (r *caseRepo) conversationRefOrNil(ctx context.Context, conversationID, pro
 	return conversationID, nil
 }
 
-// relatedCaseRefOrNil resolves relatedCaseID to itself when it names an existing
-// case-like work item (the same set updateCaseFieldsTx accepts), or nil when
-// the id is empty or that row is not in Postgres yet. Callers on the dual-write
-// path treat nil as "store no link" rather than failing the insert.
-func (r *caseRepo) relatedCaseRefOrNil(ctx context.Context, relatedCaseID string) (any, error) {
+// ResolveRelatedCaseID implements CaseRepository.
+func (r *caseRepo) ResolveRelatedCaseID(ctx context.Context, relatedCaseID string) (*string, error) {
 	if relatedCaseID == "" {
 		return nil, nil
 	}
@@ -1505,7 +1507,7 @@ func (r *caseRepo) relatedCaseRefOrNil(ctx context.Context, relatedCaseID string
 	if !ok {
 		return nil, nil
 	}
-	return relatedCaseID, nil
+	return &relatedCaseID, nil
 }
 
 // CreateCaseFromServiceNow implements CaseRepository.
@@ -1559,19 +1561,16 @@ func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.Crea
 		slog.WarnContext(ctx, "sn create case: conversation not found or not in this project, creating case without that link",
 			"caseId", id, "snNumber", number, "type", req.Type, "conversationId", req.ConversationID, "projectId", req.ProjectID)
 	}
-	// related_case_id is a "case"-table column, so only that insert binds it.
-	// A target that is not mirrored yet becomes NULL: ServiceNow already has
-	// the new case, and failing this insert would orphan it.
+	// related_case_id is a "case"-table column. The id was resolved before the
+	// ServiceNow create (req.ResolvedRelatedCaseID); this insert does not look
+	// it up again. Nil binds NULL, including when the target is not mirrored yet.
 	var relatedCaseIDArg any
-	if req.Type == "" || req.Type == "case" {
-		relatedCaseIDArg, err = r.relatedCaseRefOrNil(ctx, req.RelatedCaseID)
-		if err != nil {
-			return domain.Case{}, err
-		}
-		if relatedCaseIDArg == nil && req.RelatedCaseID != "" {
-			slog.WarnContext(ctx, "sn create case: related case not yet mirrored in postgres, creating case without that link",
-				"caseId", id, "snNumber", number, "relatedCaseId", req.RelatedCaseID)
-		}
+	if (req.Type == "" || req.Type == "case") && req.ResolvedRelatedCaseID != nil {
+		relatedCaseIDArg = *req.ResolvedRelatedCaseID
+	}
+	if (req.Type == "" || req.Type == "case") && req.RelatedCaseID != "" && req.ResolvedRelatedCaseID == nil {
+		slog.WarnContext(ctx, "sn create case: related case not yet mirrored in postgres, creating case without that link",
+			"caseId", id, "snNumber", number, "relatedCaseId", req.RelatedCaseID)
 	}
 
 	var row pgx.Row

@@ -3360,8 +3360,13 @@ type CreateCaseRequest struct {
 	CatalogItemID string     `json:"catalogItemId"`
 	Variables     []Variable `json:"variables"`
 	// Optional fields
-	RelatedCaseID  string `json:"relatedCaseId"`
-	ConversationID string `json:"conversationId"`
+	RelatedCaseID string `json:"relatedCaseId"`
+	// ResolvedRelatedCaseID is the related-case id already checked against
+	// Postgres, set by the dual-write create path before ServiceNow is called.
+	// CreateCaseFromServiceNow binds it and does not look RelatedCaseID up
+	// again. Nil binds NULL: the id was empty, or the target is not mirrored yet.
+	ResolvedRelatedCaseID *string `json:"-"`
+	ConversationID        string  `json:"conversationId"`
 	// WatchList is watcher emails (Customer Portal / Ballerina). Platform user
 	// UUIDs are still accepted and resolved to emails for CSM callers.
 	WatchList []string `json:"watchList"`

@@ -789,6 +789,16 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	if err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
+	// Resolve the related case before ServiceNow accepts the new case. A
+	// lookup failure here creates nothing. A target that is not mirrored yet
+	// is nil, and the Postgres insert binds NULL rather than failing after
+	// ServiceNow already has the case. ServiceNow still receives RelatedCaseID.
+	if req.Type == "" || req.Type == "case" {
+		req.ResolvedRelatedCaseID, err = s.repo.ResolveRelatedCaseID(ctx, req.RelatedCaseID)
+		if err != nil {
+			return domain.CreateCaseResponse{}, err
+		}
+	}
 
 	snResp, err := s.snMirror.CreateCase(ctx, req)
 	if err != nil {

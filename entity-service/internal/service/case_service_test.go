@@ -67,6 +67,7 @@ type stubCaseRepo struct {
 	createCaseComment             func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error)
 	createCaseCommentAsSystem     func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error)
 	createCase                    func(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
+	resolveRelatedCaseID          func(ctx context.Context, relatedCaseID string) (*string, error)
 	getCaseByID                   func(ctx context.Context, id string, scope repository.SearchScope) (domain.CaseView, error)
 	addCaseTag                    func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
 	setCaseWatchList              func(ctx context.Context, caseID string, userIDs []string, actorEmail string) ([]domain.WatchListUser, time.Time, error)
@@ -92,6 +93,15 @@ type stubCaseRepo struct {
 	updateCaseActorID *string
 }
 
+func (s *stubCaseRepo) ResolveRelatedCaseID(ctx context.Context, relatedCaseID string) (*string, error) {
+	if s.resolveRelatedCaseID != nil {
+		return s.resolveRelatedCaseID(ctx, relatedCaseID)
+	}
+	if relatedCaseID == "" {
+		return nil, nil
+	}
+	return &relatedCaseID, nil
+}
 func (s *stubCaseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
 	if s.createCase != nil {
 		return s.createCase(ctx, req)
@@ -2799,6 +2809,9 @@ func TestCaseService_CreateCase_RelatedCaseID(t *testing.T) {
 		repo := &stubCaseRepo{
 			createCaseFromServiceNow: func(_ context.Context, got domain.CreateCaseRequest, id, number, wso2ID, createdBy, _ string) (domain.Case, error) {
 				gotRepo = got.RelatedCaseID
+				if got.ResolvedRelatedCaseID == nil || *got.ResolvedRelatedCaseID != relatedCaseID {
+					t.Errorf("ResolvedRelatedCaseID = %v, want %q", got.ResolvedRelatedCaseID, relatedCaseID)
+				}
 				respState := domain.CaseStateOpen
 				return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, State: &respState}, nil
 			},
@@ -2835,6 +2848,69 @@ func TestCaseService_CreateCase_RelatedCaseID(t *testing.T) {
 		}
 		if got != relatedCaseID {
 			t.Fatalf("CreateCase relatedCaseId = %q, want %q", got, relatedCaseID)
+		}
+	})
+
+	t.Run("lookup failure does not create a ServiceNow case", func(t *testing.T) {
+		req := validCreateCaseRequest()
+		req.RelatedCaseID = relatedCaseID
+		mirror := &stubMirrorCaseService{
+			createCase: func(context.Context, domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+				t.Fatal("ServiceNow create must not run when the related-case lookup fails")
+				return domain.CreateCaseResponse{}, nil
+			},
+		}
+		repo := &stubCaseRepo{
+			resolveRelatedCaseID: func(context.Context, string) (*string, error) {
+				return nil, errors.New("postgres unavailable")
+			},
+			createCaseFromServiceNow: func(context.Context, domain.CreateCaseRequest, string, string, string, string, string) (domain.Case, error) {
+				t.Fatal("Postgres insert must not run when the related-case lookup fails")
+				return domain.Case{}, nil
+			},
+		}
+		svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}), mirror, nil, "")
+		if _, err := svc.CreateCase(context.Background(), req); err == nil {
+			t.Fatal("expected the lookup error")
+		}
+	})
+
+	t.Run("unmirrored related case is stored as null and still created", func(t *testing.T) {
+		req := validCreateCaseRequest()
+		req.RelatedCaseID = relatedCaseID
+		var gotMirror string
+		var gotResolved *string
+		mirror := &stubMirrorCaseService{
+			createCase: func(_ context.Context, got domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+				gotMirror = got.RelatedCaseID
+				return domain.CreateCaseResponse{
+					Case: domain.CreateCaseDetails{
+						ID: "33333333-3333-3333-3333-333333333333", Number: "CS0023001",
+						InternalID: "WSO2-CS-1", CreatedBy: "jane.doe@example.com",
+						CreatedOn: time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC), State: "Open",
+					},
+				}, nil
+			},
+		}
+		repo := &stubCaseRepo{
+			resolveRelatedCaseID: func(context.Context, string) (*string, error) {
+				return nil, nil
+			},
+			createCaseFromServiceNow: func(_ context.Context, got domain.CreateCaseRequest, id, number, wso2ID, createdBy, _ string) (domain.Case, error) {
+				gotResolved = got.ResolvedRelatedCaseID
+				respState := domain.CaseStateOpen
+				return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, State: &respState}, nil
+			},
+		}
+		svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}), mirror, nil, "")
+		if _, err := svc.CreateCase(context.Background(), req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotMirror != relatedCaseID {
+			t.Fatalf("ServiceNow relatedCaseId = %q, want %q", gotMirror, relatedCaseID)
+		}
+		if gotResolved != nil {
+			t.Fatalf("ResolvedRelatedCaseID = %q, want nil so the insert binds NULL", *gotResolved)
 		}
 	})
 
