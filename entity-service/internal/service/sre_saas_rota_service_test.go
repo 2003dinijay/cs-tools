@@ -398,6 +398,32 @@ func TestGenerateMonth_SlotsFilledByHandAreLeftAlone(t *testing.T) {
 	}
 }
 
+// TZ3 is one crew for the whole rota: an Artemis engineer a lead put on TZ3
+// L1 by hand holds that night's L1 for Apollo too, so nobody is generated
+// onto it from either team.
+func TestGenerateMonth_ATZ3TierSetByHandHoldsItForEveryTeam(t *testing.T) {
+	tier := "L1"
+	byHand := domain.ScheduleAssignment{
+		Engineer: domain.ScheduleEngineer{UserID: "artemis-05"}, TeamKey: "artemis",
+		ShiftCode: saasShiftTZ3, Tier: &tier, RotaDate: "2026-11-04", Source: "MANUAL",
+	}
+	repo := &fakeScheduleRepo{ledTeams: []string{"apollo"}, assignments: []domain.ScheduleAssignment{byHand}}
+	writer := &fakeRotaWriter{}
+	svc := newTestRotaService(repo, writer, saasTestNow)
+	res, err := svc.GenerateMonth(leadCtx("apollo.lead@example.com"), generateReq("2026-11"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Summary.KeptByHand == 0 {
+		t.Fatal("the hand-filled TZ3 L1 was not counted as kept")
+	}
+	for _, turn := range writer.got.Turns {
+		if turn.RotaDate == "2026-11-04" && turn.ShiftCode == saasShiftTZ3 && turn.Tier == saasTierL1 {
+			t.Fatalf("generated a second TZ3 L1 beside the lead's: %+v", turn)
+		}
+	}
+}
+
 // One person works one zone a day: somebody a lead put on TZ1 by hand is
 // given nothing else that day -- no TZ2 or TZ3 turn, no L3, no SUP -- and the
 // slots they would have taken go to others.

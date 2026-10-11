@@ -2156,3 +2156,210 @@ func TestScheduleIntegration_OvernightViewCarriesOnlyTheNightBefore(t *testing.T
 		t.Fatal("Wednesday's view carried Monday's block, which ended on Tuesday")
 	}
 }
+
+// ── one holder per tier ───────────────────────────────────────────────────
+//
+// A rung of the SRE pager's ladder is one person. In these tests
+// schedSreTeamKey stands in for Apollo and schedOtherTeam for Artemis: the
+// rule is about the window, not the team's type, so any two teams will do.
+
+// schedNightCoverMonday is far from any real rota, because the shared TZ3
+// slot is checked across every team in the database -- a developer's local
+// rota on schedMonday would otherwise turn up as the existing holder.
+const schedNightCoverMonday = "2030-09-23"
+
+// applyTurn sets one person to one window on one team over [from, to].
+func applyTurn(t *testing.T, repo ScheduleRepository, userID, teamKey, code, tier, from, to string) error {
+	t.Helper()
+	req := domain.ApplyScheduleRangeRequest{
+		UserID: userID, TeamKey: teamKey, ShiftCode: code, From: from, To: to,
+	}
+	if tier != "" {
+		req.Tier = &tier
+	}
+	_, err := repo.ApplyRange(context.Background(), req, schedLeadEmail)
+	return err
+}
+
+// holdersOf lists who holds a zone's tiers on a day, as "team:email:tier".
+func holdersOf(t *testing.T, pool *pgxpool.Pool, zone, day string) []string {
+	t.Helper()
+	rows, err := pool.Query(context.Background(), `
+		SELECT a.team_key || ':' || u.email || ':' || a.tier::text
+		  FROM team_schedule_assignment a
+		  JOIN "user" u ON u.id = a.user_id
+		  JOIN team_schedule_zone z ON z.id = a.zone_id
+		 WHERE z.code = $1 AND a.rota_date = $2::date AND a.tier IS NOT NULL
+		   AND a.user_id = ANY($3::uuid[])
+		 ORDER BY 1`, zone, day, []string{schedLeadID, schedMemberID, schedOtherID})
+	if err != nil {
+		t.Fatalf("read holders: %v", err)
+	}
+	defer rows.Close()
+	out := []string{}
+	for rows.Next() {
+		var v string
+		if err := rows.Scan(&v); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		out = append(out, v)
+	}
+	return out
+}
+
+// A second person put on a team's TZ1 L1 used to be added beside the first,
+// and the pager then picked one of the two. It is a conflict naming the
+// holder now, and the span is left as it was -- the days before the clash
+// included. The fixed-tier L1 window and the open window at L1 are one rung.
+func TestScheduleIntegration_ApplyRangeRefusesASecondHolderOfATier(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	wednesday := "2026-09-23"
+
+	if err := applyTurn(t, repo, schedLeadID, schedSreTeamKey, "SRE_TZ1_L1", "", wednesday, wednesday); err != nil {
+		t.Fatalf("the first holder: %v", err)
+	}
+
+	err := applyTurn(t, repo, schedMemberID, schedSreTeamKey, "SRE_TZ1", "L1", schedMonday, wednesday)
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("a second TZ1 L1 holder: got %v, want a ConflictError", err)
+	}
+	for _, want := range []string{"Sched Lead", "TZ1 L1", wednesday} {
+		if !strings.Contains(conflict.Msg, want) {
+			t.Errorf("conflict message %q does not say %q", conflict.Msg, want)
+		}
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND rota_date BETWEEN $2::date AND $3::date`,
+		schedMemberID, schedMonday, wednesday); n != 0 {
+		t.Fatalf("%d rows written for the refused span, want none", n)
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM team_schedule_assignment_activity WHERE user_id = $1::uuid`, schedMemberID); n != 0 {
+		t.Fatalf("%d history rows for the refused span, want none", n)
+	}
+	if got := holdersOf(t, pool, "TZ1", wednesday); fmt.Sprint(got) != fmt.Sprint([]string{schedSreTeamKey + ":" + schedLeadEmail + ":L1"}) {
+		t.Fatalf("TZ1 on %s is held by %v, want the first holder alone", wednesday, got)
+	}
+
+	// A different rung on the same team and day is free.
+	if err := applyTurn(t, repo, schedMemberID, schedSreTeamKey, "SRE_TZ1", "L2", wednesday, wednesday); err != nil {
+		t.Fatalf("TZ1 L2 beside the L1 holder: %v", err)
+	}
+}
+
+// TZ3 is one crew for the whole SaaS rota, so an Artemis engineer cannot take
+// TZ3 L1 on a night an Apollo engineer holds it -- but can take L2.
+func TestScheduleIntegration_ApplyRangeRefusesASecondTZ3HolderAcrossTeams(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	night := schedNightCoverMonday
+
+	var shared, iaasShared bool
+	if err := pool.QueryRow(context.Background(), `
+		SELECT (SELECT shared_across_teams FROM team_schedule_shift WHERE code = 'SRE_TZ3'),
+		       COALESCE((SELECT shared_across_teams FROM team_schedule_shift WHERE code = 'SRE_IAAS_NIGHT'), FALSE)`).
+		Scan(&shared, &iaasShared); err != nil {
+		t.Fatalf("read the catalogue: %v", err)
+	}
+	if !shared || iaasShared {
+		t.Fatalf("SRE_TZ3 shared=%v, SRE_IAAS_NIGHT shared=%v; want only SaaS's night shared (migration 0220)", shared, iaasShared)
+	}
+
+	if err := applyTurn(t, repo, schedLeadID, schedSreTeamKey, "SRE_TZ3", "L1", night, night); err != nil {
+		t.Fatalf("Apollo's TZ3 L1: %v", err)
+	}
+	err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_TZ3", "L1", night, night)
+	var conflict *apierror.ConflictError
+	if !errors.As(err, &conflict) {
+		t.Fatalf("Artemis's TZ3 L1 on Apollo's night: got %v, want a ConflictError", err)
+	}
+	for _, want := range []string{"Sched Lead", "TZ3 L1", night} {
+		if !strings.Contains(conflict.Msg, want) {
+			t.Errorf("conflict message %q does not say %q", conflict.Msg, want)
+		}
+	}
+	if n := countRows(t, pool,
+		`SELECT count(*) FROM team_schedule_assignment WHERE user_id = $1::uuid AND rota_date = $2::date`,
+		schedMemberID, night); n != 0 {
+		t.Fatalf("%d rows written for the refused night, want none", n)
+	}
+
+	if err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_TZ3", "L2", night, night); err != nil {
+		t.Fatalf("Artemis's TZ3 L2 under Apollo's L1: %v", err)
+	}
+	want := []string{schedOtherTeam + ":" + schedMemberEmail + ":L2", schedSreTeamKey + ":" + schedLeadEmail + ":L1"}
+	if got := holdersOf(t, pool, "TZ3", night); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("TZ3 crew on %s is %v, want %v", night, got, want)
+	}
+}
+
+// The person being edited is never in their own way: moving the L1 holder to
+// L2 frees L1 for somebody else, and a clear still clears.
+func TestScheduleIntegration_ApplyRangeMovesTheSameHolderBetweenTiers(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	ctx := context.Background()
+	night := schedNightCoverMonday
+
+	if err := applyTurn(t, repo, schedMemberID, schedSreTeamKey, "SRE_TZ1_L1", "", schedMonday, schedMonday); err != nil {
+		t.Fatalf("TZ1 L1: %v", err)
+	}
+	if err := applyTurn(t, repo, schedMemberID, schedSreTeamKey, "SRE_TZ1", "L2", schedMonday, schedMonday); err != nil {
+		t.Fatalf("the same person, L1 to L2: %v", err)
+	}
+	if err := applyTurn(t, repo, schedLeadID, schedSreTeamKey, "SRE_TZ1_L1", "", schedMonday, schedMonday); err != nil {
+		t.Fatalf("somebody else onto the L1 the move freed: %v", err)
+	}
+	want := []string{schedSreTeamKey + ":" + schedLeadEmail + ":L1", schedSreTeamKey + ":" + schedMemberEmail + ":L2"}
+	if got := holdersOf(t, pool, "TZ1", schedMonday); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("TZ1 on %s is held by %v, want %v", schedMonday, got, want)
+	}
+
+	// The same on the shared night, from one team's TZ3 L1 to its L3.
+	if err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_TZ3", "L1", night, night); err != nil {
+		t.Fatalf("TZ3 L1: %v", err)
+	}
+	if err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_TZ3", "L3", night, night); err != nil {
+		t.Fatalf("the same person, TZ3 L1 to L3: %v", err)
+	}
+	if got := holdersOf(t, pool, "TZ3", night); fmt.Sprint(got) != fmt.Sprint([]string{schedOtherTeam + ":" + schedMemberEmail + ":L3"}) {
+		t.Fatalf("TZ3 on %s is held by %v, want the member at L3 alone", night, got)
+	}
+
+	if _, err := repo.ApplyRange(ctx, domain.ApplyScheduleRangeRequest{
+		UserID: schedMemberID, TeamKey: schedSreTeamKey, From: schedMonday, To: schedMonday,
+	}, schedLeadEmail); err != nil {
+		t.Fatalf("clearing the day: %v", err)
+	}
+	if got := holdersOf(t, pool, "TZ1", schedMonday); fmt.Sprint(got) != fmt.Sprint([]string{schedSreTeamKey + ":" + schedLeadEmail + ":L1"}) {
+		t.Fatalf("after the clear TZ1 is held by %v, want the lead's L1 alone", got)
+	}
+}
+
+// TZ1 is one crew per team: Apollo's and Artemis's TZ1 L1 are two people, and
+// so are IaaS's per-team night rungs. Only a window marked shared is shared.
+func TestScheduleIntegration_ApplyRangeLetsEachTeamHoldItsOwnTZ1Tier(t *testing.T) {
+	repo, pool := newScheduleIntegrationRepo(t)
+	night := schedNightCoverMonday
+
+	if err := applyTurn(t, repo, schedLeadID, schedSreTeamKey, "SRE_TZ1_L1", "", schedMonday, schedMonday); err != nil {
+		t.Fatalf("Apollo's TZ1 L1: %v", err)
+	}
+	if err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_TZ1", "L1", schedMonday, schedMonday); err != nil {
+		t.Fatalf("Artemis's TZ1 L1 the same day: %v", err)
+	}
+	want := []string{schedOtherTeam + ":" + schedMemberEmail + ":L1", schedSreTeamKey + ":" + schedLeadEmail + ":L1"}
+	if got := holdersOf(t, pool, "TZ1", schedMonday); fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("TZ1 on %s is held by %v, want %v", schedMonday, got, want)
+	}
+
+	if err := applyTurn(t, repo, schedLeadID, schedSreTeamKey, "SRE_IAAS_NIGHT", "L1", night, night); err != nil {
+		t.Fatalf("one team's IaaS night L1: %v", err)
+	}
+	if err := applyTurn(t, repo, schedMemberID, schedOtherTeam, "SRE_IAAS_NIGHT", "L1", night, night); err != nil {
+		t.Fatalf("another team's IaaS night L1 the same night: %v", err)
+	}
+	var conflict *apierror.ConflictError
+	if err := applyTurn(t, repo, schedOtherID, schedOtherTeam, "SRE_IAAS_NIGHT", "L1", night, night); !errors.As(err, &conflict) {
+		t.Fatalf("a second IaaS night L1 on the same team: got %v, want a ConflictError", err)
+	}
+}

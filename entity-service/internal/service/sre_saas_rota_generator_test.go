@@ -108,6 +108,14 @@ func saasDaysOf(month time.Time) []time.Time {
 	return out
 }
 
+// saasNight is the night's TZ3 turns on tier, whichever team they are on:
+// TZ3 is one crew for the whole rota.
+func saasNight(plan saasRotaPlan, iso, tier string) []saasPlannedTurn {
+	return saasTurnsBy(plan, func(x saasPlannedTurn) bool {
+		return x.RotaDate == iso && x.ShiftCode == saasShiftTZ3 && x.Tier == tier
+	})
+}
+
 func TestSRESaaSRota_EveryWeekdaySlotIsFilled(t *testing.T) {
 	month := saasMonth(2026, time.November)
 	plan := generateSRESaaSRota(saasTestInput(month))
@@ -130,35 +138,45 @@ func TestSRESaaSRota_EveryWeekdaySlotIsFilled(t *testing.T) {
 				}
 			}
 		}
-		for _, team := range []string{"apollo", "artemis"} {
-			for _, tier := range []string{saasTierL1, saasTierL2} {
-				got := saasTurnsBy(plan, func(x saasPlannedTurn) bool {
-					return x.RotaDate == iso && x.TeamKey == team && x.ShiftCode == saasShiftTZ3 && x.Tier == tier
-				})
-				if len(got) != 1 {
-					t.Fatalf("%s %s TZ3 %s: want exactly one turn, got %v", iso, team, tier, got)
-				}
-				if team == "apollo" && !saasTestIsNight(got[0].UserID) {
-					t.Fatalf("%s apollo TZ3 %s went to %s, who is not marked on nights", iso, tier, got[0].UserID)
-				}
+		for _, tier := range []string{saasTierL1, saasTierL2, saasTierL3} {
+			got := saasNight(plan, iso, tier)
+			if len(got) != 1 {
+				t.Fatalf("%s TZ3 %s: want exactly one turn for the rota, got %v", iso, tier, got)
+			}
+			// L3 comes from the rest of the rota when one of the three night
+			// people is off -- the Monday and Tuesday after their weekend.
+			if tier != saasTierL3 && !saasTestIsNight(got[0].UserID) {
+				t.Fatalf("%s TZ3 %s went to %s, who is not marked on nights", iso, tier, got[0].UserID)
 			}
 		}
 	}
 }
 
-// What the leads asked for: every team has L1, L2 and L3 on every zone every
-// day -- TZ1, TZ2 and TZ3 on a weekday, the weekend window and TZ3 on a
-// weekend -- whether its TZ3 hours are marked (apollo) or not (artemis).
+// What the leads asked for: every team has L1, L2 and L3 on every day zone
+// every day -- TZ1 and TZ2 on a weekday, the weekend window on a weekend --
+// and the rota has one TZ3 L1, L2 and L3 every night, the night cover for
+// every team, weekends included.
 func TestSRESaaSRota_EveryTeamHasL1L2L3OnEveryZoneEveryDay(t *testing.T) {
 	month := saasMonth(2026, time.November)
 	plan := generateSRESaaSRota(saasTestInput(month))
 	for _, d := range saasDaysOf(month) {
 		iso := saasISO(d)
 		zones := map[string][]string{
-			"TZ1": {saasShiftTZ1L1, saasShiftTZ1}, "TZ2": {saasShiftTZ2L1, saasShiftTZ2}, "TZ3": {saasShiftTZ3},
+			"TZ1": {saasShiftTZ1L1, saasShiftTZ1}, "TZ2": {saasShiftTZ2L1, saasShiftTZ2},
 		}
 		if saasDow(d) >= 5 {
-			zones = map[string][]string{"TZ1+2": {saasShiftWeekend}, "TZ3": {saasShiftTZ3}}
+			zones = map[string][]string{"TZ1+2": {saasShiftWeekend}}
+		}
+		night := map[string]bool{}
+		for _, tier := range []string{saasTierL1, saasTierL2, saasTierL3} {
+			got := saasNight(plan, iso, tier)
+			if len(got) != 1 {
+				t.Fatalf("%s TZ3 %s: want exactly one for the rota, got %v", iso, tier, got)
+			}
+			if night[got[0].UserID] {
+				t.Fatalf("%s: %s holds two TZ3 tiers", iso, got[0].UserID)
+			}
+			night[got[0].UserID] = true
 		}
 		for _, team := range []string{"apollo", "artemis"} {
 			for zone, codes := range zones {
@@ -444,14 +462,12 @@ func TestSRESaaSRota_WeeksWithNoTZ3HoursMarkedStillGetNights(t *testing.T) {
 			continue
 		}
 		iso := saasISO(d)
-		for _, tier := range []string{saasTierL1, saasTierL2} {
-			got := saasTurnsBy(plan, func(x saasPlannedTurn) bool {
-				return x.RotaDate == iso && x.TeamKey == "apollo" && x.ShiftCode == saasShiftTZ3 && x.Tier == tier
-			})
+		for _, tier := range []string{saasTierL1, saasTierL2, saasTierL3} {
+			got := saasNight(plan, iso, tier)
 			if len(got) != 1 {
-				t.Fatalf("%s apollo TZ3 %s: want one turn, got %v", iso, tier, got)
+				t.Fatalf("%s TZ3 %s: want one turn, got %v", iso, tier, got)
 			}
-			if iso < "2026-11-16" && !saasTestIsNight(got[0].UserID) {
+			if iso < "2026-11-16" && tier != saasTierL3 && !saasTestIsNight(got[0].UserID) {
 				t.Fatalf("%s: a marked week's nights went to %s, who is not marked", iso, got[0].UserID)
 			}
 		}
@@ -472,12 +488,10 @@ func TestSRESaaSRota_NightsAfterMarksStopMidWeekAreCovered(t *testing.T) {
 	}
 	plan := generateSRESaaSRota(in)
 	for _, iso := range []string{"2026-11-19", "2026-11-20"} {
-		for _, tier := range []string{saasTierL1, saasTierL2} {
-			got := saasTurnsBy(plan, func(x saasPlannedTurn) bool {
-				return x.RotaDate == iso && x.TeamKey == "apollo" && x.ShiftCode == saasShiftTZ3 && x.Tier == tier
-			})
+		for _, tier := range []string{saasTierL1, saasTierL2, saasTierL3} {
+			got := saasNight(plan, iso, tier)
 			if len(got) != 1 {
-				t.Fatalf("%s apollo TZ3 %s: want one turn, got %v (warnings %v)", iso, tier, got, plan.Warnings)
+				t.Fatalf("%s TZ3 %s: want one turn, got %v (warnings %v)", iso, tier, got, plan.Warnings)
 			}
 			for _, x := range plan.Turns {
 				if x.UserID == got[0].UserID && x.RotaDate == iso && x.ShiftCode != saasShiftTZ3 && x.Tier != saasTierL3 && x.Tier != "" {
@@ -640,14 +654,12 @@ func TestSRESaaSRota_AChosenTZ3CrewTakesEveryTierInTurn(t *testing.T) {
 			}
 		}
 		for _, tier := range []string{saasTierL1, saasTierL2, saasTierL3} {
-			got := saasTurnsBy(plan, func(x saasPlannedTurn) bool {
-				return x.RotaDate == iso && x.TeamKey == "apollo" && x.ShiftCode == saasShiftTZ3 && x.Tier == tier
-			})
+			got := saasNight(plan, iso, tier)
 			if len(got) != 1 {
-				t.Fatalf("%s apollo TZ3 %s: want one, got %v", iso, tier, got)
+				t.Fatalf("%s TZ3 %s: want one, got %v", iso, tier, got)
 			}
 			if allFree && !isCrew[got[0].UserID] {
-				t.Fatalf("%s apollo TZ3 %s went to %s, not the chosen crew", iso, tier, got[0].UserID)
+				t.Fatalf("%s TZ3 %s went to %s, not the chosen crew", iso, tier, got[0].UserID)
 			}
 			if isCrew[got[0].UserID] {
 				if tiers[got[0].UserID] == nil {
@@ -669,10 +681,59 @@ func TestSRESaaSRota_AChosenTZ3CrewTakesEveryTierInTurn(t *testing.T) {
 			t.Fatalf("crew member given another zone: %v", x)
 		}
 	}
-	// Artemis chose nobody, so its nights are its usual rotation.
-	if got := saasTurnsBy(plan, func(x saasPlannedTurn) bool { return x.TeamKey == "artemis" && x.ShiftCode == saasShiftTZ3 }); len(got) == 0 {
-		t.Fatal("artemis has no nights")
+	// Artemis chose nobody: the one crew is its night cover too, so nobody on
+	// Artemis is on nights while the whole crew is free.
+	for _, x := range plan.Turns {
+		if x.TeamKey != "artemis" || x.ShiftCode != saasShiftTZ3 || x.Tier == "" {
+			continue
+		}
+		free := true
+		for _, p := range crew {
+			if lieu(p, x.RotaDate) {
+				free = false
+			}
+		}
+		if free {
+			t.Fatalf("artemis given a night beside the chosen crew: %v", x)
+		}
 	}
+}
+
+// Each team's chosen TZ3 people are one crew: both teams' people take the
+// rota's nights, and every night still has one L1, L2 and L3.
+func TestSRESaaSRota_TZ3PeopleChosenOnBothTeamsAreOneCrew(t *testing.T) {
+	month := saasMonth(2026, time.November)
+	in := saasTestInput(month)
+	in.NightCrew = map[string][]string{"apollo": {"apollo-03", "apollo-07"}, "artemis": {"artemis-05", "artemis-09"}}
+	plan := generateSRESaaSRota(in)
+	took := map[string]int{}
+	for _, d := range saasDaysOf(month) {
+		iso := saasISO(d)
+		for _, tier := range []string{saasTierL1, saasTierL2, saasTierL3} {
+			got := saasNight(plan, iso, tier)
+			if len(got) != 1 {
+				t.Fatalf("%s TZ3 %s: want one, got %v", iso, tier, got)
+			}
+			took[got[0].UserID]++
+			if got[0].TeamKey != saasTestMember(in, got[0].UserID).TeamKey {
+				t.Fatalf("%s: a night turn is written on the person's own team, got %v", iso, got[0])
+			}
+		}
+	}
+	for _, p := range []string{"apollo-03", "apollo-07", "artemis-05", "artemis-09"} {
+		if took[p] == 0 {
+			t.Fatalf("%s is on the crew but took no night: %v", p, took)
+		}
+	}
+}
+
+func saasTestMember(in saasRotaInput, id string) saasRotaMember {
+	for _, m := range in.Members {
+		if m.UserID == id {
+			return m
+		}
+	}
+	return saasRotaMember{}
 }
 
 // Lieu leave is only the days the on-call is not already away: with leave on
@@ -780,52 +841,43 @@ func TestSRESaaSRota_NoTZ3HoursMarkedPutsEveryoneOnTheNightRotation(t *testing.T
 	if len(plan.Warnings) != 0 {
 		t.Fatalf("no warning expected, got %v", plan.Warnings)
 	}
-	type key struct {
-		team string
-		wi   int
-	}
-	nightOf := map[key]map[string]bool{} // team, week -> its night people
+	nightOf := map[int]map[string]bool{} // week -> its night people
 	nightPeople := map[string]map[string]bool{"apollo": {}, "artemis": {}}
 	for _, d := range saasDaysOf(month) {
 		if saasDow(d) >= 5 {
 			continue
 		}
 		iso, wi := saasISO(d), saasWeek(d)
-		for _, team := range []string{"apollo", "artemis"} {
-			for _, tier := range []string{saasTierL1, saasTierL2} {
-				got := saasTurnsBy(plan, func(x saasPlannedTurn) bool {
-					return x.RotaDate == iso && x.TeamKey == team && x.ShiftCode == saasShiftTZ3 && x.Tier == tier
-				})
-				if len(got) != 1 {
-					t.Fatalf("%s %s TZ3 %s: want exactly one turn, got %v", iso, team, tier, got)
-				}
-				p := got[0].UserID
-				if strings.HasSuffix(p, "-lead") || !strings.HasPrefix(p, team+"-") {
-					t.Fatalf("%s %s TZ3 %s went to %s", iso, team, tier, p)
-				}
-				k := key{team, wi}
-				if nightOf[k] == nil {
-					nightOf[k] = map[string]bool{}
-				}
-				nightOf[k][p] = true
-				nightPeople[team][p] = true
+		for _, tier := range []string{saasTierL1, saasTierL2, saasTierL3} {
+			got := saasNight(plan, iso, tier)
+			if len(got) != 1 {
+				t.Fatalf("%s TZ3 %s: want exactly one turn, got %v", iso, tier, got)
 			}
+			p := got[0].UserID
+			if strings.HasSuffix(p, "-lead") {
+				t.Fatalf("%s TZ3 %s went to a lead, %s", iso, tier, p)
+			}
+			if nightOf[wi] == nil {
+				nightOf[wi] = map[string]bool{}
+			}
+			nightOf[wi][p] = true
+			nightPeople[got[0].TeamKey][p] = true
 		}
 	}
-	for k, people := range nightOf {
-		if len(people) != 2 {
-			t.Fatalf("%s week %d: want a night pair, got %v", k.team, k.wi, people)
+	for wi, people := range nightOf {
+		if len(people) != saasNightTiers {
+			t.Fatalf("week %d: want %d night people, got %v", wi, saasNightTiers, people)
 		}
 		for _, x := range plan.Turns {
-			if people[x.UserID] && saasWeek(saasMustParse(x.RotaDate)) == k.wi &&
+			if people[x.UserID] && saasWeek(saasMustParse(x.RotaDate)) == wi &&
 				saasDow(saasMustParse(x.RotaDate)) < 5 && x.ShiftCode != saasShiftTZ3 && x.Tier != "" {
-				t.Fatalf("%s week %d: night person %s also given a day turn %v", k.team, k.wi, x.UserID, x)
+				t.Fatalf("week %d: night person %s also given a day turn %v", wi, x.UserID, x)
 			}
 		}
 	}
 	for team, people := range nightPeople {
-		if len(people) < 6 {
-			t.Fatalf("%s: nights should rotate through the team, only %v took them", team, people)
+		if len(people) < 4 {
+			t.Fatalf("%s: nights should rotate through both teams, only %v of %s took them", team, people, team)
 		}
 	}
 }

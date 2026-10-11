@@ -491,7 +491,8 @@ func saasOwnedLieuNotes(from, monthEnd time.Time) map[string]bool {
 
 // saasNightCrew checks the TZ3 people a lead chose: each key a team on the
 // rota, each id a member of that team, named once. Blank ids and empty lists
-// are dropped, so a team with nobody chosen keeps the usual nights.
+// are dropped. Every team's choices together are the rota's one TZ3 crew;
+// with nobody chosen on any team, nights are drawn as usual.
 func saasNightCrew(in map[string][]string, teams []string, members []saasRotaMember) (map[string][]string, error) {
 	if len(in) == 0 {
 		return nil, nil
@@ -528,8 +529,9 @@ func saasNightCrew(in map[string][]string, teams []string, members []saasRotaMem
 }
 
 // saasClashesWithHand is true when a lead already filled this turn's slot by
-// hand (same team, day, shift and tier), or the person already holds a turn
-// by hand that overlaps it.
+// hand (same team, day, shift and tier -- any team on TZ3, which is one crew
+// for the whole rota), or the person already holds a turn by hand that
+// overlaps it.
 func saasClashesWithHand(t saasPlannedTurn, byHand []domain.ScheduleAssignment, windows map[string][2]int) bool {
 	w := windows[t.ShiftCode]
 	for _, a := range byHand {
@@ -540,7 +542,8 @@ func saasClashesWithHand(t saasPlannedTurn, byHand []domain.ScheduleAssignment, 
 		if a.Tier != nil {
 			tier = *a.Tier
 		}
-		if a.TeamKey == t.TeamKey && a.ShiftCode == t.ShiftCode && tier == t.Tier {
+		sameSlot := a.TeamKey == t.TeamKey || t.ShiftCode == saasShiftTZ3
+		if sameSlot && a.ShiftCode == t.ShiftCode && tier == t.Tier {
 			return true
 		}
 		if a.Engineer.UserID == t.UserID {
