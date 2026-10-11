@@ -192,13 +192,21 @@ func escalationState(currentLevelID string) string {
 
 // accountCaseIDs pages through the account's own cases (work_item.account_id,
 // a real, direct column) to build the case id set GetEscalationsByAccount
-// filters escalations by.
+// filters escalations by. Scoped to customerHealthCaseLikeTypes (case,
+// service_request, engagement, security_report_analysis) -- entity-service's
+// own case-search type allow-list genuinely includes "announcement" too, so
+// an accountId-only filter with no type restriction would also match an
+// account's announcements, which never carry escalations but would still
+// pointlessly inflate this id set.
 func (c *postgresViewerAccountClient) accountCaseIDs(ctx context.Context, accountID string) ([]string, error) {
 	var caseIDs []string
 	for page := 0; page < accountEscalationCasePageCap; page++ {
 		body, err := json.Marshal(entitySearchCasesRequest{
 			Filters: entitySearchCasesFilters{
-				Filters: []entityCaseFieldFilter{{Field: "accountId", Op: "in", Values: []string{accountID}}},
+				Filters: []entityCaseFieldFilter{
+					{Field: "accountId", Op: "in", Values: []string{accountID}},
+					{Field: "type", Op: "in", Values: customerHealthCaseLikeTypes},
+				},
 			},
 			Pagination: entityPagination{Limit: accountEscalationCasePageLimit, Offset: page * accountEscalationCasePageLimit},
 		})
