@@ -393,20 +393,33 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 	// legal (see isValidCustomerStateTransition's own doc comment). Built
 	// from entityReq rather than req.StateKey directly so the numeric-id→enum
 	// translation (dto.BuildEntityUpdateCaseRequest) only happens once.
+	//
+	// Skipped for a staff caller (admin/agent/internal): the permission
+	// matrix lets WSO2 staff reach this same customer-facing endpoint (e.g.
+	// for support), and this rule exists specifically to restrict what a
+	// customer may do to their own case -- it was never written with staff
+	// in mind, and staff already have their own, different transition rules
+	// enforced by apps/csm-portal/backend when they use that portal instead.
+	// Un-gated here only means "this rule doesn't apply," not "anything
+	// goes": entity-service's own validation (real state or 400) still runs
+	// regardless of caller.
 	if req.StateKey != nil {
-		current, err := h.entity.GetCase(r.Context(), id)
-		if err != nil {
-			slog.ErrorContext(r.Context(), "entity GetCase failed during state validation", "userID", user.UserID, "caseID", id, "err", summarizeErr(err))
-			mapUpstreamError(w, err, "Failed to retrieve current case state.")
-			return
-		}
-		var targetState string
-		if entityReq.State != nil {
-			targetState = *entityReq.State
-		}
-		if !isValidCustomerStateTransition(current.State, targetState) {
-			writeError(w, http.StatusBadRequest, ErrMsgInvalidTransition)
-			return
+		roles, _ := middleware.RolesFromContext(r.Context())
+		if !middleware.IsStaffRole(roles) {
+			current, err := h.entity.GetCase(r.Context(), id)
+			if err != nil {
+				slog.ErrorContext(r.Context(), "entity GetCase failed during state validation", "userID", user.UserID, "caseID", id, "err", summarizeErr(err))
+				mapUpstreamError(w, err, "Failed to retrieve current case state.")
+				return
+			}
+			var targetState string
+			if entityReq.State != nil {
+				targetState = *entityReq.State
+			}
+			if !isValidCustomerStateTransition(current.State, targetState) {
+				writeError(w, http.StatusBadRequest, ErrMsgInvalidTransition)
+				return
+			}
 		}
 	}
 

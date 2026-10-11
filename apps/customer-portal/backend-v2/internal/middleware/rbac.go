@@ -336,6 +336,50 @@ func WithGrantedAction(ctx context.Context, action Action) context.Context {
 	return context.WithValue(ctx, grantedActionKey{}, action)
 }
 
+// resolvedRolesKey is the context key under which RequirePermission/
+// RequirePermissionOneOf record the caller's own resolved roles, mirroring
+// grantedActionKey above.
+type resolvedRolesKey struct{}
+
+// RolesFromContext returns the caller's roles as resolved by RequirePermission/
+// RequirePermissionOneOf for this request, and false when the request did not
+// pass through either (or role resolution otherwise never ran). A handler that
+// needs to tell a staff caller (admin/agent/internal) apart from a real
+// customer -- e.g. a business rule that only makes sense for a customer's own
+// case, not a staff member using this same customer-facing endpoint -- reads
+// this rather than re-resolving roles itself, since the permission check
+// already paid for that resolution. Treat "not present" as "no roles known",
+// never as "is staff": the rule being gated should fail closed the same way
+// GrantedActionFromContext's own callers do.
+func RolesFromContext(ctx context.Context) ([]CanonicalRole, bool) {
+	r, ok := ctx.Value(resolvedRolesKey{}).([]CanonicalRole)
+	return r, ok
+}
+
+// WithResolvedRoles returns a copy of ctx recording roles as the caller's own,
+// as resolved by RequirePermission/RequirePermissionOneOf. Exported so handler
+// tests can put a request at a given role without building the whole
+// middleware chain, the same as WithGrantedAction.
+func WithResolvedRoles(ctx context.Context, roles []CanonicalRole) context.Context {
+	return context.WithValue(ctx, resolvedRolesKey{}, roles)
+}
+
+// IsStaffRole reports whether any of roles is a WSO2-staff role (admin, agent,
+// or internal) rather than a customer/partner one. Used to carve a staff
+// caller out of a business rule that exists specifically to restrict what a
+// customer may do to their own case -- a staff member using this
+// customer-facing endpoint (the permission matrix above allows it, e.g. for
+// support) is not a customer, and should not be bound by a customer-only rule
+// that was never written with them in mind.
+func IsStaffRole(roles []CanonicalRole) bool {
+	for _, r := range roles {
+		if r == RoleAdmin || r == RoleAgent || r == RoleInternal {
+			return true
+		}
+	}
+	return false
+}
+
 // resolveRolesForRequest resolves the caller's roles, writing the 401 (no
 // authenticated user) or 502 (roles could not be resolved) response itself and
 // returning false when the request cannot go on.
@@ -371,7 +415,7 @@ func RequirePermission(resolver RoleResolver, module Module, action Action) func
 				return
 			}
 
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(w, r.WithContext(WithResolvedRoles(r.Context(), roles)))
 		})
 	}
 }
@@ -392,7 +436,9 @@ func RequirePermissionOneOf(resolver RoleResolver, module Module, actions ...Act
 
 			for _, action := range actions {
 				if HasPermission(roles, module, action) {
-					next.ServeHTTP(w, r.WithContext(WithGrantedAction(r.Context(), action)))
+					ctx := WithGrantedAction(r.Context(), action)
+					ctx = WithResolvedRoles(ctx, roles)
+					next.ServeHTTP(w, r.WithContext(ctx))
 					return
 				}
 			}

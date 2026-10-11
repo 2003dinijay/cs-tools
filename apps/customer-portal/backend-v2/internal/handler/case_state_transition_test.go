@@ -25,6 +25,7 @@ import (
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/middleware"
 )
 
 // fakeStateTransitionEntityClient records what UpdateCase was actually called
@@ -61,6 +62,25 @@ func patchCaseState(t *testing.T, fake *fakeStateTransitionEntityClient, stateKe
 
 	reqBody := `{"stateKey":` + strconv.Itoa(stateKey) + `}`
 	req := authedRequest(http.MethodPatch, "/cases/33333333-3333-3333-3333-333333333333", reqBody)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+	return rec
+}
+
+// patchCaseStateAsRole mirrors patchCaseState, but also attaches resolved
+// roles to the request context the way RequirePermission/RequirePermissionOneOf
+// do in production -- simulating a request that already passed through the
+// RBAC middleware as the given role(s).
+func patchCaseStateAsRole(t *testing.T, fake *fakeStateTransitionEntityClient, stateKey int, roles ...middleware.CanonicalRole) *httptest.ResponseRecorder {
+	t.Helper()
+	h := NewCaseHandler(fake)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("PATCH /cases/{id}", h.PatchCase)
+
+	reqBody := `{"stateKey":` + strconv.Itoa(stateKey) + `}`
+	req := authedRequest(http.MethodPatch, "/cases/33333333-3333-3333-3333-333333333333", reqBody)
+	req = req.WithContext(middleware.WithResolvedRoles(req.Context(), roles))
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, req)
 	return rec
