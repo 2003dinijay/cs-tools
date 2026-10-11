@@ -60,6 +60,7 @@ import ConversationKnowledgeRecommendations from "@features/support/components/k
 import { useTheme } from "@wso2/oxygen-ui";
 import {
   dateFromApiCreatedOn,
+  dedupeAdjacentDuplicateMessages,
   formatDateOnly,
   formatCommentDate,
   getInitials,
@@ -358,7 +359,7 @@ export default function ConversationDetailsPage(): JSX.Element {
 
   const messages: ConversationMessage[] = useMemo(() => {
     const raw = data?.pages?.flatMap((p) => p.comments) ?? [];
-    return [...raw].sort((a, b) => {
+    const sorted = [...raw].sort((a, b) => {
       const aT = parseApiLocalDateTimeMs(a.createdOn ?? undefined);
       const bT = parseApiLocalDateTimeMs(b.createdOn ?? undefined);
       const aOk = !Number.isNaN(aT);
@@ -375,6 +376,7 @@ export default function ConversationDetailsPage(): JSX.Element {
       }
       return (a.id ?? "").localeCompare(b.id ?? "");
     });
+    return dedupeAdjacentDuplicateMessages(sorted);
   }, [data]);
 
   const chatMessages: Message[] = useMemo(
