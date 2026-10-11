@@ -174,6 +174,10 @@ type entitySearchDeployedProductsEolResponse struct {
 type entitySearchAccountsFilters struct {
 	SearchQuery string `json:"searchQuery,omitempty"`
 	OwnerEmail  string `json:"ownerEmail,omitempty"`
+	// Active mirrors entity-service's own SearchAccountsFilters.Active
+	// (account.deactivation_date IS NULL/IS NOT NULL) -- nil means both
+	// active and deactivated accounts match.
+	Active *bool `json:"active,omitempty"`
 }
 
 type entitySearchAccountsRequest struct {
