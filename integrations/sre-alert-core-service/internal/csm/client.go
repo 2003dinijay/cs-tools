@@ -23,7 +23,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -36,6 +38,8 @@ import (
 type Error struct {
 	StatusCode int
 	Body       string
+	// Location is a redirect's target (no query), kept for the log since the client follows no redirects.
+	Location string
 }
 
 func (e *Error) Error() string {
@@ -73,6 +77,8 @@ type Config struct {
 	Scopes       []string
 	// HTTPTimeout bounds each CSM call, so one stuck call can't hold a delivery worker and its lock.
 	HTTPTimeout time.Duration
+	// Logger receives one line per request to csm-integration-service; nil uses slog.Default().
+	Logger *slog.Logger
 }
 
 // Client authenticates via OAuth2 client-credentials grant; tokens are acquired and refreshed automatically.
@@ -81,6 +87,7 @@ type Client struct {
 	baseURL string
 	// breaker trips after a run of failures so a confirmed outage fails fast instead of retrying against a known-down downstream.
 	breaker *gobreaker.CircuitBreaker[[]byte]
+	logger  *slog.Logger
 }
 
 // NewClient constructs a Client using the OAuth2 client-credentials grant.
@@ -107,18 +114,28 @@ func NewClient(cfg Config) *Client {
 		return http.ErrUseLastResponse
 	}
 
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 	return &Client{
 		http:    httpClient,
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
-		breaker: newBreaker(),
+		breaker: newBreaker(logger),
+		logger:  logger,
 	}
 }
 
 // newBreaker excludes a non-retryable 4xx and genuine caller cancellation from tripping the breaker, but not a bare http.Client timeout, which must count as a real CSM-is-down failure.
-func newBreaker() *gobreaker.CircuitBreaker[[]byte] {
+func newBreaker(logger *slog.Logger) *gobreaker.CircuitBreaker[[]byte] {
 	return gobreaker.NewCircuitBreaker[[]byte](gobreaker.Settings{
 		Name:    "csm",
 		Timeout: breakerOpenTimeout,
+		// While open, calls fail with circuit_breaker_open without reaching csm-integration-service.
+		OnStateChange: func(_ string, from, to gobreaker.State) {
+			logger.Warn("csm circuit breaker state changed", "from", from.String(), "to", to.String(),
+				"consecutive_failures_to_open", breakerConsecutiveFailures, "open_for", breakerOpenTimeout.String())
+		},
 		ReadyToTrip: func(counts gobreaker.Counts) bool {
 			return counts.ConsecutiveFailures >= breakerConsecutiveFailures
 		},
@@ -140,7 +157,9 @@ var errCallerDone = errors.New("csm: caller context canceled or deadline exceede
 
 // do executes an authenticated request through the circuit breaker (caller owns the returned body slice); when open it returns gobreaker.ErrOpenState with no network call, which callers already treat as retryable.
 func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]byte, error) {
-	return c.breaker.Execute(func() ([]byte, error) {
+	start := time.Now()
+	status := 0
+	respBody, err := c.breaker.Execute(func() ([]byte, error) {
 		var reqBody io.Reader
 		if len(body) > 0 {
 			reqBody = bytes.NewReader(body)
@@ -162,6 +181,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 			return nil, wrapCallerDone(ctx, fmt.Errorf("csm: %s %s: %w", method, path, err))
 		}
 		defer resp.Body.Close()
+		status = resp.StatusCode
 
 		if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 			const maxErrBody = 256
@@ -169,7 +189,7 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 			if err != nil {
 				return nil, wrapCallerDone(ctx, fmt.Errorf("csm: read error response body: %w", err))
 			}
-			return nil, &Error{StatusCode: resp.StatusCode, Body: string(excerpt)}
+			return nil, &Error{StatusCode: resp.StatusCode, Body: string(excerpt), Location: redirectLocation(resp)}
 		}
 
 		respBody, err := io.ReadAll(resp.Body)
@@ -179,6 +199,34 @@ func (c *Client) do(ctx context.Context, method, path string, body []byte) ([]by
 
 		return respBody, nil
 	})
+	c.logRequest(ctx, method, path, status, time.Since(start), err)
+	return respBody, err
+}
+
+// logRequest records whether a request reached csm-integration-service, what came back and how long it took.
+func (c *Client) logRequest(ctx context.Context, method, path string, status int, elapsed time.Duration, err error) {
+	attrs := []any{"method", method, "path", path, "endpoint", c.baseURL, "duration_ms", elapsed.Milliseconds()}
+	if id := correlationIDFromContext(ctx); id != "" {
+		attrs = append(attrs, "correlation_id", id)
+	}
+	if err == nil {
+		c.logger.Info("csm request succeeded", append(attrs, "status_code", status)...)
+		return
+	}
+	c.logger.Warn("csm request failed", append(attrs, ErrorAttrs(err)...)...)
+}
+
+// redirectLocation is a 3xx response's Location without its query string, which can carry tokens.
+func redirectLocation(resp *http.Response) string {
+	loc := resp.Header.Get("Location")
+	if loc == "" {
+		return ""
+	}
+	if u, err := url.Parse(loc); err == nil {
+		u.RawQuery, u.Fragment = "", ""
+		return u.String()
+	}
+	return ""
 }
 
 // wrapCallerDone wraps err with errCallerDone only if ctx itself is done, so an http.Client timeout stays a plain error (counts as a breaker failure) while genuine caller cancellation is excluded.
