@@ -185,11 +185,15 @@ func TestCallRequestService_CreateCallRequest_SNSuccessCreatesPostgresRowWithMat
 	// own create flow always assigns pending_on_wso2 unconditionally with no
 	// caller concept at all, so mirroring its response would silently undo
 	// this fix for every dual-write deployment; see createCallRequestSNFirst's
-	// own doc comment. The test context here carries no resolved caller scope,
-	// so IsExternalCaller defaults to false -> pending_on_customer.
-	if gotInitialState != domain.CallRequestStatePendingOnCustomer {
+	// own doc comment. The test context here carries NO resolved caller
+	// identity at all (no WithCallerIdentity call) -- CallerIdentityFromContext's
+	// own ok=false case -- which callRequestCreateInitialState treats the same
+	// as an external caller, pending_on_wso2, rather than guessing the caller
+	// is staff (see that function's own doc comment for why collapsing
+	// "unresolved" into IsExternalCaller's plain false would get this wrong).
+	if gotInitialState != domain.CallRequestStatePendingOnWSO2 {
 		t.Errorf("CreateCallRequestFromServiceNow initialState = %q, want %q (callRequestCreateInitialState's own decision, not ServiceNow's)",
-			gotInitialState, domain.CallRequestStatePendingOnCustomer)
+			gotInitialState, domain.CallRequestStatePendingOnWSO2)
 	}
 	if resp.CallRequest.ID != snID {
 		t.Errorf("response call request id = %q, want %q (the ServiceNow-assigned id)", resp.CallRequest.ID, snID)
@@ -210,9 +214,22 @@ func TestCallRequestService_CreateCallRequest_InitialStateByCaller(t *testing.T)
 	req := domain.CreateCallRequestRequest{CaseID: testUUID, Reason: "r", UTCTimes: []string{"2026-10-01T10:00:00Z"}, DurationMinutes: 30}
 
 	tests := []struct {
-		name      string
-		scope     repository.SearchScope
-		wantState domain.CallRequestStateType
+		name string
+		// unresolved: true skips WithCallerIdentity entirely, so
+		// repository.CallerIdentityFromContext's own ok comes back false --
+		// genuinely no identity, never reached through callerIdentityMiddleware
+		// -- as opposed to `scope` below, which is always a RESOLVED identity,
+		// even when it is the zero SearchScope{} (ok=true, every field false).
+		// IsExternalCaller answers false for both an unresolved context and a
+		// resolved-but-internal one, so the two have to be tested separately
+		// to catch a regression that collapses them back into one case (a
+		// real, CodeRabbit-caught bug: the resolved-empty-scope case alone
+		// happens to produce the right answer for the wrong reason, which let
+		// the unresolved case silently regress to pending_on_customer without
+		// any test noticing).
+		unresolved bool
+		scope      repository.SearchScope
+		wantState  domain.CallRequestStateType
 	}{
 		{
 			name:      "an external (customer) caller raises a request WSO2 must respond to",
@@ -230,19 +247,24 @@ func TestCallRequestService_CreateCallRequest_InitialStateByCaller(t *testing.T)
 			wantState: domain.CallRequestStatePendingOnCustomer,
 		},
 		{
-			name:      "no resolved identity keeps the original, safer default",
+			name:      "a resolved identity with every field at its zero value is treated as external",
 			scope:     repository.SearchScope{},
 			wantState: domain.CallRequestStatePendingOnWSO2,
+		},
+		{
+			name:       "no identity resolved at all keeps the original, safer default",
+			unresolved: true,
+			wantState:  domain.CallRequestStatePendingOnWSO2,
 		},
 	}
 
 	t.Run("plain Postgres", func(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				ctx := repository.WithCallerIdentity(
-					contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com")),
-					tt.scope,
-				)
+				ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+				if !tt.unresolved {
+					ctx = repository.WithCallerIdentity(ctx, tt.scope)
+				}
 
 				var gotState domain.CallRequestStateType
 				repo := &stubCallRequestRepo{
@@ -270,10 +292,10 @@ func TestCallRequestService_CreateCallRequest_InitialStateByCaller(t *testing.T)
 	t.Run("dual-write (ServiceNow-first)", func(t *testing.T) {
 		for _, tt := range tests {
 			t.Run(tt.name, func(t *testing.T) {
-				ctx := repository.WithCallerIdentity(
-					contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com")),
-					tt.scope,
-				)
+				ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+				if !tt.unresolved {
+					ctx = repository.WithCallerIdentity(ctx, tt.scope)
+				}
 
 				// ServiceNow's own create response always reports
 				// pending_on_wso2, unconditionally (its CallRequestUtils.

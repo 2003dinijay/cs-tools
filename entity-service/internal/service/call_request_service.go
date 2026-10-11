@@ -160,10 +160,22 @@ func (s *callRequestService) CreateCallRequest(ctx context.Context, req domain.C
 // actually reads, so it is the one that needs to get this right; ServiceNow's
 // own stored state is left as-is (its own concern, out of scope here).
 // repository.IsExternalCaller reads the identity callerIdentityMiddleware
-// already resolved for every request; an unresolved/ambiguous scope
-// (IsExternalCaller's own false default) keeps the original, safer
-// pending_on_wso2 behavior rather than guessing the caller is staff.
+// already resolved for every request -- but it answers false both when the
+// caller is genuinely internal AND when no identity was ever resolved at all
+// (CallerIdentityFromContext's own ok=false case: a request that reached this
+// code with no caller identity stamped, which legitimate internal/external
+// requests through the middleware never hit, but a background job or a gap
+// in the chain could). Collapsing those two into one "false" would make the
+// unresolved case default to pending_on_customer -- guessing the caller is
+// staff -- exactly backwards from the safer intent. Checked explicitly here
+// so only a caller CallerIdentityFromContext actually resolved and confirmed
+// external gets pending_on_wso2 for that reason; everything else (resolved
+// internal, OR unresolved) falls to the same pending_on_wso2 default, kept
+// deliberately on the same side rather than guessing.
 func callRequestCreateInitialState(ctx context.Context) domain.CallRequestStateType {
+	if _, resolved := repository.CallerIdentityFromContext(ctx); !resolved {
+		return domain.CallRequestStatePendingOnWSO2
+	}
 	if repository.IsExternalCaller(ctx) {
 		return domain.CallRequestStatePendingOnWSO2
 	}
