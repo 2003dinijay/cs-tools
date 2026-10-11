@@ -33,16 +33,18 @@ import (
 // searches (accounts, projects, deployments, deployed products, cases,
 // escalations).
 type fakeEntityCustomerHealthClient struct {
-	accounts         entitySearchAccountsResponse
-	projects         entitySearchProjectsResponse
-	deployments      entityDeploymentsSearchResponse
-	deployedProducts entitySearchDeployedProductsEolResponse
-	caseResponses    []entitySearchCasesResponse // consumed in call order; last one repeats
-	escalations      entitySearchEscalationsResponse
-	caseCallCount    int
+	accounts           entitySearchAccountsResponse
+	projects           entitySearchProjectsResponse
+	deployments        entityDeploymentsSearchResponse
+	deployedProducts   entitySearchDeployedProductsEolResponse
+	caseResponses      []entitySearchCasesResponse // consumed in call order; last one repeats
+	escalations        entitySearchEscalationsResponse
+	caseCallCount      int
+	lastAccountsReqRaw []byte // last request body SearchAccounts was called with
 }
 
 func (f *fakeEntityCustomerHealthClient) SearchAccounts(ctx context.Context, body []byte) ([]byte, error) {
+	f.lastAccountsReqRaw = body
 	return json.Marshal(f.accounts)
 }
 
@@ -164,6 +166,31 @@ func TestPostgresCustomerHealthClient_RegionFilter(t *testing.T) {
 	}
 	if resp.TotalCount != 1 || len(resp.Data) != 1 || resp.Data[0].AccountSysID != "acc-1" {
 		t.Fatalf("region filter did not narrow to the APAC account: %+v", resp)
+	}
+}
+
+// Regression: found live, comparing a HAR capture of the old ServiceNow-backed
+// summary endpoint against this one for the identical request -- the two
+// reported very different account counts, because filteredAccounts applied
+// no active/inactive filter at all. Pins that every SearchAccounts call
+// this method makes carries active: true on the wire.
+func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_FiltersToActiveAccounts(t *testing.T) {
+	fake := &fakeEntityCustomerHealthClient{
+		accounts:      entitySearchAccountsResponse{Accounts: []entityAccountView{{ID: "acc-1", Name: "Acme Corp"}}, Total: 1},
+		caseResponses: []entitySearchCasesResponse{{Total: 0}},
+	}
+	c := NewPostgresCustomerHealthClient(fake)
+
+	if _, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, nil, nil, 0, 10); err != nil {
+		t.Fatalf("GetCustomerHealthSummary: %v", err)
+	}
+
+	var req entitySearchAccountsRequest
+	if err := json.Unmarshal(fake.lastAccountsReqRaw, &req); err != nil {
+		t.Fatalf("unmarshal captured request: %v", err)
+	}
+	if req.Filters.Active == nil || !*req.Filters.Active {
+		t.Fatalf("expected filters.active=true, got %+v", req.Filters)
 	}
 }
 

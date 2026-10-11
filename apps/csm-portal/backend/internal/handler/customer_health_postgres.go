@@ -316,6 +316,25 @@ type customerHealthAccountFlags struct {
 	hasRecentEscalations   bool
 }
 
+// customerHealthActiveAccountsOnly scopes every customer-health account
+// query to active accounts only (account.deactivation_date IS NULL).
+//
+// Found live, comparing a HAR capture of the old ServiceNow-backed summary
+// endpoint against this one for the identical request: the two reported
+// very different account counts, with the new endpoint's extra rows
+// including accounts that are not real, currently-active customers.
+// filteredAccounts previously applied no active/inactive filter at all
+// (every account ever synced from Salesforce, deactivated or not, counted).
+// Checked directly against the original Ballerina source this was ported
+// from (its own getAccounts, the one place in that codebase that filters
+// the same ServiceNow customer_account table explicitly): the legacy
+// convention excluded accounts whose status was "lost" --
+// account.deactivation_date here is the direct Postgres analog of
+// that, not account.classification (the legacy query never filtered by
+// Customer vs Partner classification at all, so this fix deliberately does
+// not either).
+var customerHealthActiveAccountsOnly = true
+
 // filteredAccounts resolves the page of accounts GetCustomerHealthSummary
 // should compute flags for. email/phrase map onto entity-service's own
 // SearchAccounts filters directly; region has no backing SearchAccounts
@@ -323,7 +342,7 @@ type customerHealthAccountFlags struct {
 // ownerEmail/classification only, no region), so it's applied client-side
 // over a bounded working set instead.
 func (c *postgresCustomerHealthClient) filteredAccounts(ctx context.Context, email, phrase *string, region []string, offset, limit int) ([]entityAccountView, int, error) {
-	filters := entitySearchAccountsFilters{}
+	filters := entitySearchAccountsFilters{Active: &customerHealthActiveAccountsOnly}
 	if phrase != nil {
 		filters.SearchQuery = *phrase
 	}
