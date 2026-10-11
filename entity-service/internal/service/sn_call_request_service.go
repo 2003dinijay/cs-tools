@@ -266,22 +266,25 @@ func (s *snCallRequestService) CreateCallRequest(ctx context.Context, req domain
 
 // createCallRequestSNFirstDetails implements callRequestSNCreator (see
 // call_request_service.go) -- the dual-write CREATE path's entry point into
-// this service, returning the raw id/createdBy ServiceNow assigned rather
-// than the wire-shaped domain.CreateCallRequestResponse the public
-// CreateCallRequest above returns.
-func (s *snCallRequestService) createCallRequestSNFirstDetails(ctx context.Context, req domain.CreateCallRequestRequest) (id, createdBy string, createdOn time.Time, err error) {
+// this service, returning the raw id/createdBy/state ServiceNow assigned
+// rather than the wire-shaped domain.CreateCallRequestResponse the public
+// CreateCallRequest above returns. state is ServiceNow's own real decision
+// (toDomainCallRequestState's mapping of its create response's state field),
+// not guessed here -- the caller mirrors it into Postgres as-is, since
+// ServiceNow's create API takes no state input for this service to influence.
+func (s *snCallRequestService) createCallRequestSNFirstDetails(ctx context.Context, req domain.CreateCallRequestRequest) (id, createdBy string, createdOn time.Time, state domain.CallRequestStateType, err error) {
 	resp, err := s.CreateCallRequest(ctx, req)
 	if err != nil {
-		return "", "", time.Time{}, err
+		return "", "", time.Time{}, "", err
 	}
 	if resp.CallRequest.ID == "" {
-		return "", "", time.Time{}, &apierror.DownstreamError{Msg: "The upstream service returned an invalid response to the call request create request."}
+		return "", "", time.Time{}, "", &apierror.DownstreamError{Msg: "The upstream service returned an invalid response to the call request create request."}
 	}
 	// The reply's createdOn is a wall-clock string in a non-UTC zone (the
 	// same concern createDeploymentSNFirstDetails's own doc comment
 	// documents for deployment's reply) -- the current time is used instead
 	// of parsing it.
-	return resp.CallRequest.ID, resp.CallRequest.CreatedBy, time.Now().UTC(), nil
+	return resp.CallRequest.ID, resp.CallRequest.CreatedBy, time.Now().UTC(), domain.CallRequestStateType(resp.CallRequest.State.ID), nil
 }
 
 // SearchCallRequests implements CallRequestService.
