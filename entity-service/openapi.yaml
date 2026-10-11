@@ -18116,6 +18116,27 @@ components:
         content:
           type: string
 
+    InlineAttachment:
+      type: object
+      description: An image embedded in a comment body.
+      properties:
+        id:
+          type: string
+          format: uuid
+        fileName:
+          type: string
+        contentType:
+          type: string
+        downloadUrl:
+          type: string
+        createdOn:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null when the upstream supplied no parseable timestamp.
+        createdBy:
+          type: string
+
     CaseComment:
       type: object
       properties:
@@ -18133,6 +18154,12 @@ components:
         createdOn:
           type: string
           format: date-time
+        hasInlineAttachments:
+          type: boolean
+        inlineAttachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/InlineAttachment'
 
     SearchCaseCommentsRequest:
       type: object
@@ -22092,6 +22119,12 @@ components:
             True once the comment has been soft-deleted via DELETE /comments/{id}. Content is
             "[deleted]" for a non-admin internal caller and the real content for an admin caller;
             a customer caller never receives a deleted comment at all.
+        hasInlineAttachments:
+          type: boolean
+        inlineAttachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/InlineAttachment'
 
     UpdateCommentRequest:
       type: object
