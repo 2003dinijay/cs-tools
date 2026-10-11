@@ -4396,6 +4396,7 @@ type ProjectContact struct {
 	Email                string   `json:"email"`
 	RegistrationState    string   `json:"registrationState"`
 	NotificationsEnabled bool     `json:"notificationsEnabled"`
+	IsCsIntegrationUser  bool     `json:"isCsIntegrationUser"`
 	Roles                []string `json:"roles"`
 	// AccountRoles are this person's account-level roles (role.name), a
 	// SEPARATE list from Roles and never merged into it: Roles is what they

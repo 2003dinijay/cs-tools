@@ -15622,6 +15622,9 @@ components:
           type: string
         notificationsEnabled:
           type: boolean
+        isCsIntegrationUser:
+          type: boolean
+          description: True for a system-to-system integration user that never signs in.
         roles:
           type: array
           items:
