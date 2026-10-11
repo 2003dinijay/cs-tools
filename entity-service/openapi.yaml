@@ -9473,8 +9473,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
     patch:
-      summary: Partially update an incident (ServiceNow data source only).
+      summary: Partially update an incident.
       description: >-
+        Accepts the same fields on every data source. On postgres-servicenow-dual-write the
+        change is written to Postgres and mirrored to ServiceNow. A change to impact or
+        urgency recomputes priority (ServiceNow's impact x urgency lookup); a new category
+        that does not hold the current subcategory clears it; watchList replaces the whole
+        list. A field sent as null is ignored, except environment, which null clears.
         On postgres-servicenow-dual-write, moving the incident to CLOSED also moves each of
         its open incident tasks to CLOSED_INCOMPLETE, and moving it to CANCELED moves them
         to CLOSED_SKIPPED, each with ServiceNow's work note ("Incident Task is Closed
