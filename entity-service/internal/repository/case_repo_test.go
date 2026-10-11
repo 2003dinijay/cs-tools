@@ -29,6 +29,32 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
+// TestCreateCaseQueriesPersistRelatedCaseID locks the Overview link: a type
+// "case" insert writes "case".related_case_id, and the other case-like inserts
+// do not (that column exists only on "case").
+func TestCreateCaseQueriesPersistRelatedCaseID(t *testing.T) {
+	if !strings.Contains(createCasePortalQuery, "related_case_id") || !strings.Contains(createCasePortalQuery, "NULLIF($10, '')::uuid") {
+		t.Fatal("createCasePortalQuery must store relatedCaseId in related_case_id")
+	}
+	if !strings.Contains(createCaseFromServiceNowQuery, "related_case_id") || !strings.Contains(createCaseFromServiceNowQuery, "$13::uuid") {
+		t.Fatal("createCaseFromServiceNowQuery must store relatedCaseId in related_case_id")
+	}
+	for name, query := range map[string]string{
+		"announcement portal":        createAnnouncementPortalQuery,
+		"service request portal":     createServiceRequestPortalQuery,
+		"engagement portal":          createEngagementPortalQuery,
+		"security report portal":     createSecurityReportAnalysisPortalQuery,
+		"announcement servicenow":    createAnnouncementFromServiceNowQuery,
+		"service request servicenow": createServiceRequestFromServiceNowQuery,
+		"engagement servicenow":      createEngagementFromServiceNowQuery,
+		"security report servicenow": createSecurityReportAnalysisFromServiceNowQuery,
+	} {
+		if strings.Contains(query, "related_case_id") {
+			t.Fatalf("%s insert must not write related_case_id", name)
+		}
+	}
+}
+
 func TestOnboardingStatusEnumLabels(t *testing.T) {
 	// The dashboard sends ServiceNow's spellings; each must land on the enum
 	// label, regardless of case or separator.
@@ -523,7 +549,6 @@ func TestExtensionUpdateQueriesWriteWorkStateAndResolutionCode(t *testing.T) {
 		t.Error("updateAnnouncementQuery must not write work_state or resolution_code")
 	}
 }
-
 
 // work_state is only valid while state is work_in_progress: every case-like
 // update query must derive it from the state change in the same statement, and

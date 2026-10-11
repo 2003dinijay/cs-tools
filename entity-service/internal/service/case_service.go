@@ -459,6 +459,15 @@ func validateCreateCaseRequest(req *domain.CreateCaseRequest) error {
 			return err
 		}
 	}
+	// Same posture as conversationId: a malformed relatedCaseId must be a 400
+	// before either create path writes anything. The id itself is stored on
+	// "case".related_case_id (type "case" only) so the new case's Overview
+	// can show the case it was created from.
+	if req.RelatedCaseID != "" {
+		if err := validateUUIDs("relatedCaseId", []string{req.RelatedCaseID}); err != nil {
+			return err
+		}
+	}
 	// Announcements have no deployment/deployed-product concept: these fields
 	// are deliberately omitted at the ServiceNow layer, not just optional.
 	if req.Type != "announcement" {
@@ -779,6 +788,16 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	watcherIDs, err := s.validateCreateWatchList(ctx, &req)
 	if err != nil {
 		return domain.CreateCaseResponse{}, err
+	}
+	// Resolve the related case before ServiceNow accepts the new case. A
+	// lookup failure here creates nothing. A target that is not mirrored yet
+	// is nil, and the Postgres insert binds NULL rather than failing after
+	// ServiceNow already has the case. ServiceNow still receives RelatedCaseID.
+	if req.Type == "" || req.Type == "case" {
+		req.ResolvedRelatedCaseID, err = s.repo.ResolveRelatedCaseID(ctx, req.RelatedCaseID)
+		if err != nil {
+			return domain.CreateCaseResponse{}, err
+		}
 	}
 
 	snResp, err := s.snMirror.CreateCase(ctx, req)

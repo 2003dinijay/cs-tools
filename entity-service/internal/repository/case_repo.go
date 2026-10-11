@@ -418,6 +418,11 @@ type CaseRepository interface {
 	// ServiceNow only just generated these, but is reported precisely rather
 	// than as an opaque infrastructure error if it ever does.
 	CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error)
+	// ResolveRelatedCaseID returns the id to store in "case".related_case_id.
+	// An empty id, or one that does not name a case-like work item in Postgres
+	// yet, returns (nil, nil) so the insert binds NULL. A query error is
+	// returned so the caller can stop before creating a ServiceNow case.
+	ResolveRelatedCaseID(ctx context.Context, relatedCaseID string) (*string, error)
 	// GetCaseByID returns the enriched case view for the given UUID, or a
 	// NotFoundError if no matching row exists OR it exists but scope excludes
 	// it (existence is never revealed to a caller who can't see it).
@@ -826,6 +831,22 @@ func createCaseTx(ctx context.Context, tx pgx.Tx, req domain.CreateCaseRequest) 
 			return domain.Case{}, &apierror.ValidationError{Msg: "conversationId must reference an existing conversation in this project"}
 		}
 	}
+	// related_case_id lives only on "case", and only this branch writes it.
+	// Nothing is committed yet, so a missing target fails the create rather
+	// than being stored as NULL (the dual-write path cannot do that: ServiceNow
+	// already has the new case by the time its Postgres insert runs).
+	if (req.Type == "" || req.Type == "case") && req.RelatedCaseID != "" {
+		var ok bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM work_item WHERE id = $1::uuid AND type = ANY(`+caseLikeNonAnnouncementTypes+`))`,
+			req.RelatedCaseID,
+		).Scan(&ok); err != nil {
+			return domain.Case{}, fmt.Errorf("create case: look up related case: %w", err)
+		}
+		if !ok {
+			return domain.Case{}, &apierror.ValidationError{Msg: "relatedCaseId does not exist"}
+		}
+	}
 	var row pgx.Row
 	switch req.Type {
 	case "announcement":
@@ -859,7 +880,7 @@ func createCaseTx(ctx context.Context, tx pgx.Tx, req domain.CreateCaseRequest) 
 			req.CreatedBy, req.ProjectID, req.DeploymentID, req.DeployedProductID,
 			req.Subject, req.Description,
 			caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
-			req.ConversationID,
+			req.ConversationID, req.RelatedCaseID,
 		)
 	}
 	c, err := scanUpdatedCase(row)
@@ -965,8 +986,9 @@ const createCasePortalQuery = `
 		          subject, description, created_on, updated_on
 	),
 	inserted_case AS (
-		INSERT INTO "case" (id, severity, issue_type, state)
-		SELECT id, NULLIF($7, '')::case_severity_enum, NULLIF($8, '')::case_issue_type_enum, 'OPEN'::case_state_enum
+		INSERT INTO "case" (id, severity, issue_type, state, related_case_id)
+		SELECT id, NULLIF($7, '')::case_severity_enum, NULLIF($8, '')::case_issue_type_enum, 'OPEN'::case_state_enum,
+		       NULLIF($10, '')::uuid
 		FROM inserted_work_item
 		RETURNING id, severity, issue_type, state, work_state, closed_on
 	)
@@ -1190,8 +1212,8 @@ const createCaseFromServiceNowQuery = `
 		          subject, description, created_on, updated_on
 	),
 	inserted_case AS (
-		INSERT INTO "case" (id, severity, issue_type, state)
-		VALUES ($1, $10::case_severity_enum, $11::case_issue_type_enum, 'OPEN'::case_state_enum)
+		INSERT INTO "case" (id, severity, issue_type, state, related_case_id)
+		VALUES ($1, $10::case_severity_enum, $11::case_issue_type_enum, 'OPEN'::case_state_enum, $13::uuid)
 		RETURNING id, severity, issue_type, state, work_state, closed_on
 	)
 	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by, iwi.project_id, iwi.deployment_id, iwi.deployed_product_id,
@@ -1470,6 +1492,24 @@ func (r *caseRepo) conversationRefOrNil(ctx context.Context, conversationID, pro
 	return conversationID, nil
 }
 
+// ResolveRelatedCaseID implements CaseRepository.
+func (r *caseRepo) ResolveRelatedCaseID(ctx context.Context, relatedCaseID string) (*string, error) {
+	if relatedCaseID == "" {
+		return nil, nil
+	}
+	var ok bool
+	if err := r.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM work_item WHERE id = $1::uuid AND type = ANY(`+caseLikeNonAnnouncementTypes+`))`,
+		relatedCaseID,
+	).Scan(&ok); err != nil {
+		return nil, fmt.Errorf("check related case exists: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	return &relatedCaseID, nil
+}
+
 // CreateCaseFromServiceNow implements CaseRepository.
 //
 // WithSystemIdentity: this is a system write on behalf of the ServiceNow
@@ -1521,6 +1561,17 @@ func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.Crea
 		slog.WarnContext(ctx, "sn create case: conversation not found or not in this project, creating case without that link",
 			"caseId", id, "snNumber", number, "type", req.Type, "conversationId", req.ConversationID, "projectId", req.ProjectID)
 	}
+	// related_case_id is a "case"-table column. The id was resolved before the
+	// ServiceNow create (req.ResolvedRelatedCaseID); this insert does not look
+	// it up again. Nil binds NULL, including when the target is not mirrored yet.
+	var relatedCaseIDArg any
+	if (req.Type == "" || req.Type == "case") && req.ResolvedRelatedCaseID != nil {
+		relatedCaseIDArg = *req.ResolvedRelatedCaseID
+	}
+	if (req.Type == "" || req.Type == "case") && req.RelatedCaseID != "" && req.ResolvedRelatedCaseID == nil {
+		slog.WarnContext(ctx, "sn create case: related case not yet mirrored in postgres, creating case without that link",
+			"caseId", id, "snNumber", number, "relatedCaseId", req.RelatedCaseID)
+	}
 
 	var row pgx.Row
 	switch req.Type {
@@ -1561,7 +1612,7 @@ func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.Crea
 			number, wso2ID, req.Subject, req.Description,
 			req.ProjectID, deploymentIDArg, deployedProductIDArg,
 			caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
-			conversationIDArg,
+			conversationIDArg, relatedCaseIDArg,
 		)
 	}
 	c, err := scanUpdatedCase(row)
