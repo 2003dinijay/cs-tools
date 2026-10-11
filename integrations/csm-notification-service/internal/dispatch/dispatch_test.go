@@ -119,6 +119,8 @@ type mockGoogleChatSender struct {
 	securityReportAnalysisCalls []sentSecurityReportAnalysisAlert
 	frustrationCalls            []sentFrustrationAlert
 	srCalls                     []sentSRAlert
+	incidentCreatedCalls        []sentIncidentCreatedAlert
+	incidentAssignedCalls       []sentIncidentAssignedAlert
 	// srBlock, when non-nil, holds every SR send open until it is closed,
 	// so a test can have a second Handle call arrive mid-send; srStarted
 	// counts SR sends that have begun.
@@ -205,6 +207,30 @@ func (m *mockGoogleChatSender) SendSRCustomerCommentAlert(ctx context.Context, a
 	return m.recordSR(sentSRAlert{kind: "comment", audience: audience, comment: a})
 }
 
+type sentIncidentCreatedAlert struct {
+	audience string
+	alert    notifications.IncidentCreatedAlert
+}
+
+type sentIncidentAssignedAlert struct {
+	audience string
+	alert    notifications.IncidentAssignedAlert
+}
+
+func (m *mockGoogleChatSender) SendIncidentCreatedAlert(ctx context.Context, audience string, a notifications.IncidentCreatedAlert) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.incidentCreatedCalls = append(m.incidentCreatedCalls, sentIncidentCreatedAlert{audience, a})
+	return m.err
+}
+
+func (m *mockGoogleChatSender) SendIncidentAssignedAlert(ctx context.Context, audience string, a notifications.IncidentAssignedAlert) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.incidentAssignedCalls = append(m.incidentAssignedCalls, sentIncidentAssignedAlert{audience, a})
+	return m.err
+}
+
 type sentCall struct {
 	to, message string
 }
@@ -265,6 +291,10 @@ func (m *mockLinkResolver) CSMLink(caseID string) string {
 // links into the CSM portal.
 func (m *mockLinkResolver) OutageLink(outageID string) string {
 	return "https://csm.example/operations/outages/" + outageID
+}
+
+func (m *mockLinkResolver) IncidentLink(incidentID string) string {
+	return "https://csm.example/operations/incidents/" + incidentID
 }
 
 func (m *mockLinkResolver) ServiceRequestLink(caseID string) string {
@@ -1927,6 +1957,14 @@ func (s *blockingCaseAcknowledgedChatSender) SendSRAcknowledgedAlert(ctx context
 }
 
 func (s *blockingCaseAcknowledgedChatSender) SendSRCustomerCommentAlert(ctx context.Context, audience string, a notifications.SRCustomerCommentAlert) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendIncidentCreatedAlert(ctx context.Context, audience string, a notifications.IncidentCreatedAlert) error {
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendIncidentAssignedAlert(ctx context.Context, audience string, a notifications.IncidentAssignedAlert) error {
 	return nil
 }
 

@@ -1,0 +1,144 @@
+// Copyright (c) 2026 WSO2 LLC. (https://www.wso2.com).
+//
+// WSO2 LLC. licenses this file to you under the Apache License,
+// Version 2.0 (the "License"); you may not use this file except
+// in compliance with the License.
+// You may obtain a copy of the License at
+//
+// http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing,
+// software distributed under the License is distributed on an
+// "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
+// KIND, either express or implied.  See the License for the
+// specific language governing permissions and limitations
+// under the License.
+
+package notifications
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+)
+
+func captureIncidentCard(t *testing.T) (*GoogleChatClient, func() (chatCardMessage, string, int)) {
+	t.Helper()
+	var msg chatCardMessage
+	var replyOption string
+	posts := 0
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		posts++
+		b, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(b, &msg); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		replyOption = r.URL.Query().Get("messageReplyOption")
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+	c := NewGoogleChatClient(GoogleChatConfig{AudienceSpaces: []GoogleChatAudienceSpace{{Audience: IncidentAudience("Artemis SRE Group"), WebhookURL: srv.URL}}})
+	return c, func() (chatCardMessage, string, int) { return msg, replyOption, posts }
+}
+
+func TestIncidentAudience_IgnoresCaseAndSurroundingSpace(t *testing.T) {
+	if IncidentAudience("  Artemis SRE Group ") != IncidentAudience("ARTEMIS SRE GROUP") {
+		t.Errorf("IncidentAudience should match an assignment group whatever its case")
+	}
+}
+
+func TestSendIncidentCreatedAlert_ReproducesServiceNowCard(t *testing.T) {
+	c, got := captureIncidentCard(t)
+	err := c.SendIncidentCreatedAlert(context.Background(), IncidentAudience("artemis sre group"), IncidentCreatedAlert{
+		IncidentID: "inc-1", Number: "INC0088718", Team: "Artemis SRE Group", Priority: "CRITICAL",
+		ShortDescription: "ContainerRecentlyOOMKilled", Service: "wso2-cloud", Environment: "central",
+		Category: "SERVICE_INTERRUPTION", State: "NEW", IncidentLink: "https://csm.example/operations/incidents/inc-1",
+	})
+	if err != nil {
+		t.Fatalf("SendIncidentCreatedAlert: %v", err)
+	}
+	msg, replyOption, _ := got()
+	card := msg.CardsV2[0].Card
+	if card.Header.Title != "ARTEMIS SRE GROUP | Critical Priority Incident Reported" {
+		t.Errorf("title = %q", card.Header.Title)
+	}
+	if card.Header.Subtitle != "#INC0088718 | wso2-cloud | central" {
+		t.Errorf("subtitle = %q", card.Header.Subtitle)
+	}
+	summary := card.Sections[0].Widgets
+	if !strings.Contains(summary[0].TextParagraph.Text, "ContainerRecentlyOOMKilled") {
+		t.Errorf("short description missing: %q", summary[0].TextParagraph.Text)
+	}
+	if b := summary[1].ButtonList.Buttons[0]; b.Text != "View Incident" || b.OnClick.OpenLink.URL != "https://csm.example/operations/incidents/inc-1" {
+		t.Errorf("button = %+v", b)
+	}
+	details := card.Sections[1]
+	if details.Header != "Incident Details" || !details.Collapsible {
+		t.Errorf("details section = %+v", details)
+	}
+	text := sectionText(details)
+	for _, want := range []string{"service_interruption", "P1 - Critical", "<b>State:</b> New"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("details %q missing %q", text, want)
+		}
+	}
+	if msg.Thread == nil || msg.Thread.ThreadKey != "incident-inc-1" || replyOption != chatThreadReplyOption {
+		t.Errorf("thread = %+v, replyOption = %q", msg.Thread, replyOption)
+	}
+}
+
+func TestSendIncidentCreatedAlert_OmitsWhatIsUnknown(t *testing.T) {
+	c, got := captureIncidentCard(t)
+	err := c.SendIncidentCreatedAlert(context.Background(), IncidentAudience("Artemis SRE Group"), minimalIncidentAlert())
+	if err != nil {
+		t.Fatalf("SendIncidentCreatedAlert: %v", err)
+	}
+	msg, _, _ := got()
+	card := msg.CardsV2[0].Card
+	if card.Header.Title != "Priority Incident Reported" || card.Header.Subtitle != "#INC1" {
+		t.Errorf("header = %+v", card.Header)
+	}
+	if len(card.Sections[0].Widgets) != 1 {
+		t.Errorf("no link should mean no button, got %d widgets", len(card.Sections[0].Widgets))
+	}
+}
+
+func minimalIncidentAlert() IncidentCreatedAlert {
+	return IncidentCreatedAlert{IncidentID: "inc-1", Number: "INC1"}
+}
+
+func TestSendIncidentAssignedAlert_RepliesInTheIncidentThread(t *testing.T) {
+	c, got := captureIncidentCard(t)
+	err := c.SendIncidentAssignedAlert(context.Background(), IncidentAudience("Artemis SRE Group"), IncidentAssignedAlert{
+		IncidentID: "inc-1", Number: "INC0088718", AssigneeName: "Shan Anjana", UpdatedBy: "shana@wso2.com",
+	})
+	if err != nil {
+		t.Fatalf("SendIncidentAssignedAlert: %v", err)
+	}
+	msg, _, _ := got()
+	card := msg.CardsV2[0].Card
+	if card.Header.Title != "Incident Acknowledged." || card.Header.Subtitle != "INC0088718" {
+		t.Errorf("header = %+v", card.Header)
+	}
+	text := sectionText(card.Sections[0])
+	if text != "Incident acknowledged by Shan Anjana.<br>Incident updated by shana@wso2.com." {
+		t.Errorf("body = %q", text)
+	}
+	if msg.Thread == nil || msg.Thread.ThreadKey != "incident-inc-1" {
+		t.Errorf("thread = %+v", msg.Thread)
+	}
+}
+
+func TestSendIncidentCreatedAlert_UnconfiguredGroupPostsNothing(t *testing.T) {
+	c, got := captureIncidentCard(t)
+	if err := c.SendIncidentCreatedAlert(context.Background(), IncidentAudience("Some Other Group"), minimalIncidentAlert()); err != nil {
+		t.Fatalf("an unconfigured audience is a no-op, got %v", err)
+	}
+	if _, _, posts := got(); posts != 0 {
+		t.Errorf("posts = %d, want 0", posts)
+	}
+}
