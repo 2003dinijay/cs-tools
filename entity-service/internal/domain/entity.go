@@ -3649,6 +3649,14 @@ type Comment struct {
 	// admin, and never returned at all to a customer caller (the row itself
 	// is omitted from that caller's results).
 	IsDeleted bool `json:"isDeleted,omitempty"`
+	// HasInlineAttachments / InlineAttachments describe images embedded in the
+	// comment body, the same shape as CaseComment's own fields above --
+	// previously decoded only for the case-nested comment search
+	// (SearchCaseComments), not this generic one, which silently dropped the
+	// data ServiceNow already sends. InlineAttachments is nil (not empty)
+	// when there are none.
+	HasInlineAttachments bool               `json:"hasInlineAttachments,omitempty"`
+	InlineAttachments    []InlineAttachment `json:"inlineAttachments,omitempty"`
 }
 
 // UpdateCommentRequest is the input for PATCH /comments/{id}. ID is populated
