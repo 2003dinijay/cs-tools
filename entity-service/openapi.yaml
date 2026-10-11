@@ -15497,6 +15497,13 @@ components:
           type: string
           nullable: true
           description: Hyphenated Title Case, e.g. "In-Progress".
+        goLiveDate:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            project.onboarding_go_live_date. Null when the project hasn't
+            gone live (or the date isn't tracked).
         closureState:
           type: string
           nullable: true
@@ -16028,6 +16035,12 @@ components:
             type: string
             format: uuid
           description: Filter by the deployment's own UUID. Postgres data source only.
+        includeInactive:
+          type: boolean
+          description: >
+            Additive: when true, also includes deployments with
+            is_active = FALSE. Omitted/false reproduces the default
+            (active-only) behavior exactly. Postgres data source only.
 
     DeploymentView:
       type: object

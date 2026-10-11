@@ -6650,6 +6650,59 @@ unchanged -- that one's already documented as "(ServiceNow data source
 only)", a deliberate scope boundary, not a bug. Verified by paging through
 all 1956 projects (every NULL row included) with no error afterward.
 
+## SearchProjects silently dropped GoLiveDate -- only GetProjectByID selected it
+
+`project.onboarding_go_live_date` was selected by `GetProjectByID`'s own
+query but not by `SearchProjects`'s -- the same class of "two independently-
+written queries against the same table can drift in which columns they
+SELECT" gap this file's own `ClosureState`/`StartDate` history already
+covers. Found by a caller that needs to know whether a project has gone
+live when searching by account rather than fetching one project at a time
+(`apps/csm-portal/backend`'s customer-health `hasNoGoLive` risk flag, which
+ports the real ServiceNow script's own `_NoGoLiveStatus` -- see that repo's
+own `CLAUDE.md`). Fixed across all three layers: `domain.Project` and
+`domain.ProjectView` both gained a `GoLiveDate *time.Time` field,
+`project_repo.go`'s `SearchProjects` query now selects
+`p.onboarding_go_live_date` alongside `p.onboarding_status`, and
+`project_service.go`'s `domain.Project` -> `domain.ProjectView` mapping
+copies it across (`TestSearchProjects_GoLiveDateReachesResponse` pins this
+last step specifically, the same way `TestSearchProjects_ClosureStateReachesResponse`
+already does for `ClosureState`). On the wire, `ProjectView.GoLiveDate`
+marshals as a full RFC3339 timestamp -- a different format from
+`AccountView.ActivationDate`'s plain `YYYY-MM-DD` (see `dateOnlyOrNil` in
+`account_service.go`), so a caller reading both needs two different
+`time.Parse` layouts.
+
+## SearchDeployments's permanent active-only filter missed real EOL product history
+
+`SearchDeployments`'s SQL has always had a permanent, hardcoded
+`d.is_active = TRUE` filter with no way to override it (see that query's own
+long-standing doc comment) -- the right default for a general UI listing
+(a deactivated deployment should simply stop appearing, the same way
+ServiceNow's own listing already behaves for a deactivated record), but
+wrong for a caller that needs to see every deployment's product history
+regardless of its current active state. Found live: `apps/csm-portal/backend`'s
+customer-health `hasEolProduct` risk flag was a false negative for a real
+staging account whose only deployments carrying expired product versions
+were all `is_active = false` -- confirmed directly against the database
+(the account's two *active* deployments had zero deployed products at
+all), not just inferred from the code.
+
+`SearchDeploymentsRequest` gained `IncludeInactive bool
+json:"includeInactive,omitempty"` -- additive, so every existing caller
+(every general deployment listing, Usage Metrics included) that leaves it
+unset/false gets byte-identical behavior; `deployment_repo.go`'s
+`SearchDeployments` only applies the `is_active = TRUE` predicate when it's
+false. `apps/csm-portal/backend`'s own `entityDeploymentsSearchRequest`
+mirrors the field the same way, and only its customer-health
+`projectHasEolProduct` sets it -- its project-detail view's own plain
+"Deployments" list keeps a separate, `includeInactive: false` fetch, so
+that list's unrelated active-only semantics are untouched. Verified both
+with a real-Postgres RLS integration test
+(`TestDeploymentRLSIntegration_IncludeInactive`: the flag surfaces an
+inactive deployment without bypassing project-membership scoping) and
+against the live staging account the bug was found on.
+
 ## CreateCase and case numbers (Postgres data source)
 
 **Table names are fixed.** `caseRepo.CreateCase` used to `INSERT INTO cases`, a
