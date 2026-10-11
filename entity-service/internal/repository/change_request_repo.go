@@ -93,12 +93,15 @@ import (
 // The remaining fields on the request/response contract have no
 // established mapping and are always left unset rather than guessed at:
 // ConfigurationItemID (no CMDB table exists at all in this schema);
-// ApprovedBy/ApprovedOn on domain.ChangeRequest (there is a
-// summary change_request.approval enum but no approver/date columns);
 // Labels (no join table). Deployments / Environments / DeploymentProducts ARE
 // backed (migration 0191's change_request_deployment / _environment /
 // _deployed_product, rules in change_request_links.go), as is Project
 // (work_item.project_id), now written at create time too.
+//
+// ApprovedBy/ApprovedOn on domain.ChangeRequest have no column of their own
+// either (change_request.approval is a summary enum with no approver/date),
+// but GetChangeRequestByID derives them from approval_stage_approver --
+// see changeRequestApprovedByQuery's own doc comment.
 //
 // LegalNextStates is populated -- see legalChangeRequestNextStates's own
 // doc comment for how, and for the one branch it deliberately does not
@@ -900,10 +903,14 @@ func (r *changeRequestRepo) GetChangeRequestByID(ctx context.Context, id string)
 		return domain.ChangeRequest{}, fmt.Errorf("get change request by id: %w", err)
 	}
 	// Deployments / DeploymentProducts come from the join tables (never nil).
-	// ApprovedBy/ApprovedOn/Labels have no real column -- see this file's own
-	// package doc comment.
+	// Labels have no real column -- see this file's own package doc comment.
 	cr.Deployments, cr.DeploymentProducts, err = loadChangeRequestLinks(ctx, r.db, id)
 	if err != nil {
+		return domain.ChangeRequest{}, fmt.Errorf("get change request by id: %w", err)
+	}
+	// ApprovedBy/ApprovedOn have no column of their own -- derived from
+	// approval_stage_approver, the same table GetChangeRequestApprovals reads.
+	if cr.ApprovedBy, cr.ApprovedOn, err = changeRequestApprovedBy(ctx, r.db, id); err != nil {
 		return domain.ChangeRequest{}, fmt.Errorf("get change request by id: %w", err)
 	}
 	// The Customer Group is derived live from the project, never stored.
@@ -2551,6 +2558,53 @@ const changeRequestApprovalApproversQuery = `
 	LEFT JOIN "user" u ON u.id = asa.approver_user_id
 	WHERE asa.work_item_id = $1
 	ORDER BY asa.created_on ASC, asa.id ASC`
+
+// changeRequestApprovedByQuery resolves who most recently approved this
+// change request, and when -- domain.ChangeRequest.ApprovedBy/ApprovedOn have
+// no column of their own (see this file's own package doc comment), so
+// GetChangeRequestByID derives them from approval_stage_approver instead, the
+// same table GetChangeRequestApprovals reads, filtered by the denormalized
+// work_item_id (not joined through approval_stage -- same reasoning as
+// changeRequestApprovalApproversQuery's own comment). Several stages can each
+// carry their own APPROVED row (Peer, CAB, Review, Customer Approval,
+// Customer Review); the most recently decided one is taken as "the"
+// approval, since that is the decision that most recently moved the change
+// request forward. approver_name reuses the same display-name COALESCE
+// convention as changeRequestApprovalApproversQuery.
+const changeRequestApprovedByQuery = `
+	SELECT u.id, COALESCE(NULLIF(TRIM(u.name), ''), NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS approver_name, asa.updated_on
+	FROM approval_stage_approver asa
+	LEFT JOIN "user" u ON u.id = asa.approver_user_id
+	WHERE asa.work_item_id = $1 AND asa.state = 'APPROVED'
+	ORDER BY asa.updated_on DESC, asa.id DESC
+	LIMIT 1`
+
+// changeRequestApprovedBy runs changeRequestApprovedByQuery. A change
+// request with no APPROVED row yet -- still pending, a Standard change with
+// no approval stage at all, or every decision so far a rejection -- returns
+// (nil, nil, nil): "not yet approved" is not an error. approverUserID is
+// nullable because the LEFT JOIN to "user" leaves it null whenever
+// approver_user_id itself is null or points to a since-deleted user row;
+// such a row still carries a real approvedOn, so ApprovedBy alone (not the
+// whole result) is left nil in that case.
+func changeRequestApprovedBy(ctx context.Context, q crQueryer, workItemID string) (*domain.EntityRef, *string, error) {
+	var approverUserID *string
+	var approverName string
+	var approvedOn time.Time
+	err := q.QueryRow(ctx, changeRequestApprovedByQuery, workItemID).Scan(&approverUserID, &approverName, &approvedOn)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil, nil
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("get change request approved by: %w", err)
+	}
+	var approvedBy *domain.EntityRef
+	if approverUserID != nil {
+		approvedBy = &domain.EntityRef{ID: *approverUserID, Name: approverName}
+	}
+	on := approvedOn.UTC().Format(time.RFC3339)
+	return approvedBy, &on, nil
+}
 
 // changeRequestApprovalStageRow is one row of changeRequestApprovalStagesQuery.
 type changeRequestApprovalStageRow struct {
