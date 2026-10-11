@@ -275,6 +275,21 @@ describe("linkifyBareUrls", () => {
       '<a href="https://wso2.com/docs" target="_blank" rel="noopener noreferrer"',
     );
   });
+
+  it("never rewrites a url inside a tag attribute (img src)", () => {
+    const html =
+      '<p><img src="https://wso2.service-now.com/d29f3f669773c350182338f11153af3f.iix"></p>';
+
+    expect(linkifyBareUrls(html)).toBe(html);
+  });
+
+  it("does not wrap text that is already inside an anchor", () => {
+    const html = '<a href="https://wso2.com">https://wso2.com</a> and https://wso2.com/x';
+    const output = linkifyBareUrls(html);
+
+    expect(output.startsWith('<a href="https://wso2.com">https://wso2.com</a> and ')).toBe(true);
+    expect(output.match(/<a /g)).toHaveLength(2);
+  });
 });
 
 // Regression tests: a Date with fewer than 4 digits in its year (reachable
