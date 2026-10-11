@@ -143,7 +143,10 @@ func TestInvitationValidator_Rules(t *testing.T) {
 		{name: "second listed domain, any case", email: "new@ACME.io", want: nil},
 		{name: "partner's domain, CSM Portal", email: "new@partner.io", want: nil},
 		{name: "public domain", email: "someone@gmail.com", want: &apierror.ForbiddenError{}},
-		{name: "existing contact of another account", email: "x@unrelated.org", want: &apierror.ForbiddenError{}},
+		{name: "allowed domain, existing contact of another account", email: "guest@acme.com",
+			setup: func(s *fakeInvitationSales, _ *invitationValidator) {
+				s.contacts["guest@acme.com"] = []salesentity.Contact{ivContact("guest@acme.com", ivOtherSfID)}
+			}, want: &apierror.ForbiddenError{}},
 		{name: "public domain even from an inviter", email: "someone@outlook.com", inviter: ivCustomerAdmin, want: &apierror.ForbiddenError{}},
 		{name: "domain on no list", email: ivUnrelatedInvite, want: &apierror.ForbiddenError{}},
 		{name: "not an address", email: "nobody", want: &apierror.ValidationError{}},

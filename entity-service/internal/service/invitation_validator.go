@@ -74,8 +74,8 @@ const (
 		"this project. Please use an email address with a supported domain or reach out to your account manager for assistance."
 	msgDuplicateContact = "We're sorry, but there was an error while validating the contact information. " +
 		"The contact already exists in our system."
-	msgContactOtherAccount = "We're sorry, but this email address belongs to a contact of another organisation and " +
-		"cannot be added to this project. Please reach out to your account manager for assistance."
+	msgContactNotAllowed = "We're sorry, but this email address cannot be added to this project. " +
+		"Please reach out to your account manager for assistance."
 )
 
 // Validate implements InvitationValidator.
@@ -142,12 +142,6 @@ func (v *invitationValidator) Validate(ctx context.Context, target domain.Member
 		}
 		baseAccountSfID = inviterAccount
 	}
-	// Salesforce refuses a contact from a foreign, non-partner account; say so before any write.
-	if len(invitees) == 1 {
-		if a := accountSfIDOf(invitees[0]); a != "" && a != target.AccountSfID && !containsID(partnerSfIDs, a) {
-			return &apierror.ForbiddenError{Msg: msgContactOtherAccount}
-		}
-	}
 
 	base, err := v.sales.GetCustomer(ctx, baseAccountSfID)
 	if err != nil {
@@ -158,7 +152,7 @@ func (v *invitationValidator) Validate(ctx context.Context, target domain.Member
 		return &apierror.ValidationError{Msg: msgNoDomainList}
 	}
 	if containsID(baseDomains, domainPart) {
-		return nil
+		return foreignContact(invitees, target.AccountSfID, partnerSfIDs)
 	}
 	for _, id := range partnerSfIDs {
 		partner, err := v.sales.GetCustomer(ctx, id)
@@ -166,10 +160,24 @@ func (v *invitationValidator) Validate(ctx context.Context, target domain.Member
 			return err
 		}
 		if containsID(splitDomainList(partner.DomainList), domainPart) {
-			return nil
+			return foreignContact(invitees, target.AccountSfID, partnerSfIDs)
 		}
 	}
 	return &apierror.ForbiddenError{Msg: msgDomainNotAllowed}
+}
+
+// foreignContact refuses an existing contact of an account that is neither the
+// project's nor a partner's, which Salesforce would reject at the write. Checked
+// only once the domain is allowed, with a message that does not confirm the
+// contact exists, so the validator is not an existence oracle for addresses.
+func foreignContact(invitees []salesentity.Contact, accountSfID string, partnerSfIDs []string) error {
+	if len(invitees) != 1 {
+		return nil
+	}
+	if a := accountSfIDOf(invitees[0]); a != "" && a != accountSfID && !containsID(partnerSfIDs, a) {
+		return &apierror.ForbiddenError{Msg: msgContactNotAllowed}
+	}
+	return nil
 }
 
 // belongsElsewhereWithLiveMembership reports whether an existing contact
