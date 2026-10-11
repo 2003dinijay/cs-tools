@@ -23,6 +23,7 @@ import {
   CircleX,
   Eye,
   MessageSquareText,
+  ThumbsUp,
 } from "@wso2/oxygen-ui-icons-react";
 import { Fragment, useState, type JSX } from "react";
 import type { BeCallRequestView } from "@api/backend/types";
@@ -63,6 +64,7 @@ function formatPreferredTimes(times: string[] | undefined): string {
 const ACTION_LABEL: Record<CallRequestAgentAction, string> = {
   schedule: "Schedule",
   reschedule: "Reschedule",
+  accept: "Accept",
   reject: "Reject",
   sendNotes: "Send call notes",
   complete: "Mark as completed",
@@ -75,6 +77,7 @@ const ACTION_LABEL: Record<CallRequestAgentAction, string> = {
 const ACTION_ICON: Record<CallRequestAgentAction, typeof CalendarCheck> = {
   schedule: CalendarCheck,
   reschedule: CalendarClock,
+  accept: ThumbsUp,
   reject: CircleX,
   sendNotes: MessageSquareText,
   complete: CircleCheckBig,
