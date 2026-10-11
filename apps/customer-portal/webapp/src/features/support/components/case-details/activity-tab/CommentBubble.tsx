@@ -92,6 +92,7 @@ export default function CommentBubble({
   onImageClick,
   hideAvatar = false,
   userDetails,
+  caseId,
 }: CommentBubbleProps): import("react").JSX.Element {
   const theme = useTheme();
   const isDarkMode = useDarkMode();
@@ -127,7 +128,7 @@ export default function CommentBubble({
     INLINE_COMMENT_HTML_PURIFY,
   );
   const { resolvedHtml: htmlContent, isLoading: isImagesLoading } =
-    useResolvedInlineImageHtml(sanitizedHtml);
+    useResolvedInlineImageHtml(sanitizedHtml, caseId);
   const displayName = useMemo(() => {
     if (isCurrentUser && userDetails) {
       const { firstName, lastName, email } = userDetails;
@@ -172,6 +173,7 @@ export default function CommentBubble({
   const { data: imageDataUrl, isLoading: isImagePreviewLoading } =
     useAttachmentPreview(
       isAttachmentEntry && isPreviewableImage ? comment.id : null,
+      caseId,
     );
 
   const renderAttachmentIcon = () => {

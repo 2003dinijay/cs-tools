@@ -50,6 +50,18 @@ type entityAttachmentClient interface {
 	// SearchDeployments backs authorizeAttachmentAccess's deployment branch
 	// (see deploymentAttachmentIsVisible below).
 	SearchDeployments(ctx context.Context, req entity.SearchDeploymentsRequest) (entity.SearchDeploymentsResponse, error)
+	// GetCase backs commentAttachmentIsVisible's access check on the
+	// caller-supplied caseID hint — deliberately the plain, general GetCase
+	// here (not GetAttachmentCase): this is an ordinary "can the caller see
+	// this case" check, unrelated to attachment sourcing.
+	GetCase(ctx context.Context, id string) (entity.CaseView, error)
+	// SearchComments backs commentAttachmentIsVisible (see below): an
+	// attachment pasted inline into a case comment has its own ReferenceID
+	// set to the COMMENT's id, not the case's, so GetAttachmentCase can never
+	// resolve it (entity-service has no comment->case lookup at all). This
+	// searches the case's own comments instead and checks whether the
+	// attachment id appears in one of their inlineAttachments.
+	SearchComments(ctx context.Context, req entity.SearchCommentsRequest) (entity.SearchCommentsResponse, error)
 }
 
 // deploymentAttachmentIsVisible reports whether deploymentID is visible to
@@ -87,6 +99,72 @@ func deploymentAttachmentIsVisible(ctx context.Context, client entityAttachmentC
 	return false, nil
 }
 
+// commentAttachmentMaxPages/commentAttachmentPageSize bound
+// commentAttachmentIsVisible's comment search: a generous but finite scan,
+// not full pagination to the end of arbitrarily long threads. A false
+// negative here just means this fallback doesn't find it and the request
+// 404s same as before this check existed -- fails closed, never open.
+const (
+	commentAttachmentPageSize = 50
+	commentAttachmentMaxPages = 10
+)
+
+// commentAttachmentIsVisible reports whether attachmentID is embedded as an
+// inline image in one of caseID's own customer-visible comments, which also
+// proves the caller may see caseID at all.
+//
+// Exists because an attachment pasted inline into a case comment has its own
+// ReferenceID set to the ServiceNow COMMENT's (journal entry's) id, not the
+// case's -- entity-service has no way to resolve a comment id back to its
+// parent case (there is no working GetCommentByID for the ServiceNow data
+// source at all, see snCommentSearchService.GetComment's own doc comment), so
+// GetAttachmentCase can never succeed for these and always 404s.
+//
+// Safe despite caseID being caller-supplied: (1) GetCase independently proves
+// the caller may see caseID -- the same check every other case-scoped route
+// in this backend relies on, not something this function takes on faith; (2)
+// attachmentID must then actually turn up inside one of caseID's own
+// inlineAttachments, not just be asserted -- finding it there proves it was
+// already visible to the caller the moment they fetched the comment thread.
+// Filters to type=comment only (never work_note): a customer must not gain
+// access to an inline image merely because it happens to be embedded in an
+// internal note they were never shown.
+func commentAttachmentIsVisible(ctx context.Context, client entityAttachmentClient, caseID, attachmentID string) (bool, error) {
+	if _, err := client.GetCase(ctx, caseID); err != nil {
+		var apiErr *apierror.Error
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return false, nil
+		}
+		return false, err
+	}
+
+	commentType := entity.CommentTypeComment
+	offset := 0
+	for range commentAttachmentMaxPages {
+		resp, err := client.SearchComments(ctx, entity.SearchCommentsRequest{
+			ReferenceID:   caseID,
+			ReferenceType: entity.ReferenceTypeCase,
+			Pagination:    entity.Pagination{Limit: commentAttachmentPageSize, Offset: offset},
+			Filters:       &entity.CommentFilters{Type: &commentType},
+		})
+		if err != nil {
+			return false, err
+		}
+		for _, c := range resp.Comments {
+			for _, ia := range c.InlineAttachments {
+				if ia.ID == attachmentID {
+					return true, nil
+				}
+			}
+		}
+		if !resp.HasMore || len(resp.Comments) == 0 {
+			break
+		}
+		offset += commentAttachmentPageSize
+	}
+	return false, nil
+}
+
 // authorizeAttachmentAccess verifies the caller may see an attachment's
 // underlying entity before GetAttachmentContent/GetAttachment/DeleteAttachment
 // act on it, and returns the case view (zero-valued for a non-case reference)
@@ -113,16 +191,18 @@ func deploymentAttachmentIsVisible(ctx context.Context, client entityAttachmentC
 //
 // What actually happens here instead: try the case-based check
 // (GetAttachmentCase) first, since that is the common case and entity-service
-// already scopes it correctly. Only on a 404-shaped failure — which an
-// out-of-scope case and a deployment-referenced attachment's ReferenceID both
-// produce, and this backend cannot tell apart from the response alone — fall
-// back to deploymentAttachmentIsVisible (RLS-scoped SearchDeployments by id,
-// the only other reference type actually reachable from the Deployed tab
-// today). Still fails closed on every type neither check can confirm
-// (conversation/change_request/incident — none of which has a scoped
-// ownership check anywhere in this codebase yet — see entity-service's own
-// CLAUDE.md, "Where this is actually enforced").
-func authorizeAttachmentAccess(ctx context.Context, client entityAttachmentClient, attachment entity.AttachmentDetails) (entity.CaseView, error) {
+// already scopes it correctly. On a 404-shaped failure — which an
+// out-of-scope case and a deployment- or comment-referenced attachment's
+// ReferenceID all produce, and this backend cannot tell apart from the
+// response alone — fall back to deploymentAttachmentIsVisible (RLS-scoped
+// SearchDeployments by id), then, only when the caller supplied caseHint (the
+// case they're viewing the attachment from -- see GetAttachmentContent/
+// GetAttachment's own doc comments), commentAttachmentIsVisible. Still fails
+// closed on every type neither check can confirm (conversation/
+// change_request/incident — none of which has a scoped ownership check
+// anywhere in this codebase yet — see entity-service's own CLAUDE.md, "Where
+// this is actually enforced").
+func authorizeAttachmentAccess(ctx context.Context, client entityAttachmentClient, attachment entity.AttachmentDetails, caseHint string) (entity.CaseView, error) {
 	if attachment.ReferenceID == "" {
 		return entity.CaseView{}, &apierror.Error{StatusCode: http.StatusNotFound}
 	}
@@ -144,14 +224,25 @@ func authorizeAttachmentAccess(ctx context.Context, client entityAttachmentClien
 	if derr != nil {
 		return entity.CaseView{}, derr
 	}
-	if !visible {
-		// Neither check resolved it -- report the original GetAttachmentCase
-		// error, not the deployment one, since GetAttachmentCase is the
-		// common case and its 404 is the more informative of the two to
-		// log/map from.
-		return entity.CaseView{}, err
+	if visible {
+		return entity.CaseView{}, nil
 	}
-	return entity.CaseView{}, nil
+
+	if caseHint != "" {
+		ok, cerr := commentAttachmentIsVisible(ctx, client, caseHint, attachment.ID)
+		if cerr != nil {
+			return entity.CaseView{}, cerr
+		}
+		if ok {
+			return entity.CaseView{}, nil
+		}
+	}
+
+	// Nothing resolved it -- report the original GetAttachmentCase error,
+	// not the deployment or comment one, since GetAttachmentCase is the
+	// common case and its 404 is the more informative of the three to
+	// log/map from.
+	return entity.CaseView{}, err
 }
 
 // AttachmentHandler handles HTTP requests for attachment operations.
@@ -227,6 +318,16 @@ func (h *AttachmentHandler) SearchAttachments(w http.ResponseWriter, r *http.Req
 // set (mirroring entity-service's own XSS mitigation for this endpoint) so
 // browsers never render an attachment inline. Rejected with 404 unless the
 // caller can see the attachment's own case (see authorizeAttachmentAccess).
+//
+// Accepts an optional ?caseId= query param: the case the caller is viewing
+// this attachment from, used only as a hint for authorizeAttachmentAccess's
+// commentAttachmentIsVisible fallback (an inline-comment-image attachment
+// cannot otherwise be resolved to a case at all — see that function's doc
+// comment). Ignored when absent, malformed, or when the case-based/deployment
+// checks already succeed -- never itself a trust boundary, since
+// commentAttachmentIsVisible independently re-verifies both the caller's
+// access to caseId and that this attachment id genuinely appears in one of
+// its comments.
 func (h *AttachmentHandler) GetAttachmentContent(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -239,6 +340,11 @@ func (h *AttachmentHandler) GetAttachmentContent(w http.ResponseWriter, r *http.
 		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
+	caseHint := r.URL.Query().Get("caseId")
+	if caseHint != "" && !uuidRe.MatchString(caseHint) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
 
 	attachment, err := h.entity.GetAttachment(r.Context(), id)
 	if err != nil {
@@ -246,7 +352,7 @@ func (h *AttachmentHandler) GetAttachmentContent(w http.ResponseWriter, r *http.
 		mapUpstreamError(w, err, "Failed to download attachment.")
 		return
 	}
-	if _, err := authorizeAttachmentAccess(r.Context(), h.entity, attachment); err != nil {
+	if _, err := authorizeAttachmentAccess(r.Context(), h.entity, attachment, caseHint); err != nil {
 		slog.WarnContext(r.Context(), "rejected attachment access outside caller's scope", "userID", user.UserID, "attachmentID", id)
 		mapUpstreamError(w, err, "Failed to download attachment.")
 		return
@@ -302,7 +408,7 @@ func (h *AttachmentHandler) DeleteAttachment(w http.ResponseWriter, r *http.Requ
 		mapUpstreamError(w, err, "Failed to delete attachment.")
 		return
 	}
-	caseView, err := authorizeAttachmentAccess(r.Context(), h.entity, attachment)
+	caseView, err := authorizeAttachmentAccess(r.Context(), h.entity, attachment, "")
 	if err != nil {
 		slog.WarnContext(r.Context(), "rejected attachment access outside caller's scope", "userID", user.UserID, "attachmentID", id)
 		mapUpstreamError(w, err, "Failed to delete attachment.")
@@ -327,7 +433,8 @@ func (h *AttachmentHandler) DeleteAttachment(w http.ResponseWriter, r *http.Requ
 // GetAttachment handles GET /attachments/{id} — metadata plus base64-encoded
 // content, distinct from GetAttachmentContent's raw binary stream. Rejected
 // with 404 unless the caller can see the attachment's own case (see
-// authorizeAttachmentAccess).
+// authorizeAttachmentAccess). Accepts the same optional ?caseId= hint as
+// GetAttachmentContent, for the same reason (see that handler's doc comment).
 func (h *AttachmentHandler) GetAttachment(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -340,6 +447,11 @@ func (h *AttachmentHandler) GetAttachment(w http.ResponseWriter, r *http.Request
 		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
 		return
 	}
+	caseHint := r.URL.Query().Get("caseId")
+	if caseHint != "" && !uuidRe.MatchString(caseHint) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
 
 	result, err := h.entity.GetAttachment(r.Context(), id)
 	if err != nil {
@@ -347,7 +459,7 @@ func (h *AttachmentHandler) GetAttachment(w http.ResponseWriter, r *http.Request
 		mapUpstreamError(w, err, "Failed to retrieve attachment.")
 		return
 	}
-	if _, err := authorizeAttachmentAccess(r.Context(), h.entity, result); err != nil {
+	if _, err := authorizeAttachmentAccess(r.Context(), h.entity, result, caseHint); err != nil {
 		slog.WarnContext(r.Context(), "rejected attachment access outside caller's scope", "userID", user.UserID, "attachmentID", id)
 		mapUpstreamError(w, err, "Failed to retrieve attachment.")
 		return

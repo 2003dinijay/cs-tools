@@ -44,14 +44,20 @@ function extractIixAttachmentIds(html: string): string[] {
  * Fetches images via the authenticated backend and replaces src attributes with data URLs.
  *
  * @param html - Sanitized HTML string potentially containing `.iix` img src URLs.
+ * @param caseId - The case this comment belongs to. Forwarded to the backend
+ * as an authorization hint: an attachment pasted inline into a comment has
+ * its own referenceId set to the comment's id, not the case's, so without
+ * this hint the backend has no way to resolve it to a case at all and the
+ * image 404s even when the caller can see the case.
  * @returns `{ resolvedHtml: string, isLoading: boolean }`
  */
 export function useResolvedInlineImageHtml(
   html: string,
+  caseId?: string | null,
 ): { resolvedHtml: string; isLoading: boolean } {
   const idsFromHtml = useMemo(() => extractIixAttachmentIds(html), [html]);
 
-  const { dataUrls, isLoading } = useAttachmentPreviews(idsFromHtml);
+  const { dataUrls, isLoading } = useAttachmentPreviews(idsFromHtml, caseId);
 
   const resolvedHtml = useMemo(() => {
     if (!dataUrls.size) return html;
