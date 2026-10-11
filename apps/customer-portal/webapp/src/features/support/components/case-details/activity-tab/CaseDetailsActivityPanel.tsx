@@ -206,6 +206,7 @@ export default function CaseDetailsActivityPanel({
         primaryBg={primaryBg}
         hideAvatar={hideAvatar}
         userDetails={userDetails}
+        caseId={caseId}
       />
     );
   }
@@ -308,6 +309,7 @@ function ActivityContent({
   hideAvatar = false,
   userDetails,
   onImageClick,
+  caseId,
 }: ActivityContentProps): JSX.Element {
   return (
     <Box sx={{ p: 2, flex: 1 }}>
@@ -347,6 +349,7 @@ function ActivityContent({
                 hideAvatar={hideAvatar}
                 userDetails={userDetails}
                 onImageClick={onImageClick}
+                caseId={caseId}
               />
             );
           })

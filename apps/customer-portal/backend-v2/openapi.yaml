@@ -1384,6 +1384,20 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: caseId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: >
+            Optional hint: the case the caller is viewing this attachment
+            from. Used only as a fallback when the attachment is one pasted
+            inline into a case comment (its own referenceId is then the
+            comment's id, not the case's, so it cannot otherwise be resolved
+            to a case at all). Never a trust boundary by itself -- the caller's
+            access to this case, and that the attachment genuinely belongs to
+            one of its comments, are both independently re-verified.
       responses:
         "200":
           description: Ok
@@ -1437,6 +1451,16 @@ paths:
           schema:
             type: string
             format: uuid
+        - name: caseId
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+          description: >
+            Optional hint: the case the caller is viewing this attachment
+            from. See GET /attachments/{id}/content's caseId parameter for why
+            this exists.
       responses:
         "200":
           description: Ok
