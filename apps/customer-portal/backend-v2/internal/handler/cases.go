@@ -384,6 +384,32 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	entityReq := dto.BuildEntityUpdateCaseRequest(id, req)
+
+	// State-transition guard: this backend forwarded any stateKey a customer
+	// sent straight to entity-service with no legality check at all until
+	// this was added -- entity-service only validates that the target is a
+	// real state, never that moving to it from the case's current one is
+	// legal (see isValidCustomerStateTransition's own doc comment). Built
+	// from entityReq rather than req.StateKey directly so the numeric-id→enum
+	// translation (dto.BuildEntityUpdateCaseRequest) only happens once.
+	if req.StateKey != nil {
+		current, err := h.entity.GetCase(r.Context(), id)
+		if err != nil {
+			slog.ErrorContext(r.Context(), "entity GetCase failed during state validation", "userID", user.UserID, "caseID", id, "err", summarizeErr(err))
+			mapUpstreamError(w, err, "Failed to retrieve current case state.")
+			return
+		}
+		var targetState string
+		if entityReq.State != nil {
+			targetState = *entityReq.State
+		}
+		if !isValidCustomerStateTransition(current.State, targetState) {
+			writeError(w, http.StatusBadRequest, ErrMsgInvalidTransition)
+			return
+		}
+	}
+
 	// req.WatchList carries project-contact emails, not entity-service user
 	// ids — resolve before forwarding (see resolveWatchListUserIDs). Only
 	// meaningful when WatchList is actually the field being set (StateKey is
@@ -407,10 +433,10 @@ func (h *CaseHandler) PatchCase(w http.ResponseWriter, r *http.Request) {
 			writeError(w, http.StatusBadRequest, "None of the provided watch list users could be found.")
 			return
 		}
-		req.WatchList = resolvedIDs
+		entityReq.WatchList = resolvedIDs
 	}
 
-	result, err := h.entity.UpdateCase(r.Context(), id, dto.BuildEntityUpdateCaseRequest(id, req))
+	result, err := h.entity.UpdateCase(r.Context(), id, entityReq)
 	if err != nil {
 		slog.ErrorContext(r.Context(), "entity UpdateCase failed", "userID", user.UserID, "caseID", id, "err", summarizeErr(err))
 		mapUpstreamError(w, err, "Failed to update case.")

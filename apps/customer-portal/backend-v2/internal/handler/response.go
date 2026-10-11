@@ -110,6 +110,11 @@ const (
 	// ERR_MSG_CASE_NOT_CLOSED_FOR_FEEDBACK constant so both backends reject
 	// non-closed cases with the same message.
 	ErrMsgCaseNotClosedForFeedback = "Cannot submit feedback for a case that is not closed."
+
+	// Case state-transition guard (see isValidCustomerStateTransition in
+	// state.go). Matches apps/csm-portal/backend's own ErrMsgInvalidTransition
+	// wording exactly.
+	ErrMsgInvalidTransition = "Invalid state transition."
 )
 
 // errorBody is the JSON error payload format matching the customer-portal pattern.

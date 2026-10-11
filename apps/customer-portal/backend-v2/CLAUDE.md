@@ -764,8 +764,28 @@ operations, not things a customer should be able to set on their own case. `dto.
 description, watchList, resolutionCode, cause, closeNotes), and
 `dto.BuildEntityUpdateCaseRequest(id, req)` builds the full entity-service request from it, leaving
 every excluded field zero/nil — so even if a client sends `{"workState": "ongoing"}`, it's silently
-dropped (the portal struct has no such field) rather than forwarded. The same pattern applies to
-`POST /cases/{id}/comments`: entity-service accepts `type: work_note|comment|activity`, but
+dropped (the portal struct has no such field) rather than forwarded.
+
+**`PATCH /cases/{id}`'s `stateKey` is restricted to a customer-specific field, but *which values*
+`stateKey` may legally move to from the case's current state had no guard at all until this was
+added — `internal/handler/state.go`'s `isValidCustomerStateTransition`/`customerNextStates`.**
+Restricting the request shape (above) stops a customer from setting fields like `workState`
+outright, but it did nothing to stop `{"stateKey": 10}` (work_in_progress) from being forwarded to
+entity-service for a case currently `open` — entity-service's own `UpdateCase` only validates that
+the target is a real state, never that moving to it from the case's current one is a legal
+transition (see `entity-service`'s own CLAUDE.md — it implements no from→to transition graph of its
+own at all; every enforcement point in this product is a BFF-level concern). `customerNextStates`
+is this portal's own copy of the legacy ServiceNow scoped-app's `ALLOWED_STATE_TRANSITIONS` table —
+deliberately narrower than `apps/csm-portal/backend`'s own `nextStates` (which ports
+`SUPERUSER_STATE_TRANSITIONS`, the agent-facing table): a customer's own case-update is almost
+always "close it," plus a few states that can route back through WSO2. `PatchCase` fetches the
+current state via `GetCase` before forwarding a `stateKey` change, normalizing both the current and
+target state through `dto.NormalizedCaseStateEnum` first (the same ServiceNow-display-label /
+domain-enum / numeric-choice-list-id ambiguity `IsCaseStateClosed` already handles) so a
+ServiceNow-backed case's raw display label and a Postgres-backed case's domain enum both resolve
+the same way.
+
+The same pattern applies to `POST /cases/{id}/comments`: entity-service accepts `type: work_note|comment|activity`, but
 `dto.BuildEntityCreateCaseCommentRequest` always forces `type: comment`, regardless of what the
 client sends — a customer should never be able to create an internal work-note or system-activity
 entry. When you add a write endpoint, check the entity-service request struct for fields that read
