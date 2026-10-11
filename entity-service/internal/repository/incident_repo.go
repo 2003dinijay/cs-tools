@@ -246,6 +246,10 @@ type IncidentLifecycleUpdate struct {
 	ResolutionNotes     *string // incident.close_notes
 	ResolvedByID        *string
 	DefaultResolvedByID *string // the acting user, used only when entering Resolved without ResolvedByID
+	Impact              *string // incident_impact_enum label
+	Urgency             *string // incident_urgency_enum label
+	// PriorityFor derives the priority from impact and urgency; it is applied whenever either one changes.
+	PriorityFor func(impact, urgency string) string
 
 	// WorkNotes and AdditionalComments are written as comment rows in the same transaction as the
 	// state change, so a failed note leaves the state change unsaved too. Nil or blank writes nothing.
@@ -1265,13 +1269,13 @@ func cascadeIncidentTaskClosure(ctx context.Context, tx pgx.Tx, incidentID, inci
 // resolution columns, only when one is being set).
 func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx, id string, u IncidentLifecycleUpdate, actorEmail string) error {
 	var currentState, number string
-	var currentCode, currentNotes *string
+	var currentCode, currentNotes, currentImpact, currentUrgency *string
 	err := tx.QueryRow(ctx, `
-		SELECT inc.state::text, inc.resolution_code::text, inc.close_notes, wi.number
+		SELECT inc.state::text, inc.resolution_code::text, inc.close_notes, wi.number, inc.impact::text, inc.urgency::text
 		FROM incident inc
 		JOIN work_item wi ON wi.id = inc.id
 		WHERE inc.id = $1
-		FOR UPDATE OF inc`, id).Scan(&currentState, &currentCode, &currentNotes, &number)
+		FOR UPDATE OF inc`, id).Scan(&currentState, &currentCode, &currentNotes, &number, &currentImpact, &currentUrgency)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &apierror.NotFoundError{Msg: "incident not found"}
 	}
@@ -1325,6 +1329,21 @@ func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx,
 	if u.ResolutionNotes != nil {
 		addInc("close_notes = $%d", *u.ResolutionNotes)
 	}
+	if u.Impact != nil || u.Urgency != nil {
+		impact, urgency := derefOr(currentImpact, "LOW"), derefOr(currentUrgency, "LOW")
+		if u.Impact != nil {
+			impact = *u.Impact
+			addInc("impact = $%d::incident_impact_enum", impact)
+		}
+		if u.Urgency != nil {
+			urgency = *u.Urgency
+			addInc("urgency = $%d::incident_urgency_enum", urgency)
+		}
+		// Read under the row lock above, so the priority always matches the stored impact and urgency.
+		if u.PriorityFor != nil {
+			addInc("priority = $%d::incident_priority_enum", u.PriorityFor(impact, urgency))
+		}
+	}
 	enteringResolved := u.State != nil && *u.State == "RESOLVED" && currentState != "RESOLVED"
 	resolvedBy := u.ResolvedByID
 	if resolvedBy == nil && enteringResolved {
@@ -1351,6 +1370,14 @@ func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx,
 		return cascadeIncidentTaskClosure(ctx, tx, id, number, *u.State, actorEmail)
 	}
 	return nil
+}
+
+// derefOr is *v, or fallback when v is nil (the column defaults impact and urgency to LOW).
+func derefOr(v *string, fallback string) string {
+	if v == nil {
+		return fallback
+	}
+	return *v
 }
 
 // createIncidentPortalQuery is CreateIncident's (the plain-Postgres,
