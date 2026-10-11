@@ -146,6 +146,26 @@ export const CALL_REQUEST_STATE_PENDING_ON_WSO2 = 2;
 /** API stateKey value for cancelling a call request (PATCH). */
 export const CALL_REQUEST_STATE_CANCELLED = 6;
 
+/**
+ * Every call-request stateKey (PATCH / search filter), by entity-service's own
+ * string enum id (GET /projects/{id}/filters' callRequestStates[].id) -- the
+ * fixed ServiceNow-era numeric scheme, mirroring backend-v2's own
+ * callRequestStateKeyToEnum (internal/dto/call_request_enum_mapping.go) in
+ * reverse. The string id is never itself numeric (Number(id) is always NaN),
+ * so any code deriving a stateKey from callRequestStates must go through this
+ * map (or the single-purpose constants above), never Number(id) directly.
+ */
+export const CALL_REQUEST_STATE_KEY_BY_ID: Readonly<Record<string, number>> = {
+  pending_on_customer: 1,
+  pending_on_wso2: CALL_REQUEST_STATE_PENDING_ON_WSO2,
+  scheduled: 3,
+  customer_rejected: CALL_REQUEST_STATE_CUSTOMER_REJECTED,
+  wso2_rejected: 5,
+  canceled: CALL_REQUEST_STATE_CANCELLED,
+  notes_pending: 7,
+  concluded: 8,
+};
+
 // Case severity types matching API labels.
 export const CaseSeverity = {
   CATASTROPHIC: "Catastrophic (P0)",
