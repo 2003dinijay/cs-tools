@@ -327,7 +327,7 @@ func TestCaseService_CreateCaseComment_UnresolvedIdentityDoesNotMove(t *testing.
 
 // TestCaseService_CreateCaseComment_CustomerReplyMoveIsMirroredAndAppliesSLAEffects
 // proves the move goes through UpdateCase and not around it: under
-// dual-write the one state write reaches the ServiceNow mirror through the
+// dual-write the one state write reaches the previous-system mirror through the
 // same bare patchCaseFields a manual PATCH uses, and the SLA engine gets the
 // same ApplyCaseStateEffects(waiting_on_wso2) -- resuming the clocks Awaiting
 // Info had paused -- with no logic of the rule's own for either.
@@ -364,7 +364,7 @@ func TestCaseService_CreateCaseComment_CustomerReplyMoveIsMirroredAndAppliesSLAE
 	select {
 	case <-stateMirrored:
 	case <-time.After(2 * time.Second):
-		t.Fatal("the state move was never mirrored to ServiceNow")
+		t.Fatal("the state move was never mirrored to the previous system")
 	}
 
 	mu.Lock()

@@ -2329,7 +2329,7 @@ here.
 client — customer webapp, microapp — gets it) calls its own
 `applyCustomerReplyStateTransition` last, after every other side effect of
 the comment, for `DATA_SOURCE=postgres` and `postgres-servicenow-dual-write`.
-Same semantics as the ServiceNow-mode function above, ported rather than
+Same semantics as the previous system's function above, ported rather than
 reinvented:
 
 - only a customer-visible comment (`type: comment`); a work note never
@@ -2358,7 +2358,7 @@ reinvented:
   comment is committed — so the `work_item_activity` lifecycle entry
   (`State: Awaiting Info -> Waiting on WSO2`, `user_email` = the customer),
   `case.status_changed` (after `case.comment_added`, the order the
-  ServiceNow-mode function produces), `SLAEngineService.ApplyCaseStateEffects`
+  previous system's function produces), `SLAEngineService.ApplyCaseStateEffects`
   and the dual-write `patchCaseFields` mirror of the one state write all
   happen exactly as for a manual `PATCH`, with no logic of the rule's own.
   A failed read or move is logged at ERROR with the case id and never fails
@@ -2369,7 +2369,7 @@ reinvented:
   exists (`caseLikeRowTypeColumn`), so a work item whose `work_item.type`
   disagrees with its row moves too.
 
-The ServiceNow-mode function's **KNOWN GAP** applies here unchanged: the
+The previous system's function's **KNOWN GAP** applies here unchanged: the
 rule's own `GetCaseByID` and `UpdateCase`'s write (its own `GetCaseByID`
 only decides whether to publish/record the change; the `UPDATE` is
 unconditional) are not atomic, so a record moved to another state in that

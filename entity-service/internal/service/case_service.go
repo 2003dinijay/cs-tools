@@ -1364,7 +1364,7 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 	// (applyCustomerReplyStateTransition) — Postgres owns the real outcome:
 	// this service's own applyCustomerReplyStateTransition (below) decides
 	// the move here, and the UpdateCase it goes through mirrors that one
-	// state write to ServiceNow on its own. Uses CreateBareCaseComment
+	// state write to the previous system on its own. Uses CreateBareCaseComment
 	// specifically (not the full CreateCaseComment) so neither side effect
 	// ever fires twice, or fires against ServiceNow for an outcome only
 	// Postgres actually decided. Fires identically for both the token-
@@ -1508,7 +1508,7 @@ func (s *caseService) isSupportEngineerAuthor(ctx context.Context, caseID, actor
 // the comment is already committed by the time this runs, so a failed read or
 // move is logged at ERROR with the case id and never fails the comment.
 //
-// KNOWN GAP, the same one the ServiceNow-mode function documents: the read
+// KNOWN GAP, the same one the previous system's function documents: the read
 // here (GetCaseByID) and the write (UpdateCase, which does its own GetCaseByID
 // only to decide whether to publish/record the change, then an unconditional
 // UPDATE) are not atomic -- a record moved to some other state (e.g. Closed)
