@@ -631,7 +631,8 @@ func (s *incidentService) createIncidentSNFirst(ctx context.Context, req domain.
 		return domain.CreateIncidentResponse{}, err
 	}
 
-	resp, err := s.repo.CreateIncidentFromServiceNow(ctx, req, snResp.Incident.ID, snResp.Incident.Number, snResp.Incident.CreatedBy)
+	// ServiceNow derives priority from impact x urgency but does not return it; store the same value so reads and incident.created carry it.
+	resp, err := s.repo.CreateIncidentFromServiceNow(ctx, req, snResp.Incident.ID, snResp.Incident.Number, incidentPriorityFor(req.Impact, req.Urgency), snResp.Incident.CreatedBy)
 	if err != nil {
 		// ServiceNow already has the incident at this point -- this is now
 		// real drift (ServiceNow has it, Postgres doesn't) needing operator

@@ -84,6 +84,8 @@ func TestIncidentPriorityToEnum(t *testing.T) {
 type stubIncidentRepo struct {
 	createIncident               func(ctx context.Context, req domain.CreateIncidentRequest, priority string, subcategoryValue *string, createdBy string) (domain.CreateIncidentResponse, error)
 	createIncidentFromServiceNow func(ctx context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error)
+	// fromServiceNowPriority records the priority the dual-write create was asked to store.
+	fromServiceNowPriority string
 	createIncidentComment        func(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error)
 	getIncidentByID              func(ctx context.Context, id string) (domain.IncidentView, error)
 	updateIncidentLifecycle      func(ctx context.Context, id string, u repository.IncidentLifecycleUpdate, actorEmail string) error
@@ -166,8 +168,9 @@ func (s *stubIncidentRepo) CreateIncidentComment(ctx context.Context, incidentID
 	}
 	panic("not implemented")
 }
-func (s *stubIncidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error) {
+func (s *stubIncidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req domain.CreateIncidentRequest, id, number, priority, createdBy string) (domain.CreateIncidentResponse, error) {
 	if s.createIncidentFromServiceNow != nil {
+		s.fromServiceNowPriority = priority
 		return s.createIncidentFromServiceNow(ctx, req, id, number, createdBy)
 	}
 	panic("CreateIncidentFromServiceNow called unexpectedly: Postgres must stay untouched when ServiceNow never accepts the incident")
@@ -304,6 +307,11 @@ func TestIncidentService_CreateIncident_SNSuccessCreatesPostgresRowWithMatchingI
 	}
 	if resp.Incident.ID != snID || resp.Incident.Number != snNumber || resp.Incident.CreatedBy != snCreatedBy {
 		t.Errorf("CreateIncident response = %+v, want identity matching ServiceNow's (%q, %q, %q)", resp.Incident, snID, snNumber, snCreatedBy)
+	}
+	// ServiceNow returns no priority, so the dual-write insert must store the impact x urgency one itself.
+	req := validCreateIncidentRequest()
+	if want := incidentPriorityFor(req.Impact, req.Urgency); repo.fromServiceNowPriority != want {
+		t.Errorf("stored priority = %q, want %q", repo.fromServiceNowPriority, want)
 	}
 }
 
