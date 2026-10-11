@@ -1851,30 +1851,49 @@ export type DedupableMessage = CreatedOnSortable & {
 };
 
 /**
+ * Only the conversation's own opening exchange -- the first kept message and
+ * the first reply to it -- is ever eligible for collapsing. See
+ * {@link dedupeAdjacentDuplicateMessages}'s own doc comment for why this
+ * scope is deliberately narrow, not a tunable "how many messages" knob.
+ */
+const DEDUPE_ELIGIBLE_KEPT_MESSAGE_COUNT = 2;
+
+/**
  * Drops an exact back-to-back duplicate of the message immediately before it
- * -- same content, same author and the same createdOn timestamp. Defends the
- * chat history view against a conversation whose underlying comment rows
- * were written twice for the same turn (digiops-cs#3424: both the question
- * and the answer appeared twice, with identical timestamps, only for the
- * very first exchange of a brand-new chat). This collapses the duplicate
- * wherever it comes from, rather than guessing at why the extra row exists.
+ * -- same content, same author and the same createdOn timestamp -- but ONLY
+ * within the conversation's own opening exchange (the first kept message and
+ * the first reply to it). Defends the chat history view against a
+ * conversation whose underlying comment rows were written twice for the same
+ * turn (digiops-cs#3424: both the question and the answer appeared twice,
+ * with identical timestamps, only for the very first exchange of a
+ * brand-new chat). This collapses the duplicate wherever it comes from,
+ * rather than guessing at why the extra row exists.
  *
  * Deliberately requires an EXACT match on all three fields, not just
  * content: two genuinely distinct messages that happen to read the same
  * (e.g. a user saying "ok" twice, minutes apart) are never affected, since
  * their createdOn timestamps differ in the common case.
  *
- * Known, accepted limitation: this API's createdOn is whole-second
- * resolution (no sub-second component), and no field here carries a
- * backend-assigned identity that could tell two genuinely independent
- * messages apart from a true duplicate row -- `id` itself always differs
- * for a real duplicate (each row gets its own generated id), so it can
- * never be the signal. Two truly distinct messages from the same author,
- * with byte-identical content, landing in the same whole second, would
- * also collapse here. In practice this is vanishingly rare for
- * human-typed chat content, and the app's own send flow already blocks a
- * literal double-submit while one is in flight -- but it is a real,
- * documented trade-off, not a guarantee of true simultaneity.
+ * Why this is scoped to the opening exchange, and not applied throughout a
+ * whole conversation (a CodeRabbit review finding on an earlier version of
+ * this function, verified before acting on it): this API's createdOn is
+ * whole-second resolution (no sub-second component), and no field here
+ * carries a backend-assigned identity that could tell two genuinely
+ * independent messages apart from a true duplicate row -- `id` itself
+ * always differs for a real duplicate (each row gets its own generated
+ * id), confirmed against AuditMetadata's actual field list
+ * (createdOn/updatedOn/createdBy/updatedBy only), so it can never be that
+ * signal. Implementing the finding's literal suggestion -- dedupe only
+ * when a backend-provided duplicate identity confirms it -- would need a
+ * new field on this API's response, a backend contract change out of
+ * scope for this display-layer fix. Rather than accept that risk across an
+ * entire, potentially long conversation, this narrows where the exact-match
+ * check is even consulted to the one place there is confirmed evidence of
+ * the bug: the opening exchange. Once two distinct messages have been kept,
+ * every later message is always kept as-is, however closely it resembles
+ * an earlier one -- a real repeat elsewhere in a long conversation (two
+ * different turns that happen to read the same) is never at risk of being
+ * silently dropped.
  *
  * Input must already be sorted (see {@link compareByCreatedOnThenId}), since
  * this only ever compares a message against the one immediately before it.
@@ -1885,7 +1904,10 @@ export function dedupeAdjacentDuplicateMessages<T extends DedupableMessage>(
   const result: T[] = [];
   for (const msg of sorted) {
     const prev = result[result.length - 1];
+    const withinOpeningExchange =
+      result.length <= DEDUPE_ELIGIBLE_KEPT_MESSAGE_COUNT;
     const isDuplicate =
+      withinOpeningExchange &&
       prev != null &&
       (msg.content ?? "") === (prev.content ?? "") &&
       (msg.createdBy ?? "").toLowerCase() ===

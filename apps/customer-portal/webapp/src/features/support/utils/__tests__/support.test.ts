@@ -221,6 +221,30 @@ describe("dedupeAdjacentDuplicateMessages", () => {
   it("returns an empty array unchanged", () => {
     expect(dedupeAdjacentDuplicateMessages([])).toEqual([]);
   });
+
+  // Regression for a CodeRabbit finding on an earlier version of this
+  // function (verified before acting on it): since createdOn here is only
+  // whole-second resolution, an exact-match check with no scope limit could
+  // have silently dropped a real, independent repeat anywhere in a long
+  // conversation if it coincidentally landed in the same second as an
+  // earlier turn. Scoping collapsing to the opening exchange closes that —
+  // this asserts a later, genuinely-adjacent exact match past the opening
+  // exchange survives untouched.
+  it("keeps an exact adjacent match past the opening exchange (not eligible for collapsing there)", () => {
+    const rows = [
+      { id: "1", content: "question one", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "answer one", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+      { id: "3", content: "question two", createdBy: "customer@example.test", createdOn: "2026-10-11 08:25:00" },
+      { id: "4", content: "question two", createdBy: "customer@example.test", createdOn: "2026-10-11 08:25:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+    ]);
+  });
 });
 
 describe("linkifyBareUrls", () => {
