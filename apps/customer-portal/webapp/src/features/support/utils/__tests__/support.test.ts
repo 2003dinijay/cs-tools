@@ -60,6 +60,24 @@ describe("replaceInlineImageSources", () => {
     expect(output).toContain('src="data:image/png;base64,AAA"');
     expect(output).toContain('src="/no-match.iix"');
   });
+
+  it("matches a dashless .iix reference against a dashed attachment id (HAR regression)", () => {
+    // comment.inlineAttachments[].id is a dashed UUID (entity-service converts
+    // the ServiceNow sys_id before sending it), but a .iix src always carries
+    // the dashless 32-char form -- a real case had this comparison fail for
+    // every inline image, falling through to an unconverted fetch that 404'd.
+    const html = '<img src="/9eee0466eb378750fcf5f5dabad0cd32.iix" />';
+    const output = replaceInlineImageSources(html, [
+      {
+        id: "9eee0466-eb37-8750-fcf5-f5dabad0cd32",
+        downloadUrl: "https://example.test/attachments/9eee0466-eb37-8750-fcf5-f5dabad0cd32/content",
+      },
+    ]);
+
+    expect(output).toContain(
+      'src="https://example.test/attachments/9eee0466-eb37-8750-fcf5-f5dabad0cd32/content"',
+    );
+  });
 });
 
 describe("code-wrapper helpers", () => {
