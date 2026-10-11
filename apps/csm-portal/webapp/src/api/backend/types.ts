@@ -2837,6 +2837,15 @@ export interface BeChangeRequestDetail extends BeChangeRequestSearchView {
   onHold?: boolean | null;
   /** `read_only` in the ServiceNow dictionary — inherently read-only. */
   labels?: string[];
+  /**
+   * The tags attached to the change request — the same shape as a case's
+   * {@link BeCaseView.tags}, and managed through the same case tag routes
+   * (`POST /cases/{id}/tags`, `DELETE /cases/{id}/tags/{tagId}`, which take a
+   * work item id; `useAddCaseTag` / `useRemoveCaseTag` with this detail's
+   * query key). An array (empty when none) on the PostgreSQL data source;
+   * null/absent when the backend did not load them (another data source).
+   */
+  tags?: BeTag[] | null;
   deployments?: BeEntityRef[];
 
   /** System-maintained, `read_only` in the ServiceNow dictionary. */
