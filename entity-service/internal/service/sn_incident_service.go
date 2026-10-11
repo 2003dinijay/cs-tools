@@ -1060,6 +1060,12 @@ func publishIncidentCreatedEvent(ctx context.Context, publisher EventPublisherSe
 		if view.AssignmentGroup != nil {
 			event.Team = view.AssignmentGroup.Name
 		}
+		event.Category = derefString(view.Category)
+		event.State = derefString(view.State)
+		event.Environment = derefString(view.Environment)
+		if view.Service != nil {
+			event.Service = view.Service.Name
+		}
 		// openedOn is the incident's own "when the customer reported this",
 		// which is what the ladder should measure from; createdOn above is
 		// only the fallback for when the read fails.
@@ -1712,7 +1718,7 @@ func (s *snIncidentService) publishEscalationSignals(
 	}
 	if req.AssignedEngineerID != nil {
 		if assignee, ok := incidentAssignment(before, after); ok {
-			s.publishIncidentAssigned(ctx, req.ID, assignee)
+			s.publishIncidentAssigned(ctx, req.ID, assignee, after)
 		}
 	}
 }
@@ -1731,21 +1737,25 @@ func incidentAssignment(before, after domain.IncidentView) (domain.EntityRef, bo
 
 // publishIncidentAssigned emits the SRE escalation ladder's stop signal: an
 // engineer has taken the incident.
-func (s *snIncidentService) publishIncidentAssigned(ctx context.Context, incidentID string, assignee domain.EntityRef) {
-	publishIncidentAssignedEvent(ctx, s.publisher, incidentID, assignee)
+func (s *snIncidentService) publishIncidentAssigned(ctx context.Context, incidentID string, assignee domain.EntityRef, after domain.IncidentView) {
+	publishIncidentAssignedEvent(ctx, s.publisher, incidentID, assignee, after)
 }
 
 // publishIncidentAssignedEvent is publishIncidentAssigned for any data source, so the Postgres
 // incident update sends the same event. A nil publisher publishes nothing.
-func publishIncidentAssignedEvent(ctx context.Context, publisher EventPublisherService, incidentID string, assignee domain.EntityRef) {
+func publishIncidentAssignedEvent(ctx context.Context, publisher EventPublisherService, incidentID string, assignee domain.EntityRef, after domain.IncidentView) {
 	if publisher == nil {
 		return
 	}
 	ctx, cancel := context.WithTimeout(ctx, publishIncidentEscalationSignalTimeout)
 	defer cancel()
 
-	payload, err := json.Marshal(events.IncidentAssignedPayload{AssigneeID: assignee.ID, AssigneeName: assignee.Name,
-		AssignedOn: time.Now().UTC().Format(time.RFC3339)})
+	event := events.IncidentAssignedPayload{AssigneeID: assignee.ID, AssigneeName: assignee.Name,
+		AssignedOn: time.Now().UTC().Format(time.RFC3339), Number: derefString(after.Number), UpdatedBy: after.UpdatedBy}
+	if after.AssignmentGroup != nil {
+		event.Team = after.AssignmentGroup.Name
+	}
+	payload, err := json.Marshal(event)
 	if err != nil {
 		slog.ErrorContext(ctx, "update incident: encode incident.assigned payload failed", "incidentId", incidentID, "error", err)
 		return
@@ -1861,7 +1871,7 @@ func publishIncidentStopSignals(ctx context.Context, publisher EventPublisherSer
 	}
 	if req.AssignedEngineerID != nil {
 		if assignee, ok := incidentAssignment(before, after); ok {
-			publishIncidentAssignedEvent(ctx, publisher, req.ID, assignee)
+			publishIncidentAssignedEvent(ctx, publisher, req.ID, assignee, after)
 		}
 	}
 }

@@ -265,6 +265,11 @@ func (r *Resolver) ServiceRequestLink(caseID string) string {
 	return fmt.Sprintf("%s/operations/service-requests/%s", r.csmBase, url.PathEscape(caseID))
 }
 
+// IncidentLink is an incident's page in the CSM portal.
+func (r *Resolver) IncidentLink(incidentID string) string {
+	return fmt.Sprintf("%s/operations/incidents/%s", r.csmBase, url.PathEscape(incidentID))
+}
+
 // emailDomain returns the part of email after its last "@", lowercased —
 // "" for an address with no "@" at all, which wso2EmailDomain will simply
 // never match (see linkFor).

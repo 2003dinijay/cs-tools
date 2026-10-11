@@ -44,7 +44,7 @@ const srCustomerCommentTag = "devops-sm"
 // space.
 //
 // Chat is the only side effect, so these use handleCaseAcknowledged's
-// single-channel shape (sendSRChat), not handleCaseCreated's multi-channel
+// single-channel shape (sendChatOnly), not handleCaseCreated's multi-channel
 // one: a failed post returns the error so eventbus.Consumer retries the
 // record (and dead-letters it after exhausting retries), since nothing else
 // in the record has succeeded that a retry could repeat.
@@ -57,7 +57,7 @@ func (d *Dispatcher) handleSRCreated(ctx context.Context, record eventbus.Record
 	if !ok {
 		return nil
 	}
-	return d.sendSRChat(ctx, record, func() error {
+	return d.sendChatOnly(ctx, record, func() error {
 		return d.googleChat.SendSRCreatedAlert(ctx, audience, notifications.SRCreatedAlert{
 			CaseID:              p.CaseID,
 			Number:              p.Number,
@@ -83,7 +83,7 @@ func (d *Dispatcher) handleSRAcknowledged(ctx context.Context, record eventbus.R
 	if !ok {
 		return nil
 	}
-	return d.sendSRChat(ctx, record, func() error {
+	return d.sendChatOnly(ctx, record, func() error {
 		return d.googleChat.SendSRAcknowledgedAlert(ctx, audience, notifications.SRAcknowledgedAlert{
 			CaseID:              p.CaseID,
 			Number:              p.Number,
@@ -129,7 +129,7 @@ func (d *Dispatcher) handleSRCommentAdded(ctx context.Context, record eventbus.R
 			"caseId", p.CaseID, "commentId", p.CommentID)
 		return nil
 	}
-	return d.sendSRChat(ctx, record, func() error {
+	return d.sendChatOnly(ctx, record, func() error {
 		return d.googleChat.SendSRCustomerCommentAlert(ctx, audience, notifications.SRCustomerCommentAlert{
 			CaseID:      p.CaseID,
 			Number:      p.Number,
@@ -160,7 +160,7 @@ func (d *Dispatcher) srAudience(ctx context.Context, t events.Type, ref events.S
 	return team, true
 }
 
-// sendSRChat runs send under the record's single chat claim -- the same
+// sendChatOnly runs send under the record's single chat claim -- the same
 // shape as handleCaseAcknowledged, the closest existing Chat-only handler,
 // and for the same reasons (see its doc comment):
 //
@@ -180,7 +180,7 @@ func (d *Dispatcher) srAudience(ctx context.Context, t events.Type, ref events.S
 //
 // Not record.NoMoreRetries-gated, for handleCaseAcknowledged's reason: with
 // one claim, only its owner ever releases it.
-func (d *Dispatcher) sendSRChat(ctx context.Context, record eventbus.Record, send func() error) error {
+func (d *Dispatcher) sendChatOnly(ctx context.Context, record eventbus.Record, send func() error) error {
 	chatKey := recordBaseKey(record) + "/chat"
 	if !d.claim(chatKey) {
 		return nil
