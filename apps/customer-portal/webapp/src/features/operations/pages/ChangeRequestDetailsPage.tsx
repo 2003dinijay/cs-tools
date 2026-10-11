@@ -912,7 +912,9 @@ export default function ChangeRequestDetailsPage(): JSX.Element {
                     Approved Date
                   </Typography>
                   <Typography variant="body2">
-                    {changeRequest.approvedOn || "Not available"}
+                    {changeRequest.approvedOn
+                      ? formatDateTime(changeRequest.approvedOn)
+                      : "Not available"}
                   </Typography>
                 </Box>
               </Stack>
