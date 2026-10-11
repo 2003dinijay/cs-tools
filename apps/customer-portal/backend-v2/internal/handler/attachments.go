@@ -22,6 +22,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/dto"
@@ -109,9 +110,10 @@ const (
 	commentAttachmentMaxPages = 10
 )
 
-// commentAttachmentIsVisible reports whether attachmentID is embedded as an
-// inline image in one of caseID's own customer-visible comments, which also
-// proves the caller may see caseID at all.
+// commentAttachmentIsVisible reports whether attachment belongs to one of
+// caseID's own customer-visible comments -- either the comment it was pasted
+// into (attachment.ReferenceID is that comment's id) or one that lists it as
+// an inline attachment -- which also proves the caller may see caseID at all.
 //
 // Exists because an attachment pasted inline into a case comment has its own
 // ReferenceID set to the ServiceNow COMMENT's (journal entry's) id, not the
@@ -123,13 +125,14 @@ const (
 // Safe despite caseID being caller-supplied: (1) GetCase independently proves
 // the caller may see caseID -- the same check every other case-scoped route
 // in this backend relies on, not something this function takes on faith; (2)
-// attachmentID must then actually turn up inside one of caseID's own
-// inlineAttachments, not just be asserted -- finding it there proves it was
+// the attachment must then actually belong to one of caseID's own comments
+// (its ReferenceID is that comment's id, or the comment lists it as an
+// inline attachment), not just be asserted -- finding it there proves it was
 // already visible to the caller the moment they fetched the comment thread.
 // Filters to type=comment only (never work_note): a customer must not gain
 // access to an inline image merely because it happens to be embedded in an
 // internal note they were never shown.
-func commentAttachmentIsVisible(ctx context.Context, client entityAttachmentClient, caseID, attachmentID string) (bool, error) {
+func commentAttachmentIsVisible(ctx context.Context, client entityAttachmentClient, caseID string, attachment entity.AttachmentDetails) (bool, error) {
 	if _, err := client.GetCase(ctx, caseID); err != nil {
 		var apiErr *apierror.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
@@ -151,8 +154,16 @@ func commentAttachmentIsVisible(ctx context.Context, client entityAttachmentClie
 			return false, err
 		}
 		for _, c := range resp.Comments {
+			// The attachment's own ReferenceID is the comment it was pasted
+			// into. entity-service sets it, not the caller, so a comment of
+			// this case carrying that id proves the link without relying on
+			// the comment also listing inlineAttachments -- which only the
+			// ServiceNow comment read fills in, never the Postgres one.
+			if attachment.ReferenceID != "" && strings.EqualFold(c.ID, attachment.ReferenceID) {
+				return true, nil
+			}
 			for _, ia := range c.InlineAttachments {
-				if ia.ID == attachmentID {
+				if strings.EqualFold(ia.ID, attachment.ID) {
 					return true, nil
 				}
 			}
@@ -233,7 +244,7 @@ func authorizeAttachmentAccess(ctx context.Context, client entityAttachmentClien
 	}
 
 	if caseHint != "" {
-		ok, cerr := commentAttachmentIsVisible(ctx, client, caseHint, attachment.ID)
+		ok, cerr := commentAttachmentIsVisible(ctx, client, caseHint, attachment)
 		if cerr != nil {
 			return entity.CaseView{}, cerr
 		}
@@ -241,6 +252,11 @@ func authorizeAttachmentAccess(ctx context.Context, client entityAttachmentClien
 			return entity.CaseView{}, nil
 		}
 	}
+
+	// Opaque ids only (no PII): enough to tell, next time one of these 404s,
+	// whether the attachment's reference was ever a comment of the hinted case.
+	slog.WarnContext(ctx, "attachment access: no owning case, deployment or comment found",
+		"attachmentID", attachment.ID, "referenceID", attachment.ReferenceID, "caseHintGiven", caseHint != "")
 
 	// Nothing resolved it -- report the original GetAttachmentCase error,
 	// not the deployment or comment one, since GetAttachmentCase is the
