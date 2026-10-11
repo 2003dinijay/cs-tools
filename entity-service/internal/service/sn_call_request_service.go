@@ -269,9 +269,14 @@ func (s *snCallRequestService) CreateCallRequest(ctx context.Context, req domain
 // this service, returning the raw id/createdBy/state ServiceNow assigned
 // rather than the wire-shaped domain.CreateCallRequestResponse the public
 // CreateCallRequest above returns. state is ServiceNow's own real decision
-// (toDomainCallRequestState's mapping of its create response's state field),
-// not guessed here -- the caller mirrors it into Postgres as-is, since
-// ServiceNow's create API takes no state input for this service to influence.
+// (toDomainCallRequestState's mapping of its create response's state field)
+// -- callRequestService.createCallRequestSNFirst does NOT persist it: it
+// discards this value and stores its own caller-based initialState instead,
+// since ServiceNow's create API takes no state input and always assigns
+// pending_on_wso2 unconditionally (see that method's own doc comment). This
+// return value is kept (rather than dropped from the tuple) only because the
+// interface already carries it and a future caller may still want to compare
+// against or log ServiceNow's own decision.
 func (s *snCallRequestService) createCallRequestSNFirstDetails(ctx context.Context, req domain.CreateCallRequestRequest) (id, createdBy string, createdOn time.Time, state domain.CallRequestStateType, err error) {
 	resp, err := s.CreateCallRequest(ctx, req)
 	if err != nil {
