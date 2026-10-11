@@ -115,7 +115,7 @@ func commentRowToDomain(row repository.CommentRow) domain.Comment {
 	c := domain.Comment{
 		ID:           row.ID,
 		ReferenceID:  row.WorkItemID,
-		Content:      row.Content,
+		Content:      domain.StripCommentCodeMarkers(row.Content),
 		CreatedOn:    row.CreatedOn,
 		LastEditedOn: row.LastEditedAt,
 		IsDeleted:    row.DeletedAt != nil,
@@ -140,9 +140,12 @@ func commentRowToDomain(row repository.CommentRow) domain.Comment {
 }
 
 // commentAuthorName is row.CreatedByName, except that the Novera agent, which
-// has no "user" row to resolve against, is named commentAgentDisplayName.
+// has no "user" row to resolve against, is named commentAgentDisplayName. The
+// agent is stored either as the "agent" sentinel (written by this service) or
+// as its display name (carried over verbatim on migrated records).
 func commentAuthorName(row repository.CommentRow) string {
-	if row.CreatedByName == "" && strings.EqualFold(row.CreatedBy, commentCreatedByAgent) {
+	if row.CreatedByName == "" &&
+		(strings.EqualFold(row.CreatedBy, commentCreatedByAgent) || strings.EqualFold(row.CreatedBy, commentAgentDisplayName)) {
 		return commentAgentDisplayName
 	}
 	return row.CreatedByName

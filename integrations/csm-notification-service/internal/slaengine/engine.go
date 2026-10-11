@@ -166,28 +166,23 @@ type Engine struct {
 	// against entity-service's own durable record — see
 	// entityClockStatusClient's own doc comment.
 	entity entityClockStatusClient
-	// slaEmailSendingEnabled mirrors cmd/server/main.go's existing
-	// EMAIL_SENDING_ENABLED/CALL_SENDING_ENABLED disable-entirely
-	// convention, but for SLA-breach emails specifically
-	// (SLA_EMAIL_SENDING_ENABLED, default true). It currently gates
-	// nothing: this engine's own SLA breach-alert EMAIL reaction
-	// (sendBreachEmails) was deliberately removed rather than ported when
-	// this package was redesigned (see this package's own doc comment, "The
-	// poll-engine's own SLA breach-alert EMAIL reaction... is gone, not
-	// ported") — today a breach alert sends only the Google Chat card in
-	// sendBreachAlert below. This field is wired through now as a
-	// placeholder for when that email reaction is rebuilt: the intended
-	// call site is inside sendBreachAlert, alongside the existing
-	// e.chat.SendSLABreachAlert call, guarded by
-	// `if e.slaEmailSendingEnabled { ... }`.
+	// slaEmailSendingEnabled is the SLA notification killswitch
+	// (SLA_EMAIL_SENDING_ENABLED, default true; disabled only by the literal
+	// "false", same disable-entirely convention as
+	// EMAIL_SENDING_ENABLED/CALL_SENDING_ENABLED in cmd/server/main.go). The
+	// name is kept for config compatibility, but when false it suppresses
+	// every SLA-triggered outbound message: the Google Chat breach card sent
+	// by sendBreachAlert (the only SLA Chat send in this service) and any SLA
+	// breach email should that reaction be rebuilt. Non-SLA alerts are
+	// unaffected.
 	slaEmailSendingEnabled bool
 }
 
 // NewEngine constructs an Engine. entity is the same *EntityClient the
 // caller already constructs for GetDurationPolicy/Reconcile — see
 // entityClockStatusClient's own doc comment for what it's used for here.
-// slaEmailSendingEnabled is a currently-inert placeholder — see that field's
-// own doc comment.
+// slaEmailSendingEnabled gates all SLA-triggered messages (Chat card and
+// email) — see that field's own doc comment.
 func NewEngine(store *Store, pub *eventbus.Producer, chat chatSender, links *recipientlinks.Resolver, durations map[string]map[string]time.Duration, entity entityClockStatusClient, slaEmailSendingEnabled bool) *Engine {
 	return &Engine{store: store, pub: pub, chat: chat, links: links, durations: durations, entity: entity, slaEmailSendingEnabled: slaEmailSendingEnabled}
 }
@@ -615,7 +610,21 @@ func (e *Engine) alertTier(ctx context.Context, meta ClockMeta, caseID, clockTyp
 // this whole feature exists to reduce. e.entity is nil for every caller
 // that hasn't wired one up (every existing test), which also fails open
 // the same way, preserving this function's exact prior behavior for them.
+//
+// When e.slaEmailSendingEnabled is false (SLA_EMAIL_SENDING_ENABLED=false)
+// this returns immediately, before the entity-service lookup and before any
+// Chat send. Only the send is skipped: processDueMember has already claimed
+// the tier and published sla.tier_reached before calling here, and still
+// advances the alerted-tier cursor and removes the wake entry afterwards. So
+// a gated-off tier is deliberately treated as alerted, which means
+// re-enabling the flag does not flood Chat with a backlog of stale breach
+// cards for tiers that were crossed while it was off.
 func (e *Engine) sendBreachAlert(ctx context.Context, meta ClockMeta, caseID, clockType string, tier int) {
+	if !e.slaEmailSendingEnabled {
+		slog.InfoContext(ctx, "slaengine: SLA_EMAIL_SENDING_ENABLED=false, skipping sla breach chat alert", "caseId", caseID, "clockType", clockType, "tier", tier)
+		return
+	}
+
 	if e.entity != nil {
 		state, err := e.entity.GetClockState(ctx, caseID, clockType)
 		switch {

@@ -332,3 +332,45 @@ func TestCommentRowToDomain_AgentReadsBackAsNovera(t *testing.T) {
 		t.Errorf("CreatedBy.Email = %q, want %q", got.CreatedBy.Email, "agent")
 	}
 }
+
+func TestCommentRowToDomain_AuthorAndContentTable(t *testing.T) {
+	tests := []struct {
+		name          string
+		createdBy     string
+		createdByName string
+		content       string
+		wantName      string
+		wantContent   string
+	}{
+		{"migrated Novera without resolved name", "Novera", "", "hi", "Novera", "hi"},
+		{"migrated Novera lowercase", "novera", "", "hi", "Novera", "hi"},
+		{"Novera with resolved name keeps it", "Novera", "Resolved Name", "hi", "Resolved Name", "hi"},
+		{"agent sentinel still works", "agent", "", "hi", "Novera", "hi"},
+		{"email join name wins", "jane.doe@example.com", "Jane Doe", "hi", "Jane Doe", "hi"},
+		{"unknown automation account stays empty", "some_pipeline", "", "hi", "", "hi"},
+		{"wrapped content", "Novera", "", "[code]I'm sorry.[/code]", "Novera", "I'm sorry."},
+		{"only leading marker", "x", "", "[code]open only", "", "[code]open only"},
+		{"whitespace around wrapper", "x", "", "\n [code]body[/code] \n", "", "body"},
+		{"interior marker untouched", "x", "", "a [code]b[/code] c", "", "a [code]b[/code] c"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := commentRowToDomain(repository.CommentRow{
+				ID: "c-1", WorkItemID: "wi-1",
+				Content: tt.content, CreatedBy: tt.createdBy, CreatedByName: tt.createdByName,
+			})
+			if got.CreatedBy == nil {
+				t.Fatal("CreatedBy is nil")
+			}
+			if got.CreatedBy.Name != tt.wantName {
+				t.Errorf("Name = %q, want %q", got.CreatedBy.Name, tt.wantName)
+			}
+			if got.CreatedBy.Email != tt.createdBy {
+				t.Errorf("Email = %q, want %q", got.CreatedBy.Email, tt.createdBy)
+			}
+			if got.Content != tt.wantContent {
+				t.Errorf("Content = %q, want %q", got.Content, tt.wantContent)
+			}
+		})
+	}
+}

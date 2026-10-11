@@ -123,7 +123,8 @@ const conversationSearchFrom = `
 // two queries per request). That could not be fixed with an index alone: the
 // plan flipped with the planner's row estimate for the free-text filter.
 //
-// The creator is resolved by LATERAL ... LIMIT 1, ordered by id, for the
+// The creator is resolved by LATERAL ... LIMIT 1, preferring an active, then the
+// newest, user (id breaks ties), for the
 // reason SearchWorkItemAttachments does the same: "user".email has no unique
 // constraint, so a plain join fans one conversation out into one row per user
 // sharing the address, and the COUNT (which cannot see that join) disagrees
@@ -146,7 +147,7 @@ func conversationSearchQueries(where, sortCol, sortDir string, pageArgs int) (co
 		     SELECT u2.id, u2.name, u2.first_name, u2.last_name
 		     FROM "user" u2
 		     WHERE LOWER(u2.email) = LOWER(wi.created_by)
-		     ORDER BY u2.id
+		     ORDER BY u2.is_active DESC NULLS LAST, u2.created_on DESC, u2.id
 		     LIMIT 1
 		 ) u ON TRUE
 		 ORDER BY %s %s, wi.id`,
@@ -160,8 +161,7 @@ const conversationFromJoins = `
 	FROM work_item wi
 	JOIN conversation c ON c.id = wi.id
 	LEFT JOIN project p ON p.id = wi.project_id
-	LEFT JOIN work_item case_wi ON case_wi.id = wi.parent_id
-	LEFT JOIN "user" u ON LOWER(u.email) = LOWER(wi.created_by)`
+	LEFT JOIN work_item case_wi ON case_wi.id = wi.parent_id`
 
 // conversationMessageStats batch-fetches each conversation's earliest
 // comment content and total comment count, avoiding one query per

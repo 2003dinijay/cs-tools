@@ -42,8 +42,8 @@ type CommentRow struct {
 	// see CreatedBy's own doc comment in comment_service.go), matched
 	// case-insensitively against "user".email/first_name/last_name/name the
 	// same way case_repo.go's SearchCaseActivities already resolves a
-	// comment's author for the case activity timeline -- see its own doc
-	// comment for the DISTINCT ON reasoning (email has no unique constraint).
+	// comment's author for the case activity timeline (one user per email via
+	// userByEmailJoin, since email has no unique constraint).
 	// Only SearchComments populates this; CreateComment's RETURNing has no
 	// join to resolve it from and leaves it "".
 	CreatedByName string
@@ -248,28 +248,20 @@ func (r *commentRepo) SearchComments(ctx context.Context, referenceID string, re
 
 	countQuery := "SELECT COUNT(*) " + fromJoin + " " + where
 	// Resolves the comment author's display name for the response -- see
-	// CommentRow.CreatedByName's own doc comment. The email-match join is
-	// wrapped in its own DISTINCT ON subquery, same as
-	// case_repo.go's SearchCaseActivities: "user".email has no unique
-	// constraint, so two user rows sharing an address would otherwise fan a
-	// single comment row out into more than one result row, while
-	// countQuery above (no "user" join) still counts it once.
+	// CommentRow.CreatedByName's own doc comment. userByEmailJoin picks a
+	// single user per comment, since "user".email has no unique constraint
+	// and a plain join would fan one comment out into several result rows
+	// while countQuery above (no "user" join) still counts it once.
 	dataQuery := fmt.Sprintf(`
 		SELECT c.id, c.work_item_id, c.content, c.type, c.created_by, c.created_on,
-			c.deleted_at, c.deleted_by, c.last_edited_at, c.resolved_name
-		FROM (
-			SELECT DISTINCT ON (c.id)
-				c.id, c.work_item_id, c.content, c.type, c.created_by, c.created_on,
-				c.deleted_at, c.deleted_by, c.last_edited_at,
-				COALESCE(NULLIF(TRIM(u.name), ''), NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS resolved_name
-			%s
-			LEFT JOIN "user" u ON LOWER(u.email) = LOWER(c.created_by)
-			%s
-			ORDER BY c.id, u.id
-		) c
+			c.deleted_at, c.deleted_by, c.last_edited_at,
+			COALESCE(NULLIF(TRIM(u.name), ''), NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS resolved_name
+		%s
+		%s
+		%s
 		ORDER BY c.created_on DESC, c.id
 		LIMIT $%d OFFSET $%d`,
-		fromJoin, where, len(args)+1, len(args)+2)
+		fromJoin, userByEmailJoin("u", "c.created_by"), where, len(args)+1, len(args)+2)
 	dataArgs := append(append([]any{}, args...), pagination.Limit, pagination.Offset)
 
 	var total int

@@ -11135,7 +11135,7 @@ paths:
 
   /customer-health/summary:
     post:
-      summary: Search account health summaries (ServiceNow account data enriched with MySQL-tracked review status).
+      summary: Search account health summaries (derived risk flags enriched with entity-service-tracked review status).
       operationId: getCustomerHealthSummary
       requestBody:
         required: true
@@ -11227,7 +11227,7 @@ paths:
 
   /customer-health/accounts/{accountId}:
     get:
-      summary: Get an account's detailed health breakdown (ServiceNow-backed; no MySQL involved).
+      summary: Get an account's detailed health breakdown (derived risk flags, no MySQL involved).
       operationId: getCustomerHealthAccountDetail
       parameters:
         - name: accountId

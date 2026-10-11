@@ -37,10 +37,16 @@ type entityAttachmentClient interface {
 	GetAttachmentContent(ctx context.Context, id string) (body []byte, contentType string, err error)
 	DeleteAttachment(ctx context.Context, id string) (entity.DeleteAttachmentResponse, error)
 	GetAttachment(ctx context.Context, id string) (entity.AttachmentDetails, error)
-	// GetCase backs both authorizeAttachmentAccess (every route in this file)
-	// and DeleteAttachment's closed-case guard — this handler serves no case
-	// route of its own (see caseIsClosed in cases.go).
-	GetCase(ctx context.Context, id string) (entity.CaseView, error)
+	// GetAttachmentCase backs both authorizeAttachmentAccess (every route in
+	// this file) and DeleteAttachment's closed-case guard — this handler
+	// serves no case route of its own (see caseIsClosed in cases.go). It is
+	// GET /attachments/{id}/case (id is the attachment id), not the plain
+	// GetCase/GET /cases/{id}: the plain route is always DATA_SOURCE-scoped,
+	// so it 404s on an attachment whose parent case lives only in ServiceNow
+	// under ATTACHMENT_DATA_SOURCE=servicenow (entity-service's own
+	// attachmentReadHandler doc comment, internal/server/routes.go) — this
+	// check must stay sourced the same way the attachment content itself is.
+	GetAttachmentCase(ctx context.Context, id string) (entity.CaseView, error)
 	// SearchDeployments backs authorizeAttachmentAccess's deployment branch
 	// (see deploymentAttachmentIsVisible below).
 	SearchDeployments(ctx context.Context, req entity.SearchDeploymentsRequest) (entity.SearchDeploymentsResponse, error)
@@ -105,23 +111,27 @@ func deploymentAttachmentIsVisible(ctx context.Context, client entityAttachmentC
 // ReferenceType is never actually "deployment" on any path this backend can
 // observe, live-dual-write or not.
 //
-// What actually happens here instead: try the case-based check (GetCase)
-// first, since that is the common case and entity-service already scopes it
-// correctly. Only on a 404-shaped failure — which an out-of-scope case and a
-// deployment-referenced attachment's ReferenceID both produce, and this
-// backend cannot tell apart from the response alone — fall back to
-// deploymentAttachmentIsVisible (RLS-scoped SearchDeployments by id, the only
-// other reference type actually reachable from the Deployed tab today).
-// Still fails closed on every type neither check can confirm (conversation/
-// change_request/incident — none of which has a scoped ownership check
-// anywhere in this codebase yet — see entity-service's own CLAUDE.md, "Where
-// this is actually enforced").
+// What actually happens here instead: try the case-based check
+// (GetAttachmentCase) first, since that is the common case and entity-service
+// already scopes it correctly. Only on a 404-shaped failure — which an
+// out-of-scope case and a deployment-referenced attachment's ReferenceID both
+// produce, and this backend cannot tell apart from the response alone — fall
+// back to deploymentAttachmentIsVisible (RLS-scoped SearchDeployments by id,
+// the only other reference type actually reachable from the Deployed tab
+// today). Still fails closed on every type neither check can confirm
+// (conversation/change_request/incident — none of which has a scoped
+// ownership check anywhere in this codebase yet — see entity-service's own
+// CLAUDE.md, "Where this is actually enforced").
 func authorizeAttachmentAccess(ctx context.Context, client entityAttachmentClient, attachment entity.AttachmentDetails) (entity.CaseView, error) {
 	if attachment.ReferenceID == "" {
 		return entity.CaseView{}, &apierror.Error{StatusCode: http.StatusNotFound}
 	}
 
-	caseView, err := client.GetCase(ctx, attachment.ReferenceID)
+	// GetAttachmentCase takes the attachment's own id, not ReferenceID --
+	// entity-service resolves ReferenceID internally, from the same
+	// CaseService this resolves the case from, so it can never disagree with
+	// a ReferenceID fetched from a different data source.
+	caseView, err := client.GetAttachmentCase(ctx, attachment.ID)
 	if err == nil {
 		return caseView, nil
 	}
@@ -135,9 +145,10 @@ func authorizeAttachmentAccess(ctx context.Context, client entityAttachmentClien
 		return entity.CaseView{}, derr
 	}
 	if !visible {
-		// Neither check resolved it -- report the original GetCase error,
-		// not the deployment one, since GetCase is the common case and its
-		// 404 is the more informative of the two to log/map from.
+		// Neither check resolved it -- report the original GetAttachmentCase
+		// error, not the deployment one, since GetAttachmentCase is the
+		// common case and its 404 is the more informative of the two to
+		// log/map from.
 		return entity.CaseView{}, err
 	}
 	return entity.CaseView{}, nil
@@ -263,8 +274,9 @@ func (h *AttachmentHandler) GetAttachmentContent(w http.ResponseWriter, r *http.
 // already-trusted /cases/{caseId}/... path) — caseIsClosed fails OPEN on an
 // entity-service error, which is the right call there since it's a pure
 // business-rule check layered on top of an already-authorized request. Here
-// the GetCase call IS the authorization check (see authorizeAttachmentAccess)
-// and must fail closed, so this reuses its already-fetched CaseView directly
+// the GetAttachmentCase call IS the authorization check (see
+// authorizeAttachmentAccess) and must fail closed, so this reuses its
+// already-fetched CaseView directly
 // instead of a second, separately-failing-open lookup. A previous version of
 // this handler only ran its closed-case check when a fetch of the attachment
 // succeeded AND its referenceId was non-empty — silently skipping the check

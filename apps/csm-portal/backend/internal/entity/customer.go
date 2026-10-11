@@ -45,6 +45,16 @@ func (c *CustomerEntityClient) SearchAnnouncementRegistryCases(ctx context.Conte
 	return c.do(ctx, http.MethodPost, "/announcements/registry/cases", body)
 }
 
+// SearchAnnouncementRegistryRows calls POST /announcements/registry/rows on the
+// entity service: the announcement registry already grouped (published request
+// batches plus ungrouped cases), ordered and paginated by the database. The
+// body is the /cases/search shape (filters plus pagination over the grouped
+// rows). Entity services that predate the route answer 404; callers fall back
+// to grouping in the BFF.
+func (c *CustomerEntityClient) SearchAnnouncementRegistryRows(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/announcements/registry/rows", body)
+}
+
 // AggregateCases calls POST /cases/aggregate on the entity service: a
 // server-side aggregation of cases by a single field (e.g. account, state),
 // capped to the top maxGroups buckets with the remainder folded into
@@ -111,6 +121,14 @@ func (c *CustomerEntityClient) SearchCaseEscalations(ctx context.Context, caseID
 // as raw JSON; typed response structs are deferred.
 func (c *CustomerEntityClient) CreateCaseEscalation(ctx context.Context, caseID string, body []byte) ([]byte, error) {
 	return c.do(ctx, http.MethodPost, fmt.Sprintf("/cases/%s/escalations", url.PathEscape(caseID)), body)
+}
+
+// SearchEscalations calls POST /escalations/search on the entity service --
+// unlike SearchCaseEscalations above (one case's own history), this is the
+// cross-case search, filtered by an explicit list of case ids. The body is
+// forwarded verbatim and the response is returned as raw JSON.
+func (c *CustomerEntityClient) SearchEscalations(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/escalations/search", body)
 }
 
 // GetTeamMembers calls GET /teams/{id}/members on the entity service.

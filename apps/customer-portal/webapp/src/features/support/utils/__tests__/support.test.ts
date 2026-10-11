@@ -29,6 +29,7 @@ import {
   hasSubmittableEditorContent,
   linkifyBareUrls,
   normalizeCaseTypeOptions,
+  plainTextCommentToHtml,
   replaceInlineImageSources,
   stripCodeWrapper,
   toUtcEndOfDay,
@@ -351,6 +352,44 @@ describe("collapseHtmlSourceWhitespace", () => {
 
   it("trims a newline at the very start and end of the body", () => {
     expect(collapseHtmlSourceWhitespace("\r\n<p>One</p>\r\n")).toBe("<p>One</p>");
+  });
+});
+
+describe("plainTextCommentToHtml", () => {
+  it("converts a plain-text comment's real line breaks into <br>", () => {
+    expect(
+      plainTextCommentToHtml(
+        "Hello,\n\nPlease let us know whether you need further support for this case. Please note that if you are unable to respond, the case will be closed off after one week.\n\nThanks,\nWSO2 Team",
+      ),
+    ).toBe(
+      "Hello,<br><br>Please let us know whether you need further support for this case. Please note that if you are unable to respond, the case will be closed off after one week.<br><br>Thanks,<br>WSO2 Team",
+    );
+  });
+
+  it("handles \\r\\n the same as \\n", () => {
+    expect(plainTextCommentToHtml("Line one\r\nLine two")).toBe("Line one<br>Line two");
+  });
+
+  it("HTML-escapes a literal <, >, &, quote the author typed as plain text", () => {
+    expect(plainTextCommentToHtml("Use < and > and & and \"quotes\" and it's")).toBe(
+      "Use &lt; and &gt; and &amp; and &quot;quotes&quot; and it&#39;s",
+    );
+  });
+
+  it("is a no-op for content that already contains real HTML markup", () => {
+    const html = "<p>Already HTML\nwith a newline</p>";
+    expect(plainTextCommentToHtml(html)).toBe(html);
+  });
+
+  it("is a no-op for content carrying a ServiceNow [code] marker, even with no HTML tags", () => {
+    const withCode = "Intro\n[code]raw markup[/code]\nTail";
+    expect(plainTextCommentToHtml(withCode)).toBe(withCode);
+  });
+
+  it("returns an empty string for empty/non-string input", () => {
+    expect(plainTextCommentToHtml("")).toBe("");
+    // @ts-expect-error -- exercising the runtime guard for non-string input
+    expect(plainTextCommentToHtml(null)).toBe("");
   });
 });
 

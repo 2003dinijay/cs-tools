@@ -512,8 +512,8 @@ func TestMembershipWrite_InviteRejectsBadInput(t *testing.T) {
 	}{
 		{"no email", domain.CreateProjectMembershipRequest{Roles: []string{"Portal user"}}},
 		{"malformed email", domain.CreateProjectMembershipRequest{Email: "not-an-address", Roles: []string{"Portal user"}}},
-		{"no roles", domain.CreateProjectMembershipRequest{Email: writeEmail}},
 		{"unknown role", domain.CreateProjectMembershipRequest{Email: writeEmail, Roles: []string{"Billing Contact"}}},
+		{"no roles, not an integration user", domain.CreateProjectMembershipRequest{Email: writeEmail}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -527,6 +527,65 @@ func TestMembershipWrite_InviteRejectsBadInput(t *testing.T) {
 				t.Error("input is rejected before Salesforce is called")
 			}
 		})
+	}
+}
+
+// TestMembershipWrite_InviteIgnoresTheClaimedIntegrationFlagForAnExistingContact
+// is the regression test for the CodeRabbit finding this fix addresses: a
+// caller cannot invite an EXISTING, real (non-integration) Salesforce
+// contact with zero roles just by setting IsCsIntegrationUser: true in the
+// request -- Salesforce's own stored classification must win, exactly as
+// CreateProjectMembershipRequest.IsCsIntegrationUser's own doc comment
+// already promises for every other effect of that flag.
+func TestMembershipWrite_InviteIgnoresTheClaimedIntegrationFlagForAnExistingContact(t *testing.T) {
+	h := newInternalWriteHarness(t)
+	h.se.contact = &salesentity.Contact{
+		ID: sampleStr(writeContactSfID), Email: sampleStr(writeEmail),
+		IsCsIntegrationUser: boolPtr(false), // Salesforce says: a real human contact
+	}
+
+	_, err := h.svc.Invite(context.Background(), writeProjectID, domain.CreateProjectMembershipRequest{
+		Email:               writeEmail,
+		IsCsIntegrationUser: true, // the caller's claim -- must not override Salesforce's own record
+	})
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("err = %v, want ValidationError (an existing non-integration contact still needs at least one role)", err)
+	}
+	if len(h.se.pcSearches) != 0 || len(h.se.createdPC) != 0 {
+		t.Error("no project membership may be created for a refused invitation")
+	}
+}
+
+// TestMembershipWrite_InviteAllowsNoRolesForAnIntegrationUser is a regression
+// test for a real, reported bug: the Customer Portal's Add Contact form
+// correctly sends zero human-facing roles for a CS integration user (it has
+// no Asgardeo identity and never signs in, so Portal user/Lead/Security
+// Contact/Admin are all meaningless for it) -- but Invite's own "roles must
+// contain at least one role" guard used to reject every such request
+// unconditionally, since it only ever checked the role list, never
+// IsCsIntegrationUser. A non-integration contact with zero roles must still
+// be rejected -- that's still a mistake, just not for an integration user.
+func TestMembershipWrite_InviteAllowsNoRolesForAnIntegrationUser(t *testing.T) {
+	h := newInternalWriteHarness(t)
+	req := inviteReq() // no roles
+	req.IsCsIntegrationUser = true
+
+	if _, err := h.svc.Invite(context.Background(), writeProjectID, req); err != nil {
+		t.Fatalf("Invite() error = %v, want nil for a roleless integration user", err)
+	}
+	if len(h.repo.upserts) != 1 {
+		t.Fatalf("upserts = %d, want 1", len(h.repo.upserts))
+	}
+	if !h.repo.upserts[0].IsCsIntegrationUser {
+		t.Error("membership upsert isCsIntegrationUser = false, want true")
+	}
+
+	h2 := newInternalWriteHarness(t)
+	_, err := h2.svc.Invite(context.Background(), writeProjectID, inviteReq()) // no roles, not an integration user
+	var ve *apierror.ValidationError
+	if !errors.As(err, &ve) {
+		t.Fatalf("err = %v, want ValidationError for a roleless non-integration contact", err)
 	}
 }
 

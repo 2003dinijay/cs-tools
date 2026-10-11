@@ -1274,6 +1274,59 @@ export function collapseCommentSourceWhitespace(content: string): string {
     : collapseHtmlSourceWhitespace(content);
 }
 
+// A tag-shaped substring anywhere in the content -- a far looser test than
+// HTML_STRUCTURE_TAG (block tags only), deliberately: a comment carrying
+// *any* real markup (inline tags like <b>/<span> included) must go through
+// the existing HTML-handling pipeline unchanged, not have its genuine tags
+// escaped into visible text.
+const ANY_HTML_TAG = /<[a-z][\s\S]*>/i;
+
+/**
+ * Converts a plain-text comment body -- one with no HTML markup at all, such
+ * as a ServiceNow system-generated notice ("Please note that this case has
+ * been closed due to inactivity...") -- into safe HTML that actually
+ * preserves its line breaks when rendered.
+ *
+ * {@link collapseHtmlSourceWhitespace}'s own tests document that plain text's
+ * real newlines are deliberately left untouched ("leaves plain text and
+ * editor output alone"), on the assumption they still read as real line
+ * breaks -- true in a `<textarea>` or a `white-space: pre` context, but not
+ * once the string reaches `dangerouslySetInnerHTML`: a bare `\n` inside HTML
+ * source renders as an ordinary space (or nothing), the same fact that
+ * function's own doc comment explains for *laid-out* HTML source, so a
+ * purely plain-text comment collapsed into a single run-on line with no
+ * paragraph breaks at all -- reported live.
+ *
+ * HTML-escapes the whole string first (so a literal `<`/`&` the author typed
+ * — e.g. quoting a tag by hand — shows as text, not markup) and only then
+ * replaces each real newline with `<br>`, after escaping has already turned
+ * any structural character inert.
+ *
+ * A no-op for anything that already looks like real HTML (any tag at all,
+ * not just the block tags collapseHtmlSourceWhitespace cares about) or
+ * carries a ServiceNow `[code]`/`[/code]` marker -- both already go through
+ * the existing HTML/code-block pipeline, which must not be double-processed
+ * here.
+ *
+ * @param content - Raw comment content, already run through
+ *   {@link collapseCommentSourceWhitespace}.
+ * @returns {string} HTML with real line breaks preserved as `<br>`, or the
+ *   input unchanged if it already contains markup.
+ */
+export function plainTextCommentToHtml(content: string): string {
+  if (!content || typeof content !== "string") return "";
+  if (ANY_HTML_TAG.test(content) || /\[\\?\/?code\]/i.test(content)) {
+    return content;
+  }
+  const escaped = content
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+  return escaped.replace(/\r\n|\r|\n/g, "<br>");
+}
+
 /**
  * Removes leading <br>, <br/>, <br /> and whitespace from HTML.
  * Fixes extra blank first line from content like "[code]<br><b>...</b>[/code]".

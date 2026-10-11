@@ -35,9 +35,10 @@ import (
 // (DeleteAttachment's own equivalent coverage lives in
 // closed_case_attachments_test.go, TestDeleteAttachment_ClosedCase).
 
-// fakeAttachmentAuthzClient serves GetAttachment/GetAttachmentContent/GetCase/
-// SearchDeployments from canned values and records whether the guarded
-// upstream call (content fetch, or the metadata response itself) was reached.
+// fakeAttachmentAuthzClient serves
+// GetAttachment/GetAttachmentContent/GetAttachmentCase/SearchDeployments from
+// canned values and records whether the guarded upstream call (content fetch,
+// or the metadata response itself) was reached.
 type fakeAttachmentAuthzClient struct {
 	entityAttachmentClient
 	referenceID       string
@@ -60,7 +61,7 @@ func (f *fakeAttachmentAuthzClient) GetAttachment(ctx context.Context, id string
 	return entity.AttachmentDetails{ID: id, ReferenceID: f.referenceID, Name: "logs.txt"}, nil
 }
 
-func (f *fakeAttachmentAuthzClient) GetCase(ctx context.Context, id string) (entity.CaseView, error) {
+func (f *fakeAttachmentAuthzClient) GetAttachmentCase(ctx context.Context, id string) (entity.CaseView, error) {
 	if f.getCaseErr != nil {
 		return entity.CaseView{}, f.getCaseErr
 	}
@@ -112,8 +113,9 @@ func attachmentAuthzTestCases() map[string]struct {
 			client:     fakeAttachmentAuthzClient{getAttachmentErr: &apierror.Error{StatusCode: http.StatusNotFound}},
 			wantStatus: http.StatusNotFound,
 		},
-		// Deployment-referenced attachments are never resolvable via GetCase
-		// (a deployment id is never a real case), so these all set getCaseErr
+		// Deployment-referenced attachments are never resolvable via
+		// GetAttachmentCase (a deployment id is never a real case), so these
+		// all set getCaseErr
 		// to a 404 -- the same 404 entity-service genuinely returns for one
 		// live today (see authorizeAttachmentAccess's own doc comment for why
 		// ReferenceType can't be used to route these directly instead).

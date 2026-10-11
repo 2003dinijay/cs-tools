@@ -75,6 +75,21 @@ func TestCaseFieldPredicates(t *testing.T) {
 		t.Errorf("empty set produced %v %v %d", none, noArgs, idx)
 	}
 
+	// AccountIDs produces a wi.account_id predicate, the same shape as
+	// ProjectIDs' own wi.project_id one -- a real, reported bug had this
+	// field accepted by the parser but silently dropped here, so an
+	// accountId+in filter matched every case regardless of account.
+	accountPreds, accountArgs, _, err := caseFieldPredicates(caseFieldSet{AccountIDs: []string{"acc-1"}}, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(accountPreds) != 1 || !strings.Contains(accountPreds[0], "wi.account_id = ANY($1::uuid[])") {
+		t.Fatalf("accountPreds = %v, want a wi.account_id predicate", accountPreds)
+	}
+	if len(accountArgs) != 1 || accountArgs[0].([]string)[0] != "acc-1" {
+		t.Fatalf("accountArgs = %v, want [[acc-1]]", accountArgs)
+	}
+
 	// An invalid escalation id is rejected before it can reach SQL.
 	if _, _, _, err := caseFieldPredicates(caseFieldSet{EscalationLevels: []string{"9"}}, 1); err == nil {
 		t.Error("escalation level 9 must be rejected")

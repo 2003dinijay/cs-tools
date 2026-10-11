@@ -1622,7 +1622,7 @@ func (r *caseRepo) GetCaseByID(ctx context.Context, id string, scope SearchScope
 		 FROM work_item wi
 		 LEFT JOIN "case" c ON c.id = wi.id
 		 `+caseLikeJoins+`
-		 LEFT JOIN "user" creator ON LOWER(creator.email) = LOWER(wi.created_by)
+		 `+userByEmailJoin("creator", "wi.created_by")+`
 		 LEFT JOIN project p ON p.id = wi.project_id
 		 LEFT JOIN account a ON a.id = wi.account_id
 		 LEFT JOIN "group" cre ON cre.id = a.cre_team_id
@@ -2131,14 +2131,15 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 	}
 
 	countQuery := `SELECT COUNT(*) FROM comment cc WHERE cc.work_item_id = $1` + typeFilter
-	// LEFT JOIN "user" by email match: comment.created_by is a free-text
-	// VARCHAR (see CreateCaseComment above), not a FK, so a real user id/name
-	// is only available when it happens to match a known user's email.
+	// Joined to "user" by email match (single user per comment, see
+	// userByEmailJoin): comment.created_by is a free-text VARCHAR (see
+	// CreateCaseComment above), not a FK, so a real user id/name is only
+	// available when it happens to match a known user's email.
 	dataQuery := fmt.Sprintf(`
 		SELECT cc.id, cc.work_item_id, cc.type, cc.content, cc.created_by, cc.created_on,
 		       u.id, COALESCE(u.name, NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''))
 		FROM comment cc
-		LEFT JOIN "user" u ON LOWER(u.email) = LOWER(cc.created_by)
+		`+userByEmailJoin("u", "cc.created_by")+`
 		WHERE cc.work_item_id = $1%s
 		ORDER BY cc.created_on DESC, cc.id
 		LIMIT $%d OFFSET $%d`, typeFilter, len(args)+1, len(args)+2)
@@ -2175,6 +2176,7 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 			); err != nil {
 				return fmt.Errorf("scan case comment: %w", err)
 			}
+			c.Content = domain.StripCommentCodeMarkers(c.Content)
 			c.Type = caseCommentEnumType[typeRaw]
 			if authorID != nil {
 				name := ""
@@ -3147,7 +3149,7 @@ func buildCaseSearchWhere(req domain.SearchCasesRequest, scope SearchScope) (str
 	// Fields shared with anyOf branches are built by one function so the two
 	// cannot drift apart (see caseFieldPredicates for the column notes).
 	fieldPreds, fieldArgs, nextIdx, err := caseFieldPredicates(caseFieldSet{
-		Types: req.Parsed.Types, ProjectIDs: req.Parsed.ProjectIDs, DeploymentIDs: req.Parsed.DeploymentIDs,
+		Types: req.Parsed.Types, ProjectIDs: req.Parsed.ProjectIDs, AccountIDs: req.Parsed.AccountIDs, DeploymentIDs: req.Parsed.DeploymentIDs,
 		AssignedUserIDs: req.Parsed.AssignedUserIDs, States: req.Parsed.States, Severities: req.Parsed.Severities,
 		IssueTypes: req.Parsed.IssueTypes, EngagementTypes: req.Parsed.EngagementTypes, WorkStates: req.Parsed.WorkStates,
 		EscalationLevels: req.Parsed.EscalationLevels, Tags: req.Parsed.Tags, ExcludeTags: req.Parsed.ExcludeTags,
@@ -4582,6 +4584,7 @@ func scanCaseActivity(row interface{ Scan(...any) error }) (domain.CaseActivity,
 	switch kind {
 	case "comment":
 		a.Type = domain.ActivityTypeComment
+		a.Content = domain.StripCommentCodeMarkers(a.Content)
 		if commentTypeRaw != nil {
 			if ct, ok := caseCommentEnumType[*commentTypeRaw]; ok {
 				a.CommentType = &ct
@@ -4651,26 +4654,44 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 		commentWorkNoteDataFilter = ` AND cm.type IS DISTINCT FROM 'WORK_NOTE'::comment_type_enum`
 	}
 
+	// Synced attachments live in work_item_attachment, not case_attachment. A
+	// row is skipped while PENDING, and when case_attachment already holds the
+	// same id: a dual-write upload is mirrored into case_attachment under the
+	// backing data source's own attachment identity, which is also the id the
+	// sync gives its work_item_attachment row, so the two tables describe one
+	// file and it must show once. Shared by both queries so total and rows agree.
+	const syncedAttachmentFilter = `
+			  AND wa.state IS DISTINCT FROM 'PENDING'
+			  AND NOT EXISTS (SELECT 1 FROM case_attachment ca WHERE ca.id = wa.id)`
+
 	countQuery := `
 		SELECT
 			(SELECT COUNT(*) FROM comment WHERE work_item_id = $1` + commentWorkNoteFilter + `) +
-			(SELECT COUNT(*) FROM case_attachment WHERE case_id = $1 AND status = 'complete')`
+			(SELECT COUNT(*) FROM case_attachment WHERE case_id = $1 AND status = 'complete') +
+			(SELECT COUNT(*) FROM work_item_attachment wa JOIN work_item wi ON wi.id = wa.work_item_id
+			 WHERE wa.work_item_id = $1` + syncedAttachmentFilter + `)`
 	if includeFieldChanges {
 		countQuery += ` + (SELECT COUNT(*) FROM work_item_activity WHERE work_item_id = $1)`
 	}
 
+	// An attachment entry's content is never empty: a client that hides
+	// entries with no displayable text (the customer portal's activity tab
+	// does) would otherwise drop every attachment from the feed. It falls back
+	// to the file name, and to a fixed label when a synced row has no name.
+	// Clients render attachment entries from fileName, not from content.
+	//
 	// UNION ALL merges the tables into one timeline. Comment/field-change
 	// rows resolve their (free-text VARCHAR) author by email match against
-	// "user"; attachment rows join it directly, since case_attachment.
-	// uploaded_by is a real UUID FK (migration 0106) -- see this file's
-	// other created_by fixes for why they differ.
+	// "user"; case_attachment rows join it directly, since uploaded_by is a
+	// real UUID FK (migration 0106), while synced work_item_attachment rows
+	// carry a free-text created_by and match by email like comments -- see
+	// this file's other created_by fixes for why they differ.
 	//
-	// The comment/field-change branches' email joins are each wrapped in
-	// their own DISTINCT ON subquery: "user".email has no unique constraint
-	// (migration 0002 only makes user_name UNIQUE), so two user rows
-	// sharing an address would otherwise fan a single row out into more than
-	// one activity entry, while countQuery above still counts it once --
-	// putting the page's rows and its total out of sync.
+	// The comment/field-change branches' email joins go through
+	// userByEmailJoin: "user".email has no unique constraint (migration 0002
+	// only makes user_name UNIQUE), so a plain join would fan a single row
+	// out into more than one activity entry, while countQuery above still
+	// counts it once -- putting the page's rows and its total out of sync.
 	dataQuery := `
 		WITH activity AS (
 			SELECT
@@ -4679,21 +4700,20 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 				NULL::text AS file_name, NULL::text AS content_type, NULL::bigint AS size_bytes,
 				NULL::text AS field_name, NULL::text AS old_value, NULL::text AS new_value
 			FROM (
-				SELECT DISTINCT ON (cm.id)
+				SELECT
 					cm.id, cm.content, cm.created_on, cm.created_by AS email,
 					u1.first_name, u1.last_name,
 					COALESCE(u1.name, NULLIF(TRIM(CONCAT_WS(' ', u1.first_name, u1.last_name)), '')) AS name,
 					cm.type
 				FROM comment cm
-				LEFT JOIN "user" u1 ON LOWER(u1.email) = LOWER(cm.created_by)
+				` + userByEmailJoin("u1", "cm.created_by") + `
 				WHERE cm.work_item_id = $1` + commentWorkNoteDataFilter + `
-				ORDER BY cm.id, u1.id
 			) c
 
 			UNION ALL
 
 			SELECT
-				a.id, 'attachment' AS kind, COALESCE(a.description, '') AS content, a.created_on AS created_on,
+				a.id, 'attachment' AS kind, COALESCE(NULLIF(TRIM(a.description), ''), a.filename) AS content, a.created_on AS created_on,
 				u2.email, u2.first_name, u2.last_name,
 				COALESCE(u2.name, NULLIF(TRIM(CONCAT_WS(' ', u2.first_name, u2.last_name)), '')) AS name,
 				NULL::text AS comment_type,
@@ -4701,7 +4721,27 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 				NULL::text AS field_name, NULL::text AS old_value, NULL::text AS new_value
 			FROM case_attachment a
 			JOIN "user" u2 ON u2.id = a.uploaded_by
-			WHERE a.case_id = $1 AND a.status = 'complete'`
+			WHERE a.case_id = $1 AND a.status = 'complete'
+
+			UNION ALL
+
+			SELECT
+				wa.id, 'attachment' AS kind, COALESCE(NULLIF(TRIM(wa.name), ''), 'Attachment') AS content, wa.created_on AS created_on,
+				COALESCE(u4.email, wa.created_by), u4.first_name, u4.last_name,
+				COALESCE(u4.name, NULLIF(TRIM(CONCAT_WS(' ', u4.first_name, u4.last_name)), '')) AS name,
+				NULL::text AS comment_type,
+				COALESCE(wa.name, '')::text, COALESCE(wa.content_type, '')::text, COALESCE(wa.size_bytes, 0)::bigint,
+				NULL::text AS field_name, NULL::text AS old_value, NULL::text AS new_value
+			FROM work_item_attachment wa
+			JOIN work_item wi ON wi.id = wa.work_item_id
+			LEFT JOIN LATERAL (
+				SELECT u.email, u.first_name, u.last_name, u.name
+				FROM "user" u
+				WHERE LOWER(u.email) = LOWER(wa.created_by)
+				ORDER BY u.id
+				LIMIT 1
+			) u4 ON TRUE
+			WHERE wa.work_item_id = $1` + syncedAttachmentFilter
 	if includeFieldChanges {
 		dataQuery += `
 
@@ -4714,15 +4754,14 @@ func (r *caseRepo) SearchCaseActivities(ctx context.Context, req domain.SearchCa
 				NULL::text AS file_name, NULL::text AS content_type, NULL::bigint AS size_bytes,
 				fc.field_name, fc.old_value, fc.new_value
 			FROM (
-				SELECT DISTINCT ON (wa.id)
+				SELECT
 					wa.id, wa.created_on, wa.user_email AS email,
 					u3.first_name, u3.last_name,
 					COALESCE(u3.name, NULLIF(TRIM(CONCAT_WS(' ', u3.first_name, u3.last_name)), '')) AS name,
 					wa.field_name, wa.old_value, wa.new_value
 				FROM work_item_activity wa
-				LEFT JOIN "user" u3 ON LOWER(u3.email) = LOWER(wa.user_email)
+				` + userByEmailJoin("u3", "wa.user_email") + `
 				WHERE wa.work_item_id = $1
-				ORDER BY wa.id, u3.id
 			) fc`
 	}
 	dataQuery += `
