@@ -1687,8 +1687,10 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// entry," not a failed update: the case update itself does not depend
 	// on this.
 	var before *domain.CaseView
+	var beforeErr error
 	if req.State != nil || req.WorkState != nil {
 		if cv, err := s.GetCaseByID(ctx, req.ID); err != nil {
+			beforeErr = err
 			slog.ErrorContext(ctx, "update case: enrich case for case.status_changed publish/activity failed", "caseId", req.ID)
 		} else {
 			before = &cv
@@ -1701,11 +1703,19 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// scope.Unrestricted OR scope.HasInternalAccess, not just Unrestricted
 	// alone -- see the resolutionCode block's own doc comment below for why
 	// (a mixed-identity caller). A ResolveScope failure conservatively
-	// resolves to internal, the same fail-safe posture already established
-	// here before this was factored out.
+	// resolves to internal for the resolutionCode/cause/closeNotes
+	// requirement below (failing to internal there means requiring MORE
+	// from the caller, never less) -- but that same fallback would be the
+	// wrong direction for the state-transition guard just below, which
+	// selects a MORE PERMISSIVE table for an internal caller: an external
+	// caller whose scope can't be resolved must not be silently checked
+	// against the internal table. A request that is changing state returns
+	// the scope error directly instead of guessing.
 	isInternalCaller := true
 	if scope, err := s.access.ResolveScope(ctx); err == nil {
 		isInternalCaller = scope.Unrestricted || scope.HasInternalAccess
+	} else if req.State != nil {
+		return domain.UpdateCaseResponse{}, err
 	}
 
 	// State-transition guard: until this was added, entity-service only
@@ -1722,13 +1732,22 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// ServiceNow's own business rules already reject an illegal transition
 	// server-side. A before fetch failure (before == nil, or a case with no
 	// State of its own type) can't confirm the current state, so this fails
-	// closed rather than silently allowing an unverified transition. A
-	// no-op re-PATCH (the requested state already equals the current one)
-	// is exempt -- it isn't a transition at all, just confirms the status
-	// quo, and is already handled a few lines below as "no genuine change,
-	// don't publish/log it either."
+	// closed rather than silently allowing an unverified transition. A real
+	// GetCaseByID error (a missing case, a transient read failure) is
+	// returned as-is rather than papered over with a generic "unable to
+	// verify" validation error, so a nonexistent case still answers 404
+	// rather than a misleading 400. A no-op re-PATCH (the requested state
+	// already equals the current one) is exempt -- it isn't a transition at
+	// all, just confirms the status quo, and is already handled a few lines
+	// below as "no genuine change, don't publish/log it either."
 	if req.State != nil {
-		if before == nil || before.State == nil {
+		if before == nil {
+			if beforeErr != nil {
+				return domain.UpdateCaseResponse{}, beforeErr
+			}
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "unable to verify the case's current state; try again"}
+		}
+		if before.State == nil {
 			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "unable to verify the case's current state; try again"}
 		}
 		if *before.State != *req.State && !isValidCaseStateTransition(isInternalCaller, *before.State, *req.State) {
