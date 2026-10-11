@@ -113,9 +113,23 @@ func TestDispatcher_Handle_IncidentAssigned_RepliesInTheGroupSpace(t *testing.T)
 	if len(chat.incidentAssignedCalls) != 1 {
 		t.Fatalf("replies = %d, want 1", len(chat.incidentAssignedCalls))
 	}
-	want := notifications.IncidentAssignedAlert{IncidentID: "inc-1", Number: "INC0088718", AssigneeName: "Shan Anjana", UpdatedBy: "shana@wso2.com"}
+	want := notifications.IncidentAssignedAlert{IncidentID: "inc-1", Number: "INC0088718", AssigneeName: "Shan Anjana", UpdatedBy: "shana@wso2.com",
+		IncidentLink: "https://csm.example/operations/incidents/inc-1"}
 	if got := chat.incidentAssignedCalls[0]; got.alert != want || got.audience != notifications.IncidentAudience("Artemis SRE Group") {
 		t.Errorf("reply = %+v", got)
+	}
+}
+
+func TestDispatcher_Handle_IncidentCreated_NoNumberStillPostsTheCard(t *testing.T) {
+	chat := &mockGoogleChatSender{hasAudienceSpace: artemisSpace}
+	d := NewDispatcher(&mockEmailSender{}, chat, &mockCallSender{}, &mockLinkResolver{}, true, false, nil, false, "", nil)
+	record := eventbus.Record{Value: []byte(`{"type":"incident.created","entityId":"inc-1","payload":{"title":"t","shortDescription":"t","team":"Artemis SRE Group"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(chat.incidentCreatedCalls) != 1 {
+		t.Errorf("cards = %d, want 1 even without a number", len(chat.incidentCreatedCalls))
 	}
 }
 

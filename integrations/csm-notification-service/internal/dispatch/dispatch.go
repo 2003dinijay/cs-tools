@@ -1809,6 +1809,7 @@ func (d *Dispatcher) handleIncidentCreated(ctx context.Context, record eventbus.
 			Number:           p.Number,
 			Team:             p.Team,
 			Priority:         p.Priority,
+			// Title is ServiceNow's short description (the subject); the payload's ShortDescription is the additional comments.
 			ShortDescription: truncateTitle(p.Title, maxChatTitleLength),
 			Service:          p.Service,
 			Environment:      p.Environment,
@@ -1837,10 +1838,6 @@ func (d *Dispatcher) handleIncidentAssigned(ctx context.Context, record eventbus
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return fmt.Errorf("dispatch: decode incident.assigned payload: %w", err)
 	}
-	if p.Number == "" {
-		slog.InfoContext(ctx, "dispatch: incident.assigned carries no number, no chat alert", "incidentId", incidentID)
-		return nil
-	}
 	audience, ok := d.incidentAudience(ctx, events.TypeIncidentAssigned, incidentID, p.Number, p.Team)
 	if !ok {
 		return nil
@@ -1851,6 +1848,7 @@ func (d *Dispatcher) handleIncidentAssigned(ctx context.Context, record eventbus
 			Number:       p.Number,
 			AssigneeName: p.AssigneeName,
 			UpdatedBy:    p.UpdatedBy,
+			IncidentLink: d.links.IncidentLink(incidentID),
 		})
 	})
 }

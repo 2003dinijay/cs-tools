@@ -142,3 +142,36 @@ func TestSendIncidentCreatedAlert_UnconfiguredGroupPostsNothing(t *testing.T) {
 		t.Errorf("posts = %d, want 0", posts)
 	}
 }
+
+func TestSendIncidentCreatedAlert_PNotationAndNoNumber(t *testing.T) {
+	c, got := captureIncidentCard(t)
+	if err := c.SendIncidentCreatedAlert(context.Background(), IncidentAudience("Artemis SRE Group"), IncidentCreatedAlert{IncidentID: "inc-9", Priority: "p2"}); err != nil {
+		t.Fatalf("SendIncidentCreatedAlert: %v", err)
+	}
+	msg, _, _ := got()
+	card := msg.CardsV2[0].Card
+	if card.Header.Title != "High Priority Incident Reported" || card.Header.Subtitle != "#inc-9" {
+		t.Errorf("header = %+v, want the P2 word and the id standing in for the number", card.Header)
+	}
+	if !strings.Contains(sectionText(card.Sections[1]), "P2 - High") {
+		t.Errorf("details = %q, want P2 - High", sectionText(card.Sections[1]))
+	}
+}
+
+func TestSendIncidentAssignedAlert_CarriesTheLinkAndFallsBackToTheID(t *testing.T) {
+	c, got := captureIncidentCard(t)
+	err := c.SendIncidentAssignedAlert(context.Background(), IncidentAudience("Artemis SRE Group"), IncidentAssignedAlert{
+		IncidentID: "inc-9", AssigneeName: "Shan Anjana", IncidentLink: "https://csm.example/operations/incidents/inc-9",
+	})
+	if err != nil {
+		t.Fatalf("SendIncidentAssignedAlert: %v", err)
+	}
+	msg, _, _ := got()
+	card := msg.CardsV2[0].Card
+	if card.Header.Subtitle != "inc-9" {
+		t.Errorf("subtitle = %q, want the id when no number was sent", card.Header.Subtitle)
+	}
+	if !strings.Contains(sectionText(card.Sections[0]), `<a href="https://csm.example/operations/incidents/inc-9">View incident</a>`) {
+		t.Errorf("body = %q, want a View incident link", sectionText(card.Sections[0]))
+	}
+}

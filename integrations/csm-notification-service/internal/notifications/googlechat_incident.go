@@ -52,6 +52,7 @@ type IncidentAssignedAlert struct {
 	Number       string
 	AssigneeName string
 	UpdatedBy    string
+	IncidentLink string
 }
 
 // incidentPriorityLabels renders an incident priority the way ServiceNow's incident card does.
@@ -61,12 +62,17 @@ var incidentPriorityLabels = map[string]struct{ word, label string }{
 	"MODERATE": {"Moderate", "P3 - Moderate"},
 	"LOW":      {"Low", "P4 - Low"},
 	"PLANNING": {"Planning", "P5 - Planning"},
+	"P1":       {"Critical", "P1 - Critical"},
+	"P2":       {"High", "P2 - High"},
+	"P3":       {"Moderate", "P3 - Moderate"},
+	"P4":       {"Low", "P4 - Low"},
+	"P5":       {"Planning", "P5 - Planning"},
 }
 
 // SendIncidentCreatedAlert posts ServiceNow's "<team> | <priority> Priority Incident Reported" card.
 func (c *GoogleChatClient) SendIncidentCreatedAlert(ctx context.Context, audience string, a IncidentCreatedAlert) error {
-	if a.IncidentID == "" || a.Number == "" {
-		return fmt.Errorf("notifications: incidentId and number are required")
+	if a.IncidentID == "" {
+		return fmt.Errorf("notifications: incidentId is required")
 	}
 	priority := incidentPriorityLabels[strings.ToUpper(strings.TrimSpace(a.Priority))]
 	title := "Priority Incident Reported"
@@ -76,7 +82,7 @@ func (c *GoogleChatClient) SendIncidentCreatedAlert(ctx context.Context, audienc
 	if strings.TrimSpace(a.Team) != "" {
 		title = strings.ToUpper(strings.TrimSpace(a.Team)) + " | " + title
 	}
-	subtitle := "#" + a.Number
+	subtitle := "#" + incidentRef(a.Number, a.IncidentID)
 	for _, part := range []string{a.Service, a.Environment} {
 		if strings.TrimSpace(part) != "" {
 			subtitle += " | " + strings.TrimSpace(part)
@@ -117,21 +123,33 @@ func (c *GoogleChatClient) SendIncidentCreatedAlert(ctx context.Context, audienc
 
 // SendIncidentAssignedAlert posts ServiceNow's "Incident Acknowledged." reply under the incident's card.
 func (c *GoogleChatClient) SendIncidentAssignedAlert(ctx context.Context, audience string, a IncidentAssignedAlert) error {
-	if a.IncidentID == "" || a.Number == "" {
-		return fmt.Errorf("notifications: incidentId and number are required")
+	if a.IncidentID == "" {
+		return fmt.Errorf("notifications: incidentId is required")
 	}
 	lines := []string{caseAlertLine(`Incident acknowledged by %s.`, orEmDash(a.AssigneeName))}
 	if a.UpdatedBy != "" {
 		lines = append(lines, caseAlertLine(`Incident updated by %s.`, a.UpdatedBy))
 	}
+	// The link keeps the reply usable on its own in a space that never got the card (the group changed since creation).
+	if a.IncidentLink != "" {
+		lines = append(lines, caseAlertLine(`<a href="%s">View incident</a>`, a.IncidentLink))
+	}
 	msg := chatCardMessage{
 		CardsV2: []chatCardWrapper{{CardID: "incident-assigned-alert", Card: chatCard{
-			Header:   &chatCardHeader{Title: "Incident Acknowledged.", Subtitle: a.Number},
+			Header:   &chatCardHeader{Title: "Incident Acknowledged.", Subtitle: incidentRef(a.Number, a.IncidentID)},
 			Sections: []chatCardSection{{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: strings.Join(lines, "<br>")}}}}},
 		}}},
 		Thread: &chatThread{ThreadKey: incidentThreadKey(a.IncidentID)},
 	}
 	return c.sendCardToAudience(ctx, audience, msg)
+}
+
+// incidentRef is the incident's number, or its id when an older publisher sent no number.
+func incidentRef(number, incidentID string) string {
+	if strings.TrimSpace(number) != "" {
+		return number
+	}
+	return incidentID
 }
 
 // incidentThreadKey keeps an incident's created card and its replies in one Chat thread.
