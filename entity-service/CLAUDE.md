@@ -3053,6 +3053,21 @@ old refusal still applies; `DATA_SOURCE=servicenow` is unchanged.
   purpose: a transfer has no "stale field, retry later" form, and ServiceNow's own
   validation (catalog item, missing answers) is something the engineer must see.
   The state ServiceNow reports afterwards is written to the new row.
+- **A write picks its extension table from the row that exists, not from `work_item.type`.**
+  `work_item.type` and the extension row disagree on some synced rows (a `CASE` work item whose
+  only row is a service request's, and the reverse -- see the data caveats under the search
+  notes). Every read COALESCEs the state across all five tables and shows such a ticket, while
+  `UpdateCase` used to pick its `UPDATE` target from `work_item.type` alone, update zero rows of
+  the wrong table and answer 404 "case not found" for a service request the same caller had
+  just read (confirmed on pre-prod). `UpdateCase`, `setAutocloseHoldTx` and `TransferCaseType`
+  now resolve the type through `readCaseLikeType` (`caseLikeRowTypeColumn`: `"case"`, then the
+  `caseLikeJoins` tables in the order the COALESCE reads them, falling back to `work_item.type`
+  when there is no row at all, so an id with no case-like row is still a 404). A disagreement
+  is logged at WARN with the work item id and never corrected: `work_item.type` is the sync's.
+  For the transfer this is what makes it carry the state and delete the old row of such a
+  ticket instead of leaving two rows (or dying on `service_request`'s primary key when the
+  target is the type its row already has -- that is now the ordinary "already of type"
+  refusal). `case_update_dispatch_integration_test.go` seeds both shapes.
 - **What a transfer does to the rows.** `work_item.type` moves; the extension row of the
   old type is deleted and one of the new type inserted with what every case-like row has in
   common (state, work state, close notes, cause, resolution code, closed by/on, resolved on,
@@ -8211,7 +8226,9 @@ result set.
   `service_request` row; 156 `CASE` and 39 `SERVICE_REQUEST` work items have no
   extension row at all, so they have no state and never match a state filter.
   Search selects by `work_item.type` and reads the state from whichever extension
-  row exists, so those 41 count as `case` + `open`.
+  row exists, so those 41 count as `case` + `open`. Writes follow the row that exists
+  too (`readCaseLikeType`; see "A write picks its extension table from the row that
+  exists" under the type transfer), so such a ticket can be updated, not only read.
 
 ### The state filter is a targeted id lookup, not the five-table COALESCE, for `in`/`notIn`
 
