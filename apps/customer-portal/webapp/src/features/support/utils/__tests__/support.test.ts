@@ -168,10 +168,10 @@ describe("compareByCreatedOnThenId", () => {
 describe("dedupeAdjacentDuplicateMessages", () => {
   it("collapses a back-to-back exact duplicate (same content/author/createdOn)", () => {
     const rows = [
-      { id: "1", content: "Can you give diagram?", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:19:00" },
-      { id: "2", content: "Can you give diagram?", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:19:00" },
-      { id: "3", content: "Sure, here it is...", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
-      { id: "4", content: "Sure, here it is...", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+      { id: "1", content: "First question", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "First question", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "3", content: "First answer", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+      { id: "4", content: "First answer", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
     ];
 
     expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
@@ -182,8 +182,8 @@ describe("dedupeAdjacentDuplicateMessages", () => {
 
   it("keeps two messages with identical text sent at genuinely different times", () => {
     const rows = [
-      { id: "1", content: "ok", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:19:00" },
-      { id: "2", content: "ok", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:25:00" },
+      { id: "1", content: "ok", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "ok", createdBy: "customer@example.test", createdOn: "2026-10-11 08:25:00" },
     ];
 
     expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
@@ -194,7 +194,7 @@ describe("dedupeAdjacentDuplicateMessages", () => {
 
   it("keeps two different authors' messages even if content and timestamp coincide", () => {
     const rows = [
-      { id: "1", content: "test", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:19:00" },
+      { id: "1", content: "test", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
       { id: "2", content: "test", createdBy: "Novera", createdOn: "2026-10-11 08:19:00" },
     ];
 
@@ -206,9 +206,9 @@ describe("dedupeAdjacentDuplicateMessages", () => {
 
   it("does not collapse a non-adjacent repeat (e.g. the same question asked again later)", () => {
     const rows = [
-      { id: "1", content: "test", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:19:00" },
+      { id: "1", content: "test", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
       { id: "2", content: "Hi there!", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
-      { id: "3", content: "test", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:20:00" },
+      { id: "3", content: "test", createdBy: "customer@example.test", createdOn: "2026-10-11 08:20:00" },
     ];
 
     expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
