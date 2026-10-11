@@ -271,6 +271,22 @@ This is the server-side half of a two-part fix — `apps/csm-portal/webapp`'s ow
 mitigation (added first, still in place) only ever hid the image *after* the bytes had already
 reached the browser; this is what stops them being sent at all to a caller who shouldn't see them.
 
+## Change request tags go through the case tag routes
+
+`GET /change-requests/{id}` is a raw pass-through, so the `tags` array the
+entity service now puts on a change request's detail (the same shape as a
+case's `tags`; null when it did not load them) reaches the webapp untouched
+(`TestGetChangeRequest_PassesTagsThrough`). There is deliberately **no**
+`/change-requests/{id}/tags` route: the entity service's `POST /cases/{id}/tags`,
+`DELETE /cases/{id}/tags/{tagId}` and `POST /tags/search` take a work item id
+and accept a change request's, and this BFF already routes them at `PermWrite`
+/ `PermView` -- the same permissions a change request write / read needs
+(`PATCH /change-requests/{id}` is `PermWrite` too), so the change request
+detail page calls those three as they are (`CaseHandler.AddCaseTag` /
+`RemoveCaseTag` / `SearchTags`, unchanged). Tags are staff bookkeeping: the
+entity service leaves them null for a customer, and they are never mirrored to
+the previous system (see entity-service's `CLAUDE.md`, "Change requests: Tags").
+
 ## Change request create/patch validation (`internal/handler/change_requests.go`)
 
 `POST /change-requests` and `PATCH /change-requests/{id}` forward their JSON body

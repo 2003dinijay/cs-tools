@@ -3319,6 +3319,56 @@ the same `validChangeRequestSortField`/`validChangeRequestSortOrder` maps
 value is a 400 on both data sources instead of silently falling back to
 `created_on DESC` only on Postgres.
 
+### Tags
+
+A change request's tags are the case's tags, on its own work item: the same
+`work_item_tag` / `tag` rows (migration 0026; `work_item_tag.sn_sys_id` from
+0135), read by the same helper and written by the same functions. Nothing
+change-request-specific was added beyond the field on the read model:
+
+- **Read**: `GetChangeRequestByID` fills `ChangeRequest.Tags` through
+  `fetchCaseTags` (case_repo.go, the case detail's own `work_item_tag JOIN tag
+  ... ORDER BY t.name`), so the detail and the PATCH receipt carry `tags`:
+  an array (empty when none) for an Unrestricted (staff) caller, best-effort
+  like the case read (a lookup failure is logged and leaves it null). **For a
+  restricted caller -- a customer, or staff who also hold a customer record --
+  it is null**: tags are internal bookkeeping and never reach a customer. The
+  line is `crViewer`'s, the same the visibility rule draws, so it holds on the
+  entity read itself, not only in the customer portal's BFF (whose typed DTO
+  drops the key anyway: `TestMapChangeRequestDetails_ExposesOnlyTheCustomerFields`
+  pins that a `tags` key from this service never reaches the customer). The
+  ServiceNow data source leaves it null (nothing reads tags there).
+- **Write**: `CaseRepository.AddCaseTag` / `RemoveCaseTag` / `SearchTags`
+  (`POST /cases/{id}/tags`, `DELETE /cases/{id}/tags/{tagId}`, `POST
+  /tags/search`) take a work item id and accept a change request's -- they
+  always did (`AddCaseTag` inserts for whatever `work_item` the id names; the
+  `"patch"` severity side effect reads `"case"` and finds no row). The CSM
+  portal tags a change request through exactly these routes, under the BFF's
+  existing `PermWrite` / `PermView`. `rejectHiddenChangeRequest` still guards
+  both writes: a customer who may not see the change request gets 404.
+- **Never mirrored to the previous system.** On the dual-write data source the
+  case path mirrors a tag change (`"case_tag"` add / remove writebacks, see
+  "Case tags" above). That dispatch is gated on
+  `CaseRepository.IsCaseLikeWorkItem` (`readCaseLikeType`: one of the five
+  case-like types) by `caseService.tagMirrorApplies`: for a change request
+  nothing is dispatched -- no mirror call, no `sn_writeback_failures` row, and
+  `RemoveCaseTag` skips the `sn_sys_id` lookup the mirror feeds. The gate fails
+  closed (a type lookup error means no mirror, logged). A case's mirror is
+  unchanged. `TestCaseService_AddCaseTag_ChangeRequestIsNotMirrored` /
+  `..._RemoveCaseTag_ChangeRequestIsNotMirrored`.
+- **Migrated rows.** The sync writes `tag` / `work_item_tag` rows with
+  sys_id-derived ids, `created_by` `sn-sync` / `system` and nothing else
+  (`sn_sys_id` set or NULL); nothing here reads anything only a portal-written
+  row has. `TestChangeRequestTagsIntegration_*` (CHANGE_REQUEST_TEST_DSN, run
+  as a superuser and as `csm_app`) seed exactly that shape on a CHG-numbered
+  change request with an unlabeled stage and UPPER_SNAKE approver states, and
+  assert the detail returns those tags, a native add lands beside them, a
+  migrated tag (with and without `sn_sys_id`) is removed, and customers never
+  see or reach them. Note for the sync's owner: its `label_entry.yaml` mapping
+  filters `table=sn_customerservice_case`, so change request labels of the
+  previous system are not migrated today; widening that filter (and the
+  `work_item_id` resolution) to `change_request` is what it would take.
+
 ### The approval tables are the sync layer's (state, not status)
 
 `approval_stage` and `approval_stage_approver` mirror ServiceNow's
