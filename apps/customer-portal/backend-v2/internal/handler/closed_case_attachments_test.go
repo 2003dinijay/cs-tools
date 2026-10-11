@@ -40,8 +40,9 @@ import (
 // the Ballerina backend's own guard.
 //
 // DeleteAttachment is different: it is not nested under any case/project
-// path at all, so the same GetCase lookup that recovers the case also IS the
-// authorization check (see authorizeAttachmentAccess in attachments.go) and
+// path at all, so the same GetAttachmentCase lookup that recovers the case
+// also IS the authorization check (see authorizeAttachmentAccess in
+// attachments.go) and
 // must fail CLOSED — any way that lookup comes up short (the attachment
 // lookup failing, no referenceId, or a referenceId entity-service can't
 // resolve to a case the caller may see) denies the delete rather than
@@ -205,7 +206,7 @@ func (f *fakeClosedCaseAttachmentClient) GetAttachment(ctx context.Context, id s
 	return entity.AttachmentDetails{ID: id, ReferenceID: f.referenceID}, nil
 }
 
-func (f *fakeClosedCaseAttachmentClient) GetCase(ctx context.Context, id string) (entity.CaseView, error) {
+func (f *fakeClosedCaseAttachmentClient) GetAttachmentCase(ctx context.Context, id string) (entity.CaseView, error) {
 	if f.getCaseErr != nil {
 		return entity.CaseView{}, f.getCaseErr
 	}
@@ -264,11 +265,12 @@ func TestDeleteAttachment_ClosedCase(t *testing.T) {
 		},
 		// The reported bug: a deployment-tab ("Deployed" tab) attachment's own
 		// uploader could never delete it, because authorizeAttachmentAccess
-		// always ran GetCase against the attachment's referenceId — which is a
-		// deployment id here, so GetCase could never resolve it and the delete
-		// 404'd unconditionally regardless of who uploaded it. getCaseErr is
-		// a 404 here because a deployment id is never a real case -- that's
-		// the actual, live response GetCase returns for one.
+		// always ran GetAttachmentCase against the attachment's referenceId —
+		// which is a deployment id here, so GetAttachmentCase could never
+		// resolve it and the delete 404'd unconditionally regardless of who
+		// uploaded it. getCaseErr is a 404 here because a deployment id is
+		// never a real case -- that's the actual, live response
+		// GetAttachmentCase returns for one.
 		"deployment-referenced attachment visible to the caller: delete succeeds": {
 			client:     fakeClosedCaseAttachmentClient{referenceID: testDeploymentID, getCaseErr: &apierror.Error{StatusCode: http.StatusNotFound}, deploymentVisible: true},
 			wantStatus: http.StatusOK,
