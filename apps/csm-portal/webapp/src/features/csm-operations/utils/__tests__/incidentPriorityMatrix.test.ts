@@ -15,7 +15,7 @@
 // under the License.
 
 import { describe, expect, it } from "vitest";
-import { computeIncidentPriority } from "@features/csm-operations/utils/incidentPriorityMatrix";
+import { computeIncidentPriority, incidentPriorityBadge } from "@features/csm-operations/utils/incidentPriorityMatrix";
 
 describe("computeIncidentPriority", () => {
   it.each([
@@ -44,5 +44,24 @@ describe("computeIncidentPriority", () => {
 
   it("returns null when both are missing", () => {
     expect(computeIncidentPriority("", "")).toBeNull();
+  });
+});
+
+describe("incidentPriorityBadge", () => {
+  it.each([
+    ["CRITICAL", "Critical", "P1"],
+    ["HIGH", "High", "P2"],
+    ["MODERATE", "Moderate", "P3"],
+    ["LOW", "Low", "P4"],
+    ["PLANNING", "Planning", "P5"],
+  ])("gives %s the edit dialog's badge", (priority, label, code) => {
+    const badge = incidentPriorityBadge(priority);
+    expect(badge?.label).toBe(label);
+    expect(badge?.code).toBe(code);
+  });
+
+  it("returns null for a missing or unknown priority", () => {
+    expect(incidentPriorityBadge(null)).toBeNull();
+    expect(incidentPriorityBadge("URGENT")).toBeNull();
   });
 });
