@@ -4804,6 +4804,12 @@ paths:
   /cases/{id}/tags:
     post:
       summary: Attach a free-text tag to a support case.
+      description: >-
+        The id is a work item id: a case-like work item's, or a change request's (the CSM
+        portal tags change requests through this same route; a change request hidden from a
+        customer caller is 404 here as on every other by-id path). On the dual-write data
+        source a case's tag is mirrored to the previous system; a change request's is not
+        (Postgres-only).
       operationId: addCaseTag
       parameters:
         - name: id
@@ -4812,7 +4818,7 @@ paths:
           schema:
             type: string
             format: uuid
-          description: Case UUID.
+          description: Work item UUID (a case-like work item or a change request).
       requestBody:
         required: true
         content:
@@ -4854,6 +4860,10 @@ paths:
   /cases/{id}/tags/{tagId}:
     delete:
       summary: Detach a tag from a support case.
+      description: >-
+        The id is a work item id: a case-like work item's or a change request's, as for
+        POST /cases/{id}/tags. A change request's tag removal is never mirrored to the
+        previous system.
       operationId: removeCaseTag
       parameters:
         - name: id
@@ -4862,7 +4872,7 @@ paths:
           schema:
             type: string
             format: uuid
-          description: Case UUID.
+          description: Work item UUID (a case-like work item or a change request).
         - name: tagId
           in: path
           required: true
@@ -19144,6 +19154,20 @@ components:
               type: array
               items:
                 type: string
+            tags:
+              type: array
+              nullable: true
+              items:
+                $ref: '#/components/schemas/Tag'
+              description: >-
+                The tags attached to the change request's work item -- the same work_item_tag
+                rows, read the same way, as a case's `tags`, and managed through the same
+                POST /cases/{id}/tags, DELETE /cases/{id}/tags/{tagId} and POST /tags/search,
+                which take a work item id and accept a change request's. Internal bookkeeping:
+                an array (empty when none) for an internal (unrestricted) caller on the
+                PostgreSQL data source; null for a customer's read, on the ServiceNow data
+                source, and when the lookup failed (the rest of the detail is still valid then).
+                A tag added to a change request is never mirrored to the previous system.
             deployments:
               type: array
               items:
