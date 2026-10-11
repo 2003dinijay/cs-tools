@@ -549,3 +549,27 @@ func TestExtensionUpdateQueriesWriteWorkStateAndResolutionCode(t *testing.T) {
 		t.Error("updateAnnouncementQuery must not write work_state or resolution_code")
 	}
 }
+
+// work_state is only valid while state is work_in_progress: every case-like
+// update query must derive it from the state change in the same statement, and
+// the one-Ongoing guard must only count work_in_progress items. The real
+// behavior is covered by case_work_state_integration_test.go (needs Postgres);
+// this pins the SQL shape so the rule cannot be dropped from one table's query.
+func TestWorkStateFollowsStateInUpdateQueries(t *testing.T) {
+	queries := map[string]string{
+		"case":                     updateCaseQuery,
+		"service_request":          updateServiceRequestQuery,
+		"engagement":               updateEngagementQuery,
+		"security_report_analysis": updateSecurityReportAnalysisQuery,
+	}
+	for name, q := range queries {
+		for _, want := range []string{
+			"WHEN $2 = 'AWAITING_INFO' THEN 'PAUSED'::case_work_state_enum",
+			"WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL",
+		} {
+			if !strings.Contains(q, want) {
+				t.Errorf("%s update query is missing %q", name, want)
+			}
+		}
+	}
+}

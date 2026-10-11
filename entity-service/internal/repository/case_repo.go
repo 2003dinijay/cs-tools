@@ -2339,6 +2339,11 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 // labels by UpdateCase below (state/work_state upper-cased, severity mapped
 // through caseSeverityToEnum) -- case_state_enum's "CLOSED" is what $2 = ”
 // compares a non-empty state against here, not the domain value "closed".
+// work_state is only meaningful while state is work_in_progress: an explicit
+// workState wins, otherwise a state change to awaiting_info pauses it and a
+// change to any other non-work_in_progress state clears it to NULL, in the
+// same statement as the state write (a state-only PATCH must not leave a
+// stale ONGOING behind). A change to work_in_progress leaves it untouched.
 // $5/$6/$7 (resolutionCode/cause/closeNotes) are only ever non-empty/non-nil
 // when req.State is also set to closed/solution_proposed -- CaseService.
 // UpdateCase enforces that gate before this query ever runs, mirroring
@@ -2353,7 +2358,10 @@ const updateCaseQuery = `
 		UPDATE "case"
 		SET state             = CASE WHEN $2 <> '' THEN $2::case_state_enum ELSE state END,
 		    severity          = CASE WHEN $3 <> '' THEN $3::case_severity_enum ELSE severity END,
-		    work_state        = CASE WHEN $4 <> '' THEN $4::case_work_state_enum ELSE work_state END,
+		    work_state        = CASE WHEN $4 <> '' THEN $4::case_work_state_enum
+		                          WHEN $2 = 'AWAITING_INFO' THEN 'PAUSED'::case_work_state_enum
+		                          WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL
+		                          ELSE work_state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::case_state_enum THEN $8::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    resolution_code   = CASE WHEN $5 <> '' THEN $5::case_resolution_code_enum ELSE resolution_code END,
@@ -2384,7 +2392,10 @@ const updateSecurityReportAnalysisQuery = `
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::security_report_analysis_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::security_report_analysis_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
-		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum
+		                          WHEN $2 = 'AWAITING_INFO' THEN 'PAUSED'::case_work_state_enum
+		                          WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL
+		                          ELSE work_state END,
 		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
 		RETURNING id, state, work_state, closed_on
@@ -2411,7 +2422,10 @@ const updateServiceRequestQuery = `
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::service_request_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::service_request_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
-		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum
+		                          WHEN $2 = 'AWAITING_INFO' THEN 'PAUSED'::case_work_state_enum
+		                          WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL
+		                          ELSE work_state END,
 		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
 		RETURNING id, state, work_state, closed_on
@@ -2438,7 +2452,10 @@ const updateEngagementQuery = `
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::engagement_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::engagement_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
-		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum
+		                          WHEN $2 = 'AWAITING_INFO' THEN 'PAUSED'::case_work_state_enum
+		                          WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL
+		                          ELSE work_state END,
 		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
 		RETURNING id, state, work_state, closed_on
@@ -4974,7 +4991,7 @@ func (r *caseRepo) updateCaseEnforcingOneOngoing(ctx context.Context, req domain
 				WHERE wi.assigned_to_id = $1::uuid AND wi.id <> $2::uuid
 				  AND wi.type = ANY(`+workStateWorkItemTypes+`)
 				  AND `+caseLikeWorkStateColumn+` = 'ONGOING'
-				  AND COALESCE(c.state::TEXT, eng.state::TEXT, sr.state::TEXT, sra.state::TEXT) <> 'CLOSED'
+				  AND COALESCE(c.state::TEXT, eng.state::TEXT, sr.state::TEXT, sra.state::TEXT) = 'WORK_IN_PROGRESS'
 				ORDER BY wi.updated_on DESC LIMIT 1`, *assignee, req.ID).Scan(&otherNumber)
 			if err == nil {
 				return &apierror.ConflictError{Msg: "Cannot set work state to Ongoing: the assigned engineer already has an Ongoing case: " + otherNumber}
