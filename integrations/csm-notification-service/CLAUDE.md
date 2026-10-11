@@ -426,8 +426,10 @@ cards and closing message to every space named (`Engine.chatTeams`); each
 entry must be a `teamChats` key (refused at load otherwise). Empty, such an
 incident uses `sre.chat`, as before. An SRE team of its own without a space
 stays in `sre.chat`; with `teams.abts` empty any named group counts as an SRE
-team. Two or more spaces share ONE call notifier (the rung rings its engineer
-once) and one `fanoutChat`: a rung's delivery is retried whole, call
+team. The call (and log) notifiers are always the ladder's own: a team's
+space contributes only its Chat notifier, so routing never decides whether a
+rung rings. Two or more spaces share that ONE call notifier (the rung rings its
+engineer once) and one `fanoutChat`: a rung's delivery is retried whole, call
 included, so a space that fails while another took the card counts as
 delivered (logged), and only a rung no space took is retried. The SME handoff
 message still goes by the group it left: a default group is never a SaaS SRE

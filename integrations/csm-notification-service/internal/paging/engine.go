@@ -335,18 +335,28 @@ func (e *Engine) sreTeamKey(team string) string {
 
 // notifiersFor is how one plan's rungs reach people: the spaces chatTeams
 // picks when the SRE ladder's teamChats lists them, else the ladder's own.
-// Two or more spaces share one call notifier, so a rung rings its engineer
-// once, and one fanoutChat, so a space that fails does not repost the others.
+// The call (and log) notifiers are always the ladder's own -- a team's space
+// changes where the card goes, never whether the rung rings -- so a team
+// contributes only its Chat notifier. Two or more spaces share that one call
+// notifier, so a rung rings its engineer once, and one fanoutChat, so a space
+// that fails does not repost the others.
 func (e *Engine) notifiersFor(plan Plan) []notifier {
 	teams := e.chatTeams(plan)
 	switch {
 	case len(teams) == 0 || e.teamNotifiers == nil:
 		return e.notifiers
 	case len(teams) == 1:
-		if n, ok := e.teamNotifiers[teams[0]]; ok {
-			return n
+		n, ok := e.teamNotifiers[teams[0]]
+		if !ok {
+			return e.notifiers
 		}
-		return e.notifiers
+		out := withoutChat(e.notifiers)
+		for _, c := range n {
+			if c.Channel() == ChannelChat {
+				out = append(out, c)
+			}
+		}
+		return out
 	}
 	out := withoutChat(e.notifiers)
 	var fan fanoutChat

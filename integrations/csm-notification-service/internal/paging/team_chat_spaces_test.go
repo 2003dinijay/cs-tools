@@ -273,6 +273,33 @@ func TestTeamChatSpaces_TwoSpacesCallOnce(t *testing.T) {
 	}
 }
 
+// One team's space changes where the card goes, never whether the rung
+// rings: the call comes from the ladder's own notifiers even when the team's
+// set has only its Chat notifier.
+func TestTeamChatSpaces_OneTeamSpaceKeepsTheLaddersCall(t *testing.T) {
+	calls := 0
+	call := countingCall{n: &calls}
+	apollo, shared := &fakeChat{}, &fakeChat{}
+	e := ladderEngine(LadderSRE, shared, newMemStore())
+	e.cfg.Ladder.Teams = splitSRETeams
+	e.notifiers = []notifier{call, chatNotifier{chat: shared, links: fakeLinks{}, audience: "SRE"}}
+	e.teamNotifiers = map[string][]notifier{
+		"apollo": {chatNotifier{chat: apollo, links: fakeLinks{}, audience: "Apollo SRE"}}, // Chat only
+	}
+
+	plan := Plan{Trigger: Trigger{IncidentID: testIncidentID, Team: "Apollo SRE Group"}}
+	rung := PlannedCall{Level: Level0, Ordinal: 1, Recipient: Recipient{Name: "a-l1"}}
+	if err := e.placeVia(context.Background(), plan, rung, e.notifiersFor(plan), ChannelBoth); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 1 {
+		t.Errorf("calls placed = %d; want 1, the ladder's", calls)
+	}
+	if len(apollo.posted) != 1 || len(shared.posted) != 0 {
+		t.Errorf("cards: Apollo %d, shared %d; want 1 in Apollo's space only", len(apollo.posted), len(shared.posted))
+	}
+}
+
 // A space that fails while the other takes the card is not a failed rung (a
 // retry would ring the engineer again); a rung no space took is retried.
 func TestTeamChatSpaces_FanoutFailures(t *testing.T) {
