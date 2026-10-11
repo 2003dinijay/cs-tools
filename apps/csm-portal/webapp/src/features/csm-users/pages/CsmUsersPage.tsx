@@ -279,14 +279,14 @@ export default function CsmUsersPage(): JSX.Element {
         <FormControl size="small" sx={{ minWidth: 140 }}>
           <InputLabel
             id="user-active-label"
-            shrink={filters.active !== "all"}
+            shrink
             sx={{ top: "0px !important" }}
           >
             Status
           </InputLabel>
           <Select
             labelId="user-active-label"
-            notched={filters.active !== "all"}
+            notched
             value={filters.active}
             onChange={handleActiveChange}
             input={<OutlinedInput label="Status" />}
