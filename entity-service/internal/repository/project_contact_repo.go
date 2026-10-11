@@ -204,7 +204,11 @@ func (r *projectContactRepo) SearchProjectContacts(ctx context.Context, projectI
 
 // GetProjectContactByUserID implements ProjectContactRepository.
 func (r *projectContactRepo) GetProjectContactByUserID(ctx context.Context, projectID, userID string, _ string) (ProjectContactRow, error) {
-	query := "SELECT " + projectContactColumns + " " + projectContactFromJoins + " WHERE pc.project_id = $1 AND u.id = $2"
+	query := "SELECT " + projectContactColumns + `
+	FROM project_contact pc
+	JOIN account_contact ac ON ac.id = pc.account_contact_id
+	JOIN "user" u ON u.id = $2 AND LOWER(u.user_name) = LOWER(ac.user_name)
+	WHERE pc.project_id = $1`
 	c, err := scanProjectContact(r.db.QueryRow(ctx, query, projectID, userID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return ProjectContactRow{}, &apierror.NotFoundError{Msg: "contact not found on this project"}

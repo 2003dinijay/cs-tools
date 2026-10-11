@@ -24,7 +24,7 @@ import { useAuthApiClient } from "@/hooks/useAuthApiClient";
 import { useLogger } from "@hooks/useLogger";
 import { ApiQueryKeys } from "@constants/apiConstants";
 import type { CreateProjectContactRequest } from "@features/settings/types/users";
-import { parseApiResponseMessage } from "@utils/ApiError";
+import { ApiError, parseApiResponseMessage } from "@utils/ApiError";
 
 /**
  * How an invitation request ended when it did not fail.
@@ -77,7 +77,11 @@ export function usePostProjectContact(
 
         if (!response.ok) {
           const text = await response.text();
-          throw new Error(parseApiResponseMessage(text, response.status, response.statusText));
+          throw new ApiError(
+            response.status,
+            response.statusText,
+            parseApiResponseMessage(text, response.status, response.statusText),
+          );
         }
         return response.status === 202 ? "processing" : "created";
       } catch (error) {
