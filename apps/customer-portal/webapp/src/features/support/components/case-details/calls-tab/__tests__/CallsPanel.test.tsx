@@ -20,7 +20,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { useGetCallRequests } from "@features/support/api/useGetCallRequests";
 import useGetUserDetails from "@features/settings/api/useGetUserDetails";
-import { CALL_REQUEST_STATE_CANCELLED } from "@features/support/constants/supportConstants";
+import {
+  CALL_REQUEST_STATE_CANCELLED,
+  CALL_REQUEST_STATE_CUSTOMER_REJECTED,
+  CALL_REQUEST_STATE_PENDING_ON_WSO2,
+} from "@features/support/constants/supportConstants";
 import CallsPanel from "@case-details-calls/CallsPanel";
 
 vi.mock("@features/support/api/useGetCallRequests");
@@ -48,15 +52,24 @@ vi.mock("@features/settings/api/usePatchUserMe", () => ({
   }),
 }));
 
+// entity-service's real GET /projects/{id}/filters returns callRequestStates
+// with its own string enum ids ("pending_on_wso2", ...), never the
+// ServiceNow-era numeric stateKey as a string -- a prior version of this mock
+// used numeric-looking ids ("1", "2", "4", ...), which let
+// CallsPanel.tsx's old `Number(found.id)` bug pass every test here while
+// silently sending `stateKey: NaN` against the real backend (a real,
+// reported 400 "Invalid request payload." on every customer Approve/Reject).
+// Keep this mock shaped like the real response so a regression here is
+// caught again.
 vi.mock("@api/useGetProjectFilters", () => ({
   default: () => ({
     data: {
       callRequestStates: [
-        { id: "1", label: "Pending" },
-        { id: "2", label: "Pending on WSO2" },
-        { id: "3", label: "Pending on Customer" },
-        { id: "4", label: "Customer Rejected" },
-        { id: "5", label: "Scheduled" },
+        { id: "pending_on_customer", label: "Pending on Customer" },
+        { id: "pending_on_wso2", label: "Pending on WSO2" },
+        { id: "scheduled", label: "Scheduled" },
+        { id: "customer_rejected", label: "Customer Rejected" },
+        { id: "notes_pending", label: "Notes Pending" },
       ],
     },
     isLoading: false,
@@ -347,8 +360,10 @@ describe("CallsPanel", () => {
       expect.objectContaining({
         callRequestId: "call-2",
         reason: "Not available",
-        // stateKey derived from filter: "Customer Rejected" → id "4" → number 4
-        stateKey: 4,
+        // stateKey is the fixed numeric constant (CALL_REQUEST_STATE_CUSTOMER_REJECTED),
+        // not derived from the filter's own string id ("customer_rejected") --
+        // the filter match only confirms the project still offers this state.
+        stateKey: CALL_REQUEST_STATE_CUSTOMER_REJECTED,
       }),
       expect.any(Object),
     );
@@ -395,6 +410,70 @@ describe("CallsPanel", () => {
     expect(
       screen.getByText(/Enter preferred time for this call request/i),
     ).toBeInTheDocument();
+  });
+
+  it("submits the Approve PATCH with the fixed numeric stateKey, not NaN from the filter's string id", () => {
+    // Regression test for a real, reported bug: callRequestStates' own `id`
+    // is entity-service's string enum key ("pending_on_wso2"), and the old
+    // code derived approveStateKey via Number(found.id) -- always NaN for a
+    // string id, which is not `undefined`, so validation incorrectly passed
+    // and the PATCH was sent with `stateKey: NaN` (-> JSON null -> the Go
+    // backend's int zero value 0), failing every customer Approve with
+    // "Invalid request payload."
+    vi.mocked(useGetCallRequests).mockReturnValue({
+      isPending: false,
+      isError: false,
+      refetch: vi.fn(),
+      fetchNextPage: vi.fn(),
+      hasNextPage: false,
+      isFetchingNextPage: false,
+      isFetchNextPageError: false,
+      data: {
+        pages: [
+          {
+            callRequests: [
+              {
+                id: "call-2",
+                case: { id: "case-1", label: "CS0438719" },
+                reason: "Customer approval needed",
+                preferredTimes: [],
+                durationMin: 30,
+                number: "CR-TEST",
+                scheduleTime: "",
+                createdOn: "2024-10-29 10:00:00",
+                updatedOn: "2024-10-29 10:00:00",
+                state: { id: "pending_on_customer", label: "Pending on Customer" },
+              },
+            ],
+          },
+        ],
+      },
+    } as unknown as ReturnType<typeof useGetCallRequests>);
+
+    renderWithProviders(<CallsPanel
+        projectId={mockProjectId}
+        caseId={mockCaseId}
+        caseStatusLabel="Work In Progress"
+      />);
+    fireEvent.click(screen.getByRole("button", { name: /Approve/i }));
+
+    const preferredTimeInput = screen.getByLabelText(/Preferred Time \*/i);
+    const future = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    const localValue = `${future.getFullYear()}-${pad(future.getMonth() + 1)}-${pad(future.getDate())}T${pad(future.getHours())}:${pad(future.getMinutes())}`;
+    fireEvent.change(preferredTimeInput, { target: { value: localValue } });
+
+    fireEvent.click(screen.getAllByRole("button", { name: /^Approve$/i }).at(-1)!);
+
+    expect(mockPatchMutate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        callRequestId: "call-2",
+        stateKey: CALL_REQUEST_STATE_PENDING_ON_WSO2,
+      }),
+      expect.any(Object),
+    );
+    const [sentPayload] = mockPatchMutate.mock.calls.at(-1)!;
+    expect(Number.isNaN(sentPayload.stateKey)).toBe(false);
   });
 
   it("should show pagination like attachments and fetch next page when changing page", async () => {

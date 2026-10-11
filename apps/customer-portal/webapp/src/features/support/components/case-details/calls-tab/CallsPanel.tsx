@@ -47,6 +47,9 @@ import ErrorBanner from "@components/error-banner/ErrorBanner";
 import SuccessBanner from "@components/success-banner/SuccessBanner";
 import {
   CALL_REQUEST_STATE_CANCELLED,
+  CALL_REQUEST_STATE_CUSTOMER_REJECTED,
+  CALL_REQUEST_STATE_KEY_BY_ID,
+  CALL_REQUEST_STATE_PENDING_ON_WSO2,
   CALL_SCHEDULABLE_CASE_STATUSES,
   type CaseStatus,
 } from "@features/support/constants/supportConstants";
@@ -112,12 +115,20 @@ export default function CallsPanel({
   const needsTimeZone =
     !isUserMeLoading && !!userDetails && !resolvedUserTimeZone;
 
-  // Derive filtered state keys from project filters (all non-Canceled states for search body)
+  // Derive filtered state keys from project filters (all non-Canceled states for search body).
+  // callRequestStates' own `id` is entity-service's string enum key
+  // ("pending_on_wso2", ...), not a number -- Number(s.id) is always NaN and
+  // gets filtered out, so this used to silently resolve to [], which
+  // useGetCallRequests treats as "no filter" (stateKeys.length > 0 gate):
+  // every state, Canceled included, despite this comment's own stated intent
+  // (a real, silently-degraded bug, not a crash). CALL_REQUEST_STATE_KEY_BY_ID
+  // mirrors backend-v2's own callRequestStateKeyToEnum (reversed) so this stays
+  // in the same fixed numeric scheme as approveStateKey/rejectStateKey above.
   const callRequestStateKeys = useMemo<number[] | undefined>(() => {
     if (!projectFilters?.callRequestStates) return undefined;
     return projectFilters.callRequestStates
-      .map((s) => Number(s.id))
-      .filter((n) => !Number.isNaN(n));
+      .map((s) => CALL_REQUEST_STATE_KEY_BY_ID[s.id])
+      .filter((n): n is number => n !== undefined);
   }, [projectFilters]);
 
   const severityAllocationMinutes = useMemo(() => {
@@ -143,12 +154,25 @@ export default function CallsPanel({
     return undefined;
   }, [projectFilters?.severityBasedAllocationTime, caseSeverityId]);
 
-  // Derive specific state keys from filter labels for Approve / Reject / Cancel
+  // Derive specific state keys for Approve / Reject / Cancel. The backend's
+  // PATCH wants the ServiceNow-era numeric stateKey (see
+  // CALL_REQUEST_STATE_CUSTOMER_REJECTED/_PENDING_ON_WSO2/_CANCELLED's own
+  // doc comments), while callRequestStates (GET /projects/{id}/filters) now
+  // carries entity-service's own string enum ids ("pending_on_wso2", ...),
+  // not numbers -- Number(found.id) on a string id is NaN, which is not
+  // `undefined`, so the old code silently passed its own undefined-check and
+  // sent stateKey: NaN (-> JSON null -> the Go backend's int zero value 0),
+  // always failing backend-v2's own `if req.StateKey == 0` validation as
+  // "Invalid request payload." on every Approve/Reject (a real, reported
+  // bug). The `find` below only confirms the project's own filters still
+  // offer that state at all (preserving the original "disable the action if
+  // this project can't reach it" intent) -- the sent value is always the
+  // fixed numeric constant, the same way cancelStateKey already works.
   const approveStateKey = useMemo<number | undefined>(() => {
     const found = projectFilters?.callRequestStates?.find((s) =>
       s.label.toLowerCase().includes("pending on wso2"),
     );
-    return found ? Number(found.id) : undefined;
+    return found ? CALL_REQUEST_STATE_PENDING_ON_WSO2 : undefined;
   }, [projectFilters]);
 
   const rejectStateKey = useMemo<number | undefined>(() => {
@@ -157,7 +181,7 @@ export default function CallsPanel({
         s.label.toLowerCase().includes("customer rejected") ||
         s.label.toLowerCase().includes("rejected"),
     );
-    return found ? Number(found.id) : undefined;
+    return found ? CALL_REQUEST_STATE_CUSTOMER_REJECTED : undefined;
   }, [projectFilters]);
 
   // Canceled state key from the raw filter (before filtering out Canceled)
@@ -287,7 +311,7 @@ export default function CallsPanel({
         {
           callRequestId: rejectCall.id,
           reason: reason.trim(),
-          stateKey: rejectStateKey ?? CALL_REQUEST_STATE_CANCELLED,
+          stateKey: rejectStateKey ?? CALL_REQUEST_STATE_CUSTOMER_REJECTED,
         },
         {
           onSuccess: () => {
