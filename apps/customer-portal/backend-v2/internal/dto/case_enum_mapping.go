@@ -263,26 +263,6 @@ func IsCaseStateClosed(state string) bool {
 	return caseStateIDToEnum[trimmed] == caseStateClosed
 }
 
-// NormalizedCaseStateEnum resolves state to entity-service's own domain enum
-// ("work_in_progress"), accepting every representation this field travels as
-// (see IsCaseStateClosed's doc comment: entity-service's domain enum,
-// ServiceNow's display text, or the numeric SN choice-list id). Returns "" for
-// an empty or unrecognized value.
-//
-// Exported for the same reason IsCaseStateClosed is: the case state-transition
-// guard lives in internal/handler, but the state vocabulary it needs to
-// normalize against lives here.
-func NormalizedCaseStateEnum(state string) string {
-	trimmed := strings.TrimSpace(state)
-	if trimmed == "" {
-		return ""
-	}
-	if enum, ok := caseStateLabelWords[caseStateLookupKey(trimmed)]; ok {
-		return enum
-	}
-	return caseStateIDToEnum[trimmed]
-}
-
 func caseStatusRef(label string) *IDLabelRef {
 	if label == "" {
 		return nil

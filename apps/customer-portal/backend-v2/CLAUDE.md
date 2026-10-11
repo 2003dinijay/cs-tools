@@ -766,36 +766,19 @@ description, watchList, resolutionCode, cause, closeNotes), and
 every excluded field zero/nil — so even if a client sends `{"workState": "ongoing"}`, it's silently
 dropped (the portal struct has no such field) rather than forwarded.
 
-**`PATCH /cases/{id}`'s `stateKey` is restricted to a customer-specific field, but *which values*
-`stateKey` may legally move to from the case's current state had no guard at all until this was
-added — `internal/handler/state.go`'s `isValidCustomerStateTransition`/`customerNextStates`.**
-Restricting the request shape (above) stops a customer from setting fields like `workState`
-outright, but it did nothing to stop `{"stateKey": 10}` (work_in_progress) from being forwarded to
-entity-service for a case currently `open`. `customerNextStates` is this portal's own copy of the
-legacy ServiceNow scoped-app's `ALLOWED_STATE_TRANSITIONS` table — deliberately narrower than
-`apps/csm-portal/backend`'s own `nextStates` (which ports `SUPERUSER_STATE_TRANSITIONS`, the
-agent-facing table): a customer's own case-update is almost always "close it," plus a few states
-that can route back through WSO2. `PatchCase` fetches the current state via `GetCase` before
-forwarding a `stateKey` change, normalizing both the current and target state through
-`dto.NormalizedCaseStateEnum` first (the same ServiceNow-display-label / domain-enum /
-numeric-choice-list-id ambiguity `IsCaseStateClosed` already handles) so a ServiceNow-backed case's
-raw display label and a Postgres-backed case's domain enum both resolve the same way.
-
-**entity-service now also enforces this same rule, authoritatively, independent of which BFF
-forwarded the request** (see its own CLAUDE.md, "Case state-transition legality") — this backend's
-own check is a fast, pre-emptive rejection (no round trip needed to learn the move is illegal), not
-the only line of defense. The two are not role-aware the same way, though: entity-service decides
-by the caller's real access scope (`scope.Unrestricted || scope.HasInternalAccess`); this layer's
-own `isValidCustomerStateTransition` applies the customer table unconditionally to *every* caller of
-this endpoint. That matters because the permission matrix above lets WSO2 staff (`admin`/`agent`/
-`internal`) reach this same customer-facing endpoint too (e.g. for support) — without a carve-out, a
-staff caller using the Customer Portal would be held to the customer table (stricter for most moves,
-oddly looser for `open → closed`) instead of the agent rules they get through the CSM Portal. The
-guard is skipped entirely for a staff caller: `middleware.RolesFromContext(r.Context())` (populated
-by `RequirePermission`/`RequirePermissionOneOf`, see `internal/middleware/rbac.go`'s own doc
-comments on `WithResolvedRoles`/`RolesFromContext`/`IsStaffRole`) plus `middleware.IsStaffRole`
-decide whether to run the check at all — skipping it never means "anything goes," since
-entity-service's own, role-aware enforcement still applies to a staff caller's request regardless.
+**`PATCH /cases/{id}`'s `stateKey` carries no transition-legality check in this backend, on
+purpose.** An earlier version of this handler carried its own copy of the legacy ServiceNow
+scoped-app's `ALLOWED_STATE_TRANSITIONS` table (which from→to state moves a customer may make), the
+same way `apps/csm-portal/backend`'s own `state.go` ports the agent-facing
+`SUPERUSER_STATE_TRANSITIONS` table. That copy was removed once entity-service grew its own,
+authoritative enforcement of both legacy tables (see entity-service's own CLAUDE.md, "Case
+state-transition legality") — entity-service now rejects an illegal move with 400 regardless of
+which BFF forwarded the request, so duplicating the table here would only risk drifting out of sync
+with the real rule. `PatchCase` just forwards `stateKey` (translated to entity-service's domain enum
+via `dto.BuildEntityUpdateCaseRequest`) and relays whatever response entity-service gives back,
+including its refusal. If a future endpoint here needs to know a case's own legal next states ahead
+of calling entity-service (e.g. to render which actions a customer may take), read entity-service's
+own `case_state_transitions.go` rather than reintroducing a local copy.
 
 The same pattern applies to `POST /cases/{id}/comments`: entity-service accepts `type: work_note|comment|activity`, but
 `dto.BuildEntityCreateCaseCommentRequest` always forces `type: comment`, regardless of what the
