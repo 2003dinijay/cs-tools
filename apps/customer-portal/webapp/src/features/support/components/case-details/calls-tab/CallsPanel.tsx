@@ -131,23 +131,29 @@ export default function CallsPanel({
   // safe but wrong for anything less urgent than Catastrophic/P0 -- a High
   // (P2) case only needs 60 minutes' lead time, not 300.
   const severityAllocationMinutes = useMemo(() => {
+    // A negative or non-finite value is invalid, not "use it anyway" -- it
+    // must fall through to CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID below,
+    // the same as a value that's missing entirely. Returning it here would
+    // skip that table and let computeMinScheduleDatetimeLocalForTimeZone's
+    // own `< 0` guard catch it instead, which only knows the generic
+    // 300-minute default -- wrong for a known severity like Catastrophic/P0
+    // (15 minutes).
+    const isValidAllocation = (v: unknown): v is number =>
+      typeof v === "number" && Number.isFinite(v) && v >= 0;
+
     const map = projectFilters?.severityBasedAllocationTime;
     const sid = String(caseSeverityId ?? "").trim();
     if (!sid) return undefined;
     if (map) {
       const direct = map[sid];
-      if (typeof direct === "number" && !Number.isNaN(direct)) return direct;
+      if (isValidAllocation(direct)) return direct;
       const altKey = String(Number(sid));
       if (altKey !== sid) {
         const alt = map[altKey];
-        if (typeof alt === "number" && !Number.isNaN(alt)) return alt;
+        if (isValidAllocation(alt)) return alt;
       }
       for (const [key, val] of Object.entries(map)) {
-        if (
-          String(key).trim() === sid &&
-          typeof val === "number" &&
-          !Number.isNaN(val)
-        ) {
+        if (String(key).trim() === sid && isValidAllocation(val)) {
           return val;
         }
       }
