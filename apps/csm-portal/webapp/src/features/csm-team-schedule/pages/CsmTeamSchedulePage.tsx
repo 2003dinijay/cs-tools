@@ -899,9 +899,15 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     return zonesOnDay.map((z) => {
       // At the weekend the TZ1 lane is TZ1 and TZ2 together.
       const name = zoneLabelOn(shifts, z.code, weekendDay);
+      // A zone whose tiers are one crew for every team (SaaS TZ3) is the
+      // night cover, whichever team each of its people is on.
+      const shared = [...shifts.values()].some((sh) => sh.zoneCode === z.code && sh.sharedAcrossTeams);
       return {
         name,
-        sub: name === zoneLabelOn(shifts, z.code, false) ? z.label : "Weekend crew",
+        sub: shared
+          ? `${z.label} · night cover, one crew for every team`
+          : name === zoneLabelOn(shifts, z.code, false) ? z.label : "Weekend crew",
+        shared,
         colour: zoneColour(z.code),
         // The same resolution the month roster uses: an assignment's own zone,
         // else its window's, so a zoned window stored without one still lands.

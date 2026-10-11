@@ -13455,7 +13455,7 @@ paths:
                   format: date
                 nightCrew:
                   type: object
-                  description: Team key -> the people chosen to work that team's TZ3 for the month; L1, L2 and L3 go round them.
+                  description: Team key -> the people chosen to work TZ3 for the month. TZ3 is one crew for the whole rota, so every team's choices together go round its single L1, L2 and L3.
                   additionalProperties:
                     type: array
                     items: {type: string}

@@ -86,6 +86,10 @@ export interface LadderLane {
    * scanning; off a labelled row it is immediate.
    */
   layout?: "flat" | "zone";
+  /** The zone's tiers are one crew for every team (SaaS TZ3, the night
+   *  cover): its escalation card is titled as such, and each person on it
+   *  says which team they are on, since the crew mixes them. */
+  shared?: boolean;
 }
 
 interface DayLadderProps {
@@ -147,6 +151,10 @@ interface Block {
   /** The sections are the escalation ladder, L1 to L3: every tier is shown,
    *  empty ones included, each ruled off from the next. */
   tiered?: boolean;
+  /** Each person carries their team's name: the card is one crew drawn from
+   *  several teams (the night cover), and the avatar colour alone does not
+   *  say which. */
+  teamTags?: boolean;
 }
 
 /** The escalation tiers, in the order the rota talks about them. */
@@ -421,7 +429,9 @@ export default function DayLadder({
       // regular-hours people become a last section of the escalation card.
       // TZ1 and TZ2 work regular hours wider than their escalation block, so
       // theirs stay cards of their own.
-      const escalation = escalationCards(lane.name, tiered);
+      const escalation = escalationCards(lane.name, tiered).map((c) =>
+        lane.shared ? { ...c, title: "Night cover", teamTags: true } : c,
+      );
       const apart = others.filter((o) => {
         const same = escalation.find((e) => e.startMin === o.startMin && e.endMin === o.endMin);
         if (!same) return true;
@@ -743,7 +753,7 @@ function LadderBlock({
               {section.list.map((a) => (
                 // The tier is the row's heading, so repeating it against every
                 // name costs width that the name itself needs.
-                <NameRow key={a.id} assignment={a} hideTag />
+                <NameRow key={a.id} assignment={a} hideTag showTeam={block.teamTags} />
               ))}
               {section.list.length === 0 ? <span className="gap">Nobody rostered</span> : null}
             </div>
@@ -874,11 +884,15 @@ function TeamSplit({ rows }: { rows: ScheduleAssignment[] }): JSX.Element {
 function NameRow({
   assignment,
   hideTag,
+  showTeam,
 }: {
   assignment: ScheduleAssignment;
   /** Inside a team pane the team is already the heading, so repeating it on
    *  every row would be noise. */
   hideTag?: boolean;
+  /** Spell the team out after the name: on a card that mixes teams (the
+   *  night cover) it is the thing the reader is looking for. */
+  showTeam?: boolean;
 }): JSX.Element {
   const teamColourOf = useTeamColour();
   const teamNameOf = useTeamName();
@@ -895,6 +909,7 @@ function NameRow({
       </span>
       <span className="who">{assignment.engineer.name}</span>
       {assignment.engineer.isLead ? <i className="tag lead-t">Lead</i> : null}
+      {showTeam ? <i className="tag team-t">{teamNameOf(assignment.teamKey)}</i> : null}
       {hideTag || !tag ? null : (
         <i className={`tier-t${assignment.isOnCall ? " oc-t" : ""}`}>{tag}</i>
       )}
