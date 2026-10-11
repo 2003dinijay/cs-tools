@@ -628,4 +628,53 @@ describe("CallsPanel", () => {
       ),
     ).toBeInTheDocument();
   });
+
+  // Regression: entity-service's severityBasedAllocationTime is currently
+  // always empty, so the picker's floor used to fall back to one flat
+  // conservative default (or, before that fix, an even shorter "now + 1
+  // minute") for every severity -- wrong for anything less urgent than
+  // Catastrophic/P0. CALL_REQUEST_LEAD_MINUTES_BY_PRIORITY_ID mirrors
+  // ServiceNow's own per-priority lead-time table so each severity gets its
+  // real minimum, confirmed here against the picker's actual rendered min.
+  it("floors the preferred time by the case's own severity (Catastrophic/P0 = 15 minutes)", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-10-11T09:00:00.000Z"));
+    try {
+      vi.mocked(useGetCallRequests).mockReturnValue({
+        isPending: false,
+        isError: false,
+        refetch: vi.fn(),
+        fetchNextPage: vi.fn(),
+        hasNextPage: false,
+        isFetchingNextPage: false,
+        isFetchNextPageError: false,
+        data: { pages: [{ callRequests: [] }] },
+      } as unknown as ReturnType<typeof useGetCallRequests>);
+      vi.mocked(useGetUserDetails).mockReturnValue({
+        data: { timeZone: "UTC" },
+        refetch: vi.fn().mockResolvedValue({ data: { timeZone: "UTC" } }),
+        isLoading: false,
+        isError: false,
+      } as unknown as ReturnType<typeof useGetUserDetails>);
+
+      renderWithProviders(<CallsPanel
+          projectId={mockProjectId}
+          caseId={mockCaseId}
+          caseStatusLabel="Work In Progress"
+          caseSeverityId="14"
+        />);
+
+      fireEvent.click(screen.getByRole("button", { name: /^Request Call$/ }));
+
+      const input = document.getElementById(
+        "preferred-time-0",
+      ) as HTMLInputElement;
+      // 09:00 UTC + 15 minutes (Catastrophic/P0's real ServiceNow offset,
+      // not the 300-minute flat default a lower-severity case would still
+      // fall back to) = 09:15.
+      expect(input.min).toBe("2026-10-11T09:15");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
