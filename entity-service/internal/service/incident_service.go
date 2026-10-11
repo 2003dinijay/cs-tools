@@ -100,6 +100,26 @@ func incidentLifecycleUpdateFromRequest(req domain.UpdateIncidentRequest) (u rep
 		u.ResolutionNotes = req.ResolutionNotes
 		ok = true
 	}
+	if req.Impact != nil {
+		if !validIncidentImpact[*req.Impact] {
+			return u, false, &apierror.ValidationError{Msg: "invalid impact: " + string(*req.Impact)}
+		}
+		v := string(*req.Impact)
+		u.Impact = &v
+		ok = true
+	}
+	if req.Urgency != nil {
+		if !validIncidentUrgency[*req.Urgency] {
+			return u, false, &apierror.ValidationError{Msg: "invalid urgency: " + string(*req.Urgency)}
+		}
+		v := string(*req.Urgency)
+		u.Urgency = &v
+		ok = true
+	}
+	if u.Impact != nil || u.Urgency != nil {
+		// ServiceNow's priority lookup runs on update too, so priority follows impact and urgency here as well.
+		u.PriorityFor = priorityFromImpactUrgency
+	}
 	return u, ok, nil
 }
 
@@ -728,7 +748,7 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		return domain.UpdateIncidentResponse{}, err
 	}
 	if !hasLifecycle && req.WorkNotes == nil && req.AdditionalComments == nil {
-		return domain.UpdateIncidentResponse{}, &apierror.ValidationError{Msg: "at least one of state, assignedEngineerId, resolutionCode, resolutionNotes, resolvedById, workNotes or additionalComments must be provided"}
+		return domain.UpdateIncidentResponse{}, &apierror.ValidationError{Msg: "at least one of state, assignedEngineerId, resolutionCode, resolutionNotes, resolvedById, impact, urgency, workNotes or additionalComments must be provided"}
 	}
 
 	actor, err := s.resolveActor(ctx)
@@ -795,12 +815,15 @@ func (s *incidentService) UpdateIncident(ctx context.Context, req domain.UpdateI
 		ResolutionCode:     req.ResolutionCode,
 		ResolutionNotes:    req.ResolutionNotes,
 		ResolvedByID:       req.ResolvedByID,
+		Impact:             req.Impact,
+		Urgency:            req.Urgency,
 		WorkNotes:          req.WorkNotes,
 		AdditionalComments: req.AdditionalComments,
 	}
 	payload := map[string]any{
 		"id": req.ID, "state": req.State, "assignedEngineerId": req.AssignedEngineerID,
 		"resolutionCode": req.ResolutionCode, "resolutionNotes": req.ResolutionNotes, "resolvedById": req.ResolvedByID,
+		"impact": req.Impact, "urgency": req.Urgency,
 		"workNotes": req.WorkNotes, "additionalComments": req.AdditionalComments,
 	}
 	if problemID != "" {

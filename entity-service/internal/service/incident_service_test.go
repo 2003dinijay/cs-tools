@@ -85,14 +85,14 @@ type stubIncidentRepo struct {
 	createIncident               func(ctx context.Context, req domain.CreateIncidentRequest, priority string, subcategoryValue *string, createdBy string) (domain.CreateIncidentResponse, error)
 	createIncidentFromServiceNow func(ctx context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error)
 	// fromServiceNowPriority records the priority the dual-write create was asked to store.
-	fromServiceNowPriority string
-	createIncidentComment        func(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error)
-	getIncidentByID              func(ctx context.Context, id string) (domain.IncidentView, error)
-	updateIncidentLifecycle      func(ctx context.Context, id string, u repository.IncidentLifecycleUpdate, actorEmail string) error
-	applySpecialistHandoff       func(ctx context.Context, id, actorEmail string, plan func(repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, error)) (repository.SpecialistHandoffWritten, error)
-	supportGroups                map[string]string // service id -> support group id ("" = none); a key is a service that exists
-	serviceNames                 map[string]string // service id -> name; a key is a service that exists
-	groupNames                   map[string]string // group id -> name
+	fromServiceNowPriority  string
+	createIncidentComment   func(ctx context.Context, incidentID string, commentType domain.CommentType, content, createdBy string) (domain.CaseComment, error)
+	getIncidentByID         func(ctx context.Context, id string) (domain.IncidentView, error)
+	updateIncidentLifecycle func(ctx context.Context, id string, u repository.IncidentLifecycleUpdate, actorEmail string) error
+	applySpecialistHandoff  func(ctx context.Context, id, actorEmail string, plan func(repository.SpecialistHandoffSnapshot) (repository.SpecialistHandoffPlan, error)) (repository.SpecialistHandoffWritten, error)
+	supportGroups           map[string]string // service id -> support group id ("" = none); a key is a service that exists
+	serviceNames            map[string]string // service id -> name; a key is a service that exists
+	groupNames              map[string]string // group id -> name
 	// allowedGroups is the support-group set IsSupportGroup answers from;
 	// nil means every group in supportGroups (all active).
 	allowedGroups map[string]bool
@@ -1109,5 +1109,66 @@ func TestIncidentService_UpdateIncident_NoStopSignalWithoutAChange(t *testing.T)
 				}
 			}
 		})
+	}
+}
+
+// An impact or urgency edit used to be accepted and silently dropped, so the priority never moved.
+func TestIncidentService_UpdateIncident_ImpactUrgencyRecomputePriority(t *testing.T) {
+	var got repository.IncidentLifecycleUpdate
+	repo := &stubIncidentRepo{
+		updateIncidentLifecycle: func(_ context.Context, _ string, u repository.IncidentLifecycleUpdate, _ string) error {
+			got = u
+			return nil
+		},
+		getIncidentByID: func(_ context.Context, id string) (domain.IncidentView, error) {
+			return newTestIncidentView(id), nil
+		},
+	}
+	mirrorCalled := make(chan domain.UpdateIncidentRequest, 1)
+	mirror := &stubMirrorIncidentService{
+		updateIncident: func(_ context.Context, req domain.UpdateIncidentRequest) (domain.UpdateIncidentResponse, error) {
+			mirrorCalled <- req
+			return domain.UpdateIncidentResponse{}, nil
+		},
+	}
+	svc := NewIncidentServiceWithSNMirror(repo, stubUpdateIncidentUserRepo{email: "jane.doe@example.com"}, mirror, nil, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}))
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	impact, urgency := domain.IncidentImpactHigh, domain.IncidentUrgencyMedium
+	if _, err := svc.UpdateIncident(ctx, domain.UpdateIncidentRequest{ID: testDeploymentUUID, Impact: &impact, Urgency: &urgency}); err != nil {
+		t.Fatalf("UpdateIncident(impact, urgency): %v", err)
+	}
+	if got.Impact == nil || *got.Impact != "HIGH" || got.Urgency == nil || *got.Urgency != "MEDIUM" {
+		t.Fatalf("repo got impact=%v urgency=%v, want HIGH/MEDIUM", got.Impact, got.Urgency)
+	}
+	if got.PriorityFor == nil || got.PriorityFor("HIGH", "MEDIUM") != "HIGH" || got.PriorityFor("LOW", "LOW") != "PLANNING" {
+		t.Errorf("PriorityFor must be the impact x urgency lookup")
+	}
+	select {
+	case m := <-mirrorCalled:
+		if m.Impact == nil || *m.Impact != impact || m.Urgency == nil || *m.Urgency != urgency {
+			t.Errorf("mirror got impact=%v urgency=%v, want them forwarded", m.Impact, m.Urgency)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("impact/urgency change was not mirrored to ServiceNow")
+	}
+
+	bad := domain.IncidentImpact("SEVERE")
+	if _, err := svc.UpdateIncident(ctx, domain.UpdateIncidentRequest{ID: testDeploymentUUID, Impact: &bad}); err == nil {
+		t.Error("an unknown impact must be rejected")
+	}
+}
+
+// TestPriorityFromImpactUrgency_MatchesServiceNowLookup pins every cell of ServiceNow's "Priority Data lookup rules".
+func TestPriorityFromImpactUrgency_MatchesServiceNowLookup(t *testing.T) {
+	want := map[[2]string]string{
+		{"HIGH", "HIGH"}: "CRITICAL", {"HIGH", "MEDIUM"}: "HIGH", {"HIGH", "LOW"}: "MODERATE",
+		{"MEDIUM", "HIGH"}: "HIGH", {"MEDIUM", "MEDIUM"}: "MODERATE", {"MEDIUM", "LOW"}: "LOW",
+		{"LOW", "HIGH"}: "MODERATE", {"LOW", "MEDIUM"}: "LOW", {"LOW", "LOW"}: "PLANNING",
+	}
+	for in, p := range want {
+		if got := priorityFromImpactUrgency(in[0], in[1]); got != p {
+			t.Errorf("impact %s, urgency %s: priority = %s, want %s", in[0], in[1], got, p)
+		}
 	}
 }
