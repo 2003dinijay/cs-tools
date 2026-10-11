@@ -459,6 +459,15 @@ func validateCreateCaseRequest(req *domain.CreateCaseRequest) error {
 			return err
 		}
 	}
+	// Same posture as conversationId: a malformed relatedCaseId must be a 400
+	// before either create path writes anything. The id itself is stored on
+	// "case".related_case_id (type "case" only) so the new case's Overview
+	// can show the case it was created from.
+	if req.RelatedCaseID != "" {
+		if err := validateUUIDs("relatedCaseId", []string{req.RelatedCaseID}); err != nil {
+			return err
+		}
+	}
 	// Announcements have no deployment/deployed-product concept: these fields
 	// are deliberately omitted at the ServiceNow layer, not just optional.
 	if req.Type != "announcement" {
