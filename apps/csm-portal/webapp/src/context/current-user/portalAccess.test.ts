@@ -38,10 +38,11 @@ const NONE = {
   // flags, so this must default true (role set is NOT exactly {viewer}) for
   // every one of those single-other-role cases to stay correct unchanged.
   canViewStaffSections: true,
-  // Unlike canViewStaffSections, these two are explicit allow-lists (false
+  // Unlike canViewStaffSections, these three are explicit allow-lists (false
   // by default, true only for a qualifying role) -- see each flag's own doc
   // comment.
   canViewTeamSchedule: false,
+  canViewSettings: false,
   canViewWorkItemsStaffView: false,
 };
 
@@ -143,8 +144,9 @@ describe("getPortalAccess", () => {
       canViewUsageMetrics: true,
       // Role set is {cs_engineer}/{admin}, not exactly {viewer}.
       canViewStaffSections: true,
-      // Both are full access -- qualify for both allow-list flags too.
+      // Both are full access -- qualify for all three allow-list flags too.
       canViewTeamSchedule: true,
+      canViewSettings: true,
       canViewWorkItemsStaffView: true,
     };
     // Both hold canEscalate (any internal engineer may escalate, as in
@@ -551,6 +553,47 @@ describe("getPortalAccess", () => {
 
     it("is false while roles are not loaded, so the controls fail closed", () => {
       expect(getPortalAccess(undefined).canViewWorkItemsStaffView).toBe(false);
+    });
+  });
+
+  // Settings (/admin): an explicit cs_engineer/admin-only allow-list, with no
+  // third qualifying role (unlike canViewTeamSchedule/canViewWorkItemsStaffView),
+  // independent of viewer -- a viewer combined with an unrelated role must not
+  // reach user/role/group/team administration just by also holding it.
+  describe("canViewSettings", () => {
+    it("cs_engineer and admin each hold it on their own", () => {
+      expect(getPortalAccess(["cs_engineer"]).canViewSettings).toBe(true);
+      expect(getPortalAccess(["admin"]).canViewSettings).toBe(true);
+    });
+
+    it("a viewer combined with an unrelated role does not qualify", () => {
+      expect(getPortalAccess(["viewer"]).canViewSettings).toBe(false);
+      expect(getPortalAccess(["viewer", "attachment_downloader"]).canViewSettings).toBe(false);
+      expect(getPortalAccess(["viewer", "escalator"]).canViewSettings).toBe(false);
+    });
+
+    it("a viewer who also holds a qualifying role does qualify", () => {
+      expect(getPortalAccess(["viewer", "cs_engineer"]).canViewSettings).toBe(true);
+      expect(getPortalAccess(["viewer", "admin"]).canViewSettings).toBe(true);
+    });
+
+    it("no other role grants it", () => {
+      for (const role of [
+        "escalator",
+        "attachment_downloader",
+        "usage_metrics_viewer",
+        "timecard_approver",
+        "dashboard_designer",
+        "worknote_creator",
+        "announcement_creator",
+        "comment_updater",
+      ]) {
+        expect(getPortalAccess([role]).canViewSettings).toBe(false);
+      }
+    });
+
+    it("is false while roles are not loaded, so the controls fail closed", () => {
+      expect(getPortalAccess(undefined).canViewSettings).toBe(false);
     });
   });
 });
