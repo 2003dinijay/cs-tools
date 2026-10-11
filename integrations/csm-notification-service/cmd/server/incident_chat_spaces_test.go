@@ -36,3 +36,16 @@ func TestParseIncidentChatSpaces(t *testing.T) {
 		}
 	}
 }
+
+func TestParseIncidentChatFanout(t *testing.T) {
+	spaces := parseIncidentChatSpaces(`{"Apollo SRE Group":"https://chat.example/a","Artemis SRE Group":"https://chat.example/b"}`)
+	got := parseIncidentChatFanout(`{"Default SRE Group":["Apollo SRE Group","Artemis SRE Group"]}`, spaces)
+	if targets := got["Default SRE Group"]; len(got) != 1 || len(targets) != 2 || targets[0] != "Apollo SRE Group" || targets[1] != "Artemis SRE Group" {
+		t.Errorf("fanout = %+v", got)
+	}
+	for _, raw := range []string{"", "   ", "not json", `["a"]`, `{"Default SRE Group":"Apollo SRE Group"}`} {
+		if got := parseIncidentChatFanout(raw, spaces); got != nil {
+			t.Errorf("parseIncidentChatFanout(%q) = %+v, want nil (no fan-out)", raw, got)
+		}
+	}
+}
