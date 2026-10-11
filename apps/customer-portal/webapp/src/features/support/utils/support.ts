@@ -1862,8 +1862,19 @@ export type DedupableMessage = CreatedOnSortable & {
  * Deliberately requires an EXACT match on all three fields, not just
  * content: two genuinely distinct messages that happen to read the same
  * (e.g. a user saying "ok" twice, minutes apart) are never affected, since
- * their createdOn timestamps differ. Only a true repeat -- the same row,
- * twice, at the same instant -- is collapsed.
+ * their createdOn timestamps differ in the common case.
+ *
+ * Known, accepted limitation: this API's createdOn is whole-second
+ * resolution (no sub-second component), and no field here carries a
+ * backend-assigned identity that could tell two genuinely independent
+ * messages apart from a true duplicate row -- `id` itself always differs
+ * for a real duplicate (each row gets its own generated id), so it can
+ * never be the signal. Two truly distinct messages from the same author,
+ * with byte-identical content, landing in the same whole second, would
+ * also collapse here. In practice this is vanishingly rare for
+ * human-typed chat content, and the app's own send flow already blocks a
+ * literal double-submit while one is in flight -- but it is a real,
+ * documented trade-off, not a guarantee of true simultaneity.
  *
  * Input must already be sorted (see {@link compareByCreatedOnThenId}), since
  * this only ever compares a message against the one immediately before it.
