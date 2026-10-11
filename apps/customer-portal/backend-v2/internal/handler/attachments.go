@@ -191,7 +191,11 @@ func commentAttachmentIsVisible(ctx context.Context, client entityAttachmentClie
 //
 // What actually happens here instead: try the case-based check
 // (GetAttachmentCase) first, since that is the common case and entity-service
-// already scopes it correctly. On a 404-shaped failure — which an
+// already scopes it correctly. (entity-service's GET /attachments/{id}/case
+// itself also resolves a comment-referenced attachment through the comment
+// table before giving up, so an inline comment image usually succeeds right
+// here; the comment fallback below remains for data sources with no comment
+// rows, e.g. ServiceNow-only.) On a 404-shaped failure — which an
 // out-of-scope case and a deployment- or comment-referenced attachment's
 // ReferenceID all produce, and this backend cannot tell apart from the
 // response alone — fall back to deploymentAttachmentIsVisible (RLS-scoped
