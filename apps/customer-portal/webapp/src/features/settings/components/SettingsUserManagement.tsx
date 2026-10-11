@@ -411,8 +411,8 @@ export default function SettingsUserManagement({
                     onDismiss={pendingInvites.dismiss}
                   />
                 )),
-                ...pagedContacts.map((contact) => (
-                <TableRow key={contact.id} hover>
+                ...pagedContacts.map((contact, index) => (
+                <TableRow key={`${contact.id}-${index}`} hover>
                   <TableCell>
                     <Box
                       sx={{ display: "flex", alignItems: "center", gap: 1.5 }}
