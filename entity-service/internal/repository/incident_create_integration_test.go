@@ -182,12 +182,16 @@ func TestIncidentCreate_FromServiceNowStoresJournal(t *testing.T) {
 	const snID = "d4000000-0000-0000-0000-000000000001"
 	req := icRequest()
 	req.Subcategory, req.ConfigurationItemID, req.AssignedEngineerID, req.WatchList = nil, nil, nil, nil
-	resp, err := repo.CreateIncidentFromServiceNow(ctx, req, snID, "INC-IC-SN-1", "sn.user@test.local")
+	resp, err := repo.CreateIncidentFromServiceNow(ctx, req, snID, "INC-IC-SN-1", "HIGH", "sn.user@test.local")
 	if err != nil {
 		t.Fatalf("CreateIncidentFromServiceNow: %v", err)
 	}
-	if resp.Incident.ID != snID {
-		t.Fatalf("id = %s, want %s", resp.Incident.ID, snID)
+	if resp.Incident.ID != snID || resp.Incident.Priority != "HIGH" {
+		t.Fatalf("id/priority = %s/%s, want %s/HIGH", resp.Incident.ID, resp.Incident.Priority, snID)
+	}
+	var stored string
+	if err := scoped.QueryRow(ctx, `SELECT priority::text FROM incident WHERE id = $1`, snID).Scan(&stored); err != nil || stored != "HIGH" {
+		t.Errorf("stored priority = %q (%v), want HIGH", stored, err)
 	}
 
 	rows, err := scoped.Query(ctx, `SELECT type::text, content, created_by FROM comment WHERE work_item_id = $1`, snID)

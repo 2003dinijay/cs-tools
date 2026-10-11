@@ -151,7 +151,7 @@ type IncidentRepository interface {
 	// already gives. req.AssignmentGroupID, by contrast, DOES have a
 	// backing column (work_item.assignment_group_id, migration 0075) and
 	// IS written here.
-	CreateIncidentFromServiceNow(ctx context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error)
+	CreateIncidentFromServiceNow(ctx context.Context, req domain.CreateIncidentRequest, id, number, priority, createdBy string) (domain.CreateIncidentResponse, error)
 	// CreateIncident inserts a new incident row (both work_item and
 	// "incident") for the plain-Postgres data source (no ServiceNow at all)
 	// -- createIncidentPortalQuery's own doc comment has the full
@@ -1479,6 +1479,7 @@ func (r *incidentRepo) CreateIncident(ctx context.Context, req domain.CreateInci
 		resp.Incident.Number = outNumber
 		resp.Incident.CreatedOn = outCreatedOn.UTC().Format(time.RFC3339)
 		resp.Incident.CreatedBy = outCreatedBy
+		resp.Incident.Priority = priority
 		return resp, nil
 	})
 	if err != nil {
@@ -1574,13 +1575,13 @@ const createIncidentFromServiceNowQuery = `
 			id, caller_id, category, impact, urgency,
 			service_id, service_offering_id, contact_type,
 			change_request_id, caused_by_id, parent_incident_id, problem_id,
-			opened_on, correlation_id, environment
+			opened_on, correlation_id, environment, priority
 		)
 		VALUES (
 			$1, $7::uuid, $8::incident_category_enum, $9::incident_impact_enum, $10::incident_urgency_enum,
 			$11::uuid, $12::uuid, $13::incident_contact_type_enum,
 			$14::uuid, $15::uuid, $16::uuid, $17::uuid,
-			NOW(), $18, $19
+			NOW(), $18, $19, $20::incident_priority_enum
 		)
 		RETURNING id
 	)
@@ -1589,7 +1590,7 @@ const createIncidentFromServiceNowQuery = `
 	JOIN inserted_incident ii ON ii.id = iwi.id`
 
 // CreateIncidentFromServiceNow implements IncidentRepository.
-func (r *incidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req domain.CreateIncidentRequest, id, number, createdBy string) (domain.CreateIncidentResponse, error) {
+func (r *incidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req domain.CreateIncidentRequest, id, number, priority, createdBy string) (domain.CreateIncidentResponse, error) {
 	var contactType *string
 	if req.ContactType != nil {
 		v := incidentContactTypeToEnum(*req.ContactType)
@@ -1616,7 +1617,7 @@ func (r *incidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req dom
 			req.CallerID, string(req.Category), string(req.Impact), string(req.Urgency),
 			req.ServiceID, req.ServiceOfferingID, contactType,
 			req.ChangeRequestID, req.CausedByID, req.ParentIncidentID, req.ProblemID,
-			req.CorrelationID, req.Environment,
+			req.CorrelationID, req.Environment, priority,
 		).Scan(&outID, &outNumber, &outSubject, &outCreatedOn, &outUpdatedOn, &outCreatedBy); err != nil {
 			return struct{}{}, err
 		}
@@ -1647,5 +1648,6 @@ func (r *incidentRepo) CreateIncidentFromServiceNow(ctx context.Context, req dom
 	resp.Incident.Number = outNumber
 	resp.Incident.CreatedOn = outCreatedOn.UTC().Format(time.RFC3339)
 	resp.Incident.CreatedBy = outCreatedBy
+	resp.Incident.Priority = priority
 	return resp, nil
 }

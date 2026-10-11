@@ -953,6 +953,7 @@ func (s *snIncidentService) CreateIncident(ctx context.Context, req domain.Creat
 	resp.Incident.Number = snResp.Incident.Number
 	resp.Incident.CreatedOn = snResp.Incident.CreatedOn
 	resp.Incident.CreatedBy = snResp.Incident.CreatedBy
+	resp.Incident.Priority = incidentPriorityFor(req.Impact, req.Urgency)
 	s.publishIncidentCreated(ctx, req, resp.Incident.ID, resp.Incident.Number, resp.Incident.CreatedOn)
 	return resp, nil
 }

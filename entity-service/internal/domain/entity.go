@@ -6165,6 +6165,8 @@ type CreateIncidentResponse struct {
 		Number    string `json:"number"`
 		CreatedOn string `json:"createdOn"`
 		CreatedBy string `json:"createdBy"`
+		// Priority is derived from impact x urgency (ServiceNow's priority lookup), e.g. CRITICAL.
+		Priority string `json:"priority,omitempty"`
 	} `json:"incident"`
 }
 
