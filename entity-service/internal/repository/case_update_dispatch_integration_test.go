@@ -254,3 +254,45 @@ func TestCaseUpdateDispatchIntegration_StillNotFoundWithoutARow(t *testing.T) {
 		t.Errorf("work_item.type = %s, want CASE untouched", udStr(got))
 	}
 }
+
+// The type transfer reads and replaces the row that exists too. A service
+// request under a CASE work item moved to an engagement carries its state over
+// and leaves no service_request row behind; asked to become the type its row
+// already has, it is refused rather than given a second row.
+func TestCaseUpdateDispatchIntegration_TransferFollowsTheRow(t *testing.T) {
+	f := newUDFixture(t)
+	transfer, ok := f.repo.(repository.CaseTypeTransferRepository)
+	if !ok {
+		t.Fatal("the case repository does not implement CaseTypeTransferRepository")
+	}
+
+	var ve *apierror.ValidationError
+	same := repository.CaseTypeTransfer{CaseID: udSRUnderCaseID, TargetType: "service_request", ActorEmail: udActor}
+	if _, err := transfer.TransferCaseType(f.ctx, same, nil); !errors.As(err, &ve) {
+		t.Errorf("transfer to the type the row already has = %v, want ValidationError", err)
+	}
+
+	result, err := transfer.TransferCaseType(f.ctx, ctEngagementPlan(udSRUnderCaseID), nil)
+	if err != nil {
+		t.Fatalf("transfer to engagement: %v", err)
+	}
+	if result.PreviousType != "service_request" {
+		t.Errorf("PreviousType = %q, want service_request (the row that existed)", result.PreviousType)
+	}
+	if result.State == nil || *result.State != domain.CaseStateWorkInProgress {
+		t.Errorf("State = %v, want work_in_progress carried over", result.State)
+	}
+	if got := f.column(t, "engagement", "state", udSRUnderCaseID); udStr(got) != "WORK_IN_PROGRESS" {
+		t.Errorf("engagement.state = %s, want WORK_IN_PROGRESS carried over", udStr(got))
+	}
+	var leftBehind int
+	if err := f.scoped.QueryRow(f.ctx, `SELECT COUNT(*) FROM service_request WHERE id = $1`, udSRUnderCaseID).Scan(&leftBehind); err != nil {
+		t.Fatalf("count service_request rows: %v", err)
+	}
+	if leftBehind != 0 {
+		t.Errorf("service_request still holds %d row(s) after the transfer", leftBehind)
+	}
+	if got := f.column(t, "work_item", "type", udSRUnderCaseID); udStr(got) != "ENGAGEMENT" {
+		t.Errorf("work_item.type = %s, want ENGAGEMENT", udStr(got))
+	}
+}
