@@ -4712,6 +4712,18 @@ paths:
   /cases/{id}/comments:
     post:
       summary: Create a comment on a support case.
+      description: |
+        Writes one comment on the case-like record (a case or a service request alike).
+
+        State side effect of a customer's reply: when a `comment` (customer-visible) is posted
+        by a customer -- an external caller, i.e. a registered portal contact posting through the
+        customer portal -- while the record is `awaiting_info` or `solution_proposed`, the record
+        moves to `waiting_on_wso2` automatically, exactly as a `PATCH /cases/{id}` with
+        `state: waiting_on_wso2` by that caller would (activity-feed entry, `case.status_changed`,
+        SLA effects, ServiceNow mirror). No other state is touched (a `closed` record stays
+        closed), a `work_note` never triggers it, and neither does a comment from WSO2 staff, the
+        system identity or an M2M client. The move is best-effort and runs after the comment is
+        written: a failed move is logged and the comment is still created.
       operationId: createCaseComment
       parameters:
         - name: id
