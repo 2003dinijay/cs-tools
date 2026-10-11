@@ -5655,6 +5655,14 @@ paths:
         plain GET /cases/{id} (always DATA_SOURCE-scoped) would 404 even though the
         attachment's own content is reachable. id here is an attachment UUID, matching
         every other /attachments/{id}... route.
+
+
+        An attachment pasted inline into a comment has that comment's id as its
+        referenceId, not a case id. When the referenceId is not a case, it is resolved as a
+        comment (Postgres comment table, read through the caller's own scope) and that
+        comment's case is returned -- but only if the comment is visible to the caller, not
+        deleted, a customer-visible comment (never a work note or activity entry), and its
+        own case is visible to the caller. Otherwise the response is the original 404.
       operationId: getAttachmentParentCase
       parameters:
         - name: id
