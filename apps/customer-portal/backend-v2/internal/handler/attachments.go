@@ -22,6 +22,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/customer-portal/backend-v2/internal/dto"
@@ -109,9 +110,10 @@ const (
 	commentAttachmentMaxPages = 10
 )
 
-// commentAttachmentIsVisible reports whether attachmentID is embedded as an
-// inline image in one of caseID's own customer-visible comments, which also
-// proves the caller may see caseID at all.
+// commentAttachmentIsVisible reports whether attachment belongs to one of
+// caseID's own customer-visible comments -- either the comment it was pasted
+// into (attachment.ReferenceID is that comment's id) or one that lists it as
+// an inline attachment -- which also proves the caller may see caseID at all.
 //
 // Exists because an attachment pasted inline into a case comment has its own
 // ReferenceID set to the ServiceNow COMMENT's (journal entry's) id, not the
@@ -123,13 +125,14 @@ const (
 // Safe despite caseID being caller-supplied: (1) GetCase independently proves
 // the caller may see caseID -- the same check every other case-scoped route
 // in this backend relies on, not something this function takes on faith; (2)
-// attachmentID must then actually turn up inside one of caseID's own
-// inlineAttachments, not just be asserted -- finding it there proves it was
+// the attachment must then actually belong to one of caseID's own comments
+// (its ReferenceID is that comment's id, or the comment lists it as an
+// inline attachment), not just be asserted -- finding it there proves it was
 // already visible to the caller the moment they fetched the comment thread.
 // Filters to type=comment only (never work_note): a customer must not gain
 // access to an inline image merely because it happens to be embedded in an
 // internal note they were never shown.
-func commentAttachmentIsVisible(ctx context.Context, client entityAttachmentClient, caseID, attachmentID string) (bool, error) {
+func commentAttachmentIsVisible(ctx context.Context, client entityAttachmentClient, caseID string, attachment entity.AttachmentDetails) (bool, error) {
 	if _, err := client.GetCase(ctx, caseID); err != nil {
 		var apiErr *apierror.Error
 		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
@@ -151,8 +154,16 @@ func commentAttachmentIsVisible(ctx context.Context, client entityAttachmentClie
 			return false, err
 		}
 		for _, c := range resp.Comments {
+			// The attachment's own ReferenceID is the comment it was pasted
+			// into. entity-service sets it, not the caller, so a comment of
+			// this case carrying that id proves the link without relying on
+			// the comment also listing inlineAttachments -- which only the
+			// ServiceNow comment read fills in, never the Postgres one.
+			if attachment.ReferenceID != "" && strings.EqualFold(c.ID, attachment.ReferenceID) {
+				return true, nil
+			}
 			for _, ia := range c.InlineAttachments {
-				if ia.ID == attachmentID {
+				if strings.EqualFold(ia.ID, attachment.ID) {
 					return true, nil
 				}
 			}
@@ -233,7 +244,7 @@ func authorizeAttachmentAccess(ctx context.Context, client entityAttachmentClien
 	}
 
 	if caseHint != "" {
-		ok, cerr := commentAttachmentIsVisible(ctx, client, caseHint, attachment.ID)
+		ok, cerr := commentAttachmentIsVisible(ctx, client, caseHint, attachment)
 		if cerr != nil {
 			return entity.CaseView{}, cerr
 		}
@@ -241,6 +252,11 @@ func authorizeAttachmentAccess(ctx context.Context, client entityAttachmentClien
 			return entity.CaseView{}, nil
 		}
 	}
+
+	// Opaque ids only (no PII): enough to tell, next time one of these 404s,
+	// whether the attachment's reference was ever a comment of the hinted case.
+	slog.WarnContext(ctx, "attachment access: no owning case, deployment or comment found",
+		"attachmentID", attachment.ID, "referenceID", attachment.ReferenceID, "caseHintGiven", caseHint != "")
 
 	// Nothing resolved it -- report the original GetAttachmentCase error,
 	// not the deployment or comment one, since GetAttachmentCase is the
@@ -320,15 +336,18 @@ func (h *AttachmentHandler) SearchAttachments(w http.ResponseWriter, r *http.Req
 // GetAttachmentContent handles GET /attachments/{id}/content. The response is
 // the raw file content, not JSON. Content-Disposition: attachment is always
 // set (mirroring entity-service's own XSS mitigation for this endpoint) so
-// browsers never render an attachment inline.
+// browsers never render an attachment inline. Rejected with 404 unless the
+// caller can see the attachment's own case (see authorizeAttachmentAccess).
 //
-// Follows apps/csm-portal/backend's DownloadAttachment flow: authenticated
-// caller + well-formed id, then straight to entity-service. It deliberately
-// does NOT verify the attachment belongs to a case/deployment the caller can
-// see (unlike GetAttachment/DeleteAttachment, which still go through
-// authorizeAttachmentAccess), so any authenticated customer holding an
-// attachment id can read its content. The ?caseId= query param the webapp
-// sends is accepted for compatibility but ignored.
+// Accepts an optional ?caseId= query param: the case the caller is viewing
+// this attachment from, used only as a hint for authorizeAttachmentAccess's
+// commentAttachmentIsVisible fallback (an inline-comment-image attachment
+// cannot otherwise be resolved to a case at all — see that function's doc
+// comment). Ignored when absent, malformed, or when the case-based/deployment
+// checks already succeed -- never itself a trust boundary, since
+// commentAttachmentIsVisible independently re-verifies both the caller's
+// access to caseId and that this attachment id genuinely appears in one of
+// its comments.
 func (h *AttachmentHandler) GetAttachmentContent(w http.ResponseWriter, r *http.Request) {
 	user := middleware.UserInfoFromContext(r.Context())
 	if user == nil {
@@ -339,6 +358,23 @@ func (h *AttachmentHandler) GetAttachmentContent(w http.ResponseWriter, r *http.
 	id := r.PathValue("id")
 	if id == "" || !isAttachmentID(id) {
 		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+	caseHint := r.URL.Query().Get("caseId")
+	if caseHint != "" && !uuidRe.MatchString(caseHint) {
+		writeError(w, http.StatusBadRequest, ErrMsgInvalidUUID)
+		return
+	}
+
+	attachment, err := h.entity.GetAttachment(r.Context(), id)
+	if err != nil {
+		slog.ErrorContext(r.Context(), "entity GetAttachment failed", "userID", user.UserID, "attachmentID", id, "err", summarizeErr(err))
+		mapUpstreamError(w, err, "Failed to download attachment.")
+		return
+	}
+	if _, err := authorizeAttachmentAccess(r.Context(), h.entity, attachment, caseHint); err != nil {
+		slog.WarnContext(r.Context(), "rejected attachment access outside caller's scope", "userID", user.UserID, "attachmentID", id)
+		mapUpstreamError(w, err, "Failed to download attachment.")
 		return
 	}
 
