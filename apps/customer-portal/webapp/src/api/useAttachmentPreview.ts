@@ -45,8 +45,13 @@ async function fetchAttachmentDataUrl(
   caseId?: string | null,
 ): Promise<string | null> {
   const baseUrl = getBackendBaseUrl();
+  // Resolved against window.location.href so a relative
+  // CUSTOMER_PORTAL_BACKEND_BASE_URL still works: the base is ignored when
+  // baseUrl is already absolute (every deployment seen so far), so this
+  // preserves existing behavior and only changes anything for a relative one.
   const url = new URL(
     `${baseUrl}/attachments/${encodeURIComponent(attachmentId)}/content`,
+    window.location.href,
   );
   // caseId is a hint only: it lets the backend authorize an attachment
   // pasted inline into a case comment (whose own referenceId is the
