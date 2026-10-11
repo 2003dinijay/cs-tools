@@ -31,6 +31,7 @@ import { ApiError } from "@utils/ApiError";
 const mocks = vi.hoisted(() => ({
   changeRequest: { value: null as Record<string, unknown> | null },
   error: { value: null as unknown },
+  approvals: { value: [] as Record<string, unknown>[] },
   mutateAsync: vi.fn(),
   showError: vi.fn(),
   showSuccess: vi.fn(),
@@ -44,6 +45,14 @@ vi.mock("@features/operations/api/useGetChangeRequestDetails", () => ({
     isLoading: false,
     isFetching: false,
     isError: mocks.error.value != null,
+  }),
+}));
+
+vi.mock("@features/operations/api/useGetChangeRequestApprovals", () => ({
+  default: () => ({
+    data: { approvals: mocks.approvals.value },
+    isPending: false,
+    isError: false,
   }),
 }));
 
