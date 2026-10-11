@@ -21,6 +21,7 @@ import {
   collapseHtmlSourceWhitespace,
   compareByCreatedOnThenId,
   convertCodeTagsToHtml,
+  dedupeAdjacentDuplicateMessages,
   deriveFilterLabels,
   extractInlineImageRefId,
   isInlineImageRefSrc,
@@ -155,6 +156,69 @@ describe("compareByCreatedOnThenId", () => {
     rows.sort(compareByCreatedOnThenId);
 
     expect(rows.map((r) => r.id)).toEqual(["question-1", "reply-1"]);
+  });
+});
+
+// Regression: digiops-cs#3424 — a chat's history showed the same question
+// and answer twice, with identical timestamps, for the first exchange of a
+// new conversation. Fixed at the display layer: collapse a message that
+// exactly repeats the one immediately before it (same content, author and
+// createdOn), regardless of why the duplicate row exists.
+describe("dedupeAdjacentDuplicateMessages", () => {
+  it("collapses a back-to-back exact duplicate (same content/author/createdOn)", () => {
+    const rows = [
+      { id: "1", content: "Can you give diagram?", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "Can you give diagram?", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:19:00" },
+      { id: "3", content: "Sure, here it is...", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+      { id: "4", content: "Sure, here it is...", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "3",
+    ]);
+  });
+
+  it("keeps two messages with identical text sent at genuinely different times", () => {
+    const rows = [
+      { id: "1", content: "ok", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "ok", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:25:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+    ]);
+  });
+
+  it("keeps two different authors' messages even if content and timestamp coincide", () => {
+    const rows = [
+      { id: "1", content: "test", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "test", createdBy: "Novera", createdOn: "2026-10-11 08:19:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+    ]);
+  });
+
+  it("does not collapse a non-adjacent repeat (e.g. the same question asked again later)", () => {
+    const rows = [
+      { id: "1", content: "test", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "Hi there!", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+      { id: "3", content: "test", createdBy: "layani@wso2.com", createdOn: "2026-10-11 08:20:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+      "3",
+    ]);
+  });
+
+  it("returns an empty array unchanged", () => {
+    expect(dedupeAdjacentDuplicateMessages([])).toEqual([]);
   });
 });
 
