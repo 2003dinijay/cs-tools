@@ -2684,11 +2684,25 @@ func (s *snCaseService) SearchCaseComments(ctx context.Context, req domain.Searc
 		// whole comment page, so a bad timestamp leaves that entry's CreatedOn zero.
 		var inlineAttachments []domain.InlineAttachment
 		for _, ia := range c.InlineAttachments {
+			convertedID := sysidToUUID(ia.ID)
+			// ia.DownloadURL embeds the same raw sysid as ia.ID (e.g.
+			// "/attachments/<sysid>/content"), but GET /attachments/{id}/content
+			// only ever accepts the UUID form -- confirmed live via a HAR
+			// capture of 404s on the raw-sysid URL for an attachment that
+			// succeeded under its converted id. Replace the sysid substring
+			// with the already-converted UUID rather than reconstruct the
+			// URL from scratch, since this upstream shape isn't otherwise
+			// documented and a guessed rebuild could silently drop a query
+			// string or path segment ia.DownloadURL actually carries.
+			downloadURL := ia.DownloadURL
+			if ia.ID != "" {
+				downloadURL = strings.ReplaceAll(downloadURL, ia.ID, convertedID)
+			}
 			entry := domain.InlineAttachment{
-				ID:          sysidToUUID(ia.ID),
+				ID:          convertedID,
 				FileName:    ia.FileName,
 				ContentType: ia.ContentType,
-				DownloadURL: ia.DownloadURL,
+				DownloadURL: downloadURL,
 				CreatedBy:   ia.CreatedBy,
 			}
 			// Left nil for an empty or unparseable value: a zero time would render as

@@ -82,7 +82,8 @@ func main() {
 		slog.Warn("GOOGLE_CHAT_AUDIENCE_SPACES is set but no longer read; it was renamed to GOOGLE_CHAT_SPACES, which is now the only Google Chat routing config")
 	}
 	googleChatClient := notifications.NewGoogleChatClient(notifications.GoogleChatConfig{
-		AudienceSpaces: parseGoogleChatAudienceSpaces(os.Getenv("GOOGLE_CHAT_SPACES")),
+		AudienceSpaces: append(parseGoogleChatAudienceSpaces(os.Getenv("GOOGLE_CHAT_SPACES")),
+			parseIncidentChatSpaces(os.Getenv("INCIDENT_CHAT_SPACES"))...),
 	})
 
 	// Twilio (the call channel, used by incident.created) is likewise
@@ -1444,6 +1445,27 @@ func parseGoogleChatAudienceSpaces(raw string) []notifications.GoogleChatAudienc
 		if strings.TrimSpace(s.Audience) == "" {
 			slog.Error("GOOGLE_CHAT_SPACES entry has no audience and will be skipped", "index", i)
 		}
+	}
+	return spaces
+}
+
+// parseIncidentChatSpaces decodes INCIDENT_CHAT_SPACES, {"<assignment group name>": "<webhook URL>"}, so onboarding a team is one .env entry.
+func parseIncidentChatSpaces(raw string) []notifications.GoogleChatAudienceSpace {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var byGroup map[string]string
+	if err := json.Unmarshal([]byte(raw), &byGroup); err != nil {
+		slog.Error("failed to parse INCIDENT_CHAT_SPACES; incident Chat cards will not be posted", "err", err)
+		return nil
+	}
+	spaces := make([]notifications.GoogleChatAudienceSpace, 0, len(byGroup))
+	for group, webhookURL := range byGroup {
+		if strings.TrimSpace(group) == "" || strings.TrimSpace(webhookURL) == "" {
+			slog.Error("INCIDENT_CHAT_SPACES entry has an empty assignment group or webhook URL and will be skipped", "assignmentGroup", group)
+			continue
+		}
+		spaces = append(spaces, notifications.GoogleChatAudienceSpace{Audience: notifications.IncidentAudience(group), WebhookURL: webhookURL})
 	}
 	return spaces
 }

@@ -489,6 +489,12 @@ type IncidentCreatedPayload struct {
 	// a backlogged consumer does not shift the whole ladder later than
 	// section 7.0 intends. Empty falls back to consume time.
 	ReportedAt string `json:"reportedAt,omitempty"`
+
+	// Category, State, Service and Environment fill the "Incident Reported" Chat card; all optional.
+	Category    string `json:"category,omitempty"`
+	State       string `json:"state,omitempty"`
+	Service     string `json:"service,omitempty"`
+	Environment string `json:"environment,omitempty"`
 }
 
 // IncidentCommentAddedPayload is TypeIncidentCommentAdded's payload.
@@ -528,6 +534,10 @@ type IncidentAssignedPayload struct {
 	// arrives before the alert it answers still answers it. Optional: without
 	// it the time the event is handled stands in.
 	AssignedOn string `json:"assignedOn,omitempty"`
+	// Number, Team and UpdatedBy fill the threaded "Incident Acknowledged" Chat reply; all optional.
+	Number    string `json:"number,omitempty"`
+	Team      string `json:"team,omitempty"`
+	UpdatedBy string `json:"updatedBy,omitempty"`
 }
 
 // IncidentSpecialOpsAlertPayload is TypeIncidentSpecialOpsAlert's payload,

@@ -1106,11 +1106,13 @@ revisited.
   its priority and team. The same update sends `incident.acknowledged`/
   `incident.assigned` when it moves the incident out of NEW or sets an assignee
   (`publishIncidentStopSignals`).
-  `incident.created` has exactly one reaction on the receiving side now — a
-  Twilio voice call — not a Google Chat alert: `csm-notification-service`
-  removed that reaction entirely, per explicit product direction (an
-  incident pages on-call directly; a separate Chat post was redundant with
-  that). The escalation ladder's own `chat` channel is a different thing and
+  `incident.created` has two reactions on the receiving side: a Twilio voice
+  call and an "Incident Reported" Google Chat card in the assignment group's
+  space (`INCIDENT_CHAT_SPACES` there), for which the event also carries
+  `category`/`state`/`service`/`environment`; `incident.assigned` carries
+  `number`/`team`/`updatedBy` (the incident view's last updater) for the
+  threaded "Incident Acknowledged." reply. The consumer decodes strictly:
+  deploy csm-notification-service before this. The escalation ladder's own `chat` channel is a different thing and
   is unaffected: it posts a card per *rung* of a climbing escalation, not one
   on creation. This service does not build or send an `IncidentLink` at all —
   it stays strictly a publisher of the fact that an incident was created;
@@ -1987,7 +1989,7 @@ customer-frustration-detector alert route by real per-team/audience
 resolution this way — `case.created`/`case.acknowledged`/
 `case.severity_changed` all route to a single fixed
 `chataudience.IncidentMonitor` audience instead, with no team detection at
-all, and `incident.created` has no Chat reaction. `ProjectOnboardingStatus`
+all, and the `incident.*` cards route by assignment group (`INCIDENT_CHAT_SPACES`). `ProjectOnboardingStatus`
 is `project.onboarding_status`'s raw enum label (e.g. `"IN_PROGRESS"`), `""`
 when the work item has no project or the column is unset.
 `IsEvaluationAccount` is true when the project's `project_type` matches the
