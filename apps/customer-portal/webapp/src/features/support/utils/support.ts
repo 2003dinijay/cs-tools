@@ -2329,12 +2329,27 @@ export function getLast30DaysUtcRange(): {
 }
 
 /**
- * Replaces bare URLs in an HTML string (not already inside an href attribute)
- * with clickable anchor tags that open in a new tab.
+ * Replaces bare URLs in the text of an HTML string with clickable anchor tags
+ * that open in a new tab. Only text between tags is touched: a URL inside a tag
+ * (an `<img src="https://...">`, an `href`) is an attribute value, and wrapping
+ * it in an anchor would break the tag and spill its markup into the page as
+ * text. Text already inside an `<a>` is left alone too.
  */
 export function linkifyBareUrls(html: string): string {
-  return html.replace(
-    /(?<!href=["'])(https?:\/\/[^\s<>"']+)/g,
-    '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;word-break:break-all;">$1</a>',
-  );
+  let anchorDepth = 0;
+  return html
+    .split(/(<[^>]*>)/)
+    .map((part) => {
+      if (part.startsWith("<")) {
+        if (/^<a[\s>]/i.test(part)) anchorDepth++;
+        else if (/^<\/a\s*>/i.test(part) && anchorDepth > 0) anchorDepth--;
+        return part;
+      }
+      if (anchorDepth > 0) return part;
+      return part.replace(
+        /(https?:\/\/[^\s<>"']+)/g,
+        '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;word-break:break-all;">$1</a>',
+      );
+    })
+    .join("");
 }
