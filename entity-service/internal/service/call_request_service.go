@@ -135,24 +135,30 @@ func (s *callRequestService) CreateCallRequest(ctx context.Context, req domain.C
 		return domain.CreateCallRequestResponse{}, err
 	}
 
+	initialState := callRequestCreateInitialState(ctx)
+
 	if s.snMirror != nil {
-		return s.createCallRequestSNFirst(ctx, req, user.ID, email)
+		return s.createCallRequestSNFirst(ctx, req, user.ID, email, initialState)
 	}
 
-	return s.repo.CreateCallRequest(ctx, req, user.ID, email, callRequestCreateInitialState(ctx))
+	return s.repo.CreateCallRequest(ctx, req, user.ID, email, initialState)
 }
 
 // callRequestCreateInitialState decides a new call request's starting state
-// from who is creating it, for the plain-Postgres CREATE path only (dual-write's
-// own createCallRequestSNFirst instead mirrors whatever state ServiceNow's
-// create response actually assigned -- see that method's own doc comment for
-// why: ServiceNow's create API has no field to request a starting state, so
-// there is nothing here for this service to ask it for). A customer raises a
-// request and WSO2 must respond (pending_on_wso2, the long-standing default);
-// a CSM agent instead proposes times to the customer, so the customer is the
-// one who must respond (pending_on_customer) -- before this, every call
-// request started pending_on_wso2 regardless of who created it, which was
-// backwards for an agent-initiated call (a real, reported bug).
+// from who is creating it -- applied on BOTH the plain-Postgres and the
+// dual-write CREATE paths, so the two data sources never disagree about who a
+// call request is waiting on. A customer raises a request and WSO2 must
+// respond (pending_on_wso2, the long-standing default); a CSM agent instead
+// proposes times to the customer, so the customer is the one who must
+// respond (pending_on_customer) -- before this, every call request started
+// pending_on_wso2 regardless of who created it, which was backwards for an
+// agent-initiated call (a real, reported bug). ServiceNow's own create flow
+// has no caller concept and always assigns pending_on_wso2 unconditionally
+// (confirmed against its CallRequestUtils.scheduleCall script), so on the
+// dual-write path this deliberately does NOT mirror whatever state
+// ServiceNow's create response returned -- Postgres is what every portal
+// actually reads, so it is the one that needs to get this right; ServiceNow's
+// own stored state is left as-is (its own concern, out of scope here).
 // repository.IsExternalCaller reads the identity callerIdentityMiddleware
 // already resolved for every request; an unresolved/ambiguous scope
 // (IsExternalCaller's own false default) keeps the original, safer
@@ -173,21 +179,17 @@ func callRequestCreateInitialState(ctx context.Context) domain.CallRequestStateT
 // PERMANENT orphan. Calling ServiceNow first, and only writing to Postgres
 // once that succeeds, makes that orphan impossible.
 //
-// On success, id/createdBy/createdOn/state come from ServiceNow's own
-// response and are used AS-IS for the Postgres insert
+// On success, id/createdBy/createdOn come from ServiceNow's own response and
+// are used AS-IS for the Postgres insert
 // (CallRequestRepository.CreateCallRequestFromServiceNow) rather than
-// generated or guessed -- callerID/callerEmail are still the resolved
-// caller's own identity (used for customer_call.opened_by_id/created_by,
-// matching the plain-Postgres insert's own attribution), not anything
-// ServiceNow returns. The state is mirrored rather than decided by
-// callRequestCreateInitialState (the plain-Postgres path's own caller-based
-// heuristic) specifically so Postgres can never disagree with the ServiceNow
-// record it mirrors: ServiceNow's create API has no field to request a
-// starting state and decides it on its own, so this service has no way to
-// make it assign pending_on_customer for an agent-initiated call even if it
-// wanted to -- reading back whatever it actually chose is the only way the
-// two stores can stay in agreement.
-func (s *callRequestService) createCallRequestSNFirst(ctx context.Context, req domain.CreateCallRequestRequest, callerID, callerEmail string) (domain.CreateCallRequestResponse, error) {
+// generated -- callerID/callerEmail are still the resolved caller's own
+// identity (used for customer_call.opened_by_id/created_by, matching the
+// plain-Postgres insert's own attribution), not anything ServiceNow returns.
+// initialState, however, is NOT taken from ServiceNow's response -- it is
+// callRequestCreateInitialState's own caller-based decision, the same one the
+// plain-Postgres path uses, since ServiceNow's create flow always assigns
+// pending_on_wso2 unconditionally and has no way to ask for anything else.
+func (s *callRequestService) createCallRequestSNFirst(ctx context.Context, req domain.CreateCallRequestRequest, callerID, callerEmail string, initialState domain.CallRequestStateType) (domain.CreateCallRequestResponse, error) {
 	creator, ok := s.snMirror.(callRequestSNCreator)
 	if !ok {
 		// Cannot happen with the real constructor (routes.go always passes a
@@ -197,7 +199,7 @@ func (s *callRequestService) createCallRequestSNFirst(ctx context.Context, req d
 		return domain.CreateCallRequestResponse{}, fmt.Errorf("call request SN mirror does not support create")
 	}
 
-	id, createdBy, createdOn, state, err := creator.createCallRequestSNFirstDetails(ctx, req)
+	id, createdBy, createdOn, _, err := creator.createCallRequestSNFirstDetails(ctx, req)
 	if err != nil {
 		// ServiceNow never accepted the call request -- nothing is written to
 		// Postgres at all, by construction (s.repo.CreateCallRequestFromServiceNow
@@ -205,7 +207,7 @@ func (s *callRequestService) createCallRequestSNFirst(ctx context.Context, req d
 		return domain.CreateCallRequestResponse{}, err
 	}
 
-	resp, err := s.repo.CreateCallRequestFromServiceNow(ctx, req, id, createdBy, createdOn, callerID, state)
+	resp, err := s.repo.CreateCallRequestFromServiceNow(ctx, req, id, createdBy, createdOn, callerID, initialState)
 	if err != nil {
 		// ServiceNow already has the call request at this point -- this is
 		// now real drift (ServiceNow has it, Postgres doesn't) needing
