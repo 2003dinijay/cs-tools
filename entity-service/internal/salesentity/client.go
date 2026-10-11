@@ -28,6 +28,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -36,6 +37,9 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 )
+
+// msgSalesforceRejected is the caller-safe text for a Salesforce refusal; the detail is logged.
+const msgSalesforceRejected = "We're sorry, but the request could not be completed. Please reach out to your account manager for assistance."
 
 const (
 	customerSearchPath       = "/customer-search"
@@ -359,7 +363,8 @@ func (c *Client) search(ctx context.Context, path string, body any, what string,
 	case resp.StatusCode >= 500:
 		return &apierror.ServiceUnavailableError{Msg: fmt.Sprintf("salesentity: %s returned %d", path, resp.StatusCode)}
 	default:
-		return &apierror.DownstreamError{Msg: fmt.Sprintf("salesentity rejected %s (status %d)", path, resp.StatusCode)}
+		slog.Warn("salesentity rejected the request", "path", path, "status", resp.StatusCode)
+		return &apierror.DownstreamError{Msg: msgSalesforceRejected}
 	}
 }
 

@@ -74,6 +74,8 @@ const (
 		"this project. Please use an email address with a supported domain or reach out to your account manager for assistance."
 	msgDuplicateContact = "We're sorry, but there was an error while validating the contact information. " +
 		"The contact already exists in our system."
+	msgContactOtherAccount = "We're sorry, but this email address belongs to a contact of another organisation and " +
+		"cannot be added to this project. Please reach out to your account manager for assistance."
 )
 
 // Validate implements InvitationValidator.
@@ -139,6 +141,12 @@ func (v *invitationValidator) Validate(ctx context.Context, target domain.Member
 			return &apierror.ValidationError{Msg: msgDuplicateContact}
 		}
 		baseAccountSfID = inviterAccount
+	}
+	// Salesforce refuses a contact from a foreign, non-partner account; say so before any write.
+	if len(invitees) == 1 {
+		if a := accountSfIDOf(invitees[0]); a != "" && a != target.AccountSfID && !containsID(partnerSfIDs, a) {
+			return &apierror.ForbiddenError{Msg: msgContactOtherAccount}
+		}
 	}
 
 	base, err := v.sales.GetCustomer(ctx, baseAccountSfID)
