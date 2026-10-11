@@ -69,6 +69,7 @@ type stubCaseRepo struct {
 	createCase                    func(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
 	getCaseByID                   func(ctx context.Context, id string, scope repository.SearchScope) (domain.CaseView, error)
 	addCaseTag                    func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
+	isCaseLikeWorkItem            func(ctx context.Context, workItemID string) (bool, error)
 	setCaseWatchList              func(ctx context.Context, caseID string, userIDs []string, actorEmail string) ([]domain.WatchListUser, time.Time, error)
 	accountDefaultWatcherEmails   func(ctx context.Context, projectID string) ([]string, error)
 	projectOnboardingInfo         func(ctx context.Context, projectID string) (string, bool, error)
@@ -221,6 +222,16 @@ func (s *stubCaseRepo) GetCaseTagSNSysID(ctx context.Context, caseID, tagID stri
 }
 func (s *stubCaseRepo) SearchTags(context.Context, string, string, int) ([]domain.Tag, error) {
 	panic("not implemented")
+}
+
+// IsCaseLikeWorkItem answers true unless a test says otherwise: the tag
+// mirror tests above were written against cases, and a change request's
+// Postgres-only tags are the one thing isCaseLikeWorkItem switches off.
+func (s *stubCaseRepo) IsCaseLikeWorkItem(ctx context.Context, workItemID string) (bool, error) {
+	if s.isCaseLikeWorkItem != nil {
+		return s.isCaseLikeWorkItem(ctx, workItemID)
+	}
+	return true, nil
 }
 func (s *stubCaseRepo) GetCaseFeedback(ctx context.Context, caseID string) (repository.CaseFeedbackRow, bool, error) {
 	if s.getCaseFeedback != nil {

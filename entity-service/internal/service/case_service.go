@@ -3541,7 +3541,10 @@ func (s *caseService) addCaseTagAs(ctx context.Context, caseID, label, actorEmai
 	// no ServiceNow mapping yet, the same "not yet mirrorable" state
 	// RemoveCaseTag's mirror already tolerates (see that method's own doc
 	// comment).
-	if s.snWriteback != nil {
+	//
+	// Gated on the work item's type (tagMirrorApplies): this endpoint takes
+	// any work item id, and a change request's tags are Postgres-only.
+	if s.snWriteback != nil && s.tagMirrorApplies(ctx, caseID) {
 		mirrorCaseID, mirrorTagID, mirrorLabel, mirrorActorEmail := caseID, tag.ID, label, actorEmail
 		s.snWriteback.Dispatch(ctx, "case_tag", caseID, "add",
 			map[string]any{"caseId": mirrorCaseID, "label": mirrorLabel},
@@ -3603,9 +3606,15 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 		return err
 	}
 
+	// Whether this attachment is mirrored at all: dual-write mode, and a
+	// case-like work item (a change request's tags are Postgres-only -- see
+	// tagMirrorApplies). Decided before the delete, since the sys_id lookup it
+	// gates has to read the row while it still exists.
+	mirrored := s.snWriteback != nil && s.tagMirrorApplies(ctx, caseID)
+
 	var snSysID *string
 	var snLookupErr error
-	if s.snWriteback != nil {
+	if mirrored {
 		snSysID, snLookupErr = s.repo.GetCaseTagSNSysID(ctx, caseID, tagID)
 	}
 
@@ -3622,7 +3631,7 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 	// means we could not tell whether a ServiceNow mirror needs removing, so
 	// it lands in sn_writeback_failures for manual backfill instead of
 	// vanishing.
-	if s.snWriteback != nil && snLookupErr != nil {
+	if mirrored && snLookupErr != nil {
 		lookupErr := snLookupErr
 		s.snWriteback.Dispatch(ctx, "case_tag", caseID, "remove",
 			map[string]any{"caseId": caseID, "tagId": tagID},
@@ -3630,7 +3639,7 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 				return lookupErr
 			},
 		)
-	} else if s.snWriteback != nil && snSysID != nil && *snSysID != "" {
+	} else if mirrored && snSysID != nil && *snSysID != "" {
 		mirrorCaseID, mirrorTagID := caseID, sysidToUUID(*snSysID)
 		s.snWriteback.Dispatch(ctx, "case_tag", caseID, "remove",
 			map[string]any{"caseId": mirrorCaseID, "tagId": tagID},
@@ -3641,6 +3650,26 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 	}
 
 	return nil
+}
+
+// tagMirrorApplies reports whether a tag change on the work item workItemID
+// is mirrored to the previous system (DATA_SOURCE=postgres-servicenow-dual-write
+// only; the caller has already checked snWriteback). POST /cases/{id}/tags
+// and DELETE /cases/{id}/tags/{tagId} take any work item id -- a change
+// request's too (the CSM portal tags change requests through them) -- but the
+// mirror POSTs to the previous system's case tag endpoint, which only a
+// case-like work item (CaseRepository.IsCaseLikeWorkItem) has a record
+// behind. A change request's tags are therefore Postgres-only: nothing is
+// dispatched, nothing lands in sn_writeback_failures. Fails closed: when the
+// type cannot be read, nothing is mirrored (logged at WARN) rather than a
+// mirror against a record that may not be a case.
+func (s *caseService) tagMirrorApplies(ctx context.Context, workItemID string) bool {
+	caseLike, err := s.repo.IsCaseLikeWorkItem(ctx, workItemID)
+	if err != nil {
+		slog.WarnContext(ctx, "case tag: work item type lookup failed; not mirroring the tag change to the previous system", "caseId", workItemID, "error", err)
+		return false
+	}
+	return caseLike
 }
 
 // SearchTags implements CaseService.
