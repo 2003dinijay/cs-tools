@@ -59,7 +59,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `EVENT_HUB_CONNECTION_STRING` | no* | — | Event Hub namespace Shared Access Policy connection string. *Required once `EVENT_HUB_BROKER` is set |
 | `EVENT_HUB_TOPIC` | no* | — | Event Hub (Kafka topic) name. *Required once `EVENT_HUB_BROKER` is set |
 | `EVENT_PUBLISHING_ENABLED` | no | `false` | Must be `"true"` for `EventPublisherService` to actually get constructed, even with `EVENT_HUB_BROKER` fully configured — a separate safe-by-default kill switch |
-| `CUSTOMER_ROLES` | no | — | Comma-separated ServiceNow role names whose presence on a case comment's resolved author marks a customer reply — see "Customer-reply state transition" below |
+| `CUSTOMER_ROLES` | no | — | Comma-separated ServiceNow role names whose presence on a case comment's resolved author marks a customer reply, `DATA_SOURCE=servicenow` only; the Postgres data sources decide this from the caller's identity instead — see "Customer-reply state transition" below |
 | `SALES_ENTITY_BASE_URL` | no* | — | REST `sales/sales-entity-service` base URL (not GraphQL `sales/entity-graphql-service`). *Required once any `SALES_ENTITY_*` var is set |
 | `SALES_ENTITY_TOKEN_URL` | no* | — | OAuth2 token endpoint (client_credentials grant) |
 | `SALES_ENTITY_CLIENT_ID` | no* | — | Choreo connection client id |
@@ -2321,6 +2321,71 @@ and the Choreo integration's PATCH has no conditional-update mechanism
 (ETag/version/`sys_mod_count`) to close it with. Fixing this needs that
 integration to expose one first — a cross-team dependency, not addressed
 here.
+
+### The same rule on the Postgres data sources
+
+`case_service.go`'s `createCaseCommentAs` (behind `CreateCaseComment`,
+`CreateInternalCaseComment` and the M2M `CreateCaseCommentAs`, so every
+client — customer webapp, microapp — gets it) calls its own
+`applyCustomerReplyStateTransition` last, after every other side effect of
+the comment, for `DATA_SOURCE=postgres` and `postgres-servicenow-dual-write`.
+Same semantics as the previous system's function above, ported rather than
+reinvented:
+
+- only a customer-visible comment (`type: comment`); a work note never
+  triggers it;
+- only when the record is currently `Awaiting Info` or `Solution Proposed`
+  — exactly those two; `Open`/`Work In Progress`/`Reopened` are left alone,
+  `Waiting on WSO2` is a no-op, and `Closed` stays closed (reopening is the
+  customer's explicit action);
+- only when the comment's author is a customer. This service does not look
+  the author up: the caller's resolved `AccessScope` already says so
+  (`isCustomerCommentAuthor`). An **external caller** — the scope is neither
+  `Unrestricted` nor `HasInternalAccess`, the same predicate as
+  `repository.IsExternalCaller` and the exact complement of the "internal
+  caller" `UpdateCase`'s resolution-fields requirement uses — is a registered
+  portal contact posting through the customer portal, so a customer. WSO2
+  staff, a mixed identity that still has internal access, the system
+  identity and an M2M client never trigger it. `CUSTOMER_ROLES` is
+  deliberately **not** consulted on this path, although the Postgres user
+  record carries roles (`UserRepository.GetUserRoles`): a resolved identity
+  leaves it nothing to decide, and when no identity can be resolved the move
+  could not be made anyway (`GetCaseByID` and every `Scoped` repository
+  write refuse to run without one), so a role fallback would be dead code —
+  an unresolvable scope simply answers "not confirmed";
+- the move is the service's own `UpdateCase` with `State: waiting_on_wso2`,
+  called **in-process** on the customer's own request context after the
+  comment is committed — so the `work_item_activity` lifecycle entry
+  (`State: Awaiting Info -> Waiting on WSO2`, `user_email` = the customer),
+  `case.status_changed` (after `case.comment_added`, the order the
+  previous system's function produces), `SLAEngineService.ApplyCaseStateEffects`
+  and the dual-write `patchCaseFields` mirror of the one state write all
+  happen exactly as for a manual `PATCH`, with no logic of the rule's own.
+  A failed read or move is logged at ERROR with the case id and never fails
+  the comment, which is already written.
+- **One rule, no type-specific logic.** It never reads the record's type: a
+  case and a service request go through the identical path, and
+  `CaseRepository.UpdateCase` lands the write on the extension row that
+  exists (`caseLikeRowTypeColumn`), so a work item whose `work_item.type`
+  disagrees with its row moves too.
+
+The previous system's function's **KNOWN GAP** applies here unchanged: the
+rule's own `GetCaseByID` and `UpdateCase`'s write (its own `GetCaseByID`
+only decides whether to publish/record the change; the `UPDATE` is
+unconditional) are not atomic, so a record moved to another state in that
+window is still set to `Waiting on WSO2`. Postgres could close it with a
+conditional `UPDATE`, but that lives on the `UpdateCase` path this rule
+deliberately reuses unchanged; flagged, not half-closed.
+
+Tests: `case_service_customer_reply_test.go` (the recording repository: a
+CASE and a SERVICE_REQUEST in the same table, every state, work note, staff /
+mixed / M2M callers, unresolved identity, a failed move logged with the
+comment still succeeding, and the dual-write mirror + SLA effect) and
+`case_service_customer_reply_integration_test.go` (the real service and
+repositories over `ENTITY_TEST_DATABASE_URL`, run as the superuser and as
+`csm_app`: both record types from both states move with the lifecycle entry,
+a `work_item.type`/row mismatch moves, Open/Closed/already-waiting stay, a
+staff comment and a customer's work note change nothing).
 
 ## Scheduled task runs
 
