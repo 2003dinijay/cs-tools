@@ -166,9 +166,6 @@ func parseActualDurationMin(raw *string) *int {
 // Known gaps, all left at their zero value rather than guessed:
 //   - number has no default/sequence and no confirmed format, so a created
 //     call request has a NULL number (returned as "").
-//   - CancellationReason has no column ("reason" is the request's own
-//     reason), so it is never stored or returned -- the service rejects a
-//     request that supplies one rather than silently dropping it.
 //   - closed_on/closed_by_id are never set by UpdateCallRequest: which states
 //     count as "closed" isn't specified anywhere.
 //   - State transitions are not validated against the current state, except that
@@ -625,7 +622,8 @@ func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.Upda
 			plan = COALESCE($9::text, plan),
 			attendees = COALESCE($10::text, attendees),
 			action_items = COALESCE($11::text, action_items),
-			actual_call_duration = COALESCE($12::text, actual_call_duration)
+			actual_call_duration = COALESCE($12::text, actual_call_duration),
+			reject_reason = COALESCE($15::text, reject_reason)
 		WHERE id = $1::text::uuid
 		  AND ($13::text::uuid IS NULL OR work_item_id = $13::text::uuid)
 		  AND ($14::text[] IS NULL OR state::text = ANY($14::text[]))
@@ -637,6 +635,7 @@ func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.Upda
 		req.ID, callRequestStateToEnum(req.State), callerEmail,
 		finalTimes, req.DurationMinutes, scheduledOn, assigneeID,
 		notes, req.Plan, req.Attendees, req.ActionItems, actual, caseID, onlyFromStates,
+		req.CancellationReason,
 	).Scan(&id, &updatedOn)
 	if errors.Is(err, pgx.ErrNoRows) && onlyFromStates != nil {
 		// No row matched. Either the call does not exist (not found), or it is in a state
