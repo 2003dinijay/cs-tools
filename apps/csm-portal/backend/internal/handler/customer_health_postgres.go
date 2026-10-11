@@ -481,8 +481,12 @@ var customerHealthLegacyActivationCutoff = time.Date(2024, 1, 1, 0, 0, 0, 0, tim
 
 // projectGoLiveStatus ports CustomerHealthAnalysis._NoGoLiveStatus, the real
 // ServiceNow scoped-app script this whole feature approximates -- its exact
-// source was obtained directly and is reproduced here field-for-field,
-// including its literal status strings. goLiveDate is the project's own
+// source was obtained directly and its branch structure/thresholds are
+// reproduced here faithfully. Status strings were cross-checked against a
+// live sample of real accounts (not assumed from the source alone) and
+// corrected where they disagreed -- see the "Customer for over 2 years"
+// correction in the legacy-activation branch below for one found this way.
+// goLiveDate is the project's own
 // GoLiveDate (RFC3339, entity-service's ProjectView.GoLiveDate /
 // project.onboarding_go_live_date -- u_ob_golive_date in the real script);
 // activationDate is the owning account's own ActivationDate ("YYYY-MM-DD",
@@ -513,7 +517,18 @@ func projectGoLiveStatus(goLiveDate, activationDate *string, now time.Time) serv
 	}
 
 	if haveActivation && activation.Before(customerHealthLegacyActivationCutoff) {
-		return servicenow.GoLiveStatus{Status: "Has Gone Live ( Customer for over 2 years )", IsRisk: false, State: "success"}
+		// Status is plain "Has Gone Live", not a "... over 2 years" variant --
+		// confirmed against real data: every account in a live sample whose
+		// activation predates the cutoff (with no go-live date recorded)
+		// reports plain "Has Gone Live" from the real system, never a
+		// distinct label for this branch. An earlier version of this port
+		// invented a "Has Gone Live ( Customer for over 2 years )" string
+		// here with no real-data confirmation; this branch is kept distinct
+		// from the goLiveDate-is-set branch above (not collapsed into one
+		// early return) only to preserve the real script's own branch
+		// structure for a future maintainer, even though the two currently
+		// produce an identical result.
+		return servicenow.GoLiveStatus{Status: "Has Gone Live", IsRisk: false, State: "success"}
 	}
 	if !haveActivation {
 		return servicenow.GoLiveStatus{Status: "N/A (No Start Date)", IsRisk: false, State: "pending"}

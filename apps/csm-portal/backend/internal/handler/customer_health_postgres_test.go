@@ -189,6 +189,68 @@ func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_NoStartDate(t *te
 	}
 }
 
+// TestProjectGoLiveStatus_LegacyActivationReportsPlainHasGoneLive pins a real
+// bug found by cross-checking a live sample of real accounts (not just
+// reading the ServiceNow source): an activation date before the fixed
+// 2024-01-01 grandfather-clause cutoff, with no go-live date recorded,
+// reports plain "Has Gone Live" from the real system -- every one of four
+// real sampled accounts predating the cutoff agreed. An earlier version of
+// this port returned a distinct "Has Gone Live ( Customer for over 2 years )"
+// string here that no real account ever actually produces.
+func TestProjectGoLiveStatus_LegacyActivationReportsPlainHasGoneLive(t *testing.T) {
+	now := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+	cases := []string{"2015-11-27", "2017-10-14", "2022-12-22", "2023-09-10"}
+	for _, activation := range cases {
+		activation := activation
+		t.Run(activation, func(t *testing.T) {
+			got := projectGoLiveStatus(nil, &activation, now)
+			want := servicenow.GoLiveStatus{Status: "Has Gone Live", IsRisk: false, State: "success"}
+			if got != want {
+				t.Errorf("projectGoLiveStatus(nil, %q, %v) = %+v, want %+v", activation, now, got, want)
+			}
+		})
+	}
+}
+
+// TestProjectGoLiveStatus_EveryBranch pins every branch of the real script's
+// own _NoGoLiveStatus this ports, cross-checked against real account data
+// where available (see TestPostgresCustomerHealthClient_GetCustomerHealthSummary_*
+// above and TestProjectGoLiveStatus_LegacyActivationReportsPlainHasGoneLive).
+func TestProjectGoLiveStatus_EveryBranch(t *testing.T) {
+	now := time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+	goLive := "2026-01-01T00:00:00Z"
+	noStartDate := ""
+	futureActivation := "2027-01-01"
+	recentActivation := now.AddDate(0, 0, -10).Format("2006-01-02") // ~10 days ago: < 1 month
+	threeMonthsAgo := now.AddDate(0, -3, 0).Format("2006-01-02")    // a real risk-free "pending" window
+	sevenMonthsAgo := now.AddDate(0, -7, 0).Format("2006-01-02")    // the real risk window
+	legacyActivation := "2020-01-01"
+
+	cases := []struct {
+		name           string
+		goLiveDate     *string
+		activationDate *string
+		want           servicenow.GoLiveStatus
+	}{
+		{"go-live date set", &goLive, nil, servicenow.GoLiveStatus{Status: "Has Gone Live", IsRisk: false, State: "success"}},
+		{"no go-live, no activation", nil, nil, servicenow.GoLiveStatus{Status: "N/A (No Start Date)", IsRisk: false, State: "pending"}},
+		{"no go-live, blank activation", nil, &noStartDate, servicenow.GoLiveStatus{Status: "N/A (No Start Date)", IsRisk: false, State: "pending"}},
+		{"legacy pre-cutoff activation", nil, &legacyActivation, servicenow.GoLiveStatus{Status: "Has Gone Live", IsRisk: false, State: "success"}},
+		{"activation date in the future", nil, &futureActivation, servicenow.GoLiveStatus{Status: "N/A (Activation Date in Future)", IsRisk: false, State: "pending"}},
+		{"recently activated (under a month)", nil, &recentActivation, servicenow.GoLiveStatus{Status: "Recently Activated (Less than a month)", IsRisk: false, State: "pending"}},
+		{"3 months since activation", nil, &threeMonthsAgo, servicenow.GoLiveStatus{Status: "Hasn't Gone Live Since 3 months", IsRisk: false, State: "pending"}},
+		{"7 months since activation: the real risk", nil, &sevenMonthsAgo, servicenow.GoLiveStatus{Status: "Hasn't Gone Live in 6 months", IsRisk: true, State: "failure"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := projectGoLiveStatus(tc.goLiveDate, tc.activationDate, now)
+			if got != tc.want {
+				t.Errorf("projectGoLiveStatus(%v, %v, %v) = %+v, want %+v", tc.goLiveDate, tc.activationDate, now, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestPostgresCustomerHealthClient_GetCustomerHealthSummary_ExcludesAnnouncementsFromRecentCases
 // pins the real bug this fix closes: the real ServiceNow script's own
 // "recent cases" query explicitly excludes Announcement-type work items
