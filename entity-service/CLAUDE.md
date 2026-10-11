@@ -7296,17 +7296,17 @@ A handoff needs an assignee: an unassigned incident is a 409 `incident_handoff_n
 which the SME page compares alerts against. Off without the topic; unknown to the consumer
 until it adds the type (`HandleShared` skips unknown types on sre-events).
 
-**`UpdateProblem`/`UpdateIncident` are also not
-implemented**: `UpdateProblem.Transition` is validated
+**`UpdateProblem` is also not implemented here**: `UpdateProblem.Transition` is validated
 server-side by ServiceNow's own workflow engine with no fixed, confirmed
 transition rule set to reimplement (see that field's own doc comment --
-deliberately not a closed enum for exactly this reason);
-`UpdateIncident` touches several fields with no backing column at all
-(`AssignmentGroupID`, `ConfigurationItemID`, `WatchList`) alongside ones
-that do, and would need `comment`-table side effects for
-`AdditionalComments`/`WorkNotes` mirroring `caseService.UpdateCase`'s own
-comment-on-update behavior -- deferred as a unit rather than
-half-implemented.
+deliberately not a closed enum for exactly this reason).
+**`UpdateIncident` is** (`incidentService.UpdateIncident`, dual-write and plain Postgres): the
+state transition, work notes / comments, and the record's own fields -- everything
+`snIncidentService.UpdateIncident` accepts, written in one transaction
+(`IncidentRepository.UpdateIncidentLifecycle`) and mirrored to ServiceNow as sent. A change to
+impact or urgency recomputes priority with ServiceNow's lookup; a new category that does not hold
+the current subcategory clears it; `watchList` replaces `work_item_watcher`. A field sent as
+`null` is ignored, as on the ServiceNow path; only `environment` can be cleared.
 
 `IncidentView.WatchList`/`LinkedServiceRequests` are always empty slices on
 this data source (never populated) -- `work_item_watcher` could back the
