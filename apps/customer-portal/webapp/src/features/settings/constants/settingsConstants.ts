@@ -210,7 +210,7 @@ export const SETTINGS_USER_REMOVE_ERROR =
 export const SETTINGS_USER_SYSTEM_NOT_SECURITY_ERROR =
   "System Users cannot be security contacts.";
 
-export const SETTINGS_USER_SECURITY_UPDATE_SUCCESS = "Security contact updated";
+export const SETTINGS_USER_SECURITY_UPDATE_SUCCESS = "User roles updated";
 
 export const SETTINGS_USER_UPDATE_ERROR =
   "Failed to update user. Please try again.";
