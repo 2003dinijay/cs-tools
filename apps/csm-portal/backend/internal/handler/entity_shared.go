@@ -110,6 +110,13 @@ type entityProjectView struct {
 	// (project.onboarding_status) -- nil when onboarding isn't tracked for
 	// this project.
 	OnboardingStatus *string `json:"onboardingStatus"`
+	// GoLiveDate mirrors entity-service's own ProjectView.GoLiveDate
+	// (project.onboarding_go_live_date, RFC3339 -- entity-service marshals
+	// *time.Time, not a plain date string like AccountView.ActivationDate).
+	// This is the field the real ServiceNow customer-health script's own
+	// _NoGoLiveStatus actually checks (u_ob_golive_date) -- OnboardingStatus
+	// above is a different, unrelated signal and must not be used for this.
+	GoLiveDate *string `json:"goLiveDate"`
 }
 
 type entitySearchProjectsRequest struct {
@@ -189,6 +196,11 @@ type entityAccountView struct {
 	ID     string  `json:"id"`
 	Name   string  `json:"name"`
 	Region *string `json:"region"`
+	// ActivationDate mirrors entity-service's own AccountView.ActivationDate
+	// (account.activation_date, plain "YYYY-MM-DD" -- not RFC3339) -- needed
+	// by the customer-health go-live computation, which ports the real
+	// ServiceNow script's own _NoGoLiveStatus (see customer_health_postgres.go).
+	ActivationDate *string `json:"activationDate"`
 }
 
 type entitySearchAccountsResponse struct {

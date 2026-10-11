@@ -77,14 +77,20 @@ func (r *deploymentRepo) SearchDeployments(ctx context.Context, req domain.Searc
 	// Project field) and nullable scan handling, not just a query fix.
 	// is_active = TRUE: "deleting" a deployment (PATCH .../deployments/{id}
 	// {"active": false}) deactivates it, it is never actually removed --
-	// see UpdateDeploymentFields. SearchDeploymentsRequest has no
-	// include-inactive filter in its wire contract at all (nor does the
-	// ServiceNow-backed search expose one), so a deactivated deployment must
-	// simply stop appearing here, permanently, the same as ServiceNow's own
+	// see UpdateDeploymentFields. A deactivated deployment must simply stop
+	// appearing here by default, permanently, the same as ServiceNow's own
 	// listing already does for a deactivated record. Without this, "delete"
 	// silently updated is_active in Postgres but the deployment kept
 	// appearing in every search result exactly as before.
-	where := "WHERE d.project_id IS NOT NULL AND d.is_active = TRUE"
+	// req.IncludeInactive is an explicit, additive opt-out of that filter --
+	// see its own doc comment on SearchDeploymentsRequest -- for a caller
+	// that genuinely needs to see deactivated deployments too (e.g. the CSM
+	// portal backend's customer-health EOL-product check). Every existing
+	// caller leaves it unset/false and sees byte-identical behavior.
+	where := "WHERE d.project_id IS NOT NULL"
+	if !req.IncludeInactive {
+		where += " AND d.is_active = TRUE"
+	}
 
 	if len(req.ProjectIDs) > 0 {
 		// Cast the parameter to uuid[] so the column stays uncast and idx_deployments_project_id is usable.

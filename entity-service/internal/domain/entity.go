@@ -1181,6 +1181,13 @@ type Project struct {
 	Account          *ProjectSearchAccountRef `json:"account"`
 	ActiveCasesCount int                      `json:"activeCasesCount"`
 	OnboardingStatus *string                  `json:"onboardingStatus"`
+	// GoLiveDate mirrors ProjectDetailsView/ProjectEngagementFields' own
+	// GoLiveDate (project.onboarding_go_live_date) -- previously selected
+	// only by GetProjectByID, not SearchProjects, even though callers that
+	// need to know whether a project has actually gone live (e.g. the CSM
+	// portal backend's customer-health risk flags) search by account rather
+	// than fetching one project at a time.
+	GoLiveDate *time.Time `json:"goLiveDate"`
 }
 
 // ProjectAccountRef is the embedded account summary returned in project detail responses.
@@ -1436,6 +1443,12 @@ type ProjectView struct {
 	// onboarding. Nil when no owner is assigned — most projects, since only
 	// onboarding-enabled projects have one (ServiceNow data source only).
 	OnboardingOwner *PersonRef `json:"onboardingOwner"`
+	// GoLiveDate mirrors ProjectDetailsView/ProjectEngagementFields' own
+	// GoLiveDate (project.onboarding_go_live_date) -- nil when the project
+	// hasn't gone live (or the date isn't tracked). Previously only
+	// populated on GetProjectByID; added here so an account-scoped search
+	// doesn't need one GetProjectByID call per project just to know this.
+	GoLiveDate *time.Time `json:"goLiveDate"`
 }
 
 // SearchProjectsResponse is the paginated result of a project search.
@@ -1918,6 +1931,14 @@ type SearchDeploymentsRequest struct {
 	ProjectIDs      []string         `json:"projectIds"`
 	DeploymentTypes []DeploymentType `json:"deploymentTypes"`
 	IDs             []string         `json:"ids"`
+	// IncludeInactive additively widens the result to also include deployments
+	// with is_active = FALSE -- omitted/false reproduces today's exact
+	// behavior for every existing caller (the permanent is_active = TRUE
+	// filter in SearchDeployments's SQL). Added for the CSM portal backend's
+	// customer-health EOL-product check, whose real ServiceNow script has no
+	// such filter at all -- a deactivated deployment can still carry real EOL
+	// product history that must count toward the risk flag.
+	IncludeInactive bool `json:"includeInactive,omitempty"`
 }
 
 // SearchDeploymentsResponse is the paginated result of a deployment search.
