@@ -147,6 +147,7 @@ export default function SettingsUserManagement({
         contact.email?.toLowerCase().includes(normalizedQuery) ||
         contact.firstName?.toLowerCase().includes(normalizedQuery) ||
         contact.lastName?.toLowerCase().includes(normalizedQuery) ||
+        `${contact.firstName ?? ""} ${contact.lastName ?? ""}`.trim().toLowerCase().includes(normalizedQuery) ||
         roleLabels.includes(normalizedQuery)
       );
     });
