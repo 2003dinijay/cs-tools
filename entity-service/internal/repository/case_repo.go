@@ -318,6 +318,68 @@ const caseLikeJoins = `
 	LEFT JOIN security_report_analysis sra ON sra.id = wi.id
 	LEFT JOIN announcement ann ON ann.id = wi.id`
 
+// caseLikeRowTypeColumn is the case-like type a work item's rows say it is: the
+// type of the extension row that exists (over "case" c and caseLikeJoins), and
+// work_item.type when no extension row exists at all.
+//
+// work_item.type and the extension row disagree on some synced rows (see
+// caseLikeOwnStateColumn): a work item typed CASE whose only row is a service
+// request's, or the reverse. Every read COALESCEs across all five tables
+// (caseLikeStateColumn) and so shows such a ticket with its state, while a write
+// that picked its UPDATE target from work_item.type alone updated zero rows of
+// the wrong table and answered 404 "case not found" for a ticket the same caller
+// had just read -- confirmed live on a service request. A write therefore
+// dispatches on this column, in the same table order the COALESCE reads, so it
+// lands on the very row the read showed. work_item.type itself is never
+// rewritten here: the sync owns it.
+const caseLikeRowTypeColumn = `CASE
+	WHEN c.id IS NOT NULL THEN 'CASE'
+	WHEN eng.id IS NOT NULL THEN 'ENGAGEMENT'
+	WHEN sr.id IS NOT NULL THEN 'SERVICE_REQUEST'
+	WHEN sra.id IS NOT NULL THEN 'SECURITY_REPORT_ANALYSIS'
+	WHEN ann.id IS NOT NULL THEN 'ANNOUNCEMENT'
+	ELSE wi.type::TEXT END`
+
+// caseLikeTypeQuery reads work_item.type and caseLikeRowTypeColumn for one
+// case-like work item; see readCaseLikeType.
+const caseLikeTypeQuery = `
+	SELECT wi.type::TEXT, ` + caseLikeRowTypeColumn + `
+	FROM work_item wi
+	LEFT JOIN "case" c ON c.id = wi.id
+	` + caseLikeJoins + `
+	WHERE wi.id = $1 AND wi.type = ANY(` + caseLikeWorkItemTypes + `)`
+
+// readCaseLikeType returns the type a write to case-like work item id dispatches
+// on: caseLikeRowTypeColumn, the extension row that actually exists. A work item
+// with no extension row keeps its work_item.type, so the write that follows
+// still updates zero rows and the caller still answers 404 for it, exactly as
+// before. The id is returned as pgx.ErrNoRows when it is not a case-like work
+// item (or row-level security hides it), for the caller to map.
+//
+// When the two disagree the disagreement is logged at WARN with the work item
+// id, and nothing is corrected: work_item.type is written by the sync (and by
+// TransferCaseType, which is the one deliberate type change), not here.
+//
+// lock takes the same FOR NO KEY UPDATE on the work_item row a plain UPDATE of
+// it would, for a caller that goes on to replace the extension row (the type
+// transfer); OF wi, since a lock cannot be taken on the nullable side of an
+// outer join.
+func readCaseLikeType(ctx context.Context, q rowQuerier, op, id string, lock bool) (string, error) {
+	query := caseLikeTypeQuery
+	if lock {
+		query += ` FOR NO KEY UPDATE OF wi`
+	}
+	var declared, actual string
+	if err := q.QueryRow(ctx, query, id).Scan(&declared, &actual); err != nil {
+		return "", err
+	}
+	if actual != declared {
+		slog.WarnContext(ctx, op+": work_item.type disagrees with the extension row that exists; dispatching on the row",
+			"caseId", id, "workItemType", declared, "extensionRowType", actual)
+	}
+	return actual, nil
+}
+
 // caseEscalationLevelFromEnum strips case_escalation_level_enum's 'EL'
 // prefix ('EL0'..'EL5') to the "0".."5" id CaseView.EscalationLevel's own
 // doc comment specifies.
@@ -2500,8 +2562,10 @@ func (r *caseRepo) UpdateCase(ctx context.Context, req domain.UpdateCaseRequest,
 		cause = string(*req.Cause)
 	}
 
-	var workItemType string
-	err := r.db.QueryRow(ctx, `SELECT type::TEXT FROM work_item WHERE id = $1 AND type = ANY(`+caseLikeWorkItemTypes+`)`, req.ID).Scan(&workItemType)
+	// The type of the extension row that exists, not work_item.type: the two
+	// disagree on some rows, and the UPDATE below must hit the row GetCaseByID
+	// read the state from -- see caseLikeRowTypeColumn.
+	workItemType, err := readCaseLikeType(ctx, r.db, "update case", req.ID, false)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return domain.Case{}, nil, &apierror.NotFoundError{Msg: "case not found"}
 	}
@@ -4313,8 +4377,9 @@ const autoclosureStepOnHold = "ON_HOLD"
 // Returns a NotFoundError for an unknown id and a ValidationError for a type
 // with no auto-closure columns (announcements).
 func setAutocloseHoldTx(ctx context.Context, tx pgx.Tx, caseID string, holdUntil time.Time) error {
-	var workItemType string
-	err := tx.QueryRow(ctx, `SELECT type::TEXT FROM work_item WHERE id = $1 AND type = ANY(`+caseLikeWorkItemTypes+`)`, caseID).Scan(&workItemType)
+	// Dispatched on the extension row that exists, as UpdateCase is -- see
+	// caseLikeRowTypeColumn.
+	workItemType, err := readCaseLikeType(ctx, tx, "set autoclose hold", caseID, false)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &apierror.NotFoundError{Msg: "case not found"}
 	}

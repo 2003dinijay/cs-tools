@@ -112,6 +112,35 @@ describe("feature visibility by portal access", () => {
     }
   });
 
+  // canViewSettings is a dedicated, narrower allow-list than canViewStaffSections
+  // (which also gates Settings' nav entry but is shared with Knowledge): a caller
+  // holding viewer plus one unrelated role is not caught by canViewStaffSections'
+  // exactly-{viewer} check, so it used to still reach Settings -- reported as too
+  // wide for a section that holds user/role/group/team administration.
+  it("hides Settings for every role but cs_engineer/admin, even combined with an unrelated role", () => {
+    const admin = navNodeById("admin");
+    expect(admin).toBeDefined();
+    for (const roles of [
+      ["viewer"],
+      ["escalator"],
+      ["attachment_downloader"],
+      ["usage_metrics_viewer"],
+      ["timecard_approver"],
+      ["dashboard_designer"],
+      ["viewer", "attachment_downloader"],
+    ]) {
+      const access = getPortalAccess(roles);
+      expect(visibleNavChildren(admin!, access)).toEqual([]);
+      expect(featureStateForPath("/admin", access)).toBe("hidden");
+      expect(featureStateForPath("/admin/user-management/users", access)).toBe("hidden");
+    }
+    for (const role of ["cs_engineer", "admin"]) {
+      const access = getPortalAccess([role]);
+      expect(featureStateForPath("/admin", access)).toBe("enabled");
+      expect(featureStateForPath("/admin/user-management/users", access)).toBe("enabled");
+    }
+  });
+
   it("drops Operations from quick-nav for a viewer and redirects somewhere else", () => {
     expect(navigableNavNodes(viewer).some((n) => n.id.startsWith("operations"))).toBe(false);
     expect(navigableNavNodes(csEngineer).some((n) => n.id.startsWith("operations"))).toBe(true);

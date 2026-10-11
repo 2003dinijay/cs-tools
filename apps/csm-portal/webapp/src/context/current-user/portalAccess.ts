@@ -203,6 +203,17 @@ export interface PortalAccess {
    */
   canViewTeamSchedule: boolean;
   /**
+   * The Settings section (`/admin`: user management, roles, groups, teams,
+   * the dashboard builder). `cs_engineer`/`admin` only — an explicit
+   * allow-list, independent of {@link canViewStaffSections} (which also
+   * gates Settings' nav entry today but is intentionally broader/shared
+   * with Knowledge): Settings holds user/role/group/team administration,
+   * which a plain `viewer`/`escalator`/`attachment_downloader`/
+   * `usage_metrics_viewer`/`timecard_approver`/`dashboard_designer` must
+   * not reach just by also holding one unrelated role.
+   */
+  canViewSettings: boolean;
+  /**
    * Whether a project's Work items tab shows its staff framing: the "Work
    * items" label (vs. plain "Cases"), the Chats sub-tab, and the sub-tab
    * strip itself. `cs_engineer`/`admin` (full access), or the
@@ -256,6 +267,7 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
       canViewUsageMetrics: true,
       canViewStaffSections: true,
       canViewTeamSchedule: true,
+      canViewSettings: true,
       canViewWorkItemsStaffView: true,
     };
   }
@@ -283,6 +295,7 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     canViewUsageMetrics: full || has(PORTAL_ROLE.usageMetricsViewer),
     canViewStaffSections: !(held.size === 1 && has(PORTAL_ROLE.viewer)),
     canViewTeamSchedule: full || has(PORTAL_ROLE.commentUpdater),
+    canViewSettings: full,
     canViewWorkItemsStaffView: full || has(PORTAL_ROLE.timecardApprover),
   };
 }

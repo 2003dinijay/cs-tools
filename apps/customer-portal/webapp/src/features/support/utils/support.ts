@@ -1503,11 +1503,23 @@ export function replaceInlineImageSources(
     (_match, before, doubleSrc, singleSrc, bareSrc, after) => {
       const src = (doubleSrc ?? singleSrc ?? bareSrc ?? "") as string;
       const refId = extractInlineImageRefId(src);
-      const attachment = inlineAttachments.find(
-        (a) =>
-          (a.id && (a.id === refId || src.includes(a.id))) ||
-          (a.sys_id && (a.sys_id === refId || src.includes(a.sys_id))),
-      );
+      // extractInlineImageRefId always returns the dashless, lowercase
+      // sys_id form, but comment.inlineAttachments[].id is a dashed UUID
+      // (entity-service converts it before sending) -- compare both sides
+      // in the same dashless form, or a dashed refId can never match and
+      // every inline image falls through to a raw, unconverted fetch that
+      // 404s (see support.ts's own history for the HAR that caught this).
+      const normalizedRefId = refId.replace(/-/g, "").toLowerCase();
+      const attachment = inlineAttachments.find((a) => {
+        const normalizedID = a.id?.replace(/-/g, "").toLowerCase();
+        const normalizedSysID = a.sys_id?.replace(/-/g, "").toLowerCase();
+        return (
+          (normalizedID &&
+            (normalizedID === normalizedRefId || src.includes(a.id!))) ||
+          (normalizedSysID &&
+            (normalizedSysID === normalizedRefId || src.includes(a.sys_id!)))
+        );
+      });
       const quote =
         doubleSrc !== undefined ? '"' : singleSrc !== undefined ? "'" : '"';
 
