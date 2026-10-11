@@ -18,7 +18,9 @@
 package handler
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -78,6 +80,23 @@ type CaseHandler struct {
 	// trusted to bypass RLS entirely, so it needs no second, narrower
 	// allowlist just to claim a comment/tag author.
 	m2mClientIDs map[string]bool
+	// comments, when set, lets GetAttachmentParentCase resolve an attachment
+	// whose reference is a comment rather than a case (see that method).
+	comments attachmentCommentResolver
+}
+
+// attachmentCommentResolver is the one comment read GetAttachmentParentCase
+// needs: a single comment by id, read through the caller's own scope.
+type attachmentCommentResolver interface {
+	GetComment(ctx context.Context, id string) (domain.Comment, error)
+}
+
+// WithCommentResolver sets the comment lookup GetAttachmentParentCase falls
+// back to when an attachment's reference is not a case. Optional: without it
+// such an attachment keeps resolving to 404.
+func (h *CaseHandler) WithCommentResolver(r attachmentCommentResolver) *CaseHandler {
+	h.comments = r
+	return h
 }
 
 // NewCaseHandler constructs a CaseHandler with the given service and the
@@ -363,11 +382,46 @@ func (h *CaseHandler) GetAttachmentParentCase(w http.ResponseWriter, r *http.Req
 	}
 	c, err := h.svc.GetCaseByID(r.Context(), attachment.ReferenceID)
 	if err != nil {
-		writeServiceError(w, r, err)
-		return
+		var nf *apierror.NotFoundError
+		if !errors.As(err, &nf) {
+			writeServiceError(w, r, err)
+			return
+		}
+		// An attachment pasted inline into a comment carries that comment's
+		// id as its reference, not the case's, so the case lookup above can
+		// never find it. Resolve it through the comment instead.
+		resolved, ok := h.parentCaseViaComment(r.Context(), attachment.ReferenceID)
+		if !ok {
+			writeServiceError(w, r, err)
+			return
+		}
+		c = resolved
 	}
 	w.Header().Set("Content-Type", "application/json")
 	_ = json.NewEncoder(w).Encode(c)
+}
+
+// parentCaseViaComment resolves referenceID as a comment and returns the case
+// that comment belongs to. Fails closed (ok=false) on every doubt: no resolver
+// configured, the comment is not visible to the caller (the comment read is
+// scoped to the caller, so a customer only finds comments of projects they
+// belong to), it is deleted, it is not a customer-visible comment (a work
+// note or activity entry never grants access), or its own reference is not a
+// case the caller can see -- GetCaseByID is again the caller-scoped read that
+// decides that.
+func (h *CaseHandler) parentCaseViaComment(ctx context.Context, referenceID string) (domain.CaseView, bool) {
+	if h.comments == nil {
+		return domain.CaseView{}, false
+	}
+	comment, err := h.comments.GetComment(ctx, referenceID)
+	if err != nil || comment.IsDeleted || comment.Type != domain.CommentTypeComment {
+		return domain.CaseView{}, false
+	}
+	c, err := h.svc.GetCaseByID(ctx, comment.ReferenceID)
+	if err != nil {
+		return domain.CaseView{}, false
+	}
+	return c, true
 }
 
 // UpdateAttachment handles PATCH /attachments/{id}.

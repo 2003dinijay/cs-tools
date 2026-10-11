@@ -1923,6 +1923,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// /attachments/{id}... route; GetAttachmentParentCase resolves it to a
 	// case id internally via the same CaseService GetAttachmentByID already
 	// uses, so the caller never needs to pass a case id of its own.
+	// A comment-referenced attachment (an image pasted inline into a comment)
+	// has the comment's id as its reference, so GetAttachmentParentCase falls
+	// back to the comment table, read through the caller's own scope. Always
+	// the Postgres comment service, independent of DataSource: that table is
+	// the one place a comment id can be resolved to its case.
+	if cfg.HasDatabase() {
+		attachmentReadHandler.WithCommentResolver(service.NewCommentService(commentRepo, userRepo))
+	}
 	mux.HandleFunc("GET /attachments/{id}/case", attachmentReadHandler.GetAttachmentParentCase)
 	mux.HandleFunc("PATCH /attachments/{id}", attachmentHandler.UpdateAttachment)
 	mux.HandleFunc("DELETE /attachments/{id}", attachmentHandler.DeleteCaseAttachment)
