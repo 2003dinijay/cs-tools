@@ -193,108 +193,45 @@ func TestGetAttachment_Authorization(t *testing.T) {
 	}
 }
 
-// TestGetAttachmentContent_Authorization covers GET /attachments/{id}/content
-// — the raw-binary-download route, distinct from metadata above. The
-// authorization check must run before the content fetch, not after: an
-// unauthorized caller must never reach entity-service's own binary download
-// at all.
-func TestGetAttachmentContent_Authorization(t *testing.T) {
-	for name, tc := range attachmentAuthzTestCases() {
-		t.Run(name, func(t *testing.T) {
-			fake := tc.client
-			h := NewAttachmentHandler(&fake)
-
-			mux := http.NewServeMux()
-			mux.HandleFunc("GET /attachments/{id}/content", h.GetAttachmentContent)
-
-			req := authedRequest(http.MethodGet, "/attachments/"+testAttachmentID+"/content", "")
-			rec := httptest.NewRecorder()
-			mux.ServeHTTP(rec, req)
-
-			if rec.Code != tc.wantStatus {
-				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
-			}
-			if fake.contentReached != tc.wantAllow {
-				t.Errorf("entity GetAttachmentContent reached = %v, want %v", fake.contentReached, tc.wantAllow)
-			}
-		})
-	}
-}
-
-// TestGetAttachmentContent_CommentFallback covers the ?caseId= hint and
-// commentAttachmentIsVisible: an attachment pasted inline into a case comment
-// has ReferenceID set to the comment's id, not the case's, so GetAttachmentCase
-// always 404s for it -- these are only resolvable via the caller-supplied
-// caseId hint plus the caller's own comments actually carrying the attachment
-// as an inline attachment.
-func TestGetAttachmentContent_CommentFallback(t *testing.T) {
+// TestGetAttachmentContent_NoOwnershipCheck pins the CSM-style flow for
+// GET /attachments/{id}/content: any authenticated caller with a well-formed
+// id reaches entity-service's content download, whatever the attachment's
+// reference is and whether or not a ?caseId= hint is sent. GetAttachment and
+// DeleteAttachment keep their authorizeAttachmentAccess checks (covered above).
+func TestGetAttachmentContent_NoOwnershipCheck(t *testing.T) {
+	notFound := &apierror.Error{StatusCode: http.StatusNotFound}
 	tests := map[string]struct {
-		client      fakeAttachmentAuthzClient
-		caseIDParam string
-		wantStatus  int
-		wantAllow   bool
+		client     fakeAttachmentAuthzClient
+		query      string
+		wantStatus int
+		wantReach  bool
 	}{
-		"no caseId hint: denied, unchanged from before this fallback existed": {
-			client:     fakeAttachmentAuthzClient{referenceID: testCommentID, getCaseErr: &apierror.Error{StatusCode: http.StatusNotFound}},
-			wantStatus: http.StatusNotFound,
+		"case-referenced": {
+			client: fakeAttachmentAuthzClient{referenceID: testCaseID}, wantStatus: http.StatusOK, wantReach: true,
 		},
-		"caseId hint, caller can see the case, attachment is one of its inline attachments: allowed": {
-			client: fakeAttachmentAuthzClient{
-				referenceID:                testCommentID,
-				getCaseErr:                 &apierror.Error{StatusCode: http.StatusNotFound},
-				commentInlineAttachmentIDs: []string{testAttachmentID},
-			},
-			caseIDParam: testCaseID,
-			wantStatus:  http.StatusOK,
-			wantAllow:   true,
+		"inline comment image, no caseId hint": {
+			client: fakeAttachmentAuthzClient{referenceID: testCommentID, getCaseErr: notFound}, wantStatus: http.StatusOK, wantReach: true,
 		},
-		"caseId hint, caller can see the case, but attachment is not among its inline attachments: denied": {
-			client: fakeAttachmentAuthzClient{
-				referenceID:                testCommentID,
-				getCaseErr:                 &apierror.Error{StatusCode: http.StatusNotFound},
-				commentInlineAttachmentIDs: []string{"99999999-9999-9999-9999-999999999999"},
-			},
-			caseIDParam: testCaseID,
-			wantStatus:  http.StatusNotFound,
-		},
-		"caseId hint, but caller cannot see that case at all: denied": {
-			client: fakeAttachmentAuthzClient{
-				referenceID:                testCommentID,
-				getCaseErr:                 &apierror.Error{StatusCode: http.StatusNotFound},
-				hintCaseErr:                &apierror.Error{StatusCode: http.StatusNotFound},
-				commentInlineAttachmentIDs: []string{testAttachmentID},
-			},
-			caseIDParam: testCaseID,
-			wantStatus:  http.StatusNotFound,
-		},
-		"malformed caseId hint: rejected before any lookup": {
-			client:      fakeAttachmentAuthzClient{referenceID: testCommentID},
-			caseIDParam: "not-a-uuid",
-			wantStatus:  http.StatusBadRequest,
+		"inline comment image, caseId hint ignored": {
+			client: fakeAttachmentAuthzClient{referenceID: testCommentID, getCaseErr: notFound}, query: "?caseId=" + testCaseID, wantStatus: http.StatusOK, wantReach: true,
 		},
 	}
-
 	for name, tc := range tests {
 		t.Run(name, func(t *testing.T) {
 			fake := tc.client
 			h := NewAttachmentHandler(&fake)
-
 			mux := http.NewServeMux()
 			mux.HandleFunc("GET /attachments/{id}/content", h.GetAttachmentContent)
 
-			url := "/attachments/" + testAttachmentID + "/content"
-			if tc.caseIDParam != "" {
-				url += "?caseId=" + tc.caseIDParam
-			}
-			req := authedRequest(http.MethodGet, url, "")
+			req := authedRequest(http.MethodGet, "/attachments/"+testAttachmentID+"/content"+tc.query, "")
 			rec := httptest.NewRecorder()
 			mux.ServeHTTP(rec, req)
 
 			if rec.Code != tc.wantStatus {
 				t.Fatalf("status = %d, want %d: %s", rec.Code, tc.wantStatus, rec.Body.String())
 			}
-			if fake.contentReached != tc.wantAllow {
-				t.Errorf("entity GetAttachmentContent reached = %v, want %v", fake.contentReached, tc.wantAllow)
+			if fake.contentReached != tc.wantReach {
+				t.Errorf("entity GetAttachmentContent reached = %v, want %v", fake.contentReached, tc.wantReach)
 			}
 		})
 	}
