@@ -1792,6 +1792,46 @@ export function compareByCreatedOnThenId(
   return idA.localeCompare(idB);
 }
 
+/** Shape accepted by {@link dedupeAdjacentDuplicateMessages}. */
+export type DedupableMessage = CreatedOnSortable & {
+  content?: string | null;
+};
+
+/**
+ * Drops an exact back-to-back duplicate of the message immediately before it
+ * -- same content, same author and the same createdOn timestamp. Defends the
+ * chat history view against a conversation whose underlying comment rows
+ * were written twice for the same turn (digiops-cs#3424: both the question
+ * and the answer appeared twice, with identical timestamps, only for the
+ * very first exchange of a brand-new chat). This collapses the duplicate
+ * wherever it comes from, rather than guessing at why the extra row exists.
+ *
+ * Deliberately requires an EXACT match on all three fields, not just
+ * content: two genuinely distinct messages that happen to read the same
+ * (e.g. a user saying "ok" twice, minutes apart) are never affected, since
+ * their createdOn timestamps differ. Only a true repeat -- the same row,
+ * twice, at the same instant -- is collapsed.
+ *
+ * Input must already be sorted (see {@link compareByCreatedOnThenId}), since
+ * this only ever compares a message against the one immediately before it.
+ */
+export function dedupeAdjacentDuplicateMessages<T extends DedupableMessage>(
+  sorted: T[],
+): T[] {
+  const result: T[] = [];
+  for (const msg of sorted) {
+    const prev = result[result.length - 1];
+    const isDuplicate =
+      prev != null &&
+      (msg.content ?? "") === (prev.content ?? "") &&
+      (msg.createdBy ?? "").toLowerCase() ===
+        (prev.createdBy ?? "").toLowerCase() &&
+      (msg.createdOn ?? "") === (prev.createdOn ?? "");
+    if (!isDuplicate) result.push(msg);
+  }
+  return result;
+}
+
 /**
  * Earliest datetime-local value for scheduling a call: now + severity allocation minutes,
  * rounded up to the next 5-minute boundary (e.g. 9:23 + 30m → 9:55).
