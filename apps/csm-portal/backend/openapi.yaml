@@ -5076,7 +5076,10 @@ paths:
       summary: Add a free-text tag to a case (ServiceNow data source only).
       description: >
         The case ID is taken from the URL path; the request body is forwarded to
-        the integration service as-is.
+        the integration service as-is. The id is a work item id: a change
+        request's is accepted too (the change request detail page tags through
+        this same route, under the same PermWrite), and its tag is never
+        mirrored to the previous system.
       operationId: addCaseTag
       security:
         - bearerAuth: []
@@ -5084,7 +5087,7 @@ paths:
         - name: id
           in: path
           required: true
-          description: UUID of the case.
+          description: UUID of the case (or of a change request).
           schema:
             type: string
             format: uuid
@@ -5141,6 +5144,9 @@ paths:
   /cases/{id}/tags/{tagId}:
     delete:
       summary: Remove a tag from a case (ServiceNow data source only).
+      description: >
+        The id is a work item id: a change request's is accepted too, as for
+        POST /cases/{id}/tags.
       operationId: removeCaseTag
       security:
         - bearerAuth: []
@@ -5148,7 +5154,7 @@ paths:
         - name: id
           in: path
           required: true
-          description: UUID of the case.
+          description: UUID of the case (or of a change request).
           schema:
             type: string
             format: uuid
@@ -19417,6 +19423,20 @@ components:
                 approvers at Customer Approval / Customer Review.
               items:
                 $ref: '#/components/schemas/ChangeRequestCustomerContact'
+            tags:
+              type: array
+              nullable: true
+              items:
+                $ref: '#/components/schemas/Tag'
+              description: >-
+                The tags attached to the change request, the same shape as a case's `tags`
+                and passed through from the entity service as-is: an array (empty when none)
+                on the PostgreSQL data source, null when the entity service did not load them
+                (another data source, or a failed lookup). Added and removed through the case
+                tag routes -- POST /cases/{id}/tags and DELETE /cases/{id}/tags/{tagId} take a
+                work item id and accept a change request's, under the same PermWrite; the
+                vocabulary is searched with POST /tags/search. Never mirrored to the previous
+                system, and never shown to customers.
             category:
               type: string
               nullable: true
