@@ -33,12 +33,12 @@ import (
 // searches (accounts, projects, deployments, deployed products, cases,
 // escalations).
 type fakeEntityCustomerHealthClient struct {
-	accounts           entitySearchAccountsResponse
-	projects           entitySearchProjectsResponse
-	deployments        entityDeploymentsSearchResponse
-	deployedProducts   entitySearchDeployedProductsEolResponse
-	caseResponses      []entitySearchCasesResponse // consumed in call order; last one repeats
-	escalations        entitySearchEscalationsResponse
+	accounts               entitySearchAccountsResponse
+	projects               entitySearchProjectsResponse
+	deployments            entityDeploymentsSearchResponse
+	deployedProducts       entitySearchDeployedProductsEolResponse
+	caseResponses          []entitySearchCasesResponse // consumed in call order; last one repeats
+	escalations            entitySearchEscalationsResponse
 	caseCallCount          int
 	lastAccountsReqRaw     []byte   // last request body SearchAccounts was called with
 	lastCasesReqsRaw       [][]byte // every request body SearchCases was called with, in call order
