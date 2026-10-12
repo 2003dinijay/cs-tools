@@ -59,7 +59,7 @@ The server loads `.env` automatically on startup (silently ignored if absent). P
 | `EVENT_HUB_CONNECTION_STRING` | no* | — | Event Hub namespace Shared Access Policy connection string. *Required once `EVENT_HUB_BROKER` is set |
 | `EVENT_HUB_TOPIC` | no* | — | Event Hub (Kafka topic) name. *Required once `EVENT_HUB_BROKER` is set |
 | `EVENT_PUBLISHING_ENABLED` | no | `false` | Must be `"true"` for `EventPublisherService` to actually get constructed, even with `EVENT_HUB_BROKER` fully configured — a separate safe-by-default kill switch |
-| `CUSTOMER_ROLES` | no | — | Comma-separated ServiceNow role names whose presence on a case comment's resolved author marks a customer reply — see "Customer-reply state transition" below |
+| `CUSTOMER_ROLES` | no | — | Comma-separated ServiceNow role names whose presence on a case comment's resolved author marks a customer reply, `DATA_SOURCE=servicenow` only; the Postgres data sources decide this from the caller's identity instead — see "Customer-reply state transition" below |
 | `SALES_ENTITY_BASE_URL` | no* | — | REST `sales/sales-entity-service` base URL (not GraphQL `sales/entity-graphql-service`). *Required once any `SALES_ENTITY_*` var is set |
 | `SALES_ENTITY_TOKEN_URL` | no* | — | OAuth2 token endpoint (client_credentials grant) |
 | `SALES_ENTITY_CLIENT_ID` | no* | — | Choreo connection client id |
@@ -2321,6 +2321,71 @@ and the Choreo integration's PATCH has no conditional-update mechanism
 (ETag/version/`sys_mod_count`) to close it with. Fixing this needs that
 integration to expose one first — a cross-team dependency, not addressed
 here.
+
+### The same rule on the Postgres data sources
+
+`case_service.go`'s `createCaseCommentAs` (behind `CreateCaseComment`,
+`CreateInternalCaseComment` and the M2M `CreateCaseCommentAs`, so every
+client — customer webapp, microapp — gets it) calls its own
+`applyCustomerReplyStateTransition` last, after every other side effect of
+the comment, for `DATA_SOURCE=postgres` and `postgres-servicenow-dual-write`.
+Same semantics as the previous system's function above, ported rather than
+reinvented:
+
+- only a customer-visible comment (`type: comment`); a work note never
+  triggers it;
+- only when the record is currently `Awaiting Info` or `Solution Proposed`
+  — exactly those two; `Open`/`Work In Progress`/`Reopened` are left alone,
+  `Waiting on WSO2` is a no-op, and `Closed` stays closed (reopening is the
+  customer's explicit action);
+- only when the comment's author is a customer. This service does not look
+  the author up: the caller's resolved `AccessScope` already says so
+  (`isCustomerCommentAuthor`). An **external caller** — the scope is neither
+  `Unrestricted` nor `HasInternalAccess`, the same predicate as
+  `repository.IsExternalCaller` and the exact complement of the "internal
+  caller" `UpdateCase`'s resolution-fields requirement uses — is a registered
+  portal contact posting through the customer portal, so a customer. WSO2
+  staff, a mixed identity that still has internal access, the system
+  identity and an M2M client never trigger it. `CUSTOMER_ROLES` is
+  deliberately **not** consulted on this path, although the Postgres user
+  record carries roles (`UserRepository.GetUserRoles`): a resolved identity
+  leaves it nothing to decide, and when no identity can be resolved the move
+  could not be made anyway (`GetCaseByID` and every `Scoped` repository
+  write refuse to run without one), so a role fallback would be dead code —
+  an unresolvable scope simply answers "not confirmed";
+- the move is the service's own `UpdateCase` with `State: waiting_on_wso2`,
+  called **in-process** on the customer's own request context after the
+  comment is committed — so the `work_item_activity` lifecycle entry
+  (`State: Awaiting Info -> Waiting on WSO2`, `user_email` = the customer),
+  `case.status_changed` (after `case.comment_added`, the order the
+  previous system's function produces), `SLAEngineService.ApplyCaseStateEffects`
+  and the dual-write `patchCaseFields` mirror of the one state write all
+  happen exactly as for a manual `PATCH`, with no logic of the rule's own.
+  A failed read or move is logged at ERROR with the case id and never fails
+  the comment, which is already written.
+- **One rule, no type-specific logic.** It never reads the record's type: a
+  case and a service request go through the identical path, and
+  `CaseRepository.UpdateCase` lands the write on the extension row that
+  exists (`caseLikeRowTypeColumn`), so a work item whose `work_item.type`
+  disagrees with its row moves too.
+
+The previous system's function's **KNOWN GAP** applies here unchanged: the
+rule's own `GetCaseByID` and `UpdateCase`'s write (its own `GetCaseByID`
+only decides whether to publish/record the change; the `UPDATE` is
+unconditional) are not atomic, so a record moved to another state in that
+window is still set to `Waiting on WSO2`. Postgres could close it with a
+conditional `UPDATE`, but that lives on the `UpdateCase` path this rule
+deliberately reuses unchanged; flagged, not half-closed.
+
+Tests: `case_service_customer_reply_test.go` (the recording repository: a
+CASE and a SERVICE_REQUEST in the same table, every state, work note, staff /
+mixed / M2M callers, unresolved identity, a failed move logged with the
+comment still succeeding, and the dual-write mirror + SLA effect) and
+`case_service_customer_reply_integration_test.go` (the real service and
+repositories over `ENTITY_TEST_DATABASE_URL`, run as the superuser and as
+`csm_app`: both record types from both states move with the lifecycle entry,
+a `work_item.type`/row mismatch moves, Open/Closed/already-waiting stay, a
+staff comment and a customer's work note change nothing).
 
 ## Scheduled task runs
 
@@ -6484,6 +6549,31 @@ simply never selected it. Fixed by adding `p.code` to the query and scanning it 
 `Product.Abbreviation` (already the correct `*string` type for a nullable column). Doc comment
 corrected to match.
 
+## SearchDeployedProducts 500'd on a row whose update_level_info isn't a JSON array
+
+Found while verifying a downstream caller's filters end to end against a real, locally-run
+instance of this service (not a hand-rolled fake) and real staging data: `POST
+/deployed-products/search` (and anything that calls `SearchDeployedProducts` transitively,
+which includes the customer-health `hasEolProduct` flag and its new `product` filter in
+`apps/csm-portal/backend` -- see that repo's own `CLAUDE.md`) failed outright with a 500 for
+any request whose result set included one specific real, synced shape: `deployed_product.update_level_info` is JSONB with no shape constraint at the
+database level, and while the overwhelming majority of real rows are either `NULL` or a JSON
+array (the only shape `json.Unmarshal(..., &[]domain.ProductUpdateEntry{})` can read), a real
+minority on staging are a JSON object or a plain string. `SearchDeployedProducts`'s scan
+returned that unmarshal error directly, failing the whole page -- not just the one malformed
+row -- for any caller unlucky enough to have one of those rows land on their page. This broke
+the customer-health summary endpoint **unfiltered**, for any account whose deployments happen
+to include such a row, which is exactly the failure mode a live verification pass against
+staging surfaced (a plain, no-filter request 500ing).
+
+Fixed the same way this file's own `Updates` field is already documented elsewhere ("not
+populated... deliberately left nil rather than guessed at" -- `product_version.update_level_info`
+history): a row that can't be decoded into `[]domain.ProductUpdateEntry` is logged
+(`slog.WarnContext`, the deployed product's id and the raw error) and left with `Updates`
+unset, exactly like a row with nothing recorded at all, instead of failing the entire search.
+`TestSearchDeployedProductsDescriptionAndUpdates` (the existing integration test for this
+column) gained a third fixture row with an object-shaped `update_level_info` pinning this.
+
 ## GET /projects/{id} and POST /projects/search were missing most of a project's own fields
 
 Found by diffing the Postgres and ServiceNow customer-portal responses field-for-field
@@ -6584,6 +6674,57 @@ Account` staying `nil` for Postgres-sourced results is unrelated and
 unchanged -- that one's already documented as "(ServiceNow data source
 only)", a deliberate scope boundary, not a bug. Verified by paging through
 all 1956 projects (every NULL row included) with no error afterward.
+
+## SearchProjects silently dropped GoLiveDate -- only GetProjectByID selected it
+
+`project.onboarding_go_live_date` was selected by `GetProjectByID`'s own
+query but not by `SearchProjects`'s -- the same class of "two independently-
+written queries against the same table can drift in which columns they
+SELECT" gap this file's own `ClosureState`/`StartDate` history already
+covers. Found by a caller that needs to know whether a project has gone
+live when searching by account rather than fetching one project at a time
+(`apps/csm-portal/backend`'s customer-health `hasNoGoLive` risk flag -- see
+that repo's own `CLAUDE.md`). Fixed across all three layers: `domain.Project` and
+`domain.ProjectView` both gained a `GoLiveDate *time.Time` field,
+`project_repo.go`'s `SearchProjects` query now selects
+`p.onboarding_go_live_date` alongside `p.onboarding_status`, and
+`project_service.go`'s `domain.Project` -> `domain.ProjectView` mapping
+copies it across (`TestSearchProjects_GoLiveDateReachesResponse` pins this
+last step specifically, the same way `TestSearchProjects_ClosureStateReachesResponse`
+already does for `ClosureState`). On the wire, `ProjectView.GoLiveDate`
+marshals as a full RFC3339 timestamp -- a different format from
+`AccountView.ActivationDate`'s plain `YYYY-MM-DD` (see `dateOnlyOrNil` in
+`account_service.go`), so a caller reading both needs two different
+`time.Parse` layouts.
+
+## SearchDeployments's permanent active-only filter missed real EOL product history
+
+`SearchDeployments`'s SQL has always had a permanent, hardcoded
+`d.is_active = TRUE` filter with no way to override it (see that query's own
+long-standing doc comment) -- the right default for a general UI listing
+(a deactivated deployment should simply stop appearing, permanently), but
+wrong for a caller that needs to see every deployment's product history
+regardless of its current active state. Found live: `apps/csm-portal/backend`'s
+customer-health `hasEolProduct` risk flag was a false negative for a real
+staging account whose only deployments carrying expired product versions
+were all `is_active = false` -- confirmed directly against the database
+(the account's two *active* deployments had zero deployed products at
+all), not just inferred from the code.
+
+`SearchDeploymentsRequest` gained `IncludeInactive bool
+json:"includeInactive,omitempty"` -- additive, so every existing caller
+(every general deployment listing, Usage Metrics included) that leaves it
+unset/false gets byte-identical behavior; `deployment_repo.go`'s
+`SearchDeployments` only applies the `is_active = TRUE` predicate when it's
+false. `apps/csm-portal/backend`'s own `entityDeploymentsSearchRequest`
+mirrors the field the same way, and only its customer-health
+`projectHasEolProduct` sets it -- its project-detail view's own plain
+"Deployments" list keeps a separate, `includeInactive: false` fetch, so
+that list's unrelated active-only semantics are untouched. Verified both
+with a real-Postgres RLS integration test
+(`TestDeploymentRLSIntegration_IncludeInactive`: the flag surfaces an
+inactive deployment without bypassing project-membership scoping) and
+against the live staging account the bug was found on.
 
 ## CreateCase and case numbers (Postgres data source)
 
@@ -7231,17 +7372,17 @@ A handoff needs an assignee: an unassigned incident is a 409 `incident_handoff_n
 which the SME page compares alerts against. Off without the topic; unknown to the consumer
 until it adds the type (`HandleShared` skips unknown types on sre-events).
 
-**`UpdateProblem`/`UpdateIncident` are also not
-implemented**: `UpdateProblem.Transition` is validated
+**`UpdateProblem` is also not implemented here**: `UpdateProblem.Transition` is validated
 server-side by ServiceNow's own workflow engine with no fixed, confirmed
 transition rule set to reimplement (see that field's own doc comment --
-deliberately not a closed enum for exactly this reason);
-`UpdateIncident` touches several fields with no backing column at all
-(`AssignmentGroupID`, `ConfigurationItemID`, `WatchList`) alongside ones
-that do, and would need `comment`-table side effects for
-`AdditionalComments`/`WorkNotes` mirroring `caseService.UpdateCase`'s own
-comment-on-update behavior -- deferred as a unit rather than
-half-implemented.
+deliberately not a closed enum for exactly this reason).
+**`UpdateIncident` is** (`incidentService.UpdateIncident`, dual-write and plain Postgres): the
+state transition, work notes / comments, and the record's own fields -- everything
+`snIncidentService.UpdateIncident` accepts, written in one transaction
+(`IncidentRepository.UpdateIncidentLifecycle`) and mirrored to ServiceNow as sent. A change to
+impact or urgency recomputes priority with ServiceNow's lookup; a new category that does not hold
+the current subcategory clears it; `watchList` replaces `work_item_watcher`. A field sent as
+`null` is ignored, as on the ServiceNow path; only `environment` can be cleared.
 
 `IncidentView.WatchList`/`LinkedServiceRequests` are always empty slices on
 this data source (never populated) -- `work_item_watcher` could back the

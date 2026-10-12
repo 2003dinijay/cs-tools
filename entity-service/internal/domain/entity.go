@@ -416,6 +416,20 @@ type SearchAccountsFilters struct {
 	// caller holds. Case-insensitive exact match.
 	OwnerEmail     string `json:"ownerEmail,omitempty"`
 	Classification string `json:"classification,omitempty"`
+	// LifeCycle filters on account.life_cycle (e.g. "Customer", "Partner",
+	// "Prospect", "Lost Customer", "Lost Prospect") -- exact match. This is
+	// a distinct dimension from Classification (account.classification,
+	// "Enterprise"/"Partner"/"Cloud"/"OEM", a business-segment axis) --
+	// confirmed against the legacy system's own account-scoping rule for
+	// this feature, whose "life cycle = Customer" base condition is what
+	// account.life_cycle mirrors. Do not confuse the two.
+	LifeCycle string `json:"lifeCycle,omitempty"`
+	// HasProject, when true, additionally requires the account to have at
+	// least one row in project -- an existence filter with no columns read
+	// from project, matching the legacy rule's own join-existence check
+	// against the account's projects, used purely to require a match
+	// rather than to select anything from the join.
+	HasProject bool `json:"hasProject,omitempty"`
 }
 
 // SearchAccountsRequest is the input for an account search operation.
@@ -440,7 +454,15 @@ type AccountView struct {
 	Pod            *string `json:"pod"`
 	SfID           *string `json:"sfId"`
 	Region         *string `json:"region"`
-	Country        *string `json:"country"`
+	// SubRegion (account.sub_region) is a finer-grained geography than
+	// Region -- a distinct column, not derived from it (e.g. Region "APAC"
+	// pairs with SubRegion values like "ASIA"/"SAARC"). Previously selected
+	// nowhere on this search response even though the column has long been
+	// read elsewhere (the Salesforce account upsert, project search's own
+	// account ref) -- added for a caller that filters accounts by this
+	// finer region, which Region alone cannot express.
+	SubRegion *string `json:"subRegion"`
+	Country   *string `json:"country"`
 	City           *string `json:"city"`
 	// DriveLocation is a free-text Google Drive folder reference — present
 	// on the Postgres data source (account.drive_location).
@@ -1181,6 +1203,13 @@ type Project struct {
 	Account          *ProjectSearchAccountRef `json:"account"`
 	ActiveCasesCount int                      `json:"activeCasesCount"`
 	OnboardingStatus *string                  `json:"onboardingStatus"`
+	// GoLiveDate mirrors ProjectDetailsView/ProjectEngagementFields' own
+	// GoLiveDate (project.onboarding_go_live_date) -- previously selected
+	// only by GetProjectByID, not SearchProjects, even though callers that
+	// need to know whether a project has actually gone live (e.g. the CSM
+	// portal backend's customer-health risk flags) search by account rather
+	// than fetching one project at a time.
+	GoLiveDate *time.Time `json:"goLiveDate"`
 }
 
 // ProjectAccountRef is the embedded account summary returned in project detail responses.
@@ -1436,6 +1465,12 @@ type ProjectView struct {
 	// onboarding. Nil when no owner is assigned — most projects, since only
 	// onboarding-enabled projects have one (ServiceNow data source only).
 	OnboardingOwner *PersonRef `json:"onboardingOwner"`
+	// GoLiveDate mirrors ProjectDetailsView/ProjectEngagementFields' own
+	// GoLiveDate (project.onboarding_go_live_date) -- nil when the project
+	// hasn't gone live (or the date isn't tracked). Previously only
+	// populated on GetProjectByID; added here so an account-scoped search
+	// doesn't need one GetProjectByID call per project just to know this.
+	GoLiveDate *time.Time `json:"goLiveDate"`
 }
 
 // SearchProjectsResponse is the paginated result of a project search.
@@ -1918,6 +1953,14 @@ type SearchDeploymentsRequest struct {
 	ProjectIDs      []string         `json:"projectIds"`
 	DeploymentTypes []DeploymentType `json:"deploymentTypes"`
 	IDs             []string         `json:"ids"`
+	// IncludeInactive additively widens the result to also include deployments
+	// with is_active = FALSE -- omitted/false reproduces today's exact
+	// behavior for every existing caller (the permanent is_active = TRUE
+	// filter in SearchDeployments's SQL). Added for the CSM portal backend's
+	// customer-health EOL-product check, whose real ServiceNow script has no
+	// such filter at all -- a deactivated deployment can still carry real EOL
+	// product history that must count toward the risk flag.
+	IncludeInactive bool `json:"includeInactive,omitempty"`
 }
 
 // SearchDeploymentsResponse is the paginated result of a deployment search.
@@ -3360,8 +3403,13 @@ type CreateCaseRequest struct {
 	CatalogItemID string     `json:"catalogItemId"`
 	Variables     []Variable `json:"variables"`
 	// Optional fields
-	RelatedCaseID  string `json:"relatedCaseId"`
-	ConversationID string `json:"conversationId"`
+	RelatedCaseID string `json:"relatedCaseId"`
+	// ResolvedRelatedCaseID is the related-case id already checked against
+	// Postgres, set by the dual-write create path before ServiceNow is called.
+	// CreateCaseFromServiceNow binds it and does not look RelatedCaseID up
+	// again. Nil binds NULL: the id was empty, or the target is not mirrored yet.
+	ResolvedRelatedCaseID *string `json:"-"`
+	ConversationID        string  `json:"conversationId"`
 	// WatchList is watcher emails (Customer Portal / Ballerina). Platform user
 	// UUIDs are still accepted and resolved to emails for CSM callers.
 	WatchList []string `json:"watchList"`

@@ -222,6 +222,66 @@ func TestDeploymentRLSIntegration_IDsFilterStaysWithinScope(t *testing.T) {
 	}
 }
 
+// IncludeInactive is additive: omitted/false must reproduce today's exact
+// behavior (an inactive deployment stays invisible to every existing
+// caller), and true must surface it -- added for the CSM portal backend's
+// customer-health EOL-product check, whose real ServiceNow script has no
+// active-only filter at all.
+func TestDeploymentRLSIntegration_IncludeInactive(t *testing.T) {
+	pool := caseStatsPool(t)
+	seedDeploymentRLSFixture(t, pool)
+	ctx := repository.WithSystemIdentity(context.Background())
+	if _, err := pool.Exec(ctx, `UPDATE deployment SET is_active = FALSE WHERE id = $1`, depDeployOne); err != nil {
+		t.Fatalf("seed: deactivate deployment: %v", err)
+	}
+
+	repo := repository.NewDeploymentRepository(repository.NewScoped(pool))
+	scope := repository.SearchScope{ViewerEmail: depMemberOne}
+
+	t.Run("default excludes the inactive deployment", func(t *testing.T) {
+		req := domain.SearchDeploymentsRequest{Pagination: domain.Pagination{Limit: 50}}
+		views, total, err := repo.SearchDeployments(depCtx(scope), req)
+		if err != nil {
+			t.Fatalf("SearchDeployments: %v", err)
+		}
+		if got := depIDs(views); got[depDeployOne] {
+			t.Errorf("inactive deployment %s must not be visible by default, got %v", depDeployOne, got)
+		}
+		if total != len(views) {
+			t.Errorf("total = %d but %d rows returned", total, len(views))
+		}
+	})
+
+	t.Run("includeInactive surfaces it, still scoped to the caller's own project", func(t *testing.T) {
+		req := domain.SearchDeploymentsRequest{Pagination: domain.Pagination{Limit: 50}, IncludeInactive: true}
+		views, total, err := repo.SearchDeployments(depCtx(scope), req)
+		if err != nil {
+			t.Fatalf("SearchDeployments: %v", err)
+		}
+		got := depIDs(views)
+		if !got[depDeployOne] {
+			t.Errorf("want inactive deployment %s visible with includeInactive, got %v", depDeployOne, got)
+		}
+		if got[depDeployTwo] {
+			t.Errorf("deployment %s belongs to a project this caller is not a member of; includeInactive must not bypass project scoping", depDeployTwo)
+		}
+		if total != len(views) {
+			t.Errorf("total = %d but %d rows returned", total, len(views))
+		}
+	})
+
+	t.Run("ids filter with includeInactive still resolves an inactive deployment", func(t *testing.T) {
+		req := domain.SearchDeploymentsRequest{Pagination: domain.Pagination{Limit: 50}, IDs: []string{depDeployOne}, IncludeInactive: true}
+		views, _, err := repo.SearchDeployments(depCtx(scope), req)
+		if err != nil {
+			t.Fatalf("SearchDeployments: %v", err)
+		}
+		if got := depIDs(views); !got[depDeployOne] {
+			t.Errorf("want inactive deployment %s resolvable by id with includeInactive, got %v", depDeployOne, got)
+		}
+	})
+}
+
 func TestDeploymentRLSIntegration_DeployedProductsFollowTheirDeploymentsProject(t *testing.T) {
 	pool := caseStatsPool(t)
 	seedDeploymentRLSFixture(t, pool)

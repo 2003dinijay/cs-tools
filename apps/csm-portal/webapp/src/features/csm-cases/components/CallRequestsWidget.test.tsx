@@ -193,3 +193,28 @@ describe("CallRequestsWidget: state filter", () => {
     expect(screen.getByText(/all states/i)).toBeInTheDocument();
   });
 });
+
+describe("CallRequestsWidget: create call request dialog", () => {
+  beforeEach(() => {
+    hooks.requests = [];
+  });
+
+  it("puts duration before preferred times, and steps duration by 15 minutes", () => {
+    renderWidget();
+    fireEvent.click(screen.getByRole("button", { name: "Create call request" }));
+
+    const dialog = screen.getByRole("dialog");
+    const duration = screen.getByRole("spinbutton", { name: /duration \(minutes\)/i });
+    const reason = screen.getByRole("textbox", { name: /reason for the call/i });
+    const preferred = screen.getByText(/preferred times/i);
+
+    expect(duration).toHaveAttribute("step", "15");
+    expect(duration).toHaveAttribute("min", "15");
+    expect(duration).toHaveAttribute("max", "240");
+
+    // Duration is the first of the three fields; preferred times follow it, then the reason.
+    expect(preferred.compareDocumentPosition(duration) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(reason.compareDocumentPosition(preferred) & Node.DOCUMENT_POSITION_PRECEDING).toBeTruthy();
+    expect(dialog).toContainElement(duration);
+  });
+});
