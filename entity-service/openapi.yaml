@@ -21263,6 +21263,12 @@ components:
           type: string
           example: SRE_SAAS
           description: The rota the team's type belongs to; absent for a team on no named rota.
+        isAbt:
+          type: boolean
+          description: >-
+            Whether the team is an ABT (its type ends in "abt"): the teams the
+            CRE rota and its regular hours are run by, as against Americas,
+            Migration and the like.
     CreateScheduleAbsenceKindRequest:
       type: object
       required: [shortCode, label, bucket, colourToken]

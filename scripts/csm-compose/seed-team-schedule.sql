@@ -513,6 +513,39 @@ WHERE NOT d.is_weekend
                    WHERE a.user_id = e.id AND a.rota_date = d.d AND a.created_by = 'seed')
 ON CONFLICT DO NOTHING;
 
+-- ── moves to another team: Migration, and the Brazil rotation ─────────────
+-- Migration 0202 links these two tags to the team a span moves somebody to,
+-- by finding that team by name. On a fresh local database the migrations run
+-- before this seed has created the Americas and Migration teams, so the link
+-- was never made: the picker then offered Migration and Brazil as plain
+-- allocations, with no "Move to Migration" and no Americas cover move, and
+-- Migration spans stayed on the engineer's own team. Same rule as 0202, so
+-- it is a no-op wherever the migration already linked them.
+UPDATE team_schedule_absence_kind k
+   SET moves_to_team_key = v.team_key,
+       works_rota_there = v.works_rota_there,
+       updated_on = now(),
+       updated_by = 'seed'
+  FROM (VALUES ('ALLO_BR', 'americas', TRUE), ('MIGRATION', 'migration', FALSE))
+       AS v(code, team_key, works_rota_there)
+ WHERE k.code = v.code
+   AND k.moves_to_team_key IS NULL
+   AND EXISTS (SELECT 1 FROM team t WHERE t.key = v.team_key);
+
+-- A span of a move is filed under the team it moves somebody to, their own
+-- team kept beside it -- what 0202 does to spans that already existed. The
+-- standing Migration allocations above are inserted under the engineer's own
+-- team, so they need it every run.
+UPDATE team_schedule_absence ab
+   SET home_team_key = ab.team_key,
+       team_key = k.moves_to_team_key,
+       updated_on = now(),
+       updated_by = 'seed'
+  FROM team_schedule_absence_kind k
+ WHERE k.id = ab.kind_id
+   AND k.moves_to_team_key IS NOT NULL
+   AND lower(ab.team_key) <> lower(k.moves_to_team_key);
+
 DROP FUNCTION IF EXISTS _seed_span(DATE, TEXT);
 
 COMMIT;

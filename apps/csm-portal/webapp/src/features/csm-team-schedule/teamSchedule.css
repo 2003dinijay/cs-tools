@@ -1320,6 +1320,13 @@
 .csm-ts .offcard.MAT { --cc: var(--mat-fg); }
 .csm-ts .offcard.PAT { --cc: var(--pat-fg); }
 
+/* Sabbatical leave (0221): a long planned absence like the two above, in a
+   colour of its own. */
+.csm-ts { --sab-bg: #e2d6f5; --sab-fg: #4a2a85; }
+:root[data-color-scheme="dark"] .csm-ts { --sab-bg: #3b2d5e; --sab-fg: #ddcff7; }
+.csm-ts .chip.SAB { background: var(--sab-bg); color: var(--sab-fg); }
+.csm-ts .offcard.SAB { --cc: var(--sab-fg); }
+
 /* ── Recent changes (leads, on the roster) ────────────────────────────────
    A quiet list under the edit bar: when, who and what, newest first. Leave
    entries carry the leave colour at their edge, rota entries the accent. */
@@ -2285,6 +2292,15 @@
 .csm-ts .cp-mx .cp-corner { top: 0; z-index: 4; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .csm-ts .cp-mx th[scope="row"] small { display: block; font-weight: 500; color: var(--muted); margin-top: 2px; }
 .csm-ts .cp-mx .cp-opt { font-style: italic; }
+/* L0 is one row: each team's cell holds its 1st, 2nd and 3rd responder, a
+   slot each, divided by a hairline. */
+.csm-ts .cp-mx .cp-l0 { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.csm-ts .cp-mx .cp-slot { display: flex; flex-direction: column; gap: 3px; padding: 6px 0; }
+.csm-ts .cp-mx .cp-slot:first-child { padding-top: 0; }
+.csm-ts .cp-mx .cp-slot:last-child { padding-bottom: 0; }
+.csm-ts .cp-mx .cp-slot + .cp-slot { border-top: 1px dashed var(--line-2); }
+.csm-ts .cp-mx .cp-rank { font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); }
+.csm-ts .cp-mx .cp-rank .cp-opt { font-weight: 500; text-transform: none; letter-spacing: 0; }
 /* Level groups: alternate bands, and a firmer line where a level starts. */
 .csm-ts .cp-mx tbody.band > tr > * { background: var(--cp-band), var(--cp-bg); }
 .csm-ts .cp-mx tbody + tbody > tr:first-child > * { border-top: 1px solid var(--line-2); }
@@ -2533,4 +2549,379 @@
     border-left: 0;
     border-top: 1px dashed color-mix(in srgb, var(--oc-fg) 45%, var(--line));
   }
+}
+
+/* The cell picker as a dialog in the middle of the view. The backdrop dims
+   the roster and takes the click that closes it; the dialog grows out of the
+   clicked cell (transform-origin is set from the cell's position) and shrinks
+   back on close. Two columns -- the rota, then leave and allocations with the
+   date range at their head -- stacking into one on a narrow screen. */
+.csm-ts .pk-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 70;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px 16px;
+  background: rgba(15, 20, 35, 0.42);
+  backdrop-filter: blur(2px);
+  overscroll-behavior: contain;
+  animation: ts-pk-fade-in 0.18s ease-out both;
+}
+.csm-ts .pk-scrim.closing {
+  animation: ts-pk-fade-out 0.14s ease-in both;
+}
+.csm-ts .pk-scrim .picker {
+  position: relative;
+  inset: auto;
+  width: min(780px, 100%);
+  max-width: 100%;
+  max-height: min(88vh, 820px);
+  border-radius: 14px;
+  box-shadow: 0 24px 64px rgba(15, 20, 35, 0.32);
+  animation: ts-pk-in 0.22s cubic-bezier(0.2, 0.8, 0.2, 1) both;
+}
+.csm-ts .pk-scrim.closing .picker {
+  animation: ts-pk-out 0.14s ease-in both;
+}
+.csm-ts .pk-scrim .picker:focus {
+  outline: none;
+}
+@keyframes ts-pk-fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+@keyframes ts-pk-fade-out {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+@keyframes ts-pk-in {
+  from { opacity: 0; transform: scale(0.92); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes ts-pk-out {
+  from { opacity: 1; transform: none; }
+  to { opacity: 0; transform: scale(0.96); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .csm-ts .pk-scrim,
+  .csm-ts .pk-scrim .picker {
+    animation: none;
+  }
+}
+
+.csm-ts .pk-head {
+  padding: 12px 16px;
+}
+.csm-ts .pk-head .pk-who {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.csm-ts .pk-head .pk-who small {
+  color: var(--muted);
+  font-size: 12px;
+}
+.csm-ts .pk-head .pk-now {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  padding: 4px 8px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  font-size: 12px;
+  color: var(--ink-2);
+  min-width: 0;
+}
+.csm-ts .pk-head .pk-nowl {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.csm-ts .pk-head .pk-now + .pk-x {
+  margin-left: 4px;
+}
+.csm-ts .pk-head .pk-x {
+  font-size: 18px;
+  line-height: 1;
+}
+
+.csm-ts .pk-body {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  min-height: 0;
+  overflow-y: auto;
+}
+.csm-ts .pk-col {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  padding: 12px 0 4px;
+}
+.csm-ts .pk-col + .pk-col {
+  border-left: 1px solid var(--line);
+}
+.csm-ts .pk-coltitle {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 12px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--ink);
+}
+.csm-ts .pk-coltitle small {
+  margin-left: auto;
+  font-weight: 600;
+  color: var(--accent-ink);
+}
+.csm-ts .pk-col .pk-grid {
+  overflow: visible;
+  padding-top: 0;
+}
+/* Each column's first heading sits right under its title, without a rule. */
+.csm-ts .pk-col .pk-grid > .pk-sec:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: 0;
+}
+.csm-ts .pk-col .pk-skip {
+  margin: 0;
+  padding: 0 12px 8px;
+}
+.csm-ts .pk-awaycol .pk-range {
+  margin: 0 12px 10px;
+}
+.csm-ts .pk-foot {
+  padding: 10px 12px;
+  border-top: 1px solid var(--line);
+}
+.csm-ts .pk-foot .pk-c.clear {
+  width: 100%;
+}
+
+@media (max-width: 720px) {
+  .csm-ts .pk-body {
+    grid-template-columns: 1fr;
+  }
+  .csm-ts .pk-col + .pk-col {
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
+  .csm-ts .pk-scrim {
+    padding: 12px;
+  }
+}
+
+/* ── Month roster: reading the grid ───────────────────────────────────────
+   On-call windows are dashed, the grid's existing mark for on-call (L3), so
+   "6-9am" and "6-9am on-call" no longer look the same. */
+.csm-ts .chip.oc {
+  border-style: dashed;
+  border-color: currentColor;
+}
+
+/* A turn still rostered on a leave day: the leave is the cell, the turn sits
+   under it struck through, and the cell carries a warning corner -- the gap a
+   lead has to cover, which used to hide under the leave. */
+.csm-ts .chip.gone {
+  text-decoration: line-through;
+  text-decoration-thickness: 1.5px;
+  opacity: 0.85;
+  border-style: dashed;
+  border-color: var(--crit, #c9302c);
+}
+.csm-ts .roster td.clash {
+  position: relative;
+  box-shadow: inset 0 0 0 1.5px color-mix(in srgb, var(--crit, #c9302c) 70%, transparent);
+}
+.csm-ts .roster td.clash::after {
+  content: "!";
+  position: absolute;
+  top: 1px;
+  right: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: var(--crit, #c9302c);
+  color: #fff;
+  font-size: 8.5px;
+  font-weight: 800;
+  line-height: 11px;
+  text-align: center;
+}
+
+/* In edit mode, rows this lead cannot change step back; hovering says whose
+   they are. Only the chips and the name fade: the sticky name cell keeps its
+   solid background so nothing scrolls through it. */
+.csm-ts .roster tr.ro td .chip,
+.csm-ts .roster tr.ro td .none {
+  opacity: 0.4;
+}
+.csm-ts .roster tr.ro th.lab .nm {
+  opacity: 0.6;
+}
+
+/* Keyboard: the focused cell is ringed, and the sticky header and engineer
+   column are kept clear when a cell is scrolled into view. */
+.csm-ts .roster td.editable:focus {
+  outline: none;
+}
+.csm-ts .roster td.editable:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  border-radius: 4px;
+}
+.csm-ts .rostwrap {
+  scroll-padding-left: 260px;
+  scroll-padding-top: 56px;
+}
+
+/* The legend, between the roster's controls and its grid. */
+.csm-ts .rlegend {
+  border-bottom: 1px solid var(--line);
+  padding: 6px 16px;
+  font-size: 12px;
+}
+.csm-ts .rlegend summary {
+  cursor: pointer;
+  font-weight: 650;
+  color: var(--ink-2);
+  padding: 2px 0;
+  width: max-content;
+}
+.csm-ts .rlegend summary small {
+  margin-left: 6px;
+  font-weight: 400;
+  color: var(--muted);
+}
+.csm-ts .rl-groups {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 28px;
+  padding: 8px 0 6px;
+}
+.csm-ts .rl-g {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  min-width: 0;
+}
+.csm-ts .rl-h {
+  flex: none;
+  padding-top: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.csm-ts .rl-g ul {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.csm-ts .rl-g li {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-2);
+  white-space: nowrap;
+}
+.csm-ts .rl-g li .chip {
+  min-width: 34px;
+  justify-content: center;
+}
+
+
+/* The picker's span spelled out under its two date fields. */
+.csm-ts .pk-range .pkr-when {
+  flex-basis: 100%;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+/* "Saved · Undo" after a roster edit: bottom centre, above the grid, out of
+   the way of the picker (which closes on save). */
+.csm-ts .undotoast {
+  position: fixed;
+  left: 50%;
+  bottom: 24px;
+  z-index: 80;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  max-width: min(640px, calc(100vw - 32px));
+  padding: 10px 10px 10px 16px;
+  border-radius: 10px;
+  background: var(--ink, #1b2237);
+  color: var(--surface-solid, #fff);
+  box-shadow: 0 12px 32px rgba(15, 20, 35, 0.3);
+  font-size: 12.5px;
+  animation: ts-toast-in 0.2s ease-out both;
+}
+.csm-ts .undotoast .ut-msg {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.csm-ts .undotoast .ut-undo {
+  flex: none;
+  border: 0;
+  border-radius: 6px;
+  padding: 5px 12px;
+  background: var(--accent);
+  color: #fff;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+.csm-ts .undotoast .ut-undo:disabled {
+  opacity: 0.7;
+  cursor: progress;
+}
+.csm-ts .undotoast .ut-x {
+  flex: none;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  opacity: 0.7;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+@keyframes ts-toast-in {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .csm-ts .undotoast { animation: none; }
+}
+
+/* A crowded day-view card: the team names in one row across the card, each
+   team's people below it when the cursor rests on one. */
+.csm-ts .ladder .zblk .teamsplit { flex-direction: column; gap: 6px; }
+.csm-ts .ladder .zblk .teamsplit .teamlist { flex: none; flex-direction: row; flex-wrap: wrap; gap: 4px 8px; border-right: 0; padding-right: 0; overflow: visible; }
+.csm-ts .ladder .zblk .teamsplit .teamlist .tl { width: auto; }
+.csm-ts .ladder .zblk .teamsplit .teamlist .tl .tn { flex: none; }
+.csm-ts .ladder .zblk .teamsplit .teampane { flex: 1; min-height: 0; border-top: 1px dashed var(--line); padding-top: 6px; }
+
+/* The view tabs, one width for all: each was as wide as its own text, so the
+   row read uneven. On a wide screen every tab takes the width of the widest
+   (never under 112px); a narrow screen keeps sharing the row as before. */
+@media (min-width: 821px) {
+  .csm-ts .tabs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(112px, 1fr); }
+  .csm-ts .tab { padding: 5px 8px 6px; }
+  .csm-ts .tab .tl { font-size: 12.5px; }
+  .csm-ts .tab .tsub { font-size: 9.5px; }
 }

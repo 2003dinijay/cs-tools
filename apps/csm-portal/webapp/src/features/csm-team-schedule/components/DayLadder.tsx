@@ -219,14 +219,19 @@ export default function DayLadder({
   onRotaChange,
 }: DayLadderProps): JSX.Element {
   const teamNameOf = useTeamName();
-  // Who is off the rota. Two kinds of span are left out:
+  // Who is off the rota. Three kinds of span are left out:
   //  - a stint that is rota work on another team -- the Brazil rotation,
   //    worked on the Americas rota -- which is not time off it;
   //  - a retired tag, such as Onboarding: no longer a reason anybody is away
   //    today. Its old days keep their label on the month roster, which is
-  //    the record; this column answers who to plan around now.
+  //    the record; this column answers who to plan around now;
+  //  - Excluded from rota: somebody who is never on the rota is not away from
+  //    it today, so a card of them says nothing about who to plan around. The
+  //    roster still marks them.
   const offRota = useMemo(() => {
-    const leaveOut = new Set(absenceKinds.filter((k) => k.worksRotaThere || k.retired).map((k) => k.code));
+    const leaveOut = new Set(
+      absenceKinds.filter((k) => k.worksRotaThere || k.retired || k.bucket === "EXCLUDED").map((k) => k.code),
+    );
     return absences.filter((a) => !leaveOut.has(a.kindCode));
   }, [absences, absenceKinds]);
   const wrapRef = useRef<HTMLDivElement | null>(null);
@@ -375,7 +380,12 @@ export default function DayLadder({
 
       // A zone that crosses midnight shows up twice: the piece it worked
       // yesterday and the piece it works today. They are different cards.
-      const bySegment = groupBy(placed, (x) => (x.p.startedPreviousDay ? "carried-in" : "own"));
+      // So are two rota days that both land on a reader's day far from the
+      // office -- Monday's escalation and Tuesday's are not one stretch.
+      const bySegment = groupBy(
+        placed,
+        (x) => `${x.a.rotaDate}:${x.p.startedPreviousDay ? "carried-in" : "own"}`,
+      );
 
       return [...bySegment.entries()]
         .map(([segment, items]) => {
@@ -470,10 +480,15 @@ export default function DayLadder({
   for (let h = 0; h <= 24; h += 2) hours.push(h);
 
   /** Distinct people on the rota today, not cards: one engineer holding an
-   *  escalation tier and an ordinary window is one engineer. */
+   *  escalation tier and an ordinary window is one engineer. Only those on
+   *  during the reader's day -- the read takes in the rota days either side,
+   *  for a reader whose day is not the office's. */
   const headcount = useMemo(
-    () => new Set(lanes.flatMap((l) => l.assignments.map((a) => a.engineer.userId))).size,
-    [lanes],
+    () =>
+      new Set(
+        lanes.flatMap((l) => l.assignments.filter((a) => placeOnDay(a, day, tz)).map((a) => a.engineer.userId)),
+      ).size,
+    [lanes, day, tz],
   );
 
   return (

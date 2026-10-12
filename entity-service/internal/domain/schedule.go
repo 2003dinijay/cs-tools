@@ -154,6 +154,10 @@ type ScheduleTeam struct {
 	// DefaultShiftCode is the standing window a member's ordinary weekday is:
 	// Americas cover for the Americas team. Absent means Regular hours.
 	DefaultShiftCode *string `json:"defaultShiftCode,omitempty"`
+	// IsABT says the team is an ABT (its type ends in "abt"): the teams the
+	// CRE rota and its regular hours are run by, as against Americas,
+	// Migration and the like.
+	IsABT bool `json:"isAbt"`
 }
 
 // ScheduleTeamMember is one member of a rota team. Role is the team_member
