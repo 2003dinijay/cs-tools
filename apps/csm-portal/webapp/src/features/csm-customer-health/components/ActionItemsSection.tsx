@@ -461,20 +461,32 @@ export default function ActionItemsSection({
           <Tab label={`RESOLVED (${counts.resolved})`} value="resolved" />
           <Tab label={`CANCELLED (${counts.cancelled})`} value="cancelled" />
         </Tabs>
-        <FormControl size="small" sx={{ minWidth: 180 }}>
-          <InputLabel sx={{ width: "100%", textAlign: "center", left: 0 }}>All Projects</InputLabel>
-          <Select
-            value={selectedProjectSysId}
-            label="All Projects"
-            onChange={(e) => setSelectedProjectSysId(e.target.value)}
-            sx={{ "& .MuiSelect-select": { textAlign: "center" } }}
-          >
-            <MenuItem value="">All Projects</MenuItem>
-            {projectsWithOpenRisks.map((p) => (
-              <MenuItem key={p.sysId} value={p.sysId}>{p.name}</MenuItem>
-            ))}
-          </Select>
-        </FormControl>
+        {projectsWithOpenRisks.length > 1 && (
+          // No label prop / InputLabel -- the plain displayEmpty + renderValue
+          // style every sibling filter in this app uses (see
+          // RiskIndicatorSelect.tsx's own doc comment: a floating
+          // InputLabel + notched OutlinedInput here previously rendered its
+          // closed-state text off-center, since with no selection the
+          // InputLabel sits in placeholder position while the Select's own
+          // content (the matching empty-value MenuItem) renders underneath
+          // it, so the textAlign: center rule only ever centered one of the
+          // two overlapping texts). Hidden entirely with one or zero
+          // projects to choose from -- nothing to filter by.
+          <FormControl size="small" sx={{ minWidth: 180 }}>
+            <Select
+              value={selectedProjectSysId}
+              onChange={(e) => setSelectedProjectSysId(e.target.value)}
+              displayEmpty
+              renderValue={(value) => projectsWithOpenRisks.find((p) => p.sysId === value)?.name ?? "All Projects"}
+              sx={{ "& .MuiSelect-select": { textAlign: "center" } }}
+            >
+              <MenuItem value="">All Projects</MenuItem>
+              {projectsWithOpenRisks.map((p) => (
+                <MenuItem key={p.sysId} value={p.sysId}>{p.name}</MenuItem>
+              ))}
+            </Select>
+          </FormControl>
+        )}
       </Stack>
 
       {itemsLoading && <Typography variant="body2" color="text.secondary" sx={{ py: 2 }}>Loading...</Typography>}
