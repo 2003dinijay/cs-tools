@@ -19,6 +19,7 @@ package dispatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"runtime"
 	"slices"
 	"strings"
@@ -1283,7 +1284,7 @@ func TestDispatcher_Handle_SeverityChanged(t *testing.T) {
 	chat := &mockGoogleChatSender{}
 	d := newTestDispatcher(mock, chat, &mockCallSender{})
 
-	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseTitle":"Something broke","oldSeverity":"HIGH","newSeverity":"LOW","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
+	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseTitle":"Something broke","oldSeverity":"LOW","newSeverity":"HIGH","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
 
 	if err := d.Handle(context.Background(), record); err != nil {
 		t.Fatalf("Handle() error = %v", err)
@@ -1296,7 +1297,7 @@ func TestDispatcher_Handle_SeverityChanged(t *testing.T) {
 	if len(gotEmail.to) != 1 || gotEmail.to[0] != testRecipient {
 		t.Errorf("to = %v, want [%s]", gotEmail.to, testRecipient)
 	}
-	if !strings.Contains(gotEmail.htmlBody, "High(S2)") || !strings.Contains(gotEmail.htmlBody, "Low(S4)") {
+	if !strings.Contains(gotEmail.htmlBody, "Low(S4)") || !strings.Contains(gotEmail.htmlBody, "High(S2)") {
 		t.Error("htmlBody does not contain both the old and new severity labels")
 	}
 
@@ -1304,8 +1305,58 @@ func TestDispatcher_Handle_SeverityChanged(t *testing.T) {
 		t.Fatalf("expected 1 Google Chat alert sent, got %d", len(chat.severityChangedCalls))
 	}
 	gotChat := chat.severityChangedCalls[0]
-	if gotChat.audience != chataudience.IncidentMonitor || gotChat.oldSeverityLabel != "High (P2)" || gotChat.newSeverityLabel != "Low (P4)" || gotChat.caseLink != "https://csm.example/cases/CASE-1" {
+	if gotChat.audience != chataudience.IncidentMonitor || gotChat.oldSeverityLabel != "Low (P4)" || gotChat.newSeverityLabel != "High (P2)" || gotChat.caseLink != "https://csm.example/cases/CASE-1" {
 		t.Errorf("unexpected SendSeverityChangedAlert args: %+v", gotChat)
+	}
+}
+
+// TestDispatcher_Handle_SeverityChanged_ChatByNewSeverity covers the product
+// rule: a move TO low severity (S4) posts no Incident Monitor chat, a move to
+// any of S0-S3 (including an upgrade out of S4) does. The email reaction is
+// independent and always happens.
+func TestDispatcher_Handle_SeverityChanged_ChatByNewSeverity(t *testing.T) {
+	tests := []struct {
+		name         string
+		oldSev       string
+		newSev       string
+		wantChatSent bool
+	}{
+		{"S2 to S4 skipped", "HIGH", "LOW", false},
+		{"S1 to S4 skipped", "CRITICAL", "LOW", false},
+		{"S0 to S4 skipped", "CATASTROPHIC", "LOW", false},
+		{"S3 to S4 skipped", "MEDIUM", "LOW", false},
+		{"lowercase new severity skipped", "HIGH", " low ", false},
+		{"S4 to S2 sent", "LOW", "HIGH", true},
+		{"S4 to S0 sent", "LOW", "CATASTROPHIC", true},
+		{"S3 to S2 sent", "MEDIUM", "HIGH", true},
+		{"S2 to S0 sent", "HIGH", "CATASTROPHIC", true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			mock := &mockEmailSender{}
+			chat := &mockGoogleChatSender{}
+			d := newTestDispatcher(mock, chat, &mockCallSender{})
+
+			payload := fmt.Sprintf(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001001","oldSeverity":%q,"newSeverity":%q,"product":"api-manager","recipients":["test-recipient@example.com"]}}`, tt.oldSev, tt.newSev)
+			record := eventbus.Record{Topic: "case-events", Partition: 1, Offset: 7, Value: []byte(payload)}
+
+			if err := d.Handle(context.Background(), record); err != nil {
+				t.Fatalf("Handle() error = %v", err)
+			}
+			wantChats := 0
+			if tt.wantChatSent {
+				wantChats = 1
+			}
+			if got := len(chat.severityChangedCalls); got != wantChats {
+				t.Errorf("chat alerts = %d, want %d", got, wantChats)
+			}
+			if len(mock.calls) != 1 {
+				t.Errorf("emails sent = %d, want 1 (email is independent of the chat rule)", len(mock.calls))
+			}
+			if len(d.done) != 0 {
+				t.Errorf("done map should be empty after full success, has %d entries", len(d.done))
+			}
+		})
 	}
 }
 
@@ -1317,7 +1368,7 @@ func TestDispatcher_Handle_SeverityChanged_ChatFailureStillSendsEmail(t *testing
 	chat := &mockGoogleChatSender{err: errors.New("webhook unreachable")}
 	d := newTestDispatcher(mock, chat, &mockCallSender{})
 
-	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"HIGH","newSeverity":"LOW","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
+	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"LOW","newSeverity":"HIGH","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
 
 	if err := d.Handle(context.Background(), record); err == nil {
 		t.Fatal("expected the chat error to propagate")
@@ -1337,7 +1388,7 @@ func TestDispatcher_Handle_SeverityChanged_EmailFailureStillSendsChat(t *testing
 	links := &mockLinkResolver{err: errors.New("entity-service unreachable")}
 	d := NewDispatcher(&mockEmailSender{}, chat, &mockCallSender{}, links, true, false, nil, true, "", nil)
 
-	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"HIGH","newSeverity":"LOW","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
+	record := eventbus.Record{Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"LOW","newSeverity":"HIGH","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
 
 	if err := d.Handle(context.Background(), record); err == nil {
 		t.Fatal("expected the link-resolution error to propagate")
@@ -1354,7 +1405,7 @@ func TestDispatcher_Handle_SeverityChanged_ForgetsAfterFullSuccess(t *testing.T)
 	chat := &mockGoogleChatSender{}
 	d := newTestDispatcher(mock, chat, &mockCallSender{})
 
-	record := eventbus.Record{Topic: "case-events", Partition: 1, Offset: 42, Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"HIGH","newSeverity":"LOW","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
+	record := eventbus.Record{Topic: "case-events", Partition: 1, Offset: 42, Value: []byte(`{"type":"case.severity_changed","entityId":"CASE-1","payload":{"projectId":"PROJ-1","caseId":"CASE-1","oldSeverity":"LOW","newSeverity":"HIGH","product":"api-manager","recipients":["test-recipient@example.com"]}}`)}
 
 	if err := d.Handle(context.Background(), record); err != nil {
 		t.Fatalf("Handle() error = %v", err)
