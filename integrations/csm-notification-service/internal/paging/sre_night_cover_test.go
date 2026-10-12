@@ -26,7 +26,7 @@ import (
 // SaaS SRE's night cover: whoever holds SRE_TZ3 (21:00-06:00 IST, every day)
 // is ONE crew for Apollo and Artemis together, one person per tier for the
 // whole rota. entity-service refuses a second holder of a TZ3 tier across the
-// two teams (migration 0220), so the pager sees one L1, one L2 and one L3 on
+// two teams (migration 0223), so the pager sees one L1, one L2 and one L3 on
 // a night, from either team. These tests pin that every SaaS incident at
 // night -- Apollo's, Artemis's, or one with no team -- climbs that crew, and
 // that the night begins and ends on the window's own hours.

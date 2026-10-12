@@ -2262,7 +2262,7 @@ func TestScheduleIntegration_ApplyRangeRefusesASecondTZ3HolderAcrossTeams(t *tes
 		t.Fatalf("read the catalogue: %v", err)
 	}
 	if !shared || iaasShared {
-		t.Fatalf("SRE_TZ3 shared=%v, SRE_IAAS_NIGHT shared=%v; want only SaaS's night shared (migration 0220)", shared, iaasShared)
+		t.Fatalf("SRE_TZ3 shared=%v, SRE_IAAS_NIGHT shared=%v; want only SaaS's night shared (migration 0223)", shared, iaasShared)
 	}
 
 	if err := applyTurn(t, repo, schedLeadID, schedSreTeamKey, "SRE_TZ3", "L1", night, night); err != nil {

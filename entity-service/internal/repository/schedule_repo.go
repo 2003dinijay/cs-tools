@@ -680,7 +680,7 @@ func slotConflict(err error, isoDate string) error {
 //
 // A slot is a zone's tier on one rota day. On most windows that is per team:
 // Apollo and Artemis each have their own TZ1 L1. On a window shared across
-// teams (team_schedule_shift.shared_across_teams, migration 0220 -- SaaS's
+// teams (team_schedule_shift.shared_across_teams, migration 0223 -- SaaS's
 // SRE_TZ3) it is one slot for the whole rota, because the zone belongs to one
 // rota and the night crew pages for all of its teams. Either way the person
 // being edited is never a conflict with themselves: moving them from L1 to L2

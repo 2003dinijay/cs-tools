@@ -79,7 +79,7 @@ type ScheduleShift struct {
 	RequiredHeadcount *int16 `json:"requiredHeadcount,omitempty"`
 	CrossesMidnight   bool   `json:"crossesMidnight"`
 	// SharedAcrossTeams is true when each tier of the window is one person
-	// for the whole rota, not one per team (migration 0220): SaaS TZ3, the
+	// for the whole rota, not one per team (migration 0223): SaaS TZ3, the
 	// night cover for Apollo and Artemis alike.
 	SharedAcrossTeams bool   `json:"sharedAcrossTeams"`
 	ColourToken       string `json:"colourToken"`
