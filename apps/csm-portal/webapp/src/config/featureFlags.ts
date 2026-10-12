@@ -203,43 +203,90 @@ function requirements(): Map<string, keyof PortalAccess> {
  * When `access` is given, a page needing a capability the user lacks resolves
  * to `hidden` for them, whatever the deployment's flags say. Omit it for the
  * deployment-wide state.
+ *
+ * `previewOverrides` (the Feature Preview dialog's per-admin, browser-local
+ * toggles — see `featurePreview.ts`) can PROMOTE a `hidden`/`wip` node to
+ * `enabled` for that one admin, but can never demote anything and can never
+ * bypass a genuine capability failure: a node whose `requires` capability the
+ * caller lacks resolves to `hidden` regardless of any override. Promotion
+ * also requires `access.isAdmin` — this is deliberately not reachable by
+ * anyone else, and never touches the deployment-wide `states()` map itself,
+ * so every other caller (every call site that doesn't pass this third
+ * argument) sees exactly the same result as before this parameter existed.
  */
-export function featureState(id: string, access?: PortalAccess): FeatureState {
+export function featureState(
+  id: string,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): FeatureState {
   const state = states().get(id) ?? "enabled";
-  if (state === "hidden" || !access) return state;
   const need = requirements().get(id);
-  return need && !access[need] ? "hidden" : state;
+  const capabilityOk = !access || !need || access[need];
+  if (!capabilityOk) return "hidden";
+  if ((state === "hidden" || state === "wip") && access?.isAdmin && previewOverrides?.[id]) {
+    return "enabled";
+  }
+  return state;
 }
 
 /** True when the page should appear in navigation at all (enabled or WIP). */
-export function isFeatureVisible(id: string, access?: PortalAccess): boolean {
-  return featureState(id, access) !== "hidden";
+export function isFeatureVisible(
+  id: string,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): boolean {
+  return featureState(id, access, previewOverrides) !== "hidden";
 }
 
 /** True when the page is usable, as opposed to hidden or advertised-but-WIP. */
-export function isFeatureEnabled(id: string, access?: PortalAccess): boolean {
-  return featureState(id, access) === "enabled";
+export function isFeatureEnabled(
+  id: string,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): boolean {
+  return featureState(id, access, previewOverrides) === "enabled";
 }
 
 /** Effective state of whichever page owns `pathname`. */
-export function featureStateForPath(pathname: string, access?: PortalAccess): FeatureState {
+export function featureStateForPath(
+  pathname: string,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): FeatureState {
   const node = navNodeForPath(pathname);
-  return node ? featureState(node.id, access) : "enabled";
+  return node ? featureState(node.id, access, previewOverrides) : "enabled";
 }
 
 /** Top-level sections that should render in the sidebar. */
-export function visibleNavSections(access?: PortalAccess): typeof CSM_NAV_ITEMS {
-  return CSM_NAV_ITEMS.filter((section) => isFeatureVisible(section.id, access));
+export function visibleNavSections(
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): typeof CSM_NAV_ITEMS {
+  return CSM_NAV_ITEMS.filter((section) =>
+    isFeatureVisible(section.id, access, previewOverrides),
+  );
 }
 
 /** A node's tabs that should render in its tab strip. */
-export function visibleNavChildren(node: CsmNavNode, access?: PortalAccess): CsmNavNode[] {
-  return (node.children ?? []).filter((child) => isFeatureVisible(child.id, access));
+export function visibleNavChildren(
+  node: CsmNavNode,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): CsmNavNode[] {
+  return (node.children ?? []).filter((child) =>
+    isFeatureVisible(child.id, access, previewOverrides),
+  );
 }
 
 /** A node's tabs that are actually usable. */
-export function enabledNavChildren(node: CsmNavNode, access?: PortalAccess): CsmNavNode[] {
-  return (node.children ?? []).filter((child) => isFeatureEnabled(child.id, access));
+export function enabledNavChildren(
+  node: CsmNavNode,
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): CsmNavNode[] {
+  return (node.children ?? []).filter((child) =>
+    isFeatureEnabled(child.id, access, previewOverrides),
+  );
 }
 
 /** A page the Quick-nav palette can offer as a destination. */
@@ -262,8 +309,9 @@ function navigableDescendants(
   node: CsmNavNode,
   icon: ComponentType<{ size?: number | string }>,
   access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
 ): NavigableNavNode[] {
-  return enabledNavChildren(node, access).flatMap((child) => {
+  return enabledNavChildren(node, access, previewOverrides).flatMap((child) => {
     const self: NavigableNavNode = {
       id: child.id,
       label: child.label,
@@ -271,7 +319,7 @@ function navigableDescendants(
       href: child.href,
       icon: child.icon ?? icon,
     };
-    return [self, ...navigableDescendants(child, self.icon, access)];
+    return [self, ...navigableDescendants(child, self.icon, access, previewOverrides)];
   });
 }
 
@@ -281,16 +329,19 @@ function navigableDescendants(
  * carry its label as a sublabel so "Users" reads as "Users / User management"
  * rather than as a bare word.
  */
-export function navigableNavNodes(access?: PortalAccess): NavigableNavNode[] {
+export function navigableNavNodes(
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): NavigableNavNode[] {
   return CSM_NAV_ITEMS.flatMap((section) => {
-    if (!isFeatureEnabled(section.id, access)) return [];
+    if (!isFeatureEnabled(section.id, access, previewOverrides)) return [];
     const self: NavigableNavNode = {
       id: section.id,
       label: section.label,
       href: section.href,
       icon: section.icon,
     };
-    return [self, ...navigableDescendants(section, section.icon, access)];
+    return [self, ...navigableDescendants(section, section.icon, access, previewOverrides)];
   });
 }
 
@@ -300,6 +351,24 @@ export function navigableNavNodes(access?: PortalAccess): NavigableNavNode[] {
  * callers must handle that rather than redirect into a page that is itself
  * hidden, which would bounce the router between two hidden paths forever.
  */
-export function firstEnabledDestination(access?: PortalAccess): string | undefined {
-  return navigableNavNodes(access)[0]?.href;
+export function firstEnabledDestination(
+  access?: PortalAccess,
+  previewOverrides?: Record<string, boolean>,
+): string | undefined {
+  return navigableNavNodes(access, previewOverrides)[0]?.href;
+}
+
+/**
+ * Every nav node this deployment currently hides or marks WIP, resolved WITHOUT
+ * any preview override applied — the candidate list the Feature Preview dialog
+ * renders as toggle rows. `access` only narrows by capability (a node a caller
+ * can never reach regardless of deployment state is not worth offering a
+ * toggle for); the admin-only gate on actually USING a toggle lives in
+ * `featureState`'s own promotion check, not here.
+ */
+export function listPreviewableFeatures(access?: PortalAccess): CsmNavNode[] {
+  return flattenNavNodes(CSM_NAV_ITEMS).filter((node) => {
+    const state = featureState(node.id, access);
+    return state === "hidden" || state === "wip";
+  });
 }

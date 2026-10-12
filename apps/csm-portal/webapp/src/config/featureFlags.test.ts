@@ -22,12 +22,14 @@ import {
   firstEnabledDestination,
   isFeatureEnabled,
   isFeatureVisible,
+  listPreviewableFeatures,
   navigableNavNodes,
   resetFeatureStatesForTests,
   visibleNavChildren,
   visibleNavSections,
 } from "@config/featureFlags";
 import { CSM_NAV_ITEMS, navNodeById } from "@config/csmNavItems";
+import { getPortalAccess } from "@context/current-user/portalAccess";
 
 function setOverrides(value: unknown): void {
   window.config = {
@@ -231,5 +233,76 @@ describe("isFeatureVisible / isFeatureEnabled", () => {
     expect(isFeatureVisible("engagements")).toBe(true);
     expect(isFeatureEnabled("engagements")).toBe(false);
     expect(isFeatureEnabled("dashboard")).toBe(true);
+  });
+});
+
+describe("featureState preview overrides", () => {
+  const admin = getPortalAccess(["admin"]);
+  const csEngineer = getPortalAccess(["cs_engineer"]);
+
+  it("promotes a deployment-hidden node to enabled for an admin with the override on", () => {
+    setOverrides({ updates: "hidden" });
+    expect(featureState("updates", admin)).toBe("hidden");
+    expect(featureState("updates", admin, { updates: true })).toBe("enabled");
+  });
+
+  it("promotes a deployment-wip node to enabled for an admin with the override on", () => {
+    setOverrides({ engagements: "wip" });
+    expect(featureState("engagements", admin)).toBe("wip");
+    expect(featureState("engagements", admin, { engagements: true })).toBe("enabled");
+  });
+
+  it("does not promote for a non-admin, even with the override on", () => {
+    setOverrides({ updates: "hidden" });
+    expect(featureState("updates", csEngineer, { updates: true })).toBe("hidden");
+  });
+
+  it("does not promote when the override for that id is off or absent", () => {
+    setOverrides({ updates: "hidden" });
+    expect(featureState("updates", admin, { updates: false })).toBe("hidden");
+    expect(featureState("updates", admin, {})).toBe("hidden");
+    expect(featureState("updates", admin, { engagements: true })).toBe("hidden");
+  });
+
+  it("never bypasses a genuine capability failure, even for an admin with the override on", () => {
+    // operations.incidents requires canUseOperations; a plain viewer lacks it
+    // regardless of what the deployment config or any override says.
+    const viewerAdminish = { ...getPortalAccess(["viewer"]), isAdmin: true };
+    expect(featureState("operations.incidents", viewerAdminish, { "operations.incidents": true })).toBe(
+      "hidden",
+    );
+  });
+
+  it("never demotes an already-enabled node", () => {
+    expect(featureState("dashboard", admin, { dashboard: false })).toBe("enabled");
+  });
+
+  it("leaves every other caller (no third argument) completely unaffected", () => {
+    setOverrides({ updates: "hidden", engagements: "wip" });
+    expect(featureState("updates", admin)).toBe("hidden");
+    expect(featureState("engagements", admin)).toBe("wip");
+    expect(featureState("dashboard")).toBe("enabled");
+  });
+});
+
+describe("listPreviewableFeatures", () => {
+  it("returns only nodes that are hidden or WIP for this deployment, without applying any override", () => {
+    setOverrides({ updates: "hidden", engagements: "wip" });
+    const ids = listPreviewableFeatures().map((n) => n.id);
+    expect(ids).toContain("updates");
+    expect(ids).toContain("engagements");
+    expect(ids).not.toContain("dashboard");
+  });
+
+  it("includes a config-hidden node for a caller whose capability would allow it", () => {
+    setOverrides({ "operations.incidents": "hidden" });
+    const csEngineerIds = listPreviewableFeatures(getPortalAccess(["cs_engineer"])).map(
+      (n) => n.id,
+    );
+    expect(csEngineerIds).toContain("operations.incidents");
+  });
+
+  it("returns an empty array when nothing is hidden or WIP", () => {
+    expect(listPreviewableFeatures()).toEqual([]);
   });
 });
