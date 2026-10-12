@@ -258,18 +258,6 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			// it carries; account_github_repo is the fallback for one that
 			// does not.
 			githubSyncSvc = service.WithGithubRepoConfig(githubSyncSvc, githubClient, cfg.GithubRepoConfigPath)
-			// Under dual-write, a new SR is created in ServiceNow first and takes
-			// its CS number and WSO2 Case ID, as a portal-created one does.
-			if cfg.GithubServiceNowFirst() {
-				snCases, snErr := service.NewSNGithubCaseClient(cfg.GithubSNCaseAPIURL, cfg.GithubSNCaseAPIUsername, cfg.GithubSNCaseAPIPassword)
-				if snErr != nil {
-					log.Fatalf("invalid ServiceNow GitHub case API configuration: %v", snErr)
-				}
-				githubSyncSvc = service.WithServiceNowGithubCases(githubSyncSvc, snCases)
-				slog.Info("github: service requests from issues are created in ServiceNow first (dual-write)")
-			} else if cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
-				slog.Warn("github: GITHUB_SN_CASE_API_URL is not set; service requests from issues are written to Postgres only and numbered SR-GH-<n>")
-			}
 			githubSync = githubSyncSvc
 			githubDeliveryHandler = handler.NewGithubDeliveryHandler(githubSyncSvc, cfg.M2MClientIDs)
 			githubServiceRequestHandler = handler.NewGithubServiceRequestHandler(githubSyncSvc, cfg.M2MClientIDs)
@@ -581,6 +569,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			ClientSecret: cfg.ServiceNowIntegrationServiceClientSecret,
 			Scopes:       cfg.ServiceNowIntegrationServiceScopes,
 		}, cfg.UpstreamClientTimeout)
+	}
+
+	// Under dual-write, a new SR raised from a GitHub issue is created in
+	// ServiceNow first, through the integration service's /github-cases, and
+	// takes ServiceNow's CS number and WSO2 Case ID, as a portal-created one does.
+	if githubSync != nil && serviceNowIntegrationServiceClient != nil {
+		if cfg.GithubServiceNowFirst() {
+			service.WithServiceNowGithubCases(githubSync, service.NewSNGithubCases(serviceNowIntegrationServiceClient))
+			slog.Info("github: service requests from issues are created in ServiceNow first (dual-write)")
+		} else if cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
+			slog.Info("github: service requests from issues are written to Postgres only and numbered SR-GH-<n> (GITHUB_SR_SERVICENOW_FIRST is off)")
+		}
 	}
 
 	var snAccountHandler *handler.SNAccountHandler

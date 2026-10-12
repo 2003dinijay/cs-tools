@@ -209,8 +209,9 @@ type githubSyncService struct {
 }
 
 // WithServiceNowGithubCases makes the sync create each new service request in
-// ServiceNow first, through ServiceNow's GitHub case API, and keep ServiceNow
-// in step with the issue's edits and comments. For DATA_SOURCE=
+// ServiceNow first, through the ServiceNow integration service's
+// /github-cases (ServiceNow's GitHub case API, as its M2M user), and keep
+// ServiceNow in step with the issue's edits and comments. For DATA_SOURCE=
 // postgres-servicenow-dual-write only. A no-op if svc is not a
 // *githubSyncService or api is nil.
 func WithServiceNowGithubCases(svc GithubSyncService, api snGithubCaseAPI) GithubSyncService {
@@ -446,6 +447,7 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, map
 	// repository mapped without a project (account_github_repo) cannot be, as
 	// ServiceNow's API requires one; it keeps the GitHub series.
 	snFirst := s.snCases != nil && mapping.ProjectID != ""
+	var snSysID string
 	if snFirst {
 		res, err := s.snCases.CreateCase(ctx, snGithubCaseCreate(issue, mapping.AccountID, mapping.ProjectID,
 			mapping.Category, mapping.AnnouncementType, catalog, githubCatalogPrefix(p, catalog)))
@@ -459,6 +461,7 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, map
 			slog.WarnContext(ctx, "github: ServiceNow returned no WSO2 Case ID; the record takes the GitHub series id",
 				"snNumber", res.Number, "issue", p.Issue.Number)
 		}
+		snSysID = res.SysID
 		in.ServiceNowID = sysidToUUID(res.SysID)
 		in.ServiceNowNumber = res.Number
 		in.ServiceNowWSO2ID = res.WSO2CaseID
@@ -489,12 +492,23 @@ func (s *githubSyncService) handleIssue(ctx context.Context, p IssuePayload, map
 	// Only for a new record: an issue that already had one ("exists" above)
 	// was announced when that record was created.
 	//
-	// Not for one created in ServiceNow first: ServiceNow's own "SR New
-	// Request - Acknowledge & Chat Alert" flow acts on that case, as it does
-	// for every portal SR under dual-write and did for GitHub cases before the
-	// cutover. Running ours as well would acknowledge and announce it twice.
-	if s.srNotices != nil && !snFirst {
-		s.srNotices.OnCreated(ctx, id)
+	// Ours in every case; ServiceNow's "SR New Request - Acknowledge & Chat
+	// Alert" flow is not relied on. For a record created in ServiceNow first,
+	// the acknowledgement comment is written to ServiceNow's case as well.
+	if s.srNotices != nil {
+		mirrored, canMirror := s.srNotices.(interface {
+			OnCreatedMirrored(ctx context.Context, caseID string, mirror srAckMirror)
+		})
+		if snFirst && canMirror {
+			mirrored.OnCreatedMirrored(ctx, id, func(ctx context.Context, comment string) {
+				if err := s.snCases.AddComment(ctx, snSysID, comment); err != nil {
+					logSNGithubCaseError(ctx, "github: ServiceNow did not take the SR acknowledgement", err,
+						"serviceRequestId", id, "issue", p.Issue.Number)
+				}
+			})
+		} else {
+			s.srNotices.OnCreated(ctx, id)
+		}
 	}
 	return Outcome{Action: "created", ChangeRequestID: id, Number: number}, nil
 }

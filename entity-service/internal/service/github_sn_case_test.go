@@ -20,12 +20,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"strings"
 	"testing"
 
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
@@ -151,99 +149,67 @@ func TestSNGithubCommentText(t *testing.T) {
 	}
 }
 
-// snGithubTestServer is ServiceNow's side over TLS, as the client requires
-// https.
-func snGithubTestServer(t *testing.T, h http.HandlerFunc) *SNGithubCaseClient {
-	t.Helper()
-	srv := httptest.NewTLSServer(h)
-	t.Cleanup(srv.Close)
-	c, err := NewSNGithubCaseClient(srv.URL+"/api/wso2/gh_integration/case", "gh.integration", "s3cret")
-	if err != nil {
-		t.Fatal(err)
-	}
-	c.http = srv.Client()
-	return c
+// fakeIntegration is the ServiceNow integration service for the adapter tests.
+type fakeIntegration struct {
+	calls  []string // "<METHOD> <path> token=<token>"
+	bodies []any
+	resp   json.RawMessage
+	err    error
 }
 
-func TestSNGithubCaseClient_Create(t *testing.T) {
-	var gotBody map[string]any
-	c := snGithubTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		user, pass, ok := r.BasicAuth()
-		if r.Method != http.MethodPost || r.URL.Path != "/api/wso2/gh_integration/case" || !ok ||
-			user != "gh.integration" || pass != "s3cret" || r.Header.Get("User-Agent") != snGithubUserAgent {
-			t.Errorf("unexpected request %s %s auth=%v ua=%q", r.Method, r.URL.Path, ok, r.Header.Get("User-Agent"))
-		}
-		raw, _ := io.ReadAll(r.Body)
-		_ = json.Unmarshal(raw, &gotBody)
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte(`{"result":{"case_number":"CS0441400","sys_id":"0a1b2c3d4e5f60718293a4b5c6d7e8f9","u_wso2_case_id":"WCSSUB-10"}}`))
-	})
-	res, err := c.CreateCase(context.Background(), map[string]any{"u_github_issue_key": "wso2/choreo#42"})
+func (f *fakeIntegration) Post(_ context.Context, path, token string, payload any) (json.RawMessage, error) {
+	f.calls = append(f.calls, "POST "+path+" token="+token)
+	f.bodies = append(f.bodies, payload)
+	return f.resp, f.err
+}
+
+func (f *fakeIntegration) Patch(_ context.Context, path, token string, payload any) (json.RawMessage, error) {
+	f.calls = append(f.calls, "PATCH "+path+" token="+token)
+	f.bodies = append(f.bodies, payload)
+	return f.resp, f.err
+}
+
+// Every call goes without a user token, so the integration service acts as
+// its M2M ServiceNow user -- the path an alert's incident takes.
+func TestSNGithubCases_CreateGoesThroughTheIntegrationServiceAsM2M(t *testing.T) {
+	f := &fakeIntegration{resp: json.RawMessage(`{"id":"0a1b2c3d4e5f60718293a4b5c6d7e8f9","number":"CS0441400","wso2CaseId":"WCSSUB-10","existing":false}`)}
+	res, err := (&SNGithubCases{client: f}).CreateCase(context.Background(), map[string]any{"u_github_issue_key": "wso2/choreo#42"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Number != "CS0441400" || res.SysID != "0a1b2c3d4e5f60718293a4b5c6d7e8f9" || res.WSO2CaseID != "WCSSUB-10" || res.Existing {
+	if len(f.calls) != 1 || f.calls[0] != "POST /github-cases token=" {
+		t.Errorf("calls = %v, want one POST /github-cases with no token", f.calls)
+	}
+	if res != (snGithubCaseResult{SysID: "0a1b2c3d4e5f60718293a4b5c6d7e8f9", Number: "CS0441400", WSO2CaseID: "WCSSUB-10"}) {
 		t.Errorf("result = %+v", res)
 	}
-	if gotBody["u_github_issue_key"] != "wso2/choreo#42" {
-		t.Errorf("ServiceNow got %v", gotBody)
+
+	f.resp = json.RawMessage(`{"id":"0a1b2c3d4e5f60718293a4b5c6d7e8f9","number":"CS1","wso2CaseId":null,"existing":true}`)
+	if res, err = (&SNGithubCases{client: f}).CreateCase(context.Background(), nil); err != nil || !res.Existing || res.WSO2CaseID != "" {
+		t.Errorf("existing case: %+v, %v", res, err)
+	}
+	f.resp = json.RawMessage(`{"message":"ok"}`)
+	if _, err = (&SNGithubCases{client: f}).CreateCase(context.Background(), nil); err == nil {
+		t.Error("an answer without a case must be an error")
 	}
 }
 
-func TestSNGithubCaseClient_CreateAnswers(t *testing.T) {
-	for name, tc := range map[string]struct {
-		status   int
-		body     string
-		existing bool
-		wantErr  bool
-	}{
-		"already exists, unwrapped": {200, `{"message":"Case already exists","case_number":"CS1","case_sys_id":"0a1b2c3d4e5f60718293a4b5c6d7e8f9","u_wso2_case_id":"K-1"}`, true, false},
-		"server error":              {500, `{"error":"boom"}`, false, true},
-		"no case in the answer":     {201, `{"result":{"message":"ok"}}`, false, true},
-		"not JSON":                  {201, `<html>`, false, true},
-	} {
-		c := snGithubTestServer(t, func(w http.ResponseWriter, _ *http.Request) {
-			w.WriteHeader(tc.status)
-			_, _ = w.Write([]byte(tc.body))
-		})
-		res, err := c.CreateCase(context.Background(), map[string]any{})
-		if (err != nil) != tc.wantErr || (err == nil && res.Existing != tc.existing) {
-			t.Errorf("%s: res=%+v err=%v", name, res, err)
-		}
-	}
-}
-
-func TestSNGithubCaseClient_UpdateAndComment(t *testing.T) {
-	var commentPath, commentBody string
-	c := snGithubTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.Method == http.MethodPatch && r.URL.Path == "/api/wso2/gh_integration/case":
-			w.WriteHeader(http.StatusNotFound)
-		case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/now/table/sn_customerservice_case/"):
-			commentPath = r.URL.Path
-			raw, _ := io.ReadAll(r.Body)
-			commentBody = string(raw)
-			w.WriteHeader(http.StatusOK)
-		default:
-			t.Errorf("unexpected %s %s", r.Method, r.URL.Path)
-		}
-	})
+func TestSNGithubCases_UpdateAndComment(t *testing.T) {
+	f := &fakeIntegration{err: &apierror.NotFoundError{Msg: "resource not found in downstream service"}}
+	c := &SNGithubCases{client: f}
 	if err := c.UpdateCase(context.Background(), map[string]any{}); !errors.Is(err, errSNGithubCaseNotFound) {
 		t.Errorf("update of an unknown case: err = %v, want errSNGithubCaseNotFound", err)
 	}
+	f.err = nil
 	if err := c.AddComment(context.Background(), "0a1b2c3d4e5f60718293a4b5c6d7e8f9", "hello"); err != nil {
 		t.Fatal(err)
 	}
-	if commentPath != "/api/now/table/sn_customerservice_case/0a1b2c3d4e5f60718293a4b5c6d7e8f9" || commentBody != `{"comments":"hello"}` {
-		t.Errorf("comment went to %s with %s", commentPath, commentBody)
+	if f.calls[1] != "POST /comments token=" {
+		t.Errorf("comment call = %q", f.calls[1])
 	}
-}
-
-func TestNewSNGithubCaseClient_RequiresHTTPS(t *testing.T) {
-	for _, u := range []string{"http://x.service-now.com/api/wso2/gh_integration/case", "not a url", ""} {
-		if _, err := NewSNGithubCaseClient(u, "u", "p"); err == nil {
-			t.Errorf("%q: want an error", u)
-		}
+	if got := f.bodies[1].(snCreateCommentPayload); got.ReferenceID != "0a1b2c3d4e5f60718293a4b5c6d7e8f9" ||
+		got.ReferenceType != "case" || got.Type != "comments" || got.Content != "hello" {
+		t.Errorf("comment payload = %+v", got)
 	}
 }
 
@@ -297,8 +263,7 @@ func srDelivery(action string) Delivery {
 
 // Under dual-write the SR is created in ServiceNow first and the Postgres row
 // takes ServiceNow's sys_id, CS number and WSO2 Case ID, with ServiceNow's
-// description. ServiceNow's own flow acknowledges and announces it, so ours
-// does not.
+// description.
 func TestGithubSNFirst_CreatesInServiceNowAndTakesItsIDs(t *testing.T) {
 	mut, sn, n := &fakeGhMutations{}, &fakeSNCases{}, &recordingSRNotifier{}
 	out, err := snFirstSvc(&fakeGhRepo{mapping: mappedWithProject()}, mut, sn, n).HandleWebhook(context.Background(), srDelivery("labeled"))
@@ -320,8 +285,13 @@ func TestGithubSNFirst_CreatesInServiceNowAndTakesItsIDs(t *testing.T) {
 	if !strings.HasPrefix(mut.lastSR.Description, `<span style="color:red;font-weight:bold;font-size:2em;">ENVIRONMENT: Development, Production</span>`) {
 		t.Errorf("Postgres description is not ServiceNow's: %q", mut.lastSR.Description)
 	}
-	if len(n.created) != 0 {
-		t.Errorf("our SR automation ran for %v; ServiceNow's flow handles a ServiceNow-first SR", n.created)
+	// Our automation runs (no ServiceNow flow is relied on), and its
+	// acknowledgement goes to ServiceNow's case too.
+	if len(n.mirrored) != 1 || n.mirrored[0] != "sr-new" || len(n.created) != 0 {
+		t.Errorf("automation: mirrored=%v plain=%v, want mirrored [sr-new]", n.mirrored, n.created)
+	}
+	if len(sn.comments) != 1 || !strings.HasPrefix(sn.comments[0], "0a1b2c3d4e5f60718293a4b5c6d7e8f9|"+srAcknowledgement) {
+		t.Errorf("ServiceNow got %q, want the acknowledgement on the new case", sn.comments)
 	}
 }
 

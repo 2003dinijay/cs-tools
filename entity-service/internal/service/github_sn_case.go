@@ -17,18 +17,17 @@
 package service
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
-	"time"
+
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/apierror"
+	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
+	integrationservice "github.com/wso2-open-operations/cs-tools/entity-service/internal/servicenow-integration-service"
 )
 
 // SERVICENOW-FIRST GITHUB SERVICE REQUESTS (DUAL-WRITE).
@@ -39,24 +38,26 @@ import (
 // written to Postgres only and numbered SR-GH-<n> / WSO2-GH-<n>, and ServiceNow
 // never saw it.
 //
-// This creates it the way the repositories did before the cutover:
-// servicenow_create_case.yml posted the issue to ServiceNow's GitHub case API
-// (a scripted REST API run as an integration user, so no user token is
-// needed), which answers with the case's sys_id, number and WSO2 Case ID and
-// treats an issue it already has as "Case already exists". The payload below
-// is that workflow's, field for field; the Postgres record then takes
-// ServiceNow's ids, as a portal-created one does. Edits go to the same API
-// (servicenow_update_case.yml's PATCH) and issue comments to the case's
-// journal (github_comment_to_sn.yml's Table API PATCH).
+// It is now created the way the repositories did before the cutover -- through
+// ServiceNow's GitHub case API, which needs only the account and project an
+// issue's repository declares -- but through the integration layer, as an
+// alert's incident is: the ServiceNow integration service's POST /github-cases
+// forwards to that API as its M2M ServiceNow user when no user token comes
+// with the call. No ServiceNow credential lives here. The payload is
+// servicenow_create_case.yml's, field for field; the Postgres record then takes
+// ServiceNow's ids, as a portal-created one does. Edits go to PATCH
+// /github-cases (servicenow_update_case.yml's PATCH) and issue comments to the
+// case's journal through POST /comments.
 
 // snGithubCaseAPI is ServiceNow's side of a GitHub-raised service request.
 type snGithubCaseAPI interface {
 	CreateCase(ctx context.Context, payload map[string]any) (snGithubCaseResult, error)
 	UpdateCase(ctx context.Context, payload map[string]any) error
+	// AddComment adds a customer-visible comment to the case.
 	AddComment(ctx context.Context, caseSysID, text string) error
 }
 
-// snGithubCaseResult is what ServiceNow's GitHub case API answers on create.
+// snGithubCaseResult is the case ServiceNow created, or already had.
 type snGithubCaseResult struct {
 	SysID      string
 	Number     string
@@ -66,147 +67,74 @@ type snGithubCaseResult struct {
 	Existing bool
 }
 
-// snGithubUserAgent is the workflows' own (servicenow-config.yml's
-// constants.user_agent), kept in case anything on ServiceNow's side keys on it.
-const snGithubUserAgent = "GitHub-Actions-WSO2/1.0"
+// errSNGithubCaseNotFound is ServiceNow having no case for the issue or the
+// id, as for a record of the GitHub series.
+var errSNGithubCaseNotFound = errors.New("servicenow: no case for this GitHub issue")
 
-// SNGithubCaseClient calls ServiceNow's GitHub case API and the case table
-// with the integration user's basic auth.
-type SNGithubCaseClient struct {
-	apiURL   string
-	baseURL  string
-	username string
-	password string
-	http     *http.Client
+// snIntegrationPoster is the slice of the integration client this uses.
+type snIntegrationPoster interface {
+	Post(ctx context.Context, path string, userIDToken string, payload any) (json.RawMessage, error)
+	Patch(ctx context.Context, path string, userIDToken string, payload any) (json.RawMessage, error)
 }
 
-// NewSNGithubCaseClient builds the client. apiURL is the GitHub case API
-// endpoint (the repositories' SERVICENOW_URL); the instance's base URL, for
-// the case table, is taken from it.
-func NewSNGithubCaseClient(apiURL, username, password string) (*SNGithubCaseClient, error) {
-	u, err := url.Parse(strings.TrimSpace(apiURL))
-	if err != nil || u.Scheme != "https" || u.Host == "" {
-		return nil, errors.New("the ServiceNow GitHub case API URL must be an absolute https URL")
-	}
-	return &SNGithubCaseClient{
-		apiURL:   u.String(),
-		baseURL:  u.Scheme + "://" + u.Host,
-		username: username,
-		password: password,
-		http:     &http.Client{Timeout: 30 * time.Second},
-	}, nil
+// SNGithubCases calls the ServiceNow integration service for GitHub-raised
+// cases. Every call goes without a user token: the service then acts as its
+// M2M ServiceNow user, as for an alert's incident.
+type SNGithubCases struct {
+	client snIntegrationPoster
 }
 
-func (c *SNGithubCaseClient) send(ctx context.Context, method, target string, payload any) (int, []byte, error) {
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return 0, nil, fmt.Errorf("sn github case: encode payload: %w", err)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, target, bytes.NewReader(body))
-	if err != nil {
-		return 0, nil, fmt.Errorf("sn github case: build request: %w", err)
-	}
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Accept", "application/json")
-	req.Header.Set("User-Agent", snGithubUserAgent)
-	req.SetBasicAuth(c.username, c.password)
-	resp, err := c.http.Do(req)
-	if err != nil {
-		return 0, nil, fmt.Errorf("sn github case: %s: %w", method, err)
-	}
-	defer resp.Body.Close()
-	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	return resp.StatusCode, raw, nil
+// NewSNGithubCases wraps the integration client entity-service already has.
+func NewSNGithubCases(client *integrationservice.Client) *SNGithubCases {
+	return &SNGithubCases{client: client}
 }
 
-// CreateCase posts a new issue (servicenow_create_case.yml's POST).
-func (c *SNGithubCaseClient) CreateCase(ctx context.Context, payload map[string]any) (snGithubCaseResult, error) {
-	status, raw, err := c.send(ctx, http.MethodPost, c.apiURL, payload)
+// CreateCase implements snGithubCaseAPI with POST /github-cases.
+func (c *SNGithubCases) CreateCase(ctx context.Context, payload map[string]any) (snGithubCaseResult, error) {
+	raw, err := c.client.Post(ctx, "/github-cases", "", payload)
 	if err != nil {
 		return snGithubCaseResult{}, err
 	}
-	if status != http.StatusOK && status != http.StatusCreated {
-		return snGithubCaseResult{}, fmt.Errorf("sn github case: create returned %d: %s", status, excerpt(raw))
-	}
-	return parseSNGithubCaseResult(raw)
-}
-
-// parseSNGithubCaseResult reads the create answer as the workflow did:
-// result-wrapped or not, sys_id or case_sys_id.
-func parseSNGithubCaseResult(raw []byte) (snGithubCaseResult, error) {
-	var outer map[string]json.RawMessage
-	if err := json.Unmarshal(raw, &outer); err != nil {
-		return snGithubCaseResult{}, fmt.Errorf("sn github case: unreadable create response: %s", excerpt(raw))
-	}
-	body := raw
-	if r, ok := outer["result"]; ok && len(r) > 0 && r[0] == '{' {
-		body = r
-	}
 	var r struct {
-		CaseNumber string `json:"case_number"`
-		SysID      string `json:"sys_id"`
-		CaseSysID  string `json:"case_sys_id"`
-		WSO2CaseID string `json:"u_wso2_case_id"`
-		Message    string `json:"message"`
+		ID         string  `json:"id"`
+		Number     string  `json:"number"`
+		WSO2CaseID *string `json:"wso2CaseId"`
+		Existing   bool    `json:"existing"`
 	}
-	if err := json.Unmarshal(body, &r); err != nil {
-		return snGithubCaseResult{}, fmt.Errorf("sn github case: unreadable create response: %s", excerpt(raw))
+	if err := json.Unmarshal(raw, &r); err != nil || r.ID == "" || r.Number == "" {
+		return snGithubCaseResult{}, fmt.Errorf("servicenow github case: unreadable create response")
 	}
-	sysID := r.SysID
-	if sysID == "" {
-		sysID = r.CaseSysID
+	res := snGithubCaseResult{SysID: r.ID, Number: r.Number, Existing: r.Existing}
+	if r.WSO2CaseID != nil {
+		res.WSO2CaseID = *r.WSO2CaseID
 	}
-	if sysID == "" || r.CaseNumber == "" {
-		return snGithubCaseResult{}, fmt.Errorf("sn github case: create response carries no case: %s", excerpt(raw))
-	}
-	return snGithubCaseResult{
-		SysID: sysID, Number: r.CaseNumber, WSO2CaseID: r.WSO2CaseID,
-		Existing: strings.EqualFold(strings.TrimSpace(r.Message), "Case already exists"),
-	}, nil
+	return res, nil
 }
 
-// UpdateCase applies an edited issue (servicenow_update_case.yml's PATCH).
-func (c *SNGithubCaseClient) UpdateCase(ctx context.Context, payload map[string]any) error {
-	status, raw, err := c.send(ctx, http.MethodPatch, c.apiURL, payload)
-	if err != nil {
-		return err
-	}
-	if status == http.StatusNotFound {
+// UpdateCase implements snGithubCaseAPI with PATCH /github-cases.
+func (c *SNGithubCases) UpdateCase(ctx context.Context, payload map[string]any) error {
+	_, err := c.client.Patch(ctx, "/github-cases", "", payload)
+	return notFoundAsNoCase(err)
+}
+
+// AddComment implements snGithubCaseAPI with POST /comments, the call a
+// dual-write case comment makes (snCaseService.CreateBareCaseComment).
+func (c *SNGithubCases) AddComment(ctx context.Context, caseSysID, text string) error {
+	_, err := c.client.Post(ctx, "/comments", "", snCreateCommentPayload{
+		ReferenceID:   caseSysID,
+		ReferenceType: "case",
+		Type:          snCommentTypeMap[domain.CommentTypeComment],
+		Content:       text,
+	})
+	return notFoundAsNoCase(err)
+}
+
+func notFoundAsNoCase(err error) error {
+	var nf *apierror.NotFoundError
+	if errors.As(err, &nf) {
 		return errSNGithubCaseNotFound
 	}
-	if status != http.StatusOK {
-		return fmt.Errorf("sn github case: update returned %d: %s", status, excerpt(raw))
-	}
-	return nil
-}
-
-// AddComment adds an issue comment to the case's customer-visible journal
-// (github_comment_to_sn.yml's Table API PATCH).
-func (c *SNGithubCaseClient) AddComment(ctx context.Context, caseSysID, text string) error {
-	target := c.baseURL + "/api/now/table/sn_customerservice_case/" + url.PathEscape(caseSysID)
-	status, raw, err := c.send(ctx, http.MethodPatch, target, map[string]string{"comments": text})
-	if err != nil {
-		return err
-	}
-	if status == http.StatusNotFound {
-		return errSNGithubCaseNotFound
-	}
-	if status != http.StatusOK && status != http.StatusNoContent {
-		return fmt.Errorf("sn github case: comment returned %d: %s", status, excerpt(raw))
-	}
-	return nil
-}
-
-// errSNGithubCaseNotFound is ServiceNow answering 404: it has no case for
-// the issue or the id, as for a record of the GitHub series.
-var errSNGithubCaseNotFound = errors.New("sn github case: not found")
-
-func excerpt(raw []byte) string {
-	s := strings.TrimSpace(string(raw))
-	if len(s) > 300 {
-		s = s[:300] + "..."
-	}
-	return s
+	return err
 }
 
 // snIssueField is one "### Label" of an issue form, in the order the body has it.

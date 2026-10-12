@@ -1246,40 +1246,19 @@ func TestConfig_Validate_GithubRepoTokens(t *testing.T) {
 	}
 }
 
-func TestConfig_Validate_GithubSNCaseAPI(t *testing.T) {
-	ok := baseValidConfig()
-	ok.GithubSNCaseAPIURL = "https://example.service-now.com/api/wso2/gh_integration/case"
-	ok.GithubSNCaseAPIUsername, ok.GithubSNCaseAPIPassword = "gh.integration", "secret"
-	if err := ok.Validate(); err != nil {
-		t.Errorf("complete settings: unexpected error %v", err)
-	}
-	for name, mutate := range map[string]func(*Config){
-		"http URL":     func(c *Config) { c.GithubSNCaseAPIURL = "http://example.service-now.com/api" },
-		"relative URL": func(c *Config) { c.GithubSNCaseAPIURL = "/api/wso2/gh_integration/case" },
-		"no username":  func(c *Config) { c.GithubSNCaseAPIUsername = " " },
-		"no password":  func(c *Config) { c.GithubSNCaseAPIPassword = "" },
-	} {
-		c := ok
-		mutate(&c)
-		err := c.Validate()
-		if err == nil {
-			t.Errorf("%s: want a startup error", name)
-		} else if strings.Contains(err.Error(), "secret") {
-			t.Errorf("%s: error %q quotes the password", name, err)
-		}
-	}
-
-	c := ok
+func TestConfig_GithubServiceNowFirst(t *testing.T) {
+	c := baseValidConfig()
+	c.GithubSRServiceNowFirst = true
 	c.DataSource = DataSourcePostgres
 	if c.GithubServiceNowFirst() {
-		t.Error("GithubServiceNowFirst on plain postgres: there is no ServiceNow to create in")
+		t.Error("on plain postgres: there is no ServiceNow to create in")
 	}
 	c.DataSource = DataSourcePostgresServiceNowDualWrite
 	if !c.GithubServiceNowFirst() {
-		t.Error("GithubServiceNowFirst off under dual-write with the API configured")
+		t.Error("off under dual-write with GITHUB_SR_SERVICENOW_FIRST=true")
 	}
-	c.GithubSNCaseAPIURL = ""
+	c.GithubSRServiceNowFirst = false
 	if c.GithubServiceNowFirst() {
-		t.Error("GithubServiceNowFirst on without the API URL")
+		t.Error("on without GITHUB_SR_SERVICENOW_FIRST")
 	}
 }
