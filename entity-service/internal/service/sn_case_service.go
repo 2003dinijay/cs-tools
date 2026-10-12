@@ -1319,21 +1319,24 @@ func publishCaseCreatedEvent(
 	}
 	product := caseProductName(cv)
 
+	description, descriptionTruncated := stripInlineBase64Images(cv.Description)
+
 	payload, err := json.Marshal(events.CaseCreatedPayload{
-		ReporterName: reporterName,
-		ProjectName:  cv.ProjectDetails.Name,
-		ProjectID:    cv.ProjectDetails.ID,
-		CaseID:       caseID,
-		CaseNumber:   cv.Number,
-		WSO2CaseID:   cv.InternalID,
-		CaseTitle:    cv.Subject,
-		CaseType:     strings.ToUpper(req.Type),
-		Priority:     strings.ToUpper(string(derefSeverity(cv.Severity))),
-		Product:      product,
-		Team:         caseTeamName(cv),
-		CreatedAt:    cv.CreatedOn.Format(time.RFC3339),
-		Description:  cv.Description,
-		Recipients:   recipients,
+		ReporterName:         reporterName,
+		ProjectName:          cv.ProjectDetails.Name,
+		ProjectID:            cv.ProjectDetails.ID,
+		CaseID:               caseID,
+		CaseNumber:           cv.Number,
+		WSO2CaseID:           cv.InternalID,
+		CaseTitle:            cv.Subject,
+		CaseType:             strings.ToUpper(req.Type),
+		Priority:             strings.ToUpper(string(derefSeverity(cv.Severity))),
+		Product:              product,
+		Team:                 caseTeamName(cv),
+		CreatedAt:            cv.CreatedOn.Format(time.RFC3339),
+		Description:          description,
+		DescriptionTruncated: descriptionTruncated,
+		Recipients:           recipients,
 	})
 	if err != nil {
 		slog.ErrorContext(ctx, "create case: encode case.created payload failed", "caseId", caseID, "error", err)
@@ -1514,6 +1517,8 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		}
 	}
 
+	caseComment, caseCommentTruncated := stripInlineBase64Images(req.Content)
+
 	payload, err := json.Marshal(events.CommentAddedPayload{
 		Name:                      authorName,
 		ProjectID:                 cv.ProjectDetails.ID,
@@ -1521,7 +1526,8 @@ func publishCommentAddedEvent(ctx context.Context, publisher EventPublisherServi
 		CaseNumber:                cv.Number,
 		WSO2CaseID:                cv.InternalID,
 		CaseTitle:                 cv.Subject,
-		CaseComment:               req.Content,
+		CaseComment:               caseComment,
+		CaseCommentTruncated:      caseCommentTruncated,
 		CommentID:                 commentID,
 		IsInternalNote:            req.Type == domain.CommentTypeWorkNote,
 		Recipients:                recipients,

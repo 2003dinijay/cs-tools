@@ -362,6 +362,13 @@ func main() {
 
 	dispatcher := dispatch.NewDispatcher(emailClient, googleChatClient, twilioClient, linkResolver, emailSendingEnabled, emailDebugMode, emailDebugRecipients, callSendingEnabled, defaultOnCallNumber, defaultCSMEmailCC).
 		WithOnboarding(loadOnboardingConfig(customerEntityClient, emailClient)).
+		// Same customerEntityClient as every other optional entity-service
+		// caller above — unconditional, since NewCustomerEntityClient never
+		// fails to construct; an unconfigured/unreachable entity-service only
+		// surfaces as a fetch failure at call time, which
+		// handleCaseCreated/handleCommentAdded already fall back from (see
+		// resolveFullCaseDescription/resolveFullCommentContent).
+		WithFullContentFetcher(customerEntityClient).
 		WithIncidentChatFanout(parseIncidentChatFanout(os.Getenv("INCIDENT_CHAT_FANOUT"), incidentChatSpaces))
 
 	// Status page webhooks (outage.status_page_due on sre-events): posted here
