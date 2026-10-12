@@ -7628,22 +7628,21 @@ paths:
     get:
       summary: Which teams the caller may edit.
       description: >
-        The registry keys of every team this caller leads. An empty list is a
-        valid answer for somebody who leads nothing; the portal uses it to decide
-        which rows to offer an edit control on.
+        The registry keys of every team this caller may edit: teams they lead,
+        every team in a family they are rota admin for, and teams they are the
+        rota marker for. An empty list is a valid answer for somebody who may
+        edit nothing; the portal uses it to decide which rows to offer an edit
+        control on. markerOnlyTeamKeys are the teams held only as rota marker:
+        the caller may mark their days but may not generate the rota or change
+        the shared tags.
       operationId: getMyLeadTeams
       responses:
         "200":
-          description: The caller's lead teams.
+          description: The caller's editable teams.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  teamKeys:
-                    type: array
-                    items:
-                      type: string
+                $ref: '#/components/schemas/RotaEditTeams'
         "401":
           description: Unauthenticated.
           content:
@@ -7658,6 +7657,270 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/rota-access:
+    get:
+      summary: Who may change the rotas beyond the team leads.
+      description: >
+        The Team Schedule's Rota access tab: every rota admin (cre_rota_admin,
+        sre_rota_admin, sme_rota_admin) and the rota markers of the families
+        the caller may manage, with what the caller may change. A CSM admin --
+        a token role listed in TEAM_SCHEDULE_ADMIN_ROLES, or the stored admin
+        role -- manages everything; a rota admin manages their own family's
+        markers. Anybody else internal gets an empty answer (200), which is how
+        the portal decides not to show the tab. Needs a user token.
+      operationId: getRotaAccess
+      responses:
+        "200":
+          description: The grants the caller may see, and what they may change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotaAccess'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, or no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/rota-access/admins/{family}/{userId}:
+    put:
+      summary: Make somebody a rota admin for one family.
+      description: >
+        Grants the family's rota admin role: the holder may edit every team in
+        that family. CSM admin only. The person must be active internal staff --
+        a rota role never makes anyone internal. Audited.
+      operationId: grantRotaAdmin
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+          description: The rota family (case-insensitive).
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — not CRE, SRE or SME, the user id is not a UUID, or the person is not active internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not a CSM admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Take a family's rota admin role away.
+      description: >
+        Removes every copy of the role from the person. CSM admin only. Audited.
+      operationId: revokeRotaAdmin
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+          description: The rota family (case-insensitive).
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — not CRE, SRE or SME, or the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not a CSM admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/rota-access/markers/{teamKey}/{userId}:
+    put:
+      summary: Make somebody a team's rota marker.
+      description: >
+        A rota marker may mark the team's rota -- rotations, leave and
+        allocations -- and nothing else: not the shared tags, not Generate month,
+        not the paging chain. A CSM admin may name any team's marker, a rota
+        admin their own family's. The person must be active internal staff and a
+        member of the team; the grant stops counting when they leave it. Audited.
+      operationId: grantRotaMarker
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — the user id is not a UUID, or the person is not active internal staff on the team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Take a team's rota marker away.
+      description: >
+        Same permission as granting. The person need not still be on the team. Audited.
+      operationId: revokeRotaMarker
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
           content:
             application/json:
               schema:
@@ -21835,6 +22098,93 @@ components:
             Why they are paged, for display: a CRE position ("T1 responder ·
             Vega", "Team lead · Vega", "America lead", "CRE head"), the SRE
             tiers held in the range ("L1, L2"), or the SME teams rostered on.
+    RotaEditTeams:
+      type: object
+      description: Which teams the caller may edit, and which of those only as the team's rota marker.
+      required: [teamKeys, markerOnlyTeamKeys]
+      properties:
+        teamKeys:
+          type: array
+          items:
+            type: string
+        markerOnlyTeamKeys:
+          type: array
+          items:
+            type: string
+    RotaAccess:
+      type: object
+      required: [canManage, rotaAdmins, markers]
+      properties:
+        canManage:
+          $ref: '#/components/schemas/RotaAccessRights'
+        rotaAdmins:
+          type: array
+          items:
+            $ref: '#/components/schemas/RotaAdminGrant'
+        markers:
+          type: array
+          items:
+            $ref: '#/components/schemas/RotaMarkerGrant'
+    RotaAccessRights:
+      type: object
+      required: [rotaAdmins, markerFamilies]
+      properties:
+        rotaAdmins:
+          type: boolean
+          description: True for a CSM admin, who alone grants and removes rota admin.
+        markerFamilies:
+          type: array
+          description: The families whose teams' markers the caller may change.
+          items:
+            type: string
+            enum: [CRE, SRE, SME]
+    RotaAdminGrant:
+      type: object
+      required: [family, userId, name, email, grantedBy, grantedOn, active]
+      properties:
+        family:
+          type: string
+          enum: [CRE, SRE, SME]
+        userId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        grantedBy:
+          type: string
+          description: Who granted it, as recorded on the grant (empty when unknown).
+        grantedOn:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+          description: False when the holder is not internal staff; such a grant does nothing.
+    RotaMarkerGrant:
+      type: object
+      required: [teamKey, family, userId, name, email, grantedBy, grantedOn, active]
+      properties:
+        teamKey:
+          type: string
+        family:
+          type: string
+          enum: [CRE, SRE, SME]
+        userId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        grantedBy:
+          type: string
+        grantedOn:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+          description: False once the holder has left the team or is not internal staff; the grant then does nothing.
     PagingPhone:
       type: object
       required: [masked, setBy, setAt]

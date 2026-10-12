@@ -52,8 +52,9 @@ type ScheduleService interface {
 	DeleteAssignment(ctx context.Context, id string, note *string) error
 	TeamActivity(ctx context.Context, teamKey, from, to string) ([]domain.ScheduleAssignmentActivity, error)
 
-	// MyLeadTeams is which teams this caller may edit.
-	MyLeadTeams(ctx context.Context) ([]string, error)
+	// MyLeadTeams is which teams this caller may edit, and which of those
+	// only as the team's rota marker.
+	MyLeadTeams(ctx context.Context) (domain.RotaEditTeams, error)
 
 	// ApplyRange is how the roster's picker edits: one engineer, one window,
 	// across a span of days.
@@ -212,6 +213,12 @@ func (s *scheduleService) OnDuty(ctx context.Context, at *time.Time, includeOnLe
 // eleven leads against a handful of admins -- so the second read usually never
 // happens.
 //
+// A team's rota marker (migration 0224) may write it too: somebody the team
+// names to keep its own rota -- rotations, leave, allocations -- who is not
+// its lead. It is the narrowest of the three and checked last. It reaches
+// exactly what this rule gates; the tags, Generate month and the paging chain
+// have rules of their own that do not include it.
+//
 // The internal check comes first so a customer never learns whether a team key
 // exists by being told they do not lead it.
 func (s *scheduleService) requireRotaWriter(ctx context.Context, teamKey string) error {
@@ -234,8 +241,15 @@ func (s *scheduleService) requireRotaWriter(ctx context.Context, teamKey string)
 		ok = containsFold(admin, teamKey)
 	}
 	if !ok {
+		marker, err := s.repo.RotaMarkerTeamsFor(ctx, id.UserEmail)
+		if err != nil {
+			return err
+		}
+		ok = containsFold(marker, teamKey)
+	}
+	if !ok {
 		return &apierror.ForbiddenError{
-			Msg: fmt.Sprintf("changing %s's rota needs a lead of that team, or a rota admin for its family", teamKey),
+			Msg: fmt.Sprintf("changing %s's rota needs a lead of that team, its rota marker, or a rota admin for its family", teamKey),
 		}
 	}
 	return nil
@@ -418,23 +432,40 @@ func (s *scheduleService) TeamActivity(ctx context.Context, teamKey, from, to st
 // two in step matters more than the name: a team offered an edit control that
 // then 403s, or withheld from somebody who may in fact edit it, are both worse
 // than a method whose name has aged.
-func (s *scheduleService) MyLeadTeams(ctx context.Context) ([]string, error) {
+//
+// A rota marker's team is in it too, and also listed apart: a marker may mark
+// the team's days but not generate its rota or change the tags, and the page
+// offers those only where the caller leads the team or runs its family.
+func (s *scheduleService) MyLeadTeams(ctx context.Context) (domain.RotaEditTeams, error) {
+	none := domain.RotaEditTeams{TeamKeys: []string{}, MarkerOnlyTeamKeys: []string{}}
 	if err := s.requireInternalCaller(ctx); err != nil {
-		return nil, err
+		return domain.RotaEditTeams{}, err
 	}
 	email := auth.IdentityFromContext(ctx).UserEmail
 	if email == "" {
-		return []string{}, nil
+		return none, nil
 	}
 	led, err := s.repo.LeadTeamsFor(ctx, email)
 	if err != nil {
-		return nil, err
+		return domain.RotaEditTeams{}, err
 	}
 	admin, err := s.repo.RotaAdminTeamsFor(ctx, email)
 	if err != nil {
-		return nil, err
+		return domain.RotaEditTeams{}, err
 	}
-	return mergeTeamKeys(led, admin), nil
+	marker, err := s.repo.RotaMarkerTeamsFor(ctx, email)
+	if err != nil {
+		return domain.RotaEditTeams{}, err
+	}
+	full := mergeTeamKeys(led, admin)
+	out := none
+	out.TeamKeys = mergeTeamKeys(full, marker)
+	for _, k := range marker {
+		if !containsFold(full, k) {
+			out.MarkerOnlyTeamKeys = append(out.MarkerOnlyTeamKeys, k)
+		}
+	}
+	return out, nil
 }
 
 // mergeTeamKeys unions two team key lists, case-insensitively.

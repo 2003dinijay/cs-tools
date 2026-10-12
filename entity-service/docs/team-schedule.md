@@ -264,8 +264,10 @@ and the other group's Today only. The page learns the group from the teams
 they may edit, since the sign-in token does not carry these roles.
 
 **Granting is a deployment step, not a migration**: who runs each rota differs
-per environment. There is no role UI yet, so a grant is a row in `user_role`,
-given to someone who already holds `internal` or `admin`:
+per environment. A CSM admin grants and removes it on the Team Schedule's
+**Rota access** tab (0224, see "Rota access" below). Without the portal, a
+grant is a row in `user_role`, given to someone who already holds `internal`
+or `admin`:
 
 ```sql
 INSERT INTO user_role (id, created_on, updated_on, created_by, updated_by, user_id, role_id)
@@ -393,17 +395,47 @@ and `sme_rota_admin`. No schema change: the family of a team is read from
 | Role (in CRE, SRE or SME) | Reads | Writes, updates, deletes |
 |---|---|---|
 | Engineer | every family | nothing |
+| Rota marker | every family | their own team's rotations, leave and allocations |
 | Team lead | every family | their own team |
 | Rota admin | every family | their own family's teams |
 
 - **Reads are not limited by family**, for anyone: the catalogue, turns, leave,
   on-duty, edit markers and every Case Paging chain.
 - **Writes** go through `requireRotaWriter`: a lead edits their own team, a rota
-  admin the teams of their family.
+  admin the teams of their family, a rota marker their own team.
+- **A rota marker is not a lead.** The tags, Generate month, Case Paging and
+  paging numbers keep their own rules, which do not include a marker.
 - **Absence kinds** (`schedule_tag_family.go`): a kind a rota admin adds is
   stored for their family (`team_schedule_absence_kind.family`), and they may
   delete only their own family's custom kinds. A team lead who is no rota admin
   adds shared kinds, as before.
+
+## Rota access (0224)
+
+The Team Schedule's **Rota access** tab, next to Case Paging, is where rota
+admins and rota markers are granted and taken back.
+
+- **Rota admin** (`cre_rota_admin`, `sre_rota_admin`, `sme_rota_admin`, stored
+  in `user_role`): edits every team in one family. Granted and removed by a
+  **CSM admin** only.
+- **Rota marker** (`team_schedule_rota_marker`, one row per person and team):
+  marks one team's rotations, leave and allocations, and nothing else. Granted
+  and removed by a CSM admin for any team, or by a family's rota admin for that
+  family's teams. Only a member of the team can be named, and the grant stops
+  counting the moment they leave the team or stop being internal staff; the tab
+  then lists it as inactive so it can be removed.
+- **A CSM admin** is a caller whose token carries one of
+  `TEAM_SCHEDULE_ADMIN_ROLES` (set it to the portal's `AUTH_ADMIN_ROLES`), or who
+  holds the stored `admin` role, as Case Paging already treats a portal admin.
+  The portal also gates the rota admin routes with `PermAdmin`.
+- **Only active internal staff** can be granted either, as before for rota
+  admins: a grant to anyone else is refused rather than stored.
+- **Audited.** Every grant and removal is in `team_schedule_audit`, with the
+  caller as actor: the marker table through the usual trigger, and `user_role`
+  through a trigger that records only the three rota admin roles.
+- `GET /team-schedule/my-lead-teams` also returns `markerOnlyTeamKeys`, the
+  teams held only as marker, so the page offers Generate month, the tags and
+  Case Paging only where the reader leads the team or runs its family.
 
 ## 5. Known gaps
 
@@ -420,6 +452,11 @@ and `sme_rota_admin`. No schema change: the family of a team is read from
   change as well as a migration.
 
 ## Change log
+
+- **0224 rota access.** New table `team_schedule_rota_marker` (with an index on
+  `team_key`) and its audit trigger; a second audit trigger on `user_role` that
+  records only the rota admin roles. Additive: nothing existing is changed or
+  removed. New env var `TEAM_SCHEDULE_ADMIN_ROLES` on entity-service.
 
 - **0199–0200 rotas.** The SME family; `team_schedule_rota`; `zone.rota_id` (TZ1–TZ3 on `SRE_SAAS`); the zone-family check widened from SRE to SRE or SME; IaaS and seven SME rotas, each with a Day and a Night zone and window; the `sme_rota_admin` role. Nothing is removed, renamed or re-typed, but existing objects do change: 0199 adds a value to `team_schedule_shift_family_enum`; 0200 adds the nullable column `team_schedule_zone.rota_id` and sets it on the existing TZ1–TZ3 rows, and replaces the zone-family CHECK with a wider one (every existing row satisfies it). IaaS's two windows are seeded inactive until the new webapp is deployed.
 - **0152–0155** replace `000088`–`000107`, which were written in the old
