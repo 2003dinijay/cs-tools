@@ -108,6 +108,12 @@ func genWorkItems(
 			number := fmt.Sprintf("%s-%04d", spec.prefix, 1000+counter)
 			id := newUUID()
 			createdOn := randRecentTime(1, 120)
+			if spec.wtype == "ENGAGEMENT" {
+				// Reach back far enough that some still-open MIGRATION
+				// engagements count as delayed (60d) or abandoned (180d)
+				// on the customer-health dashboard.
+				createdOn = randRecentTime(1, 400)
+			}
 			updatedOn := notAfterNow(createdOn.Add(time.Duration(randRange(1, 72)) * time.Hour))
 			subject := subjectForType(spec.wtype)
 			description := descriptionForType(spec.wtype)
@@ -287,6 +293,11 @@ func insertWorkItemExtension(
 	case "ENGAGEMENT":
 		state := pick([]string{"WORK_IN_PROGRESS", "AWAITING_INFO", "SOLUTION_PROPOSED", "CLOSED", "OPEN", "WAITING_ON_WSO2", "REOPENED"})
 		etype := pick([]string{"MIGRATION", "CONSULTANCY", "NEW_FEATURE_IMPROVEMENT", "FOLLOW_UP", "ONBOARDING"})
+		if time.Since(updatedOn) > 180*24*time.Hour {
+			// An engagement this old is always a still-open migration, so the
+			// customer-health "abandoned migration" flag has at least one hit.
+			etype, state = "MIGRATION", "WORK_IN_PROGRESS"
+		}
 		paymentType := pick([]string{"PAID", "FOC"})
 		startDate := updatedOn
 		endDate := updatedOn.AddDate(0, 0, randRange(14, 90))
