@@ -8382,7 +8382,8 @@ the `COALESCE` can even be evaluated, for every `state` filter on every case
 search. `caseLikeStateLookupClause` (`case_field_predicates.go`) replaces the
 `WHERE` predicate for both the `state` (`in`) and `ExcludeStates` (`notIn`)
 filters with a `wi.id = ANY(ARRAY(SELECT id FROM <type-table> WHERE state ...
-UNION ALL ...))` lookup (`<> ALL(ARRAY(...))` for `notIn`), scoped to exactly
+UNION ALL ...))` lookup (an anti-join, `NOT EXISTS (SELECT 1 FROM (<the same
+UNION ALL>) excluded WHERE excluded.id = wi.id)`, for `notIn`), scoped to exactly
 the type(s) the request's own `type` filter already named -- every dashboard
 widget's case search is, in practice, a `{type}` filter alongside a `{state}`
 filter, so this lets the planner use that type's own existing state index
@@ -8401,10 +8402,20 @@ computation) and then probes `work_item`'s own primary key per element,
 while a bare `IN`/`NOT IN` subquery here is prone to being planned as a join
 against the subquery's result set instead -- which, combined with this
 schema's row-level-security predicates layered onto every table, measured
-meaningfully slower than the `ARRAY` form for the identical result. ids are
-always non-`NULL` (each branch selects a primary key), so `<> ALL` is an
-exact negation of `= ANY` here, with no three-valued-logic subtlety to
-account for.
+meaningfully slower than the `ARRAY` form for the identical result.
+
+**The negated form (`notIn`) is a `NOT EXISTS` anti-join, not
+`wi.id <> ALL(ARRAY(...))`.** `<> ALL(array)` cannot be served by an index or
+a hash: PostgreSQL compares every candidate row with every element of the
+array, so its cost is rows × excluded ids. For "state notIn closed" the array
+holds every closed case-like id (~115,000 on production-volume data); the
+case search took tens of seconds, past the 10 s request timeout, and the case
+list came back empty (digiops-cs #3459). `NOT EXISTS` over the same
+`UNION ALL` is planned as a hash anti-join and checks each row once: measured
+on production-size data at 27–70 ms against 5.5–32.5 s, with identical
+results. ids are always non-`NULL` (each branch selects a primary key), so the
+anti-join is an exact negation of `= ANY` here, with no three-valued-logic
+subtlety to account for.
 
 **`projectOnboardingStatus`/its `notIn` sibling deliberately keep filtering
 through the `LEFT JOIN` to `p`, despite the superficial similarity to the
