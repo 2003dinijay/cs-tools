@@ -145,6 +145,7 @@ import { CreateGithubIssueDialog } from "@features/csm-cases/components/CreateGi
 import { isCloudSupportSubscription } from "@features/csm-projects/utils/subscriptionType";
 import { usePostCaseGithubIssue } from "@features/csm-cases/api/useCsmCaseGithubIssue";
 import CaseActivitiesFeed from "@features/csm-cases/components/CaseActivitiesFeed";
+import { ACTIVITY_PAGE_SIZE } from "@features/csm-cases/utils/caseActivityFeed";
 import { scrollToFragmentWithRetry } from "@features/csm-cases/utils/permalinkScroll";
 import CaseMetaBand from "@features/csm-cases/components/CaseMetaBand";
 import RefreshButton from "@components/RefreshButton";
@@ -764,6 +765,11 @@ export default function CsmCaseDetailPage(): JSX.Element {
   const [isAcknowledging, setIsAcknowledging] = useState(false);
   const [metaCollapsed, setMetaCollapsed] = useState(false);
   const [composerOpen, setComposerOpen] = useState(false);
+  // Activity timeline window: only this many entries render (the rest load as
+  // the user scrolls, or all at once via "Load all"). `status` mirrors what
+  // the feed reports so the button can hide once nothing is left to load.
+  const [activityLimit, setActivityLimit] = useState(ACTIVITY_PAGE_SIZE);
+  const [activityStatus, setActivityStatus] = useState({ total: 0, shown: 0 });
   // Reports composerOpen up to the in-app case-tabs layer, purely so closing
   // this case's tab from the tab strip can confirm first — see the hook's
   // own doc comment for what this signal does and doesn't guarantee.
@@ -866,6 +872,8 @@ export default function CsmCaseDetailPage(): JSX.Element {
     setPrevCaseId(caseId);
     setFeedback(null);
     setComposerOpen(false);
+    setActivityLimit(ACTIVITY_PAGE_SIZE);
+    setActivityStatus({ total: 0, shown: 0 });
     // The lifted composer draft (see clearComposerDraft above) is per-case: a
     // draft left over from the previous case must not appear — or be
     // submittable — against the newly opened one.
@@ -2840,11 +2848,24 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   />
                 )}
               </Box>
-              <RefreshButton
-                onRefresh={refreshActivitiesTab}
-                isFetching={isRefreshingActivities}
-                label="Refresh activity timeline"
-              />
+              <Box sx={{ display: "flex", alignItems: "center", gap: 1 }}>
+                {!(isCommentsLoading || isChatLoading || isActivityLoading || isFeedbackLoading) &&
+                  activityStatus.shown < activityStatus.total && (
+                    <Button
+                      size="small"
+                      variant="outlined"
+                      onClick={() => setActivityLimit(Infinity)}
+                      aria-label="Load all activity timeline entries"
+                    >
+                      Load all
+                    </Button>
+                  )}
+                <RefreshButton
+                  onRefresh={refreshActivitiesTab}
+                  isFetching={isRefreshingActivities}
+                  label="Refresh activity timeline"
+                />
+              </Box>
             </Box>
 
             {isCommentsLoading || isChatLoading || isActivityLoading || isFeedbackLoading ? (
@@ -2904,6 +2925,12 @@ export default function CsmCaseDetailPage(): JSX.Element {
                   }
                   onEditComment={canWrite ? onEditComment : undefined}
                   onDeleteComment={canWrite ? onDeleteComment : undefined}
+                  entryWindow={{
+                    limit: activityLimit,
+                    onLimitChange: setActivityLimit,
+                    onStatusChange: setActivityStatus,
+                    revealEntryId: permalinkFragment || undefined,
+                  }}
                 />
               </>
             )}
