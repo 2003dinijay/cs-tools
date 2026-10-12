@@ -17,6 +17,7 @@
 import {
   VulnerabilitySeverityToken,
   VulnerabilityStatusToken,
+  type AffectedProductGroup,
   type ProductVulnerability,
 } from "@features/security/types/security";
 
@@ -125,4 +126,51 @@ export const getAffectedProducts = (
       compareText(a.updateLevel, b.updateLevel) ||
       (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
+};
+
+/**
+ * Key of the product + product version a record belongs to. Normalised the same
+ * way as the CVE match, so "WSO2 IS" and " wso2 is " are one product.
+ */
+export const getAffectedProductGroupKey = (
+  record: ProductVulnerability,
+): string =>
+  `${normalizeKey(record.productName)}\u0000${normalizeKey(record.productVersion)}`;
+
+/**
+ * Groups a vulnerability's records by product and product version, so the
+ * several components of one product version appear as one entry. Groups keep
+ * the order in which each product version first appears, which is the sorted
+ * order produced by `getAffectedProducts`.
+ *
+ * @param records - The records of one vulnerability.
+ * @returns One group per product version, each holding its component records.
+ */
+export const groupAffectedProducts = (
+  records: ProductVulnerability[],
+): AffectedProductGroup[] => {
+  const groups = new Map<string, AffectedProductGroup>();
+
+  for (const record of records) {
+    const key = getAffectedProductGroupKey(record);
+    let group = groups.get(key);
+    if (!group) {
+      group = {
+        key,
+        productName: record.productName?.trim() ?? "",
+        productVersion: record.productVersion?.trim() ?? "",
+        updateLevels: [],
+        records: [],
+      };
+      groups.set(key, group);
+    }
+
+    group.records.push(record);
+    const updateLevel = record.updateLevel?.trim();
+    if (updateLevel && !group.updateLevels.includes(updateLevel)) {
+      group.updateLevels.push(updateLevel);
+    }
+  }
+
+  return [...groups.values()];
 };

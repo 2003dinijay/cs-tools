@@ -208,6 +208,8 @@ export const VULNERABILITY_AFFECTED_PRODUCTS_LOAD_ERROR_MESSAGE =
 
 export const VULNERABILITY_AFFECTED_PRODUCTS_CURRENT_LABEL = "Viewing";
 
+export const VULNERABILITY_AFFECTED_PRODUCTS_COMPONENTS_LABEL = "Components";
+
 export const VULNERABILITY_DETAILS_NO_RESOLUTION_MESSAGE =
   "No justification or resolution information available.";
 

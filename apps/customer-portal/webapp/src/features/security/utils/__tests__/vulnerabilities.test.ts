@@ -16,7 +16,9 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  getAffectedProductGroupKey,
   getAffectedProducts,
+  groupAffectedProducts,
   getVulnerabilitySeverityColor,
   getVulnerabilityStatusColor,
 } from "@features/security/utils/vulnerabilities";
@@ -143,6 +145,82 @@ describe("vulnerabilities utils", () => {
 
     it("returns an empty list when there is no current record", () => {
       expect(getAffectedProducts([make({ id: "x" })], undefined)).toEqual([]);
+    });
+  });
+
+  describe("groupAffectedProducts", () => {
+    const make = (overrides: Partial<ProductVulnerability>): ProductVulnerability => ({
+      id: "id",
+      cveId: "CVE-2026-1",
+      vulnerabilityId: "VULN-1",
+      severity: { id: "1", label: "High" },
+      productName: "Product A",
+      productVersion: "1.0.0",
+      componentName: "lib-a",
+      version: "1.0",
+      type: "library",
+      useCase: null,
+      justification: null,
+      resolution: null,
+      updateLevel: "U1",
+      ...overrides,
+    });
+
+    it("puts the components of one product version in one group, in first-seen order", () => {
+      const groups = groupAffectedProducts([
+        make({ id: "1", productName: "A", productVersion: "1", componentName: "x" }),
+        make({ id: "2", productName: "A", productVersion: "2", componentName: "x" }),
+        make({ id: "3", productName: "A", productVersion: "1", componentName: "y" }),
+        make({ id: "4", productName: "B", productVersion: "1", componentName: "x" }),
+      ]);
+
+      expect(groups.map((g) => [g.productName, g.productVersion, g.records.map((r) => r.id)])).toEqual([
+        ["A", "1", ["1", "3"]],
+        ["A", "2", ["2"]],
+        ["B", "1", ["4"]],
+      ]);
+    });
+
+    it("matches product name and version case-insensitively and ignoring surrounding whitespace", () => {
+      const a = make({ id: "1", productName: "WSO2 IS", productVersion: "7.0.0" });
+      const b = make({ id: "2", productName: " wso2 is ", productVersion: "7.0.0 " });
+
+      expect(getAffectedProductGroupKey(a)).toBe(getAffectedProductGroupKey(b));
+      const groups = groupAffectedProducts([a, b]);
+      expect(groups).toHaveLength(1);
+      // displays the first record's spelling, trimmed
+      expect(groups[0].productName).toBe("WSO2 IS");
+    });
+
+    it("keeps different versions of a product, and different products with one version, apart", () => {
+      const groups = groupAffectedProducts([
+        make({ id: "1", productName: "A", productVersion: "1" }),
+        make({ id: "2", productName: "A", productVersion: "2" }),
+        make({ id: "3", productName: "B", productVersion: "1" }),
+      ]);
+      expect(groups).toHaveLength(3);
+    });
+
+    it("collects each distinct update level once, in order, and skips blanks", () => {
+      const [group] = groupAffectedProducts([
+        make({ id: "1", updateLevel: "U2" }),
+        make({ id: "2", updateLevel: "U1" }),
+        make({ id: "3", updateLevel: "U2" }),
+        make({ id: "4", updateLevel: undefined }),
+        make({ id: "5", updateLevel: "  " }),
+      ]);
+      expect(group.updateLevels).toEqual(["U2", "U1"]);
+      expect(group.records).toHaveLength(5);
+    });
+
+    it("groups records without a product name or version together and returns nothing for no records", () => {
+      const groups = groupAffectedProducts([
+        make({ id: "1", productName: undefined, productVersion: undefined }),
+        make({ id: "2", productName: "", productVersion: "" }),
+      ]);
+      expect(groups).toHaveLength(1);
+      expect(groups[0].productName).toBe("");
+      expect(groupAffectedProducts([])).toEqual([]);
     });
   });
 });

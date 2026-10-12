@@ -144,6 +144,18 @@ export type VulnerabilityDetailsContentProps = {
   onAffectedProductClick?: (vulnerability: ProductVulnerability) => void;
 };
 
+/** Every record of one vulnerability for the same product and product version. */
+export type AffectedProductGroup = {
+  /** Stable identity of the product + product version (normalised). */
+  key: string;
+  productName: string;
+  productVersion: string;
+  /** Distinct update levels of the group's records (normally just one). */
+  updateLevels: string[];
+  /** One record per affected component, in the order they were supplied. */
+  records: ProductVulnerability[];
+};
+
 export type VulnerabilityAffectedProductsProps = {
   affectedProducts: ProductVulnerability[];
   currentId?: string;
