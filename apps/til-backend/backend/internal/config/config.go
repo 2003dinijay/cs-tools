@@ -95,6 +95,7 @@ func Load(getenv func(string) string) (Config, []string, error) {
 			TokenURL:     r.url("NOVERA_TOKEN_URL", true),
 			ClientID:     r.required("NOVERA_CLIENT_ID"),
 			ClientSecret: r.required("NOVERA_CLIENT_SECRET"),
+			IconURL:      novera.IconURL(cfg.WebappBaseURL),
 		}
 	}
 

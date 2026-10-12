@@ -15,7 +15,7 @@
 // under the License.
 
 // Package novera tells Novera, the Google Chat assistant, about a new entry.
-// Novera sends it to every employee who has a chat open with it.
+// Novera sends it as a card to every employee who has a chat open with it.
 package novera
 
 import (
@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"golang.org/x/oauth2"
@@ -32,7 +33,7 @@ import (
 	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/entry"
 )
 
-// Config is how to reach Novera's notification endpoint. The API gateway in
+// Config is how to reach Novera's notifications endpoint. The API gateway in
 // front of it takes a client-credentials token from an application
 // subscribed to Novera's API.
 type Config struct {
@@ -41,12 +42,24 @@ type Config struct {
 	ClientID     string
 	ClientSecret string
 	Scopes       []string
+	// IconURL is the TIL logo shown on the card; empty for none.
+	IconURL string
+}
+
+// IconURL is where the One WSO2 webapp at baseURL serves the TIL logo, or ""
+// when baseURL isn't https: Chat only loads icons over https.
+func IconURL(baseURL string) string {
+	if !strings.HasPrefix(baseURL, "https://") {
+		return ""
+	}
+	return strings.TrimRight(baseURL, "/") + "/til-logo.png"
 }
 
 // Client sends new-entry notifications.
 type Client struct {
-	url  string
-	http *http.Client
+	url     string
+	iconURL string
+	http    *http.Client
 }
 
 // New returns a Client for cfg.
@@ -60,36 +73,45 @@ func New(cfg Config) *Client {
 	tokenCtx := context.WithValue(context.Background(), oauth2.HTTPClient, &http.Client{Timeout: 10 * time.Second})
 	httpClient := cc.Client(tokenCtx)
 	httpClient.Timeout = 10 * time.Second
-	return &Client{url: cfg.NotifyURL, http: httpClient}
+	return &Client{url: cfg.NotifyURL, iconURL: cfg.IconURL, http: httpClient}
 }
 
-type payload struct {
-	Title       string  `json:"title"`
-	Who         string  `json:"who"`
-	Where       string  `json:"where"`
-	WhereDetail *string `json:"whereDetail"`
-	What        string  `json:"what"`
-	EntryURL    *string `json:"entryUrl"`
+// notification is the body of Novera's POST /internal/notifications. Every
+// value is plain text: Novera builds the card and escapes it.
+type notification struct {
+	Source   string `json:"source"`
+	Title    string `json:"title"`
+	Subtitle string `json:"subtitle,omitempty"`
+	Body     string `json:"body"`
+	Link     *link  `json:"link,omitempty"`
+	Footer   string `json:"footer,omitempty"`
+	IconURL  string `json:"iconUrl,omitempty"`
+}
+
+type link struct {
+	URL   string `json:"url"`
+	Label string `json:"label"`
 }
 
 // Notify announces e. entryURL, when not empty, is the link the card opens.
 // Best effort: the entry is already saved, so a failure here is logged and
 // never reaches the person who shared it.
 func (c *Client) Notify(ctx context.Context, e entry.Entry, entryURL string) {
-	p := payload{
-		// Plain text. Novera builds the card and escapes each value for the
-		// field it shows it in, so escaping here as well would show up in
-		// the card as "&amp;" or "&#39;".
-		Title:       e.Title,
-		Who:         e.Who,
-		Where:       e.Where,
-		WhereDetail: e.WhereDetail,
-		What:        entry.ForChat(e.What),
+	n := notification{
+		Source:   "til",
+		Title:    e.Title,
+		Subtitle: e.Where,
+		Body:     entry.BulletedText(e.What),
+		Footer:   "Authored by " + e.Who,
+		IconURL:  c.iconURL,
+	}
+	if e.WhereDetail != nil {
+		n.Subtitle += " — " + *e.WhereDetail
 	}
 	if entryURL != "" {
-		p.EntryURL = &entryURL
+		n.Link = &link{URL: entryURL, Label: "Read more"}
 	}
-	body, err := json.Marshal(p)
+	body, err := json.Marshal(n)
 	if err != nil {
 		slog.ErrorContext(ctx, "novera: encode notification", "err", err)
 		return
