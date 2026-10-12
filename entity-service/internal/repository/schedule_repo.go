@@ -95,7 +95,7 @@ type ScheduleRepository interface {
 	// holds: CRE, SRE and/or SME. Empty for anyone who holds none.
 	RotaAdminFamilies(ctx context.Context, userEmail string) ([]string, error)
 	// RotaMarkerTeamsFor is every team this caller may mark as its rota
-	// marker (migration 0224): granted, still a member, and internal.
+	// marker (migration 0225): granted, still a member, and internal.
 	RotaMarkerTeamsFor(ctx context.Context, userEmail string) ([]string, error)
 
 	// ApplyRange sets one engineer to one window across a span of days, which

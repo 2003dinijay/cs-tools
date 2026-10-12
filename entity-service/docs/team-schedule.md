@@ -274,7 +274,7 @@ they may edit, since the sign-in token does not carry these roles.
 
 **Granting is a deployment step, not a migration**: who runs each rota differs
 per environment. A CSM admin grants and removes it on the Team Schedule's
-**Rota access** tab (0224, see "Rota access" below). Without the portal, a
+**Rota access** tab (0225, see "Rota access" below). Without the portal, a
 grant is a row in `user_role`, given to someone who already holds `internal`
 or `admin`:
 
@@ -419,7 +419,7 @@ and `sme_rota_admin`. No schema change: the family of a team is read from
   delete only their own family's custom kinds. A team lead who is no rota admin
   adds shared kinds, as before.
 
-## Rota access (0224)
+## Rota access (0225)
 
 The Team Schedule's **Rota access** tab, next to Case Paging, is where rota
 admins and rota markers are granted and taken back.
@@ -463,7 +463,7 @@ admins and rota markers are granted and taken back.
 
 ## Change log
 
-- **0224 rota access.** New table `team_schedule_rota_marker` (with an index on
+- **0225 rota access.** New table `team_schedule_rota_marker` (with an index on
   `team_key`) and its audit trigger; a second audit trigger on `user_role` that
   records only the rota admin roles. Additive: nothing existing is changed or
   removed. entity-service now also reads `AUTH_ADMIN_ROLES` (same value as

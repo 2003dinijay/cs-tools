@@ -213,7 +213,7 @@ func (s *scheduleService) OnDuty(ctx context.Context, at *time.Time, includeOnLe
 // eleven leads against a handful of admins -- so the second read usually never
 // happens.
 //
-// A team's rota marker (migration 0224) may write it too: somebody the team
+// A team's rota marker (migration 0225) may write it too: somebody the team
 // names to keep its own rota -- rotations, leave, allocations -- who is not
 // its lead. It is the narrowest of the three and checked last. It reaches
 // exactly what this rule gates; the tags, Generate month and the paging chain

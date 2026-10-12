@@ -29,7 +29,7 @@ import (
 
 // RotaAccessRepository stores who may change the rotas beyond the team leads:
 // the rota admin roles (one per family, in user_role -- migrations 0156 and
-// 0200) and the rota markers (one person, one team -- migration 0224).
+// 0200) and the rota markers (one person, one team -- migration 0225).
 //
 // Plain data operations. Who may grant what is the service's decision.
 type RotaAccessRepository interface {

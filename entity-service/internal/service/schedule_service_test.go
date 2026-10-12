@@ -55,7 +55,7 @@ type fakeScheduleRepo struct {
 	gotKindCode string
 	gotRange    domain.ApplyScheduleRangeRequest
 	adminTeams  []string
-	// markerTeams is what a rota marker holds (migration 0224). Nil by
+	// markerTeams is what a rota marker holds (migration 0225). Nil by
 	// default, so the existing tests describe nobody holding one.
 	markerTeams []string
 
