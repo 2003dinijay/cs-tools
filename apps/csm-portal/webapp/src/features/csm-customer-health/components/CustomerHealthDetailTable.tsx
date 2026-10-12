@@ -27,6 +27,50 @@ import ReviewStatusCell from "./ReviewStatusCell";
 import ActionItemsSection from "./ActionItemsSection";
 import type { ProjectDetail, CaseGroup, CaseLink, EolProduct } from "../api/customerHealthTypes";
 
+// Tracks the pointer's last known screen position so forcePointerRehover
+// (below) can re-dispatch a mousemove there once a risk indicator's expand/
+// collapse finishes shifting the table's layout. Module-level and shared by
+// every RiskCell on the page -- cheap, and there's only ever one real mouse.
+let lastPointerClientX = 0;
+let lastPointerClientY = 0;
+if (typeof window !== "undefined") {
+  window.addEventListener(
+    "mousemove",
+    (e) => {
+      lastPointerClientX = e.clientX;
+      lastPointerClientY = e.clientY;
+    },
+    { passive: true },
+  );
+}
+
+/**
+ * A browser only recomputes `:hover` (and the resulting cursor) on an actual
+ * pointer-move event -- not when the DOM shifts underneath a stationary
+ * mouse. Expanding or collapsing a risk indicator's detail list changes the
+ * whole table row's height, which pushes every cell below it up or down, so
+ * whatever element ends up under the mouse keeps showing whatever
+ * hover/cursor state it had *before* the shift until the user nudges the
+ * mouse themselves -- reported live as the pointer/cursor looking "wrong"
+ * right after expanding or collapsing a row. Re-dispatching a synthetic
+ * mousemove at the pointer's last known position, once the Collapse
+ * transition has actually finished (its own onEntered/onExited, not a
+ * fixed timeout racing the animation), forces the browser to recompute
+ * hover state against the new layout with no visible pointer movement.
+ */
+function forcePointerRehover() {
+  if (typeof window === "undefined") return;
+  const target = document.elementFromPoint(lastPointerClientX, lastPointerClientY) ?? window;
+  target.dispatchEvent(
+    new MouseEvent("mousemove", {
+      bubbles: true,
+      cancelable: true,
+      clientX: lastPointerClientX,
+      clientY: lastPointerClientY,
+    }),
+  );
+}
+
 interface RiskCellProps {
   project: ProjectDetail;
   indicator: keyof ProjectDetail;
@@ -115,7 +159,7 @@ function RiskCell({ project, indicator, detailData, renderDetailItem }: RiskCell
         )}
       </Box>
       {showToggle && (
-        <Collapse in={open} timeout="auto" unmountOnExit>
+        <Collapse in={open} timeout="auto" unmountOnExit onEntered={forcePointerRehover} onExited={forcePointerRehover}>
           <List dense disablePadding sx={{ pl: 2 }}>
             {detailData!.map((item, index) => renderDetailItem(item as never, index))}
           </List>
@@ -331,20 +375,27 @@ export default function CustomerHealthDetailTable({ accountId, onAccountNameLoad
                         indicator="isUsingEolProduct"
                         detailData={project.softwareModel}
                         renderDetailItem={(item: EolProduct, index) => (
-                          <ListItem key={index} dense sx={{ pl: 4, display: "block" }}>
-                            <Typography variant="body2"><strong>Product:</strong> {item.name}</Typography>
-                            <Typography variant="body2"><strong>EOL Date:</strong> {item.eolDate}</Typography>
+                          <Box
+                            key={index}
+                            sx={{
+                              mx: 4, mb: 1, p: 1.5,
+                              border: 1, borderColor: "divider", borderLeft: 3, borderLeftColor: "error.main",
+                              borderRadius: 1, backgroundColor: "action.hover",
+                            }}
+                          >
+                            <Box sx={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 1 }}>
+                              <Typography variant="body2" fontWeight={600}>{item.name}</Typography>
+                              <Chip size="small" variant="outlined" color="error" label={`EOL: ${item.eolDate}`} />
+                            </Box>
                             {item.deployments && item.deployments.length > 0 && (
-                              <>
-                                <Typography variant="body2"><strong>Deployments:</strong></Typography>
-                                <List dense disablePadding sx={{ pl: 2 }}>
-                                  {item.deployments.map((dep) => (
-                                    <ListItem key={dep.sysId} dense><ListItemText primary={dep.name} /></ListItem>
-                                  ))}
-                                </List>
-                              </>
+                              <Box sx={{ display: "flex", alignItems: "center", flexWrap: "wrap", gap: 0.75, mt: 1 }}>
+                                <Typography variant="caption" color="text.secondary">Deployments:</Typography>
+                                {item.deployments.map((dep) => (
+                                  <Chip key={dep.sysId} size="small" variant="outlined" label={dep.name} />
+                                ))}
+                              </Box>
                             )}
-                          </ListItem>
+                          </Box>
                         )}
                       />
                     ))}
