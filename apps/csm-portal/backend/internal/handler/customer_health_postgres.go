@@ -1052,16 +1052,55 @@ func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, p enti
 			return servicenow.ProjectDetail{}, err
 		}
 	}
-	softwareModel := make([]servicenow.EolProduct, 0, len(eolDeployments))
+	// Grouped by the product_version row's own id -- entity-service's real,
+	// stable identity for one specific version (two distinct product_version
+	// rows can share the same version string under a different deployment
+	// profile, and can also share an EOL date; confirmed against real
+	// staging data for this exact feature). Grouping by name+EOL date
+	// instead, an earlier version of this fix, merged two such rows into
+	// one entry and repeated the single deployment running both of them in
+	// its Deployments list -- found live by directly comparing this
+	// function's real output against the same real account's data.
+	//
+	// Deployments was also a real, confirmed bug on its own, independent of
+	// grouping: entityDeployedProductEolView never captured entity-service's
+	// own "deployment" field at all (see that type's own doc comment), so
+	// the per-software-model deployment list was always empty regardless of
+	// real data.
+	type eolProductGroup struct {
+		name        string
+		eolDate     string
+		deployments []servicenow.Deployment
+		seenDepIDs  map[string]bool
+	}
+	softwareModelOrder := make([]string, 0, len(eolDeployments))
+	softwareModelByVersionID := make(map[string]*eolProductGroup, len(eolDeployments))
 	for _, dp := range eolDeployments {
+		versionID := dp.Product.ID // no version on this row: group per product instead
+		name := dp.Product.Name
 		eolDate := ""
-		if dp.Version != nil && dp.Version.SupportEoLDate != nil {
-			eolDate = *dp.Version.SupportEoLDate
+		if dp.Version != nil {
+			versionID = dp.Version.ID
+			name = dp.Product.Name + " " + dp.Version.Name
+			if dp.Version.SupportEoLDate != nil {
+				eolDate = *dp.Version.SupportEoLDate
+			}
 		}
-		softwareModel = append(softwareModel, servicenow.EolProduct{
-			Name:    dp.Product.Name,
-			EolDate: eolDate,
-		})
+		group, ok := softwareModelByVersionID[versionID]
+		if !ok {
+			group = &eolProductGroup{name: name, eolDate: eolDate, seenDepIDs: map[string]bool{}}
+			softwareModelByVersionID[versionID] = group
+			softwareModelOrder = append(softwareModelOrder, versionID)
+		}
+		if !group.seenDepIDs[dp.Deployment.ID] {
+			group.seenDepIDs[dp.Deployment.ID] = true
+			group.deployments = append(group.deployments, servicenow.Deployment{SysID: dp.Deployment.ID, Name: dp.Deployment.Name})
+		}
+	}
+	softwareModel := make([]servicenow.EolProduct, 0, len(softwareModelOrder))
+	for _, versionID := range softwareModelOrder {
+		group := softwareModelByVersionID[versionID]
+		softwareModel = append(softwareModel, servicenow.EolProduct{Name: group.name, EolDate: group.eolDate, Deployments: group.deployments})
 	}
 	deploymentRefs := make([]servicenow.Deployment, 0, len(deps))
 	for _, d := range deps {
