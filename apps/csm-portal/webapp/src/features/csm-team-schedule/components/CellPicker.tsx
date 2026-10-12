@@ -302,6 +302,32 @@ export default function CellPicker({
   const moves = (moveKinds ?? []).filter(
     (k) => k.movesToTeamKey && k.movesToTeamKey.toLowerCase() !== target.teamKey.toLowerCase(),
   );
+  /** "Migration Team", "Americas Team": what a move button names. A team whose
+   *  name already ends in "Team" keeps it once. */
+  const asTeam = (key: string): string => {
+    const name = teamNameOf(key).trim();
+    return /\bteam$/i.test(name) ? name : `${name} Team`;
+  };
+
+  /** Another team's ordinary hours, offered as the move it is. Americas cover
+   *  picked for somebody not on Americas puts them on the Americas team for
+   *  the span (the Brazil rotation) -- the server writes it as a move -- so it
+   *  sits with the other moves as "Move to Americas Team" rather than among
+   *  the standing hours, where it read as a window like their own. For
+   *  somebody already on that team it stays their standing hours. */
+  const windowMoves = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { kind: ScheduleAbsenceKind; shift: ScheduleShift }[] = [];
+    for (const kind of allKinds ?? awayKinds) {
+      if (!kind.movesToTeamKey || !kind.worksRotaThere || !kind.showsAsShiftCode || kind.retired) continue;
+      if (kind.movesToTeamKey.toLowerCase() === target.teamKey.toLowerCase()) continue;
+      const shift = shifts.find((sh) => sh.code === kind.showsAsShiftCode);
+      if (!shift || seen.has(shift.code)) continue;
+      seen.add(shift.code);
+      out.push({ kind, shift });
+    }
+    return out;
+  }, [allKinds, awayKinds, shifts, target.teamKey]);
 
   /** The move this day is part of, where it is one. On a move to a team that
    *  works no rota (Migration) they take no rotation -- the server refuses
@@ -324,9 +350,12 @@ export default function CellPicker({
     // rather than listed here a second time.
     return [
       { heading: "Rotations", items: decorate(shifts.filter((s) => s.isRotation && !s.isEscalation)) },
-      { heading: "Standing hours", items: decorate(shifts.filter((s) => !s.isRotation)) },
+      {
+        heading: "Standing hours",
+        items: decorate(shifts.filter((s) => !s.isRotation && !windowMoves.some((m) => m.shift.code === s.code))),
+      },
     ].filter((g) => g.items.length > 0);
-  }, [shifts, firstDay, offRota]);
+  }, [shifts, firstDay, offRota, windowMoves]);
 
   /** L1, L2 and L3 for every zone worked on the span's first day. */
   const grid = useMemo(() => escalationGrid(shifts, firstDay), [shifts, firstDay]);
@@ -571,9 +600,31 @@ export default function CellPicker({
               </>
             ) : null}
 
-            {moves.length > 0 ? (
+            {moves.length > 0 || windowMoves.length > 0 ? (
               <>
                 <div className="pk-sec">Move to another team</div>
+                {windowMoves.map(({ kind, shift }) => {
+                  const ok = allowedOn(shift, firstDay);
+                  const to = asTeam(kind.movesToTeamKey ?? "");
+                  return (
+                    <button
+                      key={`window:${shift.code}`}
+                      type="button"
+                      className={`pk-c ${shift.code === target.shiftCode || kind.code === target.absenceKindCode ? "on" : ""} ${ok ? "" : "bad"}`}
+                      disabled={!ok || busy}
+                      // The same pick as the window itself: the span above, worked
+                      // as that team's hours, and back with "Back to ...".
+                      title={ok ? `${to}: works ${shift.label} for the span` : `${to} — ${notWorked(shift)}`}
+                      onClick={() => onApply(shift.code, firstDay, lastDay)}
+                    >
+                      <span className={`chip sm ${shift.colourToken}`}>{shift.shortCode}</span>
+                      <span className="pk-l">
+                        Move to {to}
+                        {ok ? null : <small className="pk-n">{notWorked(shift)}</small>}
+                      </span>
+                    </button>
+                  );
+                })}
                 {moves.map((kind) => (
                   <button
                     key={kind.code}
@@ -586,7 +637,7 @@ export default function CellPicker({
                     onClick={() => onMarkAway(kind.code, firstDay, lastDay)}
                   >
                     <span className={`chip sm ${kind.colourToken}`}>{kind.shortCode}</span>
-                    <span className="pk-l">Move to {teamNameOf(kind.movesToTeamKey ?? "")}</span>
+                    <span className="pk-l">Move to {asTeam(kind.movesToTeamKey ?? "")}</span>
                   </button>
                 ))}
               </>

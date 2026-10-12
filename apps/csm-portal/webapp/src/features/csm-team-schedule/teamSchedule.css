@@ -1320,6 +1320,13 @@
 .csm-ts .offcard.MAT { --cc: var(--mat-fg); }
 .csm-ts .offcard.PAT { --cc: var(--pat-fg); }
 
+/* Sabbatical leave (0221): a long planned absence like the two above, in a
+   colour of its own. */
+.csm-ts { --sab-bg: #e2d6f5; --sab-fg: #4a2a85; }
+:root[data-color-scheme="dark"] .csm-ts { --sab-bg: #3b2d5e; --sab-fg: #ddcff7; }
+.csm-ts .chip.SAB { background: var(--sab-bg); color: var(--sab-fg); }
+.csm-ts .offcard.SAB { --cc: var(--sab-fg); }
+
 /* ── Recent changes (leads, on the roster) ────────────────────────────────
    A quiet list under the edit bar: when, who and what, newest first. Leave
    entries carry the leave colour at their edge, rota entries the accent. */
@@ -2285,6 +2292,15 @@
 .csm-ts .cp-mx .cp-corner { top: 0; z-index: 4; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .csm-ts .cp-mx th[scope="row"] small { display: block; font-weight: 500; color: var(--muted); margin-top: 2px; }
 .csm-ts .cp-mx .cp-opt { font-style: italic; }
+/* L0 is one row: each team's cell holds its 1st, 2nd and 3rd responder, a
+   slot each, divided by a hairline. */
+.csm-ts .cp-mx .cp-l0 { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.csm-ts .cp-mx .cp-slot { display: flex; flex-direction: column; gap: 3px; padding: 6px 0; }
+.csm-ts .cp-mx .cp-slot:first-child { padding-top: 0; }
+.csm-ts .cp-mx .cp-slot:last-child { padding-bottom: 0; }
+.csm-ts .cp-mx .cp-slot + .cp-slot { border-top: 1px dashed var(--line-2); }
+.csm-ts .cp-mx .cp-rank { font-size: 11px; font-weight: 600; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); }
+.csm-ts .cp-mx .cp-rank .cp-opt { font-weight: 500; text-transform: none; letter-spacing: 0; }
 /* Level groups: alternate bands, and a firmer line where a level starts. */
 .csm-ts .cp-mx tbody.band > tr > * { background: var(--cp-band), var(--cp-bg); }
 .csm-ts .cp-mx tbody + tbody > tr:first-child > * { border-top: 1px solid var(--line-2); }
@@ -2951,4 +2967,22 @@
 }
 @media (prefers-reduced-motion: reduce) {
   .csm-ts .undotoast { animation: none; }
+}
+
+/* A crowded day-view card: the team names in one row across the card, each
+   team's people below it when the cursor rests on one. */
+.csm-ts .ladder .zblk .teamsplit { flex-direction: column; gap: 6px; }
+.csm-ts .ladder .zblk .teamsplit .teamlist { flex: none; flex-direction: row; flex-wrap: wrap; gap: 4px 8px; border-right: 0; padding-right: 0; overflow: visible; }
+.csm-ts .ladder .zblk .teamsplit .teamlist .tl { width: auto; }
+.csm-ts .ladder .zblk .teamsplit .teamlist .tl .tn { flex: none; }
+.csm-ts .ladder .zblk .teamsplit .teampane { flex: 1; min-height: 0; border-top: 1px dashed var(--line); padding-top: 6px; }
+
+/* The view tabs, one width for all: each was as wide as its own text, so the
+   row read uneven. On a wide screen every tab takes the width of the widest
+   (never under 112px); a narrow screen keeps sharing the row as before. */
+@media (min-width: 821px) {
+  .csm-ts .tabs { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(112px, 1fr); }
+  .csm-ts .tab { padding: 5px 8px 6px; }
+  .csm-ts .tab .tl { font-size: 12.5px; }
+  .csm-ts .tab .tsub { font-size: 9.5px; }
 }

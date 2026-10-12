@@ -442,6 +442,33 @@ describe("DayLadder: a stint worked on another team's rota", () => {
     expect(screen.getByText("Lena")).toBeInTheDocument();
     expect(screen.getByText("1 not available")).toBeInTheDocument();
   });
+
+  it("leaves people excluded from the rota out of who is off today", () => {
+    const EXCLUDED = {
+      id: "k-exc", code: "EXCLUDED", shortCode: "EXC", label: "Excluded from rota", bucket: "EXCLUDED" as const,
+      colourToken: "EXC", sortOrder: 110,
+    };
+    render(
+      <DayLadder
+        day={WEDNESDAY}
+        tz={TZ}
+        zoneLabel="IST"
+        lanes={[lane([])]}
+        shifts={SHIFTS}
+        zones={ZONES}
+        absences={[
+          absence({ name: "Ezra", startsOn: "2026-01-01", kindCode: "EXCLUDED" }),
+          absence({ name: "Lena", startsOn: "2026-09-23", endsOn: "2026-09-23" }),
+        ]}
+        absenceKinds={[ANNUAL_LEAVE, EXCLUDED]}
+        {...scopeControls()}
+      />,
+    );
+    expect(screen.queryByText("Ezra")).not.toBeInTheDocument();
+    expect(screen.queryByText("Excluded from rota")).not.toBeInTheDocument();
+    expect(screen.getByText("Lena")).toBeInTheDocument();
+    expect(screen.getByText("1 not available")).toBeInTheDocument();
+  });
 });
 
 describe("DayLadder: a crowded card's team pane", () => {

@@ -231,14 +231,19 @@ export default function DayLadder({
   onRotaChange,
 }: DayLadderProps): JSX.Element {
   const teamNameOf = useTeamName();
-  // Who is off the rota. Two kinds of span are left out:
+  // Who is off the rota. Three kinds of span are left out:
   //  - a stint that is rota work on another team -- the Brazil rotation,
   //    worked on the Americas rota -- which is not time off it;
   //  - a retired tag, such as Onboarding: no longer a reason anybody is away
   //    today. Its old days keep their label on the month roster, which is
-  //    the record; this column answers who to plan around now.
+  //    the record; this column answers who to plan around now;
+  //  - Excluded from rota: somebody who is never on the rota is not away from
+  //    it today, so a card of them says nothing about who to plan around. The
+  //    roster still marks them.
   const offRota = useMemo(() => {
-    const leaveOut = new Set(absenceKinds.filter((k) => k.worksRotaThere || k.retired).map((k) => k.code));
+    const leaveOut = new Set(
+      absenceKinds.filter((k) => k.worksRotaThere || k.retired || k.bucket === "EXCLUDED").map((k) => k.code),
+    );
     return absences.filter((a) => !leaveOut.has(a.kindCode));
   }, [absences, absenceKinds]);
   const wrapRef = useRef<HTMLDivElement | null>(null);

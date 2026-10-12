@@ -82,6 +82,7 @@ import {
   zoneColumnOf,
 } from "../utils/rota";
 import { zoneColour } from "../utils/rotaHues";
+import { onItsStandingCard, standingDayRows } from "../utils/standingDay";
 import { SCHEDULE_THEME_VARS } from "../utils/useScheduleTheme";
 import "../teamSchedule.css";
 import { teamDisplayName } from "../utils/teamDisplayName";
@@ -112,11 +113,11 @@ const ALL_FAMILIES: readonly Family[] = ["CRE", "SRE", "SME"];
 const NEXT_ROTATION_HORIZON_DAYS = 56;
 
 const TITLE: Record<ViewTab, string> = {
-  mine: "My week",
-  today: "Who is on today",
-  week: "Who is on this week",
-  roster: "Month roster",
-  paging: "Case Paging",
+  mine: "My Week",
+  today: "Today",
+  week: "This Week",
+  roster: "Roster",
+  paging: "Case Alerts",
 };
 
 /** The roster's window as days, "14 Sept – 12 Oct 2026": it opens and closes
@@ -548,8 +549,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // teams rather than nothing.
   const absenceTeamKeys = teamKeys ?? teamsOf(family, rotaScoped ? scopeRota : undefined);
   // The week view reads leave too, for its leave row; `from`/`to` are already
-  // the week there.
-  const dayAbsences = useScheduleAbsences({ from, to, teamKeys: absenceTeamKeys }, dayView || view === "week");
+  // the week there. The day view reads the same rota days as its rota read, so
+  // it knows who is away on each of them (see standingDayRows).
+  const dayAbsences = useScheduleAbsences(
+    { from: dayView ? readFrom : from, to: dayView ? readTo : to, teamKeys: absenceTeamKeys },
+    dayView || view === "week",
+  );
   const rosterAbsences = useScheduleAbsencesByMonth(
     { teamKeys: absenceTeamKeys },
     rosterMonths,
@@ -754,7 +759,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           shiftCode: r.code,
           from: r.from,
           to: r.to,
-          note: "undone from the month roster",
+          note: "undone from the roster",
         });
       }
     };
@@ -774,7 +779,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     if (!kindCode || !kind || kind.movesToTeamKey || !loaded(from, to)) return undefined;
     if (!awayIsRevertible(absences.data?.absences ?? [], userId, from, to)) return undefined;
     return async () => {
-      await applyAbsence.mutateAsync({ userId, teamKey, kindCode: "", from, to, note: "undone from the month roster" });
+      await applyAbsence.mutateAsync({ userId, teamKey, kindCode: "", from, to, note: "undone from the roster" });
     };
   };
 
@@ -797,7 +802,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         shiftCode,
         from,
         to,
-        note: "set from the month roster",
+        note: "set from the roster",
         ...(tier ? { tier } : {}),
       },
       {
@@ -840,7 +845,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         kindCode,
         from,
         to,
-        note: "marked from the month roster",
+        note: "marked from the roster",
         ...(allocatedTo ? { allocatedTo } : {}),
       },
       {
@@ -882,13 +887,13 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               kindCode: ab.kindCode,
               from: ab.startsOn,
               to: endsOn,
-              note: "undone from the month roster",
+              note: "undone from the roster",
               ...(ab.allocatedTo ? { allocatedTo: ab.allocatedTo } : {}),
             });
           }
         : undefined;
     deleteAbsence.mutate(
-      { id: absenceId, note: "removed from the month roster" },
+      { id: absenceId, note: "removed from the roster" },
       {
         onSuccess: () =>
           recordChange(picker, ab.startsOn, ab.endsOn ?? ab.startsOn, `${label} removed`, revert),
@@ -957,7 +962,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           zoneCode: picker.zoneCode,
           from,
           to,
-          note: "cleared from the month roster",
+          note: "cleared from the roster",
         },
         {
           onSuccess: () =>
@@ -1007,10 +1012,48 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     return kept.length > 0 ? kept : own;
   }, [anchor, shifts, zones, family, rota, rows, tz]);
 
+  /** Leave and allocations over the day being viewed, for the off-rota column.
+   *  The day view reads the rota days either side as well; those are only for
+   *  working out who is at work on them. */
+  const absencesOnDay = useMemo(
+    () =>
+      (absences.data?.absences ?? []).filter(
+        (ab) => !dayView || (ab.startsOn <= anchorIso && (!ab.endsOn || anchorIso <= ab.endsOn)),
+      ),
+    [absences.data?.absences, dayView, anchorIso],
+  );
+
   const lanes: LadderLane[] = useMemo(() => {
     if (family === "CRE") {
+      // Everyone the month roster shows at work, not only those with a row:
+      // a blank weekday is the team's ordinary day, and the morning and
+      // evening crews work the ordinary day around their turn.
+      // The same teams as the rota read (teamKeys), worked out here because
+      // teamKeys is a fresh array every render. None means the whole family.
+      const scoped = shownTeamKey ? [shownTeamKey] : rotaScoped && scopeRota ? teamsOf(family, scopeRota) : [];
+      const inScope = new Set(scoped.map((k) => k.toLowerCase()));
+      // Every CRE team, whatever is in view: which team a window is the
+      // ordinary day of does not depend on the team picked.
+      const allCreTeams = (catalogue.data?.teams ?? []).filter((t) => t.family === "CRE");
+      const creTeams = allCreTeams
+        .filter((t) => inScope.size === 0 || inScope.has(t.key.toLowerCase()))
+        .sort((a, b) => a.sortOrder - b.sortOrder);
+      const standing = standingDayRows({
+        rotaDates: [readFrom, anchorIso, readTo],
+        teams: creTeams,
+        shifts,
+        assignments: rows,
+        absences: absences.data?.absences ?? [],
+      });
       return [
-        { name: "Rotations", sub: "on-call, the night and regular hours", colour: "var(--muted)", assignments: rows },
+        {
+          name: "Rotations",
+          sub: "on-call, the night and regular hours",
+          colour: "var(--muted)",
+          // Each standing window's card lists only the teams whose ordinary
+          // day it is: Americas cover the Americas team, regular hours the ABTs.
+          assignments: [...rows, ...standing].filter((a) => onItsStandingCard(a, shifts, allCreTeams)),
+        },
       ];
     }
     const weekendDay = anchor.getDay() === 0 || anchor.getDay() === 6;
@@ -1034,7 +1077,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         layout: "zone" as const,
       };
     });
-  }, [anchor, family, rows, shifts, zonesOnDay]);
+  }, [anchor, family, rows, shifts, zonesOnDay, shownTeamKey, rotaScoped, scopeRota, teamsOf, catalogue.data?.teams, readFrom, anchorIso, readTo, absences.data?.absences]);
 
   /** The teams the edit bar says this reader can change, by name and in the
    *  catalogue's order. A rota admin can change every team of the group, and
@@ -1130,7 +1173,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                 <span className="tl">{TITLE[t]}</span>
                 <span className="tsub">
                   {t === "paging"
-                    ? "who gets paged, tier by tier"
+                    ? "who gets alerts, tier by tier"
                     : t === "today"
                     ? fmtShort(anchor)
                     : t === "roster"
@@ -1250,7 +1293,9 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               </button>
             </div>
 
-            {canEditRota ? (
+            {/* Only the roster is edited, so the button is offered there alone:
+                on the other views it switched on a mode they do not have. */}
+            {canEditRota && view === "roster" ? (
               <button
                 className={`btn sm${editing ? " primary" : ""}`}
                 aria-pressed={editing}
@@ -1359,7 +1404,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               lanes={lanes}
               shifts={shifts}
               zones={zones}
-              absences={absences.data?.absences ?? []}
+              absences={absencesOnDay}
               absenceKinds={catalogue.data?.absenceKinds ?? []}
               teamDefaultShift={teamDefaultShift}
               {...scopeControls}

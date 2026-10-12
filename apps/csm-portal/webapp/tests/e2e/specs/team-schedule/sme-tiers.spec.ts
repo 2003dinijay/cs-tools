@@ -112,7 +112,7 @@ async function signIn(page: Page): Promise<void> {
 
 /** The SME chain's gap messages on the Case Paging tab, every one of them. */
 async function smeGaps(page: Page): Promise<string[]> {
-  await page.getByRole("tab", { name: /^Case Paging/ }).click();
+  await page.getByRole("tab", { name: /^Case Alerts/ }).click();
   await page.getByRole("tab", { name: "SME", exact: true }).click();
   // The readiness strip loads after the tab: wait for the chain's heading.
   await expect(page.getByText(/^SME page —/)).toBeVisible({ timeout: 20_000 });
@@ -130,7 +130,7 @@ const gap = (tier: string, window: "day" | "night", day: string) =>
 
 /** Opens the month roster in edit mode. */
 async function editRoster(page: Page): Promise<void> {
-  await page.getByRole("tab", { name: /^Month roster/ }).click();
+  await page.getByRole("tab", { name: /^Roster/ }).click();
   await page.getByRole("button", { name: "Edit rota" }).click();
   await expect(page.getByRole("button", { name: "Done editing" })).toBeVisible();
 }
