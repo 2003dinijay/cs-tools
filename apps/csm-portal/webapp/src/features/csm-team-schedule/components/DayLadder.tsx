@@ -387,7 +387,12 @@ export default function DayLadder({
 
       // A zone that crosses midnight shows up twice: the piece it worked
       // yesterday and the piece it works today. They are different cards.
-      const bySegment = groupBy(placed, (x) => (x.p.startedPreviousDay ? "carried-in" : "own"));
+      // So are two rota days that both land on a reader's day far from the
+      // office -- Monday's escalation and Tuesday's are not one stretch.
+      const bySegment = groupBy(
+        placed,
+        (x) => `${x.a.rotaDate}:${x.p.startedPreviousDay ? "carried-in" : "own"}`,
+      );
 
       return [...bySegment.entries()]
         .map(([segment, items]) => {
@@ -485,10 +490,15 @@ export default function DayLadder({
   for (let h = 0; h <= 24; h += 2) hours.push(h);
 
   /** Distinct people on the rota today, not cards: one engineer holding an
-   *  escalation tier and an ordinary window is one engineer. */
+   *  escalation tier and an ordinary window is one engineer. Only those on
+   *  during the reader's day -- the read takes in the rota days either side,
+   *  for a reader whose day is not the office's. */
   const headcount = useMemo(
-    () => new Set(lanes.flatMap((l) => l.assignments.map((a) => a.engineer.userId))).size,
-    [lanes],
+    () =>
+      new Set(
+        lanes.flatMap((l) => l.assignments.filter((a) => placeOnDay(a, day, tz)).map((a) => a.engineer.userId)),
+      ).size,
+    [lanes, day, tz],
   );
 
   return (

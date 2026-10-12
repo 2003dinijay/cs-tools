@@ -487,3 +487,85 @@ describe("DayLadder: a crowded card's team pane", () => {
     expect(heading).not.toHaveTextContent("orion_abt_cre_team");
   });
 });
+
+describe("DayLadder: a reader west of the office", () => {
+  // Monday 12 October 2026, read in Los Angeles. Colombo's Monday regular
+  // hours (09:00-18:00 IST) run from 20:30 Sunday to 05:30 Monday here, and
+  // Tuesday's morning crew (06:00-09:00 IST) is on 17:30-20:30 Monday.
+  const MONDAY = new Date(2026, 9, 12);
+  const LA = "America/Los_Angeles";
+
+  function at(name: string, rotaDate: string, shiftCode: string, startsAt: string, endsAt: string) {
+    return assignment({ name, rotaDate, shiftCode, startsAt, endsAt });
+  }
+
+  function renderLA(lanes: LadderLane[], shifts = SHIFTS) {
+    return render(
+      <DayLadder
+        day={MONDAY}
+        tz={LA}
+        zoneLabel="PDT"
+        lanes={lanes}
+        shifts={shifts}
+        zones={ZONES}
+        absences={[]}
+        absenceKinds={[ANNUAL_LEAVE]}
+        {...scopeControls()}
+      />,
+    );
+  }
+
+  const READ = [
+    // Sunday's rota: over by 05:30 Sunday here.
+    at("Sunday Sam", "2026-10-11", REGULAR.code, "2026-10-11T03:30:00.000Z", "2026-10-11T12:30:00.000Z"),
+    // Monday's: carried in from Sunday evening.
+    at("Monday Mia", "2026-10-12", REGULAR.code, "2026-10-12T03:30:00.000Z", "2026-10-12T12:30:00.000Z"),
+    // Tuesday's morning and regular hours: Monday evening here.
+    at("Tuesday Tom", "2026-10-13", MORNING.code, "2026-10-13T00:30:00.000Z", "2026-10-13T03:30:00.000Z"),
+    at("Tuesday Ted", "2026-10-13", REGULAR.code, "2026-10-13T03:30:00.000Z", "2026-10-13T12:30:00.000Z"),
+    // Wednesday's: Tuesday evening here.
+    at("Wednesday Wen", "2026-10-14", REGULAR.code, "2026-10-14T03:30:00.000Z", "2026-10-14T12:30:00.000Z"),
+  ];
+
+  it("shows the office's next morning crew on the reader's evening", () => {
+    renderLA([lane(READ)]);
+    expect(screen.getByText("17:30 – 20:30")).toBeInTheDocument();
+    expect(screen.getByText("Tuesday Tom")).toBeInTheDocument();
+    expect(screen.getByText("Monday Mia")).toBeInTheDocument();
+    expect(screen.getByText("Tuesday Ted")).toBeInTheDocument();
+  });
+
+  it("leaves out rota days that do not touch the reader's day", () => {
+    renderLA([lane(READ)]);
+    expect(screen.queryByText("Sunday Sam")).not.toBeInTheDocument();
+    expect(screen.queryByText("Wednesday Wen")).not.toBeInTheDocument();
+  });
+
+  it("counts only the people on during the reader's day", () => {
+    const { container } = renderLA([lane(READ)]);
+    expect(container.querySelector("h2 .count")?.textContent).toBe("3");
+  });
+
+  it("keeps two rota days' escalations as two cards", () => {
+    const tiered = (name: string, rotaDate: string, startsAt: string, endsAt: string) => ({
+      ...assignment({ name, rotaDate, shiftCode: TZ1.code, zoneCode: "TZ1", startsAt, endsAt }),
+      tier: "L1" as const,
+    });
+    const { container } = renderLA(
+      [
+        {
+          name: "TZ1",
+          layout: "zone",
+          assignments: [
+            // Monday 18:00-21:00 IST and Tuesday 06:00-09:00 IST: 05:30 and
+            // 17:30 Monday here, a working day apart.
+            tiered("Evening Eve", "2026-10-12", "2026-10-12T12:30:00.000Z", "2026-10-12T15:30:00.000Z"),
+            tiered("Morning Max", "2026-10-13", "2026-10-13T00:30:00.000Z", "2026-10-13T03:30:00.000Z"),
+          ],
+        },
+      ],
+      shiftMap(TZ1),
+    );
+    expect(container.querySelectorAll(".zbp.tiers")).toHaveLength(2);
+  });
+});
