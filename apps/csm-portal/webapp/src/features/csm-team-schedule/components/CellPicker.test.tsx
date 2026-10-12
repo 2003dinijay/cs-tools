@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import CellPicker, { type CellPickerTarget } from "./CellPicker";
@@ -484,5 +484,114 @@ describe("CellPicker: moving somebody back", () => {
     onMoved();
     fireEvent.change(screen.getByLabelText("Mark from"), { target: { value: "2026-10-02" } });
     expect(screen.queryByRole("button", { name: /^Back to/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("CellPicker: a dialog in the middle of the view", () => {
+  it("opens as a modal dialog and takes focus", () => {
+    renderPicker();
+    const dialog = screen.getByRole("dialog", { name: "Change Asela's rota" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(dialog).toHaveFocus();
+  });
+
+  it("grows out of the cell that was clicked", () => {
+    renderPicker();
+    // jsdom lays nothing out, so the dialog sits at 0,0 and the origin is the
+    // cell's own middle.
+    expect(screen.getByRole("dialog")).toHaveStyle({ transformOrigin: "122px 115px" });
+  });
+
+  it("says what the day holds now", () => {
+    renderPicker({ target: target({ shiftCode: EVENING.code }) });
+    const now = screen.getByTitle("What this day holds now");
+    expect(now).toHaveTextContent(EVENING.shortCode);
+    expect(now).toHaveTextContent(EVENING.label);
+  });
+
+  it("closes from the backdrop, after fading out", () => {
+    vi.useFakeTimers();
+    try {
+      const { onClose } = renderPicker();
+      fireEvent.mouseDown(screen.getByRole("dialog"));
+      expect(screen.getByRole("dialog").parentElement).not.toHaveClass("closing");
+      fireEvent.mouseDown(screen.getByRole("dialog").parentElement as HTMLElement);
+      expect(screen.getByRole("dialog").parentElement).toHaveClass("closing");
+      expect(onClose).not.toHaveBeenCalled();
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes on Escape once, however often it is pressed", () => {
+    vi.useFakeTimers();
+    try {
+      const { onClose } = renderPicker();
+      fireEvent.keyDown(window, { key: "Escape" });
+      fireEvent.keyDown(window, { key: "Escape" });
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps Tab inside the dialog", () => {
+    renderPicker();
+    const dialog = screen.getByRole("dialog");
+    const close = screen.getByRole("button", { name: "Close" });
+    const clear = screen.getByRole("button", { name: /Clear/ });
+    clear.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(close).toHaveFocus();
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    expect(clear).toHaveFocus();
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+  });
+
+  it("gives focus back to where it was on close", () => {
+    const before = document.createElement("button");
+    document.body.appendChild(before);
+    before.focus();
+    const { unmount } = render(
+      <CellPicker
+        target={target()}
+        shifts={[REGULAR]}
+        awayKinds={[ANNUAL_LEAVE]}
+        onApply={vi.fn()}
+        onMarkAway={vi.fn()}
+        onClear={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(before).not.toHaveFocus();
+    unmount();
+    expect(before).toHaveFocus();
+    before.remove();
+  });
+
+  it("puts the dates with leave and allocations", () => {
+    renderPicker();
+    const away = screen.getByRole("region", { name: "Leave & allocations" });
+    expect(within(away).getByLabelText("Mark from")).toBeInTheDocument();
+    expect(within(away).getByLabelText("Mark until")).toBeInTheDocument();
+    expect(within(away).getByRole("button", { name: /Annual leave/ })).toBeInTheDocument();
+    const rota = screen.getByRole("region", { name: /^Rota/ });
+    expect(within(rota).queryByLabelText("Mark from")).not.toBeInTheDocument();
+    expect(within(rota).getByRole("button", { name: /Evening 6-9pm/ })).toBeInTheDocument();
+  });
+
+  it("says on the rota side which days a pick will set", () => {
+    renderPicker();
+    const rota = screen.getByRole("region", { name: /^Rota/ });
+    expect(within(rota).getByText(/^Wed 23 Sept?$/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Mark until"), { target: { value: "2026-09-25" } });
+    expect(within(rota).getByText(/23 Sept? – 25 Sept? · 3 days/)).toBeInTheDocument();
   });
 });

@@ -16,7 +16,7 @@
  * under the License.
  */
 
-import { useMemo, useState, type JSX } from "react";
+import { useCallback, useMemo, useState, type JSX } from "react";
 import QueryErrorState from "@components/QueryErrorState";
 import { useErrorBanner } from "@context/error-banner/ErrorBannerContext";
 import { useCurrentUser } from "@context/current-user/CurrentUserContext";
@@ -44,6 +44,8 @@ import MonthRoster from "../components/MonthRoster";
 import MyWeekStrip from "../components/MyWeekStrip";
 import NextRotation from "../components/NextRotation";
 import RecentChanges from "../components/RecentChanges";
+import UndoToast, { type UndoOffer } from "../components/UndoToast";
+import { awayIsRevertible, rotaRevertRuns } from "../utils/undo";
 import WeekTable from "../components/WeekTable";
 import CasePagingTab, { type PagingRotaTarget } from "../components/CasePagingTab";
 import { useGetPagingChain } from "../api/usePagingChain";
@@ -259,6 +261,11 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  change is kept here and marked on the roster until they click Done
    *  editing, which is the point they have said they are finished. */
   const [changes, setChanges] = useState<RotaChange[]>([]);
+  /** The last save, offered back for a few seconds ("Saved · Undo"). Edits
+   *  save on the click, which leads want kept; this is the way back from a
+   *  click that landed on the wrong row. */
+  const [undoOffer, setUndoOffer] = useState<(UndoOffer & { change: RotaChange }) | null>(null);
+  const dismissUndo = useCallback(() => setUndoOffer(null), []);
   /** Whether the lead has the recent-changes panel open on the roster. */
   const [showRecent, setShowRecent] = useState(false);
   const changedCells = useMemo(() => {
@@ -710,6 +717,58 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     return zones.find((z) => (!own || z.rotaCode === own) && zoneColumnOf(z.code) === column)?.code;
   };
 
+  /** Whether a span sits inside what the roster has loaded -- the only days
+   *  whose "before" this page actually knows. */
+  const loaded = (from: string, to: string): boolean =>
+    from >= toIsoDate(rosterStart) && to <= toIsoDate(rosterEnd);
+
+  /** How to put one engineer's days back the way they were before a rota
+   *  write, where that can be done exactly: each day held one whole-day
+   *  window, or nothing. A tier, a zone, or two windows on one day get no
+   *  undo rather than a guess. Read before the write, from what the grid
+   *  has loaded. */
+  const rotaRevert = (
+    userId: string,
+    teamKey: string,
+    from: string,
+    to: string,
+    appliedCode: string,
+  ): (() => Promise<void>) | undefined => {
+    if (!loaded(from, to)) return undefined;
+    const runs = rotaRevertRuns(rows, shifts, userId, from, to, appliedCode);
+    if (!runs) return undefined;
+    return async () => {
+      for (const r of runs) {
+        await applyRange.mutateAsync({
+          userId,
+          teamKey,
+          shiftCode: r.code,
+          from: r.from,
+          to: r.to,
+          note: "undone from the month roster",
+        });
+      }
+    };
+  };
+
+  /** Leave or an allocation marked over days that had none: taking it off
+   *  again is exact. Anything already there, or a move to another team,
+   *  gets no undo. */
+  const awayRevert = (
+    userId: string,
+    teamKey: string,
+    kindCode: string,
+    from: string,
+    to: string,
+  ): (() => Promise<void>) | undefined => {
+    const kind = (catalogue.data?.absenceKinds ?? []).find((k) => k.code === kindCode);
+    if (!kindCode || !kind || kind.movesToTeamKey || !loaded(from, to)) return undefined;
+    if (!awayIsRevertible(absences.data?.absences ?? [], userId, from, to)) return undefined;
+    return async () => {
+      await applyAbsence.mutateAsync({ userId, teamKey, kindCode: "", from, to, note: "undone from the month roster" });
+    };
+  };
+
   const applyToCell = (shiftCode: string, from: string, to: string, tier?: ScheduleTier): void => {
     if (!picker) return;
     const label = shifts.get(shiftCode)?.label ?? shiftCode;
@@ -721,6 +780,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
       markAway(move.code, from, to);
       return;
     }
+    const revert = tier ? undefined : rotaRevert(picker.userId, picker.teamKey, from, to, shiftCode);
     applyRange.mutate(
       {
         userId: picker.userId,
@@ -732,7 +792,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         ...(tier ? { tier } : {}),
       },
       {
-        onSuccess: () => recordChange(picker, from, to, tier ? `${tier} · ${label}` : label),
+        onSuccess: () => recordChange(picker, from, to, tier ? `${tier} · ${label}` : label, revert),
         onError: (err) =>
           showError(notSaved("That change to the rota was not saved.", err), err),
         onSettled: () => setPicker(null),
@@ -740,8 +800,18 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     );
   };
 
-  const recordChange = (target: CellPickerTarget, from: string, to: string, what: string): void =>
-    setChanges((cs) => [...cs, { userId: target.userId, name: target.name, from, to, what }]);
+  /** Mark a saved change on the roster, and offer it back. */
+  const recordChange = (
+    target: CellPickerTarget,
+    from: string,
+    to: string,
+    what: string,
+    undo?: () => Promise<void>,
+  ): void => {
+    const change: RotaChange = { userId: target.userId, name: target.name, from, to, what };
+    setChanges((cs) => [...cs, change]);
+    setUndoOffer({ id: Date.now(), message: `${target.name}: ${what}, ${fmtRange(from, to)}`, undo, change });
+  };
 
   /** A tag as the change log names it: a move worked as another team's
    *  normal hours by those hours (Americas cover), anything else by its label. */
@@ -753,6 +823,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
   const markAway = (kindCode: string, from: string, to: string, allocatedTo?: string): void => {
     if (!picker) return;
+    const revert = awayRevert(picker.userId, picker.teamKey, kindCode, from, to);
     applyAbsence.mutate(
       {
         userId: picker.userId,
@@ -774,6 +845,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                   allocatedTo ? ` (${allocatedTo})` : ""
                 }`
               : "back on the rota",
+            revert,
           ),
         onError: (err) =>
           showError(notSaved("That change to who is away was not saved.", err), err),
@@ -786,13 +858,31 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const removeAbsence = (absenceId: string): void => {
     if (!picker?.absence) return;
     const ab = picker.absence;
-    const label =
-      (catalogue.data?.absenceKinds ?? []).find((k) => k.code === ab.kindCode)?.label ?? ab.kindCode;
+    const kind = (catalogue.data?.absenceKinds ?? []).find((k) => k.code === ab.kindCode);
+    const label = kind?.label ?? ab.kindCode;
+    // A closed span that moved nobody can be marked again exactly; an
+    // open-ended one or a move cannot.
+    const endsOn = ab.endsOn;
+    const target = picker;
+    const revert =
+      endsOn && !kind?.movesToTeamKey
+        ? async () => {
+            await applyAbsence.mutateAsync({
+              userId: target.userId,
+              teamKey: target.teamKey,
+              kindCode: ab.kindCode,
+              from: ab.startsOn,
+              to: endsOn,
+              note: "undone from the month roster",
+              ...(ab.allocatedTo ? { allocatedTo: ab.allocatedTo } : {}),
+            });
+          }
+        : undefined;
     deleteAbsence.mutate(
       { id: absenceId, note: "removed from the month roster" },
       {
         onSuccess: () =>
-          recordChange(picker, ab.startsOn, ab.endsOn ?? ab.startsOn, `${label} removed`),
+          recordChange(picker, ab.startsOn, ab.endsOn ?? ab.startsOn, `${label} removed`, revert),
         onError: (err) =>
           showError("That leave or allocation was not removed. Nothing has changed.", err),
         onSettled: () => setPicker(null),
@@ -1358,6 +1448,22 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           onClose={() => setPicker(null)}
         />
       ) : null}
+      <UndoToast
+        key={undoOffer?.id}
+        offer={undoOffer}
+        onDismiss={dismissUndo}
+        onUndone={() => {
+          const done = undoOffer;
+          if (!done) return;
+          // The days are as they were, so they are no longer this session's.
+          setChanges((cs) => cs.filter((c) => c !== done.change));
+          setUndoOffer({ ...done, id: done.id + 1, verb: "Undone", undo: undefined });
+        }}
+        onUndoFailed={(err) => {
+          setUndoOffer(null);
+          showError("The undo did not finish. Check those days on the roster before changing them again.", err);
+        }}
+      />
       {canGenerateRota ? (
         <GenerateRotaDialog open={generateOpen} onClose={() => setGenerateOpen(false)} teams={generateTeams} />
       ) : null}
