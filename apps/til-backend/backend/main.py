@@ -34,14 +34,12 @@ load_dotenv()
 
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Request, Response, UploadFile
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 import db
 import entity_client
-import uploads
 from auth import ONE_WSO2_WEBAPP_CLIENT_ID, require_auth
 from novera_notify import notify_novera
 from sanitize import sanitize_what_html
@@ -65,12 +63,11 @@ ONE_WSO2_BASE_URL = os.environ.get("ONE_WSO2_BASE_URL", "").rstrip("/")
 
 
 def require_webapp_caller(user: dict) -> Optional[JSONResponse]:
-    """Shared by POST /submissions, PUT /submissions/{id} and POST /uploads --
-    all are ways to add content to an entry, so all are restricted to the
-    same single entry point. Returns a 403 response if the caller isn't the
-    real One WSO2 webapp, else None. See POST /submissions for the full
-    reasoning on why this checks the verified token identity, never a
-    request header."""
+    """Shared by POST /submissions and PUT /submissions/{id} -- both add
+    content to an entry, so both are restricted to the same single entry
+    point. Returns a 403 response if the caller isn't the real One WSO2
+    webapp, else None. See POST /submissions for the full reasoning on why
+    this checks the verified token identity, never a request header."""
     if not ONE_WSO2_WEBAPP_CLIENT_ID or ONE_WSO2_WEBAPP_CLIENT_ID not in user.get("token_identities", set()):
         return JSONResponse(
             status_code=403,
@@ -95,17 +92,13 @@ async def lifespan(app: FastAPI):
 app = FastAPI(lifespan=lifespan, title="Today I Learned Backend API", version="0.1.0")
 
 # Rejects an oversized request by its own declared Content-Length BEFORE
-# FastAPI/Starlette starts parsing the body at all -- uploads.read_bounded()
-# only runs once inside the route handler, by which point File(...) has
-# already driven Starlette's multipart parser over the whole request.
-# A known DoS exists in python-multipart's part-header parsing for exactly
-# this "oversized/malicious body reaches the parser" case (see
-# requirements.txt's own note on the version pin); checking here closes
-# that regardless of which library version is installed. Content-Length
-# can be absent or a client can lie via chunked transfer encoding, so this
-# is defense in depth, not a substitute for read_bounded()'s own file-level
-# check -- it narrows the worst case rather than guaranteeing it away.
-_MAX_REQUEST_BYTES = uploads.MAX_UPLOAD_BYTES + 64 * 1024  # headroom for multipart boundaries/field overhead
+# FastAPI/Starlette starts reading the body at all. Every request body here
+# is a JSON entry, and the largest valid one (a full-length learning in
+# heavy formatting) is a small fraction of this. Content-Length can be
+# absent or a client can lie via chunked transfer encoding, so this is
+# defense in depth -- it narrows the worst case rather than guaranteeing it
+# away.
+_MAX_REQUEST_BYTES = 256 * 1024
 
 
 @app.middleware("http")
@@ -139,14 +132,7 @@ app.add_middleware(
 # gateway in front of this service (e.g. Choreo's own request-size
 # limit), not application code fighting the ASGI body-streaming layer.
 # reject_oversized_requests above remains as defense in depth for the
-# honest-Content-Length case; read_bounded() in uploads.py remains the
-# file-level backstop.
-
-# Serves whatever POST /uploads has saved -- StaticFiles needs the directory
-# to already exist at mount time, so this runs before the mount, not lazily
-# inside the upload handler.
-uploads.ensure_upload_dir()
-app.mount("/uploads", StaticFiles(directory=uploads.UPLOAD_DIR), name="uploads")
+# honest-Content-Length case.
 
 
 @app.get("/user-info")
@@ -228,13 +214,7 @@ async def create_submission(request: Request, user: dict = Depends(require_auth)
     where_detail = where_detail.strip() if isinstance(where_detail, str) else None
     # Re-sanitized here even though the frontend editor already does --
     # never trust that a direct API call went through it. See sanitize.py.
-    # request.url.netloc (not a configured constant) is this request's OWN
-    # host -- this backend serves from a different host per environment, so
-    # there's no single fixed value to validate an <img src> against ahead
-    # of time; the only host that's always correct is whichever one the
-    # caller actually used to reach this same backend's POST /uploads a
-    # moment earlier.
-    what = sanitize_what_html(body["what"], request_host=request.url.netloc)
+    what = sanitize_what_html(body["what"])
 
     # submittedByEmail always comes from the verified token -- this is the
     # one guarantee that makes "no anonymous entries" actually true
@@ -252,36 +232,6 @@ async def create_submission(request: Request, user: dict = Depends(require_auth)
     await notify_novera(title=title, who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
 
     return submission
-
-
-@app.post("/uploads")
-async def create_upload(request: Request, file: UploadFile = File(...), user: dict = Depends(require_auth)):
-    """Backs the image button and paste-an-image support in the "What did
-    you learn?" editor. Stores the file on disk (see uploads.py) and
-    returns an absolute URL the editor inserts as an <img src>. Built from
-    `request.base_url` rather than a configured constant -- this backend is
-    reachable at different hostnames across local dev / Staging / prod, and
-    the one guaranteed-correct base is whatever the caller actually used.
-    Same webapp-only gate as POST /submissions -- adding an image to an
-    entry is just another way of adding content to it."""
-    rejection = require_webapp_caller(user)
-    if rejection:
-        return rejection
-
-    data = await uploads.read_bounded(file)
-    if data is None:
-        return JSONResponse(status_code=400, content={"error": "Image must be 5 MB or smaller."})
-
-    # Sniffed from the actual bytes, not file.content_type -- a client can
-    # set that header to anything regardless of what was actually uploaded.
-    detected = uploads.detect_image_type(data[:12])
-    if detected is None:
-        return JSONResponse(status_code=400, content={"error": "File must be a PNG, JPEG, GIF, or WEBP image."})
-    ext, _content_type = detected
-
-    filename = uploads.save_upload(data, ext)
-    url = f"{str(request.base_url).rstrip('/')}/uploads/{filename}"
-    return {"url": url}
 
 
 @app.get("/submissions/{submission_id}")
@@ -324,9 +274,8 @@ async def update_submission(submission_id: str, request: Request, user: dict = D
     where = body["where"]
     where_detail = body.get("whereDetail")
     where_detail = where_detail.strip() if isinstance(where_detail, str) else None
-    # Same re-sanitizing, and the same request-host rule for <img src>, as
-    # create_submission above.
-    what = sanitize_what_html(body["what"], request_host=request.url.netloc)
+    # Same re-sanitizing as create_submission above.
+    what = sanitize_what_html(body["what"])
 
     # Saving without a real change would still stamp updated_at and show the
     # entry as edited, so an unchanged save returns the entry as it is.

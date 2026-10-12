@@ -54,7 +54,6 @@ database, never that database itself.
 | GET | `/submissions/{id}` | A single entry |
 | PUT | `/submissions/{id}` | `{ title, where, what, whereDetail? }`; 403 unless the caller is in `TIL_MODERATOR_GROUP` or is the entry's own submitter, plus the same webapp-only gate as `POST /submissions`. The byline (`who`, `submittedByEmail`) and `createdAt` never change; `updatedAt` is set on a real change and stays `null` on an entry never edited. No Novera broadcast |
 | DELETE | `/submissions/{id}` | 403 unless the caller is in `TIL_MODERATOR_GROUP` or is the entry's own submitter |
-| POST | `/uploads` | `multipart/form-data` with a `file` field (image, ≤5 MB); `{ url }`; same webapp-only gate as `POST /submissions` |
 | GET | `/health` | For Choreo/liveness checks |
 
 ## Design notes

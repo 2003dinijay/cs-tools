@@ -245,10 +245,10 @@ def list_submissions(
             # Two known, accepted gaps in the MATCH path, neither one worth
             # the cost of a LIKE fallback query on every empty MATCH result:
             # (1) `what` is stored HTML, so MySQL's tokenizer indexes words
-            # that appear only inside markup (e.g. "uploads"/"png" from an
-            # <img src="/uploads/...png">), so a query for one of those
-            # words matches every entry that happens to contain an image --
-            # not a security issue, just an occasional surprising match.
+            # that appear only inside markup (e.g. "strong" from <strong>, or
+            # "https" from a link's href), so a query for one of those words
+            # matches every entry that happens to use that markup -- not a
+            # security issue, just an occasional surprising match.
             # (2) a query made entirely of InnoDB's default stopwords (e.g.
             # "the") is long enough to pass _has_fulltext_eligible_token but
             # is invisible to the index regardless, so it returns zero rows

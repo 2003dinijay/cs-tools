@@ -34,7 +34,6 @@ from fastapi.testclient import TestClient
 
 import db
 import main
-import uploads
 from auth import require_auth
 
 HUMAN_USER = {"email": "jane@example.com", "name": "Jane", "groups": [], "is_moderator": False, "token_identities": {"one-wso2-webapp-real-client-id"}}
@@ -173,30 +172,19 @@ def test_create_submission_sanitizes_what_even_if_client_skips_the_editor():
     assert resp.json()["what"] == "<p>hi</p>"
 
 
-def test_create_submission_keeps_img_on_the_request_s_own_host():
-    # TestClient's default base_url is http://testserver -- this confirms
-    # main.py actually threads request.url.netloc through to
-    # sanitize_what_html end-to-end, not just that the function itself
-    # behaves correctly in isolation (see test_sanitize.py for that).
-    client = client_as(HUMAN_USER)
-    src = "http://testserver/uploads/07ec86bdee9142da838c9a3511f780e8.webp"
-    resp = client.post(
+def test_create_submission_strips_pictures():
+    # Entries are text only -- even a picture on this backend's own host.
+    resp = client_as(HUMAN_USER).post(
         "/submissions",
-        json={"title": "T", "who": "Jane", "where": "Internal", "what": f'<p>See:</p><img src="{src}">'},
+        json={
+            "title": "T",
+            "who": "Jane",
+            "where": "Internal",
+            "what": '<p>See:</p><img src="http://testserver/uploads/07ec86bdee9142da838c9a3511f780e8.webp">',
+        },
     )
     assert resp.status_code == 200
-    assert src in resp.json()["what"]
-
-
-def test_create_submission_strips_img_on_a_different_host():
-    client = client_as(HUMAN_USER)
-    evil_src = "https://attacker.example/uploads/07ec86bdee9142da838c9a3511f780e8.webp"
-    resp = client.post(
-        "/submissions",
-        json={"title": "T", "who": "Jane", "where": "Internal", "what": f'<p>See:</p><img src="{evil_src}">'},
-    )
-    assert resp.status_code == 200
-    assert "<img" not in resp.json()["what"]
+    assert resp.json()["what"] == "<p>See:</p>"
 
 
 def test_create_submission_rejects_invalid_payload():
@@ -377,62 +365,3 @@ def test_get_single_submission_returns_it():
 def test_get_single_submission_404_for_missing():
     resp = client_as(HUMAN_USER).get("/submissions/does-not-exist")
     assert resp.status_code == 404
-
-
-# Minimal valid PNG signature -- detect_image_type only sniffs the first 8
-# bytes, so this is sufficient without needing a structurally complete PNG.
-_PNG_HEADER = b"\x89PNG\r\n\x1a\n" + b"\x00" * 16
-
-
-@pytest.fixture(autouse=True)
-def isolated_upload_dir(tmp_path, monkeypatch):
-    # Redirects uploads.py's module-level UPLOAD_DIR to a throwaway temp
-    # directory for every test in this file -- without this, every passing
-    # upload test would leave a real file behind in the project's own
-    # uploads/ folder, same "never touch the real one" reasoning as
-    # fresh_db's til_test database.
-    monkeypatch.setattr(uploads, "UPLOAD_DIR", tmp_path)
-
-
-def test_upload_accepts_a_valid_png():
-    resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.png", _PNG_HEADER, "image/png")})
-    assert resp.status_code == 200
-    assert resp.json()["url"].endswith(".png")
-
-
-def test_upload_rejects_non_webapp_callers():
-    resp = client_as(HUMAN_USER_VIA_OTHER_APP).post("/uploads", files={"file": ("x.png", _PNG_HEADER, "image/png")})
-    assert resp.status_code == 403
-
-
-def test_upload_rejects_file_too_large():
-    oversized = b"\x89PNG\r\n\x1a\n" + b"\x00" * (uploads.MAX_UPLOAD_BYTES + 1)
-    resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.png", oversized, "image/png")})
-    assert resp.status_code == 400
-
-
-def test_upload_rejects_content_that_isnt_actually_an_image():
-    # Content-Type header claims an image, but the bytes don't match any
-    # known signature -- the backend sniffs the real bytes, never trusts
-    # a client-supplied header.
-    resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.png", b"not a real image", "image/png")})
-    assert resp.status_code == 400
-
-
-def test_upload_accepts_a_valid_webp():
-    webp = b"RIFF" + b"\x00\x00\x00\x00" + b"WEBP" + b"\x00" * 8
-    resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.webp", webp, "image/webp")})
-    assert resp.status_code == 200
-    assert resp.json()["url"].endswith(".webp")
-
-
-def test_upload_rejects_a_non_webp_riff_file():
-    # A WAV file also starts with "RIFF" (the same generic container
-    # format) -- regression test for a real bug where "RIFF" alone was
-    # treated as proof of a WEBP image, letting a WAV file (or anything
-    # else RIFF-based) through as if it were one.
-    wav = b"RIFF" + b"\x00\x00\x00\x00" + b"WAVE" + b"\x00" * 8
-    resp = client_as(HUMAN_USER).post("/uploads", files={"file": ("x.webp", wav, "audio/wav")})
-    assert resp.status_code == 400
-
-
