@@ -201,7 +201,18 @@ type SpecialistHandoffSnapshot struct {
 	// AssignedToID is the engineer the incident is assigned to; nil when
 	// nobody is. A handoff needs one.
 	AssignedToID *string
+	// AlertNote is the work note sre-alert-core-service creates an
+	// alert-born incident with ("<p>Incident auto-created from Alert:
+	// ALT…</p>" and the alert's fields as a table), the earliest when there
+	// are several; nil for an incident not created from an alert. That
+	// service sets no description, so this note carries what ServiceNow's
+	// alert flow put in the description.
+	AlertNote *string
 }
+
+// AlertCreationNotePrefix opens the work note sre-alert-core-service creates
+// an incident with (model.BuildCreationNote there).
+const AlertCreationNotePrefix = "<p>Incident auto-created from Alert:"
 
 // SpecialistHandoffPlan is what a handoff writes: the group the incident
 // moves to, the runbook task, and the work notes, in order.
@@ -754,14 +765,19 @@ func (r *incidentRepo) ApplySpecialistHandoff(ctx context.Context, id, actorEmai
 		var snap SpecialistHandoffSnapshot
 		err := tx.QueryRow(ctx, `
 			SELECT wi.id::text, wi.number, wi.subject, wi.description, inc.state::text,
-			       inc.service_id::text, wi.assignment_group_id::text, g.name, wi.assigned_to_id::text
+			       inc.service_id::text, wi.assignment_group_id::text, g.name, wi.assigned_to_id::text,
+			       (SELECT c.content FROM comment c
+			         WHERE c.work_item_id = wi.id AND c.type = 'WORK_NOTE'::comment_type_enum
+			           AND starts_with(c.content, $2)
+			         ORDER BY c.created_on, c.id LIMIT 1)
 			FROM incident inc
 			JOIN work_item wi ON wi.id = inc.id
 			LEFT JOIN "group" g ON g.id = wi.assignment_group_id
 			WHERE inc.id = $1 AND wi.type = 'INCIDENT'
-			FOR UPDATE OF inc, wi`, id).Scan(
+			FOR UPDATE OF inc, wi`, id, AlertCreationNotePrefix).Scan(
 			&snap.IncidentID, &snap.Number, &snap.Subject, &snap.Description, &snap.State,
-			&snap.ServiceID, &snap.AssignmentGroupID, &snap.AssignmentGroupName, &snap.AssignedToID)
+			&snap.ServiceID, &snap.AssignmentGroupID, &snap.AssignmentGroupName, &snap.AssignedToID,
+			&snap.AlertNote)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return SpecialistHandoffWritten{}, &apierror.NotFoundError{Msg: "incident not found"}
 		}

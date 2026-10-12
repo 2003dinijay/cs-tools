@@ -24176,7 +24176,9 @@ components:
           default: true
           description: >-
             Whether to also file an internal issue for the receiving team. Set false to
-            suppress it, e.g. on a re-handoff or when one already exists.
+            suppress it, e.g. on a re-handoff or when one already exists. The issue is
+            titled with the incident's subject; its body is the incident's description or,
+            for an alert-born incident with none, the alert's creation work note.
 
     HandOffIncidentToSpecialistResponse:
       type: object

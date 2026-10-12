@@ -292,11 +292,24 @@ func (s *incidentService) HandOffIncidentToSpecialist(ctx context.Context, req d
 	}, nil
 }
 
+// handoffIssueBody is the internal GitHub issue's body. ServiceNow's is the
+// incident's description, which its alert flow filled with the alert's
+// fields. sre-alert-core-service leaves the description empty and puts those
+// fields in its creation work note instead, so an incident with no
+// description takes that note -- otherwise every escalated alert files an
+// empty issue.
+func handoffIssueBody(inc repository.SpecialistHandoffSnapshot) string {
+	if d := derefString(inc.Description); strings.TrimSpace(d) != "" {
+		return d
+	}
+	return derefString(inc.AlertNote)
+}
+
 // fileHandoffIssue opens the internal GitHub issue in the product's
-// repository, with the token its credential names, titled and bodied with
-// the incident's subject and description. It never fails the handoff: a
-// product with no repository, a credential with no token, or a GitHub error
-// comes back as the error text.
+// repository, with the token its credential names, titled with the
+// incident's subject and bodied with handoffIssueBody. It never fails the
+// handoff: a product with no repository, a credential with no token, or a
+// GitHub error comes back as the error text.
 func (s *incidentService) fileHandoffIssue(ctx context.Context, product *SpecialistHandoffProduct, inc repository.SpecialistHandoffSnapshot) (*domain.IncidentSpecialistHandoffGithubIssue, *string) {
 	if product == nil || product.Github == nil {
 		msg := "No GitHub repository is configured for this product's specialist handoffs"
@@ -308,7 +321,7 @@ func (s *incidentService) fileHandoffIssue(ctx context.Context, product *Special
 		msg := "GitHub issue creation is not configured on this deployment"
 		return nil, &msg
 	}
-	created, err := client.CreateIssue(ctx, owner, repo, inc.Subject, derefString(inc.Description), nil)
+	created, err := client.CreateIssue(ctx, owner, repo, inc.Subject, handoffIssueBody(inc), nil)
 	if err != nil {
 		slog.WarnContext(ctx, "specialist handoff: GitHub issue not created", "incidentId", inc.IncidentID, "error", err)
 		// IncidentHandoffUtils' wording: the status GitHub answered with, or
