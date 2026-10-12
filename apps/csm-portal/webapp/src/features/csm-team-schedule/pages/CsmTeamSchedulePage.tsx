@@ -112,6 +112,16 @@ const ALL_FAMILIES: readonly Family[] = ["CRE", "SRE", "SME"];
  *  every rotation in the cycle without asking the API for a year of rows. */
 const NEXT_ROTATION_HORIZON_DAYS = 56;
 
+/** What each view is for, under its name. The dates it covers are on the
+ *  page's own date bar, and in the tab's tooltip. */
+const PURPOSE: Record<ViewTab, string> = {
+  mine: "your week at a glance",
+  today: "who is on today",
+  week: "who is on this week",
+  roster: "plan the month",
+  paging: "who gets alerts, tier by tier",
+};
+
 const TITLE: Record<ViewTab, string> = {
   mine: "My Week",
   today: "Today",
@@ -1150,10 +1160,21 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         <div className="tabrow">
           <div className="tabs" role="tablist">
             {visibleTabs.map((t) => {
+              // The dates a view covers, said on hover now that the line under
+              // its name says what it is for.
+              const dates =
+                t === "paging"
+                  ? undefined
+                  : t === "today"
+                    ? fmtShort(anchor)
+                    : t === "roster"
+                      ? fmtDayRange(rosterStart, rosterEnd)
+                      : `${fmtShort(weekStart)} – ${fmtShort(addDays(weekStart, 6))}`;
               return (
               <button
                 key={t}
                 id={`ts-tab-${t}`}
+                title={dates}
                 className={`tab ${view === t ? "on" : ""}`}
                 role="tab"
                 // The CSS class said which tab was active; nothing did for a
@@ -1171,15 +1192,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                 }}
               >
                 <span className="tl">{TITLE[t]}</span>
-                <span className="tsub">
-                  {t === "paging"
-                    ? "who gets alerts, tier by tier"
-                    : t === "today"
-                    ? fmtShort(anchor)
-                    : t === "roster"
-                      ? fmtDayRange(rosterStart, rosterEnd)
-                      : `${fmtShort(weekStart)} – ${fmtShort(addDays(weekStart, 6))}`}
-                </span>
+                <span className="tsub">{PURPOSE[t]}</span>
               </button>
               );
             })}
