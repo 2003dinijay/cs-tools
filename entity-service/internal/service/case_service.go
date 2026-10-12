@@ -3403,7 +3403,9 @@ func (s *caseService) ConfirmCaseAttachment(ctx context.Context, id string) (dom
 // SearchCaseAttachments implements CaseService for the CSM-native (Postgres)
 // data source.
 //
-// referenceType "case" reads case_attachment (unchanged). "change_request",
+// referenceType "case" reads case_attachment (native uploads) and the synced
+// work_item_attachment rows of the same case as one deduplicated list (see
+// caseRepo.SearchCaseAttachments). "change_request",
 // "incident" and "conversation" are work_item subtypes and read the generic
 // work_item_attachment table via CaseRepository.SearchWorkItemAttachments;
 // "deployment" is not a work_item subtype and has no attachment table on
