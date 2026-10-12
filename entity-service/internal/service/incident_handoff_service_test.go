@@ -348,6 +348,40 @@ func TestHandOffIncidentToSpecialist_FilesIssueAndNotes(t *testing.T) {
 	}
 }
 
+// The issue body is the incident's description, as in ServiceNow. An
+// alert-born incident has none -- sre-alert-core-service puts the alert's
+// fields in its creation work note -- so that note is the body instead of
+// an empty one.
+func TestHandOffIncidentToSpecialist_IssueBody(t *testing.T) {
+	note := "<p>Incident auto-created from Alert: ALT000000436</p><table><tr><td>service</td><td>Choreo</td></tr></table>"
+	cases := []struct {
+		name        string
+		description *string
+		alertNote   *string
+		want        string
+	}{
+		{"description", hoStr("All gateways return 502."), nil, "All gateways return 502."},
+		{"description wins over the alert note", hoStr("All gateways return 502."), hoStr(note), "All gateways return 502."},
+		{"no description: the alert note", nil, hoStr(note), note},
+		{"blank description: the alert note", hoStr(" \n "), hoStr(note), note},
+		{"neither", nil, nil, ""},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			snap := hoSnapshot(hoAsgardeoService, "", "IN_PROGRESS")
+			snap.Description, snap.AlertNote = c.description, c.alertNote
+			issues := &fakeHandoffIssues{result: &github.CreatedIssue{Number: 7, HTMLURL: "https://github.com/wso2-enterprise/asgardeo-product/issues/7"}}
+			req := domain.HandOffIncidentToSpecialistRequest{IncidentID: hoIncidentID, ReasonCode: domain.IncidentSpecialistHandoffReasonNoRunbook}
+			if _, err, _, _ := handoffHarness(t, snap, issues, req); err != nil {
+				t.Fatalf("handoff: %v", err)
+			}
+			if issues.calls != 1 || issues.title != "Gateway 502s" || issues.body != c.want {
+				t.Errorf("CreateIssue(%q, %q) x%d, want body %q", issues.title, issues.body, issues.calls, c.want)
+			}
+		})
+	}
+}
+
 func TestHandOffIncidentToSpecialist_GithubOutcomes(t *testing.T) {
 	short := "Escalated to Special Ops team. Escalated by jane.doe@example.com(jane.doe@example.com)"
 	off := false
