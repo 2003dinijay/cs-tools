@@ -296,6 +296,18 @@ type Config struct {
 	// ServiceNow's integration reads. A repository without it falls back to
 	// account_github_repo.
 	GithubRepoConfigPath string
+	// GithubSNCaseAPIURL, GithubSNCaseAPIUsername and GithubSNCaseAPIPassword
+	// are ServiceNow's GitHub case API -- the endpoint the repositories'
+	// servicenow_create_case.yml posted to (their SERVICENOW_URL) and its
+	// integration user (SERVICENOW_USERNAME / SERVICENOW_PASSWORD, a secret).
+	// Set under DATA_SOURCE=postgres-servicenow-dual-write, a service request
+	// raised from an issue is created in ServiceNow first and takes its CS
+	// number and WSO2 Case ID, as a portal-created one does. Unset, it is
+	// written to Postgres only and numbered SR-GH-<n>. See
+	// GithubServiceNowFirst.
+	GithubSNCaseAPIURL      string
+	GithubSNCaseAPIUsername string
+	GithubSNCaseAPIPassword string
 	// GithubOutboundInterval is how often to drain the outbound queue when the
 	// last pass came back short. A backlog drains at full speed regardless.
 	GithubOutboundInterval time.Duration
@@ -730,6 +742,9 @@ func Load() *Config {
 		GithubRepoTokens:                         os.Getenv("GITHUB_REPO_TOKENS"),
 		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
 		GithubRepoConfigPath:                     strings.TrimSpace(os.Getenv("GITHUB_REPO_CONFIG_PATH")),
+		GithubSNCaseAPIURL:                       strings.TrimSpace(os.Getenv("GITHUB_SN_CASE_API_URL")),
+		GithubSNCaseAPIUsername:                  os.Getenv("GITHUB_SN_CASE_API_USERNAME"),
+		GithubSNCaseAPIPassword:                  os.Getenv("GITHUB_SN_CASE_API_PASSWORD"),
 		GithubOutboundInterval:                   envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
 		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
 		SpecialistHandoffConfig:                  os.Getenv("SPECIALIST_HANDOFF_CONFIG"),
@@ -944,6 +959,16 @@ func (c *Config) HasDatabase() bool {
 func (c *Config) Validate() error {
 	if c.loadErr != nil {
 		return c.loadErr
+	}
+	if c.GithubSNCaseAPIURL != "" {
+		// Never quotes the URL's userinfo or the password.
+		u, err := url.Parse(c.GithubSNCaseAPIURL)
+		if err != nil || u.Scheme != "https" || u.Host == "" {
+			return fmt.Errorf("GITHUB_SN_CASE_API_URL must be an absolute https URL")
+		}
+		if strings.TrimSpace(c.GithubSNCaseAPIUsername) == "" || c.GithubSNCaseAPIPassword == "" {
+			return fmt.Errorf("GITHUB_SN_CASE_API_URL is set but GITHUB_SN_CASE_API_USERNAME or GITHUB_SN_CASE_API_PASSWORD is not")
+		}
 	}
 	for _, t := range []struct {
 		name string
@@ -1304,6 +1329,13 @@ func (c *Config) HasGithubIntegration() bool {
 	return c.GithubIntegrationEnabled &&
 		(c.GithubToken != "" || c.hasRepoTokens()) &&
 		c.GithubIntegrationLogin != ""
+}
+
+// GithubServiceNowFirst reports whether a service request raised from an
+// issue is created in ServiceNow first: under dual-write, with ServiceNow's
+// GitHub case API configured.
+func (c *Config) GithubServiceNowFirst() bool {
+	return c.DataSource == DataSourcePostgresServiceNowDualWrite && c.GithubSNCaseAPIURL != ""
 }
 
 // hasRepoTokens reports whether GITHUB_REPO_TOKENS names at least one token.
