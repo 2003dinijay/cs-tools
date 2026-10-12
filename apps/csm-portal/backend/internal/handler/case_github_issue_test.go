@@ -27,6 +27,7 @@ import (
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/middleware"
 )
 
 type createIssueCall struct {
@@ -90,7 +91,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			t.Fatalf("CreateGitIssue calls = %d, want 1", len(eng.calls))
 		}
 		c := eng.calls[0]
-		wantBody := "Product : Alpha\n\nIt fails."
+		wantBody := "Product : Alpha\nOpened By : " + testUser.Email + "\n\nIt fails."
 		if c.orgName != "example-org" || c.owner != "example-org" || c.repo != "alpha-repo" || c.title != "Crash on startup" || c.body != wantBody {
 			t.Errorf("call = %+v", c)
 		}
@@ -144,7 +145,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		w := post(t, newHandler(eng, &mockEntityCaseClient{}), "{"+base+`,"updateLevel":"U12","publicIssueUrl":"https://example.com/i/1","hotFixRequired":true,"regression":true,"reason":"migration","onboardingInProgress":true,"issueTypeLabel":"Type/Discussion","priorityLevel":"Priority/High"}`)
 		assertStatus(t, w, http.StatusCreated)
 		c := eng.calls[0]
-		wantBody := "Product : Alpha\nUpdate Level : U12\n\nIt fails.\n\nPublic Issue : https://example.com/i/1\n\nHotfix Required : Yes"
+		wantBody := "Product : Alpha\nUpdate Level : U12\nOpened By : " + testUser.Email + "\n\nIt fails.\n\nPublic Issue : https://example.com/i/1\n\nHotfix Required : Yes"
 		if c.body != wantBody {
 			t.Errorf("body = %q, want %q", c.body, wantBody)
 		}
@@ -173,15 +174,20 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 					"number":"CS0000001",
 					"internalId":"ACME-1",
 					"assignedTeam":{"id":"t1","name":"Falcon"},
-					"createdBy":{"email":"reporter@example.com","name":"Test Reporter"},
+					"createdBy":{"email":"customer@customer.example","name":"Test Customer"},
 					"deployedProduct":{"product":{"name":"Alpha"}}
 				}`), nil
 			},
 		}
 		post(t, newHandler(eng, entityClient), "{"+base+`,"updateLevel":"86"}`)
-		wantBody := "Product : Alpha\nUpdate Level : 86\nWSO2 Case Id : ACME-1\nCase Number : CS0000001\nABT Team : Falcon\nOpened By : reporter@example.com\n\nIt fails."
+		// Opened By is the engineer filing the issue (the signed-in user), never the
+		// case's createdBy, which is the customer who raised it.
+		wantBody := "Product : Alpha\nUpdate Level : 86\nWSO2 Case Id : ACME-1\nCase Number : CS0000001\nABT Team : Falcon\nOpened By : " + testUser.Email + "\n\nIt fails."
 		if got := eng.calls[0].body; got != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
+		}
+		if strings.Contains(eng.calls[0].body, "customer@customer.example") {
+			t.Errorf("body = %q, must not carry the case creator's email", eng.calls[0].body)
 		}
 		want := []string{"Origin/CS", "Alpha"}
 		if !slices.Equal(eng.calls[0].labels, want) {
@@ -189,7 +195,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 	})
 
-	t.Run("a case missing team/reporter omits those lines instead of rendering them empty", func(t *testing.T) {
+	t.Run("a case missing its team omits that line instead of rendering it empty", func(t *testing.T) {
 		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
 		entityClient := &mockEntityCaseClient{
 			getCaseFn: func(context.Context, string) ([]byte, error) {
@@ -197,6 +203,33 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			},
 		}
 		post(t, newHandler(eng, entityClient), "{"+base+"}")
+		wantBody := "Product : Alpha\nCase Number : CS0000001\nOpened By : " + testUser.Email + "\n\nIt fails."
+		if got := eng.calls[0].body; got != wantBody {
+			t.Errorf("body = %q, want %q", got, wantBody)
+		}
+	})
+
+	t.Run("a token with no email omits Opened By rather than falling back to the case creator", func(t *testing.T) {
+		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
+		entityClient := &mockEntityCaseClient{
+			getCaseFn: func(context.Context, string) ([]byte, error) {
+				return []byte(`{
+					"number":"CS0000001",
+					"createdBy":{"email":"customer@customer.example"},
+					"deployedProduct":{"product":{"name":"Alpha"}}
+				}`), nil
+			},
+		}
+		h := newHandler(eng, entityClient)
+		noEmail := *testUser
+		noEmail.Email = "  "
+		r := httptest.NewRequest(http.MethodPost, "/cases/"+caseID+"/github-issues", strings.NewReader("{"+base+"}"))
+		r = r.WithContext(middleware.WithUserInfo(r.Context(), &noEmail))
+		r.SetPathValue("id", caseID)
+		w := httptest.NewRecorder()
+		h.CreateCaseGithubIssue(w, r)
+
+		assertStatus(t, w, http.StatusCreated)
 		wantBody := "Product : Alpha\nCase Number : CS0000001\n\nIt fails."
 		if got := eng.calls[0].body; got != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
@@ -214,7 +247,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			},
 		}
 		post(t, newHandler(eng, entityClient), "{"+base+"}")
-		wantBody := "Product : Beta\n\nIt fails."
+		wantBody := "Product : Beta\nOpened By : " + testUser.Email + "\n\nIt fails."
 		if got := eng.calls[0].body; got != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
 		}
