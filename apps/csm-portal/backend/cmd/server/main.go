@@ -1412,14 +1412,14 @@ type viewerConfig struct {
 // loadViewerConfig resolves the viewer-audience endpoints' optional
 // upstream configuration. Every value is independently optional (os.Getenv,
 // not mustEnv): unset Google Drive credentials leave only GET /files and
-// GET /files/search failing at call time, and an unset SALES_ENTITY_BASE_URL
-// only Scan User's lookups, each with a normal mapped upstream
+// GET /files/search failing at call time, and an unset Scan User entity
+// service URL only Scan User's lookups, each with a normal mapped upstream
 // error (mapUpstreamErrorGeneric) rather than the route being a 404 or the
 // process refusing to start. An explicitly-set value is still validated
 // (optionalHTTPSBaseURL exits on a malformed URL -- that's a real
 // misconfiguration, not "feature absent").
 //
-// GOOGLE_DRIVE_* and SALES_ENTITY_BASE_URL carry no SPL_ prefix: Google
+// GOOGLE_DRIVE_* and the Scan User entity service URL carry no SPL_ prefix: Google
 // Drive and the Scan User entity service are just this feature's own
 // upstreams, so they follow this file's convention of naming a service's
 // credentials after the service, not the caller. See .env.example for what
