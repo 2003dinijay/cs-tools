@@ -65,6 +65,12 @@ paths:
         schema:
           type: string
           title: Submission Id
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SubmissionEdit'
       responses:
         '200':
           description: Successful Response
@@ -111,6 +117,33 @@ paths:
               schema: {}
 components:
   schemas:
+    SubmissionEdit:
+      type: object
+      title: SubmissionEdit
+      required:
+      - title
+      - where
+      - what
+      properties:
+        title:
+          type: string
+          maxLength: 100
+        where:
+          type: string
+          enum:
+          - Customer
+          - Partner
+          - Internal
+          - Other
+        whereDetail:
+          anyOf:
+          - type: string
+            maxLength: 200
+          - type: 'null'
+          description: Required when where is Customer, Partner or Other.
+        what:
+          type: string
+          description: Rich-text HTML, sanitized on save. The length limit counts its plain text, not the markup.
     HTTPValidationError:
       properties:
         detail:

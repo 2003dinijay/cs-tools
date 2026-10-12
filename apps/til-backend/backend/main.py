@@ -336,7 +336,12 @@ async def update_submission(submission_id: str, request: Request, user: dict = D
         return existing
 
     # No Novera broadcast: that announces a new entry, and an edit isn't one.
-    return db.update_submission(submission_id, title=title, where=where, what=what, where_detail=where_detail)
+    updated = db.update_submission(submission_id, title=title, where=where, what=what, where_detail=where_detail)
+    # None when the entry was deleted after the lookup above -- the edit
+    # wasn't saved, so it mustn't come back as a 200.
+    if updated is None:
+        return JSONResponse(status_code=404, content={"error": "Entry not found."})
+    return updated
 
 
 @app.delete("/submissions/{submission_id}")

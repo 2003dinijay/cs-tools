@@ -311,6 +311,23 @@ def test_edit_nonexistent_is_404():
     assert resp.status_code == 404
 
 
+def test_edit_of_an_entry_deleted_mid_edit_is_404():
+    # Someone else deletes the entry after the handler's own lookup but before
+    # its UPDATE: nothing was saved, so the edit must not come back as a 200.
+    created = _create_as(HUMAN_USER)
+    real_update = db.update_submission
+
+    def delete_then_update(submission_id, **fields):
+        db.delete_submission(submission_id)
+        return real_update(submission_id, **fields)
+
+    with patch.object(db, "update_submission", delete_then_update):
+        resp = client_as(HUMAN_USER).put(
+            f"/submissions/{created['id']}", json={"title": "T2", "where": "Internal", "what": "<p>x</p>"}
+        )
+    assert resp.status_code == 404
+
+
 def test_edit_validates_like_create():
     created = _create_as(HUMAN_USER)
     resp = client_as(HUMAN_USER).put(f"/submissions/{created['id']}", json={"title": "T", "where": "Customer", "what": "x"})
