@@ -1042,9 +1042,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		)
 		// Rota access: who may change the rotas beyond the team leads -- the
 		// rota admin roles and each team's rota marker. A CSM admin is a token
-		// role from TEAM_SCHEDULE_ADMIN_ROLES (or the stored admin role).
+		// Portal admin: a token role from AUTH_ADMIN_ROLES, as in the portal.
 		rotaAccessHandler = handler.NewRotaAccessHandler(
-			service.NewRotaAccessService(repository.NewRotaAccessRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.TeamScheduleAdminRoles),
+			service.NewRotaAccessService(repository.NewRotaAccessRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.AuthAdminRoles),
 		)
 		// Postgres-only, and internal-staff-only like every other read in this
 		// module: it returns staff names, addresses and rank.

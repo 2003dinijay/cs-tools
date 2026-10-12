@@ -50,9 +50,6 @@ type RotaAccessRepository interface {
 
 	// UserIsInternal is whether the user exists and is internal staff.
 	UserIsInternal(ctx context.Context, userID string) (bool, error)
-	// HoldsAdminRole is whether the caller is internal and holds the stored
-	// admin role -- the portal admin the Case Paging tab already recognises.
-	HoldsAdminRole(ctx context.Context, userEmail string) (bool, error)
 	// RosteredTeamFamily is the family of a team on the schedule, and false
 	// for a team that is not on it (or does not exist).
 	RosteredTeamFamily(ctx context.Context, teamKey string) (string, bool, error)
@@ -228,23 +225,6 @@ func (r *rotaAccessRepository) UserIsInternal(ctx context.Context, userID string
 		                  AND COALESCE(is_active, TRUE))`, userID).Scan(&ok)
 	if err != nil {
 		return false, fmt.Errorf("check internal user: %w", err)
-	}
-	return ok, nil
-}
-
-// HoldsAdminRole implements RotaAccessRepository.
-func (r *rotaAccessRepository) HoldsAdminRole(ctx context.Context, userEmail string) (bool, error) {
-	var ok bool
-	err := r.db.QueryRow(ctx, `
-		SELECT EXISTS (SELECT 1
-		                 FROM "user" u
-		                 JOIN user_role ur ON ur.user_id = u.id
-		                 JOIN role ro      ON ro.id = ur.role_id
-		                WHERE lower(u.email) = lower($1)
-		                  AND u.user_type = 'INTERNAL'::user_type_enum
-		                  AND ro.name = 'admin')`, userEmail).Scan(&ok)
-	if err != nil {
-		return false, fmt.Errorf("check admin role: %w", err)
 	}
 	return ok, nil
 }

@@ -529,13 +529,13 @@ type Config struct {
 	AuthJWKSURL            string
 	AuthUserTokenAudiences []string
 	AuthClockSkew          time.Duration
-	// TeamScheduleAdminRoles is TEAM_SCHEDULE_ADMIN_ROLES, comma-separated:
-	// the portal roles (the user token's "roles" claim) that make a caller a
-	// CSM admin for the Team Schedule's Rota access tab -- who may grant and
-	// take back rota admin and rota marker. Set it to csm-portal-backend's
-	// AUTH_ADMIN_ROLES so the tab's admin is the portal's admin. Empty means
-	// only a holder of the stored admin role counts.
-	TeamScheduleAdminRoles []string
+	// AuthAdminRoles is AUTH_ADMIN_ROLES, comma-separated: the same variable,
+	// with the same value, as csm-portal-backend's -- the token roles that make
+	// a caller a CSM Portal admin. Read here for one thing only: a CSM Portal
+	// admin is the Team Schedule's admin on the Rota access tab, who grants and
+	// takes back rota admin and rota marker. Matched exactly, as the portal
+	// does. Empty means nobody is (the portal's own rule for an unset role).
+	AuthAdminRoles []string
 	// M2MClientIDsRaw is the M2M_CLIENT_IDS value, a comma-separated list of
 	// Asgardeo application client ids for pure machine-to-machine callers --
 	// no human in the loop at all (the GitHub webhook delivery/service-
@@ -758,7 +758,7 @@ func Load() *Config {
 		AuthJWKSURL:                                   os.Getenv("AUTH_JWKS_URL"),
 		AuthUserTokenAudiences:                        splitComma(os.Getenv("AUTH_USER_TOKEN_AUDIENCES")),
 		AuthClockSkew:                                 envDuration("AUTH_CLOCK_SKEW", 30*time.Second),
-		TeamScheduleAdminRoles:                        splitComma(os.Getenv("TEAM_SCHEDULE_ADMIN_ROLES")),
+		AuthAdminRoles:                                splitComma(os.Getenv("AUTH_ADMIN_ROLES")),
 		M2MClientIDsRaw:                               os.Getenv("M2M_CLIENT_IDS"),
 		CSMPortalBackendClientID:                      os.Getenv("CSM_PORTAL_BACKEND_CLIENT_ID"),
 		CSMPortalUserDomain:                           strings.TrimPrefix(os.Getenv("CSM_PORTAL_USER_DOMAIN"), "@"),

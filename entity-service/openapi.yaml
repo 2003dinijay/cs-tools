@@ -7674,9 +7674,9 @@ paths:
       description: >
         The Team Schedule's Rota access tab: every rota admin (cre_rota_admin,
         sre_rota_admin, sme_rota_admin) and the rota markers of the families
-        the caller may manage, with what the caller may change. A CSM admin --
-        a token role listed in TEAM_SCHEDULE_ADMIN_ROLES, or the stored admin
-        role -- manages everything; a rota admin manages their own family's
+        the caller may manage, with what the caller may change. A CSM Portal
+        admin -- a token role listed in AUTH_ADMIN_ROLES, the same setting the
+        portal uses -- manages everything; a rota admin manages their own family's
         markers. Anybody else internal gets an empty answer (200), which is how
         the portal decides not to show the tab. Needs a user token.
       operationId: getRotaAccess

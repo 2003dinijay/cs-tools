@@ -37,9 +37,9 @@ import (
 //     family, and nothing else;
 //   - everybody else sees an empty tab and may change nothing.
 //
-// A CSM admin is a caller whose token carries one of TEAM_SCHEDULE_ADMIN_ROLES
-// (set to the portal's AUTH_ADMIN_ROLES), or who holds the stored admin role,
-// which the Case Paging tab already treats as the portal admin.
+// A CSM admin is a CSM Portal admin: a caller whose token's "roles" claim holds
+// one of AUTH_ADMIN_ROLES -- the same variable, with the same value, that
+// csm-portal-backend reads to decide who its admins are.
 type RotaAccessService interface {
 	Get(ctx context.Context) (domain.RotaAccess, error)
 	GrantRotaAdmin(ctx context.Context, family, userID string) error
@@ -56,7 +56,7 @@ type rotaAccessService struct {
 }
 
 // NewRotaAccessService constructs a RotaAccessService. adminRoles is
-// TEAM_SCHEDULE_ADMIN_ROLES.
+// AUTH_ADMIN_ROLES.
 func NewRotaAccessService(repo repository.RotaAccessRepository, schedule repository.ScheduleRepository, access AccessService, adminRoles []string) RotaAccessService {
 	return &rotaAccessService{repo: repo, schedule: schedule, access: access, adminRoles: adminRoles}
 }
@@ -90,13 +90,6 @@ func (s *rotaAccessService) whoIsAsking(ctx context.Context) (rotaAccessCaller, 
 	}
 	c := rotaAccessCaller{email: id.UserEmail}
 	c.csmAdmin = holdsAnyRole(id.Roles, s.adminRoles)
-	if !c.csmAdmin {
-		admin, err := s.repo.HoldsAdminRole(ctx, id.UserEmail)
-		if err != nil {
-			return rotaAccessCaller{}, err
-		}
-		c.csmAdmin = admin
-	}
 	if c.csmAdmin {
 		c.markerFamilies = rotaFamilies
 		return c, nil
@@ -110,15 +103,15 @@ func (s *rotaAccessService) whoIsAsking(ctx context.Context) (rotaAccessCaller, 
 }
 
 // holdsAnyRole is whether the token's roles include one of the wanted ones.
-// Exact names, case-insensitively: the identity provider's role names are
-// configuration, and a case difference is not a different role.
+// Exact and case-sensitive, as csm-portal-backend matches AUTH_ADMIN_ROLES, so
+// the two services can never disagree about who is an admin.
 func holdsAnyRole(have, want []string) bool {
 	for _, w := range want {
 		if w = strings.TrimSpace(w); w == "" {
 			continue
 		}
 		for _, h := range have {
-			if strings.EqualFold(strings.TrimSpace(h), w) {
+			if h == w {
 				return true
 			}
 		}

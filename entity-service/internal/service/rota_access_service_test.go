@@ -34,7 +34,6 @@ const (
 // fakeRotaAccessRepo answers the rota access reads from its fields and
 // records the last write.
 type fakeRotaAccessRepo struct {
-	storedAdmin  bool
 	internal     bool
 	teamFamily   map[string]string // rostered team -> family
 	listedFamily []string
@@ -76,10 +75,6 @@ func (f *fakeRotaAccessRepo) RevokeRotaMarker(_ context.Context, _, team, actor 
 
 func (f *fakeRotaAccessRepo) UserIsInternal(context.Context, string) (bool, error) {
 	return f.internal, nil
-}
-
-func (f *fakeRotaAccessRepo) HoldsAdminRole(context.Context, string) (bool, error) {
-	return f.storedAdmin, nil
 }
 
 func (f *fakeRotaAccessRepo) RosteredTeamFamily(_ context.Context, team string) (string, bool, error) {
@@ -141,31 +136,44 @@ func TestRotaAccessIsEmptyForSomebodyWhoMayChangeNothing(t *testing.T) {
 	}
 }
 
-// The CSM admin is the portal's admin role on the token, or the stored admin
-// role the Case Paging tab already treats as one. Either may change it all.
-func TestCSMAdminMayChangeEveryFamily(t *testing.T) {
-	for name, tc := range map[string]struct {
-		ctx    context.Context
-		stored bool
-	}{
-		"by the token's role": {callerWithRoles("head@example.com", "CS_ADMIN"), false},
-		"by the stored role":  {callerWithRoles("head@example.com"), true},
+// The Team Schedule's admin is the CSM Portal admin: a token role listed in
+// AUTH_ADMIN_ROLES. They may change it all.
+func TestCSMPortalAdminMayChangeEveryFamily(t *testing.T) {
+	repo := &fakeRotaAccessRepo{internal: true}
+	svc, _ := newRotaAccess(repo)
+	ctx := callerWithRoles("head@example.com", "cs_engineer", "cs_admin")
+	got, err := svc.Get(ctx)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if !got.CanManage.RotaAdmins || !reflect.DeepEqual(got.CanManage.MarkerFamilies, []string{"CRE", "SRE", "SME"}) {
+		t.Fatalf("CanManage = %+v, want everything", got.CanManage)
+	}
+	if err := svc.GrantRotaAdmin(ctx, "sre", someoneID); err != nil {
+		t.Fatalf("GrantRotaAdmin: %v", err)
+	}
+	if repo.wrote != "grant-admin:sre_rota_admin" || repo.actor != "head@example.com" {
+		t.Fatalf("wrote %q as %q", repo.wrote, repo.actor)
+	}
+}
+
+// Matched exactly, as csm-portal-backend matches AUTH_ADMIN_ROLES: a role the
+// portal would not treat as admin must not make anyone admin here either.
+func TestOnlyTheExactPortalAdminRoleCounts(t *testing.T) {
+	for name, roles := range map[string][]string{
+		"another case": {"CS_ADMIN"},
+		"no roles":     nil,
+		"engineer":     {"cs_engineer"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			repo := &fakeRotaAccessRepo{storedAdmin: tc.stored, internal: true}
+			repo := &fakeRotaAccessRepo{internal: true}
 			svc, _ := newRotaAccess(repo)
-			got, err := svc.Get(tc.ctx)
+			got, err := svc.Get(callerWithRoles("someone@example.com", roles...))
 			if err != nil {
 				t.Fatalf("Get: %v", err)
 			}
-			if !got.CanManage.RotaAdmins || !reflect.DeepEqual(got.CanManage.MarkerFamilies, []string{"CRE", "SRE", "SME"}) {
-				t.Fatalf("CanManage = %+v, want everything", got.CanManage)
-			}
-			if err := svc.GrantRotaAdmin(tc.ctx, "sre", someoneID); err != nil {
-				t.Fatalf("GrantRotaAdmin: %v", err)
-			}
-			if repo.wrote != "grant-admin:sre_rota_admin" || repo.actor != "head@example.com" {
-				t.Fatalf("wrote %q as %q", repo.wrote, repo.actor)
+			if got.CanManage.RotaAdmins {
+				t.Fatalf("roles %v made a CSM admin", roles)
 			}
 		})
 	}

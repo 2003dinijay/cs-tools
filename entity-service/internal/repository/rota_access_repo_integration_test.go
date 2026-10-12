@@ -174,7 +174,4 @@ func TestScheduleIntegration_RotaAccessLookups(t *testing.T) {
 	if ok, err := access.UserIsInternal(ctx, schedOutsiderID); err != nil || ok {
 		t.Fatalf("UserIsInternal(outsider) = %v, %v", ok, err)
 	}
-	if ok, err := access.HoldsAdminRole(ctx, schedAdminEmail); err != nil || ok {
-		t.Fatalf("HoldsAdminRole(rota admin) = %v, %v; a rota admin is no CSM admin", ok, err)
-	}
 }
