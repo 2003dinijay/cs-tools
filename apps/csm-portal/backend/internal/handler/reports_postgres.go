@@ -19,9 +19,12 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strconv"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/viewer"
 )
 
@@ -91,11 +94,45 @@ func formatHoursMinutes(hours float64) string {
 	return strconv.Itoa(h) + "h " + strconv.Itoa(m) + "m"
 }
 
-// resolveProjectByNumber resolves SPL's projectId (ServiceNow's project
-// "number", which Postgres has no distinct equivalent of -- see
-// postgresSplProjectClient's own doc comment on why Number==Key here) to
-// entity-service's internal project detail. Search-then-exact-match, the
-// same pattern used throughout this migration for every number-keyed lookup.
+// resolveProject resolves the report's projectId query parameter to
+// entity-service's project detail. The project detail page links to this
+// report with entity-service's own project id (a UUID), while the original
+// callers passed the project key, so both are accepted: a UUID is looked up
+// directly, anything else goes through resolveProjectByNumber. An unknown id
+// of either shape is viewer.ErrProjectNotFound so the route 404s.
+func (c *postgresReportsClient) resolveProject(ctx context.Context, projectID string) (entityProjectDetailsView, error) {
+	if !uuidRe.MatchString(projectID) {
+		return c.resolveProjectByNumber(ctx, projectID)
+	}
+	detail, err := c.projectDetail(ctx, projectID)
+	if err != nil {
+		var apiErr *apierror.Error
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return entityProjectDetailsView{}, viewer.ErrProjectNotFound
+		}
+		return entityProjectDetailsView{}, err
+	}
+	return detail, nil
+}
+
+// projectDetail fetches and decodes GET /projects/{id}.
+func (c *postgresReportsClient) projectDetail(ctx context.Context, projectID string) (entityProjectDetailsView, error) {
+	detailRaw, err := c.entity.GetProject(ctx, projectID)
+	if err != nil {
+		return entityProjectDetailsView{}, err
+	}
+	var detail entityProjectDetailsView
+	if err := json.Unmarshal(detailRaw, &detail); err != nil {
+		return entityProjectDetailsView{}, fmt.Errorf("unmarshal entity-service project detail response: %w", err)
+	}
+	return detail, nil
+}
+
+// resolveProjectByNumber resolves a project key (the "number" the original
+// report callers passed -- see postgresSplProjectClient's own doc comment on
+// why Number==Key here) to entity-service's internal project detail.
+// Search-then-exact-match, the same pattern used throughout this migration
+// for every number-keyed lookup.
 func (c *postgresReportsClient) resolveProjectByNumber(ctx context.Context, projectNumber string) (entityProjectDetailsView, error) {
 	// Limit is entity-service's own maxLimit (see its SearchProjects
 	// validation) -- SearchQuery is a substring match against name/key/
@@ -128,16 +165,7 @@ func (c *postgresReportsClient) resolveProjectByNumber(ctx context.Context, proj
 	if projectID == "" {
 		return entityProjectDetailsView{}, viewer.ErrProjectNotFound
 	}
-
-	detailRaw, err := c.entity.GetProject(ctx, projectID)
-	if err != nil {
-		return entityProjectDetailsView{}, err
-	}
-	var detail entityProjectDetailsView
-	if err := json.Unmarshal(detailRaw, &detail); err != nil {
-		return entityProjectDetailsView{}, fmt.Errorf("unmarshal entity-service project detail response: %w", err)
-	}
-	return detail, nil
+	return c.projectDetail(ctx, projectID)
 }
 
 // entitySearchPageLimit is entity-service's own hard cap on Pagination.Limit
@@ -209,7 +237,7 @@ func (c *postgresReportsClient) searchAllTimeCards(ctx context.Context, caseID s
 // entitySearchPageLimit-sized page and truncating the rest, which ServiceNow's
 // own version of this report never did either.
 func (c *postgresReportsClient) GetTimeLogBreakdown(ctx context.Context, projectID string) (viewer.TimeLogBreakdownDetails, error) {
-	project, err := c.resolveProjectByNumber(ctx, projectID)
+	project, err := c.resolveProject(ctx, projectID)
 	if err != nil {
 		return viewer.TimeLogBreakdownDetails{}, err
 	}
