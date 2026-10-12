@@ -120,6 +120,9 @@ export interface ScheduleTeam {
   /** The standing window a member's ordinary weekday is (Americas cover for
    *  the Americas team). Absent means Regular hours. */
   defaultShiftCode?: string;
+  /** An ABT: the teams the CRE rota and its regular hours are run by, as
+   *  against Americas, Migration and the like. Older servers do not send it. */
+  isAbt?: boolean;
 }
 
 /** One member of a rota team. role is as stored: engineer (or member), lead,

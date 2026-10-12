@@ -21,6 +21,7 @@ import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import PagingReadinessStrip from "./PagingReadinessStrip";
 import { readinessChain, readinessGap } from "../test/fixtures";
+import { ADD_TO_PROFILE_HINT } from "../utils/pagingPhone";
 
 const base = { label: "CRE", days: 7, isLoading: false, isError: false };
 
@@ -86,19 +87,19 @@ describe("PagingReadinessStrip", () => {
     fireEvent.click(within(items[1]).getByRole("button", { name: /Open the rota on/ }));
     expect(onOpenRota).toHaveBeenCalledWith(rotaGap);
 
-    expect(items[2]).toHaveTextContent("Ask them to add it under avatar › Profile");
+    expect(items[2]).toHaveTextContent(ADD_TO_PROFILE_HINT);
     expect(items[3]).toHaveTextContent("Needs an admin");
     expect(items[4]).toHaveTextContent("Needs an admin");
   });
 
   it("says when the check could not be made rather than showing nothing", () => {
     const { rerender } = render(<PagingReadinessStrip {...base} isLoading />);
-    expect(screen.getByText(/Checking the CRE paging chain/)).toBeInTheDocument();
+    expect(screen.getByText(/Checking the CRE alert chain/)).toBeInTheDocument();
     rerender(<PagingReadinessStrip {...base} isError />);
-    expect(screen.getByText(/Could not check whether the CRE paging chain is ready/)).toBeInTheDocument();
+    expect(screen.getByText(/Could not check whether the CRE alert chain is ready/)).toBeInTheDocument();
   });
 
-  it("offers Add number or Test call on a phone gap where the reader may act, else the profile hint", () => {
+  it("offers the action it is given on a phone gap, else the profile hint", () => {
     const add = vi.fn();
     const chain = readinessChain({
       chain: "CRE",
@@ -129,7 +130,7 @@ describe("PagingReadinessStrip", () => {
     // Errors first: NO_PHONE, PHONE_TEST_FAILED, ON_LEAVE, then the warning.
     fireEvent.click(within(items[0]).getByRole("button", { name: "Add number" }));
     expect(add).toHaveBeenCalled();
-    expect(items[1]).toHaveTextContent("Ask them to add it under avatar › Profile");
+    expect(items[1]).toHaveTextContent(ADD_TO_PROFILE_HINT);
     fireEvent.click(within(items[2]).getByRole("button", { name: "Set responders" }));
     expect(onFixResponders).toHaveBeenCalledWith("alpha");
     expect(within(items[3]).getByRole("button", { name: /Calling/ })).toHaveAttribute("aria-disabled", "true");
