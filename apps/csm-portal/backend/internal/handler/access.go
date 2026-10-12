@@ -294,6 +294,29 @@ type AccessConfig struct {
 	// hold this permission regardless (same "unconfigured is a normal
 	// state" reasoning as WorknoteCreator's own doc comment).
 	CommentUpdater []string
+	// PlgAdmin is PLG's own administrator: PermUsePlg and PermManagePlaybooks,
+	// the same pair admin holds. A holder works the queue AND authors the
+	// templates, without being an administrator of anything outside PLG.
+	// cs_engineer by contrast holds PermUsePlg alone and cannot author.
+	//
+	// ADDITIVE, never a replacement. admin holds both regardless, so an unset
+	// AUTH_PLG_ADMIN_ROLES means admin authors playbooks and nobody else does.
+	// That is deliberate: making this a replacement would turn an unset or
+	// misspelt variable into "nobody can author a playbook", a config error no
+	// test can catch and nothing in the product would announce.
+	//
+	// It deliberately does NOT grant PermView, unlike every other role in this
+	// guard. This one is supplementary -- a small set of people who already
+	// hold cs_engineer or another View-granting role, named additionally as
+	// PLG's administrators -- so View would be redundant on every real holder
+	// and would widen the role past what it is for. A holder who had this role
+	// alone would reach PLG and nothing else, which is an accurate description
+	// of what they were granted.
+	//
+	// It grants nothing else. PermAdmin in particular stays admin's alone, so
+	// naming someone a playbook author does not make them a portal
+	// administrator.
+	PlgAdmin []string
 }
 
 // AccessGuard authorises a request from the roles on the caller's validated
@@ -379,6 +402,7 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			{"worknote_creator", build(cfg.WorknoteCreator)},
 			{"announcement_creator", build(cfg.AnnouncementCreator)},
 			{"comment_updater", build(cfg.CommentUpdater)},
+			{"plg_admin", build(cfg.PlgAdmin)},
 		},
 		allowed: map[Permission]map[string]struct{}{
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
@@ -408,8 +432,11 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			// deliberately NOT included) -- see PermUsageMetricsViewer's own
 			// doc comment.
 			PermUsageMetricsViewer: build(cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin),
-			PermUsePlg:             build(cfg.CsEngineer, cfg.Admin),
-			PermManagePlaybooks:    build(cfg.Admin),
+			PermUsePlg:             build(cfg.CsEngineer, cfg.Admin, cfg.PlgAdmin),
+			// plg_admin and admin. admin is kept unconditionally so that an
+			// unset AUTH_PLG_ADMIN_ROLES leaves behaviour exactly as it was --
+			// see AccessConfig.PlgAdmin's own doc comment.
+			PermManagePlaybooks: build(cfg.PlgAdmin, cfg.Admin),
 			// The route-level floor for POST /cases/{id}/comments -- see
 			// PermCreateWorkNote's own doc comment for the in-handler
 			// narrowing that keeps a WorknoteCreator-only caller from

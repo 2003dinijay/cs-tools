@@ -45,6 +45,12 @@ export const PORTAL_ROLE = {
   // -- reaching PATCH/DELETE /comments/{id} for a comment the holder did NOT
   // author. See canUpdateDeleteAnyComment below.
   commentUpdater: "comment_updater",
+  // PLG's own administrator: canUsePlg AND canManagePlaybooks, the same reach
+  // inside PLG that admin has, without being the portal's administrator.
+  // Mirrors the backend's PermUsePlg + PermManagePlaybooks
+  // (internal/handler/access.go). Additive to admin, which keeps both whether
+  // or not AUTH_PLG_ADMIN_ROLES is set.
+  plgAdmin: "plg_admin",
 } as const;
 
 // Roles that, held alone, let someone use the portal at all. announcement_creator
@@ -287,8 +293,14 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     canAddWorkNotes: full || has(PORTAL_ROLE.worknoteCreator),
     canCreateUser: isAdmin,
     canUseSecurityCenter: full,
-    canUsePlg: full,
-    canManagePlaybooks: isAdmin,
+    // cs_engineer, admin, and PLG's own administrator. Mirrors the backend's
+    // PermUsePlg.
+    canUsePlg: full || has(PORTAL_ROLE.plgAdmin),
+    // admin OR the dedicated role. The hiding this drives is an affordance,
+    // not the gate -- the backend 403s either way (see PlaybooksPage's own
+    // comment) -- but it must agree with PermManagePlaybooks, or a plg_admin
+    // would be allowed to author a template and shown no form to do it in.
+    canManagePlaybooks: isAdmin || has(PORTAL_ROLE.plgAdmin),
     canCreateAnnouncement: full && (isAdmin || has(PORTAL_ROLE.announcementCreator)),
     canUpdateDeleteAnyComment: isAdmin || has(PORTAL_ROLE.commentUpdater),
     isSplAudience: has(PORTAL_ROLE.viewer),
