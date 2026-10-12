@@ -375,10 +375,12 @@ type customerHealthAccountQuery struct {
 
 // parseCustomerHealthRisks splits the comma-separated risks query param into
 // the flag keys customerHealthAccountMatchesAnyRisk checks against --
-// "hasNoGoLive", "hasRecentCases", "noSupportCases6mo", "hasEolProduct",
-// "hasAbandonedMigrations", "hasMigrationDelays", "hasRecentEscalations" --
-// the same field names customerHealthAccountFlags/servicenow.AccountSummary
-// already use, so the two can never drift apart.
+// "hasNoGoLive", "hasGoneLive", "hasRecentCases", "noSupportCases6mo",
+// "hasEolProduct", "hasAbandonedMigrations", "hasMigrationDelays",
+// "hasRecentEscalations" -- the same field names
+// customerHealthAccountFlags/servicenow.AccountSummary already use (plus
+// "hasGoneLive", the positive counterpart of "hasNoGoLive" with no matching
+// response field of its own), so the two can never drift apart.
 func parseCustomerHealthRisks(risks *string) []string {
 	if risks == nil {
 		return nil
@@ -401,6 +403,17 @@ func customerHealthAccountMatchesAnyRisk(flags customerHealthAccountFlags, risks
 		switch r {
 		case "hasNoGoLive":
 			if flags.goLiveStatus.IsRisk {
+				return true
+			}
+		case "hasGoneLive":
+			// The genuine positive, not just "!IsRisk": a project pending its
+			// go-live decision (no start date yet, activation in the future,
+			// recently activated, or under the 6-month grace period) is
+			// neither a risk nor actually live yet -- it reads "P" (pending),
+			// not "Y", in the account table (see StatusIndicator in
+			// CustomerHealthTable.tsx). Only State == "success" is a real,
+			// confirmed go-live.
+			if flags.goLiveStatus.State == "success" {
 				return true
 			}
 		case "hasRecentCases":
