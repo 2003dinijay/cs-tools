@@ -416,6 +416,20 @@ type SearchAccountsFilters struct {
 	// caller holds. Case-insensitive exact match.
 	OwnerEmail     string `json:"ownerEmail,omitempty"`
 	Classification string `json:"classification,omitempty"`
+	// LifeCycle filters on account.life_cycle (e.g. "Customer", "Partner",
+	// "Prospect", "Lost Customer", "Lost Prospect") -- exact match. This is
+	// a distinct dimension from Classification (account.classification,
+	// "Enterprise"/"Partner"/"Cloud"/"OEM", a business-segment axis) --
+	// confirmed against the legacy system's own account-scoping rule for
+	// this feature, whose "life cycle = Customer" base condition is what
+	// account.life_cycle mirrors. Do not confuse the two.
+	LifeCycle string `json:"lifeCycle,omitempty"`
+	// HasProject, when true, additionally requires the account to have at
+	// least one row in project -- an existence filter with no columns read
+	// from project, matching the legacy rule's own join-existence check
+	// against the account's projects, used purely to require a match
+	// rather than to select anything from the join.
+	HasProject bool `json:"hasProject,omitempty"`
 }
 
 // SearchAccountsRequest is the input for an account search operation.
@@ -440,7 +454,15 @@ type AccountView struct {
 	Pod            *string `json:"pod"`
 	SfID           *string `json:"sfId"`
 	Region         *string `json:"region"`
-	Country        *string `json:"country"`
+	// SubRegion (account.sub_region) is a finer-grained geography than
+	// Region -- a distinct column, not derived from it (e.g. Region "APAC"
+	// pairs with SubRegion values like "ASIA"/"SAARC"). Previously selected
+	// nowhere on this search response even though the column has long been
+	// read elsewhere (the Salesforce account upsert, project search's own
+	// account ref) -- added for a caller that filters accounts by this
+	// finer region, which Region alone cannot express.
+	SubRegion *string `json:"subRegion"`
+	Country   *string `json:"country"`
 	City           *string `json:"city"`
 	// DriveLocation is a free-text Google Drive folder reference — present
 	// on the Postgres data source (account.drive_location).

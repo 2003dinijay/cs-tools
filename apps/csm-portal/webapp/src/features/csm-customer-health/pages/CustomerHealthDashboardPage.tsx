@@ -172,7 +172,7 @@ export default function CustomerHealthDashboardPage() {
   };
 
   return (
-    <Box sx={{ display: "flex", flexDirection: "column", gap: 2.5 }}>
+    <Box sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
       <Box>
         <Typography variant="h5">Customer Health Dashboard</Typography>
         <Typography variant="body2" color="text.secondary">Monitor account parameters and identify risks</Typography>
