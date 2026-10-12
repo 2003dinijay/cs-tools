@@ -49,7 +49,15 @@ type liveEntityClient struct {
 }
 
 func (c *liveEntityClient) post(ctx context.Context, path string, body []byte) ([]byte, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
+	return c.do(ctx, http.MethodPost, path, bytes.NewReader(body))
+}
+
+func (c *liveEntityClient) get(ctx context.Context, path string) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, path, nil)
+}
+
+func (c *liveEntityClient) do(ctx context.Context, method, path string, body io.Reader) ([]byte, error) {
+	req, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
@@ -79,6 +87,9 @@ func (e *liveEntityError) Error() string {
 	return e.body
 }
 
+func (c *liveEntityClient) GetAccount(ctx context.Context, id string) ([]byte, error) {
+	return c.get(ctx, "/accounts/"+id)
+}
 func (c *liveEntityClient) SearchAccounts(ctx context.Context, body []byte) ([]byte, error) {
 	return c.post(ctx, "/accounts/search", body)
 }

@@ -19,16 +19,20 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
 // entityCustomerHealthClient is the subset of internal/entity.CustomerEntityClient
 // needed to compute customer-health signals from Postgres.
 type entityCustomerHealthClient interface {
+	GetAccount(ctx context.Context, id string) ([]byte, error)
 	SearchAccounts(ctx context.Context, body []byte) ([]byte, error)
 	SearchProjects(ctx context.Context, body []byte) ([]byte, error)
 	SearchCases(ctx context.Context, body []byte) ([]byte, error)
@@ -145,35 +149,28 @@ func (c *postgresCustomerHealthClient) GetCustomerHealthSummary(ctx context.Cont
 // per-account, with drill-down lists built from the same case/deployed-
 // product data each flag's own query already fetched.
 func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Context, accountID string) (*servicenow.AccountDetail, error) {
-	accountBody, err := json.Marshal(entitySearchAccountsRequest{
-		Pagination: entityPagination{Limit: 1, Offset: 0},
-		Filters:    entitySearchAccountsFilters{SearchQuery: accountID},
-	})
+	// A real, 100%-reproducing bug: this used to resolve the account via
+	// POST /accounts/search with Filters.SearchQuery set to accountID (a
+	// UUID) -- but entity-service's SearchQuery filter only ever matches
+	// against account.name/sf_id/number (ILIKE), never account.id (see that
+	// repo's own account_repo.go), so a UUID searchQuery matches nothing and
+	// every account detail click 404'd. GET /accounts/{id} is the real
+	// by-primary-key lookup and is what this should have called from the
+	// start.
+	raw, err := c.entity.GetAccount(ctx, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("marshal entity-service account request: %w", err)
-	}
-	raw, err := c.entity.SearchAccounts(ctx, accountBody)
-	if err != nil {
+		var apiErr *apierror.Error
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return nil, servicenow.ErrAccountNotFound
+		}
 		return nil, err
 	}
-	var accountResp entitySearchAccountsResponse
-	if err := json.Unmarshal(raw, &accountResp); err != nil {
+	var account entityAccountView
+	if err := json.Unmarshal(raw, &account); err != nil {
 		return nil, fmt.Errorf("unmarshal entity-service account response: %w", err)
 	}
-	accountName := ""
-	var activationDate *string
-	found := false
-	for _, a := range accountResp.Accounts {
-		if a.ID == accountID {
-			accountName = a.Name
-			activationDate = a.ActivationDate
-			found = true
-			break
-		}
-	}
-	if !found {
-		return nil, servicenow.ErrAccountNotFound
-	}
+	accountName := account.Name
+	activationDate := account.ActivationDate
 
 	projects, err := c.accountProjects(ctx, accountID)
 	if err != nil {
