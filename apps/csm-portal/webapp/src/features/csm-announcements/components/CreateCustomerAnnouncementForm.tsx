@@ -324,6 +324,7 @@ export default function CreateCustomerAnnouncementForm(): JSX.Element {
               the editor in a labelled group for assistive tech. */}
           <Box role="group" aria-labelledby="announcement-description-label">
             <EditorWithSourceToggle
+              keepStyledHtmlAsSource
               value={description}
               onChange={setDescription}
               placeholder="Describe the announcement…"

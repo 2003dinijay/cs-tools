@@ -531,6 +531,7 @@ export default function AnnouncementRequestDialog({
                     Description
                   </Typography>
                   <EditorWithSourceToggle
+                    keepStyledHtmlAsSource
                     value={description}
                     onChange={setDescription}
                     placeholder="Describe the announcement…"
@@ -1037,7 +1038,7 @@ export default function AnnouncementRequestDialog({
                 {(!claimsReady ||
                   (isRequestCreator && (request.publishedCaseIds ?? []).length > 0)) && (
                   <>
-                    <EditorWithSourceToggle value={updateContent} onChange={setUpdateContent} />
+                    <EditorWithSourceToggle keepStyledHtmlAsSource value={updateContent} onChange={setUpdateContent} />
                     <Box>
                       <Button
                         variant="outlined"
