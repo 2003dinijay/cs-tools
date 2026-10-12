@@ -155,6 +155,10 @@ interface Block {
    *  several teams (the night cover), and the avatar colour alone does not
    *  say which. */
   teamTags?: boolean;
+  /** List the people under a heading per team, as the Leave card does: a
+   *  zone's regular hours mix teams, and the avatar colour alone does not say
+   *  where one ends and the next begins. */
+  byTeam?: boolean;
 }
 
 /** The escalation tiers, in the order the rota talks about them. */
@@ -422,6 +426,7 @@ export default function DayLadder({
         ...c,
         title: `Others in ${lane.name}`,
         hideTags: true,
+        byTeam: true,
       }));
       // A zone whose regular hours are the same stretch as its escalation
       // window -- TZ3, 21:00-06:00, with no middle of the day to cover -- is
@@ -662,6 +667,7 @@ function LadderBlock({
   tz: string;
   teamDefaultShift?: Readonly<Record<string, string>>;
 }): JSX.Element {
+  const teamNameOf = useTeamName();
   const token = block.chipToken ?? block.shift?.colourToken ?? "";
   const first = block.rows[0];
   // Who works the hours, then who is only on call for them. Among those who
@@ -769,6 +775,25 @@ function LadderBlock({
             {crowded ? (
               <div className="zwork">
                 <TeamSplit rows={working} />
+              </div>
+            ) : shown.length > 0 && block.byTeam ? (
+              <div className="zwork">
+                {/* A heading per team, then its names, the way the Leave card
+                    lists who is away. */}
+                {[...groupBy(shown, (a) => a.teamKey).entries()].map(([team, teamRows]) => (
+                  <div className="zteam" key={team}>
+                    <div className="offgh">
+                      {teamNameOf(team)}
+                      <b>{teamRows.length}</b>
+                    </div>
+                    <div className="zsec zflow">
+                      {teamRows.map((a) => (
+                        <NameRow key={a.id} assignment={a} hideTag={block.hideTags} />
+                      ))}
+                    </div>
+                  </div>
+                ))}
+                {hidden > 0 ? <span className="lmore">+{hidden} more</span> : null}
               </div>
             ) : shown.length > 0 ? (
               <div className="zwork">

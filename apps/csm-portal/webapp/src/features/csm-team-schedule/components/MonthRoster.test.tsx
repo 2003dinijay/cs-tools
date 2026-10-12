@@ -29,6 +29,8 @@ import {
   TZ1_WE,
   TZ2,
   TZ2_WE,
+  TZ3,
+  LIEU_LEAVE,
   RND,
   TZ1_L1,
   MOE_DAY,
@@ -801,5 +803,111 @@ describe("MonthRoster: moved back before today", () => {
     const cells = [...rows[0].querySelectorAll("td")].map((td) => td.textContent?.trim());
     expect(cells[0]).toBe("Mig");
     expect(cells[15]).toBe(REGULAR.shortCode);
+  });
+});
+
+describe("MonthRoster: the night crew is off their team's rows", () => {
+  // TZ3 tiers as the catalogue marks them: one crew for every team.
+  const NIGHT = { ...TZ3, sharedAcrossTeams: true };
+  const nightShifts = shiftMap(TZ1, TZ2, NIGHT, TZ1_WE, TZ2_WE);
+  const night = (name: string, rotaDate: string, tier: "L1" | "L2" | "L3", teamKey = "delta") =>
+    assignment({ name, rotaDate, shiftCode: NIGHT.code, zoneCode: "TZ3", tier, teamKey });
+  const teamRows = (c: HTMLElement) => c.querySelector("tbody:not(.nightgrp)") as HTMLElement;
+  const nightRows = (c: HTMLElement) => c.querySelector("tbody.nightgrp") as HTMLElement;
+
+  it("lists somebody who works only nights under the night cover, with their leave, and not under their team", () => {
+    const { container } = renderRoster({
+      family: "SRE",
+      shifts: nightShifts,
+      absenceKinds: [ANNUAL_LEAVE, LIEU_LEAVE],
+      assignments: [
+        night("Nia", "2026-09-21", "L1"),
+        night("Nia", "2026-09-22", "L2"),
+        assignment({ name: "Tom", rotaDate: "2026-09-21", shiftCode: TZ1.code, zoneCode: "TZ1", teamKey: "delta" }),
+        night("Tom", "2026-09-22", "L1"),
+      ],
+      absences: [absence({ name: "Nia", startsOn: "2026-09-23", endsOn: "2026-09-23", kindCode: "LIEU_LEAVE", teamKey: "delta" })],
+    });
+    expect(teamRows(container).textContent).not.toContain("Nia");
+    expect(nightRows(container).textContent).toContain("Nia");
+    // Their lieu day shows on the one row they have.
+    const niaRow = [...nightRows(container).querySelectorAll("tr")].find((r) => r.textContent?.includes("Nia"));
+    expect(niaRow?.textContent).toContain(LIEU_LEAVE.shortCode);
+    expect(nightRows(container).textContent).toContain("listed here instead of");
+    // Somebody who also works a team zone is not a TZ3 person: their night
+    // stays on their own team row, and they are listed once, not twice.
+    expect(teamRows(container).textContent).toContain("Tom");
+    expect(nightRows(container).textContent).not.toContain("Tom");
+    const tomRow = [...teamRows(container).querySelectorAll("tr")].find((r) => r.textContent?.includes("Tom"));
+    expect(tomRow?.textContent).toContain("L1");
+    // One row each: Nia under the night cover, Tom on delta.
+    expect(screen.getAllByText("Nia")).toHaveLength(1);
+    expect(container.querySelector(".count")?.textContent).toBe(
+      String(container.querySelectorAll("tbody tr:not(.nghead) th .who").length),
+    );
+  });
+
+  it("draws the night cover after the teams that hold its nights, and other teams after it", () => {
+    const { container } = renderRoster({
+      family: "SRE",
+      shifts: nightShifts,
+      assignments: [
+        night("Nia", "2026-09-21", "L1"),
+        assignment({ name: "Tom", rotaDate: "2026-09-21", shiftCode: TZ1.code, zoneCode: "TZ1", teamKey: "delta" }),
+        // A team with no night of the shared crew (IaaS): after the group.
+        assignment({ name: "Zia", rotaDate: "2026-09-21", shiftCode: TZ2.code, zoneCode: "TZ2", teamKey: "zulu" }),
+      ],
+    });
+    const bodies = [...container.querySelectorAll("table tbody")];
+    const order = bodies.map((b) => (b.classList.contains("nightgrp") ? "night" : b.textContent?.includes("Zia") ? "zulu" : "delta"));
+    expect(order).toEqual(["delta", "night", "zulu"]);
+  });
+
+  it("lists the TZ3 people the month was generated with under the night cover, whatever else they hold", () => {
+    const { container } = renderRoster({
+      family: "SRE",
+      shifts: nightShifts,
+      // Nia was chosen: her TZ1 day stays on her one row, under the night cover.
+      nightCrew: [{ userId: "u-Nia", teamKey: "delta" }],
+      assignments: [
+        night("Nia", "2026-09-21", "L1"),
+        assignment({ name: "Nia", rotaDate: "2026-09-22", shiftCode: TZ1.code, zoneCode: "TZ1", teamKey: "delta" }),
+        // Tom works only nights here but was not chosen: he stays on his team.
+        night("Tom", "2026-09-22", "L2"),
+      ],
+    });
+    expect(teamRows(container).textContent).not.toContain("Nia");
+    expect(teamRows(container).textContent).toContain("Tom");
+    const niaRow = [...nightRows(container).querySelectorAll("tr")].find((r) => r.textContent?.includes("Nia"));
+    expect(niaRow?.textContent).toContain("L1");
+    expect(niaRow?.textContent).toContain(TZ1.shortCode);
+    expect(nightRows(container).textContent).not.toContain("Tom");
+    expect(screen.getAllByText("Nia")).toHaveLength(1);
+  });
+
+  it("has no night cover group when the months in view were generated with nobody chosen", () => {
+    const { container } = renderRoster({
+      family: "SRE",
+      shifts: nightShifts,
+      nightCrew: [],
+      assignments: [night("Nia", "2026-09-21", "L1")],
+    });
+    expect(nightRows(container)).toBeNull();
+    expect(teamRows(container).textContent).toContain("Nia");
+  });
+
+  it("puts them back on their team once they work a team zone again", () => {
+    const { container } = renderRoster({
+      family: "SRE",
+      shifts: nightShifts,
+      assignments: [
+        night("Nia", "2026-09-21", "L1"),
+        assignment({ name: "Nia", rotaDate: "2026-09-24", shiftCode: TZ2.code, zoneCode: "TZ2", teamKey: "delta" }),
+      ],
+    });
+    expect(teamRows(container).textContent).toContain("Nia");
+    // Nobody on the TZ3 crew in these dates: no group, Nia's night on her row.
+    expect(nightRows(container)).toBeNull();
+    expect(screen.getAllByText("Nia")).toHaveLength(1);
   });
 });

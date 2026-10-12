@@ -16,7 +16,13 @@
  * under the License.
  */
 
-import { useMutation, useQueryClient, type UseMutationResult } from "@tanstack/react-query";
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+  type UseMutationResult,
+  type UseQueryResult,
+} from "@tanstack/react-query";
 import { useBackendApi } from "@api/backend/client";
 
 /** The one rota that can be generated. */
@@ -81,6 +87,48 @@ export function useGenerateRota(): UseMutationResult<GenerateRotaResult, Error, 
       // The written month, and its lieu leave, are on the roster now.
       void qc.invalidateQueries({ queryKey: ["team-schedule", "assignments"] });
       void qc.invalidateQueries({ queryKey: ["team-schedule", "absences"] });
+      // And the month's TZ3 people, which the generation recorded.
+      void qc.invalidateQueries({ queryKey: NIGHT_CREW_KEY });
     },
+  });
+}
+
+/** One person chosen for a month's TZ3 night crew, under the team chosen for. */
+export interface NightCrewMember {
+  userId: string;
+  teamKey: string;
+}
+
+/** The TZ3 people each month was generated with; a month with nobody chosen
+ *  has an empty crew. */
+export interface RotaNightCrew {
+  rotaCode: string;
+  months: { month: string; crew: NightCrewMember[] }[];
+}
+
+const NIGHT_CREW_KEY = ["team-schedule", "night-crew"] as const;
+
+/**
+ * The TZ3 people each month fromMonth..toMonth (YYYY-MM) of the SaaS rota was
+ * generated with -- who the Month roster lists under the night cover instead
+ * of under their team. Recorded by a real "Generate month" run.
+ */
+export function useRotaNightCrew(
+  fromMonth: string,
+  toMonth: string,
+  enabled = true,
+): UseQueryResult<RotaNightCrew, Error> {
+  const api = useBackendApi();
+  return useQuery<RotaNightCrew, Error>({
+    queryKey: [...NIGHT_CREW_KEY, fromMonth, toMonth],
+    queryFn: async () =>
+      (await api.get<RotaNightCrew>(
+        `/team-schedule/rotas/${GENERATED_ROTA}/night-crew?from=${encodeURIComponent(fromMonth)}&to=${encodeURIComponent(toMonth)}`,
+      )) ?? { rotaCode: GENERATED_ROTA, months: [] },
+    enabled: enabled && /^\d{4}-\d{2}$/.test(fromMonth) && /^\d{4}-\d{2}$/.test(toMonth),
+    staleTime: 60_000,
+    // An entity service from before the night crew answers 404: no retry, the
+    // roster falls back to reading the turns.
+    retry: false,
   });
 }

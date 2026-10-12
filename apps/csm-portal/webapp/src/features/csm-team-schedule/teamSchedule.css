@@ -2406,6 +2406,14 @@
 .csm-ts .ladder .zsec.zflow .lnm {
   max-width: 100%;
 }
+/* "Others in" a zone lists its people a team at a time, under the Leave
+   card's team heading; the first heading sits right under the card's own. */
+.csm-ts .ladder .zwork > .zteam:first-child > .offgh {
+  margin-top: 0;
+}
+.csm-ts .ladder .zteam > .offgh + .zsec {
+  margin-top: 2px;
+}
 .csm-ts .ladder .lane .zblk .zsec.zflow .lnm .who {
   white-space: nowrap;
   overflow: hidden;
@@ -2575,12 +2583,6 @@
 }
 .csm-ts .tw.roster tbody.nightgrp td.ngtwo {
   box-shadow: inset 0 0 0 2px var(--warn);
-}
-.csm-ts .tw.roster td .nightref {
-  display: inline-block;
-  font-size: 11px;
-  line-height: 1;
-  color: #8a63d2;
 }
 
 /* The team after a name on the night cover card, where one crew mixes teams. */

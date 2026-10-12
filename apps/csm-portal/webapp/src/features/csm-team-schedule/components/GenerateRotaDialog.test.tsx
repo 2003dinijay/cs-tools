@@ -22,7 +22,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 
 const postMock = vi.fn();
-vi.mock("@api/backend/client", () => ({ useBackendApi: () => ({ post: postMock }) }));
+const getMock = vi.fn();
+vi.mock("@api/backend/client", () => ({ useBackendApi: () => ({ post: postMock, get: getMock }) }));
 vi.mock("@config/apiConfig", () => ({ apiConfig: { backendUrl: "https://example.test" } }));
 
 import GenerateRotaDialog, { type GenerateRotaTeam } from "./GenerateRotaDialog";
@@ -79,6 +80,8 @@ describe("monthKey", () => {
 describe("GenerateRotaDialog", () => {
   beforeEach(() => {
     postMock.mockReset();
+    getMock.mockReset();
+    getMock.mockResolvedValue({ rotaCode: "SRE_SAAS", months: [] });
     window.localStorage.clear();
   });
 
@@ -170,6 +173,40 @@ describe("GenerateRotaDialog", () => {
     expect(JSON.parse(window.localStorage.getItem("csm.teamSchedule.generate.tz3Crew") ?? "{}")).toEqual({
       artemis: ["u-dee"],
     });
+  });
+
+  it("starts from the TZ3 people the month was generated with, not this browser's last choice", async () => {
+    window.localStorage.setItem("csm.teamSchedule.generate.tz3Crew", JSON.stringify({ apollo: ["u-cal"] }));
+    getMock.mockImplementation((path: string) =>
+      Promise.resolve(
+        path.includes("from=2026-11")
+          ? {
+              rotaCode: "SRE_SAAS",
+              months: [{ month: "2026-11", crew: [{ userId: "u-ann", teamKey: "apollo" }, { userId: "u-dee", teamKey: "artemis" }] }],
+            }
+          : { rotaCode: "SRE_SAAS", months: [] },
+      ),
+    );
+    renderDialog(vi.fn(), TEAMS);
+    expect(await screen.findByRole("button", { name: "Ann Perera" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Dee Mendis" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Cal Fernando" })).not.toBeInTheDocument();
+    expect(getMock).toHaveBeenCalledWith("/team-schedule/rotas/SRE_SAAS/night-crew?from=2026-11&to=2026-11");
+  });
+
+  it("counts every team's TZ3 people as one crew when warning of empty tiers", async () => {
+    renderDialog(vi.fn(), TEAMS);
+    fireEvent.change(screen.getByLabelText("Apollo TZ3"), { target: { value: "Ann" } });
+    fireEvent.click(await screen.findByRole("option", { name: "Ann Perera" }));
+    expect(screen.getByText("Only 1 chosen: TZ3 L2 and L3 are left empty every night.")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Artemis TZ3"), { target: { value: "Dee" } });
+    fireEvent.click(await screen.findByRole("option", { name: "Dee Mendis" }));
+    expect(screen.getByText("Only 2 chosen: TZ3 L3 is left empty every night.")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("Apollo TZ3"), { target: { value: "Ben" } });
+    fireEvent.click(await screen.findByRole("option", { name: "Ben Silva" }));
+    expect(screen.queryByText(/left empty every night/)).not.toBeInTheDocument();
   });
 
   it("stays open while the month is being written", async () => {

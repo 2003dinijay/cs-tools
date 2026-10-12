@@ -48,7 +48,7 @@ import WeekTable from "../components/WeekTable";
 import CasePagingTab, { type PagingRotaTarget } from "../components/CasePagingTab";
 import { useGetPagingChain } from "../api/usePagingChain";
 import GenerateRotaDialog from "../components/GenerateRotaDialog";
-import { GENERATED_ROTA } from "../api/useGenerateRota";
+import { GENERATED_ROTA, useRotaNightCrew } from "../api/useGenerateRota";
 import type {
   PagingChainCode,
   RotaFamily,
@@ -647,6 +647,18 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  Only asked for while the roster is open -- no other view marks a cell --
    *  and kept out of the rota's own query so the grid never waits on it. */
   const editMarkers = useScheduleEditMarkers(rosterMonths, view === "roster");
+  /** The TZ3 people the months in view were generated with: the roster lists
+   *  them under the Night cover instead of their team. Undefined until the
+   *  server answers (or if it cannot), when the roster reads it from the turns. */
+  const nightCrewRead = useRotaNightCrew(
+    toIsoDate(rosterStart).slice(0, 7),
+    toIsoDate(rosterEnd).slice(0, 7),
+    view === "roster" && family === "SRE",
+  );
+  const nightCrew = useMemo(
+    () => (nightCrewRead.isSuccess ? nightCrewRead.data.months.flatMap((m) => m.crew) : undefined),
+    [nightCrewRead.isSuccess, nightCrewRead.data],
+  );
 
   /** Keyed for the roster to look up a cell in one step rather than scanning. */
   const editedCells = useMemo(() => {
@@ -1293,6 +1305,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               absences={absences.data?.absences ?? []}
               shifts={shifts}
               absenceKinds={catalogue.data?.absenceKinds ?? []}
+              nightCrew={nightCrew}
               {...scopeControls}
             />
           ) : (
