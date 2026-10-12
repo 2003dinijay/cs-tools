@@ -2208,10 +2208,19 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 	// sys_updated_on for any journal entry, and the lists' Updated column, their
 	// updated-date filters and the dashboard reminder widgets all read
 	// work_item.updated_on. This is what made a case nudged through "Request
-	// update" keep its old Updated date (and its place in "My Reminders"). Only
-	// for a live comment (createdOn nil): a comment carrying its own past
-	// timestamp is ServiceNow history being copied in, which is not activity
-	// happening now and must not make the case look freshly updated.
+	// update" keep its old Updated date (and its place in "My Reminders").
+	//
+	// Three limits, each on purpose:
+	//   - a live comment only (createdOn nil): a comment carrying its own past
+	//     timestamp is ServiceNow history being copied in, which is not activity
+	//     happening now and must not make the case look freshly updated;
+	//   - the case-like types only: this route takes the id of ANY work item (a
+	//     customer's BFF forwards whatever id it is given), and a change
+	//     request's updated_by is the record of who proposed a time (see
+	//     change_request_customer_proposal.go), which no comment may replace;
+	//   - never backwards: NOW() is the transaction's start, so a comment that
+	//     waited on the row lock behind a later-stamped write leaves that newer
+	//     stamp (and its writer) alone.
 	const query = `
 		WITH created AS (
 			INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
@@ -2221,7 +2230,9 @@ func (r *caseRepo) CreateCaseComment(ctx context.Context, req domain.CreateCaseC
 			RETURNING id, work_item_id, type, content, created_by, created_on
 		), touched AS (
 			UPDATE work_item SET updated_on = NOW(), updated_by = $1
-			WHERE id = $3 AND $5::timestamptz IS NULL AND EXISTS (SELECT 1 FROM created)
+			WHERE id = $3 AND type = ANY(` + caseLikeWorkItemTypes + `)
+			  AND $5::timestamptz IS NULL AND updated_on <= NOW()
+			  AND EXISTS (SELECT 1 FROM created)
 		)
 		SELECT id, work_item_id, type, content, created_by, created_on FROM created`
 

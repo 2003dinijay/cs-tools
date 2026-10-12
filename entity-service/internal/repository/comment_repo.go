@@ -208,13 +208,24 @@ func (r *commentRepo) CreateComment(ctx context.Context, referenceID string, ref
 	//
 	// The `touched` CTE stamps the parent work_item's updated_on/updated_by
 	// in that same statement (so the two writes commit or fail together and
-	// cost no extra round trip). A comment is activity on the case: ServiceNow
+	// cost no extra round trip). A comment is activity on a case: ServiceNow
 	// advances sys_updated_on for any journal entry, and the lists' "Updated"
 	// column, their updated-date filters and the dashboard reminder widgets
 	// all read work_item.updated_on, so leaving it untouched kept a case that
 	// had just been nudged in "Request update" looking untouched. It only
 	// runs when the insert produced a row (EXISTS), and an unreferenced
 	// data-modifying CTE is still executed to completion by Postgres.
+	//
+	// Only for the case-like types ($6: the reference is "case"). A change
+	// request's updated_by is the record of who proposed a time (the last
+	// writer, see change_request_customer_proposal.go) and no comment may
+	// replace it; a conversation's updated_on is what its "resolved in the last
+	// 30 days" count reads; an incident's updated_by is the last updater its
+	// events report. Those keep exactly the behaviour they had.
+	//
+	// `updated_on <= NOW()` keeps updated_on from moving backwards: NOW() is the
+	// transaction's start, so a comment that waited on the row lock behind a
+	// later-stamped write must not overwrite that newer stamp (or its writer).
 	const query = `
 		WITH created AS (
 			INSERT INTO comment (id, created_on, created_by, type, work_item_id, content)
@@ -224,11 +235,11 @@ func (r *commentRepo) CreateComment(ctx context.Context, referenceID string, ref
 			RETURNING ` + commentColumns + `
 		), touched AS (
 			UPDATE work_item SET updated_on = NOW(), updated_by = $1
-			WHERE id = $4 AND EXISTS (SELECT 1 FROM created)
+			WHERE id = $4 AND $6::boolean AND updated_on <= NOW() AND EXISTS (SELECT 1 FROM created)
 		)
 		SELECT ` + commentColumns + ` FROM created`
 
-	c, err := scanComment(r.db.QueryRow(ctx, query, createdBy, typeEnum, content, referenceID, workItemTypes))
+	c, err := scanComment(r.db.QueryRow(ctx, query, createdBy, typeEnum, content, referenceID, workItemTypes, referenceType == domain.ReferenceTypeCase))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return CommentRow{}, &apierror.NotFoundError{Msg: "no " + string(referenceType) + " found with id " + referenceID}
 	}

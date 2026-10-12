@@ -2530,26 +2530,45 @@ already use — no route path, request, or response shape changed.
   string with no name field on its wire contract at all — deliberately left
   as-is; the webapp only reads a comment's display name from `SearchComments`
   once the list is (re)fetched, never from the create response.
-- **Adding a comment stamps the parent's `updated_on`/`updated_by`.** A comment
-  is activity on the work item — ServiceNow advances `sys_updated_on` for any
-  journal entry — and the lists' Updated column, the `updatedOn` search filter
-  (relative dates such as `__daysAgo:2__` included) and the dashboard reminder
-  widgets all read `work_item.updated_on`. The insert used to leave it alone, so
-  a case nudged through "Request update" kept its old Updated date and stayed in
-  "My Reminders". Both create paths do it in the **same statement** as the insert
-  (an `UPDATE` CTE, so the two commit or fail together and cost no extra round
-  trip): `commentRepo.CreateComment` (`POST /comments`: change request, incident,
-  conversation) and `caseRepo.CreateCaseComment` (`POST /cases/{id}/comments`:
-  every case-like type — note the generic route refuses `referenceType: case`,
-  so the case route is its own code and must be kept in step). Every comment type
-  counts, work notes included, as in ServiceNow. The one exception is a comment
-  that carries its own past `createdOn`: that is ServiceNow history being
-  mirrored in at dual-write case creation (`mirrorInitialSNComments`), not
-  something happening now, so it does not move `updated_on`. The extra `UPDATE`
-  runs under the caller's own row-level security (`work_item_update` allows a
-  project member) and is skipped when the insert produced no row.
+- **Adding a comment to a case stamps its `updated_on`/`updated_by`.** A comment
+  is activity on a case — ServiceNow advances `sys_updated_on` for any journal
+  entry — and the lists' Updated column, the `updatedOn` search filter (relative
+  dates such as `__daysAgo:2__` included) and the dashboard reminder widgets all
+  read `work_item.updated_on`. The insert used to leave it alone, so a case nudged
+  through "Request update" kept its old Updated date and stayed in "My
+  Reminders". There are **two** comment-create paths and each does it in the
+  **same statement** as the insert (an `UPDATE` CTE, so the two commit or fail
+  together and cost no extra round trip): `caseRepo.CreateCaseComment`
+  (`POST /cases/{id}/comments`, the route Request update and every case reply
+  take; it takes the id of ANY work item, a customer BFF forwards whatever id it
+  is given) and `commentRepo.CreateComment` (`POST /comments`; on this data source
+  it also accepts `referenceType: case`, the refusal of that reference type lives
+  only in the ServiceNow service, and it serves change request, incident and
+  conversation references). They are separate code and must be kept in step.
+  Every comment type counts, work notes included, as in ServiceNow.
+  Limits, each on purpose:
+  - **Case-like work items only** (`caseLikeWorkItemTypes`; for `CreateComment`
+    the reference must be `case`). A change request's `updated_by` is the record
+    of who proposed a time (see "A customer's proposed time" below), so a comment
+    must never replace it; a conversation's `updated_on` is what its "resolved in
+    the last 30 days" count reads; an incident's `updated_by` is the last updater
+    its events report. Comments on those keep exactly the behaviour they had.
+  - **A live comment only.** A comment carrying its own past `createdOn` is
+    ServiceNow history being mirrored in at dual-write case creation
+    (`mirrorInitialSNComments`), not something happening now, so it does not move
+    `updated_on`.
+  - **Never backwards** (`updated_on <= NOW()`): `NOW()` is the transaction's
+    start, so a comment that waited on the row lock behind a later-stamped write
+    leaves that newer stamp, and its writer, alone.
+  The extra `UPDATE` runs under the caller's own row-level security
+  (`work_item_update` allows a project member, and `comment_write` admits no one
+  `work_item_update` does not) and is skipped when the insert produced no row.
+  Two other writers of a comment are deliberately not changed: the service
+  request acknowledgement (`srNoticeRepo.Acknowledge`, one system comment written
+  when the request is created, so its Updated time is already current) and the
+  GitHub comment sync (`githubMutationRepository.AddComment`, change requests only).
   `comment_repo_updated_on_integration_test.go` (`CASE_STATS_TEST_DSN`, as a
-  non-superuser) pins both paths, the mirror exception and the refusals.
+  non-superuser) pins both paths, each limit, the refusals and concurrent comments.
 - **Editing/deleting a comment, or viewing its edit history**
   (`UpdateComment`, `DeleteComment`, `GetCommentEditHistory`) performs **no
   author or role check of its own at all**. This service keeps no role table
@@ -5279,7 +5298,7 @@ statement-tracing integration test fail if a query of the proposer path reads th
 unconditionally, so **every PATCH** does (a work note, an additional comment, the hold, an assignee, a title: any staff edit;
 and a customer's answer or proposal, through `lockWorkItemKeepingWriter`, which is also Accept's first statement), and so
 does whatever else writes the work item row directly (the sync loader, as the previous system's user; its own stamp names
-nobody, and neither does a blank value). The approval decision route does not touch it. The acts that ANSWER a waiting time
+nobody, and neither does a blank value). The approval decision route does not touch it, and **neither does a comment**: `CreateComment` / `CreateCaseComment` stamp `updated_by` only on case-like work items (see "Adding a comment to a case stamps its `updated_on`/`updated_by`"), never on a change request, so a comment can neither erase a customer's proposal nor make its writer the recorded proposer (`TestCommentUpdatedOnIntegration_OnlyCaseLikeWorkItemsAreStamped`). The acts that ANSWER a waiting time
 stamp the staff member before they look, so they read the last writer **before their own write**: `lockWorkItemKeepingWriter`
 (Accept, a customer's proposal) and `lockChangeRequestForPatch` (a staff `{state: "authorize"}`,
 `changeRequestGateSnapshot.priorWriter`) hand it back as a `lastWriter` (whose `read` flag tells "the column held nobody" from
