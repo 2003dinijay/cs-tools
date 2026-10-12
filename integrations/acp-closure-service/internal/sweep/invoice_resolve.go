@@ -160,7 +160,7 @@ func resolveDueInvoices(ctx context.Context, reader entityReader, proj project) 
 // more-overdue eligible invoice on a later page.
 func fetchAllProjectOpportunityLinks(ctx context.Context, reader entityReader, projectID string) ([]projectOpportunityLinkDTO, error) {
 	var all []projectOpportunityLinkDTO
-	offset := 0
+	offset, pages := 0, 0
 	for {
 		reqBody, err := json.Marshal(searchProjectOpportunityLinksRequest{
 			Pagination: pagination{Limit: pageSize, Offset: offset},
@@ -184,6 +184,10 @@ func fetchAllProjectOpportunityLinks(ctx context.Context, reader entityReader, p
 		if len(page.Links) == 0 || !page.HasMore || (page.Total > 0 && len(all) >= page.Total) {
 			break
 		}
+		pages++
+		if pages >= maxSearchPages {
+			return nil, fmt.Errorf("project-opportunity links search still reports more pages after %d pages; stopping", maxSearchPages)
+		}
 		offset += pageSize
 	}
 	return all, nil
@@ -194,7 +198,7 @@ func fetchAllProjectOpportunityLinks(ctx context.Context, reader entityReader, p
 // fetchAllProjectOpportunityLinks's doc comment for why this matters.
 func fetchAllInvoicesForOpportunity(ctx context.Context, reader entityReader, opportunityID string) ([]invoiceDTO, error) {
 	var all []invoiceDTO
-	offset := 0
+	offset, pages := 0, 0
 	for {
 		reqBody, err := json.Marshal(searchInvoicesRequest{
 			Pagination:    pagination{Limit: pageSize, Offset: offset},
@@ -217,6 +221,10 @@ func fetchAllInvoicesForOpportunity(ctx context.Context, reader entityReader, op
 		// timeout (security assessment 2026-10-08).
 		if len(page.Invoices) == 0 || !page.HasMore || (page.Total > 0 && len(all) >= page.Total) {
 			break
+		}
+		pages++
+		if pages >= maxSearchPages {
+			return nil, fmt.Errorf("invoices search still reports more pages after %d pages; stopping", maxSearchPages)
 		}
 		offset += pageSize
 	}

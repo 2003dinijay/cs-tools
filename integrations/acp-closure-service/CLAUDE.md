@@ -657,7 +657,12 @@ client through `internal/httpsec`, and must keep doing so:
   2026-10-08 security assessment flagged (CWE-400). The project-opportunity
   link and invoice paging loops also stop once `total` rows are read, like
   `Run`'s project paging, so an upstream that keeps answering `hasMore: true`
-  can't hold the run until the job timeout.
+  can't hold the run until the job timeout. Because the `total` bound only
+  applies when `total` > 0, every loop also has a hard page cap that trusts
+  nothing from the upstream (`maxProjectPages` = 1,000, `maxSearchPages` =
+  200 in `run.go`); reaching it is an error, so skipped data is visible
+  (CodeRabbit, PR #2545). Contacts paging needs no cap: it stops once offset
+  reaches `total`, which with `total` = 0 is after the first page.
 
 These checks were first added to the email client alone (CodeRabbit, PR
 #1657). The entity client went without them until they were moved into the
