@@ -273,6 +273,8 @@ export default function CreateCustomerAnnouncementForm(): JSX.Element {
               projects={resolvedAudience.projects}
               total={resolvedAudience.total}
               isLoading={resolvedAudience.isLoading}
+              isLoadingMore={resolvedAudience.isLoadingMore}
+              expectedTotal={resolvedAudience.expectedTotal}
               isError={resolvedAudience.isError}
             />
           </Grid>
