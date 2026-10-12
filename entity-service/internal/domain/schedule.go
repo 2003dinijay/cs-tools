@@ -81,7 +81,7 @@ type ScheduleShift struct {
 	// SharedAcrossTeams is true when each tier of the window is one person
 	// for the whole rota, not one per team (migration 0220): SaaS TZ3, the
 	// night cover for Apollo and Artemis alike.
-	SharedAcrossTeams bool `json:"sharedAcrossTeams"`
+	SharedAcrossTeams bool   `json:"sharedAcrossTeams"`
 	ColourToken       string `json:"colourToken"`
 	SortOrder         int    `json:"sortOrder"`
 }
