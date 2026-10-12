@@ -8479,20 +8479,16 @@ state index today, so it changes nothing for them yet). The announcement branch
 keeps the text comparison, which its `CLOSE`→`CLOSED` normalization needs.
 `TestCaseLikeStateLookupUsesTheColumnNotACast` pins the shape.
 
-**`projectOnboardingStatus`/its `notIn` sibling deliberately keep filtering
-through the `LEFT JOIN` to `p`, despite the superficial similarity to the
-state-filter rewrite above.** The same "match against the table directly via
-an `ARRAY`-wrapped id lookup instead of filtering through a join" technique
-was tried here too and measured, directly against production-volume data, to
-bring no benefit and in some cases be slower. The state lookup wins because a
-case search's state filter is typically highly selective (e.g. "open" is a
-small fraction of all cases); `projectOnboardingStatus` filters in practice
-tend to be the opposite -- a widget excluding only a couple of terminal
-statuses matches nearly every project -- so building an array of almost
-every project id and checking per-row membership against it costs more than
-the indexed nested-loop join this already was. Revisit only with a
-measurement showing otherwise for a specific, genuinely selective
-onboarding-status filter shape.
+**The `projectOnboardingStatus` `notIn` branch deliberately keeps filtering
+through the `LEFT JOIN` to `p`; the `in` branch does not.** `in` is a
+`NOT EXISTS` probe on `project`'s primary key (see "Case search `countOnly`, and
+the projectOnboardingStatus `in` filter's exclusion-list rewrite" above). An
+`ARRAY`-wrapped id lookup like the state filter's was measured against
+production-volume data for this filter and brought no benefit: widgets select
+nearly every status, so the array would hold almost every project id, and
+checking per-row membership against it cost more than the indexed
+nested-loop join. Revisit `notIn` only with a measurement showing a selective
+shape that is slow.
 
 **Known, accepted divergence**: a work_item row whose own `type` disagrees
 with which extension table actually holds its data (see the bullet above --
