@@ -30,7 +30,7 @@ import (
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/clientcredentials"
 
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/entry"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entry"
 )
 
 // Config is how to reach Novera's notifications endpoint. The API gateway in

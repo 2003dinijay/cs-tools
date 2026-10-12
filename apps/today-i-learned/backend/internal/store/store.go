@@ -30,7 +30,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/entry"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entry"
 )
 
 // ErrNotFound is returned when no entry has the requested id.

@@ -1,7 +1,7 @@
 # TIL Backend
 
 [![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](../../LICENSE)
-[![GitHub last commit](https://img.shields.io/github/last-commit/wso2-open-operations/cs-tools/main?path=apps%2Ftil-backend)](https://github.com/wso2-open-operations/cs-tools/commits/main/?path=apps/til-backend)
+[![GitHub last commit](https://img.shields.io/github/last-commit/wso2-open-operations/cs-tools/main?path=apps%2Ftoday-i-learned)](https://github.com/wso2-open-operations/cs-tools/commits/main/?path=apps/today-i-learned)
 [![GitHub issues](https://img.shields.io/github/issues/wso2-open-operations/cs-tools.svg)](https://github.com/wso2-open-operations/cs-tools/issues)
 
 TIL Backend is the Go service behind "Today I Learned" — a company-wide

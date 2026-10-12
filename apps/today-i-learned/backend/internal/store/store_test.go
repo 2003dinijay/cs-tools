@@ -27,7 +27,7 @@ import (
 
 	"github.com/go-sql-driver/mysql"
 
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/entry"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entry"
 )
 
 // These tests need a MySQL server. TIL_TEST_DATABASE_DSN points at it without

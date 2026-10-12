@@ -28,12 +28,12 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/config"
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/entity"
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/handler"
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/middleware"
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/novera"
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/store"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/config"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/handler"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/middleware"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/novera"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/store"
 )
 
 // maxBodyBytes caps a request body. The largest valid one, a full-length

@@ -27,10 +27,10 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/entity"
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/entry"
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/middleware"
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/store"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entity"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entry"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/middleware"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/store"
 )
 
 // Messages for people: the webapp shows them as they are.
