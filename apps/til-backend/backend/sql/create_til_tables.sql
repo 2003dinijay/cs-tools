@@ -27,6 +27,9 @@ CREATE TABLE IF NOT EXISTS til_submissions (
     -- db.py already produces/compares as plain strings (keyset pagination
     -- does `WHERE created_at < %s` on this same string form).
     created_at         VARCHAR(40)   NOT NULL,
+    -- Same ISO 8601 UTC string form as created_at. NULL until the entry is
+    -- first edited, so "never edited" needs no separate flag.
+    updated_at         VARCHAR(40)   NULL,
     INDEX idx_til_submissions_created_at (created_at DESC),
     -- Backs the "Submitted by (email)" search scope and the "My entries"
     -- tab filter -- both now run as a real WHERE clause in list_submissions,
@@ -120,5 +123,21 @@ SET @add_what_fulltext_idx := (
       AND INDEX_NAME   = 'idx_til_submissions_what_fulltext'
 );
 PREPARE stmt FROM @add_what_fulltext_idx;
+EXECUTE stmt;
+DEALLOCATE PREPARE stmt;
+
+-- Nullable with no default, so every existing row reads as never edited.
+SET @add_updated_at := (
+    SELECT IF(
+        COUNT(*) = 0,
+        'ALTER TABLE til_submissions ADD COLUMN updated_at VARCHAR(40) NULL AFTER created_at',
+        'SELECT 1'
+    )
+    FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE()
+      AND TABLE_NAME   = 'til_submissions'
+      AND COLUMN_NAME  = 'updated_at'
+);
+PREPARE stmt FROM @add_updated_at;
 EXECUTE stmt;
 DEALLOCATE PREPARE stmt;

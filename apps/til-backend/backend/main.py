@@ -17,11 +17,11 @@
 """FastAPI backend for "Today I Learned" -- a company-wide feed of learnings
 from customers, partners, and internal sources.
 
-The One WSO2 /me/til page is the only entry point allowed to create an
-entry -- POST /submissions checks the caller's own verified token identity
-(aud/client_id/azp) against ONE_WSO2_WEBAPP_CLIENT_ID and rejects anything
-else outright. Reading and deleting entries stays open to every signed-in
-employee (see list_submissions / delete_submission below).
+The One WSO2 /me/til page is the only entry point allowed to create or edit
+an entry -- POST and PUT /submissions check the caller's own verified token
+identity (aud/client_id/azp) against ONE_WSO2_WEBAPP_CLIENT_ID and reject
+anything else outright. Reading and deleting entries stays open to every
+signed-in employee (see list_submissions / delete_submission below).
 """
 from __future__ import annotations
 
@@ -56,24 +56,35 @@ CORS_ALLOWED_ORIGINS = [
     if origin.strip()
 ]
 # Base URL of the One WSO2 webapp itself (NOT this backend) -- used only to
-# build each entry's shareable link (.../knowledge-base/{id}) for the Novera
-# broadcast card. Optional: absent just means that link is omitted, same
-# "unset key = quietly off" posture as the rest of this service.
+# build each entry's shareable link for the Novera broadcast card. The link
+# opens the entry as a full-page article (.../knowledge-base/{id}?view=article);
+# the webapp owns that query parameter. Optional: absent just means that link
+# is omitted, same "unset key = quietly off" posture as the rest of this
+# service.
 ONE_WSO2_BASE_URL = os.environ.get("ONE_WSO2_BASE_URL", "").rstrip("/")
 
 
 def require_webapp_caller(user: dict) -> Optional[JSONResponse]:
-    """Shared by POST /submissions and POST /uploads -- both are ways to add
-    content to an entry, so both are restricted to the same single entry
-    point. Returns a 403 response if the caller isn't the real One WSO2
-    webapp, else None. See POST /submissions for the full reasoning on why
-    this checks the verified token identity, never a request header."""
+    """Shared by POST /submissions, PUT /submissions/{id} and POST /uploads --
+    all are ways to add content to an entry, so all are restricted to the
+    same single entry point. Returns a 403 response if the caller isn't the
+    real One WSO2 webapp, else None. See POST /submissions for the full
+    reasoning on why this checks the verified token identity, never a
+    request header."""
     if not ONE_WSO2_WEBAPP_CLIENT_ID or ONE_WSO2_WEBAPP_CLIENT_ID not in user.get("token_identities", set()):
         return JSONResponse(
             status_code=403,
             content={"error": "This action is only available from the One WSO2 webapp."},
         )
     return None
+
+
+def can_change_entry(user: dict, existing: dict) -> bool:
+    """Shared by edit and delete: a moderator (TIL_MODERATOR_GROUP) OR the
+    entry's own submitter -- checked against the verified submittedByEmail,
+    never the free-text `who` field, for the same reason that field was never
+    trusted for identity in the first place."""
+    return user["is_moderator"] or user["email"] == existing["submittedByEmail"]
 
 
 async def lifespan(app: FastAPI):
@@ -237,7 +248,7 @@ async def create_submission(request: Request, user: dict = Depends(require_auth)
     # The gate above already guarantees this request came from the real
     # webapp, so Novera's DM broadcast fires unconditionally here -- no
     # further identity check needed at this point.
-    entry_url = f"{ONE_WSO2_BASE_URL}/knowledge-base/{submission['id']}" if ONE_WSO2_BASE_URL else None
+    entry_url = f"{ONE_WSO2_BASE_URL}/knowledge-base/{submission['id']}?view=article" if ONE_WSO2_BASE_URL else None
     await notify_novera(title=title, who=who, where=where, what=what, where_detail=where_detail, entry_url=entry_url)
 
     return submission
@@ -284,18 +295,61 @@ async def get_submission(
     return submission
 
 
+@app.put("/submissions/{submission_id}")
+async def update_submission(submission_id: str, request: Request, user: dict = Depends(require_auth)):
+    rejection = require_webapp_caller(user)
+    if rejection:
+        return rejection
+
+    existing = db.get_submission(submission_id)
+    if existing is None:
+        return JSONResponse(status_code=404, content={"error": "Entry not found."})
+    if not can_change_entry(user, existing):
+        return JSONResponse(status_code=403, content={"error": "Not authorized to edit this entry."})
+
+    try:
+        body = await request.json()
+    except Exception:
+        return JSONResponse(status_code=400, content={"error": "Request body must be valid JSON."})
+    if not isinstance(body, dict):
+        return JSONResponse(status_code=400, content={"error": "Request body must be a JSON object."})
+    # The byline stays the original author's: a moderator editing someone
+    # else's entry must not become its author, so any `who` in the body is
+    # ignored and the stored one validated in its place.
+    error = validate_submission_payload({**body, "who": existing["who"]})
+    if error:
+        return JSONResponse(status_code=400, content={"error": error})
+
+    title = body["title"].strip()
+    where = body["where"]
+    where_detail = body.get("whereDetail")
+    where_detail = where_detail.strip() if isinstance(where_detail, str) else None
+    # Same re-sanitizing, and the same request-host rule for <img src>, as
+    # create_submission above.
+    what = sanitize_what_html(body["what"], request_host=request.url.netloc)
+
+    # Saving without a real change would still stamp updated_at and show the
+    # entry as edited, so an unchanged save returns the entry as it is.
+    if (title, where, where_detail, what) == (
+        existing["title"], existing["where"], existing["whereDetail"], existing["what"]
+    ):
+        return existing
+
+    # No Novera broadcast: that announces a new entry, and an edit isn't one.
+    updated = db.update_submission(submission_id, title=title, where=where, what=what, where_detail=where_detail)
+    # None when the entry was deleted after the lookup above -- the edit
+    # wasn't saved, so it mustn't come back as a 200.
+    if updated is None:
+        return JSONResponse(status_code=404, content={"error": "Entry not found."})
+    return updated
+
+
 @app.delete("/submissions/{submission_id}")
 async def delete_submission(submission_id: str, user: dict = Depends(require_auth)):
     existing = db.get_submission(submission_id)
     if existing is None:
         return JSONResponse(status_code=404, content={"error": "Entry not found."})
-
-    # Delete is allowed for a moderator (TIL_MODERATOR_GROUP) OR the entry's
-    # own submitter -- checked against the verified submittedByEmail, never
-    # the free-text `who` field, for the same reason that field was never
-    # trusted for identity in the first place.
-    is_owner = user["email"] == existing["submittedByEmail"]
-    if not (user["is_moderator"] or is_owner):
+    if not can_change_entry(user, existing):
         return JSONResponse(status_code=403, content={"error": "Not authorized to delete entries."})
 
     db.delete_submission(submission_id)

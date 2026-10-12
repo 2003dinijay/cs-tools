@@ -125,6 +125,15 @@ def test_create_submission_notifies_novera():
         mock_notify.assert_called_once()
 
 
+def test_novera_link_opens_the_entry_as_an_article():
+    client = client_as(HUMAN_USER)
+    with patch("main.ONE_WSO2_BASE_URL", "https://one.example"), patch(
+        "main.notify_novera", new_callable=AsyncMock
+    ) as mock_notify:
+        created = client.post("/submissions", json={"title": "T", "who": "Jane", "where": "Internal", "what": "x"}).json()
+        assert mock_notify.call_args.kwargs["entry_url"] == f"https://one.example/knowledge-base/{created['id']}?view=article"
+
+
 def test_create_submission_rejects_non_webapp_callers():
     # The One WSO2 webapp is the ONLY entry point allowed to create an
     # entry -- checked against the token's own verified client_id (main.py
@@ -241,6 +250,119 @@ def test_delete_nonexistent_is_404_even_for_a_non_moderator():
     # allowed) -- you can't be "unauthorized" to delete nothing.
     resp = client_as(HUMAN_USER).delete("/submissions/does-not-exist")
     assert resp.status_code == 404
+
+
+def _create_as(user: dict) -> dict:
+    return client_as(user).post(
+        "/submissions", json={"title": "T", "who": "Jane", "where": "Internal", "what": "<p>x</p>"}
+    ).json()
+
+
+def test_submitter_can_edit_their_own_entry():
+    created = _create_as(HUMAN_USER)
+    assert created["updatedAt"] is None
+    resp = client_as(HUMAN_USER).put(
+        f"/submissions/{created['id']}",
+        json={"title": "New title", "where": "Customer", "whereDetail": "Acme Corp", "what": "<p>Changed</p>"},
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert (body["title"], body["where"], body["whereDetail"], body["what"]) == (
+        "New title", "Customer", "Acme Corp", "<p>Changed</p>"
+    )
+    assert body["updatedAt"] is not None
+    assert body["createdAt"] == created["createdAt"]
+    assert client_as(HUMAN_USER).get(f"/submissions/{created['id']}").json() == body
+
+
+def test_moderator_edit_keeps_the_original_byline():
+    # A moderator editing someone else's entry must not become its author --
+    # neither the `who` byline nor the verified submittedByEmail changes,
+    # even if the request body tries to set `who`.
+    created = _create_as(HUMAN_USER)
+    resp = client_as(MODERATOR_USER).put(
+        f"/submissions/{created['id']}",
+        json={"title": "Fixed typo", "who": "Mod", "where": "Internal", "what": "<p>x</p>"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["who"] == "Jane"
+    assert resp.json()["submittedByEmail"] == "jane@example.com"
+
+
+def test_non_owner_non_moderator_cannot_edit():
+    created = _create_as(HUMAN_USER)
+    resp = client_as(OTHER_HUMAN_USER).put(
+        f"/submissions/{created['id']}", json={"title": "Mine now", "where": "Internal", "what": "<p>x</p>"}
+    )
+    assert resp.status_code == 403
+    assert client_as(HUMAN_USER).get(f"/submissions/{created['id']}").json()["title"] == "T"
+
+
+def test_edit_rejects_non_webapp_callers():
+    created = _create_as(HUMAN_USER)
+    resp = client_as(HUMAN_USER_VIA_OTHER_APP).put(
+        f"/submissions/{created['id']}", json={"title": "T2", "where": "Internal", "what": "<p>x</p>"}
+    )
+    assert resp.status_code == 403
+
+
+def test_edit_nonexistent_is_404():
+    resp = client_as(HUMAN_USER).put("/submissions/does-not-exist", json={"title": "T", "where": "Internal", "what": "x"})
+    assert resp.status_code == 404
+
+
+def test_edit_of_an_entry_deleted_mid_edit_is_404():
+    # Someone else deletes the entry after the handler's own lookup but before
+    # its UPDATE: nothing was saved, so the edit must not come back as a 200.
+    created = _create_as(HUMAN_USER)
+    real_update = db.update_submission
+
+    def delete_then_update(submission_id, **fields):
+        db.delete_submission(submission_id)
+        return real_update(submission_id, **fields)
+
+    with patch.object(db, "update_submission", delete_then_update):
+        resp = client_as(HUMAN_USER).put(
+            f"/submissions/{created['id']}", json={"title": "T2", "where": "Internal", "what": "<p>x</p>"}
+        )
+    assert resp.status_code == 404
+
+
+def test_edit_validates_like_create():
+    created = _create_as(HUMAN_USER)
+    resp = client_as(HUMAN_USER).put(f"/submissions/{created['id']}", json={"title": "T", "where": "Customer", "what": "x"})
+    assert resp.status_code == 400
+    resp = client_as(HUMAN_USER).put(f"/submissions/{created['id']}", json=["not", "an", "object"])
+    assert resp.status_code == 400
+
+
+def test_edit_sanitizes_what():
+    created = _create_as(HUMAN_USER)
+    resp = client_as(HUMAN_USER).put(
+        f"/submissions/{created['id']}",
+        json={"title": "T", "where": "Internal", "what": "<p>hi</p><script>alert(1)</script>"},
+    )
+    assert resp.status_code == 200
+    assert resp.json()["what"] == "<p>hi</p>"
+
+
+def test_unchanged_edit_does_not_mark_the_entry_edited():
+    created = _create_as(HUMAN_USER)
+    resp = client_as(HUMAN_USER).put(
+        f"/submissions/{created['id']}", json={"title": "T", "where": "Internal", "what": "<p>x</p>"}
+    )
+    assert resp.status_code == 200
+    assert resp.json()["updatedAt"] is None
+
+
+def test_edit_does_not_notify_novera(mock_novera_notify):
+    created = _create_as(HUMAN_USER)
+    mock_novera_notify.reset_mock()
+    resp = client_as(HUMAN_USER).put(
+        f"/submissions/{created['id']}", json={"title": "T2", "where": "Internal", "what": "<p>x</p>"}
+    )
+    assert resp.status_code == 200
+    mock_novera_notify.assert_not_called()
 
 
 def test_get_single_submission_returns_it():
