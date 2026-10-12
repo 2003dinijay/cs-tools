@@ -5073,13 +5073,14 @@ paths:
 
   /cases/{id}/tags:
     post:
-      summary: Add a free-text tag to a case (ServiceNow data source only).
+      summary: Add a free-text tag to a case or a change request.
       description: >
-        The case ID is taken from the URL path; the request body is forwarded to
-        the integration service as-is. The id is a work item id: a change
-        request's is accepted too (the change request detail page tags through
-        this same route, under the same PermWrite), and its tag is never
-        mirrored to the previous system.
+        The id is taken from the URL path and the request body is forwarded to
+        entity-service as-is. The id is a work item id: a case's, or a change
+        request's (the change request detail page tags through this same route,
+        under the same PermWrite). A case is tagged on every data source; a
+        change request on the PostgreSQL data sources only, where its tag is
+        stored in PostgreSQL and never mirrored to the previous system.
       operationId: addCaseTag
       security:
         - bearerAuth: []
@@ -5143,10 +5144,11 @@ paths:
 
   /cases/{id}/tags/{tagId}:
     delete:
-      summary: Remove a tag from a case (ServiceNow data source only).
+      summary: Remove a tag from a case or a change request.
       description: >
-        The id is a work item id: a change request's is accepted too, as for
-        POST /cases/{id}/tags.
+        The id is a work item id: a case's or a change request's, with the same
+        data-source rules as POST /cases/{id}/tags (a change request's tag is
+        removed in PostgreSQL only, never mirrored to the previous system).
       operationId: removeCaseTag
       security:
         - bearerAuth: []

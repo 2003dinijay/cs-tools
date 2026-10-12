@@ -4803,7 +4803,7 @@ paths:
 
   /cases/{id}/tags:
     post:
-      summary: Attach a free-text tag to a support case.
+      summary: Attach a free-text tag to a support case or a change request.
       description: >-
         The id is a work item id: a case-like work item's, or a change request's (the CSM
         portal tags change requests through this same route; a change request hidden from a
@@ -4859,7 +4859,7 @@ paths:
 
   /cases/{id}/tags/{tagId}:
     delete:
-      summary: Detach a tag from a support case.
+      summary: Detach a tag from a support case or a change request.
       description: >-
         The id is a work item id: a case-like work item's or a change request's, as for
         POST /cases/{id}/tags. A change request's tag removal is never mirrored to the
