@@ -1,91 +1,103 @@
 # til-backend
 
-Backend for "Today I Learned" — a company-wide feed of learnings from
-customers, partners, and internal sources. The One WSO2 `/me/til` page is
-the only entry point allowed to create an entry — `POST /submissions`
-rejects any caller whose verified token identity isn't the webapp's own
-Asgardeo client id (`ONE_WSO2_WEBAPP_CLIENT_ID`).
+The backend for "Today I Learned": a company-wide feed of learnings from
+customers, partners and internal work. The One WSO2 webapp is its only
+client for sharing and editing entries; any signed-in employee can read them.
 
 ## Run locally
 
+Needs Go 1.26 and a MySQL 8 server.
+
 ```bash
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-cp .env.example .env   # fill in DB_PASSWORD, ASGARDEO_JWKS_URL / ASGARDEO_ISSUER / TIL_MODERATOR_GROUP / ONE_WSO2_WEBAPP_CLIENT_ID
+# Once per database: create it, then its tables.
+mysql -h 127.0.0.1 -u root -p -e "CREATE DATABASE IF NOT EXISTS til CHARACTER SET utf8mb4"
+mysql -h 127.0.0.1 -u root -p til < sql/create_til_tables.sql
 
-# Prerequisite, once per database -- db.py only ever verifies this table
-# exists, it never creates it (same posture as the PAR Legacy Migration
-# Tool's own sql/create_migration_tables.sql):
-mysql -h localhost -u root -p -e "CREATE DATABASE IF NOT EXISTS til"
-mysql -h localhost -u root -p til < sql/create_til_tables.sql
-
-uvicorn main:app --reload --port 8077
+cp .env.example .env   # fill in the database, auth and webapp settings
+set -a; . ./.env; set +a
+PORT=8078 go run ./cmd/server
 ```
 
-Without a real `.env`, every endpoint fails closed with 503 ("Authentication
-is not configured") rather than silently allowing requests through — verified
-live, not assumed. Starting the app against a database missing
-`til_submissions` fails loudly too (a clear `RuntimeError` naming the exact
-SQL file to run), rather than silently creating the table itself.
+The service reads the caller's token only from `x-jwt-assertion`, which the
+API gateway sets in a deployment. Locally, put the repo's gateway shim in
+front of it on the port the webapp calls. The shim turns the webapp's
+`Authorization: Bearer` header into `x-jwt-assertion`:
+
+```bash
+cd ../../../scripts/csm-compose/gateway-shim
+PORT=8077 UPSTREAM_URL=http://localhost:8078 go run .
+```
+
+The service checks its settings and the database at startup, and stops with
+a message naming what's wrong: a missing setting, an unreachable database,
+or a missing `til_entry` table.
 
 ## Test
 
 ```bash
-python3 -m pytest -q
+make test
 ```
 
-Tests, all passing: validation rules (`test_validation.py`), HTML
-sanitizing (`test_sanitize.py`), the MySQL storage layer (`test_db.py`),
-and the request-handling rules — including the webapp-only submission gate
-— in `test_main.py`. Both DB-touching suites run against a real local
-`til_test` database (`conftest.py` creates it and its schema automatically,
-and truncates between tests) — the same MySQL server as the real `til`
-database, never that database itself.
+This runs `go vet` and every test with the race detector. The store tests
+run against MySQL only when `TIL_TEST_DATABASE_DSN` is set, e.g.
+`root:root@tcp(127.0.0.1:3306)/`. They create and use a `til_test` database
+there and never touch any other.
+
+## Configuration
+
+Every setting is an environment variable; `.env.example` lists and explains
+them all.
+
+| Setting | Required | |
+|---|---|---|
+| `DB_HOST`, `DB_PORT`, `DB_USER`, `DB_PASSWORD`, `DB_NAME` | yes (port defaults to 3306) | The MySQL database. |
+| `AUTH_JWKS_ENDPOINT`, `AUTH_ISSUER` | yes | Where the token's signing keys are published, and its issuer. |
+| `AUTH_AUDIENCE` | no | Client ids a token must be issued to. |
+| `AUTH_MODERATOR_GROUPS` | no | Groups whose members may edit and delete anyone's entries. |
+| `ONE_WSO2_WEBAPP_CLIENT_ID` | no | The webapp's client id. Only a token issued to it may share or edit; unset means no one can. |
+| `ONE_WSO2_BASE_URL` | no | The webapp's address, for the "Read more" link in Google Chat. |
+| `CORS_ALLOWED_ORIGINS` | no | Browser origins allowed to call the API. |
+| `PORT`, `REST_READ_TIMEOUT`, `REST_WRITE_TIMEOUT` | no | Defaults 8077, 15s, 45s. |
+| `ENTITY_SERVICE_*` | no | Customer-name suggestions from entity-service: the base URL, token URL, client id and secret together, or none. `ENTITY_SERVICE_SCOPES` is optional. |
+| `NOVERA_*` | no | Announcing new entries in Google Chat through Novera: all four or none. |
 
 ## API
 
-| Method | Path | Notes |
+`openapi.yaml` describes every operation. Errors are `{"message": "..."}`,
+written to be shown to people as they are.
+
+| Method | Path | |
 |---|---|---|
-| GET | `/user-info` | `{ email, displayName, canModerate }` |
-| GET | `/customers/search?q=` | `[{ id, name }]`; backs the Customer autocomplete, `[]` if `ENTITY_SERVICE_*` isn't configured |
-| GET | `/submissions?limit=&cursor=&q=&scope=&dateFrom=&dateTo=&mine=` | Newest first; `nextCursor` is `null` on the last page. `q`/`scope` search (`scope` one of `what`, `title`, `who`, `email`, `whereDetail`; default `what`), `dateFrom`/`dateTo` are `YYYY-MM-DD` (400 if not a valid date), `mine=true` restricts to the caller's own entries |
-| POST | `/submissions` | `{ title, who, where, what, whereDetail? }`; 403 unless the caller's verified token identity is the One WSO2 webapp's own Asgardeo client id |
-| GET | `/submissions/{id}` | A single entry |
-| PUT | `/submissions/{id}` | `{ title, where, what, whereDetail? }`; 403 unless the caller is in `TIL_MODERATOR_GROUP` or is the entry's own submitter, plus the same webapp-only gate as `POST /submissions`. The byline (`who`, `submittedByEmail`) and `createdAt` never change; `updatedAt` is set on a real change and stays `null` on an entry never edited. No Novera broadcast |
-| DELETE | `/submissions/{id}` | 403 unless the caller is in `TIL_MODERATOR_GROUP` or is the entry's own submitter |
-| POST | `/uploads` | `multipart/form-data` with a `file` field (image, ≤5 MB); `{ url }`; same webapp-only gate as `POST /submissions` |
-| GET | `/health` | For Choreo/liveness checks |
+| GET | `/health` | Liveness. No token needed. |
+| GET | `/user-info` | `{email, displayName, canModerate}` |
+| GET | `/customers/search?q=` | `[{id, name}]`; empty when suggestions are off. |
+| GET | `/submissions` | `{items, total, limit, offset}`, newest first. Query: `q` (search), `dateFrom`/`dateTo` (`YYYY-MM-DD`, inclusive, UTC), `mine=true`, `limit` (1–100, default 10), `offset`. |
+| POST | `/submissions` | `{title, who, where, what, whereDetail?}`. Webapp only. Announced in Google Chat. |
+| GET | `/submissions/{id}` | One entry. |
+| PUT | `/submissions/{id}` | `{title, where, what, whereDetail?}`. Webapp only; the author or a moderator. |
+| DELETE | `/submissions/{id}` | The author or a moderator. |
 
-## Design notes
+## How it works
 
-- **Storage**: MySQL (`db.py`, via PyMySQL — same connection-pool pattern as
-  the PAR Legacy Migration Tool's own `db.py`). The app never creates
-  `til_submissions` itself; `sql/create_til_tables.sql` is a prerequisite an
-  operator runs once per database, and `init_db()` just verifies it exists,
-  failing loudly (not auto-creating) if it doesn't.
-- **Auth**: same pattern as the PAR Legacy Migration Tool's `auth.py` in
-  `digiops-hr` — independently verifies the JWT's real signature against
-  Asgardeo's own JWKS, never trusts a forwarded header blindly. Fails closed
-  (503) if `ASGARDEO_JWKS_URL`/`ASGARDEO_ISSUER`/`TIL_MODERATOR_GROUP` are
-  unset, rather than defaulting open.
-- **No anonymous entries**: `submittedByEmail` is always derived from the
-  verified token, never the request body.
-- **Webapp-only submission**: the One WSO2 webapp is the only entry point
-  allowed to create an entry — `POST /submissions` checks the caller's
-  verified token identity (`aud`/`client_id`/`azp`) against
-  `ONE_WSO2_WEBAPP_CLIENT_ID` and rejects everything else with a 403. There
-  is no other submission path.
-- **Notification**: a successful submission broadcasts into every connected
-  employee's own 1:1 DM with Novera (`novera_notify.py`) — the only
-  notification channel this service has.
-
-## Still needed before a real deployment (not achievable from this environment)
-
-1. A real Choreo (or equivalent) deployment, with `ASGARDEO_JWKS_URL`,
-   `ASGARDEO_ISSUER`, `TIL_MODERATOR_GROUP`, and `ONE_WSO2_WEBAPP_CLIENT_ID`
-   set to the real values — the moderator group especially needs an actual
-   decision on who moderates.
-2. A real MySQL database provisioned per environment (staging/prod), with
-   `sql/create_til_tables.sql` run against it once and `DB_HOST`/`DB_PORT`/
-   `DB_USER`/`DB_PASSWORD`/`DB_NAME` set to match.
+- **Identity.** Each token's signature, issuer and expiry are checked against
+  the published keys. `submittedByEmail` always comes from the token, never
+  the request, so no entry is anonymous and no one can post as someone else.
+- **Webapp only.** Sharing and editing need a token issued to the webapp
+  (`ONE_WSO2_WEBAPP_CLIENT_ID`). An employee's token from another
+  application can read and delete, but not post.
+- **Authors and moderators.** Only an entry's author (by verified email) or
+  a moderator can edit or delete it. An edit never changes the byline, and a
+  save that changes nothing doesn't mark the entry as edited.
+- **Sanitising.** The learning is HTML from a rich-text editor. It is
+  sanitised on every write to the editor's own formatting (paragraphs, line
+  breaks, bold, italic, underline, lists, links), whatever the client sent.
+  Entries are text only.
+- **Search.** Each entry's plain text is stored beside its HTML. A
+  full-text index over the title, that text, the author and the customer or
+  partner name serves search, so markup never matches. Every word has to
+  match, and a word matches the start of a word. Words the index can't hold
+  (under three characters, or common words such as "the") are matched as
+  text.
+- **Announcements.** A new entry is sent to Novera, which posts it to every
+  employee who has a chat open with it. This is best effort: a failure is
+  logged and never fails the request.
