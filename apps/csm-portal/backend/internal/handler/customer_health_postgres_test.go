@@ -653,6 +653,39 @@ func TestGetCustomerHealthDetail_AccountFound(t *testing.T) {
 	}
 }
 
+// TestGetCustomerHealthDetail_ProjectSysIDIsFlat pins a real, confirmed bug:
+// ProjectDetail.SysID (and every other sys_id-shaped field this function
+// constructs) was left as entity-service's own dashed UUID, while
+// GetAccountHealthStatus (internal/risk) returns ProjectSysID in the flat
+// 32-character shape the rest of this feature's wire contract uses -- the
+// webapp matches a project's health-status row back to its own card by
+// comparing these two fields for equality, so the mismatch meant marking a
+// project healthy/at-risk never appeared to do anything: the lookup could
+// never succeed.
+func TestGetCustomerHealthDetail_ProjectSysIDIsFlat(t *testing.T) {
+	fake := &fakeEntityCustomerHealthClient{
+		account: &entityAccountView{ID: "acc-1", Name: "Acme Corp"},
+		projects: entitySearchProjectsResponse{
+			Projects: []entityProjectView{{ID: "12f3e20a-1bfd-3610-0bb3-da47b04bcb44", Name: "Project One"}},
+			Total:    1,
+		},
+		caseResponses: []entitySearchCasesResponse{{Total: 0}},
+	}
+	c := NewPostgresCustomerHealthClient(fake)
+
+	detail, err := c.GetCustomerHealthDetail(context.Background(), "acc-1")
+	if err != nil {
+		t.Fatalf("GetCustomerHealthDetail: %v", err)
+	}
+	if len(detail.CustomerProjects) != 1 {
+		t.Fatalf("got %d projects, want 1", len(detail.CustomerProjects))
+	}
+	const wantFlat = "12f3e20a1bfd36100bb3da47b04bcb44"
+	if got := detail.CustomerProjects[0].SysID; got != wantFlat {
+		t.Errorf("ProjectDetail.SysID = %q, want flat sys_id %q (matching GetAccountHealthStatus's own ProjectSysID shape)", got, wantFlat)
+	}
+}
+
 // TestAccountCasesFull_ErrorsPastItsSafetyBound pins the fix for a review
 // finding: accountCasesFull must fail loudly, not silently return a
 // truncated case list, when an account has more cases than its own

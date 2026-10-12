@@ -1094,7 +1094,7 @@ func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, p enti
 		}
 		if !group.seenDepIDs[dp.Deployment.ID] {
 			group.seenDepIDs[dp.Deployment.ID] = true
-			group.deployments = append(group.deployments, servicenow.Deployment{SysID: dp.Deployment.ID, Name: dp.Deployment.Name})
+			group.deployments = append(group.deployments, servicenow.Deployment{SysID: uuidToSysID(dp.Deployment.ID), Name: dp.Deployment.Name})
 		}
 	}
 	softwareModel := make([]servicenow.EolProduct, 0, len(softwareModelOrder))
@@ -1104,7 +1104,7 @@ func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, p enti
 	}
 	deploymentRefs := make([]servicenow.Deployment, 0, len(deps))
 	for _, d := range deps {
-		deploymentRefs = append(deploymentRefs, servicenow.Deployment{SysID: d.ID, Name: d.Name})
+		deploymentRefs = append(deploymentRefs, servicenow.Deployment{SysID: uuidToSysID(d.ID), Name: d.Name})
 	}
 	_ = deployedProducts // every deployed product under the project; not surfaced beyond the EOL subset today
 
@@ -1113,7 +1113,7 @@ func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, p enti
 	status := projectGoLiveStatus(p.GoLiveDate, activationDate, time.Now())
 
 	return servicenow.ProjectDetail{
-		SysID:                   p.ID,
+		SysID:                   uuidToSysID(p.ID),
 		Name:                    p.Name,
 		HasRecentCases:          len(recentCases) > 0,
 		DetailedRecentCases:     recentGroups,
@@ -1129,6 +1129,39 @@ func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, p enti
 		DetailedEscalatedCases:  escalatedCases,
 		GoLiveStatus:            status,
 	}, nil
+}
+
+// uuidToSysID strips the dashes out of an entity-service UUID to match the
+// flat 32-character sys_id shape every other customer-health response field
+// already uses -- internal/risk's own uuidToSysID (private to that package,
+// so not reusable directly from here) documents the same convention: the
+// webapp compares a project's sysId field-for-field across endpoints (e.g.
+// matching GetCustomerHealthDetail's own ProjectDetail.SysID against
+// GetAccountHealthStatus's ProjectSysID to show each project's current
+// review status), so every project/deployment/case id this file places into
+// a response must be in the same flat shape those other endpoints already
+// use, or the two will never compare equal.
+//
+// Found live, a real, confirmed bug: ProjectDetail.SysID (and every other
+// sys_id-shaped field constructed in this file) was left as the raw, dashed
+// UUID entity-service itself uses -- so a project's health-status/action
+// items could never be matched back to its own card in the UI, and marking
+// a project healthy/at-risk never appeared to do anything, because the two
+// ids being compared never actually matched.
+func uuidToSysID(uuid string) string {
+	return strings.ReplaceAll(uuid, "-", "")
+}
+
+// sysIDToUUID is uuidToSysID's inverse: reformats a flat 32-character
+// sys_id back into the dashed UUID shape entity-service itself uses. A
+// value that isn't exactly 32 characters (already dashed, or some other
+// shape) is returned unchanged -- the same fail-safe passthrough
+// internal/risk's own identically-named, otherwise-unrelated helper uses.
+func sysIDToUUID(sysID string) string {
+	if len(sysID) != 32 {
+		return sysID
+	}
+	return sysID[0:8] + "-" + sysID[8:12] + "-" + sysID[12:16] + "-" + sysID[16:20] + "-" + sysID[20:32]
 }
 
 // filterCases returns the subset of cases for which keep returns true --
@@ -1172,7 +1205,7 @@ func escalationLinks(escalations []entityEscalation, cases []entitySearchCaseVie
 	}
 	links := make([]servicenow.CaseLink, 0, len(escalations))
 	for _, e := range escalations {
-		link := servicenow.CaseLink{EscalationSysID: e.ID}
+		link := servicenow.CaseLink{EscalationSysID: uuidToSysID(e.ID)}
 		if cv, ok := caseByID[e.Case.ID]; ok {
 			link.Number = cv.Number
 			link.EscalationNumber = cv.Number
@@ -1196,7 +1229,7 @@ func groupCasesByPriority(cases []entitySearchCaseView) []servicenow.CaseGroup {
 		if _, ok := byPriority[priority]; !ok {
 			order = append(order, priority)
 		}
-		byPriority[priority] = append(byPriority[priority], servicenow.CaseInfo{SysID: cv.ID, Number: cv.Number})
+		byPriority[priority] = append(byPriority[priority], servicenow.CaseInfo{SysID: uuidToSysID(cv.ID), Number: cv.Number})
 	}
 	groups := make([]servicenow.CaseGroup, 0, len(order))
 	for _, priority := range order {
@@ -1214,7 +1247,7 @@ func groupCasesByPriority(cases []entitySearchCaseView) []servicenow.CaseGroup {
 func caseLinks(cases []entitySearchCaseView) []servicenow.CaseLink {
 	links := make([]servicenow.CaseLink, 0, len(cases))
 	for _, cv := range cases {
-		links = append(links, servicenow.CaseLink{SysID: cv.ID, Number: cv.Number})
+		links = append(links, servicenow.CaseLink{SysID: uuidToSysID(cv.ID), Number: cv.Number})
 	}
 	return links
 }

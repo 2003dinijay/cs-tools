@@ -233,6 +233,50 @@ func TestCustomerHealthHandler_GetSummary_HealthStatusFilterStopsOnTotalCount(t 
 	}
 }
 
+// TestCustomerHealthHandler_GetSummary_HealthStatusFilterMatchesDashedAccountIDs
+// pins a real, confirmed bug: GetAccountsByHealthStatus returns ids in the
+// flat 32-character sys_id shape (internal/risk's own documented
+// convention), but GetCustomerHealthSummary's own AccountSysID is
+// entity-service's dashed UUID -- comparing the two directly (as the
+// pre-fix code did) can never match, so selecting any health-status filter
+// in the real account list always returned zero accounts regardless of
+// what was actually stored.
+func TestCustomerHealthHandler_GetSummary_HealthStatusFilterMatchesDashedAccountIDs(t *testing.T) {
+	const dashedID = "441e160e-1bbd-3610-0bb3-da47b04bcb4f"
+	const flatID = "441e160e1bbd36100bb3da47b04bcb4f"
+	sn := &fakeSNCustomerHealthClient{
+		getCustomerHealthSummary: func(ctx context.Context, email, phrase, risks *string, region []string, product, abtTeam *string, offset, limit int) (*servicenow.AccountSummaryResponse, error) {
+			return &servicenow.AccountSummaryResponse{
+				Data:       []servicenow.AccountSummary{{AccountSysID: dashedID, AccountName: strPtr("EOL Test")}},
+				TotalCount: 1,
+			}, nil
+		},
+	}
+	rc := &fakeRiskClient{
+		getAccountsByHealthStatus: func(ctx context.Context, healthStatus string) ([]string, error) {
+			return []string{flatID}, nil
+		},
+		getBatchHealthSummaries: func(ctx context.Context, accountSysIDs []string) (map[string]string, error) {
+			return map[string]string{dashedID: "at_risk"}, nil
+		},
+	}
+	h := NewCustomerHealthHandler(rc, sn, viewerAccessGuard)
+
+	body := []byte(`{"healthStatus":"at_risk"}`)
+	req := withUser(httptest.NewRequest(http.MethodPost, "/spl/customer-health/summary", bytes.NewReader(body)))
+	w := httptest.NewRecorder()
+	h.GetSummary(w, req)
+
+	assertStatus(t, w, http.StatusOK)
+	resp := decodeJSON[accountSummaryResponse](t, w)
+	if resp.TotalCount != 1 || len(resp.Data) != 1 {
+		t.Fatalf("resp = %+v, want exactly the one at_risk account", resp)
+	}
+	if resp.Data[0].AccountSysID != dashedID {
+		t.Errorf("AccountSysID = %q, want %q", resp.Data[0].AccountSysID, dashedID)
+	}
+}
+
 func TestCustomerHealthHandler_OpenRisk_RejectsMissingUser(t *testing.T) {
 	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, viewerAccessGuard)
 	req := httptest.NewRequest(http.MethodPost, "/spl/customer-health/projects/proj-1/risk", bytes.NewReader([]byte(`{}`)))
