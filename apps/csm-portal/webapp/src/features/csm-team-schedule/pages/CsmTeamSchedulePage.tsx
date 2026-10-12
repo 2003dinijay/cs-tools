@@ -45,7 +45,7 @@ import MyWeekStrip from "../components/MyWeekStrip";
 import NextRotation from "../components/NextRotation";
 import RecentChanges from "../components/RecentChanges";
 import UndoToast, { type UndoOffer } from "../components/UndoToast";
-import { awayIsRevertible, rotaRevertRuns } from "../utils/undo";
+import { UndoIncomplete, applyRevertRuns, awayIsRevertible, rotaRevertRuns } from "../utils/undo";
 import WeekTable from "../components/WeekTable";
 import CasePagingTab, { type PagingRotaTarget } from "../components/CasePagingTab";
 import { useGetPagingChain } from "../api/usePagingChain";
@@ -761,18 +761,17 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     if (!loaded(from, to)) return undefined;
     const runs = rotaRevertRuns(rows, shifts, userId, from, to, appliedCode);
     if (!runs) return undefined;
-    return async () => {
-      for (const r of runs) {
-        await applyRange.mutateAsync({
+    return () =>
+      applyRevertRuns(runs, (r) =>
+        applyRange.mutateAsync({
           userId,
           teamKey,
           shiftCode: r.code,
           from: r.from,
           to: r.to,
           note: "undone from the roster",
-        });
-      }
-    };
+        }),
+      );
   };
 
   /** Leave or an allocation marked over days that had none: taking it off
@@ -1534,8 +1533,17 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           setUndoOffer({ ...done, id: done.id + 1, verb: "Undone", undo: undefined });
         }}
         onUndoFailed={(err) => {
+          const done = undoOffer;
           setUndoOffer(null);
-          showError("The undo did not finish. Check those days on the roster before changing them again.", err);
+          // Part of it went back: those days are as they were, so only the
+          // rest stay marked as this session's.
+          if (err instanceof UndoIncomplete && done) {
+            setChanges((cs) => cs.map((c) => (c === done.change ? { ...c, from: err.remainingFrom } : c)));
+          }
+          showError(
+            "The undo did not finish. Check those days on the roster before changing them again.",
+            err instanceof UndoIncomplete ? err.failure : err,
+          );
         }}
       />
       {canGenerateRota ? (
