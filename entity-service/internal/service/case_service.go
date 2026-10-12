@@ -863,7 +863,7 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	// should be the title and description" worked wherever comments are read
 	// live from ServiceNow (plain DATA_SOURCE=servicenow), but not under
 	// dual-write, where nothing ever copied it into Postgres.
-	s.mirrorInitialSNComments(ctx, c.ID)
+	s.mirrorInitialSNComments(ctx, c.ID, req.Type, req.Description)
 
 	// Persists whatever the caller's own req.WatchList already asked for --
 	// the account's four named stakeholders are deliberately NOT persisted
@@ -925,11 +925,19 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 // exclusively on this data source, so without this step ServiceNow's own
 // auto-generated entries would never appear here at all.
 //
+// One entry is deliberately not copied: for an announcement, ServiceNow's
+// origin comment that is only a repeat of the description
+// (isAnnouncementOriginComment), the earliest such comment. The announcement's description is already
+// stored on the work item and every reader shows it, so the repeat made the
+// same body appear twice (once as the oldest comment, once as the
+// description). Anything else ServiceNow wrote, and every other case type, is
+// copied exactly as before.
+//
 // Best-effort: a failure here must not fail the case creation response,
 // since ServiceNow and Postgres both already have the case row by this
 // point -- same "log, don't return" posture as every other post-create side
 // effect in createCaseSNFirst (addRequestedWatchers, publishCaseCreatedEvent).
-func (s *caseService) mirrorInitialSNComments(ctx context.Context, caseID string) {
+func (s *caseService) mirrorInitialSNComments(ctx context.Context, caseID, caseType, description string) {
 	resp, err := s.snMirror.SearchCaseComments(ctx, domain.SearchCaseCommentsRequest{
 		CaseID:     caseID,
 		Pagination: domain.Pagination{Limit: 20, Offset: 0},
@@ -938,11 +946,28 @@ func (s *caseService) mirrorInitialSNComments(ctx context.Context, caseID string
 		slog.ErrorContext(ctx, "sn create case: fetch ServiceNow's initial comments for mirroring failed", "caseId", caseID, "error", err)
 		return
 	}
-	for _, c := range resp.Comments {
+	// For an announcement, the one comment to leave out: the EARLIEST public
+	// comment that only repeats the description. Only that one is the origin
+	// comment; a later comment with the same text is a real post (nothing stops
+	// someone repeating a body) and is copied like any other. ServiceNow's
+	// search order is not relied on, so this is chosen by CreatedOn.
+	originIdx := -1
+	if caseType == "announcement" {
+		for i, c := range resp.Comments {
+			if c.Type == domain.CommentTypeComment && isAnnouncementOriginComment(description, c.Content) &&
+				(originIdx == -1 || c.CreatedOn.Before(resp.Comments[originIdx].CreatedOn)) {
+				originIdx = i
+			}
+		}
+	}
+	for i, c := range resp.Comments {
 		// "activity" (APPROVAL_HISTORY) is ServiceNow's own audit trail and
 		// is never writable through CreateCaseComment -- see that method's
 		// identical restriction. Skipped, not an error.
 		if c.Type == domain.CommentTypeActivity {
+			continue
+		}
+		if i == originIdx {
 			continue
 		}
 		createdBy := "system"
