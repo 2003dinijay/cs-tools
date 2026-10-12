@@ -15004,6 +15004,13 @@ components:
         region:
           type: string
           nullable: true
+        subRegion:
+          type: string
+          nullable: true
+          description: >
+            A finer-grained geography than region (e.g. "ASIA"/"NA - WEST"
+            under region "APAC"/"NA") -- account.sub_region, a distinct
+            column, not derived from region.
         supportTier:
           type: string
           nullable: true

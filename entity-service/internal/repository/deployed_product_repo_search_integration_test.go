@@ -46,6 +46,11 @@ const (
 	// dpSearchBareID leaves both NULL, the pre-existing (and still valid)
 	// "nothing recorded" shape.
 	dpSearchBareID = "37555555-0000-0000-0000-000000000001"
+	// dpSearchMalformedID has update_level_info stored as a JSON object
+	// (confirmed, on real synced data, as a shape a minority of rows
+	// actually carry) rather than the array this column is otherwise
+	// always written/read as.
+	dpSearchMalformedID = "37666666-0000-0000-0000-000000000001"
 )
 
 // seedDeployedProductSearchFixture creates one project/deployment/product
@@ -61,7 +66,7 @@ func seedDeployedProductSearchFixture(t *testing.T, pool *pgxpool.Pool) {
 	scoped := repository.NewScoped(pool)
 
 	cleanup := func() {
-		_, _ = scoped.Exec(ctx, `DELETE FROM deployed_product WHERE id IN ($1, $2)`, dpSearchFullID, dpSearchBareID)
+		_, _ = scoped.Exec(ctx, `DELETE FROM deployed_product WHERE id IN ($1, $2, $3)`, dpSearchFullID, dpSearchBareID, dpSearchMalformedID)
 		_, _ = scoped.Exec(ctx, `DELETE FROM deployment WHERE id = $1`, dpSearchDeploymentID)
 		_, _ = pool.Exec(ctx, `DELETE FROM product WHERE id = $1`, dpSearchProductID)
 		_, _ = pool.Exec(ctx, `DELETE FROM project WHERE id = $1`, dpSearchProjectID)
@@ -99,6 +104,12 @@ func seedDeployedProductSearchFixture(t *testing.T, pool *pgxpool.Pool) {
 	mustExec(`INSERT INTO deployed_product (id, created_on, updated_on, created_by, updated_by, number, active, project_id, deployment_id, product_id)
 	          VALUES ($1, now(), now(), 'dp-search-test', 'dp-search-test', 'DPSEARCHBARE01', true, $2, $3, $4)`,
 		dpSearchBareID, dpSearchProjectID, dpSearchDeploymentID, dpSearchProductID)
+
+	mustExec(`INSERT INTO deployed_product (id, created_on, updated_on, created_by, updated_by, number, active, project_id, deployment_id, product_id, update_level_info)
+	          VALUES ($1, now(), now(), 'dp-search-test', 'dp-search-test', 'DPSEARCHMALF01', true, $2, $3, $4, $5::jsonb)`,
+		dpSearchMalformedID, dpSearchProjectID, dpSearchDeploymentID, dpSearchProductID,
+		`{"updateLevel":5,"date":"2026-01-10"}`,
+	)
 }
 
 // TestSearchDeployedProductsDescriptionAndUpdates regression-tests the gap
@@ -159,5 +170,17 @@ func TestSearchDeployedProductsDescriptionAndUpdates(t *testing.T) {
 	}
 	if len(bare.Updates) != 0 {
 		t.Errorf("bare.Updates = %+v, want nil/empty", bare.Updates)
+	}
+
+	// A row whose update_level_info is a JSON object rather than an array
+	// (real, synced shape on a minority of rows -- see this column's own
+	// doc comment) must not fail the whole search: it is returned with
+	// Updates left nil, same as a row with nothing recorded at all.
+	malformed, ok := byID[dpSearchMalformedID]
+	if !ok {
+		t.Fatalf("malformed fixture row %s not found in search results", dpSearchMalformedID)
+	}
+	if len(malformed.Updates) != 0 {
+		t.Errorf("malformed.Updates = %+v, want nil/empty", malformed.Updates)
 	}
 }

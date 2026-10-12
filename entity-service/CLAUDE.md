@@ -6549,6 +6549,31 @@ simply never selected it. Fixed by adding `p.code` to the query and scanning it 
 `Product.Abbreviation` (already the correct `*string` type for a nullable column). Doc comment
 corrected to match.
 
+## SearchDeployedProducts 500'd on a row whose update_level_info isn't a JSON array
+
+Found while verifying a downstream caller's filters end to end against a real, locally-run
+instance of this service (not a hand-rolled fake) and real staging data: `POST
+/deployed-products/search` (and anything that calls `SearchDeployedProducts` transitively,
+which includes the customer-health `hasEolProduct` flag and its new `product` filter in
+`apps/csm-portal/backend` -- see that repo's own `CLAUDE.md`) failed outright with a 500 for
+any request whose result set included one specific real, synced shape: `deployed_product.update_level_info` is JSONB with no shape constraint at the
+database level, and while the overwhelming majority of real rows are either `NULL` or a JSON
+array (the only shape `json.Unmarshal(..., &[]domain.ProductUpdateEntry{})` can read), a real
+minority on staging are a JSON object or a plain string. `SearchDeployedProducts`'s scan
+returned that unmarshal error directly, failing the whole page -- not just the one malformed
+row -- for any caller unlucky enough to have one of those rows land on their page. This broke
+the customer-health summary endpoint **unfiltered**, for any account whose deployments happen
+to include such a row, which is exactly the failure mode a live verification pass against
+staging surfaced (a plain, no-filter request 500ing).
+
+Fixed the same way this file's own `Updates` field is already documented elsewhere ("not
+populated... deliberately left nil rather than guessed at" -- `product_version.update_level_info`
+history): a row that can't be decoded into `[]domain.ProductUpdateEntry` is logged
+(`slog.WarnContext`, the deployed product's id and the raw error) and left with `Updates`
+unset, exactly like a row with nothing recorded at all, instead of failing the entire search.
+`TestSearchDeployedProductsDescriptionAndUpdates` (the existing integration test for this
+column) gained a third fixture row with an object-shaped `update_level_info` pinning this.
+
 ## GET /projects/{id} and POST /projects/search were missing most of a project's own fields
 
 Found by diffing the Postgres and ServiceNow customer-portal responses field-for-field
@@ -6658,9 +6683,8 @@ written queries against the same table can drift in which columns they
 SELECT" gap this file's own `ClosureState`/`StartDate` history already
 covers. Found by a caller that needs to know whether a project has gone
 live when searching by account rather than fetching one project at a time
-(`apps/csm-portal/backend`'s customer-health `hasNoGoLive` risk flag, which
-ports the real ServiceNow script's own `_NoGoLiveStatus` -- see that repo's
-own `CLAUDE.md`). Fixed across all three layers: `domain.Project` and
+(`apps/csm-portal/backend`'s customer-health `hasNoGoLive` risk flag -- see
+that repo's own `CLAUDE.md`). Fixed across all three layers: `domain.Project` and
 `domain.ProjectView` both gained a `GoLiveDate *time.Time` field,
 `project_repo.go`'s `SearchProjects` query now selects
 `p.onboarding_go_live_date` alongside `p.onboarding_status`, and
@@ -6678,8 +6702,7 @@ marshals as a full RFC3339 timestamp -- a different format from
 `SearchDeployments`'s SQL has always had a permanent, hardcoded
 `d.is_active = TRUE` filter with no way to override it (see that query's own
 long-standing doc comment) -- the right default for a general UI listing
-(a deactivated deployment should simply stop appearing, the same way
-ServiceNow's own listing already behaves for a deactivated record), but
+(a deactivated deployment should simply stop appearing, permanently), but
 wrong for a caller that needs to see every deployment's product history
 regardless of its current active state. Found live: `apps/csm-portal/backend`'s
 customer-health `hasEolProduct` risk flag was a false negative for a real

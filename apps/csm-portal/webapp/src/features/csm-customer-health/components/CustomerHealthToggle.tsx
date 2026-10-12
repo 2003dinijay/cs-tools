@@ -14,10 +14,14 @@
 // specific language governing permissions and limitations
 // under the License.
 
-// Ported verbatim — no backend call. `value` is entirely derived from
-// `page`, no local state to sync via an effect.
-import { Tab, Tabs } from "@wso2/oxygen-ui";
-import { useTheme } from "@mui/material/styles";
+// `value` is entirely derived from `page`, no local state to sync via an
+// effect. Uses the same ToggleButtonGroup/ToggleButton pattern already
+// established elsewhere in this app (features/plg/pages/organizations/
+// ProductTab.tsx's own health-state toggle) instead of the Tabs-in-a-pill
+// hack this previously was -- that version relied on a raw inline `style`
+// with a magic `height: "49.5px"` and an invalid `boxShadow: "insert"`
+// (a no-op typo for "inset").
+import { ToggleButton, ToggleButtonGroup } from "@wso2/oxygen-ui";
 
 export type AccountScopeState = "my-accounts" | "all-accounts";
 
@@ -27,30 +31,22 @@ interface CustomerHealthToggleProps {
 }
 
 export default function CustomerHealthToggle({ onSwitchClick, page }: CustomerHealthToggleProps) {
-  const theme = useTheme();
-  const value = page === "all-accounts" ? 0 : 1;
-
   return (
-    <div
-      style={{
-        border: `1px solid ${theme.palette.primary.main}`,
-        borderRadius: 25,
-        height: "49.5px",
-        width: "fit-content",
+    <ToggleButtonGroup
+      exclusive
+      size="small"
+      color="primary"
+      value={page}
+      sx={{ height: 40 }}
+      onChange={(_, next: AccountScopeState | null) => {
+        // next is null when the pressed button was already selected --
+        // ignored so the scope always stays chosen, same guard ProductTab's
+        // own ToggleButtonGroup uses.
+        if (next) onSwitchClick(next);
       }}
     >
-      <Tabs
-        sx={{
-          justifyContent: "flex-start",
-          "& button": { borderRadius: 10, boxShadow: "insert", zIndex: 1 },
-          "& button.Mui-selected": { color: theme.palette.primary.contrastText },
-        }}
-        value={value}
-        slotProps={{ indicator: { sx: { backgroundColor: "primary.main", height: "100%", borderRadius: 10 } } }}
-      >
-        <Tab onClick={() => onSwitchClick("all-accounts")} label="All Accounts" />
-        <Tab onClick={() => onSwitchClick("my-accounts")} label="My Accounts" />
-      </Tabs>
-    </div>
+      <ToggleButton value="all-accounts">All Accounts</ToggleButton>
+      <ToggleButton value="my-accounts">My Accounts</ToggleButton>
+    </ToggleButtonGroup>
   );
 }
