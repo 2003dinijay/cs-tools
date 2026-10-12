@@ -104,6 +104,12 @@ type LadderConfig struct {
 	// cards and closing message go there, and an incident whose team is not
 	// listed (or has none) uses chat above. SRE only.
 	TeamChats map[string]Chat `yaml:"teamChats"`
+	// TeamlessChats is the teamChats keys an incident with no SRE team of its
+	// own posts to, every one of them: a default group (a service mapped to
+	// no SRE team), a customer case at S0, a monitoring alert with no team.
+	// [apollo, artemis] notifies both SaaS teams. Empty, such an incident
+	// posts to chat above, as before. Its closing message follows. SRE only.
+	TeamlessChats []string `yaml:"teamlessChats"`
 	// UnansweredChat posts a closing message when the ladder has called every
 	// rung and nobody acknowledged the incident, to the team's own space
 	// (teamChats), else chat. It is posted whatever channel says, so a
@@ -664,6 +670,21 @@ func (l *LadderConfig) validate(name string) error {
 		if v := strings.TrimSpace(l.Teams.DefaultRota); v != "" && !sreRotaCode.MatchString(strings.ToUpper(v)) {
 			return fmt.Errorf("sre: teams.defaultRota is %q; use an SRE rota code such as %s or %s", v, RotaSRESaaS, RotaSREIaaS)
 		}
+		listed := map[string]bool{}
+		for k := range l.TeamChats {
+			listed[teamKeyFor(k)] = true
+		}
+		named := map[string]bool{}
+		for _, k := range l.TeamlessChats {
+			key := teamKeyFor(k)
+			if !listed[key] {
+				return fmt.Errorf("sre: teamlessChats names %q, which has no space in teamChats", k)
+			}
+			if named[key] {
+				return fmt.Errorf("sre: teamlessChats names %q twice", k)
+			}
+			named[key] = true
+		}
 		seen := map[string]string{}
 		for k, c := range l.TeamChats {
 			key := teamKeyFor(k)
@@ -699,8 +720,8 @@ func (l *LadderConfig) validate(name string) error {
 		if len(l.Teams.DefaultGroups) > 0 {
 			return fmt.Errorf("%s: teams.defaultGroups is an SRE setting", name)
 		}
-		if len(l.TeamChats) > 0 || l.UnansweredChat || l.SMEHandoffChat {
-			return fmt.Errorf("%s: teamChats, unansweredChat and smeHandoffChat are SRE settings", name)
+		if len(l.TeamChats) > 0 || l.UnansweredChat || l.SMEHandoffChat || len(l.TeamlessChats) > 0 {
+			return fmt.Errorf("%s: teamChats, teamlessChats, unansweredChat and smeHandoffChat are SRE settings", name)
 		}
 	}
 	return nil
