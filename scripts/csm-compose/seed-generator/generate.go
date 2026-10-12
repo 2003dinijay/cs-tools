@@ -53,7 +53,8 @@ type genUser struct {
 }
 
 type genAccount struct {
-	id, name string
+	id, name  string
+	lifeCycle string
 }
 
 type genAccountContact struct {
@@ -332,10 +333,11 @@ func genAccounts(ctx context.Context, tx pgx.Tx, internalUsers []genUser, summar
 		activation := createdOn.AddDate(0, 0, -randRange(0, 30))
 
 		// Customer Health lists only accounts whose life_cycle is "Customer"
-		// (and that own at least one project); keep one in ten outside that
-		// so the filter is exercised rather than a no-op.
+		// (and that own at least one project). The last account is a
+		// Prospect, with projects and cases like the others, so the filter
+		// is exercised rather than a no-op.
 		lifeCycle := "Customer"
-		if i%10 == 9 {
+		if i == numAccounts-1 {
 			lifeCycle = "Prospect"
 		}
 		if _, err := tx.Exec(ctx, `
@@ -349,7 +351,7 @@ func genAccounts(ctx context.Context, tx pgx.Tx, internalUsers []genUser, summar
 			return nil, err
 		}
 		summary.accounts++
-		out = append(out, genAccount{id: id, name: name})
+		out = append(out, genAccount{id: id, name: name, lifeCycle: lifeCycle})
 	}
 	return out, nil
 }

@@ -68,12 +68,29 @@ func genWorkItems(
 		contactsByAccount[ac.accountID] = append(contactsByAccount[ac.accountID], ac)
 	}
 
+	// The customer-health dashboard lists only life_cycle "Customer"
+	// accounts, so the one engagement guaranteed to be an abandoned
+	// migration (below) must belong to one of them.
+	var customerAccounts []genAccount
+	for _, a := range accounts {
+		if a.lifeCycle == "Customer" {
+			customerAccounts = append(customerAccounts, a)
+		}
+	}
+	if len(customerAccounts) == 0 {
+		customerAccounts = accounts
+	}
+
 	var out []genWorkItem
 	counter := 0
 
 	for _, spec := range workItemSpecs {
 		for i := 0; i < spec.count; i++ {
+			oldMigration := spec.wtype == "ENGAGEMENT" && i == 0
 			acc := pick(accounts)
+			if oldMigration {
+				acc = pick(customerAccounts)
+			}
 			projs := projectsByAccount[acc.id]
 			if len(projs) == 0 {
 				continue
@@ -113,6 +130,12 @@ func genWorkItems(
 				// engagements count as delayed (60d) or abandoned (180d)
 				// on the customer-health dashboard.
 				createdOn = randRecentTime(1, 400)
+				if oldMigration {
+					// Older than 180 days even after the updated_on offset
+					// below (up to 72h), which is what makes
+					// insertWorkItemExtension turn it into an open migration.
+					createdOn = randRecentTime(184, 400)
+				}
 			}
 			updatedOn := notAfterNow(createdOn.Add(time.Duration(randRange(1, 72)) * time.Hour))
 			subject := subjectForType(spec.wtype)

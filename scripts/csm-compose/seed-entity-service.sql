@@ -49,8 +49,8 @@ INSERT INTO user_role (id, created_on, updated_on, user_id, role_id) VALUES
 ON CONFLICT (id) DO NOTHING;
 
 -- Account + project + deployment.
-INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, customer_success_manager_id, country, city, drive_location) VALUES
-  ('00000000-0000-0000-0000-000000000301', now(), now(), 'seed', 'seed', 'Example Corp', 'ACC-0001', 'SF-0001', '00000000-0000-0000-0000-000000000001', 'United States', 'Mountain View', 'https://drive.example.com/example-corp')
+INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, customer_success_manager_id, country, city, drive_location, life_cycle) VALUES
+  ('00000000-0000-0000-0000-000000000301', now(), now(), 'seed', 'seed', 'Example Corp', 'ACC-0001', 'SF-0001', '00000000-0000-0000-0000-000000000001', 'United States', 'Mountain View', 'https://drive.example.com/example-corp', 'Customer')
 ON CONFLICT (id) DO NOTHING;
 
 -- Customer portal entitlements of the local project type. The customer portal shows its
@@ -317,8 +317,8 @@ INSERT INTO "user" (id, created_on, updated_on, created_by, updated_by, user_nam
   ('00000000-0000-0000-0000-000000000003', now(), now(), 'seed', 'seed', 'sam.other@othercorp.example', 'Sam Other', 'Sam', 'Other', 'sam.other@othercorp.example', true, false)
 ON CONFLICT (id) DO NOTHING;
 
-INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, customer_success_manager_id, country, city, drive_location) VALUES
-  ('00000000-0000-0000-0000-000000000302', now(), now(), 'seed', 'seed', 'Other Corp', 'ACC-0002', 'SF-0002', '00000000-0000-0000-0000-000000000001', 'United Kingdom', 'London', 'https://drive.example.com/other-corp')
+INSERT INTO account (id, created_on, updated_on, created_by, updated_by, name, number, sf_id, customer_success_manager_id, country, city, drive_location, life_cycle) VALUES
+  ('00000000-0000-0000-0000-000000000302', now(), now(), 'seed', 'seed', 'Other Corp', 'ACC-0002', 'SF-0002', '00000000-0000-0000-0000-000000000001', 'United Kingdom', 'London', 'https://drive.example.com/other-corp', 'Customer')
 ON CONFLICT (id) DO NOTHING;
 
 INSERT INTO project (id, created_on, updated_on, created_by, updated_by, key, sf_id, name, account_id, is_active, project_type_id) VALUES
