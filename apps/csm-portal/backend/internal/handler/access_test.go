@@ -41,6 +41,7 @@ func testAccessConfig() AccessConfig {
 		WorknoteCreator:      []string{"test-worknote-creator"},
 		AnnouncementCreator:  []string{"test-announcement-creator"},
 		CommentUpdater:       []string{"test-comment-updater"},
+		PlgAdmin:             []string{"test-plg-admin"},
 	}
 }
 
@@ -218,10 +219,11 @@ func TestAccessGuard_RolesFor(t *testing.T) {
 			"test-viewer", "test-escalator", "test-attachment-downloader",
 			"test-cs-engineer", "test-usage-metrics-viewer", "test-timecard-approver",
 			"test-dashboard-designer", "test-admin", "test-sales-solutions", "test-worknote-creator", "test-announcement-creator",
-			"test-comment-updater",
-		}, []string{"viewer", "escalator", "attachment_downloader", "cs_engineer", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "admin", "sales_solutions", "worknote_creator", "announcement_creator", "comment_updater"}},
+			"test-comment-updater", "test-plg-admin",
+		}, []string{"viewer", "escalator", "attachment_downloader", "cs_engineer", "usage_metrics_viewer", "timecard_approver", "dashboard_designer", "admin", "sales_solutions", "worknote_creator", "announcement_creator", "comment_updater", "plg_admin"}},
 		{"announcement creator is reported like any other portal role", []string{"test-cs-engineer", "test-announcement-creator"}, []string{"cs_engineer", "announcement_creator"}},
 		{"comment updater is reported like any other portal role", []string{"test-cs-engineer", "test-comment-updater"}, []string{"cs_engineer", "comment_updater"}},
+		{"plg admin is reported like any other portal role", []string{"test-cs-engineer", "test-plg-admin"}, []string{"cs_engineer", "plg_admin"}},
 		{"unrelated roles are ignored", []string{"wso2-everyone", "agent"}, []string{}},
 		{"a duplicated held role is reported once", []string{"test-viewer", "test-viewer"}, []string{"viewer"}},
 		{"sales solutions is reported like any other portal role, alongside a real capability", []string{"test-viewer", "test-sales-solutions"}, []string{"viewer", "sales_solutions"}},
@@ -573,4 +575,88 @@ func TestAccessGuard_RequireAll(t *testing.T) {
 			t.Errorf("status = %d, want 401", w.Code)
 		}
 	})
+}
+
+// TestPlgAdmin_IsPlgsOwnAdminAndNothingMore pins the matrix the role exists for:
+//
+//	plg_admin    everyday PLG + playbook authoring   (what admin has, inside PLG)
+//	cs_engineer  everyday PLG only                   (unchanged)
+//	admin        everyday PLG + playbook authoring   (unchanged)
+//
+// The boundary that matters is the last assertion. "PLG's administrator" and
+// "the portal's administrator" are different jobs, and the whole reason for a
+// separate variable is to let someone hold the first without the second. If
+// PermAdmin ever leaked into this role, naming a playbook author would quietly
+// make them a portal administrator — and nothing in the product would say so.
+func TestPlgAdmin_IsPlgsOwnAdminAndNothingMore(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	plgAdmin := []string{"test-plg-admin"}
+
+	for _, p := range []struct {
+		name string
+		perm Permission
+	}{
+		{"PermUsePlg", PermUsePlg},
+		{"PermManagePlaybooks", PermManagePlaybooks},
+	} {
+		if _, reached := serveWithRoles(g, p.perm, plgAdmin); !reached {
+			t.Errorf("plg_admin must hold %s: it did not reach the handler", p.name)
+		}
+	}
+
+	// ...and stops there. These two are the boundary: PermAdmin is the portal's
+	// own administration, admin's alone; PermView is deliberately absent too,
+	// because this role is supplementary and every real holder already has it
+	// from cs_engineer or another View-granting role (see AccessConfig.PlgAdmin).
+	for _, p := range []struct {
+		name string
+		perm Permission
+	}{
+		{"PermAdmin", PermAdmin},
+		{"PermView", PermView},
+	} {
+		if status, _ := serveWithRoles(g, p.perm, plgAdmin); status != http.StatusForbidden {
+			t.Errorf("plg_admin must not hold %s: status = %d, want 403", p.name, status)
+		}
+	}
+	// cs_engineer is the other half of the matrix and must be unaffected:
+	// everyday PLG yes, authoring no.
+	engineer := []string{"test-cs-engineer"}
+	if _, reached := serveWithRoles(g, PermUsePlg, engineer); !reached {
+		t.Error("cs_engineer must keep PermUsePlg")
+	}
+	if status, _ := serveWithRoles(g, PermManagePlaybooks, engineer); status != http.StatusForbidden {
+		t.Errorf("cs_engineer must still not author playbooks: status = %d, want 403", status)
+	}
+	// admin keeps both regardless, which is what makes the role additive.
+	if _, reached := serveWithRoles(g, PermManagePlaybooks, []string{"test-admin"}); !reached {
+		t.Error("admin must keep PermManagePlaybooks: it did not reach the handler")
+	}
+}
+
+// TestPlgAdmin_UnsetLeavesBehaviourUnchanged is the regression guard for the
+// deployment story.
+//
+// AUTH_PLG_ADMIN_ROLES is unset until someone deliberately configures it, so
+// "unset" has to mean: admin authors playbooks, nobody else does. If the role
+// were a replacement rather than an addition, an unset or misspelt variable
+// would silently make playbook authoring unreachable — a config error no test
+// catches and nothing in the product announces.
+func TestPlgAdmin_UnsetLeavesBehaviourUnchanged(t *testing.T) {
+	cfg := testAccessConfig()
+	cfg.PlgAdmin = nil
+	g := NewAccessGuard(cfg)
+
+	if _, reached := serveWithRoles(g, PermManagePlaybooks, []string{"test-admin"}); !reached {
+		t.Error("with AUTH_PLG_ADMIN_ROLES unset, admin must still author playbooks")
+	}
+	if status, _ := serveWithRoles(g, PermManagePlaybooks, []string{"test-cs-engineer"}); status != http.StatusForbidden {
+		t.Errorf("with AUTH_PLG_ADMIN_ROLES unset, cs_engineer must still not author playbooks: "+
+			"status = %d, want 403", status)
+	}
+	// And the role reports nothing, so GET /users/me does not advertise a role
+	// the deployment has not configured.
+	if got := g.RolesFor([]string{"test-plg-admin"}); len(got) != 0 {
+		t.Errorf("an unconfigured plg_admin must grant no portal role, got %v", got)
+	}
 }

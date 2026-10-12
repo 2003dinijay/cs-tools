@@ -189,7 +189,33 @@ describe("getPortalAccess", () => {
     expect(getPortalAccess(["admin"]).canUsePlg).toBe(true);
   });
 
-  it("only admin can manage playbooks -- CS engineer reads them but cannot author one", () => {
+  it("plg_admin is PLG's own administrator -- the whole section, nothing outside it", () => {
+    // Both PLG capabilities, matching the backend's PermUsePlg +
+    // PermManagePlaybooks. If these disagreed, the holder would be allowed to
+    // author a template and shown no form to do it in.
+    expect(getPortalAccess(["plg_admin"])).toMatchObject({
+      canUsePlg: true,
+      canManagePlaybooks: true,
+      hasAnyRole: true,
+    });
+    // ...and nothing outside PLG. Administering the portal stays admin's.
+    expect(getPortalAccess(["plg_admin"])).toMatchObject({
+      canCreateUser: false,
+      canWrite: false,
+      canEscalate: false,
+    });
+    // The other half of the matrix, unchanged: cs_engineer works the queue and
+    // still cannot author.
+    expect(getPortalAccess(["cs_engineer"])).toMatchObject({
+      canUsePlg: true,
+      canManagePlaybooks: false,
+    });
+  });
+
+  it("admin keeps playbook authoring whether or not plg_admin is configured", () => {
+    // AUTH_PLG_ADMIN_ROLES is unset until someone configures it, and an
+    // unconfigured deployment reports no plg_admin role at all -- so admin
+    // alone must still see the authoring form.
     expect(getPortalAccess(["admin"]).canManagePlaybooks).toBe(true);
     expect(getPortalAccess(["cs_engineer"]).canManagePlaybooks).toBe(false);
     // ...and losing that does not cost them PLG itself.
