@@ -121,7 +121,7 @@ func TestGetTimeLogBreakdown_PagesThroughAllCasesAndTimeCards(t *testing.T) {
 		}
 	}
 
-	c := NewPostgresReportsClient(entity, nil)
+	c := NewPostgresReportsClient(entity)
 	got, err := c.GetTimeLogBreakdown(context.Background(), "PRJ001")
 	if err != nil {
 		t.Fatalf("GetTimeLogBreakdown: %v", err)
@@ -157,4 +157,24 @@ func makeTimeCardViews(n int, hours float64) []entityTimeCardView {
 		views[i] = entityTimeCardView{ID: "tc-" + strconv.Itoa(i), TotalTime: hours, WorkDate: "2026-01-01"}
 	}
 	return views
+}
+
+func TestFormatHoursMinutes(t *testing.T) {
+	cases := []struct {
+		hours float64
+		want  string
+	}{
+		{0, "0m"},
+		{0.5, "30m"},
+		{1, "1h 0m"},
+		{1.5, "1h 30m"},
+		{2.0833, "2h 5m"}, // 125 minutes
+		{0.0083, "0m"},    // under half a minute rounds down
+		{0.0084, "1m"},    // just over half a minute rounds up
+	}
+	for _, tc := range cases {
+		if got := formatHoursMinutes(tc.hours); got != tc.want {
+			t.Errorf("formatHoursMinutes(%v) = %q, want %q", tc.hours, got, tc.want)
+		}
+	}
 }
