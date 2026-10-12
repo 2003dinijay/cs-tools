@@ -17,7 +17,7 @@
  */
 
 import { fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import MonthRoster from "./MonthRoster";
 import {
@@ -883,6 +883,26 @@ describe("MonthRoster: the night crew is off their team's rows", () => {
     expect(niaRow?.textContent).toContain(TZ1.shortCode);
     expect(nightRows(container).textContent).not.toContain("Tom");
     expect(screen.getAllByText("Nia")).toHaveLength(1);
+  });
+
+  it("marks the reader's own row in the night cover as theirs, so the roster can scroll to it", () => {
+    // jsdom has no scrollIntoView; the roster calls it on the reader's row.
+    const scrolled = vi.fn();
+    const had = Element.prototype.scrollIntoView;
+    Element.prototype.scrollIntoView = scrolled;
+    onTestFinished(() => {
+      Element.prototype.scrollIntoView = had;
+    });
+    const { container } = renderRoster({
+      family: "SRE",
+      shifts: nightShifts,
+      meEmail: "nia@example.test",
+      nightCrew: [{ userId: "u-Nia", teamKey: "delta" }],
+      assignments: [night("Nia", "2026-09-21", "L1")],
+    });
+    const mine = nightRows(container).querySelector('tr[aria-current="true"]');
+    expect(mine?.textContent).toContain("Nia");
+    expect(scrolled.mock.contexts).toContain(mine);
   });
 
   it("has no night cover group when the months in view were generated with nobody chosen", () => {

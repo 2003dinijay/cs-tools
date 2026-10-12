@@ -656,7 +656,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     view === "roster" && family === "SRE",
   );
   const nightCrew = useMemo(
-    () => (nightCrewRead.isSuccess ? nightCrewRead.data.months.flatMap((m) => m.crew) : undefined),
+    () => (nightCrewRead.isSuccess && nightCrewRead.data ? nightCrewRead.data.months.flatMap((m) => m.crew) : undefined),
     [nightCrewRead.isSuccess, nightCrewRead.data],
   );
 

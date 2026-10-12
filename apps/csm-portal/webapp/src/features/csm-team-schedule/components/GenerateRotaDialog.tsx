@@ -172,12 +172,13 @@ export default function GenerateRotaDialog({
       <DialogTitle id="generate-rota-title">Generate SaaS rota</DialogTitle>
       <DialogContent>
         <Typography variant="body2" sx={{ mb: 2 }}>
-          Works out the month for Apollo and Artemis, per team: L1 and L2 for TZ1, TZ2 and TZ3 every day
-          (weekend on-call and escalation included), everyone&rsquo;s regular hours (SUP) on weekdays,
-          and lieu leave after a weekend on-call. Every
+          Works out the month for Apollo and Artemis: per team, L1 and L2 for TZ1 and TZ2 every day
+          (weekend on-call and escalation included); one TZ3 night crew for both teams, L1, L2 and L3,
+          weekends included; everyone&rsquo;s regular hours (SUP) on weekdays; and lieu leave after a
+          weekend on-call. Every
           engineer is on the rota, nights included, unless marked away on the roster (leave, RnD, ENG or
           any other tag); TZ3 regular hours, if marked, decide who is on nights. One person works one
-          zone a day: each team&rsquo;s lead is L3 on TZ1, and a teammate on TZ2 and TZ3. Turns set by hand
+          zone a day: each team&rsquo;s lead is L3 on TZ1, and a teammate on TZ2. Turns set by hand
           are kept.
         </Typography>
 

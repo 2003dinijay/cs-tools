@@ -21357,7 +21357,9 @@ components:
           description: >-
             True when each tier of this window is held by one person for the
             whole rota rather than one per team -- SaaS TZ3, the night cover
-            for every SaaS team. A second holder of a tier is refused (409).
+            for every SaaS team. Saving the roster (POST
+            /team-schedule/assignments/apply) refuses a second holder of a
+            tier (409); assignment create and update do not check it yet.
         colourToken: { type: string }
         sortOrder: { type: integer }
     ScheduleTeam:

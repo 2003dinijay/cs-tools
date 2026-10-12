@@ -1239,8 +1239,11 @@ export default function MonthRoster({
                 return (
                   <tr
                     key={`night|${row.userId}|${row.teamKey}`}
+                    // A TZ3 person's only row: "scroll to my row" finds them here.
+                    ref={isMe ? meRow : undefined}
                     className={`tinted ngrow${isMe ? " me" : ""}${i % 2 === 1 ? " alt" : ""}`}
                     style={{ "--rc": NIGHT_COLOUR } as CSSProperties}
+                    aria-current={isMe ? "true" : undefined}
                   >
                     <th className="lab">
                       <span className="nm">

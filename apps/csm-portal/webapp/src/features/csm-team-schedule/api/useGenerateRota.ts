@@ -111,24 +111,26 @@ const NIGHT_CREW_KEY = ["team-schedule", "night-crew"] as const;
 /**
  * The TZ3 people each month fromMonth..toMonth (YYYY-MM) of the SaaS rota was
  * generated with -- who the Month roster lists under the night cover instead
- * of under their team. Recorded by a real "Generate month" run.
+ * of under their team. Recorded by a real "Generate month" run. Resolves to
+ * null when the server has no such endpoint (an entity service from before
+ * it answers 404): the roster then reads the night cover from the turns.
  */
 export function useRotaNightCrew(
   fromMonth: string,
   toMonth: string,
   enabled = true,
-): UseQueryResult<RotaNightCrew, Error> {
+): UseQueryResult<RotaNightCrew | null, Error> {
   const api = useBackendApi();
-  return useQuery<RotaNightCrew, Error>({
+  return useQuery<RotaNightCrew | null, Error>({
     queryKey: [...NIGHT_CREW_KEY, fromMonth, toMonth],
-    queryFn: async () =>
-      (await api.get<RotaNightCrew>(
+    // A GET that 404s resolves to null: kept as null (not "nobody chosen"),
+    // so the roster knows the server cannot say.
+    queryFn: () =>
+      api.get<RotaNightCrew>(
         `/team-schedule/rotas/${GENERATED_ROTA}/night-crew?from=${encodeURIComponent(fromMonth)}&to=${encodeURIComponent(toMonth)}`,
-      )) ?? { rotaCode: GENERATED_ROTA, months: [] },
+      ),
     enabled: enabled && /^\d{4}-\d{2}$/.test(fromMonth) && /^\d{4}-\d{2}$/.test(toMonth),
     staleTime: 60_000,
-    // An entity service from before the night crew answers 404: no retry, the
-    // roster falls back to reading the turns.
     retry: false,
   });
 }
