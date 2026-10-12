@@ -24,7 +24,7 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/entry"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entry"
 )
 
 func ptr(s string) *string { return &s }

@@ -1,4 +1,4 @@
-module github.com/wso2-open-operations/cs-tools/apps/til-backend/backend
+module github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend
 
 go 1.26.9
 

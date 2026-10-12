@@ -29,9 +29,9 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/entry"
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/middleware"
-	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/store"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entry"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/middleware"
+	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/store"
 )
 
 const (
