@@ -433,8 +433,13 @@ export default function ActionItemsSection({
           <Tab label={`CANCELLED (${counts.cancelled})`} value="cancelled" />
         </Tabs>
         <FormControl size="small" sx={{ minWidth: 180 }}>
-          <InputLabel>All Projects</InputLabel>
-          <Select value={selectedProjectSysId} label="All Projects" onChange={(e) => setSelectedProjectSysId(e.target.value)}>
+          <InputLabel sx={{ width: "100%", textAlign: "center", left: 0 }}>All Projects</InputLabel>
+          <Select
+            value={selectedProjectSysId}
+            label="All Projects"
+            onChange={(e) => setSelectedProjectSysId(e.target.value)}
+            sx={{ "& .MuiSelect-select": { textAlign: "center" } }}
+          >
             <MenuItem value="">All Projects</MenuItem>
             {projectsWithOpenRisks.map((p) => (
               <MenuItem key={p.sysId} value={p.sysId}>{p.name}</MenuItem>
