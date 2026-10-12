@@ -7466,6 +7466,75 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/rotas/{code}/night-crew:
+    get:
+      summary: The TZ3 people each month of a rota was generated with.
+      description: >
+        The people a lead chose for TZ3 (the SaaS night cover, one crew for
+        Apollo and Artemis) in "Generate month", as each month's last real
+        generation recorded them. The Month roster lists them under the night
+        cover instead of under their team. Every month from..to is listed; a
+        month with nobody chosen has an empty crew. Only SRE_SAAS has one. At
+        most 12 months at once. Internal staff only.
+      operationId: getRotaNightCrew
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            example: SRE_SAAS
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            example: "2026-10"
+          description: First month, YYYY-MM.
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            example: "2026-12"
+          description: Last month, YYYY-MM; not before from.
+      responses:
+        "200":
+          description: The chosen TZ3 people, month by month.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotaNightCrewResponse'
+        "400":
+          description: A bad from or to, to before from, or more than 12 months.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: A rota with no night crew (anything but SRE_SAAS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/absences/apply:
     post:
       summary: Mark one engineer away across a span, or bring them back over it.
@@ -14163,14 +14232,40 @@ components:
             crew for the whole rota (the night cover for every team): every
             team's choices together are that crew, and the rota's single TZ3
             L1, L2 and L3 go round them night by night (weekends included).
-            They work no other zone; a night they are short is filled from any
-            team and warned about. With nobody chosen, nights are drawn as
-            usual. Each id must be a member of the team it is listed under
-            (400 otherwise).
+            They work no other zone, and nobody else is put on TZ3: a tier they
+            cannot cover on a night is left empty and warned about. With nobody
+            chosen, nights are drawn as usual. Each id must be a member of the
+            team it is listed under (400 otherwise). A real (not dryRun) run
+            records the choice for the month, replacing the month's earlier one
+            (see GET /team-schedule/rotas/{code}/night-crew).
           additionalProperties:
             type: array
             items: {type: string, format: uuid}
           example: {apollo: ["6ed08bc9-1b20-6690-182c-0dc5604bcb6b"]}
+    RotaNightCrewResponse:
+      type: object
+      required: [rotaCode, months]
+      properties:
+        rotaCode:
+          type: string
+          example: SRE_SAAS
+        months:
+          type: array
+          items:
+            type: object
+            required: [month, crew]
+            properties:
+              month:
+                type: string
+                example: "2026-11"
+              crew:
+                type: array
+                items:
+                  type: object
+                  required: [userId, teamKey]
+                  properties:
+                    userId: {type: string, format: uuid}
+                    teamKey: {type: string, example: apollo}
     GeneratedRotaTurn:
       type: object
       properties:

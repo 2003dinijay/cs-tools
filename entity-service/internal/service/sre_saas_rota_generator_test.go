@@ -623,9 +623,9 @@ func TestSRESaaSRota_RegularHoursSetByOthersKeepThePersonToThatZone(t *testing.T
 
 // A lead chooses three people for a team's TZ3: every TZ3 turn of that team
 // -- L1, L2 and L3, weekdays and weekends -- is theirs while they are free,
-// each of them takes every tier in turn, and they work no other zone. Only a
-// night the crew is short (lieu after a weekend on-call) is filled from the
-// rest of the team. The other team keeps its usual nights.
+// each of them takes every tier in turn, and they work no other zone. Nobody
+// else is ever put on TZ3: a night the crew is short (lieu after a weekend
+// on-call) leaves the uncovered tier empty, warned about for that night.
 func TestSRESaaSRota_AChosenTZ3CrewTakesEveryTierInTurn(t *testing.T) {
 	month := saasMonth(2026, time.November)
 	in := saasTestInput(month)
@@ -655,13 +655,19 @@ func TestSRESaaSRota_AChosenTZ3CrewTakesEveryTierInTurn(t *testing.T) {
 		}
 		for _, tier := range []string{saasTierL1, saasTierL2, saasTierL3} {
 			got := saasNight(plan, iso, tier)
-			if len(got) != 1 {
-				t.Fatalf("%s TZ3 %s: want one, got %v", iso, tier, got)
+			if len(got) > 1 || (allFree && len(got) != 1) {
+				t.Fatalf("%s TZ3 %s: want one (none only on a short night), got %v", iso, tier, got)
 			}
-			if allFree && !isCrew[got[0].UserID] {
+			if len(got) == 0 {
+				if !saasWarnedOn(plan, iso, "chosen TZ3 people are free") {
+					t.Fatalf("%s TZ3 %s is empty with no warning: %v", iso, tier, plan.Warnings)
+				}
+				continue
+			}
+			if !isCrew[got[0].UserID] {
 				t.Fatalf("%s TZ3 %s went to %s, not the chosen crew", iso, tier, got[0].UserID)
 			}
-			if isCrew[got[0].UserID] {
+			{
 				if tiers[got[0].UserID] == nil {
 					tiers[got[0].UserID] = map[string]int{}
 				}
@@ -682,21 +688,68 @@ func TestSRESaaSRota_AChosenTZ3CrewTakesEveryTierInTurn(t *testing.T) {
 		}
 	}
 	// Artemis chose nobody: the one crew is its night cover too, so nobody on
-	// Artemis is on nights while the whole crew is free.
+	// Artemis is ever on nights.
 	for _, x := range plan.Turns {
-		if x.TeamKey != "artemis" || x.ShiftCode != saasShiftTZ3 || x.Tier == "" {
-			continue
-		}
-		free := true
-		for _, p := range crew {
-			if lieu(p, x.RotaDate) {
-				free = false
-			}
-		}
-		if free {
+		if x.TeamKey == "artemis" && x.ShiftCode == saasShiftTZ3 && x.Tier != "" {
 			t.Fatalf("artemis given a night beside the chosen crew: %v", x)
 		}
 	}
+}
+
+// With a crew chosen on both teams, a crew member away does not bring anyone
+// else onto TZ3: the night goes round the crew still free, and a night with
+// fewer than three of them free leaves the rest of its tiers empty, warned.
+func TestSRESaaSRota_OnlyTheChosenTZ3PeopleWorkTZ3(t *testing.T) {
+	month := saasMonth(2026, time.November)
+	in := saasTestInput(month)
+	crew := []string{"apollo-03", "apollo-07", "artemis-05", "artemis-09"}
+	in.NightCrew = map[string][]string{"apollo": crew[:2], "artemis": crew[2:]}
+	// Two of the four away for three weekdays and a weekend: those nights
+	// have two of them free at most.
+	short := []string{"2026-11-16", "2026-11-17", "2026-11-18", "2026-11-21", "2026-11-22"}
+	for _, p := range []string{"apollo-07", "artemis-09"} {
+		in.Unavailable[p] = map[string]bool{}
+		for _, iso := range short {
+			in.Unavailable[p][iso] = true
+		}
+	}
+	plan := generateSRESaaSRota(in)
+	isCrew := map[string]bool{}
+	for _, p := range crew {
+		isCrew[p] = true
+	}
+	for _, x := range plan.Turns {
+		if x.ShiftCode == saasShiftTZ3 && !isCrew[x.UserID] {
+			t.Fatalf("someone outside the chosen crew is on TZ3: %v", x)
+		}
+	}
+	for _, iso := range short {
+		filled := 0
+		for _, tier := range []string{saasTierL1, saasTierL2, saasTierL3} {
+			got := saasNight(plan, iso, tier)
+			if len(got) > 1 {
+				t.Fatalf("%s TZ3 %s: want at most one, got %v", iso, tier, got)
+			}
+			filled += len(got)
+		}
+		// The tiers fill from L1 down, so a short night always loses L3.
+		if filled == 0 || filled >= saasNightTiers || len(saasNight(plan, iso, saasTierL3)) != 0 {
+			t.Fatalf("%s: want L1 (and maybe L2) filled and L3 empty, got %d filled", iso, filled)
+		}
+		if !saasWarnedOn(plan, iso, "left empty; nobody else is put on TZ3") {
+			t.Fatalf("%s: want the empty tiers warned about, got %v", iso, plan.Warnings)
+		}
+	}
+}
+
+// saasWarnedOn is whether the plan has a warning for iso containing text.
+func saasWarnedOn(plan saasRotaPlan, iso, text string) bool {
+	for _, w := range plan.Warnings {
+		if w.Date == iso && strings.Contains(w.Message, text) {
+			return true
+		}
+	}
+	return false
 }
 
 // Each team's chosen TZ3 people are one crew: both teams' people take the

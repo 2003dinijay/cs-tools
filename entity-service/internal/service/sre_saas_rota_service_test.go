@@ -36,6 +36,9 @@ type fakeRotaWriter struct {
 	// owned is what GeneratedRows answers: the rows the generator wrote.
 	owned      repository.GeneratedRowIDs
 	ownerAsked string
+	// crew is what NightCrew answers; crewAsked is what it was asked for.
+	crew      []repository.RotaNightCrewRow
+	crewAsked [3]string
 }
 
 func (f *fakeRotaWriter) GeneratedRows(_ context.Context, owner string, _ []string, _, _ string) (repository.GeneratedRowIDs, error) {
@@ -48,6 +51,11 @@ func (f *fakeRotaWriter) GeneratedRows(_ context.Context, owner string, _ []stri
 		out.Absences[id] = true
 	}
 	return out, nil
+}
+
+func (f *fakeRotaWriter) NightCrew(_ context.Context, rotaCode, from, to string) ([]repository.RotaNightCrewRow, error) {
+	f.crewAsked = [3]string{rotaCode, from, to}
+	return f.crew, nil
 }
 
 func (f *fakeRotaWriter) ReplaceGeneratedMonth(_ context.Context, w repository.RotaMonthWrite) (repository.RotaMonthWriteResult, error) {
@@ -470,6 +478,90 @@ func TestGenerateMonth_TheChosenTZ3CrewReachesTheGenerator(t *testing.T) {
 	for _, turn := range writer.got.Turns {
 		if turn.TeamKey == "apollo" && turn.ShiftCode == saasShiftTZ3 && turn.RotaDate == "2026-11-04" && !crew[turn.UserID] {
 			t.Fatalf("apollo TZ3 on 4 Nov went outside the chosen crew: %+v", turn)
+		}
+	}
+}
+
+// A real generation records the month's TZ3 people (deduplicated, under the
+// team they were chosen for); a preview records nothing; generating the month
+// again with nobody chosen clears the record, which puts them back on their
+// team.
+func TestGenerateMonth_RecordsTheMonthsTZ3People(t *testing.T) {
+	repo := &fakeScheduleRepo{ledTeams: []string{"apollo"}}
+	writer := &fakeRotaWriter{}
+	svc := newTestRotaService(repo, writer, saasTestNow)
+	req := generateReq("2026-11")
+	req.NightCrew = map[string][]string{"apollo": {"apollo-02", " apollo-02 "}, "artemis": {"artemis-05"}}
+
+	preview := req
+	preview.DryRun = true
+	if _, err := svc.GenerateMonth(leadCtx("apollo.lead@example.com"), preview); err != nil {
+		t.Fatal(err)
+	}
+	if writer.calls != 0 {
+		t.Fatalf("a preview must record nothing, got %d writes", writer.calls)
+	}
+
+	if _, err := svc.GenerateMonth(leadCtx("apollo.lead@example.com"), req); err != nil {
+		t.Fatal(err)
+	}
+	got := writer.got
+	if got.RotaCode != RotaSRESaaS || got.Month != "2026-11-01" {
+		t.Fatalf("crew recorded for %s %s, want SRE_SAAS 2026-11-01", got.RotaCode, got.Month)
+	}
+	want := []repository.RotaNightCrewRow{{UserID: "apollo-02", TeamKey: "apollo"}, {UserID: "artemis-05", TeamKey: "artemis"}}
+	if fmt.Sprint(got.NightCrew) != fmt.Sprint(want) {
+		t.Fatalf("night crew: got %+v, want %+v", got.NightCrew, want)
+	}
+
+	again := generateReq("2026-11")
+	again.Regenerate = true
+	if _, err := svc.GenerateMonth(leadCtx("apollo.lead@example.com"), again); err != nil {
+		t.Fatal(err)
+	}
+	if writer.got.Month != "2026-11-01" || len(writer.got.NightCrew) != 0 {
+		t.Fatalf("regenerating with nobody chosen must clear the month's crew, got %s %+v", writer.got.Month, writer.got.NightCrew)
+	}
+}
+
+func TestNightCrew_ListsEveryMonthAskedFor(t *testing.T) {
+	writer := &fakeRotaWriter{crew: []repository.RotaNightCrewRow{
+		{Month: "2026-11-01", UserID: "apollo-02", TeamKey: "apollo"},
+		{Month: "2026-11-01", UserID: "artemis-05", TeamKey: "artemis"},
+	}}
+	svc := newTestRotaService(&fakeScheduleRepo{}, writer, saasTestNow)
+	res, err := svc.NightCrew(leadCtx("viewer@example.com"), "sre_saas", "2026-10", "2026-12")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if writer.crewAsked != [3]string{RotaSRESaaS, "2026-10-01", "2026-12-01"} {
+		t.Fatalf("asked the store for %v", writer.crewAsked)
+	}
+	if len(res.Months) != 3 || res.Months[0].Month != "2026-10" || len(res.Months[0].Crew) != 0 ||
+		len(res.Months[1].Crew) != 2 || res.Months[1].Crew[0].UserID != "apollo-02" || len(res.Months[2].Crew) != 0 {
+		t.Fatalf("months: %+v", res.Months)
+	}
+	if res.Months[0].Crew == nil {
+		t.Fatal("a month with nobody chosen must be an empty list, not null")
+	}
+}
+
+func TestNightCrew_RefusesWhatItCannotRead(t *testing.T) {
+	svc := newTestRotaService(&fakeScheduleRepo{}, &fakeRotaWriter{}, saasTestNow)
+	ctx := leadCtx("viewer@example.com")
+	for name, c := range map[string]struct {
+		code, from, to string
+		want           any
+	}{
+		"another rota":    {"SRE_IAAS", "2026-11", "2026-11", &apierror.NotFoundError{}},
+		"bad from":        {"SRE_SAAS", "2026/11", "2026-11", &apierror.ValidationError{}},
+		"bad to":          {"SRE_SAAS", "2026-11", "", &apierror.ValidationError{}},
+		"to before from":  {"SRE_SAAS", "2026-11", "2026-10", &apierror.ValidationError{}},
+		"too many months": {"SRE_SAAS", "2026-01", "2027-01", &apierror.ValidationError{}},
+	} {
+		_, err := svc.NightCrew(ctx, c.code, c.from, c.to)
+		if err == nil || fmt.Sprintf("%T", err) != fmt.Sprintf("%T", c.want) {
+			t.Errorf("%s: got %v (%T), want %T", name, err, err, c.want)
 		}
 	}
 }

@@ -117,7 +117,8 @@ type saasRotaInput struct {
 	// NightCrew is team key -> the people a lead chose for TZ3 for the month.
 	// Every team's choices together are the night crew: the rota's TZ3 L1, L2
 	// and L3 go round them night by night, every week, marks or not, and they
-	// work no other zone.
+	// work no other zone. Nobody else is put on TZ3: a tier the crew cannot
+	// cover on a night is left empty and warned about, for a lead to fill.
 	NightCrew map[string][]string
 	// Pinned is user id -> ISO date -> zone ("TZ1" or "TZ2"), for a day someone
 	// else set the person's regular hours on: they work that zone or nothing.
@@ -397,12 +398,13 @@ func (g *saasGenerator) weekday(d time.Time, wi, dow int, emit bool) {
 	}
 	seq := saasRotate(present, saasDayNumber(d))
 	if crew && len(seq) < saasNightTiers && emit {
-		g.warn(iso, fmt.Sprintf("TZ3: only %d of the chosen TZ3 people are free, so the rest of TZ3 comes from the teams", len(seq)))
+		g.warnCrewShort(iso, "TZ3", len(seq))
 	}
-	if len(seq) < saasNightTiers {
+	if !crew && len(seq) < saasNightTiers {
 		// Fewer night people are free tonight than there are tiers (leave, or
 		// marks that stop part-way through a week): the rest come from anyone
-		// free and not on a day turn today, leads last.
+		// free and not on a day turn today, leads last. A chosen crew is never
+		// topped up this way: TZ3 is theirs alone.
 		seq = append(seq, g.nightSpares(wi, dow, iso, dayTaken, seq)...)
 	}
 	for i, tier := range []string{saasTierL1, saasTierL2, saasTierL3} {
@@ -412,7 +414,7 @@ func (g *saasGenerator) weekday(d time.Time, wi, dow int, emit bool) {
 			zoneOf[p] = "TZ3"
 		}
 		if emit {
-			g.turn(p, "", saasShiftTZ3, tier, iso, "TZ3 "+tier)
+			g.turn(p, "", saasShiftTZ3, tier, iso, g.nightSlot("TZ3 "+tier))
 		}
 	}
 	if !emit {
@@ -496,13 +498,16 @@ func (g *saasGenerator) weekend(d time.Time, emit bool) {
 	// people first, then anyone free both days, leads last. Its L1 is the
 	// night's on-call and earns the lieu.
 	nights := g.weekendNights(sat, satWeek, taken)
+	if len(g.crew) > 0 && len(nights) < saasNightTiers && emit {
+		g.warnCrewShort(iso, "TZ3 weekend", len(nights))
+	}
 	for i, tier := range []string{saasTierL1, saasTierL2, saasTierL3} {
 		p := saasAt(nights, i)
 		if p != "" {
 			taken[p] = true
 		}
 		if emit {
-			g.turn(p, "", saasShiftTZ3, tier, iso, "TZ3 weekend "+tier)
+			g.turn(p, "", saasShiftTZ3, tier, iso, g.nightSlot("TZ3 weekend "+tier))
 		}
 	}
 	g.lieuFor(saasAt(nights, 0), sat, emit)
@@ -518,7 +523,8 @@ func (g *saasGenerator) weekend(d time.Time, emit bool) {
 
 // weekendNights is a weekend's TZ3 L1, L2 and L3: the week's night people
 // free both days first, then anyone else free both days (every team, taken
-// in turn), leads last in each. Nobody in skip is picked.
+// in turn), leads last in each. With a chosen crew only the crew is picked,
+// so it can come back with fewer than three. Nobody in skip is picked.
 func (g *saasGenerator) weekendNights(sat time.Time, satWeek int, skip map[string]bool) []string {
 	satISO, sunISO := saasISO(sat), saasISO(sat.AddDate(0, 0, 1))
 	picked := map[string]bool{}
@@ -543,10 +549,32 @@ func (g *saasGenerator) weekendNights(sat time.Time, satWeek int, skip map[strin
 		}
 	}
 	from(g.nightPool(satWeek))
-	if len(out) < saasNightTiers {
+	if len(out) < saasNightTiers && len(g.crew) == 0 {
 		from(g.everyone)
 	}
 	return out
+}
+
+// warnCrewShort says, once for the night, which tiers the chosen crew leaves
+// empty. The empty slots themselves are not warned again (nightSlot).
+func (g *saasGenerator) warnCrewShort(iso, zone string, free int) {
+	tiers := map[int]string{1: "L3 is", 2: "L2 and L3 are", 3: "L1, L2 and L3 are"}[saasNightTiers-free]
+	who := fmt.Sprintf("only %d of the chosen TZ3 people is free", free)
+	if free == 0 {
+		who = "none of the chosen TZ3 people is free"
+	} else if free > 1 {
+		who = fmt.Sprintf("only %d of the chosen TZ3 people are free", free)
+	}
+	g.warn(iso, fmt.Sprintf("%s: %s, so %s left empty; nobody else is put on TZ3", zone, who, tiers))
+}
+
+// nightSlot is the slot name a TZ3 turn warns under when it is empty: none
+// with a chosen crew, whose short night warnCrewShort already reported.
+func (g *saasGenerator) nightSlot(slot string) string {
+	if len(g.crew) > 0 {
+		return ""
+	}
+	return slot
 }
 
 // weekendCrew is a weekend's on-call and escalation for one team: from pool
