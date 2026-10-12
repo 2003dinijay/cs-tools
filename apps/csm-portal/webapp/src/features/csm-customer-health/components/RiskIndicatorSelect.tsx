@@ -30,27 +30,19 @@ import {
 } from "@wso2/oxygen-ui";
 import type { RiskFilterKey } from "../api/customerHealthTypes";
 
-// Every label here must describe the RISK the option actually selects for --
-// the backend ORs these keys together and an account matches when it
-// EXHIBITS the risk (see entity-service/apps/csm-portal/backend's
-// customerHealthAccountMatchesAnyRisk), not when it's in the "healthy" state
-// the key's name might otherwise suggest.
-//
-// "hasNoGoLive"/"noSupportCases6mo" used to be labeled with the positive,
-// non-risk framing ("Has Gone Live"/"Support Activity (Last 6 Mo)") -- the
-// opposite of the four sibling options, which already read as the risk
-// itself ("Using EOL Products", not "Not Using EOL Products"). Checking
-// "Has Gone Live" silently selected for accounts that HAVEN'T gone live in
-// 6+ months (hasNoGoLive.isRisk), and "Support Activity (Last 6 Mo)"
-// silently selected for accounts with NO support cases in that window
-// (noSupportCases6mo) -- both backwards from what the label promised.
-// Reported live by comparing the checked label against the network
-// payload's key. Relabeled to match every other option's risk-framing
-// instead of changing the keys/backend logic, which already behaves
-// correctly for the OR-of-risks the dropdown is built around.
+// "Has Gone Live"/"Support Activity (Last 6 Mo)" used to send the risk keys
+// "hasNoGoLive"/"noSupportCases6mo" -- the NEGATION of what the label says.
+// Checking "Has Gone Live" silently selected accounts that HAVEN'T gone live
+// in 6+ months, and "Support Activity (Last 6 Mo)" selected accounts with NO
+// support cases in that window -- found by comparing the checked label
+// against the network payload's key. Fixed by sending the positive keys the
+// backend already supports/now supports ("hasGoneLive"/"hasRecentCases",
+// see customerHealthAccountMatchesAnyRisk in apps/csm-portal/backend's
+// customer_health_postgres.go) instead of relabeling the UI to match the
+// negated keys.
 const riskOptions: { key: RiskFilterKey; label: string }[] = [
-  { key: "hasNoGoLive", label: "Hasn't Gone Live (6+ Mo)" },
-  { key: "noSupportCases6mo", label: "No Support Activity (Last 6 Mo)" },
+  { key: "hasGoneLive", label: "Has Gone Live" },
+  { key: "hasRecentCases", label: "Support Activity (Last 6 Mo)" },
   { key: "hasEolProduct", label: "Using EOL Products" },
   { key: "hasAbandonedMigrations", label: "Abandoned Migrations" },
   { key: "hasMigrationDelays", label: "Migration Delays" },
