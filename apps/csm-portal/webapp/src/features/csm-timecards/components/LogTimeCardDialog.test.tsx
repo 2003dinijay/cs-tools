@@ -136,6 +136,28 @@ describe("LogTimeCardDialog — create mode", () => {
     ).toBeInTheDocument();
   });
 
+  it("selects an activity minutes field's whole value on focus, so typing replaces the default 0 instead of appending to it", () => {
+    render(
+      <LogTimeCardDialog
+        caseId="case-1"
+        caseNumber="CS0000001"
+        caseSeverity="S3"
+        projectId="proj-1"
+        projectName="Acme"
+        isSubmitting={false}
+        onClose={vi.fn()}
+        onSubmit={vi.fn()}
+      />,
+    );
+
+    const input = screen.getByLabelText("Analysis and debugging") as HTMLInputElement;
+    const selectSpy = vi.spyOn(input, "select");
+
+    fireEvent.focus(input);
+
+    expect(selectSpy).toHaveBeenCalledTimes(1);
+  });
+
   it("shows previously-selected approvers before the engineer types anything", () => {
     mockedUseRecentApprovers.mockReturnValue({
       data: [
