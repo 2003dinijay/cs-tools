@@ -103,7 +103,8 @@ type caseGitHubIssueResult struct {
 // what the request body itself carries, to fill the fixed info block at the
 // top of every filed issue's body. A field is left "" when the case has none
 // (e.g. no assigned team) -- buildGitHubIssueBody omits its line rather than
-// rendering it empty.
+// rendering it empty. OpenedBy is not a case field: it is the engineer filing
+// the issue, set by the caller from the signed-in user.
 type caseGitHubIssueContext struct {
 	Number     string
 	InternalID string
@@ -112,7 +113,9 @@ type caseGitHubIssueContext struct {
 }
 
 // caseGitHubIssueContextFromCase reads the same raw GetCase response
-// productNameFromCase already decodes a different projection of.
+// productNameFromCase already decodes a different projection of. It
+// deliberately does not read the case's createdBy: that is the customer who
+// raised the case, not the WSO2 engineer opening the Git issue.
 func caseGitHubIssueContextFromCase(raw []byte) caseGitHubIssueContext {
 	var view struct {
 		Number       string `json:"number"`
@@ -120,9 +123,6 @@ func caseGitHubIssueContextFromCase(raw []byte) caseGitHubIssueContext {
 		AssignedTeam *struct {
 			Name string `json:"name"`
 		} `json:"assignedTeam"`
-		CreatedBy *struct {
-			Email string `json:"email"`
-		} `json:"createdBy"`
 	}
 	if err := json.Unmarshal(raw, &view); err != nil {
 		return caseGitHubIssueContext{}
@@ -130,9 +130,6 @@ func caseGitHubIssueContextFromCase(raw []byte) caseGitHubIssueContext {
 	ctx := caseGitHubIssueContext{Number: view.Number, InternalID: view.InternalID}
 	if view.AssignedTeam != nil {
 		ctx.Team = strings.TrimSpace(view.AssignedTeam.Name)
-	}
-	if view.CreatedBy != nil {
-		ctx.OpenedBy = strings.TrimSpace(view.CreatedBy.Email)
 	}
 	return ctx
 }
@@ -319,7 +316,9 @@ func (h *CaseHandler) createGitHubIssueViaEngineering(w http.ResponseWriter, r *
 	if productLabel == "" {
 		productLabel = productName
 	}
-	issueBody := buildGitHubIssueBody(req, productLabel, caseGitHubIssueContextFromCase(caseRaw))
+	caseCtx := caseGitHubIssueContextFromCase(caseRaw)
+	caseCtx.OpenedBy = strings.TrimSpace(user.Email)
+	issueBody := buildGitHubIssueBody(req, productLabel, caseCtx)
 	if utf8.RuneCountInString(issueBody) > maxGitHubIssueBodyChars {
 		writeError(w, http.StatusBadRequest, errMsgGitHubBodyTooLong)
 		return
