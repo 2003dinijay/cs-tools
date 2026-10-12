@@ -498,6 +498,61 @@ func TestPostgresCustomerHealthClient_GetCustomerHealthSummary_FiltersToRealCust
 	}
 }
 
+// Regression: found live against a real account whose only work items were
+// three announcements (WSO2-authored broadcast notices) -- entity-service's
+// own case-search type allow-list genuinely includes "announcement"
+// alongside the four real case-like types, so an accountId-only filter with
+// no type restriction legitimately matched them, flipping hasRecentCases to
+// true and noSupportCases6mo to false for an account with zero real cases.
+// Pins that every case-count search this method makes carries an explicit
+// type filter restricted to customerHealthCaseLikeTypes.
+func TestPostgresCustomerHealthClient_AccountHasCasesSince_ExcludesAnnouncements(t *testing.T) {
+	fake := &fakeEntityCustomerHealthClient{
+		accounts:      entitySearchAccountsResponse{Accounts: []entityAccountView{{ID: "acc-1", Name: "Acme Corp"}}, Total: 1},
+		caseResponses: []entitySearchCasesResponse{{Total: 0}},
+	}
+	c := NewPostgresCustomerHealthClient(fake)
+
+	if _, err := c.GetCustomerHealthSummary(context.Background(), nil, nil, nil, nil, nil, nil, 0, 10); err != nil {
+		t.Fatalf("GetCustomerHealthSummary: %v", err)
+	}
+	if len(fake.lastCasesReqsRaw) == 0 {
+		t.Fatal("expected at least one SearchCases call")
+	}
+
+	// The first SearchCases call is accountHasCasesSince's own caseCount
+	// (caseType == "" -- "any real case-like type").
+	var req entitySearchCasesRequest
+	if err := json.Unmarshal(fake.lastCasesReqsRaw[0], &req); err != nil {
+		t.Fatalf("unmarshal captured request: %v", err)
+	}
+	var typeFilter *entityCaseFieldFilter
+	for i := range req.Filters.Filters {
+		if req.Filters.Filters[i].Field == "type" {
+			typeFilter = &req.Filters.Filters[i]
+		}
+	}
+	if typeFilter == nil {
+		t.Fatalf("expected a type filter on the case count request, got %+v", req.Filters.Filters)
+	}
+	for _, want := range []string{"case", "service_request", "engagement", "security_report_analysis"} {
+		found := false
+		for _, v := range typeFilter.Values {
+			if v == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("type filter %v missing expected value %q", typeFilter.Values, want)
+		}
+	}
+	for _, v := range typeFilter.Values {
+		if v == "announcement" {
+			t.Error("type filter must not include announcement")
+		}
+	}
+}
+
 func TestGroupCasesByPriority(t *testing.T) {
 	high := "high"
 	cases := []entitySearchCaseView{

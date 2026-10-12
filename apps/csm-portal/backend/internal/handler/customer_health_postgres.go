@@ -257,7 +257,10 @@ func (c *postgresCustomerHealthClient) accountCasesFull(ctx context.Context, acc
 	complete := false
 	for page := 0; page < customerHealthAccountCasePageCap; page++ {
 		body, err := json.Marshal(entitySearchCasesRequest{
-			Filters:    entitySearchCasesFilters{Filters: []entityCaseFieldFilter{{Field: "accountId", Op: "in", Values: []string{accountID}}}},
+			Filters: entitySearchCasesFilters{Filters: []entityCaseFieldFilter{
+				{Field: "accountId", Op: "in", Values: []string{accountID}},
+				{Field: "type", Op: "in", Values: customerHealthCaseLikeTypes},
+			}},
 			Pagination: entityPagination{Limit: customerHealthAccountCasePageLimit, Offset: page * customerHealthAccountCasePageLimit},
 		})
 		if err != nil {
@@ -945,10 +948,23 @@ func (c *postgresCustomerHealthClient) accountMigrationFlags(ctx context.Context
 // search, optionally narrowed to one work-item type, plus any extra filters
 // -- a limit:1 request, reading only the response's own Total rather than
 // fetching the matching rows.
+//
+// Found live: entity-service's own case-search type allow-list genuinely
+// includes "announcement" alongside the four real case-like types (case,
+// service_request, engagement, security_report_analysis) -- a plain
+// accountId-scoped search with no type filter at all legitimately returns
+// announcement rows too (WSO2-authored broadcast notices, never something a
+// customer filed). An empty caseType here used to mean "no type filter",
+// which silently counted an account's announcements as recent/support
+// cases -- confirmed against a real account whose only work items were
+// three announcements, which still flipped hasRecentCases to true. caseType
+// == "" now means "any of the real case-like types", not "unrestricted".
 func (c *postgresCustomerHealthClient) caseCount(ctx context.Context, accountID, caseType string, extra []entityCaseFieldFilter) (int, error) {
 	filters := []entityCaseFieldFilter{{Field: "accountId", Op: "in", Values: []string{accountID}}}
 	if caseType != "" {
 		filters = append(filters, entityCaseFieldFilter{Field: "type", Op: "in", Values: []string{caseType}})
+	} else {
+		filters = append(filters, entityCaseFieldFilter{Field: "type", Op: "in", Values: customerHealthCaseLikeTypes})
 	}
 	filters = append(filters, extra...)
 
