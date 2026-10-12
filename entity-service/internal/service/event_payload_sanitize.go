@@ -30,10 +30,15 @@ import "regexp"
 // this replaces the ENTIRE <img> tag with plain text: the result here can
 // end up directly in a Kafka event payload and, on the email fallback path,
 // directly in a rendered notification email with no further processing step
-// to hide a still-broken image behind a UI placeholder. The base64 alphabet
-// (`A-Za-z0-9+/=`) never includes `"`, so the payload capture naturally stops
-// one character before the attribute's closing quote.
-var inlineBase64ImageTagRe = regexp.MustCompile(`<img\b[^>]*\bsrc\s*=\s*"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+"[^>]*>`)
+// to hide a still-broken image behind a UI placeholder. Matches the src
+// attribute quoted either way (`"..."` or `'...'`) -- a single-quoted image
+// left unmatched would both survive into the event uncounted toward the
+// byte-cap backstop's intent and risk that backstop later cutting straight
+// through the middle of its base64 payload instead of the text after it.
+// The base64 alphabet (`A-Za-z0-9+/=`) never includes `"` or `'`, so each
+// payload capture naturally stops one character before its own attribute's
+// closing quote.
+var inlineBase64ImageTagRe = regexp.MustCompile(`<img\b[^>]*\bsrc\s*=\s*(?:"data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+"|'data:image/[a-zA-Z0-9.+-]+;base64,[A-Za-z0-9+/=]+')[^>]*>`)
 
 // inlineImageUnavailablePlaceholder replaces each stripped <img> tag. Plain
 // text, not a data: URI or any other value an email client might try to

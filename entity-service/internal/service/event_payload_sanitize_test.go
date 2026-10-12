@@ -50,6 +50,30 @@ func TestStripInlineBase64Images_StripsEmbeddedImage(t *testing.T) {
 	}
 }
 
+func TestStripInlineBase64Images_StripsSingleQuotedImage(t *testing.T) {
+	// A large single-quoted image: if the regex only matched double quotes,
+	// this would survive stripping entirely and the byte-cap backstop below
+	// would then cut straight through the middle of its base64 payload --
+	// losing both the image (still present, leaving a dangling open <img>
+	// tag) and the text that follows it.
+	largePayload := strings.Repeat("A", maxEventTextFieldBytes)
+	html := `<p>Before.</p><img src='data:image/png;base64,` + largePayload + `' alt='x'><p>After.</p>`
+
+	got, truncated := stripInlineBase64Images(html)
+	if !truncated {
+		t.Fatal("expected truncated=true for a single-quoted inline image")
+	}
+	if strings.Contains(got, "base64") || strings.Contains(got, "AAAA") {
+		t.Fatalf("expected no fragment of the base64 payload to survive, got %q", got)
+	}
+	if !strings.Contains(got, inlineImageUnavailablePlaceholder) {
+		t.Fatalf("expected the readable placeholder in place of the single-quoted image, got %q", got)
+	}
+	if !strings.Contains(got, "<p>Before.</p>") || !strings.Contains(got, "<p>After.</p>") {
+		t.Fatalf("expected the text surrounding the image -- including after it -- to survive, got %q", got)
+	}
+}
+
 func TestStripInlineBase64Images_StripsMultipleImages(t *testing.T) {
 	html := `<img src="data:image/png;base64,AAAA"><p>middle</p><img src="data:image/jpeg;base64,BBBB">`
 	got, truncated := stripInlineBase64Images(html)
