@@ -28,7 +28,7 @@ import type {
   ScheduleTier,
   RotaFamily,
 } from "../types";
-import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneColumnOf, zoneLabelOn, type RosterSpan } from "../utils/rota";
+import { addDays, initialsOf, isRotationShift, mondayOf, toIsoDate, zoneAbbreviation, zoneColumnOf, zoneLabelOn, type RosterSpan } from "../utils/rota";
 import { useTeamColour, useTeamName } from "../utils/teamColourContext";
 
 export type { RosterSpan };
@@ -55,6 +55,11 @@ interface MonthRosterProps {
   absences: ScheduleAbsence[];
   shifts: Map<string, ScheduleShift>;
   absenceKinds: ScheduleAbsenceKind[];
+  /** The TZ3 people the months in view were generated with: listed under the
+   *  Night cover, with every day of theirs, instead of under their team.
+   *  Absent when the server cannot say (it is then read from the turns: whoever
+   *  works only TZ3 nights in view). */
+  nightCrew?: readonly { userId: string; teamKey: string }[];
   /** Counts presses of Today. The day alone cannot express "take me back
    *  there" once the reader has scrolled away without changing it, so the
    *  press is what the grid listens to. */
@@ -150,6 +155,9 @@ interface MonthRosterProps {
 }
 
 
+/** The night cover group's own colour: it is no one team's. */
+const NIGHT_COLOUR = "#8a63d2";
+
 interface Cell {
   code: string;
   token: string;
@@ -169,6 +177,10 @@ interface Cell {
   absence?: CellAbsence;
   /** Drawn, not stored: what an unmarked weekday means for the row's team. */
   isDefault?: boolean;
+  /** A tier on a window that is one crew for every team (SaaS TZ3). A TZ3
+   *  person's turns are drawn on their row in the Night cover group; anyone
+   *  else's stay on their own team's row. */
+  onNightCover?: boolean;
 }
 
 /** What a weekday nobody has marked is: an ordinary working day.
@@ -205,6 +217,7 @@ export default function MonthRoster({
   absences,
   shifts,
   absenceKinds,
+  nightCrew,
   selectedIso,
   focusRequest,
   family,
@@ -415,6 +428,7 @@ export default function MonthRoster({
         isRotation,
         shiftCode: a.shiftCode,
         tier: a.tier,
+        onNightCover: Boolean(a.tier && shift?.sharedAcrossTeams),
       };
 
       // A zoned window lands in its own sub-column; anything else is a fact
@@ -585,10 +599,93 @@ export default function MonthRoster({
       );
   }, [absences, assignments, days, kindByCode, shifts, teams, teamKey, teamMembers]);
 
+  /** The night cover: the zones whose tiers are one crew for the whole rota
+   *  (the catalogue's sharedAcrossTeams -- SaaS TZ3), drawn as a group of its
+   *  own after the teams, the way the Americas team sits after the ABTs. A
+   *  row per person holding one of its tiers in view, in their own team's
+   *  colour; their own team's row keeps only a mark on those nights. Built
+   *  from the grid, so a team picked in the filter shows that team's part of
+   *  the crew, and the rows edit exactly as the person's own row does. */
+  const nightCover = useMemo(() => {
+    const zones = new Set<string>();
+    const zoneCols = new Set<string>();
+    let hours = "";
+    for (const sh of shifts.values()) {
+      if (sh.family !== family || !sh.sharedAcrossTeams || !sh.zoneCode) continue;
+      zones.add(zoneLabelOn(shifts, zoneColumnOf(sh.zoneCode), false));
+      zoneCols.add(zoneColumnOf(sh.zoneCode));
+      const hhmm = (m: number) => `${String(Math.floor(m / 60) % 24).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
+      hours ||= `${hhmm(sh.startMinute)}–${hhmm(sh.endMinute)} ${zoneAbbreviation(sh.authoringTimeZone)}`;
+    }
+    const crew: {
+      row: (typeof grid)[number];
+      turns: Map<string, { cell: Cell; zone: string }>;
+      /** On the night crew for every date in view: nothing in any other zone
+       *  and no other turn, the way the chosen TZ3 people are rostered. They
+       *  are listed here only, off their team's rows, until a month puts them
+       *  back on a team zone. Always true for a row in the group. */
+      offTeam: boolean;
+    }[] = [];
+    const holders = new Map<string, string[]>(); // `${iso}|${tier}` -> names
+    const chosen = nightCrew
+      ? new Set(nightCrew.map((c) => `${c.userId}|${c.teamKey.toLowerCase()}`))
+      : undefined;
+    for (const row of grid) {
+      const turns = new Map<string, { cell: Cell; zone: string }>();
+      for (const [key, cell] of row.zoned) {
+        if (!cell.onNightCover) continue;
+        const [iso, zone] = key.split("|");
+        turns.set(iso, { cell, zone });
+        const k = `${iso}|${cell.tier}`;
+        holders.set(k, [...(holders.get(k) ?? []), `${row.name} (${teamNameOf(row.teamKey)})`]);
+      }
+      // Only the TZ3 people are in the group: the ones the months in view were
+      // generated with, when the server says; else whoever works only nights
+      // in view. Anyone else holding a night keeps it on their own team's
+      // row, so nobody is listed twice.
+      const offTeam = chosen
+        ? chosen.has(`${row.userId}|${row.teamKey.toLowerCase()}`)
+        : turns.size > 0 &&
+          [...row.zoned.keys()].every((k) => zoneCols.has(k.split("|")[1])) &&
+          [...row.days.values()].every((c) => !c.isRotation);
+      if (offTeam) crew.push({ row, turns, offTeam });
+    }
+    const offTeamKeys = new Set(crew.map(({ row }) => `${row.userId}|${row.teamKey}`));
+    /** The teams whose people hold the shared nights in view: the night cover
+     *  is drawn after the last of them. */
+    const teamsOnNights = new Set([
+      ...grid.filter((row) => [...row.zoned.values()].some((c) => c.onNightCover)).map((row) => row.teamKey),
+      ...crew.map(({ row }) => row.teamKey),
+    ]);
+    return { zones: [...zones], zoneColumns: [...zoneCols], hours, crew, holders, offTeamKeys, teamsOnNights };
+  }, [shifts, family, grid, teamNameOf, nightCrew]);
+
   const q = query.trim().toLowerCase();
+  // Shown when anyone in view is on the TZ3 crew; with nobody chosen, every
+  // night is on its holder's own team row.
+  const showNight = split && nightCover.zones.length > 0 && nightCover.crew.length > 0;
+  // The night crew's own people are not on their team's rows: the Night cover
+  // group is their one row.
+  const teamGrid = showNight ? grid.filter((r) => !nightCover.offTeamKeys.has(`${r.userId}|${r.teamKey}`)) : grid;
   const rows = q
-    ? grid.filter((r) => r.name.toLowerCase().includes(q) || r.teamKey.toLowerCase().includes(q))
-    : grid;
+    ? teamGrid.filter((r) => r.name.toLowerCase().includes(q) || r.teamKey.toLowerCase().includes(q))
+    : teamGrid;
+  // The night cover sits after the teams whose people hold its nights (SaaS),
+  // and before the rest (IaaS), which keep their place at the end.
+  const lastNightTeam = showNight
+    ? rows.reduce((last, r, i) => (nightCover.teamsOnNights.has(r.teamKey) ? i : last), -1)
+    : rows.length - 1;
+  const rowsBeforeNight = rows.slice(0, lastNightTeam + 1);
+  const rowsAfterNight = rows.slice(lastNightTeam + 1);
+  const nightRows = q
+    ? nightCover.crew.filter(
+        ({ row }) => row.name.toLowerCase().includes(q) || row.teamKey.toLowerCase().includes(q) || "night cover".startsWith(q),
+      )
+    : nightCover.crew;
+  // The teams the crew is drawn from, as the rows show them -- not every team
+  // on the rota family, which can hold teams that are not on this night.
+  const crewTeams = [...new Set(nightCover.crew.map(({ row }) => row.teamKey))];
+  const nightName = `Night cover · ${nightCover.zones.join(", ")}`;
 
   const todayIso = toIsoDate(new Date());
 
@@ -773,6 +870,186 @@ export default function MonthRoster({
     return () => window.clearTimeout(t);
   }, [monthIso, selectedIso, focusRequest]);
 
+  /** A team's rows, in one table body: the night cover sits between the teams
+   *  that share it and the rest, so the rows are drawn by part. */
+  const teamRowsOf = (list: typeof rows): JSX.Element[] =>
+    list.map((row, i) => {
+      // The first row of each team earns a rule above it: sorted by team
+      // with nothing between them, a hundred and twenty rows read as one
+      // undifferentiated block.
+      const opensTeam = i > 0 && list[i - 1].teamKey !== row.teamKey;
+      // Case-insensitive and trimmed: an identity provider is free to
+      // hand back Jane.Doe@Example.com for the address seeded as
+      // jane.doe@example.com, and an exact compare would silently
+      // never match.
+      const isMe = Boolean(me) && row.email.trim().toLowerCase() === me;
+      return (
+      <tr
+        key={`${row.userId}|${row.teamKey}`}
+        ref={isMe ? meRow : undefined}
+        // Every other row banded, so one engineer's month reads across
+        // the grid without a hover to follow it.
+        // Tinted in the team's own colour, faintly, so where one team
+        // ends and the next begins reads at a glance. --rc carries it.
+        className={`tinted${isMe ? " me" : ""}${opensTeam ? " teamtop" : ""}${i % 2 === 1 ? " alt" : ""}`}
+        style={{ "--rc": teamColourOf(row.teamKey) } as CSSProperties}
+        aria-current={isMe ? "true" : undefined}
+      >
+        <th className="lab">
+          <span className="nm">
+            <span className="av" style={{ background: teamColourOf(row.teamKey) }}>
+              {initialsOf(row.name)}
+            </span>
+            <span className="who">{row.name}</span>
+            {isMe ? <i className="youtag">You</i> : null}
+            {row.isLead ? <i className="leadtag">Lead</i> : null}
+            <span className="team">{teamNameOf(row.teamKey)}</span>
+          </span>
+        </th>
+        {days.map((d) => {
+          const iso = toIsoDate(d);
+          const cell = row.days.get(iso);
+          const weekend = d.getDay() === 0 || d.getDay() === 6;
+          const marks = `${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""} ${
+            iso === selectedIso ? "sel" : ""
+          } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}${weekMarks(iso)}${
+            changedCells?.has(`${row.userId}|${iso}`) ? " changed" : ""
+          }`;
+          const faded = (c: Cell | undefined) =>
+            rotationsOnly && c && !c.isRotation ? "muted" : "";
+
+          const alloc = row.allocs.get(iso);
+          /** A turn and the allocation beside it, as one thing to
+           *  open: the picker shows the turn as held and offers to
+           *  remove the allocation. */
+          const withAlloc = (c: Cell | undefined): Cell | undefined =>
+            alloc
+              ? {
+                  ...(c ?? alloc),
+                  absenceKindCode: alloc.absenceKindCode,
+                  absence: alloc.absence,
+                  title: c ? `${c.title} · also ${alloc.title}` : alloc.title,
+                }
+              : c;
+
+          if (!split) {
+            const editable = canEdit(row, iso);
+            const touched = changedBy(row.userId, iso);
+            // An unmarked weekday is a working day; a weekend is not.
+            const shown = cell ?? alloc ?? (weekend ? undefined : defaultFor(row, iso));
+            return (
+              <td
+                key={iso}
+                className={`${marks} ${faded(shown)}${editable ? " c editable" : ""}${
+                  touched.mark ? " touched" : ""
+                }`}
+                title={
+                  editable
+                    ? `${row.name} · ${shown ? (withAlloc(cell)?.title ?? shown.title) : "nothing rostered"}${touched.note} — click to change`
+                    : shown || touched.mark
+                      ? `${row.name} · ${shown ? shown.title : "nothing rostered"}${touched.note}`
+                      : undefined
+                }
+                onClick={editable ? (e) => openCell(e, row, iso, withAlloc(cell)) : undefined}
+              >
+                {cell && alloc ? (
+                  <span className="duo">
+                    <span className={`chip sm ${cell.token}`}>{cell.code}</span>
+                    <span className={`chip sm ${alloc.token}`}>{alloc.code}</span>
+                  </span>
+                ) : shown ? (
+                  <span className={`chip sm ${shown.token}${shown.isDefault ? " dflt" : ""}`}>{shown.code}</span>
+                ) : (
+                  <span className="none">·</span>
+                )}
+              </td>
+            );
+          }
+
+          const zones = zonesOn(weekend);
+
+          // Leave belongs to the day, not to a zone: somebody away is
+          // away from all of them, so it spans rather than picking one
+          // arbitrarily. So does an unmarked weekday -- a working day,
+          // in no zone yet -- which reads as one LK, not three blanks.
+          const unmarked =
+            !cell && !alloc && !weekend && zones.every((z) => !row.zoned.has(`${iso}|${z}`));
+          const whole = cell ?? (unmarked ? defaultFor(row, iso) : undefined);
+          if (whole) {
+            const editable = canEdit(row, iso);
+            return (
+              <td
+                key={iso}
+                colSpan={zones.length}
+                className={`c zwhole ${marks} ${faded(whole)}${
+                  editable ? " editable" : ""
+                }`}
+                title={
+                  editable
+                    ? `${row.name} · ${whole.title} — click to change`
+                    : `${row.name} · ${whole.title}`
+                }
+                onClick={editable ? (e) => openCell(e, row, iso, cell) : undefined}
+              >
+                <span className={`chip sm ${whole.token}${whole.isDefault ? " dflt" : ""}`}>{whole.code}</span>
+              </td>
+            );
+          }
+
+          const editable = canEdit(row, iso);
+          return zones.map((z, i) => {
+            // A zone the engineer holds a turn in shows the turn; the
+            // rest of the day shows the allocation that fills it.
+            const turn = row.zoned.get(`${iso}|${z}`);
+            const zc = turn ?? alloc;
+            // Under a turn: the allocation the rest of the day is
+            // given to, else the zone's regular hours.
+            const under = turn && turn.isRotation ? (alloc ?? row.zonedBase.get(`${iso}|${z}`)) : alloc;
+            return (
+              <td
+                key={`${iso}|${z}`}
+                // A day split across zone columns still has one left
+                // edge and one right edge. The month rule and the
+                // week band's opening edge belong to the first
+                // sub-column and its closing edge to the last;
+                // repeating them on each zone would rule the inside
+                // of the day as heavily as its boundary.
+                className={`c z ${i === 0 ? "zfirst" : ""}${i === zones.length - 1 ? " zlast" : ""} ${
+                  zoneMarks(marks, i, zones.length)
+                } ${faded(zc)}${editable ? " editable" : ""}`}
+                title={
+                  editable
+                    ? `${row.name} · ${z} · ${zc ? (withAlloc(row.zoned.get(`${iso}|${z}`))?.title ?? zc.title) : "nothing rostered"} — click to change`
+                    : zc
+                      ? `${row.name} · ${z} · ${zc.title}`
+                      : undefined
+                }
+                onClick={editable ? (e) => openCell(e, row, iso, withAlloc(row.zoned.get(`${iso}|${z}`)), zoneCodeFor?.(row.teamKey, z) ?? z) : undefined}
+              >
+                {/* A night held by somebody not on the TZ3 crew stays
+                    here, on their own row: the Night cover group lists
+                    the crew alone, so nobody is shown twice. */}
+                {turn && under ? (
+                  // The zone's turn and what it sits on, stacked: L1
+                  // in TZ1 on an RnD day, or on TZ1's regular hours --
+                  // the cell says both.
+                  <span className="duo">
+                    <span className={`chip sm ${turn.token}`}>{turn.code}</span>
+                    <span className={`chip sm ${under.token}`}>{under.code}</span>
+                  </span>
+                ) : zc ? (
+                  <span className={`chip sm ${zc.token}`}>{zc.code}</span>
+                ) : (
+                  <span className="zempty" />
+                )}
+              </td>
+            );
+          });
+        })}
+      </tr>
+      );
+    });
+
   return (
     <>
       <div className="card-head">
@@ -797,7 +1074,7 @@ export default function MonthRoster({
         <RotaPicker rotas={rotas} rotaCode={rotaCode} onRotaChange={onRotaChange} />
 
         <h2>
-          Roster <span className="count">{rows.length}</span>
+          Roster <span className="count">{rows.length + (showNight ? nightRows.length : 0)}</span>
         </h2>
 
         <div className="tools">
@@ -938,184 +1215,128 @@ export default function MonthRoster({
             ) : null}
           </thead>
           <tbody>
-            {rows.map((row, i) => {
-              // The first row of each team earns a rule above it: sorted by team
-              // with nothing between them, a hundred and twenty rows read as one
-              // undifferentiated block.
-              const opensTeam = i > 0 && rows[i - 1].teamKey !== row.teamKey;
-              // Case-insensitive and trimmed: an identity provider is free to
-              // hand back Jane.Doe@Example.com for the address seeded as
-              // jane.doe@example.com, and an exact compare would silently
-              // never match.
-              const isMe = Boolean(me) && row.email.trim().toLowerCase() === me;
-              return (
-              <tr
-                key={`${row.userId}|${row.teamKey}`}
-                ref={isMe ? meRow : undefined}
-                // Every other row banded, so one engineer's month reads across
-                // the grid without a hover to follow it.
-                // Tinted in the team's own colour, faintly, so where one team
-                // ends and the next begins reads at a glance. --rc carries it.
-                className={`tinted${isMe ? " me" : ""}${opensTeam ? " teamtop" : ""}${i % 2 === 1 ? " alt" : ""}`}
-                style={{ "--rc": teamColourOf(row.teamKey) } as CSSProperties}
-                aria-current={isMe ? "true" : undefined}
-              >
-                <th className="lab">
-                  <span className="nm">
-                    <span className="av" style={{ background: teamColourOf(row.teamKey) }}>
-                      {initialsOf(row.name)}
-                    </span>
-                    <span className="who">{row.name}</span>
-                    {isMe ? <i className="youtag">You</i> : null}
-                    {row.isLead ? <i className="leadtag">Lead</i> : null}
-                    <span className="team">{teamNameOf(row.teamKey)}</span>
-                  </span>
-                </th>
-                {days.map((d) => {
-                  const iso = toIsoDate(d);
-                  const cell = row.days.get(iso);
-                  const weekend = d.getDay() === 0 || d.getDay() === 6;
-                  const marks = `${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""} ${
-                    iso === selectedIso ? "sel" : ""
-                  } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}${weekMarks(iso)}${
-                    changedCells?.has(`${row.userId}|${iso}`) ? " changed" : ""
-                  }`;
-                  const faded = (c: Cell | undefined) =>
-                    rotationsOnly && c && !c.isRotation ? "muted" : "";
-
-                  const alloc = row.allocs.get(iso);
-                  /** A turn and the allocation beside it, as one thing to
-                   *  open: the picker shows the turn as held and offers to
-                   *  remove the allocation. */
-                  const withAlloc = (c: Cell | undefined): Cell | undefined =>
-                    alloc
-                      ? {
-                          ...(c ?? alloc),
-                          absenceKindCode: alloc.absenceKindCode,
-                          absence: alloc.absence,
-                          title: c ? `${c.title} · also ${alloc.title}` : alloc.title,
-                        }
-                      : c;
-
-                  if (!split) {
-                    const editable = canEdit(row, iso);
-                    const touched = changedBy(row.userId, iso);
-                    // An unmarked weekday is a working day; a weekend is not.
-                    const shown = cell ?? alloc ?? (weekend ? undefined : defaultFor(row, iso));
-                    return (
-                      <td
-                        key={iso}
-                        className={`${marks} ${faded(shown)}${editable ? " c editable" : ""}${
-                          touched.mark ? " touched" : ""
-                        }`}
-                        title={
-                          editable
-                            ? `${row.name} · ${shown ? (withAlloc(cell)?.title ?? shown.title) : "nothing rostered"}${touched.note} — click to change`
-                            : shown || touched.mark
-                              ? `${row.name} · ${shown ? shown.title : "nothing rostered"}${touched.note}`
-                              : undefined
-                        }
-                        onClick={editable ? (e) => openCell(e, row, iso, withAlloc(cell)) : undefined}
-                      >
-                        {cell && alloc ? (
-                          <span className="duo">
-                            <span className={`chip sm ${cell.token}`}>{cell.code}</span>
-                            <span className={`chip sm ${alloc.token}`}>{alloc.code}</span>
-                          </span>
-                        ) : shown ? (
-                          <span className={`chip sm ${shown.token}${shown.isDefault ? " dflt" : ""}`}>{shown.code}</span>
-                        ) : (
-                          <span className="none">·</span>
-                        )}
-                      </td>
-                    );
-                  }
-
-                  const zones = zonesOn(weekend);
-
-                  // Leave belongs to the day, not to a zone: somebody away is
-                  // away from all of them, so it spans rather than picking one
-                  // arbitrarily. So does an unmarked weekday -- a working day,
-                  // in no zone yet -- which reads as one LK, not three blanks.
-                  const unmarked =
-                    !cell && !alloc && !weekend && zones.every((z) => !row.zoned.has(`${iso}|${z}`));
-                  const whole = cell ?? (unmarked ? defaultFor(row, iso) : undefined);
-                  if (whole) {
-                    const editable = canEdit(row, iso);
-                    return (
-                      <td
-                        key={iso}
-                        colSpan={zones.length}
-                        className={`c zwhole ${marks} ${faded(whole)}${
-                          editable ? " editable" : ""
-                        }`}
-                        title={
-                          editable
-                            ? `${row.name} · ${whole.title} — click to change`
-                            : `${row.name} · ${whole.title}`
-                        }
-                        onClick={editable ? (e) => openCell(e, row, iso, cell) : undefined}
-                      >
-                        <span className={`chip sm ${whole.token}${whole.isDefault ? " dflt" : ""}`}>{whole.code}</span>
-                      </td>
-                    );
-                  }
-
-                  const editable = canEdit(row, iso);
-                  return zones.map((z, i) => {
-                    // A zone the engineer holds a turn in shows the turn; the
-                    // rest of the day shows the allocation that fills it.
-                    const turn = row.zoned.get(`${iso}|${z}`);
-                    const zc = turn ?? alloc;
-                    // Under a turn: the allocation the rest of the day is
-                    // given to, else the zone's regular hours.
-                    const under = turn && turn.isRotation ? (alloc ?? row.zonedBase.get(`${iso}|${z}`)) : alloc;
-                    return (
-                      <td
-                        key={`${iso}|${z}`}
-                        // A day split across zone columns still has one left
-                        // edge and one right edge. The month rule and the
-                        // week band's opening edge belong to the first
-                        // sub-column and its closing edge to the last;
-                        // repeating them on each zone would rule the inside
-                        // of the day as heavily as its boundary.
-                        className={`c z ${i === 0 ? "zfirst" : ""}${i === zones.length - 1 ? " zlast" : ""} ${
-                          zoneMarks(marks, i, zones.length)
-                        } ${faded(zc)}${editable ? " editable" : ""}`}
-                        title={
-                          editable
-                            ? `${row.name} · ${z} · ${zc ? (withAlloc(row.zoned.get(`${iso}|${z}`))?.title ?? zc.title) : "nothing rostered"} — click to change`
-                            : zc
-                              ? `${row.name} · ${z} · ${zc.title}`
-                              : undefined
-                        }
-                        onClick={editable ? (e) => openCell(e, row, iso, withAlloc(row.zoned.get(`${iso}|${z}`)), zoneCodeFor?.(row.teamKey, z) ?? z) : undefined}
-                      >
-                        {turn && under ? (
-                          // The zone's turn and what it sits on, stacked: L1
-                          // in TZ1 on an RnD day, or on TZ1's regular hours --
-                          // the cell says both.
-                          <span className="duo">
-                            <span className={`chip sm ${turn.token}`}>{turn.code}</span>
-                            <span className={`chip sm ${under.token}`}>{under.code}</span>
-                          </span>
-                        ) : zc ? (
-                          <span className={`chip sm ${zc.token}`}>{zc.code}</span>
-                        ) : (
-                          <span className="zempty" />
-                        )}
-                      </td>
-                    );
-                  });
-                })}
-              </tr>
-              );
-            })}
+            {teamRowsOf(rowsBeforeNight)}
           </tbody>
+          {showNight ? (
+            // The night cover, after the teams: one crew for all of them, so
+            // a group of its own rather than a sub-column on each team's rows.
+            <tbody className="nightgrp" aria-label={`${nightName}: one crew for every team`}>
+              <tr className="nghead">
+                <th className="lab">
+                  <span className="ngt">{nightName}</span>
+                  {nightCover.hours ? <small>{nightCover.hours}</small> : null}
+                </th>
+                <td colSpan={days.reduce((n, d) => n + zonesOn(d.getDay() === 0 || d.getDay() === 6).length, 0)}>
+                  The TZ3 people, one crew for {crewTeams.length > 1 ? crewTeams.map(teamNameOf).join(" and ") : "every team"},
+                  every night: L1 is called first, then L2; L3 oversees the night. They are listed here instead of
+                  under their team.
+                  {teamKey ? ` Only ${teamNameOf(teamKey)}'s people are shown; choose All teams for the whole crew.` : ""}
+                  {nightRows.length === 0 ? " Nobody holds a night in these dates." : ""}
+                </td>
+              </tr>
+              {nightRows.map(({ row, turns, offTeam }, i) => {
+                const isMe = Boolean(me) && row.email.trim().toLowerCase() === me;
+                return (
+                  <tr
+                    key={`night|${row.userId}|${row.teamKey}`}
+                    // A TZ3 person's only row: "scroll to my row" finds them here.
+                    ref={isMe ? meRow : undefined}
+                    className={`tinted ngrow${isMe ? " me" : ""}${i % 2 === 1 ? " alt" : ""}`}
+                    style={{ "--rc": NIGHT_COLOUR } as CSSProperties}
+                    aria-current={isMe ? "true" : undefined}
+                  >
+                    <th className="lab">
+                      <span className="nm">
+                        <span className="av" style={{ background: teamColourOf(row.teamKey) }}>
+                          {initialsOf(row.name)}
+                        </span>
+                        <span className="who">{row.name}</span>
+                        {isMe ? <i className="youtag">You</i> : null}
+                        <span className="team">{teamNameOf(row.teamKey)}</span>
+                      </span>
+                    </th>
+                    {days.map((d) => {
+                      const iso = toIsoDate(d);
+                      const weekend = d.getDay() === 0 || d.getDay() === 6;
+                      const held = turns.get(iso);
+                      const marks = `${weekend ? "wknd" : ""} ${iso === todayIso ? "today" : ""} ${
+                        iso === selectedIso ? "sel" : ""
+                      } ${d.getDay() === 1 ? "wkstart" : ""}${opensMonth(d) ? " mstart" : ""}${weekMarks(iso)}`;
+                      // Off their team's rows, this is their only row: leave
+                      // and anything else about the whole day shows here too.
+                      const whole = offTeam ? (row.days.get(iso) ?? row.allocs.get(iso)) : undefined;
+                      if (whole) {
+                        const editable = canEdit(row, iso);
+                        return (
+                          <td
+                            key={iso}
+                            colSpan={zonesOn(weekend).length}
+                            className={`c zwhole ng ${marks}${editable ? " editable" : ""}`}
+                            title={`${row.name} · ${whole.title}${editable ? " — click to change" : ""}`}
+                            onClick={editable ? (e) => openCell(e, row, iso, whole) : undefined}
+                          >
+                            <span className={`chip sm ${whole.token}`}>{whole.code}</span>
+                          </td>
+                        );
+                      }
+                      const others = held ? (nightCover.holders.get(`${iso}|${held.cell.tier}`) ?? []) : [];
+                      const what = held
+                        ? others.length > 1
+                          ? `${held.cell.code} with ${others.length - 1} more (${others.join(", ")}); one is expected`
+                          : held.cell.code
+                        : "not on the night";
+                      // Split by zone like every other row, so the night
+                      // turn lands in its own zone's sub-column; the other
+                      // zones are the teams' and stay empty here.
+                      const zones = zonesOn(weekend);
+                      return zones.map((z, i) => {
+                        const night = nightCover.zoneColumns.includes(z);
+                        const mine = held && held.zone === z ? held : undefined;
+                        // This is their only row: every zone's cell of theirs shows here --
+                        // their nights' regular hours, and any day a team zone was kept.
+                        const regular = offTeam && !mine ? row.zoned.get(`${iso}|${z}`) : undefined;
+                        const editable = (night || offTeam) && canEdit(row, iso);
+                        return (
+                          <td
+                            key={`${iso}|${z}`}
+                            className={`c z ng ${i === 0 ? "zfirst" : ""}${i === zones.length - 1 ? " zlast" : ""} ${zoneMarks(
+                              marks,
+                              i,
+                              zones.length,
+                            )}${editable ? " editable" : ""}${mine && others.length > 1 ? " ngtwo" : ""}`}
+                            title={
+                              night || regular
+                                ? `${row.name} · ${z} · ${night ? what : regular?.title}${editable ? " — click to change" : ""}`
+                                : undefined
+                            }
+                            onClick={
+                              editable ? (e) => openCell(e, row, iso, mine?.cell ?? regular, zoneCodeFor?.(row.teamKey, z) ?? z) : undefined
+                            }
+                          >
+                            {mine ? (
+                              <span className={`chip sm ${mine.cell.token}`}>{mine.cell.code}</span>
+                            ) : regular ? (
+                              <span className={`chip sm ${regular.token}`}>{regular.code}</span>
+                            ) : (
+                              <span className="zempty" />
+                            )}
+                          </td>
+                        );
+                      });
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          ) : null}
+          {rowsAfterNight.length > 0 ? (
+            // Teams that hold no night of the shared crew -- IaaS -- after it.
+            <tbody className="afternight">{teamRowsOf(rowsAfterNight)}</tbody>
+          ) : null}
         </table>
       </div>
 
-      {rows.length === 0 ? (
+      {rows.length === 0 && (!showNight || nightRows.length === 0) ? (
         <div className="offnone">
           {q ? (
             <>No engineer matches “{query}”.</>

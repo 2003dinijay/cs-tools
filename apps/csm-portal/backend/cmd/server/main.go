@@ -629,6 +629,7 @@ func main() {
 	// "Generate month": a lead of the SaaS SRE rota works a month out from
 	// the availability marked on it. Who may is entity-service's decision.
 	route("POST /team-schedule/rotas/{code}/generate", handler.PermWrite, rotaGenerateHandler.GenerateRotaMonth)
+	route("GET /team-schedule/rotas/{code}/night-crew", handler.PermView, rotaGenerateHandler.GetRotaNightCrew)
 	// Rota access tab: rota admins (one family each) and each team's rota
 	// marker. Granting rota admin is for the portal's admins, so PermAdmin
 	// keeps the control away from anyone else; a team's marker can also be

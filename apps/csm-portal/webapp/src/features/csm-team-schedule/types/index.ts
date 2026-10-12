@@ -69,6 +69,10 @@ export interface ScheduleShift {
    *  or the Americas night -- rather than a turn on the rota. */
   isRotation: boolean;
   crossesMidnight: boolean;
+  /** Each tier of this window is one person for the whole rota, not one per
+   *  team: SaaS TZ3, the night cover for Apollo and Artemis alike. Absent
+   *  from an older entity-service, which reads as false. */
+  sharedAcrossTeams?: boolean;
   colourToken: string;
   sortOrder: number;
 }

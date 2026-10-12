@@ -37,6 +37,16 @@ type RotaGenerateRepository interface {
 	// generator wrote for owner (and that nobody has since edited by hand: an
 	// edit makes an assignment MANUAL or SWAP).
 	GeneratedRows(ctx context.Context, owner string, teamKeys []string, from, to string) (GeneratedRowIDs, error)
+	// NightCrew is the TZ3 people chosen for each month of the rota in
+	// fromMonth..toMonth (first days of months), in month order.
+	NightCrew(ctx context.Context, rotaCode, fromMonth, toMonth string) ([]RotaNightCrewRow, error)
+}
+
+// RotaNightCrewRow is one person chosen for a month's TZ3 night crew.
+type RotaNightCrewRow struct {
+	Month   string // YYYY-MM-DD, the first of the month
+	UserID  string
+	TeamKey string
 }
 
 // RotaGeneratorOwner is the created_by the generator writes for a rota's rows.
@@ -86,6 +96,12 @@ type RotaMonthWrite struct {
 	LieuNotes []string
 	Turns     []RotaTurnRow
 	Lieu      []RotaLieuRow
+	// RotaCode and Month (YYYY-MM-DD, the first of the month) say whose night
+	// crew this generation records; NightCrew replaces that month's earlier
+	// choice, and an empty one clears it. Month empty leaves the choice alone.
+	RotaCode  string
+	Month     string
+	NightCrew []RotaNightCrewRow
 }
 
 // RotaMonthWriteResult counts what the write did.
@@ -229,10 +245,58 @@ func (r *rotaGenerateRepository) ReplaceGeneratedMonth(ctx context.Context, w Ro
 		out.LieuWritten = int(tag.RowsAffected())
 	}
 
+	if w.Month != "" {
+		// The month's TZ3 people, as chosen for this generation: the earlier
+		// choice goes, so somebody left out is back on their team.
+		if _, err := tx.Exec(ctx, `
+			DELETE FROM team_schedule_night_crew WHERE rota_code = $1 AND month = $2::date`,
+			w.RotaCode, w.Month); err != nil {
+			return out, fmt.Errorf("remove night crew: %w", err)
+		}
+		if len(w.NightCrew) > 0 {
+			users := make([]string, len(w.NightCrew))
+			teams := make([]string, len(w.NightCrew))
+			for i, c := range w.NightCrew {
+				users[i], teams[i] = c.UserID, c.TeamKey
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO team_schedule_night_crew (rota_code, month, user_id, team_key, created_by)
+				SELECT $1, $2::date, v.user_id, v.team_key, $3
+				  FROM unnest($4::uuid[], $5::text[]) AS v(user_id, team_key)
+				ON CONFLICT DO NOTHING`,
+				w.RotaCode, w.Month, w.ActorEmail, users, teams); err != nil {
+				return out, fmt.Errorf("insert night crew: %w", err)
+			}
+		}
+	}
+
 	if err := tx.Commit(ctx); err != nil {
 		return out, fmt.Errorf("commit generated month: %w", err)
 	}
 	return out, nil
+}
+
+// NightCrew implements RotaGenerateRepository.
+func (r *rotaGenerateRepository) NightCrew(ctx context.Context, rotaCode, fromMonth, toMonth string) ([]RotaNightCrewRow, error) {
+	rows, err := r.db.Query(ctx, `
+		SELECT to_char(month, 'YYYY-MM-DD'), user_id::text, team_key
+		  FROM team_schedule_night_crew
+		 WHERE rota_code = $1 AND month BETWEEN $2::date AND $3::date
+		 ORDER BY month, team_key, user_id`,
+		rotaCode, fromMonth, toMonth)
+	if err != nil {
+		return nil, fmt.Errorf("query night crew: %w", err)
+	}
+	defer rows.Close()
+	out := []RotaNightCrewRow{}
+	for rows.Next() {
+		var c RotaNightCrewRow
+		if err := rows.Scan(&c.Month, &c.UserID, &c.TeamKey); err != nil {
+			return nil, fmt.Errorf("scan night crew: %w", err)
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
 }
 
 // GeneratedRows implements RotaGenerateRepository.

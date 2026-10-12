@@ -48,7 +48,14 @@ const rotaAuthoringZone = "Asia/Colombo"
 // Artemis) can be generated.
 type RotaGenerateService interface {
 	GenerateMonth(ctx context.Context, req domain.GenerateRotaMonthRequest) (domain.GenerateRotaMonthResponse, error)
+	// NightCrew is the TZ3 people chosen for each month fromMonth..toMonth
+	// (YYYY-MM), as the months' last real generations recorded them.
+	NightCrew(ctx context.Context, rotaCode, fromMonth, toMonth string) (domain.RotaNightCrewResponse, error)
 }
+
+// rotaNightCrewMaxMonths bounds a night crew read: the roster shows six
+// months at most.
+const rotaNightCrewMaxMonths = 12
 
 type rotaGenerateService struct {
 	schedule repository.ScheduleRepository
@@ -332,6 +339,15 @@ func (s *rotaGenerateService) GenerateMonth(ctx context.Context, req domain.Gene
 		ShiftCodes: saasWrittenShiftCodes(),
 		From:       saasISO(from),
 		To:         saasISO(monthEnd),
+		// The month's TZ3 people, recorded with the month so the roster can
+		// list them under the night cover; nobody chosen clears the record.
+		RotaCode: RotaSRESaaS,
+		Month:    saasISO(monthStart),
+	}
+	for _, team := range teams {
+		for _, id := range crew[team] {
+			write.NightCrew = append(write.NightCrew, repository.RotaNightCrewRow{UserID: id, TeamKey: team})
+		}
 	}
 	for note := range ownedNotes {
 		write.LieuNotes = append(write.LieuNotes, note)
@@ -354,6 +370,51 @@ func (s *rotaGenerateService) GenerateMonth(ctx context.Context, req domain.Gene
 	out.Summary.Written = res.Written
 	out.Summary.Replaced = res.Replaced
 	out.Summary.LieuWritten = res.LieuWritten
+	return out, nil
+}
+
+// NightCrew implements RotaGenerateService. Anyone on the team schedule may
+// read it, as they may read the rota itself.
+func (s *rotaGenerateService) NightCrew(ctx context.Context, rotaCode, fromMonth, toMonth string) (domain.RotaNightCrewResponse, error) {
+	var out domain.RotaNightCrewResponse
+	if err := RequireInternalCaller(ctx, s.access, "the team schedule is only available to internal staff"); err != nil {
+		return out, err
+	}
+	if !strings.EqualFold(rotaCode, RotaSRESaaS) {
+		return out, &apierror.NotFoundError{Msg: fmt.Sprintf("rota %q has no night crew; only %s has", rotaCode, RotaSRESaaS)}
+	}
+	from, err := time.Parse("2006-01", strings.TrimSpace(fromMonth))
+	if err != nil {
+		return out, &apierror.ValidationError{Msg: "from must be YYYY-MM"}
+	}
+	to, err := time.Parse("2006-01", strings.TrimSpace(toMonth))
+	if err != nil {
+		return out, &apierror.ValidationError{Msg: "to must be YYYY-MM"}
+	}
+	if to.Before(from) {
+		return out, &apierror.ValidationError{Msg: "to must not be before from"}
+	}
+	if to.After(from.AddDate(0, rotaNightCrewMaxMonths-1, 0)) {
+		return out, &apierror.ValidationError{Msg: fmt.Sprintf("at most %d months can be read at once", rotaNightCrewMaxMonths)}
+	}
+	rows, err := s.writer.NightCrew(ctx, RotaSRESaaS, saasISO(from), saasISO(to))
+	if err != nil {
+		return out, err
+	}
+	byMonth := map[string][]domain.RotaNightCrewMember{}
+	for _, r := range rows {
+		m := r.Month[:7]
+		byMonth[m] = append(byMonth[m], domain.RotaNightCrewMember{UserID: r.UserID, TeamKey: r.TeamKey})
+	}
+	out.RotaCode = RotaSRESaaS
+	for m := from; !m.After(to); m = m.AddDate(0, 1, 0) {
+		key := m.Format("2006-01")
+		crew := byMonth[key]
+		if crew == nil {
+			crew = []domain.RotaNightCrewMember{}
+		}
+		out.Months = append(out.Months, domain.RotaNightCrewMonth{Month: key, Crew: crew})
+	}
 	return out, nil
 }
 
@@ -491,7 +552,8 @@ func saasOwnedLieuNotes(from, monthEnd time.Time) map[string]bool {
 
 // saasNightCrew checks the TZ3 people a lead chose: each key a team on the
 // rota, each id a member of that team, named once. Blank ids and empty lists
-// are dropped, so a team with nobody chosen keeps the usual nights.
+// are dropped. Every team's choices together are the rota's one TZ3 crew;
+// with nobody chosen on any team, nights are drawn as usual.
 func saasNightCrew(in map[string][]string, teams []string, members []saasRotaMember) (map[string][]string, error) {
 	if len(in) == 0 {
 		return nil, nil
@@ -528,8 +590,9 @@ func saasNightCrew(in map[string][]string, teams []string, members []saasRotaMem
 }
 
 // saasClashesWithHand is true when a lead already filled this turn's slot by
-// hand (same team, day, shift and tier), or the person already holds a turn
-// by hand that overlaps it.
+// hand (same team, day, shift and tier -- any team on TZ3, which is one crew
+// for the whole rota), or the person already holds a turn by hand that
+// overlaps it.
 func saasClashesWithHand(t saasPlannedTurn, byHand []domain.ScheduleAssignment, windows map[string][2]int) bool {
 	w := windows[t.ShiftCode]
 	for _, a := range byHand {
@@ -540,7 +603,8 @@ func saasClashesWithHand(t saasPlannedTurn, byHand []domain.ScheduleAssignment, 
 		if a.Tier != nil {
 			tier = *a.Tier
 		}
-		if a.TeamKey == t.TeamKey && a.ShiftCode == t.ShiftCode && tier == t.Tier {
+		sameSlot := a.TeamKey == t.TeamKey || t.ShiftCode == saasShiftTZ3
+		if sameSlot && a.ShiftCode == t.ShiftCode && tier == t.Tier {
 			return true
 		}
 		if a.Engineer.UserID == t.UserID {

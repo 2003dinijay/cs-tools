@@ -1761,6 +1761,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// A lead of the rota (or its admin) works out a month from the
 		// availability marked on the roster; dryRun previews it.
 		mux.HandleFunc("POST /team-schedule/rotas/{code}/generate", rotaGenerateHandler.GenerateRotaMonth)
+		// The TZ3 people each month was generated with: the Month roster lists
+		// them under the night cover instead of under their team.
+		mux.HandleFunc("GET /team-schedule/rotas/{code}/night-crew", rotaGenerateHandler.GetRotaNightCrew)
 	}
 	if announcementRequestHandler != nil {
 		mux.HandleFunc("POST /announcement-requests", announcementRequestHandler.CreateAnnouncementRequest)

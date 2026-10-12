@@ -7098,7 +7098,9 @@ paths:
         whatever that engineer held, because the roster is one slot per person
         per day. A day the window is not worked on — a weekday rotation landing
         on a Saturday — is skipped rather than refused, and reported back in
-        `skippedDates`. The whole range is one transaction.
+        `skippedDates`. The whole range is one transaction. It replaces only
+        that engineer's own rows: an SRE tier somebody else holds is refused
+        with 409, never taken from them.
       operationId: applyScheduleRange
       requestBody:
         required: true
@@ -7133,6 +7135,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >
+            Nothing was applied. Either a day clashes with a turn of another
+            team, or somebody else already holds the SRE tier being set (the
+            same zone, tier and day -- per team, or across every team of the
+            rota on a window shared across teams, such as SaaS TZ3, the night
+            cover). The message names the holder; take them off it first.
           content:
             application/json:
               schema:
@@ -7449,6 +7462,75 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "503":
           description: The catalogue lacks a SaaS shift, the lieu kind, or a team on the rota.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/rotas/{code}/night-crew:
+    get:
+      summary: The TZ3 people each month of a rota was generated with.
+      description: >
+        The people a lead chose for TZ3 (the SaaS night cover, one crew for
+        Apollo and Artemis) in "Generate month", as each month's last real
+        generation recorded them. The Month roster lists them under the night
+        cover instead of under their team. Every month from..to is listed; a
+        month with nobody chosen has an empty crew. Only SRE_SAAS has one. At
+        most 12 months at once. Internal staff only.
+      operationId: getRotaNightCrew
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            example: SRE_SAAS
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            example: "2026-10"
+          description: First month, YYYY-MM.
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            example: "2026-12"
+          description: Last month, YYYY-MM; not before from.
+      responses:
+        "200":
+          description: The chosen TZ3 people, month by month.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotaNightCrewResponse'
+        "400":
+          description: A bad from or to, to before from, or more than 12 months.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: A rota with no night crew (anything but SRE_SAAS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal error.
           content:
             application/json:
               schema:
@@ -14409,15 +14491,44 @@ components:
         nightCrew:
           type: object
           description: >
-            Team key -> the people chosen to work that team's TZ3 for the month.
-            Their TZ3 L1, L2 and L3 go round them night by night (weekends
-            included) and they work no other zone; a night they are short is
-            filled from the team and warned about. A team left out keeps the
-            usual nights. Each id must be a member of that team (400 otherwise).
+            Team key -> the people chosen to work TZ3 for the month. TZ3 is one
+            crew for the whole rota (the night cover for every team): every
+            team's choices together are that crew, and the rota's single TZ3
+            L1, L2 and L3 go round them night by night (weekends included).
+            They work no other zone, and nobody else is put on TZ3: a tier they
+            cannot cover on a night is left empty and warned about. With nobody
+            chosen, nights are drawn as usual. Each id must be a member of the
+            team it is listed under (400 otherwise). A real (not dryRun) run
+            records the choice for the month, replacing the month's earlier one
+            (see GET /team-schedule/rotas/{code}/night-crew).
           additionalProperties:
             type: array
             items: {type: string, format: uuid}
           example: {apollo: ["6ed08bc9-1b20-6690-182c-0dc5604bcb6b"]}
+    RotaNightCrewResponse:
+      type: object
+      required: [rotaCode, months]
+      properties:
+        rotaCode:
+          type: string
+          example: SRE_SAAS
+        months:
+          type: array
+          items:
+            type: object
+            required: [month, crew]
+            properties:
+              month:
+                type: string
+                example: "2026-11"
+              crew:
+                type: array
+                items:
+                  type: object
+                  required: [userId, teamKey]
+                  properties:
+                    userId: {type: string, format: uuid}
+                    teamKey: {type: string, example: apollo}
     GeneratedRotaTurn:
       type: object
       properties:
@@ -21504,6 +21615,14 @@ components:
             How many people this window is meant to carry, where a target has
             been agreed. Null where none has -- every SRE window today.
         crossesMidnight: { type: boolean }
+        sharedAcrossTeams:
+          type: boolean
+          description: >-
+            True when each tier of this window is held by one person for the
+            whole rota rather than one per team -- SaaS TZ3, the night cover
+            for every SaaS team. Saving the roster (POST
+            /team-schedule/assignments/apply) refuses a second holder of a
+            tier (409); assignment create and update do not check it yet.
         colourToken: { type: string }
         sortOrder: { type: integer }
     ScheduleTeam:

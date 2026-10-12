@@ -82,6 +82,15 @@ runs as on a weekday: `SRE_TZ3` is `day_scope = 'ANY'`, and TZ3 is its own
 weekend zone. An older database's weekend TZ2 window (`SRE_WE_TZ2`, standing in
 for TZ3) is folded into `SRE_TZ3` by 0154, turns included.
 
+**TZ3 is the SaaS night cover, one crew for every team.** Each night has one
+TZ3 L1, L2 and L3 for the whole `SRE_SAAS` rota, whichever of Apollo or Artemis
+each person is on (the turn is still written on their own team, so it shows on
+their row). The pager calls the incident's own team's holder of a tier when
+there is one and anyone on the rota otherwise, so with one holder per tier an
+Apollo and an Artemis incident at night both reach the same L1 → L2 → L3.
+"Generate month" builds the night that way, weekends included; TZ1, TZ2 and the
+weekend TZ1+2 stay per team.
+
 **CRE windows:** 6–9am (and its on-call), regular hours LK and IND, 6–9pm,
 Americas cover, weekend rotation 06:00–21:00, and Americas weekend (and its
 on-call).
@@ -461,6 +470,7 @@ admins and rota markers are granted and taken back.
   csm-portal-backend's).
 
 - **0199–0200 rotas.** The SME family; `team_schedule_rota`; `zone.rota_id` (TZ1–TZ3 on `SRE_SAAS`); the zone-family check widened from SRE to SRE or SME; IaaS and seven SME rotas, each with a Day and a Night zone and window; the `sme_rota_admin` role. Nothing is removed, renamed or re-typed, but existing objects do change: 0199 adds a value to `team_schedule_shift_family_enum`; 0200 adds the nullable column `team_schedule_zone.rota_id` and sets it on the existing TZ1–TZ3 rows, and replaces the zone-family CHECK with a wider one (every existing row satisfies it). IaaS's two windows are seeded inactive until the new webapp is deployed.
+- **0223 shared windows.** `team_schedule_shift.shared_across_teams` (BOOLEAN, default FALSE), TRUE for `SRE_TZ3` only: its tiers are one crew for the whole SaaS rota. `POST /team-schedule/assignments/apply` refuses (409, naming the holder) an SRE tier somebody else already holds on that zone and day -- per team, or across the rota on a shared window. Additive only; no constraint is added, since data written before it may already hold two people on one tier.
 - **0152–0155** replace `000088`–`000107`, which were written in the old
   up/down format. They reproduce the schema and catalogue that chain ended in
   exactly (compared with `pg_dump` against a server built from the old chain).

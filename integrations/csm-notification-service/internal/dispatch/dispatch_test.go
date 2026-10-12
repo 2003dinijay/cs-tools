@@ -333,6 +333,42 @@ func newTestDispatcher(email emailSender, chat googleChatSender, call callSender
 	return NewDispatcher(email, chat, call, &mockLinkResolver{}, true, false, nil, true, "", nil)
 }
 
+// mockFullContentFetcher is a hand-written fake for fullContentFetcher —
+// the truncated-event re-fetch handleCaseCreated/handleCommentAdded make
+// when a payload's Description/CaseComment was stripped of an embedded
+// base64 image. descriptionErr/commentErr simulate the fetch itself failing
+// (e.g. entity-service unreachable), which the real dispatcher must fall
+// back from rather than fail or drop the notification over.
+type mockFullContentFetcher struct {
+	mu             sync.Mutex
+	description    string
+	descriptionErr error
+	comment        string
+	commentErr     error
+	caseCalls      []string
+	commentCalls   []string
+}
+
+func (m *mockFullContentFetcher) GetCaseDescription(_ context.Context, caseID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.caseCalls = append(m.caseCalls, caseID)
+	if m.descriptionErr != nil {
+		return "", m.descriptionErr
+	}
+	return m.description, nil
+}
+
+func (m *mockFullContentFetcher) GetCommentContent(_ context.Context, commentID string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.commentCalls = append(m.commentCalls, commentID)
+	if m.commentErr != nil {
+		return "", m.commentErr
+	}
+	return m.comment, nil
+}
+
 func TestDispatcher_Handle_CaseCreated(t *testing.T) {
 	mock := &mockEmailSender{}
 	chat := &mockGoogleChatSender{}
@@ -363,6 +399,82 @@ func TestDispatcher_Handle_CaseCreated(t *testing.T) {
 	gotChat := chat.caseCreatedCalls[0]
 	if gotChat.title != "Something broke" || gotChat.caseLink != "https://csm.example/cases/CASE-1" {
 		t.Errorf("unexpected SendCaseCreatedAlert args: %+v", gotChat)
+	}
+}
+
+// TestDispatcher_Handle_CaseCreated_TruncatedDescription_FetchesFullContentForEmail
+// is the regression guard for the fix to a real production bug: a case
+// description with an embedded base64 image blew past Event Hub's
+// per-message size limit and silently failed the whole case.created
+// publish. entity-service now strips the image and sets
+// descriptionTruncated — this asserts the dispatcher notices that flag and
+// fetches the full, original description (images included) for the email
+// instead of sending the stripped placeholder, calling the fetcher exactly
+// once regardless of how many recipient-link groups the event resolves to.
+func TestDispatcher_Handle_CaseCreated_TruncatedDescription_FetchesFullContentForEmail(t *testing.T) {
+	mock := &mockEmailSender{}
+	fetcher := &mockFullContentFetcher{description: `<p>Full description</p><img src="data:image/png;base64,realImageData">`}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}).WithFullContentFetcher(fetcher)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"HIGH","product":"api-manager","createdAt":"2026-01-01","description":"[Image not available in this notification]","descriptionTruncated":true,"recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(fetcher.caseCalls) != 1 || fetcher.caseCalls[0] != "CASE-1" {
+		t.Fatalf("expected GetCaseDescription called exactly once with CASE-1, got %v", fetcher.caseCalls)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 email sent, got %d", len(mock.calls))
+	}
+	if strings.Contains(mock.calls[0].htmlBody, "not available") {
+		t.Error("expected the email to show the fetched full description, not the stripped placeholder")
+	}
+	if !strings.Contains(mock.calls[0].htmlBody, "Full description") {
+		t.Error("expected the email to contain the fetched full description's text")
+	}
+}
+
+// TestDispatcher_Handle_CaseCreated_TruncatedDescription_FetchFailureFallsBackToStrippedContent
+// verifies that a failed re-fetch degrades the email's content, never its
+// delivery: the notification must still send, using the (already safe)
+// stripped placeholder, rather than failing or dropping the record.
+func TestDispatcher_Handle_CaseCreated_TruncatedDescription_FetchFailureFallsBackToStrippedContent(t *testing.T) {
+	mock := &mockEmailSender{}
+	fetcher := &mockFullContentFetcher{descriptionErr: errors.New("entity-service unreachable")}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}).WithFullContentFetcher(fetcher)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"HIGH","product":"api-manager","createdAt":"2026-01-01","description":"[Image not available in this notification]","descriptionTruncated":true,"recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v, want the notification to still send despite the failed re-fetch", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 email still sent, got %d", len(mock.calls))
+	}
+	if !strings.Contains(mock.calls[0].htmlBody, "not available") {
+		t.Error("expected the email to fall back to the stripped placeholder text")
+	}
+}
+
+// TestDispatcher_Handle_CaseCreated_NotTruncated_NeverFetches verifies the
+// common, unremarkable case (no embedded image, descriptionTruncated unset)
+// never pays the extra entity-service round trip.
+func TestDispatcher_Handle_CaseCreated_NotTruncated_NeverFetches(t *testing.T) {
+	mock := &mockEmailSender{}
+	fetcher := &mockFullContentFetcher{description: "should never be used"}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}).WithFullContentFetcher(fetcher)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseType":"CASE","priority":"HIGH","product":"api-manager","createdAt":"2026-01-01","description":"ordinary description","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(fetcher.caseCalls) != 0 {
+		t.Errorf("expected no fetch when descriptionTruncated is unset, got %d call(s)", len(fetcher.caseCalls))
+	}
+	if !strings.Contains(mock.calls[0].htmlBody, "ordinary description") {
+		t.Error("expected the email to contain the untouched description")
 	}
 }
 
@@ -671,6 +783,56 @@ func TestDispatcher_Handle_CommentAdded(t *testing.T) {
 	}
 	if !strings.Contains(mock.calls[0].htmlBody, "fixed it") {
 		t.Error("htmlBody does not contain the comment text")
+	}
+}
+
+// TestDispatcher_Handle_CommentAdded_TruncatedComment_FetchesFullContentForEmail
+// is handleCaseCreated's identical regression guard, for a comment's own
+// body: entity-service strips an embedded base64 image out of CaseComment
+// and sets caseCommentTruncated, and the dispatcher must fetch the full,
+// original comment (images included) for the email.
+func TestDispatcher_Handle_CommentAdded_TruncatedComment_FetchesFullContentForEmail(t *testing.T) {
+	mock := &mockEmailSender{}
+	fetcher := &mockFullContentFetcher{comment: `<p>Here's the real comment</p><img src="data:image/png;base64,realImageData">`}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}).WithFullContentFetcher(fetcher)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseComment":"[Image not available in this notification]","caseCommentTruncated":true,"commentId":"C-1","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(fetcher.commentCalls) != 1 || fetcher.commentCalls[0] != "C-1" {
+		t.Fatalf("expected GetCommentContent called exactly once with C-1, got %v", fetcher.commentCalls)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 email sent, got %d", len(mock.calls))
+	}
+	if strings.Contains(mock.calls[0].htmlBody, "not available") {
+		t.Error("expected the email to show the fetched full comment, not the stripped placeholder")
+	}
+	if !strings.Contains(mock.calls[0].htmlBody, "Here&#39;s the real comment") && !strings.Contains(mock.calls[0].htmlBody, "Here's the real comment") {
+		t.Errorf("expected the email to contain the fetched full comment's text, got %q", mock.calls[0].htmlBody)
+	}
+}
+
+// TestDispatcher_Handle_CommentAdded_TruncatedComment_FetchFailureFallsBackToStrippedContent
+// verifies the same must-still-send-on-fetch-failure guarantee as
+// handleCaseCreated's own fallback test, for a comment.
+func TestDispatcher_Handle_CommentAdded_TruncatedComment_FetchFailureFallsBackToStrippedContent(t *testing.T) {
+	mock := &mockEmailSender{}
+	fetcher := &mockFullContentFetcher{commentErr: errors.New("entity-service unreachable")}
+	d := newTestDispatcher(mock, &mockGoogleChatSender{}, &mockCallSender{}).WithFullContentFetcher(fetcher)
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.comment_added","entityId":"CASE-1","payload":{"name":"Commenter","projectId":"PROJ-1","caseId":"CASE-1","caseTitle":"Something broke","caseComment":"[Image not available in this notification]","caseCommentTruncated":true,"commentId":"C-1","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v, want the notification to still send despite the failed re-fetch", err)
+	}
+	if len(mock.calls) != 1 {
+		t.Fatalf("expected 1 email still sent, got %d", len(mock.calls))
+	}
+	if !strings.Contains(mock.calls[0].htmlBody, "not available") {
+		t.Error("expected the email to fall back to the stripped placeholder text")
 	}
 }
 
