@@ -70,6 +70,7 @@ import {
   movesOfferedOn,
   monthPieces,
   narrowsToOneRota,
+  placeOnDay,
   readerFamily,
   rosterRange,
   type RosterSpan,
@@ -464,6 +465,14 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   }, [anchorIso, rosterSpan]);
   const from = dayView ? toIsoDate(anchor) : toIsoDate(weekStart);
   const to = dayView ? toIsoDate(anchor) : toIsoDate(addDays(weekStart, 6));
+  // The day view reads the rota days either side of its own as well. A rota
+  // day is a day on its office's clock, and the reader's day is not that
+  // one: at 18:00 in Los Angeles, Colombo is already into tomorrow's morning
+  // crew, which a read of today's rota date alone never brought back -- the
+  // ladder went blank from 17:30 PDT. The ladder places every block by its
+  // instants, so whatever does not touch the reader's day simply is not drawn.
+  const readFrom = dayView ? toIsoDate(addDays(anchor, -1)) : from;
+  const readTo = dayView ? toIsoDate(addDays(anchor, 1)) : to;
   // A family running more than one rota reads only the rota on screen's
   // teams; otherwise the family alone, as before.
   /** The rota the data on screen is narrowed to: one at a time, on every
@@ -490,8 +499,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
   const singleRead = useScheduleAssignments(
     {
-      from,
-      to,
+      from: readFrom,
+      to: readTo,
       family,
       teamKeys,
       // Only the day view needs the crew that started last night and is still
@@ -975,9 +984,16 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     // The zones of the rota on screen (a zone no rota claims counts as every
     // rota's), so the fallback below can never pull in another rota's lanes.
     const own = zones.filter((z) => !rota || !z.rotaCode || z.rotaCode === rota);
+    // A zone with a crew on during the reader's day keeps its lane whatever
+    // the day is called where its rota is written: a Sunday evening in
+    // Chicago is Monday morning in the office, and that weekday crew is on.
+    for (const a of rows) {
+      const zone = a.zoneCode ?? shifts.get(a.shiftCode)?.zoneCode;
+      if (zone && placeOnDay(a, anchor, tz)) staffed.add(zone);
+    }
     const kept = own.filter((z) => staffed.has(z.code));
     return kept.length > 0 ? kept : own;
-  }, [anchor, shifts, zones, family, rota]);
+  }, [anchor, shifts, zones, family, rota, rows, tz]);
 
   const lanes: LadderLane[] = useMemo(() => {
     if (family === "CRE") {
