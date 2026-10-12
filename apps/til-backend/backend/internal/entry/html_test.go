@@ -109,17 +109,15 @@ func TestPlainText(t *testing.T) {
 	}
 }
 
-func TestForChat(t *testing.T) {
+func TestBulletedText(t *testing.T) {
 	tests := []struct{ in, want string }{
-		{"<p>Learned <strong>a lot</strong> from <em>this</em>.</p>", "Learned <b>a lot</b> from <i>this</i>."},
-		{"<p>One</p><p>Two</p>", "One<br>Two"},
-		{"<ul><li>First</li><li>Second</li></ul>", "• First<br>• Second"},
-		{`<p><a href="https://wso2.com">WSO2</a> &amp; <u>more</u></p>`, `<a href="https://wso2.com">WSO2</a> &amp; <u>more</u>`},
-		{`<p><a target="_blank">no href</a></p>`, "no href"},
+		{"<ul><li>First</li><li>Second</li></ul>", "• First • Second"},
+		{"<p>Steps:</p><ol><li>Retry</li><li><strong>Check</strong></li></ol><p>Done</p>", "Steps: • Retry • Check Done"},
+		{"<p>No list &amp; no bullets</p>", "No list & no bullets"},
 	}
 	for _, tc := range tests {
-		if got := ForChat(tc.in); got != tc.want {
-			t.Errorf("ForChat(%q) = %q, want %q", tc.in, got, tc.want)
+		if got := BulletedText(tc.in); got != tc.want {
+			t.Errorf("BulletedText(%q) = %q, want %q", tc.in, got, tc.want)
 		}
 	}
 }

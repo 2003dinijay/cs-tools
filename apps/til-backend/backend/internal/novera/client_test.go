@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"github.com/wso2-open-operations/cs-tools/apps/til-backend/backend/internal/entry"
@@ -53,8 +54,8 @@ func newNovera(t *testing.T, status int) (*httptest.Server, <-chan map[string]an
 	return srv, received
 }
 
-func newClient(srv *httptest.Server) *Client {
-	return New(Config{NotifyURL: srv.URL + "/notify", TokenURL: srv.URL + "/token", ClientID: "til", ClientSecret: "s3cret"})
+func newClient(srv *httptest.Server, iconURL string) *Client {
+	return New(Config{NotifyURL: srv.URL + "/notify", TokenURL: srv.URL + "/token", ClientID: "til", ClientSecret: "s3cret", IconURL: iconURL})
 }
 
 func TestNotifySendsTheEntry(t *testing.T) {
@@ -65,41 +66,56 @@ func TestNotifySendsTheEntry(t *testing.T) {
 		Who:         "Jane <Doe>",
 		Where:       "Customer",
 		WhereDetail: ptr("Acme & <Co>"),
-		What:        "<p>Learned <strong>a lot</strong>.</p><ul><li>One</li></ul>",
+		What:        "<p>Learned <strong>a lot</strong>.</p><ul><li>One</li><li>Two</li></ul>",
 	}
-	newClient(srv).Notify(context.Background(), e, "https://one.example/knowledge-base/e1?view=article")
+	newClient(srv, "https://one.example/til-logo.png").Notify(context.Background(), e, "https://one.example/knowledge-base/e1?view=article")
 
-	// Title, who and whereDetail go as plain text; Novera escapes them.
+	// Plain text throughout; Novera escapes it.
 	got := <-received
 	want := map[string]any{
-		"title":       `Use <b> & "quotes"`,
-		"who":         "Jane <Doe>",
-		"where":       "Customer",
-		"whereDetail": "Acme & <Co>",
-		"what":        "Learned <b>a lot</b>.<br>• One",
-		"entryUrl":    "https://one.example/knowledge-base/e1?view=article",
+		"source":   "til",
+		"title":    `Use <b> & "quotes"`,
+		"subtitle": "Customer — Acme & <Co>",
+		"body":     "Learned a lot. • One • Two",
+		"link":     map[string]any{"url": "https://one.example/knowledge-base/e1?view=article", "label": "Read more"},
+		"footer":   "Authored by Jane <Doe>",
+		"iconUrl":  "https://one.example/til-logo.png",
 	}
-	for k, v := range want {
-		if got[k] != v {
-			t.Errorf("%s = %#v, want %#v", k, got[k], v)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("sent %#v\nwant %#v", got, want)
+	}
+}
+
+func TestNotifyLeavesOutAbsentValues(t *testing.T) {
+	srv, received := newNovera(t, http.StatusOK)
+	newClient(srv, "").Notify(context.Background(), entry.Entry{ID: "e1", Title: "T", Who: "J", Where: "Internal", What: "<p>x</p>"}, "")
+	got := <-received
+	if got["subtitle"] != "Internal" {
+		t.Errorf("subtitle = %#v, want Internal", got["subtitle"])
+	}
+	for _, k := range []string{"link", "iconUrl"} {
+		if v, present := got[k]; present {
+			t.Errorf("%s = %#v, want it left out", k, v)
 		}
 	}
 }
 
-func TestNotifySendsNullsForAbsentValues(t *testing.T) {
-	srv, received := newNovera(t, http.StatusOK)
-	newClient(srv).Notify(context.Background(), entry.Entry{ID: "e1", Title: "T", Who: "J", Where: "Internal", What: "<p>x</p>"}, "")
-	got := <-received
-	for _, k := range []string{"whereDetail", "entryUrl"} {
-		if v, present := got[k]; !present || v != nil {
-			t.Errorf("%s = %#v (present %v), want null", k, v, present)
+func TestIconURL(t *testing.T) {
+	for base, want := range map[string]string{
+		"https://one.example":   "https://one.example/til-logo.png",
+		"https://one.example/":  "https://one.example/til-logo.png",
+		"http://localhost:3000": "",
+		"":                      "",
+	} {
+		if got := IconURL(base); got != want {
+			t.Errorf("IconURL(%q) = %q, want %q", base, got, want)
 		}
 	}
 }
 
 func TestNotifySwallowsFailures(t *testing.T) {
 	srv, received := newNovera(t, http.StatusInternalServerError)
-	newClient(srv).Notify(context.Background(), entry.Entry{ID: "e1"}, "")
+	newClient(srv, "").Notify(context.Background(), entry.Entry{ID: "e1"}, "")
 	<-received
 
 	// Nothing listening at all.

@@ -55,11 +55,11 @@ them all.
 | `AUTH_AUDIENCE` | no | Client ids a token must be issued to. |
 | `AUTH_MODERATOR_GROUPS` | no | Groups whose members may edit and delete anyone's entries. |
 | `ONE_WSO2_WEBAPP_CLIENT_ID` | no | The webapp's client id. Only a token issued to it may share or edit; unset means no one can. |
-| `ONE_WSO2_BASE_URL` | no | The webapp's address, for the "Read more" link in Google Chat. |
+| `ONE_WSO2_BASE_URL` | no | The webapp's address, for the "Read more" link in Google Chat and the TIL logo it serves at `/til-logo.png` (shown only over https). |
 | `CORS_ALLOWED_ORIGINS` | no | Browser origins allowed to call the API. |
 | `PORT`, `REST_READ_TIMEOUT`, `REST_WRITE_TIMEOUT` | no | Defaults 8077, 15s, 45s. |
 | `ENTITY_SERVICE_*` | no | Customer-name suggestions from entity-service: the base URL, token URL, client id and secret together, or none. `ENTITY_SERVICE_SCOPES` is optional. |
-| `NOVERA_*` | no | Announcing new entries in Google Chat through Novera: all four or none. |
+| `NOVERA_*` | no | Announcing new entries in Google Chat through Novera's `POST /internal/notifications`: all four or none. |
 
 ## API
 

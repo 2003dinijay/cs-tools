@@ -17,7 +17,6 @@
 package entry
 
 import (
-	"html"
 	"io"
 	"strings"
 
@@ -50,6 +49,16 @@ func Sanitize(html string) string {
 // space, so "<p>One</p><p>Two</p>" reads "One Two", the way the webapp's own
 // character counter reads it.
 func PlainText(sanitized string) string {
+	return plainText(sanitized, false)
+}
+
+// BulletedText is PlainText with "• " before each list item, for showing an
+// entry's text where lists can't be formatted, such as a Google Chat card.
+func BulletedText(sanitized string) string {
+	return plainText(sanitized, true)
+}
+
+func plainText(sanitized string, bullets bool) string {
 	var b strings.Builder
 	z := xhtml.NewTokenizer(strings.NewReader(sanitized))
 	for {
@@ -66,77 +75,14 @@ func PlainText(sanitized string) string {
 				b.WriteByte(' ')
 			}
 		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
-			if name, _ := z.TagName(); string(name) == "br" {
-				b.WriteByte(' ')
-			}
-		}
-	}
-}
-
-// ForChat converts an entry's sanitised HTML to the subset a Google Chat card
-// paragraph understands: <b>, <i>, <u>, <a href> and <br>. Paragraphs end in a
-// line break and list items become bullet lines.
-func ForChat(sanitized string) string {
-	var b strings.Builder
-	// Whether each open <a> was written out: one without an href isn't, so
-	// its closing tag mustn't be either.
-	var links []bool
-	z := xhtml.NewTokenizer(strings.NewReader(sanitized))
-	for {
-		tt := z.Next()
-		if tt == xhtml.ErrorToken {
-			break
-		}
-		token := z.Token()
-		switch tt {
-		case xhtml.TextToken:
-			b.WriteString(html.EscapeString(token.Data))
-		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
-			switch token.Data {
-			case "strong":
-				b.WriteString("<b>")
-			case "em":
-				b.WriteString("<i>")
-			case "u":
-				b.WriteString("<u>")
+			switch name, _ := z.TagName(); string(name) {
 			case "br":
-				b.WriteString("<br>")
+				b.WriteByte(' ')
 			case "li":
-				b.WriteString("• ")
-			case "a":
-				written := false
-				for _, attr := range token.Attr {
-					if attr.Key == "href" {
-						b.WriteString(`<a href="` + html.EscapeString(attr.Val) + `">`)
-						written = true
-						break
-					}
-				}
-				links = append(links, written)
-			}
-		case xhtml.EndTagToken:
-			switch token.Data {
-			case "strong":
-				b.WriteString("</b>")
-			case "em":
-				b.WriteString("</i>")
-			case "u":
-				b.WriteString("</u>")
-			case "p", "li":
-				b.WriteString("<br>")
-			case "a":
-				if n := len(links); n > 0 {
-					if links[n-1] {
-						b.WriteString("</a>")
-					}
-					links = links[:n-1]
+				if bullets {
+					b.WriteString("• ")
 				}
 			}
 		}
 	}
-	out := strings.TrimSpace(b.String())
-	for strings.HasSuffix(out, "<br>") {
-		out = strings.TrimSpace(strings.TrimSuffix(out, "<br>"))
-	}
-	return out
 }

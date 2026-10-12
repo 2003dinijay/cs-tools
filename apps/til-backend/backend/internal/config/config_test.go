@@ -70,7 +70,7 @@ func TestLoadReadsEverything(t *testing.T) {
 		"ENTITY_SERVICE_CLIENT_ID":     "til",
 		"ENTITY_SERVICE_CLIENT_SECRET": "s",
 		"ENTITY_SERVICE_SCOPES":        "accounts:read",
-		"NOVERA_NOTIFY_URL":            "https://gateway.example/novera/notify",
+		"NOVERA_NOTIFY_URL":            "https://gateway.example/novera/internal/notifications",
 		"NOVERA_TOKEN_URL":             "https://gateway.example/token",
 		"NOVERA_CLIENT_ID":             "til",
 		"NOVERA_CLIENT_SECRET":         "s",
@@ -92,7 +92,8 @@ func TestLoadReadsEverything(t *testing.T) {
 		cfg.WebappBaseURL != "https://one.example" {
 		t.Fatalf("lists = %+v", cfg)
 	}
-	if cfg.Entity == nil || cfg.Entity.Scopes[0] != "accounts:read" || cfg.Novera == nil || cfg.Novera.NotifyURL != v["NOVERA_NOTIFY_URL"] {
+	if cfg.Entity == nil || cfg.Entity.Scopes[0] != "accounts:read" || cfg.Novera == nil || cfg.Novera.NotifyURL != v["NOVERA_NOTIFY_URL"] ||
+		cfg.Novera.IconURL != "https://one.example/til-logo.png" {
 		t.Fatalf("clients = %+v %+v", cfg.Entity, cfg.Novera)
 	}
 }
