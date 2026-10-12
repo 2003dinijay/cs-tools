@@ -12348,10 +12348,13 @@ paths:
 
   /team-schedule/my-lead-teams:
     get:
-      summary: Teams the caller leads (may edit the rota of).
+      summary: Teams the caller may edit the rota of.
       operationId: getTeamScheduleMyLeadTeams
       description: >
-        Response is the entity service's payload, forwarded unchanged. Whether the caller may edit a team's rota is decided by the entity service.
+        Response is the entity service's payload, forwarded unchanged: `teamKeys` (teams the caller
+        leads, runs as rota admin, or marks as rota marker) and `markerOnlyTeamKeys` (the ones held
+        only as rota marker, which may be marked but not generated, and give no say over the tags).
+        Whether the caller may edit a team's rota is decided by the entity service.
       responses:
         "200":
           description: Ok.
@@ -12380,6 +12383,251 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
           description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /team-schedule/rota-access:
+    get:
+      summary: Rota admins and rota markers, and what the caller may change.
+      operationId: getTeamScheduleRotaAccess
+      description: >
+        The Rota access tab. The entity service's payload, forwarded unchanged: `canManage`
+        (`rotaAdmins` for a CSM admin, `markerFamilies` for the families whose markers the caller
+        may change), `rotaAdmins[]` and `markers[]`. A caller who may change nothing gets empty
+        lists, which is how the page decides not to show the tab.
+      responses:
+        "200":
+          description: Ok.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /team-schedule/rota-access/admins/{family}/{userId}:
+    put:
+      summary: Make somebody a family's rota admin.
+      operationId: putTeamScheduleRotaAdmin
+      description: >
+        CSM admin only (PermAdmin here, and checked again by the entity service). The person must be
+        active internal staff. Audited by the entity service.
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Done (idempotent).
+        "400":
+          description: Bad request (not CRE/SRE/SME or a team key, not a UUID, or refused by the entity service with its reason).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (the entity service's reason is kept).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found (a team not on the schedule).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    delete:
+      summary: Take a family's rota admin role away.
+      operationId: deleteTeamScheduleRotaAdmin
+      description: >
+        CSM admin only (PermAdmin here, and checked again by the entity service).
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Done (idempotent).
+        "400":
+          description: Bad request (not CRE/SRE/SME or a team key, not a UUID, or refused by the entity service with its reason).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (the entity service's reason is kept).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found (a team not on the schedule).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /team-schedule/rota-access/markers/{teamKey}/{userId}:
+    put:
+      summary: Make somebody a team's rota marker.
+      operationId: putTeamScheduleRotaMarker
+      description: >
+        A rota marker may mark the team's rotations, leave and allocations, and nothing else. A CSM
+        admin may name any team's marker, the family's rota admin their own family's; the entity
+        service decides. The person must be active internal staff on the team.
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Done (idempotent).
+        "400":
+          description: Bad request (not CRE/SRE/SME or a team key, not a UUID, or refused by the entity service with its reason).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (the entity service's reason is kept).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found (a team not on the schedule).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    delete:
+      summary: Take a team's rota marker away.
+      operationId: deleteTeamScheduleRotaMarker
+      description: >
+        Same permission as granting; the entity service decides.
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Done (idempotent).
+        "400":
+          description: Bad request (not CRE/SRE/SME or a team key, not a UUID, or refused by the entity service with its reason).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (the entity service's reason is kept).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found (a team not on the schedule).
           content:
             application/json:
               schema:

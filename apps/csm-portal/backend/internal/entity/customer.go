@@ -1160,6 +1160,32 @@ func (c *CustomerEntityClient) GetPagingReadiness(ctx context.Context, days int)
 	return c.do(ctx, http.MethodGet, "/team-schedule/paging-readiness?"+q.Encode(), nil)
 }
 
+// GetRotaAccess calls GET /team-schedule/rota-access: who holds a rota admin
+// role or marks a team's rota, and what the caller may change.
+func (c *CustomerEntityClient) GetRotaAccess(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/team-schedule/rota-access", nil)
+}
+
+// PutRotaAdmin calls PUT /team-schedule/rota-access/admins/{family}/{userId}.
+func (c *CustomerEntityClient) PutRotaAdmin(ctx context.Context, family, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/rota-access/admins/"+url.PathEscape(family)+"/"+url.PathEscape(userID), nil)
+}
+
+// DeleteRotaAdmin calls DELETE /team-schedule/rota-access/admins/{family}/{userId}.
+func (c *CustomerEntityClient) DeleteRotaAdmin(ctx context.Context, family, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/rota-access/admins/"+url.PathEscape(family)+"/"+url.PathEscape(userID), nil)
+}
+
+// PutRotaMarker calls PUT /team-schedule/rota-access/markers/{teamKey}/{userId}.
+func (c *CustomerEntityClient) PutRotaMarker(ctx context.Context, teamKey, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodPut, "/team-schedule/rota-access/markers/"+url.PathEscape(teamKey)+"/"+url.PathEscape(userID), nil)
+}
+
+// DeleteRotaMarker calls DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}.
+func (c *CustomerEntityClient) DeleteRotaMarker(ctx context.Context, teamKey, userID string) ([]byte, error) {
+	return c.do(ctx, http.MethodDelete, "/team-schedule/rota-access/markers/"+url.PathEscape(teamKey)+"/"+url.PathEscape(userID), nil)
+}
+
 // GetMyLeadTeams calls GET /team-schedule/my-lead-teams on the entity service.
 func (c *CustomerEntityClient) GetMyLeadTeams(ctx context.Context) ([]byte, error) {
 	return c.do(ctx, http.MethodGet, "/team-schedule/my-lead-teams", nil)
