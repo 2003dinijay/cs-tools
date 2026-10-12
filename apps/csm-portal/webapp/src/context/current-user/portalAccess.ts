@@ -170,22 +170,33 @@ export interface PortalAccess {
   canUpdateDeleteAnyComment: boolean;
   /**
    * The small set of sections that used to live in the separate, now-removed
-   * "Support Portal Lite" app (Customer Health, User scan, SLA/Time/CS
-   * project reports, and the extra Account detail tabs they added): `viewer`
-   * only, regardless of what other roles the caller also holds — mirrors the
-   * backend's `PermViewerAccess` (`access.go`), which is built only from the
-   * viewer role, not folded into the usual "full access" `cs_engineer`/`admin`
+   * "Support Portal Lite" app (User scan, SLA/Time/CS project reports, and
+   * the extra Account detail tabs they added): `viewer` only, regardless of
+   * what other roles the caller also holds — mirrors the backend's
+   * `PermViewerAccess` (`access.go`), which is built only from the viewer
+   * role, not folded into the usual "full access" `cs_engineer`/`admin`
    * bundle the way every other flag above is. A `cs_engineer` who does not
    * also separately hold `viewer` does not get these sections; one who holds
    * both does, same as before this app was merged into the main portal.
+   * Customer Health used to be in this set and now has its own, wider flag
+   * ({@link canViewCustomerHealth}).
    */
   isSplAudience: boolean;
+  /**
+   * The Customer Health dashboard (list, account detail, risk and action
+   * items): `viewer`, the audience it was built for, plus `cs_engineer` and
+   * `admin` (full access), who work the same accounts. Unlike
+   * {@link isSplAudience} it does not require `viewer` — a `cs_engineer` or
+   * `admin` who does not also hold it still sees the dashboard. Mirrors the
+   * backend's `PermViewCustomerHealth` (`access.go`).
+   */
+  canViewCustomerHealth: boolean;
   /**
    * Usage metrics requires `cs_engineer`/`admin` (full access) or the
    * dedicated `usage_metrics_viewer` role. Unlike {@link isSplAudience},
    * holding plain `viewer` does NOT grant this on its own — reported live:
    * a viewer-only account must not see this section at all, even though it
-   * (like Customer Health/User Scan) is an ex-Support-Portal-Lite feature.
+   * (like User Scan) is an ex-Support-Portal-Lite feature.
    */
   canViewUsageMetrics: boolean;
   /**
@@ -288,6 +299,7 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
       canCreateAnnouncement: true,
       canUpdateDeleteAnyComment: true,
       isSplAudience: true,
+      canViewCustomerHealth: true,
       canViewUsageMetrics: true,
       canViewStaffSections: true,
       canViewTeamSchedule: true,
@@ -318,6 +330,7 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     canCreateAnnouncement: full && (isAdmin || has(PORTAL_ROLE.announcementCreator)),
     canUpdateDeleteAnyComment: isAdmin || has(PORTAL_ROLE.commentUpdater),
     isSplAudience: has(PORTAL_ROLE.viewer),
+    canViewCustomerHealth: full || has(PORTAL_ROLE.viewer),
     canViewUsageMetrics: full || has(PORTAL_ROLE.usageMetricsViewer),
     canViewStaffSections: !(held.size === 1 && has(PORTAL_ROLE.viewer)),
     canViewTeamSchedule: full || has(PORTAL_ROLE.commentUpdater),

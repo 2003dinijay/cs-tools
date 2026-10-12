@@ -292,10 +292,11 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     label: "Customer Health",
     href: "/customer-health",
     // Ex-Support Portal Lite section with no modern/entity-service-backed
-    // equivalent -- stays limited to the same audience it always had
-    // (PermViewerAccess server-side: the viewer role, regardless of what
-    // else the caller holds). See isSplAudience's own doc comment.
-    requires: "isSplAudience",
+    // equivalent. Its audience is the viewer role plus cs_engineer and admin
+    // (PermViewCustomerHealth server-side) -- see canViewCustomerHealth's own
+    // doc comment. Like Usage Metrics below, it sits just above User Scan and
+    // Help at the end of the sidebar.
+    requires: "canViewCustomerHealth",
     icon: HeartPulse,
   },
   {

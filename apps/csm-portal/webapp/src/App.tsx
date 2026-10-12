@@ -120,7 +120,8 @@ import CsmKBAdminPage from "@features/csm-kb-articles/pages/CsmKBAdminPage";
 // Metrics, Customer Health) have no modern/entity-service-backed equivalent.
 // Relocated out of the former "sales-sa"/"Support Portal Lite" tree (now
 // deleted); routing/audience-gating for each is isSplAudience, except Usage
-// Metrics, which is canViewUsageMetrics — see both flags' own doc comments.
+// Metrics (canViewUsageMetrics) and Customer Health (canViewCustomerHealth) —
+// see each flag's own doc comment.
 import SlaReportPage from "@features/csm-reports/pages/SlaReportPage";
 import CsReportPage from "@features/csm-reports/pages/CsReportPage";
 import TimelogsReportPage from "@features/csm-reports/pages/TimelogsReportPage";
@@ -662,10 +663,13 @@ export default function App(): JSX.Element {
                       directly. */}
                   <Route path="user-scan" element={<UserScanPage />} />
 
-                  {/* Usage Metrics is the one exception: NOT limited to
-                      isSplAudience — cs_engineer/admin and the dedicated
-                      usage_metrics_viewer role see it too, see
-                      canViewUsageMetrics's own doc comment. */}
+                  {/* Usage Metrics and Customer Health are the exceptions: NOT
+                      limited to isSplAudience. Usage Metrics also goes to
+                      cs_engineer/admin and the dedicated usage_metrics_viewer
+                      role (canViewUsageMetrics); Customer Health to
+                      cs_engineer/admin as well as viewer
+                      (canViewCustomerHealth) — see each flag's own doc
+                      comment. */}
                   <Route path="usage-metrics" element={<UsageMetricsPage />} />
 
                   <Route

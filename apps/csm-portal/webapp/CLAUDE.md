@@ -100,18 +100,22 @@ A handful of features from that old app have no equivalent on the shared side an
 (not rewritten) into their own properly-named `csm-*` feature folders, restyled to this app's table/
 page conventions, but still calling the exact same backend routes they always did (`/customer-health/*`,
 `/usage-metrics/*`, `/user-scan`, the SLA/CS/Time-log report endpoints — all still gated backend-side by
-`PermViewerAccess`/`PermUsageMetricsViewer`, see `apps/csm-portal/backend`'s own `CLAUDE.md`):
-`csm-customer-health`, `csm-usage-metrics`, `csm-user-scan`, `csm-reports`. Three gating flags on
+`PermViewCustomerHealth`/`PermViewerAccess`/`PermUsageMetricsViewer`, see `apps/csm-portal/backend`'s
+own `CLAUDE.md`): `csm-customer-health`, `csm-usage-metrics`, `csm-user-scan`, `csm-reports`. Four gating flags on
 `usePortalAccess()` (`portalAccess.ts`) control who sees what in this merged app, and are NOT
 interchangeable:
 
 - **`isSplAudience`** — true for anyone holding the `viewer` role, regardless of what else they hold.
-  Gates the four relocated ex-only-for-viewer features above, plus the Escalations/Artifacts-Repository/
-  Projects-under-account tabs added to `CsmAccountDetailPage.tsx` and the SLA/Time/CS report buttons
-  added to `CsmProjectDetailPage.tsx` — all of it invisible to a caller who has never held `viewer`.
-- **`canViewUsageMetrics`** — the one deliberate exception: `cs_engineer`/`admin`/`usage_metrics_viewer`
-  as well as `viewer`. A plain `viewer` with none of those does NOT get this (reported live, correcting
-  an earlier pass that granted it to every `viewer`) — don't conflate it with `isSplAudience`.
+  Gates User Scan, the Escalations and Artifacts-Repository sections added to `CsmAccountDetailPage.tsx`
+  and the SLA/Time/CS report buttons added to `CsmProjectDetailPage.tsx` — all of it invisible to a caller
+  who has never held `viewer`.
+- **`canViewCustomerHealth`** — the Customer Health dashboard: `viewer` as well as `cs_engineer`/`admin`
+  (mirrors the backend's `PermViewCustomerHealth`). Wider than `isSplAudience` on purpose, so a
+  `cs_engineer` or `admin` who does not also hold `viewer` still sees it. Customer Health and Usage Metrics
+  sit together at the end of the sidebar, just above User Scan and Help.
+- **`canViewUsageMetrics`** — the other deliberate exception: `cs_engineer`/`admin`/`usage_metrics_viewer`.
+  A plain `viewer` with none of those does NOT get this (reported live, correcting an earlier pass that
+  granted it to every `viewer`) — don't conflate it with `isSplAudience`.
 - **`canViewStaffSections`** — false only when a caller's role set is *exactly* `{viewer}` (no other
   role at all). Gates Team Schedule, Knowledge, Settings, and the Chats sub-tab inside a project's Work
   Items tab (which itself relabels to "Cases" for such a caller, since there's only one sub-tab left).
