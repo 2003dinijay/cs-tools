@@ -162,6 +162,14 @@ export type VulnerabilityAffectedProductsProps = {
   isLoading?: boolean;
   isError?: boolean;
   onRowClick?: (vulnerability: ProductVulnerability) => void;
+  /**
+   * The user's expand/collapse choices by group key. Pass it together with
+   * `onToggleGroup` to keep the choices in a parent that outlives this component
+   * (the details page unmounts the section while the next record loads); leave
+   * both out and the component keeps them itself.
+   */
+  toggledGroups?: Record<string, boolean>;
+  onToggleGroup?: (groupKey: string, expanded: boolean) => void;
 };
 
 // Response type for product vulnerabilities metadata.
