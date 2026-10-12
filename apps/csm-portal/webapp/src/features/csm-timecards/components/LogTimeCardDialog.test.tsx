@@ -151,11 +151,24 @@ describe("LogTimeCardDialog — create mode", () => {
     );
 
     const input = screen.getByLabelText("Analysis and debugging") as HTMLInputElement;
-    const selectSpy = vi.spyOn(input, "select");
+
+    // This field must be type="text" (with inputMode="numeric" for the mobile
+    // numeric keypad), not type="number": per the HTML spec,
+    // HTMLInputElement.select()/selectionStart/selectionEnd are no-ops/throw
+    // for type="number" (MDN, the WHATWG spec, and Chromium's own source all
+    // confirm this — verified independently), so calling .select() in the
+    // onFocus handler would silently do nothing in a real browser if this
+    // were still type="number", even though this exact assertion still
+    // passes under jsdom for a number input (jsdom doesn't enforce the
+    // spec's restriction) — a false negative this test must not reproduce.
+    expect(input.type).toBe("text");
 
     fireEvent.focus(input);
 
-    expect(selectSpy).toHaveBeenCalledTimes(1);
+    // Confirms the selection actually happened (every character selected),
+    // not merely that `select()` was invoked.
+    expect(input.selectionStart).toBe(0);
+    expect(input.selectionEnd).toBe(input.value.length);
   });
 
   it("shows previously-selected approvers before the engineer types anything", () => {
@@ -359,11 +372,13 @@ describe("LogTimeCardDialog — edit mode", () => {
       />,
     );
 
-    expect(screen.getByLabelText("Analysis and debugging")).toHaveValue(11);
-    expect(screen.getByLabelText("Reproduce")).toHaveValue(33);
-    expect(screen.getByLabelText("Setting up")).toHaveValue(22);
-    expect(screen.getByLabelText("Providing solution")).toHaveValue(44);
-    expect(screen.getByLabelText("Answering")).toHaveValue(55);
+    // The activity-minutes fields are type="text" (not type="number" — see
+    // the onFocus select() comment above), so their DOM value is a string.
+    expect(screen.getByLabelText("Analysis and debugging")).toHaveValue("11");
+    expect(screen.getByLabelText("Reproduce")).toHaveValue("33");
+    expect(screen.getByLabelText("Setting up")).toHaveValue("22");
+    expect(screen.getByLabelText("Providing solution")).toHaveValue("44");
+    expect(screen.getByLabelText("Answering")).toHaveValue("55");
     expect(screen.getByLabelText("work-log-editor")).toHaveValue(
       "<p>Investigated the reported latency issue.</p>",
     );
