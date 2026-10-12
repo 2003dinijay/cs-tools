@@ -23,8 +23,8 @@ import ProductVulnerabilitiesTableHeader from "@features/security/components/Pro
 import ProductVulnerabilitiesFilters from "@features/security/components/ProductVulnerabilitiesFilters";
 import ProductVulnerabilitiesList from "@features/security/components/ProductVulnerabilitiesList";
 import {
-  PRODUCT_VULNERABILITIES_ALL_FETCH_LIMIT,
   PRODUCT_VULNERABILITIES_DEFAULT_ROWS_PER_PAGE,
+  PRODUCT_VULNERABILITIES_FETCH_ALL_REQUEST,
   PRODUCT_VULNERABILITIES_SEARCH_DEBOUNCE_MS,
 } from "@features/security/constants/securityConstants";
 import type {
@@ -33,14 +33,9 @@ import type {
 } from "@features/security/types/security";
 import { countProductVulnerabilityTableActiveFilters } from "@features/security/utils/productVulnerabilitiesTable";
 
-// Stable request object — fetches the full dataset once.
-// The BFF transparently paginates through the entity service in batches of 50.
-// Kept at module level so the React Query cache key is stable across re-renders.
-const FETCH_ALL_REQUEST = {
-  filters: {},
-  pagination: { offset: 0, limit: PRODUCT_VULNERABILITIES_ALL_FETCH_LIMIT },
-};
-
+// The full dataset is fetched once with a stable, shared request object (the
+// BFF transparently paginates through the entity service in batches of 50). The
+// vulnerability details page reuses the same request so it shares the cache entry.
 /**
  * Product Vulnerabilities table.
  *
@@ -79,7 +74,7 @@ const ProductVulnerabilitiesTable = ({
     data: allData,
     isLoading,
     isError,
-  } = usePostProductVulnerabilitiesSearch(FETCH_ALL_REQUEST);
+  } = usePostProductVulnerabilitiesSearch(PRODUCT_VULNERABILITIES_FETCH_ALL_REQUEST);
 
   const allVulnerabilities = useMemo(
     (): ProductVulnerability[] => allData?.productVulnerabilities ?? [],

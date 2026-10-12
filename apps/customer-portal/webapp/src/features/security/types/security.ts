@@ -137,6 +137,19 @@ export type VulnerabilityDetailsContentProps = {
   isLoading: boolean;
   isError: boolean;
   onBack: () => void;
+  /** Every record that shares this vulnerability's CVE (one per product / version / component). */
+  affectedProducts?: ProductVulnerability[];
+  isAffectedProductsLoading?: boolean;
+  isAffectedProductsError?: boolean;
+  onAffectedProductClick?: (vulnerability: ProductVulnerability) => void;
+};
+
+export type VulnerabilityAffectedProductsProps = {
+  affectedProducts: ProductVulnerability[];
+  currentId?: string;
+  isLoading?: boolean;
+  isError?: boolean;
+  onRowClick?: (vulnerability: ProductVulnerability) => void;
 };
 
 // Response type for product vulnerabilities metadata.
