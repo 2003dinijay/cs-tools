@@ -70,6 +70,13 @@ type entitySearchCasesRequest struct {
 	Filters    entitySearchCasesFilters `json:"filters"`
 	SortBy     entityCaseSort           `json:"sortBy"`
 	Pagination entityPagination         `json:"pagination"`
+	// CountOnly mirrors entity-service's own SearchCasesRequest.CountOnly: a
+	// caller that only ever reads Total off the response (never Cases) should
+	// set this so entity-service skips building and running the page query
+	// entirely, rather than paying for a full, sorted, RLS-checked page fetch
+	// whose one row is then discarded unread. See customer_health_postgres.go's
+	// caseCount, the one caller that sets it.
+	CountOnly bool `json:"countOnly,omitempty"`
 }
 
 type entitySearchCaseView struct {

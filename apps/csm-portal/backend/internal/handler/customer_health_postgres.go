@@ -952,6 +952,7 @@ func (c *postgresCustomerHealthClient) caseCount(ctx context.Context, accountID,
 	body, err := json.Marshal(entitySearchCasesRequest{
 		Filters:    entitySearchCasesFilters{Filters: filters},
 		Pagination: entityPagination{Limit: 1, Offset: 0},
+		CountOnly:  true,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("marshal entity-service cases request: %w", err)
