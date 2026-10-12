@@ -64,17 +64,18 @@ func TestNotifySendsTheEntry(t *testing.T) {
 		Title:       `Use <b> & "quotes"`,
 		Who:         "Jane <Doe>",
 		Where:       "Customer",
-		WhereDetail: ptr("Acme Corp"),
+		WhereDetail: ptr("Acme & <Co>"),
 		What:        "<p>Learned <strong>a lot</strong>.</p><ul><li>One</li></ul>",
 	}
 	newClient(srv).Notify(context.Background(), e, "https://one.example/knowledge-base/e1?view=article")
 
+	// Title, who and whereDetail go as plain text; Novera escapes them.
 	got := <-received
 	want := map[string]any{
-		"title":       "Use &lt;b&gt; &amp; &#34;quotes&#34;",
-		"who":         "Jane &lt;Doe&gt;",
+		"title":       `Use <b> & "quotes"`,
+		"who":         "Jane <Doe>",
 		"where":       "Customer",
-		"whereDetail": "Acme Corp",
+		"whereDetail": "Acme & <Co>",
 		"what":        "Learned <b>a lot</b>.<br>• One",
 		"entryUrl":    "https://one.example/knowledge-base/e1?view=article",
 	}

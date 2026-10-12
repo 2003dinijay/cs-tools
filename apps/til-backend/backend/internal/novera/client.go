@@ -22,7 +22,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"html"
 	"log/slog"
 	"net/http"
 	"time"
@@ -78,10 +77,11 @@ type payload struct {
 // never reaches the person who shared it.
 func (c *Client) Notify(ctx context.Context, e entry.Entry, entryURL string) {
 	p := payload{
-		// The card puts these straight into its text, so they are escaped
-		// here rather than relying on Novera to do it.
-		Title:       html.EscapeString(e.Title),
-		Who:         html.EscapeString(e.Who),
+		// Plain text. Novera builds the card and escapes each value for the
+		// field it shows it in, so escaping here as well would show up in
+		// the card as "&amp;" or "&#39;".
+		Title:       e.Title,
+		Who:         e.Who,
 		Where:       e.Where,
 		WhereDetail: e.WhereDetail,
 		What:        entry.ForChat(e.What),

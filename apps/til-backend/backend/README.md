@@ -58,7 +58,7 @@ them all.
 | `ONE_WSO2_BASE_URL` | no | The webapp's address, for the "Read more" link in Google Chat. |
 | `CORS_ALLOWED_ORIGINS` | no | Browser origins allowed to call the API. |
 | `PORT`, `REST_READ_TIMEOUT`, `REST_WRITE_TIMEOUT` | no | Defaults 8077, 15s, 45s. |
-| `ENTITY_SERVICE_*` | no | Customer-name suggestions from entity-service: all four or none. |
+| `ENTITY_SERVICE_*` | no | Customer-name suggestions from entity-service: the base URL, token URL, client id and secret together, or none. `ENTITY_SERVICE_SCOPES` is optional. |
 | `NOVERA_*` | no | Announcing new entries in Google Chat through Novera: all four or none. |
 
 ## API

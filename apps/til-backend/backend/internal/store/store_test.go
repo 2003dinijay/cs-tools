@@ -295,6 +295,7 @@ func TestSearch(t *testing.T) {
 		{jane, content(t, "Idempotency keys", "Customer", ptr("Acme Corp"), "<p>Retries can apply a <strong>payment</strong> twice.</p>")},
 		{Author{Name: "Sam Perera", Email: "sam@example.com"}, content(t, "Liveness probes", "Internal", nil, "<p>A probe shouldn't check the database.</p>")},
 		{jane, content(t, "R&D notes", "Other", ptr("Conference"), "<p>Go is fun &amp; 100% fast_path</p>")},
+		{jane, content(t, "Batch sizes", "Internal", nil, "<p>Batches of 10 cut latency.</p>")},
 	} {
 		if _, err := s.Create(ctx, e.author, e.c); err != nil {
 			t.Fatal(err)
@@ -313,7 +314,7 @@ func TestSearch(t *testing.T) {
 		{"probe payment", ""},                 // terms from different entries
 		{"Go", "R&D notes"},                   // too short for the index
 		{"R&D", "R&D notes"},                  // an entity decoded in the text
-		{"100%", "R&D notes"},                 // a literal %
+		{"0%", "R&D notes"},                   // a literal %, so not "10"
 		{"fast_path", "R&D notes"},            // a literal _
 		{"_", "R&D notes"},                    // "_" alone isn't a wildcard
 		{"strong", ""},                        // markup is never searched
