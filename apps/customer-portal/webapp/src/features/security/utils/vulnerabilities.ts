@@ -66,17 +66,37 @@ export const getVulnerabilityStatusColor = (status?: string): string => {
 const normalizeKey = (value?: string | null): string =>
   value?.trim().toLowerCase() ?? "";
 
+// A fixed locale keeps the order identical for every user.
 const compareText = (a?: string | null, b?: string | null): number =>
-  (a ?? "").localeCompare(b ?? "", undefined, { numeric: true, sensitivity: "base" });
+  (a ?? "").localeCompare(b ?? "", "en", { numeric: true, sensitivity: "base" });
+
+/**
+ * Whether two records describe the same vulnerability. Symmetric on purpose, so
+ * opening any record of a group lists the same group: two records with a CVE
+ * match on it, and records without a CVE match on a non-empty vulnerability id.
+ * A record with a CVE never groups with one without.
+ */
+const isSameVulnerability = (
+  a: ProductVulnerability,
+  b: ProductVulnerability,
+): boolean => {
+  const cveA = normalizeKey(a.cveId);
+  const cveB = normalizeKey(b.cveId);
+  if (cveA || cveB) return cveA === cveB;
+
+  const vulnerabilityA = normalizeKey(a.vulnerabilityId);
+  return vulnerabilityA !== "" && vulnerabilityA === normalizeKey(b.vulnerabilityId);
+};
 
 /**
  * Returns every record that describes the same vulnerability as `current`.
  *
  * The backend stores one row per product, product version and component, so a
- * single CVE appears as many rows. Rows are matched on the CVE id, falling back
- * to the vulnerability id when the CVE is missing. `current` is always part of
- * the result, even when the supplied list is stale or does not contain it, and
- * the rows are ordered by product, product version, component, component version.
+ * single CVE appears as many rows. `current` is always part of the result and
+ * replaces any copy of itself in `all`, because it was fetched directly while
+ * the list can be hours old. Each id appears once. Rows are ordered by product,
+ * product version, component, component version, update level and finally id,
+ * so the order never depends on how the backend returned them.
  *
  * @param all - Candidate records (typically the full product vulnerability list).
  * @param current - The vulnerability the details page is showing.
@@ -88,27 +108,21 @@ export const getAffectedProducts = (
 ): ProductVulnerability[] => {
   if (!current) return [];
 
-  const cveKey = normalizeKey(current.cveId);
-  const vulnerabilityKey = normalizeKey(current.vulnerabilityId);
-
-  const matches = all.filter((item) => {
-    if (item.id === current.id) return true;
-    if (cveKey) return normalizeKey(item.cveId) === cveKey;
-    if (vulnerabilityKey) {
-      return normalizeKey(item.vulnerabilityId) === vulnerabilityKey;
+  const byId = new Map<string, ProductVulnerability>();
+  for (const item of all) {
+    if (item.id !== current.id && isSameVulnerability(current, item)) {
+      byId.set(item.id, item);
     }
-    return false;
-  });
+  }
+  byId.set(current.id, current);
 
-  const rows = matches.some((item) => item.id === current.id)
-    ? matches
-    : [current, ...matches];
-
-  return [...rows].sort(
+  return [...byId.values()].sort(
     (a, b) =>
       compareText(a.productName, b.productName) ||
       compareText(a.productVersion, b.productVersion) ||
       compareText(a.componentName, b.componentName) ||
-      compareText(a.version, b.version),
+      compareText(a.version, b.version) ||
+      compareText(a.updateLevel, b.updateLevel) ||
+      (a.id < b.id ? -1 : a.id > b.id ? 1 : 0),
   );
 };

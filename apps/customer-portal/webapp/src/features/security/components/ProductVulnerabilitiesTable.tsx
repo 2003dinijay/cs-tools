@@ -33,14 +33,13 @@ import type {
 } from "@features/security/types/security";
 import { countProductVulnerabilityTableActiveFilters } from "@features/security/utils/productVulnerabilitiesTable";
 
-// The full dataset is fetched once with a stable, shared request object (the
-// BFF transparently paginates through the entity service in batches of 50). The
-// vulnerability details page reuses the same request so it shares the cache entry.
 /**
  * Product Vulnerabilities table.
  *
  * Architecture note:
- * - All ~1500 records are fetched once via a single "fetch all" request.
+ * - All ~1500 records are fetched once via a single "fetch all" request, using
+ *   the shared PRODUCT_VULNERABILITIES_FETCH_ALL_REQUEST so the vulnerability
+ *   details page resolves to the same React Query cache entry.
  * - The BFF handles batching to the entity service (which is capped at 50/request).
  * - All filtering, sorting, and pagination are performed client-side for instant response.
  */
