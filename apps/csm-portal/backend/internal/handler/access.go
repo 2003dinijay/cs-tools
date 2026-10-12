@@ -136,11 +136,29 @@ const (
 	// from it by default in the webapp's own nav. See usePortalView.ts and
 	// useAccess.ts for the matching frontend halves of this split;
 	// keep all three in sync on which role each one checks.
+	//
+	// Customer Health is the one viewer-audience domain that is NOT on this
+	// permission any more: see PermViewCustomerHealth, which cs_engineer and
+	// admin hold as well as Viewer.
 	PermViewerAccess
+	// PermViewCustomerHealth is the Customer Health dashboard: its summary,
+	// account detail, risk and action-item routes (/customer-health/*) and the
+	// two filter lists it reads (GET /products, GET /abt-teams).
+	//
+	// Held by Viewer, the audience the dashboard was built for, and also by
+	// cs_engineer and admin, who work the same accounts and need the same
+	// view -- so unlike PermViewerAccess it does not require the Viewer role:
+	// a cs_engineer or admin reaches it without separately holding Viewer.
+	// Every other route in the viewer-audience block (User Scan, Time report,
+	// the account escalation list, Drive files) stays on PermViewerAccess.
+	// Keep the webapp's canViewCustomerHealth (portalAccess.ts) in sync with
+	// this set.
+	PermViewCustomerHealth
 	// PermUsageMetricsViewer is the Usage Metrics domain (/usage-metrics/*).
-	// Unlike every other ex-"Support Portal Lite" domain (Customer Health,
-	// User Scan, the SLA/Time/CS project reports — all still gated by
-	// PermViewerAccess, Viewer only), Usage Metrics is registered directly
+	// Unlike the ex-"Support Portal Lite" domains still gated by
+	// PermViewerAccess (Viewer only: User Scan, the SLA/Time/CS project
+	// reports), and unlike Customer Health (PermViewCustomerHealth, which
+	// cs_engineer and admin hold too), Usage Metrics is registered directly
 	// on THIS permission at the route level, not layered on top of
 	// PermViewerAccess: it was reported live as needing a broader audience
 	// than "holds the Viewer role" once Support Portal Lite's separate
@@ -451,6 +469,9 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			// Viewer, unconditionally (no cs_engineer exclusion) -- see
 			// PermViewerAccess's own doc comment for why.
 			PermViewerAccess: build(cfg.Viewer),
+			// Viewer plus the staff roles that hold full access -- see
+			// PermViewCustomerHealth's own doc comment.
+			PermViewCustomerHealth: build(cfg.Viewer, cfg.CsEngineer, cfg.Admin),
 			// Every existing PermView holder, so nothing they could already
 			// read stops being readable, plus SalesSolutions for exactly the
 			// routes this permission is registered on -- see

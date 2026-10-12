@@ -46,10 +46,10 @@ type usageMetricsServiceNowClient interface {
 // UsageMetricsHandler handles HTTP requests for the usage-metrics domain
 // (/usage-metrics/*), delegating to ServiceNow's custom scoped-app API.
 // Every endpoint in this domain requires PermUsageMetricsViewer directly —
-// unlike this domain's former siblings (Customer Health, User Scan, the
-// SLA/Time/CS project reports), it is NOT layered on top of the narrower
-// PermViewerAccess (Viewer-only) gate; see PermUsageMetricsViewer's own doc
-// comment for why.
+// unlike this domain's former siblings User Scan and the SLA/Time/CS project
+// reports, it is NOT layered on top of the narrower PermViewerAccess
+// (Viewer-only) gate (and Customer Health has its own, PermViewCustomerHealth);
+// see PermUsageMetricsViewer's own doc comment for why.
 type UsageMetricsHandler struct {
 	client      usageMetricsServiceNowClient
 	accessGuard *AccessGuard

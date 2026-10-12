@@ -738,7 +738,10 @@ func main() {
 	// EXCEPT the /usage-metrics/* routes further down, which are registered
 	// directly on the broader PermUsageMetricsViewer instead -- see that
 	// permission's own doc comment for why this one domain's audience is
-	// wider than its siblings'. EscalateCase and DownloadAttachment
+	// wider than its siblings' -- and the Customer Health routes (/customer-
+	// health/* plus the GET /products and GET /abt-teams lists its filters
+	// read), which use PermViewCustomerHealth so a cs_engineer or admin
+	// reaches them without also holding Viewer. EscalateCase and DownloadAttachment
 	// additionally check a narrower permission (PermEscalate/
 	// PermDownloadAttachment) inside the handler itself, the same layered
 	// shape SPL_ADD_ESCALATION_GROUPS/SPL_DOWNLOAD_ATTACHMENT_GROUPS
@@ -750,8 +753,8 @@ func main() {
 	route("POST /accounts/{accountId}/cases/{caseId}/escalate", handler.PermViewerAccess, viewerHandlers.accountEsc.EscalateCase)
 	route("GET /cases/{caseId}/attachments-info", handler.PermViewerAccess, viewerHandlers.cases.GetAttachmentsInfo)
 	route("GET /attachments/{attachmentId}/download", handler.PermViewerAccess, viewerHandlers.attachments.DownloadAttachment)
-	route("GET /products", handler.PermViewerAccess, viewerHandlers.lookups.GetProducts)
-	route("GET /abt-teams", handler.PermViewerAccess, viewerHandlers.lookups.GetABTTeams)
+	route("GET /products", handler.PermViewCustomerHealth, viewerHandlers.lookups.GetProducts)
+	route("GET /abt-teams", handler.PermViewCustomerHealth, viewerHandlers.lookups.GetABTTeams)
 	route("GET /generate-sla-report", handler.PermViewerAccess, viewerHandlers.reports.GenerateSLAReport)
 	route("GET /report-details", handler.PermViewerAccess, viewerHandlers.reports.GetReportDetails)
 	route("GET /generate-timelogs-breakdown-report", handler.PermViewerAccess, viewerHandlers.reports.GenerateTimelogsBreakdownReport)
@@ -771,23 +774,23 @@ func main() {
 	route("POST /usage-metrics/instances/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.SearchInstances)
 	route("POST /usage-metrics/deployed-products/{id}/metrics/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetDeployedProductMetrics)
 	route("POST /usage-metrics/deployed-products/{id}/metrics/usage-counts/search", handler.PermUsageMetricsViewer, viewerHandlers.usageMetrics.GetDeployedProductUsageCounts)
-	route("POST /customer-health/summary", handler.PermViewerAccess, viewerHandlers.customerHealth.GetSummary)
-	route("POST /customer-health/accounts/{accountSysId}/init-health-tracking", handler.PermViewerAccess, viewerHandlers.customerHealth.InitHealthTracking)
-	route("GET /customer-health/accounts/{accountId}", handler.PermViewerAccess, viewerHandlers.customerHealth.GetAccountDetail)
-	route("POST /customer-health/projects/{projectSysId}/risk", handler.PermViewerAccess, viewerHandlers.customerHealth.OpenRisk)
-	route("PUT /customer-health/risks/{riskId}/close", handler.PermViewerAccess, viewerHandlers.customerHealth.CloseRisk)
-	route("POST /customer-health/projects/{projectSysId}/mark-healthy", handler.PermViewerAccess, viewerHandlers.customerHealth.MarkHealthy)
-	route("POST /customer-health/projects/{projectSysId}/revert-review", handler.PermViewerAccess, viewerHandlers.customerHealth.RevertReview)
-	route("GET /customer-health/accounts/{accountSysId}/health-status", handler.PermViewerAccess, viewerHandlers.customerHealth.GetAccountHealthStatus)
-	route("GET /customer-health/accounts/{accountSysId}/health-summary", handler.PermViewerAccess, viewerHandlers.customerHealth.GetAccountHealthSummary)
-	route("GET /customer-health/projects/{projectSysId}/risk-history", handler.PermViewerAccess, viewerHandlers.customerHealth.GetProjectRiskHistory)
-	route("POST /customer-health/risks/{riskId}/action-items", handler.PermViewerAccess, viewerHandlers.customerHealth.CreateActionItem)
-	route("PUT /customer-health/action-items/{actionItemId}/status", handler.PermViewerAccess, viewerHandlers.customerHealth.UpdateActionItemStatus)
-	route("PUT /customer-health/action-items/{actionItemId}", handler.PermViewerAccess, viewerHandlers.customerHealth.UpdateActionItem)
-	route("GET /customer-health/risks/{riskId}/action-items", handler.PermViewerAccess, viewerHandlers.customerHealth.GetActionItemsByRisk)
-	route("GET /customer-health/accounts/{accountSysId}/action-items", handler.PermViewerAccess, viewerHandlers.customerHealth.GetActionItemsByAccount)
-	route("POST /customer-health/action-items/{actionItemId}/comments", handler.PermViewerAccess, viewerHandlers.customerHealth.CreateActionItemComment)
-	route("GET /customer-health/action-items/{actionItemId}/comments", handler.PermViewerAccess, viewerHandlers.customerHealth.GetActionItemComments)
+	route("POST /customer-health/summary", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetSummary)
+	route("POST /customer-health/accounts/{accountSysId}/init-health-tracking", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.InitHealthTracking)
+	route("GET /customer-health/accounts/{accountId}", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetAccountDetail)
+	route("POST /customer-health/projects/{projectSysId}/risk", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.OpenRisk)
+	route("PUT /customer-health/risks/{riskId}/close", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.CloseRisk)
+	route("POST /customer-health/projects/{projectSysId}/mark-healthy", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.MarkHealthy)
+	route("POST /customer-health/projects/{projectSysId}/revert-review", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.RevertReview)
+	route("GET /customer-health/accounts/{accountSysId}/health-status", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetAccountHealthStatus)
+	route("GET /customer-health/accounts/{accountSysId}/health-summary", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetAccountHealthSummary)
+	route("GET /customer-health/projects/{projectSysId}/risk-history", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetProjectRiskHistory)
+	route("POST /customer-health/risks/{riskId}/action-items", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.CreateActionItem)
+	route("PUT /customer-health/action-items/{actionItemId}/status", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.UpdateActionItemStatus)
+	route("PUT /customer-health/action-items/{actionItemId}", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.UpdateActionItem)
+	route("GET /customer-health/risks/{riskId}/action-items", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetActionItemsByRisk)
+	route("GET /customer-health/accounts/{accountSysId}/action-items", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetActionItemsByAccount)
+	route("POST /customer-health/action-items/{actionItemId}/comments", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.CreateActionItemComment)
+	route("GET /customer-health/action-items/{actionItemId}/comments", handler.PermViewCustomerHealth, viewerHandlers.customerHealth.GetActionItemComments)
 
 	// Built once and reused on both listeners below: Auth() does a real JWKS
 	// fetch (when TokenValidatorEnabled), so calling it a second time would

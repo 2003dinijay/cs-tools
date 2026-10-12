@@ -19,6 +19,7 @@ package handler
 import (
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"testing"
 
@@ -66,14 +67,14 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 	// PermAdmin and PermApproveTimeCard are deliberately excluded and tested
 	// separately below -- approving a time card is a dedicated responsibility
 	// cs_engineer does not share, the same way PermAdmin isn't.
-	csEngineerPerms := []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermViewSecurityCenter, PermUsePlg}
+	csEngineerPerms := []Permission{PermView, PermViewOperations, PermTimeCardsAndUpdates, PermEscalate, PermDownloadAttachment, PermWrite, PermViewSecurityCenter, PermUsePlg, PermViewCustomerHealth}
 	all := append(append([]Permission{}, csEngineerPerms...), PermAdmin, PermApproveTimeCard, PermManagePlaybooks, PermCreateAnnouncement)
 	tests := []struct {
 		name  string
 		roles []string
 		allow []Permission
 	}{
-		{"viewer reads only", []string{"test-viewer"}, []Permission{PermView}},
+		{"viewer reads, plus the Customer Health dashboard", []string{"test-viewer"}, []Permission{PermView, PermViewCustomerHealth}},
 		{"escalator can view and escalate", []string{"test-escalator"}, []Permission{PermView, PermEscalate}},
 		{"downloader can view and download", []string{"test-attachment-downloader"}, []Permission{PermView, PermDownloadAttachment}},
 		{"CS engineer can do every route permission except admin-only and approve-time-card ones", []string{"test-cs-engineer"}, csEngineerPerms},
@@ -85,7 +86,7 @@ func TestAccessGuard_PermissionMatrix(t *testing.T) {
 		{"dashboard designer can view only", []string{"test-dashboard-designer"}, []Permission{PermView}},
 		{"sales solutions role alone grants none of these -- it holds PermViewSharedEntity/PermViewerAccess instead, tested separately", []string{"test-sales-solutions"}, nil},
 		{"security team can view, view operations, and view security center -- but no write/escalate/approve permission of any kind", []string{"test-security-team"}, []Permission{PermView, PermViewOperations, PermViewSecurityCenter}},
-		{"roles combine", []string{"test-viewer", "test-escalator", "test-attachment-downloader"}, []Permission{PermView, PermEscalate, PermDownloadAttachment}},
+		{"roles combine", []string{"test-viewer", "test-escalator", "test-attachment-downloader"}, []Permission{PermView, PermEscalate, PermDownloadAttachment, PermViewCustomerHealth}},
 		{"unrelated roles grant nothing", []string{"wso2-everyone", "admin", "agent", "customer"}, nil},
 		{"no roles", nil, nil},
 		{"role names are case sensitive", []string{"TEST-ADMIN"}, nil},
@@ -419,6 +420,60 @@ func TestAccessGuard_PlgIsForCsEngineersAndAdmins(t *testing.T) {
 	} {
 		if status, _ := serveWithRoles(g, PermUsePlg, []string{role}); status != http.StatusForbidden {
 			t.Errorf("%s holds PermView but must not hold PermUsePlg: status = %d, want 403", role, status)
+		}
+	}
+}
+
+// TestAccessGuard_CustomerHealthIsForViewersCsEngineersAndAdmins pins
+// PermViewCustomerHealth as wider than PermViewerAccess (Viewer only) but
+// still narrower than PermView: a cs_engineer or admin reaches the dashboard
+// without separately holding Viewer, while the other portal roles do not.
+func TestAccessGuard_CustomerHealthIsForViewersCsEngineersAndAdmins(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	for _, role := range []string{"test-viewer", "test-cs-engineer", "test-admin"} {
+		if status, _ := serveWithRoles(g, PermViewCustomerHealth, []string{role}); status != http.StatusNoContent {
+			t.Errorf("%s: status = %d, want 204", role, status)
+		}
+	}
+	for _, role := range rolesOutsideCustomerHealthAudience() {
+		if status, _ := serveWithRoles(g, PermViewCustomerHealth, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s must not hold PermViewCustomerHealth: status = %d, want 403", role, status)
+		}
+	}
+	if status, _ := serveWithRoles(g, PermViewCustomerHealth, nil); status != http.StatusForbidden {
+		t.Errorf("no roles: status = %d, want 403", status)
+	}
+}
+
+// rolesOutsideCustomerHealthAudience returns the test token role of every
+// configured portal role except the three that hold PermViewCustomerHealth
+// (Viewer, CsEngineer, Admin). It reads AccessConfig by reflection so a role
+// added to the config later is assumed to be OUTSIDE the audience, and the
+// tests below fail if it is ever granted the permission by mistake.
+func rolesOutsideCustomerHealthAudience() []string {
+	cfg := reflect.ValueOf(testAccessConfig())
+	var roles []string
+	for i := 0; i < cfg.NumField(); i++ {
+		switch cfg.Type().Field(i).Name {
+		case "Viewer", "CsEngineer", "Admin":
+			continue
+		}
+		if names, ok := cfg.Field(i).Interface().([]string); ok {
+			roles = append(roles, names...)
+		}
+	}
+	return roles
+}
+
+// TestAccessGuard_CustomerHealthDoesNotWidenTheRestOfViewerAccess guards the
+// other direction: giving cs_engineer/admin the Customer Health dashboard must
+// not hand them the rest of the viewer-audience routes (User Scan, the Time
+// report, the account escalation list, Drive files), which stay Viewer-only.
+func TestAccessGuard_CustomerHealthDoesNotWidenTheRestOfViewerAccess(t *testing.T) {
+	g := NewAccessGuard(testAccessConfig())
+	for _, role := range []string{"test-cs-engineer", "test-admin"} {
+		if status, _ := serveWithRoles(g, PermViewerAccess, []string{role}); status != http.StatusForbidden {
+			t.Errorf("%s: PermViewerAccess status = %d, want 403 (still Viewer-only)", role, status)
 		}
 	}
 }

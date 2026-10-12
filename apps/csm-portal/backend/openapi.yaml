@@ -10055,6 +10055,10 @@ paths:
   # out), so every ServiceNow-backed endpoint here always fails its own
   # call now -- see cmd/server/main.go's loadViewerConfig. Path parameters
   # here are ServiceNow sys_ids or case/account/project numbers, not UUIDs.
+  # Audience: every route here needs the viewer role, except /usage-metrics/*
+  # (usage_metrics_viewer, cs_engineer, admin) and the Customer Health routes
+  # plus the GET /products and GET /abt-teams lists its filters read (viewer,
+  # cs_engineer, admin).
   # ---------------------------------------------------------------------
 
   /accounts/{accountId}/escalations:

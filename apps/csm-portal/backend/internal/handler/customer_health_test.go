@@ -514,6 +514,39 @@ func TestCustomerHealthHandler_OpenRisk_RejectsMissingSPLAccess(t *testing.T) {
 	assertStatus(t, w, http.StatusForbidden)
 }
 
+func TestCustomerHealthHandler_AllowsCsEngineerAndAdminWithoutViewerRole(t *testing.T) {
+	sn := &fakeSNCustomerHealthClient{
+		getCustomerHealthDetail: func(ctx context.Context, accountID string) (*servicenow.AccountDetail, error) {
+			return &servicenow.AccountDetail{AccountName: "Example Corp"}, nil
+		},
+	}
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, sn, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	for _, role := range []string{"test-cs-engineer", "test-admin"} {
+		req := httptest.NewRequest(http.MethodGet, "/customer-health/accounts/acct-1", nil)
+		req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{Email: "staff@example.com", UserID: "u-staff", Roles: []string{role}}))
+		req.SetPathValue("accountId", "acct-1")
+		w := httptest.NewRecorder()
+		h.GetAccountDetail(w, req)
+		if w.Code != http.StatusOK {
+			t.Errorf("%s: status = %d, want 200", role, w.Code)
+		}
+	}
+}
+
+func TestCustomerHealthHandler_RejectsRolesWithoutCustomerHealthAccess(t *testing.T) {
+	h := NewCustomerHealthHandler(&fakeRiskClient{}, &fakeSNCustomerHealthClient{}, &fakeHealthAccountSearch{}, viewerAccessGuard)
+	for _, role := range []string{"test-usage-metrics-viewer", "test-escalator", "test-timecard-approver", "test-security-team"} {
+		req := httptest.NewRequest(http.MethodPost, "/customer-health/projects/proj-1/risk", bytes.NewReader([]byte(`{}`)))
+		req = req.WithContext(middleware.WithUserInfo(req.Context(), &middleware.UserInfo{Email: "staff@example.com", UserID: "u-staff", Roles: []string{role}}))
+		req.SetPathValue("projectSysId", "proj-1")
+		w := httptest.NewRecorder()
+		h.OpenRisk(w, req)
+		if w.Code != http.StatusForbidden {
+			t.Errorf("%s: status = %d, want 403", role, w.Code)
+		}
+	}
+}
+
 func TestCustomerHealthHandler_CloseRisk_UpstreamConflictMapsTo409(t *testing.T) {
 	rc := &fakeRiskClient{
 		closeProjectRisk: func(ctx context.Context, riskID, comment string) (*risk.ProjectRisk, error) {
