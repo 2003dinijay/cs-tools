@@ -19,16 +19,20 @@ package handler
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"strings"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
 // entityCustomerHealthClient is the subset of internal/entity.CustomerEntityClient
 // needed to compute customer-health signals from Postgres.
 type entityCustomerHealthClient interface {
+	GetAccount(ctx context.Context, id string) ([]byte, error)
 	SearchAccounts(ctx context.Context, body []byte) ([]byte, error)
 	SearchProjects(ctx context.Context, body []byte) ([]byte, error)
 	SearchCases(ctx context.Context, body []byte) ([]byte, error)
@@ -145,35 +149,28 @@ func (c *postgresCustomerHealthClient) GetCustomerHealthSummary(ctx context.Cont
 // per-account, with drill-down lists built from the same case/deployed-
 // product data each flag's own query already fetched.
 func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Context, accountID string) (*servicenow.AccountDetail, error) {
-	accountBody, err := json.Marshal(entitySearchAccountsRequest{
-		Pagination: entityPagination{Limit: 1, Offset: 0},
-		Filters:    entitySearchAccountsFilters{SearchQuery: accountID},
-	})
+	// A real, 100%-reproducing bug: this used to resolve the account via
+	// POST /accounts/search with Filters.SearchQuery set to accountID (a
+	// UUID) -- but entity-service's SearchQuery filter only ever matches
+	// against account.name/sf_id/number (ILIKE), never account.id (see that
+	// repo's own account_repo.go), so a UUID searchQuery matches nothing and
+	// every account detail click 404'd. GET /accounts/{id} is the real
+	// by-primary-key lookup and is what this should have called from the
+	// start.
+	raw, err := c.entity.GetAccount(ctx, accountID)
 	if err != nil {
-		return nil, fmt.Errorf("marshal entity-service account request: %w", err)
-	}
-	raw, err := c.entity.SearchAccounts(ctx, accountBody)
-	if err != nil {
+		var apiErr *apierror.Error
+		if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusNotFound {
+			return nil, servicenow.ErrAccountNotFound
+		}
 		return nil, err
 	}
-	var accountResp entitySearchAccountsResponse
-	if err := json.Unmarshal(raw, &accountResp); err != nil {
+	var account entityAccountView
+	if err := json.Unmarshal(raw, &account); err != nil {
 		return nil, fmt.Errorf("unmarshal entity-service account response: %w", err)
 	}
-	accountName := ""
-	var activationDate *string
-	found := false
-	for _, a := range accountResp.Accounts {
-		if a.ID == accountID {
-			accountName = a.Name
-			activationDate = a.ActivationDate
-			found = true
-			break
-		}
-	}
-	if !found {
-		return nil, servicenow.ErrAccountNotFound
-	}
+	accountName := account.Name
+	activationDate := account.ActivationDate
 
 	projects, err := c.accountProjects(ctx, accountID)
 	if err != nil {
@@ -1055,16 +1052,55 @@ func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, p enti
 			return servicenow.ProjectDetail{}, err
 		}
 	}
-	softwareModel := make([]servicenow.EolProduct, 0, len(eolDeployments))
+	// Grouped by the product_version row's own id -- entity-service's real,
+	// stable identity for one specific version (two distinct product_version
+	// rows can share the same version string under a different deployment
+	// profile, and can also share an EOL date; confirmed against real
+	// staging data for this exact feature). Grouping by name+EOL date
+	// instead, an earlier version of this fix, merged two such rows into
+	// one entry and repeated the single deployment running both of them in
+	// its Deployments list -- found live by directly comparing this
+	// function's real output against the same real account's data.
+	//
+	// Deployments was also a real, confirmed bug on its own, independent of
+	// grouping: entityDeployedProductEolView never captured entity-service's
+	// own "deployment" field at all (see that type's own doc comment), so
+	// the per-software-model deployment list was always empty regardless of
+	// real data.
+	type eolProductGroup struct {
+		name        string
+		eolDate     string
+		deployments []servicenow.Deployment
+		seenDepIDs  map[string]bool
+	}
+	softwareModelOrder := make([]string, 0, len(eolDeployments))
+	softwareModelByVersionID := make(map[string]*eolProductGroup, len(eolDeployments))
 	for _, dp := range eolDeployments {
+		versionID := dp.Product.ID // no version on this row: group per product instead
+		name := dp.Product.Name
 		eolDate := ""
-		if dp.Version != nil && dp.Version.SupportEoLDate != nil {
-			eolDate = *dp.Version.SupportEoLDate
+		if dp.Version != nil {
+			versionID = dp.Version.ID
+			name = dp.Product.Name + " " + dp.Version.Name
+			if dp.Version.SupportEoLDate != nil {
+				eolDate = *dp.Version.SupportEoLDate
+			}
 		}
-		softwareModel = append(softwareModel, servicenow.EolProduct{
-			Name:    dp.Product.Name,
-			EolDate: eolDate,
-		})
+		group, ok := softwareModelByVersionID[versionID]
+		if !ok {
+			group = &eolProductGroup{name: name, eolDate: eolDate, seenDepIDs: map[string]bool{}}
+			softwareModelByVersionID[versionID] = group
+			softwareModelOrder = append(softwareModelOrder, versionID)
+		}
+		if !group.seenDepIDs[dp.Deployment.ID] {
+			group.seenDepIDs[dp.Deployment.ID] = true
+			group.deployments = append(group.deployments, servicenow.Deployment{SysID: dp.Deployment.ID, Name: dp.Deployment.Name})
+		}
+	}
+	softwareModel := make([]servicenow.EolProduct, 0, len(softwareModelOrder))
+	for _, versionID := range softwareModelOrder {
+		group := softwareModelByVersionID[versionID]
+		softwareModel = append(softwareModel, servicenow.EolProduct{Name: group.name, EolDate: group.eolDate, Deployments: group.deployments})
 	}
 	deploymentRefs := make([]servicenow.Deployment, 0, len(deps))
 	for _, d := range deps {

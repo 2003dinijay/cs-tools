@@ -163,14 +163,28 @@ type entitySearchDeployedProductsEolRequest struct {
 // DeployedProductVersionRef than usage_metrics_postgres.go's own
 // entityDeployedProductView.Version (*entityRef, id/name only) -- this one
 // specifically needs SupportEoLDate, which that file's shape doesn't carry.
+// ID is the product_version row's own stable identity: two distinct
+// product_version rows can share the same version string under a different
+// deployment profile (and can also share an EOL date), confirmed against
+// real data for this exact feature -- grouping the EOL software list by
+// name/EOL date instead of this id merges those two rows into one entry.
 type entityDeployedProductVersionEolRef struct {
+	ID             string  `json:"id"`
 	Name           string  `json:"name"`
 	SupportEoLDate *string `json:"supportEoLDate"`
 }
 
 type entityDeployedProductEolView struct {
-	Product entityRef                           `json:"product"`
-	Version *entityDeployedProductVersionEolRef `json:"version"`
+	Product entityRef `json:"product"`
+	// Deployment mirrors entity-service's own DeployedProductView.Deployment
+	// -- it was missing from this narrower, EOL-specific copy of that wire
+	// shape entirely, so entity-service's own real "deployment" field was
+	// silently dropped on every unmarshal and the customer-health detail
+	// view's own per-software-model Deployments list was always empty. See
+	// customer_health_postgres.go's own projectDetail, which groups rows by
+	// product/EOL date and uses this field to list which deployments run it.
+	Deployment entityRef                           `json:"deployment"`
+	Version    *entityDeployedProductVersionEolRef `json:"version"`
 }
 
 type entitySearchDeployedProductsEolResponse struct {

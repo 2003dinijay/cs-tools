@@ -20,9 +20,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"testing"
 	"time"
 
+	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
 )
 
@@ -43,6 +45,19 @@ type fakeEntityCustomerHealthClient struct {
 	lastAccountsReqRaw     []byte   // last request body SearchAccounts was called with
 	lastCasesReqsRaw       [][]byte // every request body SearchCases was called with, in call order
 	lastDeploymentsReqsRaw [][]byte // every request body SearchDeployments was called with, in call order
+	// account/accountNotFound back GetAccount (GET /accounts/{id}), the
+	// real by-primary-key lookup GetCustomerHealthDetail uses -- kept
+	// separate from the accounts/SearchAccounts fields above, which back the
+	// unrelated account-list search GetCustomerHealthSummary uses.
+	account         *entityAccountView
+	accountNotFound bool
+}
+
+func (f *fakeEntityCustomerHealthClient) GetAccount(ctx context.Context, id string) ([]byte, error) {
+	if f.accountNotFound || f.account == nil {
+		return nil, &apierror.Error{StatusCode: http.StatusNotFound, Body: `{"message":"account not found"}`}
+	}
+	return json.Marshal(f.account)
 }
 
 func (f *fakeEntityCustomerHealthClient) SearchAccounts(ctx context.Context, body []byte) ([]byte, error) {
@@ -607,9 +622,7 @@ func TestProjectDetail_DeploymentsListStaysActiveOnly(t *testing.T) {
 }
 
 func TestGetCustomerHealthDetail_AccountNotFound(t *testing.T) {
-	fake := &fakeEntityCustomerHealthClient{
-		accounts: entitySearchAccountsResponse{Accounts: []entityAccountView{}, Total: 0},
-	}
+	fake := &fakeEntityCustomerHealthClient{accountNotFound: true}
 	c := NewPostgresCustomerHealthClient(fake)
 
 	_, err := c.GetCustomerHealthDetail(context.Background(), "acc-missing")
@@ -618,12 +631,16 @@ func TestGetCustomerHealthDetail_AccountNotFound(t *testing.T) {
 	}
 }
 
+// TestGetCustomerHealthDetail_AccountFound pins the real fix: this used to
+// resolve the account via POST /accounts/search with Filters.SearchQuery set
+// to the account's own UUID, which entity-service's SearchQuery filter can
+// never match (it only compares against account.name/sf_id/number, never
+// account.id) -- so every account detail lookup 404'd regardless of whether
+// the account existed. GetAccount (GET /accounts/{id}, a real by-primary-key
+// lookup) is what this must call instead.
 func TestGetCustomerHealthDetail_AccountFound(t *testing.T) {
 	fake := &fakeEntityCustomerHealthClient{
-		accounts: entitySearchAccountsResponse{
-			Accounts: []entityAccountView{{ID: "acc-1", Name: "Acme Corp"}},
-			Total:    1,
-		},
+		account: &entityAccountView{ID: "acc-1", Name: "Acme Corp"},
 	}
 	c := NewPostgresCustomerHealthClient(fake)
 
