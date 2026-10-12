@@ -1342,7 +1342,16 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 	// reasoning as handleIncidentCreated's own doc comment, and the same
 	// shape handleCaseCreated's own chat block uses (outside its email
 	// if/else, not nested inside the success branch).
-	chatOwned := d.claim(chatKey)
+	//
+	// Product rule: a move TO low severity (S4) never posts to the Incident
+	// Monitor chat, whatever the old severity was; a move to any higher
+	// severity (S0-S3, including an upgrade from S4) always does. Only the
+	// NEW severity matters. chatKey is simply never claimed when skipped;
+	// forgetting an unclaimed key below is a harmless no-op.
+	chatOwned := false
+	if !isLowSeverity(p.NewSeverity) {
+		chatOwned = d.claim(chatKey)
+	}
 	if chatOwned {
 		caseLink := d.links.CSMLink(p.CaseID)
 		title := truncateTitle(p.CaseTitle, maxChatTitleLength)
