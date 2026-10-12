@@ -8297,12 +8297,19 @@ shape**: "every project except the in-progress ones" (6 of the 7 statuses), matc
 already-joined `p.onboarding_status` column (`caseSearchJoins`'s `LEFT JOIN project p`) keeps
 that join alive for every row even in a `COUNT(*)`-only query that reads no other column of `p`;
 replayed Query Store text measured the project lookup alone at ~10,200 of a widget's
-21,000-55,000 total data pages. The filter is now `wi.project_id IS NOT NULL AND wi.project_id
-<> ALL(ARRAY(SELECT id FROM project WHERE onboarding_status IS NULL OR onboarding_status <>
-ALL($n::text[]::onboarding_status_enum[])))` -- same NULL semantics as before (a project with no
-status, or a case with no project, never matches `in`), but with no WHERE-clause reference to the
-`p` alias left for this filter at all, which is what lets the planner drop the dead `LEFT JOIN
-project` from a `COUNT(*)`-only query entirely. The `notIn` branch is deliberately left as the
+21,000-55,000 total data pages. The filter is now `wi.project_id IS NOT NULL AND NOT EXISTS
+(SELECT 1 FROM project excluded WHERE excluded.id = wi.project_id AND (excluded.onboarding_status
+IS NULL OR excluded.onboarding_status <> ALL($n::text[]::onboarding_status_enum[])))` -- same NULL
+semantics as before (a project with no status, or a case with no project, never matches `in`), but
+with no WHERE-clause reference to the `p` alias left for this filter at all, which is what lets the
+planner drop the dead `LEFT JOIN project` from a `COUNT(*)`-only query entirely. It was first
+written as `wi.project_id <> ALL(ARRAY(SELECT id FROM project WHERE ...))`; that form compares
+every case row with every excluded id (no index, no hash), which is cheap for the six-status widget
+list (about a dozen excluded projects) but not when only one or two statuses are selected and the
+exclusion list holds ~1,950 ids: measured on a production-size copy at 93-105 ms against 12 ms for
+the `NOT EXISTS` probe on `project`'s primary key, with identical counts for every single status and
+for the six-status set (where both take ~12 ms). Same problem as the state filter's `notIn`
+(digiops-cs #3459). The `notIn` branch is deliberately left as the
 plain join check: it already satisfies the no-project/no-status cases via its own `OR`, nothing
 marks it as a measured bottleneck the way `in` was, and the equivalent rewrite would need its own
 extra `OR wi.project_id IS NULL` term to keep that behaviour -- not worth the added risk without
@@ -8455,6 +8462,22 @@ on production-size data at 27–70 ms against 5.5–32.5 s, with identical
 results. ids are always non-`NULL` (each branch selects a primary key), so the
 anti-join is an exact negation of `= ANY` here, with no three-valued-logic
 subtlety to account for.
+
+**Each enum-typed branch compares the state column, not `state::TEXT`.**
+Casting the column hides it from its index (`idx_case_state`), so
+`state::TEXT = ANY($n::text[])` was a sequential scan of `"case"` on every
+state-filtered search. The bound list stays `text[]` and is turned into the
+table's own enum by keeping only the labels that enum has
+(`caseLikeEnumStateList`: `ARRAY(SELECT s FROM unnest(enum_range(NULL::case_state_enum))
+s WHERE s::TEXT = ANY($n))`), so a label the enum does not know matches nothing,
+as the text comparison did, instead of failing the query the way a direct
+`$n::text[]::case_state_enum[]` cast would. Measured on a production-size copy
+(129,440 cases): `{OPEN}` 10.3 ms seq scan → 0.4 ms index-only scan, `{CLOSED}`
+13.6 → 5.6 ms, identical counts, unknown labels included. `engagement`,
+`service_request` and `security_report_analysis` use the same form (they have no
+state index today, so it changes nothing for them yet). The announcement branch
+keeps the text comparison, which its `CLOSE`→`CLOSED` normalization needs.
+`TestCaseLikeStateLookupUsesTheColumnNotACast` pins the shape.
 
 **`projectOnboardingStatus`/its `notIn` sibling deliberately keep filtering
 through the `LEFT JOIN` to `p`, despite the superficial similarity to the

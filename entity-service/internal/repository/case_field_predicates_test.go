@@ -101,7 +101,7 @@ func TestCaseLikeStateLookupClause(t *testing.T) {
 	// matching the shape every dashboard widget's search sends (a {type}
 	// filter alongside a {state} filter).
 	got := caseLikeStateLookupClause([]string{"case"}, "$3::text[]", false)
-	want := `wi.id = ANY(ARRAY(SELECT id FROM "case" WHERE state::TEXT = ANY($3::text[])))`
+	want := `wi.id = ANY(ARRAY(SELECT id FROM "case" WHERE state = ANY(ARRAY(SELECT s FROM unnest(enum_range(NULL::case_state_enum)) s WHERE s::TEXT = ANY($3::text[])))))`
 	if got != want {
 		t.Errorf("got %q, want %q", got, want)
 	}
@@ -109,8 +109,8 @@ func TestCaseLikeStateLookupClause(t *testing.T) {
 	// Several requested types each contribute their own branch, UNION ALL'd.
 	got = caseLikeStateLookupClause([]string{"case", "engagement"}, "$1::text[]", false)
 	for _, want := range []string{
-		`SELECT id FROM "case" WHERE state::TEXT = ANY($1::text[])`,
-		`SELECT id FROM engagement WHERE state::TEXT = ANY($1::text[])`,
+		`SELECT id FROM "case" WHERE state = ANY(ARRAY(SELECT s FROM unnest(enum_range(NULL::case_state_enum)) s WHERE s::TEXT = ANY($1::text[])))`,
+		`SELECT id FROM engagement WHERE state = ANY(ARRAY(SELECT s FROM unnest(enum_range(NULL::engagement_state_enum)) s WHERE s::TEXT = ANY($1::text[])))`,
 		" UNION ALL ",
 	} {
 		if !strings.Contains(got, want) {
@@ -138,7 +138,7 @@ func TestCaseLikeStateLookupClause(t *testing.T) {
 	// never "<> ALL(ARRAY(...))", which compares every row with every excluded
 	// id and took tens of seconds for "notIn closed" on production-volume data.
 	got = caseLikeStateLookupClause([]string{"case"}, "$1::text[]", true)
-	wantNegated := `NOT EXISTS (SELECT 1 FROM (SELECT id FROM "case" WHERE state::TEXT = ANY($1::text[])) excluded WHERE excluded.id = wi.id)`
+	wantNegated := `NOT EXISTS (SELECT 1 FROM (SELECT id FROM "case" WHERE state = ANY(ARRAY(SELECT s FROM unnest(enum_range(NULL::case_state_enum)) s WHERE s::TEXT = ANY($1::text[])))) excluded WHERE excluded.id = wi.id)`
 	if got != wantNegated {
 		t.Errorf("negate=true = %s\nwant %s", got, wantNegated)
 	}
@@ -171,5 +171,33 @@ func TestCaseFieldSetFromGroup(t *testing.T) {
 	}
 	if len(f.Types) != 1 || len(f.EscalationLevels) != 1 || len(f.Tags) != 1 || len(f.ExcludeTags) != 1 {
 		t.Errorf("fields not carried over: %+v", f)
+	}
+}
+
+// TestCaseLikeStateLookupUsesTheColumnNotACast pins that the enum-typed
+// branches compare the state column itself (so its index can be used) and
+// drop labels the enum does not know instead of casting the list.
+func TestCaseLikeStateLookupUsesTheColumnNotACast(t *testing.T) {
+	for typ, enum := range map[string]string{
+		"case":                     "case_state_enum",
+		"engagement":               "engagement_state_enum",
+		"service_request":          "service_request_state_enum",
+		"security_report_analysis": "security_report_analysis_state_enum",
+	} {
+		got := caseLikeStateLookupClause([]string{typ}, "$1::text[]", false)
+		if strings.Contains(got, "state::TEXT = ANY($1") {
+			t.Errorf("%s: compares state::TEXT, which cannot use the state index: %s", typ, got)
+		}
+		if !strings.Contains(got, "enum_range(NULL::"+enum+")") {
+			t.Errorf("%s: list not filtered through %s: %s", typ, enum, got)
+		}
+		if strings.Contains(got, "::"+enum+"[]") {
+			t.Errorf("%s: casts the list to %s[], which fails on an unknown label: %s", typ, enum, got)
+		}
+	}
+	// Announcement keeps its CLOSE->CLOSED normalization.
+	got := caseLikeStateLookupClause([]string{"announcement"}, "$1::text[]", false)
+	if !strings.Contains(got, "WHEN state::TEXT = 'CLOSE' THEN 'CLOSED'") {
+		t.Errorf("announcement lost its CLOSE->CLOSED normalization: %s", got)
 	}
 }
