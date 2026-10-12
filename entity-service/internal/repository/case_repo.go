@@ -2912,20 +2912,61 @@ func (r *caseRepo) ConfirmCaseAttachment(ctx context.Context, id string) (domain
 
 // SearchCaseAttachments implements CaseRepository.
 //
-// Both queries filter to status = 'complete' -- see the doc comment on
-// CaseService.SearchCaseAttachments for why pending (still-uploading) rows
-// are excluded from the default list/search response rather than shown with
-// a visible status.
+// Returns the case's native uploads (case_attachment) and its synced
+// attachments (work_item_attachment) as one list, ordered newest first with
+// the id as a stable tiebreaker. Both queries read the same UNION ALL, so the
+// total and the page rows always agree.
+//
+// Native rows keep the status = 'complete' filter -- see the doc comment on
+// CaseService.SearchCaseAttachments for why pending (still-uploading) rows are
+// excluded from the default list/search response rather than shown with a
+// visible status. A synced row is skipped while PENDING, and when
+// case_attachment already holds the same id: a dual-write upload is mirrored
+// into case_attachment under the backing data source's own attachment
+// identity, which is also the id the sync gives its work_item_attachment row,
+// so the two tables describe one file and it must show once (same rule as the
+// activity feed, see SearchCaseActivities).
+//
+// The synced side is joined to work_item so that work_item's row-level
+// security scopes it like every other work item read. Its uploader is matched
+// to a user by email with a LATERAL ... LIMIT 1 ("user".email has no unique
+// constraint, so a plain join would fan one attachment into several rows
+// while the count still counted it once); an unmatched uploader is still
+// returned, carrying only the email. Synced rows have no storage key.
 func (r *caseRepo) SearchCaseAttachments(ctx context.Context, caseID string, pagination domain.Pagination) ([]domain.Attachment, int, error) {
-	const countQuery = `SELECT COUNT(*) FROM case_attachment WHERE case_id = $1 AND status = 'complete'`
-	const dataQuery = `
-		SELECT ca.id, ca.case_id, ca.filename, ca.mime_type, ca.size_bytes, ca.description,
-		       u.id, u.email, COALESCE(u.name, NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS full_name,
-		       ca.created_on, ca.storage_key, ca.status
+	const combined = `
+		SELECT ca.id, ca.case_id AS reference_id, ca.filename AS name, ca.mime_type AS content_type,
+		       ca.size_bytes::bigint AS size_bytes, ca.description::text AS description,
+		       u.id::text AS uploader_id, u.email::text AS uploader_email,
+		       COALESCE(u.name, NULLIF(TRIM(CONCAT_WS(' ', u.first_name, u.last_name)), ''), '') AS uploader_name,
+		       ca.created_on, ca.storage_key::text AS storage_key, ca.status::text AS status
 		FROM case_attachment ca
 		JOIN "user" u ON u.id = ca.uploaded_by
 		WHERE ca.case_id = $1 AND ca.status = 'complete'
-		ORDER BY ca.created_on DESC, ca.id
+		UNION ALL
+		SELECT wa.id, wa.work_item_id, COALESCE(wa.name, ''), COALESCE(wa.content_type, ''),
+		       COALESCE(wa.size_bytes, 0)::bigint, NULL::text,
+		       COALESCE(su.id::text, ''), COALESCE(wa.created_by, ''),
+		       COALESCE(su.name, NULLIF(TRIM(CONCAT_WS(' ', su.first_name, su.last_name)), ''), ''),
+		       wa.created_on, NULL::text, 'complete'
+		FROM work_item_attachment wa
+		JOIN work_item wi ON wi.id = wa.work_item_id
+		LEFT JOIN LATERAL (
+			SELECT u2.id, u2.name, u2.first_name, u2.last_name
+			FROM "user" u2
+			WHERE LOWER(u2.email) = LOWER(wa.created_by)
+			ORDER BY u2.id
+			LIMIT 1
+		) su ON TRUE
+		WHERE wa.work_item_id = $1
+		  AND wa.state IS DISTINCT FROM 'PENDING'
+		  AND NOT EXISTS (SELECT 1 FROM case_attachment dup WHERE dup.id = wa.id)`
+	const countQuery = `SELECT COUNT(*) FROM (` + combined + `) att`
+	const dataQuery = `
+		SELECT id, reference_id, name, content_type, size_bytes, description,
+		       uploader_id, uploader_email, uploader_name, created_on, storage_key, status
+		FROM (` + combined + `) att
+		ORDER BY created_on DESC, id
 		LIMIT $2 OFFSET $3`
 
 	var total int
@@ -2951,20 +2992,23 @@ func (r *caseRepo) SearchCaseAttachments(ctx context.Context, caseID string, pag
 		for rows.Next() {
 			var (
 				a                         domain.Attachment
+				sizeBytes                 int64
 				uploaderID, uploaderEmail string
 				uploaderName              string
 				// storageKey is nullable: a dual-write (ServiceNow-sourced)
 				// row has no storage_key at all -- see migration 0185's own
-				// comment. *string (not string) is required here so a NULL
-				// column value scans as a nil pointer instead of erroring.
+				// comment -- and neither does a synced row. *string (not
+				// string) is required here so a NULL column value scans as a
+				// nil pointer instead of erroring.
 				storageKey *string
 			)
 			if err := rows.Scan(
-				&a.ID, &a.ReferenceID, &a.Name, &a.Type, &a.SizeBytes, &a.Description,
+				&a.ID, &a.ReferenceID, &a.Name, &a.Type, &sizeBytes, &a.Description,
 				&uploaderID, &uploaderEmail, &uploaderName, &a.CreatedOn, &storageKey, &a.Status,
 			); err != nil {
 				return fmt.Errorf("scan case attachment: %w", err)
 			}
+			a.SizeBytes = int(sizeBytes)
 			a.ReferenceType = domain.ReferenceTypeCase
 			a.CreatedBy = domain.NewUserReference(uploaderID, uploaderEmail, uploaderName)
 			a.StorageKey = storageKey
