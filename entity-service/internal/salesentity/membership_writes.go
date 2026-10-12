@@ -23,6 +23,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -317,6 +318,7 @@ func (c *Client) mutate(ctx context.Context, method, path string, body any, what
 	case resp.StatusCode >= 500:
 		return &apierror.ServiceUnavailableError{Msg: fmt.Sprintf("salesentity: %s %s returned %d", method, path, resp.StatusCode)}
 	default:
-		return &apierror.DownstreamError{Msg: fmt.Sprintf("salesentity rejected %s %s (status %d)", method, path, resp.StatusCode)}
+		slog.Warn("salesentity rejected the request", "method", method, "path", path, "status", resp.StatusCode)
+		return &apierror.DownstreamError{Msg: msgSalesforceRejected}
 	}
 }

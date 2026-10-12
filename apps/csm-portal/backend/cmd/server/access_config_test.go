@@ -27,6 +27,7 @@ func TestLoadAccessConfig(t *testing.T) {
 		"AUTH_ATTACHMENT_DOWNLOADER_ROLES", "AUTH_USAGE_METRICS_VIEWER_ROLES",
 		"AUTH_SUPPORT_ENGINEER_ROLES", "AUTH_ADMIN_ROLES", "AUTH_TIMECARD_APPROVER_ROLES",
 		"AUTH_DASHBOARD_DESIGNER_ROLES", "AUTH_ANNOUNCEMENT_CREATOR_ROLES",
+		"AUTH_PLG_ADMIN_ROLES",
 	}
 	resetEnv := func(t *testing.T) {
 		for _, name := range envs {
@@ -95,6 +96,52 @@ func TestLoadAccessConfig(t *testing.T) {
 		}
 		if len(got.CsEngineer) != 0 || len(got.Admin) != 0 {
 			t.Errorf("CsEngineer = %v, Admin = %v, want both untouched by this variable", got.CsEngineer, got.Admin)
+		}
+	})
+}
+
+// TestLoadAccessConfig_PlgAdmin covers the variable this role is configured by.
+//
+// Two things matter here and neither is the happy path. The variable must not
+// disturb any other role — it names who administers PLG and nothing more — and
+// an unset variable must produce an empty list rather than a default, because
+// "empty" is what leaves admin as the only holder of PermManagePlaybooks.
+func TestLoadAccessConfig_PlgAdmin(t *testing.T) {
+	envs := []string{
+		"AUTH_VIEWER_ROLES", "AUTH_ESCALATOR_ROLES",
+		"AUTH_ATTACHMENT_DOWNLOADER_ROLES", "AUTH_USAGE_METRICS_VIEWER_ROLES",
+		"AUTH_SUPPORT_ENGINEER_ROLES", "AUTH_ADMIN_ROLES", "AUTH_TIMECARD_APPROVER_ROLES",
+		"AUTH_DASHBOARD_DESIGNER_ROLES", "AUTH_ANNOUNCEMENT_CREATOR_ROLES",
+		"AUTH_PLG_ADMIN_ROLES",
+	}
+	reset := func(t *testing.T) {
+		for _, name := range envs {
+			t.Setenv(name, "")
+		}
+	}
+
+	t.Run("it reads its own variable, trimming and splitting like the others", func(t *testing.T) {
+		reset(t)
+		t.Setenv("AUTH_PLG_ADMIN_ROLES", " plg-authors , plg-leads ")
+		got := loadAccessConfig()
+		if want := []string{"plg-authors", "plg-leads"}; !slices.Equal(got.PlgAdmin, want) {
+			t.Errorf("PlgAdmin = %v, want %v", got.PlgAdmin, want)
+		}
+		if len(got.Admin) != 0 || len(got.CsEngineer) != 0 {
+			t.Errorf("Admin = %v, CsEngineer = %v, want both untouched by this variable",
+				got.Admin, got.CsEngineer)
+		}
+	})
+
+	t.Run("unset leaves it empty, which is what keeps admin the only author", func(t *testing.T) {
+		reset(t)
+		t.Setenv("AUTH_ADMIN_ROLES", "real-admin")
+		got := loadAccessConfig()
+		if len(got.PlgAdmin) != 0 {
+			t.Errorf("PlgAdmin = %v, want empty when AUTH_PLG_ADMIN_ROLES is unset", got.PlgAdmin)
+		}
+		if want := []string{"real-admin"}; !slices.Equal(got.Admin, want) {
+			t.Errorf("Admin = %v, want %v", got.Admin, want)
 		}
 	})
 }

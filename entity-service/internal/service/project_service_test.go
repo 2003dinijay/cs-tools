@@ -19,6 +19,7 @@ package service
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
@@ -137,6 +138,28 @@ func TestSearchProjects_ClosureStateReachesResponse(t *testing.T) {
 	}
 	if len(resp.Projects) != 1 || resp.Projects[0].ClosureState == nil || *resp.Projects[0].ClosureState != closureState {
 		t.Fatalf("Projects[0].ClosureState = %+v, want %q", resp.Projects, closureState)
+	}
+}
+
+// TestSearchProjects_GoLiveDateReachesResponse pins that domain.Project's
+// GoLiveDate (project.onboarding_go_live_date, now selected by SearchProjects
+// alongside OnboardingStatus) reaches the mapped ProjectView -- the same class
+// of "repository returns it, service layer silently drops it" bug
+// TestSearchProjects_ClosureStateReachesResponse already guards for ClosureState.
+func TestSearchProjects_GoLiveDateReachesResponse(t *testing.T) {
+	goLive := time.Date(2026, 3, 1, 0, 0, 0, 0, time.UTC)
+	repo := &recordingProjectRepo{toReturn: []domain.Project{{ID: "p1", GoLiveDate: &goLive}, {ID: "p2"}}}
+	svc := NewProjectService(repo, alwaysUnrestrictedAccess{})
+
+	resp, err := svc.SearchProjects(t.Context(), domain.SearchProjectsRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(resp.Projects) != 2 || resp.Projects[0].GoLiveDate == nil || !resp.Projects[0].GoLiveDate.Equal(goLive) {
+		t.Fatalf("Projects[0].GoLiveDate = %+v, want %v", resp.Projects, goLive)
+	}
+	if resp.Projects[1].GoLiveDate != nil {
+		t.Fatalf("Projects[1].GoLiveDate = %v, want nil (no go-live date recorded)", resp.Projects[1].GoLiveDate)
 	}
 }
 

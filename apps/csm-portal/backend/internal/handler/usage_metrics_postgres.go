@@ -232,6 +232,13 @@ type snDeploymentsSearchRequest struct {
 type entityDeploymentsSearchRequest struct {
 	Pagination entityPagination `json:"pagination"`
 	ProjectIDs []string         `json:"projectIds"`
+	// IncludeInactive mirrors entity-service's own
+	// SearchDeploymentsRequest.IncludeInactive -- additive, omitted/false
+	// reproduces entity-service's default (is_active = TRUE only) exactly,
+	// so this field only affects a call site that explicitly sets it (the
+	// customer-health EOL-product check in customer_health_postgres.go).
+	// Usage Metrics itself never sets it.
+	IncludeInactive bool `json:"includeInactive,omitempty"`
 }
 
 // entityDeploymentView mirrors entity-service's domain.DeploymentView, minus

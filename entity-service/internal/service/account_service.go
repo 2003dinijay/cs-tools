@@ -175,6 +175,7 @@ func accountRowToView(row repository.AccountRow) domain.AccountView {
 		Pod:                    row.Pod,
 		SfID:                   row.SfID,
 		Region:                 row.Region,
+		SubRegion:              row.SubRegion,
 		Country:                row.Country,
 		City:                   row.City,
 		DriveLocation:          row.DriveLocation,

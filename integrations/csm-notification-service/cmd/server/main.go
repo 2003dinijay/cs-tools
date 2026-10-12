@@ -81,9 +81,10 @@ func main() {
 	if os.Getenv("GOOGLE_CHAT_AUDIENCE_SPACES") != "" {
 		slog.Warn("GOOGLE_CHAT_AUDIENCE_SPACES is set but no longer read; it was renamed to GOOGLE_CHAT_SPACES, which is now the only Google Chat routing config")
 	}
+	incidentChatSpaces := parseIncidentChatSpaces(os.Getenv("INCIDENT_CHAT_SPACES"))
 	googleChatClient := notifications.NewGoogleChatClient(notifications.GoogleChatConfig{
 		AudienceSpaces: append(parseGoogleChatAudienceSpaces(os.Getenv("GOOGLE_CHAT_SPACES")),
-			parseIncidentChatSpaces(os.Getenv("INCIDENT_CHAT_SPACES"))...),
+			incidentChatSpaces...),
 	})
 
 	// Twilio (the call channel, used by incident.created) is likewise
@@ -360,7 +361,8 @@ func main() {
 	defaultCSMEmailCC := splitComma(os.Getenv("DEFAULT_CSM_EMAIL_CC"))
 
 	dispatcher := dispatch.NewDispatcher(emailClient, googleChatClient, twilioClient, linkResolver, emailSendingEnabled, emailDebugMode, emailDebugRecipients, callSendingEnabled, defaultOnCallNumber, defaultCSMEmailCC).
-		WithOnboarding(loadOnboardingConfig(customerEntityClient, emailClient))
+		WithOnboarding(loadOnboardingConfig(customerEntityClient, emailClient)).
+		WithIncidentChatFanout(parseIncidentChatFanout(os.Getenv("INCIDENT_CHAT_FANOUT"), incidentChatSpaces))
 
 	// Status page webhooks (outage.status_page_due on sre-events): posted here
 	// the moment entity-service publishes them, reported back to
@@ -1468,6 +1470,39 @@ func parseIncidentChatSpaces(raw string) []notifications.GoogleChatAudienceSpace
 		spaces = append(spaces, notifications.GoogleChatAudienceSpace{Audience: notifications.IncidentAudience(group), WebhookURL: webhookURL})
 	}
 	return spaces
+}
+
+// parseIncidentChatFanout decodes INCIDENT_CHAT_FANOUT, {"<assignment group>":
+// ["<assignment group>", ...]}: the incident cards of a group with no space of
+// its own -- a default group, whose incidents belong to no SRE team -- go to
+// the INCIDENT_CHAT_SPACES spaces of the groups listed, e.g.
+// {"Default SRE Group": ["Apollo SRE Group", "Artemis SRE Group"]}. Group
+// names only, no URLs. Unset or unreadable is no fan-out: every group keeps
+// its own space. spaces is INCIDENT_CHAT_SPACES, parsed, read only to warn
+// about a listed group that has no space there.
+func parseIncidentChatFanout(raw string, spaces []notifications.GoogleChatAudienceSpace) map[string][]string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	var fanout map[string][]string
+	if err := json.Unmarshal([]byte(raw), &fanout); err != nil {
+		slog.Error("failed to parse INCIDENT_CHAT_FANOUT; every group's incident cards go to its own space", "err", err)
+		return nil
+	}
+	known := map[string]bool{}
+	for _, sp := range spaces {
+		known[sp.Audience] = true
+	}
+	for group, targets := range fanout {
+		for _, target := range targets {
+			if !known[notifications.IncidentAudience(target)] {
+				slog.Warn("INCIDENT_CHAT_FANOUT names a group with no INCIDENT_CHAT_SPACES entry; that space gets no card",
+					"assignmentGroup", group, "target", target)
+			}
+		}
+	}
+	slog.Info("incident Chat cards fan out to other groups' spaces (INCIDENT_CHAT_FANOUT)", "groups", len(fanout))
+	return fanout
 }
 
 // deadLetterErrAttrs describes a handler failure without reproducing it. An

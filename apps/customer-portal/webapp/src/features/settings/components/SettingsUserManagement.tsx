@@ -472,9 +472,9 @@ export default function SettingsUserManagement({
                   <TableCell>
                     <Chip
                       size="small"
-                      label={contact.membershipStatus ?? NULL_PLACEHOLDER}
+                      label={contact.isCsIntegrationUser ? "REGISTERED" : (contact.membershipStatus ?? NULL_PLACEHOLDER)}
                       variant="outlined"
-                      color={getUserStatusColor(contact.membershipStatus ?? "")}
+                      color={getUserStatusColor(contact.isCsIntegrationUser ? "REGISTERED" : (contact.membershipStatus ?? ""))}
                       sx={{ typography: "caption" }}
                     />
                   </TableCell>

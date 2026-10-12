@@ -62,3 +62,14 @@ export function computeIncidentPriority(
   if (!impact || !urgency) return null;
   return PRIORITY_MATRIX[impact][urgency];
 }
+
+/** The badge for an incident's stored priority, the same one the edit dialog previews; null when it is unknown. */
+export function incidentPriorityBadge(priority?: string | null): IncidentPriorityResult | null {
+  if (!priority) return null;
+  for (const row of Object.values(PRIORITY_MATRIX)) {
+    for (const cell of Object.values(row)) {
+      if (cell.priority === priority) return cell;
+    }
+  }
+  return null;
+}

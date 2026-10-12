@@ -246,11 +246,40 @@ type IncidentLifecycleUpdate struct {
 	ResolutionNotes     *string // incident.close_notes
 	ResolvedByID        *string
 	DefaultResolvedByID *string // the acting user, used only when entering Resolved without ResolvedByID
+	Impact              *string // incident_impact_enum label
+	Urgency             *string // incident_urgency_enum label
 
 	// WorkNotes and AdditionalComments are written as comment rows in the same transaction as the
 	// state change, so a failed note leaves the state change unsaved too. Nil or blank writes nothing.
 	WorkNotes          *string
 	AdditionalComments *string
+
+	// The record's own fields, the rest of what the portal's edit dialog
+	// sends -- the same set ServiceNow's incident update accepts. Enum fields
+	// carry their Postgres label. Nil leaves the column unchanged, as on the
+	// ServiceNow path, where a field sent as null is not sent at all.
+	Subject             *string // work_item.subject
+	ParentID            *string // work_item.parent_id
+	AssignmentGroupID   *string // work_item.assignment_group_id
+	Category            *string // incident_category_enum label
+	SubcategoryValue    *string // incident_subcategory.value, looked up under the new or current category
+	ContactType         *string // domain.IncidentContactType; mapped to incident_contact_type_enum here, as on create
+	Priority            *string // incident_priority_enum label; used only when neither Impact nor Urgency is set
+	ServiceID           *string
+	ServiceOfferingID   *string
+	ConfigurationItemID *string // incident.cmdb_ci_id
+	ChangeRequestID     *string
+	ProblemID           *string
+	CausedByID          *string
+	ParentIncidentID    *string
+	IncidentReport      *string
+	Environment         **string  // non-nil outer, nil inner clears it
+	WatchList           *[]string // replaces the whole list, as ServiceNow does; empty clears it
+
+	// PriorityFor is ServiceNow's priority lookup (impact x urgency). When
+	// Impact or Urgency is set, priority is recomputed from the new value and
+	// the one already on record, as ServiceNow's lookup does on every save.
+	PriorityFor func(impact, urgency string) string
 }
 
 type incidentRepo struct {
@@ -1160,11 +1189,22 @@ func insertIncidentNotesTx(ctx context.Context, tx pgx.Tx, incidentID string, wo
 }
 
 // incidentLifecycleFKField names the request field behind each foreign key
-// UpdateIncidentLifecycle can trip, so a bad id reads as a ValidationError
-// on that field instead of a 500.
-var incidentLifecycleFKField = map[string]string{
-	"work_item_assigned_to_id_fkey": "assignedEngineerId",
-	"incident_resolved_by_id_fkey":  "resolvedById",
+// UpdateIncidentLifecycle can trip, and what it refers to, so a bad id reads
+// as a ValidationError on that field instead of a 500.
+var incidentLifecycleFKField = map[string][2]string{
+	"work_item_assigned_to_id_fkey":      {"assignedEngineerId", "user"},
+	"incident_resolved_by_id_fkey":       {"resolvedById", "user"},
+	"work_item_assignment_group_id_fkey": {"assignmentGroupId", "group"},
+	"work_item_parent_id_fkey":           {"parentId", "record"},
+	"incident_service_id_fkey":           {"serviceId", "service"},
+	"incident_service_offering_id_fkey":  {"serviceOfferingId", "service offering"},
+	"incident_change_request_id_fkey":    {"changeRequestId", "change request"},
+	"incident_caused_by_id_fkey":         {"causedById", "change request"},
+	"incident_cmdb_ci_id_fkey":           {"configurationItemId", "configuration item"},
+	"incident_problem_id_fkey":           {"problemId", "problem"},
+	"incident_parent_incident_id_fkey":   {"parentIncidentId", "incident"},
+	"incident_category_subcategory_fkey": {"subcategory", "subcategory of the category"},
+	"work_item_watcher_user_id_fkey":     {"watchList", "user"},
 }
 
 // UpdateIncidentLifecycle implements IncidentRepository.
@@ -1187,11 +1227,10 @@ func (r *incidentRepo) UpdateIncidentLifecycle(ctx context.Context, id string, u
 		return &apierror.NotFoundError{Msg: "incident not found"}
 	}
 	if pgErr := (*pgconn.PgError)(nil); errors.As(err, &pgErr) && pgErr.Code == "23503" {
-		field := incidentLifecycleFKField[pgErr.ConstraintName]
-		if field == "" {
-			field = "a referenced id"
+		if f, ok := incidentLifecycleFKField[pgErr.ConstraintName]; ok {
+			return &apierror.ValidationError{Msg: f[0] + " does not identify an existing " + f[1]}
 		}
-		return &apierror.ValidationError{Msg: field + " does not identify an existing user"}
+		return &apierror.ValidationError{Msg: "a referenced id does not exist"}
 	}
 	return fmt.Errorf("update incident: %w", err)
 }
@@ -1261,17 +1300,20 @@ func cascadeIncidentTaskClosure(ctx context.Context, tx pgx.Tx, incidentID, inci
 // updateIncidentLifecycleTx is UpdateIncidentLifecycle's body: lock the
 // incident row, check the Resolved/Closed resolution requirement against the
 // request plus what is already on record, then update work_item (always,
-// for updated_on/updated_by, plus the assignee) and incident (state and
-// resolution columns, only when one is being set).
+// for updated_on/updated_by, plus subject, parent, group and assignee) and
+// incident (state, resolution and the record's own columns, only when one is
+// being set), and replace the watch list when one is given.
 func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx, id string, u IncidentLifecycleUpdate, actorEmail string) error {
 	var currentState, number string
-	var currentCode, currentNotes *string
+	var currentCode, currentNotes, currentCategory, currentImpact, currentUrgency, currentSubcategoryID *string
 	err := tx.QueryRow(ctx, `
-		SELECT inc.state::text, inc.resolution_code::text, inc.close_notes, wi.number
+		SELECT inc.state::text, inc.resolution_code::text, inc.close_notes, wi.number,
+		       inc.category::text, inc.impact::text, inc.urgency::text, inc.subcategory_id::text
 		FROM incident inc
 		JOIN work_item wi ON wi.id = inc.id
 		WHERE inc.id = $1
-		FOR UPDATE OF inc`, id).Scan(&currentState, &currentCode, &currentNotes, &number)
+		FOR UPDATE OF inc`, id).Scan(&currentState, &currentCode, &currentNotes, &number,
+		&currentCategory, &currentImpact, &currentUrgency, &currentSubcategoryID)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return &apierror.NotFoundError{Msg: "incident not found"}
 	}
@@ -1294,10 +1336,17 @@ func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx,
 
 	wiSets := []string{"updated_on = NOW()", "updated_by = $1"}
 	wiArgs := []any{actorEmail}
-	if u.AssignedEngineerID != nil {
-		wiSets = append(wiSets, fmt.Sprintf("assigned_to_id = $%d::uuid", len(wiArgs)+1))
-		wiArgs = append(wiArgs, *u.AssignedEngineerID)
+	addWI := func(assignment string, val *string) {
+		if val == nil {
+			return
+		}
+		wiArgs = append(wiArgs, *val)
+		wiSets = append(wiSets, fmt.Sprintf(assignment, len(wiArgs)))
 	}
+	addWI("subject = $%d", u.Subject)
+	addWI("parent_id = $%d::uuid", u.ParentID)
+	addWI("assignment_group_id = $%d::uuid", u.AssignmentGroupID)
+	addWI("assigned_to_id = $%d::uuid", u.AssignedEngineerID)
 	wiArgs = append(wiArgs, id)
 	var wiID string
 	if err := tx.QueryRow(ctx,
@@ -1325,6 +1374,21 @@ func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx,
 	if u.ResolutionNotes != nil {
 		addInc("close_notes = $%d", *u.ResolutionNotes)
 	}
+	if u.Impact != nil || u.Urgency != nil {
+		impact, urgency := derefOr(currentImpact, "LOW"), derefOr(currentUrgency, "LOW")
+		if u.Impact != nil {
+			impact = *u.Impact
+			addInc("impact = $%d::incident_impact_enum", impact)
+		}
+		if u.Urgency != nil {
+			urgency = *u.Urgency
+			addInc("urgency = $%d::incident_urgency_enum", urgency)
+		}
+		// Read under the row lock above, so the priority always matches the stored impact and urgency.
+		if u.PriorityFor != nil {
+			addInc("priority = $%d::incident_priority_enum", u.PriorityFor(impact, urgency))
+		}
+	}
 	enteringResolved := u.State != nil && *u.State == "RESOLVED" && currentState != "RESOLVED"
 	resolvedBy := u.ResolvedByID
 	if resolvedBy == nil && enteringResolved {
@@ -1336,19 +1400,157 @@ func (r *incidentRepo) updateIncidentLifecycleTx(ctx context.Context, tx pgx.Tx,
 	if enteringResolved {
 		incSets = append(incSets, "resolved_on = NOW()")
 	}
-	if len(incSets) == 0 {
-		return nil
-	}
-	incArgs = append(incArgs, id)
-	if _, err := tx.Exec(ctx,
-		fmt.Sprintf(`UPDATE incident SET %s WHERE id = $%d`, strings.Join(incSets, ", "), len(incArgs)),
-		incArgs...,
-	); err != nil {
+	if err := r.addIncidentRecordFields(ctx, tx, u, addInc, &incSets,
+		currentCategory, currentImpact, currentUrgency, currentSubcategoryID); err != nil {
 		return err
+	}
+	if len(incSets) > 0 {
+		incArgs = append(incArgs, id)
+		if _, err := tx.Exec(ctx,
+			fmt.Sprintf(`UPDATE incident SET %s WHERE id = $%d`, strings.Join(incSets, ", "), len(incArgs)),
+			incArgs...,
+		); err != nil {
+			return err
+		}
+	}
+	if u.WatchList != nil {
+		if err := replaceIncidentWatchers(ctx, tx, id, *u.WatchList); err != nil {
+			return err
+		}
 	}
 	// After the incident's own write, as ServiceNow's cascade is an after rule.
 	if u.State != nil && *u.State != currentState {
 		return cascadeIncidentTaskClosure(ctx, tx, id, number, *u.State, actorEmail)
+	}
+	return nil
+}
+
+// derefOr is *v, or fallback when v is nil (the column defaults impact and urgency to LOW).
+func derefOr(v *string, fallback string) string {
+	if v == nil {
+		return fallback
+	}
+	return *v
+}
+
+// addIncidentRecordFields adds the incident columns of the record's own
+// fields to the UPDATE updateIncidentLifecycleTx builds.
+//
+// Two of them follow ServiceNow rather than the column alone:
+//
+//   - priority is ServiceNow's lookup on impact x urgency (PriorityFor), run
+//     whenever either one changes, against the other's value on record. An
+//     explicit priority is written only when neither changes.
+//   - subcategory depends on category. A new subcategory is looked up under
+//     the new category, or the current one. A new category whose list does
+//     not hold the current subcategory clears it, as ServiceNow's dependent
+//     field does; the (category, subcategory_id) foreign key would otherwise
+//     reject the save.
+func (r *incidentRepo) addIncidentRecordFields(ctx context.Context, tx pgx.Tx, u IncidentLifecycleUpdate,
+	addInc func(assignment string, val any), incSets *[]string,
+	currentCategory, currentImpact, currentUrgency, currentSubcategoryID *string,
+) error {
+	set := func(assignment string, val *string) {
+		if val != nil {
+			addInc(assignment, *val)
+		}
+	}
+	set("category = $%d::incident_category_enum", u.Category)
+
+	category := currentCategory
+	if u.Category != nil {
+		category = u.Category
+	}
+	switch {
+	case u.SubcategoryValue != nil:
+		if category == nil {
+			return &apierror.ValidationError{Msg: "subcategory needs a category"}
+		}
+		var subcategoryID string
+		err := tx.QueryRow(ctx,
+			`SELECT id::text FROM incident_subcategory WHERE category = $1::incident_category_enum AND value = $2`,
+			*category, *u.SubcategoryValue,
+		).Scan(&subcategoryID)
+		if errors.Is(err, pgx.ErrNoRows) {
+			return &apierror.ValidationError{Msg: fmt.Sprintf("subcategory %s does not belong to category %s", *u.SubcategoryValue, *category)}
+		}
+		if err != nil {
+			return fmt.Errorf("update incident: resolve subcategory: %w", err)
+		}
+		addInc("subcategory_id = $%d::uuid", subcategoryID)
+	case u.Category != nil && currentSubcategoryID != nil:
+		var belongs bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM incident_subcategory WHERE id = $1::uuid AND category = $2::incident_category_enum)`,
+			*currentSubcategoryID, *u.Category,
+		).Scan(&belongs); err != nil {
+			return fmt.Errorf("update incident: check subcategory: %w", err)
+		}
+		if !belongs {
+			*incSets = append(*incSets, "subcategory_id = NULL")
+		}
+	}
+
+	if u.ContactType != nil {
+		addInc("contact_type = $%d::incident_contact_type_enum", incidentContactTypeToEnum(domain.IncidentContactType(*u.ContactType)))
+	}
+	set("impact = $%d::incident_impact_enum", u.Impact)
+	set("urgency = $%d::incident_urgency_enum", u.Urgency)
+	if (u.Impact != nil || u.Urgency != nil) && u.PriorityFor != nil {
+		impact, urgency := currentImpact, currentUrgency
+		if u.Impact != nil {
+			impact = u.Impact
+		}
+		if u.Urgency != nil {
+			urgency = u.Urgency
+		}
+		// Both columns are NOT NULL DEFAULT 'LOW'; an unset value reads as LOW, as the lookup's default does.
+		label := func(v *string) string {
+			if v == nil {
+				return "LOW"
+			}
+			return *v
+		}
+		addInc("priority = $%d::incident_priority_enum", u.PriorityFor(label(impact), label(urgency)))
+	} else {
+		set("priority = $%d::incident_priority_enum", u.Priority)
+	}
+
+	set("service_id = $%d::uuid", u.ServiceID)
+	set("service_offering_id = $%d::uuid", u.ServiceOfferingID)
+	set("cmdb_ci_id = $%d::uuid", u.ConfigurationItemID)
+	set("change_request_id = $%d::uuid", u.ChangeRequestID)
+	set("problem_id = $%d::uuid", u.ProblemID)
+	set("caused_by_id = $%d::uuid", u.CausedByID)
+	set("parent_incident_id = $%d::uuid", u.ParentIncidentID)
+	set("incident_report = $%d", u.IncidentReport)
+	if u.Environment != nil {
+		if *u.Environment == nil {
+			*incSets = append(*incSets, "environment = NULL")
+		} else {
+			addInc("environment = $%d", **u.Environment)
+		}
+	}
+	return nil
+}
+
+// replaceIncidentWatchers replaces the incident's watch list with entries
+// (user ids or emails), as ServiceNow's update does. An empty list clears it.
+func replaceIncidentWatchers(ctx context.Context, tx pgx.Tx, incidentID string, entries []string) error {
+	userIDs, err := resolveIncidentWatchers(ctx, tx, entries)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(ctx, `DELETE FROM work_item_watcher WHERE work_item_id = $1`, incidentID); err != nil {
+		return fmt.Errorf("update incident: clear watch list: %w", err)
+	}
+	for _, userID := range userIDs {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO work_item_watcher (id, work_item_id, user_id) VALUES (gen_random_uuid(), $1, $2)`,
+			incidentID, userID,
+		); err != nil {
+			return fmt.Errorf("update incident: add watcher: %w", err)
+		}
 	}
 	return nil
 }

@@ -23,6 +23,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -244,6 +245,12 @@ func (e *Engine) buildTeamChats(cfg EngineConfig, calls *notifications.TwilioCli
 		for team, c := range cfg.Ladder.TeamChats {
 			e.teamNotifiers[teamKeyFor(team)], _ = buildNotifiers(cfg.Channel, c, cfg.UseSSML, calls, chat, links, defaultChatProduct)
 		}
+		slog.Info("escalation: SRE teams with a Chat space of their own (sre.teamChats); every other incident uses sre.chat",
+			"teams", sortedTeamChatKeys(cfg.Ladder.TeamChats))
+		if unknown := unknownSRETeamChats(cfg.Ladder); len(unknown) > 0 {
+			slog.Warn("escalation: sre.teamChats names a team no incident is assigned to (not in sre.teams.abts, aliases or defaultGroups); its space is never used",
+				"teams", unknown)
+		}
 	}
 	if cfg.SME.Enabled && cfg.SME.UnansweredChat {
 		e.smeRooms = map[string]chatRoom{}
@@ -274,6 +281,46 @@ func (e *Engine) buildTeamChats(cfg EngineConfig, calls *notifications.TwilioCli
 	}
 }
 
+// sortedTeamChatKeys is teamChats' team keys, lower case and sorted, for a log line.
+func sortedTeamChatKeys(chats map[string]Chat) []string {
+	keys := make([]string, 0, len(chats))
+	for k := range chats {
+		keys = append(keys, teamKeyFor(k))
+	}
+	slices.Sort(keys)
+	return keys
+}
+
+// unknownSRETeamChats is the sre.teamChats keys no incident can match: not a
+// team in sre.teams.abts, not a target of sre.teams.aliases and not one of
+// sre.teams.defaultGroups. Such a space is never used, so a misspelt key
+// ("apolo") would quietly leave that team's cards in sre.chat. Nil when
+// sre.teams.abts is empty: the SRE teams then come from abtType, which only the
+// Team Schedule knows.
+func unknownSRETeamChats(l LadderConfig) []string {
+	if len(l.Teams.ABTs) == 0 {
+		return nil
+	}
+	known := map[string]bool{}
+	for _, t := range l.Teams.ABTs {
+		known[teamKeyFor(t)] = true
+	}
+	for _, t := range l.Teams.Aliases {
+		known[teamKeyFor(t)] = true
+	}
+	for _, g := range l.Teams.DefaultGroups {
+		known[teamKeyFor(g)] = true
+	}
+	var out []string
+	for k := range l.TeamChats {
+		if !known[teamKeyFor(k)] {
+			out = append(out, k)
+		}
+	}
+	slices.Sort(out)
+	return out
+}
+
 // sreTeamKey is the SRE team an incident is assigned to, as a teamChats key:
 // its assignment group through sre.teams.aliases, lower case.
 func (e *Engine) sreTeamKey(team string) string {
@@ -286,15 +333,102 @@ func (e *Engine) sreTeamKey(team string) string {
 	return key
 }
 
-// notifiersFor is how one plan's rungs reach people: its team's own space
-// when the SRE ladder's teamChats lists the team, else the ladder's own.
+// notifiersFor is how one plan's rungs reach people: the spaces chatTeams
+// picks when the SRE ladder's teamChats lists them, else the ladder's own.
+// The call (and log) notifiers are always the ladder's own -- a team's space
+// changes where the card goes, never whether the rung rings -- so a team
+// contributes only its Chat notifier. Two or more spaces share that one call
+// notifier, so a rung rings its engineer once, and one fanoutChat, so a space
+// that fails does not repost the others.
 func (e *Engine) notifiersFor(plan Plan) []notifier {
-	if e.teamNotifiers != nil {
-		if n, ok := e.teamNotifiers[e.sreTeamKey(plan.Trigger.Team)]; ok {
-			return n
+	teams := e.chatTeams(plan)
+	switch {
+	case len(teams) == 0 || e.teamNotifiers == nil:
+		return e.notifiers
+	case len(teams) == 1:
+		n, ok := e.teamNotifiers[teams[0]]
+		if !ok {
+			return e.notifiers
+		}
+		out := withoutChat(e.notifiers)
+		for _, c := range n {
+			if c.Channel() == ChannelChat {
+				out = append(out, c)
+			}
+		}
+		return out
+	}
+	out := withoutChat(e.notifiers)
+	var fan fanoutChat
+	for _, team := range teams {
+		for _, n := range e.teamNotifiers[team] {
+			if c, ok := n.(chatNotifier); ok {
+				fan.chats = append(fan.chats, c)
+			}
 		}
 	}
-	return e.notifiers
+	if len(fan.chats) > 0 {
+		out = append(out, fan)
+	}
+	return out
+}
+
+// chatTeams is the teamChats keys whose spaces a plan's cards and closing
+// message go to; none is the ladder's own (chat). It is the incident's own
+// team when teamChats lists it. An incident with no SRE team of its own -- a
+// default group (a service mapped to no SRE team), a customer case at S0, a
+// monitoring alert with no team -- goes to every team sre.teamlessChats
+// names (Apollo and Artemis), or to chat when that is empty.
+func (e *Engine) chatTeams(plan Plan) []string {
+	if len(e.teamNotifiers) == 0 && len(e.teamRooms) == 0 {
+		return nil
+	}
+	if own := e.sreTeamKey(plan.Trigger.Team); e.hasTeamChat(own) {
+		return []string{own}
+	}
+	if e.hasOwnSRETeam(plan.Trigger.Team) {
+		return nil
+	}
+	var out []string
+	for _, k := range e.cfg.Ladder.TeamlessChats {
+		if key := teamKeyFor(k); e.hasTeamChat(key) && !slices.Contains(out, key) {
+			out = append(out, key)
+		}
+	}
+	return out
+}
+
+// hasTeamChat reports whether the team key has a space of its own: rung
+// cards (teamNotifiers) or a closing-message room (teamRooms), both built
+// from sre.teamChats.
+func (e *Engine) hasTeamChat(key string) bool {
+	if key == "" {
+		return false
+	}
+	_, cards := e.teamNotifiers[key]
+	_, room := e.teamRooms[key]
+	return cards || room
+}
+
+// hasOwnSRETeam reports whether an incident's assignment group is an SRE
+// team: one of sre.teams.abts, directly or through sre.teams.aliases. No
+// group, or a default group, is not. With abts empty the SRE teams come from
+// abtType, which only the Team Schedule knows, so any other group counts as
+// one -- its cards then stay in chat.
+func (e *Engine) hasOwnSRETeam(team string) bool {
+	key := e.sreTeamKey(team)
+	if key == "" {
+		return false
+	}
+	for _, g := range e.cfg.Ladder.Teams.DefaultGroups {
+		if teamKeyFor(g) == teamKeyFor(team) || teamKeyFor(g) == key {
+			return false
+		}
+	}
+	if len(e.cfg.Ladder.Teams.ABTs) == 0 {
+		return true
+	}
+	return contains(e.cfg.Ladder.Teams.ABTs, key)
 }
 
 // postUnanswered tells the team's space that a ladder called every rung and
@@ -305,12 +439,8 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 	if e.cfg.Kind != LadderSRE {
 		return
 	}
-	target, ok, chain := e.unansweredRoom(t)
-	if !ok {
-		return
-	}
-	if !target.chat.HasAudienceSpace(target.room) {
-		slog.WarnContext(ctx, "escalation: no Google Chat space for the closing message", "incidentId", t.IncidentID, "audience", target.room)
+	targets, chain := e.unansweredRooms(st.Plan)
+	if len(targets) == 0 {
 		return
 	}
 	var called []string
@@ -328,52 +458,65 @@ func (e *Engine) postUnanswered(ctx context.Context, st LadderState) {
 	if t.isCase() {
 		portal, label = e.links.CaseLink(t.IncidentID), "View case"
 	}
-	err := target.chat.SendEscalationUnanswered(ctx, notifications.EscalationUnanswered{
-		Audience:    target.room,
-		Chain:       chain,
-		IncidentRef: t.caseRef(),
-		Title:       t.Title,
-		Priority:    t.Priority,
-		Team:        t.Team,
-		Called:      called,
-		Instruction: t.instruction(false),
-		PortalURL:   portal,
-		PortalLabel: label,
-		ThreadKey:   "incident-escalation-" + t.IncidentID,
-	})
-	if err != nil {
-		slog.ErrorContext(ctx, "escalation: the closing message was not posted", "incidentId", t.IncidentID, "audience", target.room, "err", err)
-		return
+	for _, target := range targets {
+		if !target.chat.HasAudienceSpace(target.room) {
+			slog.WarnContext(ctx, "escalation: no Google Chat space for the closing message", "incidentId", t.IncidentID, "audience", target.room)
+			continue
+		}
+		err := target.chat.SendEscalationUnanswered(ctx, notifications.EscalationUnanswered{
+			Audience:    target.room,
+			Chain:       chain,
+			IncidentRef: t.caseRef(),
+			Title:       t.Title,
+			Priority:    t.Priority,
+			Team:        t.Team,
+			Called:      called,
+			Instruction: t.instruction(false),
+			PortalURL:   portal,
+			PortalLabel: label,
+			ThreadKey:   "incident-escalation-" + t.IncidentID,
+		})
+		if err != nil {
+			slog.ErrorContext(ctx, "escalation: the closing message was not posted", "incidentId", t.IncidentID, "audience", target.room, "err", err)
+			continue
+		}
+		slog.InfoContext(ctx, "escalation: closing message posted", "incidentId", t.IncidentID, "audience", target.room)
 	}
-	slog.InfoContext(ctx, "escalation: closing message posted", "incidentId", t.IncidentID, "audience", target.room)
 }
 
-// unansweredRoom is where a finished, unanswered ladder's closing message
-// goes, and the chain it names; ok is false when it goes nowhere.
-func (e *Engine) unansweredRoom(t Trigger) (chatRoom, bool, string) {
+// unansweredRooms is where a finished, unanswered ladder's closing message
+// goes, and the chain it names; none when it goes nowhere.
+func (e *Engine) unansweredRooms(plan Plan) ([]chatRoom, string) {
+	t := plan.Trigger
 	if t.Routing.Ladder == LadderSME {
 		if !e.cfg.SME.UnansweredChat {
-			return chatRoom{}, false, ""
+			return nil, ""
 		}
 		chain := smeTeamLabel(t.Routing.SMETeam) + " SME"
 		if r, ok := e.smeRooms[teamKeyFor(t.Routing.SMETeam)]; ok {
-			return r, true, chain
+			return []chatRoom{r}, chain
 		}
 		if e.smeSharedRoom != nil {
-			return *e.smeSharedRoom, true, chain
+			return []chatRoom{*e.smeSharedRoom}, chain
 		}
-		return chatRoom{}, false, ""
+		return nil, ""
 	}
 	if !e.cfg.Ladder.UnansweredChat {
-		return chatRoom{}, false, ""
+		return nil, ""
 	}
-	if r, ok := e.teamRooms[e.sreTeamKey(t.Team)]; ok {
-		return r, true, t.Routing.SREChain()
+	var rooms []chatRoom
+	for _, team := range e.chatTeams(plan) {
+		if r, ok := e.teamRooms[team]; ok {
+			rooms = append(rooms, r)
+		}
+	}
+	if len(rooms) > 0 {
+		return rooms, t.Routing.SREChain()
 	}
 	if e.sharedRoom != nil {
-		return *e.sharedRoom, true, t.Routing.SREChain()
+		return []chatRoom{*e.sharedRoom}, t.Routing.SREChain()
 	}
-	return chatRoom{}, false, ""
+	return nil, ""
 }
 
 // sreRoomFor is the SRE space for a team: its own (sre.teamChats), else the
@@ -436,7 +579,7 @@ func (e *Engine) smeTeamHasNoChat(team string) bool {
 func withoutChat(notifiers []notifier) []notifier {
 	out := []notifier{}
 	for _, n := range notifiers {
-		if _, isChat := n.(chatNotifier); !isChat {
+		if n.Channel() != ChannelChat {
 			out = append(out, n)
 		}
 	}

@@ -42,6 +42,7 @@ type AccountRow struct {
 	Pod                         *string
 	SfID                        *string
 	Region                      *string
+	SubRegion                   *string
 	Country                     *string
 	City                        *string
 	DriveLocation               *string
@@ -134,7 +135,7 @@ func NewAccountRepository(db *Scoped) AccountRepository {
 // genuinely are not in this schema — see accountRowCommonFields' own doc
 // comment in account_service.go.
 const accountSelectColumns = `
-	a.id, a.name, a.number, a.classification, a.global_pod, a.sf_id, a.region,
+	a.id, a.name, a.number, a.classification, a.global_pod, a.sf_id, a.region, a.sub_region,
 	a.country, a.city, a.drive_location,
 	a.activation_date, a.deactivation_date,
 	tow.id, COALESCE(tow.name, NULLIF(TRIM(CONCAT_WS(' ', tow.first_name, tow.last_name)), '')), tow.email,
@@ -160,7 +161,7 @@ const accountFromJoins = `
 func scanAccountRow(row interface{ Scan(...any) error }) (AccountRow, error) {
 	var a AccountRow
 	err := row.Scan(
-		&a.ID, &a.Name, &a.Number, &a.Classification, &a.Pod, &a.SfID, &a.Region,
+		&a.ID, &a.Name, &a.Number, &a.Classification, &a.Pod, &a.SfID, &a.Region, &a.SubRegion,
 		&a.Country, &a.City, &a.DriveLocation,
 		&a.ActivationDate, &a.DeactivationDate,
 		&a.TechnicalOwnerID, &a.TechnicalOwnerName, &a.TechnicalOwnerEmail,
@@ -216,6 +217,14 @@ func (r *accountRepo) SearchAccounts(ctx context.Context, req domain.SearchAccou
 		} else {
 			where += " AND a.deactivation_date IS NOT NULL"
 		}
+	}
+	if req.Filters.LifeCycle != "" {
+		where += fmt.Sprintf(" AND a.life_cycle = $%d", argIdx)
+		filterArgs = append(filterArgs, req.Filters.LifeCycle)
+		argIdx++
+	}
+	if req.Filters.HasProject {
+		where += " AND EXISTS (SELECT 1 FROM project p WHERE p.account_id = a.id)"
 	}
 
 	countQuery := "SELECT COUNT(*) " + accountFromJoins + " " + where

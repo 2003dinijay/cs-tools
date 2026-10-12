@@ -1,6 +1,6 @@
 module github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend
 
-go 1.26.6
+go 1.26.9
 
 require (
 	github.com/MicahParks/keyfunc/v3 v3.8.0

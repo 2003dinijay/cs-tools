@@ -21,6 +21,7 @@ import {
   collapseHtmlSourceWhitespace,
   compareByCreatedOnThenId,
   convertCodeTagsToHtml,
+  dedupeAdjacentDuplicateMessages,
   deriveFilterLabels,
   extractInlineImageRefId,
   isInlineImageRefSrc,
@@ -177,6 +178,93 @@ describe("compareByCreatedOnThenId", () => {
   });
 });
 
+// Regression: digiops-cs#3424 — a chat's history showed the same question
+// and answer twice, with identical timestamps, for the first exchange of a
+// new conversation. Fixed at the display layer: collapse a message that
+// exactly repeats the one immediately before it (same content, author and
+// createdOn), regardless of why the duplicate row exists.
+describe("dedupeAdjacentDuplicateMessages", () => {
+  it("collapses a back-to-back exact duplicate (same content/author/createdOn)", () => {
+    const rows = [
+      { id: "1", content: "First question", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "First question", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "3", content: "First answer", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+      { id: "4", content: "First answer", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "3",
+    ]);
+  });
+
+  it("keeps two messages with identical text sent at genuinely different times", () => {
+    const rows = [
+      { id: "1", content: "ok", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "ok", createdBy: "customer@example.test", createdOn: "2026-10-11 08:25:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+    ]);
+  });
+
+  it("keeps two different authors' messages even if content and timestamp coincide", () => {
+    const rows = [
+      { id: "1", content: "test", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "test", createdBy: "Novera", createdOn: "2026-10-11 08:19:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+    ]);
+  });
+
+  it("does not collapse a non-adjacent repeat (e.g. the same question asked again later)", () => {
+    const rows = [
+      { id: "1", content: "test", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "Hi there!", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+      { id: "3", content: "test", createdBy: "customer@example.test", createdOn: "2026-10-11 08:20:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+      "3",
+    ]);
+  });
+
+  it("returns an empty array unchanged", () => {
+    expect(dedupeAdjacentDuplicateMessages([])).toEqual([]);
+  });
+
+  // Regression for a CodeRabbit finding on an earlier version of this
+  // function (verified before acting on it): since createdOn here is only
+  // whole-second resolution, an exact-match check with no scope limit could
+  // have silently dropped a real, independent repeat anywhere in a long
+  // conversation if it coincidentally landed in the same second as an
+  // earlier turn. Scoping collapsing to the opening exchange closes that —
+  // this asserts a later, genuinely-adjacent exact match past the opening
+  // exchange survives untouched.
+  it("keeps an exact adjacent match past the opening exchange (not eligible for collapsing there)", () => {
+    const rows = [
+      { id: "1", content: "question one", createdBy: "customer@example.test", createdOn: "2026-10-11 08:19:00" },
+      { id: "2", content: "answer one", createdBy: "Novera", createdOn: "2026-10-11 08:19:05" },
+      { id: "3", content: "question two", createdBy: "customer@example.test", createdOn: "2026-10-11 08:25:00" },
+      { id: "4", content: "question two", createdBy: "customer@example.test", createdOn: "2026-10-11 08:25:00" },
+    ];
+
+    expect(dedupeAdjacentDuplicateMessages(rows).map((m) => m.id)).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+    ]);
+  });
+});
+
 describe("linkifyBareUrls", () => {
   it("linkifies plain urls but skips href values", () => {
     const html = '<a href="https://already.linked">ok</a> visit https://wso2.com/docs';
@@ -186,6 +274,21 @@ describe("linkifyBareUrls", () => {
     expect(output).toContain(
       '<a href="https://wso2.com/docs" target="_blank" rel="noopener noreferrer"',
     );
+  });
+
+  it("never rewrites a url inside a tag attribute (img src)", () => {
+    const html =
+      '<p><img src="https://wso2.service-now.com/d29f3f669773c350182338f11153af3f.iix"></p>';
+
+    expect(linkifyBareUrls(html)).toBe(html);
+  });
+
+  it("does not wrap text that is already inside an anchor", () => {
+    const html = '<a href="https://wso2.com">https://wso2.com</a> and https://wso2.com/x';
+    const output = linkifyBareUrls(html);
+
+    expect(output.startsWith('<a href="https://wso2.com">https://wso2.com</a> and ')).toBe(true);
+    expect(output.match(/<a /g)).toHaveLength(2);
   });
 });
 

@@ -591,6 +591,11 @@ services:
       # Kept in scripts/csm-compose/.env (git-ignored); export it before
       # `docker compose up`. Never committed.
       SRE_CHAT_WEBHOOK_URL: ${SRE_CHAT_WEBHOOK_URL:-}
+      # Each SRE sub-team's own room, named by paging-alert.yaml sre.teamChats.
+      # Read only for a team teamChats lists (empty by default).
+      SRE_CHAT_WEBHOOK_URL_APOLLO: ${SRE_CHAT_WEBHOOK_URL_APOLLO:-}
+      SRE_CHAT_WEBHOOK_URL_ARTEMIS: ${SRE_CHAT_WEBHOOK_URL_ARTEMIS:-}
+      SRE_CHAT_WEBHOOK_URL_IAAS: ${SRE_CHAT_WEBHOOK_URL_IAAS:-}
       # The SME page's room, named by paging-alert.yaml sme.chat.webhookUrlEnv.
       SME_CHAT_WEBHOOK_URL: ${SME_CHAT_WEBHOOK_URL:-}
       INCIDENT_ESCALATION_ROSTER: ${INCIDENT_ESCALATION_ROSTER:-}

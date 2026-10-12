@@ -1045,6 +1045,11 @@ func loadAccessConfig() handler.AccessConfig {
 		SalesSolutions:  splitComma(os.Getenv("AUTH_SALES_SOLUTIONS_ROLES")),
 		WorknoteCreator: splitComma(os.Getenv("AUTH_WORKNOTE_CREATOR_ROLES")),
 		CommentUpdater:  splitComma(os.Getenv("AUTH_COMMENT_UPDATER_ROLES")),
+		// Also bypasses roles() for the same reason as the three above: admin
+		// holds PermManagePlaybooks whether or not this is set, so unset is a
+		// normal state and not worth warning about. See
+		// handler.AccessConfig.PlgAdmin's own doc comment.
+		PlgAdmin: splitComma(os.Getenv("AUTH_PLG_ADMIN_ROLES")),
 	}
 	if len(unset) > 0 {
 		slog.Warn("access-control role variables are unset, so no token role grants them", "variables", unset)

@@ -306,6 +306,12 @@ type Dispatcher struct {
 	// retried; cmd/server/main.go always sets it.
 	onboarding OnboardingConfig
 
+	// incidentChatFanout is INCIDENT_CHAT_FANOUT (WithIncidentChatFanout):
+	// an assignment group, lower-cased and trimmed, whose incident cards go
+	// to the INCIDENT_CHAT_SPACES spaces of the groups listed instead of a
+	// space of its own -- a default group's cards to Apollo and Artemis.
+	incidentChatFanout map[string][]string
+
 	// identityExisted (guarded by doneMu, like done) remembers, per baseKey,
 	// the Existed result of an identity step that already succeeded on an
 	// earlier attempt at the same record — so a retry caused by a later
@@ -498,6 +504,21 @@ func (d *Dispatcher) WithStatusPage(poster statusPagePoster, reports cloudStatus
 // orthogonal to every other event type.
 func (d *Dispatcher) WithOnboarding(cfg OnboardingConfig) *Dispatcher {
 	d.onboarding = cfg
+	return d
+}
+
+// WithIncidentChatFanout sends the incident cards of each group in fanout
+// (INCIDENT_CHAT_FANOUT: assignment group -> other assignment groups) to the
+// INCIDENT_CHAT_SPACES spaces of the groups it lists, e.g. a default group,
+// whose incidents belong to no SRE team, to both Apollo and Artemis. A group
+// not in fanout keeps its own space. Returns d for chaining.
+func (d *Dispatcher) WithIncidentChatFanout(fanout map[string][]string) *Dispatcher {
+	d.incidentChatFanout = map[string][]string{}
+	for group, targets := range fanout {
+		if key := strings.ToLower(strings.TrimSpace(group)); key != "" && len(targets) > 0 {
+			d.incidentChatFanout[key] = targets
+		}
+	}
 	return d
 }
 
@@ -1803,12 +1824,12 @@ func (d *Dispatcher) handleIncidentCreated(ctx context.Context, record eventbus.
 		}
 	}
 
-	if audience, ok := d.incidentAudience(ctx, events.TypeIncidentCreated, incidentID, p.Number, p.Team); ok && d.claim(chatKey) {
-		chatErr := d.googleChat.SendIncidentCreatedAlert(ctx, audience, notifications.IncidentCreatedAlert{
-			IncidentID:       incidentID,
-			Number:           p.Number,
-			Team:             p.Team,
-			Priority:         p.Priority,
+	if audiences := d.incidentAudiences(ctx, events.TypeIncidentCreated, incidentID, p.Number, p.Team); len(audiences) > 0 && d.claim(chatKey) {
+		alert := notifications.IncidentCreatedAlert{
+			IncidentID: incidentID,
+			Number:     p.Number,
+			Team:       p.Team,
+			Priority:   p.Priority,
 			// Title is ServiceNow's short description (the subject); the payload's ShortDescription is the additional comments.
 			ShortDescription: truncateTitle(p.Title, maxChatTitleLength),
 			Service:          p.Service,
@@ -1816,6 +1837,9 @@ func (d *Dispatcher) handleIncidentCreated(ctx context.Context, record eventbus.
 			Category:         p.Category,
 			State:            p.State,
 			IncidentLink:     d.links.IncidentLink(incidentID),
+		}
+		chatErr := d.sendToEachIncidentSpace(ctx, events.TypeIncidentCreated, incidentID, audiences, func(audience string) error {
+			return d.googleChat.SendIncidentCreatedAlert(ctx, audience, alert)
 		})
 		if chatErr != nil {
 			errs = append(errs, chatErr)
@@ -1838,35 +1862,73 @@ func (d *Dispatcher) handleIncidentAssigned(ctx context.Context, record eventbus
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return fmt.Errorf("dispatch: decode incident.assigned payload: %w", err)
 	}
-	audience, ok := d.incidentAudience(ctx, events.TypeIncidentAssigned, incidentID, p.Number, p.Team)
-	if !ok {
+	audiences := d.incidentAudiences(ctx, events.TypeIncidentAssigned, incidentID, p.Number, p.Team)
+	if len(audiences) == 0 {
 		return nil
 	}
+	alert := notifications.IncidentAssignedAlert{
+		IncidentID:   incidentID,
+		Number:       p.Number,
+		AssigneeName: p.AssigneeName,
+		UpdatedBy:    p.UpdatedBy,
+		IncidentLink: d.links.IncidentLink(incidentID),
+	}
 	return d.sendChatOnly(ctx, record, func() error {
-		return d.googleChat.SendIncidentAssignedAlert(ctx, audience, notifications.IncidentAssignedAlert{
-			IncidentID:   incidentID,
-			Number:       p.Number,
-			AssigneeName: p.AssigneeName,
-			UpdatedBy:    p.UpdatedBy,
-			IncidentLink: d.links.IncidentLink(incidentID),
+		return d.sendToEachIncidentSpace(ctx, events.TypeIncidentAssigned, incidentID, audiences, func(audience string) error {
+			return d.googleChat.SendIncidentAssignedAlert(ctx, audience, alert)
 		})
 	})
 }
 
-// incidentAudience maps an assignment group to its INCIDENT_CHAT_SPACES audience; a missing entry is config, not a retry.
-func (d *Dispatcher) incidentAudience(ctx context.Context, t events.Type, incidentID, number, team string) (string, bool) {
+// incidentAudiences maps an assignment group to the INCIDENT_CHAT_SPACES
+// audiences its cards go to: the spaces of the groups INCIDENT_CHAT_FANOUT
+// lists for it, else its own. A missing entry is config, not a retry.
+func (d *Dispatcher) incidentAudiences(ctx context.Context, t events.Type, incidentID, number, team string) []string {
 	if strings.TrimSpace(team) == "" {
 		slog.InfoContext(ctx, "dispatch: incident has no assignment group, no chat alert",
 			"type", string(t), "incidentId", incidentID, "number", number)
-		return "", false
+		return nil
 	}
-	audience := notifications.IncidentAudience(team)
-	if !d.googleChat.HasAudienceSpace(audience) {
-		slog.InfoContext(ctx, "dispatch: assignment group has no INCIDENT_CHAT_SPACES entry, no chat alert",
-			"type", string(t), "incidentId", incidentID, "number", number, "assignmentGroup", team)
-		return "", false
+	targets, fanout := d.incidentChatFanout[strings.ToLower(strings.TrimSpace(team))]
+	if !fanout {
+		targets = []string{team}
 	}
-	return audience, true
+	var audiences []string
+	for _, target := range targets {
+		audience := notifications.IncidentAudience(target)
+		if !d.googleChat.HasAudienceSpace(audience) {
+			slog.InfoContext(ctx, "dispatch: assignment group has no INCIDENT_CHAT_SPACES entry, no chat alert",
+				"type", string(t), "incidentId", incidentID, "number", number, "assignmentGroup", target)
+			continue
+		}
+		if !slices.Contains(audiences, audience) {
+			audiences = append(audiences, audience)
+		}
+	}
+	return audiences
+}
+
+// sendToEachIncidentSpace posts one incident card to every audience. A
+// failed card is retried with the whole record, so a space that fails while
+// another took the card is logged, not returned -- a retry would post it
+// twice where it landed; only a card no space took is an error.
+func (d *Dispatcher) sendToEachIncidentSpace(ctx context.Context, t events.Type, incidentID string, audiences []string, send func(audience string) error) error {
+	var errs []error
+	for _, audience := range audiences {
+		err := send(audience)
+		if err == nil {
+			continue
+		}
+		errs = append(errs, err)
+		if len(audiences) > 1 {
+			slog.WarnContext(ctx, "dispatch: an incident Chat space did not take the card",
+				"type", string(t), "incidentId", incidentID, "audience", audience, "err", err)
+		}
+	}
+	if len(errs) < len(audiences) {
+		return nil
+	}
+	return errors.Join(errs...)
 }
 
 // handleCRPlanDateNotice emails one turn of the plan-start-date conversation:
