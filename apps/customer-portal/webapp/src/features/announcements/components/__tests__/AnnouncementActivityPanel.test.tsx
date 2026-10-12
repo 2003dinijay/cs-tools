@@ -126,6 +126,31 @@ describe("AnnouncementActivityPanel", () => {
     expect(screen.getByText(/Scheduled downtime on Friday/)).toBeInTheDocument();
   });
 
+  it("keeps the oldest comment when its timestamp ties with the next one, since the sort cannot tell which is the origin", () => {
+    givenComments([
+      comment("c2", "<p>Update: postponed to October 11.</p>", "2026-10-12T10:16:00Z"),
+      comment("c1", DESCRIPTION, "2026-10-12T10:16:00Z"),
+    ]);
+    render(
+      <AnnouncementActivityPanel projectId="p1" caseId="a1" description={DESCRIPTION} />,
+    );
+    expect(screen.getByText(/Scheduled downtime on Friday/)).toBeInTheDocument();
+    expect(screen.getByText(/postponed to October 11/)).toBeInTheDocument();
+  });
+
+  it("keeps the oldest comment when the next one's timestamp cannot be parsed, since the order is then unknown", () => {
+    // An unparsable timestamp sorts as the newest, so it is the next-oldest here.
+    givenComments([
+      comment("c2", "<p>Update: postponed to October 11.</p>", "not a date"),
+      comment("c1", DESCRIPTION, "2026-10-12T10:16:00Z"),
+    ]);
+    render(
+      <AnnouncementActivityPanel projectId="p1" caseId="a1" description={DESCRIPTION} />,
+    );
+    expect(screen.getByText(/Scheduled downtime on Friday/)).toBeInTheDocument();
+    expect(screen.getByText(/postponed to October 11/)).toBeInTheDocument();
+  });
+
   it("keeps every loaded comment while older pages remain, since the origin is not loaded yet", () => {
     // Without the last page the oldest loaded comment is not known to be the
     // origin, so even a lookalike must stay.

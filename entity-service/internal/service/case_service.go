@@ -927,7 +927,7 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 //
 // One entry is deliberately not copied: for an announcement, ServiceNow's
 // origin comment that is only a repeat of the description
-// (isAnnouncementOriginComment). The announcement's description is already
+// (isAnnouncementOriginComment), the earliest such comment. The announcement's description is already
 // stored on the work item and every reader shows it, so the repeat made the
 // same body appear twice (once as the oldest comment, once as the
 // description). Anything else ServiceNow wrote, and every other case type, is
@@ -946,14 +946,28 @@ func (s *caseService) mirrorInitialSNComments(ctx context.Context, caseID, caseT
 		slog.ErrorContext(ctx, "sn create case: fetch ServiceNow's initial comments for mirroring failed", "caseId", caseID, "error", err)
 		return
 	}
-	for _, c := range resp.Comments {
+	// For an announcement, the one comment to leave out: the EARLIEST public
+	// comment that only repeats the description. Only that one is the origin
+	// comment; a later comment with the same text is a real post (nothing stops
+	// someone repeating a body) and is copied like any other. ServiceNow's
+	// search order is not relied on, so this is chosen by CreatedOn.
+	originIdx := -1
+	if caseType == "announcement" {
+		for i, c := range resp.Comments {
+			if c.Type == domain.CommentTypeComment && isAnnouncementOriginComment(description, c.Content) &&
+				(originIdx == -1 || c.CreatedOn.Before(resp.Comments[originIdx].CreatedOn)) {
+				originIdx = i
+			}
+		}
+	}
+	for i, c := range resp.Comments {
 		// "activity" (APPROVAL_HISTORY) is ServiceNow's own audit trail and
 		// is never writable through CreateCaseComment -- see that method's
 		// identical restriction. Skipped, not an error.
 		if c.Type == domain.CommentTypeActivity {
 			continue
 		}
-		if caseType == "announcement" && c.Type == domain.CommentTypeComment && isAnnouncementOriginComment(description, c.Content) {
+		if i == originIdx {
 			continue
 		}
 		createdBy := "system"

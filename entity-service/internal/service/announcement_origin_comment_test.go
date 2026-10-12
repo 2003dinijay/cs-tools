@@ -160,6 +160,21 @@ func TestMirrorInitialSNComments_AnnouncementDoesNotCopyTheRepeatedOriginComment
 		}
 	})
 
+	t.Run("only the earliest repeat is dropped, a later comment with the same text is copied", func(t *testing.T) {
+		// ServiceNow's search order is not relied on, so try both.
+		later := originTestComment(domain.CommentTypeComment, "<div>"+originTestDescription+"</div>", at.Add(time.Hour))
+		origin := originTestComment(domain.CommentTypeComment, originTestDescription, at)
+		for name, order := range map[string][]domain.CaseComment{
+			"newest first": {later, origin},
+			"oldest first": {origin, later},
+		} {
+			got := mirrorContents(t, "announcement", originTestDescription, order)
+			if !equalStrings(got, []string{later.Content}) {
+				t.Fatalf("%s: only the later repeat must be copied, got %v", name, got)
+			}
+		}
+	})
+
 	t.Run("a blank description drops nothing, the comment may be the only copy", func(t *testing.T) {
 		got := mirrorContents(t, "announcement", "<p> </p>", []domain.CaseComment{
 			originTestComment(domain.CommentTypeComment, "<p>The only copy of the content.</p>", at),

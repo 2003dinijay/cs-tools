@@ -39,6 +39,7 @@ import {
   hasDisplayableContent,
   hasSingleCodeWrapper,
   INLINE_COMMENT_HTML_PURIFY,
+  parseApiLocalDateTimeMs,
   plainTextCommentToHtml,
   stripAllCodeBlocks,
   stripCodeWrapper,
@@ -137,7 +138,22 @@ export default function AnnouncementActivityPanel({
       return newestFirst;
     }
     const oldest = newestFirst[newestFirst.length - 1];
+    // Only when it is unmistakably the oldest: a lone comment, or one with a
+    // valid timestamp strictly earlier than the next-oldest. On a tie the sort
+    // falls back to the id, so the last item could be a later post that merely
+    // repeats the description, and an unparsable timestamp says nothing about
+    // order; in both cases the comment stays.
+    const oldestTime = parseApiLocalDateTimeMs(oldest.createdOn);
+    const nextOldestTime = parseApiLocalDateTimeMs(
+      newestFirst[newestFirst.length - 2]?.createdOn,
+    );
+    const isClearlyOldest =
+      newestFirst.length === 1 ||
+      (Number.isFinite(oldestTime) &&
+        Number.isFinite(nextOldestTime) &&
+        oldestTime < nextOldestTime);
     if (
+      isClearlyOldest &&
       isDescriptionEchoedInComment(
         description,
         sanitizeCommentContent(oldest.content, isDarkMode),
