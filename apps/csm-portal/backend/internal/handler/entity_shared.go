@@ -110,6 +110,13 @@ type entityProjectView struct {
 	// (project.onboarding_status) -- nil when onboarding isn't tracked for
 	// this project.
 	OnboardingStatus *string `json:"onboardingStatus"`
+	// GoLiveDate mirrors entity-service's own ProjectView.GoLiveDate
+	// (project.onboarding_go_live_date, RFC3339 -- entity-service marshals
+	// *time.Time, not a plain date string like AccountView.ActivationDate).
+	// This is the field the customer-health go-live computation actually
+	// checks -- OnboardingStatus above is a different, unrelated signal and
+	// must not be used for this.
+	GoLiveDate *string `json:"goLiveDate"`
 }
 
 type entitySearchProjectsRequest struct {
@@ -178,6 +185,18 @@ type entitySearchAccountsFilters struct {
 	// (account.deactivation_date IS NULL/IS NOT NULL) -- nil means both
 	// active and deactivated accounts match.
 	Active *bool `json:"active,omitempty"`
+	// LifeCycle mirrors entity-service's own SearchAccountsFilters.LifeCycle
+	// (account.life_cycle, e.g. "Customer"/"Partner"/"Prospect"/"Lost
+	// Customer"/"Lost Prospect") -- a distinct dimension from account
+	// classification (business segment: Enterprise/Partner/Cloud/OEM). This
+	// is what the legacy system's own account-scoping rule for this feature
+	// actually filters on.
+	LifeCycle string `json:"lifeCycle,omitempty"`
+	// HasProject mirrors entity-service's own SearchAccountsFilters.HasProject
+	// -- true additionally requires the account to have at least one
+	// project, matching the legacy rule's own join-existence check against
+	// the account's projects.
+	HasProject bool `json:"hasProject,omitempty"`
 }
 
 type entitySearchAccountsRequest struct {
@@ -189,6 +208,22 @@ type entityAccountView struct {
 	ID     string  `json:"id"`
 	Name   string  `json:"name"`
 	Region *string `json:"region"`
+	// SubRegion mirrors entity-service's own AccountView.SubRegion
+	// (account.sub_region) -- a finer-grained geography than Region (e.g.
+	// "ASIA"/"NA - WEST" under Region "APAC"/"NA"). This, not Region, is
+	// what the customer-health region filter's dropdown values actually
+	// match against -- see customer_health_postgres.go's own filteredAccounts.
+	SubRegion *string `json:"subRegion"`
+	// CreTeam/SreTeam mirror entity-service's own AccountView.CreTeam/SreTeam
+	// (account.cre_team_id/sre_team_id, resolved to a named group reference)
+	// -- what the customer-health "ABT team" filter matches an account's
+	// team assignment against.
+	CreTeam *entityRef `json:"creTeam"`
+	SreTeam *entityRef `json:"sreTeam"`
+	// ActivationDate mirrors entity-service's own AccountView.ActivationDate
+	// (account.activation_date, plain "YYYY-MM-DD" -- not RFC3339) -- needed
+	// by the customer-health go-live computation (see customer_health_postgres.go).
+	ActivationDate *string `json:"activationDate"`
 }
 
 type entitySearchAccountsResponse struct {

@@ -1857,6 +1857,79 @@ export function compareByCreatedOnThenId(
   return idA.localeCompare(idB);
 }
 
+/** Shape accepted by {@link dedupeAdjacentDuplicateMessages}. */
+export type DedupableMessage = CreatedOnSortable & {
+  content?: string | null;
+};
+
+/**
+ * Only the conversation's own opening exchange -- the first kept message and
+ * the first reply to it -- is ever eligible for collapsing. See
+ * {@link dedupeAdjacentDuplicateMessages}'s own doc comment for why this
+ * scope is deliberately narrow, not a tunable "how many messages" knob.
+ */
+const DEDUPE_ELIGIBLE_KEPT_MESSAGE_COUNT = 2;
+
+/**
+ * Drops an exact back-to-back duplicate of the message immediately before it
+ * -- same content, same author and the same createdOn timestamp -- but ONLY
+ * within the conversation's own opening exchange (the first kept message and
+ * the first reply to it). Defends the chat history view against a
+ * conversation whose underlying comment rows were written twice for the same
+ * turn (digiops-cs#3424: both the question and the answer appeared twice,
+ * with identical timestamps, only for the very first exchange of a
+ * brand-new chat). This collapses the duplicate wherever it comes from,
+ * rather than guessing at why the extra row exists.
+ *
+ * Deliberately requires an EXACT match on all three fields, not just
+ * content: two genuinely distinct messages that happen to read the same
+ * (e.g. a user saying "ok" twice, minutes apart) are never affected, since
+ * their createdOn timestamps differ in the common case.
+ *
+ * Why this is scoped to the opening exchange, and not applied throughout a
+ * whole conversation (a CodeRabbit review finding on an earlier version of
+ * this function, verified before acting on it): this API's createdOn is
+ * whole-second resolution (no sub-second component), and no field here
+ * carries a backend-assigned identity that could tell two genuinely
+ * independent messages apart from a true duplicate row -- `id` itself
+ * always differs for a real duplicate (each row gets its own generated
+ * id), confirmed against AuditMetadata's actual field list
+ * (createdOn/updatedOn/createdBy/updatedBy only), so it can never be that
+ * signal. Implementing the finding's literal suggestion -- dedupe only
+ * when a backend-provided duplicate identity confirms it -- would need a
+ * new field on this API's response, a backend contract change out of
+ * scope for this display-layer fix. Rather than accept that risk across an
+ * entire, potentially long conversation, this narrows where the exact-match
+ * check is even consulted to the one place there is confirmed evidence of
+ * the bug: the opening exchange. Once two distinct messages have been kept,
+ * every later message is always kept as-is, however closely it resembles
+ * an earlier one -- a real repeat elsewhere in a long conversation (two
+ * different turns that happen to read the same) is never at risk of being
+ * silently dropped.
+ *
+ * Input must already be sorted (see {@link compareByCreatedOnThenId}), since
+ * this only ever compares a message against the one immediately before it.
+ */
+export function dedupeAdjacentDuplicateMessages<T extends DedupableMessage>(
+  sorted: T[],
+): T[] {
+  const result: T[] = [];
+  for (const msg of sorted) {
+    const prev = result[result.length - 1];
+    const withinOpeningExchange =
+      result.length <= DEDUPE_ELIGIBLE_KEPT_MESSAGE_COUNT;
+    const isDuplicate =
+      withinOpeningExchange &&
+      prev != null &&
+      (msg.content ?? "") === (prev.content ?? "") &&
+      (msg.createdBy ?? "").toLowerCase() ===
+        (prev.createdBy ?? "").toLowerCase() &&
+      (msg.createdOn ?? "") === (prev.createdOn ?? "");
+    if (!isDuplicate) result.push(msg);
+  }
+  return result;
+}
+
 /**
  * Earliest datetime-local value for scheduling a call: now + severity allocation minutes,
  * rounded up to the next 5-minute boundary (e.g. 9:23 + 30m → 9:55).
@@ -2256,12 +2329,27 @@ export function getLast30DaysUtcRange(): {
 }
 
 /**
- * Replaces bare URLs in an HTML string (not already inside an href attribute)
- * with clickable anchor tags that open in a new tab.
+ * Replaces bare URLs in the text of an HTML string with clickable anchor tags
+ * that open in a new tab. Only text between tags is touched: a URL inside a tag
+ * (an `<img src="https://...">`, an `href`) is an attribute value, and wrapping
+ * it in an anchor would break the tag and spill its markup into the page as
+ * text. Text already inside an `<a>` is left alone too.
  */
 export function linkifyBareUrls(html: string): string {
-  return html.replace(
-    /(?<!href=["'])(https?:\/\/[^\s<>"']+)/g,
-    '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;word-break:break-all;">$1</a>',
-  );
+  let anchorDepth = 0;
+  return html
+    .split(/(<[^>]*>)/)
+    .map((part) => {
+      if (part.startsWith("<")) {
+        if (/^<a[\s>]/i.test(part)) anchorDepth++;
+        else if (/^<\/a\s*>/i.test(part) && anchorDepth > 0) anchorDepth--;
+        return part;
+      }
+      if (anchorDepth > 0) return part;
+      return part.replace(
+        /(https?:\/\/[^\s<>"']+)/g,
+        '<a href="$1" target="_blank" rel="noopener noreferrer" style="color:inherit;text-decoration:underline;word-break:break-all;">$1</a>',
+      );
+    })
+    .join("");
 }

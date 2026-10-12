@@ -18,6 +18,7 @@ package paging
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -315,6 +316,45 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 		return Delivery{Channel: ChannelChat}, err
 	}
 	return Delivery{Channel: ChannelChat, Status: "posted to " + room}, nil
+}
+
+// fanoutChat posts one rung's card to several Chat spaces: an incident with
+// no SRE team of its own goes to every space sre.teamlessChats names. It is
+// one notifier on purpose. A rung whose delivery fails is retried whole --
+// its call included -- so a space that fails while another succeeds counts as
+// delivered (the failure is logged), and only a rung no space took is
+// retried, transient failures first.
+type fanoutChat struct {
+	chats []chatNotifier
+}
+
+func (fanoutChat) Channel() Channel { return ChannelChat }
+
+func (f fanoutChat) Deliver(ctx context.Context, plan Plan, call PlannedCall) (Delivery, error) {
+	var posted []string
+	var permanent, transient error
+	for _, c := range f.chats {
+		d, err := c.Deliver(ctx, plan, call)
+		if err != nil {
+			slog.WarnContext(ctx, "escalation: a Chat space did not take the rung card",
+				"incidentId", plan.Trigger.IncidentID, "level", call.Level.String(), "audience", c.roomFor(), "err", err)
+			if isPermanent(err) {
+				permanent = errors.Join(permanent, err)
+			} else {
+				transient = errors.Join(transient, err)
+			}
+			continue
+		}
+		posted = append(posted, d.Status)
+	}
+	switch {
+	case len(posted) > 0:
+		return Delivery{Channel: ChannelChat, Status: strings.Join(posted, "; ")}, nil
+	case transient != nil:
+		return Delivery{Channel: ChannelChat}, transient
+	default:
+		return Delivery{Channel: ChannelChat}, permanent
+	}
 }
 
 // elapsedSince renders how long an incident has gone unattended, which is the

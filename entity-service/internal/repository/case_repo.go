@@ -418,6 +418,11 @@ type CaseRepository interface {
 	// ServiceNow only just generated these, but is reported precisely rather
 	// than as an opaque infrastructure error if it ever does.
 	CreateCaseFromServiceNow(ctx context.Context, req domain.CreateCaseRequest, id, number, wso2ID, createdBy, state string) (domain.Case, error)
+	// ResolveRelatedCaseID returns the id to store in "case".related_case_id.
+	// An empty id, or one that does not name a case-like work item in Postgres
+	// yet, returns (nil, nil) so the insert binds NULL. A query error is
+	// returned so the caller can stop before creating a ServiceNow case.
+	ResolveRelatedCaseID(ctx context.Context, relatedCaseID string) (*string, error)
 	// GetCaseByID returns the enriched case view for the given UUID, or a
 	// NotFoundError if no matching row exists OR it exists but scope excludes
 	// it (existence is never revealed to a caller who can't see it).
@@ -826,6 +831,22 @@ func createCaseTx(ctx context.Context, tx pgx.Tx, req domain.CreateCaseRequest) 
 			return domain.Case{}, &apierror.ValidationError{Msg: "conversationId must reference an existing conversation in this project"}
 		}
 	}
+	// related_case_id lives only on "case", and only this branch writes it.
+	// Nothing is committed yet, so a missing target fails the create rather
+	// than being stored as NULL (the dual-write path cannot do that: ServiceNow
+	// already has the new case by the time its Postgres insert runs).
+	if (req.Type == "" || req.Type == "case") && req.RelatedCaseID != "" {
+		var ok bool
+		if err := tx.QueryRow(ctx,
+			`SELECT EXISTS (SELECT 1 FROM work_item WHERE id = $1::uuid AND type = ANY(`+caseLikeNonAnnouncementTypes+`))`,
+			req.RelatedCaseID,
+		).Scan(&ok); err != nil {
+			return domain.Case{}, fmt.Errorf("create case: look up related case: %w", err)
+		}
+		if !ok {
+			return domain.Case{}, &apierror.ValidationError{Msg: "relatedCaseId does not exist"}
+		}
+	}
 	var row pgx.Row
 	switch req.Type {
 	case "announcement":
@@ -859,7 +880,7 @@ func createCaseTx(ctx context.Context, tx pgx.Tx, req domain.CreateCaseRequest) 
 			req.CreatedBy, req.ProjectID, req.DeploymentID, req.DeployedProductID,
 			req.Subject, req.Description,
 			caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
-			req.ConversationID,
+			req.ConversationID, req.RelatedCaseID,
 		)
 	}
 	c, err := scanUpdatedCase(row)
@@ -965,8 +986,9 @@ const createCasePortalQuery = `
 		          subject, description, created_on, updated_on
 	),
 	inserted_case AS (
-		INSERT INTO "case" (id, severity, issue_type, state)
-		SELECT id, NULLIF($7, '')::case_severity_enum, NULLIF($8, '')::case_issue_type_enum, 'OPEN'::case_state_enum
+		INSERT INTO "case" (id, severity, issue_type, state, related_case_id)
+		SELECT id, NULLIF($7, '')::case_severity_enum, NULLIF($8, '')::case_issue_type_enum, 'OPEN'::case_state_enum,
+		       NULLIF($10, '')::uuid
 		FROM inserted_work_item
 		RETURNING id, severity, issue_type, state, work_state, closed_on
 	)
@@ -1190,8 +1212,8 @@ const createCaseFromServiceNowQuery = `
 		          subject, description, created_on, updated_on
 	),
 	inserted_case AS (
-		INSERT INTO "case" (id, severity, issue_type, state)
-		VALUES ($1, $10::case_severity_enum, $11::case_issue_type_enum, 'OPEN'::case_state_enum)
+		INSERT INTO "case" (id, severity, issue_type, state, related_case_id)
+		VALUES ($1, $10::case_severity_enum, $11::case_issue_type_enum, 'OPEN'::case_state_enum, $13::uuid)
 		RETURNING id, severity, issue_type, state, work_state, closed_on
 	)
 	SELECT iwi.id, iwi.number, iwi.wso2_id, iwi.created_by, iwi.project_id, iwi.deployment_id, iwi.deployed_product_id,
@@ -1470,6 +1492,24 @@ func (r *caseRepo) conversationRefOrNil(ctx context.Context, conversationID, pro
 	return conversationID, nil
 }
 
+// ResolveRelatedCaseID implements CaseRepository.
+func (r *caseRepo) ResolveRelatedCaseID(ctx context.Context, relatedCaseID string) (*string, error) {
+	if relatedCaseID == "" {
+		return nil, nil
+	}
+	var ok bool
+	if err := r.db.QueryRow(ctx,
+		`SELECT EXISTS (SELECT 1 FROM work_item WHERE id = $1::uuid AND type = ANY(`+caseLikeNonAnnouncementTypes+`))`,
+		relatedCaseID,
+	).Scan(&ok); err != nil {
+		return nil, fmt.Errorf("check related case exists: %w", err)
+	}
+	if !ok {
+		return nil, nil
+	}
+	return &relatedCaseID, nil
+}
+
 // CreateCaseFromServiceNow implements CaseRepository.
 //
 // WithSystemIdentity: this is a system write on behalf of the ServiceNow
@@ -1521,6 +1561,17 @@ func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.Crea
 		slog.WarnContext(ctx, "sn create case: conversation not found or not in this project, creating case without that link",
 			"caseId", id, "snNumber", number, "type", req.Type, "conversationId", req.ConversationID, "projectId", req.ProjectID)
 	}
+	// related_case_id is a "case"-table column. The id was resolved before the
+	// ServiceNow create (req.ResolvedRelatedCaseID); this insert does not look
+	// it up again. Nil binds NULL, including when the target is not mirrored yet.
+	var relatedCaseIDArg any
+	if (req.Type == "" || req.Type == "case") && req.ResolvedRelatedCaseID != nil {
+		relatedCaseIDArg = *req.ResolvedRelatedCaseID
+	}
+	if (req.Type == "" || req.Type == "case") && req.RelatedCaseID != "" && req.ResolvedRelatedCaseID == nil {
+		slog.WarnContext(ctx, "sn create case: related case not yet mirrored in postgres, creating case without that link",
+			"caseId", id, "snNumber", number, "relatedCaseId", req.RelatedCaseID)
+	}
 
 	var row pgx.Row
 	switch req.Type {
@@ -1561,7 +1612,7 @@ func (r *caseRepo) CreateCaseFromServiceNow(ctx context.Context, req domain.Crea
 			number, wso2ID, req.Subject, req.Description,
 			req.ProjectID, deploymentIDArg, deployedProductIDArg,
 			caseSeverityToEnum[req.Severity], strings.ToUpper(string(req.IssueType)),
-			conversationIDArg,
+			conversationIDArg, relatedCaseIDArg,
 		)
 	}
 	c, err := scanUpdatedCase(row)
@@ -2288,6 +2339,11 @@ func (r *caseRepo) SearchCaseComments(ctx context.Context, req domain.SearchCase
 // labels by UpdateCase below (state/work_state upper-cased, severity mapped
 // through caseSeverityToEnum) -- case_state_enum's "CLOSED" is what $2 = ”
 // compares a non-empty state against here, not the domain value "closed".
+// work_state is only meaningful while state is work_in_progress: an explicit
+// workState wins, otherwise a state change to awaiting_info pauses it and a
+// change to any other non-work_in_progress state clears it to NULL, in the
+// same statement as the state write (a state-only PATCH must not leave a
+// stale ONGOING behind). A change to work_in_progress leaves it untouched.
 // $5/$6/$7 (resolutionCode/cause/closeNotes) are only ever non-empty/non-nil
 // when req.State is also set to closed/solution_proposed -- CaseService.
 // UpdateCase enforces that gate before this query ever runs, mirroring
@@ -2302,7 +2358,10 @@ const updateCaseQuery = `
 		UPDATE "case"
 		SET state             = CASE WHEN $2 <> '' THEN $2::case_state_enum ELSE state END,
 		    severity          = CASE WHEN $3 <> '' THEN $3::case_severity_enum ELSE severity END,
-		    work_state        = CASE WHEN $4 <> '' THEN $4::case_work_state_enum ELSE work_state END,
+		    work_state        = CASE WHEN $4 <> '' THEN $4::case_work_state_enum
+		                          WHEN $2 = 'AWAITING_INFO' THEN 'PAUSED'::case_work_state_enum
+		                          WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL
+		                          ELSE work_state END,
 		    closed_on         = CASE WHEN $2 = 'CLOSED' THEN NOW() WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_on END,
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::case_state_enum THEN $8::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    resolution_code   = CASE WHEN $5 <> '' THEN $5::case_resolution_code_enum ELSE resolution_code END,
@@ -2333,7 +2392,10 @@ const updateSecurityReportAnalysisQuery = `
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::security_report_analysis_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::security_report_analysis_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
-		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum
+		                          WHEN $2 = 'AWAITING_INFO' THEN 'PAUSED'::case_work_state_enum
+		                          WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL
+		                          ELSE work_state END,
 		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
 		RETURNING id, state, work_state, closed_on
@@ -2360,7 +2422,10 @@ const updateServiceRequestQuery = `
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::service_request_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::service_request_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
-		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum
+		                          WHEN $2 = 'AWAITING_INFO' THEN 'PAUSED'::case_work_state_enum
+		                          WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL
+		                          ELSE work_state END,
 		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
 		RETURNING id, state, work_state, closed_on
@@ -2387,7 +2452,10 @@ const updateEngagementQuery = `
 		    closed_by_user_id = CASE WHEN $2 = 'CLOSED' AND state IS DISTINCT FROM 'CLOSED'::engagement_state_enum THEN $7::uuid WHEN $2 <> '' AND $2 <> 'CLOSED' THEN NULL ELSE closed_by_user_id END,
 		    cause             = CASE WHEN $3 <> '' THEN $3::engagement_cause_enum ELSE cause END,
 		    close_notes       = COALESCE($4, close_notes),
-		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum ELSE work_state END,
+		    work_state        = CASE WHEN $5 <> '' THEN $5::case_work_state_enum
+		                          WHEN $2 = 'AWAITING_INFO' THEN 'PAUSED'::case_work_state_enum
+		                          WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL
+		                          ELSE work_state END,
 		    resolution_code   = CASE WHEN $6 <> '' THEN $6::case_resolution_code_enum ELSE resolution_code END
 		WHERE id = $1
 		RETURNING id, state, work_state, closed_on
@@ -4923,7 +4991,7 @@ func (r *caseRepo) updateCaseEnforcingOneOngoing(ctx context.Context, req domain
 				WHERE wi.assigned_to_id = $1::uuid AND wi.id <> $2::uuid
 				  AND wi.type = ANY(`+workStateWorkItemTypes+`)
 				  AND `+caseLikeWorkStateColumn+` = 'ONGOING'
-				  AND COALESCE(c.state::TEXT, eng.state::TEXT, sr.state::TEXT, sra.state::TEXT) <> 'CLOSED'
+				  AND COALESCE(c.state::TEXT, eng.state::TEXT, sr.state::TEXT, sra.state::TEXT) = 'WORK_IN_PROGRESS'
 				ORDER BY wi.updated_on DESC LIMIT 1`, *assignee, req.ID).Scan(&otherNumber)
 			if err == nil {
 				return &apierror.ConflictError{Msg: "Cannot set work state to Ongoing: the assigned engineer already has an Ongoing case: " + otherNumber}

@@ -128,6 +128,35 @@ func TestDeploymentService_SearchDeployments_IDsFilter(t *testing.T) {
 	}
 }
 
+// SearchDeployments passes IncludeInactive straight through to the
+// repository unchanged -- it is additive (see SearchDeploymentsRequest's own
+// doc comment), so the service layer must not strip, default, or otherwise
+// interpret it; the repository's own SQL is what decides whether the
+// is_active = TRUE filter applies.
+func TestDeploymentService_SearchDeployments_IncludeInactivePassesThrough(t *testing.T) {
+	var gotReq domain.SearchDeploymentsRequest
+	svc := NewDeploymentService(&stubDeploymentRepo{
+		searchDeployments: func(_ context.Context, req domain.SearchDeploymentsRequest) ([]domain.DeploymentView, int, error) {
+			gotReq = req
+			return nil, 0, nil
+		},
+	})
+
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{IncludeInactive: true}); err != nil {
+		t.Fatalf("SearchDeployments: unexpected error: %v", err)
+	}
+	if !gotReq.IncludeInactive {
+		t.Error("repository did not receive IncludeInactive: true")
+	}
+
+	if _, err := svc.SearchDeployments(context.Background(), domain.SearchDeploymentsRequest{}); err != nil {
+		t.Fatalf("SearchDeployments: unexpected error: %v", err)
+	}
+	if gotReq.IncludeInactive {
+		t.Error("IncludeInactive should default to false when omitted")
+	}
+}
+
 // A plain Postgres data source (no SN mirror wired at all) must keep
 // rejecting CreateDeployment/UpdateDeployment exactly as before this
 // dual-write path existed -- no regression for DATA_SOURCE=postgres.

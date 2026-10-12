@@ -23,6 +23,16 @@ import "@testing-library/jest-dom/vitest";
 // `UserRefLink` (rendered for "Created by"/"Assignee") resolves an unknown id
 // through `useResolvedUserId`, which needs the real API client — same
 // approach as CaseDetailWidgets.test.tsx.
+vi.hoisted(() => {
+  // CaseMetaBand's import tree reads this at module load (apiConfig throws
+  // without it). The real value comes from public/config.js, which vitest
+  // does not load. hoisted so it runs before that import.
+  window.config = {
+    ...window.config,
+    CSM_PORTAL_BACKEND_BASE_URL: "http://localhost:9090",
+  };
+});
+
 vi.mock("@api/backend/client", () => ({
   useBackendApi: () => ({ post: vi.fn().mockResolvedValue({ users: [] }) }),
 }));
@@ -93,6 +103,25 @@ function renderBand(overrides: Partial<CsmCaseDetail>): ReturnType<typeof render
     </QueryClientProvider>,
   );
 }
+
+describe("CaseMetaBand — related case", () => {
+  it("shows the related case number as a link in Overview", () => {
+    renderBand({
+      relatedCase: { id: "case-closed", caseNumber: "CS-0009" },
+    });
+
+    expect(screen.getByText("Related case")).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "CS-0009" })).toHaveAttribute(
+      "href",
+      "/cases/case-closed",
+    );
+  });
+
+  it("omits the related case cell when the case has none", () => {
+    renderBand({});
+    expect(screen.queryByText("Related case")).not.toBeInTheDocument();
+  });
+});
 
 describe("CaseMetaBand — fix ETA cells", () => {
   it("renders all three fix ETA cells when all three values are set", () => {

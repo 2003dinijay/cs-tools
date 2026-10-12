@@ -29,6 +29,32 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/domain"
 )
 
+// TestCreateCaseQueriesPersistRelatedCaseID locks the Overview link: a type
+// "case" insert writes "case".related_case_id, and the other case-like inserts
+// do not (that column exists only on "case").
+func TestCreateCaseQueriesPersistRelatedCaseID(t *testing.T) {
+	if !strings.Contains(createCasePortalQuery, "related_case_id") || !strings.Contains(createCasePortalQuery, "NULLIF($10, '')::uuid") {
+		t.Fatal("createCasePortalQuery must store relatedCaseId in related_case_id")
+	}
+	if !strings.Contains(createCaseFromServiceNowQuery, "related_case_id") || !strings.Contains(createCaseFromServiceNowQuery, "$13::uuid") {
+		t.Fatal("createCaseFromServiceNowQuery must store relatedCaseId in related_case_id")
+	}
+	for name, query := range map[string]string{
+		"announcement portal":        createAnnouncementPortalQuery,
+		"service request portal":     createServiceRequestPortalQuery,
+		"engagement portal":          createEngagementPortalQuery,
+		"security report portal":     createSecurityReportAnalysisPortalQuery,
+		"announcement servicenow":    createAnnouncementFromServiceNowQuery,
+		"service request servicenow": createServiceRequestFromServiceNowQuery,
+		"engagement servicenow":      createEngagementFromServiceNowQuery,
+		"security report servicenow": createSecurityReportAnalysisFromServiceNowQuery,
+	} {
+		if strings.Contains(query, "related_case_id") {
+			t.Fatalf("%s insert must not write related_case_id", name)
+		}
+	}
+}
+
 func TestOnboardingStatusEnumLabels(t *testing.T) {
 	// The dashboard sends ServiceNow's spellings; each must land on the enum
 	// label, regardless of case or separator.
@@ -524,3 +550,26 @@ func TestExtensionUpdateQueriesWriteWorkStateAndResolutionCode(t *testing.T) {
 	}
 }
 
+// work_state is only valid while state is work_in_progress: every case-like
+// update query must derive it from the state change in the same statement, and
+// the one-Ongoing guard must only count work_in_progress items. The real
+// behavior is covered by case_work_state_integration_test.go (needs Postgres);
+// this pins the SQL shape so the rule cannot be dropped from one table's query.
+func TestWorkStateFollowsStateInUpdateQueries(t *testing.T) {
+	queries := map[string]string{
+		"case":                     updateCaseQuery,
+		"service_request":          updateServiceRequestQuery,
+		"engagement":               updateEngagementQuery,
+		"security_report_analysis": updateSecurityReportAnalysisQuery,
+	}
+	for name, q := range queries {
+		for _, want := range []string{
+			"WHEN $2 = 'AWAITING_INFO' THEN 'PAUSED'::case_work_state_enum",
+			"WHEN $2 <> '' AND $2 <> 'WORK_IN_PROGRESS' THEN NULL",
+		} {
+			if !strings.Contains(q, want) {
+				t.Errorf("%s update query is missing %q", name, want)
+			}
+		}
+	}
+}

@@ -459,6 +459,15 @@ func validateCreateCaseRequest(req *domain.CreateCaseRequest) error {
 			return err
 		}
 	}
+	// Same posture as conversationId: a malformed relatedCaseId must be a 400
+	// before either create path writes anything. The id itself is stored on
+	// "case".related_case_id (type "case" only) so the new case's Overview
+	// can show the case it was created from.
+	if req.RelatedCaseID != "" {
+		if err := validateUUIDs("relatedCaseId", []string{req.RelatedCaseID}); err != nil {
+			return err
+		}
+	}
 	// Announcements have no deployment/deployed-product concept: these fields
 	// are deliberately omitted at the ServiceNow layer, not just optional.
 	if req.Type != "announcement" {
@@ -779,6 +788,16 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	watcherIDs, err := s.validateCreateWatchList(ctx, &req)
 	if err != nil {
 		return domain.CreateCaseResponse{}, err
+	}
+	// Resolve the related case before ServiceNow accepts the new case. A
+	// lookup failure here creates nothing. A target that is not mirrored yet
+	// is nil, and the Postgres insert binds NULL rather than failing after
+	// ServiceNow already has the case. ServiceNow still receives RelatedCaseID.
+	if req.Type == "" || req.Type == "case" {
+		req.ResolvedRelatedCaseID, err = s.repo.ResolveRelatedCaseID(ctx, req.RelatedCaseID)
+		if err != nil {
+			return domain.CreateCaseResponse{}, err
+		}
 	}
 
 	snResp, err := s.snMirror.CreateCase(ctx, req)
@@ -1361,11 +1380,10 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 	// this mirror's ONLY job is making sure ServiceNow's copy of the comment
 	// text exists too. It deliberately does NOT replicate
 	// snCaseService.CreateCaseComment's auto state-transition-on-reply
-	// (applyCustomerReplyStateTransition) — Postgres already owns the real
-	// outcome (note: this Postgres-native CreateCaseComment does not
-	// currently implement state-transition-on-reply at all; that is a
-	// separate, larger feature-parity gap, out of scope here — see
-	// CreateBareCaseComment's own doc comment). Uses CreateBareCaseComment
+	// (applyCustomerReplyStateTransition) — Postgres owns the real outcome:
+	// this service's own applyCustomerReplyStateTransition (below) decides
+	// the move here, and the UpdateCase it goes through mirrors that one
+	// state write to the previous system on its own. Uses CreateBareCaseComment
 	// specifically (not the full CreateCaseComment) so neither side effect
 	// ever fires twice, or fires against ServiceNow for an outcome only
 	// Postgres actually decided. Fires identically for both the token-
@@ -1389,6 +1407,12 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 			)
 		}
 	}
+
+	// Last, after every other side effect of the comment itself, in the same
+	// position snCaseService.CreateCaseComment calls its own
+	// applyCustomerReplyStateTransition: the case.comment_added publish above
+	// precedes the case.status_changed publish this may cause.
+	s.applyCustomerReplyStateTransition(ctx, req, actorEmail)
 
 	return domain.CreateCaseCommentResponse{
 		Message: "Comment created successfully",
@@ -1479,6 +1503,89 @@ func (s *caseService) isSupportEngineerAuthor(ctx context.Context, caseID, actor
 		return false
 	}
 	return slices.Contains(roles, s.csEngineerRole)
+}
+
+// applyCustomerReplyStateTransition moves a case-like record back to
+// Waiting on WSO2 when a customer replies while it is Awaiting Info or
+// Solution Proposed -- WSO2 was waiting on the customer, and a reply means it
+// is WSO2's turn to act again. This is caseService's own port of
+// snCaseService.applyCustomerReplyStateTransition, the previous system's
+// rule, with the same semantics: only a customer-visible comment
+// (req.Type == comment, never a work note), only from exactly those two
+// states (not Open/Work In Progress/Reopened, never Closed), only when the
+// author is a customer (see isCustomerCommentAuthor), and the move is made by
+// calling this service's own UpdateCase with State: WaitingOnWSO2 in-process,
+// after the comment has been written -- so the status-changed event, the
+// SLA state effects, the activity-feed entry stamped with the customer as the
+// actor and the dual-write mirror all happen exactly as for a manual move,
+// with no duplicated logic. One rule for every record UpdateCase handles: it
+// never looks at the record's type -- a case and a service request go through
+// this identical path, and the repository's own UpdateCase lands the write on
+// the extension row that exists.
+//
+// Best-effort, like every other comment-creation side effect in this file:
+// the comment is already committed by the time this runs, so a failed read or
+// move is logged at ERROR with the case id and never fails the comment.
+//
+// KNOWN GAP, the same one the previous system's function documents: the read
+// here (GetCaseByID) and the write (UpdateCase, which does its own GetCaseByID
+// only to decide whether to publish/record the change, then an unconditional
+// UPDATE) are not atomic -- a record moved to some other state (e.g. Closed)
+// in that window is still set to Waiting on WSO2. Postgres could close it
+// with a conditional UPDATE, but that lives on the UpdateCase path this rule
+// deliberately reuses unchanged; flagged rather than half-closed here.
+func (s *caseService) applyCustomerReplyStateTransition(ctx context.Context, req domain.CreateCaseCommentRequest, actorEmail string) {
+	if req.Type != domain.CommentTypeComment {
+		return
+	}
+	if !s.isCustomerCommentAuthor(ctx) {
+		return
+	}
+
+	cv, err := s.GetCaseByID(ctx, req.CaseID)
+	if err != nil {
+		slog.ErrorContext(ctx, "create comment: customer reply state transition not evaluated, get case failed", "caseId", req.CaseID)
+		return
+	}
+	if derefState(cv.State) != domain.CaseStateAwaitingInfo && derefState(cv.State) != domain.CaseStateSolutionProposed {
+		return
+	}
+
+	waitingOnWSO2 := domain.CaseStateWaitingOnWSO2
+	if _, err := s.UpdateCase(ctx, domain.UpdateCaseRequest{ID: req.CaseID, State: &waitingOnWSO2}); err != nil {
+		slog.ErrorContext(ctx, "create comment: move case to waiting on wso2 after customer reply failed", "caseId", req.CaseID)
+	}
+}
+
+// isCustomerCommentAuthor answers "is this comment's author a customer" for
+// applyCustomerReplyStateTransition. snCaseService has no identity layer of
+// its own and answers it by looking the author up and checking CUSTOMER_ROLES;
+// this data source knows the caller: an external caller (the resolved scope
+// is neither Unrestricted nor HasInternalAccess -- the same predicate as
+// repository.IsExternalCaller, and the exact complement of the "internal
+// caller" UpdateCase's resolution-fields requirement uses) is a registered
+// portal contact posting through the customer portal, so a customer. An
+// internal caller -- WSO2 staff, a mixed identity that still has internal
+// access, the system identity, an M2M client -- never is, whatever roles
+// the author may also hold.
+//
+// CUSTOMER_ROLES is deliberately not consulted here, although the Postgres
+// user record does carry roles (UserRepository.GetUserRoles): a resolved
+// identity leaves it no decision to make (internal is never a customer,
+// external always is), and when no identity can be resolved the move could
+// not be made anyway -- GetCaseByID and every Scoped repository write refuse
+// to run without one -- so a role-based fallback would be dead code. A
+// scope that cannot be resolved therefore answers false: can't confirm, not
+// an error, the same posture as isSupportEngineerAuthor.
+func (s *caseService) isCustomerCommentAuthor(ctx context.Context) bool {
+	if s.access == nil {
+		return false
+	}
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return false
+	}
+	return !scope.Unrestricted && !scope.HasInternalAccess
 }
 
 // SearchCaseComments implements CaseService.

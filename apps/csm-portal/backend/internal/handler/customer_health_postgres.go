@@ -20,6 +20,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/servicenow"
@@ -37,19 +38,13 @@ type entityCustomerHealthClient interface {
 }
 
 // customerHealthRecentWindow/customerHealthDelayWindow/customerHealthAbandonedWindow
-// are this file's own judgment calls, not a ported ServiceNow spec: the
-// original implementation (SupportPortalLite's getCustomerHealthSummary/
-// getCustomerHealthDetail) called a bespoke ServiceNow scoped-app script
-// (/api/wso2/customerhealthanalysis/...) with no accessible source anywhere
-// in this codebase or the Ballerina backend it was ported from -- confirmed
-// by reading both directly. The seven flags these windows back
-// (hasRecentCases/noSupportCases6mo/hasAbandonedMigrations/hasMigrationDelays/
+// are this file's own judgment calls for the two migration-engagement
+// signals (hasAbandonedMigrations/hasMigrationDelays), not a confirmed spec.
+// The other flags' own windows (hasRecentCases/noSupportCases6mo/
 // hasRecentEscalations) are genuinely derivable from real, populated Postgres
 // data (checked directly against staging: 3,820 cases created in the last
-// 180 days, 76 MIGRATION-type engagements, 349+ account-linked escalations),
-// but the exact thresholds ServiceNow used are not visible anywhere, so these
-// are reasonable approximations rather than a faithful port. Revisit if a
-// product owner specifies different windows.
+// 180 days, 76 MIGRATION-type engagements, 349+ account-linked escalations).
+// Revisit if a product owner specifies different windows.
 const (
 	customerHealthRecentWindow     = 180 * 24 * time.Hour // "recent cases" / "no support cases" cutoff
 	customerHealthEscalationWindow = 90 * 24 * time.Hour  // "recent escalations" cutoff
@@ -58,13 +53,10 @@ const (
 )
 
 // postgresCustomerHealthClient implements customerHealthSNClient entirely
-// against entity-service (Postgres) -- no ServiceNow dependency at all. The
-// original ServiceNow implementation computed these seven account/project
-// risk flags (hasNoGoLive, hasRecentCases, hasEolProduct,
-// hasAbandonedMigrations, hasMigrationDelays, hasRecentEscalations,
-// noSupportCases6mo) inside a bespoke scoped-app script this codebase has no
-// access to; this type derives the same signals from real, already-synced
-// Postgres columns instead (project.onboarding_status,
+// against entity-service (Postgres). It derives seven account/project risk
+// flags (hasNoGoLive, hasRecentCases, hasEolProduct, hasAbandonedMigrations,
+// hasMigrationDelays, hasRecentEscalations, noSupportCases6mo) from real,
+// already-synced Postgres columns (project.onboarding_status,
 // deployed_product's product_version.support_eol_date, work_item.account_id,
 // case_escalation, engagement.type='MIGRATION') -- see the window constants
 // above for the judgment calls involved.
@@ -81,29 +73,54 @@ func NewPostgresCustomerHealthClient(entity entityCustomerHealthClient) *postgre
 
 // customerHealthCaseLikeTypes mirrors the case-like work_item types
 // entity-service's own case search already treats as one family (see that
-// service's own CLAUDE.md, "Case-like work_item types").
+// service's own CLAUDE.md, "Case-like work_item types") -- deliberately
+// excluding "announcement", which must never count as a case for this
+// feature's own "recent cases" signal. "type" only accepts an "in" filter
+// on entity-service's case search (no "notIn"), so this list is used as an
+// inclusion filter everywhere "every case-like type but announcement" is
+// needed, rather than an exclusion.
 var customerHealthCaseLikeTypes = []string{"case", "service_request", "engagement", "security_report_analysis"}
 
-// GetCustomerHealthSummary implements customerHealthSNClient. product/abtTeam/
-// risks are accepted (matching the existing interface every caller already
-// uses) but not applied as filters: none of them map onto an account-level
-// column or an already-indexed join entity-service exposes today (which
-// product an account's projects deploy, which ABT team "owns" an account, and
-// the original "risks" free-text filter all need either a new entity-service
-// query shape or a product decision about what they should mean on this data
-// source) -- a known, explicitly flagged gap, same posture this codebase
-// already uses elsewhere for a filter with no backing column (see
-// changeRequestWhereClause's own doc comment in entity-service). email/phrase/
-// region are applied.
+// isCustomerHealthCaseLikeType reports whether t is one of
+// customerHealthCaseLikeTypes -- used to filter an already-fetched case list
+// client-side (GetCustomerHealthDetail's per-project recentCases) the same
+// way the type:in filter narrows a fresh entity-service search
+// (accountHasCasesSince).
+func isCustomerHealthCaseLikeType(t string) bool {
+	for _, want := range customerHealthCaseLikeTypes {
+		if t == want {
+			return true
+		}
+	}
+	return false
+}
+
+// GetCustomerHealthSummary implements customerHealthSNClient.
+//
+// Found live: product/abtTeam/risks were accepted on the wire (matching the
+// existing interface every caller already uses) but silently never applied
+// -- confirmed against a captured record of real traffic where selecting
+// "risks", a "product", or any region at all either changed nothing
+// (product/risks) or returned zero results for every value tried (region,
+// which was comparing against the wrong account field -- see
+// filteredAccounts' own doc comment). All five of
+// email/phrase/risks/region/product/abtTeam are applied now.
 func (c *postgresCustomerHealthClient) GetCustomerHealthSummary(ctx context.Context, email, phrase, risks *string, region []string, product, abtTeam *string, offset, limit int) (*servicenow.AccountSummaryResponse, error) {
-	accounts, total, err := c.filteredAccounts(ctx, email, phrase, region, offset, limit)
+	accounts, total, err := c.filteredAccounts(ctx, customerHealthAccountQuery{
+		email:   email,
+		phrase:  phrase,
+		region:  region,
+		product: product,
+		abtTeam: abtTeam,
+		risks:   parseCustomerHealthRisks(risks),
+	}, offset, limit)
 	if err != nil {
 		return nil, err
 	}
 
 	data := make([]servicenow.AccountSummary, 0, len(accounts))
 	for _, a := range accounts {
-		flags, err := c.accountFlags(ctx, a.ID)
+		flags, err := c.accountFlags(ctx, a.ID, a.ActivationDate)
 		if err != nil {
 			return nil, err
 		}
@@ -144,10 +161,12 @@ func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Conte
 		return nil, fmt.Errorf("unmarshal entity-service account response: %w", err)
 	}
 	accountName := ""
+	var activationDate *string
 	found := false
 	for _, a := range accountResp.Accounts {
 		if a.ID == accountID {
 			accountName = a.Name
+			activationDate = a.ActivationDate
 			found = true
 			break
 		}
@@ -199,7 +218,7 @@ func (c *postgresCustomerHealthClient) GetCustomerHealthDetail(ctx context.Conte
 
 	details := make([]servicenow.ProjectDetail, 0, len(projects))
 	for _, p := range projects {
-		detail, err := c.projectDetail(ctx, p, casesByProject[p.ID], escalationsByProject[p.ID])
+		detail, err := c.projectDetail(ctx, p, activationDate, casesByProject[p.ID], escalationsByProject[p.ID])
 		if err != nil {
 			return nil, err
 		}
@@ -316,41 +335,151 @@ type customerHealthAccountFlags struct {
 	hasRecentEscalations   bool
 }
 
-// customerHealthActiveAccountsOnly scopes every customer-health account
-// query to active accounts only (account.deactivation_date IS NULL).
+// customerHealthAccountLifeCycle/customerHealthAccountRequiresProject scope
+// every customer-health account query to the confirmed, correct rule for
+// this feature: account.life_cycle = 'Customer' and the account has at
+// least one project.
 //
-// Found live, comparing a HAR capture of the old ServiceNow-backed summary
-// endpoint against this one for the identical request: the two reported
-// very different account counts, with the new endpoint's extra rows
-// including accounts that are not real, currently-active customers.
-// filteredAccounts previously applied no active/inactive filter at all
-// (every account ever synced from Salesforce, deactivated or not, counted).
-// Checked directly against the original Ballerina source this was ported
-// from (its own getAccounts, the one place in that codebase that filters
-// the same ServiceNow customer_account table explicitly): the legacy
-// convention excluded accounts whose status was "lost" --
-// account.deactivation_date here is the direct Postgres analog of
-// that, not account.classification (the legacy query never filtered by
-// Customer vs Partner classification at all, so this fix deliberately does
-// not either).
-var customerHealthActiveAccountsOnly = true
+// This supersedes an earlier version of this fix, which guessed "active"
+// (account.deactivation_date IS NULL) was the right scope, reasoned from an
+// unrelated account search/picker endpoint's own exclusion of accounts
+// whose status was "lost". That guess was wrong on two counts, found once
+// the correct rule was confirmed and checked directly against staging data:
+// (1) the right field is account.life_cycle -- a distinct column from
+// account.classification (a business-segment axis: Enterprise/Partner/
+// Cloud/OEM) -- not deactivation_date at all; deactivation_date IS NULL
+// matched far more accounts than the real endpoint's count, nowhere close.
+// (2) the account must also have at least one project -- missing this
+// alone still overcounts, since life_cycle = 'Customer' alone still matches
+// a much larger set than the real endpoint's count. Confirmed together:
+// life_cycle = 'Customer' AND at least one project matches exactly the
+// account count the real endpoint reports for the identical unfiltered
+// request. Notably the correct rule has NO active/inactive check at all --
+// some of those matching accounts are themselves deactivated
+// (deactivation_date IS NOT NULL) and must still be included, which is why
+// this is no longer combined with an Active filter.
+const (
+	customerHealthAccountLifeCycle       = "Customer"
+	customerHealthAccountRequiresProject = true
+)
+
+// customerHealthAccountQuery bundles every optional account-list filter
+// GetCustomerHealthSummary accepts into one place, rather than a long
+// positional parameter list.
+type customerHealthAccountQuery struct {
+	email, phrase, product, abtTeam *string
+	region                          []string
+	// risks is the already-split form of the comma-separated "risks" query
+	// param -- see parseCustomerHealthRisks. An account matches when it
+	// exhibits ANY one of these (an OR within the list), same as every
+	// other filter here is ANDed against it.
+	risks []string
+}
+
+// parseCustomerHealthRisks splits the comma-separated risks query param into
+// the flag keys customerHealthAccountMatchesAnyRisk checks against --
+// "hasNoGoLive", "hasRecentCases", "noSupportCases6mo", "hasEolProduct",
+// "hasAbandonedMigrations", "hasMigrationDelays", "hasRecentEscalations" --
+// the same field names customerHealthAccountFlags/servicenow.AccountSummary
+// already use, so the two can never drift apart.
+func parseCustomerHealthRisks(risks *string) []string {
+	if risks == nil {
+		return nil
+	}
+	var out []string
+	for _, r := range strings.Split(*risks, ",") {
+		if r = strings.TrimSpace(r); r != "" {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+// customerHealthAccountMatchesAnyRisk reports whether flags exhibits any one
+// of the requested risk keys -- an unrecognized key matches nothing (rather
+// than erroring), the same fail-safe posture a stale/future webapp build
+// sending an unknown key should get.
+func customerHealthAccountMatchesAnyRisk(flags customerHealthAccountFlags, risks []string) bool {
+	for _, r := range risks {
+		switch r {
+		case "hasNoGoLive":
+			if flags.goLiveStatus.IsRisk {
+				return true
+			}
+		case "hasRecentCases":
+			if flags.hasRecentCases {
+				return true
+			}
+		case "noSupportCases6mo":
+			if !flags.hasRecentCases {
+				return true
+			}
+		case "hasEolProduct":
+			if flags.hasEolProduct {
+				return true
+			}
+		case "hasAbandonedMigrations":
+			if flags.hasAbandonedMigrations {
+				return true
+			}
+		case "hasMigrationDelays":
+			if flags.hasMigrationDelays {
+				return true
+			}
+		case "hasRecentEscalations":
+			if flags.hasRecentEscalations {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // filteredAccounts resolves the page of accounts GetCustomerHealthSummary
 // should compute flags for. email/phrase map onto entity-service's own
-// SearchAccounts filters directly; region has no backing SearchAccounts
-// filter (checked directly: SearchAccountsFilters has searchQuery/active/pod/
-// ownerEmail/classification only, no region), so it's applied client-side
-// over a bounded working set instead.
-func (c *postgresCustomerHealthClient) filteredAccounts(ctx context.Context, email, phrase *string, region []string, offset, limit int) ([]entityAccountView, int, error) {
-	filters := entitySearchAccountsFilters{Active: &customerHealthActiveAccountsOnly}
-	if phrase != nil {
-		filters.SearchQuery = *phrase
+// SearchAccounts filters directly; region/product/abtTeam/risks have no
+// backing SearchAccounts filter at all (checked directly:
+// SearchAccountsFilters has searchQuery/active/pod/ownerEmail/
+// classification/lifeCycle/hasProject only), so all four are applied
+// client-side over a bounded working set instead, the same shape as the
+// pre-existing region-only scan this replaces.
+//
+// Found live: every one of these four silently did nothing (product/
+// abtTeam/risks) or matched nothing at all (region). The region bug was
+// comparing against the wrong account field entirely -- q.region's values
+// ("ASIA", "NA - WEST", "Benelux + France", ...) are sub-region values
+// (account.sub_region), while the filter compared them against
+// account.region (a different, coarser field: "APAC", "EU", "US WEST", ...)
+// -- confirmed directly against staging data, where neither column's values
+// ever overlap with the other's. "ABT team" matches an account's own
+// CreTeam or SreTeam name (account.cre_team_id/sre_team_id, resolved to a
+// group reference) -- confirmed directly: every real customer account's
+// CreTeam name is one of the names the "All Teams" dropdown itself lists.
+// "product" matches any deployed product (active or not) under any of the
+// account's projects' deployments.
+func (c *postgresCustomerHealthClient) filteredAccounts(ctx context.Context, q customerHealthAccountQuery, offset, limit int) ([]entityAccountView, int, error) {
+	filters := entitySearchAccountsFilters{
+		LifeCycle:  customerHealthAccountLifeCycle,
+		HasProject: customerHealthAccountRequiresProject,
 	}
-	if email != nil {
-		filters.OwnerEmail = *email
+	if q.phrase != nil {
+		filters.SearchQuery = *q.phrase
+	}
+	if q.email != nil {
+		filters.OwnerEmail = *q.email
 	}
 
-	if len(region) == 0 {
+	wantProduct := ""
+	if q.product != nil {
+		wantProduct = strings.TrimSpace(*q.product)
+	}
+	wantABTTeam := ""
+	if q.abtTeam != nil {
+		wantABTTeam = strings.TrimSpace(*q.abtTeam)
+	}
+	needsScan := len(q.region) > 0 || len(q.risks) > 0 || wantProduct != "" || wantABTTeam != ""
+
+	if !needsScan {
 		body, err := json.Marshal(entitySearchAccountsRequest{
 			Pagination: entityPagination{Limit: limit, Offset: offset},
 			Filters:    filters,
@@ -369,8 +498,8 @@ func (c *postgresCustomerHealthClient) filteredAccounts(ctx context.Context, ema
 		return resp.Accounts, resp.Total, nil
 	}
 
-	wantRegion := make(map[string]bool, len(region))
-	for _, r := range region {
+	wantRegion := make(map[string]bool, len(q.region))
+	for _, r := range q.region {
 		wantRegion[r] = true
 	}
 	var matched []entityAccountView
@@ -401,9 +530,35 @@ func (c *postgresCustomerHealthClient) filteredAccounts(ctx context.Context, ema
 			return nil, 0, fmt.Errorf("unmarshal entity-service accounts response: %w", err)
 		}
 		for _, a := range resp.Accounts {
-			if a.Region != nil && wantRegion[*a.Region] {
-				matched = append(matched, a)
+			if len(wantRegion) > 0 && (a.SubRegion == nil || !wantRegion[*a.SubRegion]) {
+				continue
 			}
+			if wantABTTeam != "" {
+				onTeam := (a.CreTeam != nil && strings.EqualFold(a.CreTeam.Name, wantABTTeam)) ||
+					(a.SreTeam != nil && strings.EqualFold(a.SreTeam.Name, wantABTTeam))
+				if !onTeam {
+					continue
+				}
+			}
+			if wantProduct != "" {
+				hasProduct, err := c.accountHasProduct(ctx, a.ID, wantProduct)
+				if err != nil {
+					return nil, 0, err
+				}
+				if !hasProduct {
+					continue
+				}
+			}
+			if len(q.risks) > 0 {
+				flags, err := c.accountFlags(ctx, a.ID, a.ActivationDate)
+				if err != nil {
+					return nil, 0, err
+				}
+				if !customerHealthAccountMatchesAnyRisk(flags, q.risks) {
+					continue
+				}
+			}
+			matched = append(matched, a)
 		}
 		if len(resp.Accounts) < accountScanPageLimit || (page+1)*accountScanPageLimit >= resp.Total {
 			break
@@ -416,6 +571,37 @@ func (c *postgresCustomerHealthClient) filteredAccounts(ctx context.Context, ema
 		end = start
 	}
 	return matched[start:end], total, nil
+}
+
+// accountHasProduct reports whether any deployed product (active or not)
+// under any of accountID's own projects' deployments has this product name
+// (case-insensitive). Reuses deployedEolProducts' own second return value
+// (every deployed product under the given deployments, not just the EOL
+// ones) rather than a separate entity-service call.
+func (c *postgresCustomerHealthClient) accountHasProduct(ctx context.Context, accountID, product string) (bool, error) {
+	projects, err := c.accountProjects(ctx, accountID)
+	if err != nil {
+		return false, err
+	}
+	for _, p := range projects {
+		deployments, err := c.projectDeployments(ctx, p.ID, true)
+		if err != nil {
+			return false, err
+		}
+		if len(deployments) == 0 {
+			continue
+		}
+		_, all, err := c.deployedEolProducts(ctx, deploymentIDsOf(deployments))
+		if err != nil {
+			return false, err
+		}
+		for _, dp := range all {
+			if strings.EqualFold(dp.Product.Name, product) {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
 }
 
 // accountProjects pages through an account's own projects.
@@ -449,37 +635,130 @@ func (c *postgresCustomerHealthClient) accountProjects(ctx context.Context, acco
 	return projects, nil
 }
 
-// projectNeedsGoLive reports whether a project's onboarding status means it
-// has not gone live yet. entity-service's own wire shape for OnboardingStatus
-// is NOT the raw onboarding_status_enum label ("NOT_STARTED"/"IN_PROGRESS") --
-// confirmed directly against real data (project_repo.go's own
-// INITCAP(REPLACE(..., '_', '-')) SQL): the four possible values are
-// "Not-Started", "In-Progress", "Completed", "Not-Applicable" (hyphenated,
-// title-case). A project with no onboarding tracked at all ("Not-Applicable",
-// or no project at all) is not treated as a go-live risk -- only a project
-// actively mid-onboarding is.
-func projectNeedsGoLive(status *string) bool {
-	return status != nil && (*status == "Not-Started" || *status == "In-Progress")
+// customerHealthLegacyActivationCutoff is the legacy system's own
+// grandfather-clause date ("2024-01-01 00:00:00", confirmed directly against
+// its own source): an account active before this is treated as having gone
+// live regardless of whether a go-live date was ever recorded for its
+// projects.
+var customerHealthLegacyActivationCutoff = time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+
+// projectGoLiveStatus ports the legacy system's own go-live-status
+// computation -- its exact source was obtained directly and its branch
+// structure/thresholds are reproduced here faithfully. Status strings were
+// cross-checked against a live sample of real accounts (not assumed from
+// the source alone) and corrected where they disagreed -- see the
+// "Customer for over 2 years" correction in the legacy-activation branch
+// below for one found this way.
+// goLiveDate is the project's own
+// GoLiveDate (RFC3339, entity-service's ProjectView.GoLiveDate /
+// project.onboarding_go_live_date -- the field the legacy system's own
+// equivalent checks); activationDate is the owning account's own
+// ActivationDate ("YYYY-MM-DD", entity-service's AccountView.ActivationDate
+// / account.activation_date -- the field the legacy system's own equivalent
+// checks). The legacy system's "project missing"/"account missing" branches
+// don't apply here: both are already resolved by the caller before this
+// runs.
+//
+// A previous version of this check used the project's OnboardingStatus
+// (project.onboarding_status) instead -- a different, unrelated field the
+// legacy rule never reads for this purpose at all, found live to silently
+// under-report: a project with no go-live date and no account activation
+// date ("N/A (No Start Date)" in the legacy rule) was reported as "Live"
+// here, because OnboardingStatus's "Not-Applicable" value was (wrongly)
+// treated as "nothing to worry about".
+func projectGoLiveStatus(goLiveDate, activationDate *string, now time.Time) servicenow.GoLiveStatus {
+	if goLiveDate != nil && *goLiveDate != "" {
+		return servicenow.GoLiveStatus{Status: "Has Gone Live", IsRisk: false, State: "success"}
+	}
+
+	var activation time.Time
+	haveActivation := false
+	if activationDate != nil && *activationDate != "" {
+		if t, err := time.Parse("2006-01-02", *activationDate); err == nil {
+			activation = t
+			haveActivation = true
+		}
+	}
+
+	if haveActivation && activation.Before(customerHealthLegacyActivationCutoff) {
+		// Status is plain "Has Gone Live", not a "... over 2 years" variant --
+		// confirmed against real data: every account in a live sample whose
+		// activation predates the cutoff (with no go-live date recorded)
+		// reports plain "Has Gone Live" from the legacy system, never a
+		// distinct label for this branch. An earlier version of this port
+		// invented a "Has Gone Live ( Customer for over 2 years )" string
+		// here with no real-data confirmation; this branch is kept distinct
+		// from the goLiveDate-is-set branch above (not collapsed into one
+		// early return) only to preserve the legacy rule's own branch
+		// structure for a future maintainer, even though the two currently
+		// produce an identical result.
+		return servicenow.GoLiveStatus{Status: "Has Gone Live", IsRisk: false, State: "success"}
+	}
+	if !haveActivation {
+		return servicenow.GoLiveStatus{Status: "N/A (No Start Date)", IsRisk: false, State: "pending"}
+	}
+	if activation.After(now) {
+		return servicenow.GoLiveStatus{Status: "N/A (Activation Date in Future)", IsRisk: false, State: "pending"}
+	}
+
+	// totalMonths mirrors the legacy rule's own
+	// floor(totalDays / 30.4375) -- the average days-per-month constant
+	// it uses, not a calendar-month diff.
+	totalMonths := int(now.Sub(activation).Hours() / 24 / 30.4375)
+	switch {
+	case totalMonths >= 6:
+		return servicenow.GoLiveStatus{Status: "Hasn't Gone Live in 6 months", IsRisk: true, State: "failure"}
+	case totalMonths == 0:
+		return servicenow.GoLiveStatus{Status: "Recently Activated (Less than a month)", IsRisk: false, State: "pending"}
+	default:
+		unit := "months"
+		if totalMonths == 1 {
+			unit = "month"
+		}
+		return servicenow.GoLiveStatus{Status: fmt.Sprintf("Hasn't Gone Live Since %d %s", totalMonths, unit), IsRisk: false, State: "pending"}
+	}
+}
+
+// customerHealthDefaultGoLiveStatus is the legacy rule's own default
+// ({isRisk: false, state: 'success', status: 'Has Gone Live'}) -- what an
+// account with no projects, or whose every project has actually gone live,
+// reports.
+var customerHealthDefaultGoLiveStatus = servicenow.GoLiveStatus{Status: "Has Gone Live", IsRisk: false, State: "success"}
+
+// accountGoLiveStatus aggregates projectGoLiveStatus across every one of an
+// account's projects the same way the legacy rule does: starting from the
+// "Has Gone Live" default, a project's "failure" or "pending" result
+// overwrites the running summary (a "success" result never does), and once
+// "failure" is reached nothing evaluated afterward can change it -- the
+// legacy rule's own guard against downgrading an already-failed summary.
+func accountGoLiveStatus(projects []entityProjectView, activationDate *string, now time.Time) servicenow.GoLiveStatus {
+	status := customerHealthDefaultGoLiveStatus
+	for _, p := range projects {
+		if status.State == "failure" {
+			break
+		}
+		result := projectGoLiveStatus(p.GoLiveDate, activationDate, now)
+		if result.State == "failure" || result.State == "pending" {
+			status = result
+		}
+	}
+	return status
 }
 
 // accountFlags computes the seven summary-level flags for one account,
 // aggregating across every one of its projects (any project flagged ->
 // the account is flagged) for the project-scoped signals (go-live,
 // EOL product, migration delays/abandonment), and account-wide queries for
-// the case/escalation-based ones.
-func (c *postgresCustomerHealthClient) accountFlags(ctx context.Context, accountID string) (customerHealthAccountFlags, error) {
+// the case/escalation-based ones. activationDate is the account's own
+// ActivationDate (entity-service's AccountView.ActivationDate), needed by
+// accountGoLiveStatus -- see that function's own doc comment.
+func (c *postgresCustomerHealthClient) accountFlags(ctx context.Context, accountID string, activationDate *string) (customerHealthAccountFlags, error) {
 	projects, err := c.accountProjects(ctx, accountID)
 	if err != nil {
 		return customerHealthAccountFlags{}, err
 	}
 
-	noGoLive := false
-	for _, p := range projects {
-		if projectNeedsGoLive(p.OnboardingStatus) {
-			noGoLive = true
-			break
-		}
-	}
+	goLiveStatus := accountGoLiveStatus(projects, activationDate, time.Now())
 
 	hasEolProduct := false
 	for _, p := range projects {
@@ -508,13 +787,8 @@ func (c *postgresCustomerHealthClient) accountFlags(ctx context.Context, account
 		return customerHealthAccountFlags{}, err
 	}
 
-	status := servicenow.GoLiveStatus{Status: "Live", IsRisk: false, State: "healthy"}
-	if noGoLive {
-		status = servicenow.GoLiveStatus{Status: "No Go-Live", IsRisk: true, State: "risk"}
-	}
-
 	return customerHealthAccountFlags{
-		goLiveStatus:           status,
+		goLiveStatus:           goLiveStatus,
 		hasRecentCases:         hasRecentCases,
 		hasEolProduct:          hasEolProduct,
 		hasAbandonedMigrations: hasAbandoned,
@@ -525,8 +799,15 @@ func (c *postgresCustomerHealthClient) accountFlags(ctx context.Context, account
 
 // projectHasEolProduct checks whether any deployed product under projectID's
 // own deployments is running a product version past its support_eol_date.
+//
+// Fetches with includeInactive: true -- the legacy rule this ports has no
+// active-only filter at all, and a deactivated/decommissioned deployment can
+// still carry real EOL product history that must count toward the risk flag
+// (confirmed by a live reproduction against a real staging account: the
+// deployment holding its EOL product history was inactive, so the
+// active-only default made this flag a false negative).
 func (c *postgresCustomerHealthClient) projectHasEolProduct(ctx context.Context, projectID string) (bool, error) {
-	deployments, err := c.projectDeployments(ctx, projectID)
+	deployments, err := c.projectDeployments(ctx, projectID, true)
 	if err != nil || len(deployments) == 0 {
 		return false, err
 	}
@@ -557,12 +838,13 @@ const (
 	customerHealthDeploymentPageCap   = 20 // 20 * 50 = 1000 deployments/products per project
 )
 
-func (c *postgresCustomerHealthClient) projectDeployments(ctx context.Context, projectID string) ([]entityDeploymentView, error) {
+func (c *postgresCustomerHealthClient) projectDeployments(ctx context.Context, projectID string, includeInactive bool) ([]entityDeploymentView, error) {
 	var deployments []entityDeploymentView
 	for page := 0; page < customerHealthDeploymentPageCap; page++ {
 		body, err := json.Marshal(entityDeploymentsSearchRequest{
-			Pagination: entityPagination{Limit: customerHealthDeploymentPageLimit, Offset: page * customerHealthDeploymentPageLimit},
-			ProjectIDs: []string{projectID},
+			Pagination:      entityPagination{Limit: customerHealthDeploymentPageLimit, Offset: page * customerHealthDeploymentPageLimit},
+			ProjectIDs:      []string{projectID},
+			IncludeInactive: includeInactive,
 		})
 		if err != nil {
 			return nil, fmt.Errorf("marshal entity-service deployments request: %w", err)
@@ -622,9 +904,14 @@ func (c *postgresCustomerHealthClient) deployedEolProducts(ctx context.Context, 
 }
 
 // accountHasCasesSince reports whether the account has any case-like work
-// item created at or after since.
+// item created at or after since -- restricted to customerHealthCaseLikeTypes
+// (excludes "announcement"), matching the legacy rule's own "recent cases"
+// query exactly. A previous version applied no type filter at all here, so
+// an account whose only recent work items were announcements (which the
+// legacy rule never counts) was wrongly reported as having recent cases.
 func (c *postgresCustomerHealthClient) accountHasCasesSince(ctx context.Context, accountID string, since time.Time) (bool, error) {
 	total, err := c.caseCount(ctx, accountID, "", []entityCaseFieldFilter{
+		{Field: "type", Op: "in", Values: customerHealthCaseLikeTypes},
 		{Field: "createdOn", Op: "gte", Values: []string{since.UTC().Format(time.RFC3339)}},
 	})
 	return total > 0, err
@@ -722,9 +1009,12 @@ func (c *postgresCustomerHealthClient) accountHasRecentEscalations(ctx context.C
 // the whole account and grouped by project -- this function does no case or
 // escalation search of its own, only the (bounded, per-project) deployment/
 // deployed-product lookups.
-func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, p entityProjectView, cases []entitySearchCaseView, escalations []entityEscalation) (servicenow.ProjectDetail, error) {
+func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, p entityProjectView, activationDate *string, cases []entitySearchCaseView, escalations []entityEscalation) (servicenow.ProjectDetail, error) {
 	since := time.Now().Add(-customerHealthRecentWindow).UTC()
 	recentCases := filterCases(cases, func(cv entitySearchCaseView) bool {
+		if !isCustomerHealthCaseLikeType(cv.Type) {
+			return false
+		}
 		t, err := time.Parse(time.RFC3339, cv.CreatedOn)
 		return err == nil && !t.Before(since)
 	})
@@ -740,11 +1030,23 @@ func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, p enti
 		return isOpenMigrationBefore(cv, delayedCutoff)
 	})
 
-	deps, err := c.projectDeployments(ctx, p.ID)
+	// Active-only: this is what feeds the plain "Deployments" list below
+	// (deploymentRefs), which must keep showing only a project's current
+	// deployments, unchanged by the EOL fix just below.
+	deps, err := c.projectDeployments(ctx, p.ID, false)
 	if err != nil {
 		return servicenow.ProjectDetail{}, err
 	}
-	deploymentIDs := deploymentIDsOf(deps)
+	// includeInactive: true for the EOL computation specifically -- see
+	// projectHasEolProduct's own doc comment. Fetched separately from deps
+	// (above) so the "Deployments" list's own active-only semantics are
+	// untouched; the legacy system's own EOL drill-down is built from
+	// deployments regardless of active state too.
+	eolDeps, err := c.projectDeployments(ctx, p.ID, true)
+	if err != nil {
+		return servicenow.ProjectDetail{}, err
+	}
+	deploymentIDs := deploymentIDsOf(eolDeps)
 	var eolDeployments []entityDeployedProductEolView
 	var deployedProducts []entityDeployedProductEolView
 	if len(deploymentIDs) > 0 {
@@ -772,11 +1074,7 @@ func (c *postgresCustomerHealthClient) projectDetail(ctx context.Context, p enti
 
 	escalatedCases := escalationLinks(escalations, cases)
 
-	noGoLive := projectNeedsGoLive(p.OnboardingStatus)
-	status := servicenow.GoLiveStatus{Status: "Live", IsRisk: false, State: "healthy"}
-	if noGoLive {
-		status = servicenow.GoLiveStatus{Status: "No Go-Live", IsRisk: true, State: "risk"}
-	}
+	status := projectGoLiveStatus(p.GoLiveDate, activationDate, time.Now())
 
 	return servicenow.ProjectDetail{
 		SysID:                   p.ID,

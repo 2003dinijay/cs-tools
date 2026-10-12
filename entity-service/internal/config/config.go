@@ -427,10 +427,13 @@ type Config struct {
 	// a committed default) whose presence on a case comment's
 	// resolved author marks that comment as a customer reply — see
 	// sn_case_service.go's applyCustomerReplyStateTransition, which moves
-	// the case back to Work In Progress when a customer replies while it's
+	// the case back to Waiting on WSO2 when a customer replies while it's
 	// Awaiting Info/Solution Proposed. Left unset (or empty), that function
 	// can't confirm customer-authorship and skips (logged) — not fatal, not
-	// required by Validate. Coincidentally shares its name with an
+	// required by Validate. DATA_SOURCE=servicenow only: case_service.go's
+	// port of the same rule decides customer-authorship from the caller's
+	// resolved identity and never reads this (see its
+	// isCustomerCommentAuthor). Coincidentally shares its name with an
 	// unrelated CUSTOMER_ROLES env var in
 	// integrations/csm-notification-service (notification-link routing,
 	// nothing to do with case state) — the two are read by separate

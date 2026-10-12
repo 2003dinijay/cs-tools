@@ -166,9 +166,6 @@ func parseActualDurationMin(raw *string) *int {
 // Known gaps, all left at their zero value rather than guessed:
 //   - number has no default/sequence and no confirmed format, so a created
 //     call request has a NULL number (returned as "").
-//   - CancellationReason has no column ("reason" is the request's own
-//     reason), so it is never stored or returned -- the service rejects a
-//     request that supplies one rather than silently dropping it.
 //   - closed_on/closed_by_id are never set by UpdateCallRequest: which states
 //     count as "closed" isn't specified anywhere.
 //   - State transitions are not validated against the current state, except that
@@ -243,7 +240,7 @@ func NewCallRequestRepository(db *Scoped) CallRequestRepository {
 // filters of SearchAllCallRequests, but are included in the shared FROM so
 // the count and page queries can never drift apart.
 const callRequestSelect = `
-	SELECT cc.id, cc.number, cc.state::TEXT, cc.reason, cc.final_times,
+	SELECT cc.id, cc.number, cc.state::TEXT, cc.reason, cc.reject_reason, cc.final_times,
 	       (EXTRACT(EPOCH FROM cc.duration) / 60)::INT, cc.scheduled_on, cc.call_link,
 	       cc.created_on, cc.updated_on,
 	       cc.all_notes, cc.plan, cc.attendees, cc.action_items, cc.actual_call_duration,
@@ -258,19 +255,19 @@ const callRequestFrom = `
 
 func scanCallRequest(row pgx.Row) (domain.CallRequestView, error) {
 	var (
-		v                                           domain.CallRequestView
-		id                                          string
-		number, state, reason, callLink             *string
-		finalTimes                                  []byte
-		durationMin                                 *int
-		scheduledOn                                 *time.Time
-		createdOn, updatedOn                        time.Time
-		notes, plan, attendees, actionItems, actual *string
-		caseID, caseSubject, caseNumber             *string
-		assignee                                    *string
+		v                                             domain.CallRequestView
+		id                                            string
+		number, state, reason, rejectReason, callLink *string
+		finalTimes                                    []byte
+		durationMin                                   *int
+		scheduledOn                                   *time.Time
+		createdOn, updatedOn                          time.Time
+		notes, plan, attendees, actionItems, actual   *string
+		caseID, caseSubject, caseNumber               *string
+		assignee                                      *string
 	)
 	if err := row.Scan(
-		&id, &number, &state, &reason, &finalTimes,
+		&id, &number, &state, &reason, &rejectReason, &finalTimes,
 		&durationMin, &scheduledOn, &callLink,
 		&createdOn, &updatedOn,
 		&notes, &plan, &attendees, &actionItems, &actual,
@@ -284,6 +281,7 @@ func scanCallRequest(row pgx.Row) (domain.CallRequestView, error) {
 	v.Number = stringOrEmpty(number)
 	v.Case = domain.CallRequestCaseRef{ID: stringOrEmpty(caseID), Name: stringOrEmpty(caseSubject), Number: caseNumber}
 	v.Reason = reason
+	v.CancellationReason = rejectReason
 	v.PreferredTimes = decodeFinalTimes(finalTimes)
 	if durationMin != nil {
 		v.DurationMin = *durationMin
@@ -635,7 +633,8 @@ func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.Upda
 			plan = COALESCE($9::text, plan),
 			attendees = COALESCE($10::text, attendees),
 			action_items = COALESCE($11::text, action_items),
-			actual_call_duration = COALESCE($12::text, actual_call_duration)
+			actual_call_duration = COALESCE($12::text, actual_call_duration),
+			reject_reason = COALESCE($15::text, reject_reason)
 		WHERE id = $1::text::uuid
 		  AND ($13::text::uuid IS NULL OR work_item_id = $13::text::uuid)
 		  AND ($14::text[] IS NULL OR state::text = ANY($14::text[]))
@@ -647,6 +646,7 @@ func (r *callRequestRepo) UpdateCallRequest(ctx context.Context, req domain.Upda
 		req.ID, callRequestStateToEnum(req.State), callerEmail,
 		finalTimes, req.DurationMinutes, scheduledOn, assigneeID,
 		notes, req.Plan, req.Attendees, req.ActionItems, actual, caseID, onlyFromStates,
+		req.CancellationReason,
 	).Scan(&id, &updatedOn)
 	if errors.Is(err, pgx.ErrNoRows) && onlyFromStates != nil {
 		// No row matched. Either the call does not exist (not found), or it is in a state

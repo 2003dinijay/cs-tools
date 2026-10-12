@@ -276,6 +276,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		        p.start_date, p.end_date, p.created_on, p.updated_on,
 		        `+projectClosureColumns+`,
 		        INITCAP(REPLACE(p.onboarding_status::TEXT, '_', '-')),
+		        p.onboarding_go_live_date,
 		        a.id, a.name, a.region, a.sub_region, `+accountIsPartnerColumn+`,
 		        (SELECT COUNT(*) FROM work_item wi
 		           LEFT JOIN "case" c ON c.id = wi.id`+caseLikeJoins+`
@@ -344,7 +345,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn,
 				&p.ClosureState, &p.EndDateClosureState, &p.InvoiceDueDateClosureState,
 				&p.ComplianceViolationClosureState, &p.ComplianceViolationDate, &p.SuspensionProcessState,
-				&p.OnboardingStatus,
+				&p.OnboardingStatus, &p.GoLiveDate,
 				&aID, &aName, &acct.Region, &acct.SubRegion, &acct.IsPartner,
 				&p.ActiveCasesCount,
 			); err != nil {
