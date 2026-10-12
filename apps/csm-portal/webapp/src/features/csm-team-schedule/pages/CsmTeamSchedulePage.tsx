@@ -27,6 +27,7 @@ import {
   useDeleteAbsence,
   useScheduleEditMarkers,
   useApplyRange,
+  useMarkerOnlyTeams,
   useMyLeadTeams,
   useScheduleAbsences,
   useScheduleAbsencesByMonth,
@@ -46,6 +47,8 @@ import NextRotation from "../components/NextRotation";
 import RecentChanges from "../components/RecentChanges";
 import WeekTable from "../components/WeekTable";
 import CasePagingTab, { type PagingRotaTarget } from "../components/CasePagingTab";
+import RotaAccessTab from "../components/RotaAccessTab";
+import { canManageRotaAccess, useRotaAccess } from "../api/useRotaAccess";
 import { useGetPagingChain } from "../api/usePagingChain";
 import GenerateRotaDialog from "../components/GenerateRotaDialog";
 import { GENERATED_ROTA } from "../api/useGenerateRota";
@@ -93,7 +96,7 @@ function notSaved(what: string, err: unknown): string {
   return `${what}${reason} Nothing has moved.`;
 }
 
-type ViewTab = "mine" | "today" | "week" | "roster" | "paging";
+type ViewTab = "mine" | "today" | "week" | "roster" | "paging" | "access";
 type Family = RotaFamily;
 
 /** Every family in the order the switch lists them, the reader's own first. */
@@ -114,6 +117,7 @@ const TITLE: Record<ViewTab, string> = {
   week: "Who is on this week",
   roster: "Month roster",
   paging: "Case Paging",
+  access: "Rota access",
 };
 
 /** The roster's window as days, "14 Sept – 12 Oct 2026": it opens and closes
@@ -236,6 +240,14 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   // Which teams this reader may edit. Asked once: it changes when somebody is
   // made a lead, not while they are looking at a rota.
   const leadTeams = useMyLeadTeams();
+  /** The editable teams held only as the team's rota marker: their days may
+   *  be marked, but Generate month, the tags and Case Paging are not offered
+   *  for them -- those stay with the team's lead and the family's rota admin. */
+  const markerOnlyTeams = useMarkerOnlyTeams();
+  const fullTeams = useMemo(() => {
+    const markerOnly = new Set((markerOnlyTeams.data ?? []).map((k) => k.toLowerCase()));
+    return (leadTeams.data ?? []).filter((k) => !markerOnly.has(k.toLowerCase()));
+  }, [leadTeams.data, markerOnlyTeams.data]);
   const { showError } = useErrorBanner();
   const applyRange = useApplyRange();
   const applyAbsence = useApplyAbsence();
@@ -276,19 +288,25 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  the roster answers per team, and the server answers again on the write. */
   const canEditRota = (leadTeams.data ?? []).length > 0;
 
-  /** Case Paging is offered to a rota admin or Team lead (canEditRota), and
-   *  to anyone the server lets change some part of the paging chain -- the
-   *  CRE and CS heads, a portal admin. Engineers never see it. The probe is
-   *  the CRE chain the tab opens on, so it is the same read, not a second. */
+  /** Case Paging is offered to a rota admin or Team lead (not to a reader
+   *  who only marks a team), and to anyone the server lets change some part
+   *  of the paging chain -- the CRE and CS heads, a portal admin. Engineers
+   *  never see it. The probe is the CRE chain the tab opens on, so it is the
+   *  same read, not a second. */
   const pagingProbe = useGetPagingChain("CRE");
   const pagingCan = pagingProbe.data?.canEdit;
   const showPaging =
-    canEditRota ||
+    fullTeams.length > 0 ||
     (!!pagingCan &&
       (pagingCan.responderTeams.length > 0 ||
         pagingCan.teamLeadTeams.length > 0 ||
         pagingCan.americasTeamLead ||
         pagingCan.heads));
+
+  /** Rota access is offered to whoever the server says may change some of
+   *  it: a CSM admin, or a rota admin naming their own group's markers. */
+  const rotaAccess = useRotaAccess();
+  const showAccess = canManageRotaAccess(rotaAccess.data);
 
   /** The reader's own group, from their CSM profile: their team, or for a
    *  rota admin the group their role runs (see readerFamily). Absent for
@@ -317,8 +335,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    * group, so My week can never apply to them, and a permanently dead tab is
    * just something to wonder about. It is not offered.
    */
-  const visibleTabs: ViewTab[] = (["mine", "today", "week", "roster", "paging"] as ViewTab[]).filter(
-    (t) => !(isManager && t === "mine") && (t !== "paging" || showPaging),
+  const visibleTabs: ViewTab[] = (["mine", "today", "week", "roster", "paging", "access"] as ViewTab[]).filter(
+    (t) => !(isManager && t === "mine") && (t !== "paging" || showPaging) && (t !== "access" || showAccess),
   );
 
   /** The tab actually being shown. A manager's remembered My week (from
@@ -327,11 +345,14 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   const view: ViewTab =
     isManager && tab === "mine"
       ? "today"
-      : tab === "paging" && !showPaging
+      : (tab === "paging" && !showPaging) || (tab === "access" && !showAccess)
         ? isManager
           ? "today"
           : "mine"
         : tab;
+  /** A tab that is a panel of its own rather than a view of the rota: no
+   *  date controls, and no rota to read for it. */
+  const panelTab = view === "paging" || view === "access";
 
   /**
    * Whether this view can show the other group.
@@ -475,7 +496,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     view === "roster" &&
     scopeRota === GENERATED_ROTA &&
     (catalogue.data?.teams ?? []).some(
-      (t) => t.rotaCode === GENERATED_ROTA && (leadTeams.data ?? []).includes(t.key),
+      (t) => t.rotaCode === GENERATED_ROTA && fullTeams.includes(t.key),
     );
   // A family running more than one rota reads only the scoped rota's teams;
   // otherwise the family alone, as before.
@@ -491,7 +512,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
       // working this morning; the week groups by rota date, so it does not.
       includeOvernight: dayView,
     },
-    !rosterView && view !== "paging",
+    !rosterView && !panelTab,
   );
   // The roster spans three months, which is more than one read may ask for,
   // so it is read a month at a time and merged.
@@ -1007,6 +1028,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
                 <span className="tsub">
                   {t === "paging"
                     ? "who gets paged, tier by tier"
+                    : t === "access"
+                    ? "who can mark the rotas"
                     : t === "today"
                     ? fmtShort(anchor)
                     : t === "roster"
@@ -1018,7 +1041,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
             })}
           </div>
 
-          <div className="tabright" hidden={view === "paging"}>
+          <div className="tabright" hidden={panelTab}>
             <div className="controls">
               {/* The group and team controls used to live here. Every card now
                   carries them in its own head, where the reader is actually
@@ -1223,6 +1246,8 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         <div className="card" id="ts-panel" role="tabpanel" aria-labelledby={`ts-tab-${view}`}>
           {view === "paging" ? (
             <CasePagingTab onOpenRota={openRota} initialChain={myPagingChain} />
+          ) : view === "access" ? (
+            <RotaAccessTab teams={catalogue.data?.teams ?? []} />
           ) : assignments.isError ? (
             <QueryErrorState message="Could not load the rota." error={assignments.error} />
           ) : busy ? (
@@ -1333,8 +1358,11 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           onApply={applyToCell}
           onMarkAway={markAway}
           onRemoveAbsence={removeAbsence}
-          onCreateKind={addKind}
-          onDeleteKind={removeKind}
+          // The tags are shared by every team, so they are a lead's or a rota
+          // admin's to change; a reader who only marks a team is not offered
+          // them (the server refuses them too).
+          onCreateKind={fullTeams.length > 0 ? addKind : undefined}
+          onDeleteKind={fullTeams.length > 0 ? removeKind : undefined}
           onClear={clearCell}
           onClose={() => setPicker(null)}
         />
