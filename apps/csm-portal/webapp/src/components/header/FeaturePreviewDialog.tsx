@@ -26,8 +26,7 @@ import { X } from "@wso2/oxygen-ui-icons-react";
 import { type JSX } from "react";
 import { featureState, listPreviewableFeatures } from "@config/featureFlags";
 import { useFeaturePreviewOverrides } from "@config/featurePreview";
-import { usePortalAccess } from "@context/current-user/usePortalAccess";
-import { useCurrentUser } from "@context/current-user/CurrentUserContext";
+import { usePortalAccess, useSafeCurrentUserId } from "@context/current-user/usePortalAccess";
 
 export interface FeaturePreviewDialogProps {
   open: boolean;
@@ -51,8 +50,7 @@ export default function FeaturePreviewDialog({
   onClose,
 }: FeaturePreviewDialogProps): JSX.Element {
   const access = usePortalAccess();
-  const { user } = useCurrentUser();
-  const { overrides, setOverride } = useFeaturePreviewOverrides(user?.id);
+  const { overrides, setOverride } = useFeaturePreviewOverrides(useSafeCurrentUserId());
   const candidates = listPreviewableFeatures(access);
 
   return (
