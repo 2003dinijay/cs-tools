@@ -629,6 +629,7 @@ func main() {
 	// "Generate month": a lead of the SaaS SRE rota works a month out from
 	// the availability marked on it. Who may is entity-service's decision.
 	route("POST /team-schedule/rotas/{code}/generate", handler.PermWrite, rotaGenerateHandler.GenerateRotaMonth)
+	route("GET /team-schedule/rotas/{code}/night-crew", handler.PermView, rotaGenerateHandler.GetRotaNightCrew)
 	route("POST /configuration-items/search", handler.PermView, configurationItemHandler.SearchConfigurationItems)
 	route("POST /time-cards/search", handler.PermTimeCardsAndUpdates, timeCardHandler.SearchTimeCards)
 	route("POST /time-cards", handler.PermTimeCardsAndUpdates, timeCardHandler.CreateTimeCard)

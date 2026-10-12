@@ -341,6 +341,48 @@ describe("DayLadder: TZ3 is one card", () => {
   });
 });
 
+describe("DayLadder: others in a zone, by team", () => {
+  const day = (name: string, teamKey: string) =>
+    assignment({ name, rotaDate: ISO, shiftCode: TZ1.code, zoneCode: "TZ1", teamKey });
+  const renderZone = (assignments: ReturnType<typeof day>[]) =>
+    render(
+      <DayLadder
+        day={WEDNESDAY}
+        tz={TZ}
+        zoneLabel="IST"
+        lanes={[{ name: "TZ1", assignments, layout: "zone" }]}
+        shifts={shiftMap(TZ1)}
+        zones={ZONES}
+        absences={[]}
+        absenceKinds={[ANNUAL_LEAVE]}
+        {...scopeControls()}
+      />,
+    );
+
+  it("lists each team under its own heading and count, as the Leave card does", () => {
+    const { container } = renderZone([
+      day("Nadia", "orion_abt_cre_team"),
+      day("Kasun", "lyra_abt_cre_team"),
+      day("Ruwan", "orion_abt_cre_team"),
+    ]);
+    const card = [...container.querySelectorAll(".zblk")].find((el) => el.textContent?.includes("Others in TZ1"))!;
+    const groups = [...card.querySelectorAll(".zteam")].map((g) => ({
+      heading: g.querySelector(".offgh")?.firstChild?.textContent,
+      count: g.querySelector(".offgh b")?.textContent,
+      names: [...g.querySelectorAll(".lnm .who")].map((n) => n.textContent),
+    }));
+    expect(groups).toEqual([
+      { heading: "Orion", count: "2", names: ["Nadia", "Ruwan"] },
+      { heading: "Lyra", count: "1", names: ["Kasun"] },
+    ]);
+  });
+
+  it("keeps the escalation card as tiers, not teams", () => {
+    const { container } = renderZone([{ ...day("Nadia", "orion_abt_cre_team"), tier: "L1" }]);
+    expect(container.querySelector(".zbp.tiers .zteam")).toBeNull();
+  });
+});
+
 describe("DayLadder: a stint worked on another team's rota", () => {
   const BRAZIL = {
     id: "k-br", code: "ALLO_BR", shortCode: "BR", label: "Brazil rotation", bucket: "ALLOCATION" as const,

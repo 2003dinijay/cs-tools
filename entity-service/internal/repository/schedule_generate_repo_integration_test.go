@@ -231,3 +231,53 @@ func TestRotaGenerateIntegration_LieuOverLeaveIsSkipped(t *testing.T) {
 		t.Fatal("lieu written over leave already booked")
 	}
 }
+
+// A generation records the month's TZ3 people in the same transaction, and the
+// next generation of that month replaces them -- with nobody chosen, clears
+// them. Other months are left alone. A rota code of its own keeps the test off
+// any real rota's months.
+func TestRotaGenerateIntegration_RecordsAndReplacesTheNightCrew(t *testing.T) {
+	repo, pool := newRotaGenerateIntegrationRepo(t)
+	ctx := context.Background()
+	const rota = "GEN_TEST"
+	clean := func() { mustExec(t, pool, `DELETE FROM team_schedule_night_crew WHERE rota_code = $1`, rota) }
+	clean()
+	t.Cleanup(clean)
+
+	write := func(month string, crew ...RotaNightCrewRow) {
+		t.Helper()
+		if _, err := repo.ReplaceGeneratedMonth(ctx, RotaMonthWrite{
+			ActorEmail: "lead@example.test", Owner: RotaGeneratorOwner(rota), TeamKeys: []string{genTeamKey},
+			ShiftCodes: []string{"SRE_TZ3"}, From: month, To: month,
+			RotaCode: rota, Month: month, NightCrew: crew,
+		}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("2026-11-01", RotaNightCrewRow{UserID: genUserA, TeamKey: genTeamKey}, RotaNightCrewRow{UserID: genUserB, TeamKey: genTeamKey})
+	write("2026-12-01", RotaNightCrewRow{UserID: genUserC, TeamKey: genTeamKey})
+
+	got, err := repo.NightCrew(ctx, rota, "2026-10-01", "2026-12-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 3 || got[0].Month != "2026-11-01" || got[2].Month != "2026-12-01" || got[2].UserID != genUserC {
+		t.Fatalf("night crew: %+v", got)
+	}
+	if n := genCountRows(t, pool, `SELECT count(*) FROM team_schedule_night_crew WHERE rota_code = $1 AND created_by = 'lead@example.test'`, rota); n != 3 {
+		t.Fatalf("want 3 rows naming who chose them, got %d", n)
+	}
+
+	// November again, with only C: A and B are back on their team.
+	write("2026-11-01", RotaNightCrewRow{UserID: genUserC, TeamKey: genTeamKey})
+	got, _ = repo.NightCrew(ctx, rota, "2026-11-01", "2026-11-01")
+	if len(got) != 1 || got[0].UserID != genUserC {
+		t.Fatalf("november after the second run: %+v", got)
+	}
+	// November with nobody chosen: cleared; December untouched.
+	write("2026-11-01")
+	got, _ = repo.NightCrew(ctx, rota, "2026-11-01", "2026-12-01")
+	if len(got) != 1 || got[0].Month != "2026-12-01" {
+		t.Fatalf("after clearing november: %+v", got)
+	}
+}

@@ -335,7 +335,8 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 	shiftRows, err := r.db.Query(ctx, `
 		SELECT s.id, s.code, s.short_code, s.label, s.family::text, z.code, s.tier::text,
 		       s.day_scope::text, s.start_minute, s.end_minute, s.authoring_time_zone,
-		       s.is_on_call, s.is_escalation, s.is_rotation, s.crosses_midnight, s.colour_token, s.sort_order
+		       s.is_on_call, s.is_escalation, s.is_rotation, s.crosses_midnight, s.colour_token, s.sort_order,
+		       s.shared_across_teams
 		FROM team_schedule_shift s
 		LEFT JOIN team_schedule_zone z ON z.id = s.zone_id
 		WHERE s.is_active ORDER BY s.family, s.sort_order`)
@@ -347,7 +348,8 @@ func (r *scheduleRepository) Catalogue(ctx context.Context) (domain.ScheduleCata
 		var s domain.ScheduleShift
 		if err := shiftRows.Scan(&s.ID, &s.Code, &s.ShortCode, &s.Label, &s.Family, &s.ZoneCode, &s.Tier,
 			&s.DayScope, &s.StartMinute, &s.EndMinute, &s.AuthoringTimeZone,
-			&s.IsOnCall, &s.IsEscalation, &s.IsRotation, &s.CrossesMidnight, &s.ColourToken, &s.SortOrder); err != nil {
+			&s.IsOnCall, &s.IsEscalation, &s.IsRotation, &s.CrossesMidnight, &s.ColourToken, &s.SortOrder,
+			&s.SharedAcrossTeams); err != nil {
 			return cat, fmt.Errorf("scan schedule shift: %w", err)
 		}
 		cat.Shifts = append(cat.Shifts, s)
@@ -666,6 +668,66 @@ func slotConflict(err error, isoDate string) error {
 		Msg: "this person already has a window that overlaps this one" + on +
 			", possibly on another team's rota; clear that one first",
 	}
+}
+
+// tierHolderConflict refuses a turn whose tier somebody else already holds.
+//
+// A rung of the SRE pager's ladder is one person. ApplyRange used to put the
+// new person on beside the old one -- its displacement only ever clears the
+// person being edited -- so a second "Apollo TZ1 L1" left the pager to choose
+// between them. The lead is told who holds the slot instead, and has to take
+// them off first; nothing is replaced behind their back.
+//
+// A slot is a zone's tier on one rota day. On most windows that is per team:
+// Apollo and Artemis each have their own TZ1 L1. On a window shared across
+// teams (team_schedule_shift.shared_across_teams, migration 0223 -- SaaS's
+// SRE_TZ3) it is one slot for the whole rota, because the zone belongs to one
+// rota and the night crew pages for all of its teams. Either way the person
+// being edited is never a conflict with themselves: moving them from L1 to L2
+// is the displacement's job.
+//
+// Holding the slot is about the zone and tier, not the window: SRE_TZ1_L1 and
+// SRE_TZ1 at L1 are the same rung. A row with no tier of its own holds its
+// window's, as the pager reads it -- CreateAssignment stores the tier it is
+// given, which can be none on a fixed-tier window.
+//
+// The advisory lock serialises two leads setting the same slot at once, which
+// a read-then-insert would otherwise let both through. It is keyed without the
+// team, so the per-team and the shared case take the same lock.
+func tierHolderConflict(ctx context.Context, tx pgx.Tx,
+	zoneID, zoneCode, tier, isoDate, userID, teamKey string, sharedAcrossTeams bool) error {
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1::text, 0::bigint))`,
+		"team-schedule-tier-slot:"+zoneID+":"+tier+":"+isoDate); err != nil {
+		return fmt.Errorf("lock the %s %s slot on %s: %w", zoneCode, tier, isoDate, err)
+	}
+	var holder, team string
+	err := tx.QueryRow(ctx, `
+		SELECT `+engineerName+`, COALESCE(t.name, a.team_key)
+		  FROM team_schedule_assignment a
+		  JOIN team_schedule_shift s ON s.id = a.shift_id
+		  JOIN "user" u    ON u.id = a.user_id
+		  LEFT JOIN team t ON lower(t.key) = lower(a.team_key)
+		 WHERE a.zone_id = $1::uuid
+		   AND COALESCE(a.tier, s.tier) = $2::team_schedule_tier_enum
+		   AND a.rota_date = $3::date
+		   AND a.user_id <> $4::uuid
+		   AND ($6 OR lower(a.team_key) = lower($5))
+		 ORDER BY a.created_on, a.id
+		 LIMIT 1`,
+		zoneID, tier, isoDate, userID, teamKey, sharedAcrossTeams).Scan(&holder, &team)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("read the %s %s holder on %s: %w", zoneCode, tier, isoDate, err)
+	}
+	if sharedAcrossTeams {
+		return &apierror.ConflictError{Msg: fmt.Sprintf(
+			"%s (%s) already holds %s %s on %s, and %s is one crew for the whole rota; take them off it first",
+			holder, team, zoneCode, tier, isoDate, zoneCode)}
+	}
+	return &apierror.ConflictError{Msg: fmt.Sprintf(
+		"%s already holds %s %s on %s; take them off it first", holder, zoneCode, tier, isoDate)}
 }
 
 // syncMoveShifts keeps a person's MOVE shifts in step with their spans over
@@ -1168,6 +1230,10 @@ func (r *scheduleRepository) distinctStrings(ctx context.Context, sql string, ar
 // Each day replaces whatever that engineer held: the roster is one slot per
 // person per day, and "put them on the evening shift" means instead of, not as
 // well as, their regular hours.
+//
+// It replaces only that engineer's own rows, never a colleague's: an SRE tier
+// somebody else already holds on a day is refused as a conflict naming them
+// (tierHolderConflict), and the whole span is left unchanged.
 func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplyScheduleRangeRequest, actorEmail string) (domain.ApplyScheduleRangeResponse, error) {
 	out := domain.ApplyScheduleRangeResponse{SkippedDates: []string{}}
 
@@ -1216,6 +1282,11 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 	displace := "day"
 	var zoneID *string
 	var isEscalation bool
+	// The tier slot the new turn takes, when it takes one -- see
+	// tierHolderConflict. holdsTier stays false for a clear, a window with no
+	// tier, and every window outside SRE.
+	var holdsTier, sharedAcrossTeams bool
+	var slotTier, slotZoneCode string
 	if clearing && req.ZoneCode != nil {
 		var id string
 		if err := tx.QueryRow(ctx, `SELECT id::text FROM team_schedule_zone WHERE code = $1`, *req.ZoneCode).Scan(&id); err != nil {
@@ -1224,11 +1295,17 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 		zoneID, displace = &id, "zone"
 	}
 	if !clearing {
-		var fixedTier *string
+		var fixedTier, zoneCode *string
 		var isRotation bool
-		if err := tx.QueryRow(ctx,
-			`SELECT day_scope::text, is_escalation, tier::text, zone_id::text, is_rotation FROM team_schedule_shift WHERE code = $1`,
-			req.ShiftCode).Scan(&scope, &isEscalation, &fixedTier, &zoneID, &isRotation); err != nil {
+		var family string
+		if err := tx.QueryRow(ctx, `
+			SELECT s.day_scope::text, s.is_escalation, s.tier::text, s.zone_id::text, s.is_rotation,
+			       s.family::text, s.shared_across_teams, z.code
+			  FROM team_schedule_shift s
+			  LEFT JOIN team_schedule_zone z ON z.id = s.zone_id
+			 WHERE s.code = $1`,
+			req.ShiftCode).Scan(&scope, &isEscalation, &fixedTier, &zoneID, &isRotation,
+			&family, &sharedAcrossTeams, &zoneCode); err != nil {
 			return out, &apierror.ValidationError{Msg: fmt.Sprintf("no such shift %q", req.ShiftCode)}
 		}
 		// Somebody moved to a team that works no rota -- Migration -- is not on
@@ -1276,6 +1353,19 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 				return out, &apierror.ValidationError{Msg: fmt.Sprintf("%s is an %s window; it cannot hold %s", req.ShiftCode, *fixedTier, *req.Tier)}
 			}
 		}
+		// An SRE turn is one rung of the pager's ladder, and a rung is one
+		// person: two people on "Apollo TZ1 L1" leaves the pager to pick one
+		// of them arbitrarily. CRE has no tiers, and SME's rotations are left
+		// as they were.
+		if family == "SRE" && isEscalation && zoneID != nil && zoneCode != nil {
+			switch {
+			case req.Tier != nil:
+				holdsTier, slotTier = true, *req.Tier
+			case fixedTier != nil:
+				holdsTier, slotTier = true, *fixedTier
+			}
+			slotZoneCode = *zoneCode
+		}
 	}
 
 	for d := from; !d.After(to); d = d.AddDate(0, 0, 1) {
@@ -1286,6 +1376,16 @@ func (r *scheduleRepository) ApplyRange(ctx context.Context, req domain.ApplySch
 			continue
 		}
 		iso := d.Format("2006-01-02")
+
+		// Refused before anything of the day is touched, though the rollback
+		// would undo it anyway: the whole span is one transaction, so a clash
+		// on its last day leaves its first days as they were too.
+		if holdsTier {
+			if err := tierHolderConflict(ctx, tx, *zoneID, slotZoneCode, slotTier, iso,
+				req.UserID, req.TeamKey, sharedAcrossTeams); err != nil {
+				return out, err
+			}
+		}
 
 		// Record what is being displaced before it goes, so the history is not
 		// a row appearing from nowhere.
