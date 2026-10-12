@@ -31,8 +31,8 @@ func baseValidConfig() Config {
 		SLADataSource:        SLADataSourcePostgres,
 		AttachmentDataSource: AttachmentDataSourcePostgres,
 		DBUser:               "user",
-		DBPassword:    "password",
-		DBName:        "db",
+		DBPassword:           "password",
+		DBName:               "db",
 		// Both ports carry their real defaults: Load always populates them,
 		// and Validate rejects the two being equal — which a zero-value
 		// Config would be.
@@ -1243,5 +1243,43 @@ func TestConfig_Validate_GithubRepoTokens(t *testing.T) {
 		if err := c.Validate(); err == nil {
 			t.Errorf("%q: want a startup error", v)
 		}
+	}
+}
+
+func TestConfig_Validate_GithubSNCaseAPI(t *testing.T) {
+	ok := baseValidConfig()
+	ok.GithubSNCaseAPIURL = "https://example.service-now.com/api/wso2/gh_integration/case"
+	ok.GithubSNCaseAPIUsername, ok.GithubSNCaseAPIPassword = "gh.integration", "secret"
+	if err := ok.Validate(); err != nil {
+		t.Errorf("complete settings: unexpected error %v", err)
+	}
+	for name, mutate := range map[string]func(*Config){
+		"http URL":     func(c *Config) { c.GithubSNCaseAPIURL = "http://example.service-now.com/api" },
+		"relative URL": func(c *Config) { c.GithubSNCaseAPIURL = "/api/wso2/gh_integration/case" },
+		"no username":  func(c *Config) { c.GithubSNCaseAPIUsername = " " },
+		"no password":  func(c *Config) { c.GithubSNCaseAPIPassword = "" },
+	} {
+		c := ok
+		mutate(&c)
+		err := c.Validate()
+		if err == nil {
+			t.Errorf("%s: want a startup error", name)
+		} else if strings.Contains(err.Error(), "secret") {
+			t.Errorf("%s: error %q quotes the password", name, err)
+		}
+	}
+
+	c := ok
+	c.DataSource = DataSourcePostgres
+	if c.GithubServiceNowFirst() {
+		t.Error("GithubServiceNowFirst on plain postgres: there is no ServiceNow to create in")
+	}
+	c.DataSource = DataSourcePostgresServiceNowDualWrite
+	if !c.GithubServiceNowFirst() {
+		t.Error("GithubServiceNowFirst off under dual-write with the API configured")
+	}
+	c.GithubSNCaseAPIURL = ""
+	if c.GithubServiceNowFirst() {
+		t.Error("GithubServiceNowFirst on without the API URL")
 	}
 }
