@@ -1794,11 +1794,74 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// entry," not a failed update: the case update itself does not depend
 	// on this.
 	var before *domain.CaseView
+	var beforeErr error
 	if req.State != nil || req.WorkState != nil {
 		if cv, err := s.GetCaseByID(ctx, req.ID); err != nil {
+			beforeErr = err
 			slog.ErrorContext(ctx, "update case: enrich case for case.status_changed publish/activity failed", "caseId", req.ID)
 		} else {
 			before = &cv
+		}
+	}
+
+	// isInternalCaller resolves once and is reused below (the
+	// resolutionCode/cause/closeNotes requirement) rather than calling
+	// ResolveScope twice for the same request. "Internal" is
+	// scope.Unrestricted OR scope.HasInternalAccess, not just Unrestricted
+	// alone -- see the resolutionCode block's own doc comment below for why
+	// (a mixed-identity caller). A ResolveScope failure conservatively
+	// resolves to internal for the resolutionCode/cause/closeNotes
+	// requirement below (failing to internal there means requiring MORE
+	// from the caller, never less) -- but that same fallback would be the
+	// wrong direction for the state-transition guard just below, which
+	// selects a MORE PERMISSIVE table for an internal caller: an external
+	// caller whose scope can't be resolved must not be silently checked
+	// against the internal table. A request that is changing state returns
+	// the scope error directly instead of guessing.
+	isInternalCaller := true
+	if scope, err := s.access.ResolveScope(ctx); err == nil {
+		isInternalCaller = scope.Unrestricted || scope.HasInternalAccess
+	} else if req.State != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	// State-transition guard: until this was added, entity-service only
+	// validated that a requested state was a real enum value (validCaseState,
+	// above), never that moving to it from the case's current state was a
+	// legal transition for the caller's own tier -- so a customer-facing BFF
+	// forwarding a caller's own stateKey unchecked (as apps/customer-portal's
+	// backend did before its own BFF-level fix) could move any case to any
+	// state. This is the Postgres data source's own enforcement of the same
+	// rule ServiceNow's real instance already applies natively via its own
+	// workflow (the legacy ALLOWED_STATE_TRANSITIONS/SUPERUSER_STATE_TRANSITIONS
+	// scoped-app tables this file's caseStateTransitionsExternal/Internal
+	// port) -- sn_case_service.go needs no equivalent check of its own, since
+	// ServiceNow's own business rules already reject an illegal transition
+	// server-side. A before fetch failure (before == nil, or a case with no
+	// State of its own type) can't confirm the current state, so this fails
+	// closed rather than silently allowing an unverified transition. A real
+	// GetCaseByID error (a missing case, a transient read failure) is
+	// returned as-is rather than papered over with a generic "unable to
+	// verify" validation error, so a nonexistent case still answers 404
+	// rather than a misleading 400. A no-op re-PATCH (the requested state
+	// already equals the current one) is exempt -- it isn't a transition at
+	// all, just confirms the status quo, and is already handled a few lines
+	// below as "no genuine change, don't publish/log it either."
+	if req.State != nil {
+		if before == nil {
+			if beforeErr != nil {
+				return domain.UpdateCaseResponse{}, beforeErr
+			}
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "unable to verify the case's current state; try again"}
+		}
+		if before.State == nil {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "unable to verify the case's current state; try again"}
+		}
+		if *before.State != *req.State && !isValidCaseStateTransition(isInternalCaller, *before.State, *req.State) {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{
+				Msg:  fmt.Sprintf("state cannot move from %q to %q", string(*before.State), string(*req.State)),
+				Code: "case_invalid_state_transition",
+			}
 		}
 	}
 
@@ -1859,10 +1922,6 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// keeping both stores in sync.
 	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
 		if before == nil || before.Type == nil || *before.Type == "case" {
-			isInternalCaller := true
-			if scope, err := s.access.ResolveScope(ctx); err == nil {
-				isInternalCaller = scope.Unrestricted || scope.HasInternalAccess
-			}
 			if isInternalCaller {
 				if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
 					return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}

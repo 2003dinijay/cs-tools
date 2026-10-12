@@ -1721,8 +1721,15 @@ func TestCaseService_UpdateCase_ResolutionFieldsRequireClosedOrSolutionProposedS
 				// just event publishing), so every State-bearing case here
 				// needs this stubbed even though none of them care about
 				// the activity log itself.
+				// work_in_progress, not open: an internal (agent-tier) caller
+				// can reach both closed and solution_proposed from
+				// work_in_progress, but not from open -- see
+				// case_state_transitions.go's caseStateTransitionsInternal.
+				// This test is about the resolution-fields requirement, not
+				// transition legality, so the "before" state just needs to be
+				// one real transition away from both targets under test.
 				getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
-					st := domain.CaseStateOpen
+					st := domain.CaseStateWorkInProgress
 					return domain.CaseView{ID: id, State: &st}, nil
 				},
 				updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
@@ -1933,7 +1940,11 @@ func (s *stubMirrorCaseService) patchCaseWatchList(ctx context.Context, caseID s
 // snCaseService.UpdateCase (this stub doesn't even implement that — see
 // stubMirrorCaseService's own doc comment).
 func TestCaseService_UpdateCase_MirrorsFieldToServiceNow(t *testing.T) {
-	state := domain.CaseStateOpen
+	// work_in_progress, not open: no transition table (customer or agent)
+	// ever allows a caller to move a case back into open, so a target state
+	// for this mirroring test has to be one that's actually reachable --
+	// see case_state_transitions.go.
+	state := domain.CaseStateWorkInProgress
 	severity := domain.CaseSeverityHigh
 	workState := domain.CaseWorkStateOngoing
 
@@ -1972,7 +1983,7 @@ func TestCaseService_UpdateCase_MirrorsFieldToServiceNow(t *testing.T) {
 				// entry, not just event publishing) -- irrelevant to this
 				// test's own mirror assertions, just needs to not panic.
 				getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
-					priorState := domain.CaseStateClosed
+					priorState := domain.CaseStateOpen
 					priorWorkState := domain.CaseWorkStatePaused
 					return domain.CaseView{ID: id, State: &priorState, WorkState: &priorWorkState}, nil
 				},
@@ -2025,9 +2036,12 @@ func TestCaseService_UpdateCase_PublishesStatusChanged(t *testing.T) {
 	newState := domain.CaseStateWaitingOnWSO2
 	repo := &stubCaseRepo{
 		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			openState := domain.CaseStateOpen
+			// work_in_progress, not open: an agent-tier caller can reach
+			// waiting_on_wso2 from work_in_progress, not directly from open
+			// -- see case_state_transitions.go.
+			priorState := domain.CaseStateWorkInProgress
 			return domain.CaseView{
-				ID: testDeploymentUUID, Number: "CS0001", State: &openState,
+				ID: testDeploymentUUID, Number: "CS0001", State: &priorState,
 				ProjectDetails: &domain.EntityRef{ID: "proj-1", Name: "Project One"},
 				WatchList:      []domain.WatchListUser{{Email: "watcher@example.com"}},
 			}, nil
@@ -2074,9 +2088,11 @@ func TestCaseService_UpdateCase_StatusChanged_RecipientsIncludeFreshDefaultsAndD
 
 	repo := &stubCaseRepo{
 		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			openState := domain.CaseStateOpen
+			// work_in_progress, not open: see the identical note in
+			// TestCaseService_UpdateCase_PublishesStatusChanged above.
+			priorState := domain.CaseStateWorkInProgress
 			return domain.CaseView{
-				ID: testDeploymentUUID, Number: "CS0001", State: &openState,
+				ID: testDeploymentUUID, Number: "CS0001", State: &priorState,
 				ProjectDetails: &domain.EntityRef{ID: projectID, Name: "Project One"},
 				WatchList: []domain.WatchListUser{
 					{ID: activeWatcherID, Email: "active@example.com"},
@@ -2152,10 +2168,12 @@ func TestCaseService_UpdateCase_StatusChanged_RecipientsIncludeFreshDefaultsAndD
 // has no such field.
 func TestCaseService_UpdateCase_ResolvesActorIDForClosedByStamp(t *testing.T) {
 	closed := domain.CaseStateClosed
-	open := domain.CaseStateOpen
+	// work_in_progress, not open: an agent-tier caller can reach closed from
+	// work_in_progress, not directly from open -- see case_state_transitions.go.
+	priorState := domain.CaseStateWorkInProgress
 	repo := &stubCaseRepo{
 		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{ID: testDeploymentUUID, State: &open}, nil
+			return domain.CaseView{ID: testDeploymentUUID, State: &priorState}, nil
 		},
 		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
 			return domain.Case{ID: req.ID, State: req.State}, nil, nil
@@ -2183,10 +2201,12 @@ func TestCaseService_UpdateCase_ResolvesActorIDForClosedByStamp(t *testing.T) {
 // the whole update or guessing at who the actor is.
 func TestCaseService_UpdateCase_LeavesActorIDNilWithoutAToken(t *testing.T) {
 	closed := domain.CaseStateClosed
-	open := domain.CaseStateOpen
+	// work_in_progress, not open: see the identical note in
+	// TestCaseService_UpdateCase_ResolvesActorIDForClosedByStamp above.
+	priorState := domain.CaseStateWorkInProgress
 	repo := &stubCaseRepo{
 		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{ID: testDeploymentUUID, State: &open}, nil
+			return domain.CaseView{ID: testDeploymentUUID, State: &priorState}, nil
 		},
 		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
 			return domain.Case{ID: req.ID, State: req.State}, nil, nil
@@ -2343,8 +2363,11 @@ func TestCaseService_UpdateCase_AppliesStateSLAEffects(t *testing.T) {
 	newState := domain.CaseStateAwaitingInfo
 	repo := &stubCaseRepo{
 		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			openState := domain.CaseStateOpen
-			return domain.CaseView{ID: testDeploymentUUID, State: &openState}, nil
+			// work_in_progress, not open: an agent-tier caller can reach
+			// awaiting_info from work_in_progress, not directly from open --
+			// see case_state_transitions.go.
+			priorState := domain.CaseStateWorkInProgress
+			return domain.CaseView{ID: testDeploymentUUID, State: &priorState}, nil
 		},
 		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
 			return domain.Case{ID: req.ID, State: req.State}, nil, nil
@@ -5151,8 +5174,12 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 
 	newSvc := func(mirror *stubMirrorCaseService) CaseService {
 		repo := &stubCaseRepo{
+			// work_in_progress, not open: an agent-tier (Unrestricted) caller
+			// can reach closed from work_in_progress, not directly from open
+			// -- see case_state_transitions.go. This sub-test's callers are
+			// all alwaysUnrestrictedAccess (internal tier).
 			getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
-				st := domain.CaseStateOpen
+				st := domain.CaseStateWorkInProgress
 				return domain.CaseView{ID: id, State: &st}, nil
 			},
 			updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
@@ -5272,8 +5299,12 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 	// exempt them.
 	t.Run("caller with a mixed internal+external identity still requires resolution fields", func(t *testing.T) {
 		repo := &stubCaseRepo{
+			// work_in_progress, not open: this caller resolves as internal
+			// (HasInternalAccess below), which can reach closed from
+			// work_in_progress, not directly from open -- see
+			// case_state_transitions.go.
 			getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
-				st := domain.CaseStateOpen
+				st := domain.CaseStateWorkInProgress
 				typ := "case"
 				return domain.CaseView{ID: id, State: &st, Type: &typ}, nil
 			},
@@ -5292,8 +5323,10 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 
 	t.Run("closing a non-case type without resolution fields is allowed", func(t *testing.T) {
 		repo := &stubCaseRepo{
+			// work_in_progress, not open: see the identical note on newSvc's
+			// own stub above -- this sub-test also uses alwaysUnrestrictedAccess.
 			getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
-				st := domain.CaseStateOpen
+				st := domain.CaseStateWorkInProgress
 				typ := "security_report_analysis"
 				return domain.CaseView{ID: id, State: &st, Type: &typ}, nil
 			},

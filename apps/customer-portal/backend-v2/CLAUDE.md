@@ -764,8 +764,23 @@ operations, not things a customer should be able to set on their own case. `dto.
 description, watchList, resolutionCode, cause, closeNotes), and
 `dto.BuildEntityUpdateCaseRequest(id, req)` builds the full entity-service request from it, leaving
 every excluded field zero/nil — so even if a client sends `{"workState": "ongoing"}`, it's silently
-dropped (the portal struct has no such field) rather than forwarded. The same pattern applies to
-`POST /cases/{id}/comments`: entity-service accepts `type: work_note|comment|activity`, but
+dropped (the portal struct has no such field) rather than forwarded.
+
+**`PATCH /cases/{id}`'s `stateKey` carries no transition-legality check in this backend, on
+purpose.** An earlier version of this handler carried its own copy of the legacy ServiceNow
+scoped-app's `ALLOWED_STATE_TRANSITIONS` table (which from→to state moves a customer may make), the
+same way `apps/csm-portal/backend`'s own `state.go` ports the agent-facing
+`SUPERUSER_STATE_TRANSITIONS` table. That copy was removed once entity-service grew its own,
+authoritative enforcement of both legacy tables (see entity-service's own CLAUDE.md, "Case
+state-transition legality") — entity-service now rejects an illegal move with 400 regardless of
+which BFF forwarded the request, so duplicating the table here would only risk drifting out of sync
+with the real rule. `PatchCase` just forwards `stateKey` (translated to entity-service's domain enum
+via `dto.BuildEntityUpdateCaseRequest`) and relays whatever response entity-service gives back,
+including its refusal. If a future endpoint here needs to know a case's own legal next states ahead
+of calling entity-service (e.g. to render which actions a customer may take), read entity-service's
+own `case_state_transitions.go` rather than reintroducing a local copy.
+
+The same pattern applies to `POST /cases/{id}/comments`: entity-service accepts `type: work_note|comment|activity`, but
 `dto.BuildEntityCreateCaseCommentRequest` always forces `type: comment`, regardless of what the
 client sends — a customer should never be able to create an internal work-note or system-activity
 entry. When you add a write endpoint, check the entity-service request struct for fields that read

@@ -2969,6 +2969,45 @@ helper: decodes `x-user-id-token`'s `email` claim without a `"user"` table
 lookup, since nothing on these paths needs the caller's platform id today,
 only their claimed email.
 
+## Case state-transition legality (`case_state_transitions.go`)
+
+Until this was added, `caseService.UpdateCase`'s only check on a requested `state` was
+`validCaseState[*req.State]` -- is the value a real enum member -- never whether moving to it from
+the case's current state was a legal move for the caller's own tier. A customer-facing BFF
+forwarding a caller's own `stateKey` unchecked could move any case to any state (confirmed live:
+`apps/customer-portal/backend-v2` did exactly this before its own BFF-level fix landed first).
+ServiceNow's real instance already enforces this natively via its own workflow business rules (the
+`ALLOWED_STATE_TRANSITIONS`/`SUPERUSER_STATE_TRANSITIONS` scoped-app tables this file's
+`caseStateTransitionsExternal`/`caseStateTransitionsInternal` port directly) -- so `sn_case_service.go`
+needs no equivalent check of its own; this is Postgres-only enforcement of a rule ServiceNow already
+applies upstream.
+
+- **Two tables, selected by caller tier** -- `isInternalCaller` (`scope.Unrestricted ||
+  scope.HasInternalAccess`, the exact same two-flag test the resolutionCode/cause/closeNotes
+  requirement just below already uses, resolved once and shared between both checks rather than
+  calling `ResolveScope` twice per request): `caseStateTransitionsInternal` for WSO2 staff,
+  `caseStateTransitionsExternal` for everyone else. A caller's own portal (CSM vs. customer) is
+  irrelevant here -- entity-service decides by access scope, not by which BFF forwarded the
+  request, which is also why `apps/customer-portal/backend-v2`'s own transition guard has to carve
+  staff out for itself (it applies the customer table unconditionally to every caller of its own
+  endpoint, since it has no equivalent scope check) rather than relying on this being enforced
+  twice consistently.
+- **`reopened -> work_in_progress` (internal table) is this codebase's own addition, not in the
+  legacy `SUPERUSER_STATE_TRANSITIONS` table at all** -- confirmed intentional rather than a
+  porting gap: an agent treats a reopened case like a fresh open one and picks it back up into
+  active work. `apps/csm-portal/backend`'s own `state.go` already carries this same addition.
+- **A no-op re-PATCH (requested state equals the current one) is never treated as an illegal
+  transition** -- neither table lists a state as its own legal next state, but setting a case to
+  the state it's already in isn't a transition at all, just confirms the status quo; it's handled a
+  few lines below as "no genuine change, don't publish or log it either."
+- **A `before` fetch failure (or a case with no `State` of its own type) fails closed** -- "unable
+  to verify the case's current state" rather than silently allowing an unverified transition
+  through. This mirrors the conservative-on-failure posture the resolutionCode/cause/closeNotes
+  requirement already established for the same kind of lookup failure.
+- The refusal carries a machine-readable `case_invalid_state_transition` error code (the same
+  `apierror.ValidationError.Code` convention change requests use -- see "Error types"), alongside a
+  message naming both the current and requested state.
+
 ## PATCH /cases/{id}: assignee, acknowledge, parent, and the combinable field bundle
 
 Found live: assigning a case ("Assign to me") and acknowledging one both
