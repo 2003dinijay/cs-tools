@@ -37,14 +37,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/integrations/csm-notification-service/internal/oauthhttp"
-	"golang.org/x/oauth2"
 )
 
 // CustomerEntityConfig holds the configuration for the customer entity
@@ -76,20 +74,13 @@ type CustomerEntityConfig struct {
 type CustomerEntityClient struct {
 	http    *http.Client
 	baseURL string
-	// tokens is the same client-credentials source the HTTP client uses,
-	// held separately so do() can also attach it to x-jwt-assertion — see
-	// do()'s own doc comment for why that header, not the Authorization one
-	// the OAuth2 transport already sets, is what makes entity-service
-	// recognize this caller as internal. Mirrors internal/paging/client.go's
-	// own EntityClient.tokens/setClientAssertion exactly.
-	tokens oauth2.TokenSource
 }
 
 // NewCustomerEntityClient constructs a CustomerEntityClient that
 // authenticates against the customer entity service using the OAuth2 client
 // credentials grant type.
 func NewCustomerEntityClient(cfg CustomerEntityConfig) *CustomerEntityClient {
-	httpClient, tokens := oauthhttp.NewClientWithTokenSource(oauthhttp.Config{
+	httpClient := oauthhttp.NewClient(oauthhttp.Config{
 		TokenURL:     cfg.TokenURL,
 		ClientID:     cfg.ClientID,
 		ClientSecret: cfg.ClientSecret,
@@ -99,7 +90,6 @@ func NewCustomerEntityClient(cfg CustomerEntityConfig) *CustomerEntityClient {
 	return &CustomerEntityClient{
 		http:    httpClient,
 		baseURL: strings.TrimRight(cfg.BaseURL, "/"),
-		tokens:  tokens,
 	}
 }
 
@@ -118,7 +108,6 @@ func (c *CustomerEntityClient) do(ctx context.Context, method, path string, body
 	if len(body) > 0 {
 		req.Header.Set("Content-Type", "application/json")
 	}
-	c.setClientAssertion(ctx, req)
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -146,36 +135,6 @@ func (c *CustomerEntityClient) do(ctx context.Context, method, path string, body
 	}
 
 	return respBody, nil
-}
-
-// setClientAssertion puts the access token in x-jwt-assertion as well as in
-// Authorization, which the OAuth2 transport sets on its own.
-//
-// entity-service decides whether a caller is internal — and so whether
-// GET /comments/{id} and the per-caller scoping on GET /cases/{id} let it
-// through at all — from x-jwt-assertion's client_id claim, not from
-// Authorization (see entity-service's own CLAUDE.md, "Token validation and
-// caller-scoped access"). In a Choreo deployment its gateway translates one
-// into the other before entity-service sees the request, so this works in
-// production whether or not the header is set here. Nothing translates it
-// locally, so without this a direct/local run would have every such request
-// refused — this is the exact mechanism internal/paging/client.go's own
-// EntityClient.setClientAssertion already uses for the identical reason;
-// see that function's own doc comment for the fuller rationale.
-//
-// Best-effort: a token fetch that fails leaves the header off and lets the
-// request go, so the failure surfaces as the upstream's own status rather
-// than as a client-side error that hides it.
-func (c *CustomerEntityClient) setClientAssertion(ctx context.Context, req *http.Request) {
-	if c.tokens == nil {
-		return
-	}
-	tok, err := c.tokens.Token()
-	if err != nil || tok == nil || tok.AccessToken == "" {
-		slog.WarnContext(ctx, "entity: could not attach the client assertion; entity-service will not see this caller as internal")
-		return
-	}
-	req.Header.Set("x-jwt-assertion", tok.AccessToken)
 }
 
 // UserRoleInfo is the subset of an entity-service user record

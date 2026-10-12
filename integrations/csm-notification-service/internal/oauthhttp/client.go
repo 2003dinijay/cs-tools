@@ -49,23 +49,7 @@ type Config struct {
 // NewClient returns an *http.Client that attaches a bearer token from cfg
 // to every request. It never contacts the token endpoint itself: a missing
 // or invalid configuration only surfaces as an error on the first request.
-//
-// A caller whose upstream decides whether it's an internal/M2M caller from
-// the client-credentials token itself (entity-service does — see
-// x-jwt-assertion in its own CLAUDE.md), rather than from the standard
-// Authorization header this client already sets, should use
-// NewClientWithTokenSource instead and attach that same token to
-// x-jwt-assertion on each request too (see internal/paging/client.go's
-// setClientAssertion for the reference shape).
 func NewClient(cfg Config) *http.Client {
-	httpClient, _ := NewClientWithTokenSource(cfg)
-	return httpClient
-}
-
-// NewClientWithTokenSource is NewClient, plus the underlying token source —
-// for a caller that also needs to attach the same access token to a header
-// other than Authorization (see NewClient's own doc comment).
-func NewClientWithTokenSource(cfg Config) (*http.Client, oauth2.TokenSource) {
 	cc := clientcredentials.Config{
 		ClientID:     cfg.ClientID,
 		ClientSecret: cfg.ClientSecret,
@@ -74,8 +58,7 @@ func NewClientWithTokenSource(cfg Config) (*http.Client, oauth2.TokenSource) {
 	}
 	tokenCtx := context.WithValue(context.Background(), oauth2.HTTPClient,
 		&http.Client{Timeout: TokenFetchTimeout})
-	tokens := cc.TokenSource(tokenCtx)
-	httpClient := oauth2.NewClient(tokenCtx, tokens)
+	httpClient := cc.Client(tokenCtx)
 	httpClient.Timeout = RequestTimeout
-	return httpClient, tokens
+	return httpClient
 }

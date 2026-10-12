@@ -170,20 +170,16 @@ func TestSearchUsersByEmail_EmptyInput(t *testing.T) {
 	}
 }
 
-// TestGetCaseDescription_SendsXJWTAssertion is the regression guard for a
-// real CodeRabbit-caught gap: entity-service decides whether a caller is
-// internal from the x-jwt-assertion header's client_id claim, not from the
-// Authorization header the OAuth2 transport already sets on its own (see
-// entity-service's own CLAUDE.md, "Token validation and caller-scoped
-// access") — without this, GetCaseDescription/GetCommentContent's real
-// requests would be refused in any deployment where Choreo's gateway isn't
-// there to translate one header into the other (e.g. local/direct testing),
-// and this service's own fallback would then make that look like a quiet
-// no-op rather than a request that was never going to succeed.
-func TestGetCaseDescription_SendsXJWTAssertion(t *testing.T) {
-	var gotAssertion, gotAuthorization string
+// TestGetCaseDescription_SendsBearerToken verifies GetCaseDescription sends
+// the same OAuth2 client-credentials bearer token every other method on this
+// client already does (see SearchUsersByEmail's own tests) — entity-service
+// resolves this caller's identity from it (its own gateway translates the
+// token into its internal x-jwt-assertion form), the same path every
+// existing call on this client already relies on, so this one needs no
+// header handling of its own.
+func TestGetCaseDescription_SendsBearerToken(t *testing.T) {
+	var gotAuthorization string
 	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAssertion = r.Header.Get("x-jwt-assertion")
 		gotAuthorization = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"description": "full description"})
@@ -201,20 +197,17 @@ func TestGetCaseDescription_SendsXJWTAssertion(t *testing.T) {
 	if got != "full description" {
 		t.Errorf("description = %q, want %q", got, "full description")
 	}
-	if gotAssertion != "test-token" {
-		t.Errorf("x-jwt-assertion = %q, want the access token %q", gotAssertion, "test-token")
-	}
 	if gotAuthorization != "Bearer test-token" {
 		t.Errorf("Authorization = %q, want %q", gotAuthorization, "Bearer test-token")
 	}
 }
 
-// TestGetCommentContent_SendsXJWTAssertion is GetCaseDescription's
+// TestGetCommentContent_SendsBearerToken is GetCaseDescription's
 // GET /comments/{id} counterpart — see that test's own doc comment.
-func TestGetCommentContent_SendsXJWTAssertion(t *testing.T) {
-	var gotAssertion string
+func TestGetCommentContent_SendsBearerToken(t *testing.T) {
+	var gotAuthorization string
 	apiSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotAssertion = r.Header.Get("x-jwt-assertion")
+		gotAuthorization = r.Header.Get("Authorization")
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(map[string]any{"content": "full comment"})
 	}))
@@ -231,7 +224,7 @@ func TestGetCommentContent_SendsXJWTAssertion(t *testing.T) {
 	if got != "full comment" {
 		t.Errorf("content = %q, want %q", got, "full comment")
 	}
-	if gotAssertion != "test-token" {
-		t.Errorf("x-jwt-assertion = %q, want the access token %q", gotAssertion, "test-token")
+	if gotAuthorization != "Bearer test-token" {
+		t.Errorf("Authorization = %q, want %q", gotAuthorization, "Bearer test-token")
 	}
 }
