@@ -459,6 +459,9 @@ export default function CsmTeamSchedulePage(): JSX.Element {
   /** Their own team runs no rota yet (PaaS): there is no sheet of theirs to
    *  show, and another sub-team's is not it. */
   const noRotaOfTheirs = rotaScoped && shownRotas.length === 0;
+  /** The roster's edit controls: not over that note, where there is no
+   *  sheet to edit (a PaaS lead). */
+  const editsHere = canEditRota && !noRotaOfTheirs;
 
   /** The teams the team filter offers: those of the rotas shown. Today and a
    *  manager still get every team of the family -- picking one in another
@@ -1402,7 +1405,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
 
             {/* Only the roster is edited, so the button is offered there alone:
                 on the other views it switched on a mode they do not have. */}
-            {canEditRota && view === "roster" ? (
+            {editsHere && view === "roster" ? (
               <button
                 className={`btn sm${editing ? " primary" : ""}`}
                 aria-pressed={editing}
@@ -1441,7 +1444,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
             and a bar saying "click a cell" above a view with none to click
             reads as something broken. Names the teams because the grid shows
             every team and only the reader's own rows are live. */}
-        {canEditRota && editing && view === "roster" ? (
+        {editsHere && editing && view === "roster" ? (
           <div className="editbar">
             <span className="pill">Editing</span>
             <span>{editableTeamsLabel}</span>
@@ -1467,7 +1470,7 @@ export default function CsmTeamSchedulePage(): JSX.Element {
           </div>
         ) : null}
 
-        {canEditRota && showRecent && view === "roster" ? (
+        {editsHere && showRecent && view === "roster" ? (
           <RecentChanges
             activity={activity.data ?? []}
             isLoading={activity.isLoading}
