@@ -382,6 +382,12 @@ type CaseAcknowledgedPayload struct {
 	// decode-compatibility pair exists.
 	ProjectOnboardingStatus string `json:"projectOnboardingStatus,omitempty"`
 	IsEvaluationAccount     bool   `json:"isEvaluationAccount,omitempty"`
+	// CaseType — see CaseCreatedPayload's own doc comment (the same
+	// strings.ToUpper(req.Type) convention entity-service uses). A
+	// security_report_analysis case never carries a severity, so
+	// handleCaseAcknowledged uses this to pick the dedicated ack card that
+	// omits the severity line, instead of rendering "Unknown".
+	CaseType string `json:"caseType,omitempty"`
 }
 
 // WorkaroundProvidedPayload is TypeWorkaroundProvided's payload — mirrors

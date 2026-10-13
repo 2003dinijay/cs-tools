@@ -113,15 +113,16 @@ type sentFrustrationAlert struct {
 type mockGoogleChatSender struct {
 	err error
 	// mu guards calls — see mockEmailSender.mu's doc comment.
-	mu                          sync.Mutex
-	caseCreatedCalls            []sentCaseCreatedAlert
-	caseAcknowledgedCalls       []sentCaseAcknowledgedAlert
-	severityChangedCalls        []sentSeverityChangedAlert
-	securityReportAnalysisCalls []sentSecurityReportAnalysisAlert
-	frustrationCalls            []sentFrustrationAlert
-	srCalls                     []sentSRAlert
-	incidentCreatedCalls        []sentIncidentCreatedAlert
-	incidentAssignedCalls       []sentIncidentAssignedAlert
+	mu                                      sync.Mutex
+	caseCreatedCalls                        []sentCaseCreatedAlert
+	caseAcknowledgedCalls                   []sentCaseAcknowledgedAlert
+	severityChangedCalls                    []sentSeverityChangedAlert
+	securityReportAnalysisCalls             []sentSecurityReportAnalysisAlert
+	securityReportAnalysisAcknowledgedCalls []sentCaseAcknowledgedAlert
+	frustrationCalls                        []sentFrustrationAlert
+	srCalls                                 []sentSRAlert
+	incidentCreatedCalls                    []sentIncidentCreatedAlert
+	incidentAssignedCalls                   []sentIncidentAssignedAlert
 	// srBlock, when non-nil, holds every SR send open until it is closed,
 	// so a test can have a second Handle call arrive mid-send; srStarted
 	// counts SR sends that have begun.
@@ -158,6 +159,16 @@ func (m *mockGoogleChatSender) SendCaseAcknowledgedAlert(ctx context.Context, au
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.caseAcknowledgedCalls = append(m.caseAcknowledgedCalls, sentCaseAcknowledgedAlert{audience, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName})
+	return m.err
+}
+
+func (m *mockGoogleChatSender) SendSecurityReportAnalysisAcknowledgedAlert(ctx context.Context, audience, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// No severity fields on this card — recorded under the same
+	// sentCaseAcknowledgedAlert shape with both left blank, so existing
+	// assertions distinguishing the two calls can check severityLabel == "".
+	m.securityReportAnalysisAcknowledgedCalls = append(m.securityReportAnalysisAcknowledgedCalls, sentCaseAcknowledgedAlert{audience, "", "", caseNumber, wso2CaseID, caseLink, acknowledgerName})
 	return m.err
 }
 
@@ -479,12 +490,16 @@ func TestDispatcher_Handle_CaseCreated_NotTruncated_NeverFetches(t *testing.T) {
 }
 
 // TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail verifies
-// handleCaseCreated's CaseType gate: every non-"CASE" type (engagement,
-// service_request, security_report_analysis, announcement) sends no Google
-// Chat alert at all — explicit product direction, those types notify their
-// audience by email only — while the email reaction is unaffected.
+// handleCaseCreated's CaseType gate: every non-"CASE" type that gets no Chat
+// alert at all (engagement, service_request, announcement) sends neither
+// SendCaseCreatedAlert nor SendSecurityReportAnalysisAlert — explicit
+// product direction, those types notify their audience by email only —
+// while the email reaction is unaffected. security_report_analysis is
+// deliberately NOT in this list any more — it does get a Chat alert now,
+// just a dedicated one; see
+// TestDispatcher_Handle_CaseCreated_SecurityReportAnalysisGetsDedicatedChatCard.
 func TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail(t *testing.T) {
-	for _, caseType := range []string{"ENGAGEMENT", "SERVICE_REQUEST", "SECURITY_REPORT_ANALYSIS", "ANNOUNCEMENT"} {
+	for _, caseType := range []string{"ENGAGEMENT", "SERVICE_REQUEST", "ANNOUNCEMENT"} {
 		t.Run(caseType, func(t *testing.T) {
 			email := &mockEmailSender{}
 			chat := &mockGoogleChatSender{}
@@ -506,6 +521,39 @@ func TestDispatcher_Handle_CaseCreated_NonCaseTypesSkipChatButStillEmail(t *test
 				t.Errorf("expected the email reaction to still fire for a %s case, got %d call(s)", caseType, len(email.calls))
 			}
 		})
+	}
+}
+
+// TestDispatcher_Handle_CaseCreated_SecurityReportAnalysisGetsDedicatedChatCard
+// verifies a security_report_analysis case.created now posts a Chat alert —
+// previously excluded alongside engagement/service_request/announcement —
+// through the dedicated SendSecurityReportAnalysisAlert card (no severity
+// line), never the plain SendCaseCreatedAlert one, alongside its usual email
+// reaction.
+func TestDispatcher_Handle_CaseCreated_SecurityReportAnalysisGetsDedicatedChatCard(t *testing.T) {
+	email := &mockEmailSender{}
+	chat := &mockGoogleChatSender{}
+	d := newTestDispatcher(email, chat, &mockCallSender{})
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.created","entityId":"CASE-1","payload":{"reporterName":"Reporter","projectName":"Proj","projectId":"PROJ-1","caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseTitle":"Something broke","caseType":"SECURITY_REPORT_ANALYSIS","priority":"","product":"api-manager","team":"Team Nova","createdAt":"2026-01-01","description":"desc","recipients":["test-recipient@example.com"]}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+
+	if len(chat.caseCreatedCalls) != 0 {
+		t.Errorf("expected SendCaseCreatedAlert NOT to be called for a security_report_analysis case, got %d call(s)", len(chat.caseCreatedCalls))
+	}
+	if len(chat.securityReportAnalysisCalls) != 1 {
+		t.Fatalf("expected 1 SendSecurityReportAnalysisAlert call, got %d", len(chat.securityReportAnalysisCalls))
+	}
+	got := chat.securityReportAnalysisCalls[0]
+	if got.audience != chataudience.IncidentMonitor || got.caseNumber != "CS0001001" || got.wso2CaseID != "WSO2-1000" ||
+		got.productName != "api-manager" || got.team != "Team Nova" {
+		t.Errorf("unexpected SendSecurityReportAnalysisAlert args: %+v", got)
+	}
+	if len(email.calls) != 1 {
+		t.Errorf("expected the email reaction to still fire, got %d call(s)", len(email.calls))
 	}
 }
 
@@ -1394,6 +1442,32 @@ func TestDispatcher_Handle_CaseAcknowledged_BlankSeverityRendersUnknownNotEmpty(
 	}
 }
 
+// TestDispatcher_Handle_CaseAcknowledged_SecurityReportAnalysisOmitsSeverity
+// verifies a security_report_analysis ack event posts the dedicated
+// SendSecurityReportAnalysisAcknowledgedAlert card — which has no severity
+// line at all — instead of SendCaseAcknowledgedAlert's own "Unknown"
+// fallback for a type that never carries a severity.
+func TestDispatcher_Handle_CaseAcknowledged_SecurityReportAnalysisOmitsSeverity(t *testing.T) {
+	chat := &mockGoogleChatSender{}
+	d := newTestDispatcher(&mockEmailSender{}, chat, &mockCallSender{})
+
+	record := eventbus.Record{Value: []byte(`{"type":"case.acknowledged","entityId":"CASE-1","payload":{"caseId":"CASE-1","caseNumber":"CS0001001","wso2CaseId":"WSO2-1000","caseType":"SECURITY_REPORT_ANALYSIS","acknowledgerName":"Jane Doe"}}`)}
+
+	if err := d.Handle(context.Background(), record); err != nil {
+		t.Fatalf("Handle() error = %v", err)
+	}
+	if len(chat.caseAcknowledgedCalls) != 0 {
+		t.Errorf("expected SendCaseAcknowledgedAlert NOT to be called for a security_report_analysis case, got %d call(s)", len(chat.caseAcknowledgedCalls))
+	}
+	if len(chat.securityReportAnalysisAcknowledgedCalls) != 1 {
+		t.Fatalf("expected 1 SendSecurityReportAnalysisAcknowledgedAlert call, got %d", len(chat.securityReportAnalysisAcknowledgedCalls))
+	}
+	got := chat.securityReportAnalysisAcknowledgedCalls[0]
+	if got.audience != chataudience.IncidentMonitor || got.caseNumber != "CS0001001" || got.wso2CaseID != "WSO2-1000" || got.acknowledgerName != "Jane Doe" {
+		t.Errorf("unexpected SendSecurityReportAnalysisAcknowledgedAlert args: %+v", got)
+	}
+}
+
 // TestDispatcher_Handle_CaseAcknowledged_ForgetsAfterFullSuccess mirrors
 // TestDispatcher_Handle_CaseCreated_ForgetsAfterFullSuccess: once
 // case.acknowledged's one and only reaction (the Chat alert) succeeds, its
@@ -2150,6 +2224,10 @@ func (s *blockingCaseAcknowledgedChatSender) SendSecurityReportAnalysisAlert(ctx
 func (s *blockingCaseAcknowledgedChatSender) SendCaseAcknowledgedAlert(ctx context.Context, product, severityLabel, severityColor, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
 	atomic.AddInt32(&s.calls, 1)
 	<-s.proceed
+	return nil
+}
+
+func (s *blockingCaseAcknowledgedChatSender) SendSecurityReportAnalysisAcknowledgedAlert(ctx context.Context, product, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
 	return nil
 }
 

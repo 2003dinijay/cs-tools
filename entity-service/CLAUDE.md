@@ -1401,7 +1401,14 @@ service's own `CLAUDE.md`, `dispatch.subjectLine`).
   ever echoes `Number`/`AlreadyAcknowledged`/`AcknowledgedBy`, none of which
   cover `CaseNumber`/`WSO2CaseID`/`Severity`/`Product` — everything
   `csm-notification-service`'s Chat alert needs to display (see that
-  service's own `CLAUDE.md` for the card's exact shape).
+  service's own `CLAUDE.md` for the card's exact shape). Also sets
+  `CaseType` (`strings.ToUpper(derefString(cv.Type))`, the same convention
+  `publishCaseCreated`'s own `CaseType` uses) — added so
+  `csm-notification-service` can render a security_report_analysis
+  acknowledgement with its own dedicated, no-severity card instead of
+  showing "Unknown" where a severity would be (that type never carries
+  one). `caseService.publishCaseAcknowledged` (the plain-Postgres path) sets
+  the identical field the same way.
 
 - **`snCaseService.UpdateCase`** also publishes `case.severity_changed` via
   `publishSeverityChanged`, called only when `req.Severity` was set AND

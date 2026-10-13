@@ -458,6 +458,44 @@ func (c *GoogleChatClient) SendCaseAcknowledgedAlert(ctx context.Context, audien
 	return c.sendCardToAudience(ctx, audience, msg)
 }
 
+// SendSecurityReportAnalysisAcknowledgedAlert is SendCaseAcknowledgedAlert's
+// counterpart for a security_report_analysis case — a dedicated card rather
+// than a variant of that one, same reasoning as SendSecurityReportAnalysisAlert's
+// own doc comment: severity is never set for this case type, so
+// SendCaseAcknowledgedAlert's own severity line would render "Unknown"
+// instead of just not being there. Two lines instead of three — the case
+// reference, then "Ack by <name> · View case" — everything
+// SendCaseAcknowledgedAlert has except its leading severity line.
+func (c *GoogleChatClient) SendSecurityReportAnalysisAcknowledgedAlert(ctx context.Context, audience, caseNumber, wso2CaseID, caseLink, acknowledgerName string) error {
+	if caseNumber == "" || acknowledgerName == "" {
+		return fmt.Errorf("notifications: caseNumber and acknowledgerName are required")
+	}
+	caseRefLine := caseAlertLine(`%s`, caseNumber)
+	if wso2CaseID != "" {
+		caseRefLine += " · " + caseAlertLine(`%s`, wso2CaseID)
+	}
+	closeLine := caseAlertLine(`Ack by %s`, acknowledgerName) + " · " + caseAlertLine(`<a href="%s">View case</a>`, caseLink)
+	text := strings.Join([]string{caseRefLine, closeLine}, "<br>")
+
+	msg := chatCardMessage{
+		CardsV2: []chatCardWrapper{
+			{
+				CardID: "security-report-analysis-acknowledged-alert",
+				Card: chatCard{
+					Sections: []chatCardSection{
+						{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: text}}}},
+					},
+				},
+			},
+		},
+		// Same thread as the case's own security-report-analysis-created-alert
+		// card — see SendSecurityReportAnalysisAlert's own Thread field doc
+		// comment.
+		Thread: &chatThread{ThreadKey: chatThreadKey(caseNumber)},
+	}
+	return c.sendCardToAudience(ctx, audience, msg)
+}
+
 // SendSeverityChangedAlert posts a card message announcing a case's
 // severity changed, to the same Google Chat space as its case.created
 // alert. The case reference leads the header, same as every other case.*
