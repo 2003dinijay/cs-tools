@@ -2171,6 +2171,8 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 // to a project). Unlike an assignee, which is normally an internal engineer
 // with no project_contact row at all, a watcher can be either kind; this check
 // deliberately covers updateCaseWatchList only, not updateCaseAssignee.
+// updateCaseWatchList calls it only with the NEWLY ADDED watchers (see
+// newlyAddedWatcherIDs): ids already persisted on the case are not re-checked.
 //
 // The project-contact lookup runs first because it is the common case for
 // customer watchers; the user lookup (for the INTERNAL check) only runs for
@@ -2308,6 +2310,30 @@ func (s *caseService) isActiveProjectWatcher(ctx context.Context, projectID, use
 	return user.UserType == domain.UserTypeInternal, nil
 }
 
+// newlyAddedWatcherIDs returns the entries of submitted that are not already
+// persisted watchers on the case (current is the case's present watch list),
+// comparing ids case-insensitively and preserving submitted's order. Locked
+// entries are skipped when building the existing set: they are account
+// stakeholders synthesized on read, not persisted watcher rows, so they do
+// not make a submitted id exempt from validation.
+func newlyAddedWatcherIDs(current []domain.WatchListUser, submitted []string) []string {
+	existing := make(map[string]struct{}, len(current))
+	for _, w := range current {
+		if w.Locked || w.ID == "" {
+			continue
+		}
+		existing[strings.ToLower(w.ID)] = struct{}{}
+	}
+	added := make([]string, 0, len(submitted))
+	for _, id := range submitted {
+		if _, ok := existing[strings.ToLower(id)]; ok {
+			continue
+		}
+		added = append(added, id)
+	}
+	return added
+}
+
 // updateCaseWatchList implements UpdateCase's WatchList branch: replacing
 // the case's watch list wholesale with req's user ids via
 // CaseRepository.SetCaseWatchList. The account's four named stakeholders are
@@ -2328,7 +2354,11 @@ func (s *caseService) updateCaseWatchList(ctx context.Context, req domain.Update
 		return domain.UpdateCaseResponse{}, err
 	}
 
-	if err := s.validateWatchListProjectMembership(ctx, cv, userIDs); err != nil {
+	// The submitted list is the full desired watch list (existing + new), so
+	// only a newly added watcher is checked: someone already persisted on the
+	// case stays valid to re-submit even if they have since stopped being a
+	// registered contact. Removing them is the caller's explicit choice.
+	if err := s.validateWatchListProjectMembership(ctx, cv, newlyAddedWatcherIDs(cv.WatchList, userIDs)); err != nil {
 		return domain.UpdateCaseResponse{}, err
 	}
 
