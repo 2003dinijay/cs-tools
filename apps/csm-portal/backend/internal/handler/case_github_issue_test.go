@@ -34,6 +34,10 @@ import (
 type createIssueCall struct {
 	orgName, owner, repo, title, body string
 	labels                            []string
+	// ctxErr and hasDeadline are the state of the context CreateGitIssue received, read
+	// at the time of the call.
+	ctxErr      error
+	hasDeadline bool
 }
 
 type mockEngineeringClient struct {
@@ -42,8 +46,9 @@ type mockEngineeringClient struct {
 	err   error
 }
 
-func (m *mockEngineeringClient) CreateGitIssue(_ context.Context, orgName, owner, repoName, title, body string, labels []string) (entity.GitHubIssue, error) {
-	m.calls = append(m.calls, createIssueCall{orgName, owner, repoName, title, body, labels})
+func (m *mockEngineeringClient) CreateGitIssue(ctx context.Context, orgName, owner, repoName, title, body string, labels []string) (entity.GitHubIssue, error) {
+	_, hasDeadline := ctx.Deadline()
+	m.calls = append(m.calls, createIssueCall{orgName, owner, repoName, title, body, labels, ctx.Err(), hasDeadline})
 	return m.issue, m.err
 }
 
@@ -92,7 +97,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			t.Fatalf("CreateGitIssue calls = %d, want 1", len(eng.calls))
 		}
 		c := eng.calls[0]
-		wantBody := "It fails.\n\nProduct : Alpha\nOpened By : " + testUser.Email + ""
+		wantBody := "It fails.\n\nProduct : Alpha\nOpened By : " + testUser.Email
 		if c.orgName != "example-org" || c.owner != "example-org" || c.repo != "alpha-repo" || c.title != "Crash on startup" || c.body != wantBody {
 			t.Errorf("call = %+v", c)
 		}
@@ -146,7 +151,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		w := post(t, newHandler(eng, &mockEntityCaseClient{}), "{"+base+`,"updateLevel":"U12","publicIssueUrl":"https://example.com/i/1","hotFixRequired":true,"regression":true,"reason":"migration","onboardingInProgress":true,"issueTypeLabel":"Type/Discussion","priorityLevel":"Priority/High"}`)
 		assertStatus(t, w, http.StatusCreated)
 		c := eng.calls[0]
-		wantBody := "It fails.\n\nPublic Issue : https://example.com/i/1\n\nHotfix Required : Yes\n\nProduct : Alpha\nUpdate Level : U12\nOpened By : " + testUser.Email + ""
+		wantBody := "It fails.\n\nPublic Issue : https://example.com/i/1\n\nHotfix Required : Yes\n\nProduct : Alpha\nUpdate Level : U12\nOpened By : " + testUser.Email
 		if c.body != wantBody {
 			t.Errorf("body = %q, want %q", c.body, wantBody)
 		}
@@ -270,6 +275,10 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		if took := time.Since(started); took > 2*time.Second {
 			t.Errorf("filing took %v, want it bounded by the lookup timeout", took)
 		}
+		// The filing call must get the request's own context, not the lookup's timed-out one.
+		if c := eng.calls[0]; c.ctxErr != nil || c.hasDeadline {
+			t.Errorf("CreateGitIssue context: err=%v deadline=%v, want a live context with no deadline", c.ctxErr, c.hasDeadline)
+		}
 		if got := eng.calls[0].body; got != fallbackBody+testUser.Email {
 			t.Errorf("body = %q, want %q", got, fallbackBody+testUser.Email)
 		}
@@ -306,6 +315,100 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 		if len(offsets) != 2 {
 			t.Errorf("searches = %d, want 2 (one per page)", len(offsets))
+		} else if !strings.Contains(offsets[1], `"offset":50`) || !strings.Contains(offsets[1], `"limit":50`) {
+			t.Errorf("second search = %s, want offset 50 and limit 50", offsets[1])
+		}
+	})
+
+	t.Run("the walk stops after the page limit when the entity service always says there is more", func(t *testing.T) {
+		searches := 0
+		eng, w := fileIsCase(t, func(context.Context, []byte) ([]byte, error) {
+			searches++
+			return []byte(`{"deployedProducts":[{"id":"ee111111-1111-1111-1111-111111111111","product":{"abbreviation":"wso2am"},"version":{"name":"4.1.0"}}],"hasMore":true}`), nil
+		})
+		assertStatus(t, w, http.StatusCreated)
+		if searches != deployedProductLookupMaxPages {
+			t.Errorf("searches = %d, want %d (the page limit)", searches, deployedProductLookupMaxPages)
+		}
+		if got := eng.calls[0].body; got != fallbackBody+testUser.Email {
+			t.Errorf("body = %q, want %q", got, fallbackBody+testUser.Email)
+		}
+	})
+
+	t.Run("an empty page ends the walk even when it says there is more", func(t *testing.T) {
+		searches := 0
+		eng, w := fileIsCase(t, func(context.Context, []byte) ([]byte, error) {
+			searches++
+			return []byte(`{"deployedProducts":[],"hasMore":true}`), nil
+		})
+		assertStatus(t, w, http.StatusCreated)
+		if searches != 1 {
+			t.Errorf("searches = %d, want 1", searches)
+		}
+		if got := eng.calls[0].body; got != fallbackBody+testUser.Email {
+			t.Errorf("body = %q, want %q", got, fallbackBody+testUser.Email)
+		}
+	})
+
+	t.Run("a case naming only one of its deployment and deployed product makes no lookup", func(t *testing.T) {
+		for name, caseJSON := range map[string]string{
+			"deployment but no deployed product id": `{"deployment":{"id":"d1111111-1111-1111-1111-111111111111"},"deployedProduct":{"id":null,"displayName":"Alpha 1.2.3","product":{"name":"Alpha"}}}`,
+			"deployed product id but no deployment": `{"deployedProduct":{"id":"dd111111-1111-1111-1111-111111111111","displayName":"Alpha 1.2.3","product":{"name":"Alpha"}}}`,
+			"blank deployment id":                   `{"deployment":{"id":"  "},"deployedProduct":{"id":"dd111111-1111-1111-1111-111111111111","displayName":"Alpha 1.2.3","product":{"name":"Alpha"}}}`,
+		} {
+			eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
+			entityClient := &mockEntityCaseClient{
+				getCaseFn: func(context.Context, string) ([]byte, error) { return []byte(caseJSON), nil },
+				searchDeployedProductsFn: func(context.Context, []byte) ([]byte, error) {
+					t.Errorf("%s: the deployed product lookup ran", name)
+					return nil, nil
+				},
+			}
+			assertStatus(t, post(t, newHandler(eng, entityClient), "{"+base+"}"), http.StatusCreated)
+			if got := eng.calls[0].body; !strings.Contains(got, "Product : Alpha 1.2.3") {
+				t.Errorf("%s: body = %q, want the display name", name, got)
+			}
+		}
+	})
+
+	t.Run("with no display name the Product is the catalogue name, not the repository label", func(t *testing.T) {
+		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
+		entityClient := &mockEntityCaseClient{
+			getCaseFn: func(context.Context, string) ([]byte, error) {
+				return []byte(`{"deployedProduct":{"product":{"name":"Gamma Server"}}}`), nil
+			},
+			getProductRepoMappingFn: func(context.Context, string) ([]byte, error) {
+				return []byte(`{"productName":"Gamma Server","owner":"example-org","repository":"g-repo","githubLabel":"product/g"}`), nil
+			},
+		}
+		assertStatus(t, post(t, newHandler(eng, entityClient), "{"+base+"}"), http.StatusCreated)
+		if want := "It fails.\n\nProduct : Gamma Server\nOpened By : " + testUser.Email; eng.calls[0].body != want {
+			t.Errorf("body = %q, want %q", eng.calls[0].body, want)
+		}
+		if want := []string{"Origin/CS", "product/g"}; !slices.Equal(eng.calls[0].labels, want) {
+			t.Errorf("labels = %v, want %v", eng.calls[0].labels, want)
+		}
+	})
+
+	t.Run("a value holding a newline stays on its own footer line", func(t *testing.T) {
+		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
+		entityClient := &mockEntityCaseClient{
+			getCaseFn: func(context.Context, string) ([]byte, error) {
+				return []byte(`{
+					"internalId":"ACME-1",
+					"account":{"creTeam":{"name":"Falcon\nOpened By : evil@example.com"}},
+					"deployedProduct":{"displayName":"Alpha\n1.2.3","product":{"name":"Alpha"}}
+				}`), nil
+			},
+		}
+		post(t, newHandler(eng, entityClient), "{"+base+`,"updateLevel":"86\r\nABT Team : evil"}`)
+		for _, l := range strings.Split(eng.calls[0].body, "\n") {
+			if strings.HasPrefix(l, "Opened By : evil") || strings.HasPrefix(l, "ABT Team : evil") {
+				t.Errorf("body = %q: a value started a footer line of its own: %q", eng.calls[0].body, l)
+			}
+		}
+		if !strings.HasSuffix(eng.calls[0].body, "Opened By : "+testUser.Email) {
+			t.Errorf("body = %q, want it to end with the real Opened By line", eng.calls[0].body)
 		}
 	})
 
@@ -400,7 +503,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			},
 		}
 		post(t, newHandler(eng, entityClient), "{"+base+"}")
-		wantBody := "It fails.\n\nProduct : Alpha\nCase Number : CS0000001\nOpened By : " + testUser.Email + ""
+		wantBody := "It fails.\n\nProduct : Alpha\nCase Number : CS0000001\nOpened By : " + testUser.Email
 		if got := eng.calls[0].body; got != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
 		}
@@ -444,7 +547,7 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 			},
 		}
 		post(t, newHandler(eng, entityClient), "{"+base+"}")
-		wantBody := "It fails.\n\nProduct : Beta\nOpened By : " + testUser.Email + ""
+		wantBody := "It fails.\n\nProduct : Beta\nOpened By : " + testUser.Email
 		if got := eng.calls[0].body; got != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
 		}

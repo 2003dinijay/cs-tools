@@ -216,6 +216,17 @@ func (h *CaseHandler) deployedProductSlug(ctx context.Context, caseRaw []byte, u
 		return ""
 	}
 
+	// Every way the lookup can come back empty is logged with why (ids only), so a
+	// Product that fell back to the display name can be explained afterwards.
+	fallback := func(reason string, err error) string {
+		args := []any{"reason", reason, "userID", userID, "caseID", caseID}
+		if err != nil {
+			args = append(args, "err", err)
+		}
+		slog.WarnContext(ctx, "deployed product lookup found no abbreviation and version while filing a GitHub issue; using the product label", args...)
+		return ""
+	}
+
 	ctx, cancel := context.WithTimeout(ctx, deployedProductLookupTimeout)
 	defer cancel()
 	for page := 0; page < deployedProductLookupMaxPages; page++ {
@@ -224,12 +235,11 @@ func (h *CaseHandler) deployedProductSlug(ctx context.Context, caseRaw []byte, u
 			"pagination":    map[string]int{"limit": deployedProductLookupPageSize, "offset": page * deployedProductLookupPageSize},
 		})
 		if err != nil {
-			return ""
+			return fallback("request not built", err)
 		}
 		raw, err := h.entity.SearchDeployedProducts(ctx, body)
 		if err != nil {
-			slog.WarnContext(ctx, "deployed product lookup failed while filing a GitHub issue; using the product label", "userID", userID, "caseID", caseID, "err", err)
-			return ""
+			return fallback("search failed", err)
 		}
 		var resp struct {
 			DeployedProducts []struct {
@@ -244,26 +254,28 @@ func (h *CaseHandler) deployedProductSlug(ctx context.Context, caseRaw []byte, u
 			HasMore bool `json:"hasMore"`
 		}
 		if err := json.Unmarshal(raw, &resp); err != nil {
-			return ""
+			return fallback("response not understood", err)
 		}
 		for _, dp := range resp.DeployedProducts {
 			if idKey(dp.ID) != wantID {
 				continue
 			}
 			if dp.Product == nil || dp.Product.Abbreviation == nil || dp.Version == nil {
-				return ""
+				return fallback("deployed product has no abbreviation or version", nil)
 			}
 			abbreviation, version := strings.TrimSpace(*dp.Product.Abbreviation), strings.TrimSpace(dp.Version.Name)
 			if abbreviation == "" || version == "" {
-				return ""
+				return fallback("deployed product has a blank abbreviation or version", nil)
 			}
 			return abbreviation + "-" + version
 		}
-		if !resp.HasMore {
-			return ""
+		// An empty page ends the walk even when hasMore says otherwise, the same
+		// guard the entity service's own deployed-product paging uses.
+		if !resp.HasMore || len(resp.DeployedProducts) == 0 {
+			return fallback("deployed product not listed on the deployment", nil)
 		}
 	}
-	return ""
+	return fallback("deployed product not found within the page limit", nil)
 }
 
 // idKey makes two spellings of one id comparable: the entity service writes the
@@ -283,7 +295,9 @@ func idKey(id string) string {
 func buildGitHubIssueBody(req caseGitHubIssueRequest, productLabel string, caseCtx caseGitHubIssueContext) string {
 	var info strings.Builder
 	line := func(label, value string) {
-		if value = strings.TrimSpace(value); value == "" {
+		// Fields rather than TrimSpace: the block is parsed line by line downstream, so a
+		// value holding a newline must not start a line of its own.
+		if value = strings.Join(strings.Fields(value), " "); value == "" {
 			return
 		}
 		if info.Len() > 0 {
