@@ -30,6 +30,7 @@ package repository_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -38,37 +39,40 @@ import (
 	"github.com/wso2-open-operations/cs-tools/entity-service/internal/repository"
 )
 
-const (
-	sfeCaseID        = "90000000-0000-0000-0000-000000000011"
-	sfeCreatedByUser = "sfe-fixture-creator@test.local"
-)
-
-func seedSearchFixEtaFixture(t *testing.T, pool *pgxpool.Pool) {
+// seedSearchFixEtaFixture inserts a fresh, Postgres-generated id (gen_random_uuid(),
+// read back via RETURNING -- the same convention every other seeded-fixture
+// integration test in this package uses) and a run-unique number/wso2Id/
+// created_by, rather than a fixed literal id: two runs against the same shared
+// staging database (CodeRabbit flagged this) must never delete or collide with
+// each other's fixture.
+func seedSearchFixEtaFixture(t *testing.T, pool *pgxpool.Pool) (caseID, createdBy string) {
 	t.Helper()
 	ctx := repository.WithSystemIdentity(context.Background())
 	scoped := repository.NewScoped(pool)
 
-	cleanup := func() {
-		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE id = $1`, sfeCaseID)
-	}
-	cleanup()
-	t.Cleanup(cleanup)
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	createdByUser := "sfe-fixture-creator-" + suffix + "@test.local"
 
-	now := time.Now().UTC()
 	// best_case_eta/most_likely_eta/worst_case_eta live on work_item itself,
 	// not "case" -- confirmed directly against the real schema (\d work_item);
 	// GetCaseByID's own query already reads them as wi.best_case_eta etc.
-	if _, err := scoped.Exec(ctx,
+	now := time.Now().UTC()
+	if err := scoped.QueryRow(ctx,
 		`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type,
 		                        best_case_eta, most_likely_eta, worst_case_eta)
-		 VALUES ($1, $2, $2, $3, $3, 'SFE-TEST-0001', 'SFE-TEST-WSO2-0001', 'search fix-eta integration test fixture', 'CASE',
-		         '2026-11-01', '2026-11-05', '2026-11-10')`,
-		sfeCaseID, now, sfeCreatedByUser); err != nil {
+		 VALUES (gen_random_uuid(), $1, $1, $2, $2, $3, $4, 'search fix-eta integration test fixture', 'CASE',
+		         '2026-11-01', '2026-11-05', '2026-11-10')
+		 RETURNING id`,
+		now, createdByUser, "SFE-TEST-"+suffix, "SFE-TEST-WSO2-"+suffix).Scan(&caseID); err != nil {
 		t.Fatalf("seed work_item: %v", err)
 	}
-	if _, err := scoped.Exec(ctx, `INSERT INTO "case" (id, state) VALUES ($1, 'OPEN')`, sfeCaseID); err != nil {
+	t.Cleanup(func() {
+		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE id = $1`, caseID)
+	})
+	if _, err := scoped.Exec(ctx, `INSERT INTO "case" (id, state) VALUES ($1, 'OPEN')`, caseID); err != nil {
 		t.Fatalf("seed case: %v", err)
 	}
+	return caseID, createdByUser
 }
 
 // TestSearchCasesFixEtaIntegration_SearchReturnsTheSameEtaValuesAsGetCaseByID
@@ -78,7 +82,7 @@ func seedSearchFixEtaFixture(t *testing.T, pool *pgxpool.Pool) {
 // reported bug exhibited.
 func TestSearchCasesFixEtaIntegration_SearchReturnsTheSameEtaValuesAsGetCaseByID(t *testing.T) {
 	pool := caseStatsPool(t)
-	seedSearchFixEtaFixture(t, pool)
+	sfeCaseID, sfeCreatedByUser := seedSearchFixEtaFixture(t, pool)
 	repo := repository.NewCaseRepository(repository.NewScoped(pool))
 	scope := repository.SearchScope{Unrestricted: true, ViewerEmail: "sfe-viewer@wso2.com"}
 	ctx := repository.WithCallerIdentity(context.Background(), scope)
@@ -133,21 +137,21 @@ func TestSearchCasesFixEtaIntegration_UnsetEtaReadsAsNil(t *testing.T) {
 	ctx := repository.WithSystemIdentity(context.Background())
 	scoped := repository.NewScoped(pool)
 
-	noEtaCaseID := "90000000-0000-0000-0000-000000000012"
-	noEtaCreatedBy := "sfe-no-eta-fixture-creator@test.local"
-	cleanup := func() {
-		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE id = $1`, noEtaCaseID)
-	}
-	cleanup()
-	t.Cleanup(cleanup)
+	suffix := fmt.Sprintf("%d", time.Now().UnixNano())
+	noEtaCreatedBy := "sfe-no-eta-fixture-creator-" + suffix + "@test.local"
 
+	var noEtaCaseID string
 	now := time.Now().UTC()
-	if _, err := scoped.Exec(ctx,
+	if err := scoped.QueryRow(ctx,
 		`INSERT INTO work_item (id, created_on, updated_on, created_by, updated_by, number, wso2_id, subject, type)
-		 VALUES ($1, $2, $2, $3, $3, 'SFE-TEST-0002', 'SFE-TEST-WSO2-0002', 'no fix-eta fixture', 'CASE')`,
-		noEtaCaseID, now, noEtaCreatedBy); err != nil {
+		 VALUES (gen_random_uuid(), $1, $1, $2, $2, $3, $4, 'no fix-eta fixture', 'CASE')
+		 RETURNING id`,
+		now, noEtaCreatedBy, "SFE-TEST-NOETA-"+suffix, "SFE-TEST-WSO2-NOETA-"+suffix).Scan(&noEtaCaseID); err != nil {
 		t.Fatalf("seed work_item: %v", err)
 	}
+	t.Cleanup(func() {
+		_, _ = scoped.Exec(ctx, `DELETE FROM work_item WHERE id = $1`, noEtaCaseID)
+	})
 	if _, err := scoped.Exec(ctx, `INSERT INTO "case" (id, state) VALUES ($1, 'OPEN')`, noEtaCaseID); err != nil {
 		t.Fatalf("seed case: %v", err)
 	}
