@@ -18,7 +18,7 @@
 
 import type { JSX } from "react";
 import type { PagingChainMember } from "../types";
-import { phoneChipState } from "../utils/pagingPhone";
+import { ADD_TO_PROFILE_HINT, phoneChipState } from "../utils/pagingPhone";
 
 /** What a reader may do about a person's paging number; the tab owns it. */
 export interface PagingPhoneControls {
@@ -41,10 +41,11 @@ function PhoneIcon(): JSX.Element {
 }
 
 /**
- * The number Case Paging would call for one person, and -- for a reader who
- * may -- the actions on their paging-only number. The words say the state
- * ("Profile ✓", "No number", ...); the colour only repeats them. Only the
- * masked number is ever shown.
+ * The number Case Alerts would call for one person. The words say the state
+ * ("Profile ✓", "No number", ...); the colour only repeats them, and only the
+ * masked number is ever shown. A number is added on the person's profile, not
+ * here, so a missing one says where to add it. A paging-only number set
+ * before that rule can still be test-called or removed by a reader who may.
  */
 export default function PhoneChip({
   member,
@@ -67,28 +68,13 @@ export default function PhoneChip({
           {st.masked ? <span className="cp-mask"> · {st.masked}</span> : null}
         </span>
       </span>
-      {can && controls ? (
+      {!member.pagingPhone && member.hasProfilePhone === false ? (
+        <span className="cp-fixnote">{ADD_TO_PROFILE_HINT}</span>
+      ) : null}
+      {can && controls && member.pagingPhone ? (
         <span className="cp-phact">
-          {!member.pagingPhone && member.hasProfilePhone !== true ? (
-            <button
-              type="button"
-              className="btn ghost sm"
-              aria-label={`Add a paging number for ${name}`}
-              onClick={() => controls.edit(member)}
-            >
-              Add number
-            </button>
-          ) : null}
           {member.pagingPhone ? (
             <>
-              <button
-                type="button"
-                className="btn ghost sm"
-                aria-label={`Change ${name}'s paging number`}
-                onClick={() => controls.edit(member)}
-              >
-                Change
-              </button>
               <button
                 type="button"
                 className="btn ghost sm"

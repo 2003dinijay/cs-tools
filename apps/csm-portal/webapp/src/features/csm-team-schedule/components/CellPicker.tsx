@@ -18,6 +18,7 @@
 
 import {
   Fragment,
+  useCallback,
   useEffect,
   useLayoutEffect,
   useMemo,
@@ -50,7 +51,7 @@ export interface CellPickerTarget {
   /** The leave or allocation this day is part of, if any -- the whole span,
    *  so it can be removed in one click. */
   absence?: CellAbsence;
-  /** Where on screen the cell is, so the picker can sit against it. */
+  /** Where on screen the cell is, so the picker can grow out of it. */
   anchor: { top: number; left: number; bottom: number; right: number };
   /** The standing window this engineer sits in on an ordinary weekday, so
    *  clearing a weekday puts them back on it rather than leaving a hole.
@@ -157,12 +158,30 @@ function dayCount(from: string, to: string): number {
   return Math.max(1, Math.round((b - a) / 86_400_000) + 1);
 }
 
+/** How long the picker takes to fade out, matched by the stylesheet. */
+const CLOSE_MS = 140;
+
+/** Everything Tab may land on inside the picker, in order. */
+const FOCUSABLE = 'button:not(:disabled), input:not(:disabled), [tabindex]:not([tabindex="-1"])';
+
+function prefersReducedMotion(): boolean {
+  return typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
 /**
  * The picker a lead gets on a roster cell.
  *
- * Anchored to the cell rather than opened as a modal: the point of this grid is
- * the rows around the one being changed -- who else is on that week, who is
- * already away -- and a dialog in the middle of the screen hides exactly that.
+ * A dialog in the middle of the view, the same place every time. Anchored to
+ * the cell, it landed wherever the cell happened to be -- half off a row near
+ * the bottom, over the column being edited -- and leads went looking for it.
+ * It grows out of the cell that was clicked, so the eye still follows the
+ * click, and the header says who and what the day holds now, which is the
+ * part of the grid it covers that the decision needs.
+ *
+ * Two columns: the rota on the left, leave and allocations on the right with
+ * the date range at their head. Leave is almost always marked over days, a
+ * rotation mostly for the one that was clicked; the range still applies to
+ * both, and the rota side says which days it will set.
  *
  * The caller keys it on the cell, so a new cell is a new decision: the range
  * starts closed again rather than carrying the last one over onto somebody
@@ -204,26 +223,63 @@ export default function CellPicker({
   const [deleteError, setDeleteError] = useState("");
   const box = useRef<HTMLDivElement | null>(null);
   const endField = useRef<HTMLInputElement | null>(null);
-  const [at, setAt] = useState<{ left: number; top: number } | null>(null);
+  /** Where the clicked cell is, as seen from the dialog: the point it grows
+   *  out of. Unset until measured, when it simply grows from its middle. */
+  const [origin, setOrigin] = useState<string | undefined>(undefined);
+  const [closing, setClosing] = useState(false);
+  const closeTimer = useRef<number | undefined>(undefined);
 
+  /** Fade out, then close. Straight away for anyone who asked for less
+   *  motion, and only once however many times it is asked for. */
+  const close = useCallback((): void => {
+    if (closeTimer.current !== undefined) return;
+    if (prefersReducedMotion()) {
+      onClose();
+      return;
+    }
+    setClosing(true);
+    closeTimer.current = window.setTimeout(onClose, CLOSE_MS);
+  }, [onClose]);
+
+  useEffect(() => () => window.clearTimeout(closeTimer.current), []);
+
+  /** Focus goes into the dialog when it opens and back to wherever it was when
+   *  it closes, so a keyboard user is never left on the page behind it. */
+  useEffect(() => {
+    const before = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    box.current?.focus({ preventScroll: true });
+    return () => {
+      if (before && document.contains(before)) before.focus({ preventScroll: true });
+    };
+  }, []);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if (e.key === "Escape") onClose();
-    };
-    const onDown = (e: MouseEvent): void => {
-      if (box.current && !box.current.contains(e.target as Node)) onClose();
+      if (e.key === "Escape") {
+        close();
+        return;
+      }
+      // Tab goes round inside the dialog: the page behind it is not
+      // reachable while it is open, by mouse or by keyboard.
+      if (e.key !== "Tab" || !box.current) return;
+      // In document order: a selector list is not guaranteed to come back
+      // that way everywhere (jsdom groups it by selector).
+      const stops = [...box.current.querySelectorAll<HTMLElement>("*")].filter((el) => el.matches(FOCUSABLE));
+      if (stops.length === 0) return;
+      const first = stops[0];
+      const last = stops[stops.length - 1];
+      const here = document.activeElement;
+      if (e.shiftKey && (here === first || here === box.current || !box.current.contains(here))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (here === last || !box.current.contains(here))) {
+        e.preventDefault();
+        first.focus();
+      }
     };
     window.addEventListener("keydown", onKey);
-    // Deferred to the next tick: the click that opened the picker is still
-    // propagating, and would otherwise close it immediately.
-    const t = window.setTimeout(() => document.addEventListener("mousedown", onDown), 0);
-    return () => {
-      window.removeEventListener("keydown", onKey);
-      document.removeEventListener("mousedown", onDown);
-      window.clearTimeout(t);
-    };
-  }, [onClose]);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [close]);
 
   /** The range the picker really has.
    *
@@ -246,6 +302,32 @@ export default function CellPicker({
   const moves = (moveKinds ?? []).filter(
     (k) => k.movesToTeamKey && k.movesToTeamKey.toLowerCase() !== target.teamKey.toLowerCase(),
   );
+  /** "Migration Team", "Americas Team": what a move button names. A team whose
+   *  name already ends in "Team" keeps it once. */
+  const asTeam = (key: string): string => {
+    const name = teamNameOf(key).trim();
+    return /\bteam$/i.test(name) ? name : `${name} Team`;
+  };
+
+  /** Another team's ordinary hours, offered as the move it is. Americas cover
+   *  picked for somebody not on Americas puts them on the Americas team for
+   *  the span (the Brazil rotation) -- the server writes it as a move -- so it
+   *  sits with the other moves as "Move to Americas Team" rather than among
+   *  the standing hours, where it read as a window like their own. For
+   *  somebody already on that team it stays their standing hours. */
+  const windowMoves = useMemo(() => {
+    const seen = new Set<string>();
+    const out: { kind: ScheduleAbsenceKind; shift: ScheduleShift }[] = [];
+    for (const kind of allKinds ?? awayKinds) {
+      if (!kind.movesToTeamKey || !kind.worksRotaThere || !kind.showsAsShiftCode || kind.retired) continue;
+      if (kind.movesToTeamKey.toLowerCase() === target.teamKey.toLowerCase()) continue;
+      const shift = shifts.find((sh) => sh.code === kind.showsAsShiftCode);
+      if (!shift || seen.has(shift.code)) continue;
+      seen.add(shift.code);
+      out.push({ kind, shift });
+    }
+    return out;
+  }, [allKinds, awayKinds, shifts, target.teamKey]);
 
   /** The move this day is part of, where it is one. On a move to a team that
    *  works no rota (Migration) they take no rotation -- the server refuses
@@ -268,13 +350,15 @@ export default function CellPicker({
     // rather than listed here a second time.
     return [
       { heading: "Rotations", items: decorate(shifts.filter((s) => s.isRotation && !s.isEscalation)) },
-      { heading: "Standing hours", items: decorate(shifts.filter((s) => !s.isRotation)) },
+      {
+        heading: "Standing hours",
+        items: decorate(shifts.filter((s) => !s.isRotation && !windowMoves.some((m) => m.shift.code === s.code))),
+      },
     ].filter((g) => g.items.length > 0);
-  }, [shifts, firstDay, offRota]);
+  }, [shifts, firstDay, offRota, windowMoves]);
 
   /** L1, L2 and L3 for every zone worked on the span's first day. */
   const grid = useMemo(() => escalationGrid(shifts, firstDay), [shifts, firstDay]);
-  const groupCount = groups.reduce((n, g) => n + g.items.length, 0);
 
   /** Leave, then allocations, each under its own heading. */
   const awayGroups = useMemo(
@@ -293,21 +377,16 @@ export default function CellPicker({
     [awayKinds],
   );
 
-  /** Sit under the cell, or above it when there is no room below, and never
-   *  off the side. Measured after the first paint because the height depends
-   *  on how many windows this group runs. */
+  /** Grow out of the cell that was clicked. Measured before the first paint,
+   *  from the dialog's own untransformed place in the backdrop, so the
+   *  opening scale does not skew it. */
   useLayoutEffect(() => {
     const el = box.current;
     if (!el) return;
-    const m = 12;
-    const w = el.offsetWidth;
-    const h = el.offsetHeight;
-    const left = Math.min(Math.max(m, target.anchor.left), window.innerWidth - w - m);
-    let top = target.anchor.bottom + 8;
-    if (top + h > window.innerHeight - m) top = Math.max(m, target.anchor.top - h - 8);
-    if (top + h > window.innerHeight - m) top = Math.max(m, window.innerHeight - h - m);
-    setAt({ left: Math.round(left), top: Math.round(top) });
-  }, [target.anchor, groupCount, awayGroups.length, tagOpen, grid.length]);
+    const x = (target.anchor.left + target.anchor.right) / 2 - el.offsetLeft;
+    const y = (target.anchor.top + target.anchor.bottom) / 2 - el.offsetTop;
+    setOrigin(`${Math.round(x)}px ${Math.round(y)}px`);
+  }, [target.anchor]);
 
   /** What clearing means here. A weekend has no standing window to fall back
    *  to, so clearing it genuinely empties the day. */
@@ -319,438 +398,529 @@ export default function CellPicker({
     month: "short",
   });
 
+  /** What the day holds now -- the part of the grid the dialog covers that
+   *  the decision needs. */
+  const heldShift = target.shiftCode ? shifts.find((s) => s.code === target.shiftCode) : undefined;
+  const heldAway = target.absenceKindCode
+    ? (allKinds ?? awayKinds).find((k) => k.code === target.absenceKindCode)
+    : undefined;
+
+  /** The days a rota pick will set, said where the pick is made: the range
+   *  itself sits with leave, on the other side. */
+  const spanLabel =
+    span === 1
+      ? new Date(`${firstDay}T00:00:00`).toLocaleDateString("en-GB", {
+          weekday: "short",
+          day: "numeric",
+          month: "short",
+        })
+      : `${shortDate(firstDay)} – ${shortDate(lastDay)} · ${span} days`;
+
   return (
     <div
-      className="picker open"
-      ref={box}
-      role="dialog"
-      aria-label={`Change ${target.name}'s rota`}
-      // Off screen until it has been measured, rather than at 0,0 where it
-      // would flash in the corner for a frame before landing on the cell.
-      style={at ?? { top: -9999, left: -9999 }}
+      className={`pk-scrim${closing ? " closing" : ""}`}
+      // The backdrop itself, not a press that started inside the dialog and
+      // ended out here (selecting a date's text, say).
+      onMouseDown={(e) => {
+        if (e.target === e.currentTarget) close();
+      }}
     >
-      <div className="pk-head">
-        <b>{target.name}</b>
-        <span className="pk-d">{when}</span>
-        <button type="button" className="pk-x" onClick={onClose} aria-label="Close">
-          &times;
-        </button>
-      </div>
-
-      {target.absence && onRemoveAbsence ? (
-        // The whole span, not the day that was clicked: leave is granted as a
-        // span, so taking it back is one decision too. Clearing a few days out
-        // of it is still what the date range and "Clear" below are for.
-        <div className="pk-remove">
-          {(() => {
-            const ab = target.absence;
-            const kind = (allKinds ?? awayKinds).find((k) => k.code === ab.kindCode);
-            // A move worked as another team's normal hours reads as those
-            // hours -- Americas cover -- not as the tag that records it.
-            const shownAs =
-              kind?.worksRotaThere && kind.showsAsShiftCode
-                ? shifts.find((sh) => sh.code === kind.showsAsShiftCode)
-                : undefined;
-            const range = ab.endsOn
-              ? ab.endsOn === ab.startsOn
-                ? shortDate(ab.startsOn)
-                : `${shortDate(ab.startsOn)} – ${shortDate(ab.endsOn)}`
-              : `from ${shortDate(ab.startsOn)}, until further notice`;
-            return (
-              <>
-                <span className={`chip sm ${shownAs?.colourToken ?? kind?.colourToken ?? ""}`}>
-                  {shownAs?.shortCode ?? kind?.shortCode ?? ab.kindCode}
+      <div
+        className="picker open"
+        ref={box}
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Change ${target.name}'s rota`}
+        tabIndex={-1}
+        style={origin ? { transformOrigin: origin } : undefined}
+      >
+        <div className="pk-head">
+          <span className="pk-who">
+            <b>{target.name}</b>
+            <small>
+              {teamNameOf(target.teamKey)} · {when}
+            </small>
+          </span>
+          {heldShift || heldAway ? (
+            <span className="pk-now" title="What this day holds now">
+              {heldShift ? (
+                <span className={`chip sm ${heldShift.colourToken}`}>
+                  {heldShift.shortCode}
+                  {target.tier ? ` ${target.tier}` : ""}
                 </span>
-                <span className="pkrm-t">
-                  <b>{shownAs?.label ?? kind?.label ?? ab.kindCode}</b>
-                  {ab.allocatedTo ? ` · ${ab.allocatedTo}` : ""}
-                  <small>{range}</small>
-                </span>
-                <button
-                  type="button"
-                  className="pkrm-b"
-                  disabled={busy}
-                  onClick={() => onRemoveAbsence(ab.id)}
-                >
-                  Remove
-                </button>
-                {/* Only from a day the move still covers: a later start would
-                    send a backwards range, which the server swaps round --
-                    clearing the move's last day and whatever else lies in
-                    between. */}
-                {heldMove && ab.homeTeamKey && (!ab.endsOn || firstDay <= ab.endsOn) ? (
-                  // The end of a move: back on their own team from the day
-                  // picked, the days before it kept as they were.
-                  <button
-                    type="button"
-                    className="pkrm-b back"
-                    disabled={busy}
-                    onClick={() => onMarkAway("", firstDay, ab.endsOn ?? isoPlusDays(firstDay, 365))}
-                  >
-                    Back to {teamNameOf(ab.homeTeamKey)} from {shortDate(firstDay)}
-                  </button>
-                ) : null}
-              </>
-            );
-          })()}
+              ) : null}
+              {heldAway ? <span className={`chip sm ${heldAway.colourToken}`}>{heldAway.shortCode}</span> : null}
+              <span className="pk-nowl">{heldAway?.label ?? heldShift?.label}</span>
+            </span>
+          ) : null}
+          <button type="button" className="pk-x" onClick={close} aria-label="Close">
+            &times;
+          </button>
         </div>
-      ) : null}
 
-      <div className="pk-range">
-        <label className="pkr-f">
-          <span>From</span>
-          <input
-            type="date"
-            // Uncontrolled, like the end date below and for the same reason.
-            defaultValue={target.rotaDate}
-            onChange={(e) => setStart(e.target.value || target.rotaDate)}
-            onBlur={(e) => {
-              e.target.value = firstDay;
-              setStart(firstDay);
-              // A start moved past the end takes the end with it, so the two
-              // fields never show a backwards range.
-              if (endField.current && endField.current.value < firstDay) {
-                endField.current.value = firstDay;
-                setUntil(firstDay);
-              }
-            }}
-            aria-label="Mark from"
-          />
-        </label>
-        <label className="pkr-f">
-          <span>To</span>
-          <input
-            ref={endField}
-            type="date"
-            // Uncontrolled on purpose. A date input keeps its own half-typed
-            // segment, and feeding `value` back on every change throws that
-            // away: the "2" of "29" lands as the 2nd, React re-renders, and
-            // the "9" starts over as the 9th. The date is read out of the
-            // field instead, and the component is keyed on the cell so it
-            // still starts fresh when another cell is picked.
-            defaultValue={target.rotaDate}
-            min={firstDay}
-            // Taken as typed, and only settled back to the start once focus
-            // leaves. Clamping on every change cannot work here: a date input
-            // reports a whole date per segment, so the first digit of "25" is
-            // the 2nd of the month, which is before the start -- snapping
-            // there resets the field under the typist and the second digit
-            // can never land. What the range actually means is clamped above
-            // instead, so nothing downstream sees a backwards span.
-            onChange={(e) => setUntil(e.target.value || firstDay)}
-            onBlur={(e) => {
-              e.target.value = lastDay;
-              setUntil(lastDay);
-            }}
-            aria-label="Mark until"
-          />
-        </label>
-        <span className="pkr-n">
-          {span} day{span === 1 ? "" : "s"}
-        </span>
-      </div>
-
-      <div className="pk-grid">
-        {groups.map((group) => (
-          <Fragment key={group.heading}>
-            <div className="pk-sec">{group.heading}</div>
-            {group.items.map(({ shift, ok }) => (
-              <button
-                key={shift.code}
-                type="button"
-                className={`pk-c ${shift.code === target.shiftCode ? "on" : ""} ${ok ? "" : "bad"}`}
-                disabled={!ok || busy}
-                title={ok ? shift.label : `${shift.label} — ${offRota && shift.isRotation ? offRotaWhy : notWorked(shift)}`}
-                onClick={() => onApply(shift.code, firstDay, lastDay)}
-              >
-                <span className={`chip sm ${shift.colourToken}`}>{shift.shortCode}</span>
-                {/* A window that does not apply today still says what it is.
-                    "weekends only" on its own left a lead reading chips to
-                    work out which weekend window was which. */}
-                <span className="pk-l">
-                  {shift.label}
-                  {ok ? null : (
-                    <small className="pk-n">{offRota && shift.isRotation ? offRotaWhy : notWorked(shift)}</small>
-                  )}
-                </span>
-              </button>
-            ))}
-          </Fragment>
-        ))}
-
-        {grid.length > 0 ? (
-          <>
-            <div className="pk-sec">Escalation</div>
-            {/* Every zone, not only the column that was clicked: a lead
-                rostering L3 for TZ2 from a TZ1 cell should not have to find
-                the TZ2 column first. The clicked zone is marked. */}
-            <div className="pk-esc">
-              {grid.map((row) => (
-                <div
-                  key={row.zoneCode}
-                  className={`pk-escr${row.zoneCode === target.zoneCode ? " here" : ""}`}
-                >
-                  <span className="pk-escz">{row.label}</span>
-                  {row.tiers.map(({ tier, shift }) => {
-                    const held =
-                      Boolean(shift) &&
-                      shift?.code === target.shiftCode &&
-                      (target.tier ?? shift?.tier) === tier;
-                    return (
-                      <button
-                        key={tier}
-                        type="button"
-                        className={`pk-t${held ? " on" : ""}`}
-                        disabled={!shift || busy || offRota}
-                        aria-label={`${tier} for ${row.label}`}
-                        title={shift ? `${tier} · ${shift.label}` : `${row.label} has no ${tier} window`}
-                        onClick={() =>
-                          shift && onApply(shift.code, firstDay, lastDay, shift.tier ? undefined : tier)
-                        }
-                      >
-                        <span className={`chip sm ${tier}`}>{tier}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              ))}
-            </div>
-          </>
-        ) : null}
-
-        {moves.length > 0 ? (
-          <>
-            <div className="pk-sec">Move to another team</div>
-            {moves.map((kind) => (
-              <button
-                key={kind.code}
-                type="button"
-                className={`pk-c ${kind.code === target.absenceKindCode ? "on" : ""}`}
-                disabled={busy}
-                // A span like any other: from and to above. They show under
-                // that team for those days, and come back with "Back to ...".
-                title={`${kind.label}: on the ${teamNameOf(kind.movesToTeamKey ?? "")} team for the span`}
-                onClick={() => onMarkAway(kind.code, firstDay, lastDay)}
-              >
-                <span className={`chip sm ${kind.colourToken}`}>{kind.shortCode}</span>
-                <span className="pk-l">Move to {teamNameOf(kind.movesToTeamKey ?? "")}</span>
-              </button>
-            ))}
-          </>
-        ) : null}
-
-        {awayGroups.map((group) => (
-          <Fragment key={group.bucket}>
-            <div className="pk-sec">{group.heading}</div>
-            {group.bucket === "ALLOCATION" ? (
-              // Who the time is for, so a new customer is a value rather than
-              // a new kind. Optional: "on RnD" is a complete answer when the
-              // product team is not known yet.
-              <label className="pk-for">
-                <span>For</span>
-                <input
-                  type="text"
-                  value={allocatedTo}
-                  maxLength={100}
-                  placeholder="Customer or product team (optional)"
-                  onChange={(e) => setAllocatedTo(e.target.value)}
-                  aria-label="Allocated to"
-                />
-              </label>
-            ) : null}
-            {group.kinds.map((kind) => {
-              // No leave from a weekend: nobody is rostered to be away from a
-              // Saturday. A span that starts on a weekday may still run across
-              // one. An allocation has no such rule -- the time is given to
-              // someone else whichever day it starts.
-              const blocked = onWeekend && kind.bucket === "LEAVE";
-              const mark = (
-                <button
-                  key={kind.code}
-                  type="button"
-                  className={`pk-c ${kind.code === target.absenceKindCode ? "on" : ""}${blocked ? " bad" : ""}`}
-                  disabled={busy || blocked}
-                  // No weekday rule inside the span, unlike a rotation. It is
-                  // stored as a span rather than a day at a time, so a weekend
-                  // inside it is covered too -- somebody away Friday to Monday
-                  // is away for the weekend, and skipping it would say they
-                  // were back for two days in the middle of it.
-                  title={`${kind.label} — the whole span, weekends included`}
-                  onClick={() =>
-                    onMarkAway(
-                      kind.code,
-                      firstDay,
-                      lastDay,
-                      kind.bucket === "ALLOCATION" && allocatedTo.trim() ? allocatedTo.trim() : undefined,
-                    )
-                  }
-                >
-                  <span className={`chip sm ${kind.colourToken}`}>{kind.shortCode}</span>
-                  <span className="pk-l">{kind.label}</span>
-                </button>
-              );
-              if (!kind.custom || !onDeleteKind) return mark;
-              // A tag a lead added can be deleted from where it is used. Two
-              // clicks, because it is shared: the tag goes for every team.
-              const asking = confirmDelete === kind.code;
+        {target.absence && onRemoveAbsence ? (
+          // The whole span, not the day that was clicked: leave is granted as a
+          // span, so taking it back is one decision too. Clearing a few days out
+          // of it is still what the date range and "Clear" below are for.
+          <div className="pk-remove">
+            {(() => {
+              const ab = target.absence;
+              const kind = (allKinds ?? awayKinds).find((k) => k.code === ab.kindCode);
+              // A move worked as another team's normal hours reads as those
+              // hours -- Americas cover -- not as the tag that records it.
+              const shownAs =
+                kind?.worksRotaThere && kind.showsAsShiftCode
+                  ? shifts.find((sh) => sh.code === kind.showsAsShiftCode)
+                  : undefined;
+              const range = ab.endsOn
+                ? ab.endsOn === ab.startsOn
+                  ? shortDate(ab.startsOn)
+                  : `${shortDate(ab.startsOn)} – ${shortDate(ab.endsOn)}`
+                : `from ${shortDate(ab.startsOn)}, until further notice`;
               return (
-                <div className="pk-cw" key={kind.code}>
-                  {mark}
+                <>
+                  <span className={`chip sm ${shownAs?.colourToken ?? kind?.colourToken ?? ""}`}>
+                    {shownAs?.shortCode ?? kind?.shortCode ?? ab.kindCode}
+                  </span>
+                  <span className="pkrm-t">
+                    <b>{shownAs?.label ?? kind?.label ?? ab.kindCode}</b>
+                    {ab.allocatedTo ? ` · ${ab.allocatedTo}` : ""}
+                    <small>{range}</small>
+                  </span>
                   <button
                     type="button"
-                    className={`pk-del${asking ? " ask" : ""}`}
-                    aria-label={asking ? `Confirm deleting the ${kind.label} tag` : `Delete the ${kind.label} tag`}
-                    title={asking ? "Click again to delete it for every team" : "Delete this tag"}
+                    className="pkrm-b"
                     disabled={busy}
-                    onClick={() => {
-                      if (!asking) {
-                        setConfirmDelete(kind.code);
-                        setDeleteError("");
-                        return;
-                      }
-                      onDeleteKind(kind.code)
-                        .then(() => setConfirmDelete(null))
-                        .catch((err: unknown) =>
-                          setDeleteError(err instanceof Error && err.message ? err.message : "The tag was not deleted."),
-                        );
-                    }}
+                    onClick={() => onRemoveAbsence(ab.id)}
                   >
-                    {asking ? "Delete?" : "×"}
+                    Remove
                   </button>
-                </div>
+                  {/* Only from a day the move still covers: a later start would
+                      send a backwards range, which the server swaps round --
+                      clearing the move's last day and whatever else lies in
+                      between. */}
+                  {heldMove && ab.homeTeamKey && (!ab.endsOn || firstDay <= ab.endsOn) ? (
+                    // The end of a move: back on their own team from the day
+                    // picked, the days before it kept as they were.
+                    <button
+                      type="button"
+                      className="pkrm-b back"
+                      disabled={busy}
+                      onClick={() => onMarkAway("", firstDay, ab.endsOn ?? isoPlusDays(firstDay, 365))}
+                    >
+                      Back to {teamNameOf(ab.homeTeamKey)} from {shortDate(firstDay)}
+                    </button>
+                  ) : null}
+                </>
               );
-            })}
-            {deleteError && group.kinds.some((k) => k.code === confirmDelete) ? (
-              <div className="tf-err pk-delerr" role="alert">{deleteError}</div>
-            ) : null}
-          </Fragment>
-        ))}
-
-        {onCreateKind ? (
-          tagOpen ? (
-            <form
-              className="pk-newtag tf"
-              onSubmit={(e) => {
-                e.preventDefault();
-                const shortCode = tag.shortCode.trim();
-                const label = tag.label.trim();
-                if (!shortCode || !label) {
-                  setTagError("A short code and a name are both needed.");
-                  return;
-                }
-                if (awayKinds.some((k) => k.shortCode.toLowerCase() === shortCode.toLowerCase())) {
-                  setTagError(`${shortCode} is already a tag — pick another short code.`);
-                  return;
-                }
-                setTagBusy(true);
-                setTagError("");
-                onCreateKind({ ...tag, shortCode, label })
-                  .then(() => {
-                    setTagOpen(false);
-                    setTag({ shortCode: "", label: "", bucket: tag.bucket, colourToken: tag.colourToken });
-                  })
-                  .catch((err: unknown) =>
-                    setTagError(err instanceof Error && err.message ? err.message : "The tag was not added."),
-                  )
-                  .finally(() => setTagBusy(false));
-              }}
-            >
-              <div className="pk-sec">New tag</div>
-              <label>
-                <span>Short code</span>
-                <input
-                  value={tag.shortCode}
-                  maxLength={12}
-                  placeholder="e.g. Trn"
-                  onChange={(e) => setTag({ ...tag, shortCode: e.target.value })}
-                  aria-label="Tag short code"
-                />
-              </label>
-              <label>
-                <span>Name</span>
-                <input
-                  value={tag.label}
-                  maxLength={100}
-                  placeholder="e.g. External training"
-                  onChange={(e) => setTag({ ...tag, label: e.target.value })}
-                  aria-label="Tag name"
-                />
-              </label>
-              <div className="pk-codes" role="radiogroup" aria-label="Tag type">
-                {(["LEAVE", "ALLOCATION"] as const).map((b) => (
-                  <button
-                    key={b}
-                    type="button"
-                    role="radio"
-                    aria-checked={tag.bucket === b}
-                    className={tag.bucket === b ? "on" : ""}
-                    onClick={() => setTag({ ...tag, bucket: b })}
-                  >
-                    {b === "LEAVE" ? "Leave" : "Allocation"}
-                  </button>
-                ))}
-              </div>
-              <div className="tf-sw" role="radiogroup" aria-label="Tag colour">
-                {TAG_COLOURS.map((c) => (
-                  <button
-                    key={c}
-                    type="button"
-                    role="radio"
-                    aria-checked={tag.colourToken === c}
-                    aria-label={`Colour ${c}`}
-                    className={`pk-sw${tag.colourToken === c ? " on" : ""}`}
-                    onClick={() => setTag({ ...tag, colourToken: c })}
-                  >
-                    <span className={`chip sm ${c}`}>{tag.colourToken === c && tag.shortCode.trim() ? tag.shortCode.trim() : "Aa"}</span>
-                  </button>
-                ))}
-              </div>
-              <p className="pk-note">Shared with every team once added.</p>
-              <div className="tf-err" role="alert">{tagError}</div>
-              <div className="pk-tagact">
-                <button type="button" className="btn sm" onClick={() => setTagOpen(false)}>
-                  Cancel
-                </button>
-                <button type="submit" className="btn sm primary" disabled={tagBusy}>
-                  {tagBusy ? "Adding…" : "Add tag"}
-                </button>
-              </div>
-            </form>
-          ) : (
-            <button type="button" className="pk-c newtype" onClick={() => setTagOpen(true)}>
-              + New tag
-            </button>
-          )
+            })()}
+          </div>
         ) : null}
 
-        <button
-          type="button"
-          className="pk-c clear"
-          disabled={busy}
-          onClick={() => onClear(backTo, firstDay, lastDay)}
-        >
-          {/* Says what clearing will actually do here, which is not the same
-              thing in the three cases. Somebody marked away comes back onto
-              whatever the rota already had for them; a weekend has no standing
-              window to fall back to at all. */}
-          {target.otherTurns && target.zoneCode
-            ? `Clear — take off ${target.zoneCode}${target.tier ? ` ${target.tier}` : ""} only`
-            : target.absenceKindCode && !target.shiftCode
-            ? "Clear — back on the rota"
-            : backTo
-              ? `Clear — back to ${shifts.find((s) => s.code === backTo)?.label ?? "regular hours"}`
-              : "Clear — nothing rostered"}
-        </button>
-      </div>
 
-      {/* Over a span, a weekday rotation will skip the weekend inside it, and
-          the reader should know that before they click rather than after. */}
-      {span > 1 ? (
-        <p className="pk-note">
-          Days a rotation is not worked on are skipped — a weekday rotation over
-          a week sets the five weekdays.
-        </p>
-      ) : null}
+        <div className="pk-body">
+          <section className="pk-col" aria-labelledby="pk-rota-t">
+            <div className="pk-coltitle" id="pk-rota-t">
+              Rota
+              <small>{spanLabel}</small>
+            </div>
+            {/* Over a span, a weekday rotation will skip the weekend inside it, and
+                the reader should know that before they click rather than after. */}
+            {span > 1 ? (
+              <p className="pk-note pk-skip">
+                Days a rotation is not worked on are skipped — a weekday rotation over
+                a week sets the five weekdays.
+              </p>
+            ) : null}
+            <div className="pk-grid">
+            {groups.map((group) => (
+              <Fragment key={group.heading}>
+                <div className="pk-sec">{group.heading}</div>
+                {group.items.map(({ shift, ok }) => (
+                  <button
+                    key={shift.code}
+                    type="button"
+                    className={`pk-c ${shift.code === target.shiftCode ? "on" : ""} ${ok ? "" : "bad"}`}
+                    disabled={!ok || busy}
+                    title={ok ? shift.label : `${shift.label} — ${offRota && shift.isRotation ? offRotaWhy : notWorked(shift)}`}
+                    onClick={() => onApply(shift.code, firstDay, lastDay)}
+                  >
+                    <span className={`chip sm ${shift.colourToken}`}>{shift.shortCode}</span>
+                    {/* A window that does not apply today still says what it is.
+                        "weekends only" on its own left a lead reading chips to
+                        work out which weekend window was which. */}
+                    <span className="pk-l">
+                      {shift.label}
+                      {ok ? null : (
+                        <small className="pk-n">{offRota && shift.isRotation ? offRotaWhy : notWorked(shift)}</small>
+                      )}
+                    </span>
+                  </button>
+                ))}
+              </Fragment>
+            ))}
+
+            {grid.length > 0 ? (
+              <>
+                <div className="pk-sec">Escalation</div>
+                {/* Every zone, not only the column that was clicked: a lead
+                    rostering L3 for TZ2 from a TZ1 cell should not have to find
+                    the TZ2 column first. The clicked zone is marked. */}
+                <div className="pk-esc">
+                  {grid.map((row) => (
+                    <div
+                      key={row.zoneCode}
+                      className={`pk-escr${row.zoneCode === target.zoneCode ? " here" : ""}`}
+                    >
+                      <span className="pk-escz">{row.label}</span>
+                      {row.tiers.map(({ tier, shift }) => {
+                        const held =
+                          Boolean(shift) &&
+                          shift?.code === target.shiftCode &&
+                          (target.tier ?? shift?.tier) === tier;
+                        return (
+                          <button
+                            key={tier}
+                            type="button"
+                            className={`pk-t${held ? " on" : ""}`}
+                            disabled={!shift || busy || offRota}
+                            aria-label={`${tier} for ${row.label}`}
+                            title={shift ? `${tier} · ${shift.label}` : `${row.label} has no ${tier} window`}
+                            onClick={() =>
+                              shift && onApply(shift.code, firstDay, lastDay, shift.tier ? undefined : tier)
+                            }
+                          >
+                            <span className={`chip sm ${tier}`}>{tier}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  ))}
+                </div>
+              </>
+            ) : null}
+
+            {moves.length > 0 || windowMoves.length > 0 ? (
+              <>
+                <div className="pk-sec">Move to another team</div>
+                {windowMoves.map(({ kind, shift }) => {
+                  const ok = allowedOn(shift, firstDay);
+                  const to = asTeam(kind.movesToTeamKey ?? "");
+                  return (
+                    <button
+                      key={`window:${shift.code}`}
+                      type="button"
+                      className={`pk-c ${shift.code === target.shiftCode || kind.code === target.absenceKindCode ? "on" : ""} ${ok ? "" : "bad"}`}
+                      disabled={!ok || busy}
+                      // The same pick as the window itself: the span above, worked
+                      // as that team's hours, and back with "Back to ...".
+                      title={ok ? `${to}: works ${shift.label} for the span` : `${to} — ${notWorked(shift)}`}
+                      onClick={() => onApply(shift.code, firstDay, lastDay)}
+                    >
+                      <span className={`chip sm ${shift.colourToken}`}>{shift.shortCode}</span>
+                      <span className="pk-l">
+                        Move to {to}
+                        {ok ? null : <small className="pk-n">{notWorked(shift)}</small>}
+                      </span>
+                    </button>
+                  );
+                })}
+                {moves.map((kind) => (
+                  <button
+                    key={kind.code}
+                    type="button"
+                    className={`pk-c ${kind.code === target.absenceKindCode ? "on" : ""}`}
+                    disabled={busy}
+                    // A span like any other: from and to above. They show under
+                    // that team for those days, and come back with "Back to ...".
+                    title={`${kind.label}: on the ${teamNameOf(kind.movesToTeamKey ?? "")} team for the span`}
+                    onClick={() => onMarkAway(kind.code, firstDay, lastDay)}
+                  >
+                    <span className={`chip sm ${kind.colourToken}`}>{kind.shortCode}</span>
+                    <span className="pk-l">Move to {asTeam(kind.movesToTeamKey ?? "")}</span>
+                  </button>
+                ))}
+              </>
+            ) : null}
+
+            </div>
+          </section>
+
+          {/* The range heads this column: leave and allocations are almost
+              always marked over days, so the dates sit with them. */}
+          <section className="pk-col pk-awaycol" aria-labelledby="pk-away-t">
+            <div className="pk-coltitle" id="pk-away-t">
+              Leave &amp; allocations
+            </div>
+            <div className="pk-range">
+              <label className="pkr-f">
+                <span>From</span>
+                <input
+                  type="date"
+                  // Uncontrolled, like the end date below and for the same reason.
+                  defaultValue={target.rotaDate}
+                  onChange={(e) => setStart(e.target.value || target.rotaDate)}
+                  onBlur={(e) => {
+                    e.target.value = firstDay;
+                    setStart(firstDay);
+                    // A start moved past the end takes the end with it, so the two
+                    // fields never show a backwards range.
+                    if (endField.current && endField.current.value < firstDay) {
+                      endField.current.value = firstDay;
+                      setUntil(firstDay);
+                    }
+                  }}
+                  aria-label="Mark from"
+                />
+              </label>
+              <label className="pkr-f">
+                <span>To</span>
+                <input
+                  ref={endField}
+                  type="date"
+                  // Uncontrolled on purpose. A date input keeps its own half-typed
+                  // segment, and feeding `value` back on every change throws that
+                  // away: the "2" of "29" lands as the 2nd, React re-renders, and
+                  // the "9" starts over as the 9th. The date is read out of the
+                  // field instead, and the component is keyed on the cell so it
+                  // still starts fresh when another cell is picked.
+                  defaultValue={target.rotaDate}
+                  min={firstDay}
+                  // Taken as typed, and only settled back to the start once focus
+                  // leaves. Clamping on every change cannot work here: a date input
+                  // reports a whole date per segment, so the first digit of "25" is
+                  // the 2nd of the month, which is before the start -- snapping
+                  // there resets the field under the typist and the second digit
+                  // can never land. What the range actually means is clamped above
+                  // instead, so nothing downstream sees a backwards span.
+                  onChange={(e) => setUntil(e.target.value || firstDay)}
+                  onBlur={(e) => {
+                    e.target.value = lastDay;
+                    setUntil(lastDay);
+                  }}
+                  aria-label="Mark until"
+                />
+              </label>
+              <span className="pkr-n">
+                {span} day{span === 1 ? "" : "s"}
+              </span>
+              {/* The fields draw dates in the browser's own format (10/20/2026
+                  on a US-English browser), which reads either way round; the
+                  span is spelled out the way the rest of the page writes dates. */}
+              <span className="pkr-when" aria-live="polite">
+                {span === 1 ? spanLabel : `${shortDate(firstDay)} – ${shortDate(lastDay)}`}
+              </span>
+            </div>
+
+            <div className="pk-grid">
+            {awayGroups.map((group) => (
+              <Fragment key={group.bucket}>
+                <div className="pk-sec">{group.heading}</div>
+                {group.bucket === "ALLOCATION" ? (
+                  // Who the time is for, so a new customer is a value rather than
+                  // a new kind. Optional: "on RnD" is a complete answer when the
+                  // product team is not known yet.
+                  <label className="pk-for">
+                    <span>For</span>
+                    <input
+                      type="text"
+                      value={allocatedTo}
+                      maxLength={100}
+                      placeholder="Customer or product team (optional)"
+                      onChange={(e) => setAllocatedTo(e.target.value)}
+                      aria-label="Allocated to"
+                    />
+                  </label>
+                ) : null}
+                {group.kinds.map((kind) => {
+                  // No leave from a weekend: nobody is rostered to be away from a
+                  // Saturday. A span that starts on a weekday may still run across
+                  // one. An allocation has no such rule -- the time is given to
+                  // someone else whichever day it starts.
+                  const blocked = onWeekend && kind.bucket === "LEAVE";
+                  const mark = (
+                    <button
+                      key={kind.code}
+                      type="button"
+                      className={`pk-c ${kind.code === target.absenceKindCode ? "on" : ""}${blocked ? " bad" : ""}`}
+                      disabled={busy || blocked}
+                      // No weekday rule inside the span, unlike a rotation. It is
+                      // stored as a span rather than a day at a time, so a weekend
+                      // inside it is covered too -- somebody away Friday to Monday
+                      // is away for the weekend, and skipping it would say they
+                      // were back for two days in the middle of it.
+                      title={`${kind.label} — the whole span, weekends included`}
+                      onClick={() =>
+                        onMarkAway(
+                          kind.code,
+                          firstDay,
+                          lastDay,
+                          kind.bucket === "ALLOCATION" && allocatedTo.trim() ? allocatedTo.trim() : undefined,
+                        )
+                      }
+                    >
+                      <span className={`chip sm ${kind.colourToken}`}>{kind.shortCode}</span>
+                      <span className="pk-l">{kind.label}</span>
+                    </button>
+                  );
+                  if (!kind.custom || !onDeleteKind) return mark;
+                  // A tag a lead added can be deleted from where it is used. Two
+                  // clicks, because it is shared: the tag goes for every team.
+                  const asking = confirmDelete === kind.code;
+                  return (
+                    <div className="pk-cw" key={kind.code}>
+                      {mark}
+                      <button
+                        type="button"
+                        className={`pk-del${asking ? " ask" : ""}`}
+                        aria-label={asking ? `Confirm deleting the ${kind.label} tag` : `Delete the ${kind.label} tag`}
+                        title={asking ? "Click again to delete it for every team" : "Delete this tag"}
+                        disabled={busy}
+                        onClick={() => {
+                          if (!asking) {
+                            setConfirmDelete(kind.code);
+                            setDeleteError("");
+                            return;
+                          }
+                          onDeleteKind(kind.code)
+                            .then(() => setConfirmDelete(null))
+                            .catch((err: unknown) =>
+                              setDeleteError(err instanceof Error && err.message ? err.message : "The tag was not deleted."),
+                            );
+                        }}
+                      >
+                        {asking ? "Delete?" : "×"}
+                      </button>
+                    </div>
+                  );
+                })}
+                {deleteError && group.kinds.some((k) => k.code === confirmDelete) ? (
+                  <div className="tf-err pk-delerr" role="alert">{deleteError}</div>
+                ) : null}
+              </Fragment>
+            ))}
+
+            {onCreateKind ? (
+              tagOpen ? (
+                <form
+                  className="pk-newtag tf"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    const shortCode = tag.shortCode.trim();
+                    const label = tag.label.trim();
+                    if (!shortCode || !label) {
+                      setTagError("A short code and a name are both needed.");
+                      return;
+                    }
+                    if (awayKinds.some((k) => k.shortCode.toLowerCase() === shortCode.toLowerCase())) {
+                      setTagError(`${shortCode} is already a tag — pick another short code.`);
+                      return;
+                    }
+                    setTagBusy(true);
+                    setTagError("");
+                    onCreateKind({ ...tag, shortCode, label })
+                      .then(() => {
+                        setTagOpen(false);
+                        setTag({ shortCode: "", label: "", bucket: tag.bucket, colourToken: tag.colourToken });
+                      })
+                      .catch((err: unknown) =>
+                        setTagError(err instanceof Error && err.message ? err.message : "The tag was not added."),
+                      )
+                      .finally(() => setTagBusy(false));
+                  }}
+                >
+                  <div className="pk-sec">New tag</div>
+                  <label>
+                    <span>Short code</span>
+                    <input
+                      value={tag.shortCode}
+                      maxLength={12}
+                      placeholder="e.g. Trn"
+                      onChange={(e) => setTag({ ...tag, shortCode: e.target.value })}
+                      aria-label="Tag short code"
+                    />
+                  </label>
+                  <label>
+                    <span>Name</span>
+                    <input
+                      value={tag.label}
+                      maxLength={100}
+                      placeholder="e.g. External training"
+                      onChange={(e) => setTag({ ...tag, label: e.target.value })}
+                      aria-label="Tag name"
+                    />
+                  </label>
+                  <div className="pk-codes" role="radiogroup" aria-label="Tag type">
+                    {(["LEAVE", "ALLOCATION"] as const).map((b) => (
+                      <button
+                        key={b}
+                        type="button"
+                        role="radio"
+                        aria-checked={tag.bucket === b}
+                        className={tag.bucket === b ? "on" : ""}
+                        onClick={() => setTag({ ...tag, bucket: b })}
+                      >
+                        {b === "LEAVE" ? "Leave" : "Allocation"}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="tf-sw" role="radiogroup" aria-label="Tag colour">
+                    {TAG_COLOURS.map((c) => (
+                      <button
+                        key={c}
+                        type="button"
+                        role="radio"
+                        aria-checked={tag.colourToken === c}
+                        aria-label={`Colour ${c}`}
+                        className={`pk-sw${tag.colourToken === c ? " on" : ""}`}
+                        onClick={() => setTag({ ...tag, colourToken: c })}
+                      >
+                        <span className={`chip sm ${c}`}>{tag.colourToken === c && tag.shortCode.trim() ? tag.shortCode.trim() : "Aa"}</span>
+                      </button>
+                    ))}
+                  </div>
+                  <p className="pk-note">Shared with every team once added.</p>
+                  <div className="tf-err" role="alert">{tagError}</div>
+                  <div className="pk-tagact">
+                    <button type="button" className="btn sm" onClick={() => setTagOpen(false)}>
+                      Cancel
+                    </button>
+                    <button type="submit" className="btn sm primary" disabled={tagBusy}>
+                      {tagBusy ? "Adding…" : "Add tag"}
+                    </button>
+                  </div>
+                </form>
+              ) : (
+                <button type="button" className="pk-c newtype" onClick={() => setTagOpen(true)}>
+                  + New tag
+                </button>
+              )
+            ) : null}
+            </div>
+          </section>
+        </div>
+
+        <div className="pk-foot">
+          <button
+            type="button"
+            className="pk-c clear"
+            disabled={busy}
+            onClick={() => onClear(backTo, firstDay, lastDay)}
+          >
+            {/* Says what clearing will actually do here, which is not the same
+                thing in the three cases. Somebody marked away comes back onto
+                whatever the rota already had for them; a weekend has no standing
+                window to fall back to at all. */}
+            {target.otherTurns && target.zoneCode
+              ? `Clear — take off ${target.zoneCode}${target.tier ? ` ${target.tier}` : ""} only`
+              : target.absenceKindCode && !target.shiftCode
+              ? "Clear — back on the rota"
+              : backTo
+                ? `Clear — back to ${shifts.find((s) => s.code === backTo)?.label ?? "regular hours"}`
+                : "Clear — nothing rostered"}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

@@ -23,6 +23,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import type { PagingChainResponse, PagingReadinessResponse } from "../types";
 import { pagingChain, pagingMember, readinessChain, readinessGap } from "../test/fixtures";
+import { ADD_TO_PROFILE_HINT } from "../utils/pagingPhone";
 // vi.mock below is hoisted above this import, so the panel gets the mocks.
 import CasePagingTab from "./CasePagingTab";
 
@@ -85,8 +86,8 @@ describe("CasePagingTab", () => {
   it("opens on CRE: the editable chain, with its readiness", () => {
     render(<CasePagingTab onOpenRota={vi.fn()} />);
     expect(screen.getByRole("tab", { name: "CRE" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("button", { name: /Edit paging chain/ })).toBeInTheDocument();
-    expect(screen.getByRole("table", { name: "CRE paging chain by team and level" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Edit alert chain/ })).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "CRE alert chain by team and level" })).toBeInTheDocument();
     expect(screen.getByRole("columnheader", { name: /^Alpha/ })).toBeInTheDocument();
     expect(screen.getByText(/✓ ready for the next 7 days/)).toBeInTheDocument();
   });
@@ -97,7 +98,7 @@ describe("CasePagingTab", () => {
     fireEvent.click(screen.getByRole("tab", { name: "SaaS SRE" }));
 
     expect(screen.getByRole("tab", { name: "SaaS SRE" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.queryByRole("button", { name: /Edit paging chain/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Edit alert chain/ })).not.toBeInTheDocument();
     expect(
       screen.getByText(/People come from the SaaS SRE rota; set them in the Team Schedule views/),
     ).toBeInTheDocument();
@@ -129,11 +130,11 @@ describe("CasePagingTab", () => {
     render(<CasePagingTab onOpenRota={vi.fn()} initialChain="SME" />);
     expect(screen.getByRole("tab", { name: "SME" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("button", { name: "Open the SME rota" })).toBeInTheDocument();
-    expect(screen.queryByRole("table", { name: "CRE paging chain by team and level" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("table", { name: "CRE alert chain by team and level" })).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("tab", { name: "CRE" }));
     expect(screen.getByRole("tab", { name: "CRE" })).toHaveAttribute("aria-selected", "true");
-    expect(screen.getByRole("table", { name: "CRE paging chain by team and level" })).toBeInTheDocument();
+    expect(screen.getByRole("table", { name: "CRE alert chain by team and level" })).toBeInTheDocument();
   });
 
   it("opens an IaaS SRE reader on the IaaS SRE chain", () => {
@@ -174,7 +175,7 @@ describe("CasePagingTab", () => {
     fireEvent.click(screen.getByRole("tab", { name: "IaaS SRE" }));
     expect(screen.getByText(/People come from the IaaS SRE rota/)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("tab", { name: "CRE" }));
-    expect(screen.getByRole("button", { name: /Edit paging chain/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Edit alert chain/ })).toBeInTheDocument();
   });
 
   it("shows a phone chip by each person and runs the paging-number actions", () => {
@@ -202,20 +203,16 @@ describe("CasePagingTab", () => {
     fireEvent.click(screen.getByRole("button", { name: "Test call John Roe's paging number" }));
     expect(testMutate).toHaveBeenCalledWith("u-a2", expect.anything());
 
-    fireEvent.click(screen.getByRole("button", { name: "Change John Roe's paging number" }));
-    const dialog = screen.getByRole("dialog", { name: "Change paging number for John Roe" });
-    expect(within(dialog).getByLabelText("Mobile number (with country code)")).toHaveValue("+94771234123");
-    fireEvent.change(within(dialog).getByLabelText("Mobile number (with country code)"), { target: { value: "+94 77 765 4321" } });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save" }));
-    expect(putMutate).toHaveBeenCalledWith({ userId: "u-a2", phone: "+94777654321" }, expect.anything());
+    // A number is changed on the profile, not here.
+    expect(screen.queryByRole("button", { name: "Change John Roe's paging number" })).not.toBeInTheDocument();
+    expect(putMutate).not.toHaveBeenCalled();
 
-    fireEvent.keyDown(dialog, { key: "Escape" });
     fireEvent.click(screen.getByRole("button", { name: "Remove John Roe's paging number" }));
     fireEvent.click(within(screen.getByRole("dialog")).getByRole("button", { name: "Remove" }));
     expect(delMutate).toHaveBeenCalledWith("u-a2", expect.anything());
   });
 
-  it("acts on a readiness phone gap for a person the reader may edit, and keeps the hint otherwise", () => {
+  it("points a missing number to the profile, even for a person the reader may edit", () => {
     const base = pagingChain();
     chain.data = {
       ...base,
@@ -233,8 +230,9 @@ describe("CasePagingTab", () => {
     render(<CasePagingTab onOpenRota={vi.fn()} />);
     const strip = screen.getByRole("list", { name: "CRE gaps" });
     const [sam, ann] = within(strip).getAllByRole("listitem");
-    fireEvent.click(within(sam).getByRole("button", { name: "Add number" }));
-    expect(screen.getByRole("dialog", { name: "Add paging number for Sam Lee" })).toBeInTheDocument();
-    expect(ann).toHaveTextContent("Ask them to add it under avatar › Profile");
+    expect(within(sam).queryByRole("button", { name: "Add number" })).not.toBeInTheDocument();
+    expect(sam).toHaveTextContent(ADD_TO_PROFILE_HINT);
+    expect(ann).toHaveTextContent(ADD_TO_PROFILE_HINT);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 });
