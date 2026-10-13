@@ -197,7 +197,7 @@ describe("ProjectContactsTab", () => {
     expect(screen.getByText(/No contacts found for this project/i)).toBeInTheDocument();
   });
 
-  it("shows Admin for an account admin and for a project ADMIN role", () => {
+  it("shows Admin only when this project's roles include ADMIN", () => {
     postMock.mockResolvedValue({ users: [] });
     mockQueryResult({
       data: [
@@ -217,7 +217,7 @@ describe("ProjectContactsTab", () => {
       ],
     });
     renderTab();
-    expect(screen.getByText("Customer Admin", { selector: ".MuiChip-label" })).toBeInTheDocument();
+    expect(screen.queryByText("Customer Admin", { selector: ".MuiChip-label" })).not.toBeInTheDocument();
     expect(screen.getAllByText("Admin", { selector: ".MuiChip-label" })).toHaveLength(1);
     expect(screen.getAllByText("Portal User", { selector: ".MuiChip-label" })).toHaveLength(2);
     expect(screen.getByText("Security User", { selector: ".MuiChip-label" })).toBeInTheDocument();
