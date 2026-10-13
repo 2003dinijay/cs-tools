@@ -50,6 +50,20 @@ vi.mock("@features/settings/api/usePatchUsersMe", () => ({
   usePatchUsersMe: () => ({ mutate: vi.fn(), isPending: false }),
 }));
 
+// usePortalAccess (which the Feature Preview gating reads) derives from
+// useCurrentUser's roles -- mocked the same way CsmUsersPage.test.tsx does,
+// with a mutable roles/id a test can set before rendering. Defaults to no
+// roles, matching every pre-existing test in this file.
+let mockRoles: string[] | undefined;
+let mockUserId: string | undefined = "user-1";
+vi.mock("@context/current-user/CurrentUserContext", () => ({
+  useCurrentUser: () => ({
+    user: { roles: mockRoles, id: mockUserId },
+    isLoading: false,
+    isError: false,
+  }),
+}));
+
 function renderUserProfile(props: { hideProjectControls?: boolean } = {}) {
   return render(
     <ErrorBannerProvider>
@@ -67,6 +81,8 @@ function renderUserProfile(props: { hideProjectControls?: boolean } = {}) {
 describe("UserProfile", () => {
   beforeEach(() => {
     localStorage.clear();
+    mockRoles = undefined;
+    mockUserId = "user-1";
   });
 
   it("offers Preferences below Profile in the profile menu, and no separate Sign out gap", async () => {
@@ -115,5 +131,50 @@ describe("UserProfile", () => {
     expect(screen.getByText("Sign out")).toBeInTheDocument();
     expect(screen.queryByText("Profile")).not.toBeInTheDocument();
     expect(screen.queryByText("Preferences")).not.toBeInTheDocument();
+  });
+
+  describe("Feature Preview", () => {
+    it("does not render for a non-admin", async () => {
+      mockRoles = ["cs_engineer"];
+      renderUserProfile();
+      fireEvent.click(screen.getByRole("button", { name: "Account" }));
+      await screen.findByText("Preferences");
+      expect(screen.queryByText("Feature Preview")).not.toBeInTheDocument();
+    });
+
+    it("renders for an admin, below Preferences and above Sign out", async () => {
+      mockRoles = ["admin"];
+      renderUserProfile();
+      fireEvent.click(screen.getByRole("button", { name: "Account" }));
+
+      const preferencesItem = await screen.findByText("Preferences");
+      const previewItem = await screen.findByText("Feature Preview");
+      const signOutItem = await screen.findByText("Sign out");
+
+      const position = (el: Element) =>
+        Array.from(el.closest("ul")?.children ?? []).indexOf(el.closest("li") ?? el);
+      expect(position(previewItem)).toBeGreaterThan(position(preferencesItem));
+      expect(position(signOutItem)).toBeGreaterThan(position(previewItem));
+    });
+
+    it("does not render for an admin when hideProjectControls is set", async () => {
+      mockRoles = ["admin"];
+      renderUserProfile({ hideProjectControls: true });
+      fireEvent.click(screen.getByRole("button", { name: "Account" }));
+      await screen.findByText("Sign out");
+      expect(screen.queryByText("Feature Preview")).not.toBeInTheDocument();
+    });
+
+    it("opens the Feature Preview dialog from its own menu item", async () => {
+      mockRoles = ["admin"];
+      renderUserProfile();
+      fireEvent.click(screen.getByRole("button", { name: "Account" }));
+      fireEvent.click(await screen.findByText("Feature Preview"));
+
+      expect(await screen.findByText("Feature Preview", { selector: "h6" })).toBeInTheDocument();
+      expect(
+        screen.getByText(/in-progress features this deployment has hidden/i),
+      ).toBeInTheDocument();
+    });
   });
 });

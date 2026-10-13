@@ -223,6 +223,14 @@ export interface PortalAccess {
    * see this under the old exactly-`{viewer}` check.
    */
   canViewWorkItemsStaffView: boolean;
+  /**
+   * Holds the `admin` role specifically — the one capability gate in this
+   * type keyed on the role itself rather than a derived permission, needed by
+   * the feature-preview toggle (see `featurePreview.ts`) which is
+   * deliberately admin-only regardless of any other capability a caller
+   * might hold.
+   */
+  isAdmin: boolean;
 }
 
 /**
@@ -269,6 +277,7 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
       canViewTeamSchedule: true,
       canViewSettings: true,
       canViewWorkItemsStaffView: true,
+      isAdmin: true,
     };
   }
   const held = new Set((roles ?? []).map((r) => r.toLowerCase()));
@@ -297,5 +306,6 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     canViewTeamSchedule: full || has(PORTAL_ROLE.commentUpdater),
     canViewSettings: full,
     canViewWorkItemsStaffView: full || has(PORTAL_ROLE.timecardApprover),
+    isAdmin,
   };
 }
