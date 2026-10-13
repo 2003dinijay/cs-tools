@@ -31,8 +31,8 @@ func baseValidConfig() Config {
 		SLADataSource:        SLADataSourcePostgres,
 		AttachmentDataSource: AttachmentDataSourcePostgres,
 		DBUser:               "user",
-		DBPassword:    "password",
-		DBName:        "db",
+		DBPassword:           "password",
+		DBName:               "db",
 		// Both ports carry their real defaults: Load always populates them,
 		// and Validate rejects the two being equal — which a zero-value
 		// Config would be.
@@ -1243,5 +1243,22 @@ func TestConfig_Validate_GithubRepoTokens(t *testing.T) {
 		if err := c.Validate(); err == nil {
 			t.Errorf("%q: want a startup error", v)
 		}
+	}
+}
+
+func TestConfig_GithubServiceNowFirst(t *testing.T) {
+	c := baseValidConfig()
+	c.GithubSRServiceNowFirst = true
+	c.DataSource = DataSourcePostgres
+	if c.GithubServiceNowFirst() {
+		t.Error("on plain postgres: there is no ServiceNow to create in")
+	}
+	c.DataSource = DataSourcePostgresServiceNowDualWrite
+	if !c.GithubServiceNowFirst() {
+		t.Error("off under dual-write with GITHUB_SR_SERVICENOW_FIRST=true")
+	}
+	c.GithubSRServiceNowFirst = false
+	if c.GithubServiceNowFirst() {
+		t.Error("on without GITHUB_SR_SERVICENOW_FIRST")
 	}
 }

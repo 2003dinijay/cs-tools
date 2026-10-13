@@ -296,6 +296,15 @@ type Config struct {
 	// ServiceNow's integration reads. A repository without it falls back to
 	// account_github_repo.
 	GithubRepoConfigPath string
+	// GithubSRServiceNowFirst is GITHUB_SR_SERVICENOW_FIRST. "true" under
+	// DATA_SOURCE=postgres-servicenow-dual-write creates a service request
+	// raised from an issue in ServiceNow first, through the ServiceNow
+	// integration service's /github-cases, so it takes ServiceNow's CS number
+	// and WSO2 Case ID as a portal-created one does. Off by default: turn it on
+	// once the integration service serving /github-cases is deployed, or every
+	// new issue fails to create. Off, an issue's SR is written to Postgres only
+	// and numbered SR-GH-<n>. See GithubServiceNowFirst.
+	GithubSRServiceNowFirst bool
 	// GithubOutboundInterval is how often to drain the outbound queue when the
 	// last pass came back short. A backlog drains at full speed regardless.
 	GithubOutboundInterval time.Duration
@@ -723,6 +732,7 @@ func Load() *Config {
 		GithubRepoTokens:                         os.Getenv("GITHUB_REPO_TOKENS"),
 		GithubIntegrationLogin:                   os.Getenv("GITHUB_INTEGRATION_LOGIN"),
 		GithubRepoConfigPath:                     strings.TrimSpace(os.Getenv("GITHUB_REPO_CONFIG_PATH")),
+		GithubSRServiceNowFirst:                  strings.EqualFold(strings.TrimSpace(os.Getenv("GITHUB_SR_SERVICENOW_FIRST")), "true"),
 		GithubOutboundInterval:                   envDuration("GITHUB_OUTBOUND_INTERVAL", 15*time.Second),
 		CSMPortalBaseURL:                         os.Getenv("CSM_PORTAL_BASE_URL"),
 		SpecialistHandoffConfig:                  os.Getenv("SPECIALIST_HANDOFF_CONFIG"),
@@ -1296,6 +1306,13 @@ func (c *Config) HasGithubIntegration() bool {
 	return c.GithubIntegrationEnabled &&
 		(c.GithubToken != "" || c.hasRepoTokens()) &&
 		c.GithubIntegrationLogin != ""
+}
+
+// GithubServiceNowFirst reports whether a service request raised from an
+// issue is created in ServiceNow first: under dual-write, with
+// GITHUB_SR_SERVICENOW_FIRST=true.
+func (c *Config) GithubServiceNowFirst() bool {
+	return c.DataSource == DataSourcePostgresServiceNowDualWrite && c.GithubSRServiceNowFirst
 }
 
 // hasRepoTokens reports whether GITHUB_REPO_TOKENS names at least one token.
