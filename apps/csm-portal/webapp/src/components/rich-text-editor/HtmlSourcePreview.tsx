@@ -16,8 +16,7 @@
 
 import { Box, Typography } from "@wso2/oxygen-ui";
 import { useMemo, type JSX } from "react";
-import { sanitizeRichTextHtml, stripLightModeInlineStyles } from "@utils/sanitizeHtml";
-import { useDarkMode } from "@utils/useDarkMode";
+import { sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 
 /**
  * Shows how HTML typed in the source box will look, without touching it.
@@ -25,17 +24,14 @@ import { useDarkMode } from "@utils/useDarkMode";
  * The rich editor cannot be used for this when the markup has styling it cannot
  * represent (a bordered box, coloured links): loading it there rewrites it. So
  * the source view gets its own read-only rendering instead, prepared the way
- * the portals prepare backend HTML for display: DOMPurify's default policy (the
- * same as the customer portal's announcement view), plus the light-background
- * clean-up the staff view applies in dark mode. Scripts, event handlers and
- * `javascript:` URLs are removed, exactly as they are for customers.
+ * the portals prepare backend HTML for display: DOMPurify's default policy, the
+ * same as the announcement views, with the styling left as written (including
+ * in dark mode, so the preview matches what the announcement will look like).
+ * Scripts, event handlers and `javascript:` URLs are removed, exactly as they
+ * are for customers.
  */
 export default function HtmlSourcePreview({ html }: { html: string }): JSX.Element | null {
-  const isDarkMode = useDarkMode();
-  const safeHtml = useMemo(
-    () => sanitizeRichTextHtml(isDarkMode ? stripLightModeInlineStyles(html) : html),
-    [html, isDarkMode],
-  );
+  const safeHtml = useMemo(() => sanitizeRichTextHtml(html), [html]);
 
   if (!html.trim()) return null;
 

@@ -64,11 +64,11 @@ describe("HtmlSourcePreview", () => {
     expect(preview()).not.toHaveTextContent("first");
   });
 
-  it("drops light backgrounds in dark mode, as the staff view does, and keeps the rest of the styling", () => {
+  it("leaves light backgrounds as written in dark mode, so it matches the announcement view", () => {
     document.documentElement.setAttribute("data-color-scheme", "dark");
     render(<HtmlSourcePreview html={'<div style="background: #ffffff; border: 1px solid #888; padding: 4px">x</div>'} />);
     const styled = preview().querySelector("div") as HTMLElement;
-    expect(styled.getAttribute("style")).not.toMatch(/background/i);
+    expect(styled.getAttribute("style")).toMatch(/background/i);
     expect(styled.getAttribute("style")).toMatch(/border/i);
   });
 });
