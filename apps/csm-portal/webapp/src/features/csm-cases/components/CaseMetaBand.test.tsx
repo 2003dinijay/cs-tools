@@ -212,3 +212,35 @@ describe("CaseMetaBand — CRE / SRE team", () => {
     expect(screen.queryByText("CRE / SRE team")).not.toBeInTheDocument();
   });
 });
+
+describe("CaseMetaBand — tier", () => {
+  it("renders the Tier cell when the account has a tier", () => {
+    renderBand({
+      customerContext: { ...BASE_CASE.customerContext, tier: "Enterprise" },
+    });
+
+    expect(screen.getByText("Tier")).toBeInTheDocument();
+  });
+
+  it.each([["empty", ""], ["whitespace-only", "  "]])(
+    "omits the Tier cell when the tier is %s",
+    (_name, tier) => {
+      renderBand({ customerContext: { ...BASE_CASE.customerContext, tier } });
+
+      expect(screen.queryByText("Tier")).not.toBeInTheDocument();
+      // Neighbouring cells are unaffected.
+      expect(screen.getByText("Account")).toBeInTheDocument();
+      expect(screen.getByText("Project")).toBeInTheDocument();
+    },
+  );
+
+  it("omits the Tier cell on an announcement with no tier", () => {
+    renderBand({
+      caseType: "announcement",
+      customerContext: { ...BASE_CASE.customerContext, tier: "" },
+    });
+
+    expect(screen.queryByText("Tier")).not.toBeInTheDocument();
+    expect(screen.getByText("State")).toBeInTheDocument();
+  });
+});
