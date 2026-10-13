@@ -17963,7 +17963,7 @@ components:
                 no onboarding engagement at all. "Not-Applicable" (and null) both mean
                 there is no active onboarding to surface for this project; treat either
                 as "onboarding not enabled" when deciding whether to show
-                onboardingOwner. ServiceNow data source only.
+                onboardingOwner.
             onboardingOwner:
               nullable: true
               allOf:
@@ -17971,7 +17971,7 @@ components:
               description: >
                 The WSO2 staff member assigned to lead this project's onboarding. Null
                 when no owner is assigned (most projects, since it is only set for
-                onboarding-enabled projects). ServiceNow data source only.
+                onboarding-enabled projects).
 
     ProjectAccountRef:
       type: object
