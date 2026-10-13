@@ -280,9 +280,9 @@ func TestList(t *testing.T) {
 func TestListRejectsBadQueries(t *testing.T) {
 	api := newTestAPI(t)
 	for query, want := range map[string]string{
-		"limit=0":                  "limit must be a whole number from 1 to 50.",
-		"limit=51":                 "limit must be a whole number from 1 to 50.",
-		"limit=ten":                "limit must be a whole number from 1 to 50.",
+		"limit=0":                  "limit must be a whole number from 1 to 100.",
+		"limit=101":                "limit must be a whole number from 1 to 100.",
+		"limit=ten":                "limit must be a whole number from 1 to 100.",
 		"offset=-1":                "offset must be a whole number, 0 or more.",
 		"createdFrom=2026-10-01":   "createdFrom must be a time like 2026-10-31T00:00:00Z.",
 		"createdBefore=not-a-time": "createdBefore must be a time like 2026-10-31T00:00:00Z.",

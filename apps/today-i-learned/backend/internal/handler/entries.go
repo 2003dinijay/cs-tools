@@ -36,9 +36,9 @@ import (
 
 const (
 	defaultPageSize = 10
-	// The feed asks for 5 or 10 a page; 50 leaves room without letting one
-	// request pull the whole table.
-	maxPageSize     = 50
+	// The feed asks for 5 or 10 a page. 100 stays allowed so a webapp still
+	// loading its feed in one request (limit=100) keeps working.
+	maxPageSize     = 100
 	maxSearchLength = 200
 	// notifyTimeout bounds the new-entry announcement, which runs before the
 	// response so it isn't cut off when the request ends.
