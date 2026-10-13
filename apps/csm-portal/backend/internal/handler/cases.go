@@ -88,6 +88,10 @@ type entityCaseClient interface {
 	// GetProductRepoMapping calls GET /products/github-repo?name= on the
 	// entity service. The response is the GitHub repository for that product.
 	GetProductRepoMapping(ctx context.Context, name string) ([]byte, error)
+	// SearchDeployedProducts calls POST /deployed-products/search on the entity
+	// service. Filing a Git issue reads one deployment's deployed products for the
+	// product's abbreviation and version.
+	SearchDeployedProducts(ctx context.Context, body []byte) ([]byte, error)
 	CreateCaseAttachment(ctx context.Context, body []byte) ([]byte, error)
 	SearchCaseAttachments(ctx context.Context, body []byte) ([]byte, error)
 	GetCaseAttachmentContent(ctx context.Context, attachmentID string) ([]byte, string, error)

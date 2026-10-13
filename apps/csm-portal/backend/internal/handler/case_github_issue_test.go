@@ -24,6 +24,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/apierror"
 	"github.com/wso2-open-operations/cs-tools/apps/csm-portal/backend/internal/entity"
@@ -200,29 +201,127 @@ func TestCreateCaseGithubIssue_ViaEngineering(t *testing.T) {
 		}
 	})
 
-	t.Run("a case's product version and CRE team reach the footer, while the repository label stays a label", func(t *testing.T) {
+	// A case as the portal reads it for the Git issue form: a deployed product whose label
+	// carries the version, on a deployment, under an account with a CRE team.
+	const isCase = `{
+		"number":"CS0378654",
+		"internalId":"MPASUB-231",
+		"account":{"id":"a1","name":"Acme","creTeam":{"id":"t1","name":"Sirius"}},
+		"deployment":{"id":"d1111111-1111-1111-1111-111111111111","name":"Production"},
+		"deployedProduct":{"id":"dd111111-1111-1111-1111-111111111111","displayName":"WSO2 Identity Server 6.1.0","product":{"name":"WSO2 Identity Server"}}
+	}`
+	isMapping := func(context.Context, string) ([]byte, error) {
+		return []byte(`{"productName":"WSO2 Identity Server","owner":"example-org","repository":"is-repo","githubLabel":"product/is"}`), nil
+	}
+	// deployed-product search results: other products on the deployment, then the case's own
+	const isProducts = `{"deployedProducts":[
+		{"id":"ee111111-1111-1111-1111-111111111111","product":{"abbreviation":"wso2am"},"version":{"name":"4.1.0"}},
+		{"id":"DD111111111111111111111111111111","product":{"abbreviation":"wso2is"},"version":{"name":"6.1.0"}}
+	],"hasMore":false}`
+	fileIsCase := func(t *testing.T, search func(context.Context, []byte) ([]byte, error)) (*mockEngineeringClient, *httptest.ResponseRecorder) {
+		t.Helper()
 		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
 		entityClient := &mockEntityCaseClient{
-			getCaseFn: func(context.Context, string) ([]byte, error) {
-				return []byte(`{
-					"number":"CS0378654",
-					"internalId":"MPASUB-231",
-					"account":{"id":"a1","name":"Acme","creTeam":{"id":"t1","name":"Sirius"}},
-					"deployedProduct":{"displayName":"IS 6.1.0","product":{"name":"WSO2 Identity Server"}}
-				}`), nil
-			},
-			getProductRepoMappingFn: func(context.Context, string) ([]byte, error) {
-				return []byte(`{"productName":"WSO2 Identity Server","owner":"example-org","repository":"is-repo","githubLabel":"product/is"}`), nil
-			},
+			getCaseFn:                func(context.Context, string) ([]byte, error) { return []byte(isCase), nil },
+			getProductRepoMappingFn:  isMapping,
+			searchDeployedProductsFn: search,
 		}
-		post(t, newHandler(eng, entityClient), "{"+base+`,"updateLevel":"295"}`)
-		wantBody := "It fails.\n\nProduct : IS 6.1.0\nUpdate Level : 295\nWSO2 Case Id : MPASUB-231\nCase Number : CS0378654\nABT Team : Sirius\nOpened By : " + testUser.Email
+		return eng, post(t, newHandler(eng, entityClient), "{"+base+`,"updateLevel":"295"}`)
+	}
+	const fallbackBody = "It fails.\n\nProduct : WSO2 Identity Server 6.1.0\nUpdate Level : 295\nWSO2 Case Id : MPASUB-231\nCase Number : CS0378654\nABT Team : Sirius\nOpened By : "
+
+	t.Run("a case's product is its abbreviation and version, with the CRE team, while the repository label stays a label", func(t *testing.T) {
+		var searched []byte
+		eng, w := fileIsCase(t, func(_ context.Context, body []byte) ([]byte, error) {
+			searched = body
+			return []byte(isProducts), nil
+		})
+		assertStatus(t, w, http.StatusCreated)
+		wantBody := "It fails.\n\nProduct : wso2is-6.1.0\nUpdate Level : 295\nWSO2 Case Id : MPASUB-231\nCase Number : CS0378654\nABT Team : Sirius\nOpened By : " + testUser.Email
 		if got := eng.calls[0].body; got != wantBody {
 			t.Errorf("body = %q, want %q", got, wantBody)
 		}
 		if want := []string{"Origin/CS", "product/is"}; !slices.Equal(eng.calls[0].labels, want) {
 			t.Errorf("labels = %v, want %v -- the repository's GitHub label still goes on as a label", eng.calls[0].labels, want)
 		}
+		if !strings.Contains(string(searched), `"deploymentIds":["d1111111-1111-1111-1111-111111111111"]`) {
+			t.Errorf("search body = %s, want the case's deployment", searched)
+		}
+	})
+
+	t.Run("a failed product lookup keeps the deployed product's label and still files the issue", func(t *testing.T) {
+		eng, w := fileIsCase(t, func(context.Context, []byte) ([]byte, error) { return nil, errors.New("entity down") })
+		assertStatus(t, w, http.StatusCreated)
+		if got := eng.calls[0].body; got != fallbackBody+testUser.Email {
+			t.Errorf("body = %q, want %q", got, fallbackBody+testUser.Email)
+		}
+	})
+
+	t.Run("a product lookup that hangs cannot hold the filing back", func(t *testing.T) {
+		old := deployedProductLookupTimeout
+		deployedProductLookupTimeout = 50 * time.Millisecond
+		t.Cleanup(func() { deployedProductLookupTimeout = old })
+		started := time.Now()
+		eng, w := fileIsCase(t, func(ctx context.Context, _ []byte) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+		assertStatus(t, w, http.StatusCreated)
+		if took := time.Since(started); took > 2*time.Second {
+			t.Errorf("filing took %v, want it bounded by the lookup timeout", took)
+		}
+		if got := eng.calls[0].body; got != fallbackBody+testUser.Email {
+			t.Errorf("body = %q, want %q", got, fallbackBody+testUser.Email)
+		}
+	})
+
+	t.Run("a deployed product missing its abbreviation or version, or not on the deployment, keeps the label", func(t *testing.T) {
+		for name, products := range map[string]string{
+			"no abbreviation": `{"deployedProducts":[{"id":"dd111111-1111-1111-1111-111111111111","product":{},"version":{"name":"6.1.0"}}],"hasMore":false}`,
+			"blank version":   `{"deployedProducts":[{"id":"dd111111-1111-1111-1111-111111111111","product":{"abbreviation":"wso2is"},"version":{"name":" "}}],"hasMore":false}`,
+			"no version":      `{"deployedProducts":[{"id":"dd111111-1111-1111-1111-111111111111","product":{"abbreviation":"wso2is"}}],"hasMore":false}`,
+			"not listed":      `{"deployedProducts":[{"id":"ee111111-1111-1111-1111-111111111111","product":{"abbreviation":"wso2am"},"version":{"name":"4.1.0"}}],"hasMore":false}`,
+			"not json":        `<html>`,
+		} {
+			eng, w := fileIsCase(t, func(context.Context, []byte) ([]byte, error) { return []byte(products), nil })
+			assertStatus(t, w, http.StatusCreated)
+			if got := eng.calls[0].body; got != fallbackBody+testUser.Email {
+				t.Errorf("%s: body = %q, want %q", name, got, fallbackBody+testUser.Email)
+			}
+		}
+	})
+
+	t.Run("the case's deployed product is found on a later page of the deployment's products", func(t *testing.T) {
+		var offsets []string
+		eng, w := fileIsCase(t, func(_ context.Context, body []byte) ([]byte, error) {
+			offsets = append(offsets, string(body))
+			if strings.Contains(string(body), `"offset":0`) {
+				return []byte(`{"deployedProducts":[{"id":"ee111111-1111-1111-1111-111111111111","product":{"abbreviation":"wso2am"},"version":{"name":"4.1.0"}}],"hasMore":true}`), nil
+			}
+			return []byte(isProducts), nil
+		})
+		assertStatus(t, w, http.StatusCreated)
+		if !strings.Contains(eng.calls[0].body, "Product : wso2is-6.1.0\n") {
+			t.Errorf("body = %q, want the abbreviation and version from the second page", eng.calls[0].body)
+		}
+		if len(offsets) != 2 {
+			t.Errorf("searches = %d, want 2 (one per page)", len(offsets))
+		}
+	})
+
+	t.Run("a case with no deployment or deployed product makes no lookup", func(t *testing.T) {
+		eng := &mockEngineeringClient{issue: entity.GitHubIssue{Number: 1}}
+		entityClient := &mockEntityCaseClient{
+			getCaseFn: func(context.Context, string) ([]byte, error) {
+				return []byte(`{"deployedProduct":{"product":{"name":"Alpha"}}}`), nil
+			},
+			searchDeployedProductsFn: func(context.Context, []byte) ([]byte, error) {
+				t.Error("the deployed product lookup ran for a case that names no deployment")
+				return nil, nil
+			},
+		}
+		w := post(t, newHandler(eng, entityClient), "{"+base+"}")
+		assertStatus(t, w, http.StatusCreated)
 	})
 
 	t.Run("an account with no CRE team keeps the case's assigned team as the ABT Team, never the SRE team", func(t *testing.T) {
