@@ -875,6 +875,12 @@ func TestLoadDir_RejectsInvalidWidgets(t *testing.T) {
 			 "query": {}, "groupBy": {"bucket": "day", "linkResourceType": "account"}}`,
 			want: `widget "w": "groupBy.linkResourceType" is only meaningful with "groupBy.field", not "groupBy.bucket"`,
 		},
+		{
+			name: "groupBy.linkResourceType paired with a mismatched field",
+			widgets: `{"id": "w", "displayName": "W", "resourceType": "case", "shape": "bar", "gridWidth": 6,
+			 "query": {}, "groupBy": {"field": "state", "linkResourceType": "account"}}`,
+			want: `widget "w": "groupBy.linkResourceType" "account" only supports "groupBy.field" "account", got "state"`,
+		},
 	}
 
 	for _, tc := range cases {

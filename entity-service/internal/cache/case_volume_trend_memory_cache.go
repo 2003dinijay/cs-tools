@@ -45,9 +45,50 @@ type InMemoryCaseVolumeTrendCache struct {
 	entries map[string]caseVolumeMemoryEntry
 }
 
-// NewInMemoryCaseVolumeTrendCache constructs an empty InMemoryCaseVolumeTrendCache.
+// caseVolumeMemorySweepInterval is how often the background sweep (started by
+// NewInMemoryCaseVolumeTrendCache) removes already-expired entries on its
+// own, regardless of whether anyone has asked for them. Without this, a day
+// that rolls out of every live request window (90 days is the widest this
+// endpoint allows) -- or a whole filtersKey orphaned by a dashboard config
+// edit that changes a widget's filters -- would sit in memory for the rest
+// of the process's life: GetMany only ever evicts a key it was actually
+// asked about, so a key nobody asks about again is never evicted by it
+// alone. An hour is coarse on purpose: every TTL this cache ever uses is
+// measured in hours (the UTC-midnight-capped "today" entry) to months (a
+// fully-elapsed day's caseVolumeTrendStableTTL), so there's nothing to gain
+// from sweeping more often.
+const caseVolumeMemorySweepInterval = time.Hour
+
+// NewInMemoryCaseVolumeTrendCache constructs an empty InMemoryCaseVolumeTrendCache
+// and starts its background sweep goroutine, which runs for the life of the
+// process (this cache is constructed once at startup and never torn down,
+// same as routes.go's other long-lived singletons).
 func NewInMemoryCaseVolumeTrendCache() *InMemoryCaseVolumeTrendCache {
-	return &InMemoryCaseVolumeTrendCache{entries: make(map[string]caseVolumeMemoryEntry)}
+	c := &InMemoryCaseVolumeTrendCache{entries: make(map[string]caseVolumeMemoryEntry)}
+	go c.sweepExpiredEntriesPeriodically()
+	return c
+}
+
+// sweepExpiredEntriesPeriodically evicts every already-expired entry on a
+// fixed interval -- the complement to GetMany's own on-access eviction,
+// which only ever reaches a key still being asked about. See
+// caseVolumeMemorySweepInterval's own doc comment for why this exists.
+func (c *InMemoryCaseVolumeTrendCache) sweepExpiredEntriesPeriodically() {
+	ticker := time.NewTicker(caseVolumeMemorySweepInterval)
+	defer ticker.Stop()
+	for range ticker.C {
+		c.sweepExpiredEntries(time.Now())
+	}
+}
+
+func (c *InMemoryCaseVolumeTrendCache) sweepExpiredEntries(now time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for key, entry := range c.entries {
+		if now.After(entry.expires) {
+			delete(c.entries, key)
+		}
+	}
 }
 
 func caseVolumeMemoryKey(filtersKey, day string) string {

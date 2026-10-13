@@ -865,6 +865,26 @@ func validateWidgets(d Dashboard, source string) error {
 					return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: \"groupBy.linkResourceType\" is only meaningful with \"groupBy.field\", not \"groupBy.bucket\"",
 						source, d.ID, w.ID)
 				}
+				// The bucket's own key is only a real id of linkResourceType
+				// when the field being grouped on IS that resource (e.g.
+				// Field "account" groups cases by their account id, which is
+				// exactly what Account's own detail page is keyed by). A
+				// mismatched pairing (e.g. Field "state" + LinkResourceType
+				// "account") would hand the frontend a state value like
+				// "open" as if it were an account id, building a broken
+				// link (/customers/accounts/open). This is deliberately a
+				// strict equality check, not an allowlist of known-safe
+				// pairs: every field this schema's groupBy supports today
+				// names the very resource it would link to when the two are
+				// meant to pair at all (see ResourceAccount's own Field
+				// "account" case), so requiring them to match is both the
+				// narrowest rule that admits the one real use case and the
+				// one least likely to admit a future mismatched pairing by
+				// accident.
+				if string(w.GroupBy.LinkResourceType) != w.GroupBy.Field {
+					return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: \"groupBy.linkResourceType\" %q only supports \"groupBy.field\" %q, got %q",
+						source, d.ID, w.ID, w.GroupBy.LinkResourceType, w.GroupBy.LinkResourceType, w.GroupBy.Field)
+				}
 			}
 		}
 		if w.Shape == ShapeLine {

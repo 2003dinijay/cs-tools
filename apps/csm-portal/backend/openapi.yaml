@@ -3835,7 +3835,7 @@ paths:
           application/json:
             schema:
               $ref: '#/components/schemas/CaseVolumeTrendPayload'
-        required: false
+        required: true
       responses:
         "200":
           description: Daily opened/closed case counts for the requested window.

@@ -144,8 +144,12 @@ type GroupByConfig struct {
 	// page rather than a cases list filtered by that account. Omitted is a
 	// no-op: every existing groupBy widget keeps navigating to its own
 	// ResourceType's list, exactly as before this field existed. Resolved
-	// entirely client-side, same as the rest of this type — this layer only
-	// validates that it names a real ResourceType.
+	// entirely client-side, same as the rest of this type. Must equal Field
+	// itself (checked at load time) — a bucket's key is only a real id of
+	// LinkResourceType when the field being grouped on IS that resource
+	// (Field "account" groups by an account id); any other pairing (e.g.
+	// Field "state" + LinkResourceType "account") would hand the frontend a
+	// value like "open" as if it were an account id, building a broken link.
 	LinkResourceType ResourceType `json:"linkResourceType,omitempty"`
 }
 
