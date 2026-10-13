@@ -360,6 +360,10 @@ export default function CellPicker({
   /** L1, L2 and L3 for every zone worked on the span's first day. */
   const grid = useMemo(() => escalationGrid(shifts, firstDay), [shifts, firstDay]);
 
+  /** The rota offers nothing at all for this person: no window of their rota
+   *  is served, so there is nothing to put them on. */
+  const nothingToRoster = shifts.length === 0 && moves.length === 0;
+
   /** Leave, then allocations, each under its own heading. */
   const awayGroups = useMemo(
     () =>
@@ -530,6 +534,15 @@ export default function CellPicker({
               <p className="pk-note pk-skip">
                 Days a rotation is not worked on are skipped — a weekday rotation over
                 a week sets the five weekdays.
+              </p>
+            ) : null}
+            {/* A rota whose windows the catalogue does not serve -- IaaS's sat
+                switched off for months -- left this side blank, and a lead
+                read the blank as not being allowed to roster. Say what it is. */}
+            {nothingToRoster ? (
+              <p className="pk-note pk-empty">
+                {teamNameOf(target.teamKey)} has no rota windows set up yet, so no rotation or
+                L1–L3 turn can be set here. Leave and allocations can still be marked.
               </p>
             ) : null}
             <div className="pk-grid">

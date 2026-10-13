@@ -456,6 +456,39 @@ export function narrowsToOneRota(family: RotaFamily, rotaCount: number): boolean
   return rotaCount > 1 && family !== "SME";
 }
 
+/**
+ * The rotas of a narrowed family (see narrowsToOneRota) a reader is shown.
+ *
+ * My week, This week and the roster are planning views of the reader's own
+ * rota: a SaaS engineer plans with Apollo, Artemis and the TZ3 night crew, and
+ * has no use for IaaS's Day and Night beside them, nor an IaaS engineer for
+ * SaaS's. So on those views a reader gets their own rota, and any rota they
+ * edit -- a lead, a rota marker, an SRE rota admin across both.
+ *
+ * Not a permission: Today and Case Paging still show every rota, because who
+ * is covering right now is everybody's question, and the server answers reads
+ * the same as before. A reader who may cross groups (a manager, Today, This
+ * week opened from Case Paging) gets every rota.
+ *
+ * A reader whose team runs no rota yet (PaaS) is shown none, rather than
+ * another sub-team's. One the page cannot place at all -- no team on their
+ * profile and nothing they edit -- keeps every rota, as before, rather than
+ * being locked into one that may not be theirs.
+ */
+export function rotasForReader(reader: {
+  familyRotas: readonly string[];
+  crosses: boolean;
+  ownRota?: string;
+  ownTeamKnown: boolean;
+  editRotas: readonly string[];
+}): string[] {
+  const { familyRotas, crosses, ownRota, ownTeamKnown, editRotas } = reader;
+  if (crosses) return [...familyRotas];
+  const theirs = familyRotas.filter((code) => code === ownRota || editRotas.includes(code));
+  if (theirs.length > 0) return theirs;
+  return ownTeamKnown ? [] : [...familyRotas];
+}
+
 
 /** The kinds a lead may mark somebody away for on one rota: leave, and the
  *  time allocations that rota uses.

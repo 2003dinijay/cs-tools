@@ -413,6 +413,55 @@ describe("CellPicker: the SRE escalation grid", () => {
   });
 });
 
+describe("CellPicker: a rota of Day and Night (IaaS)", () => {
+  // IaaS's two windows: one per zone, every day, the tier left to the turn.
+  const IAAS_DAY = shift({
+    code: "SRE_IAAS_DAY", shortCode: "Day", label: "IaaS day escalation", family: "SRE",
+    zoneCode: "IAAS_D", dayScope: "ANY", isEscalation: true, sortOrder: 210,
+  });
+  const IAAS_NIGHT = shift({
+    code: "SRE_IAAS_NIGHT", shortCode: "Night", label: "IaaS night escalation", family: "SRE",
+    zoneCode: "IAAS_N", dayScope: "ANY", isEscalation: true, sortOrder: 220,
+  });
+
+  function renderIaas(shifts: ReturnType<typeof shift>[], onApply = vi.fn()) {
+    render(
+      <CellPicker
+        // A Saturday: the rota is worked every day.
+        target={target({ teamKey: "iaas", zoneCode: "IAAS_D", rotaDate: "2026-09-26" })}
+        shifts={shifts}
+        awayKinds={[ANNUAL_LEAVE, RND]}
+        onApply={onApply}
+        onMarkAway={vi.fn()}
+        onClear={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    return onApply;
+  }
+
+  it("offers L1, L2 and L3 on Day and on Night, weekends included", () => {
+    const onApply = renderIaas([IAAS_DAY, IAAS_NIGHT]);
+    for (const tier of ["L1", "L2", "L3"]) {
+      const both = screen.getAllByRole("button", { name: new RegExp(`^${tier} for `) });
+      expect(both).toHaveLength(2);
+      for (const b of both) expect(b).toBeEnabled();
+    }
+    fireEvent.click(screen.getAllByRole("button", { name: /^L2 for / })[1]);
+    expect(onApply).toHaveBeenCalledWith("SRE_IAAS_NIGHT", "2026-09-26", "2026-09-26", "L2");
+    expect(screen.queryByText(/no rota windows set up/)).not.toBeInTheDocument();
+  });
+
+  it("says so when the rota has no windows, rather than leaving the side blank", () => {
+    // What an IaaS lead got while the windows were switched off: leave on the
+    // right and nothing at all on the left, which read as "not allowed".
+    renderIaas([]);
+    expect(screen.getByText(/no rota windows set up yet/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^L1 for / })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Annual leave/ })).toBeInTheDocument();
+  });
+});
+
 describe("CellPicker: deleting a tag a lead added", () => {
   const CUSTOM = { ...RND, id: "k9", code: "TRAINING", shortCode: "Trn", label: "Training", custom: true };
 
