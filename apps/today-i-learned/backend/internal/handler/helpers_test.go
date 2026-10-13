@@ -171,6 +171,7 @@ func newTestAPI(t *testing.T, change ...func(*Config)) *testAPI {
 	h := New(cfg)
 	api.mux = http.NewServeMux()
 	api.mux.HandleFunc("GET /user-info", h.UserInfo)
+	api.mux.HandleFunc("GET /settings", h.Settings)
 	api.mux.HandleFunc("GET /customers/search", h.SearchCustomers)
 	api.mux.HandleFunc("GET /submissions", h.ListEntries)
 	api.mux.HandleFunc("POST /submissions", h.CreateEntry)

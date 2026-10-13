@@ -64,8 +64,10 @@ type Query struct {
 	// source detail. Every term has to match; a term matches the start of a
 	// word.
 	Search string
-	// From and To are UTC dates, both inclusive. Nil means no bound.
-	From, To *time.Time
+	// From and Before bound the creation time: From inclusive, Before
+	// exclusive. Nil means no bound. The webapp sends the start of the
+	// reader's own first and last-plus-one days, so a day means their day.
+	From, Before *time.Time
 	// AuthorEmail, when set, keeps only that person's entries.
 	AuthorEmail string
 	Limit       int
@@ -256,9 +258,9 @@ func filters(q Query) (string, []any) {
 		conds = append(conds, "created_on >= ?")
 		args = append(args, q.From.UTC())
 	}
-	if q.To != nil {
+	if q.Before != nil {
 		conds = append(conds, "created_on < ?")
-		args = append(args, q.To.UTC().AddDate(0, 0, 1))
+		args = append(args, q.Before.UTC())
 	}
 	if c, a := searchConditions(q.Search); len(c) > 0 {
 		conds = append(conds, c...)

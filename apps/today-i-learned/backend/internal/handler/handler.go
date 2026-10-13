@@ -79,6 +79,9 @@ type Config struct {
 	// WebappBaseURL is the One WSO2 webapp's own address, for the link in a
 	// new-entry announcement. Empty means the announcement has no link.
 	WebappBaseURL string
+	// WhatMaxLength is the most characters of plain text a learning may have;
+	// zero means entry.DefaultWhatMaxLength.
+	WhatMaxLength int
 }
 
 // Handler serves the API's routes.
@@ -89,6 +92,9 @@ type Handler struct {
 // New returns a Handler for cfg.
 func New(cfg Config) *Handler {
 	cfg.WebappBaseURL = strings.TrimRight(cfg.WebappBaseURL, "/")
+	if cfg.WhatMaxLength <= 0 {
+		cfg.WhatMaxLength = entry.DefaultWhatMaxLength
+	}
 	return &Handler{cfg: cfg}
 }
 
@@ -108,6 +114,15 @@ func (h *Handler) UserInfo(w http.ResponseWriter, r *http.Request) {
 		"displayName": user.DisplayName,
 		"canModerate": user.IsModerator,
 	})
+}
+
+// Settings returns the rules the webapp's form shows, so they always match
+// what this service enforces.
+func (h *Handler) Settings(w http.ResponseWriter, r *http.Request) {
+	if _, ok := currentUser(w, r); !ok {
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"whatMaxLength": h.cfg.WhatMaxLength})
 }
 
 // SearchCustomers suggests customer names for the form's "Customer name".

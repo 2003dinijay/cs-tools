@@ -21,6 +21,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/entry"
 	"github.com/wso2-open-operations/cs-tools/apps/today-i-learned/backend/internal/middleware"
@@ -262,9 +263,11 @@ func TestList(t *testing.T) {
 		t.Fatalf("mine: total %d, query %+v", page.Total, api.store.lastQuery)
 	}
 
-	api.do(t, jane, http.MethodGet, "/submissions?q=+retries++idempotency+&dateFrom=2026-10-01&dateTo=2026-10-31", "")
+	// A reader at +05:30 asking for 1-31 October in their own days.
+	api.do(t, jane, http.MethodGet, "/submissions?q=+retries++idempotency+&createdFrom=2026-09-30T18:30:00.000Z&createdBefore=2026-10-31T18:30:00%2B00:00", "")
 	q := api.store.lastQuery
-	if q.Search != "retries  idempotency" || q.From == nil || q.From.Format("2006-01-02") != "2026-10-01" || q.To.Format("2006-01-02") != "2026-10-31" {
+	if q.Search != "retries  idempotency" || q.From == nil || q.Before == nil ||
+		!q.From.Equal(time.Date(2026, 9, 30, 18, 30, 0, 0, time.UTC)) || !q.Before.Equal(time.Date(2026, 10, 31, 18, 30, 0, 0, time.UTC)) {
 		t.Fatalf("query = %+v", q)
 	}
 
@@ -277,14 +280,15 @@ func TestList(t *testing.T) {
 func TestListRejectsBadQueries(t *testing.T) {
 	api := newTestAPI(t)
 	for query, want := range map[string]string{
-		"limit=0":                               "limit must be a whole number from 1 to 100.",
-		"limit=101":                             "limit must be a whole number from 1 to 100.",
-		"limit=ten":                             "limit must be a whole number from 1 to 100.",
-		"offset=-1":                             "offset must be a whole number, 0 or more.",
-		"dateFrom=2026-1-5":                     "dateFrom must be a date like 2026-10-31.",
-		"dateTo=not-a-date":                     "dateTo must be a date like 2026-10-31.",
-		"dateFrom=2026-10-31&dateTo=2026-10-01": "dateFrom must not be after dateTo.",
-		"mine=yes":                              "mine must be true or false.",
+		"limit=0":                  "limit must be a whole number from 1 to 100.",
+		"limit=101":                "limit must be a whole number from 1 to 100.",
+		"limit=ten":                "limit must be a whole number from 1 to 100.",
+		"offset=-1":                "offset must be a whole number, 0 or more.",
+		"createdFrom=2026-10-01":   "createdFrom must be a time like 2026-10-31T00:00:00Z.",
+		"createdBefore=not-a-time": "createdBefore must be a time like 2026-10-31T00:00:00Z.",
+		"createdFrom=2026-10-31T00:00:00Z&createdBefore=2026-10-01T00:00:00Z": "createdFrom must be before createdBefore.",
+		"createdFrom=2026-10-01T00:00:00Z&createdBefore=2026-10-01T00:00:00Z": "createdFrom must be before createdBefore.",
+		"mine=yes": "mine must be true or false.",
 		"q=" + strings.Repeat("a", maxSearchLength+1): "Search must be 200 characters or fewer.",
 	} {
 		assertError(t, api.do(t, jane, http.MethodGet, "/submissions?"+query, ""), http.StatusBadRequest, want)
@@ -340,4 +344,27 @@ func TestOversizedBodyIsRejected(t *testing.T) {
 	req.ContentLength = -1 // as if sent without a length
 	w := record(h, req)
 	assertError(t, w, http.StatusRequestEntityTooLarge, msgTooLarge)
+}
+
+func TestSettings(t *testing.T) {
+	got := decodeJSON[map[string]any](t, newTestAPI(t).do(t, jane, http.MethodGet, "/settings", ""))
+	if got["whatMaxLength"] != float64(500) {
+		t.Fatalf("default settings = %v", got)
+	}
+	api := newTestAPI(t, func(c *Config) { c.WhatMaxLength = 800 })
+	if got := decodeJSON[map[string]any](t, api.do(t, jane, http.MethodGet, "/settings", "")); got["whatMaxLength"] != float64(800) {
+		t.Fatalf("configured settings = %v", got)
+	}
+}
+
+func TestCreateEnforcesTheConfiguredLimit(t *testing.T) {
+	api := newTestAPI(t, func(c *Config) { c.WhatMaxLength = 20 })
+	body := func(n int) string {
+		return `{"title":"T","who":"Jane","where":"Internal","what":"<p>` + strings.Repeat("x", n) + `</p>"}`
+	}
+	// The form stops at 20; the margin past it is still accepted.
+	if w := api.do(t, jane, http.MethodPost, "/submissions", body(20+entry.WhatLengthMargin)); w.Code != http.StatusCreated {
+		t.Fatalf("within the margin: %d %s", w.Code, w.Body)
+	}
+	assertError(t, api.do(t, jane, http.MethodPost, "/submissions", body(21+entry.WhatLengthMargin)), http.StatusBadRequest, "What you learned must be 20 characters or fewer.")
 }

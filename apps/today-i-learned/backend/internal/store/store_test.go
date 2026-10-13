@@ -112,7 +112,7 @@ func clock(start time.Time) func() time.Time {
 
 func content(t *testing.T, title, where string, detail *string, what string) entry.Content {
 	t.Helper()
-	c, err := entry.Prepare(entry.Draft{Title: title, Where: where, WhereDetail: detail, What: what})
+	c, err := entry.Prepare(entry.Draft{Title: title, Where: where, WhereDetail: detail, What: what}, entry.MaxWhatMaxLength)
 	if err != nil {
 		t.Fatalf("Prepare: %v", err)
 	}
@@ -255,7 +255,7 @@ func TestListFiltersByAuthor(t *testing.T) {
 	}
 }
 
-func TestListFiltersByDateRangeInclusive(t *testing.T) {
+func TestListFiltersByCreationTime(t *testing.T) {
 	s := openTestStore(t)
 	ctx := context.Background()
 	for _, tc := range []struct {
@@ -273,9 +273,10 @@ func TestListFiltersByDateRangeInclusive(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// From is inclusive and Before exclusive.
 	from := time.Date(2026, 10, 4, 0, 0, 0, 0, time.UTC)
-	to := time.Date(2026, 10, 5, 0, 0, 0, 0, time.UTC)
-	p, err := s.List(ctx, Query{From: &from, To: &to, Limit: 10})
+	before := time.Date(2026, 10, 6, 0, 0, 0, 0, time.UTC)
+	p, err := s.List(ctx, Query{From: &from, Before: &before, Limit: 10})
 	if err != nil {
 		t.Fatal(err)
 	}

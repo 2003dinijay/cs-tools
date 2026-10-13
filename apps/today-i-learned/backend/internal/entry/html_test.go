@@ -101,6 +101,10 @@ func TestPlainText(t *testing.T) {
 		{"<p><br></p>", ""},
 		{"<p>R&amp;D &lt;3 &#39;quoted&#39;</p>", "R&D <3 'quoted'"},
 		{"<p>a&nbsp;b c</p>", "a b c"},
+		// Trimmed at least as much as a browser's trim(), so the backend never
+		// counts more than the webapp's counter.
+		{"<p>\ufeffzero-width\ufeff</p>", "zero-width"},
+		{"<p>next-line\u0085</p>", "next-line"},
 	}
 	for _, tc := range tests {
 		if got := PlainText(tc.in); got != tc.want {
