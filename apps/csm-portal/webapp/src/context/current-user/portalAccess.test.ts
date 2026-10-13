@@ -231,9 +231,10 @@ describe("getPortalAccess", () => {
     }
   });
 
-  it("only admin and CS engineer can use Security Center", () => {
+  it("only admin, CS engineer and security_team can use Security Center", () => {
     expect(getPortalAccess(["admin"]).canUseSecurityCenter).toBe(true);
     expect(getPortalAccess(["cs_engineer"]).canUseSecurityCenter).toBe(true);
+    expect(getPortalAccess(["security_team"]).canUseSecurityCenter).toBe(true);
     for (const role of [
       "viewer",
       "escalator",
@@ -262,7 +263,7 @@ describe("getPortalAccess", () => {
     expect(getPortalAccess(["admin"]).canUseTimeCardsAndUpdates).toBe(true);
   });
 
-  it("only full-access roles get the Operations section", () => {
+  it("only full-access roles and security_team get the Operations section", () => {
     for (const role of [
       "viewer",
       "escalator",
@@ -276,6 +277,7 @@ describe("getPortalAccess", () => {
     expect(getPortalAccess(["viewer", "escalator", "attachment_downloader"]).canUseOperations).toBe(false);
     expect(getPortalAccess(["cs_engineer"]).canUseOperations).toBe(true);
     expect(getPortalAccess(["admin"]).canUseOperations).toBe(true);
+    expect(getPortalAccess(["security_team"]).canUseOperations).toBe(true);
   });
 
   it("a user holding several roles gets the union", () => {
@@ -599,6 +601,39 @@ describe("getPortalAccess", () => {
 
     it("is false while roles are not loaded, so the controls fail closed", () => {
       expect(getPortalAccess(undefined).canViewSettings).toBe(false);
+    });
+  });
+
+  // The dedicated read-only security role: grants canUseOperations and
+  // canUseSecurityCenter and nothing else -- never canWrite, so both
+  // sections render read-only for a holder with no other role. Mirrors the
+  // backend's AccessConfig.SecurityTeam.
+  describe("security_team", () => {
+    it("on its own grants exactly Operations and Security Center, read-only", () => {
+      expect(getPortalAccess(["security_team"])).toEqual({
+        ...NONE,
+        hasAnyRole: true,
+        canUseOperations: true,
+        canUseSecurityCenter: true,
+      });
+    });
+
+    it("does not grant write access of any kind", () => {
+      expect(getPortalAccess(["security_team"]).canWrite).toBe(false);
+      expect(getPortalAccess(["security_team"]).canEscalate).toBe(false);
+      expect(getPortalAccess(["security_team"]).canAddWorkNotes).toBe(false);
+      expect(getPortalAccess(["security_team"]).canCreateAnnouncement).toBe(false);
+      expect(getPortalAccess(["security_team"]).canUpdateDeleteAnyComment).toBe(false);
+    });
+
+    it("matches the role key case-insensitively, like every other role", () => {
+      expect(getPortalAccess(["Security_Team"]).canUseOperations).toBe(true);
+      expect(getPortalAccess(["Security_Team"]).canUseSecurityCenter).toBe(true);
+    });
+
+    it("is false while roles are not loaded, so the controls fail closed", () => {
+      expect(getPortalAccess(undefined).canUseOperations).toBe(false);
+      expect(getPortalAccess(undefined).canUseSecurityCenter).toBe(false);
     });
   });
 

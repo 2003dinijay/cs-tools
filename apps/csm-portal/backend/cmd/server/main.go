@@ -1005,7 +1005,7 @@ func loadDirectory() *directory.Directory {
 //	AUTH_ATTACHMENT_DOWNLOADER_ROLES, AUTH_USAGE_METRICS_VIEWER_ROLES,
 //	AUTH_SUPPORT_ENGINEER_ROLES, AUTH_ADMIN_ROLES, AUTH_TIMECARD_APPROVER_ROLES,
 //	AUTH_DASHBOARD_DESIGNER_ROLES, AUTH_SALES_SOLUTIONS_ROLES,
-//	AUTH_WORKNOTE_CREATOR_ROLES, AUTH_COMMENT_UPDATER_ROLES
+//	AUTH_WORKNOTE_CREATOR_ROLES, AUTH_COMMENT_UPDATER_ROLES, AUTH_SECURITY_TEAM_ROLES
 //	    Each is a comma-separated list of role names; a caller whose token's
 //	    "roles" claim holds any one of them has that role.
 //
@@ -1050,6 +1050,13 @@ func loadAccessConfig() handler.AccessConfig {
 		// Warns when unset (via roles()) on purpose, unlike the two optional
 		// roles below: unset means only admin can create announcements.
 		AnnouncementCreator: roles("AUTH_ANNOUNCEMENT_CREATOR_ROLES"),
+		// Warns when unset like every other dedicated role above: unset means
+		// nobody holds security_team, which is a real misconfiguration once
+		// this role is meant to be in use (see handler.AccessConfig.SecurityTeam's
+		// own doc comment) -- unlike SalesSolutions/WorknoteCreator/CommentUpdater
+		// just below, cs_engineer/admin granting nothing it needs does not make an
+		// unset variable here a normal, no-op state.
+		SecurityTeam: roles("AUTH_SECURITY_TEAM_ROLES"),
 		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES,
 		// AUTH_WORKNOTE_CREATOR_ROLES or AUTH_COMMENT_UPDATER_ROLES is a
 		// normal, supported state (see this function's own doc comment for
