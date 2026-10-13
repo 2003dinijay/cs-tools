@@ -62,6 +62,15 @@ describe("projectContactRoleLabels", () => {
     ).toEqual(["Lead", "System User"]);
   });
 
+  it("does not invent Portal User for a confirmed unlinked row with no roles", () => {
+    expect(
+      projectContactRoleLabels({
+        roles: [],
+        customerContactPresent: false,
+      }),
+    ).toEqual([]);
+  });
+
   it("falls back to Portal User when the role is not one the customer portal shows", () => {
     expect(projectContactRoleLabels({ roles: ["viewer"] })).toEqual(["Portal User"]);
   });

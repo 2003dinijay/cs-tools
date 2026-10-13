@@ -71,7 +71,10 @@ export function projectContactRoleChipSx(chipColor: ProjectContactRoleChip["chip
  * this response does not include, so it is not drawn here.
  */
 export function projectContactRoleChips(
-  contact: Pick<BeProjectContact, "roles" | "isCsIntegrationUser" | "accountRoles">,
+  contact: Pick<
+    BeProjectContact,
+    "roles" | "isCsIntegrationUser" | "accountRoles" | "customerContactPresent"
+  >,
 ): ProjectContactRoleChip[] {
   const projectRoles = (contact.roles ?? []).map((role) => role.trim()).filter(Boolean);
   const hasProjectRole = (code: string) =>
@@ -82,6 +85,9 @@ export function projectContactRoleChips(
     (contact.accountRoles ?? []).map((role) => role.trim().toLowerCase()).filter(Boolean),
   );
   const isAccountAdmin = accountRoles.has("customer_admin") || accountRoles.has("partner_admin");
+  // A row the API confirms has no linked user, and no project roles, is not a
+  // portal user. An absent flag is an older response, so the fallback stays.
+  const confirmedUnlinked = contact.customerContactPresent === false && projectRoles.length === 0;
 
   const chips: ProjectContactRoleChip[] = [];
   if (hasProjectRole("ADMIN") || isAccountAdmin) chips.push(ADMIN_CHIP);
@@ -91,14 +97,17 @@ export function projectContactRoleChips(
   } else {
     if (isPortalUser) chips.push(PORTAL_CHIP);
     if (isSecurityContact) chips.push(SECURITY_CHIP);
-    if (!isPortalUser && !isSecurityContact) chips.push(PORTAL_CHIP);
+    if (!isPortalUser && !isSecurityContact && !confirmedUnlinked) chips.push(PORTAL_CHIP);
   }
   if (hasProjectRole("BUSINESS_CONTACT")) chips.push(BUSINESS_CHIP);
   return chips;
 }
 
 export function projectContactRoleLabels(
-  contact: Pick<BeProjectContact, "roles" | "isCsIntegrationUser" | "accountRoles">,
+  contact: Pick<
+    BeProjectContact,
+    "roles" | "isCsIntegrationUser" | "accountRoles" | "customerContactPresent"
+  >,
 ): string[] {
   return projectContactRoleChips(contact).map((chip) => chip.label);
 }
