@@ -18,12 +18,20 @@ import { describe, expect, it } from "vitest";
 import { BULLETIN_HTML } from "@components/rich-text-editor/bulletinFixture";
 import {
   absorbStrayText,
+  adjacentBreak,
+  adoptSlotText,
   applyTextEdits,
+  breakSlotAt,
+  caretAtSourcePos,
   buildTextMap,
   decodeHtmlText,
   encodeHtmlText,
+  findLineBreaks,
   findTextRuns,
+  insertLineBreakAtSlot,
+  insertLineBreakInText,
   isTextOnlyEdit,
+  removeLineBreak,
   type TextMap,
 } from "@components/rich-text-editor/htmlTextEditing";
 import { sanitizeRichTextHtml } from "@utils/sanitizeHtml";
@@ -366,5 +374,157 @@ describe("absorbStrayText", () => {
     expect(absorbStrayText(host, map, null)).toBeNull();
     expect(absorbStrayText(host, map, document.createTextNode("x"))).toBeNull();
     expect(host.textContent).toContain("one");
+  });
+});
+
+describe("line breaks", () => {
+  function mapOf(html: string): { host: HTMLElement; map: TextMap } {
+    const host = document.createElement("div");
+    host.innerHTML = html;
+    document.body.appendChild(host);
+    const map = buildTextMap(html, host);
+    if (!map) throw new Error("no map");
+    return { host, map };
+  }
+  const textOf = (host: HTMLElement, fragment: string): Text => {
+    const walker = document.createTreeWalker(host, NodeFilter.SHOW_TEXT);
+    for (let n = walker.nextNode(); n; n = walker.nextNode()) if ((n.nodeValue ?? "").includes(fragment)) return n as Text;
+    throw new Error("no node " + fragment);
+  };
+
+  it("finds <br> tags in the source, not in comments or text", () => {
+    const html = '<p>a<br>b<br />c<BR/></p><!-- <br> --><textarea><br></textarea>';
+    expect(findLineBreaks(html).map((b) => html.slice(b.start, b.end))).toEqual(["<br>", "<br />", "<BR/>"]);
+  });
+
+  it("pairs source and preview <br> tags, and gives up when they differ", () => {
+    expect(mapOf("<p>a<br>b</p>").map.breaks).toHaveLength(1);
+    const host = document.createElement("div");
+    host.innerHTML = "<p>a</p>";
+    expect(buildTextMap("<p>a<br></p>", host)?.breaks).toBeNull();
+  });
+
+  it("splits a text with a <br /> where Enter was pressed, and puts the caret after it", () => {
+    const { host, map } = mapOf("<p>Hello world</p>");
+    const edit = insertLineBreakInText(map, textOf(host, "Hello"), 5);
+    expect(edit?.source).toBe("<p>Hello<br /> world</p>");
+    expect(edit?.caretPos).toBe("<p>Hello<br />".length);
+  });
+
+  it("leaves every other piece of the source exactly as written when adding a break", () => {
+    const { host, map } = mapOf('<div style="a:b"><a href="x" target="_blank">Link &copy;</a> and text &amp; more</div>');
+    const node = textOf(host, "and text");
+    const edit = insertLineBreakInText(map, node, (node.nodeValue ?? "").indexOf("text"));
+    // The link text is untouched (entity included); only the split text is rewritten.
+    expect(edit?.source).toBe('<div style="a:b"><a href="x" target="_blank">Link &copy;</a> and <br />text &amp; more</div>');
+  });
+
+  it("applies a pending edit in the same text before adding the break", () => {
+    const { host, map } = mapOf("<p>one</p><p>two three</p>");
+    textOf(host, "one").nodeValue = "ONE";
+    const edit = insertLineBreakInText(map, textOf(host, "two"), 3);
+    expect(edit?.source).toBe("<p>ONE</p><p>two<br /> three</p>");
+  });
+
+  it("is refused inside preformatted text", () => {
+    const { host, map } = mapOf("<pre>a b</pre>");
+    expect(insertLineBreakInText(map, textOf(host, "a b"), 1)).toBeNull();
+  });
+
+  it("is refused when the <br> tags cannot be lined up", () => {
+    const host = document.createElement("div");
+    host.innerHTML = "<p>a</p>";
+    document.body.appendChild(host);
+    const map = buildTextMap("<p>a<br></p>", host) as TextMap;
+    expect(insertLineBreakInText(map, textOf(host, "a"), 1)).toBeNull();
+  });
+
+  it("adds another <br /> from a caret beside an existing one", () => {
+    const { host, map } = mapOf("<p>a<br>b</p>");
+    const p = host.querySelector("p") as HTMLElement;
+    const after = insertLineBreakAtSlot(map, p, 2);
+    expect(after?.source).toBe("<p>a<br><br />b</p>");
+  });
+
+  it("refuses Enter on an empty line inside preformatted text", () => {
+    const { host, map } = mapOf("<pre>a<br>b</pre>");
+    const pre = host.querySelector("pre") as HTMLElement;
+    expect(insertLineBreakAtSlot(map, pre, 2)).toBeNull();
+  });
+
+  it("recognises a caret beside a <br> as a slot, and not one inside text", () => {
+    const { host, map } = mapOf("<p>a<br>b</p>");
+    const p = host.querySelector("p") as HTMLElement;
+    expect(breakSlotAt(map, p, 2)?.side).toBe("after");
+    expect(breakSlotAt(map, p, 1)?.side).toBe("before");
+    expect(breakSlotAt(map, p, 0)).toBeNull();
+    expect(breakSlotAt(map, textOf(host, "a"), 1)).toBeNull();
+  });
+
+  it("finds the <br> a Backspace or Delete would remove, only for a collapsed caret", () => {
+    const { host, map } = mapOf("<p>a<br>b</p>");
+    const a = textOf(host, "a");
+    const b = textOf(host, "b");
+    const point = (node: Node, offset: number) => ({ anchorNode: node, anchorOffset: offset, focusNode: node, focusOffset: offset });
+    expect(adjacentBreak(map, point(b, 0), "backward")).toBe(map.brNodes[0]);
+    expect(adjacentBreak(map, point(a, 1), "forward")).toBe(map.brNodes[0]);
+    expect(adjacentBreak(map, point(b, 0), "forward")).toBeNull();
+    expect(adjacentBreak(map, point(a, 0), "backward")).toBeNull();
+    expect(adjacentBreak(map, { anchorNode: b, anchorOffset: 0, focusNode: b, focusOffset: 1 }, "backward")).toBeNull();
+  });
+
+  it("removes one <br> and leaves the rest of the source alone", () => {
+    const { map } = mapOf('<p class="x">a<br>b<br />c</p>');
+    const edit = removeLineBreak(map, map.brNodes[0]);
+    expect(edit?.source).toBe('<p class="x">ab<br />c</p>');
+    expect(edit?.caretPos).toBe('<p class="x">a'.length);
+  });
+
+  it("tracks <br> positions through earlier text edits", () => {
+    const { host, map } = mapOf("<p>aa</p><p>b<br>c</p>");
+    textOf(host, "aa").nodeValue = "a much longer first line";
+    const edit = removeLineBreak(map, map.brNodes[0]);
+    expect(edit?.source).toBe("<p>a much longer first line</p><p>bc</p>");
+  });
+
+  it("gives text typed beside a <br> its own place in the source", () => {
+    const { host, map } = mapOf("<p>one<br></p>");
+    const p = host.querySelector("p") as HTMLElement;
+    p.appendChild(document.createTextNode("two"));
+    expect(adoptSlotText(host, map)).toBe(true);
+    expect(applyTextEdits(map).source).toBe("<p>one<br>two</p>");
+  });
+
+  it("puts text typed before a <br> ahead of it", () => {
+    const { host, map } = mapOf("<p><br>tail</p>");
+    host.querySelector("p")?.insertBefore(document.createTextNode("head"), host.querySelector("br"));
+    adoptSlotText(host, map);
+    expect(applyTextEdits(map).source).toBe("<p>head<br>tail</p>");
+  });
+
+  it("does not adopt text that is not beside a <br>", () => {
+    const { host, map } = mapOf("<p>one<br>two</p><p>x</p>");
+    host.querySelector("p:last-child")?.appendChild(document.createElement("b")).appendChild(document.createTextNode("stray"));
+    expect(adoptSlotText(host, map)).toBe(false);
+  });
+
+  it("adopts nothing, and does not fail, when the <br> tags could not be lined up", () => {
+    const host = document.createElement("div");
+    host.innerHTML = "<p>one<br></p>";
+    document.body.appendChild(host);
+    const map = buildTextMap("<p>one</p>", host) as TextMap;
+    expect(map.breaks).toBeNull();
+    host.querySelector("p")?.appendChild(document.createTextNode("two"));
+    expect(adoptSlotText(host, map)).toBe(false);
+  });
+
+  it("works out where the caret goes in the redrawn source", () => {
+    const { host, map } = mapOf("<p>Hello<br />world</p>");
+    const world = textOf(host, "world");
+    expect(caretAtSourcePos(map, "<p>Hello<br />".length)).toEqual({ node: world, offset: 0 });
+    expect(caretAtSourcePos(map, "<p>Hel".length)).toEqual({ node: textOf(host, "Hello"), offset: 3 });
+    const end = mapOf("<p>Hello<br /></p>");
+    const p = end.host.querySelector("p") as HTMLElement;
+    expect(caretAtSourcePos(end.map, "<p>Hello<br />".length)).toEqual({ node: p, offset: 2 });
   });
 });

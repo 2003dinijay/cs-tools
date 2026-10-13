@@ -16,7 +16,22 @@
 
 import { Box, Button, Typography } from "@wso2/oxygen-ui";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type JSX } from "react";
-import { absorbStrayText, applyTextEdits, buildTextMap, isTextOnlyEdit, type TextMap } from "@components/rich-text-editor/htmlTextEditing";
+import {
+  absorbStrayText,
+  adjacentBreak,
+  adoptSlotText,
+  applyTextEdits,
+  breakSlotAt,
+  buildTextMap,
+  caretAtSourcePos,
+  insertLineBreakAtSlot,
+  insertLineBreakInText,
+  isTextOnlyEdit,
+  PLACEHOLDER_ATTR,
+  removeLineBreak,
+  type LineBreakEdit,
+  type TextMap,
+} from "@components/rich-text-editor/htmlTextEditing";
 import { sanitizeRichTextHtml } from "@utils/sanitizeHtml";
 
 /**
@@ -66,6 +81,8 @@ export default function HtmlSourcePreview({
   // the preview already shows it, so redrawing would only move the caret.
   const lastEmittedRef = useRef<string | null>(null);
   const redrawRef = useRef(false);
+  // Where in the new source the caret belongs after a line break edit.
+  const caretPosRef = useRef<number | null>(null);
   const [editing, setEditing] = useState(false);
   const [redrawTick, setRedrawTick] = useState(0);
 
@@ -79,6 +96,21 @@ export default function HtmlSourcePreview({
     lastEmittedRef.current = null;
     host.innerHTML = safeHtml;
     mapRef.current = canEdit ? buildTextMap(html, host) : null;
+    // After a line break was added or removed, put the caret where the edit left it.
+    const caretPos = caretPosRef.current;
+    caretPosRef.current = null;
+    const caret = caretPos !== null && mapRef.current ? caretAtSourcePos(mapRef.current, caretPos) : null;
+    if (caret) {
+      // Right after a break that ends its block, the empty line only shows with another break after it.
+      const before = caret.node.nodeType === Node.ELEMENT_NODE ? caret.node.childNodes[caret.offset - 1] : null;
+      if (before && mapRef.current?.brNodes.includes(before as Element) && !before.nextSibling) {
+        const placeholder = document.createElement("br");
+        placeholder.setAttribute(PLACEHOLDER_ATTR, "");
+        caret.node.appendChild(placeholder);
+      }
+      host.focus();
+      window.getSelection()?.collapse(caret.node, caret.offset);
+    }
   }, [html, safeHtml, canEdit, hasContent, redrawTick]);
 
   // The text node the last native edit was aimed at, so text the browser puts
@@ -92,6 +124,8 @@ export default function HtmlSourcePreview({
     if (!composing && host) {
       const caret = absorbStrayText(host, map, targetRef.current);
       if (caret) window.getSelection()?.collapse(caret.node, caret.offset);
+      // Text typed on an empty line (beside a <br>) gets its place in the source.
+      adoptSlotText(host, map);
     }
     const { source, changed, emptied } = applyTextEdits(map);
     if (!changed) return;
@@ -105,10 +139,26 @@ export default function HtmlSourcePreview({
     onChange(source);
   }, [onChange]);
 
+  // Adding or removing a <br> changes the structure, so the new source goes out
+  // and the preview is redrawn from it, with the caret put back where it was.
+  const commitLineBreak = useCallback(
+    (edit: LineBreakEdit) => {
+      lastEmittedRef.current = edit.source;
+      redrawRef.current = true;
+      caretPosRef.current = edit.caretPos;
+      setRedrawTick((t) => t + 1);
+      onChange?.(edit.source);
+    },
+    [onChange],
+  );
+
+  useEffect(() => {
+    if (editing && editable) hostRef.current?.focus();
+  }, [editing, editable]);
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host || !editing || !editable) return;
-    host.focus();
 
     const onBeforeInput = (event: Event): void => {
       const e = event as InputEvent;
@@ -127,20 +177,45 @@ export default function HtmlSourcePreview({
       const mapped = new Set<Node>(map.entries.map((entry) => entry.node));
       const selection = window.getSelection();
       targetRef.current = selection?.anchorNode ?? null;
-      let allowed = isTextOnlyEdit(
-        mapped,
-        {
-          anchorNode: selection?.anchorNode ?? null,
-          anchorOffset: selection?.anchorOffset ?? 0,
-          focusNode: selection?.focusNode ?? null,
-          focusOffset: selection?.focusOffset ?? 0,
-        },
-        e.inputType,
-      );
+      const point = {
+        anchorNode: selection?.anchorNode ?? null,
+        anchorOffset: selection?.anchorOffset ?? 0,
+        focusNode: selection?.focusNode ?? null,
+        focusOffset: selection?.focusOffset ?? 0,
+      };
+
+      // A redraw would interrupt an IME composition, so structural edits wait until it ends.
+      const structural = !e.isComposing;
+
+      if (structural && (e.inputType === "insertParagraph" || e.inputType === "insertLineBreak")) {
+        // Enter: a <br /> in the source at the caret.
+        e.preventDefault();
+        if (!selection?.isCollapsed || !point.anchorNode) return;
+        const edit = mapped.has(point.anchorNode)
+          ? insertLineBreakInText(map, point.anchorNode as Text, point.anchorOffset)
+          : insertLineBreakAtSlot(map, point.anchorNode, point.anchorOffset);
+        if (edit) commitLineBreak(edit);
+        return;
+      }
+      if (structural && (e.inputType === "deleteContentBackward" || e.inputType === "deleteContentForward")) {
+        // Backspace / Delete right beside a <br> removes that <br> from the source.
+        const br = adjacentBreak(map, point, e.inputType === "deleteContentBackward" ? "backward" : "forward");
+        if (br) {
+          e.preventDefault();
+          const edit = removeLineBreak(map, br);
+          if (edit) commitLineBreak(edit);
+          return;
+        }
+      }
+
+      const atBreakSlot = breakSlotAt(map, point.anchorNode, point.anchorOffset) !== null;
+      let allowed = isTextOnlyEdit(mapped, point, e.inputType, atBreakSlot);
       // Where the browser says exactly what the edit touches, hold it to the same rule.
       if (allowed && !e.inputType.startsWith("history")) {
         for (const range of e.getTargetRanges?.() ?? []) {
-          if (range.startContainer !== range.endContainer || !mapped.has(range.startContainer)) allowed = false;
+          const inText = mapped.has(range.startContainer);
+          const onEmptyLine = breakSlotAt(map, range.startContainer, range.startOffset) !== null;
+          if (range.startContainer !== range.endContainer || !(inText || onEmptyLine)) allowed = false;
         }
       }
       if (!allowed) e.preventDefault();
@@ -155,7 +230,7 @@ export default function HtmlSourcePreview({
       host.removeEventListener("drop", refuse);
       host.removeEventListener("dragstart", refuse);
     };
-  }, [editing, editable]);
+  }, [editing, editable, commitLineBreak]);
 
   if (!hasContent) return null;
 
@@ -200,8 +275,9 @@ export default function HtmlSourcePreview({
       />
       {isEditing && (
         <Typography variant="caption" color="text.secondary" sx={{ display: "block", mt: 0.5 }}>
-          Click in the text to fix wording or spacing. Each change is written to the HTML source above; styling, links
-          and structure are left as they are. Use the source box for anything else.
+          Click in the text to fix wording or spacing. Enter adds a line break (a &lt;br /&gt; in the source) and Backspace
+          removes it. Each change is written to the HTML source above; styling and links are left as they are. Use the
+          source box for anything else.
         </Typography>
       )}
       {canEdit && !editable && (

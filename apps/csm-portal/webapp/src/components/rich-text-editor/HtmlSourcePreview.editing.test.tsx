@@ -14,7 +14,7 @@
 // specific language governing permissions and limitations
 // under the License.
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen } from "@testing-library/react";
 import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
@@ -66,7 +66,9 @@ function select(node: Node, from: number, to = from): void {
 function refused(inputType: string, extra?: (event: Event) => void): boolean {
   const event = new InputEvent("beforeinput", { inputType, cancelable: true, bubbles: true });
   extra?.(event);
-  host().dispatchEvent(event);
+  act(() => {
+    host().dispatchEvent(event);
+  });
   return event.defaultPrevented;
 }
 
@@ -201,6 +203,181 @@ describe("HtmlSourcePreview — editing text in the preview", () => {
     render(<HtmlSourcePreview html="<p>a</p><iframe>gone</iframe><p>b</p>" onChange={vi.fn()} />);
     expect(editButton()).toBeNull();
     expect(screen.getByText(/text can't be edited in the preview for this markup/i)).toBeInTheDocument();
+  });
+});
+
+describe("HtmlSourcePreview — line breaks", () => {
+  /** A parent that hands the new source straight back, like the real form does. */
+  function Controlled({ initial, onSource }: { initial: string; onSource: (html: string) => void }) {
+    const [html, setHtml] = useState(initial);
+    return (
+      <HtmlSourcePreview
+        html={html}
+        onChange={(next) => {
+          onSource(next);
+          setHtml(next);
+        }}
+      />
+    );
+  }
+  const caret = (): Selection => document.getSelection() as Selection;
+
+  it("Enter adds a <br /> to the source at the caret, redraws, and puts the caret on the new line", () => {
+    const sources: string[] = [];
+    render(<Controlled initial={'<p><a href="x" target="_blank">Hello world</a></p>'} onSource={(h) => sources.push(h)} />);
+    startEditing();
+    const node = textNode("Hello world");
+    select(node, 5);
+
+    expect(refused("insertParagraph")).toBe(true);
+
+    expect(sources.at(-1)).toBe('<p><a href="x" target="_blank">Hello<br /> world</a></p>');
+    expect(host().querySelectorAll("br")).toHaveLength(1);
+    expect(caret().anchorNode?.nodeValue).toBe(" world");
+    expect(caret().anchorOffset).toBe(0);
+  });
+
+  it("Shift+Enter does the same", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<p>ab</p>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    select(textNode("ab"), 1);
+    expect(refused("insertLineBreak")).toBe(true);
+    expect(sources.at(-1)).toBe("<p>a<br />b</p>");
+  });
+
+  it("Enter at the end of a line leaves the caret on the empty line, and typing there is written to the source", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<p>one</p>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    select(textNode("one"), 3);
+    refused("insertParagraph");
+    expect(sources.at(-1)).toBe("<p>one<br /></p>");
+
+    const p = host().querySelector("p") as HTMLElement;
+    expect(caret().anchorNode).toBe(p);
+    expect(caret().anchorOffset).toBe(2);
+    // A break ending its line shows no empty line on its own, so the preview adds one of its own.
+    expect(p.querySelectorAll("br[data-edit-placeholder]")).toHaveLength(1);
+    expect(sources.at(-1)).not.toContain("data-edit-placeholder");
+
+    // The browser starts a text node on the empty line.
+    expect(refused("insertText")).toBe(false);
+    p.insertBefore(document.createTextNode("two"), p.querySelector("br[data-edit-placeholder]"));
+    fireEvent.input(host());
+    expect(sources.at(-1)).toBe("<p>one<br />two</p>");
+
+    // More typing goes into that same text, now part of the map.
+    typeInto("two", "two!");
+    expect(sources.at(-1)).toBe("<p>one<br />two!</p>");
+  });
+
+  it("two Enters in a row make two breaks", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<p>one</p>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    select(textNode("one"), 3);
+    refused("insertParagraph");
+    refused("insertParagraph");
+    expect(sources.at(-1)).toBe("<p>one<br /><br /></p>");
+  });
+
+  it("Backspace right after a break removes it, joining the lines with the caret at the join", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<p>one<br />two</p>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    select(textNode("two"), 0);
+
+    expect(refused("deleteContentBackward")).toBe(true);
+
+    expect(sources.at(-1)).toBe("<p>onetwo</p>");
+    expect(host().querySelectorAll("br")).toHaveLength(0);
+    expect(caret().anchorNode?.nodeValue).toBe("onetwo");
+    expect(caret().anchorOffset).toBe(3);
+  });
+
+  it("Delete at the end of a line before a break removes it", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<p>one<br />two</p>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    select(textNode("one"), 3);
+    expect(refused("deleteContentForward")).toBe(true);
+    expect(sources.at(-1)).toBe("<p>onetwo</p>");
+  });
+
+  it("Backspace on a blank line (caret in the parent beside the break) removes the break", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<p>one<br /><br />two</p>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    const p = host().querySelector("p") as HTMLElement;
+    select(p, 2); // between the two breaks
+    expect(refused("deleteContentBackward")).toBe(true);
+    expect(sources.at(-1)).toBe("<p>one<br />two</p>");
+  });
+
+  it("keeps working on the next edit after a break was added", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<p>ab</p><p>other</p>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    select(textNode("ab"), 1);
+    refused("insertParagraph");
+    typeInto("other", "OTHER");
+    expect(sources.at(-1)).toBe("<p>a<br />b</p><p>OTHER</p>");
+  });
+
+  it("applies a pending wording edit in the same text when Enter is pressed", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<p>Hello</p>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    typeInto("Hello", "Hello there");
+    select(textNode("Hello there"), 5);
+    refused("insertParagraph");
+    expect(sources.at(-1)).toBe("<p>Hello<br /> there</p>");
+  });
+
+  it("does nothing for Enter when text is selected, or inside preformatted text", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<p>one two</p><pre>x y</pre>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    select(textNode("one two"), 1, 4);
+    expect(refused("insertParagraph")).toBe(true);
+    select(textNode("x y"), 1);
+    expect(refused("insertParagraph")).toBe(true);
+    expect(sources).toHaveLength(0);
+  });
+
+  it("leaves line breaks alone while an IME composition is in progress", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<p>one<br />two</p>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    select(textNode("one"), 3);
+    const enter = new InputEvent("beforeinput", { inputType: "insertParagraph", isComposing: true, cancelable: true, bubbles: true });
+    act(() => {
+      host().dispatchEvent(enter);
+    });
+    select(textNode("two"), 0);
+    const backspace = new InputEvent("beforeinput", { inputType: "deleteContentBackward", isComposing: true, cancelable: true, bubbles: true });
+    act(() => {
+      host().dispatchEvent(backspace);
+    });
+    expect(sources).toHaveLength(0);
+    expect(host().querySelectorAll("br")).toHaveLength(1);
+  });
+
+  it("refuses Enter on an empty line inside preformatted text", () => {
+    const sources: string[] = [];
+    render(<Controlled initial="<pre>a<br />b</pre>" onSource={(h) => sources.push(h)} />);
+    startEditing();
+    select(host().querySelector("pre") as HTMLElement, 2);
+    expect(refused("insertParagraph")).toBe(true);
+    expect(sources).toHaveLength(0);
+  });
+
+  it("still refuses Backspace at the edge of a text that has no break next to it", () => {
+    render(<Controlled initial="<p>one</p><p>two</p>" onSource={vi.fn()} />);
+    startEditing();
+    select(textNode("two"), 0);
+    expect(refused("deleteContentBackward")).toBe(true);
   });
 });
 
