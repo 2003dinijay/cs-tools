@@ -360,9 +360,10 @@ export default function CellPicker({
   /** L1, L2 and L3 for every zone worked on the span's first day. */
   const grid = useMemo(() => escalationGrid(shifts, firstDay), [shifts, firstDay]);
 
-  /** The rota offers nothing at all for this person: no window of their rota
-   *  is served, so there is nothing to put them on. */
-  const nothingToRoster = shifts.length === 0 && moves.length === 0;
+  /** No window of their rota is served, so there is no rotation or L1-L3 to
+   *  put them on. Said even when a move to another team is still offered:
+   *  the move buttons alone don't explain why the rota part is missing. */
+  const nothingToRoster = shifts.length === 0;
 
   /** Leave, then allocations, each under its own heading. */
   const awayGroups = useMemo(

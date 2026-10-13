@@ -424,13 +424,18 @@ describe("CellPicker: a rota of Day and Night (IaaS)", () => {
     zoneCode: "IAAS_N", dayScope: "ANY", isEscalation: true, sortOrder: 220,
   });
 
-  function renderIaas(shifts: ReturnType<typeof shift>[], onApply = vi.fn()) {
+  function renderIaas(
+    shifts: ReturnType<typeof shift>[],
+    onApply = vi.fn(),
+    moveKinds: ScheduleAbsenceKind[] = [],
+  ) {
     render(
       <CellPicker
         // A Saturday: the rota is worked every day.
         target={target({ teamKey: "iaas", zoneCode: "IAAS_D", rotaDate: "2026-09-26" })}
         shifts={shifts}
         awayKinds={[ANNUAL_LEAVE, RND]}
+        moveKinds={moveKinds}
         onApply={onApply}
         onMarkAway={vi.fn()}
         onClear={vi.fn()}
@@ -459,6 +464,19 @@ describe("CellPicker: a rota of Day and Night (IaaS)", () => {
     expect(screen.getByText(/no rota windows set up yet/)).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: /^L1 for / })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /Annual leave/ })).toBeInTheDocument();
+  });
+
+  it("still says so when a move to another team is on offer", () => {
+    // The move buttons alone would fill the side and leave the missing L1-L3
+    // unexplained.
+    const toPaas: ScheduleAbsenceKind = {
+      id: "k-paas", code: "TO_PAAS", shortCode: "PaaS", label: "PaaS", bucket: "ALLOCATION",
+      colourToken: "MIG", sortOrder: 50, movesToTeamKey: "paas",
+    };
+    renderIaas([], vi.fn(), [toPaas]);
+    expect(screen.getByText(/no rota windows set up yet/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Move to paas team/i })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^L1 for / })).not.toBeInTheDocument();
   });
 });
 
