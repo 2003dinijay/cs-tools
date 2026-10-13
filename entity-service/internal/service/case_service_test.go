@@ -1918,7 +1918,7 @@ func (s *stubProjectContactRepo) GetProjectContactByUserID(ctx context.Context, 
 type stubMirrorCaseService struct {
 	CaseService
 	createCase                    func(ctx context.Context, req domain.CreateCaseRequest) (domain.CreateCaseResponse, error)
-	patchCaseFieldsFn             func(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields) (domain.UpdatedCase, error)
+	patchCaseFieldsFn             func(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields, asSystemUser bool) (domain.UpdatedCase, error)
 	createBareCaseComment         func(ctx context.Context, caseID string, commentType domain.CommentType, content string) (domain.CaseCommentDetail, error)
 	addCaseTagAsFn                func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
 	removeCaseTagFn               func(ctx context.Context, caseID, tagID string) error
@@ -1971,8 +1971,8 @@ func (s *stubMirrorCaseService) SearchCaseComments(ctx context.Context, req doma
 	return domain.SearchCaseCommentsResponse{}, nil
 }
 
-func (s *stubMirrorCaseService) patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields) (domain.UpdatedCase, error) {
-	return s.patchCaseFieldsFn(ctx, caseID, state, severity, workState, markFixIssued, resolution)
+func (s *stubMirrorCaseService) patchCaseFields(ctx context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields, asSystemUser bool) (domain.UpdatedCase, error) {
+	return s.patchCaseFieldsFn(ctx, caseID, state, severity, workState, markFixIssued, resolution, asSystemUser)
 }
 
 func (s *stubMirrorCaseService) CreateBareCaseComment(ctx context.Context, caseID string, commentType domain.CommentType, content string) (domain.CaseCommentDetail, error) {
@@ -2041,7 +2041,7 @@ func TestCaseService_UpdateCase_MirrorsFieldToServiceNow(t *testing.T) {
 			var gotWorkState *domain.CaseWorkState
 			called := make(chan struct{})
 			mirror := &stubMirrorCaseService{
-				patchCaseFieldsFn: func(_ context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, _ *bool, _ *caseResolutionFields) (domain.UpdatedCase, error) {
+				patchCaseFieldsFn: func(_ context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, _ *bool, _ *caseResolutionFields, _ bool) (domain.UpdatedCase, error) {
 					mu.Lock()
 					gotCaseID, gotState, gotSeverity, gotWorkState = caseID, state, severity, workState
 					mu.Unlock()
@@ -2572,7 +2572,7 @@ func TestCaseService_UpdateCase_ReappliesStateSLAEffectsAfterSeverityRevision(t 
 // recorded to sn_writeback_failures instead (see SNWritebackDispatcher).
 func TestCaseService_UpdateCase_RecordsSNWritebackFailureOnMirrorError(t *testing.T) {
 	mirror := &stubMirrorCaseService{
-		patchCaseFieldsFn: func(context.Context, string, *domain.CaseState, *domain.CaseSeverity, *domain.CaseWorkState, *bool, *caseResolutionFields) (domain.UpdatedCase, error) {
+		patchCaseFieldsFn: func(context.Context, string, *domain.CaseState, *domain.CaseSeverity, *domain.CaseWorkState, *bool, *caseResolutionFields, bool) (domain.UpdatedCase, error) {
 			return domain.UpdatedCase{}, errors.New("sn downstream unreachable")
 		},
 	}
@@ -2619,7 +2619,7 @@ func TestCaseService_UpdateCase_MarkFixIssued_MirrorsToServiceNow(t *testing.T) 
 	var gotMarkFixIssued *bool
 	called := make(chan struct{})
 	mirror := &stubMirrorCaseService{
-		patchCaseFieldsFn: func(_ context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields) (domain.UpdatedCase, error) {
+		patchCaseFieldsFn: func(_ context.Context, caseID string, state *domain.CaseState, severity *domain.CaseSeverity, workState *domain.CaseWorkState, markFixIssued *bool, resolution *caseResolutionFields, _ bool) (domain.UpdatedCase, error) {
 			mu.Lock()
 			gotCaseID, gotMarkFixIssued = caseID, markFixIssued
 			mu.Unlock()
@@ -2677,7 +2677,7 @@ func TestCaseService_UpdateCase_MarkFixIssued_AlreadySetIsNoOp(t *testing.T) {
 
 	mirrorCalled := false
 	mirror := &stubMirrorCaseService{
-		patchCaseFieldsFn: func(context.Context, string, *domain.CaseState, *domain.CaseSeverity, *domain.CaseWorkState, *bool, *caseResolutionFields) (domain.UpdatedCase, error) {
+		patchCaseFieldsFn: func(context.Context, string, *domain.CaseState, *domain.CaseSeverity, *domain.CaseWorkState, *bool, *caseResolutionFields, bool) (domain.UpdatedCase, error) {
 			mirrorCalled = true
 			return domain.UpdatedCase{}, nil
 		},
@@ -5277,8 +5277,10 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 
 	t.Run("closed with all three reaches the mirror", func(t *testing.T) {
 		got := make(chan *caseResolutionFields, 1)
-		mirror := &stubMirrorCaseService{patchCaseFieldsFn: func(_ context.Context, _ string, _ *domain.CaseState, _ *domain.CaseSeverity, _ *domain.CaseWorkState, _ *bool, r *caseResolutionFields) (domain.UpdatedCase, error) {
+		gotAsSystemUser := make(chan bool, 1)
+		mirror := &stubMirrorCaseService{patchCaseFieldsFn: func(_ context.Context, _ string, _ *domain.CaseState, _ *domain.CaseSeverity, _ *domain.CaseWorkState, _ *bool, r *caseResolutionFields, asSystemUser bool) (domain.UpdatedCase, error) {
 			got <- r
+			gotAsSystemUser <- asSystemUser
 			return domain.UpdatedCase{}, nil
 		}}
 		svc := newSvc(mirror)
@@ -5292,6 +5294,12 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("mirror.patchCaseFields was never called")
+		}
+		// An INTERNAL caller's own resolution choice must still mirror under
+		// their own identity, unchanged -- asSystemUser is only for the
+		// external-caller-defaulted path (see the sub-test below).
+		if gotAsSystemUser := <-gotAsSystemUser; gotAsSystemUser {
+			t.Error("asSystemUser = true for an internal caller's own resolution fields, want false")
 		}
 	})
 
@@ -5313,14 +5321,20 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 	// requirement conservatively treats as "case" -- see UpdateCase's own
 	// comment on that fallback).
 	//
-	// This is the regression test for a CodeRabbit-caught follow-up: an
-	// external caller is not simply exempted from supplying resolution
-	// fields -- leaving them nil would make the ServiceNow mirror write fail
-	// outright (ServiceNow's own case-closure workflow requires them), so
-	// they're defaulted to real, valid values instead ("solved by
-	// customer" / "unknown cause" / a generic note) and those defaults must
-	// actually reach both the Postgres write and the mirror.
-	t.Run("external caller's missing resolution fields are defaulted, not left nil", func(t *testing.T) {
+	// This replaces a prior regression test that asserted the opposite: an
+	// external caller's missing resolution fields used to be silently
+	// defaulted ("solved by customer" / "unknown cause" / a generic note")
+	// so the async ServiceNow mirror write wouldn't fail outright. That
+	// defaulting was deliberately removed 2026-10-13 (see UpdateCase's own
+	// updated doc comment on this block for the full reasoning and the
+	// explicit, not-yet-independently-verified SN caveat) -- a customer
+	// close with none of the three fields supplied must now leave all three
+	// nil, in both the Postgres write and whatever reaches the mirror, and
+	// since there is nothing to mirror, asSystemUser must be false too (it
+	// only fires when an external caller explicitly supplies their own
+	// resolution fields -- see patchCaseFields's own doc comment, and the
+	// production incident, case CS0378899, that introduced it).
+	t.Run("external caller's missing resolution fields are left nil, not defaulted", func(t *testing.T) {
 		var gotReq domain.UpdateCaseRequest
 		repo := &stubCaseRepo{
 			getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
@@ -5336,8 +5350,10 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 		}
 		dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
 		gotMirror := make(chan *caseResolutionFields, 1)
-		mirror := &stubMirrorCaseService{patchCaseFieldsFn: func(_ context.Context, _ string, _ *domain.CaseState, _ *domain.CaseSeverity, _ *domain.CaseWorkState, _ *bool, r *caseResolutionFields) (domain.UpdatedCase, error) {
+		gotAsSystemUser := make(chan bool, 1)
+		mirror := &stubMirrorCaseService{patchCaseFieldsFn: func(_ context.Context, _ string, _ *domain.CaseState, _ *domain.CaseSeverity, _ *domain.CaseWorkState, _ *bool, r *caseResolutionFields, asSystemUser bool) (domain.UpdatedCase, error) {
 			gotMirror <- r
+			gotAsSystemUser <- asSystemUser
 			return domain.UpdatedCase{}, nil
 		}}
 		svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, stubAccess{scope: AccessScope{Unrestricted: false}}, nil, dispatcher, mirror, nil, "")
@@ -5345,22 +5361,72 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 		if _, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, State: &closed}); err != nil {
 			t.Fatalf("unexpected error closing a case with no resolution fields as an external caller: %v", err)
 		}
-		if gotReq.ResolutionCode == nil || *gotReq.ResolutionCode != domain.CaseResolutionCodeSolvedByCustomer {
-			t.Errorf("ResolutionCode = %v, want %q", gotReq.ResolutionCode, domain.CaseResolutionCodeSolvedByCustomer)
+		if gotReq.ResolutionCode != nil {
+			t.Errorf("ResolutionCode = %v, want nil (no auto-defaulting)", *gotReq.ResolutionCode)
 		}
-		if gotReq.Cause == nil || *gotReq.Cause != domain.CaseCauseUnknown {
-			t.Errorf("Cause = %v, want %q", gotReq.Cause, domain.CaseCauseUnknown)
+		if gotReq.Cause != nil {
+			t.Errorf("Cause = %v, want nil (no auto-defaulting)", *gotReq.Cause)
 		}
-		if gotReq.CloseNotes == nil || *gotReq.CloseNotes != externalCloseDefaultNotes {
-			t.Errorf("CloseNotes = %v, want %q", gotReq.CloseNotes, externalCloseDefaultNotes)
+		if gotReq.CloseNotes != nil {
+			t.Errorf("CloseNotes = %v, want nil (no auto-defaulting)", *gotReq.CloseNotes)
 		}
 		select {
 		case r := <-gotMirror:
-			if r == nil || r.Code == nil || *r.Code != domain.CaseResolutionCodeSolvedByCustomer {
-				t.Errorf("mirror resolution code = %v, want %q", r, domain.CaseResolutionCodeSolvedByCustomer)
+			if r != nil {
+				t.Errorf("mirror resolution = %+v, want nil (no fields to mirror)", r)
 			}
 		case <-time.After(2 * time.Second):
 			t.Fatal("mirror.patchCaseFields was never called")
+		}
+		if asSystemUser := <-gotAsSystemUser; asSystemUser {
+			t.Error("asSystemUser = true for an external caller with no resolution fields to mirror, want false -- there is nothing to mirror as any identity")
+		}
+	})
+
+	// This is the regression test for a CodeRabbit-caught gap in the "stop
+	// defaulting" change above: removing the auto-defaulting did not, by
+	// itself, stop an external caller from supplying resolutionCode/cause/
+	// closeNotes EXPLICITLY -- and combined with asSystemUser, an
+	// explicitly-supplied value would have been written to Postgres and
+	// mirrored to ServiceNow under the integration's own system identity,
+	// bypassing ServiceNow's own rejection of a customer setting its
+	// internal resolution taxonomy (the exact rule CS0378899's error
+	// message enforces). An external caller supplying any of the three
+	// fields must be refused outright, before the Postgres write, not
+	// accepted and silently re-identified as a system write.
+	t.Run("external caller explicitly supplying resolution fields is refused, not accepted", func(t *testing.T) {
+		var updateCaseCalled bool
+		repo := &stubCaseRepo{
+			getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
+				st := domain.CaseStateOpen
+				typ := "case"
+				return domain.CaseView{ID: id, State: &st, Type: &typ}, nil
+			},
+			updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
+				updateCaseCalled = true
+				st := *req.State
+				return domain.Case{ID: req.ID, State: &st}, nil, nil
+			},
+		}
+		dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
+		var mirrorCalled bool
+		mirror := &stubMirrorCaseService{patchCaseFieldsFn: func(_ context.Context, _ string, _ *domain.CaseState, _ *domain.CaseSeverity, _ *domain.CaseWorkState, _ *bool, _ *caseResolutionFields, _ bool) (domain.UpdatedCase, error) {
+			mirrorCalled = true
+			return domain.UpdatedCase{}, nil
+		}}
+		svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, stubAccess{scope: AccessScope{Unrestricted: false}}, nil, dispatcher, mirror, nil, "")
+
+		code := domain.CaseResolutionCodeSolvedByCustomer
+		_, err := svc.UpdateCase(context.Background(), domain.UpdateCaseRequest{ID: testDeploymentUUID, State: &closed, ResolutionCode: &code})
+		var verr *apierror.ValidationError
+		if !errors.As(err, &verr) {
+			t.Fatalf("err = %v, want a *apierror.ValidationError", err)
+		}
+		if updateCaseCalled {
+			t.Error("repo.UpdateCase was called, want the request refused before any Postgres write")
+		}
+		if mirrorCalled {
+			t.Error("mirror.patchCaseFields was called, want the request refused before any ServiceNow mirror dispatch")
 		}
 	})
 
@@ -5411,7 +5477,7 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 			},
 		}
 		dispatcher := NewSNWritebackDispatcher(&recordingSNWritebackFailures{})
-		mirror := &stubMirrorCaseService{patchCaseFieldsFn: func(_ context.Context, _ string, _ *domain.CaseState, _ *domain.CaseSeverity, _ *domain.CaseWorkState, _ *bool, _ *caseResolutionFields) (domain.UpdatedCase, error) {
+		mirror := &stubMirrorCaseService{patchCaseFieldsFn: func(_ context.Context, _ string, _ *domain.CaseState, _ *domain.CaseSeverity, _ *domain.CaseWorkState, _ *bool, _ *caseResolutionFields, _ bool) (domain.UpdatedCase, error) {
 			return domain.UpdatedCase{}, nil
 		}}
 		svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, dispatcher, mirror, nil, "")
