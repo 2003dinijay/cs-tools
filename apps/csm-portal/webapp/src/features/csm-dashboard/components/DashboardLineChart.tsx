@@ -124,17 +124,55 @@ export default function DashboardLineChart({
 
   return (
     <Box sx={{ width: "100%" }}>
+      {/* A hand-rolled legend, not the library's own `legend` prop: that
+          renders in an opaque, library-positioned block whose height and
+          internal alignment aren't exposed through this wrapper's typed
+          props, and in practice reserved far more vertical space than its
+          one line of content needed while still crowding the chart's own
+          top tick label underneath it. Same "don't trust the library's
+          legend layout" precedent DashboardPieChart.tsx's own legend list
+          already follows in this codebase — this gives this chart tight,
+          predictable spacing instead. */}
+      <Box sx={{ display: "flex", alignItems: "center", gap: 2, mb: 1 }}>
+        {(
+          [
+            { key: "opened", label: "Opened", color: theme.palette.info.main },
+            { key: "closed", label: "Closed", color: theme.palette.success.main },
+          ] as const
+        ).map((series) => (
+          <Box key={series.key} sx={{ display: "flex", alignItems: "center", gap: 0.75 }}>
+            <Box
+              sx={{
+                width: 10,
+                height: 10,
+                borderRadius: "50%",
+                bgcolor: series.color,
+                flexShrink: 0,
+              }}
+            />
+            <Typography variant="caption" color="text.secondary">
+              {series.label}
+            </Typography>
+          </Box>
+        ))}
+      </Box>
       <Box sx={{ width: "100%", height: CHART_HEIGHT_PX }}>
         <LineChart
           data={chartData}
           xAxisDataKey="label"
           height={CHART_HEIGHT_PX}
           width="100%"
-          legend={{ show: true, align: "left", verticalAlign: "top" }}
+          legend={{ show: false }}
           grid={{ show: true, strokeDasharray: "3 3" }}
           margin={{ top: 8, right: 8, bottom: 8, left: 0 }}
           tooltip={{ show: true, wrapperStyle: { zIndex: 1000 } }}
-          xAxis={{ show: true }}
+          // `interval: "preserveStartEnd"` thins the x-axis down to as many
+          // evenly-spaced labels as actually fit the rendered width (always
+          // keeping the first/last), rather than printing every single day
+          // in the window -- which crowds into illegibility well before 30
+          // days, and far sooner once this tile shares a row with another
+          // widget instead of spanning the full 12-column width.
+          xAxis={{ show: true, interval: "preserveStartEnd" }}
           yAxis={{ show: true }}
           lines={[
             {
