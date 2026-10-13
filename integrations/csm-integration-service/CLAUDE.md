@@ -213,10 +213,9 @@ same `{success, data}` envelope and field names, built from entity-service's
 `POST .../search` responses. **This is the one place besides cloud-status that
 does not pass bytes through** — entity-service stays unchanged. Consequences:
 
-- `sfIds` has no entity-service equivalent (project search can't filter by
-  Salesforce id), so the handler pages `POST /projects/search` once and caches
-  the sfId→UUID map for 5 minutes. Unknown sfIds return an empty list, never an
-  unfiltered one. Deployed products go sfIds → projects → deployments → deployed products.
+- `sfIds` is resolved to project UUIDs through `POST /projects/search`'s `sfIds`
+  filter (a SQL filter on Postgres; applied in Go on ServiceNow). Unknown sfIds
+  return an empty list, never an unfiltered one. Deployed products go sfIds → projects → deployments → deployed products.
 - `limit` allows up to 100 (sample contract); entity-service caps at 50, so
   larger windows are several upstream calls.
 - Fields entity-service cannot supply are null/empty: `deployment.version`,

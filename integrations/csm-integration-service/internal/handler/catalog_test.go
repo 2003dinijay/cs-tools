@@ -27,7 +27,6 @@ import (
 
 type mockCatalogClient struct {
 	products, versions, deployments, deployedProducts, projects func(body []byte) ([]byte, error)
-	projectCalls                                                int
 }
 
 func (m *mockCatalogClient) SearchProducts(_ context.Context, b []byte) ([]byte, error) {
@@ -43,7 +42,6 @@ func (m *mockCatalogClient) SearchDeployedProducts(_ context.Context, b []byte) 
 	return m.deployedProducts(b)
 }
 func (m *mockCatalogClient) SearchProjects(_ context.Context, b []byte) ([]byte, error) {
-	m.projectCalls++
 	return m.projects(b)
 }
 
@@ -62,9 +60,19 @@ func serveCatalog(t *testing.T, m *mockCatalogClient, pattern, target string) *h
 	return w
 }
 
+// projectsJSON stands in for entity-service's sfIds filter: SF001 is the only known id.
 func projectsJSON(t *testing.T) func([]byte) ([]byte, error) {
-	return func([]byte) ([]byte, error) {
-		return []byte(`{"projects":[{"id":"p1","sfId":"SF001"},{"id":"p2","sfId":"SF002"},{"id":"p3","sfId":null}],"total":3,"hasMore":false}`), nil
+	return func(b []byte) ([]byte, error) {
+		var req struct {
+			SfIDs []string `json:"sfIds"`
+		}
+		_ = json.Unmarshal(b, &req)
+		for _, id := range req.SfIDs {
+			if id == "SF001" {
+				return []byte(`{"projects":[{"id":"p1"}],"total":1,"hasMore":false}`), nil
+			}
+		}
+		return []byte(`{"projects":[],"total":0,"hasMore":false}`), nil
 	}
 }
 
@@ -188,22 +196,6 @@ func TestCatalog_UnknownSfIDsGiveEmptyNotUnfiltered(t *testing.T) {
 		if data["totalRecords"].(float64) != 0 {
 			t.Errorf("%s: totalRecords = %v", path, data["totalRecords"])
 		}
-	}
-}
-
-func TestCatalog_ProjectIndexIsCached(t *testing.T) {
-	m := &mockCatalogClient{
-		projects:    projectsJSON(t),
-		deployments: func([]byte) ([]byte, error) { return []byte(`{"deployments":[],"total":0}`), nil },
-	}
-	h := NewCatalogHandler(m)
-	for range 3 {
-		w := httptest.NewRecorder()
-		h.SearchDeployments(w, httptest.NewRequest(http.MethodGet, "/deployments/search?sfIds=SF001", nil))
-		assertStatus(t, w, http.StatusOK)
-	}
-	if m.projectCalls != 1 {
-		t.Errorf("project scans = %d, want 1", m.projectCalls)
 	}
 }
 

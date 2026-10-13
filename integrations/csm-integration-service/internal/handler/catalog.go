@@ -24,8 +24,6 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
-	"sync"
-	"time"
 )
 
 // Limits of the ServiceNow-shaped API this file reproduces, versus entity-service's.
@@ -38,7 +36,6 @@ const (
 	maxSfIDs          = 100
 	// maxSfScopedDeployments bounds the deployments gathered to scope a deployed-products search by sfIds.
 	maxSfScopedDeployments = 5000
-	projectIndexTTL        = 5 * time.Minute
 )
 
 const (
@@ -69,8 +66,6 @@ type entityCatalogClient interface {
 // productVersion.product.name) or empty (products.warnings).
 type CatalogHandler struct {
 	entity entityCatalogClient
-
-	projects projectIndex
 }
 
 // NewCatalogHandler creates a CatalogHandler backed by the given entity client.
@@ -168,63 +163,32 @@ func (h *CatalogHandler) call(ctx context.Context, fn func() ([]byte, error), ou
 
 // ----- sfIds -> project ids -----
 
-// projectIndex caches the Salesforce-id -> project UUID map. entity-service's
-// project search cannot filter by Salesforce id, so the whole project list is
-// paged once and reused until the TTL expires.
-type projectIndex struct {
-	mu        sync.Mutex
-	byID      map[string]string
-	fetchedAt time.Time
-	ttl       time.Duration
-}
-
 type entityProjectsPage struct {
 	Projects []struct {
-		ID   string  `json:"id"`
-		SfID *string `json:"sfId"`
+		ID string `json:"id"`
 	} `json:"projects"`
-	Total   int  `json:"total"`
 	HasMore bool `json:"hasMore"`
 }
 
-// resolveProjectIDs maps Salesforce ids to project UUIDs; unknown ids are dropped.
+// resolveProjectIDs maps Salesforce ids to project UUIDs using entity-service's
+// sfIds project filter; ids matching no project are simply absent from the result.
 func (h *CatalogHandler) resolveProjectIDs(ctx context.Context, sfIDs []string) ([]string, error) {
-	idx := &h.projects
-	idx.mu.Lock()
-	defer idx.mu.Unlock()
-
-	ttl := idx.ttl
-	if ttl == 0 {
-		ttl = projectIndexTTL
-	}
-	if idx.byID == nil || time.Since(idx.fetchedAt) > ttl {
-		m := map[string]string{}
-		for offset := 0; ; {
-			body, _ := json.Marshal(map[string]any{"pagination": map[string]int{"limit": entityMaxPageSize, "offset": offset}})
-			var p entityProjectsPage
-			if err := h.call(ctx, func() ([]byte, error) { return h.entity.SearchProjects(ctx, body) }, &p); err != nil {
-				return nil, err
-			}
-			for _, pr := range p.Projects {
-				if pr.SfID != nil && *pr.SfID != "" {
-					m[*pr.SfID] = pr.ID
-				}
-			}
-			offset += len(p.Projects)
-			if !p.HasMore || len(p.Projects) == 0 {
-				break
-			}
+	ids, _, err := fetchWindow(len(sfIDs), 0, func(n, o int) (page[string], error) {
+		body, _ := json.Marshal(map[string]any{
+			"sfIds":      sfIDs,
+			"pagination": map[string]int{"limit": n, "offset": o},
+		})
+		var p entityProjectsPage
+		if err := h.call(ctx, func() ([]byte, error) { return h.entity.SearchProjects(ctx, body) }, &p); err != nil {
+			return page[string]{}, err
 		}
-		idx.byID, idx.fetchedAt = m, time.Now()
-	}
-
-	out := make([]string, 0, len(sfIDs))
-	for _, sf := range sfIDs {
-		if id, ok := idx.byID[sf]; ok {
-			out = append(out, id)
+		out := make([]string, 0, len(p.Projects))
+		for _, pr := range p.Projects {
+			out = append(out, pr.ID)
 		}
-	}
-	return out, nil
+		return page[string]{items: out, hasMore: p.HasMore}, nil
+	})
+	return ids, err
 }
 
 // ----- GET /products/search -----

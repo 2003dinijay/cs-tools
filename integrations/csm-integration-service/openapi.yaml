@@ -2268,6 +2268,11 @@ components:
         arrTodayGte:
           type: string
           description: Minimum account ARR. Rejected with 400 on the Postgres data source.
+        sfIds:
+          type: array
+          items:
+            type: string
+          description: Only projects whose Salesforce ID is any of these (exact match; empty or padded values are rejected with 400).
 
     ProjectSearchResponse:
       type: object
