@@ -655,10 +655,25 @@ describe("CellPicker: moving somebody to another team", () => {
     expect(onApply).toHaveBeenCalledWith("CRE_AMERICAS", "2026-09-23", "2026-09-23");
   });
 
+  it("sets a move's months in one click: 3 months from the 23rd runs to the 22nd", () => {
+    const { onApply } = renderMoves("draco");
+    fireEvent.click(screen.getByRole("button", { name: "3 months" }));
+    expect(screen.getByLabelText("Mark until")).toHaveValue("2026-12-22");
+    fireEvent.click(screen.getByRole("button", { name: /Move to Americas Team/ }));
+    expect(onApply).toHaveBeenCalledWith("CRE_AMERICAS", "2026-09-23", "2026-12-22");
+    fireEvent.click(screen.getByRole("button", { name: "6 months" }));
+    expect(screen.getByLabelText("Mark until")).toHaveValue("2027-03-22");
+  });
+
   it("names the Migration move as a team too", () => {
     const { onMarkAway } = renderMoves("draco");
     fireEvent.click(screen.getByRole("button", { name: /Move to Migration Team/ }));
     expect(onMarkAway).toHaveBeenCalledWith("MIGRATION", "2026-09-23", "2026-09-23");
+  });
+
+  it("offers no month shortcuts where there is no move to make", () => {
+    renderPicker();
+    expect(screen.queryByRole("button", { name: "3 months" })).not.toBeInTheDocument();
   });
 
   it("keeps Americas cover as standing hours for somebody already on Americas", () => {

@@ -53,7 +53,7 @@ import RotaAccessTab from "../components/RotaAccessTab";
 import { canManageRotaAccess, useRotaAccess } from "../api/useRotaAccess";
 import { useGetPagingChain } from "../api/usePagingChain";
 import GenerateRotaDialog from "../components/GenerateRotaDialog";
-import { GENERATED_ROTA, useRotaNightCrew } from "../api/useGenerateRota";
+import { GENERATED_ROTA } from "../api/useGenerateRota";
 import type {
   PagingChainCode,
   RotaFamily,
@@ -700,19 +700,6 @@ export default function CsmTeamSchedulePage(): JSX.Element {
    *  Only asked for while the roster is open -- no other view marks a cell --
    *  and kept out of the rota's own query so the grid never waits on it. */
   const editMarkers = useScheduleEditMarkers(rosterMonths, view === "roster");
-  /** The TZ3 people the months in view were generated with: the roster lists
-   *  them under the Night cover instead of their team. Undefined until the
-   *  server answers (or if it cannot), when the roster reads it from the turns. */
-  const nightCrewRead = useRotaNightCrew(
-    toIsoDate(rosterStart).slice(0, 7),
-    toIsoDate(rosterEnd).slice(0, 7),
-    view === "roster" && family === "SRE",
-  );
-  const nightCrew = useMemo(
-    () => (nightCrewRead.isSuccess && nightCrewRead.data ? nightCrewRead.data.months.flatMap((m) => m.crew) : undefined),
-    [nightCrewRead.isSuccess, nightCrewRead.data],
-  );
-
   /** Keyed for the roster to look up a cell in one step rather than scanning. */
   const editedCells = useMemo(() => {
     const out = new Map<string, { actor: string; changedAt: string }>();
@@ -1138,19 +1125,53 @@ export default function CsmTeamSchedulePage(): JSX.Element {
     [catalogue.data?.teams],
   );
 
-  /** The generated rota's teams and their people, for choosing each team's TZ3. */
+  /** The generated rota's teams, for naming them in Generate month's preview. */
   const generateTeams = useMemo(
     () =>
       (catalogue.data?.teams ?? [])
         .filter((t) => t.rotaCode === GENERATED_ROTA)
         .sort((a, b) => a.sortOrder - b.sortOrder)
-        .map((t) => ({
-          key: t.key,
-          name: teamDisplayName(t.name),
-          members: [...(t.members ?? [])].sort((a, b) => (a.name || a.email).localeCompare(b.name || b.email)),
-        })),
+        .map((t) => ({ key: t.key, name: teamDisplayName(t.name) })),
     [catalogue.data?.teams],
   );
+  /** The tags that move somebody onto another team of the generated rota --
+   *  the SaaS Night cover -- by the team they move them to. */
+  const nightCoverKinds = useMemo(() => {
+    const onRota = new Set(generateTeams.map((t) => t.key.toLowerCase()));
+    return new Map(
+      (catalogue.data?.absenceKinds ?? [])
+        .filter((k) => k.worksRotaThere && k.movesToTeamKey && onRota.has(k.movesToTeamKey.toLowerCase()))
+        .map((k) => [k.code, k.movesToTeamKey as string]),
+    );
+  }, [catalogue.data?.absenceKinds, generateTeams]);
+  /** Who is on the SaaS Night cover over the months Generate month offers
+   *  (this one and the next two): whoever a move covers is that month's TZ3
+   *  crew. Read a month at a time, as the roster is -- the server takes a
+   *  window of 70 days at most -- and only while the dialog is open. */
+  const generateMonths = useMemo(() => {
+    const now = new Date();
+    return [0, 1, 2].map((n) => ({
+      from: toIsoDate(new Date(now.getFullYear(), now.getMonth() + n, 1)),
+      to: toIsoDate(new Date(now.getFullYear(), now.getMonth() + n + 1, 0)),
+    }));
+  }, []);
+  const nightCoverRead = useScheduleAbsencesByMonth(
+    { teamKeys: [...new Set(nightCoverKinds.values())] },
+    generateMonths,
+    generateOpen && nightCoverKinds.size > 0,
+  );
+  const nightCover = useMemo(() => {
+    const nameOf = new Map((catalogue.data?.teams ?? []).map((t) => [t.key.toLowerCase(), teamDisplayName(t.name)]));
+    return (nightCoverRead.data?.absences ?? [])
+      .filter((a) => nightCoverKinds.has(a.kindCode))
+      .map((a) => ({
+        userId: a.engineer.userId,
+        name: a.engineer.name || a.engineer.email,
+        homeTeam: (a.homeTeamKey && nameOf.get(a.homeTeamKey.toLowerCase())) || a.homeTeamKey || "",
+        startsOn: a.startsOn,
+        endsOn: a.endsOn,
+      }));
+  }, [nightCoverRead.data, nightCoverKinds, catalogue.data?.teams]);
 
   /** Teams the roster draws no LK for: the generated rota's own, whose
    *  engineers work one zone a day and carry its SUP instead. */
@@ -1492,7 +1513,6 @@ export default function CsmTeamSchedulePage(): JSX.Element {
               absences={absences.data?.absences ?? []}
               shifts={shifts}
               absenceKinds={catalogue.data?.absenceKinds ?? []}
-              nightCrew={nightCrew}
               {...scopeControls}
             />
           ) : (
@@ -1574,7 +1594,12 @@ export default function CsmTeamSchedulePage(): JSX.Element {
         }}
       />
       {canGenerateRota ? (
-        <GenerateRotaDialog open={generateOpen} onClose={() => setGenerateOpen(false)} teams={generateTeams} />
+        <GenerateRotaDialog
+          open={generateOpen}
+          onClose={() => setGenerateOpen(false)}
+          teams={generateTeams}
+          nightCover={nightCover}
+        />
       ) : null}
     </div>
     </TeamColourProvider>
