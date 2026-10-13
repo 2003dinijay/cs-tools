@@ -630,6 +630,17 @@ func main() {
 	// the availability marked on it. Who may is entity-service's decision.
 	route("POST /team-schedule/rotas/{code}/generate", handler.PermWrite, rotaGenerateHandler.GenerateRotaMonth)
 	route("GET /team-schedule/rotas/{code}/night-crew", handler.PermView, rotaGenerateHandler.GetRotaNightCrew)
+	// Rota access tab: rota admins (one family each) and each team's rota
+	// marker. Granting rota admin is for the portal's admins, so PermAdmin
+	// keeps the control away from anyone else; a team's marker can also be
+	// named by that family's rota admin, who is no portal admin, so those
+	// routes are PermWrite and entity-service decides.
+	rotaAccessHandler := handler.NewRotaAccessHandler(customerEntityClient)
+	route("GET /team-schedule/rota-access", handler.PermView, rotaAccessHandler.GetRotaAccess)
+	route("PUT /team-schedule/rota-access/admins/{family}/{userId}", handler.PermAdmin, rotaAccessHandler.PutRotaAdmin)
+	route("DELETE /team-schedule/rota-access/admins/{family}/{userId}", handler.PermAdmin, rotaAccessHandler.DeleteRotaAdmin)
+	route("PUT /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.PutRotaMarker)
+	route("DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.DeleteRotaMarker)
 	route("POST /configuration-items/search", handler.PermView, configurationItemHandler.SearchConfigurationItems)
 	route("POST /time-cards/search", handler.PermTimeCardsAndUpdates, timeCardHandler.SearchTimeCards)
 	route("POST /time-cards", handler.PermTimeCardsAndUpdates, timeCardHandler.CreateTimeCard)

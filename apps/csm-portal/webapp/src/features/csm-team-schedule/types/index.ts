@@ -377,3 +377,38 @@ export interface PagingReadinessResponse {
   to: string;
   chains: PagingReadinessChain[];
 }
+
+/**
+ * The Rota access tab: who may change the rotas beyond the team leads.
+ *
+ * A rota admin edits every team in one family. A rota marker edits one team's
+ * rota -- rotations, leave and allocations -- and nothing else. canManage is
+ * what the reader may change: rota admins for a CSM admin, and the markers of
+ * markerFamilies (every family for a CSM admin, their own for a rota admin).
+ * Somebody who may change nothing gets empty lists, and the tab is not shown.
+ */
+export interface RotaAccess {
+  canManage: { rotaAdmins: boolean; markerFamilies: RotaFamily[] };
+  rotaAdmins: RotaAdminGrant[];
+  markers: RotaMarkerGrant[];
+}
+
+interface RotaGrant {
+  userId: string;
+  name: string;
+  email: string;
+  grantedBy: string;
+  grantedOn: string;
+  /** False when the grant does nothing: the holder is not internal staff,
+   *  or (a marker) has left the team. Listed so it can be removed. */
+  active: boolean;
+}
+
+export interface RotaAdminGrant extends RotaGrant {
+  family: RotaFamily;
+}
+
+export interface RotaMarkerGrant extends RotaGrant {
+  teamKey: string;
+  family: RotaFamily;
+}

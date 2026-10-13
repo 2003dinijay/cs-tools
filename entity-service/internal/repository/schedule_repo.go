@@ -94,6 +94,9 @@ type ScheduleRepository interface {
 	// RotaAdminFamilies is the families of the rota admin roles the caller
 	// holds: CRE, SRE and/or SME. Empty for anyone who holds none.
 	RotaAdminFamilies(ctx context.Context, userEmail string) ([]string, error)
+	// RotaMarkerTeamsFor is every team this caller may mark as its rota
+	// marker (migration 0225): granted, still a member, and internal.
+	RotaMarkerTeamsFor(ctx context.Context, userEmail string) ([]string, error)
 
 	// ApplyRange sets one engineer to one window across a span of days, which
 	// is how the roster's picker edits.
@@ -1187,6 +1190,33 @@ func (r *scheduleRepository) RotaAdminFamilies(ctx context.Context, userEmail st
 		 WHERE lower(u.email) = lower($1)
 		   AND u.user_type = 'INTERNAL'::user_type_enum
 		   AND ro.name IN ('cre_rota_admin', 'sre_rota_admin', 'sme_rota_admin')`, userEmail)
+}
+
+// RotaMarkerTeamsFor implements ScheduleRepository.
+//
+// A grant counts only while its holder is still a member of the team and
+// internal staff. Both are asked here rather than enforced by removing the
+// grant: the ServiceNow sync moves people between teams without knowing a
+// grant exists, and a leaver's grant should stop working the moment they
+// leave, not when somebody notices it on the Rota access tab.
+func (r *scheduleRepository) RotaMarkerTeamsFor(ctx context.Context, userEmail string) ([]string, error) {
+	out, err := r.distinctStrings(ctx, `
+		SELECT DISTINCT m.team_key
+		  FROM team_schedule_rota_marker m
+		  JOIN "user" u ON u.id = m.user_id
+		  JOIN team t    ON t.key = m.team_key
+		 WHERE lower(u.email) = lower($1)
+		   AND u.user_type = 'INTERNAL'::user_type_enum
+		   AND EXISTS (SELECT 1 FROM team_member tm
+		                WHERE tm.team_id = t.id AND tm.user_id = u.id)
+		 ORDER BY 1`, userEmail)
+	if err != nil {
+		return nil, fmt.Errorf("rota marker teams: %w", err)
+	}
+	if out == nil {
+		out = []string{}
+	}
+	return out, nil
 }
 
 // hasFold is a case-insensitive membership test.

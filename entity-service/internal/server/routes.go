@@ -288,6 +288,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// The SaaS SRE rota's "Generate month" action. Postgres-only, like the
 	// rest of the Team Schedule.
 	var rotaGenerateHandler *handler.RotaGenerateHandler
+	var rotaAccessHandler *handler.RotaAccessHandler
 	var teamMemberHandler *handler.TeamMemberHandler
 	var pagingChainHandler *handler.PagingChainHandler
 
@@ -1039,6 +1040,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		rotaGenerateHandler = handler.NewRotaGenerateHandler(
 			service.NewRotaGenerateService(repository.NewScheduleRepository(db), repository.NewRotaGenerateRepository(db), accessSvc),
 		)
+		// Rota access: who may change the rotas beyond the team leads -- the
+		// rota admin roles and each team's rota marker. A CSM admin is a token
+		// Portal admin: a token role from AUTH_ADMIN_ROLES, as in the portal.
+		rotaAccessHandler = handler.NewRotaAccessHandler(
+			service.NewRotaAccessService(repository.NewRotaAccessRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.AuthAdminRoles),
+		)
 		// Postgres-only, and internal-staff-only like every other read in this
 		// module: it returns staff names, addresses and rank.
 		teamMemberHandler = handler.NewTeamMemberHandler(
@@ -1739,6 +1746,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("DELETE /team-schedule/absences/{id}", scheduleHandler.DeleteScheduleAbsence)
 		mux.HandleFunc("POST /team-schedule/absence-kinds", scheduleHandler.CreateScheduleAbsenceKind)
 		mux.HandleFunc("DELETE /team-schedule/absence-kinds/{code}", scheduleHandler.DeleteScheduleAbsenceKind)
+	}
+	if rotaAccessHandler != nil {
+		// Who holds a rota admin role or marks a team's rota, and changing
+		// that. The service decides who may: a CSM admin for rota admin, a
+		// CSM admin or the family's rota admin for a team's marker.
+		mux.HandleFunc("GET /team-schedule/rota-access", rotaAccessHandler.GetRotaAccess)
+		mux.HandleFunc("PUT /team-schedule/rota-access/admins/{family}/{userId}", rotaAccessHandler.GrantRotaAdmin)
+		mux.HandleFunc("DELETE /team-schedule/rota-access/admins/{family}/{userId}", rotaAccessHandler.RevokeRotaAdmin)
+		mux.HandleFunc("PUT /team-schedule/rota-access/markers/{teamKey}/{userId}", rotaAccessHandler.GrantRotaMarker)
+		mux.HandleFunc("DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}", rotaAccessHandler.RevokeRotaMarker)
 	}
 	if rotaGenerateHandler != nil {
 		// A lead of the rota (or its admin) works out a month from the
