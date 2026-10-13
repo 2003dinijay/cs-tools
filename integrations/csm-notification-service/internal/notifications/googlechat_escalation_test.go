@@ -27,7 +27,7 @@ import (
 
 func sampleAlert() EscalationAlert {
 	return EscalationAlert{
-		Audience: "WSO2 API Manager", Rung: "LEVEL_2", RungRole: "ABT lead",
+		Audience: "WSO2 API Manager", Rung: "L3", RungRole: "ABT lead",
 		Attempt: 1, Priority: "P1", IncidentRef: "INC0012345",
 		Title: "Gateway returning 500s in production", RecipientName: "Siluni Perera",
 		Instruction: "Update the ticket status to Work In Progress to stop further notifications.",
@@ -42,7 +42,7 @@ func TestEscalationCard_Header(t *testing.T) {
 	if card.Header == nil {
 		t.Fatal("the card has no header; the rung would not be visible at a glance")
 	}
-	if !strings.Contains(card.Header.Title, "LEVEL_2") {
+	if !strings.Contains(card.Header.Title, "L3") {
 		t.Errorf("title = %q, want the rung in it", card.Header.Title)
 	}
 	if !strings.Contains(card.Header.Subtitle, "INC0012345") {
@@ -56,17 +56,17 @@ func TestEscalationCard_Header(t *testing.T) {
 // tells a reader it has been through a rung it has not.
 func TestEscalationCard_Level0IsNotAnEscalation(t *testing.T) {
 	a := sampleAlert()
-	a.Rung = "LEVEL_0"
+	a.Rung = "L1"
 	title := buildEscalationCard(a).CardsV2[0].Card.Header.Title
-	if strings.Contains(title, "escalated") {
-		t.Errorf("title = %q; LEVEL_0 is a notification, not an escalation", title)
+	if strings.Contains(title, "Escalated") {
+		t.Errorf("title = %q; L1 is a notification, not an escalation", title)
 	}
-	if !strings.Contains(title, "notifying") {
+	if !strings.Contains(title, "Notifying") {
 		t.Errorf("title = %q, want it to say the rotation is being notified", title)
 	}
 
-	a.Rung = "LEVEL_3"
-	if title := buildEscalationCard(a).CardsV2[0].Card.Header.Title; !strings.Contains(title, "escalated") {
+	a.Rung = "L4"
+	if title := buildEscalationCard(a).CardsV2[0].Card.Header.Title; !strings.Contains(title, "Escalated") {
 		t.Errorf("title = %q; a real rung is an escalation", title)
 	}
 }
@@ -149,9 +149,9 @@ func TestEscalationCard_AlwaysSaysHowLongUnattended(t *testing.T) {
 // deadline.
 func TestEscalationCard_SaysWhatHappensNext(t *testing.T) {
 	a := sampleAlert()
-	a.NextRung, a.NextIn = "LEVEL_3", "7m"
+	a.NextRung, a.NextIn = "L4", "7m"
 	body := buildEscalationCard(a).CardsV2[0].Card.Sections[0].Widgets[0].TextParagraph.Text
-	if !strings.Contains(body, "Escalates to LEVEL_3") || !strings.Contains(body, "in 7m unless acknowledged") {
+	if !strings.Contains(body, "Escalates to L4") || !strings.Contains(body, "in 7m unless acknowledged") {
 		t.Errorf("the card does not say where this goes next:\n%s", body)
 	}
 
@@ -222,7 +222,7 @@ func TestSendEscalationAlert_PostsToTheSpace(t *testing.T) {
 func TestBuildEscalationCard_CarriesTheVoiceScript(t *testing.T) {
 	script := "WSO2 Support Alert. Priority, P0."
 	msg := buildEscalationCard(EscalationAlert{
-		Rung: "LEVEL_1", Priority: "P0", IncidentRef: "INC-1", VoiceScript: script,
+		Rung: "L2", Priority: "P0", IncidentRef: "INC-1", VoiceScript: script,
 	})
 
 	sections := msg.CardsV2[0].Card.Sections
@@ -240,7 +240,7 @@ func TestBuildEscalationCard_CarriesTheVoiceScript(t *testing.T) {
 // Without one, the section is absent rather than empty: an empty labelled
 // block reads as "the call says nothing".
 func TestBuildEscalationCard_NoVoiceScriptNoSection(t *testing.T) {
-	msg := buildEscalationCard(EscalationAlert{Rung: "LEVEL_1", Priority: "P0", IncidentRef: "INC-1"})
+	msg := buildEscalationCard(EscalationAlert{Rung: "L2", Priority: "P0", IncidentRef: "INC-1"})
 	if got := len(msg.CardsV2[0].Card.Sections); got != 1 {
 		t.Errorf("sections = %d, want only the body", got)
 	}
@@ -250,7 +250,7 @@ func TestBuildEscalationCard_NoVoiceScriptNoSection(t *testing.T) {
 // characters, not as card formatting.
 func TestBuildEscalationCard_VoiceScriptIsEscaped(t *testing.T) {
 	msg := buildEscalationCard(EscalationAlert{
-		Rung: "LEVEL_1", IncidentRef: "INC-1", VoiceScript: `Account, <b>Acme</b> & Co.`,
+		Rung: "L2", IncidentRef: "INC-1", VoiceScript: `Account, <b>Acme</b> & Co.`,
 	})
 	got := msg.CardsV2[0].Card.Sections[1].Widgets[0].TextParagraph.Text
 	if strings.Contains(got, "<b>Acme</b>") {
@@ -266,7 +266,7 @@ func TestBuildEscalationCard_VoiceScriptIsEscaped(t *testing.T) {
 // and who was supposed to have it first.
 func TestBuildEscalationCard_CarriesTheContextAReaderNeeds(t *testing.T) {
 	body := buildEscalationCard(EscalationAlert{
-		Rung: "LEVEL_1", Priority: "P0", IncidentRef: "WSO2-1042",
+		Rung: "L2", Priority: "P0", IncidentRef: "WSO2-1042",
 		Team: "Vega", Rotation: "CRE_EVENING",
 		ReportedAt: "2026-09-28 19:42 IST", Firing: "2026-09-28 19:43 IST",
 		OnCall: "Ashens",
@@ -279,12 +279,53 @@ func TestBuildEscalationCard_CarriesTheContextAReaderNeeds(t *testing.T) {
 	}
 }
 
+// The rung time sits beside the person called, so a thread reads as who was called when.
+func TestBuildEscalationCard_CallingLineCarriesTheRungTime(t *testing.T) {
+	body := buildEscalationCard(EscalationAlert{
+		Rung: "L1", RungRole: "SaaS SRE L1 Support", Priority: "P0", IncidentRef: "WSO2-1042",
+		RecipientName: "Jane Doe", Firing: "2026-10-13 15:21 IST",
+	}).CardsV2[0].Card.Sections[0].Widgets[0].TextParagraph.Text
+
+	if !strings.Contains(body, "Calling Jane Doe (2026-10-13 15:21 IST)") {
+		t.Errorf("card body missing the timed calling line:\n%s", body)
+	}
+	if strings.Contains(body, "This rung ") {
+		t.Errorf("rung time repeated on its own line:\n%s", body)
+	}
+}
+
+// An incident's rung is a short reply under its "Incident Reported" card, which already shows the incident.
+func TestBuildEscalationReply(t *testing.T) {
+	msg := buildEscalationReply(EscalationAlert{
+		Rung: "L2", RungRole: "SaaS SRE L2 Support", IncidentRef: "INC0100914",
+		RecipientName: "Jane Doe", Firing: "2026-10-13 15:26 IST", ThreadKey: "incident-abc",
+	})
+	card := msg.CardsV2[0].Card
+	if card.Header.Title != "Escalated to L2" || card.Header.Subtitle != "INC0100914" {
+		t.Errorf("header = %q / %q", card.Header.Title, card.Header.Subtitle)
+	}
+	body := card.Sections[0].Widgets[0].TextParagraph.Text
+	if body != "<b>SaaS SRE L2 Support</b><br>Calling Jane Doe (2026-10-13 15:26 IST)" {
+		t.Errorf("body = %q", body)
+	}
+	if msg.Thread == nil || msg.Thread.ThreadKey != "incident-abc" {
+		t.Errorf("thread = %+v, want the incident card's thread", msg.Thread)
+	}
+	withInstruction := buildEscalationReply(EscalationAlert{Rung: "L2", RungRole: "SaaS SRE L2 Support", Instruction: "Assign <it> to yourself."}).CardsV2[0].Card.Sections[0].Widgets[0].TextParagraph.Text
+	if !strings.Contains(withInstruction, "Assign &lt;it&gt; to yourself.") {
+		t.Errorf("reply = %q, want the escaped stop instruction", withInstruction)
+	}
+	if title := buildEscalationReply(EscalationAlert{Rung: "L1"}).CardsV2[0].Card.Header.Title; title != "Notifying L1" {
+		t.Errorf("first rung title = %q, want Notifying L1", title)
+	}
+}
+
 // Every one of them is absent on some rung or some deployment: a configured
 // roster resolves no rota window, and only the first rung has an on-call
 // name. A card must not carry an empty label for any of them.
 func TestBuildEscalationCard_OmitsContextItDoesNotHave(t *testing.T) {
 	body := buildEscalationCard(EscalationAlert{
-		Rung: "LEVEL_2", Priority: "P0", IncidentRef: "WSO2-1042",
+		Rung: "L3", Priority: "P0", IncidentRef: "WSO2-1042",
 	}).CardsV2[0].Card.Sections[0].Widgets[0].TextParagraph.Text
 
 	for _, absent := range []string{"team ", "rotation ", "Reported ", "This rung ", "On call was"} {

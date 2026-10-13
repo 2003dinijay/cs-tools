@@ -279,7 +279,7 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 
 	alert := notifications.EscalationAlert{
 		Audience:      room,
-		Rung:          call.Level.String(),
+		Rung:          call.Level.Label(),
 		RungRole:      rungRole(call.Level, t.Routing),
 		Attempt:       call.Ordinal,
 		Priority:      t.Priority,
@@ -296,12 +296,9 @@ func (n chatNotifier) Deliver(ctx context.Context, plan Plan, call PlannedCall) 
 		Elapsed:     elapsedSince(t.At, call.At),
 		NextRung:    nextRung,
 		NextIn:      nextIn,
-		// One thread per incident, so a space shows an escalation unfolding
-		// in one conversation instead of scattering its rungs through
-		// everything else being posted. The incident id is the natural key:
-		// stable, unique, and already the identity every other part of the
-		// ladder is filed under.
-		ThreadKey: "incident-escalation-" + t.IncidentID,
+		// An incident's rungs reply under its "Incident Reported" card, so the space shows the escalation in that one thread.
+		ThreadKey: t.chatThreadKey(),
+		Reply:     !t.isCase(),
 		Team:      t.Team,
 		// Both stamps in IST, because every shift boundary this ladder routes
 		// by is expressed in it. Rendering either in the reader's own zone

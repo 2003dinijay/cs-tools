@@ -47,7 +47,7 @@ type EscalationAlert struct {
 	// card was dropped. The escalation ladder sets it from its own
 	// configuration (paging-alert.yaml chat.audience).
 	Audience string
-	// Rung is the level being contacted, e.g. "LEVEL_2".
+	// Rung is the level being contacted, e.g. "L2".
 	Rung string
 	// RungRole names who that rung is, e.g. "ABT team leads".
 	RungRole string
@@ -82,7 +82,7 @@ type EscalationAlert struct {
 	// Empty means the ladder has only just started.
 	Elapsed string
 	// NextRung and NextIn say where this goes if nobody picks it up, e.g.
-	// "LEVEL_3" and "7m". Both empty on the final rung, which has nowhere
+	// "L3" and "7m". Both empty on the final rung, which has nowhere
 	// left to climb.
 	//
 	// These exist because a space flattens time. Cards arrive minutes apart
@@ -97,6 +97,8 @@ type EscalationAlert struct {
 	// conversation, so the space shows an escalation unfolding in one place
 	// instead of scattering it through everything else being posted.
 	ThreadKey string
+	// Reply renders the rung as a short reply under the incident's "Incident Reported" card, which already carries the incident's details.
+	Reply bool
 	// VoiceScript is what the call would say, word for word.
 	//
 	// The card carries it because the call often cannot be placed: a
@@ -156,7 +158,36 @@ func (c *GoogleChatClient) SendEscalationAlert(ctx context.Context, a Escalation
 	if strings.TrimSpace(a.Audience) == "" {
 		return fmt.Errorf("notifications: audience is required")
 	}
+	if a.Reply {
+		return c.sendCardToAudience(ctx, a.Audience, buildEscalationReply(a))
+	}
 	return c.sendCardToAudience(ctx, a.Audience, buildEscalationCard(a))
+}
+
+// buildEscalationReply is a rung as a reply under the incident card: the rung, who it is, who is called when, and how to stop it.
+func buildEscalationReply(a EscalationAlert) chatCardMessage {
+	lines := []string{caseAlertLine("<b>%s</b>", a.RungRole)}
+	if a.RecipientName != "" {
+		calling := caseAlertLine("Calling %s", a.RecipientName)
+		if a.Firing != "" {
+			calling += caseAlertLine(" (%s)", a.Firing)
+		}
+		lines = append(lines, calling)
+	}
+	// The instruction stays because on a chat-only ladder it is the only place the room learns how to stop the paging.
+	if a.Instruction != "" {
+		lines = append(lines, caseAlertLine(`<font color="#5F6368">%s</font>`, a.Instruction))
+	}
+	return chatCardMessage{
+		Thread: threadFor(a.ThreadKey),
+		CardsV2: []chatCardWrapper{{
+			CardID: "incident-escalation-rung",
+			Card: chatCard{
+				Header:   &chatCardHeader{Title: rungVerb(a.Rung) + " " + a.Rung, Subtitle: a.IncidentRef},
+				Sections: []chatCardSection{{Widgets: []chatCardWidget{{TextParagraph: &chatTextParagraph{Text: strings.Join(lines, "<br>")}}}}},
+			},
+		}},
+	}
 }
 
 // buildEscalationCard assembles the card, split from the send so its exact
@@ -174,6 +205,9 @@ func buildEscalationCard(a EscalationAlert) chatCardMessage {
 	if a.RecipientName != "" {
 		body.WriteString("<br>")
 		body.WriteString(caseAlertLine("Calling %s", a.RecipientName))
+		if a.Firing != "" {
+			body.WriteString(caseAlertLine(" (%s)", a.Firing))
+		}
 	}
 	body.WriteString("<br>")
 	body.WriteString(caseAlertLine(`<font color="#5F6368">Priority %s</font>`, a.Priority))
@@ -195,13 +229,13 @@ func buildEscalationCard(a EscalationAlert) chatCardMessage {
 		body.WriteString("<br>")
 		body.WriteString(`<font color="#B3261E">This is the final rung. Nothing escalates past it.</font>`)
 	}
-	if a.ReportedAt != "" || a.Firing != "" || a.OnCall != "" {
+	if a.ReportedAt != "" || (a.Firing != "" && a.RecipientName == "") || a.OnCall != "" {
 		body.WriteString("<br>")
 	}
 	if a.ReportedAt != "" {
 		body.WriteString(caseAlertLine(`<br><font color="#5F6368">Reported %s</font>`, a.ReportedAt))
 	}
-	if a.Firing != "" {
+	if a.Firing != "" && a.RecipientName == "" {
 		body.WriteString(caseAlertLine(`<br><font color="#5F6368">This rung %s</font>`, a.Firing))
 	}
 	if a.OnCall != "" {
@@ -271,19 +305,19 @@ func threadFor(key string) *chatThread {
 	return &chatThread{ThreadKey: key}
 }
 
-// rungVerb keeps the header honest about what LEVEL_0 is.
+// rungVerb keeps the header honest about what L1 (LEVEL_0) is.
 //
 // Section 3.0 calls it the notification level and says in as many words that
 // it is "represented as the initial escalation level (but not an actual
 // escalation level)" - it exists to tell the rotation an incident has arrived,
-// before any escalation has happened. A card announcing "escalated to LEVEL_0"
+// before any escalation has happened. A card announcing "Escalated to L1"
 // contradicts the document it implements, and tells a reader the incident has
 // already been through a rung it has not.
 func rungVerb(rung string) string {
-	if rung == "LEVEL_0" {
-		return "notifying"
+	if rung == "L1" {
+		return "Notifying"
 	}
-	return "escalated to"
+	return "Escalated to"
 }
 
 // escalationSeverityMark gives the header a glyph that reads at a glance in a

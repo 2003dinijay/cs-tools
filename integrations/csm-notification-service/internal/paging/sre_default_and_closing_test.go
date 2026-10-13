@@ -131,8 +131,8 @@ func TestUnansweredChat_PostsToTheTeamsOwnSpace(t *testing.T) {
 	if got := strings.Join(u.Called, ", "); got != "L1 a-l1, L2 a-l2, L3 r-l3" {
 		t.Errorf("called = %q; want the three rungs in order", got)
 	}
-	if u.ThreadKey != "incident-escalation-"+testIncidentID {
-		t.Errorf("thread = %q; want the ladder's own thread", u.ThreadKey)
+	if u.ThreadKey != "incident-"+testIncidentID {
+		t.Errorf("thread = %q; want the incident card's thread", u.ThreadKey)
 	}
 }
 
