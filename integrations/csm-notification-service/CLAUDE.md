@@ -429,9 +429,13 @@ stays in `sre.chat`; with `teams.abts` empty any named group counts as an SRE
 team. The call (and log) notifiers are always the ladder's own: a team's
 space contributes only its Chat notifier, so routing never decides whether a
 rung rings. Two or more spaces share that ONE call notifier (the rung rings its
-engineer once) and one `fanoutChat`: a rung's delivery is retried whole, call
-included, so a space that fails while another took the card counts as
-delivered (logged), and only a rung no space took is retried. The SME handoff
+engineer once) and one `fanoutChat`: a failed card is retried to every space
+at once, so a space that fails while another took the card counts as
+delivered (logged), and only a card no space took is retried. With
+`channel: both` the call alone decides whether a rung is retried; a card that
+fails transiently after the call went out is retried on its own
+(`LadderState.CardPending`), never re-dialling, for up to 15 minutes after the
+rung was due (`cardRetryWindow`); a rejected card is logged and dropped. The SME handoff
 message still goes by the group it left: a default group is never a SaaS SRE
 team, so it is never handed to SME.
 
