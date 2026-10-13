@@ -2610,14 +2610,15 @@ already use — no route path, request, or response shape changed.
   labels straight from Postgres's own enum catalog
   (`pg_enum`/`ListSeverities`) rather than hardcoding them, so it can never
   drift from the migration that defines the type.
-  `SyncProductVulnerabilities` has **no Postgres equivalent** and always
-  returns a `ServiceUnavailableError` on that data source: its full-replace
-  semantics (delete anything absent from the submitted set, upsert
-  everything present) need a stable external join key with a
-  database-enforced uniqueness guarantee, and `product_vulnerability` has no
-  `UNIQUE` constraint on any column other than its own generated `id` —
-  adding one is a schema change, out of scope for wiring up the existing
-  table's read queries.
+  `SyncProductVulnerabilities` delegates to ServiceNow when configured
+  (via `NewProductVulnerabilityServiceWithSNSync`), falling back to a
+  `ServiceUnavailableError` when no ServiceNow integration is present:
+  Postgres cannot satisfy its full-replace semantics (delete anything absent
+  from the submitted set, upsert everything present) without a stable external
+  join key with a database-enforced uniqueness guarantee, and
+  `product_vulnerability` has no `UNIQUE` constraint on any column other than
+  its own generated `id`. When `db != nil`, all read queries are served from
+  Postgres regardless of `DATA_SOURCE`.
 - **Time cards**: like comments, the Postgres path has no inbound-auth
   layer to forward a caller's identity through, so `CreateTimeCard`/
   `UpdateTimeCard`/`DeleteTimeCard` resolve the caller's user id from
