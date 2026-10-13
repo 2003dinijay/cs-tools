@@ -36,7 +36,10 @@ const (
 	// PermViewOperations is reading the Operations area: incidents, change
 	// requests, problems, incident tasks, outages and their alerts. Narrower than
 	// PermView on purpose: a view-only role sees cases and customers but not
-	// operations, which support-portal-lite never exposed to them.
+	// operations, which support-portal-lite never exposed to them. Held by
+	// cs_engineer, admin, and security_team (read-only -- see
+	// AccessConfig.SecurityTeam's own doc comment); every other role, Viewer
+	// included, is denied.
 	PermViewOperations
 	// PermTimeCardsAndUpdates is the Time Cards and Updates areas: every time-card
 	// route (search, create, update, delete) and the update-level lookups. Held by
@@ -82,13 +85,16 @@ const (
 	// cases (POST /cases/search and GET /cases/{id}, type-checked inside
 	// CaseHandler itself — see its own doc comment for why a route-level
 	// permission alone can't express this) and both /products/vulnerabilities
-	// routes. Admin, cs_engineer and comment_updater only — every other
-	// role, including plain viewer/escalator/attachment_downloader, is
-	// denied even though they hold PermView, since this is deliberately
+	// routes. Admin, cs_engineer, comment_updater and security_team only —
+	// every other role, including plain viewer/escalator/attachment_downloader,
+	// is denied even though they hold PermView, since this is deliberately
 	// narrower than the general case/product-data access PermView otherwise
 	// grants. comment_updater holds it because that role is also used for
 	// staff who triage security reports but don't otherwise hold
-	// cs_engineer.
+	// cs_engineer. security_team is the dedicated read-only role for the
+	// security team itself (see AccessConfig.SecurityTeam's own doc
+	// comment) — it holds this and PermViewOperations but never PermWrite,
+	// so Security Center and Operations render for it, read-only.
 	PermViewSecurityCenter
 	// PermViewerAccess is the blanket audience gate for every SupportPortalLite
 	// (Sales/Solutions-Architecture) route — replacing the old
@@ -294,6 +300,18 @@ type AccessConfig struct {
 	// hold this permission regardless (same "unconfigured is a normal
 	// state" reasoning as WorknoteCreator's own doc comment).
 	CommentUpdater []string
+	// SecurityTeam grants PermView, PermViewOperations and
+	// PermViewSecurityCenter -- the dedicated role for security-team staff
+	// who need to see the Operations area and Security Center (security
+	// reports + vulnerabilities) but hold no write access of any kind: it
+	// never grants PermWrite, PermEscalate, PermApproveTimeCard or any other
+	// state-changing permission, so both sections render read-only for a
+	// holder with no other role. Deliberately separate from comment_updater
+	// (which also holds PermViewSecurityCenter, for staff who triage
+	// security reports while also handling comments) and from cs_engineer/
+	// admin (full access) -- this role's whole purpose is "read-only,
+	// Operations and Security Center only."
+	SecurityTeam []string
 }
 
 // AccessGuard authorises a request from the roles on the caller's validated
@@ -354,7 +372,12 @@ type portalRole struct {
 // does not hold that second one -- and PermViewSecurityCenter, which
 // cs_engineer and admin both already hold anyway. See
 // PermUpdateDeleteComment's and PermUpdateDeleteAnyComment's own doc comments
-// for what each actually controls.
+// for what each actually controls. security_team is narrower still, and in a
+// different direction from every role above: it implies View, PermViewOperations
+// and PermViewSecurityCenter and nothing else -- not PermWrite, not PermEscalate,
+// not any other state-changing permission -- so both areas it can see render
+// read-only for a holder with no other role. See AccessConfig.SecurityTeam's own
+// doc comment.
 func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 	build := func(lists ...[]string) map[string]struct{} {
 		set := make(map[string]struct{})
@@ -379,18 +402,20 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			{"worknote_creator", build(cfg.WorknoteCreator)},
 			{"announcement_creator", build(cfg.AnnouncementCreator)},
 			{"comment_updater", build(cfg.CommentUpdater)},
+			{"security_team", build(cfg.SecurityTeam)},
 		},
 		allowed: map[Permission]map[string]struct{}{
 			PermView: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
-				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner),
-			PermViewOperations:      build(cfg.CsEngineer, cfg.Admin),
+				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner,
+				cfg.SecurityTeam),
+			PermViewOperations:      build(cfg.CsEngineer, cfg.Admin, cfg.SecurityTeam),
 			PermTimeCardsAndUpdates: build(cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover),
 			PermEscalate:            build(cfg.Escalator, cfg.CsEngineer, cfg.Admin),
 			PermDownloadAttachment:  build(cfg.AttachmentDownloader, cfg.CsEngineer, cfg.Admin),
 			PermWrite:               build(cfg.CsEngineer, cfg.Admin),
 			PermViewAllDashboards:   build(cfg.CsEngineer, cfg.Admin),
 			PermAdmin:               build(cfg.Admin),
-			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin, cfg.CommentUpdater),
+			PermViewSecurityCenter:  build(cfg.CsEngineer, cfg.Admin, cfg.CommentUpdater, cfg.SecurityTeam),
 			PermApproveTimeCard:     build(cfg.TimecardApprover, cfg.Admin),
 			// Viewer, unconditionally (no cs_engineer exclusion) -- see
 			// PermViewerAccess's own doc comment for why.
@@ -402,7 +427,7 @@ func NewAccessGuard(cfg AccessConfig) *AccessGuard {
 			// just PermView with SalesSolutions folded in.
 			PermViewSharedEntity: build(cfg.Viewer, cfg.Escalator, cfg.AttachmentDownloader,
 				cfg.UsageMetricsViewer, cfg.CsEngineer, cfg.Admin, cfg.TimecardApprover, cfg.DashboardDesigner,
-				cfg.SalesSolutions),
+				cfg.SalesSolutions, cfg.SecurityTeam),
 			// CsEngineer, Admin, and the dedicated role grant this directly
 			// (no separate PermViewerAccess layer, and Viewer itself is
 			// deliberately NOT included) -- see PermUsageMetricsViewer's own
