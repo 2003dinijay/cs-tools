@@ -458,6 +458,7 @@ func main() {
 	route("GET /tags/search", handler.PermView, caseHandler.SearchTagsQuery)
 	route("POST /cases/search", handler.PermViewSharedEntity, caseHandler.SearchCases)
 	route("POST /cases/aggregate", handler.PermView, caseHandler.AggregateCases)
+	route("POST /cases/volume-trend", handler.PermView, caseHandler.VolumeTrend)
 	route("POST /cases/feedback/search", handler.PermView, caseHandler.SearchFeedback)
 	route("POST /cases/feedback/aggregate", handler.PermView, caseHandler.AggregateFeedback)
 	route("GET /dashboards", handler.PermView, dashboardHandler.GetDashboards)

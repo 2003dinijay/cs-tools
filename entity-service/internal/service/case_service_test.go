@@ -51,6 +51,7 @@ func (alwaysUnrestrictedAccess) ResolveScope(context.Context) (AccessScope, erro
 // repository, not merely that the repository ignores the field.
 type stubCaseRepo struct {
 	aggregateCases                func(ctx context.Context, req domain.SearchCasesRequest, groupBy string) ([]domain.AggregateBucket, error)
+	caseVolumeTrend               func(ctx context.Context, req domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error)
 	searchCases                   func(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error)
 	createCaseAttachment          func(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error)
 	createCaseAttachmentFromSN    func(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string) (domain.Attachment, error)
@@ -125,6 +126,12 @@ func (s *stubCaseRepo) AggregateCases(ctx context.Context, req domain.SearchCase
 		return s.aggregateCases(ctx, req, groupBy)
 	}
 	panic("AggregateCases called unexpectedly")
+}
+func (s *stubCaseRepo) CaseVolumeTrend(ctx context.Context, req domain.SearchCasesRequest, days []string, _ repository.SearchScope) (map[string]domain.CaseVolumeDayCount, error) {
+	if s.caseVolumeTrend != nil {
+		return s.caseVolumeTrend(ctx, req, days)
+	}
+	panic("CaseVolumeTrend called unexpectedly")
 }
 func (s *stubCaseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope repository.SearchScope) ([]domain.SearchCaseView, int, error) {
 	if s.searchCases != nil {
@@ -5423,5 +5430,222 @@ func TestCaseService_AggregateCases_GroupsAndCapsBuckets(t *testing.T) {
 	}
 	if _, err := svc.AggregateCases(ctx, domain.AggregateCasesRequest{GroupBy: "bogus"}); err == nil {
 		t.Error("expected a ValidationError for an unknown groupBy")
+	}
+}
+
+// stubVolumeTrendCache is a minimal in-memory fake of service.CaseVolumeTrendCache,
+// recording every Set call's ttl so tests can assert the midnight-capped/
+// stable split.
+type stubVolumeTrendCache struct {
+	mu       sync.Mutex
+	data     map[string]domain.CaseVolumeDayCount
+	setCalls []struct {
+		day string
+		ttl time.Duration
+	}
+}
+
+func newStubVolumeTrendCache() *stubVolumeTrendCache {
+	return &stubVolumeTrendCache{data: map[string]domain.CaseVolumeDayCount{}}
+}
+
+func (c *stubVolumeTrendCache) key(filtersKey, day string) string { return filtersKey + "|" + day }
+
+func (c *stubVolumeTrendCache) GetMany(_ context.Context, filtersKey string, days []string) map[string]domain.CaseVolumeDayCount {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := map[string]domain.CaseVolumeDayCount{}
+	for _, d := range days {
+		if v, ok := c.data[c.key(filtersKey, d)]; ok {
+			out[d] = v
+		}
+	}
+	return out
+}
+
+func (c *stubVolumeTrendCache) Set(_ context.Context, filtersKey, day string, dc domain.CaseVolumeDayCount, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data[c.key(filtersKey, day)] = dc
+	c.setCalls = append(c.setCalls, struct {
+		day string
+		ttl time.Duration
+	}{day, ttl})
+}
+
+func TestCaseService_CaseVolumeTrend_ColdCacheQueriesOnceAndCachesWithAsymmetricTTLs(t *testing.T) {
+	var gotDays []string
+	repo := &stubCaseRepo{caseVolumeTrend: func(_ context.Context, _ domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error) {
+		gotDays = append([]string{}, days...)
+		out := make(map[string]domain.CaseVolumeDayCount, len(days))
+		for i, d := range days {
+			out[d] = domain.CaseVolumeDayCount{Opened: i + 1, Closed: i}
+		}
+		return out, nil
+	}}
+	volCache := newStubVolumeTrendCache()
+	svc := WithCaseVolumeTrendCache(NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil), volCache)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	resp, err := svc.CaseVolumeTrend(ctx, domain.CaseVolumeTrendRequest{Days: 3})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Days != 3 || len(resp.Series) != 2 {
+		t.Fatalf("got days=%d series=%d, want 3/2", resp.Days, len(resp.Series))
+	}
+	if len(gotDays) != 3 {
+		t.Fatalf("repo.CaseVolumeTrend called with %d days, want exactly 3 (one bulk call)", len(gotDays))
+	}
+	todayKey := time.Now().UTC().Format("2006-01-02")
+	sawFresh, sawStable := false, false
+	for _, c := range volCache.setCalls {
+		if c.day == todayKey {
+			// Capped at time left until UTC midnight, not a flat duration --
+			// bounded above by 24h and must be strictly positive. The exact
+			// value depends on the instant the service itself called
+			// time.Now(), a few nanoseconds before this assertion runs, so
+			// this checks the bound rather than pinning an exact duration.
+			if c.ttl <= 0 || c.ttl > 24*time.Hour {
+				t.Errorf("today's TTL = %v, want (0, 24h]", c.ttl)
+			}
+			sawFresh = true
+		} else {
+			if c.ttl != caseVolumeTrendStableTTL {
+				t.Errorf("past day %s's TTL = %v, want the stable TTL %v", c.day, c.ttl, caseVolumeTrendStableTTL)
+			}
+			sawStable = true
+		}
+	}
+	if !sawFresh || !sawStable {
+		t.Errorf("expected both a midnight-capped (today) and a stable-TTL (past day) cache write, sawFresh=%v sawStable=%v", sawFresh, sawStable)
+	}
+}
+
+func TestTTLUntilNextUTCMidnight(t *testing.T) {
+	tests := []struct {
+		name string
+		now  time.Time
+		want time.Duration
+	}{
+		{"just after midnight", time.Date(2026, 10, 13, 0, 0, 1, 0, time.UTC), 23*time.Hour + 59*time.Minute + 59*time.Second},
+		{"just before midnight", time.Date(2026, 10, 13, 23, 59, 59, 0, time.UTC), time.Second},
+		{"midday", time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC), 12 * time.Hour},
+		{"exactly midnight", time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC), 24 * time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ttlUntilNextUTCMidnight(tt.now); got != tt.want {
+				t.Errorf("ttlUntilNextUTCMidnight(%v) = %v, want %v", tt.now, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCaseService_CaseVolumeTrend_WarmCacheSkipsTheRepository(t *testing.T) {
+	repo := &stubCaseRepo{} // caseVolumeTrend left nil: panics if called
+	volCache := newStubVolumeTrendCache()
+	svc := WithCaseVolumeTrendCache(NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil), volCache)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	// Prime the cache for every day a 2-day window will ask for, exactly as
+	// CaseVolumeTrend itself would compute them.
+	today := time.Now().UTC()
+	filtersKey := "{}"
+	for i := 0; i < 2; i++ {
+		day := today.AddDate(0, 0, -i).Format("2006-01-02")
+		volCache.Set(ctx, filtersKey, day, domain.CaseVolumeDayCount{Opened: 1, Closed: 1}, time.Hour)
+	}
+
+	if _, err := svc.CaseVolumeTrend(ctx, domain.CaseVolumeTrendRequest{Days: 2}); err != nil {
+		t.Fatalf("unexpected error (repo.CaseVolumeTrend must not have been called): %v", err)
+	}
+}
+
+func TestCaseService_CaseVolumeTrend_PartialCacheHitQueriesOnlyTheMissingDays(t *testing.T) {
+	today := time.Now().UTC()
+	yesterday := today.AddDate(0, 0, -1).Format("2006-01-02")
+	dayBefore := today.AddDate(0, 0, -2).Format("2006-01-02")
+
+	var gotDays []string
+	repo := &stubCaseRepo{caseVolumeTrend: func(_ context.Context, _ domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error) {
+		gotDays = append([]string{}, days...)
+		out := make(map[string]domain.CaseVolumeDayCount, len(days))
+		for _, d := range days {
+			out[d] = domain.CaseVolumeDayCount{Opened: 9, Closed: 9}
+		}
+		return out, nil
+	}}
+	volCache := newStubVolumeTrendCache()
+	svc := WithCaseVolumeTrendCache(NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil), volCache)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	// Pre-cache the two oldest days of a 3-day window; only "today" is missing.
+	filtersKey := "{}"
+	volCache.Set(ctx, filtersKey, dayBefore, domain.CaseVolumeDayCount{Opened: 1}, time.Hour)
+	volCache.Set(ctx, filtersKey, yesterday, domain.CaseVolumeDayCount{Opened: 2}, time.Hour)
+
+	if _, err := svc.CaseVolumeTrend(ctx, domain.CaseVolumeTrendRequest{Days: 3}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gotDays) != 1 || gotDays[0] != today.Format("2006-01-02") {
+		t.Fatalf("repo.CaseVolumeTrend called with days=%v, want exactly [%s]", gotDays, today.Format("2006-01-02"))
+	}
+}
+
+func TestCaseService_CaseVolumeTrend_ValidatesDays(t *testing.T) {
+	repo := &stubCaseRepo{caseVolumeTrend: func(_ context.Context, _ domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error) {
+		out := make(map[string]domain.CaseVolumeDayCount, len(days))
+		for _, d := range days {
+			out[d] = domain.CaseVolumeDayCount{}
+		}
+		return out, nil
+	}}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	// Days omitted defaults to 30.
+	resp, err := svc.CaseVolumeTrend(ctx, domain.CaseVolumeTrendRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Days != defaultCaseVolumeTrendDays {
+		t.Errorf("Days = %d, want the default %d", resp.Days, defaultCaseVolumeTrendDays)
+	}
+
+	for _, days := range []int{-1, 0 - 1, maxCaseVolumeTrendDays + 1} {
+		if _, err := svc.CaseVolumeTrend(ctx, domain.CaseVolumeTrendRequest{Days: days}); err == nil {
+			t.Errorf("days=%d: expected a ValidationError", days)
+		}
+	}
+}
+
+// Regression guard: this endpoint's own cache (see CLAUDE.md, "Deliberately
+// NOT keyed by caller identity") is keyed only by filters, never by caller
+// scope -- safe only because every caller is Unrestricted. A restricted
+// caller must never reach the repository at all: a scope-filtered result
+// cached under a scope-independent key would leak across callers with
+// different scopes in either direction on the next request for the same
+// filters. Same "repository must never even be reached" guard as
+// TestCaseService_GetCaseFeedback_RejectsExternalCaller.
+func TestCaseService_CaseVolumeTrend_RejectsExternalCaller(t *testing.T) {
+	reached := false
+	repo := &stubCaseRepo{caseVolumeTrend: func(_ context.Context, _ domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error) {
+		reached = true
+		out := make(map[string]domain.CaseVolumeDayCount, len(days))
+		for _, d := range days {
+			out[d] = domain.CaseVolumeDayCount{}
+		}
+		return out, nil
+	}}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, stubAccess{scope: AccessScope{Unrestricted: false}}, nil)
+
+	_, err := svc.CaseVolumeTrend(context.Background(), domain.CaseVolumeTrendRequest{})
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("expected ForbiddenError, got %v", err)
+	}
+	if reached {
+		t.Fatal("CaseVolumeTrend reached the repository for a non-internal caller")
 	}
 }

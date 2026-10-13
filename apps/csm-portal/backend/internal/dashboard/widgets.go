@@ -83,6 +83,15 @@ const (
 	ShapeList  Shape = "list"  // top-N matching records
 	ShapePie   Shape = "pie"   // one search per Slices entry (or one server-side aggregation via GroupBy), each resolved via its own total — see PieSlice and GroupByConfig
 	ShapeBar   Shape = "bar"   // same resolution as ShapePie; differs only in how the frontend renders the resolved data
+	// ShapeLine is a fixed, two-series day-bucketed trend chart ("Opened" vs
+	// "Closed" case counts per day) -- deliberately narrow, unlike pie/bar's
+	// open-ended Slices/GroupBy config: it backs exactly one chart, the Case
+	// Summary dashboard's case-volume trend, not a platform. Only meaningful
+	// for ResourceCase; the frontend resolves it with one call to
+	// POST /cases/volume-trend (Query as the base filters, Days as the
+	// window size), not the generic per-ResourceType /search endpoint every
+	// other shape uses.
+	ShapeLine Shape = "line"
 )
 
 // GroupByConfig configures a Shape "pie"/"bar" widget to resolve via a single
@@ -126,6 +135,18 @@ type GroupByConfig struct {
 	// remainder bucket. Omitted uses "Others". Meaningless when Bucket is
 	// set, same as MaxGroups.
 	OthersLabel string `json:"othersLabel,omitempty"`
+	// LinkResourceType opts a Field-grouped (never Bucket-grouped — see the
+	// registry's own validation) widget into sending each bucket's
+	// click-through to that OTHER ResourceType's own detail page (by the
+	// bucket's own key, e.g. an account UUID for Field "account") instead of
+	// the widget's own ResourceType's list page — the one case this exists
+	// for today is "cases grouped by account" linking to the account's own
+	// page rather than a cases list filtered by that account. Omitted is a
+	// no-op: every existing groupBy widget keeps navigating to its own
+	// ResourceType's list, exactly as before this field existed. Resolved
+	// entirely client-side, same as the rest of this type — this layer only
+	// validates that it names a real ResourceType.
+	LinkResourceType ResourceType `json:"linkResourceType,omitempty"`
 }
 
 // PieSlice is one wedge of a Shape "pie" widget. The caller resolves its
@@ -261,6 +282,12 @@ type WidgetTemplate struct {
 	// no-op -- this backend only passes it through, exactly like
 	// InlineDrilldown.
 	InlineLabels bool `json:"inlineLabels,omitempty"`
+	// Days is only meaningful for Shape line: the trailing window size (in
+	// days, ending today) POST /cases/volume-trend should return. Omitted/
+	// zero defers to that endpoint's own default (30); the registry rejects
+	// a value outside 1-90 at load time, the same range the endpoint itself
+	// enforces.
+	Days int `json:"days,omitempty"`
 
 	// legacyFilters holds a pre-rename config's "filters" key so
 	// migrateLegacyWidgetKeys can move it into Query. Unexported so it can

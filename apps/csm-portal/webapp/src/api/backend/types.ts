@@ -4412,8 +4412,11 @@ export type BeWidgetResourceType =
  * resolve the same way `count` does, just once per slice — see
  * {@link BeDashboardWidget.slices} — differing only in how the frontend
  * renders the resolved data (wedges vs. bars), not in how it's fetched.
+ * `line` is its own fixed resolution path — see {@link BeDashboardWidget.days}
+ * and `useCaseVolumeTrendData` — always two named series (Opened/Closed),
+ * never slice/groupBy configured.
  */
-export type BeWidgetShape = "count" | "list" | "pie" | "bar";
+export type BeWidgetShape = "count" | "list" | "pie" | "bar" | "line";
 
 /** Palette key a dashboard config can use to color a pie slice — the same
  * vocabulary `WidgetResourceConfig.iconColor` already uses elsewhere in this
@@ -4493,6 +4496,17 @@ export interface BeDashboardGroupByConfig {
    * `othersCount`. Defaults to `"Others"` when omitted. Meaningless when
    * `bucket` is set, same as `maxGroups`. */
   othersLabel?: string;
+  /** Opts this widget into sending each bucket's click-through to THIS
+   * other resourceType's own detail page (by the bucket's own `key` — e.g.
+   * an account UUID for `field: "account"`) instead of the widget's own
+   * `resourceType`'s list page filtered to that bucket. The one case this
+   * exists for today: "cases grouped by account" linking each bar to that
+   * account's own page rather than a cases list filtered by it. Backend-
+   * enforced at config-load time to only ever accompany `field`, never
+   * `bucket` (a case-feedback date/rating bucket has no detail page to link
+   * to). Omitted is a no-op — every existing groupBy widget keeps its
+   * original list-page click-through unchanged. */
+  linkResourceType?: BeWidgetResourceType;
 }
 
 /** One bucket of a `POST /{resourceType}/aggregate` response. */
@@ -4690,6 +4704,35 @@ export interface BeDashboardWidget {
    * a no-op — every existing pie widget's donut+legend rendering is
    * unchanged. See `DashboardPieChart`'s own `inlineLabels` prop. */
   inlineLabels?: boolean;
+  /** Only meaningful for shape "line": how many trailing days (ending
+   * today, UTC) the two-series Opened/Closed trend covers. Defaults to 30
+   * on the backend when omitted; the backend's own `/cases/volume-trend`
+   * endpoint caps this at 90 — a widget configured above that cap fails
+   * dashboard-config validation at load time, not at render time. */
+  days?: number;
+}
+
+/** One day's point in a `shape: "line"` widget's resolved trend — see
+ * {@link BeCaseVolumeTrendResponse}. */
+export interface BeCaseVolumeTrendPoint {
+  /** `YYYY-MM-DD`, UTC. */
+  date: string;
+  count: number;
+}
+
+/** One of the two fixed series ("Opened"/"Closed") in a `shape: "line"`
+ * widget's resolved trend. */
+export interface BeCaseVolumeTrendSeries {
+  label: string;
+  points: BeCaseVolumeTrendPoint[];
+}
+
+/** Response of `POST /cases/volume-trend` — the sole data source for a
+ * `shape: "line"` widget. Always exactly two series, in a fixed order
+ * (Opened, then Closed); every series carries the same set of dates. */
+export interface BeCaseVolumeTrendResponse {
+  days: number;
+  series: BeCaseVolumeTrendSeries[];
 }
 
 /**

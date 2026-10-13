@@ -774,8 +774,13 @@ var validWidgetResourceTypes = map[ResourceType]bool{
 }
 
 var validWidgetShapes = map[Shape]bool{
-	ShapeCount: true, ShapeList: true, ShapePie: true, ShapeBar: true,
+	ShapeCount: true, ShapeList: true, ShapePie: true, ShapeBar: true, ShapeLine: true,
 }
+
+// maxWidgetLineDays mirrors POST /cases/volume-trend's own upper bound
+// (entity-service's maxCaseVolumeTrendDays) -- kept in sync by hand, same as
+// validGroupByBuckets below for its own endpoint's enum.
+const maxWidgetLineDays = 90
 
 // validGroupByBuckets are the legal values of GroupByConfig.Bucket -- the
 // same enum POST /cases/feedback/aggregate documents on the entity-service
@@ -822,8 +827,8 @@ func validateWidgets(d Dashboard, source string) error {
 			return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: unknown \"resourceType\" %q", source, d.ID, w.ID, w.ResourceType)
 		}
 		if !validWidgetShapes[w.Shape] {
-			return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: unknown \"shape\" %q; expected one of %q, %q, %q, %q",
-				source, d.ID, w.ID, w.Shape, ShapeCount, ShapeList, ShapePie, ShapeBar)
+			return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: unknown \"shape\" %q; expected one of %q, %q, %q, %q, %q",
+				source, d.ID, w.ID, w.Shape, ShapeCount, ShapeList, ShapePie, ShapeBar, ShapeLine)
 		}
 		if w.GridWidth < 1 || w.GridWidth > 12 {
 			return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: \"gridWidth\" is %d; it is a column count out of 12 and must be between 1 and 12",
@@ -850,6 +855,26 @@ func validateWidgets(d Dashboard, source string) error {
 			case hasBucket && !validGroupByBuckets[w.GroupBy.Bucket]:
 				return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: unknown \"groupBy.bucket\" %q; expected one of \"day\", \"week\", \"month\" (time buckets), \"rating\", \"reasons_very_dissatisfied\", \"reasons_dissatisfied\", \"reasons_neutral\", \"reasons_satisfied\", \"reasons_very_satisfied\" (categorical buckets)",
 					source, d.ID, w.ID, w.GroupBy.Bucket)
+			}
+			if w.GroupBy.LinkResourceType != "" {
+				if !validWidgetResourceTypes[w.GroupBy.LinkResourceType] {
+					return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: unknown \"groupBy.linkResourceType\" %q",
+						source, d.ID, w.ID, w.GroupBy.LinkResourceType)
+				}
+				if hasBucket {
+					return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: \"groupBy.linkResourceType\" is only meaningful with \"groupBy.field\", not \"groupBy.bucket\"",
+						source, d.ID, w.ID)
+				}
+			}
+		}
+		if w.Shape == ShapeLine {
+			if w.ResourceType != ResourceCase {
+				return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: shape %q only supports resourceType %q, got %q",
+					source, d.ID, w.ID, ShapeLine, ResourceCase, w.ResourceType)
+			}
+			if w.Days < 0 || w.Days > maxWidgetLineDays {
+				return fmt.Errorf("dashboard definitions: %s (id %q): widget %q: \"days\" is %d; it must be between 1 and %d (or omitted for the default)",
+					source, d.ID, w.ID, w.Days, maxWidgetLineDays)
 			}
 		}
 	}

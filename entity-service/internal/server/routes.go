@@ -64,6 +64,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	userRepo := repository.NewUserRepository(db)
 	userSvc := service.NewUserService(userRepo)
 
+	// The case-volume-trend cache behind POST /cases/volume-trend is a
+	// plain per-pod in-memory map -- deliberately not Redis-backed, even
+	// though Redis may be configured for the user cache right below. This
+	// endpoint's own cache entry is cheap to recompute (one bulk Postgres
+	// query for however many days are missing) and read-only/identical for
+	// every caller (see service.CaseVolumeTrendCache's own doc comment), so
+	// each pod simply computing and caching independently costs nothing
+	// worth a shared store's added complexity.
+	var volumeTrendCache service.CaseVolumeTrendCache = cache.NewInMemoryCaseVolumeTrendCache()
+
 	// The user cache in front of GET /users/{id} and GET /users/me, on when
 	// REDIS_URL or REDIS_ADDR is set (see internal/cache). Postgres-only:
 	// those routes are served by the ServiceNow handlers in servicenow mode.
@@ -71,18 +81,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// *cache.UserCache inside a non-nil one -- so the writers below can test
 	// it against nil.
 	var userCacheInvalidator service.UserCacheInvalidator
-	closeUserCache := func() {}
+	closeRedis := func() {}
 	if db != nil && cfg.HasRedis() {
 		rdb, err := cache.NewRedisClient(cfg)
 		if err != nil {
-			panic("user cache: " + err.Error())
+			panic("redis client: " + err.Error())
 		}
 		userCache := cache.NewUserCache(rdb, cfg.UserCacheTTL)
 		userSvc = service.NewCachedUserService(userSvc, userCache)
 		userCacheInvalidator = userCache
-		closeUserCache = func() {
+		closeRedis = func() {
 			if err := rdb.Close(); err != nil {
-				log.Printf("user cache: close redis client: %v", err)
+				log.Printf("redis: close client: %v", err)
 			}
 		}
 		log.Printf("user cache enabled (ttl %s)", cfg.UserCacheTTL)
@@ -948,6 +958,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// below), not for DataSourceServiceNow: that mode's CreateCase never
 		// reaches this service's Postgres data at all.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		// POST /cases/volume-trend's per-day cache -- Redis-backed or
+		// in-memory, see volumeTrendCache's own construction above.
+		activeCaseSvc = service.WithCaseVolumeTrendCache(activeCaseSvc, volumeTrendCache)
 		if snSLASearchDelegate != nil {
 			activeCaseSvc = service.WithSLASearchDelegate(activeCaseSvc, snSLASearchDelegate)
 		}
@@ -991,6 +1004,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// See the matching comment in the DataSourcePostgresServiceNowDualWrite
 		// case above.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		activeCaseSvc = service.WithCaseVolumeTrendCache(activeCaseSvc, volumeTrendCache)
 		if snSLASearchDelegate != nil {
 			activeCaseSvc = service.WithSLASearchDelegate(activeCaseSvc, snSLASearchDelegate)
 		}
@@ -1936,6 +1950,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /announcements/registry/rows", internalOnly(accessSvc, announcementRegistryHandler.SearchRegistryRows))
 	}
 	mux.HandleFunc("POST /cases/aggregate", caseHandler.AggregateCases)
+	mux.HandleFunc("POST /cases/volume-trend", caseHandler.CaseVolumeTrend)
 	mux.HandleFunc("POST /cases/feedback/search", feedbackHandler.SearchFeedback)
 	mux.HandleFunc("POST /cases/feedback/aggregate", feedbackHandler.AggregateFeedback)
 	mux.HandleFunc("POST /cases/{id}/comments", caseHandler.CreateCaseComment)
@@ -2244,7 +2259,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		}
 		// Last: the retry worker above can still be invalidating users
 		// until it has stopped.
-		closeUserCache()
+		closeRedis()
 	}
 
 	// PLG Customer Success Portal. Every repository, service, handler and route

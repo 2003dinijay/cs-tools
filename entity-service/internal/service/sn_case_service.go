@@ -2131,6 +2131,23 @@ func (s *snCaseService) GetCaseEtaSharedOn(ctx context.Context, caseID string) (
 	return s.pgFallback.GetCaseEtaSharedOn(ctx, caseID)
 }
 
+// CaseVolumeTrend implements CaseService. Unlike the pgFallback delegations
+// above, a missing day-bucketed total here has no safe "empty" fallback that
+// wouldn't mislead a dashboard chart into showing a flat zero trend -- so a
+// pure ServiceNow deployment with no Postgres pool (pgFallback nil) gets a
+// ServiceUnavailableError instead, the same posture
+// unavailableFeedbackService takes for the structurally identical
+// case-feedback trend. Day-bucketed case counts have no ServiceNow endpoint
+// to compute them from at all (see CaseRepository.CaseVolumeTrend, which
+// depends on Postgres-native date_trunc SQL), so under
+// DATA_SOURCE=postgres-servicenow-dual-write this simply delegates whole.
+func (s *snCaseService) CaseVolumeTrend(ctx context.Context, req domain.CaseVolumeTrendRequest) (domain.CaseVolumeTrendResponse, error) {
+	if s.pgFallback == nil {
+		return domain.CaseVolumeTrendResponse{}, &apierror.ServiceUnavailableError{Msg: "case volume trend is only supported for the Postgres data source"}
+	}
+	return s.pgFallback.CaseVolumeTrend(ctx, req)
+}
+
 func (s *snCaseService) GetCaseByID(ctx context.Context, id string) (domain.CaseView, error) {
 	token := middleware.UserIDTokenFromContext(ctx)
 

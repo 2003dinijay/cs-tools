@@ -64,6 +64,14 @@ func (c *CustomerEntityClient) AggregateCases(ctx context.Context, body []byte) 
 	return c.do(ctx, http.MethodPost, "/cases/aggregate", body)
 }
 
+// VolumeTrend calls POST /cases/volume-trend on the entity service: a
+// day-bucketed case-volume trend (opened vs. closed, one point per day over
+// a trailing window), for the Case Summary dashboard's trend chart. Response
+// is returned as raw JSON; typed response structs are deferred.
+func (c *CustomerEntityClient) VolumeTrend(ctx context.Context, body []byte) ([]byte, error) {
+	return c.do(ctx, http.MethodPost, "/cases/volume-trend", body)
+}
+
 // SearchFeedback calls POST /cases/feedback/search on the entity service:
 // search of case-feedback (satisfaction rating) records across cases,
 // filterable by case, accounts, and submission date range. Response is
