@@ -253,6 +253,26 @@ The change request create page and edit dialog share `useChangeRequestScope` (`f
 - The detail response's `category` is the enum value (or an `{id, name|label}` ref on older responses) — always read it through `changeRequestCategoryValue` / `changeRequestCategoryLabel`.
 - e2e: `tests/e2e/utils/fakeChangeRequestApi.ts` fakes the whole slice (projects, link-options with per-project contacts, create, PATCH, detail) with the backend's own validation (including the `customerGroupId` / `environmentIds` refusals), so the cascade, wire payload, 400 path and lifecycle are tested without creating records anywhere.
 
+### Change request tags: the case page's widget, dialog and hooks, not a copy
+
+`CsmChangeRequestDetailPage` shows a change request's `tags` (on
+`BeChangeRequestDetail`, the same shape as a case's) in the case page's own
+`TagsWidget` (`csm-cases/components/CaseDetailWidgets`), mounted under the
+Overview card, and adds one through the case page's `AddTagDialog` (whose
+type-ahead is `useSearchTags`, `POST /tags/search`). The writes are the case
+hooks themselves: `useAddCaseTag` / `useRemoveCaseTag` (`csm-cases/api/useCaseTags`)
+call `POST /cases/{id}/tags` / `DELETE /cases/{id}/tags/{tagId}`, which take a
+work item id, so they are given the change request's id and -- their one
+parameter added for this -- the detail query key to invalidate
+(`[CHANGE_REQUEST_DETAILS, id]`; the case detail key stays the default), so the
+chips follow a write. Do not fork the widget, the dialog or the hooks for
+another work item type: pass the id and the detail key. The widget is read-only
+without `canWrite` (no Tag button, no chip delete), and not rendered at all when
+the backend carried no `tags` array (another data source). Tags are staff
+bookkeeping -- the backend leaves them null on a customer's read -- and a change
+request's tag is never mirrored to the previous system. e2e: the fake API holds
+them (`seedTags`, `tags()`) behind the same case tag routes and `POST /tags/search`.
+
 ### The customer's part is fixed once approval is requested (Edit dialog, action bar)
 
 Who the customer is (the **Customer Project**, from which the read-only Customer Group is derived) and whether they are asked (the **Customer Approval** / **Customer Review** tick boxes) are fully editable only in the creation phase, the state **New**. The rule, a pure function of `(state, the stored tick box, whether the change has a project)` and therefore computed client-side in `features/csm-operations/utils/changeRequests.ts` exactly as entity-service decides it (the backend stays the authority and answers 400; its message still shows in the dialog's `saveError`):
@@ -421,7 +441,7 @@ interface BeDashboardWidget {
   description?: string;        // subtitle shown under displayName; not shape-specific by design
   resourceType: BeWidgetResourceType;  // "case" | "incident" | "change_request" | "account" | "project"
                                         // | "user" | "time_card" | "problem" | "product_vulnerability"
-  shape: BeWidgetShape;         // "count" | "list" | "pie" | "bar"
+  shape: BeWidgetShape;         // "count" | "list" | "pie" | "bar" | "line"
   gridWidth: number;            // 1-12, CSS grid columns this widget occupies
   filters: Record<string, unknown>;  // opaque; passed verbatim as the filters of that
                                       // resourceType's own POST /{resourceType}s/search
@@ -430,6 +450,7 @@ interface BeDashboardWidget {
   listLimit?: number;           // shape "list" only: how many rows to show
   slices?: BeDashboardPieSlice[]; // shapes "pie"/"bar" only: see below
   section?: string;            // groups widgets under a titled sub-heading — see below
+  days?: number;                // shape "line" only: size of the trailing day window; see below
 }
 
 interface BeDashboardPieSlice {
@@ -444,11 +465,12 @@ Every field beyond `widgetId`/`displayName`/`resourceType`/`shape`/`gridWidth`/`
 
 ### How each `shape` resolves its data
 
-All four shapes ultimately do the same thing — issue that `resourceType`'s own `POST /{resourceType}s/search` and read the response — they just differ in *how many* searches and what they do with the result(s):
+Four of the five shapes do the same thing — issue that `resourceType`'s own `POST /{resourceType}s/search` and read the response — they just differ in *how many* searches and what they do with the result(s). The fifth, `"line"`, is its own fixed resolution path against a dedicated endpoint instead:
 
 - **`count`** (`useWidgetData`, shape `"count"`): one search, `pagination.limit: 1`, reads `total`. Renders a big number, the whole tile is a link to that resource's own tab (`WIDGET_RESOURCE_CONFIG[resourceType].buildHref(filters)`).
 - **`list`** (`useWidgetData`, shape `"list"`): one search, `pagination.limit: listLimit ?? 4`, reads the item array. Renders through `WIDGET_LIST_RENDERERS[resourceType]` (`widgetListConfig.tsx`) — reuses each resource's **own real tab component** where one exists (e.g. `case` renders through the identical `CasesList` the Cases tab uses, via the same `mapCaseSearchViewToRow` mapper), falling back to the generic `DashboardMiniTable` otherwise. A "View more" link (shown only once `total > (listLimit ?? 4)`) goes to a dedicated, real, bookmarkable preview route (`DashboardWidgetPreviewPage`, `/dashboard/:previewSlug`) with pagination and search — not directly to the resource's own tab.
-- **`pie`** / **`bar`** (`useWidgetPieData`): one search **per `slices` entry**, each with `pagination.limit: 1`, merging that slice's own `filters` under the widget's base `filters` (slice keys win). `useWidgetPieData` is shape-agnostic — it just resolves N labeled totals; `DashboardPieChart`/`DashboardBarChart` (both under `components/`) render the same resolved data as wedges or bars respectively. Each wedge/bar/legend row navigates to that slice's own filtered destination the same way a `count` tile does. A total of `0` across every slice renders an empty state (inbox icon + "Nothing to show here right now"), not an all-grey chart.
+- **`pie`** / **`bar`** (`useWidgetPieData` for a hand-authored `slices` config, `useWidgetGroupByData` for a server-side `groupBy`): one search **per `slices` entry** (or one `POST /{resourceType}/aggregate` call for `groupBy`), each with `pagination.limit: 1`, merging that slice's own `filters` under the widget's base `filters` (slice keys win). Both hooks are shape-agnostic — they just resolve N labeled totals; `DashboardPieChart`/`DashboardBarChart` (both under `components/`) render the same resolved data as wedges or bars respectively. Each wedge/bar/legend row navigates to that slice's own filtered destination the same way a `count` tile does — **unless** `groupBy.linkResourceType` is set, in which case a named bucket's click-through goes instead to that OTHER `resourceType`'s own `detailHref`, keyed by the bucket's raw `key` (e.g. `groupBy: {field: "account", linkResourceType: "account"}` on a `case`-resourceType widget sends each bar to that account's own detail page — `/customers/accounts/{id}` — rather than the Cases list filtered to it). This only applies to a named `groupBy` bucket (never a hand-authored `slices` entry, and never the synthetic "Others" bucket, which carries no id of its own); backend-enforced at config-load time to only ever accompany `groupBy.field`, never `groupBy.bucket`. A total of `0` across every slice renders an empty state (inbox icon + "Nothing to show here right now"), not an all-grey chart.
+- **`line`** (`useCaseVolumeTrendData`, `resourceType: "case"` only — backend-enforced at config-load time, see `registry.go`'s own validation): one call to `POST /cases/volume-trend`, a dedicated case-volume-trend endpoint, **not** `/cases/search` — the widget's `filters` is forwarded verbatim as that request's own `filters`, alongside `days` (defaults to 30 when the widget omits it; the endpoint itself caps it at 90). The response is always exactly two named series ("Opened"/"Closed"), one point per day; the hook zips them by date into one `{date, opened, closed}` array for `DashboardLineChart` (`components/`, built on `@wso2/oxygen-ui-charts-react`'s own `LineChart`) to render as two lines, colored by this app's own semantic palette (`info` for Opened, `success` for Closed) rather than a chart-library hue rotation. Unlike `pie`/`bar`, a day's point is not a single filterable selector the case list's search can scope to, so there is no per-point click-through and no tile-level background click-through either — the `Card` is plain, non-link chrome, same posture as shape `"list"`. An all-zero trend (every point 0 across both series) renders the same empty state `pie`/`bar` do.
 
 `DashboardWidgetTile.tsx` is the per-widget dispatcher: it reads `shape` and picks which of the above to render, plus the shared per-widget loading/error states.
 

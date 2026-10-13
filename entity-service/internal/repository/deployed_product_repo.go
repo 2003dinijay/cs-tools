@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 	"time"
@@ -519,12 +520,22 @@ func (r *deployedProductRepo) SearchDeployedProducts(ctx context.Context, req do
 				}
 			}
 			dp.Category = lowercaseCategory(dp.Category)
+			// update_level_info is real, synced data, not something this
+			// service ever writes into that shape itself -- a live check
+			// found it stored as a JSON array (the only shape this decodes),
+			// but also, for a real minority of rows, a JSON object or a
+			// plain string. A row shaped like that must not fail the whole
+			// search: Updates is already documented elsewhere as "not
+			// populated... deliberately left nil rather than guessed at"
+			// for the exact same reason (no confirmed shape to trust), so a
+			// row this can't decode gets the identical nil treatment,
+			// logged rather than silently dropped.
 			if len(updateLevelInfo) > 0 {
 				var updates []domain.ProductUpdateEntry
 				if err := json.Unmarshal(updateLevelInfo, &updates); err != nil {
-					return fmt.Errorf("unmarshal deployed product update_level_info: %w", err)
-				}
-				if len(updates) > 0 {
+					slog.WarnContext(ctx, "search deployed products: update_level_info is not a JSON array, leaving Updates unset",
+						"deployedProductId", dp.ID, "error", err)
+				} else if len(updates) > 0 {
 					dp.Updates = updates
 				}
 			}

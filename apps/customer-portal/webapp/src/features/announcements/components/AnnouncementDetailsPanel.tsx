@@ -255,7 +255,11 @@ export default function AnnouncementDetailsPanel({
       </Paper>
 
       {projectId && caseId && (
-        <AnnouncementActivityPanel projectId={projectId} caseId={caseId} />
+        <AnnouncementActivityPanel
+          projectId={projectId}
+          caseId={caseId}
+          description={data.description}
+        />
       )}
 
       <Paper

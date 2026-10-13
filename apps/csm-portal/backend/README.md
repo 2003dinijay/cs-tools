@@ -299,6 +299,7 @@ configured at all, nobody can use the portal.
 | `AUTH_DASHBOARD_DESIGNER_ROLES` | view |
 | `AUTH_WORKNOTE_CREATOR_ROLES` | posting a `work_note`-type comment on a case only (`POST /cases/{id}/comments`) — not a customer-visible reply, and none of `write`'s other actions. `cs_engineer`/`admin` already grant this via `write`; a plain `viewer` does NOT (it is read-only), so give this role to anyone who should add work notes without full write; unset is a normal, supported state (like `AUTH_SALES_SOLUTIONS_ROLES`), not a misconfiguration — startup does not warn about it |
 | `AUTH_ANNOUNCEMENT_CREATOR_ROLES` | creating and sending a customer announcement — create, edit, dry run, submit, schedule, publish, add an update and record deliveries on `/announcement-requests`, plus listing requests (`POST /announcement-requests/search`, the Requests tab) and `POST /cases` with `type: announcement`; reading one request, and the published announcements list, stay open to everyone who can view. Required **in addition to** `write`: it narrows who may send customers an announcement, it does not make anyone a writer, and it implies no view access. `cs_engineer` does NOT grant it (that is the point); `admin` does. Marking a request as approved is not gated by it. Grants the `announcement_creator` portal role. Unset means only `admin` can create announcements, so startup warns about it |
+| `AUTH_SECURITY_TEAM_ROLES` | view, view_operations, security_center — read-only access to the Operations area and Security Center (security reports + vulnerabilities), and nothing else: never `write`, `escalate`, or any other state-changing permission, so both sections render read-only for a holder with no other role. Grants the `security_team` portal role. Unset means nobody holds it, so startup warns about it |
 
 A worknote-creator- or escalator-only caller is provisioned a platform `"user"` record
 on first use rather than needing to go through the admin "Add User" flow first: before
@@ -406,6 +407,8 @@ backend/
 - `GET /cases/{id}` — Get case by ID
 - `PATCH /cases/{id}` — Update a case (state, severity, workState, watchList, or assigneeEmail); optional `resolutionCode`, `cause`, `closeNotes` accepted alongside `state: closed` or `state: solution_proposed`
 - `POST /cases/search` — Search cases; filters include `searchQuery`, `types`, `states`, `severities`, `workStates` (`ongoing`/`paused`), `assignedUserIds`, `projectIds`, `deploymentIds`, `engagementTypes`, `issueTypes`, date ranges, `createdBy`, `createdByMe`
+- `POST /cases/aggregate` — Server-side aggregation of cases by a single field (e.g. `account`), top N + Others
+- `POST /cases/volume-trend` — Day-bucketed case-volume trend (`Opened`/`Closed` series, one point per day over a trailing window), for the Case Summary dashboard's trend chart
 - `POST /cases/{id}/comments` — Create a comment on a case
 - `POST /cases/{id}/comments/search` — Search comments on a case
 - `POST /attachments` — Upload an attachment (`referenceId`, `referenceType`, `name`, `type`, `file` in body)

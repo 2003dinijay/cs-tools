@@ -26,7 +26,7 @@ func TestLoadAccessConfig(t *testing.T) {
 		"AUTH_VIEWER_ROLES", "AUTH_ESCALATOR_ROLES",
 		"AUTH_ATTACHMENT_DOWNLOADER_ROLES", "AUTH_USAGE_METRICS_VIEWER_ROLES",
 		"AUTH_SUPPORT_ENGINEER_ROLES", "AUTH_ADMIN_ROLES", "AUTH_TIMECARD_APPROVER_ROLES",
-		"AUTH_DASHBOARD_DESIGNER_ROLES", "AUTH_ANNOUNCEMENT_CREATOR_ROLES",
+		"AUTH_DASHBOARD_DESIGNER_ROLES", "AUTH_ANNOUNCEMENT_CREATOR_ROLES", "AUTH_SECURITY_TEAM_ROLES",
 	}
 	resetEnv := func(t *testing.T) {
 		for _, name := range envs {
@@ -42,7 +42,7 @@ func TestLoadAccessConfig(t *testing.T) {
 			"AttachmentDownloader": got.AttachmentDownloader, "UsageMetricsViewer": got.UsageMetricsViewer,
 			"CsEngineer": got.CsEngineer, "Admin": got.Admin,
 			"TimecardApprover": got.TimecardApprover, "DashboardDesigner": got.DashboardDesigner,
-			"AnnouncementCreator": got.AnnouncementCreator,
+			"AnnouncementCreator": got.AnnouncementCreator, "SecurityTeam": got.SecurityTeam,
 		} {
 			if len(roles) != 0 {
 				t.Errorf("%s = %v, want no names when the variable is unset", name, roles)
@@ -92,6 +92,20 @@ func TestLoadAccessConfig(t *testing.T) {
 		got := loadAccessConfig()
 		if want := []string{"test-announcers", "test-leads"}; !slices.Equal(got.AnnouncementCreator, want) {
 			t.Errorf("AnnouncementCreator = %v, want %v", got.AnnouncementCreator, want)
+		}
+		if len(got.CsEngineer) != 0 || len(got.Admin) != 0 {
+			t.Errorf("CsEngineer = %v, Admin = %v, want both untouched by this variable", got.CsEngineer, got.Admin)
+		}
+	})
+
+	// security_team is read-only (view, operations, security center) and
+	// holds no write access of any kind -- see handler.AccessConfig.SecurityTeam.
+	t.Run("the security team role reads its own variable", func(t *testing.T) {
+		resetEnv(t)
+		t.Setenv("AUTH_SECURITY_TEAM_ROLES", " test-security , test-secops ")
+		got := loadAccessConfig()
+		if want := []string{"test-security", "test-secops"}; !slices.Equal(got.SecurityTeam, want) {
+			t.Errorf("SecurityTeam = %v, want %v", got.SecurityTeam, want)
 		}
 		if len(got.CsEngineer) != 0 || len(got.Admin) != 0 {
 			t.Errorf("CsEngineer = %v, Admin = %v, want both untouched by this variable", got.CsEngineer, got.Admin)

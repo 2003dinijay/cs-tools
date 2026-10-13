@@ -69,6 +69,10 @@ export interface ScheduleShift {
    *  or the Americas night -- rather than a turn on the rota. */
   isRotation: boolean;
   crossesMidnight: boolean;
+  /** Each tier of this window is one person for the whole rota, not one per
+   *  team: SaaS TZ3, the night cover for Apollo and Artemis alike. Absent
+   *  from an older entity-service, which reads as false. */
+  sharedAcrossTeams?: boolean;
   colourToken: string;
   sortOrder: number;
 }
@@ -120,6 +124,9 @@ export interface ScheduleTeam {
   /** The standing window a member's ordinary weekday is (Americas cover for
    *  the Americas team). Absent means Regular hours. */
   defaultShiftCode?: string;
+  /** An ABT: the teams the CRE rota and its regular hours are run by, as
+   *  against Americas, Migration and the like. Older servers do not send it. */
+  isAbt?: boolean;
 }
 
 /** One member of a rota team. role is as stored: engineer (or member), lead,
@@ -369,4 +376,39 @@ export interface PagingReadinessResponse {
   from: string;
   to: string;
   chains: PagingReadinessChain[];
+}
+
+/**
+ * The Rota access tab: who may change the rotas beyond the team leads.
+ *
+ * A rota admin edits every team in one family. A rota marker edits one team's
+ * rota -- rotations, leave and allocations -- and nothing else. canManage is
+ * what the reader may change: rota admins for a CSM admin, and the markers of
+ * markerFamilies (every family for a CSM admin, their own for a rota admin).
+ * Somebody who may change nothing gets empty lists, and the tab is not shown.
+ */
+export interface RotaAccess {
+  canManage: { rotaAdmins: boolean; markerFamilies: RotaFamily[] };
+  rotaAdmins: RotaAdminGrant[];
+  markers: RotaMarkerGrant[];
+}
+
+interface RotaGrant {
+  userId: string;
+  name: string;
+  email: string;
+  grantedBy: string;
+  grantedOn: string;
+  /** False when the grant does nothing: the holder is not internal staff,
+   *  or (a marker) has left the team. Listed so it can be removed. */
+  active: boolean;
+}
+
+export interface RotaAdminGrant extends RotaGrant {
+  family: RotaFamily;
+}
+
+export interface RotaMarkerGrant extends RotaGrant {
+  teamKey: string;
+  family: RotaFamily;
 }

@@ -276,7 +276,11 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		        p.start_date, p.end_date, p.created_on, p.updated_on,
 		        `+projectClosureColumns+`,
 		        INITCAP(REPLACE(p.onboarding_status::TEXT, '_', '-')),
+		        p.onboarding_go_live_date,
 		        a.id, a.name, a.region, a.sub_region, `+accountIsPartnerColumn+`,
+		        onb.id,
+		        COALESCE(onb.name, NULLIF(TRIM(CONCAT_WS(' ', onb.first_name, onb.last_name)), '')),
+		        onb.email,
 		        (SELECT COUNT(*) FROM work_item wi
 		           LEFT JOIN "case" c ON c.id = wi.id`+caseLikeJoins+`
 		          WHERE wi.project_id = p.id
@@ -285,6 +289,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 		 FROM project p
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
 		 LEFT JOIN account a ON a.id = p.account_id
+		 LEFT JOIN "user" onb ON onb.id = p.onboarding_owner_id
 		 %s
 		 ORDER BY %s
 		 LIMIT $%d OFFSET $%d`,
@@ -338,14 +343,16 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 			// own declared constraint, not a wider contract change every
 			// other reader of Project.SfID would also have to handle.
 			var sfID, aID, aName *string
+			var ownerID, ownerName, ownerEmail *string
 			var acct domain.ProjectSearchAccountRef
 			if err := rows.Scan(
 				&p.ID, &p.AccountID, &sfID, &p.Name, &p.Key, &projectTypeName,
 				&p.StartDate, &p.EndDate, &p.CreatedOn, &p.UpdatedOn,
 				&p.ClosureState, &p.EndDateClosureState, &p.InvoiceDueDateClosureState,
 				&p.ComplianceViolationClosureState, &p.ComplianceViolationDate, &p.SuspensionProcessState,
-				&p.OnboardingStatus,
+				&p.OnboardingStatus, &p.GoLiveDate,
 				&aID, &aName, &acct.Region, &acct.SubRegion, &acct.IsPartner,
+				&ownerID, &ownerName, &ownerEmail,
 				&p.ActiveCasesCount,
 			); err != nil {
 				return fmt.Errorf("scan project: %w", err)
@@ -360,6 +367,7 @@ func (r *projectRepo) SearchProjects(ctx context.Context, req domain.SearchProje
 			if projectTypeName != nil {
 				p.SubscriptionType = projectTypeNameToSubscriptionType(*projectTypeName)
 			}
+			p.OnboardingOwner = onboardingOwnerRef(ownerID, ownerName, ownerEmail)
 			// ClosureStatus still has no real column -- see this
 			// repository's own doc comment.
 			result = append(result, p)
@@ -430,6 +438,8 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 	// leaving HasSr at its Go zero value (false) for every project
 	// regardless of type, which is what this data source used to do.
 	var hasSr *bool
+	// onboarding owner id/name/email: all NULL when the project has no owner.
+	var ownerID, ownerName, ownerEmail *string
 	// tou/amu: this view's Account.OwnerEmail/TechnicalOwnerEmail were
 	// previously left at their zero value unconditionally -- both are real
 	// columns' worth of data, just not this project's own; they're the
@@ -475,7 +485,10 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		        EXTRACT(EPOCH FROM p.total_onboarding_duration) / 3600,
 		        EXTRACT(EPOCH FROM p.consumed_onboarding_duration) / 3600,
 		        EXTRACT(EPOCH FROM p.remaining_onboarding_duration) / 3600,
-		        tou.email, amu.email
+		        tou.email, amu.email,
+		        onb.id,
+		        COALESCE(onb.name, NULLIF(TRIM(CONCAT_WS(' ', onb.first_name, onb.last_name)), '')),
+		        onb.email
 		 FROM project p
 		 LEFT JOIN account a ON p.account_id = a.id
 		 LEFT JOIN project_type pt ON pt.id = p.project_type_id
@@ -492,6 +505,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		 -- against. Verify against a real payload before trusting it further.
 		 LEFT JOIN "user" tou ON tou.id = a.technical_owner_id
 		 LEFT JOIN "user" amu ON amu.id = a.account_manager_id
+		 LEFT JOIN "user" onb ON onb.id = p.onboarding_owner_id
 		 WHERE p.id = $1`+scopeClause, scopeArgs...,
 	).Scan(
 		&v.ID, &sfID, &v.Name, &v.Key,
@@ -508,6 +522,7 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		&v.ConsumedQueryHours,
 		&v.TotalOnboardingHours, &v.ConsumedOnboardingHours, &v.RemainingOnboardingHours,
 		&v.Account.TechnicalOwnerEmail, &v.Account.OwnerEmail,
+		&ownerID, &ownerName, &ownerEmail,
 	)
 	// v.Account.Tier is sourced from account.support_tier (migration 0101).
 	// ServiceNow's own u_support_tier/u_support_timezone fields are swapped on
@@ -540,11 +555,22 @@ func (r *projectRepo) GetProjectByID(ctx context.Context, id string, scope Searc
 		v.SubscriptionType = projectTypeNameToSubscriptionType(*projectTypeName)
 	}
 	v.HasSr = hasSr != nil && *hasSr
+	v.OnboardingOwner = onboardingOwnerRef(ownerID, ownerName, ownerEmail)
 	// The backing data source stores a sign-inverted consumed balance for some
 	// projects; normalise at read, leaving the stored value untouched.
 	v.ConsumedQueryHours = absHours(v.ConsumedQueryHours)
 	v.ConsumedOnboardingHours = absHours(v.ConsumedOnboardingHours)
 	return v, nil
+}
+
+// onboardingOwnerRef builds a PersonRef from the joined owner columns, nil when
+// no owner is assigned. A blank name or NULL email yields an empty name / nil
+// email rather than dropping the owner.
+func onboardingOwnerRef(id, name, email *string) *domain.PersonRef {
+	if id == nil || *id == "" {
+		return nil
+	}
+	return &domain.PersonRef{ID: *id, Name: stringOrEmpty(name), Email: email}
 }
 
 // absHours returns the absolute value of h, preserving nil.

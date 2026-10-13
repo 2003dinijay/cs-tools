@@ -43,6 +43,14 @@ export interface PieSliceResult extends BeDashboardPieSlice {
    * `useWidgetGroupByData`) — `DashboardWidgetTile` skips click-through for
    * a slice carrying this. */
   navigable?: boolean;
+  /** The raw `POST /{resourceType}/aggregate` bucket `key` this slice came
+   * from (e.g. an account UUID) — only ever set by `useWidgetGroupByData`
+   * for a named bucket (never the synthetic "Others" bucket, which has no
+   * key of its own, and never a hand-authored `slices` config, which has no
+   * bucket at all). Exists purely for `BeDashboardGroupByConfig.linkResourceType`:
+   * `DashboardWidgetTile` uses it as the id when building that OTHER
+   * resourceType's own `detailHref`, instead of this slice's own `query`. */
+  linkId?: string;
 }
 
 export interface WidgetPieData {
@@ -151,7 +159,14 @@ export function useWidgetPieData(
           // every other widget's own call, so it needs both at least as
           // much.
           return withWidgetFetchSlot(async (signal) => {
-            const body = { filters, pagination: { offset: 0, limit: 1 } };
+            // `project`'s search takes flat filters (see its
+            // `buildSearchRequestBody`). Other overrides, e.g. case_feedback's,
+            // also change the response shape and aren't handled by this
+            // count-only path, so they keep the default body.
+            const body: Record<string, unknown> =
+              resourceType === "project" && config.buildSearchRequestBody
+                ? config.buildSearchRequestBody({ filters, offset: 0, limit: 1 })
+                : { filters, pagination: { offset: 0, limit: 1 } };
             // Every slice query here only ever reads `total` -- skip the
             // page query entirely via `countOnly` on the one search endpoint
             // that supports it (see useWidgetData's identical reasoning). A
@@ -160,17 +175,14 @@ export function useWidgetPieData(
             const res =
               config.searchEndpoint === "/cases/search"
                 ? await postCountingOnly<
-                    {
-                      filters: Record<string, unknown>;
-                      pagination: { offset: number; limit: number };
-                      countOnly?: boolean;
-                    },
+                    Record<string, unknown> & { countOnly?: boolean },
                     Record<string, unknown>
                   >(api, config.searchEndpoint, body, { signal })
-                : await api.post<
-                    { filters: Record<string, unknown>; pagination: { offset: number; limit: number } },
-                    Record<string, unknown>
-                  >(config.searchEndpoint, body, { signal });
+                : await api.post<Record<string, unknown>, Record<string, unknown>>(
+                    config.searchEndpoint,
+                    body,
+                    { signal },
+                  );
             return typeof res.total === "number" ? res.total : 0;
           }, teamKey);
         },

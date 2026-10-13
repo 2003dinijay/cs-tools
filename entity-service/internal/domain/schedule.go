@@ -78,6 +78,10 @@ type ScheduleShift struct {
 	// "cannot say" rather than "nobody needed".
 	RequiredHeadcount *int16 `json:"requiredHeadcount,omitempty"`
 	CrossesMidnight   bool   `json:"crossesMidnight"`
+	// SharedAcrossTeams is true when each tier of the window is one person
+	// for the whole rota, not one per team (migration 0223): SaaS TZ3, the
+	// night cover for Apollo and Artemis alike.
+	SharedAcrossTeams bool   `json:"sharedAcrossTeams"`
 	ColourToken       string `json:"colourToken"`
 	SortOrder         int    `json:"sortOrder"`
 }
@@ -154,6 +158,10 @@ type ScheduleTeam struct {
 	// DefaultShiftCode is the standing window a member's ordinary weekday is:
 	// Americas cover for the Americas team. Absent means Regular hours.
 	DefaultShiftCode *string `json:"defaultShiftCode,omitempty"`
+	// IsABT says the team is an ABT (its type ends in "abt"): the teams the
+	// CRE rota and its regular hours are run by, as against Americas,
+	// Migration and the like.
+	IsABT bool `json:"isAbt"`
 }
 
 // ScheduleTeamMember is one member of a rota team. Role is the team_member

@@ -62,6 +62,8 @@ function formatUtcHint(ms: number): string {
 
 const MIN_DURATION_MINUTES = 15;
 const MAX_DURATION_MINUTES = 240;
+/** Spinner step for the duration field. Matches the customer portal's 15-minute duration options. */
+const DURATION_STEP_MINUTES = 15;
 const MAX_TIME_SLOTS = 3;
 
 /**
@@ -282,17 +284,6 @@ export function CreateCallRequestDialog({
             ready for an agent to schedule.
           </Typography>
           <TextField
-            label="Reason for the call"
-            multiline
-            minRows={3}
-            value={reason}
-            onChange={(e) => setReason(e.target.value)}
-            fullWidth
-            required
-            disabled={submitting}
-            placeholder="Describe why a call is needed..."
-          />
-          <TextField
             label="Duration (minutes)"
             type="number"
             value={duration}
@@ -301,8 +292,12 @@ export function CreateCallRequestDialog({
             required
             disabled={submitting}
             error={duration !== "" && !durationValid}
-            helperText={`Between ${MIN_DURATION_MINUTES} and ${MAX_DURATION_MINUTES} minutes.`}
-            inputProps={{ min: MIN_DURATION_MINUTES, max: MAX_DURATION_MINUTES }}
+            helperText={`Between ${MIN_DURATION_MINUTES} and ${MAX_DURATION_MINUTES} minutes, in steps of ${DURATION_STEP_MINUTES}.`}
+            inputProps={{
+              min: MIN_DURATION_MINUTES,
+              max: MAX_DURATION_MINUTES,
+              step: DURATION_STEP_MINUTES,
+            }}
           />
           <Box sx={{ display: "flex", flexDirection: "column", gap: 1 }}>
             <Typography variant="caption" color="text.secondary">
@@ -369,6 +364,17 @@ export function CreateCallRequestDialog({
               </Button>
             )}
           </Box>
+          <TextField
+            label="Reason for the call"
+            multiline
+            minRows={3}
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            fullWidth
+            required
+            disabled={submitting}
+            placeholder="Describe why a call is needed..."
+          />
         </Box>
       </DialogContent>
       <DialogActions>

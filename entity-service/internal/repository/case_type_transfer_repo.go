@@ -253,19 +253,25 @@ func (r *caseRepo) TransferCaseType(ctx context.Context, plan CaseTypeTransfer, 
 
 	var result CaseTypeTransferResult
 	err := r.db.InTx(ctx, func(tx pgx.Tx) error {
-		// 1. Lock the work item and read its current type. FOR NO KEY UPDATE is what
-		//    a plain UPDATE of work_item takes: it excludes a concurrent update of the
-		//    same case without blocking the foreign-key probes other tables make.
-		var currentType string
-		var projectID *string
-		err := tx.QueryRow(ctx,
-			`SELECT type::TEXT, project_id::TEXT FROM work_item
-			  WHERE id = $1::uuid AND type = ANY(`+caseLikeWorkItemTypes+`) FOR NO KEY UPDATE`,
-			plan.CaseID).Scan(&currentType, &projectID)
+		// 1. Lock the work item and read the type its rows say it is: the extension
+		//    row that exists, not work_item.type (see caseLikeRowTypeColumn -- the
+		//    two disagree on some synced rows). Steps 2 and 3 read and delete the
+		//    row of that type; taken from work_item.type alone, a ticket typed CASE
+		//    whose only row is a service request's would carry nothing over, delete
+		//    nothing, and end up with two extension rows (or a duplicate-key error
+		//    when the target is the type its row already has). FOR NO KEY UPDATE is
+		//    what a plain UPDATE of work_item takes: it excludes a concurrent update
+		//    of the same case without blocking the foreign-key probes other tables
+		//    make.
+		currentType, err := readCaseLikeType(ctx, tx, "transfer case type", plan.CaseID, true)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return &apierror.NotFoundError{Msg: "case not found"}
 		}
 		if err != nil {
+			return fmt.Errorf("transfer case type: read work item: %w", err)
+		}
+		var projectID *string
+		if err := tx.QueryRow(ctx, `SELECT project_id::TEXT FROM work_item WHERE id = $1::uuid`, plan.CaseID).Scan(&projectID); err != nil {
 			return fmt.Errorf("transfer case type: read work item: %w", err)
 		}
 		previousType := workItemTypeToCaseType[currentType]

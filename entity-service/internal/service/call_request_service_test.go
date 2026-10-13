@@ -483,15 +483,33 @@ func requireErrKind(t *testing.T, name string, err error, want any) {
 	}
 }
 
-func TestCallRequestService_UpdateRejectsCancellationReason(t *testing.T) {
-	svc := &callRequestService{}
-	// Rejected before any caller/repository work, and for every state: silently
-	// dropping a supplied reason would report success while losing it.
+// TestCallRequestService_UpdatePassesCancellationReasonThrough covers the
+// fix for a real, reported bug: cancelling a call request from the Customer
+// Portal always 400'd on Postgres-backed projects, since
+// customer_call.reject_reason did not exist and UpdateCallRequest rejected
+// any request that supplied CancellationReason outright. Now that the
+// column exists (migration 0219), the reason must reach the repository
+// call unchanged, for every state a reason is meaningful on.
+func TestCallRequestService_UpdatePassesCancellationReasonThrough(t *testing.T) {
 	for _, st := range []domain.CallRequestStateType{domain.CallRequestStateCanceled, domain.CallRequestStateCustomerRejected, domain.CallRequestStateWSO2Rejected} {
-		_, err := svc.UpdateCallRequest(context.Background(), domain.UpdateCallRequestRequest{
+		var gotReason *string
+		repo := &stubCallRequestRepo{
+			updateCallRequest: func(ctx context.Context, req domain.UpdateCallRequestRequest, assigneeID *string, callerEmail string) (domain.UpdateCallRequestResponse, error) {
+				gotReason = req.CancellationReason
+				return domain.UpdateCallRequestResponse{}, nil
+			},
+		}
+		svc := &callRequestService{repo: repo}
+		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+		_, err := svc.UpdateCallRequest(ctx, domain.UpdateCallRequestRequest{
 			ID: testUUID, State: st, CancellationReason: str("no longer needed"),
 		})
-		requireErrKind(t, "cancellationReason on "+string(st), err, &apierror.ValidationError{})
+		if err != nil {
+			t.Fatalf("%s: unexpected error: %v", st, err)
+		}
+		if gotReason == nil || *gotReason != "no longer needed" {
+			t.Errorf("%s: CancellationReason = %v, want \"no longer needed\"", st, gotReason)
+		}
 	}
 }
 

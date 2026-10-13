@@ -416,6 +416,20 @@ type SearchAccountsFilters struct {
 	// caller holds. Case-insensitive exact match.
 	OwnerEmail     string `json:"ownerEmail,omitempty"`
 	Classification string `json:"classification,omitempty"`
+	// LifeCycle filters on account.life_cycle (e.g. "Customer", "Partner",
+	// "Prospect", "Lost Customer", "Lost Prospect") -- exact match. This is
+	// a distinct dimension from Classification (account.classification,
+	// "Enterprise"/"Partner"/"Cloud"/"OEM", a business-segment axis) --
+	// confirmed against the legacy system's own account-scoping rule for
+	// this feature, whose "life cycle = Customer" base condition is what
+	// account.life_cycle mirrors. Do not confuse the two.
+	LifeCycle string `json:"lifeCycle,omitempty"`
+	// HasProject, when true, additionally requires the account to have at
+	// least one row in project -- an existence filter with no columns read
+	// from project, matching the legacy rule's own join-existence check
+	// against the account's projects, used purely to require a match
+	// rather than to select anything from the join.
+	HasProject bool `json:"hasProject,omitempty"`
 }
 
 // SearchAccountsRequest is the input for an account search operation.
@@ -440,7 +454,15 @@ type AccountView struct {
 	Pod            *string `json:"pod"`
 	SfID           *string `json:"sfId"`
 	Region         *string `json:"region"`
-	Country        *string `json:"country"`
+	// SubRegion (account.sub_region) is a finer-grained geography than
+	// Region -- a distinct column, not derived from it (e.g. Region "APAC"
+	// pairs with SubRegion values like "ASIA"/"SAARC"). Previously selected
+	// nowhere on this search response even though the column has long been
+	// read elsewhere (the Salesforce account upsert, project search's own
+	// account ref) -- added for a caller that filters accounts by this
+	// finer region, which Region alone cannot express.
+	SubRegion *string `json:"subRegion"`
+	Country   *string `json:"country"`
 	City           *string `json:"city"`
 	// DriveLocation is a free-text Google Drive folder reference — present
 	// on the Postgres data source (account.drive_location).
@@ -1181,6 +1203,16 @@ type Project struct {
 	Account          *ProjectSearchAccountRef `json:"account"`
 	ActiveCasesCount int                      `json:"activeCasesCount"`
 	OnboardingStatus *string                  `json:"onboardingStatus"`
+	// OnboardingOwner is the person assigned to run this project's onboarding,
+	// nil when none is assigned.
+	OnboardingOwner *PersonRef `json:"onboardingOwner"`
+	// GoLiveDate mirrors ProjectDetailsView/ProjectEngagementFields' own
+	// GoLiveDate (project.onboarding_go_live_date) -- previously selected
+	// only by GetProjectByID, not SearchProjects, even though callers that
+	// need to know whether a project has actually gone live (e.g. the CSM
+	// portal backend's customer-health risk flags) search by account rather
+	// than fetching one project at a time.
+	GoLiveDate *time.Time `json:"goLiveDate"`
 }
 
 // ProjectAccountRef is the embedded account summary returned in project detail responses.
@@ -1278,8 +1310,7 @@ type ProjectDetailsView struct {
 	ProjectClosureFields
 	// OnboardingOwner is the person assigned to run this project's
 	// onboarding. Nil when no owner is assigned — most projects, since only
-	// onboarding-enabled projects have one. Currently populated only from
-	// the ServiceNow data source.
+	// onboarding-enabled projects have one. Populated by every data source.
 	OnboardingOwner *PersonRef `json:"onboardingOwner"`
 }
 
@@ -1434,8 +1465,14 @@ type ProjectView struct {
 	OnboardingStatus *string `json:"onboardingStatus"`
 	// OnboardingOwner is the person assigned to run this project's
 	// onboarding. Nil when no owner is assigned — most projects, since only
-	// onboarding-enabled projects have one (ServiceNow data source only).
+	// onboarding-enabled projects have one.
 	OnboardingOwner *PersonRef `json:"onboardingOwner"`
+	// GoLiveDate mirrors ProjectDetailsView/ProjectEngagementFields' own
+	// GoLiveDate (project.onboarding_go_live_date) -- nil when the project
+	// hasn't gone live (or the date isn't tracked). Previously only
+	// populated on GetProjectByID; added here so an account-scoped search
+	// doesn't need one GetProjectByID call per project just to know this.
+	GoLiveDate *time.Time `json:"goLiveDate"`
 }
 
 // SearchProjectsResponse is the paginated result of a project search.
@@ -1918,6 +1955,14 @@ type SearchDeploymentsRequest struct {
 	ProjectIDs      []string         `json:"projectIds"`
 	DeploymentTypes []DeploymentType `json:"deploymentTypes"`
 	IDs             []string         `json:"ids"`
+	// IncludeInactive additively widens the result to also include deployments
+	// with is_active = FALSE -- omitted/false reproduces today's exact
+	// behavior for every existing caller (the permanent is_active = TRUE
+	// filter in SearchDeployments's SQL). Added for the CSM portal backend's
+	// customer-health EOL-product check, whose real ServiceNow script has no
+	// such filter at all -- a deactivated deployment can still carry real EOL
+	// product history that must count toward the risk flag.
+	IncludeInactive bool `json:"includeInactive,omitempty"`
 }
 
 // SearchDeploymentsResponse is the paginated result of a deployment search.
@@ -2968,6 +3013,56 @@ type AggregateResponse struct {
 	TotalRecords int               `json:"totalRecords"`
 }
 
+// CaseVolumeTrendRequest is the input for POST /cases/volume-trend: a
+// day-bucketed count of cases opened and closed per day, for dashboard
+// widgets. Deliberately narrow (no bucket-unit/series config, unlike
+// AggregateCasesRequest's open-ended groupBy): this backs exactly one chart,
+// not a platform, so the two series (opened, closed) are fixed.
+type CaseVolumeTrendRequest struct {
+	Filters SearchCasesFilters `json:"filters"`
+	// Days is the size of the trailing window, ending today (UTC). Optional;
+	// the service applies a default (30) when omitted and rejects a value
+	// outside 1-90.
+	Days int `json:"days,omitempty"`
+}
+
+// CaseVolumeTrendPoint is one day's count in a CaseVolumeTrendSeries. Date is
+// a plain YYYY-MM-DD (UTC calendar day), matching this codebase's other
+// date-only wire fields.
+type CaseVolumeTrendPoint struct {
+	Date  string `json:"date"`
+	Count int    `json:"count"`
+}
+
+// CaseVolumeTrendSeries is one named line in a CaseVolumeTrendResponse
+// ("Opened" or "Closed"), with one point per day in the requested window,
+// in chronological order. A day with no matching cases is still present,
+// with Count 0 -- the chart draws a continuous line.
+type CaseVolumeTrendSeries struct {
+	Label  string                 `json:"label"`
+	Points []CaseVolumeTrendPoint `json:"points"`
+}
+
+// CaseVolumeTrendResponse is the result of a case-volume trend query: always
+// exactly two series, "Opened" (by created date) and "Closed" (by closed
+// date, own-type only -- see caseLikeOwnClosedOnColumn's doc comment).
+type CaseVolumeTrendResponse struct {
+	Days   int                     `json:"days"`
+	Series []CaseVolumeTrendSeries `json:"series"`
+}
+
+// CaseVolumeDayCount is the opened/closed count for one UTC calendar day --
+// the unit CaseVolumeTrend computes and the Redis-backed cache in front of
+// it stores. Lives in domain (not repository) specifically so internal/cache
+// can share it without importing internal/repository, the same layering
+// every other cached type (e.g. UserDetail) already follows. Not a wire
+// type of its own; the service assembles CaseVolumeTrendResponse's two
+// named series from a map of these, keyed by day.
+type CaseVolumeDayCount struct {
+	Opened int `json:"opened"`
+	Closed int `json:"closed"`
+}
+
 // SearchCaseView is the unified case representation returned in search results.
 // Fields absent for a given data source are nil.
 type SearchCaseView struct {
@@ -3014,19 +3109,22 @@ type SearchCaseView struct {
 	// (Type). Populated for the ServiceNow data source only; null otherwise.
 	AccountDetails *AccountRef `json:"account"`
 	// BestCaseFixEta is the internal-only best-case fix-commitment date, as a
-	// date-only "YYYY-MM-DD" string. Populated for the ServiceNow data source
-	// only; null otherwise. CSM-engineer-facing only, never shared with the
-	// customer.
+	// date-only "YYYY-MM-DD" string. Populated on both data sources -- on
+	// Postgres, read from work_item.best_case_eta the same way GetCaseByID
+	// already does; null when unset. CSM-engineer-facing only, never shared
+	// with the customer.
 	BestCaseFixEta *string `json:"bestCaseFixEta"`
 	// MostLikelyFixEta is the internal-only most-likely fix-commitment date, as
-	// a date-only "YYYY-MM-DD" string. Populated for the ServiceNow data source
-	// only; null otherwise. CSM-engineer-facing only, never shared with the
-	// customer.
+	// a date-only "YYYY-MM-DD" string. Populated on both data sources -- on
+	// Postgres, read from work_item.most_likely_eta the same way GetCaseByID
+	// already does; null when unset. CSM-engineer-facing only, never shared
+	// with the customer.
 	MostLikelyFixEta *string `json:"mostLikelyFixEta"`
 	// WorstCaseFixEta is the internal-only worst-case fix-commitment date, as a
-	// date-only "YYYY-MM-DD" string. Populated for the ServiceNow data source
-	// only; null otherwise. CSM-engineer-facing only, never shared with the
-	// customer.
+	// date-only "YYYY-MM-DD" string. Populated on both data sources -- on
+	// Postgres, read from work_item.worst_case_eta the same way GetCaseByID
+	// already does; null when unset. CSM-engineer-facing only, never shared
+	// with the customer.
 	WorstCaseFixEta *string `json:"worstCaseFixEta"`
 	// EscalationLevel is the case's current escalation level -- see
 	// CaseView.EscalationLevel's doc comment.
@@ -3360,8 +3458,13 @@ type CreateCaseRequest struct {
 	CatalogItemID string     `json:"catalogItemId"`
 	Variables     []Variable `json:"variables"`
 	// Optional fields
-	RelatedCaseID  string `json:"relatedCaseId"`
-	ConversationID string `json:"conversationId"`
+	RelatedCaseID string `json:"relatedCaseId"`
+	// ResolvedRelatedCaseID is the related-case id already checked against
+	// Postgres, set by the dual-write create path before ServiceNow is called.
+	// CreateCaseFromServiceNow binds it and does not look RelatedCaseID up
+	// again. Nil binds NULL: the id was empty, or the target is not mirrored yet.
+	ResolvedRelatedCaseID *string `json:"-"`
+	ConversationID        string  `json:"conversationId"`
 	// WatchList is watcher emails (Customer Portal / Ballerina). Platform user
 	// UUIDs are still accepted and resolved to emails for CSM callers.
 	WatchList []string `json:"watchList"`
@@ -3649,6 +3752,14 @@ type Comment struct {
 	// admin, and never returned at all to a customer caller (the row itself
 	// is omitted from that caller's results).
 	IsDeleted bool `json:"isDeleted,omitempty"`
+	// HasInlineAttachments / InlineAttachments describe images embedded in the
+	// comment body, the same shape as CaseComment's own fields above --
+	// previously decoded only for the case-nested comment search
+	// (SearchCaseComments), not this generic one, which silently dropped the
+	// data ServiceNow already sends. InlineAttachments is nil (not empty)
+	// when there are none.
+	HasInlineAttachments bool               `json:"hasInlineAttachments,omitempty"`
+	InlineAttachments    []InlineAttachment `json:"inlineAttachments,omitempty"`
 }
 
 // UpdateCommentRequest is the input for PATCH /comments/{id}. ID is populated
@@ -4388,6 +4499,7 @@ type ProjectContact struct {
 	Email                string   `json:"email"`
 	RegistrationState    string   `json:"registrationState"`
 	NotificationsEnabled bool     `json:"notificationsEnabled"`
+	IsCsIntegrationUser  bool     `json:"isCsIntegrationUser"`
 	Roles                []string `json:"roles"`
 	// AccountRoles are this person's account-level roles (role.name), a
 	// SEPARATE list from Roles and never merged into it: Roles is what they
@@ -4950,6 +5062,18 @@ type ChangeRequest struct {
 	// Read-only -- they are the customer's approvers at Customer Approval /
 	// Customer Review.
 	CustomerContacts []ChangeRequestCustomerContact `json:"customerContacts"`
+
+	// Tags are the labels attached to the change request's work_item through
+	// work_item_tag -- the same rows, read by the same helper (fetchCaseTags),
+	// as CaseView.Tags, and managed through the same POST /cases/{id}/tags,
+	// DELETE /cases/{id}/tags/{tagId} and POST /tags/search, which take a work
+	// item id and accept a change request's. Tags are internal bookkeeping:
+	// an array (empty when none) for an Unrestricted (staff) caller on the
+	// PostgreSQL data source, and null for every other read -- a customer
+	// (restricted) caller, the ServiceNow data source, or a lookup that failed
+	// (best-effort, like the case read). A tag added to a change request is
+	// never mirrored to the previous system (unlike a case's).
+	Tags []Tag `json:"tags"`
 
 	// Group C2 -- carried for parity, read-through only; no write path is
 	// exposed for any of these seven.

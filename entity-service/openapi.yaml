@@ -4604,6 +4604,61 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
 
+  /cases/volume-trend:
+    post:
+      summary: Day-bucketed case-volume trend (opened vs. closed), for a dashboard chart.
+      description: >-
+        Returns exactly two series, "Opened" (by created date) and "Closed"
+        (by closed date), one point per UTC calendar day over a trailing
+        window (30 days by default). Deliberately narrow compared to the
+        aggregate operation's open-ended groupBy: this backs exactly one
+        chart, not a platform.
+      operationId: caseVolumeTrend
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseVolumeTrendRequest'
+      responses:
+        "200":
+          description: Daily opened/closed case counts for the requested window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseVolumeTrendResponse'
+        "400":
+          description: Bad request.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Case volume trend is only available to internal users.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "503":
+          description: >-
+            Case volume trend is only supported for the Postgres data source.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
   /cases/feedback/search:
     post:
       summary: >-
@@ -4712,6 +4767,18 @@ paths:
   /cases/{id}/comments:
     post:
       summary: Create a comment on a support case.
+      description: |
+        Writes one comment on the case-like record (a case or a service request alike).
+
+        State side effect of a customer's reply: when a `comment` (customer-visible) is posted
+        by a customer -- an external caller, i.e. a registered portal contact posting through the
+        customer portal -- while the record is `awaiting_info` or `solution_proposed`, the record
+        moves to `waiting_on_wso2` automatically, exactly as a `PATCH /cases/{id}` with
+        `state: waiting_on_wso2` by that caller would (activity-feed entry, `case.status_changed`,
+        SLA effects, dual-write mirror). No other state is touched (a `closed` record stays
+        closed), a `work_note` never triggers it, and neither does a comment from WSO2 staff, the
+        system identity or an M2M client. The move is best-effort and runs after the comment is
+        written: a failed move is logged and the comment is still created.
       operationId: createCaseComment
       parameters:
         - name: id
@@ -4791,7 +4858,13 @@ paths:
 
   /cases/{id}/tags:
     post:
-      summary: Attach a free-text tag to a support case.
+      summary: Attach a free-text tag to a support case or a change request.
+      description: >-
+        The id is a work item id: a case-like work item's, or a change request's (the CSM
+        portal tags change requests through this same route; a change request hidden from a
+        customer caller is 404 here as on every other by-id path). On the dual-write data
+        source a case's tag is mirrored to the previous system; a change request's is not
+        (Postgres-only).
       operationId: addCaseTag
       parameters:
         - name: id
@@ -4800,7 +4873,7 @@ paths:
           schema:
             type: string
             format: uuid
-          description: Case UUID.
+          description: Work item UUID (a case-like work item or a change request).
       requestBody:
         required: true
         content:
@@ -4841,7 +4914,11 @@ paths:
 
   /cases/{id}/tags/{tagId}:
     delete:
-      summary: Detach a tag from a support case.
+      summary: Detach a tag from a support case or a change request.
+      description: >-
+        The id is a work item id: a case-like work item's or a change request's, as for
+        POST /cases/{id}/tags. A change request's tag removal is never mirrored to the
+        previous system.
       operationId: removeCaseTag
       parameters:
         - name: id
@@ -4850,7 +4927,7 @@ paths:
           schema:
             type: string
             format: uuid
-          description: Case UUID.
+          description: Work item UUID (a case-like work item or a change request).
         - name: tagId
           in: path
           required: true
@@ -5655,6 +5732,14 @@ paths:
         plain GET /cases/{id} (always DATA_SOURCE-scoped) would 404 even though the
         attachment's own content is reachable. id here is an attachment UUID, matching
         every other /attachments/{id}... route.
+
+
+        An attachment pasted inline into a comment has that comment's id as its
+        referenceId, not a case id. When the referenceId is not a case, it is resolved as a
+        comment (Postgres comment table, read through the caller's own scope) and that
+        comment's case is returned -- but only if the comment is visible to the caller, not
+        deleted, a customer-visible comment (never a work note or activity entry), and its
+        own case is visible to the caller. Otherwise the response is the original 404.
       operationId: getAttachmentParentCase
       parameters:
         - name: id
@@ -7078,7 +7163,9 @@ paths:
         whatever that engineer held, because the roster is one slot per person
         per day. A day the window is not worked on — a weekday rotation landing
         on a Saturday — is skipped rather than refused, and reported back in
-        `skippedDates`. The whole range is one transaction.
+        `skippedDates`. The whole range is one transaction. It replaces only
+        that engineer's own rows: an SRE tier somebody else holds is refused
+        with 409, never taken from them.
       operationId: applyScheduleRange
       requestBody:
         required: true
@@ -7113,6 +7200,17 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "409":
+          description: >
+            Nothing was applied. Either a day clashes with a turn of another
+            team, or somebody else already holds the SRE tier being set (the
+            same zone, tier and day -- per team, or across every team of the
+            rota on a window shared across teams, such as SaaS TZ3, the night
+            cover). The message names the holder; take them off it first.
           content:
             application/json:
               schema:
@@ -7433,6 +7531,75 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ErrorResponse'
+  /team-schedule/rotas/{code}/night-crew:
+    get:
+      summary: The TZ3 people each month of a rota was generated with.
+      description: >
+        The people a lead chose for TZ3 (the SaaS night cover, one crew for
+        Apollo and Artemis) in "Generate month", as each month's last real
+        generation recorded them. The Month roster lists them under the night
+        cover instead of under their team. Every month from..to is listed; a
+        month with nobody chosen has an empty crew. Only SRE_SAAS has one. At
+        most 12 months at once. Internal staff only.
+      operationId: getRotaNightCrew
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema:
+            type: string
+            example: SRE_SAAS
+        - name: from
+          in: query
+          required: true
+          schema:
+            type: string
+            example: "2026-10"
+          description: First month, YYYY-MM.
+        - name: to
+          in: query
+          required: true
+          schema:
+            type: string
+            example: "2026-12"
+          description: Last month, YYYY-MM; not before from.
+      responses:
+        "200":
+          description: The chosen TZ3 people, month by month.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotaNightCrewResponse'
+        "400":
+          description: A bad from or to, to before from, or more than 12 months.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: A rota with no night crew (anything but SRE_SAAS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
   /team-schedule/absences/apply:
     post:
       summary: Mark one engineer away across a span, or bring them back over it.
@@ -7608,22 +7775,21 @@ paths:
     get:
       summary: Which teams the caller may edit.
       description: >
-        The registry keys of every team this caller leads. An empty list is a
-        valid answer for somebody who leads nothing; the portal uses it to decide
-        which rows to offer an edit control on.
+        The registry keys of every team this caller may edit: teams they lead,
+        every team in a family they are rota admin for, and teams they are the
+        rota marker for. An empty list is a valid answer for somebody who may
+        edit nothing; the portal uses it to decide which rows to offer an edit
+        control on. markerOnlyTeamKeys are the teams held only as rota marker:
+        the caller may mark their days but may not generate the rota or change
+        the shared tags.
       operationId: getMyLeadTeams
       responses:
         "200":
-          description: The caller's lead teams.
+          description: The caller's editable teams.
           content:
             application/json:
               schema:
-                type: object
-                properties:
-                  teamKeys:
-                    type: array
-                    items:
-                      type: string
+                $ref: '#/components/schemas/RotaEditTeams'
         "401":
           description: Unauthenticated.
           content:
@@ -7638,6 +7804,270 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
         "404":
           description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/rota-access:
+    get:
+      summary: Who may change the rotas beyond the team leads.
+      description: >
+        The Team Schedule's Rota access tab: every rota admin (cre_rota_admin,
+        sre_rota_admin, sme_rota_admin) and the rota markers of the families
+        the caller may manage, with what the caller may change. A CSM Portal
+        admin -- a token role listed in AUTH_ADMIN_ROLES, the same setting the
+        portal uses -- manages everything; a rota admin manages their own family's
+        markers. Anybody else internal gets an empty answer (200), which is how
+        the portal decides not to show the tab. Needs a user token.
+      operationId: getRotaAccess
+      responses:
+        "200":
+          description: The grants the caller may see, and what they may change.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/RotaAccess'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not an internal caller, or no user token.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/rota-access/admins/{family}/{userId}:
+    put:
+      summary: Make somebody a rota admin for one family.
+      description: >
+        Grants the family's rota admin role: the holder may edit every team in
+        that family. CSM admin only. The person must be active internal staff --
+        a rota role never makes anyone internal. Audited.
+      operationId: grantRotaAdmin
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+          description: The rota family (case-insensitive).
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — not CRE, SRE or SME, the user id is not a UUID, or the person is not active internal staff.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not a CSM admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Take a family's rota admin role away.
+      description: >
+        Removes every copy of the role from the person. CSM admin only. Audited.
+      operationId: revokeRotaAdmin
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+          description: The rota family (case-insensitive).
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — not CRE, SRE or SME, or the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Not a CSM admin.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: Not found — the schedule routes register only with a database pool.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /team-schedule/rota-access/markers/{teamKey}/{userId}:
+    put:
+      summary: Make somebody a team's rota marker.
+      description: >
+        A rota marker may mark the team's rota -- rotations, leave and
+        allocations -- and nothing else: not the shared tags, not Generate month,
+        not the paging chain. A CSM admin may name any team's marker, a rota
+        admin their own family's. The person must be active internal staff and a
+        member of the team; the grant stops counting when they leave it. Audited.
+      operationId: grantRotaMarker
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — the user id is not a UUID, or the person is not active internal staff on the team.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "500":
+          description: Unexpected error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+    delete:
+      summary: Take a team's rota marker away.
+      description: >
+        Same permission as granting. The person need not still be on the team. Audited.
+      operationId: revokeRotaMarker
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+          description: The team's registry key.
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+          description: The person ("user" id).
+      responses:
+        "204":
+          description: Done. Granting what is already held, or removing what is not, changes nothing and is not an error.
+        "400":
+          description: Bad request — the user id is not a UUID.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "401":
+          description: No user token and not an authorized internal client.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "403":
+          description: Neither a CSM admin nor the rota admin for the team's family.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+        "404":
+          description: The team is not on the schedule, or the schedule routes are not registered.
           content:
             application/json:
               schema:
@@ -9453,8 +9883,13 @@ paths:
                 $ref: '#/components/schemas/ErrorResponse'
 
     patch:
-      summary: Partially update an incident (ServiceNow data source only).
+      summary: Partially update an incident.
       description: >-
+        Accepts the same fields on every data source. On postgres-servicenow-dual-write the
+        change is written to Postgres and mirrored to ServiceNow. A change to impact or
+        urgency recomputes priority (ServiceNow's impact x urgency lookup); a new category
+        that does not hold the current subcategory clears it; watchList replaces the whole
+        list. A field sent as null is ignored, except environment, which null clears.
         On postgres-servicenow-dual-write, moving the incident to CLOSED also moves each of
         its open incident tasks to CLOSED_INCOMPLETE, and moving it to CANCELED moves them
         to CLOSED_SKIPPED, each with ServiceNow's work note ("Incident Task is Closed
@@ -14121,15 +14556,44 @@ components:
         nightCrew:
           type: object
           description: >
-            Team key -> the people chosen to work that team's TZ3 for the month.
-            Their TZ3 L1, L2 and L3 go round them night by night (weekends
-            included) and they work no other zone; a night they are short is
-            filled from the team and warned about. A team left out keeps the
-            usual nights. Each id must be a member of that team (400 otherwise).
+            Team key -> the people chosen to work TZ3 for the month. TZ3 is one
+            crew for the whole rota (the night cover for every team): every
+            team's choices together are that crew, and the rota's single TZ3
+            L1, L2 and L3 go round them night by night (weekends included).
+            They work no other zone, and nobody else is put on TZ3: a tier they
+            cannot cover on a night is left empty and warned about. With nobody
+            chosen, nights are drawn as usual. Each id must be a member of the
+            team it is listed under (400 otherwise). A real (not dryRun) run
+            records the choice for the month, replacing the month's earlier one
+            (see GET /team-schedule/rotas/{code}/night-crew).
           additionalProperties:
             type: array
             items: {type: string, format: uuid}
           example: {apollo: ["6ed08bc9-1b20-6690-182c-0dc5604bcb6b"]}
+    RotaNightCrewResponse:
+      type: object
+      required: [rotaCode, months]
+      properties:
+        rotaCode:
+          type: string
+          example: SRE_SAAS
+        months:
+          type: array
+          items:
+            type: object
+            required: [month, crew]
+            properties:
+              month:
+                type: string
+                example: "2026-11"
+              crew:
+                type: array
+                items:
+                  type: object
+                  required: [userId, teamKey]
+                  properties:
+                    userId: {type: string, format: uuid}
+                    teamKey: {type: string, example: apollo}
     GeneratedRotaTurn:
       type: object
       properties:
@@ -14979,6 +15443,13 @@ components:
         region:
           type: string
           nullable: true
+        subRegion:
+          type: string
+          nullable: true
+          description: >
+            A finer-grained geography than region (e.g. "ASIA"/"NA - WEST"
+            under region "APAC"/"NA") -- account.sub_region, a distinct
+            column, not derived from region.
         supportTier:
           type: string
           nullable: true
@@ -15472,6 +15943,20 @@ components:
           type: string
           nullable: true
           description: Hyphenated Title Case, e.g. "In-Progress".
+        onboardingOwner:
+          nullable: true
+          allOf:
+            - $ref: '#/components/schemas/PersonRef'
+          description: >
+            The person assigned to run this project's onboarding. Null when no
+            owner is assigned.
+        goLiveDate:
+          type: string
+          format: date-time
+          nullable: true
+          description: >
+            project.onboarding_go_live_date. Null when the project hasn't
+            gone live (or the date isn't tracked).
         closureState:
           type: string
           nullable: true
@@ -15622,6 +16107,9 @@ components:
           type: string
         notificationsEnabled:
           type: boolean
+        isCsIntegrationUser:
+          type: boolean
+          description: True for a system-to-system integration user that never signs in.
         roles:
           type: array
           items:
@@ -16000,6 +16488,12 @@ components:
             type: string
             format: uuid
           description: Filter by the deployment's own UUID. Postgres data source only.
+        includeInactive:
+          type: boolean
+          description: >
+            Additive: when true, also includes deployments with
+            is_active = FALSE. Omitted/false reproduces the default
+            (active-only) behavior exactly. Postgres data source only.
 
     DeploymentView:
       type: object
@@ -17309,6 +17803,58 @@ components:
             remainder is folded into AggregateResponse.othersCount. Optional; a
             default is applied when omitted.
 
+    CaseVolumeTrendRequest:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/SearchCasesFilters'
+        days:
+          type: integer
+          description: >-
+            Size of the trailing window, ending today (UTC). Optional;
+            defaults to 30 when omitted. Must be between 1 and 90.
+
+    CaseVolumeTrendPoint:
+      type: object
+      required: [date, count]
+      properties:
+        date:
+          type: string
+          format: date
+          description: UTC calendar day (YYYY-MM-DD).
+        count:
+          type: integer
+
+    CaseVolumeTrendSeries:
+      type: object
+      required: [label, points]
+      properties:
+        label:
+          type: string
+          description: '"Opened" or "Closed".'
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseVolumeTrendPoint'
+          description: >-
+            One point per day in the requested window, oldest first. A day
+            with no matching cases is still present, with count 0.
+
+    CaseVolumeTrendResponse:
+      type: object
+      required: [days, series]
+      description: >-
+        The result of a day-bucketed case-volume trend query: always exactly
+        two series, "Opened" (by created date) and "Closed" (by closed date).
+      properties:
+        days:
+          type: integer
+          description: The size of the window actually returned.
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseVolumeTrendSeries'
+
     UserReference:
       type: object
       nullable: true
@@ -18187,6 +18733,27 @@ components:
         content:
           type: string
 
+    InlineAttachment:
+      type: object
+      description: An image embedded in a comment body.
+      properties:
+        id:
+          type: string
+          format: uuid
+        fileName:
+          type: string
+        contentType:
+          type: string
+        downloadUrl:
+          type: string
+        createdOn:
+          type: string
+          format: date-time
+          nullable: true
+          description: Null when the upstream supplied no parseable timestamp.
+        createdBy:
+          type: string
+
     CaseComment:
       type: object
       properties:
@@ -18204,6 +18771,12 @@ components:
         createdOn:
           type: string
           format: date-time
+        hasInlineAttachments:
+          type: boolean
+        inlineAttachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/InlineAttachment'
 
     SearchCaseCommentsRequest:
       type: object
@@ -19094,6 +19667,20 @@ components:
               type: array
               items:
                 type: string
+            tags:
+              type: array
+              nullable: true
+              items:
+                $ref: '#/components/schemas/Tag'
+              description: >-
+                The tags attached to the change request's work item -- the same work_item_tag
+                rows, read the same way, as a case's `tags`, and managed through the same
+                POST /cases/{id}/tags, DELETE /cases/{id}/tags/{tagId} and POST /tags/search,
+                which take a work item id and accept a change request's. Internal bookkeeping:
+                an array (empty when none) for an internal (unrestricted) caller on the
+                PostgreSQL data source; null for a customer's read, on the ServiceNow data
+                source, and when the lookup failed (the rest of the detail is still valid then).
+                A tag added to a change request is never mirrored to the previous system.
             deployments:
               type: array
               items:
@@ -21166,6 +21753,14 @@ components:
             How many people this window is meant to carry, where a target has
             been agreed. Null where none has -- every SRE window today.
         crossesMidnight: { type: boolean }
+        sharedAcrossTeams:
+          type: boolean
+          description: >-
+            True when each tier of this window is held by one person for the
+            whole rota rather than one per team -- SaaS TZ3, the night cover
+            for every SaaS team. Saving the roster (POST
+            /team-schedule/assignments/apply) refuses a second holder of a
+            tier (409); assignment create and update do not check it yet.
         colourToken: { type: string }
         sortOrder: { type: integer }
     ScheduleTeam:
@@ -21188,6 +21783,12 @@ components:
           type: string
           example: SRE_SAAS
           description: The rota the team's type belongs to; absent for a team on no named rota.
+        isAbt:
+          type: boolean
+          description: >-
+            Whether the team is an ABT (its type ends in "abt"): the teams the
+            CRE rota and its regular hours are run by, as against Americas,
+            Migration and the like.
     CreateScheduleAbsenceKindRequest:
       type: object
       required: [shortCode, label, bucket, colourToken]
@@ -21760,6 +22361,93 @@ components:
             Why they are paged, for display: a CRE position ("T1 responder ·
             Vega", "Team lead · Vega", "America lead", "CRE head"), the SRE
             tiers held in the range ("L1, L2"), or the SME teams rostered on.
+    RotaEditTeams:
+      type: object
+      description: Which teams the caller may edit, and which of those only as the team's rota marker.
+      required: [teamKeys, markerOnlyTeamKeys]
+      properties:
+        teamKeys:
+          type: array
+          items:
+            type: string
+        markerOnlyTeamKeys:
+          type: array
+          items:
+            type: string
+    RotaAccess:
+      type: object
+      required: [canManage, rotaAdmins, markers]
+      properties:
+        canManage:
+          $ref: '#/components/schemas/RotaAccessRights'
+        rotaAdmins:
+          type: array
+          items:
+            $ref: '#/components/schemas/RotaAdminGrant'
+        markers:
+          type: array
+          items:
+            $ref: '#/components/schemas/RotaMarkerGrant'
+    RotaAccessRights:
+      type: object
+      required: [rotaAdmins, markerFamilies]
+      properties:
+        rotaAdmins:
+          type: boolean
+          description: True for a CSM admin, who alone grants and removes rota admin.
+        markerFamilies:
+          type: array
+          description: The families whose teams' markers the caller may change.
+          items:
+            type: string
+            enum: [CRE, SRE, SME]
+    RotaAdminGrant:
+      type: object
+      required: [family, userId, name, email, grantedBy, grantedOn, active]
+      properties:
+        family:
+          type: string
+          enum: [CRE, SRE, SME]
+        userId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        grantedBy:
+          type: string
+          description: Who granted it, as recorded on the grant (empty when unknown).
+        grantedOn:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+          description: False when the holder is not internal staff; such a grant does nothing.
+    RotaMarkerGrant:
+      type: object
+      required: [teamKey, family, userId, name, email, grantedBy, grantedOn, active]
+      properties:
+        teamKey:
+          type: string
+        family:
+          type: string
+          enum: [CRE, SRE, SME]
+        userId:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        grantedBy:
+          type: string
+        grantedOn:
+          type: string
+          format: date-time
+        active:
+          type: boolean
+          description: False once the holder has left the team or is not internal staff; the grant then does nothing.
     PagingPhone:
       type: object
       required: [masked, setBy, setAt]
@@ -22163,6 +22851,12 @@ components:
             True once the comment has been soft-deleted via DELETE /comments/{id}. Content is
             "[deleted]" for a non-admin internal caller and the real content for an admin caller;
             a customer caller never receives a deleted comment at all.
+        hasInlineAttachments:
+          type: boolean
+        inlineAttachments:
+          type: array
+          items:
+            $ref: '#/components/schemas/InlineAttachment'
 
     UpdateCommentRequest:
       type: object
@@ -23613,7 +24307,13 @@ components:
           default: true
           description: >-
             Whether to also file an internal issue for the receiving team. Set false to
-            suppress it, e.g. on a re-handoff or when one already exists.
+            suppress it, e.g. on a re-handoff or when one already exists. The issue is
+            titled "[INC…] [P1] <subject>". Its body is a table of the incident and the
+            handoff (link to the incident, priority, service, environment, category, team,
+            reason, who escalated, runbook task, times), the incident's description (for an
+            alert-born incident with none, the alert's creation work note), its latest three
+            work notes, and a footer. Labels come from the product's github.labels in
+            SPECIALIST_HANDOFF_CONFIG.
 
     HandOffIncidentToSpecialistResponse:
       type: object

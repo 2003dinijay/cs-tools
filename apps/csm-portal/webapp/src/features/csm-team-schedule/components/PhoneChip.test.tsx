@@ -20,6 +20,7 @@ import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import { pagingMember } from "../test/fixtures";
+import { ADD_TO_PROFILE_HINT } from "../utils/pagingPhone";
 import PhoneChip, { CALLING_LABEL, type PagingPhoneControls } from "./PhoneChip";
 
 const paging = { masked: "+94•••••123", phone: "+94771234123", setBy: "lead@example.com", setAt: "2026-10-01T09:00:00Z" };
@@ -42,13 +43,11 @@ describe("PhoneChip", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
-  it("offers Add number where there is no number at all", () => {
-    const c = controls();
+  it("says to add a missing number on the profile, and offers no way to add one here", () => {
     const m = pagingMember({ membershipId: "a", name: "Jane Doe", hasProfilePhone: false, canEditPhone: true });
-    render(<PhoneChip member={m} controls={c} />);
-    fireEvent.click(screen.getByRole("button", { name: "Add a paging number for Jane Doe" }));
-    expect(c.edit).toHaveBeenCalledWith(m);
-    expect(screen.queryByRole("button", { name: /Test call/ })).not.toBeInTheDocument();
+    render(<PhoneChip member={m} controls={controls()} />);
+    expect(screen.getByText(ADD_TO_PROFILE_HINT)).toBeInTheDocument();
+    expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
   it("offers nothing to add when the profile has a number", () => {
@@ -57,14 +56,14 @@ describe("PhoneChip", () => {
     expect(screen.queryByRole("button")).not.toBeInTheDocument();
   });
 
-  it("offers Change, Remove and Test call on a paging number, and says Calling while a test is awaited", () => {
+  it("offers Remove and Test call on an existing paging number, not Change, and says Calling while a test is awaited", () => {
     const c = controls();
     const m = pagingMember({ membershipId: "a", name: "Jane Doe", hasProfilePhone: false, canEditPhone: true, pagingPhone: paging });
     const { rerender } = render(<PhoneChip member={m} controls={c} />);
-    fireEvent.click(screen.getByRole("button", { name: "Change Jane Doe's paging number" }));
+    expect(screen.queryByRole("button", { name: /Change/ })).not.toBeInTheDocument();
+    expect(screen.queryByText(ADD_TO_PROFILE_HINT)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Remove Jane Doe's paging number" }));
     fireEvent.click(screen.getByRole("button", { name: "Test call Jane Doe's paging number" }));
-    expect(c.edit).toHaveBeenCalledWith(m);
     expect(c.remove).toHaveBeenCalledWith(m);
     expect(c.test).toHaveBeenCalledTimes(1);
 

@@ -140,6 +140,19 @@ type identityProvisioner interface {
 	EnsureExternalUser(ctx context.Context, email, givenName, familyName string) (scim.ExternalUser, error)
 }
 
+// fullContentFetcher abstracts entity.CustomerEntityClient's
+// GetCaseDescription/GetCommentContent for testability — the re-fetch
+// handleCaseCreated/handleCommentAdded make when a payload's own
+// Description/CaseComment was stripped of an embedded base64 image to fit
+// under Event Hub's message-size limit (see events.CaseCreatedPayload.
+// DescriptionTruncated's own doc comment). An HTTP GET has no comparable
+// size ceiling, so this is how the full, original content (images included)
+// reaches the notification EMAIL specifically; nothing else reads it.
+type fullContentFetcher interface {
+	GetCaseDescription(ctx context.Context, caseID string) (string, error)
+	GetCommentContent(ctx context.Context, commentID string) (string, error)
+}
+
 // onboardingStepRecorder abstracts entity.CustomerEntityClient's
 // RecordOnboardingStep for testability — the one write this dispatcher
 // makes back to entity-service.
@@ -224,6 +237,16 @@ type Dispatcher struct {
 	// frustrationDetector above.
 	slaEngine slaEngineService
 
+	// fullContent is set via WithFullContentFetcher — nil (no entity-service
+	// client configured for this) means handleCaseCreated/handleCommentAdded
+	// simply use the event payload's own (possibly image-stripped)
+	// Description/CaseComment for the email, same as before this feature
+	// existed, rather than erroring. Even when configured, a fetch failure
+	// falls back to that same stripped content and logs a warning — this is
+	// a best-effort enrichment of the email body, never a reason to fail or
+	// delay the notification.
+	fullContent fullContentFetcher
+
 	// emailSendingEnabled (EMAIL_SENDING_ENABLED, the disable-entirely
 	// `!= "false"` convention CALL_SENDING_ENABLED below also uses) is
 	// checked first, before emailDebugMode: when false, sendPerGroup logs
@@ -306,6 +329,12 @@ type Dispatcher struct {
 	// retried; cmd/server/main.go always sets it.
 	onboarding OnboardingConfig
 
+	// incidentChatFanout is INCIDENT_CHAT_FANOUT (WithIncidentChatFanout):
+	// an assignment group, lower-cased and trimmed, whose incident cards go
+	// to the INCIDENT_CHAT_SPACES spaces of the groups listed instead of a
+	// space of its own -- a default group's cards to Apollo and Artemis.
+	incidentChatFanout map[string][]string
+
 	// identityExisted (guarded by doneMu, like done) remembers, per baseKey,
 	// the Existed result of an identity step that already succeeded on an
 	// earlier attempt at the same record — so a retry caused by a later
@@ -368,6 +397,54 @@ func (d *Dispatcher) WithFrustrationDetection(detector escalationDetector) *Disp
 func (d *Dispatcher) WithSLAEngine(engine slaEngineService) *Dispatcher {
 	d.slaEngine = engine
 	return d
+}
+
+// WithFullContentFetcher configures handleCaseCreated/handleCommentAdded's
+// truncated-content re-fetch (see fullContentFetcher) and returns d for
+// chaining. Not part of NewDispatcher's parameter list deliberately — same
+// "optional per deployment" reasoning as WithSLAEngine above: without it,
+// both handlers simply use the event payload's own content for the email,
+// exactly as they did before this feature existed.
+func (d *Dispatcher) WithFullContentFetcher(f fullContentFetcher) *Dispatcher {
+	d.fullContent = f
+	return d
+}
+
+// resolveFullCaseDescription returns the case's full, original description
+// for the case.created email body when truncated is true (entity-service
+// stripped an embedded base64 image to fit under Event Hub's message-size
+// limit) and a fullContentFetcher is configured, falling back to stripped
+// (the event payload's own, already-safe content) on any fetch failure — a
+// transient entity-service hiccup must degrade the email's fidelity, never
+// its delivery. Calling d.fullContent's method only when it's known
+// non-nil avoids invoking a method on a nil interface, which panics
+// regardless of which concrete type would otherwise have handled it. Not
+// called at all when truncated is false — the common case pays no extra
+// round trip.
+func (d *Dispatcher) resolveFullCaseDescription(ctx context.Context, truncated bool, stripped, caseID string) string {
+	if !truncated || d.fullContent == nil {
+		return stripped
+	}
+	full, err := d.fullContent.GetCaseDescription(ctx, caseID)
+	if err != nil {
+		slog.WarnContext(ctx, "dispatch: fetching full case description for truncated case.created email failed, using the stripped content", "caseId", caseID, "err", err)
+		return stripped
+	}
+	return full
+}
+
+// resolveFullCommentContent is resolveFullCaseDescription's
+// case.comment_added counterpart, for CaseCommentTruncated/CaseComment.
+func (d *Dispatcher) resolveFullCommentContent(ctx context.Context, truncated bool, stripped, commentID string) string {
+	if !truncated || d.fullContent == nil {
+		return stripped
+	}
+	full, err := d.fullContent.GetCommentContent(ctx, commentID)
+	if err != nil {
+		slog.WarnContext(ctx, "dispatch: fetching full comment content for truncated case.comment_added email failed, using the stripped content", "commentId", commentID, "err", err)
+		return stripped
+	}
+	return full
 }
 
 // pagingTestCaller places a paging-number test call; internal/paging's
@@ -498,6 +575,21 @@ func (d *Dispatcher) WithStatusPage(poster statusPagePoster, reports cloudStatus
 // orthogonal to every other event type.
 func (d *Dispatcher) WithOnboarding(cfg OnboardingConfig) *Dispatcher {
 	d.onboarding = cfg
+	return d
+}
+
+// WithIncidentChatFanout sends the incident cards of each group in fanout
+// (INCIDENT_CHAT_FANOUT: assignment group -> other assignment groups) to the
+// INCIDENT_CHAT_SPACES spaces of the groups it lists, e.g. a default group,
+// whose incidents belong to no SRE team, to both Apollo and Artemis. A group
+// not in fanout keeps its own space. Returns d for chaining.
+func (d *Dispatcher) WithIncidentChatFanout(fanout map[string][]string) *Dispatcher {
+	d.incidentChatFanout = map[string][]string{}
+	for group, targets := range fanout {
+		if key := strings.ToLower(strings.TrimSpace(group)); key != "" && len(targets) > 0 {
+			d.incidentChatFanout[key] = targets
+		}
+	}
 	return d
 }
 
@@ -766,6 +858,14 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 
 	var errs []error
 
+	// Resolved once, outside sendPerGroup's own render callback (which runs
+	// once per recipient-link group — at most two today): a truncated
+	// description must be fetched exactly once per event, never once per
+	// group. The Google Chat alert below deliberately keeps using p.Product/
+	// p.Team/etc. (not this) — it never reads Description/CaseComment at
+	// all, so it has nothing to recover here.
+	description := d.resolveFullCaseDescription(ctx, p.DescriptionTruncated, p.Description, p.CaseID)
+
 	groups, groupUserIDs, err := d.groupByLink(ctx, p.Recipients, p.ProjectID, p.CaseID)
 	if err != nil {
 		errs = append(errs, err)
@@ -783,7 +883,7 @@ func (d *Dispatcher) handleCaseCreated(ctx context.Context, record eventbus.Reco
 				Priority:                  emailSeverityLabel(p.Priority),
 				Product:                   p.Product,
 				CreatedAt:                 p.CreatedAt,
-				Description:               p.Description,
+				Description:               description,
 				IncidentImpactDescription: p.IncidentImpactDescription,
 				CaseLink:                  caseLink,
 				CommentLink:               commentLinkFor(caseLink, ""),
@@ -921,6 +1021,13 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 	}
 	baseKey := recordBaseKey(record)
 	subject := subjectLine(p.WSO2CaseID, p.CaseNumber, p.CaseID, p.CaseTitle)
+	// Resolved once, outside sendPerGroup's own render callback — see
+	// handleCaseCreated's identical reasoning. checkFrustration above
+	// deliberately keeps using p.CaseComment (the stripped, already-delivered
+	// text): frustration analysis works on the words, which survive
+	// stripping untouched — only the embedded image itself is gone — so it
+	// has no reason to pay for this fetch too.
+	caseComment := d.resolveFullCommentContent(ctx, p.CaseCommentTruncated, p.CaseComment, p.CommentID)
 	owned, sendErr := d.sendPerGroup(ctx, baseKey, groups, groupUserIDs, subject, d.links.CSMLink(p.CaseID), func(caseLink, intendedFor string) (string, []notifications.InlineImage) {
 		if p.IsInternalNote {
 			// See events.CommentAddedPayload.IsInternalNote's own doc
@@ -928,9 +1035,9 @@ func (d *Dispatcher) handleCommentAdded(ctx context.Context, record eventbus.Rec
 			// as the case reference — this audience is always wso2.com
 			// staff, who recognize the internal reference, not ServiceNow's
 			// own case number.
-			return notifications.RenderInternalNoteEmail(p.Name, displayInternalRef(p.WSO2CaseID, p.CaseID), p.CaseTitle, p.CaseComment, commentLinkFor(caseLink, p.CommentID), caseLink, intendedFor)
+			return notifications.RenderInternalNoteEmail(p.Name, displayInternalRef(p.WSO2CaseID, p.CaseID), p.CaseTitle, caseComment, commentLinkFor(caseLink, p.CommentID), caseLink, intendedFor)
 		}
-		return notifications.RenderCommentAddedEmail(p.Name, displayCaseRef(p.CaseNumber, p.CaseID), p.CaseTitle, p.CaseComment, commentLinkFor(caseLink, p.CommentID), caseLink, intendedFor)
+		return notifications.RenderCommentAddedEmail(p.Name, displayCaseRef(p.CaseNumber, p.CaseID), p.CaseTitle, caseComment, commentLinkFor(caseLink, p.CommentID), caseLink, intendedFor)
 	})
 	if record.NoMoreRetries {
 		d.forgetEmailGroups(baseKey, slices.Collect(maps.Keys(groups)))
@@ -1321,7 +1428,16 @@ func (d *Dispatcher) handleSeverityChanged(ctx context.Context, record eventbus.
 	// reasoning as handleIncidentCreated's own doc comment, and the same
 	// shape handleCaseCreated's own chat block uses (outside its email
 	// if/else, not nested inside the success branch).
-	chatOwned := d.claim(chatKey)
+	//
+	// Product rule: a move TO low severity (S4) never posts to the Incident
+	// Monitor chat, whatever the old severity was; a move to any higher
+	// severity (S0-S3, including an upgrade from S4) always does. Only the
+	// NEW severity matters. chatKey is simply never claimed when skipped;
+	// forgetting an unclaimed key below is a harmless no-op.
+	chatOwned := false
+	if !isLowSeverity(p.NewSeverity) {
+		chatOwned = d.claim(chatKey)
+	}
 	if chatOwned {
 		caseLink := d.links.CSMLink(p.CaseID)
 		title := truncateTitle(p.CaseTitle, maxChatTitleLength)
@@ -1803,12 +1919,12 @@ func (d *Dispatcher) handleIncidentCreated(ctx context.Context, record eventbus.
 		}
 	}
 
-	if audience, ok := d.incidentAudience(ctx, events.TypeIncidentCreated, incidentID, p.Number, p.Team); ok && d.claim(chatKey) {
-		chatErr := d.googleChat.SendIncidentCreatedAlert(ctx, audience, notifications.IncidentCreatedAlert{
-			IncidentID:       incidentID,
-			Number:           p.Number,
-			Team:             p.Team,
-			Priority:         p.Priority,
+	if audiences := d.incidentAudiences(ctx, events.TypeIncidentCreated, incidentID, p.Number, p.Team); len(audiences) > 0 && d.claim(chatKey) {
+		alert := notifications.IncidentCreatedAlert{
+			IncidentID: incidentID,
+			Number:     p.Number,
+			Team:       p.Team,
+			Priority:   p.Priority,
 			// Title is ServiceNow's short description (the subject); the payload's ShortDescription is the additional comments.
 			ShortDescription: truncateTitle(p.Title, maxChatTitleLength),
 			Service:          p.Service,
@@ -1816,6 +1932,9 @@ func (d *Dispatcher) handleIncidentCreated(ctx context.Context, record eventbus.
 			Category:         p.Category,
 			State:            p.State,
 			IncidentLink:     d.links.IncidentLink(incidentID),
+		}
+		chatErr := d.sendToEachIncidentSpace(ctx, events.TypeIncidentCreated, incidentID, audiences, func(audience string) error {
+			return d.googleChat.SendIncidentCreatedAlert(ctx, audience, alert)
 		})
 		if chatErr != nil {
 			errs = append(errs, chatErr)
@@ -1838,35 +1957,73 @@ func (d *Dispatcher) handleIncidentAssigned(ctx context.Context, record eventbus
 	if err := json.Unmarshal(raw, &p); err != nil {
 		return fmt.Errorf("dispatch: decode incident.assigned payload: %w", err)
 	}
-	audience, ok := d.incidentAudience(ctx, events.TypeIncidentAssigned, incidentID, p.Number, p.Team)
-	if !ok {
+	audiences := d.incidentAudiences(ctx, events.TypeIncidentAssigned, incidentID, p.Number, p.Team)
+	if len(audiences) == 0 {
 		return nil
 	}
+	alert := notifications.IncidentAssignedAlert{
+		IncidentID:   incidentID,
+		Number:       p.Number,
+		AssigneeName: p.AssigneeName,
+		UpdatedBy:    p.UpdatedBy,
+		IncidentLink: d.links.IncidentLink(incidentID),
+	}
 	return d.sendChatOnly(ctx, record, func() error {
-		return d.googleChat.SendIncidentAssignedAlert(ctx, audience, notifications.IncidentAssignedAlert{
-			IncidentID:   incidentID,
-			Number:       p.Number,
-			AssigneeName: p.AssigneeName,
-			UpdatedBy:    p.UpdatedBy,
-			IncidentLink: d.links.IncidentLink(incidentID),
+		return d.sendToEachIncidentSpace(ctx, events.TypeIncidentAssigned, incidentID, audiences, func(audience string) error {
+			return d.googleChat.SendIncidentAssignedAlert(ctx, audience, alert)
 		})
 	})
 }
 
-// incidentAudience maps an assignment group to its INCIDENT_CHAT_SPACES audience; a missing entry is config, not a retry.
-func (d *Dispatcher) incidentAudience(ctx context.Context, t events.Type, incidentID, number, team string) (string, bool) {
+// incidentAudiences maps an assignment group to the INCIDENT_CHAT_SPACES
+// audiences its cards go to: the spaces of the groups INCIDENT_CHAT_FANOUT
+// lists for it, else its own. A missing entry is config, not a retry.
+func (d *Dispatcher) incidentAudiences(ctx context.Context, t events.Type, incidentID, number, team string) []string {
 	if strings.TrimSpace(team) == "" {
 		slog.InfoContext(ctx, "dispatch: incident has no assignment group, no chat alert",
 			"type", string(t), "incidentId", incidentID, "number", number)
-		return "", false
+		return nil
 	}
-	audience := notifications.IncidentAudience(team)
-	if !d.googleChat.HasAudienceSpace(audience) {
-		slog.InfoContext(ctx, "dispatch: assignment group has no INCIDENT_CHAT_SPACES entry, no chat alert",
-			"type", string(t), "incidentId", incidentID, "number", number, "assignmentGroup", team)
-		return "", false
+	targets, fanout := d.incidentChatFanout[strings.ToLower(strings.TrimSpace(team))]
+	if !fanout {
+		targets = []string{team}
 	}
-	return audience, true
+	var audiences []string
+	for _, target := range targets {
+		audience := notifications.IncidentAudience(target)
+		if !d.googleChat.HasAudienceSpace(audience) {
+			slog.InfoContext(ctx, "dispatch: assignment group has no INCIDENT_CHAT_SPACES entry, no chat alert",
+				"type", string(t), "incidentId", incidentID, "number", number, "assignmentGroup", target)
+			continue
+		}
+		if !slices.Contains(audiences, audience) {
+			audiences = append(audiences, audience)
+		}
+	}
+	return audiences
+}
+
+// sendToEachIncidentSpace posts one incident card to every audience. A
+// failed card is retried with the whole record, so a space that fails while
+// another took the card is logged, not returned -- a retry would post it
+// twice where it landed; only a card no space took is an error.
+func (d *Dispatcher) sendToEachIncidentSpace(ctx context.Context, t events.Type, incidentID string, audiences []string, send func(audience string) error) error {
+	var errs []error
+	for _, audience := range audiences {
+		err := send(audience)
+		if err == nil {
+			continue
+		}
+		errs = append(errs, err)
+		if len(audiences) > 1 {
+			slog.WarnContext(ctx, "dispatch: an incident Chat space did not take the card",
+				"type", string(t), "incidentId", incidentID, "audience", audience, "err", err)
+		}
+	}
+	if len(errs) < len(audiences) {
+		return nil
+	}
+	return errors.Join(errs...)
 }
 
 // handleCRPlanDateNotice emails one turn of the plan-start-date conversation:

@@ -331,13 +331,31 @@ sre:
     webhookUrlEnv: SRE_CHAT_WEBHOOK_URL
     audience: "SRE"
 
-  # Each SRE team's own Google Chat space, by team key, the same shape as
-  # chat: its rung cards and its closing message go there. A team not listed,
-  # or an incident with no team, uses chat above. e.g.
+  # Each SRE sub-team's own Google Chat space, by team key, the same shape as
+  # chat: its rung cards and its closing message go there. An incident's team
+  # is its assignment group through teams.aliases below ("SRE IaaS" is iaas).
+  # A team not listed uses chat above, so keep chat set; a default group and
+  # a customer case at S0 follow teamlessChats below. Startup logs the teams
+  # that have a space, and warns about a key that matches no team. To
+  # separate SaaS Apollo, SaaS Artemis and IaaS, uncomment and set the three
+  # variables:
   #   teamChats:
   #     apollo:  { webhookUrlEnv: SRE_CHAT_WEBHOOK_URL_APOLLO,  audience: "Apollo SRE" }
   #     artemis: { webhookUrlEnv: SRE_CHAT_WEBHOOK_URL_ARTEMIS, audience: "Artemis SRE" }
+  #     iaas:    { webhookUrlEnv: SRE_CHAT_WEBHOOK_URL_IAAS,    audience: "IaaS SRE" }
+  # A variable named here but not set is not a fallback to chat: that team's
+  # cards are recorded NO_CHAT_SPACE, and startup names the variable.
   teamChats: {}
+
+  # The teamChats spaces an incident with no SRE team of its own posts to,
+  # every one of them: a service mapped to no SRE team (its incident lands in
+  # a default group), a customer case at S0, a monitoring alert with no team.
+  # Its closing message follows; the call still rings one engineer once.
+  # Empty: such an incident posts to chat above. Each entry must be a
+  # teamChats key, so leave it empty while teamChats is. To notify both SaaS
+  # teams, set it with the teamChats above:
+  #   teamlessChats: [apollo, artemis]
+  teamlessChats: []
 
   # When L1, L2 and L3 have all been called and nobody acknowledged, post a
   # closing message to the team's space (teamChats, else chat) saying the
@@ -414,21 +432,28 @@ sme:
     webhookUrlEnv: SME_CHAT_WEBHOOK_URL
     audience: "Special Ops"
 
-  # Each SME team's own Google Chat space, by SME team key, the same shape as
-  # chat. Empty or absent: every team's cards go to chat above. Set: a listed
-  # team's cards go to its own space, and a team not listed gets no card (its
-  # calls still go out when channel includes calls). webhookUrlEnv is the
-  # NAME of the variable holding the URL, never the URL. e.g.
+  # Each SME team's own Google Chat space, by SME team key (the rota team key),
+  # the same shape as chat. An escalation notifies only the SME team it was
+  # escalated to. Empty or absent: every team's cards go to chat above. Set: a
+  # listed team's cards go to its own space, and a team not listed gets no
+  # card (its calls still go out when channel includes calls).
+  #
+  # With audience alone (no webhookUrlEnv) a team's space comes from
+  # GOOGLE_CHAT_SPACES, the JSON list of {"audience", "webhookUrl"} the
+  # service already reads: add one entry per team there, so the nine spaces
+  # need no variable of their own. An audience missing from it records
+  # NO_CHAT_SPACE on that team's rungs. To give all nine teams their own space:
   #   teamChats:
-  #     asgardeo:        { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_ASGARDEO,       audience: "Asgardeo SME" }
-  #     choreo-runtime:  { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_CHOREO_RUNTIME, audience: "Choreo Runtime SME" }
-  #     bijira:          { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_BIJIRA,         audience: "Bijira SME" }
-  #     devant:          { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_DEVANT,         audience: "Devant SME" }
-  #     cloud-agent:     { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_CLOUD_AGENT,    audience: "WSO2 Cloud Agent platform SME" }
-  #     cloud-core:      { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_CLOUD_CORE,     audience: "WSO2 Cloud Core SME" }
-  #     moesif:          { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_MOESIF,         audience: "Moesif SME" }
-  #     u2:              { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_U2,             audience: "U2 SME" }
-  #     b-central:       { webhookUrlEnv: SME_CHAT_WEBHOOK_URL_B_CENTRAL,      audience: "B-Central SME" }
+  #     asgardeo:        { audience: "Asgardeo SME" }
+  #     choreo-runtime:  { audience: "Choreo Runtime SME" }
+  #     bijira:          { audience: "Bijira SME" }
+  #     devant:          { audience: "Devant SME" }
+  #     cloud-agent:     { audience: "WSO2 Cloud Agent platform SME" }
+  #     cloud-core:      { audience: "WSO2 Cloud Core SME" }
+  #     moesif:          { audience: "Moesif SME" }
+  #     u2:              { audience: "U2 SME" }
+  #     b-central:       { audience: "B-Central SME" }
+  # (webhookUrlEnv: <VARIABLE> per team still works, as for sre.teamChats.)
   teamChats: {}
 
   # When the SME ladder has called L1 to L3 and nobody was assigned, post a

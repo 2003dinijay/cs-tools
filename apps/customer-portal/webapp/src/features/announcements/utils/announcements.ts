@@ -225,6 +225,71 @@ export function isAnnouncementDescriptionEffectivelyEmpty(
 }
 
 /**
+ * The label ServiceNow's announcement flow writes ahead of the body in an
+ * announcement's origin comment (`<b><u>Description</u></b><br>...`), as it
+ * appears once `textForEchoComparison` has reduced the comment to its text.
+ */
+const ORIGIN_COMMENT_DESCRIPTION_LABEL = "description";
+
+/**
+ * Reduces HTML to just its visible characters so two snippets can be compared
+ * for "same text" regardless of markup, entity encoding, or where each side
+ * happens to put whitespace between blocks (a description's `</p><p>` and a
+ * journal entry's newline between the same two paragraphs must not look
+ * different).
+ */
+function textForEchoComparison(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, "")
+    .replace(/&nbsp;/gi, " ")
+    .replace(/<[^>]*>/g, "")
+    .replace(/&amp;/gi, "&")
+    .replace(/&lt;/gi, "<")
+    .replace(/&gt;/gi, ">")
+    .replace(/&quot;/gi, '"')
+    .replace(/&#0?39;/g, "'")
+    .replace(/\s+/g, "")
+    .toLowerCase();
+}
+
+/**
+ * True when `commentHtml` is only a repeat of the announcement description:
+ * the same text (markup, entity encoding, whitespace and letter case
+ * ignored), optionally under the bold "Description" label that
+ * ServiceNow's announcement flow puts in front of the body.
+ *
+ * Creating an announcement case makes ServiceNow write an "origin" comment
+ * that mirrors the description, so the details page used to show the same
+ * body twice: once as the oldest comment and once as the Description card.
+ * A blank description has nothing to echo, so it never counts as echoed (the
+ * comment may be the only place the content lives).
+ *
+ * Deliberately an equality check, not "contains": a comment that quotes the
+ * description and then adds something of its own (an update, a correction)
+ * must never be treated as a duplicate and hidden. The worst a mismatch can
+ * do here is leave the duplicate showing, which is how the page behaved
+ * before this check existed.
+ *
+ * @param descriptionHtml - The announcement's description HTML.
+ * @param commentHtml - A comment's HTML (as rendered).
+ * @returns Whether the comment is only a repeat of the description.
+ */
+export function isDescriptionEchoedInComment(
+  descriptionHtml: string | null | undefined,
+  commentHtml: string | null | undefined,
+): boolean {
+  const description = textForEchoComparison(descriptionHtml ?? "");
+  if (!description || !commentHtml) {
+    return false;
+  }
+  const comment = textForEchoComparison(commentHtml);
+  return (
+    comment === description ||
+    comment === `${ORIGIN_COMMENT_DESCRIPTION_LABEL}${description}`
+  );
+}
+
+/**
  * Formats an API date string (ISO or ServiceNow-style `YYYY-MM-DD HH:mm:ss`) for
  * list and detail views using the runtime locale.
  *

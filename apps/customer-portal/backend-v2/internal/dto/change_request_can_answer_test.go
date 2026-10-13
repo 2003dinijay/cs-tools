@@ -114,7 +114,8 @@ func TestMapChangeRequestDetails_ExposesOnlyTheCustomerFields(t *testing.T) {
 		"customerContacts": [{"id": "u1", "name": "Alice", "email": "alice@example.com"}],
 		"approvals": [{"stage": "CAB Approval", "approvers": [{"id": "u2", "name": "Cab Member", "status": "APPROVED", "canDecide": false}]}],
 		"customerApprovalRequired": true, "customerReviewRequired": false,
-		"requestedBy": {"id": "u3", "name": "Requester"}
+		"requestedBy": {"id": "u3", "name": "Requester"},
+		"tags": [{"id": "t1", "label": "internal-only", "color": null}]
 	}`
 	var cr entity.ChangeRequest
 	if err := json.Unmarshal([]byte(fromEntityService), &cr); err != nil {
@@ -141,7 +142,12 @@ func TestMapChangeRequestDetails_ExposesOnlyTheCustomerFields(t *testing.T) {
 	if !reflect.DeepEqual(keys, want) {
 		t.Fatalf("the customer detail's keys changed:\n  got:  %v\n  want: %v", keys, want)
 	}
-	for _, internal := range []string{"customerContacts", "approvals", "approvers", "legalNextStates", "requestedBy", "canDecide"} {
+	// tags are staff bookkeeping (the CSM portal's), never a customer's to see:
+	// the entity type has no field for them, so the key cannot reach the customer.
+	// customerApprovalRequired / customerReviewRequired are no longer in this list:
+	// they reach a customer's read, but only when entity-service computed it for a
+	// customer (see the requirement-box tests below).
+	for _, internal := range []string{"customerContacts", "approvals", "approvers", "legalNextStates", "requestedBy", "canDecide", "tags"} {
 		if _, present := got[internal]; present {
 			t.Errorf("the customer detail exposes %q", internal)
 		}

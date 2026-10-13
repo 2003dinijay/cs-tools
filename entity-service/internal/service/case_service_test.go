@@ -51,6 +51,7 @@ func (alwaysUnrestrictedAccess) ResolveScope(context.Context) (AccessScope, erro
 // repository, not merely that the repository ignores the field.
 type stubCaseRepo struct {
 	aggregateCases                func(ctx context.Context, req domain.SearchCasesRequest, groupBy string) ([]domain.AggregateBucket, error)
+	caseVolumeTrend               func(ctx context.Context, req domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error)
 	searchCases                   func(ctx context.Context, req domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error)
 	createCaseAttachment          func(ctx context.Context, req domain.CreateAttachmentRequest) (domain.Attachment, error)
 	createCaseAttachmentFromSN    func(ctx context.Context, req domain.CreateAttachmentRequest, id string, sizeBytes int, uploadedBy string) (domain.Attachment, error)
@@ -67,8 +68,10 @@ type stubCaseRepo struct {
 	createCaseComment             func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error)
 	createCaseCommentAsSystem     func(ctx context.Context, req domain.CreateCaseCommentRequest, createdOn *time.Time) (domain.CaseComment, error)
 	createCase                    func(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error)
+	resolveRelatedCaseID          func(ctx context.Context, relatedCaseID string) (*string, error)
 	getCaseByID                   func(ctx context.Context, id string, scope repository.SearchScope) (domain.CaseView, error)
 	addCaseTag                    func(ctx context.Context, caseID, label, actorEmail string) (domain.Tag, error)
+	isCaseLikeWorkItem            func(ctx context.Context, workItemID string) (bool, error)
 	setCaseWatchList              func(ctx context.Context, caseID string, userIDs []string, actorEmail string) ([]domain.WatchListUser, time.Time, error)
 	accountDefaultWatcherEmails   func(ctx context.Context, projectID string) ([]string, error)
 	projectOnboardingInfo         func(ctx context.Context, projectID string) (string, bool, error)
@@ -92,6 +95,15 @@ type stubCaseRepo struct {
 	updateCaseActorID *string
 }
 
+func (s *stubCaseRepo) ResolveRelatedCaseID(ctx context.Context, relatedCaseID string) (*string, error) {
+	if s.resolveRelatedCaseID != nil {
+		return s.resolveRelatedCaseID(ctx, relatedCaseID)
+	}
+	if relatedCaseID == "" {
+		return nil, nil
+	}
+	return &relatedCaseID, nil
+}
 func (s *stubCaseRepo) CreateCase(ctx context.Context, req domain.CreateCaseRequest) (domain.Case, error) {
 	if s.createCase != nil {
 		return s.createCase(ctx, req)
@@ -115,6 +127,12 @@ func (s *stubCaseRepo) AggregateCases(ctx context.Context, req domain.SearchCase
 		return s.aggregateCases(ctx, req, groupBy)
 	}
 	panic("AggregateCases called unexpectedly")
+}
+func (s *stubCaseRepo) CaseVolumeTrend(ctx context.Context, req domain.SearchCasesRequest, days []string, _ repository.SearchScope) (map[string]domain.CaseVolumeDayCount, error) {
+	if s.caseVolumeTrend != nil {
+		return s.caseVolumeTrend(ctx, req, days)
+	}
+	panic("CaseVolumeTrend called unexpectedly")
 }
 func (s *stubCaseRepo) SearchCases(ctx context.Context, req domain.SearchCasesRequest, scope repository.SearchScope) ([]domain.SearchCaseView, int, error) {
 	if s.searchCases != nil {
@@ -221,6 +239,16 @@ func (s *stubCaseRepo) GetCaseTagSNSysID(ctx context.Context, caseID, tagID stri
 }
 func (s *stubCaseRepo) SearchTags(context.Context, string, string, int) ([]domain.Tag, error) {
 	panic("not implemented")
+}
+
+// IsCaseLikeWorkItem answers true unless a test says otherwise: the tag
+// mirror tests above were written against cases, and a change request's
+// Postgres-only tags are the one thing isCaseLikeWorkItem switches off.
+func (s *stubCaseRepo) IsCaseLikeWorkItem(ctx context.Context, workItemID string) (bool, error) {
+	if s.isCaseLikeWorkItem != nil {
+		return s.isCaseLikeWorkItem(ctx, workItemID)
+	}
+	return true, nil
 }
 func (s *stubCaseRepo) GetCaseFeedback(ctx context.Context, caseID string) (repository.CaseFeedbackRow, bool, error) {
 	if s.getCaseFeedback != nil {
@@ -493,6 +521,63 @@ func TestCaseService_SearchCases_CountOnlyReachesRepository(t *testing.T) {
 	}
 	if resp.Total != 42 {
 		t.Fatalf("expected Total 42, got %d", resp.Total)
+	}
+}
+
+// TestCaseService_SearchCases_RedactsFixEtaForNonInternalScope proves a
+// customer-scoped (non-internal) caller never sees BestCaseFixEta/
+// MostLikelyFixEta/WorstCaseFixEta on a SearchCases response -- those three
+// fields are internal-only (CSM-engineer-facing, never shared with the
+// customer; see SearchCaseView's own doc comment on each), and a CodeRabbit
+// review of the SearchCases fix-ETA fix (digiops-cs#3319 / PR #2745) caught
+// that the repository populates them unconditionally regardless of scope.
+// An internal/unrestricted caller still gets them, matching GetCaseByID's
+// existing (if imperfect) behavior.
+func TestCaseService_SearchCases_RedactsFixEtaForNonInternalScope(t *testing.T) {
+	bestCaseEta := "2026-11-01"
+	mostLikelyEta := "2026-11-05"
+	worstCaseEta := "2026-11-10"
+
+	tests := []struct {
+		name       string
+		scope      AccessScope
+		wantRedact bool
+	}{
+		{name: "external customer scope redacts fix-ETA", scope: AccessScope{Unrestricted: false, HasInternalAccess: false}, wantRedact: true},
+		{name: "internal (Unrestricted) scope keeps fix-ETA", scope: AccessScope{Unrestricted: true}, wantRedact: false},
+		{name: "staff with HasInternalAccess but not Unrestricted keeps fix-ETA", scope: AccessScope{Unrestricted: false, HasInternalAccess: true}, wantRedact: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			repo := &stubCaseRepo{
+				searchCases: func(context.Context, domain.SearchCasesRequest) ([]domain.SearchCaseView, int, error) {
+					return []domain.SearchCaseView{
+						{
+							ID:               "case-1",
+							BestCaseFixEta:   &bestCaseEta,
+							MostLikelyFixEta: &mostLikelyEta,
+							WorstCaseFixEta:  &worstCaseEta,
+						},
+					}, 1, nil
+				},
+			}
+			svc := NewCaseService(repo, stubUserRepo{}, nil, stubAccess{scope: tt.scope}, nil)
+			ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+			resp, err := svc.SearchCases(ctx, domain.SearchCasesRequest{})
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if len(resp.Cases) != 1 {
+				t.Fatalf("expected 1 case, got %d", len(resp.Cases))
+			}
+			got := resp.Cases[0]
+			gotRedacted := got.BestCaseFixEta == nil && got.MostLikelyFixEta == nil && got.WorstCaseFixEta == nil
+			if gotRedacted != tt.wantRedact {
+				t.Errorf("fix-ETA redacted = %v, want %v (BestCaseFixEta=%v MostLikelyFixEta=%v WorstCaseFixEta=%v)",
+					gotRedacted, tt.wantRedact, got.BestCaseFixEta, got.MostLikelyFixEta, got.WorstCaseFixEta)
+			}
+		})
 	}
 }
 
@@ -1711,8 +1796,15 @@ func TestCaseService_UpdateCase_ResolutionFieldsRequireClosedOrSolutionProposedS
 				// just event publishing), so every State-bearing case here
 				// needs this stubbed even though none of them care about
 				// the activity log itself.
+				// work_in_progress, not open: an internal (agent-tier) caller
+				// can reach both closed and solution_proposed from
+				// work_in_progress, but not from open -- see
+				// case_state_transitions.go's caseStateTransitionsInternal.
+				// This test is about the resolution-fields requirement, not
+				// transition legality, so the "before" state just needs to be
+				// one real transition away from both targets under test.
 				getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
-					st := domain.CaseStateOpen
+					st := domain.CaseStateWorkInProgress
 					return domain.CaseView{ID: id, State: &st}, nil
 				},
 				updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
@@ -1923,7 +2015,11 @@ func (s *stubMirrorCaseService) patchCaseWatchList(ctx context.Context, caseID s
 // snCaseService.UpdateCase (this stub doesn't even implement that — see
 // stubMirrorCaseService's own doc comment).
 func TestCaseService_UpdateCase_MirrorsFieldToServiceNow(t *testing.T) {
-	state := domain.CaseStateOpen
+	// work_in_progress, not open: no transition table (customer or agent)
+	// ever allows a caller to move a case back into open, so a target state
+	// for this mirroring test has to be one that's actually reachable --
+	// see case_state_transitions.go.
+	state := domain.CaseStateWorkInProgress
 	severity := domain.CaseSeverityHigh
 	workState := domain.CaseWorkStateOngoing
 
@@ -1962,7 +2058,7 @@ func TestCaseService_UpdateCase_MirrorsFieldToServiceNow(t *testing.T) {
 				// entry, not just event publishing) -- irrelevant to this
 				// test's own mirror assertions, just needs to not panic.
 				getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
-					priorState := domain.CaseStateClosed
+					priorState := domain.CaseStateOpen
 					priorWorkState := domain.CaseWorkStatePaused
 					return domain.CaseView{ID: id, State: &priorState, WorkState: &priorWorkState}, nil
 				},
@@ -2015,9 +2111,12 @@ func TestCaseService_UpdateCase_PublishesStatusChanged(t *testing.T) {
 	newState := domain.CaseStateWaitingOnWSO2
 	repo := &stubCaseRepo{
 		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			openState := domain.CaseStateOpen
+			// work_in_progress, not open: an agent-tier caller can reach
+			// waiting_on_wso2 from work_in_progress, not directly from open
+			// -- see case_state_transitions.go.
+			priorState := domain.CaseStateWorkInProgress
 			return domain.CaseView{
-				ID: testDeploymentUUID, Number: "CS0001", State: &openState,
+				ID: testDeploymentUUID, Number: "CS0001", State: &priorState,
 				ProjectDetails: &domain.EntityRef{ID: "proj-1", Name: "Project One"},
 				WatchList:      []domain.WatchListUser{{Email: "watcher@example.com"}},
 			}, nil
@@ -2064,9 +2163,11 @@ func TestCaseService_UpdateCase_StatusChanged_RecipientsIncludeFreshDefaultsAndD
 
 	repo := &stubCaseRepo{
 		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			openState := domain.CaseStateOpen
+			// work_in_progress, not open: see the identical note in
+			// TestCaseService_UpdateCase_PublishesStatusChanged above.
+			priorState := domain.CaseStateWorkInProgress
 			return domain.CaseView{
-				ID: testDeploymentUUID, Number: "CS0001", State: &openState,
+				ID: testDeploymentUUID, Number: "CS0001", State: &priorState,
 				ProjectDetails: &domain.EntityRef{ID: projectID, Name: "Project One"},
 				WatchList: []domain.WatchListUser{
 					{ID: activeWatcherID, Email: "active@example.com"},
@@ -2142,10 +2243,12 @@ func TestCaseService_UpdateCase_StatusChanged_RecipientsIncludeFreshDefaultsAndD
 // has no such field.
 func TestCaseService_UpdateCase_ResolvesActorIDForClosedByStamp(t *testing.T) {
 	closed := domain.CaseStateClosed
-	open := domain.CaseStateOpen
+	// work_in_progress, not open: an agent-tier caller can reach closed from
+	// work_in_progress, not directly from open -- see case_state_transitions.go.
+	priorState := domain.CaseStateWorkInProgress
 	repo := &stubCaseRepo{
 		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{ID: testDeploymentUUID, State: &open}, nil
+			return domain.CaseView{ID: testDeploymentUUID, State: &priorState}, nil
 		},
 		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
 			return domain.Case{ID: req.ID, State: req.State}, nil, nil
@@ -2173,10 +2276,12 @@ func TestCaseService_UpdateCase_ResolvesActorIDForClosedByStamp(t *testing.T) {
 // the whole update or guessing at who the actor is.
 func TestCaseService_UpdateCase_LeavesActorIDNilWithoutAToken(t *testing.T) {
 	closed := domain.CaseStateClosed
-	open := domain.CaseStateOpen
+	// work_in_progress, not open: see the identical note in
+	// TestCaseService_UpdateCase_ResolvesActorIDForClosedByStamp above.
+	priorState := domain.CaseStateWorkInProgress
 	repo := &stubCaseRepo{
 		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			return domain.CaseView{ID: testDeploymentUUID, State: &open}, nil
+			return domain.CaseView{ID: testDeploymentUUID, State: &priorState}, nil
 		},
 		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
 			return domain.Case{ID: req.ID, State: req.State}, nil, nil
@@ -2333,8 +2438,11 @@ func TestCaseService_UpdateCase_AppliesStateSLAEffects(t *testing.T) {
 	newState := domain.CaseStateAwaitingInfo
 	repo := &stubCaseRepo{
 		getCaseByID: func(context.Context, string, repository.SearchScope) (domain.CaseView, error) {
-			openState := domain.CaseStateOpen
-			return domain.CaseView{ID: testDeploymentUUID, State: &openState}, nil
+			// work_in_progress, not open: an agent-tier caller can reach
+			// awaiting_info from work_in_progress, not directly from open --
+			// see case_state_transitions.go.
+			priorState := domain.CaseStateWorkInProgress
+			return domain.CaseView{ID: testDeploymentUUID, State: &priorState}, nil
 		},
 		updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
 			return domain.Case{ID: req.ID, State: req.State}, nil, nil
@@ -2772,6 +2880,164 @@ func TestCaseService_CreateCase_SNSuccessCreatesPostgresRowWithMatchingIdentity(
 	if resp.Case.ID != snID || resp.Case.Number != snNumber || resp.Case.InternalID != snInternalID {
 		t.Errorf("CreateCase response = %+v, want identity matching ServiceNow's (%q, %q, %q)", resp.Case, snID, snNumber, snInternalID)
 	}
+}
+
+// TestCaseService_CreateCase_RelatedCaseID pins that the closed case's id
+// survives both create paths. The Overview band reads it back from
+// "case".related_case_id, so dropping it here is what left that cell empty.
+func TestCaseService_CreateCase_RelatedCaseID(t *testing.T) {
+	const relatedCaseID = "44444444-4444-4444-4444-444444444444"
+
+	t.Run("dual-write forwards the id", func(t *testing.T) {
+		req := validCreateCaseRequest()
+		req.RelatedCaseID = relatedCaseID
+		var gotMirror, gotRepo string
+		mirror := &stubMirrorCaseService{
+			createCase: func(_ context.Context, got domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+				gotMirror = got.RelatedCaseID
+				return domain.CreateCaseResponse{
+					Case: domain.CreateCaseDetails{
+						ID: "33333333-3333-3333-3333-333333333333", Number: "CS0023001",
+						InternalID: "WSO2-CS-1", CreatedBy: "jane.doe@example.com",
+						CreatedOn: time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC), State: "Open",
+					},
+				}, nil
+			},
+		}
+		repo := &stubCaseRepo{
+			createCaseFromServiceNow: func(_ context.Context, got domain.CreateCaseRequest, id, number, wso2ID, createdBy, _ string) (domain.Case, error) {
+				gotRepo = got.RelatedCaseID
+				if got.ResolvedRelatedCaseID == nil || *got.ResolvedRelatedCaseID != relatedCaseID {
+					t.Errorf("ResolvedRelatedCaseID = %v, want %q", got.ResolvedRelatedCaseID, relatedCaseID)
+				}
+				respState := domain.CaseStateOpen
+				return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, State: &respState}, nil
+			},
+		}
+		svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}), mirror, nil, "")
+		if _, err := svc.CreateCase(context.Background(), req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotMirror != relatedCaseID || gotRepo != relatedCaseID {
+			t.Fatalf("relatedCaseId mirror=%q repo=%q, want %q", gotMirror, gotRepo, relatedCaseID)
+		}
+	})
+
+	t.Run("plain postgres forwards the id", func(t *testing.T) {
+		req := validCreateCaseRequest()
+		req.RelatedCaseID = relatedCaseID
+		var got string
+		repo := &stubCaseRepo{
+			createCase: func(_ context.Context, gotReq domain.CreateCaseRequest) (domain.Case, error) {
+				got = gotReq.RelatedCaseID
+				respState := domain.CaseStateOpen
+				return domain.Case{ID: "66666666-6666-6666-6666-666666666666", Number: "CS0023004", State: &respState}, nil
+			},
+		}
+		userRepo := stubUserRepo{
+			getUserByEmail: func(context.Context, string) (domain.User, error) {
+				return domain.User{ID: "user-1", Email: "jane.doe@example.com"}, nil
+			},
+		}
+		svc := NewCaseService(repo, userRepo, nil, alwaysUnrestrictedAccess{}, nil)
+		ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+		if _, err := svc.CreateCase(ctx, req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if got != relatedCaseID {
+			t.Fatalf("CreateCase relatedCaseId = %q, want %q", got, relatedCaseID)
+		}
+	})
+
+	t.Run("lookup failure does not create a ServiceNow case", func(t *testing.T) {
+		req := validCreateCaseRequest()
+		req.RelatedCaseID = relatedCaseID
+		mirror := &stubMirrorCaseService{
+			createCase: func(context.Context, domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+				t.Fatal("ServiceNow create must not run when the related-case lookup fails")
+				return domain.CreateCaseResponse{}, nil
+			},
+		}
+		repo := &stubCaseRepo{
+			resolveRelatedCaseID: func(context.Context, string) (*string, error) {
+				return nil, errors.New("postgres unavailable")
+			},
+			createCaseFromServiceNow: func(context.Context, domain.CreateCaseRequest, string, string, string, string, string) (domain.Case, error) {
+				t.Fatal("Postgres insert must not run when the related-case lookup fails")
+				return domain.Case{}, nil
+			},
+		}
+		svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}), mirror, nil, "")
+		if _, err := svc.CreateCase(context.Background(), req); err == nil {
+			t.Fatal("expected the lookup error")
+		}
+	})
+
+	t.Run("unmirrored related case is stored as null and still created", func(t *testing.T) {
+		req := validCreateCaseRequest()
+		req.RelatedCaseID = relatedCaseID
+		var gotMirror string
+		var gotResolved *string
+		mirror := &stubMirrorCaseService{
+			createCase: func(_ context.Context, got domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+				gotMirror = got.RelatedCaseID
+				return domain.CreateCaseResponse{
+					Case: domain.CreateCaseDetails{
+						ID: "33333333-3333-3333-3333-333333333333", Number: "CS0023001",
+						InternalID: "WSO2-CS-1", CreatedBy: "jane.doe@example.com",
+						CreatedOn: time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC), State: "Open",
+					},
+				}, nil
+			},
+		}
+		repo := &stubCaseRepo{
+			resolveRelatedCaseID: func(context.Context, string) (*string, error) {
+				return nil, nil
+			},
+			createCaseFromServiceNow: func(_ context.Context, got domain.CreateCaseRequest, id, number, wso2ID, createdBy, _ string) (domain.Case, error) {
+				gotResolved = got.ResolvedRelatedCaseID
+				respState := domain.CaseStateOpen
+				return domain.Case{ID: id, Number: number, InternalID: wso2ID, CreatedBy: createdBy, State: &respState}, nil
+			},
+		}
+		svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}), mirror, nil, "")
+		if _, err := svc.CreateCase(context.Background(), req); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if gotMirror != relatedCaseID {
+			t.Fatalf("ServiceNow relatedCaseId = %q, want %q", gotMirror, relatedCaseID)
+		}
+		if gotResolved != nil {
+			t.Fatalf("ResolvedRelatedCaseID = %q, want nil so the insert binds NULL", *gotResolved)
+		}
+	})
+
+	t.Run("invalid id is rejected before any write", func(t *testing.T) {
+		req := validCreateCaseRequest()
+		req.RelatedCaseID = "not-a-uuid"
+		mirror := &stubMirrorCaseService{
+			createCase: func(context.Context, domain.CreateCaseRequest) (domain.CreateCaseResponse, error) {
+				t.Fatal("ServiceNow create must not run for an invalid relatedCaseId")
+				return domain.CreateCaseResponse{}, nil
+			},
+		}
+		repo := &stubCaseRepo{
+			createCase: func(context.Context, domain.CreateCaseRequest) (domain.Case, error) {
+				t.Fatal("Postgres create must not run for an invalid relatedCaseId")
+				return domain.Case{}, nil
+			},
+			createCaseFromServiceNow: func(context.Context, domain.CreateCaseRequest, string, string, string, string, string) (domain.Case, error) {
+				t.Fatal("Postgres create-from-ServiceNow must not run for an invalid relatedCaseId")
+				return domain.Case{}, nil
+			},
+		}
+		svc := NewCaseServiceWithSNWriteback(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil, NewSNWritebackDispatcher(&recordingSNWritebackFailures{}), mirror, nil, "")
+		_, err := svc.CreateCase(context.Background(), req)
+		var ve *apierror.ValidationError
+		if !errors.As(err, &ve) {
+			t.Fatalf("err = %v, want *apierror.ValidationError", err)
+		}
+	})
 }
 
 // TestCaseService_CreateCase_MirrorsInitialServiceNowComments is the
@@ -4983,8 +5249,12 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 
 	newSvc := func(mirror *stubMirrorCaseService) CaseService {
 		repo := &stubCaseRepo{
+			// work_in_progress, not open: an agent-tier (Unrestricted) caller
+			// can reach closed from work_in_progress, not directly from open
+			// -- see case_state_transitions.go. This sub-test's callers are
+			// all alwaysUnrestrictedAccess (internal tier).
 			getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
-				st := domain.CaseStateOpen
+				st := domain.CaseStateWorkInProgress
 				return domain.CaseView{ID: id, State: &st}, nil
 			},
 			updateCase: func(_ context.Context, req domain.UpdateCaseRequest) (domain.Case, *domain.CaseSeverity, error) {
@@ -5104,8 +5374,12 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 	// exempt them.
 	t.Run("caller with a mixed internal+external identity still requires resolution fields", func(t *testing.T) {
 		repo := &stubCaseRepo{
+			// work_in_progress, not open: this caller resolves as internal
+			// (HasInternalAccess below), which can reach closed from
+			// work_in_progress, not directly from open -- see
+			// case_state_transitions.go.
 			getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
-				st := domain.CaseStateOpen
+				st := domain.CaseStateWorkInProgress
 				typ := "case"
 				return domain.CaseView{ID: id, State: &st, Type: &typ}, nil
 			},
@@ -5124,8 +5398,10 @@ func TestCaseService_UpdateCase_DualWriteRequiresResolutionFieldsAndMirrorsThem(
 
 	t.Run("closing a non-case type without resolution fields is allowed", func(t *testing.T) {
 		repo := &stubCaseRepo{
+			// work_in_progress, not open: see the identical note on newSvc's
+			// own stub above -- this sub-test also uses alwaysUnrestrictedAccess.
 			getCaseByID: func(_ context.Context, id string, _ repository.SearchScope) (domain.CaseView, error) {
-				st := domain.CaseStateOpen
+				st := domain.CaseStateWorkInProgress
 				typ := "security_report_analysis"
 				return domain.CaseView{ID: id, State: &st, Type: &typ}, nil
 			},
@@ -5165,5 +5441,222 @@ func TestCaseService_AggregateCases_GroupsAndCapsBuckets(t *testing.T) {
 	}
 	if _, err := svc.AggregateCases(ctx, domain.AggregateCasesRequest{GroupBy: "bogus"}); err == nil {
 		t.Error("expected a ValidationError for an unknown groupBy")
+	}
+}
+
+// stubVolumeTrendCache is a minimal in-memory fake of service.CaseVolumeTrendCache,
+// recording every Set call's ttl so tests can assert the midnight-capped/
+// stable split.
+type stubVolumeTrendCache struct {
+	mu       sync.Mutex
+	data     map[string]domain.CaseVolumeDayCount
+	setCalls []struct {
+		day string
+		ttl time.Duration
+	}
+}
+
+func newStubVolumeTrendCache() *stubVolumeTrendCache {
+	return &stubVolumeTrendCache{data: map[string]domain.CaseVolumeDayCount{}}
+}
+
+func (c *stubVolumeTrendCache) key(filtersKey, day string) string { return filtersKey + "|" + day }
+
+func (c *stubVolumeTrendCache) GetMany(_ context.Context, filtersKey string, days []string) map[string]domain.CaseVolumeDayCount {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := map[string]domain.CaseVolumeDayCount{}
+	for _, d := range days {
+		if v, ok := c.data[c.key(filtersKey, d)]; ok {
+			out[d] = v
+		}
+	}
+	return out
+}
+
+func (c *stubVolumeTrendCache) Set(_ context.Context, filtersKey, day string, dc domain.CaseVolumeDayCount, ttl time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data[c.key(filtersKey, day)] = dc
+	c.setCalls = append(c.setCalls, struct {
+		day string
+		ttl time.Duration
+	}{day, ttl})
+}
+
+func TestCaseService_CaseVolumeTrend_ColdCacheQueriesOnceAndCachesWithAsymmetricTTLs(t *testing.T) {
+	var gotDays []string
+	repo := &stubCaseRepo{caseVolumeTrend: func(_ context.Context, _ domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error) {
+		gotDays = append([]string{}, days...)
+		out := make(map[string]domain.CaseVolumeDayCount, len(days))
+		for i, d := range days {
+			out[d] = domain.CaseVolumeDayCount{Opened: i + 1, Closed: i}
+		}
+		return out, nil
+	}}
+	volCache := newStubVolumeTrendCache()
+	svc := WithCaseVolumeTrendCache(NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil), volCache)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	resp, err := svc.CaseVolumeTrend(ctx, domain.CaseVolumeTrendRequest{Days: 3})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Days != 3 || len(resp.Series) != 2 {
+		t.Fatalf("got days=%d series=%d, want 3/2", resp.Days, len(resp.Series))
+	}
+	if len(gotDays) != 3 {
+		t.Fatalf("repo.CaseVolumeTrend called with %d days, want exactly 3 (one bulk call)", len(gotDays))
+	}
+	todayKey := time.Now().UTC().Format("2006-01-02")
+	sawFresh, sawStable := false, false
+	for _, c := range volCache.setCalls {
+		if c.day == todayKey {
+			// Capped at time left until UTC midnight, not a flat duration --
+			// bounded above by 24h and must be strictly positive. The exact
+			// value depends on the instant the service itself called
+			// time.Now(), a few nanoseconds before this assertion runs, so
+			// this checks the bound rather than pinning an exact duration.
+			if c.ttl <= 0 || c.ttl > 24*time.Hour {
+				t.Errorf("today's TTL = %v, want (0, 24h]", c.ttl)
+			}
+			sawFresh = true
+		} else {
+			if c.ttl != caseVolumeTrendStableTTL {
+				t.Errorf("past day %s's TTL = %v, want the stable TTL %v", c.day, c.ttl, caseVolumeTrendStableTTL)
+			}
+			sawStable = true
+		}
+	}
+	if !sawFresh || !sawStable {
+		t.Errorf("expected both a midnight-capped (today) and a stable-TTL (past day) cache write, sawFresh=%v sawStable=%v", sawFresh, sawStable)
+	}
+}
+
+func TestTTLUntilNextUTCMidnight(t *testing.T) {
+	tests := []struct {
+		name string
+		now  time.Time
+		want time.Duration
+	}{
+		{"just after midnight", time.Date(2026, 10, 13, 0, 0, 1, 0, time.UTC), 23*time.Hour + 59*time.Minute + 59*time.Second},
+		{"just before midnight", time.Date(2026, 10, 13, 23, 59, 59, 0, time.UTC), time.Second},
+		{"midday", time.Date(2026, 10, 13, 12, 0, 0, 0, time.UTC), 12 * time.Hour},
+		{"exactly midnight", time.Date(2026, 10, 13, 0, 0, 0, 0, time.UTC), 24 * time.Hour},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ttlUntilNextUTCMidnight(tt.now); got != tt.want {
+				t.Errorf("ttlUntilNextUTCMidnight(%v) = %v, want %v", tt.now, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestCaseService_CaseVolumeTrend_WarmCacheSkipsTheRepository(t *testing.T) {
+	repo := &stubCaseRepo{} // caseVolumeTrend left nil: panics if called
+	volCache := newStubVolumeTrendCache()
+	svc := WithCaseVolumeTrendCache(NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil), volCache)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	// Prime the cache for every day a 2-day window will ask for, exactly as
+	// CaseVolumeTrend itself would compute them.
+	today := time.Now().UTC()
+	filtersKey := "{}"
+	for i := 0; i < 2; i++ {
+		day := today.AddDate(0, 0, -i).Format("2006-01-02")
+		volCache.Set(ctx, filtersKey, day, domain.CaseVolumeDayCount{Opened: 1, Closed: 1}, time.Hour)
+	}
+
+	if _, err := svc.CaseVolumeTrend(ctx, domain.CaseVolumeTrendRequest{Days: 2}); err != nil {
+		t.Fatalf("unexpected error (repo.CaseVolumeTrend must not have been called): %v", err)
+	}
+}
+
+func TestCaseService_CaseVolumeTrend_PartialCacheHitQueriesOnlyTheMissingDays(t *testing.T) {
+	today := time.Now().UTC()
+	yesterday := today.AddDate(0, 0, -1).Format("2006-01-02")
+	dayBefore := today.AddDate(0, 0, -2).Format("2006-01-02")
+
+	var gotDays []string
+	repo := &stubCaseRepo{caseVolumeTrend: func(_ context.Context, _ domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error) {
+		gotDays = append([]string{}, days...)
+		out := make(map[string]domain.CaseVolumeDayCount, len(days))
+		for _, d := range days {
+			out[d] = domain.CaseVolumeDayCount{Opened: 9, Closed: 9}
+		}
+		return out, nil
+	}}
+	volCache := newStubVolumeTrendCache()
+	svc := WithCaseVolumeTrendCache(NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil), volCache)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	// Pre-cache the two oldest days of a 3-day window; only "today" is missing.
+	filtersKey := "{}"
+	volCache.Set(ctx, filtersKey, dayBefore, domain.CaseVolumeDayCount{Opened: 1}, time.Hour)
+	volCache.Set(ctx, filtersKey, yesterday, domain.CaseVolumeDayCount{Opened: 2}, time.Hour)
+
+	if _, err := svc.CaseVolumeTrend(ctx, domain.CaseVolumeTrendRequest{Days: 3}); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(gotDays) != 1 || gotDays[0] != today.Format("2006-01-02") {
+		t.Fatalf("repo.CaseVolumeTrend called with days=%v, want exactly [%s]", gotDays, today.Format("2006-01-02"))
+	}
+}
+
+func TestCaseService_CaseVolumeTrend_ValidatesDays(t *testing.T) {
+	repo := &stubCaseRepo{caseVolumeTrend: func(_ context.Context, _ domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error) {
+		out := make(map[string]domain.CaseVolumeDayCount, len(days))
+		for _, d := range days {
+			out[d] = domain.CaseVolumeDayCount{}
+		}
+		return out, nil
+	}}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, alwaysUnrestrictedAccess{}, nil)
+	ctx := contextWithUserIDToken(fakeJWTWithEmail(t, "jane.doe@example.com"))
+
+	// Days omitted defaults to 30.
+	resp, err := svc.CaseVolumeTrend(ctx, domain.CaseVolumeTrendRequest{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if resp.Days != defaultCaseVolumeTrendDays {
+		t.Errorf("Days = %d, want the default %d", resp.Days, defaultCaseVolumeTrendDays)
+	}
+
+	for _, days := range []int{-1, 0 - 1, maxCaseVolumeTrendDays + 1} {
+		if _, err := svc.CaseVolumeTrend(ctx, domain.CaseVolumeTrendRequest{Days: days}); err == nil {
+			t.Errorf("days=%d: expected a ValidationError", days)
+		}
+	}
+}
+
+// Regression guard: this endpoint's own cache (see CLAUDE.md, "Deliberately
+// NOT keyed by caller identity") is keyed only by filters, never by caller
+// scope -- safe only because every caller is Unrestricted. A restricted
+// caller must never reach the repository at all: a scope-filtered result
+// cached under a scope-independent key would leak across callers with
+// different scopes in either direction on the next request for the same
+// filters. Same "repository must never even be reached" guard as
+// TestCaseService_GetCaseFeedback_RejectsExternalCaller.
+func TestCaseService_CaseVolumeTrend_RejectsExternalCaller(t *testing.T) {
+	reached := false
+	repo := &stubCaseRepo{caseVolumeTrend: func(_ context.Context, _ domain.SearchCasesRequest, days []string) (map[string]domain.CaseVolumeDayCount, error) {
+		reached = true
+		out := make(map[string]domain.CaseVolumeDayCount, len(days))
+		for _, d := range days {
+			out[d] = domain.CaseVolumeDayCount{}
+		}
+		return out, nil
+	}}
+	svc := NewCaseService(repo, stubUserRepo{}, nil, stubAccess{scope: AccessScope{Unrestricted: false}}, nil)
+
+	_, err := svc.CaseVolumeTrend(context.Background(), domain.CaseVolumeTrendRequest{})
+	var forbidden *apierror.ForbiddenError
+	if !errors.As(err, &forbidden) {
+		t.Fatalf("expected ForbiddenError, got %v", err)
+	}
+	if reached {
+		t.Fatal("CaseVolumeTrend reached the repository for a non-internal caller")
 	}
 }

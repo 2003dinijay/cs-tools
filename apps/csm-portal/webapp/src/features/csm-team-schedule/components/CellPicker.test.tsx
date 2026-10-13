@@ -16,12 +16,13 @@
  * under the License.
  */
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import CellPicker, { type CellPickerTarget } from "./CellPicker";
 import type { CellAbsence } from "../types";
-import { ANNUAL_LEAVE, EVENING, LIEU_LEAVE, REGULAR, RND, TZ1, TZ1_L1, TZ2, TZ3, WEEKEND } from "../test/fixtures";
+import type { ScheduleAbsenceKind } from "../types";
+import { ANNUAL_LEAVE, EVENING, LIEU_LEAVE, REGULAR, RND, TZ1, TZ1_L1, TZ2, TZ3, WEEKEND, shift } from "../test/fixtures";
 
 const ANCHOR = { top: 100, left: 100, bottom: 130, right: 144 };
 
@@ -484,5 +485,185 @@ describe("CellPicker: moving somebody back", () => {
     onMoved();
     fireEvent.change(screen.getByLabelText("Mark from"), { target: { value: "2026-10-02" } });
     expect(screen.queryByRole("button", { name: /^Back to/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("CellPicker: a dialog in the middle of the view", () => {
+  it("opens as a modal dialog and takes focus", () => {
+    renderPicker();
+    const dialog = screen.getByRole("dialog", { name: "Change Asela's rota" });
+    expect(dialog).toHaveAttribute("aria-modal", "true");
+    expect(dialog).toHaveFocus();
+  });
+
+  it("grows out of the cell that was clicked", () => {
+    renderPicker();
+    // jsdom lays nothing out, so the dialog sits at 0,0 and the origin is the
+    // cell's own middle.
+    expect(screen.getByRole("dialog")).toHaveStyle({ transformOrigin: "122px 115px" });
+  });
+
+  it("says what the day holds now", () => {
+    renderPicker({ target: target({ shiftCode: EVENING.code }) });
+    const now = screen.getByTitle("What this day holds now");
+    expect(now).toHaveTextContent(EVENING.shortCode);
+    expect(now).toHaveTextContent(EVENING.label);
+  });
+
+  it("closes from the backdrop, after fading out", () => {
+    vi.useFakeTimers();
+    try {
+      const { onClose } = renderPicker();
+      fireEvent.mouseDown(screen.getByRole("dialog"));
+      expect(screen.getByRole("dialog").parentElement).not.toHaveClass("closing");
+      fireEvent.mouseDown(screen.getByRole("dialog").parentElement as HTMLElement);
+      expect(screen.getByRole("dialog").parentElement).toHaveClass("closing");
+      expect(onClose).not.toHaveBeenCalled();
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("closes on Escape once, however often it is pressed", () => {
+    vi.useFakeTimers();
+    try {
+      const { onClose } = renderPicker();
+      fireEvent.keyDown(window, { key: "Escape" });
+      fireEvent.keyDown(window, { key: "Escape" });
+      act(() => {
+        vi.advanceTimersByTime(200);
+      });
+      expect(onClose).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("keeps Tab inside the dialog", () => {
+    renderPicker();
+    const dialog = screen.getByRole("dialog");
+    const close = screen.getByRole("button", { name: "Close" });
+    const clear = screen.getByRole("button", { name: /Clear/ });
+    clear.focus();
+    fireEvent.keyDown(window, { key: "Tab" });
+    expect(close).toHaveFocus();
+    fireEvent.keyDown(window, { key: "Tab", shiftKey: true });
+    expect(clear).toHaveFocus();
+    expect(dialog).toContainElement(document.activeElement as HTMLElement);
+  });
+
+  it("gives focus back to where it was on close", () => {
+    const before = document.createElement("button");
+    document.body.appendChild(before);
+    before.focus();
+    const { unmount } = render(
+      <CellPicker
+        target={target()}
+        shifts={[REGULAR]}
+        awayKinds={[ANNUAL_LEAVE]}
+        onApply={vi.fn()}
+        onMarkAway={vi.fn()}
+        onClear={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(before).not.toHaveFocus();
+    unmount();
+    expect(before).toHaveFocus();
+    before.remove();
+  });
+
+  it("puts the dates with leave and allocations", () => {
+    renderPicker();
+    const away = screen.getByRole("region", { name: "Leave & allocations" });
+    expect(within(away).getByLabelText("Mark from")).toBeInTheDocument();
+    expect(within(away).getByLabelText("Mark until")).toBeInTheDocument();
+    expect(within(away).getByRole("button", { name: /Annual leave/ })).toBeInTheDocument();
+    const rota = screen.getByRole("region", { name: /^Rota/ });
+    expect(within(rota).queryByLabelText("Mark from")).not.toBeInTheDocument();
+    expect(within(rota).getByRole("button", { name: /Evening 6-9pm/ })).toBeInTheDocument();
+  });
+
+  it("says on the rota side which days a pick will set", () => {
+    renderPicker();
+    const rota = screen.getByRole("region", { name: /^Rota/ });
+    expect(within(rota).getByText(/^Wed 23 Sept?$/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Mark until"), { target: { value: "2026-09-25" } });
+    expect(within(rota).getByText(/23 Sept? – 25 Sept? · 3 days/)).toBeInTheDocument();
+  });
+});
+
+describe("CellPicker: moving somebody to another team", () => {
+  const AMERICAS_COVER = shift({
+    code: "CRE_AMERICAS",
+    shortCode: "NLK",
+    label: "Americas cover",
+    isRotation: false,
+    startMinute: 1260,
+    endMinute: 1800,
+    sortOrder: 95,
+  });
+  const BRAZIL: ScheduleAbsenceKind = {
+    id: "k-br",
+    code: "ALLO_BR",
+    shortCode: "BR",
+    label: "Brazil rotation",
+    bucket: "ALLOCATION",
+    colourToken: "BR",
+    sortOrder: 40,
+    movesToTeamKey: "americas",
+    worksRotaThere: true,
+    showsAsShiftCode: "CRE_AMERICAS",
+  };
+  const MIGRATION: ScheduleAbsenceKind = {
+    id: "k-mig",
+    code: "MIGRATION",
+    shortCode: "Mig",
+    label: "Migration",
+    bucket: "ALLOCATION",
+    colourToken: "MIG",
+    sortOrder: 41,
+    movesToTeamKey: "migration",
+  };
+
+  function renderMoves(teamKey: string, onApply = vi.fn(), onMarkAway = vi.fn()) {
+    render(
+      <CellPicker
+        target={target({ teamKey })}
+        shifts={[REGULAR, EVENING, AMERICAS_COVER]}
+        awayKinds={[ANNUAL_LEAVE]}
+        allKinds={[ANNUAL_LEAVE, BRAZIL, MIGRATION]}
+        moveKinds={[MIGRATION]}
+        onApply={onApply}
+        onMarkAway={onMarkAway}
+        onClear={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    return { onApply, onMarkAway };
+  }
+
+  it("offers Americas cover as a move to the Americas team, not as standing hours", () => {
+    const { onApply } = renderMoves("draco");
+    expect(screen.queryByRole("button", { name: /Americas cover/ })).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /Move to Americas Team/ }));
+    // The same pick the window was: the server writes it as the move.
+    expect(onApply).toHaveBeenCalledWith("CRE_AMERICAS", "2026-09-23", "2026-09-23");
+  });
+
+  it("names the Migration move as a team too", () => {
+    const { onMarkAway } = renderMoves("draco");
+    fireEvent.click(screen.getByRole("button", { name: /Move to Migration Team/ }));
+    expect(onMarkAway).toHaveBeenCalledWith("MIGRATION", "2026-09-23", "2026-09-23");
+  });
+
+  it("keeps Americas cover as standing hours for somebody already on Americas", () => {
+    renderMoves("americas");
+    expect(screen.getByRole("button", { name: /Americas cover/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /Move to Americas Team/ })).not.toBeInTheDocument();
   });
 });

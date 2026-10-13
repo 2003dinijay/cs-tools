@@ -39,6 +39,7 @@ import {
   useState,
 } from "react";
 import { useLocation } from "react-router";
+import { incidentPriorityBadge } from "@features/csm-operations/utils/incidentPriorityMatrix";
 import { formatBackendTimestampForDisplay } from "@utils/dateTime";
 import { BackendApiError } from "@api/backend/client";
 import ExportPdfButton from "@components/ExportPdfButton";
@@ -671,14 +672,24 @@ export default function CsmIncidentDetailPage(): JSX.Element {
                   label={incidentStateLabel(incident.state)}
                 />
               )}
-              {incident.priority && (
-                <Chip
-                  size="small"
-                  variant="outlined"
-                  color={incidentPriorityColor(incident.priority)}
-                  label={incidentPriorityLabel(incident.priority)}
-                />
-              )}
+              {incident.priority &&
+                (() => {
+                  const badge = incidentPriorityBadge(incident.priority);
+                  return badge ? (
+                    <Chip
+                      size="small"
+                      label={`${badge.label} (${badge.code})`}
+                      sx={{ bgcolor: badge.bg, color: badge.fg, fontWeight: 600 }}
+                    />
+                  ) : (
+                    <Chip
+                      size="small"
+                      variant="outlined"
+                      color={incidentPriorityColor(incident.priority)}
+                      label={incidentPriorityLabel(incident.priority)}
+                    />
+                  );
+                })()}
             </Box>
           </Box>
           <Box sx={{ flexShrink: 0, alignSelf: { xs: "stretch", md: "flex-start" } }}>

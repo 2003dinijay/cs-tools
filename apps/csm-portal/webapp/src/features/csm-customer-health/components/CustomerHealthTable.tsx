@@ -95,15 +95,20 @@ export default function CustomerHealthTable(props: CustomerHealthTableProps): Re
 
   return (
     <>
-      <Box sx={{ my: 2 }}>
-        <Typography variant="h6">Accounts Overview</Typography>
-      </Box>
-      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "center", mb: 1 }}>
-        <Typography variant="caption" color="text.secondary">
-          {totalCount} accounts found
-          {props.healthStatus === "at_risk" && " · Filtered by: At Risk"}
-          {props.healthStatus === "healthy" && " · Filtered by: Healthy"}
-          {!props.healthStatus && " at risk"}.
+      {/* Heading and count share one row (rather than stacking as two
+          separate lines) specifically to cut vertical space -- reported
+          live as still too much gap between the filter bar and the table
+          even after trimming the surrounding margins, since the dominant
+          cost was a whole second text line's own height, not the margins
+          around it. */}
+      <Box sx={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", mb: 1 }}>
+        <Typography variant="h6">
+          Accounts Overview{" "}
+          <Typography component="span" variant="body2" color="text.secondary">
+            ({totalCount} accounts found
+            {props.healthStatus === "at_risk" && " · Filtered by: At Risk"}
+            {props.healthStatus === "healthy" && " · Filtered by: Healthy"})
+          </Typography>
         </Typography>
         <Button
           variant="text"
@@ -121,11 +126,11 @@ export default function CustomerHealthTable(props: CustomerHealthTableProps): Re
           <Table size="small" aria-label="customer health summary table" sx={{ tableLayout: "fixed", "& .MuiTableCell-root": { borderColor: "divider" } }}>
             <TableHead>
               <TableRow sx={{ bgcolor: "action.hover" }}>
-                <TableCell rowSpan={2} sx={{ verticalAlign: "middle", width: "15%" }}>
+                <TableCell rowSpan={2} sx={{ verticalAlign: "middle", width: "19%" }}>
                   Account Name
                 </TableCell>
-                <TableCell rowSpan={2} align="center" sx={{ verticalAlign: "middle", width: "10%" }}>
-                  <HeaderTooltip label="Health Status" text={TOOLTIP_TEXT.healthStatus} />
+                <TableCell rowSpan={2} align="center" sx={{ verticalAlign: "middle", width: "12%" }}>
+                  <HeaderTooltip label="Health Status" sub={null} text={TOOLTIP_TEXT.healthStatus} />
                 </TableCell>
                 <TableCell
                   colSpan={6}
@@ -137,15 +142,15 @@ export default function CustomerHealthTable(props: CustomerHealthTableProps): Re
               </TableRow>
               <TableRow sx={{ bgcolor: "action.hover" }}>
                 {[
-                  { label: "Has Gone Live", tip: TOOLTIP_TEXT.goLive },
-                  { label: "Support Activity (Last 6 Mo)", tip: TOOLTIP_TEXT.support },
-                  { label: "Using EOL Products", tip: TOOLTIP_TEXT.eol },
-                  { label: "Abandoned Migrations", tip: TOOLTIP_TEXT.abandoned },
-                  { label: "Migration Delays", tip: TOOLTIP_TEXT.delays },
-                  { label: "Escalations\n(Last 3 Mo)", tip: TOOLTIP_TEXT.escalations },
-                ].map(({ label, tip }) => (
-                  <TableCell key={label} align="center" sx={{ width: "12.5%" }}>
-                    <HeaderTooltip label={label} text={tip} />
+                  { label: "Has Gone Live", sub: null, tip: TOOLTIP_TEXT.goLive },
+                  { label: "Support Activity", sub: "(Last 6 Mo)", tip: TOOLTIP_TEXT.support },
+                  { label: "Using EOL Products", sub: null, tip: TOOLTIP_TEXT.eol },
+                  { label: "Abandoned Migrations", sub: null, tip: TOOLTIP_TEXT.abandoned },
+                  { label: "Migration Delays", sub: null, tip: TOOLTIP_TEXT.delays },
+                  { label: "Escalations", sub: "(Last 3 Mo)", tip: TOOLTIP_TEXT.escalations },
+                ].map(({ label, sub, tip }) => (
+                  <TableCell key={label} align="center" sx={{ width: "11.5%" }}>
+                    <HeaderTooltip label={label} sub={sub} text={tip} />
                   </TableCell>
                 ))}
               </TableRow>
@@ -158,7 +163,7 @@ export default function CustomerHealthTable(props: CustomerHealthTableProps): Re
                       <Skeleton variant="rounded" width="80%" height={18} />
                     </TableCell>
                     <TableCell align="center">
-                      <Skeleton variant="rounded" width={120} height={28} sx={{ mx: "auto" }} />
+                      <Skeleton variant="rounded" width={110} height={24} sx={{ mx: "auto" }} />
                     </TableCell>
                     {Array.from({ length: 6 }).map((__, c) => (
                       <TableCell key={c} align="center">
@@ -193,10 +198,12 @@ export default function CustomerHealthTable(props: CustomerHealthTableProps): Re
                     sx={{ cursor: "pointer" }}
                     onClick={() => handleAccountTableRowClick(acc)}
                   >
-                    <TableCell component="th" scope="row" sx={{ maxWidth: 320 }}>
-                      <Typography variant="body2" noWrap color="primary" title={acc.accountName ?? undefined}>
-                        {acc.accountName || `Account ID: ${acc.accountSysId.substring(0, 8)}...`}
-                      </Typography>
+                    <TableCell component="th" scope="row" sx={{ maxWidth: 360 }}>
+                      <Tooltip title={acc.accountName || ""} arrow placement="top" disableHoverListener={!acc.accountName}>
+                        <Typography variant="body2" noWrap color="primary">
+                          {acc.accountName || `Account ID: ${acc.accountSysId.substring(0, 8)}...`}
+                        </Typography>
+                      </Tooltip>
                     </TableCell>
                     <TableCell align="center">
                       <ReviewStatusBadge status={acc.healthStatus} />
@@ -230,15 +237,25 @@ export default function CustomerHealthTable(props: CustomerHealthTableProps): Re
   );
 }
 
+// Slightly smaller than a default small Chip's own padding, but NOT shrunk
+// so far that "To Be Reviewed" (the longest label) gets its own text
+// truncated with an ellipsis -- an earlier pass over-corrected for the
+// column crowding Has Gone Live by shrinking this chip until its label no
+// longer fit at all. The real fix for the crowding is the column-width
+// rebalance above (Health Status widened back to 12%, the six single-letter
+// risk columns narrowed from 12.5% to 11.5% to make room) -- this chip only
+// needs a little horizontal padding trimmed, not a smaller font.
+const reviewStatusChipSx = { fontWeight: 600, fontSize: "0.75rem", minWidth: 110, "& .MuiChip-label": { px: 1.25 } };
+
 function ReviewStatusBadge({ status }: { status?: string }) {
   if (!status || status === "to_be_reviewed") {
-    return <Chip label="To Be Reviewed" size="small" color="warning" variant="outlined" sx={{ fontWeight: 600, minWidth: 120 }} />;
+    return <Chip label="To Be Reviewed" size="small" color="warning" variant="outlined" sx={reviewStatusChipSx} />;
   }
   if (status === "at_risk") {
-    return <Chip label="At Risk" size="small" color="error" variant="outlined" sx={{ fontWeight: 600, minWidth: 120 }} />;
+    return <Chip label="At Risk" size="small" color="error" variant="outlined" sx={reviewStatusChipSx} />;
   }
   if (status === "healthy") {
-    return <Chip label="Healthy" size="small" color="success" variant="outlined" sx={{ fontWeight: 600, minWidth: 120 }} />;
+    return <Chip label="Healthy" size="small" color="success" variant="outlined" sx={reviewStatusChipSx} />;
   }
   return null;
 }
@@ -263,28 +280,33 @@ function StatusIndicator({ isRisk, state, riskShowsYes = false }: { isRisk: bool
   return <Chip label={riskShowsYes ? "N" : "Y"} size="small" color="success" sx={{ fontWeight: 700, minWidth: 32 }} />;
 }
 
-// Renders as plain inline content (no flex row) so the label can wrap onto a
-// second line within a narrow column instead of forcing the table to scroll
-// horizontally -- the info icon is just the last inline "word", so it wraps
-// along with the label text rather than pinning the column to one line. A
-// "\n" in label forces a break at that exact point (e.g. "Escalations" /
-// "(Last 3 Mo)") rather than leaving it to the browser's own word-wrap.
-function HeaderTooltip({ label, text }: { label: string; text: string }) {
-  const lines = label.split("\n");
+// Every risk-indicator header renders as exactly two lines, always in the
+// same shape: the label alone on line 1, and the info icon -- preceded by
+// `sub` (a parenthetical qualifier like "(Last 6 Mo)") when there is one --
+// on line 2. This replaced an earlier version where the icon was just the
+// last inline "word" of a single wrapping block of text: a short label
+// (e.g. "Has Gone Live") stayed on one line with the icon trailing right
+// after it, while a longer one (e.g. "Support Activity (Last 6 Mo)") wrapped
+// the browser's own way, landing the icon on its own line in some columns
+// but not others -- reported live as visibly inconsistent icon placement
+// across the header row. Forcing every column through the same two-line
+// template (label / qualifier+icon) fixes both: the icon is always on line 2
+// in the same relative position, and no column is one line while its
+// neighbours are two.
+function HeaderTooltip({ label, sub, text }: { label: string; sub?: string | null; text: string }) {
   return (
-    <Typography component="span" variant="body2" sx={{ fontWeight: 600, whiteSpace: "normal", lineHeight: 1.3 }}>
-      {lines.map((line, i) => (
-        <span key={i}>
-          {i > 0 && <br />}
-          {line}
-          {i === lines.length - 1 && " "}
-        </span>
-      ))}
-      <Tooltip title={text} arrow placement="top">
-        <Box component="span" sx={{ display: "inline-flex", verticalAlign: "middle", color: "text.secondary", cursor: "help", "&:hover": { color: "text.primary" } }}>
-          <InfoIcon size={14} />
-        </Box>
-      </Tooltip>
+    <Typography component="span" variant="body2" sx={{ fontWeight: 600, lineHeight: 1.3 }}>
+      <Box component="span" sx={{ display: "block", whiteSpace: "normal" }}>
+        {label}
+      </Box>
+      <Box component="span" sx={{ display: "block", whiteSpace: "nowrap" }}>
+        {sub && `${sub} `}
+        <Tooltip title={text} arrow placement="top">
+          <Box component="span" sx={{ display: "inline-flex", verticalAlign: "middle", color: "text.secondary", cursor: "help", "&:hover": { color: "text.primary" } }}>
+            <InfoIcon size={14} />
+          </Box>
+        </Tooltip>
+      </Box>
     </Typography>
   );
 }

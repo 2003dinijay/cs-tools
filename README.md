@@ -12,7 +12,8 @@ Open-source tools built by WSO2 for customer success operations. This repository
 cs-tools/
 ├── apps/
 │   ├── csm-portal/          # CSM Portal (Go backend + React webapp)
-│   └── customer-portal/     # Customer Portal (Ballerina backend + React webapp + React microapp)
+│   ├── customer-portal/     # Customer Portal (Ballerina backend + React webapp + React microapp)
+│   └── today-i-learned/     # Today I Learned (Go backend for the feed in One WSO2)
 ├── entity-service/          # Shared entity service
 └── integrations/
     ├── acp-closure-service/         # Go CLI: Account Closure Process, Phase 1 (subscription end-date closure)
@@ -48,6 +49,16 @@ Delivered through two frontend experiences alongside a shared backend:
 | `microapp` | Microapp experience inside the [WSO2 super app](https://github.com/opensuperapp/opensuperapp/tree/v1) (React + TypeScript) |
 
 See the [Customer Portal README](./apps/customer-portal/README.md) for full setup and usage documentation.
+
+### Today I Learned (`apps/today-i-learned/`)
+
+Backend for "Today I Learned" — a company-wide feed of learnings from customers, partners, and internal work. Entries are shared, read and edited in the One WSO2 webapp, and each new one is announced in Google Chat through Novera.
+
+| Component | Description |
+|-----------|-------------|
+| `backend` | Go service (`til-backend`) providing the entry, search, moderation, and customer-suggestion APIs |
+
+See the [Today I Learned README](./apps/today-i-learned/README.md) for full setup and usage documentation.
 
 ### Entity Service (`entity-service/`)
 

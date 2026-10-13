@@ -208,8 +208,8 @@ func (h *CustomerHealthHandler) GetSummary(w http.ResponseWriter, r *http.Reques
 	})
 }
 
-// summaryFilteredByHealthStatus implements the MySQL-filtered branch of
-// GetSummary — see its doc comment.
+// summaryFilteredByHealthStatus implements the health-status-filtered branch
+// of GetSummary — see its doc comment.
 func (h *CustomerHealthHandler) summaryFilteredByHealthStatus(ctx context.Context, payload customerHealthSummaryRequest, healthStatus string) (accountSummaryResponse, error) {
 	matchingIDs, err := h.risk.GetAccountsByHealthStatus(ctx, healthStatus)
 	if err != nil {
@@ -218,9 +218,20 @@ func (h *CustomerHealthHandler) summaryFilteredByHealthStatus(ctx context.Contex
 	if len(matchingIDs) == 0 {
 		return accountSummaryResponse{Data: []accountSummary{}, TotalCount: 0}, nil
 	}
+	// A real, confirmed bug: matchingIDs comes back in the flat 32-character
+	// sys_id shape internal/risk's own GetAccountsByHealthStatus always
+	// returns (see that method's own doc comment), but acc.AccountSysID
+	// below is entity-service's own dashed UUID -- GetCustomerHealthSummary
+	// never converts it (account ids are used as-is throughout this file;
+	// see customer_health_postgres.go's own uuidToSysID for the equivalent
+	// fix on project/case/deployment ids in the account detail view). The
+	// two formats can never compare equal, so selecting any health-status
+	// filter ("Healthy"/"At Risk"/"To Be Reviewed") in the account list
+	// always returned zero accounts. Fixed by normalizing matchingIDs to
+	// the same dashed format idSet is actually checked against.
 	idSet := make(map[string]bool, len(matchingIDs))
 	for _, id := range matchingIDs {
-		idSet[id] = true
+		idSet[sysIDToUUID(id)] = true
 	}
 
 	const batchSize = 200

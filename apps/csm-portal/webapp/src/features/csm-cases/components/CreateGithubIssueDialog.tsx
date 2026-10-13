@@ -307,7 +307,7 @@ export function CreateGithubIssueDialog({
             required
             disabled={submitting}
             placeholder="What needs to be fixed?"
-            helperText="Case number, product and reporter are appended to the issue body automatically."
+            helperText="Case number, product and your email (as Opened By) are appended to the issue body automatically."
           />
 
           {showSeverity &&

@@ -19,7 +19,7 @@ info:
     | `create_work_note` | `POST /cases/{id}/comments` with `type=work_note` (internal note) — and nothing else | worknote-creator, cs-engineer, admin |
     | `write` | every other `POST`/`PATCH`/`DELETE`, including incident and change-request comments and case comments of any type other than `work_note` | cs-engineer, admin |
     | `admin` | `POST /users` | admin only |
-    | `security_center` | `POST /products/vulnerabilities/search`, `GET /products/vulnerabilities/{id}`, and a `POST /cases/search`/`GET /cases/{id}` naming case type security_report_analysis | cs-engineer, admin |
+    | `security_center` | `POST /products/vulnerabilities/search`, `GET /products/vulnerabilities/{id}`, `GET /products/vulnerabilities/meta`, and a `POST /cases/search`/`GET /cases/{id}` naming case type security_report_analysis | cs-engineer, admin |
 security:
   - bearerAuth: []
 servers:
@@ -3818,6 +3818,62 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /cases/volume-trend:
+    post:
+      summary: >-
+        Day-bucketed case-volume trend (opened vs. closed), for the Case
+        Summary dashboard's trend chart.
+      description: >-
+        Plain forward-and-return proxy to the entity service's own POST
+        /cases/volume-trend: exactly two series, "Opened" (by created date)
+        and "Closed" (by closed date), one point per UTC calendar day over a
+        trailing window (30 days by default).
+      operationId: postCasesVolumeTrend
+      requestBody:
+        description: Case volume-trend payload
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseVolumeTrendPayload'
+        required: true
+      responses:
+        "200":
+          description: Daily opened/closed case counts for the requested window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseVolumeTrendResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /cases/feedback/search:
     post:
       summary: Search case-feedback (satisfaction rating) records across cases.
@@ -5073,10 +5129,14 @@ paths:
 
   /cases/{id}/tags:
     post:
-      summary: Add a free-text tag to a case (ServiceNow data source only).
+      summary: Add a free-text tag to a case or a change request.
       description: >
-        The case ID is taken from the URL path; the request body is forwarded to
-        the integration service as-is.
+        The id is taken from the URL path and the request body is forwarded to
+        entity-service as-is. The id is a work item id: a case's, or a change
+        request's (the change request detail page tags through this same route,
+        under the same PermWrite). A case is tagged on every data source; a
+        change request on the PostgreSQL data sources only, where its tag is
+        stored in PostgreSQL and never mirrored to the previous system.
       operationId: addCaseTag
       security:
         - bearerAuth: []
@@ -5084,7 +5144,7 @@ paths:
         - name: id
           in: path
           required: true
-          description: UUID of the case.
+          description: UUID of the case (or of a change request).
           schema:
             type: string
             format: uuid
@@ -5140,7 +5200,11 @@ paths:
 
   /cases/{id}/tags/{tagId}:
     delete:
-      summary: Remove a tag from a case (ServiceNow data source only).
+      summary: Remove a tag from a case or a change request.
+      description: >
+        The id is a work item id: a case's or a change request's, with the same
+        data-source rules as POST /cases/{id}/tags (a change request's tag is
+        removed in PostgreSQL only, never mirrored to the previous system).
       operationId: removeCaseTag
       security:
         - bearerAuth: []
@@ -5148,7 +5212,7 @@ paths:
         - name: id
           in: path
           required: true
-          description: UUID of the case.
+          description: UUID of the case (or of a change request).
           schema:
             type: string
             format: uuid
@@ -6429,6 +6493,38 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
           description: Vulnerability not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /products/vulnerabilities/meta:
+    get:
+      summary: Get reference metadata for product vulnerabilities (severity choice list).
+      operationId: getVulnerabilityMeta
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Reference metadata for product vulnerabilities.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnerabilityMetaResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
           content:
             application/json:
               schema:
@@ -12348,10 +12444,13 @@ paths:
 
   /team-schedule/my-lead-teams:
     get:
-      summary: Teams the caller leads (may edit the rota of).
+      summary: Teams the caller may edit the rota of.
       operationId: getTeamScheduleMyLeadTeams
       description: >
-        Response is the entity service's payload, forwarded unchanged. Whether the caller may edit a team's rota is decided by the entity service.
+        Response is the entity service's payload, forwarded unchanged: `teamKeys` (teams the caller
+        leads, runs as rota admin, or marks as rota marker) and `markerOnlyTeamKeys` (the ones held
+        only as rota marker, which may be marked but not generated, and give no say over the tags).
+        Whether the caller may edit a team's rota is decided by the entity service.
       responses:
         "200":
           description: Ok.
@@ -12380,6 +12479,251 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
           description: Not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /team-schedule/rota-access:
+    get:
+      summary: Rota admins and rota markers, and what the caller may change.
+      operationId: getTeamScheduleRotaAccess
+      description: >
+        The Rota access tab. The entity service's payload, forwarded unchanged: `canManage`
+        (`rotaAdmins` for a CSM admin, `markerFamilies` for the families whose markers the caller
+        may change), `rotaAdmins[]` and `markers[]`. A caller who may change nothing gets empty
+        lists, which is how the page decides not to show the tab.
+      responses:
+        "200":
+          description: Ok.
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: true
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /team-schedule/rota-access/admins/{family}/{userId}:
+    put:
+      summary: Make somebody a family's rota admin.
+      operationId: putTeamScheduleRotaAdmin
+      description: >
+        CSM admin only (PermAdmin here, and checked again by the entity service). The person must be
+        active internal staff. Audited by the entity service.
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Done (idempotent).
+        "400":
+          description: Bad request (family not CRE/SRE/SME, userId not a UUID, or refused by the entity service with its reason, e.g. the person is not active internal staff).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (the entity service's reason is kept).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found (the entity service has no schedule database, so its rota access routes are not registered).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    delete:
+      summary: Take a family's rota admin role away.
+      operationId: deleteTeamScheduleRotaAdmin
+      description: >
+        CSM admin only (PermAdmin here, and checked again by the entity service).
+      parameters:
+        - name: family
+          in: path
+          required: true
+          schema:
+            type: string
+            enum: [CRE, SRE, SME]
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Done (idempotent).
+        "400":
+          description: Bad request (family not CRE/SRE/SME, userId not a UUID, or refused by the entity service with its reason, e.g. the person is not active internal staff).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (the entity service's reason is kept).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found (the entity service has no schedule database, so its rota access routes are not registered).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /team-schedule/rota-access/markers/{teamKey}/{userId}:
+    put:
+      summary: Make somebody a team's rota marker.
+      operationId: putTeamScheduleRotaMarker
+      description: >
+        A rota marker may mark the team's rotations, leave and allocations, and nothing else. A CSM
+        admin may name any team's marker, the family's rota admin their own family's; the entity
+        service decides. The person must be active internal staff on the team.
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Done (idempotent).
+        "400":
+          description: Bad request (not CRE/SRE/SME or a team key, not a UUID, or refused by the entity service with its reason).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (the entity service's reason is kept).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found (a team not on the schedule).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+    delete:
+      summary: Take a team's rota marker away.
+      operationId: deleteTeamScheduleRotaMarker
+      description: >
+        Same permission as granting; the entity service decides.
+      parameters:
+        - name: teamKey
+          in: path
+          required: true
+          schema:
+            type: string
+        - name: userId
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+      responses:
+        "204":
+          description: Done (idempotent).
+        "400":
+          description: Bad request (not CRE/SRE/SME or a team key, not a UUID, or refused by the entity service with its reason).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden (the entity service's reason is kept).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: Not found (a team not on the schedule).
           content:
             application/json:
               schema:
@@ -13455,7 +13799,7 @@ paths:
                   format: date
                 nightCrew:
                   type: object
-                  description: Team key -> the people chosen to work that team's TZ3 for the month; L1, L2 and L3 go round them.
+                  description: Team key -> the people chosen to work TZ3 for the month. TZ3 is one crew for the whole rota, so every team's choices together go round its single L1, L2 and L3.
                   additionalProperties:
                     type: array
                     items: {type: string}
@@ -13509,6 +13853,84 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /team-schedule/rotas/{code}/night-crew:
+    get:
+      summary: The TZ3 people each month of a rota was generated with.
+      description: >
+        The people a lead chose for TZ3 (the SaaS night cover) in "Generate
+        month", as each month's last real generation recorded them; the Month
+        roster lists them under the night cover instead of under their team.
+        Entity-service's RotaNightCrewResponse, passed through. Every month
+        from..to is listed; a month with nobody chosen has an empty crew. At
+        most 12 months at once.
+      operationId: getRotaNightCrew
+      parameters:
+        - name: code
+          in: path
+          required: true
+          schema: {type: string, example: SRE_SAAS}
+        - name: from
+          in: query
+          required: true
+          schema: {type: string, example: "2026-10"}
+          description: First month, YYYY-MM.
+        - name: to
+          in: query
+          required: true
+          schema: {type: string, example: "2026-12"}
+          description: Last month, YYYY-MM.
+      responses:
+        "200":
+          description: The chosen TZ3 people, month by month.
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  rotaCode: {type: string}
+                  months:
+                    type: array
+                    items:
+                      type: object
+                      properties:
+                        month: {type: string}
+                        crew:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              userId: {type: string}
+                              teamKey: {type: string}
+        "400":
+          description: from or to is not a month, to is before from, or more than 12 months.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthenticated.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Not allowed to read the team schedule.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "404":
+          description: A rota with no night crew (anything but SRE_SAAS).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
   /team-schedule/absence-kinds/{code}:
     delete:
       summary: Delete a leave or allocation tag once nothing uses it.
@@ -15403,6 +15825,55 @@ components:
             Caps the response to the top maxGroups buckets by count; the
             remainder is folded into AggregateResponse.othersCount. Optional;
             a default is applied when omitted.
+
+    CaseVolumeTrendPayload:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/CaseSearchFilters'
+        days:
+          type: integer
+          description: >-
+            Size of the trailing window, ending today (UTC). Optional;
+            defaults to 30 when omitted. Must be between 1 and 90.
+
+    CaseVolumeTrendPoint:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+          description: UTC calendar day (YYYY-MM-DD).
+        count:
+          type: integer
+
+    CaseVolumeTrendSeries:
+      type: object
+      properties:
+        label:
+          type: string
+          description: '"Opened" or "Closed".'
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseVolumeTrendPoint'
+          description: >-
+            One point per day in the requested window, oldest first. A day
+            with no matching cases is still present, with count 0.
+
+    CaseVolumeTrendResponse:
+      type: object
+      description: >-
+        Day-bucketed case-volume trend: always exactly two series, "Opened"
+        (by created date) and "Closed" (by closed date).
+      properties:
+        days:
+          type: integer
+          description: The size of the window actually returned.
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseVolumeTrendSeries'
 
     AggregateBucket:
       type: object
@@ -17885,7 +18356,7 @@ components:
                 no onboarding engagement at all. "Not-Applicable" (and null) both mean
                 there is no active onboarding to surface for this project; treat either
                 as "onboarding not enabled" when deciding whether to show
-                onboardingOwner. ServiceNow data source only.
+                onboardingOwner.
             onboardingOwner:
               nullable: true
               allOf:
@@ -17893,7 +18364,7 @@ components:
               description: >
                 The WSO2 staff member assigned to lead this project's onboarding. Null
                 when no owner is assigned (most projects, since it is only set for
-                onboarding-enabled projects). ServiceNow data source only.
+                onboarding-enabled projects).
 
     ProjectAccountRef:
       type: object
@@ -19417,6 +19888,20 @@ components:
                 approvers at Customer Approval / Customer Review.
               items:
                 $ref: '#/components/schemas/ChangeRequestCustomerContact'
+            tags:
+              type: array
+              nullable: true
+              items:
+                $ref: '#/components/schemas/Tag'
+              description: >-
+                The tags attached to the change request, the same shape as a case's `tags`
+                and passed through from the entity service as-is: an array (empty when none)
+                on the PostgreSQL data source, null when the entity service did not load them
+                (another data source, or a failed lookup). Added and removed through the case
+                tag routes -- POST /cases/{id}/tags and DELETE /cases/{id}/tags/{tagId} take a
+                work item id and accept a change request's, under the same PermWrite; the
+                vocabulary is searched with POST /tags/search. Never mirrored to the previous
+                system, and never shown to customers.
             category:
               type: string
               nullable: true
@@ -19989,6 +20474,22 @@ components:
         resolution:
           type: string
           nullable: true
+
+    ChoiceListItem:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+
+    VulnerabilityMetaResponse:
+      type: object
+      properties:
+        severities:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChoiceListItem'
 
     SearchProductVulnerabilitiesResponse:
       type: object

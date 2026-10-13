@@ -16,7 +16,7 @@
 
 import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { JSX } from "react";
+import { useEffect, type JSX } from "react";
 import {
   MemoryRouter,
   Route,
@@ -590,11 +590,16 @@ vi.mock("@features/csm-cases/components/CreateGithubIssueDialog", () => ({
 // author name / body / role-chip-suppression to actually render. The feed's
 // own layout/filtering/sorting is covered in CaseActivitiesFeed.test.tsx.
 vi.mock("@features/csm-cases/components/CaseActivitiesFeed", () => ({
-  default: ({
+  default: function CaseActivitiesFeedProbe({
     comments,
     onEditComment,
     onDeleteComment,
+    entryWindow,
   }: {
+    entryWindow?: {
+      limit: number;
+      onStatusChange?: (s: { total: number; shown: number }) => void;
+    };
     comments: Array<{
       id: string;
       authorName: string;
@@ -604,9 +609,18 @@ vi.mock("@features/csm-cases/components/CaseActivitiesFeed", () => ({
     }>;
     onEditComment?: unknown;
     onDeleteComment?: unknown;
-  }) => (
+  }) {
+    // Stands in for the real feed's status report: pretend the case has 120
+    // entries so the page's "Load all" button has something to hide/show.
+    const shown = Math.min(entryWindow?.limit ?? 120, 120);
+    const onStatusChange = entryWindow?.onStatusChange;
+    useEffect(() => {
+      onStatusChange?.({ total: 120, shown });
+    }, [onStatusChange, shown]);
+    return (
     <div
       data-testid="case-activities-feed-probe"
+      data-limit={String(entryWindow?.limit)}
       data-can-edit={String(!!onEditComment)}
       data-can-delete={String(!!onDeleteComment)}
     >
@@ -620,7 +634,8 @@ vi.mock("@features/csm-cases/components/CaseActivitiesFeed", () => ({
         </div>
       ))}
     </div>
-  ),
+    );
+  },
 }));
 vi.mock("@features/csm-cases/components/CaseMetaBand", () => ({
   default: () => null,
@@ -1818,6 +1833,28 @@ describe("CsmCaseDetailPage — role-based controls", () => {
       expect(screen.getByRole("tab", { name: /time tracking/i })).toHaveAttribute("aria-selected", "true");
       unmount();
     }
+  });
+
+  it("windows the activity timeline to 50 entries, and 'Load all' (left of Refresh) lifts the window then hides", () => {
+    renderPage();
+    const feed = screen.getByTestId("case-activities-feed-probe");
+    expect(feed).toHaveAttribute("data-limit", "50");
+
+    const loadAll = screen.getByRole("button", { name: "Load all activity timeline entries" });
+    const refresh = screen.getByRole("button", { name: "Refresh activity timeline" });
+    // Immediately to the left of Refresh.
+    expect(
+      loadAll.compareDocumentPosition(refresh) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    fireEvent.click(loadAll);
+    expect(screen.getByTestId("case-activities-feed-probe")).toHaveAttribute(
+      "data-limit",
+      "Infinity",
+    );
+    expect(
+      screen.queryByRole("button", { name: "Load all activity timeline entries" }),
+    ).not.toBeInTheDocument();
   });
 
   it("a viewer's own note offers no edit or delete (both are write-only on the backend)", () => {

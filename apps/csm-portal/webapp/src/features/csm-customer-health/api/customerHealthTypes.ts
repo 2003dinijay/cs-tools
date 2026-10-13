@@ -90,8 +90,8 @@ export interface AccountDetail {
 }
 
 export type RiskFilterKey =
-  | "hasNoGoLive"
-  | "noSupportCases6mo"
+  | "hasGoneLive"
+  | "hasRecentCases"
   | "hasEolProduct"
   | "hasAbandonedMigrations"
   | "hasMigrationDelays"

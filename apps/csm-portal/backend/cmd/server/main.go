@@ -458,6 +458,7 @@ func main() {
 	route("GET /tags/search", handler.PermView, caseHandler.SearchTagsQuery)
 	route("POST /cases/search", handler.PermViewSharedEntity, caseHandler.SearchCases)
 	route("POST /cases/aggregate", handler.PermView, caseHandler.AggregateCases)
+	route("POST /cases/volume-trend", handler.PermView, caseHandler.VolumeTrend)
 	route("POST /cases/feedback/search", handler.PermView, caseHandler.SearchFeedback)
 	route("POST /cases/feedback/aggregate", handler.PermView, caseHandler.AggregateFeedback)
 	route("GET /dashboards", handler.PermView, dashboardHandler.GetDashboards)
@@ -629,6 +630,18 @@ func main() {
 	// "Generate month": a lead of the SaaS SRE rota works a month out from
 	// the availability marked on it. Who may is entity-service's decision.
 	route("POST /team-schedule/rotas/{code}/generate", handler.PermWrite, rotaGenerateHandler.GenerateRotaMonth)
+	route("GET /team-schedule/rotas/{code}/night-crew", handler.PermView, rotaGenerateHandler.GetRotaNightCrew)
+	// Rota access tab: rota admins (one family each) and each team's rota
+	// marker. Granting rota admin is for the portal's admins, so PermAdmin
+	// keeps the control away from anyone else; a team's marker can also be
+	// named by that family's rota admin, who is no portal admin, so those
+	// routes are PermWrite and entity-service decides.
+	rotaAccessHandler := handler.NewRotaAccessHandler(customerEntityClient)
+	route("GET /team-schedule/rota-access", handler.PermView, rotaAccessHandler.GetRotaAccess)
+	route("PUT /team-schedule/rota-access/admins/{family}/{userId}", handler.PermAdmin, rotaAccessHandler.PutRotaAdmin)
+	route("DELETE /team-schedule/rota-access/admins/{family}/{userId}", handler.PermAdmin, rotaAccessHandler.DeleteRotaAdmin)
+	route("PUT /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.PutRotaMarker)
+	route("DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}", handler.PermWrite, rotaAccessHandler.DeleteRotaMarker)
 	route("POST /configuration-items/search", handler.PermView, configurationItemHandler.SearchConfigurationItems)
 	route("POST /time-cards/search", handler.PermTimeCardsAndUpdates, timeCardHandler.SearchTimeCards)
 	route("POST /time-cards", handler.PermTimeCardsAndUpdates, timeCardHandler.CreateTimeCard)
@@ -637,6 +650,7 @@ func main() {
 	route("POST /catalogs/search", handler.PermView, catalogHandler.SearchCatalogs)
 	route("GET /catalogs/{catalogId}/items/{catalogItemId}/variables", handler.PermView, catalogHandler.GetCatalogItemVariables)
 	route("POST /products/vulnerabilities/search", handler.PermViewSecurityCenter, productVulnerabilityHandler.SearchProductVulnerabilities)
+	route("GET /products/vulnerabilities/meta", handler.PermViewSecurityCenter, productVulnerabilityHandler.GetVulnerabilityMeta)
 	route("GET /products/vulnerabilities/{id}", handler.PermViewSecurityCenter, productVulnerabilityHandler.GetProductVulnerability)
 	route("GET /conversations/{id}/messages", handler.PermView, conversationHandler.GetConversationMessages)
 	route("POST /conversations/search", handler.PermView, conversationHandler.SearchConversations)
@@ -992,7 +1006,7 @@ func loadDirectory() *directory.Directory {
 //	AUTH_ATTACHMENT_DOWNLOADER_ROLES, AUTH_USAGE_METRICS_VIEWER_ROLES,
 //	AUTH_SUPPORT_ENGINEER_ROLES, AUTH_ADMIN_ROLES, AUTH_TIMECARD_APPROVER_ROLES,
 //	AUTH_DASHBOARD_DESIGNER_ROLES, AUTH_SALES_SOLUTIONS_ROLES,
-//	AUTH_WORKNOTE_CREATOR_ROLES, AUTH_COMMENT_UPDATER_ROLES
+//	AUTH_WORKNOTE_CREATOR_ROLES, AUTH_COMMENT_UPDATER_ROLES, AUTH_SECURITY_TEAM_ROLES
 //	    Each is a comma-separated list of role names; a caller whose token's
 //	    "roles" claim holds any one of them has that role.
 //
@@ -1037,6 +1051,13 @@ func loadAccessConfig() handler.AccessConfig {
 		// Warns when unset (via roles()) on purpose, unlike the two optional
 		// roles below: unset means only admin can create announcements.
 		AnnouncementCreator: roles("AUTH_ANNOUNCEMENT_CREATOR_ROLES"),
+		// Warns when unset like every other dedicated role above: unset means
+		// nobody holds security_team, which is a real misconfiguration once
+		// this role is meant to be in use (see handler.AccessConfig.SecurityTeam's
+		// own doc comment) -- unlike SalesSolutions/WorknoteCreator/CommentUpdater
+		// just below, cs_engineer/admin granting nothing it needs does not make an
+		// unset variable here a normal, no-op state.
+		SecurityTeam: roles("AUTH_SECURITY_TEAM_ROLES"),
 		// Unlike the roles above, an unset AUTH_SALES_SOLUTIONS_ROLES,
 		// AUTH_WORKNOTE_CREATOR_ROLES or AUTH_COMMENT_UPDATER_ROLES is a
 		// normal, supported state (see this function's own doc comment for

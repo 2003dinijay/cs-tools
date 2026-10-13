@@ -320,8 +320,8 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
     id: "admin",
     label: "Settings",
     href: "/admin",
-    // Staff-only -- see canViewStaffSections's own doc comment.
-    requires: "canViewStaffSections",
+    // cs_engineer/admin only -- see canViewSettings's own doc comment.
+    requires: "canViewSettings",
     icon: Settings,
     children: [
       {
@@ -439,7 +439,9 @@ export const CSM_NAV_ITEMS: CsmNavSection[] = [
         id: "help.settings",
         label: "Settings",
         href: "/help#settings",
-        requires: "canViewStaffSections",
+        // Help topics follow the page they document -- see canViewSettings's
+        // own doc comment on why Settings itself is cs_engineer/admin-only.
+        requires: "canViewSettings",
       },
     ],
   },

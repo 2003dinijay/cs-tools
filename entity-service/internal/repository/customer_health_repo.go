@@ -388,8 +388,12 @@ func (r *customerHealthRepo) MarkProjectHealthy(ctx context.Context, projectID, 
 	}
 
 	return inTxReturning(ctx, r.db, func(tx pgx.Tx) (domain.ProjectHealthStatus, error) {
+		// Locked for the same reason OpenProjectRisk locks it: this method
+		// also decides "does this project already have an open risk" and
+		// must serialize against a concurrent OpenProjectRisk/MarkProjectHealthy
+		// call for the same project.
 		var accountID string
-		err := tx.QueryRow(ctx, `SELECT account_id FROM project WHERE id = $1`, projectID).Scan(&accountID)
+		err := tx.QueryRow(ctx, `SELECT account_id FROM project WHERE id = $1 FOR UPDATE`, projectID).Scan(&accountID)
 		if errors.Is(err, pgx.ErrNoRows) {
 			return domain.ProjectHealthStatus{}, &apierror.NotFoundError{Msg: "project not found"}
 		}
@@ -404,6 +408,30 @@ func (r *customerHealthRepo) MarkProjectHealthy(ctx context.Context, projectID, 
 			projectID, accountID, actorEmail,
 		); err != nil {
 			return domain.ProjectHealthStatus{}, fmt.Errorf("upsert project_health_status: %w", err)
+		}
+
+		// Marking a project healthy must resolve any risk that is still
+		// genuinely OPEN on it -- without this, a project reachable via a
+		// path that doesn't go through CloseProjectRisk first (e.g. "Mark
+		// Healthy" offered directly from the "to be reviewed" display) ends
+		// up HEALTHY with an OPEN project_risk row left behind underneath
+		// it. GetAccountProjectHealthStatuses only looks up a project's open
+		// risk while its health_status is AT_RISK, so that orphaned OPEN row
+		// becomes permanently invisible to every read (and to the UI's
+		// "Close Risk" action, which only renders while an open risk is
+		// actually shown) -- yet OpenProjectRisk's own check still finds it,
+		// so every future "Mark At Risk" on the same project fails forever
+		// with "project already has an open risk". Closing it here, in the
+		// same transaction as the healthy status write, keeps the two in
+		// agreement in every case, not just the one the frontend's own
+		// Close Risk flow already handles.
+		if _, err := tx.Exec(ctx, `
+			UPDATE project_risk
+			SET status = 'CLOSED', closed_comment = $1, closed_by_email = $2, closed_on = NOW()
+			WHERE project_id = $3 AND status = 'OPEN'`,
+			closedComment, actorEmail, projectID,
+		); err != nil {
+			return domain.ProjectHealthStatus{}, fmt.Errorf("close open project_risk on mark healthy: %w", err)
 		}
 
 		if _, err := tx.Exec(ctx, `

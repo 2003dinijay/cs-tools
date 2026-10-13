@@ -30,7 +30,7 @@ import {
   Typography,
 } from "@wso2/oxygen-ui";
 import { useMemo, useState, type JSX } from "react";
-import { useGenerateRota, type GenerateRotaResult } from "../api/useGenerateRota";
+import { useGenerateRota, useRotaNightCrew, type GenerateRotaResult } from "../api/useGenerateRota";
 import GeneratedRotaPreview from "./GeneratedRotaPreview";
 import { monthKey, monthLabel } from "../utils/rotaMonth";
 
@@ -96,7 +96,24 @@ export default function GenerateRotaDialog({
   const [preview, setPreview] = useState<GenerateRotaResult | null>(null);
   const [written, setWritten] = useState<GenerateRotaResult | null>(null);
   const generate = useGenerateRota();
-  const [crew, setCrew] = useState<Record<string, string[]>>(loadCrew);
+  /** The lead's last choice, kept in this browser: where a month the server
+   *  has no crew for starts. */
+  const [lastChoice] = useState<Record<string, string[]>>(loadCrew);
+  /** What the lead has chosen in this dialog, month by month. */
+  const [edited, setEdited] = useState<Record<string, Record<string, string[]>>>({});
+  const saved = useRotaNightCrew(month, month, open);
+  /** The month's TZ3 people as its last generation recorded them, by team. */
+  const savedCrew = useMemo(() => {
+    const crewOf = saved.data?.months.find((m) => m.month === month)?.crew ?? [];
+    if (crewOf.length === 0) return undefined;
+    const out: Record<string, string[]> = {};
+    for (const c of crewOf) out[c.teamKey] = [...(out[c.teamKey] ?? []), c.userId];
+    return out;
+  }, [saved.data, month]);
+  // The month's own record first: the people it was generated with are who
+  // works its nights now, whoever was chosen in this browser last.
+  const crew = edited[month] ?? savedCrew ?? lastChoice;
+  const setCrew = (next: Record<string, string[]>): void => setEdited((e) => ({ ...e, [month]: next }));
   const [showRota, setShowRota] = useState(false);
   /** A real write is in flight. The request cannot be called back, so the
    *  dialog stays open until it lands: closing now would only hide a month
@@ -113,6 +130,8 @@ export default function GenerateRotaDialog({
     }
     return Object.keys(out).length > 0 ? out : undefined;
   }, [teams, crew]);
+  /** Everyone chosen, every team's together: the size of the one TZ3 crew. */
+  const crewSize = nightCrew ? Object.values(nightCrew).reduce((n, ids) => n + ids.length, 0) : 0;
 
   const reset = (): void => {
     setPreview(null);
@@ -153,12 +172,13 @@ export default function GenerateRotaDialog({
       <DialogTitle id="generate-rota-title">Generate SaaS rota</DialogTitle>
       <DialogContent>
         <Typography variant="body2" sx={{ mb: 2 }}>
-          Works out the month for Apollo and Artemis, per team: L1 and L2 for TZ1, TZ2 and TZ3 every day
-          (weekend on-call and escalation included), everyone&rsquo;s regular hours (SUP) on weekdays,
-          and lieu leave after a weekend on-call. Every
+          Works out the month for Apollo and Artemis: per team, L1 and L2 for TZ1 and TZ2 every day
+          (weekend on-call and escalation included); one TZ3 night crew for both teams, L1, L2 and L3,
+          weekends included; everyone&rsquo;s regular hours (SUP) on weekdays; and lieu leave after a
+          weekend on-call. Every
           engineer is on the rota, nights included, unless marked away on the roster (leave, RnD, ENG or
           any other tag); TZ3 regular hours, if marked, decide who is on nights. One person works one
-          zone a day: each team&rsquo;s lead is L3 on TZ1, and a teammate on TZ2 and TZ3. Turns set by hand
+          zone a day: each team&rsquo;s lead is L3 on TZ1, and a teammate on TZ2. Turns set by hand
           are kept.
         </Typography>
 
@@ -185,9 +205,11 @@ export default function GenerateRotaDialog({
           <Box sx={{ mt: 2 }}>
             <Typography variant="subtitle2">TZ3 people (optional)</Typography>
             <Typography variant="caption" color="text.secondary" component="p" sx={{ mt: 0.25, mb: 1.5 }}>
-              Choose who works a team&rsquo;s TZ3 this month, for example three people: TZ3 L1, L2 and L3 go
-              round them night by night, and they work no other zone. Leave a team empty to use the TZ3
-              hours marked on the roster.
+              Choose who works TZ3 this month. TZ3 is one night crew for every team: L1, L2 and L3 go round
+              everyone chosen below, night by night, and they work no other zone. Nobody else is put on TZ3,
+              so a night they cannot cover is left empty and listed in the preview. Generating saves them with
+              the month: the roster lists them under Night cover instead of their team, until the month is
+              generated again without them. Leave every team empty to use the TZ3 hours marked on the roster.
             </Typography>
             {teams.map((t) => {
               const chosen = (crew[t.key] ?? [])
@@ -214,17 +236,17 @@ export default function GenerateRotaDialog({
                       {...params}
                       label={`${t.name} TZ3`}
                       placeholder={chosen.length === 0 ? "As marked on the roster" : undefined}
-                      helperText={
-                        chosen.length > 0 && chosen.length < 3
-                          ? "With fewer than three, the rest of TZ3 comes from the team."
-                          : undefined
-                      }
                     />
                   )}
                   sx={{ mb: 1.5 }}
                 />
               );
             })}
+            {crewSize > 0 && crewSize < 3 ? (
+              <Typography variant="caption" color="warning.main" component="p">
+                Only {crewSize} chosen: TZ3 {crewSize === 1 ? "L2 and L3 are" : "L3 is"} left empty every night.
+              </Typography>
+            ) : null}
           </Box>
         ) : null}
 

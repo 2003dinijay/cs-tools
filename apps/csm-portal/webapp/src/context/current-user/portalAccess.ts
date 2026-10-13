@@ -45,6 +45,12 @@ export const PORTAL_ROLE = {
   // -- reaching PATCH/DELETE /comments/{id} for a comment the holder did NOT
   // author. See canUpdateDeleteAnyComment below.
   commentUpdater: "comment_updater",
+  // Grants PermViewOperations and PermViewSecurityCenter on the backend
+  // (internal/handler/access.go) -- read-only access to the Operations area
+  // and Security Center (security reports + vulnerabilities), and nothing
+  // else: never PermWrite, so both sections render read-only for a holder
+  // with no other role. See canUseOperations/canUseSecurityCenter below.
+  securityTeam: "security_team",
 } as const;
 
 // Roles that, held alone, let someone use the portal at all. announcement_creator
@@ -74,7 +80,10 @@ export interface PortalAccess {
   /**
    * The Operations section (incidents, change requests, problems, outages,
    * service requests). Support-portal-lite had no such area, so its
-   * view-oriented roles never saw one: only full-access roles do here.
+   * view-oriented roles never saw one: only full-access roles do here, plus
+   * the dedicated `security_team` role (read-only -- that role never holds
+   * {@link canWrite}, so this section renders read-only for a holder with no
+   * other role). Mirrors the backend's `PermViewOperations`.
    */
   canUseOperations: boolean;
   /**
@@ -109,8 +118,9 @@ export interface PortalAccess {
   canCreateUser: boolean;
   /**
    * The Security Center section (Security reports + Vulnerabilities tabs)
-   * and the API calls behind it. `admin` and `cs_engineer` only — mirrors
-   * the backend's `PermViewSecurityCenter`, which (unlike `PermView`) plain
+   * and the API calls behind it. `admin`, `cs_engineer`, and the dedicated
+   * `security_team` role (read-only) — mirrors the backend's
+   * `PermViewSecurityCenter`, which (unlike `PermView`) plain
    * viewer/escalator/attachment_downloader/usage_metrics_viewer/
    * timecard_approver/dashboard_designer do not hold.
    */
@@ -203,6 +213,17 @@ export interface PortalAccess {
    */
   canViewTeamSchedule: boolean;
   /**
+   * The Settings section (`/admin`: user management, roles, groups, teams,
+   * the dashboard builder). `cs_engineer`/`admin` only — an explicit
+   * allow-list, independent of {@link canViewStaffSections} (which also
+   * gates Settings' nav entry today but is intentionally broader/shared
+   * with Knowledge): Settings holds user/role/group/team administration,
+   * which a plain `viewer`/`escalator`/`attachment_downloader`/
+   * `usage_metrics_viewer`/`timecard_approver`/`dashboard_designer` must
+   * not reach just by also holding one unrelated role.
+   */
+  canViewSettings: boolean;
+  /**
    * Whether a project's Work items tab shows its staff framing: the "Work
    * items" label (vs. plain "Cases"), the Chats sub-tab, and the sub-tab
    * strip itself. `cs_engineer`/`admin` (full access), or the
@@ -212,6 +233,14 @@ export interface PortalAccess {
    * see this under the old exactly-`{viewer}` check.
    */
   canViewWorkItemsStaffView: boolean;
+  /**
+   * Holds the `admin` role specifically — the one capability gate in this
+   * type keyed on the role itself rather than a derived permission, needed by
+   * the feature-preview toggle (see `featurePreview.ts`) which is
+   * deliberately admin-only regardless of any other capability a caller
+   * might hold.
+   */
+  isAdmin: boolean;
 }
 
 /**
@@ -256,7 +285,9 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
       canViewUsageMetrics: true,
       canViewStaffSections: true,
       canViewTeamSchedule: true,
+      canViewSettings: true,
       canViewWorkItemsStaffView: true,
+      isAdmin: true,
     };
   }
   const held = new Set((roles ?? []).map((r) => r.toLowerCase()));
@@ -269,12 +300,12 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     // further limited to the case's ABT team leads (CsmCaseDetailPage).
     canEscalate: full || has(PORTAL_ROLE.escalator),
     canDownloadAttachment: full || has(PORTAL_ROLE.attachmentDownloader),
-    canUseOperations: full,
+    canUseOperations: full || has(PORTAL_ROLE.securityTeam),
     canUseTimeCardsAndUpdates: full || has(PORTAL_ROLE.timecardApprover),
     canWrite: full,
     canAddWorkNotes: full || has(PORTAL_ROLE.worknoteCreator),
     canCreateUser: isAdmin,
-    canUseSecurityCenter: full,
+    canUseSecurityCenter: full || has(PORTAL_ROLE.securityTeam),
     canUsePlg: full,
     canManagePlaybooks: isAdmin,
     canCreateAnnouncement: full && (isAdmin || has(PORTAL_ROLE.announcementCreator)),
@@ -283,6 +314,8 @@ export function getPortalAccess(roles: string[] | undefined): PortalAccess {
     canViewUsageMetrics: full || has(PORTAL_ROLE.usageMetricsViewer),
     canViewStaffSections: !(held.size === 1 && has(PORTAL_ROLE.viewer)),
     canViewTeamSchedule: full || has(PORTAL_ROLE.commentUpdater),
+    canViewSettings: full,
     canViewWorkItemsStaffView: full || has(PORTAL_ROLE.timecardApprover),
+    isAdmin,
   };
 }

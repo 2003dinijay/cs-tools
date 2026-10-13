@@ -64,6 +64,16 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	userRepo := repository.NewUserRepository(db)
 	userSvc := service.NewUserService(userRepo)
 
+	// The case-volume-trend cache behind POST /cases/volume-trend is a
+	// plain per-pod in-memory map -- deliberately not Redis-backed, even
+	// though Redis may be configured for the user cache right below. This
+	// endpoint's own cache entry is cheap to recompute (one bulk Postgres
+	// query for however many days are missing) and read-only/identical for
+	// every caller (see service.CaseVolumeTrendCache's own doc comment), so
+	// each pod simply computing and caching independently costs nothing
+	// worth a shared store's added complexity.
+	var volumeTrendCache service.CaseVolumeTrendCache = cache.NewInMemoryCaseVolumeTrendCache()
+
 	// The user cache in front of GET /users/{id} and GET /users/me, on when
 	// REDIS_URL or REDIS_ADDR is set (see internal/cache). Postgres-only:
 	// those routes are served by the ServiceNow handlers in servicenow mode.
@@ -71,18 +81,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// *cache.UserCache inside a non-nil one -- so the writers below can test
 	// it against nil.
 	var userCacheInvalidator service.UserCacheInvalidator
-	closeUserCache := func() {}
+	closeRedis := func() {}
 	if db != nil && cfg.HasRedis() {
 		rdb, err := cache.NewRedisClient(cfg)
 		if err != nil {
-			panic("user cache: " + err.Error())
+			panic("redis client: " + err.Error())
 		}
 		userCache := cache.NewUserCache(rdb, cfg.UserCacheTTL)
 		userSvc = service.NewCachedUserService(userSvc, userCache)
 		userCacheInvalidator = userCache
-		closeUserCache = func() {
+		closeRedis = func() {
 			if err := rdb.Close(); err != nil {
-				log.Printf("user cache: close redis client: %v", err)
+				log.Printf("redis: close client: %v", err)
 			}
 		}
 		log.Printf("user cache enabled (ttl %s)", cfg.UserCacheTTL)
@@ -288,6 +298,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// The SaaS SRE rota's "Generate month" action. Postgres-only, like the
 	// rest of the Team Schedule.
 	var rotaGenerateHandler *handler.RotaGenerateHandler
+	var rotaAccessHandler *handler.RotaAccessHandler
 	var teamMemberHandler *handler.TeamMemberHandler
 	var pagingChainHandler *handler.PagingChainHandler
 
@@ -568,6 +579,18 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 			ClientSecret: cfg.ServiceNowIntegrationServiceClientSecret,
 			Scopes:       cfg.ServiceNowIntegrationServiceScopes,
 		}, cfg.UpstreamClientTimeout)
+	}
+
+	// Under dual-write, a new SR raised from a GitHub issue is created in
+	// ServiceNow first, through the integration service's /github-cases, and
+	// takes ServiceNow's CS number and WSO2 Case ID, as a portal-created one does.
+	if githubSync != nil && serviceNowIntegrationServiceClient != nil {
+		if cfg.GithubServiceNowFirst() {
+			service.WithServiceNowGithubCases(githubSync, service.NewSNGithubCases(serviceNowIntegrationServiceClient))
+			slog.Info("github: service requests from issues are created in ServiceNow first (dual-write)")
+		} else if cfg.DataSource == config.DataSourcePostgresServiceNowDualWrite {
+			slog.Info("github: service requests from issues are written to Postgres only and numbered SR-GH-<n> (GITHUB_SR_SERVICENOW_FIRST is off)")
+		}
 	}
 
 	var snAccountHandler *handler.SNAccountHandler
@@ -935,6 +958,9 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// below), not for DataSourceServiceNow: that mode's CreateCase never
 		// reaches this service's Postgres data at all.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		// POST /cases/volume-trend's per-day cache -- Redis-backed or
+		// in-memory, see volumeTrendCache's own construction above.
+		activeCaseSvc = service.WithCaseVolumeTrendCache(activeCaseSvc, volumeTrendCache)
 		if snSLASearchDelegate != nil {
 			activeCaseSvc = service.WithSLASearchDelegate(activeCaseSvc, snSLASearchDelegate)
 		}
@@ -978,6 +1004,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		// See the matching comment in the DataSourcePostgresServiceNowDualWrite
 		// case above.
 		activeCaseSvc = service.WithProductCategoryEnforcement(activeCaseSvc, referenceDataRepo, deployedProductRepo)
+		activeCaseSvc = service.WithCaseVolumeTrendCache(activeCaseSvc, volumeTrendCache)
 		if snSLASearchDelegate != nil {
 			activeCaseSvc = service.WithSLASearchDelegate(activeCaseSvc, snSLASearchDelegate)
 		}
@@ -1038,6 +1065,12 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		)
 		rotaGenerateHandler = handler.NewRotaGenerateHandler(
 			service.NewRotaGenerateService(repository.NewScheduleRepository(db), repository.NewRotaGenerateRepository(db), accessSvc),
+		)
+		// Rota access: who may change the rotas beyond the team leads -- the
+		// rota admin roles and each team's rota marker. A CSM admin is a token
+		// Portal admin: a token role from AUTH_ADMIN_ROLES, as in the portal.
+		rotaAccessHandler = handler.NewRotaAccessHandler(
+			service.NewRotaAccessService(repository.NewRotaAccessRepository(db), repository.NewScheduleRepository(db), accessSvc, cfg.AuthAdminRoles),
 		)
 		// Postgres-only, and internal-staff-only like every other read in this
 		// module: it returns staff names, addresses and rank.
@@ -1322,6 +1355,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		log.Fatalf("invalid specialist handoff configuration: %v", handoffErr)
 	}
 	activeIncidentSvc = service.WithSpecialistHandoffConfig(activeIncidentSvc, handoffConfig)
+	// The handoff's GitHub issue links back to the incident in the CSM portal.
+	activeIncidentSvc = service.WithHandoffPortalBaseURL(activeIncidentSvc, cfg.CSMPortalBaseURL)
 	if db != nil {
 		// Case Paging: who is on each tier of a team's paging chain, picked on
 		// the Team Schedule's Case Paging tab, and whether each chain would
@@ -1740,10 +1775,23 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /team-schedule/absence-kinds", scheduleHandler.CreateScheduleAbsenceKind)
 		mux.HandleFunc("DELETE /team-schedule/absence-kinds/{code}", scheduleHandler.DeleteScheduleAbsenceKind)
 	}
+	if rotaAccessHandler != nil {
+		// Who holds a rota admin role or marks a team's rota, and changing
+		// that. The service decides who may: a CSM admin for rota admin, a
+		// CSM admin or the family's rota admin for a team's marker.
+		mux.HandleFunc("GET /team-schedule/rota-access", rotaAccessHandler.GetRotaAccess)
+		mux.HandleFunc("PUT /team-schedule/rota-access/admins/{family}/{userId}", rotaAccessHandler.GrantRotaAdmin)
+		mux.HandleFunc("DELETE /team-schedule/rota-access/admins/{family}/{userId}", rotaAccessHandler.RevokeRotaAdmin)
+		mux.HandleFunc("PUT /team-schedule/rota-access/markers/{teamKey}/{userId}", rotaAccessHandler.GrantRotaMarker)
+		mux.HandleFunc("DELETE /team-schedule/rota-access/markers/{teamKey}/{userId}", rotaAccessHandler.RevokeRotaMarker)
+	}
 	if rotaGenerateHandler != nil {
 		// A lead of the rota (or its admin) works out a month from the
 		// availability marked on the roster; dryRun previews it.
 		mux.HandleFunc("POST /team-schedule/rotas/{code}/generate", rotaGenerateHandler.GenerateRotaMonth)
+		// The TZ3 people each month was generated with: the Month roster lists
+		// them under the night cover instead of under their team.
+		mux.HandleFunc("GET /team-schedule/rotas/{code}/night-crew", rotaGenerateHandler.GetRotaNightCrew)
 	}
 	if announcementRequestHandler != nil {
 		mux.HandleFunc("POST /announcement-requests", announcementRequestHandler.CreateAnnouncementRequest)
@@ -1904,6 +1952,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		mux.HandleFunc("POST /announcements/registry/rows", internalOnly(accessSvc, announcementRegistryHandler.SearchRegistryRows))
 	}
 	mux.HandleFunc("POST /cases/aggregate", caseHandler.AggregateCases)
+	mux.HandleFunc("POST /cases/volume-trend", caseHandler.CaseVolumeTrend)
 	mux.HandleFunc("POST /cases/feedback/search", feedbackHandler.SearchFeedback)
 	mux.HandleFunc("POST /cases/feedback/aggregate", feedbackHandler.AggregateFeedback)
 	mux.HandleFunc("POST /cases/{id}/comments", caseHandler.CreateCaseComment)
@@ -1927,6 +1976,14 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 	// /attachments/{id}... route; GetAttachmentParentCase resolves it to a
 	// case id internally via the same CaseService GetAttachmentByID already
 	// uses, so the caller never needs to pass a case id of its own.
+	// A comment-referenced attachment (an image pasted inline into a comment)
+	// has the comment's id as its reference, so GetAttachmentParentCase falls
+	// back to the comment table, read through the caller's own scope. Always
+	// the Postgres comment service, independent of DataSource: that table is
+	// the one place a comment id can be resolved to its case.
+	if cfg.HasDatabase() {
+		attachmentReadHandler.WithCommentResolver(service.NewCommentService(commentRepo, userRepo))
+	}
 	mux.HandleFunc("GET /attachments/{id}/case", attachmentReadHandler.GetAttachmentParentCase)
 	mux.HandleFunc("PATCH /attachments/{id}", attachmentHandler.UpdateAttachment)
 	mux.HandleFunc("DELETE /attachments/{id}", attachmentHandler.DeleteCaseAttachment)
@@ -2204,7 +2261,7 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		}
 		// Last: the retry worker above can still be invalidating users
 		// until it has stopped.
-		closeUserCache()
+		closeRedis()
 	}
 
 	// PLG Customer Success Portal. Every repository, service, handler and route

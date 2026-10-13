@@ -117,6 +117,14 @@ type caseService struct {
 	// not apply here, and this is wanted under plain DATA_SOURCE=postgres too,
 	// where snMirror is never set at all.
 	slaSearchDelegate CaseService
+	// volumeTrendCache backs CaseVolumeTrend's per-day caching (see that
+	// method's own doc comment) -- wired via WithCaseVolumeTrendCache,
+	// which routes.go always calls with either a Redis-backed or an
+	// in-memory cache (see CaseVolumeTrendCache's own doc comment), so this
+	// is nil only for a *caseService built directly by a test. Checked for
+	// nil before use anyway, same posture as every other optional
+	// dependency on this struct.
+	volumeTrendCache CaseVolumeTrendCache
 }
 
 // srNotifier is what caseService needs from SRNoticeService; an interface so
@@ -189,6 +197,19 @@ func WithProductCategoryEnforcement(svc CaseService, referenceDataRepo repositor
 func WithCSEngineerRole(svc CaseService, csEngineerRole string) CaseService {
 	if cs, ok := svc.(*caseService); ok {
 		cs.csEngineerRole = csEngineerRole
+	}
+	return svc
+}
+
+// WithCaseVolumeTrendCache attaches the optional Redis-backed per-day cache
+// CaseVolumeTrend reads through to an already-constructed CaseService. Same
+// post-construction wiring shape as WithProductCategoryEnforcement/
+// WithCSEngineerRole, for the same reason -- optional, nil-safe to omit, and
+// every existing NewCaseService/NewCaseServiceWithSNWriteback call site keeps
+// working unchanged. A no-op if svc is not a *caseService or cache is nil.
+func WithCaseVolumeTrendCache(svc CaseService, cache CaseVolumeTrendCache) CaseService {
+	if cs, ok := svc.(*caseService); ok && cache != nil {
+		cs.volumeTrendCache = cache
 	}
 	return svc
 }
@@ -456,6 +477,15 @@ func validateCreateCaseRequest(req *domain.CreateCaseRequest) error {
 	// a raw "invalid input syntax for type uuid" surfacing from the INSERT.
 	if req.ConversationID != "" {
 		if err := validateUUIDs("conversationId", []string{req.ConversationID}); err != nil {
+			return err
+		}
+	}
+	// Same posture as conversationId: a malformed relatedCaseId must be a 400
+	// before either create path writes anything. The id itself is stored on
+	// "case".related_case_id (type "case" only) so the new case's Overview
+	// can show the case it was created from.
+	if req.RelatedCaseID != "" {
+		if err := validateUUIDs("relatedCaseId", []string{req.RelatedCaseID}); err != nil {
 			return err
 		}
 	}
@@ -780,6 +810,16 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	if err != nil {
 		return domain.CreateCaseResponse{}, err
 	}
+	// Resolve the related case before ServiceNow accepts the new case. A
+	// lookup failure here creates nothing. A target that is not mirrored yet
+	// is nil, and the Postgres insert binds NULL rather than failing after
+	// ServiceNow already has the case. ServiceNow still receives RelatedCaseID.
+	if req.Type == "" || req.Type == "case" {
+		req.ResolvedRelatedCaseID, err = s.repo.ResolveRelatedCaseID(ctx, req.RelatedCaseID)
+		if err != nil {
+			return domain.CreateCaseResponse{}, err
+		}
+	}
 
 	snResp, err := s.snMirror.CreateCase(ctx, req)
 	if err != nil {
@@ -844,7 +884,7 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 	// should be the title and description" worked wherever comments are read
 	// live from ServiceNow (plain DATA_SOURCE=servicenow), but not under
 	// dual-write, where nothing ever copied it into Postgres.
-	s.mirrorInitialSNComments(ctx, c.ID)
+	s.mirrorInitialSNComments(ctx, c.ID, req.Type, req.Description)
 
 	// Persists whatever the caller's own req.WatchList already asked for --
 	// the account's four named stakeholders are deliberately NOT persisted
@@ -906,11 +946,19 @@ func (s *caseService) createCaseSNFirst(ctx context.Context, req domain.CreateCa
 // exclusively on this data source, so without this step ServiceNow's own
 // auto-generated entries would never appear here at all.
 //
+// One entry is deliberately not copied: for an announcement, ServiceNow's
+// origin comment that is only a repeat of the description
+// (isAnnouncementOriginComment), the earliest such comment. The announcement's description is already
+// stored on the work item and every reader shows it, so the repeat made the
+// same body appear twice (once as the oldest comment, once as the
+// description). Anything else ServiceNow wrote, and every other case type, is
+// copied exactly as before.
+//
 // Best-effort: a failure here must not fail the case creation response,
 // since ServiceNow and Postgres both already have the case row by this
 // point -- same "log, don't return" posture as every other post-create side
 // effect in createCaseSNFirst (addRequestedWatchers, publishCaseCreatedEvent).
-func (s *caseService) mirrorInitialSNComments(ctx context.Context, caseID string) {
+func (s *caseService) mirrorInitialSNComments(ctx context.Context, caseID, caseType, description string) {
 	resp, err := s.snMirror.SearchCaseComments(ctx, domain.SearchCaseCommentsRequest{
 		CaseID:     caseID,
 		Pagination: domain.Pagination{Limit: 20, Offset: 0},
@@ -919,11 +967,28 @@ func (s *caseService) mirrorInitialSNComments(ctx context.Context, caseID string
 		slog.ErrorContext(ctx, "sn create case: fetch ServiceNow's initial comments for mirroring failed", "caseId", caseID, "error", err)
 		return
 	}
-	for _, c := range resp.Comments {
+	// For an announcement, the one comment to leave out: the EARLIEST public
+	// comment that only repeats the description. Only that one is the origin
+	// comment; a later comment with the same text is a real post (nothing stops
+	// someone repeating a body) and is copied like any other. ServiceNow's
+	// search order is not relied on, so this is chosen by CreatedOn.
+	originIdx := -1
+	if caseType == "announcement" {
+		for i, c := range resp.Comments {
+			if c.Type == domain.CommentTypeComment && isAnnouncementOriginComment(description, c.Content) &&
+				(originIdx == -1 || c.CreatedOn.Before(resp.Comments[originIdx].CreatedOn)) {
+				originIdx = i
+			}
+		}
+	}
+	for i, c := range resp.Comments {
 		// "activity" (APPROVAL_HISTORY) is ServiceNow's own audit trail and
 		// is never writable through CreateCaseComment -- see that method's
 		// identical restriction. Skipped, not an error.
 		if c.Type == domain.CommentTypeActivity {
+			continue
+		}
+		if i == originIdx {
 			continue
 		}
 		createdBy := "system"
@@ -1361,11 +1426,10 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 	// this mirror's ONLY job is making sure ServiceNow's copy of the comment
 	// text exists too. It deliberately does NOT replicate
 	// snCaseService.CreateCaseComment's auto state-transition-on-reply
-	// (applyCustomerReplyStateTransition) — Postgres already owns the real
-	// outcome (note: this Postgres-native CreateCaseComment does not
-	// currently implement state-transition-on-reply at all; that is a
-	// separate, larger feature-parity gap, out of scope here — see
-	// CreateBareCaseComment's own doc comment). Uses CreateBareCaseComment
+	// (applyCustomerReplyStateTransition) — Postgres owns the real outcome:
+	// this service's own applyCustomerReplyStateTransition (below) decides
+	// the move here, and the UpdateCase it goes through mirrors that one
+	// state write to the previous system on its own. Uses CreateBareCaseComment
 	// specifically (not the full CreateCaseComment) so neither side effect
 	// ever fires twice, or fires against ServiceNow for an outcome only
 	// Postgres actually decided. Fires identically for both the token-
@@ -1389,6 +1453,12 @@ func (s *caseService) createCaseCommentAs(ctx context.Context, req domain.Create
 			)
 		}
 	}
+
+	// Last, after every other side effect of the comment itself, in the same
+	// position snCaseService.CreateCaseComment calls its own
+	// applyCustomerReplyStateTransition: the case.comment_added publish above
+	// precedes the case.status_changed publish this may cause.
+	s.applyCustomerReplyStateTransition(ctx, req, actorEmail)
 
 	return domain.CreateCaseCommentResponse{
 		Message: "Comment created successfully",
@@ -1479,6 +1549,89 @@ func (s *caseService) isSupportEngineerAuthor(ctx context.Context, caseID, actor
 		return false
 	}
 	return slices.Contains(roles, s.csEngineerRole)
+}
+
+// applyCustomerReplyStateTransition moves a case-like record back to
+// Waiting on WSO2 when a customer replies while it is Awaiting Info or
+// Solution Proposed -- WSO2 was waiting on the customer, and a reply means it
+// is WSO2's turn to act again. This is caseService's own port of
+// snCaseService.applyCustomerReplyStateTransition, the previous system's
+// rule, with the same semantics: only a customer-visible comment
+// (req.Type == comment, never a work note), only from exactly those two
+// states (not Open/Work In Progress/Reopened, never Closed), only when the
+// author is a customer (see isCustomerCommentAuthor), and the move is made by
+// calling this service's own UpdateCase with State: WaitingOnWSO2 in-process,
+// after the comment has been written -- so the status-changed event, the
+// SLA state effects, the activity-feed entry stamped with the customer as the
+// actor and the dual-write mirror all happen exactly as for a manual move,
+// with no duplicated logic. One rule for every record UpdateCase handles: it
+// never looks at the record's type -- a case and a service request go through
+// this identical path, and the repository's own UpdateCase lands the write on
+// the extension row that exists.
+//
+// Best-effort, like every other comment-creation side effect in this file:
+// the comment is already committed by the time this runs, so a failed read or
+// move is logged at ERROR with the case id and never fails the comment.
+//
+// KNOWN GAP, the same one the previous system's function documents: the read
+// here (GetCaseByID) and the write (UpdateCase, which does its own GetCaseByID
+// only to decide whether to publish/record the change, then an unconditional
+// UPDATE) are not atomic -- a record moved to some other state (e.g. Closed)
+// in that window is still set to Waiting on WSO2. Postgres could close it
+// with a conditional UPDATE, but that lives on the UpdateCase path this rule
+// deliberately reuses unchanged; flagged rather than half-closed here.
+func (s *caseService) applyCustomerReplyStateTransition(ctx context.Context, req domain.CreateCaseCommentRequest, actorEmail string) {
+	if req.Type != domain.CommentTypeComment {
+		return
+	}
+	if !s.isCustomerCommentAuthor(ctx) {
+		return
+	}
+
+	cv, err := s.GetCaseByID(ctx, req.CaseID)
+	if err != nil {
+		slog.ErrorContext(ctx, "create comment: customer reply state transition not evaluated, get case failed", "caseId", req.CaseID)
+		return
+	}
+	if derefState(cv.State) != domain.CaseStateAwaitingInfo && derefState(cv.State) != domain.CaseStateSolutionProposed {
+		return
+	}
+
+	waitingOnWSO2 := domain.CaseStateWaitingOnWSO2
+	if _, err := s.UpdateCase(ctx, domain.UpdateCaseRequest{ID: req.CaseID, State: &waitingOnWSO2}); err != nil {
+		slog.ErrorContext(ctx, "create comment: move case to waiting on wso2 after customer reply failed", "caseId", req.CaseID)
+	}
+}
+
+// isCustomerCommentAuthor answers "is this comment's author a customer" for
+// applyCustomerReplyStateTransition. snCaseService has no identity layer of
+// its own and answers it by looking the author up and checking CUSTOMER_ROLES;
+// this data source knows the caller: an external caller (the resolved scope
+// is neither Unrestricted nor HasInternalAccess -- the same predicate as
+// repository.IsExternalCaller, and the exact complement of the "internal
+// caller" UpdateCase's resolution-fields requirement uses) is a registered
+// portal contact posting through the customer portal, so a customer. An
+// internal caller -- WSO2 staff, a mixed identity that still has internal
+// access, the system identity, an M2M client -- never is, whatever roles
+// the author may also hold.
+//
+// CUSTOMER_ROLES is deliberately not consulted here, although the Postgres
+// user record does carry roles (UserRepository.GetUserRoles): a resolved
+// identity leaves it no decision to make (internal is never a customer,
+// external always is), and when no identity can be resolved the move could
+// not be made anyway -- GetCaseByID and every Scoped repository write refuse
+// to run without one -- so a role-based fallback would be dead code. A
+// scope that cannot be resolved therefore answers false: can't confirm, not
+// an error, the same posture as isSupportEngineerAuthor.
+func (s *caseService) isCustomerCommentAuthor(ctx context.Context) bool {
+	if s.access == nil {
+		return false
+	}
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return false
+	}
+	return !scope.Unrestricted && !scope.HasInternalAccess
 }
 
 // SearchCaseComments implements CaseService.
@@ -1687,11 +1840,74 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// entry," not a failed update: the case update itself does not depend
 	// on this.
 	var before *domain.CaseView
+	var beforeErr error
 	if req.State != nil || req.WorkState != nil {
 		if cv, err := s.GetCaseByID(ctx, req.ID); err != nil {
+			beforeErr = err
 			slog.ErrorContext(ctx, "update case: enrich case for case.status_changed publish/activity failed", "caseId", req.ID)
 		} else {
 			before = &cv
+		}
+	}
+
+	// isInternalCaller resolves once and is reused below (the
+	// resolutionCode/cause/closeNotes requirement) rather than calling
+	// ResolveScope twice for the same request. "Internal" is
+	// scope.Unrestricted OR scope.HasInternalAccess, not just Unrestricted
+	// alone -- see the resolutionCode block's own doc comment below for why
+	// (a mixed-identity caller). A ResolveScope failure conservatively
+	// resolves to internal for the resolutionCode/cause/closeNotes
+	// requirement below (failing to internal there means requiring MORE
+	// from the caller, never less) -- but that same fallback would be the
+	// wrong direction for the state-transition guard just below, which
+	// selects a MORE PERMISSIVE table for an internal caller: an external
+	// caller whose scope can't be resolved must not be silently checked
+	// against the internal table. A request that is changing state returns
+	// the scope error directly instead of guessing.
+	isInternalCaller := true
+	if scope, err := s.access.ResolveScope(ctx); err == nil {
+		isInternalCaller = scope.Unrestricted || scope.HasInternalAccess
+	} else if req.State != nil {
+		return domain.UpdateCaseResponse{}, err
+	}
+
+	// State-transition guard: until this was added, entity-service only
+	// validated that a requested state was a real enum value (validCaseState,
+	// above), never that moving to it from the case's current state was a
+	// legal transition for the caller's own tier -- so a customer-facing BFF
+	// forwarding a caller's own stateKey unchecked (as apps/customer-portal's
+	// backend did before its own BFF-level fix) could move any case to any
+	// state. This is the Postgres data source's own enforcement of the same
+	// rule ServiceNow's real instance already applies natively via its own
+	// workflow (the legacy ALLOWED_STATE_TRANSITIONS/SUPERUSER_STATE_TRANSITIONS
+	// scoped-app tables this file's caseStateTransitionsExternal/Internal
+	// port) -- sn_case_service.go needs no equivalent check of its own, since
+	// ServiceNow's own business rules already reject an illegal transition
+	// server-side. A before fetch failure (before == nil, or a case with no
+	// State of its own type) can't confirm the current state, so this fails
+	// closed rather than silently allowing an unverified transition. A real
+	// GetCaseByID error (a missing case, a transient read failure) is
+	// returned as-is rather than papered over with a generic "unable to
+	// verify" validation error, so a nonexistent case still answers 404
+	// rather than a misleading 400. A no-op re-PATCH (the requested state
+	// already equals the current one) is exempt -- it isn't a transition at
+	// all, just confirms the status quo, and is already handled a few lines
+	// below as "no genuine change, don't publish/log it either."
+	if req.State != nil {
+		if before == nil {
+			if beforeErr != nil {
+				return domain.UpdateCaseResponse{}, beforeErr
+			}
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "unable to verify the case's current state; try again"}
+		}
+		if before.State == nil {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "unable to verify the case's current state; try again"}
+		}
+		if *before.State != *req.State && !isValidCaseStateTransition(isInternalCaller, *before.State, *req.State) {
+			return domain.UpdateCaseResponse{}, &apierror.ValidationError{
+				Msg:  fmt.Sprintf("state cannot move from %q to %q", string(*before.State), string(*req.State)),
+				Code: "case_invalid_state_transition",
+			}
 		}
 	}
 
@@ -1752,10 +1968,6 @@ func (s *caseService) UpdateCase(ctx context.Context, req domain.UpdateCaseReque
 	// keeping both stores in sync.
 	if s.snWriteback != nil && req.State != nil && (*req.State == domain.CaseStateClosed || *req.State == domain.CaseStateSolutionProposed) {
 		if before == nil || before.Type == nil || *before.Type == "case" {
-			isInternalCaller := true
-			if scope, err := s.access.ResolveScope(ctx); err == nil {
-				isInternalCaller = scope.Unrestricted || scope.HasInternalAccess
-			}
 			if isInternalCaller {
 				if req.ResolutionCode == nil || req.Cause == nil || req.CloseNotes == nil || strings.TrimSpace(*req.CloseNotes) == "" {
 					return domain.UpdateCaseResponse{}, &apierror.ValidationError{Msg: "resolutionCode, cause, and closeNotes are required when state is closed or solution_proposed"}
@@ -2928,6 +3140,19 @@ func (s *caseService) SearchCases(ctx context.Context, req domain.SearchCasesReq
 		return domain.SearchCasesResponse{}, err
 	}
 
+	// BestCaseFixEta/MostLikelyFixEta/WorstCaseFixEta are internal-only --
+	// never shared with the customer (see SearchCaseView's own doc comment
+	// on each). GetCaseByID has the same exposure for a non-internal scope
+	// today; that is an existing gap, not a reason to add a second copy of
+	// it to this newly-populated search response.
+	if !scope.Unrestricted && !scope.HasInternalAccess {
+		for i := range cases {
+			cases[i].BestCaseFixEta = nil
+			cases[i].MostLikelyFixEta = nil
+			cases[i].WorstCaseFixEta = nil
+		}
+	}
+
 	return domain.SearchCasesResponse{
 		Cases:  cases,
 		Total:  total,
@@ -3016,6 +3241,162 @@ func (s *caseService) AggregateCases(ctx context.Context, req domain.AggregateCa
 		others += b.Count
 	}
 	return domain.AggregateResponse{Groups: buckets[:maxGroups], OthersCount: others, TotalRecords: total}, nil
+}
+
+// defaultCaseVolumeTrendDays/maxCaseVolumeTrendDays bound
+// CaseVolumeTrendRequest.Days.
+const (
+	defaultCaseVolumeTrendDays = 30
+	maxCaseVolumeTrendDays     = 90
+)
+
+// caseVolumeTrendStableTTL is CaseVolumeTrend's cache lifetime for a day
+// that has fully elapsed (UTC) and can never change again -- comfortably
+// longer than the widest window this endpoint allows (maxCaseVolumeTrendDays)
+// rather than needing an explicit invalidation path, since it simply never
+// needs recomputing again while it stays within any request's window.
+// "Today" has no fixed constant of its own -- see ttlUntilNextUTCMidnight.
+const caseVolumeTrendStableTTL = 120 * 24 * time.Hour
+
+// ttlUntilNextUTCMidnight returns how much of the current UTC calendar day
+// is left, as of now. This -- not a flat duration -- is "today"'s own TTL,
+// applied identically to both the Redis and in-memory layers (by explicit
+// product decision: the count only needs to be correct as of whenever it
+// was last computed that day, not refreshed on any shorter cycle, so there
+// is no reason for the two layers to differ here any more). Capping to the
+// day boundary is still essential even though the value is otherwise long:
+// a flat duration written a few minutes before midnight would otherwise
+// still be "valid" well into the next calendar day, serving a snapshot of a
+// day that has already ended instead of forcing the one-time recompute that
+// actually finalizes it (after which it's cached under
+// caseVolumeTrendStableTTL, correctly, since by then `day != todayKey`).
+// Capping here means that recompute always happens on the very first
+// request after midnight, on any pod, regardless of how recently "today"
+// had been refreshed before the day ended.
+func ttlUntilNextUTCMidnight(now time.Time) time.Duration {
+	nextMidnight := now.Truncate(24 * time.Hour).Add(24 * time.Hour)
+	return nextMidnight.Sub(now)
+}
+
+// CaseVolumeTrend implements CaseService. It returns exactly two series --
+// "Opened" (by created date) and "Closed" (by closed date) -- one point per
+// UTC calendar day over the trailing window, oldest first; see
+// domain.CaseVolumeTrendResponse's own doc comment for why this is fixed
+// rather than an open-ended series config.
+//
+// Caching (volumeTrendCache -- see that field's own doc comment; routes.go
+// always wires a per-pod in-memory cache, so this is never nil): a day that
+// has fully elapsed can never change again, so once computed it is cached
+// for caseVolumeTrendStableTTL; "today" is cached only until UTC midnight
+// (ttlUntilNextUTCMidnight), never longer, so the day it represents is
+// never served stale into the next calendar day. On a cold cache this still
+// costs at most ONE additional Postgres query regardless of how many days
+// are missing -- CaseRepository.CaseVolumeTrend bulk-computes every missing
+// day in a single statement, never one query per day -- which is what keeps
+// a dashboard load cheap even right after a cache flush. Deliberately NOT
+// keyed by caller scope: every real caller of this endpoint sees the same,
+// portal-wide count (see service.CaseVolumeTrendCache's own doc comment for
+// why that's safe here) -- only the request's own filters distinguish one
+// cache entry from another.
+func (s *caseService) CaseVolumeTrend(ctx context.Context, req domain.CaseVolumeTrendRequest) (domain.CaseVolumeTrendResponse, error) {
+	// This endpoint's own cache (below) is deliberately NOT keyed by caller
+	// scope -- see CLAUDE.md, "Deliberately NOT keyed by caller identity" --
+	// which is only safe because every caller is Unrestricted. That used to
+	// be an assumption about who calls this ("reached solely through the CSM
+	// portal's own internal-staff dashboard"), not an enforced one: a
+	// restricted-scope caller would have its own scope applied by the
+	// repository on a cache miss, then have that scope-filtered result cached
+	// under a scope-independent key and served back to the next caller with
+	// the same filters, whatever THEIR scope is -- a cross-tenant leak in
+	// either direction. Gating here, the same way GetCaseFeedback's own
+	// requireInternalCaller already does in this file, makes the assumption
+	// the cache design depends on an actual invariant.
+	if err := RequireInternalCaller(ctx, s.access, "case volume trend is only available to internal users"); err != nil {
+		return domain.CaseVolumeTrendResponse{}, err
+	}
+	days := req.Days
+	if days == 0 {
+		days = defaultCaseVolumeTrendDays
+	}
+	if days < 1 || days > maxCaseVolumeTrendDays {
+		return domain.CaseVolumeTrendResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("days must be between 1 and %d", maxCaseVolumeTrendDays)}
+	}
+	search, err := s.prepareCaseSearch(ctx, domain.SearchCasesRequest{Filters: req.Filters})
+	if err != nil {
+		return domain.CaseVolumeTrendResponse{}, err
+	}
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.CaseVolumeTrendResponse{}, err
+	}
+
+	today := time.Now().UTC()
+	allDays := make([]string, days)
+	for i := 0; i < days; i++ {
+		allDays[i] = today.AddDate(0, 0, -(days - 1 - i)).Format("2006-01-02")
+	}
+	todayKey := today.Format("2006-01-02")
+
+	cacheEnabled := s.volumeTrendCache != nil
+	var filtersKey string
+	counts := make(map[string]domain.CaseVolumeDayCount, days)
+	if cacheEnabled {
+		filtersKey = caseVolumeFiltersKey(req.Filters)
+		for day, dc := range s.volumeTrendCache.GetMany(ctx, filtersKey, allDays) {
+			counts[day] = dc
+		}
+	}
+
+	missing := make([]string, 0, days)
+	for _, d := range allDays {
+		if _, ok := counts[d]; !ok {
+			missing = append(missing, d)
+		}
+	}
+	if len(missing) > 0 {
+		fresh, err := s.repo.CaseVolumeTrend(ctx, search, missing, scope)
+		if err != nil {
+			return domain.CaseVolumeTrendResponse{}, err
+		}
+		for day, dc := range fresh {
+			counts[day] = dc
+			if cacheEnabled {
+				ttl := caseVolumeTrendStableTTL
+				if day == todayKey {
+					ttl = ttlUntilNextUTCMidnight(today)
+				}
+				s.volumeTrendCache.Set(ctx, filtersKey, day, dc, ttl)
+			}
+		}
+	}
+
+	opened := make([]domain.CaseVolumeTrendPoint, days)
+	closed := make([]domain.CaseVolumeTrendPoint, days)
+	for i, d := range allDays {
+		dc := counts[d]
+		opened[i] = domain.CaseVolumeTrendPoint{Date: d, Count: dc.Opened}
+		closed[i] = domain.CaseVolumeTrendPoint{Date: d, Count: dc.Closed}
+	}
+	return domain.CaseVolumeTrendResponse{
+		Days: days,
+		Series: []domain.CaseVolumeTrendSeries{
+			{Label: "Opened", Points: opened},
+			{Label: "Closed", Points: closed},
+		},
+	}, nil
+}
+
+// caseVolumeFiltersKey encodes req.Filters into a stable string for
+// CaseVolumeTrendCache's key -- two requests with byte-identical filters
+// (the common case: a dashboard widget's own JSON config never changes
+// between loads) share a cache entry; anything else is simply a cache miss,
+// never a correctness problem.
+func caseVolumeFiltersKey(filters domain.SearchCasesFilters) string {
+	raw, err := json.Marshal(filters)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 // resolveActor authenticates the caller from the x-user-id-token header
@@ -3237,7 +3618,9 @@ func (s *caseService) ConfirmCaseAttachment(ctx context.Context, id string) (dom
 // SearchCaseAttachments implements CaseService for the CSM-native (Postgres)
 // data source.
 //
-// referenceType "case" reads case_attachment (unchanged). "change_request",
+// referenceType "case" reads case_attachment (native uploads) and the synced
+// work_item_attachment rows of the same case as one deduplicated list (see
+// caseRepo.SearchCaseAttachments). "change_request",
 // "incident" and "conversation" are work_item subtypes and read the generic
 // work_item_attachment table via CaseRepository.SearchWorkItemAttachments;
 // "deployment" is not a work_item subtype and has no attachment table on
@@ -3453,7 +3836,10 @@ func (s *caseService) addCaseTagAs(ctx context.Context, caseID, label, actorEmai
 	// no ServiceNow mapping yet, the same "not yet mirrorable" state
 	// RemoveCaseTag's mirror already tolerates (see that method's own doc
 	// comment).
-	if s.snWriteback != nil {
+	//
+	// Gated on the work item's type (tagMirrorApplies): this endpoint takes
+	// any work item id, and a change request's tags are Postgres-only.
+	if s.snWriteback != nil && s.tagMirrorApplies(ctx, caseID) {
 		mirrorCaseID, mirrorTagID, mirrorLabel, mirrorActorEmail := caseID, tag.ID, label, actorEmail
 		s.snWriteback.Dispatch(ctx, "case_tag", caseID, "add",
 			map[string]any{"caseId": mirrorCaseID, "label": mirrorLabel},
@@ -3515,9 +3901,15 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 		return err
 	}
 
+	// Whether this attachment is mirrored at all: dual-write mode, and a
+	// case-like work item (a change request's tags are Postgres-only -- see
+	// tagMirrorApplies). Decided before the delete, since the sys_id lookup it
+	// gates has to read the row while it still exists.
+	mirrored := s.snWriteback != nil && s.tagMirrorApplies(ctx, caseID)
+
 	var snSysID *string
 	var snLookupErr error
-	if s.snWriteback != nil {
+	if mirrored {
 		snSysID, snLookupErr = s.repo.GetCaseTagSNSysID(ctx, caseID, tagID)
 	}
 
@@ -3534,7 +3926,7 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 	// means we could not tell whether a ServiceNow mirror needs removing, so
 	// it lands in sn_writeback_failures for manual backfill instead of
 	// vanishing.
-	if s.snWriteback != nil && snLookupErr != nil {
+	if mirrored && snLookupErr != nil {
 		lookupErr := snLookupErr
 		s.snWriteback.Dispatch(ctx, "case_tag", caseID, "remove",
 			map[string]any{"caseId": caseID, "tagId": tagID},
@@ -3542,7 +3934,7 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 				return lookupErr
 			},
 		)
-	} else if s.snWriteback != nil && snSysID != nil && *snSysID != "" {
+	} else if mirrored && snSysID != nil && *snSysID != "" {
 		mirrorCaseID, mirrorTagID := caseID, sysidToUUID(*snSysID)
 		s.snWriteback.Dispatch(ctx, "case_tag", caseID, "remove",
 			map[string]any{"caseId": mirrorCaseID, "tagId": tagID},
@@ -3553,6 +3945,26 @@ func (s *caseService) RemoveCaseTag(ctx context.Context, caseID, tagID string) e
 	}
 
 	return nil
+}
+
+// tagMirrorApplies reports whether a tag change on the work item workItemID
+// is mirrored to the previous system (DATA_SOURCE=postgres-servicenow-dual-write
+// only; the caller has already checked snWriteback). POST /cases/{id}/tags
+// and DELETE /cases/{id}/tags/{tagId} take any work item id -- a change
+// request's too (the CSM portal tags change requests through them) -- but the
+// mirror POSTs to the previous system's case tag endpoint, which only a
+// case-like work item (CaseRepository.IsCaseLikeWorkItem) has a record
+// behind. A change request's tags are therefore Postgres-only: nothing is
+// dispatched, nothing lands in sn_writeback_failures. Fails closed: when the
+// type cannot be read, nothing is mirrored (logged at WARN) rather than a
+// mirror against a record that may not be a case.
+func (s *caseService) tagMirrorApplies(ctx context.Context, workItemID string) bool {
+	caseLike, err := s.repo.IsCaseLikeWorkItem(ctx, workItemID)
+	if err != nil {
+		slog.WarnContext(ctx, "case tag: work item type lookup failed; not mirroring the tag change to the previous system", "caseId", workItemID, "error", err)
+		return false
+	}
+	return caseLike
 }
 
 // SearchTags implements CaseService.
