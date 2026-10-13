@@ -391,15 +391,31 @@ export function firstEnabledDestination(
 }
 
 /**
- * Every nav node this deployment currently hides or marks WIP, resolved WITHOUT
- * any preview override applied — the candidate list the Feature Preview dialog
- * renders as toggle rows. `access` only narrows by capability (a node a caller
- * can never reach regardless of deployment state is not worth offering a
- * toggle for); the admin-only gate on actually USING a toggle lives in
- * `featureState`'s own promotion check, not here.
+ * Every nav node this deployment's own `CSM_PORTAL_FEATURE_OVERRIDES` map
+ * EXPLICITLY names, and whose resolved state (without any preview override
+ * applied) is still `hidden`/`wip` — the candidate list the Feature Preview
+ * dialog renders as toggle rows.
+ *
+ * Deliberately NOT every node whose state merely ends up `hidden`/`wip`
+ * through inheritance — a `hidden` section forces every one of its tabs
+ * hidden too (rule 1 in `computeStates`' own doc comment), so without this
+ * restriction a deployment that hides a handful of sections would offer a
+ * toggle for every tab underneath each one as well, turning a short,
+ * intentional restriction list into a dialog listing nearly the entire nav
+ * tree. Only the ids a deployment actually chose to name are worth a row;
+ * previewing a tab that's merely swept up by a hidden ancestor still works
+ * (`hasPreviewedDescendant` promotes the ancestor too, see `featureState`),
+ * it's just not separately offered here unless the deployment named it too.
+ *
+ * `access` only narrows by capability (a node a caller can never reach
+ * regardless of deployment state is not worth offering a toggle for); the
+ * admin-only gate on actually USING a toggle lives in `featureState`'s own
+ * promotion check, not here.
  */
 export function listPreviewableFeatures(access?: PortalAccess): CsmNavNode[] {
+  const overrides = parseOverrides();
   return flattenNavNodes(CSM_NAV_ITEMS).filter((node) => {
+    if (!(node.id in overrides)) return false;
     const state = featureState(node.id, access);
     return state === "hidden" || state === "wip";
   });
