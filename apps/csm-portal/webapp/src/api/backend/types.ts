@@ -4164,6 +4164,23 @@ export interface BeSearchProductVulnerabilitiesResponse {
   offset: number;
 }
 
+/**
+ * Generic `{id, label}` pair entity-service uses for reference/choice-list
+ * metadata (e.g. `GetVulnerabilityMeta`'s severities). `id` here is a
+ * string-encoded integer (the upstream's own severity id scheme), not a
+ * `BeVulnerabilityPriority` enum value — see `vulnerabilityMetaToPriority`
+ * in `csm-security-center/utils/vulnerabilities.ts` for the mapping.
+ */
+export interface BeChoiceListItem {
+  id: string;
+  label: string;
+}
+
+/** Response of `GET /products/vulnerabilities/meta`. */
+export interface BeVulnerabilityMetaResponse {
+  severities: BeChoiceListItem[];
+}
+
 export type BeTimeCardState =
   | "pending"
   | "submitted"

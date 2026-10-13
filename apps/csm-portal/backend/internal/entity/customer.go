@@ -663,6 +663,12 @@ func (c *CustomerEntityClient) GetProductVulnerability(ctx context.Context, id s
 	return c.do(ctx, http.MethodGet, fmt.Sprintf("/products/vulnerabilities/%s", url.PathEscape(id)), nil)
 }
 
+// GetVulnerabilityMeta calls GET /products/vulnerabilities/meta on the entity service.
+// Response is returned as raw JSON.
+func (c *CustomerEntityClient) GetVulnerabilityMeta(ctx context.Context) ([]byte, error) {
+	return c.do(ctx, http.MethodGet, "/products/vulnerabilities/meta", nil)
+}
+
 // CreateCallRequest calls POST /call-requests on the entity service.
 // Response is returned as raw JSON.
 func (c *CustomerEntityClient) CreateCallRequest(ctx context.Context, body []byte) ([]byte, error) {

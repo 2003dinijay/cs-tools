@@ -19,7 +19,7 @@ info:
     | `create_work_note` | `POST /cases/{id}/comments` with `type=work_note` (internal note) — and nothing else | worknote-creator, cs-engineer, admin |
     | `write` | every other `POST`/`PATCH`/`DELETE`, including incident and change-request comments and case comments of any type other than `work_note` | cs-engineer, admin |
     | `admin` | `POST /users` | admin only |
-    | `security_center` | `POST /products/vulnerabilities/search`, `GET /products/vulnerabilities/{id}`, and a `POST /cases/search`/`GET /cases/{id}` naming case type security_report_analysis | cs-engineer, admin |
+    | `security_center` | `POST /products/vulnerabilities/search`, `GET /products/vulnerabilities/{id}`, `GET /products/vulnerabilities/meta`, and a `POST /cases/search`/`GET /cases/{id}` naming case type security_report_analysis | cs-engineer, admin |
 security:
   - bearerAuth: []
 servers:
@@ -6429,6 +6429,38 @@ paths:
                 $ref: '#/components/schemas/ErrorPayload'
         "404":
           description: Vulnerability not found.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: Internal server error.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
+  /products/vulnerabilities/meta:
+    get:
+      summary: Get reference metadata for product vulnerabilities (severity choice list).
+      operationId: getVulnerabilityMeta
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Reference metadata for product vulnerabilities.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VulnerabilityMetaResponse'
+        "401":
+          description: Unauthorized.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden.
           content:
             application/json:
               schema:
@@ -20315,6 +20347,22 @@ components:
         resolution:
           type: string
           nullable: true
+
+    ChoiceListItem:
+      type: object
+      properties:
+        id:
+          type: string
+        label:
+          type: string
+
+    VulnerabilityMetaResponse:
+      type: object
+      properties:
+        severities:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChoiceListItem'
 
     SearchProductVulnerabilitiesResponse:
       type: object

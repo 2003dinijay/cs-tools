@@ -649,6 +649,7 @@ func main() {
 	route("POST /catalogs/search", handler.PermView, catalogHandler.SearchCatalogs)
 	route("GET /catalogs/{catalogId}/items/{catalogItemId}/variables", handler.PermView, catalogHandler.GetCatalogItemVariables)
 	route("POST /products/vulnerabilities/search", handler.PermViewSecurityCenter, productVulnerabilityHandler.SearchProductVulnerabilities)
+	route("GET /products/vulnerabilities/meta", handler.PermViewSecurityCenter, productVulnerabilityHandler.GetVulnerabilityMeta)
 	route("GET /products/vulnerabilities/{id}", handler.PermViewSecurityCenter, productVulnerabilityHandler.GetProductVulnerability)
 	route("GET /conversations/{id}/messages", handler.PermView, conversationHandler.GetConversationMessages)
 	route("POST /conversations/search", handler.PermView, conversationHandler.SearchConversations)
