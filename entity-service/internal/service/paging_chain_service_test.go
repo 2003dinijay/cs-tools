@@ -106,6 +106,7 @@ func pagingFixture() *stubPagingRepo {
 			"amlead@wso2.com":   {Memberships: []repository.PagingCallerMembership{{TeamKey: "americas", Role: "lead"}}},
 			"amhead@wso2.com":   {Memberships: []repository.PagingCallerMembership{{TeamKey: "americas", Role: "americas_team_lead"}}},
 			"crehead@wso2.com":  {Memberships: []repository.PagingCallerMembership{{TeamKey: "cre-leadership", Role: "cre_head"}}},
+			"cshead@wso2.com":   {Memberships: []repository.PagingCallerMembership{{TeamKey: "cre-leadership", Role: "cs_head"}}},
 			"eng@wso2.com":      {Memberships: []repository.PagingCallerMembership{{TeamKey: "vega", Role: "engineer"}}},
 		},
 	}
@@ -134,7 +135,9 @@ func TestUpdatePagingMember_PermissionTable(t *testing.T) {
 		req    domain.UpdatePagingMemberRequest
 		allow  bool
 	}{
-		// 1st-3rd responders: the team's lead, or its head where it has one, or a CRE rota admin.
+		// 1st-3rd responders: the team's lead, or its head where it has one, a CRE rota admin, or the CRE or CS head.
+		{"CRE head picks a vega responder", "crehead@wso2.com", domain.UpdatePagingMemberRequest{MembershipID: idVegaEng, ResponderRank: intp(2)}, true},
+		{"CS head picks an americas responder", "cshead@wso2.com", domain.UpdatePagingMemberRequest{MembershipID: idAmEng, ResponderRank: intp(1)}, true},
 		{"vega lead picks vega responder", "vegalead@wso2.com", domain.UpdatePagingMemberRequest{MembershipID: idVegaEng, ResponderRank: intp(2)}, true},
 		{"americas lead cannot pick vega responder", "amlead@wso2.com", domain.UpdatePagingMemberRequest{MembershipID: idVegaEng, ResponderRank: intp(2)}, false},
 		{"rota admin picks any responder", "rota@wso2.com", domain.UpdatePagingMemberRequest{MembershipID: idVegaEng, ResponderRank: intp(1)}, true},
@@ -231,7 +234,8 @@ func TestGetPagingChain_CanEditFollowsTheTable(t *testing.T) {
 	}{
 		{"vegalead@wso2.com", []string{"vega"}, []string{}, false},
 		{"amhead@wso2.com", []string{"americas"}, []string{"americas"}, false},
-		{"crehead@wso2.com", []string{}, []string{"cre-leadership", "vega"}, false},
+		{"crehead@wso2.com", []string{"americas", "cre-leadership", "vega"}, []string{"cre-leadership", "vega"}, false},
+		{"cshead@wso2.com", []string{"americas", "cre-leadership", "vega"}, []string{"cre-leadership", "vega"}, false},
 		{"rota@wso2.com", []string{"americas", "cre-leadership", "vega"}, []string{"americas", "cre-leadership", "vega"}, true},
 		{"admin@wso2.com", []string{}, []string{}, true},
 		{"eng@wso2.com", []string{}, []string{}, false},

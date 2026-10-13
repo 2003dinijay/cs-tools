@@ -405,7 +405,15 @@ and `sme_rota_admin`. No schema change: the family of a team is read from
 | Rota marker | every family | their own team's rotations, leave and allocations |
 | Team lead | every family | their own team |
 | Rota admin | every family | their own family's teams |
+| CRE head, CS head | every family | every CRE team, as a CRE rota admin |
 
+- **The CRE head and the CS head** (team position `cre_head` / `cs_head` on
+  any team, internal staff) count as CRE rota admins without holding the role:
+  every CRE team's rota, the CRE tags, CRE's rota markers on Rota access, and
+  on Case Paging the responders and Team leads of every CRE team. Who holds a
+  position -- the America lead, Americas Team leads, the CRE and CS heads --
+  keeps its own rules (a CRE rota admin or the portal admin), so a head cannot
+  appoint the head above them. Neither runs an SRE or SME rota by being a head.
 - **Reads are not limited by family**, for anyone: the catalogue, turns, leave,
   on-duty, edit markers and every Case Paging chain.
 - **Writes** go through `requireRotaWriter`: a lead edits their own team, a rota

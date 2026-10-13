@@ -150,7 +150,11 @@ func (a pagingAuthority) canSetResponders(t teamFacts) bool {
 	if t.family != familyCRE {
 		return false
 	}
-	if a.creRotaAdmin {
+	// The CRE head and the CS head pick responders on every CRE team, as a
+	// CRE rota admin does: who answers a page is part of running CRE's rota,
+	// which they do from above the teams. Who holds a position -- Team lead,
+	// America lead, CRE or CS head -- stays with the rules below.
+	if a.creRotaAdmin || a.head {
 		return true
 	}
 	if t.hasHead {
