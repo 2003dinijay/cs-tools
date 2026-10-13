@@ -19,6 +19,21 @@ import { describe, expect, it, vi } from "vitest";
 import "@testing-library/jest-dom/vitest";
 import SetFixEtaDialog from "@features/csm-cases/components/SetFixEtaDialog";
 
+// The Product field is now a dropdown backed by the product catalogue
+// (digiops-cs#3449), so every test that reveals it needs a real product list
+// to pick from -- mocked directly rather than pulling in the real backend
+// client (which requires window.config at module load, per this app's own
+// testing convention for @api/backend/client-backed hooks).
+vi.mock("@features/csm-projects/api/useSearchProducts", () => ({
+  useSearchProducts: () => ({
+    data: [
+      { id: "prod-apim", name: "API Manager" },
+      { id: "prod-is", name: "Identity Server" },
+    ],
+    isLoading: false,
+  }),
+}));
+
 describe("SetFixEtaDialog — single combined save", () => {
   it("renders one Save button, disabled until at least one field is set", () => {
     render(
@@ -78,7 +93,7 @@ describe("SetFixEtaDialog — single combined save", () => {
     expect(onSave).toHaveBeenCalledWith({ bestCaseFixEta: "2099-06-16" });
   });
 
-  it("reveals product/public ticket fields and blocks Save until they're filled, when sharing with customer", () => {
+  it("reveals product/public ticket fields and blocks Save until they're filled, when sharing with customer", async () => {
     render(
       <SetFixEtaDialog
         currentBestCaseFixEta="2099-06-16"
@@ -92,9 +107,8 @@ describe("SetFixEtaDialog — single combined save", () => {
     );
     expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
 
-    fireEvent.change(screen.getByLabelText(/^product/i), {
-      target: { value: "API Manager" },
-    });
+    fireEvent.mouseDown(screen.getByLabelText(/^product/i));
+    fireEvent.click(await screen.findByRole("option", { name: "API Manager" }));
     expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
 
     fireEvent.change(screen.getByLabelText(/public ticket/i), {
@@ -103,16 +117,15 @@ describe("SetFixEtaDialog — single combined save", () => {
     expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
   });
 
-  it("blocks sharing with customer when no fix ETA is set, even with product/ticket filled in", () => {
+  it("blocks sharing with customer when no fix ETA is set, even with product/ticket filled in", async () => {
     render(
       <SetFixEtaDialog isSaving={false} onClose={() => {}} onSave={() => {}} />,
     );
     fireEvent.click(
       screen.getByRole("switch", { name: /share fix eta with customer/i }),
     );
-    fireEvent.change(screen.getByLabelText(/^product/i), {
-      target: { value: "API Manager" },
-    });
+    fireEvent.mouseDown(screen.getByLabelText(/^product/i));
+    fireEvent.click(await screen.findByRole("option", { name: "API Manager" }));
     fireEvent.change(screen.getByLabelText(/public ticket/i), {
       target: { value: "https://github.com/wso2/product-apim/issues/1" },
     });
@@ -122,7 +135,7 @@ describe("SetFixEtaDialog — single combined save", () => {
     ).toBeInTheDocument();
   });
 
-  it("includes addPublicComment/product/publicTicket in the combined payload when sharing", () => {
+  it("includes addPublicComment/product/publicTicket in the combined payload when sharing", async () => {
     const onSave = vi.fn();
     render(
       <SetFixEtaDialog
@@ -135,9 +148,8 @@ describe("SetFixEtaDialog — single combined save", () => {
     fireEvent.click(
       screen.getByRole("switch", { name: /share fix eta with customer/i }),
     );
-    fireEvent.change(screen.getByLabelText(/^product/i), {
-      target: { value: "API Manager" },
-    });
+    fireEvent.mouseDown(screen.getByLabelText(/^product/i));
+    fireEvent.click(await screen.findByRole("option", { name: "API Manager" }));
     fireEvent.change(screen.getByLabelText(/public ticket/i), {
       target: { value: "https://github.com/wso2/product-apim/issues/1" },
     });
@@ -148,6 +160,84 @@ describe("SetFixEtaDialog — single combined save", () => {
       product: "API Manager",
       publicTicket: "https://github.com/wso2/product-apim/issues/1",
     });
+  });
+
+  it("rejects a public ticket that isn't a GitHub issue/PR URL", async () => {
+    render(
+      <SetFixEtaDialog
+        currentBestCaseFixEta="2099-06-16"
+        isSaving={false}
+        onClose={() => {}}
+        onSave={() => {}}
+      />,
+    );
+    fireEvent.click(
+      screen.getByRole("switch", { name: /share fix eta with customer/i }),
+    );
+    fireEvent.mouseDown(screen.getByLabelText(/^product/i));
+    fireEvent.click(await screen.findByRole("option", { name: "API Manager" }));
+    fireEvent.change(screen.getByLabelText(/public ticket/i), {
+      target: { value: "not-a-url" },
+    });
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+    expect(
+      screen.getAllByText(/must be a github issue or pull request url/i).length,
+    ).toBeGreaterThan(0);
+
+    fireEvent.change(screen.getByLabelText(/public ticket/i), {
+      target: { value: "https://github.com/wso2/product-apim/issues/42" },
+    });
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
+  });
+
+  it("blocks a past fix ETA date and shows an inline error", () => {
+    const onSave = vi.fn();
+    render(
+      <SetFixEtaDialog
+        currentBestCaseFixEta="2020-01-01"
+        isSaving={false}
+        onClose={() => {}}
+        onSave={onSave}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+    expect(screen.getByText(/this date is in the past/i)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("blocks Save when the three estimates are out of best <= most likely <= worst case order", () => {
+    const onSave = vi.fn();
+    render(
+      <SetFixEtaDialog
+        currentBestCaseFixEta="2099-06-18"
+        currentMostLikelyFixEta="2099-06-17"
+        currentWorstCaseFixEta="2099-06-16"
+        isSaving={false}
+        onClose={() => {}}
+        onSave={onSave}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeDisabled();
+    expect(
+      screen.getByText(/best case must not be later than most likely/i),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /^save$/i }));
+    expect(onSave).not.toHaveBeenCalled();
+  });
+
+  it("allows the estimates in correct best <= most likely <= worst case order", () => {
+    render(
+      <SetFixEtaDialog
+        currentBestCaseFixEta="2099-06-16"
+        currentMostLikelyFixEta="2099-06-17"
+        currentWorstCaseFixEta="2099-06-18"
+        isSaving={false}
+        onClose={() => {}}
+        onSave={() => {}}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /^save$/i })).toBeEnabled();
   });
 
   // CodeRabbit catch: sharing posts through the same comment endpoint as the
