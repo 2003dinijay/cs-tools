@@ -62,6 +62,83 @@ type SpecialistHandoffGithub struct {
 	Owner      string `json:"owner"`
 	Repo       string `json:"repo"`
 	Credential string `json:"credential,omitempty"`
+	// Labels the issue gets, optional: the repositories name their labels
+	// differently, so each product maps its own.
+	Labels *SpecialistHandoffGithubLabels `json:"labels,omitempty"`
+}
+
+// SpecialistHandoffGithubLabels maps what the incident is to the labels its
+// issue gets:
+//
+//	"labels":{"byPriority":{"CRITICAL":["Priority/Highest (P1)","Severity/Critical"],"HIGH":[...]},
+//	          "byEnvironment":{"prod":["Env/Production"],"production":["Env/Production"]}}
+//
+// ByPriority is keyed by the incident priority (CRITICAL, HIGH, MODERATE,
+// LOW, PLANNING); ByEnvironment by the incident's environment, compared
+// without case. An incident matching no key gets no label from that map.
+type SpecialistHandoffGithubLabels struct {
+	ByPriority    map[string][]string `json:"byPriority,omitempty"`
+	ByEnvironment map[string][]string `json:"byEnvironment,omitempty"`
+}
+
+// githubLabelMaxLen is GitHub's limit on a label's name.
+const githubLabelMaxLen = 50
+
+// validIncidentPriorities are the keys byPriority accepts.
+var validIncidentPriorities = map[string]bool{
+	string(domain.IncidentPriorityCritical): true, string(domain.IncidentPriorityHigh): true,
+	string(domain.IncidentPriorityModerate): true, string(domain.IncidentPriorityLow): true,
+	string(domain.IncidentPriorityPlanning): true,
+}
+
+// normalizeLabels trims and checks one map's label lists in place, keying it
+// by key(k); where names the map in errors.
+func normalizeLabels(m map[string][]string, where string, key func(string) (string, error)) (map[string][]string, error) {
+	out := make(map[string][]string, len(m))
+	for k, labels := range m {
+		nk, err := key(k)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %w", where, err)
+		}
+		if _, dup := out[nk]; dup {
+			return nil, fmt.Errorf("%s: key %q appears twice", where, k)
+		}
+		clean := make([]string, 0, len(labels))
+		for _, l := range labels {
+			l = strings.TrimSpace(l)
+			if l == "" || len([]rune(l)) > githubLabelMaxLen {
+				return nil, fmt.Errorf("%s[%q]: label %q must be 1 to %d characters", where, k, l, githubLabelMaxLen)
+			}
+			clean = append(clean, l)
+		}
+		out[nk] = clean
+	}
+	return out, nil
+}
+
+// labelsFor is the labels an incident's issue gets: its priority's, then its
+// environment's, each once, in configured order.
+func (l *SpecialistHandoffGithubLabels) labelsFor(priority, environment *string) []string {
+	if l == nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(labels []string) {
+		for _, x := range labels {
+			if !seen[x] {
+				seen[x] = true
+				out = append(out, x)
+			}
+		}
+	}
+	if priority != nil {
+		add(l.ByPriority[strings.ToUpper(strings.TrimSpace(*priority))])
+	}
+	if environment != nil {
+		add(l.ByEnvironment[strings.ToLower(strings.TrimSpace(*environment))])
+	}
+	return out
 }
 
 // credential is the name of the token that files this repository's issues.
@@ -153,6 +230,27 @@ func ParseSpecialistHandoffConfig(raw string) (*SpecialistHandoffConfig, error) 
 			g.Owner, g.Repo, g.Credential = strings.TrimSpace(g.Owner), strings.TrimSpace(g.Repo), strings.TrimSpace(g.Credential)
 			if g.Owner == "" || g.Repo == "" {
 				return nil, fmt.Errorf("%s: github needs both owner and repo", where)
+			}
+			if l := g.Labels; l != nil {
+				var err error
+				if l.ByPriority, err = normalizeLabels(l.ByPriority, where+": github.labels.byPriority", func(k string) (string, error) {
+					k = strings.ToUpper(strings.TrimSpace(k))
+					if !validIncidentPriorities[k] {
+						return "", fmt.Errorf("%q is not an incident priority (CRITICAL, HIGH, MODERATE, LOW, PLANNING)", k)
+					}
+					return k, nil
+				}); err != nil {
+					return nil, err
+				}
+				if l.ByEnvironment, err = normalizeLabels(l.ByEnvironment, where+": github.labels.byEnvironment", func(k string) (string, error) {
+					k = strings.ToLower(strings.TrimSpace(k))
+					if k == "" {
+						return "", fmt.Errorf("an empty environment key")
+					}
+					return k, nil
+				}); err != nil {
+					return nil, err
+				}
 			}
 		}
 		if len(p.Teams) == 0 {

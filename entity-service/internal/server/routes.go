@@ -1341,6 +1341,8 @@ func NewRouter(db *pgxpool.Pool, cfg *config.Config) (http.Handler, func()) {
 		log.Fatalf("invalid specialist handoff configuration: %v", handoffErr)
 	}
 	activeIncidentSvc = service.WithSpecialistHandoffConfig(activeIncidentSvc, handoffConfig)
+	// The handoff's GitHub issue links back to the incident in the CSM portal.
+	activeIncidentSvc = service.WithHandoffPortalBaseURL(activeIncidentSvc, cfg.CSMPortalBaseURL)
 	if db != nil {
 		// Case Paging: who is on each tier of a team's paging chain, picked on
 		// the Team Schedule's Case Paging tab, and whether each chain would
