@@ -308,9 +308,93 @@ Conventions to preserve:
 
 Known limits: a read that races an invalidation can re-cache the old value
 until the TTL; a degraded `GetMe` (e.g. groups unavailable) is cached like any
-other success; `SearchUsers`, `GetUsersByIDs` and `DATA_SOURCE=servicenow` are
-not cached. The client is a plain `redis.NewClient`, so the target must not use
-the "OSS Cluster" clustering policy.
+other success; `SearchUsers` and `GetUsersByIDs` are not cached. The client is
+a plain `redis.NewClient`, so the target must not use the "OSS Cluster"
+clustering policy.
+
+## POST /cases/volume-trend: day-bucketed opened/closed counts for a dashboard chart
+
+Backs the CSM portal's "Case Summary" dashboard trend widget (`apps/csm-portal/webapp`'s
+new `"line"` shape): exactly two fixed series, "Opened" (by `work_item.created_on`) and
+"Closed" (by `caseLikeOwnClosedOnColumn`, the per-type closure timestamp), one point per
+UTC calendar day over a trailing window (`days`, default 30, 1-90). Deliberately narrow,
+unlike `AggregateCasesRequest`'s open-ended `groupBy` -- this backs exactly one chart, not
+a platform, so there's no generic series/bucket-unit config.
+
+**A naive `to_char(timestamp, 'YYYY-MM-DD') = ANY(days)` predicate is non-sargable --
+confirmed against a real staging database (505k `work_item` rows), not assumed.** Wrapping
+the indexed column in `to_char()` before comparing defeats any index on that column
+outright, forcing a full sequential scan regardless of whether one exists: a single day's
+query took ~380-550ms this way, a 30-day cold window over 3s. `CaseRepository.CaseVolumeTrend`
+instead ANDs a sargable range (`col >= start AND col < end`, computed from the min/max of
+the requested days) with the exact `to_char(...) = ANY(days)` membership check -- the range
+half is what an index can actually serve; the exact check on top is what keeps the result
+correct for a non-contiguous/sparse day list (a partially-warm cache asking for just the
+days it's missing). Migration `0226` (`idx_work_item_type_created_on`) is what the "opened"
+branch's range half now uses -- confirmed via `EXPLAIN (ANALYZE, BUFFERS)` against staging:
+23.9ms, down from a full-table scan.
+
+**The "closed" branch still can't use an index, and that's accepted, not a bug to chase
+further.** `caseLikeOwnClosedOnColumn` is a `CASE wi.type WHEN 'CASE' THEN c.closed_on
+WHEN 'ENGAGEMENT' THEN eng.closed_on ... END` spanning five joined tables -- the identical
+structural limitation migration `0195` already documents for `caseLikeStateColumn`'s own
+cross-table `COALESCE` (Postgres can't push an index scan through a CASE/COALESCE spanning
+several joined tables). Migrations `0227`/`0228`/`0230` add a plain `closed_on` index on each of the three
+case-like types this endpoint's own dashboard config actually requests (`case`/`engagement`/
+`security_report_analysis` -- `announcement` and `service_request` are both excluded by that
+config's own `type` filter, so there's no caller needing an `announcement.closed_on` or
+`service_request.closed_on` index yet) anyway, at the
+same explicit "keep it ready for the eventual sargable rewrite" request `0195`-`0198` already
+established for `state` -- not wired up by this query yet. Confirmed via `EXPLAIN`: this branch still costs ~450-460ms per call on staging. The
+caching below is what makes that acceptable rather than something worth a riskier query
+rewrite right now.
+
+**Caching is a plain per-pod in-memory map, deliberately not Redis-backed, by explicit product
+decision** (`internal/cache/case_volume_trend_memory_cache.go`'s `InMemoryCaseVolumeTrendCache`,
+wired directly as `service.CaseVolumeTrendCache` in `routes.go` -- no composite/Redis layer in
+front of it). A day missing from a given pod's own map -- the normal case only right after a
+fresh deployment, when every pod starts empty, or the first time any pod is asked about a given
+day at all -- is the one case that queries Postgres; each pod then simply computes and caches
+independently, which costs nothing worth a shared store's added complexity for data this cheap
+to recompute and identical for every caller (see `service.CaseVolumeTrendCache`'s own doc
+comment).
+
+**"Today"'s own TTL is capped at whatever's left of the UTC day, not a flat duration --
+`ttlUntilNextUTCMidnight` (case_service.go).** By explicit product decision, a day's count
+only needs to be correct as of whenever it was last computed, not refreshed on any shorter
+cycle -- "today" is cached for up to 24h, same as a fully-elapsed day's `caseVolumeTrendStableTTL`
+(120 days) would suggest, except capped at the real day boundary: a flat duration written a few
+minutes before midnight would otherwise still read as "valid" well into the next calendar day,
+serving a snapshot of a day that's already over instead of forcing the one-time recompute that
+actually finalizes it. The cap guarantees that recompute happens on the very first request after
+midnight, on any pod, regardless of how recently "today" had last been refreshed before the day
+ended -- once recomputed past midnight, the day is cached under `caseVolumeTrendStableTTL`
+instead, since by then it's no longer `today`.
+
+**Deliberately NOT keyed by caller identity -- and `CaseVolumeTrend` enforces, not just
+assumes, that every caller is `Unrestricted`.** The portal-wide count is correct for everyone,
+so a day's cache entry is shared globally, keyed only by the request's own filters (a plain
+JSON encoding of `SearchCasesFilters`) and the day itself -- see `service.CaseVolumeTrendCache`'s
+own doc comment. This is only safe because no caller ever gets a scope-restricted result cached
+under that scope-independent key: `CaseVolumeTrend` calls `RequireInternalCaller` (the same gate
+`GetCaseFeedback` in this same file already uses) before doing anything else, so a restricted
+caller is refused with a 403 before the repository -- and therefore the cache -- is ever reached.
+Without this, a restricted caller's own scope-filtered result (the repository call below still
+takes `scope` and applies it) would get cached under the filters-only key and served back to the
+next caller for the same filters regardless of THEIR scope -- a cross-tenant leak in either
+direction, found and fixed by an automated security review rather than designed in from the
+start. Don't add scope-based cache keys back without a real caller that needs per-caller counts;
+doing so for a single-count, dashboard-wide endpoint like this one is needless complexity -- keep
+the internal-only gate instead.
+
+**The dashboard config decides which case types count, not this endpoint.** Like every
+other widget-driving endpoint here, `CaseVolumeTrend` takes whatever `filters` the caller
+sends and applies no default type exclusion of its own -- a caller that wants the "Case
+Summary" dashboard's volume-trend widget to exclude announcements and service requests
+(neither is a real support case) does so the same way `customerHealthCaseLikeTypes` already
+does it elsewhere in this codebase: an inclusion-list `{"field": "type", "op": "in", "values":
+["case", "engagement", "security_report_analysis"]}` filter, set in the dashboard's own JSON
+config, not hardcoded into the endpoint.
 
 ## Salesforce Account ingest
 

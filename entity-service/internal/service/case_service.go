@@ -117,6 +117,14 @@ type caseService struct {
 	// not apply here, and this is wanted under plain DATA_SOURCE=postgres too,
 	// where snMirror is never set at all.
 	slaSearchDelegate CaseService
+	// volumeTrendCache backs CaseVolumeTrend's per-day caching (see that
+	// method's own doc comment) -- wired via WithCaseVolumeTrendCache,
+	// which routes.go always calls with either a Redis-backed or an
+	// in-memory cache (see CaseVolumeTrendCache's own doc comment), so this
+	// is nil only for a *caseService built directly by a test. Checked for
+	// nil before use anyway, same posture as every other optional
+	// dependency on this struct.
+	volumeTrendCache CaseVolumeTrendCache
 }
 
 // srNotifier is what caseService needs from SRNoticeService; an interface so
@@ -189,6 +197,19 @@ func WithProductCategoryEnforcement(svc CaseService, referenceDataRepo repositor
 func WithCSEngineerRole(svc CaseService, csEngineerRole string) CaseService {
 	if cs, ok := svc.(*caseService); ok {
 		cs.csEngineerRole = csEngineerRole
+	}
+	return svc
+}
+
+// WithCaseVolumeTrendCache attaches the optional Redis-backed per-day cache
+// CaseVolumeTrend reads through to an already-constructed CaseService. Same
+// post-construction wiring shape as WithProductCategoryEnforcement/
+// WithCSEngineerRole, for the same reason -- optional, nil-safe to omit, and
+// every existing NewCaseService/NewCaseServiceWithSNWriteback call site keeps
+// working unchanged. A no-op if svc is not a *caseService or cache is nil.
+func WithCaseVolumeTrendCache(svc CaseService, cache CaseVolumeTrendCache) CaseService {
+	if cs, ok := svc.(*caseService); ok && cache != nil {
+		cs.volumeTrendCache = cache
 	}
 	return svc
 }
@@ -3220,6 +3241,162 @@ func (s *caseService) AggregateCases(ctx context.Context, req domain.AggregateCa
 		others += b.Count
 	}
 	return domain.AggregateResponse{Groups: buckets[:maxGroups], OthersCount: others, TotalRecords: total}, nil
+}
+
+// defaultCaseVolumeTrendDays/maxCaseVolumeTrendDays bound
+// CaseVolumeTrendRequest.Days.
+const (
+	defaultCaseVolumeTrendDays = 30
+	maxCaseVolumeTrendDays     = 90
+)
+
+// caseVolumeTrendStableTTL is CaseVolumeTrend's cache lifetime for a day
+// that has fully elapsed (UTC) and can never change again -- comfortably
+// longer than the widest window this endpoint allows (maxCaseVolumeTrendDays)
+// rather than needing an explicit invalidation path, since it simply never
+// needs recomputing again while it stays within any request's window.
+// "Today" has no fixed constant of its own -- see ttlUntilNextUTCMidnight.
+const caseVolumeTrendStableTTL = 120 * 24 * time.Hour
+
+// ttlUntilNextUTCMidnight returns how much of the current UTC calendar day
+// is left, as of now. This -- not a flat duration -- is "today"'s own TTL,
+// applied identically to both the Redis and in-memory layers (by explicit
+// product decision: the count only needs to be correct as of whenever it
+// was last computed that day, not refreshed on any shorter cycle, so there
+// is no reason for the two layers to differ here any more). Capping to the
+// day boundary is still essential even though the value is otherwise long:
+// a flat duration written a few minutes before midnight would otherwise
+// still be "valid" well into the next calendar day, serving a snapshot of a
+// day that has already ended instead of forcing the one-time recompute that
+// actually finalizes it (after which it's cached under
+// caseVolumeTrendStableTTL, correctly, since by then `day != todayKey`).
+// Capping here means that recompute always happens on the very first
+// request after midnight, on any pod, regardless of how recently "today"
+// had been refreshed before the day ended.
+func ttlUntilNextUTCMidnight(now time.Time) time.Duration {
+	nextMidnight := now.Truncate(24 * time.Hour).Add(24 * time.Hour)
+	return nextMidnight.Sub(now)
+}
+
+// CaseVolumeTrend implements CaseService. It returns exactly two series --
+// "Opened" (by created date) and "Closed" (by closed date) -- one point per
+// UTC calendar day over the trailing window, oldest first; see
+// domain.CaseVolumeTrendResponse's own doc comment for why this is fixed
+// rather than an open-ended series config.
+//
+// Caching (volumeTrendCache -- see that field's own doc comment; routes.go
+// always wires a per-pod in-memory cache, so this is never nil): a day that
+// has fully elapsed can never change again, so once computed it is cached
+// for caseVolumeTrendStableTTL; "today" is cached only until UTC midnight
+// (ttlUntilNextUTCMidnight), never longer, so the day it represents is
+// never served stale into the next calendar day. On a cold cache this still
+// costs at most ONE additional Postgres query regardless of how many days
+// are missing -- CaseRepository.CaseVolumeTrend bulk-computes every missing
+// day in a single statement, never one query per day -- which is what keeps
+// a dashboard load cheap even right after a cache flush. Deliberately NOT
+// keyed by caller scope: every real caller of this endpoint sees the same,
+// portal-wide count (see service.CaseVolumeTrendCache's own doc comment for
+// why that's safe here) -- only the request's own filters distinguish one
+// cache entry from another.
+func (s *caseService) CaseVolumeTrend(ctx context.Context, req domain.CaseVolumeTrendRequest) (domain.CaseVolumeTrendResponse, error) {
+	// This endpoint's own cache (below) is deliberately NOT keyed by caller
+	// scope -- see CLAUDE.md, "Deliberately NOT keyed by caller identity" --
+	// which is only safe because every caller is Unrestricted. That used to
+	// be an assumption about who calls this ("reached solely through the CSM
+	// portal's own internal-staff dashboard"), not an enforced one: a
+	// restricted-scope caller would have its own scope applied by the
+	// repository on a cache miss, then have that scope-filtered result cached
+	// under a scope-independent key and served back to the next caller with
+	// the same filters, whatever THEIR scope is -- a cross-tenant leak in
+	// either direction. Gating here, the same way GetCaseFeedback's own
+	// requireInternalCaller already does in this file, makes the assumption
+	// the cache design depends on an actual invariant.
+	if err := RequireInternalCaller(ctx, s.access, "case volume trend is only available to internal users"); err != nil {
+		return domain.CaseVolumeTrendResponse{}, err
+	}
+	days := req.Days
+	if days == 0 {
+		days = defaultCaseVolumeTrendDays
+	}
+	if days < 1 || days > maxCaseVolumeTrendDays {
+		return domain.CaseVolumeTrendResponse{}, &apierror.ValidationError{Msg: fmt.Sprintf("days must be between 1 and %d", maxCaseVolumeTrendDays)}
+	}
+	search, err := s.prepareCaseSearch(ctx, domain.SearchCasesRequest{Filters: req.Filters})
+	if err != nil {
+		return domain.CaseVolumeTrendResponse{}, err
+	}
+	scope, err := s.access.ResolveScope(ctx)
+	if err != nil {
+		return domain.CaseVolumeTrendResponse{}, err
+	}
+
+	today := time.Now().UTC()
+	allDays := make([]string, days)
+	for i := 0; i < days; i++ {
+		allDays[i] = today.AddDate(0, 0, -(days - 1 - i)).Format("2006-01-02")
+	}
+	todayKey := today.Format("2006-01-02")
+
+	cacheEnabled := s.volumeTrendCache != nil
+	var filtersKey string
+	counts := make(map[string]domain.CaseVolumeDayCount, days)
+	if cacheEnabled {
+		filtersKey = caseVolumeFiltersKey(req.Filters)
+		for day, dc := range s.volumeTrendCache.GetMany(ctx, filtersKey, allDays) {
+			counts[day] = dc
+		}
+	}
+
+	missing := make([]string, 0, days)
+	for _, d := range allDays {
+		if _, ok := counts[d]; !ok {
+			missing = append(missing, d)
+		}
+	}
+	if len(missing) > 0 {
+		fresh, err := s.repo.CaseVolumeTrend(ctx, search, missing, scope)
+		if err != nil {
+			return domain.CaseVolumeTrendResponse{}, err
+		}
+		for day, dc := range fresh {
+			counts[day] = dc
+			if cacheEnabled {
+				ttl := caseVolumeTrendStableTTL
+				if day == todayKey {
+					ttl = ttlUntilNextUTCMidnight(today)
+				}
+				s.volumeTrendCache.Set(ctx, filtersKey, day, dc, ttl)
+			}
+		}
+	}
+
+	opened := make([]domain.CaseVolumeTrendPoint, days)
+	closed := make([]domain.CaseVolumeTrendPoint, days)
+	for i, d := range allDays {
+		dc := counts[d]
+		opened[i] = domain.CaseVolumeTrendPoint{Date: d, Count: dc.Opened}
+		closed[i] = domain.CaseVolumeTrendPoint{Date: d, Count: dc.Closed}
+	}
+	return domain.CaseVolumeTrendResponse{
+		Days: days,
+		Series: []domain.CaseVolumeTrendSeries{
+			{Label: "Opened", Points: opened},
+			{Label: "Closed", Points: closed},
+		},
+	}, nil
+}
+
+// caseVolumeFiltersKey encodes req.Filters into a stable string for
+// CaseVolumeTrendCache's key -- two requests with byte-identical filters
+// (the common case: a dashboard widget's own JSON config never changes
+// between loads) share a cache entry; anything else is simply a cache miss,
+// never a correctness problem.
+func caseVolumeFiltersKey(filters domain.SearchCasesFilters) string {
+	raw, err := json.Marshal(filters)
+	if err != nil {
+		return ""
+	}
+	return string(raw)
 }
 
 // resolveActor authenticates the caller from the x-user-id-token header

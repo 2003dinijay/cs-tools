@@ -3818,6 +3818,62 @@ paths:
               schema:
                 $ref: '#/components/schemas/ErrorPayload'
 
+  /cases/volume-trend:
+    post:
+      summary: >-
+        Day-bucketed case-volume trend (opened vs. closed), for the Case
+        Summary dashboard's trend chart.
+      description: >-
+        Plain forward-and-return proxy to the entity service's own POST
+        /cases/volume-trend: exactly two series, "Opened" (by created date)
+        and "Closed" (by closed date), one point per UTC calendar day over a
+        trailing window (30 days by default).
+      operationId: postCasesVolumeTrend
+      requestBody:
+        description: Case volume-trend payload
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CaseVolumeTrendPayload'
+        required: true
+      responses:
+        "200":
+          description: Daily opened/closed case counts for the requested window.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CaseVolumeTrendResponse'
+        "400":
+          description: BadRequest
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "401":
+          description: Unauthorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "403":
+          description: Forbidden
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "413":
+          description: RequestEntityTooLarge
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+        "500":
+          description: InternalServerError
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorPayload'
+
   /cases/feedback/search:
     post:
       summary: Search case-feedback (satisfaction rating) records across cases.
@@ -15761,6 +15817,55 @@ components:
             Caps the response to the top maxGroups buckets by count; the
             remainder is folded into AggregateResponse.othersCount. Optional;
             a default is applied when omitted.
+
+    CaseVolumeTrendPayload:
+      type: object
+      properties:
+        filters:
+          $ref: '#/components/schemas/CaseSearchFilters'
+        days:
+          type: integer
+          description: >-
+            Size of the trailing window, ending today (UTC). Optional;
+            defaults to 30 when omitted. Must be between 1 and 90.
+
+    CaseVolumeTrendPoint:
+      type: object
+      properties:
+        date:
+          type: string
+          format: date
+          description: UTC calendar day (YYYY-MM-DD).
+        count:
+          type: integer
+
+    CaseVolumeTrendSeries:
+      type: object
+      properties:
+        label:
+          type: string
+          description: '"Opened" or "Closed".'
+        points:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseVolumeTrendPoint'
+          description: >-
+            One point per day in the requested window, oldest first. A day
+            with no matching cases is still present, with count 0.
+
+    CaseVolumeTrendResponse:
+      type: object
+      description: >-
+        Day-bucketed case-volume trend: always exactly two series, "Opened"
+        (by created date) and "Closed" (by closed date).
+      properties:
+        days:
+          type: integer
+          description: The size of the window actually returned.
+        series:
+          type: array
+          items:
+            $ref: '#/components/schemas/CaseVolumeTrendSeries'
 
     AggregateBucket:
       type: object

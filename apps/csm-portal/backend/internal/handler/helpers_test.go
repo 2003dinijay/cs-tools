@@ -155,6 +155,7 @@ type mockEntityCaseClient struct {
 	searchCaseActivitiesFn     func(ctx context.Context, caseID string, body []byte) ([]byte, error)
 	searchCasesFn              func(ctx context.Context, body []byte) ([]byte, error)
 	aggregateCasesFn           func(ctx context.Context, body []byte) ([]byte, error)
+	volumeTrendFn              func(ctx context.Context, body []byte) ([]byte, error)
 	searchFeedbackFn           func(ctx context.Context, body []byte) ([]byte, error)
 	aggregateFeedbackFn        func(ctx context.Context, body []byte) ([]byte, error)
 	getCaseFn                  func(ctx context.Context, caseID string) ([]byte, error)
@@ -276,6 +277,13 @@ func (m *mockEntityCaseClient) AggregateCases(ctx context.Context, body []byte) 
 		return m.aggregateCasesFn(ctx, body)
 	}
 	return []byte(`{"groups":[],"othersCount":0,"totalRecords":0}`), nil
+}
+
+func (m *mockEntityCaseClient) VolumeTrend(ctx context.Context, body []byte) ([]byte, error) {
+	if m.volumeTrendFn != nil {
+		return m.volumeTrendFn(ctx, body)
+	}
+	return []byte(`{"days":30,"series":[]}`), nil
 }
 
 func (m *mockEntityCaseClient) SearchFeedback(ctx context.Context, body []byte) ([]byte, error) {
